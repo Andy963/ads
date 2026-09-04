@@ -419,6 +419,83 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     }
   });
 
+  it("preserves interleaved user prompts and timestamps across reconnect sync (Issue #143)", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          events: [
+            {
+              seq: 1,
+              type: "user",
+              revision: 1,
+              ts: 1000000,
+              payload: { type: "user", clientMessageId: "user-prompt-1", text: "first user query", ts: 1000000 },
+            },
+            {
+              seq: 2,
+              type: "result",
+              revision: 1,
+              ts: 1000500,
+              payload: { type: "result", output: "first assistant response", ts: 1000500, ok: true },
+            },
+            {
+              seq: 3,
+              type: "user",
+              revision: 1,
+              ts: 2000000,
+              payload: { type: "user", clientMessageId: "user-prompt-2", text: "second user query", ts: 2000000 },
+            },
+            {
+              seq: 4,
+              type: "result",
+              revision: 1,
+              ts: 2000800,
+              payload: { type: "result", output: "second assistant response", ts: 2000800, ok: true },
+            },
+          ],
+          latestSeq: 4,
+          minAvailableSeq: 1,
+          hasMore: false,
+          truncated: false,
+        }),
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const { wrapper, rt } = await mountReconnectHarness();
+      rt.needsChatSync = true;
+
+      // Connect and trigger reconnect catch-up
+      lastWs!.onOpen?.();
+      lastWs!.onMessage?.({ type: "welcome", latestSeq: 4, inFlight: false });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+      await vi.waitFor(() => {
+        expect(rt.messages.value.map((m) => [m.role, m.content])).toEqual([
+          ["user", "first user query"],
+          ["assistant", "first assistant response"],
+          ["user", "second user query"],
+          ["assistant", "second assistant response"],
+        ]);
+      });
+
+      expect(rt.messages.value[0]?.ts).toBe(1000000);
+      expect(rt.messages.value[1]?.ts).toBe(1000500);
+      expect(rt.messages.value[2]?.ts).toBe(2000000);
+      expect(rt.messages.value[3]?.ts).toBe(2000800);
+      expect(rt.messages.value.filter((m) => m.role === "user")).toHaveLength(2);
+
+      // Receiving duplicate user sync event does not duplicate the rendered user prompt
+      lastWs!.onMessage?.({ type: "user", clientMessageId: "user-prompt-1", text: "first user query", ts: 1000000, seq: 1 });
+      await settleUi(wrapper);
+      expect(rt.messages.value.filter((m) => m.role === "user")).toHaveLength(2);
+
+      wrapper.unmount();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
   it("orders HTTP catch-up and overlapping live events through one sequencer", async () => {
     const originalFetch = globalThis.fetch;
     let resolveFetch: ((response: Response) => void) | null = null;

@@ -370,11 +370,17 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       }
       if (lane.deltaCoalescer && isStreamTerminalEvent(eventType)) {
         lane.deltaCoalescer.finish();
+      } else if (lane.deltaCoalescer && eventType === "phase_complete") {
+        lane.deltaCoalescer.finishPhase();
       }
+      const eventId = String(payloadRecord.eventId ?? payloadRecord.event_id ?? "").trim() || undefined;
+      const eventTs = Number(payloadRecord.ts);
       const seq = syncEventStore.append({
         namespace: lane.laneNamespace,
         laneKey: lane.historyKey,
         type: eventType,
+        eventId,
+        ts: Number.isFinite(eventTs) && eventTs > 0 ? Math.floor(eventTs) : undefined,
         payload: payloadRecord,
       });
       if (seq === null) {
@@ -729,6 +735,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         isLaneCurrent: () => isLaneCurrent(lane),
         traceWsDuplication: config.traceWsDuplication,
         warn: (message) => logger.warn(message),
+        emitUserSyncEvent: (userEv) => { const res = appendSyncEventForLane(lane, userEv); return { ok: res.ok }; },
         sessionId: lane.sessionId,
         userId: lane.userId,
         onPersistedMessage: ({ clientMessageId: persistedId, text }) => {

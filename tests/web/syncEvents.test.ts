@@ -293,4 +293,56 @@ describe("web sync events", () => {
     store.deleteCoalesced(args);
     assert.equal(store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: 0 }).events.length, 0);
   });
+  it("preserves phase-segmented delta snapshots and phase_complete ordering through catch-up", () => {
+    const store = new SyncEventStore({ stateDbPath });
+    const laneKey = "phase-stream-lane";
+
+    // Snapshot 1
+    store.appendCoalesced({
+      namespace: WEB_WORKER_NAMESPACE,
+      laneKey,
+      type: "delta_snapshot",
+      eventId: `stream:${laneKey}:0`,
+      payload: { type: "delta_snapshot", text: "Phase 1 explanation" },
+    });
+    // Phase complete 1
+    store.append({
+      namespace: WEB_WORKER_NAMESPACE,
+      laneKey,
+      type: "phase_complete",
+      payload: { type: "phase_complete", phase: "assistant" },
+    });
+    // Snapshot 2
+    store.appendCoalesced({
+      namespace: WEB_WORKER_NAMESPACE,
+      laneKey,
+      type: "delta_snapshot",
+      eventId: `stream:${laneKey}:1`,
+      payload: { type: "delta_snapshot", text: "Phase 2 explanation" },
+    });
+    // Phase complete 2
+    store.append({
+      namespace: WEB_WORKER_NAMESPACE,
+      laneKey,
+      type: "phase_complete",
+      payload: { type: "phase_complete", phase: "assistant" },
+    });
+    // Snapshot 3 (active)
+    store.appendCoalesced({
+      namespace: WEB_WORKER_NAMESPACE,
+      laneKey,
+      type: "delta_snapshot",
+      eventId: `stream:${laneKey}:2`,
+      payload: { type: "delta_snapshot", text: "Phase 3 in-flight" },
+    });
+    const result = store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: 0 });
+    const sequence = result.events.map((e) => `${e.type}:${(e.payload as any).text ?? (e.payload as any).phase}`);
+    assert.deepEqual(sequence, [
+      "delta_snapshot:Phase 1 explanation",
+      "phase_complete:assistant",
+      "delta_snapshot:Phase 2 explanation",
+      "phase_complete:assistant",
+      "delta_snapshot:Phase 3 in-flight",
+    ]);
+  });
 });

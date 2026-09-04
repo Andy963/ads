@@ -203,4 +203,69 @@ describe("chat semantic card ordering (Issue #67)", () => {
 
     expect(rt.messages.value.map((item) => item.kind)).toEqual(["text", "thought", "execute", "text"]);
   });
+  it("handles user sync event without duplicating locally rendered user prompt (Issue #143)", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const rt = ctx.activeRuntime.value;
+    const handler = createWsMessageHandler({
+      projects: ctx.projects,
+      pid: "default",
+      rt,
+      wsInstance: { sendPrompt: () => true } as any,
+      randomId: (p: string) => p + "-mock",
+      maxTurnCommands: 5,
+      updateProject: () => {},
+      ...chat,
+    });
+
+    chat.pushMessageBeforeLive({ id: "client-msg-1", role: "user", kind: "text", content: "Optimize database queries", ts: 1000 }, rt);
+
+    handler({
+      type: "user",
+      clientMessageId: "client-msg-1",
+      text: "Optimize database queries",
+      ts: 1000,
+    });
+
+    expect(rt.messages.value.filter((m) => m.role === "user")).toHaveLength(1);
+    expect(rt.messages.value[0]?.ts).toBe(1000);
+
+    handler({
+      type: "user",
+      clientMessageId: "server-msg-2",
+      text: "Next prompt from another tab",
+      ts: 2000,
+    });
+
+    expect(rt.messages.value.filter((m) => m.role === "user")).toHaveLength(2);
+    expect(rt.messages.value[1]?.content).toBe("Next prompt from another tab");
+    expect(rt.messages.value[1]?.ts).toBe(2000);
+  });
+  it("does not collapse distinct repeated prompts with same text but distinct clientMessageId (Issue #143 Finding 4)", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const rt = ctx.activeRuntime.value;
+    const handler = createWsMessageHandler({
+      projects: ctx.projects,
+      pid: "default",
+      rt,
+      wsInstance: { sendPrompt: () => true } as any,
+      randomId: (p: string) => p + "-mock",
+      maxTurnCommands: 5,
+      updateProject: () => {},
+      ...chat,
+    });
+
+    handler({ type: "user", clientMessageId: "msg-id-1", text: "same user prompt", ts: 1000 });
+    handler({ type: "result", output: "first answer", ts: 1050 });
+    handler({ type: "user", clientMessageId: "msg-id-2", text: "same user prompt", ts: 2000 });
+    handler({ type: "result", output: "second answer", ts: 2050 });
+
+    const userMessages = rt.messages.value.filter((m) => m.role === "user");
+    expect(userMessages).toHaveLength(2);
+    expect(userMessages[0]?.id).toBe("msg-id-1");
+    expect(userMessages[1]?.id).toBe("msg-id-2");
+    expect(userMessages[0]?.ts).toBe(1000);
+    expect(userMessages[1]?.ts).toBe(2000);
+  });
 });

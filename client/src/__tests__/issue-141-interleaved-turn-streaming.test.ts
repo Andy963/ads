@@ -143,4 +143,65 @@ describe("Issue #141: Interleaved turn streaming and elimination of monolithic b
 
     wrapper.unmount();
   });
+  it("seals assistant streaming bubble and creates separate cards on phase_complete without commands", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const rt = ctx.activeRuntime.value;
+    const handler = createWsMessageHandler({
+      projects: ctx.projects,
+      pid: "default",
+      rt,
+      wsInstance: { sendPrompt: () => true } as any,
+      randomId: (p: string) => `${p}-mock`,
+      maxTurnCommands: 5,
+      updateProject: () => {},
+      ...chat,
+    });
+
+    chat.pushMessageBeforeLive({ id: "user-1", role: "user", kind: "text", content: "Explain concept" }, rt);
+
+    // Phase 1 begins and streams
+    handler({ type: "delta", delta: "First part of explanation." });
+    let messages = rt.messages.value;
+    expect(messages).toHaveLength(2);
+    expect(messages[1]?.content).toBe("First part of explanation.");
+    expect(messages[1]?.streaming).toBe(true);
+
+    // Phase 1 completes (e.g. raw agent_message item completed without any command)
+    handler({ type: "phase_complete", phase: "assistant" });
+    messages = rt.messages.value;
+    expect(messages[1]?.streaming).toBe(false);
+
+    // Phase 2 streams next message
+    handler({ type: "delta", delta: "Second part of explanation." });
+    messages = rt.messages.value;
+    expect(messages).toHaveLength(3);
+    expect(messages[1]?.content).toBe("First part of explanation.");
+    expect(messages[1]?.streaming).toBe(false);
+    expect(messages[2]?.content).toBe("Second part of explanation.");
+    expect(messages[2]?.streaming).toBe(true);
+  });
+  it("phase_complete with no active assistant text is completely harmless", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const rt = ctx.activeRuntime.value;
+    const handler = createWsMessageHandler({
+      projects: ctx.projects,
+      pid: "default",
+      rt,
+      wsInstance: { sendPrompt: () => true } as any,
+      randomId: (p: string) => `${p}-mock`,
+      maxTurnCommands: 5,
+      updateProject: () => {},
+      ...chat,
+    });
+
+    chat.pushMessageBeforeLive({ id: "user-1", role: "user", kind: "text", content: "Wait for something" }, rt);
+    expect(rt.messages.value).toHaveLength(1);
+
+    // Emit phase_complete when no assistant card is active or streaming
+    handler({ type: "phase_complete", phase: "assistant" });
+    expect(rt.messages.value).toHaveLength(1);
+    expect(rt.messages.value[0]?.content).toBe("Wait for something");
+  });
 });

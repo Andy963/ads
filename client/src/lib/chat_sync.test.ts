@@ -618,7 +618,76 @@ describe("chat_sync.mergeHistoryFromServer", () => {
     expect(out).toEqual(local);
   });
 
-  it("uses the newest overlap when comparable messages repeat", () => {
+  it("backfills missing intermediate user and assistant messages between anchors (Issue #143)", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "first" }),
+      msg({ id: "a1", role: "assistant", content: "old answer" }),
+      msg({ id: "a2", role: "assistant", content: "latest answer" }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "s1", role: "user", content: "first" }),
+      msg({ id: "s2", role: "assistant", content: "old answer" }),
+      msg({ id: "s3", role: "user", content: "missing prompt" }),
+      msg({ id: "s4", role: "assistant", content: "latest answer" }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+    expect(out.map((m) => [m.role, m.content])).toEqual([
+      ["user", "first"],
+      ["assistant", "old answer"],
+      ["user", "missing prompt"],
+      ["assistant", "latest answer"],
+    ]);
+  });
+
+  it("backfills missing intermediate user prompt when assistant responses repeat (Issue #143 Finding 3)", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "first" }),
+      msg({ id: "a1", role: "assistant", content: "same answer" }),
+      msg({ id: "a2", role: "assistant", content: "same answer" }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "s1", role: "user", content: "first" }),
+      msg({ id: "s2", role: "assistant", content: "same answer" }),
+      msg({ id: "s3", role: "user", content: "missing prompt" }),
+      msg({ id: "s4", role: "assistant", content: "same answer" }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+    expect(out.map((m) => [m.role, m.content])).toEqual([
+      ["user", "first"],
+      ["assistant", "same answer"],
+      ["user", "missing prompt"],
+      ["assistant", "same answer"],
+    ]);
+  });
+  it("backfills multiple missing intermediate user prompts across repeated assistants (Issue #143 Finding 2)", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u1", role: "user", content: "first" }),
+      msg({ id: "a1", role: "assistant", content: "same" }),
+      msg({ id: "a2", role: "assistant", content: "same" }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "s1", role: "user", content: "first" }),
+      msg({ id: "s2", role: "assistant", content: "same" }),
+      msg({ id: "s3", role: "user", content: "missing1" }),
+      msg({ id: "s4", role: "assistant", content: "same" }),
+      msg({ id: "s5", role: "user", content: "missing2" }),
+      msg({ id: "s6", role: "assistant", content: "same" }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+    expect(out.map((m) => [m.role, m.content])).toEqual([
+      ["user", "first"],
+      ["assistant", "same"],
+      ["user", "missing1"],
+      ["assistant", "same"],
+      ["user", "missing2"],
+      ["assistant", "same"],
+    ]);
+  });
+
+  it("preserves intermediate server prompts and responses when comparable messages repeat (Issue #143)", () => {
     const local: ChatItem[] = [
       msg({ id: "u1", role: "user", content: "Hi" }),
       msg({ id: "a1", role: "assistant", content: "Ack" }),
@@ -632,7 +701,7 @@ describe("chat_sync.mergeHistoryFromServer", () => {
     ];
 
     const out = mergeHistoryFromServer(local, server, LIVE);
-    expect(out.map((m) => m.content)).toEqual(["Hi", "Ack", "Tail"]);
+    expect(out.map((m) => m.content)).toEqual(["Hi", "Ack", "Intermediate", "Ack", "Tail"]);
   });
 });
 
