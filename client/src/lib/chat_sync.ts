@@ -141,6 +141,113 @@ export function finalizeStreamingOnDisconnect(items: ChatItem[], liveStepId: str
   return next;
 }
 
+function findLcsAlignment(
+  localCmp: ComparableChat[],
+  serverCmp: ComparableChat[],
+): Array<{ localIdx: number; serverIdx: number }> {
+  const n = localCmp.length;
+  const m = serverCmp.length;
+  if (n === m && localCmp.every((item, i) => comparableKey(item) === comparableKey(serverCmp[i]!))) {
+    return localCmp.map((_, i) => ({ localIdx: i, serverIdx: i }));
+  }
+
+  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = 0; i < n; i++) {
+    const localKey = comparableKey(localCmp[i]!);
+    for (let j = 0; j < m; j++) {
+      if (localKey === comparableKey(serverCmp[j]!)) {
+        dp[i + 1]![j + 1] = dp[i]![j]! + 1;
+      } else {
+        dp[i + 1]![j + 1] = Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
+      }
+    }
+  }
+
+  const alignment: Array<{ localIdx: number; serverIdx: number }> = [];
+  let i = n;
+  let j = m;
+  while (i > 0 && j > 0) {
+    const localKey = comparableKey(localCmp[i - 1]!);
+    const serverKey = comparableKey(serverCmp[j - 1]!);
+    if (localKey === serverKey) {
+      alignment.unshift({ localIdx: i - 1, serverIdx: j - 1 });
+      i--;
+      j--;
+    } else if (dp[i]![j - 1]! >= dp[i - 1]![j]!) {
+      j--;
+    } else {
+      i--;
+    }
+  }
+
+  return alignment;
+}
+
+function alignAndBackfillHistory(
+  local: ChatItem[],
+  server: ChatItem[],
+  alignment: Array<{ localIdx: number; serverIdx: number }>,
+): ChatItem[] {
+  const result: ChatItem[] = [];
+  let prevLocalIdx = -1;
+  let prevServerIdx = -1;
+
+  for (let k = 0; k <= alignment.length; k++) {
+    const pair = alignment[k];
+    const curLocalIdx = pair ? pair.localIdx : local.length;
+    const curServerIdx = pair ? pair.serverIdx : server.length;
+
+    const localSlice = local.slice(prevLocalIdx + 1, curLocalIdx);
+    const serverSlice = server.slice(prevServerIdx + 1, curServerIdx);
+
+    if (k === alignment.length) {
+      let hydratedTail = localSlice;
+      if (serverSlice.length === 0) {
+        if (hydratedTail.length > 0 && hydratedTail.every(isDisconnectMarkedTail)) {
+          hydratedTail = [];
+        }
+        result.push(...hydratedTail);
+      } else {
+        const firstNew = serverSlice[0]!;
+        const reconciledTail = hydratedTail.filter(
+          (item) => !isDisconnectMarkedTail(item) || canReplaceLocalTailWithServer(item, firstNew),
+        );
+        const lastLocal = reconciledTail[reconciledTail.length - 1];
+        if (lastLocal && canReplaceLocalTailWithServer(lastLocal, firstNew)) {
+          const localText = normalizeContentForMerge(lastLocal.content);
+          const serverText = normalizeContentForMerge(firstNew.content);
+          const replacesTruncatedTail =
+            localText && serverText.startsWith(localText) && serverText.length > localText.length;
+          const replacesEmptyExecuteNotice = lastLocal.kind === "execute" && !localText && Boolean(serverText);
+          if (serverText && (replacesTruncatedTail || replacesEmptyExecuteNotice)) {
+            const replaced = { ...firstNew, id: lastLocal.id };
+            result.push(...reconciledTail.slice(0, -1), replaced, ...serverSlice.slice(1));
+          } else {
+            result.push(...reconciledTail, ...serverSlice);
+          }
+        } else {
+          result.push(...reconciledTail, ...serverSlice);
+        }
+      }
+    } else {
+      const localSliceKeys = new Set(localSlice.map((item) => comparableKey(toComparable([item])[0]!)));
+      const missingFromServer = serverSlice.filter(
+        (item) => !localSliceKeys.has(comparableKey(toComparable([item])[0]!)),
+      );
+      result.push(...missingFromServer, ...localSlice);
+
+      const anchorLocal = local[curLocalIdx]!;
+      const anchorServer = server[curServerIdx]!;
+      result.push(hydrateOverlappingExecuteMetadata([anchorLocal], 0, anchorServer)[0]!);
+    }
+
+    prevLocalIdx = curLocalIdx;
+    prevServerIdx = curServerIdx;
+  }
+
+  return result;
+}
+
 export function mergeHistoryFromServer(
   localMessages: ChatItem[],
   serverHistory: ChatItem[],
@@ -153,66 +260,13 @@ export function mergeHistoryFromServer(
 
   const localCmp = toComparable(local);
   const serverCmp = toComparable(server);
-  const localComparableKeyToIdx = new Map<string, number>();
-  for (let i = 0; i < localCmp.length; i += 1) {
-    localComparableKeyToIdx.set(comparableKey(localCmp[i]!), i);
-  }
-  let lastMatchedServerIdx = -1;
-  let lastMatchedLocalIdx = -1;
-
-  // Find the newest server message that already exists locally; local history may have been trimmed.
-  for (let s = serverCmp.length - 1; s >= 0; s--) {
-    const localIdx = localComparableKeyToIdx.get(comparableKey(serverCmp[s]!));
-    if (localIdx !== undefined) {
-      lastMatchedServerIdx = s;
-      lastMatchedLocalIdx = localIdx;
-      break;
-    }
-  }
-
-  if (lastMatchedServerIdx < 0) {
-    // If there is no overlap, avoid clobbering an existing UI transcript.
-    // Only hydrate from server when the local view is effectively empty (system-only).
+  const alignment = findLcsAlignment(localCmp, serverCmp);
+  if (alignment.length === 0) {
     const hasUserOrAssistant = localCmp.some((m) => m.role === "user" || m.role === "assistant");
     return hasUserOrAssistant ? local : server;
   }
 
-  const tailStart = Math.min(server.length, Math.max(0, lastMatchedServerIdx + 1));
-  const tail = server.slice(tailStart);
-  let hydratedLocal = hydrateOverlappingExecuteMetadata(local, lastMatchedLocalIdx, server[lastMatchedServerIdx]!);
-  if (tail.length === 0) {
-    const localTail = hydratedLocal.slice(lastMatchedLocalIdx + 1);
-    if (localTail.length > 0 && localTail.every(isDisconnectMarkedTail)) {
-      return hydratedLocal.slice(0, lastMatchedLocalIdx + 1);
-    }
-    return hydratedLocal;
-  }
-
-  const firstNew = tail[0]!;
-  const localPrefix = hydratedLocal.slice(0, lastMatchedLocalIdx + 1);
-  const localTail = hydratedLocal.slice(lastMatchedLocalIdx + 1);
-  const reconciledTail = localTail.filter(
-    (item) => !isDisconnectMarkedTail(item) || canReplaceLocalTailWithServer(item, firstNew),
-  );
-  if (reconciledTail.length !== localTail.length) {
-    hydratedLocal = [...localPrefix, ...reconciledTail];
-  }
-
-  // If the local tail is a truncated version of the server's next message (common after disconnect),
-  // replace it instead of duplicating it.
-  const lastLocal = hydratedLocal[hydratedLocal.length - 1]!;
-  if (canReplaceLocalTailWithServer(lastLocal, firstNew)) {
-    const localText = normalizeContentForMerge(lastLocal.content);
-    const serverText = normalizeContentForMerge(firstNew.content);
-    const replacesTruncatedTail = localText && serverText.startsWith(localText) && serverText.length > localText.length;
-    const replacesEmptyExecuteNotice = lastLocal.kind === "execute" && !localText && Boolean(serverText);
-    if (serverText && (replacesTruncatedTail || replacesEmptyExecuteNotice)) {
-      const replaced = { ...firstNew, id: lastLocal.id };
-      return [...hydratedLocal.slice(0, -1), replaced, ...tail.slice(1)];
-    }
-  }
-
-  return [...hydratedLocal, ...tail];
+  return alignAndBackfillHistory(local, server, alignment);
 }
 
 export function getSemanticCardRank(item: ChatItem): number {

@@ -108,6 +108,8 @@ export function attachWorkerPromptHandler(args: {
   getThoughtText: () => string;
 } {
   const lastRespondingTextByItemId = new Map<string, string>();
+  let activeRespondingItemId: string | null = null;
+  const completedRespondingItemIds = new Set<string>();
   let lastReasoningText = "";
   let latestStepTraceText = "";
   const lastCommandOutputsByKey = new Map<string, string>();
@@ -160,6 +162,8 @@ export function attachWorkerPromptHandler(args: {
     const raw = event.raw as ThreadEvent;
     if (raw.type === "turn.started") {
       lastRespondingTextByItemId.clear();
+      activeRespondingItemId = null;
+      completedRespondingItemIds.clear();
       lastReasoningText = "";
       latestStepTraceText = "";
     }
@@ -195,6 +199,11 @@ export function attachWorkerPromptHandler(args: {
       const next = event.delta;
       const rawItem = (raw as { item?: { id?: unknown } }).item;
       const itemId = rawItem && typeof rawItem === "object" ? String(rawItem.id ?? "").trim() || "__unknown__" : "__unknown__";
+      if (activeRespondingItemId && activeRespondingItemId !== itemId && !completedRespondingItemIds.has(activeRespondingItemId)) {
+        completedRespondingItemIds.add(activeRespondingItemId);
+        args.sendToChat({ type: "phase_complete", phase: "assistant", ts: Date.now() });
+      }
+      activeRespondingItemId = itemId;
       const previous = lastRespondingTextByItemId.get(itemId) ?? "";
       if (previous && !next.startsWith(previous)) {
         // App-server agent-message updates are cumulative per item. A shorter or
@@ -208,8 +217,24 @@ export function attachWorkerPromptHandler(args: {
       }
       return;
     }
-    const rawItem = (raw as { item?: { type?: unknown } }).item;
+    const rawItem = (raw as { item?: { type?: unknown; id?: unknown } }).item;
     const rawItemType = rawItem && typeof rawItem === "object" ? String((rawItem as { type?: unknown }).type ?? "").trim() : "";
+    if (raw.type === "item.completed" && rawItemType === "agent_message") {
+      const itemId = rawItem && typeof rawItem === "object" ? String((rawItem as { id?: unknown }).id ?? "").trim() : "";
+      if (itemId) {
+        if (!completedRespondingItemIds.has(itemId)) {
+          completedRespondingItemIds.add(itemId);
+          if (activeRespondingItemId === itemId) {
+            activeRespondingItemId = null;
+            args.sendToChat({ type: "phase_complete", phase: "assistant", ts: Date.now() });
+          }
+        }
+      } else if (activeRespondingItemId === "__unknown__") {
+        activeRespondingItemId = null;
+        args.sendToChat({ type: "phase_complete", phase: "assistant", ts: Date.now() });
+      }
+    }
+
     if (raw.type === "item.completed" && rawItemType === "file_change") {
       const item = rawItem as { changes?: unknown };
       const changes = Array.isArray(item.changes) ? (item.changes as Array<{ kind?: unknown; path?: unknown }>) : [];

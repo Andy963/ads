@@ -61,6 +61,7 @@ export function preflightPersistAndAck(args: {
   sessionId: string;
   userId: number;
   onPersistedMessage?: (message: { clientMessageId: string; role: "user"; text: string }) => void;
+  emitUserSyncEvent?: (event: { type: "user"; clientMessageId: string; text: string; ts: number; eventId?: string }) => { ok: boolean };
 }): { enqueue: boolean } {
   if (args.isLaneCurrent && !args.isLaneCurrent() && args.parsed.type !== "clear_history") {
     return { enqueue: false };
@@ -105,8 +106,8 @@ export function preflightPersistAndAck(args: {
       args.sendJson({ type: "error", message: "消息保存失败，请重试" });
       return { enqueue: false };
     }
-    args.sendJson({ type: "ack", client_message_id: args.clientMessageId, duplicate: persistence === "duplicate" });
     if (persistence === "duplicate") {
+      args.sendJson({ type: "ack", client_message_id: args.clientMessageId, duplicate: true });
       const historyEntries = args.historyStore.get(args.historyKey);
       const persistedPrompt = historyEntries.find(
         (entry) =>
@@ -128,6 +129,26 @@ export function preflightPersistAndAck(args: {
       }
       return { enqueue: replayIncomplete };
     }
+    if (args.emitUserSyncEvent) {
+      const syncRes = args.emitUserSyncEvent({
+        type: "user",
+        clientMessageId: args.clientMessageId,
+        text: textResult.text,
+        ts: args.receivedAt,
+        eventId: "user:" + args.clientMessageId,
+      });
+      if (!syncRes.ok) {
+        // Roll back only the prompt inserted by this attempt so a retry can succeed.
+        const rolledBack = args.historyStore.removeByExactKind(args.historyKey, entryKind);
+        if (!rolledBack) {
+          args.warn("[WebSocket][Sync] failed to roll back prompt history entry");
+        }
+        args.warn("[WebSocket][Sync] failed to append user sync event; rolled back prompt entry");
+        args.sendJson({ type: "error", message: "消息保存失败，请重试" });
+        return { enqueue: false };
+      }
+    }
+    args.sendJson({ type: "ack", client_message_id: args.clientMessageId, duplicate: false });
     args.onPersistedMessage?.({ clientMessageId: args.clientMessageId, role: "user", text: textResult.text });
     args.broadcastPersistedHistory?.();
     args.broadcastInFlight?.();

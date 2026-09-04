@@ -392,4 +392,111 @@ describe("web/server/ws/workerPromptHandler", () => {
     const planUpserts = upserts.filter((entry) => entry.kind.startsWith("plan:"));
     assert.equal(planUpserts.length, 0);
   });
+  it("handles out-of-order old completion and new delta without double phase_complete", () => {
+    const { emit, sent } = createHarness();
+
+    // 1. First message streams
+    emit(respondingEvent("msg-1", "Hello from msg 1"));
+    // 2. New delta for msg-2 arrives BEFORE msg-1 completion event
+    emit(respondingEvent("msg-2", "Hello from msg 2"));
+
+    // Should have emitted exactly one phase_complete when transitioning msg-1 -> msg-2
+    let phaseEvents = sent.filter((p: any) => p.type === "phase_complete");
+    assert.equal(phaseEvents.length, 1);
+
+    // 3. Late arrival of msg-1 completed event
+    emit({
+      phase: "responding",
+      title: "done 1",
+      timestamp: Date.now(),
+      raw: {
+        type: "item.completed",
+        item: { type: "agent_message", id: "msg-1" },
+      },
+    });
+
+    // Must NOT emit a second phase_complete that would prematurely seal msg-2
+    phaseEvents = sent.filter((p: any) => p.type === "phase_complete");
+    assert.equal(phaseEvents.length, 1);
+
+    // 4. Now msg-2 legitimately completes
+    emit({
+      phase: "responding",
+      title: "done 2",
+      timestamp: Date.now(),
+      raw: {
+        type: "item.completed",
+        item: { type: "agent_message", id: "msg-2" },
+      },
+    });
+
+    phaseEvents = sent.filter((p: any) => p.type === "phase_complete");
+    assert.equal(phaseEvents.length, 2);
+  });
+  it("ignores id-less old completion after a new identified delta begins (Finding A)", () => {
+    const { emit, sent } = createHarness();
+
+    // 1. Identified message streams
+    emit(respondingEvent("msg-identified-1", "Identified text"));
+
+    // 2. An anonymous / id-less old completion arrives out of order
+    emit({
+      phase: "responding",
+      title: "done unknown",
+      timestamp: Date.now(),
+      raw: {
+        type: "item.completed",
+        item: { type: "agent_message" },
+      },
+    });
+
+    // Must NOT emit phase_complete and must NOT seal msg-identified-1
+    const phaseEvents = sent.filter((p: any) => p.type === "phase_complete");
+    assert.equal(phaseEvents.length, 0);
+  });
+  it("does not double-seal active identified phase when stale anonymous completion arrives after transition", () => {
+    const { emit, sent } = createHarness();
+
+    // 1. Anonymous delta arrives (no item ID)
+    emit({
+      phase: "responding",
+      title: "streaming anon",
+      delta: "Anonymous delta text",
+      timestamp: 1000,
+      raw: { type: "item.started", item: { type: "agent_message" } },
+    });
+
+    // 2. Identified message begins streaming -> seals anonymous phase
+    emit(respondingEvent("msg-identified-2", "Identified text"));
+    let phaseEvents = sent.filter((p: any) => p.type === "phase_complete");
+    assert.equal(phaseEvents.length, 1);
+
+    // 3. Stale anonymous completion arrives out of order
+    emit({
+      phase: "responding",
+      title: "done anon",
+      timestamp: 2000,
+      raw: {
+        type: "item.completed",
+        item: { type: "agent_message" },
+      },
+    });
+
+    // Must NOT emit a second phase_complete that would seal msg-identified-2
+    phaseEvents = sent.filter((p: any) => p.type === "phase_complete");
+    assert.equal(phaseEvents.length, 1);
+
+    // 4. Identified message finishes
+    emit({
+      phase: "responding",
+      title: "done 2",
+      timestamp: 3000,
+      raw: {
+        type: "item.completed",
+        item: { type: "agent_message", id: "msg-identified-2" },
+      },
+    });
+    phaseEvents = sent.filter((p: any) => p.type === "phase_complete");
+    assert.equal(phaseEvents.length, 2);
+  });
 });

@@ -538,6 +538,7 @@ export function createChatActions(ctx: AppContext) {
     upsertStepLiveDelta,
     upsertLiveActivity,
     clearStepLive,
+    sealActiveStreamingAssistant,
   } = createStreamingActions({
     liveStepId: LIVE_STEP_ID,
     liveActivityId: LIVE_ACTIVITY_ID,
@@ -677,7 +678,7 @@ export function createChatActions(ctx: AppContext) {
     }
   };
 
-  const finalizeAssistant = (content: string, rt?: ProjectRuntime): void => {
+  const finalizeAssistant = (content: string, rt?: ProjectRuntime, ts?: number): void => {
     const state = runtimeOrActive(rt);
     const text = String(content ?? "").replace(/\r\n/g, "\n");
     const trimmedText = text.trim();
@@ -704,6 +705,9 @@ export function createChatActions(ctx: AppContext) {
       }
       existing[streamIndex]!.content = text;
       existing[streamIndex]!.streaming = false;
+      if (Number.isFinite(ts) && (ts as number) > 0) {
+        existing[streamIndex]!.ts = Math.floor(ts as number);
+      }
       setMessages(existing.slice(), state);
       return;
     }
@@ -725,7 +729,7 @@ export function createChatActions(ctx: AppContext) {
       }
     }
 
-    pushMessageBeforeLive({ role: "assistant", kind: "text", content: text, ts: Date.now() }, state);
+    pushMessageBeforeLive({ role: "assistant", kind: "text", content: text, ts: (Number.isFinite(ts) && (ts as number) > 0) ? Math.floor(ts as number) : Date.now() }, state);
   };
 
   const pruneTaskChatBuffer = (rt: ProjectRuntime): void => {
@@ -827,6 +831,7 @@ export function createChatActions(ctx: AppContext) {
     upsertStepLiveDelta,
     upsertLiveActivity,
     clearStepLive,
+    sealActiveStreamingAssistant,
     finalizeAssistant,
     pruneTaskChatBuffer,
     bufferTaskChatEvent,

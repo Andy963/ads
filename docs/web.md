@@ -28,9 +28,13 @@ Web Console 聚焦于双 Lane 交互界面与 GitHub-Native 交付流：
   - 输入框模型选择器严格联动：仅展示当前 Agent 兼容且已启用的模型，切换 Agent 时自动恢复对应兼容偏好。页面加载或模型列表刷新不会覆盖已有的自定义模型选择。
   - 所有模型配置持久化于全局 SQLite 状态库 (`state.db`)。
 
-### 2.1 流式回复增量
+### 2.1 流式回复增量与阶段边界协议 (Streaming & Phase Boundaries)
 
-WebSocket 流式回复按 Provider 的消息 `itemId` 隔离累计文本；多个 agent message、工具调用和 reasoning item 交错时，不会把其他 item 的完整快照重复追加到当前回复。前端还会忽略已接收的重复累计前缀，作为传输异常时的最后一道保护。
+- **消息增量隔离**：WebSocket 流式回复按 Provider 的消息 `itemId` 隔离累计文本；多个 agent message、工具调用和 reasoning item 交错时，不会把其他 item 的完整快照重复追加到当前回复。前端还会忽略已接收的重复累计前缀，作为传输异常时的最后一道保护。
+- **阶段边界事件 (`phase_complete`)**：当单个 assistant `agent_message` 块完成时，服务端派发显式的 `phase_complete` 事件，通知客户端与重放流封板当前回复气泡并置 `streaming: false`。后续的回复增量会独立创建新气泡，即使没有命令或工具卡片交错，也不会将逻辑上独立的解释文本拼接进同一个气泡中。
+- **阶段化快照持久化与跨轮次无碰撞 ID (`delta_snapshot`)**：增量同步日志中，流式快照按执行阶段分段持久化（`eventId` 格式为 `stream:<laneKey>:<streamId>:<phase>`，其中 `streamId` 对每个活动 stream 唯一）。轮次终端结算 (`finish`) 仅清理当前未封板的活跃快照，严禁删除已封板阶段；新建或重连的 Coalescer 使用新的 stream ID，避免覆盖前序轮次已封板的快照。每当收到 `phase_complete`，当前阶段的 `delta_snapshot` 刷盘封板保留，作为可靠的断线重放记录；重放顺序严格保持 `delta_snapshot (phase 1) -> phase_complete -> delta_snapshot (phase 2) -> ...`。
+- **用户消息同步事件与原子性回滚 (`user`)**：Preflight 阶段保存用户提示词后，同步向 `SyncEventStore` 追加 `type: "user"` 增量事件，保持增量流与完整历史具有相同的回合拓扑（user -> command -> result）。若增量事件写入失败，服务端立即按精确 `kind` 回滚刚刚写入历史库的提示词条目并返回错误，确保客户端重试时不会因历史重复而遭到拦截。
+- **断线重连与双向历史对齐 (History Gap Reconciliation)**：前端对齐算法采用 LCS（最长公共子序列）执行双向对齐，当断线重放或重新拉取历史时，自动回填因连接抖动而在本地遗漏的中间用户消息与助手回复，并保留各事件在 `state.db` 中持久化的原始时间戳与执行元数据。
 
 ### 3. 全局规则系统 (Global Rules)
 - 跨项目、跨 Channel（Web Console / Telegram Bot）以及统一 Codex 引擎生效的规则引擎。

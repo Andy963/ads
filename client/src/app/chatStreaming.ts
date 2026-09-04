@@ -172,6 +172,22 @@ export function createStreamingActions(params: {
     setMessages([...sealedExisting.slice(0, insertAt), nextItem, ...sealedExisting.slice(insertAt)], state);
   };
 
+  const sealActiveStreamingAssistant = (rt?: ProjectRuntime): void => {
+    const state = runtimeOrActive(rt);
+    const existing = state.messages.value.slice();
+    let updated = false;
+    const next = existing.map((m) => {
+      if (m.role === "assistant" && m.streaming && !isLiveMessageId(m.id)) {
+        updated = true;
+        return { ...m, streaming: false };
+      }
+      return m;
+    });
+    if (updated) {
+      setMessages(next, state);
+    }
+  };
+
   /**
    * Replace the in-flight assistant text with an absolute snapshot.
    *
@@ -180,7 +196,7 @@ export function createStreamingActions(params: {
    * carrying the full text so far, and catch-up applies it here — the streaming
    * block is rewritten rather than appended to, so replaying a snapshot is idempotent.
    */
-  const replaceStreamingText = (text: string, rt?: ProjectRuntime): void => {
+  const replaceStreamingText = (text: string, rt?: ProjectRuntime, ts?: number): void => {
     const state = runtimeOrActive(rt);
     const nextText = String(text ?? "");
     if (!nextText) return;
@@ -195,6 +211,7 @@ export function createStreamingActions(params: {
       existing[streamIndex] = {
         ...existing[streamIndex]!,
         content: nextContent,
+        ...(Number.isFinite(ts) && (ts as number) > 0 ? { ts: Math.floor(ts as number) } : {}),
       };
       setMessages(existing.slice(), state);
       return;
@@ -215,7 +232,7 @@ export function createStreamingActions(params: {
       kind: "text",
       content: recovered.text,
       streaming: true,
-      ts: Date.now(),
+      ts: (Number.isFinite(ts) && (ts as number) > 0) ? Math.floor(ts as number) : Date.now(),
     };
     const insertAt = findAssistantInsertIndex(sealedExisting);
     setMessages([...sealedExisting.slice(0, insertAt), nextItem, ...sealedExisting.slice(insertAt)], state);
@@ -372,5 +389,6 @@ export function createStreamingActions(params: {
     upsertStepLiveDelta,
     upsertLiveActivity,
     clearStepLive,
+    sealActiveStreamingAssistant,
   };
 }

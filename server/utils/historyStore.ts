@@ -36,6 +36,7 @@ type HistoryStoreStatements = {
   upsertSessionLinkStmt: SqliteStatement;
   selectSessionLinksStmt: SqliteStatement;
   selectRecentSessionLinksStmt: SqliteStatement;
+  deleteByExactKindStmt: SqliteStatement;
 };
 
 const historyStoreStatementsCache = new WeakMap<DatabaseType, HistoryStoreStatements>();
@@ -116,6 +117,7 @@ export class HistoryStore {
   private upsertSessionLinkStmt?: SqliteStatement;
   private selectSessionLinksStmt?: SqliteStatement;
   private selectRecentSessionLinksStmt?: SqliteStatement;
+  private deleteByExactKindStmt?: SqliteStatement;
 
   constructor(options: HistoryStoreOptions = {}) {
     this.storagePath = options.storagePath ?? path.join(resolveAdsStateDir(), "state.db");
@@ -218,6 +220,29 @@ export class HistoryStore {
     } catch (error) {
       logger.warn(`[HistoryStore] Failed to insert history entry (sqlite)`, error);
       return "failed";
+    }
+  }
+
+  removeByExactKind(sessionId: string, kind: string): boolean {
+    const normalizedKey = String(sessionId ?? "").trim();
+    const normalizedKind = String(kind ?? "").trim();
+    if (!normalizedKey || !normalizedKind) return false;
+    if (!this.useSqlite || !this.db || !this.deleteByExactKindStmt) {
+      const existing = this.store.get(normalizedKey);
+      if (!existing) return false;
+      const filtered = existing.filter((e) => String(e.kind ?? "").trim() !== normalizedKind);
+      if (filtered.length === existing.length) return false;
+      this.store.set(normalizedKey, filtered);
+      this.persist();
+      return true;
+    }
+    try {
+      const info = this.deleteByExactKindStmt.run(this.namespace, normalizedKey, normalizedKind);
+      const changes = (info as { changes?: unknown }).changes;
+      return typeof changes === "number" ? changes > 0 : true;
+    } catch (error) {
+      logger.warn("[HistoryStore] Failed to remove entry by exact kind", error);
+      return false;
     }
   }
 
@@ -503,6 +528,7 @@ export class HistoryStore {
     this.upsertSessionLinkStmt = statements.upsertSessionLinkStmt;
     this.selectSessionLinksStmt = statements.selectSessionLinksStmt;
     this.selectRecentSessionLinksStmt = statements.selectRecentSessionLinksStmt;
+    this.deleteByExactKindStmt = statements.deleteByExactKindStmt;
   }
 
   private trimSqlite(sessionId: string): void {
@@ -716,6 +742,9 @@ function getHistoryStoreStatements(db: DatabaseType): HistoryStoreStatements {
      ORDER BY lastSeenAt DESC
      LIMIT ?`,
   );
+  const deleteByExactKindStmt = db.prepare(
+    `DELETE FROM history_entries WHERE namespace = ? AND session_id = ? AND kind = ?`,
+  );
   const { getMigrationMarkerStmt, setMigrationMarkerStmt } = prepareMigrationMarkerStatements(db);
   const statements = {
     insertStmt,
@@ -733,6 +762,7 @@ function getHistoryStoreStatements(db: DatabaseType): HistoryStoreStatements {
     upsertSessionLinkStmt,
     selectSessionLinksStmt,
     selectRecentSessionLinksStmt,
+    deleteByExactKindStmt,
   };
   historyStoreStatementsCache.set(db, statements);
   return statements;

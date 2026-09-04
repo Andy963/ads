@@ -159,6 +159,7 @@ export type WsMessageHandlerArgs = {
   clearPendingPrompt: ChatActions["clearPendingPrompt"];
   consumeSessionReset?: (payload: Record<string, unknown>) => boolean;
   clearStepLive: ChatActions["clearStepLive"];
+  sealActiveStreamingAssistant?: ChatActions["sealActiveStreamingAssistant"];
   commandKeyForWsEvent: ChatActions["commandKeyForWsEvent"];
   finalizeAssistant: ChatActions["finalizeAssistant"];
   finalizeCommandBlock: ChatActions["finalizeCommandBlock"];
@@ -190,6 +191,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     clearPendingPrompt,
     consumeSessionReset,
     clearStepLive,
+    sealActiveStreamingAssistant,
     commandKeyForWsEvent,
     finalizeAssistant,
     finalizeCommandBlock,
@@ -1229,6 +1231,30 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
+    if (type === "phase_complete") {
+      sealActiveStreamingAssistant?.(rt);
+      return;
+    }
+
+    if (type === "user") {
+      const clientMessageId = String(msg.clientMessageId ?? msg.client_message_id ?? "").trim();
+      const text = String(msg.text ?? msg.content ?? "").trim();
+      const eventTsRaw = Number((msg as { ts?: unknown }).ts);
+      const eventTs = Number.isFinite(eventTsRaw) && eventTsRaw > 0 ? Math.floor(eventTsRaw) : Date.now();
+      const existing = rt.messages.value;
+      const alreadyHas = clientMessageId ? existing.some((m) => m.id === clientMessageId) : existing.length > 0 && existing[existing.length - 1]?.role === "user" && existing[existing.length - 1]?.content === text;
+      if (!alreadyHas && text) {
+        pushMessageBeforeLive({
+          id: clientMessageId || randomId("u"),
+          role: "user",
+          kind: "text",
+          content: text,
+          ts: eventTs,
+        }, rt);
+      }
+      return;
+    }
+
     if (type === "in_flight") {
       const inFlight = (msg as { inFlight?: unknown }).inFlight;
       if (typeof inFlight !== "boolean") return;
@@ -1299,7 +1325,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.busy.value = true;
       rt.turnInFlight = true;
       clearRecoveredBackendStatus();
-      replaceStreamingText(text, rt);
+      const eventTsRaw = Number((msg as { ts?: unknown }).ts);
+      const eventTs = Number.isFinite(eventTsRaw) && eventTsRaw > 0 ? Math.floor(eventTsRaw) : undefined;
+      replaceStreamingText(text, rt, eventTs);
       return;
     }
 
@@ -1537,7 +1565,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         void flushQueuedPrompts(rt);
         return;
       }
-      finalizeAssistant(output, rt);
+      const resultTsRaw = Number((msg as { ts?: unknown }).ts);
+      const resultTs = Number.isFinite(resultTsRaw) && resultTsRaw > 0 ? Math.floor(resultTsRaw) : undefined;
+      finalizeAssistant(output, rt, resultTs);
       void flushQueuedPrompts(rt);
       return;
     }

@@ -1,5 +1,6 @@
 import type { SyncEventStore } from "./store.js";
 import { DELTA_SNAPSHOT_EVENT_TYPE } from "./eventClass.js";
+import { randomUUID } from "node:crypto";
 
 /**
  * How often the accumulated stream text is written to the sync log. Per-token
@@ -23,17 +24,24 @@ export type DeltaStreamCoalescer = ReturnType<typeof createDeltaStreamCoalescer>
  * point the durable `result` / `error` event and the history bootstrap carry the text.
  */
 export function createDeltaStreamCoalescer(args: {
-  store: Pick<SyncEventStore, "appendCoalesced" | "deleteCoalesced">;
+  store: Pick<SyncEventStore, "appendCoalesced" | "deleteCoalesced"> & {
+    getHighestCoalescedPhase?: (namespace: string, laneKey: string, eventType?: string) => number;
+  };
   namespace: string;
   laneKey: string;
   flushIntervalMs?: number;
   maxChars?: number;
   now?: () => number;
+  initialPhase?: number;
 }) {
   const flushIntervalMs = Math.max(0, args.flushIntervalMs ?? DELTA_SNAPSHOT_FLUSH_INTERVAL_MS);
   const maxChars = Math.max(1, args.maxChars ?? DELTA_SNAPSHOT_MAX_CHARS);
   const now = args.now ?? (() => Date.now());
-  const eventId = `stream:${args.laneKey}`;
+  // A lane can host multiple turns and coalescer instances. Keep snapshot IDs
+  // unique so a later turn cannot replace a sealed snapshot from an earlier one.
+  const streamId = randomUUID();
+  let currentPhase = Math.max(0, args.initialPhase ?? 0);
+  const getEventId = () => `stream:${args.laneKey}:${streamId}:${currentPhase}`;
 
   let text = "";
   let revision = 0;
@@ -48,7 +56,7 @@ export function createDeltaStreamCoalescer(args: {
       namespace: args.namespace,
       laneKey: args.laneKey,
       type: DELTA_SNAPSHOT_EVENT_TYPE,
-      eventId,
+      eventId: getEventId(),
       revision,
       payload: { type: DELTA_SNAPSHOT_EVENT_TYPE, text, revision },
       ts: lastFlushAt,
@@ -73,25 +81,60 @@ export function createDeltaStreamCoalescer(args: {
       writeSnapshot();
     },
 
-    /** Retire the snapshot once the turn is over; the terminal event supersedes it. */
-    finish(): void {
-      const hadStream = Boolean(text) || revision > 0;
+    /**
+     * Seal the active assistant phase so subsequent text lands in a fresh snapshot slot.
+     * Any buffered text is flushed and retained as a durable replay record for catch-up.
+     */
+    finishPhase(): void {
+      if (pending && text) {
+        writeSnapshot();
+      }
       text = "";
       revision = 0;
       lastFlushAt = 0;
       pending = false;
-      if (!hadStream) return;
+      currentPhase += 1;
+    },
+
+    /**
+     * Retire only the unsealed currently-active snapshot once the turn reaches a terminal frame,
+     * because the terminal result/history supersedes it. Sealed intermediate phase snapshots
+     * remain replayable until normal SyncEventStore retention trims them.
+     */
+    finish(): void {
+      const activeEventId = getEventId();
+      const hadActive = Boolean(text) || revision > 0;
+      text = "";
+      revision = 0;
+      lastFlushAt = 0;
+      pending = false;
+      if (!hadActive) return;
+      currentPhase += 1;
       args.store.deleteCoalesced({
         namespace: args.namespace,
         laneKey: args.laneKey,
         type: DELTA_SNAPSHOT_EVENT_TYPE,
-        eventId,
+        eventId: activeEventId,
       });
+    },
+
+    /** Reset coalescer state on lane switch/disconnect without erasing durable history. */
+    reset(): void {
+      text = "";
+      revision = 0;
+      lastFlushAt = 0;
+      pending = false;
+      currentPhase = 0;
     },
 
     /** Accumulated text so far — exposed for tests and diagnostics. */
     getText(): string {
       return text;
+    },
+
+    /** Current phase index — exposed for tests and diagnostics. */
+    getPhase(): number {
+      return currentPhase;
     },
   };
 }

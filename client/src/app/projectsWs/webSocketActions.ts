@@ -28,6 +28,7 @@ const TERMINAL_BOOTSTRAP_COVERED_EVENT_TYPES = new Set([
   "explored",
   "plan",
   "agent",
+  "phase_complete",
 ]);
 const BOOTSTRAP_HISTORY_WATCHDOG_MS = 5000;
 
@@ -48,6 +49,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
   const {
     clearStepLive,
+    sealActiveStreamingAssistant,
     finalizeCommandBlock,
     applyStreamingDisconnectCleanup,
     pushMessageBeforeLive,
@@ -1130,6 +1132,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       clearPendingPrompt,
       consumeSessionReset,
       clearStepLive,
+      sealActiveStreamingAssistant,
       commandKeyForWsEvent,
       finalizeAssistant,
       finalizeCommandBlock,

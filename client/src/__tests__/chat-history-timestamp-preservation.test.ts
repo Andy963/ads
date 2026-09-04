@@ -86,4 +86,53 @@ describe("chat timestamp preservation", () => {
     expect(rt.messages.value[0]?.ts).toBeGreaterThanOrEqual(before);
     expect(rt.messages.value[0]?.ts).toBeLessThanOrEqual(after);
   });
+  it("preserves explicit event timestamp when finalizeAssistant is called with timestamp (Issue #143)", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const rt = ctx.activeRuntime.value;
+
+    const historicalTimestamp = 1672531199000;
+    chat.finalizeAssistant("Historical answer", rt, historicalTimestamp);
+
+    expect(rt.messages.value).toHaveLength(1);
+    expect(rt.messages.value[0]?.ts).toBe(historicalTimestamp);
+  });
+  it("preserves explicit event timestamp on streaming assistant finalization (Issue #143 Finding 2)", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const rt = ctx.activeRuntime.value;
+
+    chat.pushMessageBeforeLive({ id: "stream-1", role: "assistant", kind: "text", content: "In flight", streaming: true, ts: 1000 }, rt);
+    const historicalTimestamp = 1672531199000;
+    chat.finalizeAssistant("Final answer", rt, historicalTimestamp);
+
+    expect(rt.messages.value[0]?.content).toBe("Final answer");
+    expect(rt.messages.value[0]?.streaming).toBe(false);
+    expect(rt.messages.value[0]?.ts).toBe(historicalTimestamp);
+  });
+  it("preserves explicit event timestamp when replacing streaming text from delta_snapshot (Issue #143 Finding 1)", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const rt = ctx.activeRuntime.value;
+    const historicalTimestamp = 1672531199000;
+
+    chat.replaceStreamingText("Recovered snapshot text", rt, historicalTimestamp);
+
+    const streamMsg = rt.messages.value.find((m) => m.content === "Recovered snapshot text");
+    expect(streamMsg).toBeDefined();
+    expect(streamMsg?.ts).toBe(historicalTimestamp);
+  });
+  it("updates existing streaming card timestamp when valid replay ts is supplied to replaceStreamingText", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const rt = ctx.activeRuntime.value;
+
+    chat.pushMessageBeforeLive({ id: "stream-1", role: "assistant", kind: "text", content: "old", streaming: true, ts: 1000 }, rt);
+    chat.replaceStreamingText("new", rt, 2000);
+
+    const streamMsg = rt.messages.value.find((m) => m.id === "stream-1");
+    expect(streamMsg?.content).toBe("new");
+    expect(streamMsg?.streaming).toBe(true);
+    expect(streamMsg?.ts).toBe(2000);
+  });
 });
