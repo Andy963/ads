@@ -36,11 +36,10 @@ Web Console 聚焦于双 Lane 交互界面与 GitHub-Native 交付流：
 - **用户消息同步事件与原子性回滚 (`user`)**：Preflight 阶段保存用户提示词后，同步向 `SyncEventStore` 追加 `type: "user"` 增量事件，保持增量流与完整历史具有相同的回合拓扑（user -> command -> result）。若增量事件写入失败，服务端立即按精确 `kind` 回滚刚刚写入历史库的提示词条目并返回错误，确保客户端重试时不会因历史重复而遭到拦截。
 - **断线重连与双向历史对齐 (History Gap Reconciliation)**：前端对齐算法采用 LCS（最长公共子序列）执行双向对齐，当断线重放或重新拉取历史时，自动回填因连接抖动而在本地遗漏的中间用户消息与助手回复，并保留各事件在 `state.db` 中持久化的原始时间戳与执行元数据。
 
-### 3. 全局规则系统 (Global Rules)
-- 跨项目、跨 Channel（Web Console / Telegram Bot）以及统一 Codex 引擎生效的规则引擎。
-- 规则分为四种级别：`advisory`（建议）、`required`（必须遵守）、`approval_required`（需审批）、`blocked`（阻断）。
-- 支持在线规则编辑、启用/停用、匹配模式过滤（针对特定 Agent、工具或路径）。
-- 提供 **注入预览 (Preview)** 与 **规则测试面板 (Test Playground)**，修改后实时保存至数据库，下一轮对话即时注入 `<global_rules>` 上下文生效，无需重启服务。
+### 3. 安全边界与退役规则系统
+- 系统提示不再注入数据库驱动的 `<global_rules>` 内容，也不提供在线规则编辑入口。
+- ADS 自身进程保护和数据库文件保护由服务端命令执行边界的确定性安全中间件负责。
+- 历史 `global_rules` 表保留为惰性遗留结构，不参与正常请求路径；流程知识由 skills、仓库文档和 workspace memory 提供。
 
 ### 4. 原生会话恢复与历史管理 (Session Resume)
 - 点击工具栏 **「历史会话」** 打开恢复选择器。
@@ -65,9 +64,9 @@ Web Console 聚焦于双 Lane 交互界面与 GitHub-Native 交付流：
 ## 移动端适配 (Mobile Experience)
 
 Web Console 经过专门的移动端交互优化：
-1. **抽屉式导航 (Drawer Navigation)**：左上角汉堡菜单可无缝滑出抽屉，按 **项目 (Projects)**、**规则 (Rules)**、**模型 (Models)** 进行全局模块切换。
+1. **抽屉式导航 (Drawer Navigation)**：左上角汉堡菜单可无缝滑出抽屉，按 **项目 (Projects)**、**模型 (Models)** 进行全局模块切换。
 2. **双 Tab 扁平导航**：移动端顶栏按 `Advisor | Worker` 排布；首次使用或项目没有记录时聚焦 Advisor，之后按项目恢复上次打开的 Tab。
-3. **独立上下文菜单 (Context Actions)**：右上角根据当前激活模块提供专属操作（如恢复会话、新建会话、新增规则、刷新模型列表等），语言与操作深度统一。
+3. **独立上下文菜单 (Context Actions)**：右上角根据当前激活模块提供专属操作（如恢复会话、新建会话、刷新模型列表等），语言与操作深度统一。
 4. **软键盘自适应**：自动侦测移动端虚拟键盘开启与高度，精确调整底部 Composer 避让，消除空白与遮挡。
 
 ---

@@ -80,7 +80,7 @@ describe("skills auto-load and auto-save", () => {
       "utf8",
     );
 
-    const manager = new SystemPromptManager({ workspaceRoot: workspace, reinjection: { enabled: true, turns: 999, rulesTurns: 999 } });
+    const manager = new SystemPromptManager({ workspaceRoot: workspace, reinjection: { enabled: true, turns: 999 } });
     const adapter = new CaptureAgentAdapter({ id: "codex", name: "Codex" });
     const orchestrator = new HybridOrchestrator({
       adapters: [adapter],
@@ -113,7 +113,7 @@ describe("skills auto-load and auto-save", () => {
       "utf8",
     );
 
-    const manager = new SystemPromptManager({ workspaceRoot: workspace, reinjection: { enabled: true, turns: 999, rulesTurns: 999 } });
+    const manager = new SystemPromptManager({ workspaceRoot: workspace, reinjection: { enabled: true, turns: 999 } });
     const adapter = new CaptureAgentAdapter({ id: "codex", name: "Codex" });
     const orchestrator = new HybridOrchestrator({
       adapters: [adapter],

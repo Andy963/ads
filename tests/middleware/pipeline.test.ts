@@ -14,6 +14,7 @@ import {
   type AdsMiddleware,
 } from "../../server/middleware/index.js";
 import { runAgentTurn } from "../../server/agents/turn.js";
+import { createRuleEnforcementGate } from "../../server/rules/enforcementGate.js";
 
 describe("MiddlewarePipeline & Core Middlewares", () => {
   const baseCtx: TurnContext = {
@@ -83,6 +84,94 @@ describe("MiddlewarePipeline & Core Middlewares", () => {
       command: "systemctl --user stop ads-web",
     });
     assert.equal(blockedSystemctl.blockExecution, true);
+
+    for (const command of [
+      "killall ads-web",
+      "pkill -f cli.js web",
+      "pkill -f \\\nads",
+      "kill -TERM $(pgrep -f ads-tg)",
+      "kill -TERM $(cat /run/ads.pid)",
+      "systemctl --user disable ads-tg",
+      "systemctl mask ads-web",
+      "systemctl --user kill ads-web",
+    ]) {
+      const result = await pipeline.executeItemStart(baseCtx, {
+        type: "command_execution",
+        command,
+      });
+      assert.equal(result.blockExecution, true, command);
+    }
+
+    const blockedRmDb = await pipeline.executeItemStart(baseCtx, {
+      type: "command_execution",
+      command: "rm -f state.db",
+    });
+    assert.equal(blockedRmDb.blockExecution, true);
+    assert.match(blockedRmDb.reason ?? "", /blocked by security rule/i);
+
+    const blockedTruncateSqlite = await pipeline.executeItemStart(baseCtx, {
+      type: "command_execution",
+      command: "truncate -s 0 test.sqlite",
+    });
+    assert.equal(blockedTruncateSqlite.blockExecution, true);
+
+    const blockedRedirectDb = await pipeline.executeItemStart(baseCtx, {
+      type: "command_execution",
+      command: "echo test > state.sqlite3",
+    });
+    assert.equal(blockedRedirectDb.blockExecution, true);
+
+    const blockedQuotedRedirect = await pipeline.executeItemStart(baseCtx, {
+      type: "command_execution",
+      command: "echo test > \"state.db\"",
+    });
+    assert.equal(blockedQuotedRedirect.blockExecution, true);
+
+    const blockedSqliteWrite = await pipeline.executeItemStart(baseCtx, {
+      type: "command_execution",
+      command: "sqlite3 state.db 'UPDATE settings SET value = 1'",
+    });
+    assert.equal(blockedSqliteWrite.blockExecution, true);
+
+    for (const command of [
+      "cat state.db",
+      "sqlite3 state.db 'SELECT name FROM sqlite_master'",
+      "systemctl --user status ads-web",
+      "git status",
+    ]) {
+      const result = await pipeline.executeItemStart(baseCtx, {
+        type: "command_execution",
+        command,
+      });
+      assert.equal(result.blockExecution, false, command);
+    }
+  });
+
+  it("applies the same built-in safety decision without reading rule state", () => {
+    const gate = createRuleEnforcementGate({ mode: "observe" });
+    const blocked = gate.evaluate({
+      agent: "codex",
+      channel: "web",
+      workspace: baseCtx.workspaceRoot,
+      tool: "shell",
+      command: "rm -f state.db",
+      userExplicitlyApproved: false,
+    });
+    assert.equal(blocked.decision, "deny");
+    assert.equal(blocked.effectiveDecision, "deny");
+    assert.equal(blocked.hits[0]?.ruleId, "builtin-security");
+
+    const allowed = gate.evaluate({
+      agent: "codex",
+      channel: "web",
+      workspace: baseCtx.workspaceRoot,
+      tool: "shell",
+      command: "sqlite3 state.db 'SELECT 1'",
+      userExplicitlyApproved: false,
+    });
+    assert.equal(allowed.decision, "allow");
+    assert.equal(allowed.effectiveDecision, "allow");
+    assert.deepEqual(allowed.hits, []);
   });
 
   it("spills oversized outputs to disk artifacts via contextArtifactMiddleware in onItemEnd", async () => {

@@ -10,6 +10,7 @@ import type { AgentEvent } from "../../codex/events.js";
 import { mapThreadEventToAgentEvent, parseReconnectingMessage } from "../../codex/events.js";
 import type { SandboxMode } from "../../telegram/config.js";
 import { createLogger } from "../../utils/logger.js";
+import { findSecurityViolation } from "../../middleware/builtin/globalRulesMiddleware.js";
 import { createAbortError, createSilentAbortError } from "../../utils/abort.js";
 import {
   CodexAppServerDaemonRegistry,
@@ -617,6 +618,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       failed: false,
       failureMessage: null,
     };
+    let safetyBlockTriggered = false;
     const reasoningSummaryBuffers = new Map<string, string>();
     const planDeltaBuffers = new Map<string, string>();
 
@@ -769,6 +771,30 @@ export class CodexAppServerAdapter implements AgentAdapter {
         const item = (params as { item?: unknown }).item;
         const translated = translateItem(item);
         if (translated) {
+          if (translated.type === "command_execution") {
+            const violation = findSecurityViolation(translated.command);
+            if (violation && !safetyBlockTriggered) {
+              safetyBlockTriggered = true;
+              const message = "Command blocked by security rule: " + violation;
+              state.failed = true;
+              state.failureMessage = message;
+              emit({ type: "error", message });
+              const threadId = state.threadIdFromStarted ?? this.threadId;
+              const turnId = state.turnId;
+              if (threadId && turnId) {
+                client
+                  .request("turn/interrupt", { threadId, turnId })
+                  .catch((err) =>
+                    logger.debug(
+                      "turn/interrupt failed after safety block: " +
+                        (err instanceof Error ? err.message : String(err)),
+                    ),
+                  );
+              }
+              turnFail(new Error(message));
+              return;
+            }
+          }
           retryState.markSideEffect(translated);
           emit({ type: "item.started", item: translated });
         } else {

@@ -58,7 +58,7 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 
 ---
 
-## 4. 技能、规则与记忆系统
+## 4. 技能、记忆与安全系统
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
@@ -70,8 +70,7 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_MEMORY_MAX_TOKENS` | `1024` | 注入长期记忆的最大 Token 预算 |
 | `ADS_SOUL_MAX_TOKENS` | `512` | 注入工作区 Soul 偏好的最大 Token 预算 |
 | `ADS_REINJECTION_TURNS` | `6` | 系统 Instructions 周期性重新注入的轮次间隔 |
-| `ADS_RULES_REINJECTION_TURNS` | `8` | Global Rules 重新注入的轮次间隔（规则内容变更时立即注入，不受此间隔限制） |
-| `ADS_RULE_ENFORCEMENT_MODE` | `observe` | 全局规则执行模式：`observe`（仅监控记录）或 `enforce`（硬阻断生效） |
+| `ADS_RULE_ENFORCEMENT_MODE` | `observe` | 兼容性日志模式；内置安全拦截始终执行，不由该变量放宽 |
 | `ADS_AUDIO_TRANSCRIPTION_TIMEOUT_MS`| `120000` | 语音转写处理的单次超时时限（毫秒） |
 
 ---

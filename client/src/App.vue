@@ -9,7 +9,6 @@ import DraggableModal from "./components/DraggableModal.vue";
 import MainChatView from "./components/MainChat.vue";
 import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
 import ModelManager from "./components/ModelManager.vue";
-import GlobalRuleManager from "./components/GlobalRuleManager.vue";
 import SessionResumePicker from "./components/SessionResumePicker.vue";
 
 import { createAppController } from "./app/controller";
@@ -105,14 +104,11 @@ const {
 } = createAppController();
 
 const modelManagerOpen = ref(false);
-const globalRuleManagerOpen = ref(false);
 
-type MobileDrawerSection = "projects" | "rules" | "models";
+type MobileDrawerSection = "projects" | "models";
 type MobileContextActionId =
   | "resume"
   | "new-session"
-  | "create-rule"
-  | "refresh-rules"
   | "create-model"
   | "refresh-models";
 type MobileContextAction = {
@@ -128,7 +124,6 @@ type MobileManagerHandle = {
 const mobileDrawerOpen = ref(false);
 const mobileDrawerSection = ref<MobileDrawerSection>("projects");
 const mobileContextMenuOpen = ref(false);
-const mobileGlobalRuleManagerRef = ref<MobileManagerHandle | null>(null);
 const mobileModelManagerRef = ref<MobileManagerHandle | null>(null);
 
 const chatLanes: Array<{ id: ChatLane; label: string }> = [
@@ -212,24 +207,16 @@ const newSessionDisabledReason = computed(() => {
 });
 
 const mobileContextTitle = computed(() => {
-  if (mobileDrawerSection.value === "rules") return "规则";
   if (mobileDrawerSection.value === "models") return "模型管理";
   return activeProject.value?.name?.trim() || "项目";
 });
 
 const mobileContextMenuTitle = computed(() => {
-  if (mobileDrawerSection.value === "rules") return "规则操作";
   if (mobileDrawerSection.value === "models") return "模型管理操作";
   return "项目操作";
 });
 
 const mobileContextActions = computed<MobileContextAction[]>(() => {
-  if (mobileDrawerSection.value === "rules") {
-    return [
-      { id: "create-rule", label: "新增规则" },
-      { id: "refresh-rules", label: "刷新规则" },
-    ];
-  }
   if (mobileDrawerSection.value === "models") {
     return [
       { id: "create-model", label: "新增模型" },
@@ -288,7 +275,7 @@ function restoreMobileWorkspaceTab(): void {
 function selectMobileDrawerSection(section: MobileDrawerSection): void {
   mobileDrawerSection.value = section;
   mobileContextMenuOpen.value = false;
-  if (section === "rules" || section === "models") closeMobileDrawer();
+  if (section === "models") closeMobileDrawer();
 }
 
 function toggleMobileContextMenu(): void {
@@ -306,14 +293,6 @@ function handleMobileContextAction(actionId: MobileContextActionId): void {
   if (actionId === "new-session") {
     closeMobileDrawer();
     handleLaneNewSession();
-    return;
-  }
-  if (actionId === "create-rule") {
-    mobileGlobalRuleManagerRef.value?.create();
-    return;
-  }
-  if (actionId === "refresh-rules") {
-    void mobileGlobalRuleManagerRef.value?.refresh();
     return;
   }
   if (actionId === "create-model") {
@@ -412,18 +391,6 @@ function closeModelManager(): void {
   modelManagerOpen.value = false;
 }
 
-function openGlobalRuleManager(): void {
-  if (isMobile.value) {
-    openMobileDrawer("rules");
-    return;
-  }
-  globalRuleManagerOpen.value = true;
-}
-
-function closeGlobalRuleManager(): void {
-  globalRuleManagerOpen.value = false;
-}
-
 async function onModelManagerChanged(): Promise<void> {
   try {
     await loadModels();
@@ -498,17 +465,6 @@ const plannerConnectionStatus = computed(() => {
           <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
         </button>
         <button
-          v-if="!isMobile"
-          type="button"
-          class="topbarIconBtn"
-          title="全局规则"
-          aria-label="全局规则"
-          data-testid="global-rule-manager-open"
-          @click="openGlobalRuleManager"
-        >
-          <el-icon :size="16" aria-hidden="true"><Document /></el-icon>
-        </button>
-        <button
           v-if="isMobile"
           type="button"
           class="topbarIconBtn mobileContextMenuBtn"
@@ -576,17 +532,6 @@ const plannerConnectionStatus = computed(() => {
           >
             <el-icon :size="16" aria-hidden="true"><Document /></el-icon>
             <span>项目</span>
-          </button>
-          <button
-            type="button"
-            class="mobileDrawerNavItem"
-            :class="{ active: mobileDrawerSection === 'rules' }"
-            :aria-current="mobileDrawerSection === 'rules' ? 'page' : undefined"
-            data-testid="mobile-drawer-section-rules"
-            @click="selectMobileDrawerSection('rules')"
-          >
-            <el-icon :size="16" aria-hidden="true"><Document /></el-icon>
-            <span>规则</span>
           </button>
           <button
             type="button"
@@ -667,16 +612,8 @@ const plannerConnectionStatus = computed(() => {
       </aside>
 
       <section v-if="isMobile && mobileDrawerSection !== 'projects'" class="mobileMainPanel">
-        <GlobalRuleManager
-          v-if="mobileDrawerSection === 'rules'"
-          ref="mobileGlobalRuleManagerRef"
-          :api="api"
-          :show-header="false"
-          :show-add-button="false"
-          @close="closeMobileModule"
-        />
         <ModelManager
-          v-else-if="mobileDrawerSection === 'models'"
+          v-if="mobileDrawerSection === 'models'"
           ref="mobileModelManagerRef"
           :api="api"
           :show-header="false"
@@ -848,10 +785,6 @@ const plannerConnectionStatus = computed(() => {
         @load-more="loadMoreResumableSessions"
         @resume="resumeSelectedSession"
       />
-    </DraggableModal>
-
-    <DraggableModal v-if="globalRuleManagerOpen" card-variant="large" @close="closeGlobalRuleManager">
-      <GlobalRuleManager :api="api" @close="closeGlobalRuleManager" />
     </DraggableModal>
 
     <div v-if="projectDialogOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="closeProjectDialog">

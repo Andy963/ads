@@ -74,20 +74,6 @@ vi.mock("../components/LoginGate.vue", () => ({
   }),
 }));
 
-const RuleManagerStub = defineComponent({
-  name: "GlobalRuleManager",
-  props: {
-    showHeader: { type: Boolean, default: true },
-    showAddButton: { type: Boolean, default: true },
-  },
-  template:
-    '<section data-testid="global-rule-manager" :data-show-header="showHeader" :data-show-add-button="showAddButton" />',
-  setup(_, { expose }) {
-    expose({ create: vi.fn(), refresh: vi.fn() });
-    return {};
-  },
-});
-
 const ModelManagerStub = defineComponent({
   name: "ModelManager",
   props: {
@@ -144,7 +130,6 @@ describe("mobile navigation behavior", () => {
         stubs: {
           LoginGate: false,
           MainChatView: false,
-          GlobalRuleManager: RuleManagerStub,
           ModelManager: ModelManagerStub,
           DraggableModal: true,
         },
@@ -161,7 +146,6 @@ describe("mobile navigation behavior", () => {
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-new-session"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="mobile-context-action-create-rule"]').exists()).toBe(false);
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
 
     await wrapper.find('[data-testid="lane-tab-planner"]').trigger("click");
@@ -182,21 +166,10 @@ describe("mobile navigation behavior", () => {
 
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
     await settleUi(wrapper);
-    expect(wrapper.findAll(".mobileDrawerNavItem")).toHaveLength(3);
+    expect(wrapper.findAll(".mobileDrawerNavItem")).toHaveLength(2);
     expect(wrapper.findAll(".mobileDrawerNavItem")[0]?.text()).toContain("项目");
-    expect(wrapper.findAll(".mobileDrawerNavItem")[1]?.text()).toContain("规则");
-    expect(wrapper.findAll(".mobileDrawerNavItem")[2]?.text()).toContain("Provider");
+    expect(wrapper.findAll(".mobileDrawerNavItem")[1]?.text()).toContain("Provider");
 
-    await wrapper.find('[data-testid="mobile-drawer-section-rules"]').trigger("click");
-    await settleUi(wrapper);
-    expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
-    expect(wrapper.find(".chatShell").exists()).toBe(false);
-    expect(wrapper.find(".mobileMainPanel").exists()).toBe(true);
-    expect(wrapper.find('[data-testid="global-rule-manager"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="global-rule-manager"]').attributes("data-show-header")).toBe("false");
-    expect(wrapper.find('[data-testid="global-rule-manager"]').attributes("data-show-add-button")).toBe("false");
-
-    await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
     await wrapper.find('[data-testid="mobile-drawer-section-models"]').trigger("click");
     await settleUi(wrapper);
     expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
@@ -209,7 +182,6 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find('[data-testid="mobile-context-action-choose-provider"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="mobile-context-action-create-model"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-refresh-models"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="mobile-context-action-create-rule"]').exists()).toBe(false);
 
     wrapper.unmount();
   }, 40_000);
@@ -231,7 +203,6 @@ describe("mobile navigation behavior", () => {
         stubs: {
           LoginGate: false,
           MainChatView: false,
-          GlobalRuleManager: RuleManagerStub,
           ModelManager: ModelManagerStub,
           DraggableModal: true,
         },
@@ -271,7 +242,6 @@ describe("mobile navigation behavior", () => {
         stubs: {
           LoginGate: false,
           MainChatView: false,
-          GlobalRuleManager: RuleManagerStub,
           ModelManager: ModelManagerStub,
           DraggableModal: true,
         },

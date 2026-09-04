@@ -15,7 +15,7 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编�
   - **Advisor (规划 Lane)**：专属架构方案研讨；任务草稿可直接引用 GitHub Issue/PR 或使用自包含 prompt，不要求本地 issue/spec 文档。
   - **Worker (执行 Lane)**：有本地快照时读取批准时固定的 issue/spec 内容，否则直接依据任务 prompt 与 GitHub 引用执行，实时输出紧凑预览。
 - **统一多 Provider 模型支持**：所有模型均通过 **Codex App-Server** 路由（包括 Anthropic Claude、Google Gemini 与 DeepSeek），支持模型可视化启用/停用与即时配置。
-- **全局规则引擎 (Global Rules)**：跨项目、跨终端（Web / Telegram）统一注入 system prompt 规范，支持在线测试与修改即时生效。
+- **确定性安全拦截**：在命令执行边界保护 ADS 自身进程和 SQLite 数据库文件，不依赖模型提示或可变数据库规则。
 - **原生会话恢复 (Session Resume)**：零 Token 冗余恢复底层 CLI 真实历史上下文，断线重连自动增量同步。
 - **多模态与语音转写**：支持拖拽/粘贴图片预览、语音一键转写 Prompt，以及代码文件与行号跳转预览模态框。
 - **远程 Telegram 控制**：可选单用户安全 Bot，支持远程对话、命令执行、语音/图片输入与任务终态通知。
@@ -71,10 +71,10 @@ npm run web:init-admin -- --username admin --password-stdin
 
 详细的模块说明与进阶指南请查阅 `docs/` 目录：
 
-- 📖 **[Web Console 完整使用指南](docs/web.md)**：工作区 Tab、Provider 模型管理、全局规则系统、移动端交互规范与 Web 专属配置。
+- 📖 **[Web Console 完整使用指南](docs/web.md)**：工作区 Tab、Provider 模型管理、移动端交互规范与 Web 专属配置。
 - 📱 **[Telegram Bot 配置与使用手册](docs/telegram.md)**：Bot 设置、完整指令清单、多模态语音交互与权限保护。
 - 🏛 **[系统架构与核心机制](docs/architecture.md)**：双层 SQLite 数据模型、Agent 适配器层、Durable Sync 状态同步协议与调度器引擎。
-- ⚙️ **[完整环境变量配置参考](docs/configuration.md)**：核心配置、Web、Agent、Rules/Memory、Scheduler 及 Telegram 变量全览。
+- ⚙️ **[完整环境变量配置参考](docs/configuration.md)**：核心配置、Web、Agent、Skills/Memory、Scheduler 及 Telegram 变量全览。
 
 ---
 
@@ -97,7 +97,7 @@ npm run web:init-admin -- --username admin --password-stdin
 ads/
 ├── server/            # 服务端源码 (Node.js / Express-WS / Telegram)
 │   ├── agents/        # Codex App-Server 适配器与执行守护器
-│   ├── rules/         # 全局规则服务与执行网关
+│   ├── rules/         # 内置安全执行网关
 │   ├── scheduler/     # 自然语言定时调度引擎与 Cron 运行时
 │   ├── state/         # 全局 SQLite (state.db) 数据表与迁移
 │   ├── storage/       # 工作区独立 SQLite (ads.db) 数据表与迁移

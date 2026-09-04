@@ -185,61 +185,6 @@ export interface ReviewerModelSelection {
   model: ModelConfig | null;
 }
 
-export type RuleSeverity = "advisory" | "required" | "approval_required" | "blocked";
-
-export interface RuleMatch {
-  agents?: string[];
-  channels?: string[];
-  tools?: string[];
-  commandPatterns?: string[];
-  pathPatterns?: string[];
-}
-
-export interface GlobalRule {
-  id: string;
-  title: string;
-  body: string;
-  category: string;
-  severity: RuleSeverity;
-  enabled: boolean;
-  priority: number;
-  createdAt: number;
-  updatedAt: number;
-  updatedBy: string | null;
-  match: RuleMatch | null;
-}
-
-export interface GlobalRuleAuditEntry {
-  id: number;
-  ruleId: string;
-  action: "create" | "update" | "enable" | "disable" | "delete";
-  before: GlobalRule | null;
-  after: GlobalRule | null;
-  actor: string | null;
-  ts: number;
-}
-
-export interface GlobalRulesPreview {
-  text: string;
-  hash: string;
-  source: "database" | "bootstrap";
-  degraded: boolean;
-  ruleCount: number;
-}
-
-export interface RuleEnforcementResult {
-  decision: "allow" | "require_approval" | "deny";
-  effectiveDecision: "allow" | "require_approval" | "deny";
-  mode: "observe" | "enforce";
-  hits: Array<{
-    ruleId: string;
-    title: string;
-    category: string;
-    severity: RuleSeverity;
-    matchedOn: string;
-  }>;
-}
-
 export type FilePreviewResponse = {
   path: string;
   content: string;

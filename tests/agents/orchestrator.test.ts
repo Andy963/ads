@@ -37,8 +37,8 @@ class InjectingSystemPromptManager {
     // no-op
   }
 
-  maybeInject(): { text: string; reason: string; instructionsHash: string; rulesHash: string } {
-    return { text: "INJECTED_SYSTEM", reason: "test", instructionsHash: "x", rulesHash: "y" };
+  maybeInject(): { text: string; reason: string; instructionsHash: string } {
+    return { text: "INJECTED_SYSTEM", reason: "test", instructionsHash: "x" };
   }
 
   completeTurn(): void {

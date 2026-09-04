@@ -91,12 +91,7 @@ describe("systemPrompt/lane instructions", () => {
     assert.match(first?.text ?? "", /Version one/);
 
     manager.completeTurn();
-    // Rules reinject on their own cadence; that pass must not drag the lane
-    // instructions along, or every turn would repeat them.
-    const rulesOnly = manager.maybeInject();
-    if (rulesOnly) {
-      assert.doesNotMatch(rulesOnly.text, /Version one/);
-    }
+    assert.equal(manager.maybeInject(), null);
 
     fs.writeFileSync(path.join(templateRoot, "planner-instructions.md"), "# Planner only\nVersion two.\n", "utf8");
 
