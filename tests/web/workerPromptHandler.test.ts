@@ -349,7 +349,7 @@ describe("web/server/ws/workerPromptHandler", () => {
     });
   });
 
-  it("forwards todo_list events as plan messages and persists snapshots by kind", () => {
+  it("decommissions todo_list plan events and does not emit synthetic plan messages (ADR 0002)", () => {
     const { emit, sent, upserts } = createHarness();
 
     const baseEvent = (eventType: "item.started" | "item.updated" | "item.completed", items: Array<{ text: string; status: string }>) => ({
@@ -386,97 +386,10 @@ describe("web/server/ws/workerPromptHandler", () => {
       ]),
     );
 
-    const planMessages = sent.filter((payload) => (payload as { type?: unknown }).type === "plan") as Array<{
-      planId: string;
-      status: string;
-      items: Array<{ text: string; status: string }>;
-    }>;
-    assert.equal(planMessages.length, 3);
-    assert.equal(planMessages[0]?.status, "in_progress");
-    assert.equal(planMessages[2]?.status, "completed");
-    assert.equal(planMessages[2]?.items[0]?.status, "completed");
-
-    // All three updates share the same plan kind so they upsert in place.
-    assert.equal(upserts.length, 3);
-    for (const entry of upserts) {
-      assert.equal(entry.kind, "plan:plan-1");
-      assert.equal(entry.role, "status");
-    }
-    // Final upsert must include the completed items.
-    const finalPersisted = upserts[upserts.length - 1]?.text ?? "";
-    const parsed = JSON.parse(finalPersisted) as { items: Array<{ status: string }>; status: string };
-    assert.equal(parsed.status, "completed");
-    assert.deepEqual(parsed.items.map((entry) => entry.status), ["completed", "completed"]);
-  });
-
-  it("keeps one logical plan when provider item IDs change within a turn", () => {
-    const { emit, sent, upserts } = createHarness();
-
-    emit({
-      phase: "analysis",
-      title: "plan",
-      timestamp: 1,
-      raw: {
-        type: "item.updated",
-        item: { type: "todo_list", id: "tool-call-1", items: [{ text: "Step A", status: "in_progress" }] },
-      },
-    });
-    emit({
-      phase: "analysis",
-      title: "plan",
-      timestamp: 2,
-      raw: {
-        type: "item.updated",
-        item: { type: "todo_list", id: "tool-call-2", items: [{ text: "Step A", status: "completed" }] },
-      },
-    });
-
-    const planMessages = sent.filter((payload) => (payload as { type?: unknown }).type === "plan") as Array<{ planId: string }>;
-    assert.deepEqual(planMessages.map((message) => message.planId), ["tool-call-1", "tool-call-1"]);
-    assert.deepEqual(upserts.map((entry) => entry.kind), ["plan:tool-call-1", "plan:tool-call-1"]);
-  });
-
-  it("publishes an authoritative completed snapshot when the turn succeeds", () => {
-    const { emit, sent, upserts } = createHarness();
-
-    emit({
-      phase: "analysis",
-      title: "plan",
-      timestamp: 1,
-      raw: {
-        type: "item.updated",
-        item: {
-          type: "todo_list",
-          id: "plan-final",
-          items: [
-            { text: "Step A", status: "completed" },
-            { text: "Step B", status: "in_progress" },
-          ],
-        },
-      },
-    });
-    emit({ phase: "done", title: "done", timestamp: 2, raw: { type: "turn.completed" } });
-
-    const finalMessage = sent.at(-1) as { type: string; status: string; items: Array<{ status: string }> };
-    assert.equal(finalMessage.type, "plan");
-    assert.equal(finalMessage.status, "completed");
-    assert.deepEqual(finalMessage.items.map((item) => item.status), ["completed", "completed"]);
-    const persisted = JSON.parse(upserts.at(-1)?.text ?? "{}") as { status?: string };
-    assert.equal(persisted.status, "completed");
-  });
-
-  it("creates a new card for a distinct plan after the prior plan completes", () => {
-    const { emit, sent } = createHarness();
-    emit({
-      phase: "analysis", title: "plan", timestamp: 1,
-      raw: { type: "item.completed", item: { type: "todo_list", id: "plan-a", items: [{ text: "Step A", status: "completed" }] } },
-    });
-    emit({
-      phase: "analysis", title: "plan", timestamp: 2,
-      raw: { type: "item.started", item: { type: "todo_list", id: "plan-b", items: [{ text: "Step B", status: "pending" }] } },
-    });
-
-    const plans = sent.filter((payload) => (payload as { type?: unknown }).type === "plan") as Array<{ planId: string }>;
-    assert.deepEqual(plans.map((plan) => plan.planId), ["plan-a", "plan-b"]);
+    // ADR 0002: todo_list events are decommissioned from emitting plan messages or persisting plan:* snapshots
+    const planMessages = sent.filter((payload) => (payload as { type?: unknown }).type === "plan");
+    assert.equal(planMessages.length, 0);
+    const planUpserts = upserts.filter((entry) => entry.kind.startsWith("plan:"));
+    assert.equal(planUpserts.length, 0);
   });
 });

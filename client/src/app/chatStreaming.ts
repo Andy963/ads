@@ -46,10 +46,16 @@ export function createStreamingActions(params: {
   const { liveStepId, liveActivityId, runtimeOrActive, setMessages, dropEmptyAssistantPlaceholder, isLiveMessageId, randomId } =
     params;
 
-  const findLastStreamingAssistantIndex = (items: ChatItem[]): number => {
+  const findActiveStreamingAssistantIndex = (items: ChatItem[]): number => {
     for (let i = items.length - 1; i >= 0; i--) {
       const msg = items[i]!;
-      if (msg.role === "assistant" && msg.streaming && !isLiveMessageId(msg.id)) {
+      if (isLiveMessageId(msg.id)) continue;
+      // Tool execution blocks and patches demarcate phase boundaries. Assistant text
+      // before a tool call belongs to a prior conversational phase and must not be concatenated into.
+      if (msg.kind === "execute" || msg.kind === "command" || msg.kind === "patch") {
+        return -1;
+      }
+      if (msg.role === "assistant" && msg.kind === "text" && msg.streaming) {
         return i;
       }
     }
@@ -100,15 +106,26 @@ export function createStreamingActions(params: {
     if (!chunk) return;
     dropEmptyAssistantPlaceholder(state);
     const existing = state.messages.value.slice();
-    const streamIndex = findLastStreamingAssistantIndex(existing);
+    const streamIndex = findActiveStreamingAssistantIndex(existing);
     if (streamIndex >= 0) {
       const current = String(existing[streamIndex]!.content ?? "");
       const nextChunk = stripStreamingOverlap(current, chunk);
       if (!nextChunk) return;
-      existing[streamIndex]!.content = current + nextChunk;
+      existing[streamIndex] = {
+        ...existing[streamIndex]!,
+        content: current + nextChunk,
+      };
       setMessages(existing.slice(), state);
       return;
     }
+
+    // Seal any earlier in-flight assistant bubbles from previous phases
+    const sealedExisting = existing.map((m) => {
+      if (m.role === "assistant" && m.streaming && !isLiveMessageId(m.id)) {
+        return { ...m, streaming: false };
+      }
+      return m;
+    });
 
     const nextItem: ChatItem = {
       id: randomId("stream"),
@@ -118,8 +135,8 @@ export function createStreamingActions(params: {
       streaming: true,
       ts: Date.now(),
     };
-    const insertAt = findAssistantInsertIndex(existing);
-    setMessages([...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)], state);
+    const insertAt = findAssistantInsertIndex(sealedExisting);
+    setMessages([...sealedExisting.slice(0, insertAt), nextItem, ...sealedExisting.slice(insertAt)], state);
   };
 
   /**
@@ -136,13 +153,23 @@ export function createStreamingActions(params: {
     if (!nextText) return;
     dropEmptyAssistantPlaceholder(state);
     const existing = state.messages.value.slice();
-    const streamIndex = findLastStreamingAssistantIndex(existing);
+    const streamIndex = findActiveStreamingAssistantIndex(existing);
     if (streamIndex >= 0) {
       if (existing[streamIndex]!.content === nextText) return;
-      existing[streamIndex]!.content = nextText;
+      existing[streamIndex] = {
+        ...existing[streamIndex]!,
+        content: nextText,
+      };
       setMessages(existing.slice(), state);
       return;
     }
+
+    const sealedExisting = existing.map((m) => {
+      if (m.role === "assistant" && m.streaming && !isLiveMessageId(m.id)) {
+        return { ...m, streaming: false };
+      }
+      return m;
+    });
 
     const nextItem: ChatItem = {
       id: randomId("stream"),
@@ -152,8 +179,8 @@ export function createStreamingActions(params: {
       streaming: true,
       ts: Date.now(),
     };
-    const insertAt = findAssistantInsertIndex(existing);
-    setMessages([...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)], state);
+    const insertAt = findAssistantInsertIndex(sealedExisting);
+    setMessages([...sealedExisting.slice(0, insertAt), nextItem, ...sealedExisting.slice(insertAt)], state);
   };
 
   const upsertThoughtDelta = (delta: string, rt?: ProjectRuntime): void => {

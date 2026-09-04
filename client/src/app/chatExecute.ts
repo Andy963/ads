@@ -1,4 +1,5 @@
 import type { ChatItem, ProjectRuntime } from "./controller";
+import { isLiveMessageId as isLiveMessageIdDefault } from "./chatLive";
 import { findExecuteInsertIndex, normalizeTurnSemanticOrder } from "../lib/chat_sync";
 
 function trimRightLine(line: string): string {
@@ -43,6 +44,7 @@ export function createExecuteActions(params: {
     dropEmptyAssistantPlaceholder,
     maxExecutePreviewLines,
     maxTurnCommands,
+    isLiveMessageId = isLiveMessageIdDefault,
   } = params;
 
   const commandKeyForWsEvent = (command: string, id: string | null): string | null => {
@@ -153,9 +155,18 @@ export function createExecuteActions(params: {
       return;
     }
 
-    const insertAt = findExecuteInsertIndex(cleanedExisting);
+    // Demarcate phase boundary: pre-command assistant explanations are sealed
+    // when a command execution block enters the stream.
+    const sealedExisting = cleanedExisting.map((m) => {
+      if (m.role === "assistant" && m.streaming && !isLiveMessageId?.(m.id)) {
+        return { ...m, streaming: false };
+      }
+      return m;
+    });
 
-    setMessages([...cleanedExisting.slice(0, insertAt), nextItem, ...cleanedExisting.slice(insertAt)], state);
+    const insertAt = findExecuteInsertIndex(sealedExisting);
+
+    setMessages([...sealedExisting.slice(0, insertAt), nextItem, ...sealedExisting.slice(insertAt)], state);
 
     if (state.executeOrder.length > maxTurnCommands) {
       const overflow = state.executeOrder.length - maxTurnCommands;

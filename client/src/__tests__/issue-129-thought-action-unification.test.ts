@@ -99,12 +99,13 @@ describe("Issue #129: Thought/Action decoupling, command ordering, and lane pari
     expect(getSemanticCardRank(user)).toBe(0);
     expect(getSemanticCardRank(plan)).toBe(1);
     expect(getSemanticCardRank(thought)).toBe(2);
+    // Action & dialogue items share rank 3 to preserve chronological interleaving (Issue #141)
     expect(getSemanticCardRank(exec)).toBe(3);
-    expect(getSemanticCardRank(patch)).toBe(4);
-    expect(getSemanticCardRank(assistant)).toBe(5);
+    expect(getSemanticCardRank(patch)).toBe(3);
+    expect(getSemanticCardRank(assistant)).toBe(3);
 
-    // Even if messages arrive in inverted or scrambled order within the turn:
-    const randomOrder: ChatItem[] = [user, assistant, exec, patch, thought, plan];
+    // Cognitive tier (User -> Plan -> Thought) precedes the action/dialogue stream:
+    const randomOrder: ChatItem[] = [user, exec, patch, assistant, thought, plan];
     const sorted = normalizeTurnSemanticOrder(randomOrder);
     expect(sorted.map((m) => m.id)).toEqual(["u1", "pl1", "th1", "ex1", "pa1", "as1"]);
   });
