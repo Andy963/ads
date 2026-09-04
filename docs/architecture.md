@@ -27,9 +27,9 @@ ADS (Agent Dispatch & Orchestration System) 采用分层解耦的架构设计，
 ┌──────────────────────────────┐ ┌──────────────────────────────┐
 │       Agent 适配器层          │ │        双层存储系统          │
 │ - Codex App Server (RPC)     │ │ - 全局库: state.db           │
-│ - Codex CLI Adapter          │ │   (用户/会话/模型/规则)       │
-│ - Claude Code CLI Adapter    │ │ - 工作区库: <ws>/ads.db      │
-│ - Claude CLI Adapter         │ │   (附件/调度/历史)            │
+│   (统一路由所有 Provider 模型) │ │   (用户/会话/模型/规则)       │
+│                              │ │ - 工作区库: <ws>/ads.db      │
+│                              │ │   (附件/调度/历史)            │
 └──────────────────────────────┘ └──────────────────────────────┘
 ```
 
@@ -56,10 +56,10 @@ Web 与 Telegram 保留各自现有的本地存储和消息交付行为。通道
 
 ### 2.2 多 Agent 抽象与容错执行
 - **统一适配器抽象 (`AgentAdapter`)**：
-  - 标准化封装 Codex 与 Claude Code 的命令行调用、输入输出流解析（Stream Parser）与进程生命周期。
+  - 通过 Codex App-Server 标准化封装多 Provider 模型的 RPC 调用、结构化事件与进程生命周期。
   - 支持 Codex App Server JSON-RPC 长连接与一次性 CLI 的无缝降级。
 - **上游重试与自愈 (Upstream Retry & Healing)**：
-  - 自动识别限流（429）、服务器高负载（503）、Cloudflare/网关超时（520–524）以及 Claude Fable 误拦截。
+  - 自动识别限流（429）、服务器高负载（503）、Cloudflare/网关超时（520–524）以及上游安全拦截。
   - 仅在未产生命令执行或文件写入等副作用前，自动指数退避重试，保障网络波动下的任务可靠性。
 - **进程守卫 (Execution Governor)**：
   - 动态限制并发 CLI 实例数，提供空闲看门狗（Idle Watchdog）与最大硬超时保护，防止僵尸进程耗尽系统资源。

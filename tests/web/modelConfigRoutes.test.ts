@@ -295,7 +295,7 @@ describe("web/model-config routes", () => {
     );
   });
 
-  it("keeps defaults independent for different agent scopes", () => {
+  it("keeps one default model across the unified Codex scope", () => {
     modelStore.upsertModelConfig({
       id: "codex-default",
       modelId: "gpt-codex",
@@ -315,7 +315,7 @@ describe("web/model-config routes", () => {
       configJson: { allowedAgents: ["claude"] },
     });
 
-    assert.equal(modelStore.getModelConfig("codex-default")?.isDefault, true);
+    assert.equal(modelStore.getModelConfig("codex-default")?.isDefault, false);
     assert.equal(modelStore.getModelConfig("claude-default")?.isDefault, true);
 
     modelStore.upsertModelConfig({
@@ -330,6 +330,6 @@ describe("web/model-config routes", () => {
 
     assert.equal(modelStore.getModelConfig("codex-default")?.isDefault, false);
     assert.equal(modelStore.getModelConfig("codex-next")?.isDefault, true);
-    assert.equal(modelStore.getModelConfig("claude-default")?.isDefault, true);
+    assert.equal(modelStore.getModelConfig("claude-default")?.isDefault, false);
   });
 });

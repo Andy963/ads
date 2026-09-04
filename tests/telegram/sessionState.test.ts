@@ -85,7 +85,7 @@ describe("telegram/sessionState helpers", () => {
       agentThreads: {},
       model: "gpt-4o",
       modelReasoningEffort: "high",
-      activeAgentId: "claude",
+      activeAgentId: "codex",
     });
   });
 
@@ -144,7 +144,7 @@ describe("telegram/sessionState helpers", () => {
     assert.equal(resume.shouldInjectHistory, true);
   });
 
-  it("does not bind another agent's thread when the active agent has no thread", () => {
+  it("resumes the canonical Codex thread from a legacy active-agent marker", () => {
     storage.setRecord(15, {
       cwd: "/tmp/project",
       agentThreads: { codex: "codex-thread" },
@@ -160,7 +160,28 @@ describe("telegram/sessionState helpers", () => {
       currentCwd: "/tmp/project",
     });
 
-    assert.equal(resume.activeAgentId, "claude");
+    assert.equal(resume.activeAgentId, undefined);
+    assert.equal(resume.resumeThreadId, "codex-thread");
+    assert.equal(resume.restoreMode, "thread_resumed");
+    assert.equal(resume.shouldInjectHistory, false);
+  });
+
+  it("does not pass a legacy Claude-only session id to Codex", () => {
+    storage.setRecord(16, {
+      cwd: "/tmp/project",
+      agentThreads: { claude: "claude-thread" },
+      activeAgentId: "claude",
+    });
+
+    const resume = resolveResumeState({
+      userId: 16,
+      resumeThread: true,
+      storage,
+      logger: { info: () => {} },
+      currentCwd: "/tmp/project",
+    });
+
+    assert.equal(resume.activeAgentId, undefined);
     assert.equal(resume.resumeThreadId, undefined);
     assert.equal(resume.restoreMode, "history_injection");
     assert.equal(resume.shouldInjectHistory, true);
@@ -228,7 +249,6 @@ describe("telegram/sessionState helpers", () => {
 
     assert.equal(resume.restoreMode, "fresh");
     assert.equal(resume.resumeThreadId, undefined);
-    assert.equal(resume.resumeThreadIds, undefined);
     assert.equal(resume.shouldInjectHistory, false);
   });
 });

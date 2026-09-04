@@ -15,9 +15,8 @@
 | fork 链折叠（每个对话只留最新 session） | [`historyStore.ts`](../server/utils/historyStore.ts) `selectRecentSessionLinksStmt`、[`catalog.ts`](../server/agents/sessions/catalog.ts) `listLinkedSessions` |
 | 分页游标 | [`types.ts`](../server/agents/sessions/types.ts) `SessionListCursor` |
 | 默认恒恢复（无空闲超时） | [`sessionState.ts`](../server/telegram/utils/sessionState.ts) `resolveResumeState`、`SessionManager.getOrCreate` 的 `resumeThread` 默认 `true` |
-| 恢复失败自愈降级 | [`missingProviderSession.ts`](../server/agents/adapters/missingProviderSession.ts)、两个 adapter 的 fresh 重试、[`handlePrompt.ts`](../server/web/server/ws/handlePrompt.ts) `onSessionFallback` |
+| 恢复失败自愈降级 | [`missingProviderSession.ts`](../server/agents/adapters/missingProviderSession.ts)、Codex adapter 的 fresh 重试、[`handlePrompt.ts`](../server/web/server/ws/handlePrompt.ts) `onSessionFallback` |
 | Codex 数据源 | [`codexSessionSource.ts`](../server/agents/sessions/codexSessionSource.ts)（app-server + rollout 兜底） |
-| Claude 数据源 | [`claudeSessionSource.ts`](../server/agents/sessions/claudeSessionSource.ts) + `history_session_links` |
 | 预览文本提取 | [`promptPreview.ts`](../server/agents/sessions/promptPreview.ts) |
 | WS 协议 | [`handleSessionList.ts`](../server/web/server/ws/handleSessionList.ts)、[`messageControl.ts`](../server/web/server/ws/messageControl.ts) |
 | 前端选择器 | [`SessionResumePicker.vue`](../client/src/components/SessionResumePicker.vue) |
@@ -31,7 +30,7 @@
 
 ADS 目前的"恢复上下文"能力存在两条互相竞争的路径：
 
-- **原生 session resume**：把 provider 自己的会话文件重新装载回模型（Codex `resume <threadId>`、Claude `--resume <sessionId>`）。上下文、工具调用记录、模型侧缓存都保留。
+- **原生 session resume**：把 Codex App-Server 的会话文件重新装载回模型（`resume <threadId>`）。上下文、工具调用记录、模型侧缓存都保留。
 - **history injection**：把 ADS 自己 SQLite 里的历史条目压缩成一段文本，拼在下一条 prompt 前面。
 
 第二条路径是有损的：它丢掉工具调用/结果结构、丢掉 provider 侧的 prompt cache、并且把历史"降级"成一段用户消息，模型无法区分"这是我上一轮真的做过的事"和"用户在复述一段文字"。当前实现在多数场景下会走到第二条路径，甚至在原生 session ID 明明可用时**同时**走两条。
@@ -40,19 +39,18 @@ ADS 目前的"恢复上下文"能力存在两条互相竞争的路径：
 
 ## 2. 现状盘点（代码事实）
 
-### 2.1 底层能力：两个 agent 都已支持原生 resume
+### 2.1 底层能力：Codex App-Server 支持原生 resume
 
 | Agent | 实现位置 | 机制 |
 |---|---|---|
 | Codex | [`codexAppServerAdapter.ts`](../server/agents/adapters/codexAppServerAdapter.ts) | 通过 `thread/start` 或 `turn/start` 的 `threadId` 参数原生恢复；`thread/started` 事件回写新的 `threadId` |
-| Claude | [`claudeCliAdapter.ts:296`](../server/agents/adapters/claudeCliAdapter.ts) | `sessionId` 存在时 argv 追加 `--resume <sessionId>` |
 
 也就是说 **adapter 层没有缺口**，缺的是上面的编排与 UI。
 
 ### 2.2 Session ID 的持久化
 
-- `SessionManager` 按 agent 分别保存 thread/session ID：[`sessionManager.ts:273`](../server/telegram/utils/sessionManager.ts)（`saveThreadId`）、`:282`（`getSavedThreadId`）、`:317`（`getSavedResumeThreadId`）。
-- 每次 prompt 会把 `(historyKey, agentId, providerSessionId, cwd)` 写进 `history_session_links` 表：[`handlePrompt.ts:173`](../server/web/server/ws/handlePrompt.ts) → [`historyStore.ts:245`](../server/utils/historyStore.ts)（`linkAgentSession`）。表结构见 [`schemaMigrations.ts:235`](../server/state/schemaMigrations.ts)，带 `(namespace, session_id, agent_id, last_seen_at DESC)` 索引。
+- `SessionManager` 为每个用户保存一个 Codex thread ID：[`sessionManager.ts`](../server/telegram/utils/sessionManager.ts)（`saveThreadId`、`getSavedThreadId`、`getSavedResumeThreadId`）。
+- 每次 prompt 会把 `(historyKey, agentId, providerSessionId, cwd)` 写进 `history_session_links` 表：[`handlePrompt.ts`](../server/web/server/ws/handlePrompt.ts) → [`historyStore.ts`](../server/utils/historyStore.ts)（`linkAgentSession`）。历史记录中的旧非 Codex agent 标记仅作兼容数据，不参与恢复。
 
 **这是关键资产**：ADS 已经有一张"ADS 会话 ↔ provider 原生 session"的映射表，只是从来没有被读出来做列表展示。
 
@@ -62,9 +60,9 @@ ADS 目前的"恢复上下文"能力存在两条互相竞争的路径：
 
 > 已修复：按钮改为打开 [`SessionResumePicker.vue`](../client/src/components/SessionResumePicker.vue)，选中项由前端把 `sessionId` 填进 `task_resume` payload。
 
-**限制 B — 非 Codex 一律降级。** `handleTaskResume` 曾传入 `canResumeThread: activeAgentId === "codex"` 并硬性抛错，于是 Claude 无论是否有可用 `sessionId`，Web 端显式恢复必然掉进 history injection 分支。
+**限制 B — 非 Codex 一律降级。** 旧实现按 agent 分支恢复，会让已废弃的 Claude session 标记进入错误的 adapter 路径。
 
-> 已修复：改为 `supportsNativeResume(activeAgentId)`，白名单为 `codex` 与 `claude`。
+> 已修复：统一只创建 Codex adapter，并在恢复前忽略旧的非 Codex agent 标记。
 
 **限制 C — 恢复成功了还要再注入一遍历史。** `resolveResumeState` 的 `thread_resumed_with_history` 分支同时返回 `resumeThreadId` 和 `shouldInjectHistory: true`，`restoreMode` 却写成 `history_injection`——日志与返回值自相矛盾。下一次 prompt 时 [`handlePrompt.ts`](../server/web/server/ws/handlePrompt.ts) 的 `needsHistoryInjection` 命中，把同一段历史再喂一遍。模型因此看到"原生上下文 + 一份该上下文的文字复述"，这正是"效果并不好"的直接来源。
 
@@ -88,8 +86,7 @@ stdinData: "Reply with exactly OK. Do not run any tools.\n",
 |---|---|---|
 | Codex app-server | `thread/list`、`thread/read`、`thread/resume` | 参数类型已生成：[`ThreadListParams.ts`](../server/codex/appServer/protocol/v2/ThreadListParams.ts) 支持 `cwd` 过滤、`searchTerm`、`limit`、`cursor`、`sortKey`、`useStateDbOnly`；[`ThreadResumeParams.ts`](../server/codex/appServer/protocol/v2/ThreadResumeParams.ts) 支持 `excludeTurns` |
 | Codex rollout 文件 | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | app-server 不可用时的兜底 |
-| ADS 自有映射 | `history_session_links` 表 | 覆盖两个 agent，含 `cwd` 与 `last_seen_at` |
-| Claude 会话文件 | `~/.claude/projects/<cwd-slug>/<uuid>.jsonl` | slug 由 cwd 把 `/` 替换为 `-` 得到；本机 `-home-andy-repos-ads` 下有 56 个会话 |
+| ADS 自有映射 | `history_session_links` 表 | 补充 Codex 会话标题与预览，含 `cwd` 与 `last_seen_at` |
 
 ADS 已经有 app-server 的 JSON-RPC 客户端与守护进程注册表：[`rpcClient.ts:106`](../server/codex/appServer/rpcClient.ts)（`CodexAppServerClient`）、[`daemonRegistry.ts:158`](../server/codex/appServer/daemonRegistry.ts)（`getSharedDaemonRegistry`）。**但目前全仓库没有任何地方调用 `thread/list` 或 `thread/resume`**——协议类型是生成好放在那儿的，客户端也在，只差接线。
 
@@ -97,7 +94,7 @@ ADS 已经有 app-server 的 JSON-RPC 客户端与守护进程注册表：[`rpcC
 
 ### 目标
 
-1. Web 端可以按当前 cwd 列出最近 session（Codex 与 Claude 都要有），显示标题/预览、更新时间、来源、是否为当前 session。
+1. Web 端可以按当前 cwd 列出最近 Codex session，显示标题/预览、更新时间、来源、是否为当前 session。
 2. 选中某一项后走**原生 resume**，不做 history injection。
 3. 原生 resume 不可用时才降级，且降级对用户**可见**（明确告知"未能原生恢复，已改为注入历史摘要"）。
 4. 列出 session 的操作必须廉价：不产生模型调用。
@@ -125,23 +122,22 @@ ADS 已经有 app-server 的 JSON-RPC 客户端与守护进程注册表：[`rpcC
 │  probe(agentId, sessionId) -> Resumability    │
 └───┬──────────────────────┬───────────────────┘
     │                      │
-┌───▼──────────────┐  ┌────▼─────────────────┐
-│ CodexSessionSrc  │  │ ClaudeSessionSrc     │
-│ app-server       │  │ history_session_links│
-│ thread/list      │  │ + ~/.claude/projects │
-│ (fallback: JSONL)│  │   /<slug>/*.jsonl    │
-└──────────────────┘  └──────────────────────┘
+┌────────────────────────────────────────────┐
+│ CodexSessionSrc                             │
+│ app-server thread/list                     │
+│ fallback: ~/.codex/sessions rollout files │
+└────────────────────────────────────────────┘
 ```
 
 ### 4.2 统一模型
 
 ```ts
 // server/agents/sessions/types.ts
-export type AgentSessionSource = "app_server" | "rollout_file" | "ads_link" | "claude_transcript";
+export type AgentSessionSource = "app_server" | "rollout_file" | "ads_link";
 
 export interface AgentSessionRef {
-  agentId: AgentIdentifier;     // "codex" | "claude"
-  sessionId: string;            // provider 原生 ID（Codex threadId / Claude sessionId）
+  agentId: AgentIdentifier;     // "codex"
+  sessionId: string;            // Codex thread id
   cwd?: string;
   title?: string;               // provider 标题，无则从首条用户消息清洗得到
   preview?: string;
@@ -182,7 +178,7 @@ export function listAgentSessions(
 
 ### 4.2.1 降噪：一次性会话与重名折叠
 
-实测 `~/.claude/projects/-home-andy-repos-ads` 下 52 个 transcript，其中 35 个是单轮会话，25 个标题同为「继续」、9 个同为「改完没有」。它们并非同一会话的多份副本——每个文件都有独立 sessionId、独立的 root user 消息，彼此无 parent 关系。来源是自动续跑：每次「继续」都新建一个 provider session，重发约 11k 字符的 ADS 前导，得到一次性回答后结束。
+Codex rollout 文件中也可能存在一次性会话与重复标题。它们并非同一会话的多份副本，因此列表继续使用单轮过滤与重名折叠规则。
 
 若不降噪，这些条目会占满 20 条的窗口，把真正的多轮对话挤出列表。因此：
 
@@ -192,7 +188,7 @@ export function listAgentSessions(
 - **搜索豁免**：`searchTerm` 非空时不做任何降噪。搜索是显式定向查询，从结果里扣掉匹配项比噪声本身更糟。
 - **当前会话豁免**：`isCurrent` 的条目永不隐藏。
 
-`singleTurn` 的判定需要区分真实用户轮次与工具结果。Claude transcript 把 tool_result 也记为 `type: "user"`——实测最大的一个文件有 231 条 `type: "user"` 记录，但真实用户轮次只有 3 轮，naive 计数会高估约 75 倍。因此只统计 content 中存在非 `tool_result` 分块的记录。
+`singleTurn` 的判定需要区分真实用户轮次与工具结果，只统计 content 中存在非 `tool_result` 分块的记录。
 
 判定不额外增加 I/O：沿用原有的 256KB head 读取，`bytesRead < 256KB` 即说明读到了 EOF，轮次计数是精确的；读满 256KB 说明文件更大，此时既不判定为一次性会话（大文件本身就是有实质内容的证据），也不给出 `userTurns`（那只是下界）。实测 52 个文件耗时 99ms，保留项文件大小中位数 534KB，被过滤项中位数 37KB 且全部 < 256KB。
 
@@ -202,8 +198,6 @@ export function listAgentSessions(
 
 | ADS lane | agent | provider session 数 | 时间跨度 |
 |---|---|---|---|
-| `…0dlFJE8A::main` | claude | 53 | 08-08 → 08-09 |
-| `…9-d9e02447171f` | claude | 48 | 07-28 → 08-09 |
 | `…OBvnSGL8::main` | codex | 27 | 07-15 → 08-02 |
 
 更直接的证据：同一条 lane 在 **1.28 秒内**记录了两个不同的 claude session id，正是 [`handlePrompt.ts`](../server/web/server/ws/handlePrompt.ts) 在 send 前（`expectedThreadId`）与 send 后（`orchestrator.getThreadId()`）各记一次的结果——**一轮对话内 id 就变了**。也就是说 CLI 在 `--resume` 时 fork 出新 id，ADS 侧并没有漏传 `--resume`（`threadReset` 的判定逻辑本来就预期了这一点）。
@@ -241,16 +235,11 @@ const res = await client.request<ThreadListParams, ThreadListResponse>("thread/l
 
 > 注意：`codex app-server` 在 stdin 收到 EOF 后不再处理请求。`CodexAppServerClient` 持有长连接，因此不受影响；手工用管道复现时必须保持 stdin 打开，否则 `thread/list` 会看起来"无响应"。
 
-### 4.4 Claude 数据源
+### 4.4 Codex 数据源与预览
 
-Claude CLI 没有等价的 `thread/list` RPC，因此分两级：
+Codex 会话优先来自 app-server 的 `thread/list`，不可用时回退扫描 `~/.codex/sessions` rollout 文件；ADS 自有 `history_session_links` 仅用于补充标题和预览。旧的非 Codex provider 会话不会再出现在恢复列表中。
 
-1. **一级（权威、便宜）**：查 `history_session_links` 中 `agent_id = 'claude'` 且 `cwd` 与当前兼容的行，按 `last_seen_at DESC`（[`HistoryStore.listAgentSessionLinks`](../server/utils/historyStore.ts)）。这些 session 一定是 ADS 自己发起的，恢复成功率最高，且能回连 ADS 历史。
-2. **二级（补全）**：扫描 `~/.claude/projects/<slug>/*.jsonl`，`slug` 由 cwd 规范化得到（`/home/andy/repos/ads` → `-home-andy-repos-ads`）。用于列出在 ADS 之外（例如终端里直接跑 `claude`）产生的 session。二级结果与一级按 `sessionId` 去重，一级优先。
-
-> slug 规则依赖 Claude CLI 的实现细节，集中在 `claudeProjectSlug` 一个函数里并有单测；若未来 CLI 改变布局，只需改一处，且二级源失效不影响一级源。
-
-**预览文本必须清洗。** 两个 provider 的首条用户消息都是 ADS 拼装的完整前导（agent 指令、全局规则、skill 列表），直接展示会让每一条会话看起来一模一样。[`promptPreview.ts`](../server/agents/sessions/promptPreview.ts) 的 `extractUserFacingPrompt` 从 `**用户请求（…）：**` 标记之后取正文，剥掉 `<system-reminder>` / `<global_rules>` 等包裹块与 `【协作代理指令】` 尾块。一级源（ADS 历史）文本更干净，因此在 `mergeById` 中优先级高于 provider 文本。
+**预览文本必须清洗。** 首条用户消息可能包含 ADS 拼装的前导（agent 指令、全局规则、skill 列表），直接展示会让每一条会话看起来一模一样。[`promptPreview.ts`](../server/agents/sessions/promptPreview.ts) 的 `extractUserFacingPrompt` 从 `**用户请求（…）：**` 标记之后取正文，剥掉 `<system-reminder>` / `<global_rules>` 等包裹块与 `【协作代理指令】` 尾块。
 
 ### 4.5 可恢复性探测（替换原先的"真跑一轮"）
 
@@ -264,7 +253,7 @@ Claude CLI 没有等价的 `thread/list` RPC，因此分两级：
 
 `unknown` 这一态是必要的：若把"读不到根目录"（例如 `CODEX_HOME` 配错）也判成 `absent`，会误删一个其实仍然有效的 saved session ID。
 
-Codex 定位靠文件名（`rollout-<ts>-<threadId>.jsonl`），Claude 靠 `<slug>/<sessionId>.jsonl`，都不需要打开文件。整体是**乐观恢复 + 失败降级**，零模型调用。
+Codex 定位靠文件名（`rollout-<ts>-<threadId>.jsonl`），不需要打开文件。整体是**乐观恢复 + 失败降级**，零模型调用。
 
 ### 4.6 协议
 
@@ -376,7 +365,7 @@ claude  No conversation found with session ID: <id>
 
 1. ~~**P0** — `resolveResumeState` 在原生恢复成功时仍要求注入历史。~~ 已修复。
 2. ~~**P0** — 探活跑真实模型轮次。~~ 已修复，改为磁盘三态探测。
-3. ~~**P1** — `handleTaskResume` 对 Claude 硬性拒绝原生恢复，与 [`claudeCliAdapter.ts`](../server/agents/adapters/claudeCliAdapter.ts) 的实际能力不符。~~ 已修复。
+3. ~~**P1** — `handleTaskResume` 对非 Codex session 标记缺少统一降级路径。~~ 已修复。
 4. ~~**P2** — Web UI 无 session 列表入口。~~ 已实现。
 5. ~~**P4** — 列表把同一条对话的每个 fork 都当成独立会话，挤占扫描窗口。~~ 已修复，见 §4.2.2。
 6. ~~**P4** — 降级注入时看不出是原生恢复失败还是本来就没有原生会话。~~ 已修复，见 §4.8。
@@ -386,9 +375,9 @@ claude  No conversation found with session ID: <id>
 | 阶段 | 范围 | 状态 |
 |---|---|---|
 | **P0** | 修 §5 的 1、2 | ✅ 已完成 |
-| **P1** | `AgentSessionCatalog` + Codex/Claude 数据源 + `session_list` WS | ✅ 已完成 |
+| **P1** | `AgentSessionCatalog` + Codex 数据源 + `session_list` WS | ✅ 已完成 |
 | **P2** | `SessionResumePicker.vue` + 入口改造 | ✅ 已完成 |
-| **P3** | Claude 数据源 + 放开 codex-only 限制 | ✅ 已完成 |
+| **P3** | 统一 Codex agent allowlist 与模型作用域 | ✅ 已完成 |
 | **P4** | 分页游标、过期标记、降级原因、fork 折叠、Telegram `/sessions` | ✅ 已完成 |
 
 rollout 文件兜底原计划在 P4，实际已随 P1 一并落地。逐条收尾记录见 [session-resume-todo.md](./session-resume-todo.md)。
@@ -403,7 +392,7 @@ rollout 文件兜底原计划在 P4，实际已随 P1 一并落地。逐条收�
 - `tests/web/taskResumeProbe.test.ts`（7 项）：三态探测、`unknown` 不被判为永久失败、错误消息能被 `isPermanentTaskResumeFailure` 识别。
 - `tests/telegram/sessionListMessage.test.ts`（6 项）：callback data 编解码与 64 字节上限、空列表文案、按钮与状态标注、折叠/隐藏/降级的回传、长标题按字符截断。
 - `tests/telegram/sessionState.test.ts`、`tests/telegram/sessionManager.test.ts`：原生恢复分支断言 `shouldInjectHistory === false` / `restoreMode === "thread_resumed"`（P0 回归护栏）。
-- `tests/web/handleTaskResume.test.ts`（8 项）：Claude 走原生恢复路径；磁盘缺失的 saved id 被清理；降级文案带原因；未尝试原生恢复时保持原措辞。该文件把 `CODEX_HOME` / `CLAUDE_CONFIG_DIR` 指向空的临时目录——探测在根目录缺失时返回 `unknown` 而非 `absent`，不隔离的话结果取决于跑测机器上是否存在真实的 provider 目录。
+- `tests/web/handleTaskResume.test.ts`：Codex session 原生恢复、磁盘缺失的 saved id 清理、降级文案与未尝试原生恢复时的原有措辞。
 - `client/src/__tests__/session-resume-picker.test.ts`（19 项）：挂载即拉列表、点击派发 `sessionId`、快捷项派发 `undefined`、busy 时不派发、空态、搜索防抖、cwd 开关重新拉取、错误展示、隐藏计数提示、`×N` 折叠标记、禁用原因展示，以及「加载更多」的出现条件与并发抑制、`stale` 标记不影响可点击、fork 折叠说明。
 
 校验命令：`npm test`（926 通过）、`npm run test:web`（417 通过）、`npm run lint`、`npm run build`。
@@ -415,7 +404,7 @@ rollout 文件兜底原计划在 P4，实际已随 P1 一并落地。逐条收�
 | 风险 | 缓解 |
 |---|---|
 | app-server 守护进程拉起失败或版本不匹配 | rollout 文件兜底；失败时 `degraded` 标记回传，UI 提示列表可能不完整 |
-| Claude 会话目录布局随 CLI 升级变化 | slug 推导集中在 `claudeProjectSlug` + 单测；二级源失效不影响一级源 |
+| Codex rollout 目录布局随 CLI 升级变化 | 文件名定位集中在 `sessionPaths.ts`，app-server 列表仍作为首选数据源 |
 | 列表暴露其他项目的 session | 默认用 `areSessionCwdsCompatible` 过滤；跨 cwd 需显式勾选"显示全部目录" |
 | 乐观恢复导致首轮失败 | 降级路径给出明确提示（§4.8）；`absent` 时清理保存的 ID，避免反复失败 |
 | 探测误判导致误删有效 session ID | `unknown` 三态：根目录读不到时放行而非判为 absent（§4.5） |

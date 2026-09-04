@@ -199,16 +199,10 @@ describe("mobile navigation behavior", () => {
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
     await wrapper.find('[data-testid="mobile-drawer-section-models"]').trigger("click");
     await settleUi(wrapper);
-    expect(wrapper.findAll(".mobileDrawerSubitem")).toHaveLength(2);
-    expect(wrapper.findAll(".mobileDrawerSubitemArrow")).toHaveLength(0);
-    expect(wrapper.find(".mobileModuleEmpty").exists()).toBe(true);
-
-    await wrapper.find('[data-testid="mobile-drawer-model-claude"]').trigger("click");
-    await settleUi(wrapper);
     expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
     expect(wrapper.find(".chatShell").exists()).toBe(false);
     expect(wrapper.find('[data-testid="model-manager"]').exists()).toBe(true);
-    expect(wrapper.find(".selected-agent").text()).toBe("claude");
+    expect(wrapper.find(".selected-agent").text()).toBe("");
     expect(wrapper.find('[data-testid="model-manager"]').attributes("data-show-header")).toBe("false");
 
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");

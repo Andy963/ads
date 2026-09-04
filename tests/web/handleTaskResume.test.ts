@@ -110,15 +110,15 @@ describe("web/ws/handleTaskResume", () => {
     let getConversationMessagesCalls = 0;
 
     const initialOrchestrator = {
-      getActiveAgentId: () => "claude",
-      getThreadId: () => "claude-current-thread",
+      getActiveAgentId: () => "codex",
+      getThreadId: () => "codex-current-thread",
       setWorkingDirectory: () => {},
       status: () => ({ ready: true }),
     };
 
     const fallbackOrchestrator = {
-      getActiveAgentId: () => "claude",
-      getThreadId: () => "new-claude-session",
+      getActiveAgentId: () => "codex",
+      getThreadId: () => "new-codex-session",
       setWorkingDirectory: () => {},
       status: () => ({ ready: true }),
       send: async (prompt: string, options: { streaming: boolean }) => {
@@ -155,7 +155,7 @@ describe("web/ws/handleTaskResume", () => {
       },
       sessions: {
         sessionManager: {
-          getSavedThreadId: () => "claude-saved-thread",
+          getSavedThreadId: () => "codex-saved-thread",
           getSavedResumeThreadId: () => "saved-resume-thread",
           getSandboxMode: () => "workspace-write",
           getCodexEnv: () => undefined,
@@ -198,7 +198,7 @@ describe("web/ws/handleTaskResume", () => {
                 id: "task-old",
                 title: "Older task",
                 prompt: "prompt",
-                model: "claude",
+                model: "gpt-codex",
                 status: "completed",
                 priority: 0,
                 queueOrder: 0,
@@ -228,11 +228,11 @@ describe("web/ws/handleTaskResume", () => {
     assert.equal(getConversationMessagesCalls, 0);
     assert.deepEqual(dropSessionCalls, [{}]);
     assert.deepEqual(getOrCreateCalls, [{ userId: 9, cwd: "/mnt/d/code/ADS/ads", resumeThread: false }]);
-    assert.deepEqual(saveThreadCalls, [{ userId: 9, threadId: "new-claude-session", agentId: "claude" }]);
+    assert.deepEqual(saveThreadCalls, [{ userId: 9, threadId: "new-codex-session", agentId: "codex" }]);
     assert.equal(sent.length, 0);
     assert.deepEqual(sessionSent.at(-1), {
       type: "history",
-      threadId: "new-claude-session",
+      threadId: "new-codex-session",
       contextMode: "history_injection",
       items: [
         {
@@ -685,7 +685,7 @@ describe("web/ws/handleTaskResume", () => {
     });
   });
 
-  it("attempts native resume for claude without importing an unrelated task transcript", async () => {
+  it("does not attempt native resume for a legacy Claude marker", async () => {
     const sent: unknown[] = [];
     const historyEntries: Array<{ role: string; text: string; ts: number }> = [];
     const dropSessionCalls: Array<{ clearSavedThread?: boolean }> = [];
@@ -811,14 +811,11 @@ describe("web/ws/handleTaskResume", () => {
     assert.deepEqual(dropSessionCalls, []);
     assert.deepEqual(getOrCreateCalls, []);
     assert.deepEqual(saveThreadCalls, []);
-    // Claude is no longer excluded from native resume; the attempt is made and
-    // only fails because this synthetic session id has no transcript on disk.
-    assert.equal(warnings.length, 2);
-    assert.match(warnings[0], /resumeThread failed thread=claude-current-thread/);
-    assert.match(warnings[1], /restore=unavailable/);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /restore=unavailable/);
     assert.deepEqual(sent.at(-1), {
       type: "error",
-      message: "未能原生恢复（会话文件已不存在），且未找到可用于恢复的任务历史",
+      message: "未找到可用于恢复的任务历史",
     });
   });
 

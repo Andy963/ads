@@ -9,10 +9,6 @@ export function selectAgentForModel(_model?: string): AgentIdentifier {
   return "codex";
 }
 
-export function selectAgentForTask(input: { agentId?: unknown; modelToUse: string }): AgentIdentifier {
-  const agentId = normalizeAgentId(input.agentId);
-  if (agentId) {
-    return agentId;
-  }
+export function selectAgentForTask(_input: { agentId?: unknown; modelToUse: string }): AgentIdentifier {
   return "codex";
 }

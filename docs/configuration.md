@@ -42,14 +42,11 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 
 ---
 
-## 3. Agent CLI 与执行器配置
+## 3. Codex App-Server 与执行器配置
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
 | `ADS_CODEX_BIN` | `codex` | Codex 二进制执行文件路径或别名；ADS 通过 `codex app-server` 启动 |
-| `ADS_CLAUDE_ENABLED` | `1` (启用) | 设为 `0` 完全禁用 Claude Code 适配器 |
-| `ADS_CLAUDE_BIN` | `claude` | Claude Code CLI 二进制执行文件路径 |
-| `ADS_CLAUDE_MODEL` | 未设置 | Claude 默认使用的模型 ID 覆盖 |
 | `ADS_AGENT_PROBE_TIMEOUT_MS` | `5000` | 启动时探测 Agent 可用性的超时时间（毫秒） |
 | `ADS_AGENT_IDLE_TIMEOUT_MS` | `3600000` (1小时) | CLI 连续无标准输出/错误的空闲看门狗超时，`0` 表示禁用 |
 | `ADS_AGENT_MAX_RUN_TIMEOUT_MS` | `43200000` (12小时)| 单次 CLI 运行的最大硬超时保护，`0` 表示禁用 |

@@ -19,12 +19,12 @@ Web Console 聚焦于双 Lane 交互界面与 GitHub-Native 交付流：
   - 实时展示阶段 trace（如 `[analysis]`、`[tool]`、`[editing]`）与命令执行输出；文件变更由 Patch 卡片展示。
   - Plan 卡片按单轮逻辑计划合并 provider 更新，并在任务完成与历史重连时保持唯一且状态一致。
 
-### 2. Provider CLI 与全局模型配置 (Provider & Models)
-- **多 Provider CLI 接入**：
-  - 原生支持 **Codex CLI**（OpenAI Codex）与 **Claude Code**（Anthropic Claude）。
-  - 左侧导航可切换 Provider，右侧维护各 Provider 的模型列表。
+### 2. Provider 模型与全局配置 (Provider & Models)
+- **统一 Codex App-Server 接入**：
+  - 所有模型（包括 Anthropic Claude、Google Gemini 与 DeepSeek）均通过 Codex App-Server 路由。
+  - 模型管理页提供单一的模型列表，不再按 CLI Provider 分组。
 - **模型管理**：
-  - 在线启用/停用模型、按 CLI 设置默认模型、编辑与新增模型；Codex 与 Claude 的默认模型彼此独立。
+  - 在线启用/停用模型、设置默认模型、编辑与新增模型。
   - 输入框模型选择器严格联动：仅展示当前 Agent 兼容且已启用的模型，切换 Agent 时自动恢复对应兼容偏好。页面加载或模型列表刷新不会覆盖已有的自定义模型选择。
   - 所有模型配置持久化于全局 SQLite 状态库 (`state.db`)。
 
@@ -33,14 +33,14 @@ Web Console 聚焦于双 Lane 交互界面与 GitHub-Native 交付流：
 WebSocket 流式回复按 Provider 的消息 `itemId` 隔离累计文本；多个 agent message、工具调用和 reasoning item 交错时，不会把其他 item 的完整快照重复追加到当前回复。前端还会忽略已接收的重复累计前缀，作为传输异常时的最后一道保护。
 
 ### 3. 全局规则系统 (Global Rules)
-- 跨项目、跨 Channel（Web Console / Telegram Bot）以及跨 Agent（Codex / Claude）统一生效的规则引擎。
+- 跨项目、跨 Channel（Web Console / Telegram Bot）以及统一 Codex 引擎生效的规则引擎。
 - 规则分为四种级别：`advisory`（建议）、`required`（必须遵守）、`approval_required`（需审批）、`blocked`（阻断）。
 - 支持在线规则编辑、启用/停用、匹配模式过滤（针对特定 Agent、工具或路径）。
 - 提供 **注入预览 (Preview)** 与 **规则测试面板 (Test Playground)**，修改后实时保存至数据库，下一轮对话即时注入 `<global_rules>` 上下文生效，无需重启服务。
 
 ### 4. 原生会话恢复与历史管理 (Session Resume)
 - 点击工具栏 **「历史会话」** 打开恢复选择器。
-- 自动扫描并展示当前项目工作区下所有的原生 Provider 会话（标题、更新时间、轮数统计）。
+- 自动扫描并展示当前项目工作区下的 Codex 原生会话（标题、更新时间、轮数统计）。
 - 原生恢复：直接按 CLI 底层 session 续接，不重复注入历史文本，保留完整的 Token 上下文与缓存状态。
 - 会话文件健康判定：断线或重连时若会话文件存在则原生恢复，缺失时平滑降级并友好提示。
 - 新建聊天会话时，在线 WebSocket 通过原连接内协议切换 session；连接状态保持在线，离线时自动回退到完整重连。
@@ -61,7 +61,7 @@ WebSocket 流式回复按 Provider 的消息 `itemId` 隔离累计文本；多�
 ## 移动端适配 (Mobile Experience)
 
 Web Console 经过专门的移动端交互优化：
-1. **抽屉式导航 (Drawer Navigation)**：左上角汉堡菜单可无缝滑出抽屉，按 **项目 (Projects)**、**规则 (Rules)**、**Provider** 进行全局模块切换。
+1. **抽屉式导航 (Drawer Navigation)**：左上角汉堡菜单可无缝滑出抽屉，按 **项目 (Projects)**、**规则 (Rules)**、**模型 (Models)** 进行全局模块切换。
 2. **双 Tab 扁平导航**：移动端顶栏按 `Advisor | Worker` 排布；首次使用或项目没有记录时聚焦 Advisor，之后按项目恢复上次打开的 Tab。
 3. **独立上下文菜单 (Context Actions)**：右上角根据当前激活模块提供专属操作（如恢复会话、新建会话、新增规则、刷新模型列表等），语言与操作深度统一。
 4. **软键盘自适应**：自动侦测移动端虚拟键盘开启与高度，精确调整底部 Composer 避让，消除空白与遮挡。

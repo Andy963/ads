@@ -22,23 +22,22 @@ describe("mobile navigation shell", () => {
     expect(sfc).toMatch(/:aria-selected="activeWorkspaceTab === tab.id"/);
   });
 
-  it("uses a vertical module drawer with module-specific subitems", async () => {
+  it("uses a unified model manager without provider subitems", async () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
     expect(sfc).toContain('data-testid="mobile-drawer-toggle"');
     expect(sfc).toContain('data-testid="mobile-drawer-section-projects"');
     expect(sfc).toContain('data-testid="mobile-drawer-section-rules"');
     expect(sfc).toContain('data-testid="mobile-drawer-section-models"');
     expect(sfc).toContain("<span>Provider</span>");
-    expect(sfc).toContain('class="mobileDrawerSubitems"');
-    expect(sfc).toContain('v-for="group in MODEL_AGENT_GROUPS"');
-    expect(sfc).toContain(':data-testid="`mobile-drawer-model-${group.kind}`"');
+    expect(sfc).not.toContain('class="mobileDrawerSubitems"');
+    expect(sfc).not.toContain("MODEL_AGENT_GROUPS");
     expect(sfc).toContain('class="mobileMainPanel"');
     expect(sfc).toContain(':show-add-button="false"');
     // projectTasks removed
     expect(sfc).not.toContain('class="lanePanel taskLanePanel"');
     expect(sfc).not.toContain('class="mobileTaskWorkspace"');
     expect(sfc).toContain('v-if="mobileDrawerSection === \'rules\'"');
-    expect(sfc).toContain(':agent="mobileModelAgent"');
+    expect(sfc).toContain('v-else-if="mobileDrawerSection === \'models\'"');
     expect(sfc).toContain("flex-direction: column");
     expect(sfc).toContain('v-if="!isMobile && p.id === \'default\'"');
     // create button removed

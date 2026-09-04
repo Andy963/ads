@@ -8,8 +8,7 @@
 
 - ADS Web
 - ADS Telegram
-- Codex
-- Claude
+- Codex App-Server（统一路由所有 Provider 模型）
 
 规则应具备可视化管理、审计、统一注入和执行级拦截能力。单靠 prompt 注入不能视为硬规则。
 
@@ -21,7 +20,7 @@
 
 - 规则以文件维护，没有 Web 编辑界面、版本记录或审计信息。
 - workspace 的 `memory.md` 用于长期事实，受 token 上限和 workspace 隔离影响，不适合保存全局硬规则。
-- Codex 与 Claude 当前都可在高权限模式下执行命令，模型即使收到规则，也可能遗漏或绕过。
+- Codex App-Server 当前可在高权限模式下执行命令，模型即使收到规则，也可能遗漏或绕过。
 - workspace 自定义 `rules.md` 有读取和展示能力，但不是当前统一 prompt 注入的可靠来源。
 
 ## 设计原则
@@ -58,7 +57,7 @@ CREATE TABLE global_rules (
 
 ```jsonc
 {
-  "agents": ["codex", "claude"],   // 作用域，留空=全部
+  "agents": ["codex"],              // 作用域，留空=全部
   "channels": ["web", "telegram"], // 作用域，留空=全部
   "tools": ["shell"],              // 作用域 + 触发器
   "commandPatterns": ["\\bpkill\\b"], // 触发器，正则，大小写不敏感
@@ -103,7 +102,7 @@ Web 管理界面
 </global_rules>
 ```
 
-该区块对 Web、TG、Codex、Claude 使用同一份内容。规则变更后应立即使缓存失效，下一轮请求生效，无需重启服务。
+该区块对 Web、TG 与 Codex App-Server 使用同一份内容。规则变更后应立即使缓存失效，下一轮请求生效，无需重启服务。
 
 实现细节：
 
@@ -119,7 +118,7 @@ Web 管理界面
 
 ```ts
 {
-  agent: "codex" | "claude",
+  agent: "codex",
   channel: "web" | "telegram",
   workspace: string,
   tool: string,
@@ -152,9 +151,9 @@ Gate 返回：
 - Web：`server/web/server/ws/workerPromptHandler.ts`，每条新命令评估一次，命中非 `allow` 时向聊天流推一条 `Rule` 记录。
 - Telegram：`server/telegram/adapters/codex/statusUpdater.ts`，命中时写告警日志。
 
-⚠️ **当前实现的限制（必须知道）**：Codex app-server 的 `execCommandApproval` / `item/commandExecution/requestApproval` 服务端请求在 `server/codex/appServer/rpcClient.ts` 中被当作通知处理、从不回包，Claude CLI 以 `--permission-mode bypassPermissions` 启动，两者都不向 ADS 请求逐条审批。因此现阶段 Gate 观测到的是**命令已经开始执行后的事件**，`enforce` 模式能做到「立即告警并中断本轮」，做不到「阻止该条命令启动」。要满足验收标准 3（blocked 命令绝不执行），还需要接入 Codex 的审批回包或 Claude 的 PreToolUse hook——这是后续独立一轮的工作。
+⚠️ **当前实现的限制（必须知道）**：Codex app-server 的 `execCommandApproval` / `item/commandExecution/requestApproval` 服务端请求在 `server/codex/appServer/rpcClient.ts` 中被当作通知处理、从不回包。因此现阶段 Gate 观测到的是**命令已经开始执行后的事件**，`enforce` 模式能做到「立即告警并中断本轮」，做不到「阻止该条命令启动」。要满足验收标准 3（blocked 命令绝不执行），还需要接入 Codex 的审批回包——这是后续独立一轮的工作。
 
-Codex 的 execpolicy 仍可保留为额外防线，但不能作为唯一方案。Claude 也必须经过 ADS 的同一 Gate，避免模型或 CLI 差异导致规则失效。
+Codex 的 execpolicy 仍可保留为额外防线，但不能作为唯一方案。
 
 ## Web 管理界面
 
@@ -192,7 +191,7 @@ API 一览：
 4. ✅ 改造 `SystemPromptManager`，优先读取数据库规则。
 5. ✅ 先以 observe 模式运行 Enforcement Gate，只记录本应拦截的动作。（默认 `ADS_RULE_ENFORCEMENT_MODE=observe`）
 6. ❌ 验证命中率后，对 `blocked` 和 `approval_required` 正式启用拦截。（待观测数据积累；且受上文「执行级拦截」的限制约束）
-7. ⚠️ 为 Web、TG、Codex、Claude 编写覆盖一致性的集成测试。单元测试已覆盖 store / service / gate / API / 界面（`tests/rules/globalRules.test.ts`、`tests/web/globalRuleRoutes.test.ts`、`client/src/__tests__/global-rule-manager.test.ts`）；跨 channel 端到端集成测试尚未编写。
+7. ⚠️ 为 Web、TG 与 Codex 编写覆盖一致性的集成测试。单元测试已覆盖 store / service / gate / API / 界面（`tests/rules/globalRules.test.ts`、`tests/web/globalRuleRoutes.test.ts`、`client/src/__tests__/global-rule-manager.test.ts`）；跨 channel 端到端集成测试尚未编写。
 
 ## 与记忆系统的边界
 
@@ -207,8 +206,8 @@ API 一览：
 ## 验收标准
 
 1. ✅ Web 与 TG 在同一时刻读取到同一版本的启用规则。（同一份 `state.db`，缓存按版本指纹失效）
-2. ✅ Codex 与 Claude 的 prompt 都包含相同的 `<global_rules>` 区块。（同一个 `SystemPromptManager`，与 agent 无关）
-3. ❌ 被标记为 `blocked` 的命令，无论来自哪个 channel 或 agent，都不会执行。当前只能在命令事件到达时告警；真正的执行前拦截取决于 Codex 审批回包 / Claude PreToolUse hook 的接入，见「执行级拦截」一节。
+2. ✅ Codex prompt 包含 `<global_rules>` 区块。（同一个 `SystemPromptManager`）
+3. ❌ 被标记为 `blocked` 的命令当前只能在命令事件到达时告警；真正的执行前拦截取决于 Codex 审批回包的接入，见「执行级拦截」一节。
 4. ✅ Web 可以查看、编辑、启停规则并追溯修改记录。
 5. ✅ 规则改动在下一轮请求生效，不需要部署或重启。
 6. ✅ 数据库故障时，系统明确降级到只读 bootstrap 规则并记录告警。

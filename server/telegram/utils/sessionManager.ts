@@ -214,10 +214,6 @@ export class SessionManager {
   }
 
   getConfiguredAgentIds(): AgentIdentifier[] {
-    const configured = this.options.agentAllowlist;
-    if (configured && configured.length > 0) {
-      return [...configured];
-    }
     return ["codex"];
   }
 

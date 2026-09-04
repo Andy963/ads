@@ -369,7 +369,7 @@ describe("tasks/taskStore", () => {
     );
   });
 
-  it("should keep task-store defaults independent for different agent scopes", () => {
+  it("should keep one default model across the unified Codex scope", () => {
     const store = new TaskStore();
     store.upsertModelConfig({
       id: "codex-default",
@@ -390,7 +390,7 @@ describe("tasks/taskStore", () => {
       configJson: { allowedAgents: ["claude"] },
     });
 
-    assert.equal(store.getModelConfig("codex-default")?.isDefault, true);
+    assert.equal(store.getModelConfig("codex-default")?.isDefault, false);
     assert.equal(store.getModelConfig("claude-default")?.isDefault, true);
   });
 

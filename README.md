@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node Version](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
 
-ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编排中枢。它以项目工作区为核心，围绕 Advisor（方案规划）/ Worker（代码执行）/ Task（任务看板与队列）构建了一体化的 AI 开发工作流，并支持多 Provider CLI 接入与可选的 Telegram Bot 远程交互。
+ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编排中枢。它以项目工作区为核心，围绕 Advisor（方案规划）/ Worker（代码执行）/ Task（任务看板与队列）构建了一体化的 AI 开发工作流，并通过 Codex App-Server 统一接入多 Provider 模型与可选的 Telegram Bot 远程交互。
 
 ---
 
@@ -14,7 +14,7 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编�
   - **Task (任务看板)**：可视化任务排队、执行、重试、错误追踪、开发/审核/返工分类及 Task Bundle 任务草稿审批。
   - **Advisor (规划 Lane)**：专属架构方案研讨；任务草稿可直接引用 GitHub Issue/PR 或使用自包含 prompt，不要求本地 issue/spec 文档。
   - **Worker (执行 Lane)**：有本地快照时读取批准时固定的 issue/spec 内容，否则直接依据任务 prompt 与 GitHub 引用执行，实时输出紧凑预览。
-- **多 Provider CLI 支持**：原生适配 **OpenAI Codex** 与 **Anthropic Claude Code**，支持模型可视化启用/停用与即时配置。
+- **统一多 Provider 模型支持**：所有模型均通过 **Codex App-Server** 路由（包括 Anthropic Claude、Google Gemini 与 DeepSeek），支持模型可视化启用/停用与即时配置。
 - **全局规则引擎 (Global Rules)**：跨项目、跨终端（Web / Telegram）统一注入 system prompt 规范，支持在线测试与修改即时生效。
 - **原生会话恢复 (Session Resume)**：零 Token 冗余恢复底层 CLI 真实历史上下文，断线重连自动增量同步。
 - **多模态与语音转写**：支持拖拽/粘贴图片预览、语音一键转写 Prompt，以及代码文件与行号跳转预览模态框。
@@ -27,7 +27,7 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编�
 ### 1. 环境依赖
 - **Node.js**: `>= 24.0.0`
 - **npm**: 确保具备 C++ 编译环境以支持 `better-sqlite3` 原生模块构建。
-- **Agent CLI**: 本机已安装并配置 `codex` 或 `claude`。
+- **Agent runtime**: 本机已安装并配置 `codex` App-Server CLI。
 
 ### 2. 安装与构建
 ```bash
@@ -96,7 +96,7 @@ npm run web:init-admin -- --username admin --password-stdin
 ```text
 ads/
 ├── server/            # 服务端源码 (Node.js / Express-WS / Telegram)
-│   ├── agents/        # Agent CLI 适配器与执行守护器 (Codex / Claude)
+│   ├── agents/        # Codex App-Server 适配器与执行守护器
 │   ├── rules/         # 全局规则服务与执行网关
 │   ├── scheduler/     # 自然语言定时调度引擎与 Cron 运行时
 │   ├── state/         # 全局 SQLite (state.db) 数据表与迁移

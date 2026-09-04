@@ -20,8 +20,8 @@ function cloneHistoryEntries(entries: readonly HistoryEntry[]): HistoryEntry[] {
   return entries.map((entry) => ({ ...entry }));
 }
 
-/** Agents whose CLI can reattach to a provider-native session by id. */
-const NATIVE_RESUME_AGENTS = new Set(["codex", "claude"]);
+/** The unified runtime's provider-native session is a Codex thread. */
+const NATIVE_RESUME_AGENTS = new Set(["codex"]);
 
 function supportsNativeResume(agentId: string | undefined): boolean {
   return NATIVE_RESUME_AGENTS.has(String(agentId ?? "").trim());
