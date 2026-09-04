@@ -158,7 +158,7 @@ export function createExecuteActions(params: {
     // Demarcate phase boundary: pre-command assistant explanations are sealed
     // when a command execution block enters the stream.
     const sealedExisting = cleanedExisting.map((m) => {
-      if (m.role === "assistant" && m.streaming && !isLiveMessageId?.(m.id)) {
+      if (m.role === "assistant" && m.streaming && String(m.content ?? "").trim() && !isLiveMessageId?.(m.id)) {
         return { ...m, streaming: false };
       }
       return m;

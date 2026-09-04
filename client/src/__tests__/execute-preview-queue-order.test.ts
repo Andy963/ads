@@ -135,7 +135,7 @@ describe("execute preview queue ordering", () => {
     });
   });
 
-  it("inserts the current execute preview below the latest user message", () => {
+  it("inserts the current execute preview below the current turn content", () => {
     const rt = {
       messages: ref([
         { id: "u-1", role: "user", kind: "text", content: "old prompt" },
@@ -171,7 +171,7 @@ describe("execute preview queue ordering", () => {
     const newExecuteIndex = messages.findIndex((m: any) => m.id === "exec:new");
     const assistantIndex = messages.findIndex((m: any) => m.id === "a-2");
 
+    expect(newExecuteIndex).toBeGreaterThan(assistantIndex);
     expect(newExecuteIndex).toBeGreaterThan(newUserIndex);
-    expect(newExecuteIndex).toBeLessThan(assistantIndex);
   });
 });

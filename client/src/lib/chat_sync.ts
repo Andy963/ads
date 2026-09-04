@@ -8,16 +8,19 @@ export const STREAM_DISCONNECT_NOTICE = "[连接中断：这段回复尚未完�
 export const EXECUTE_DISCONNECT_NOTICE = "[连接中断：命令输出可能不完整，正在等待重连同步]";
 
 function normalizeContentForMerge(text: string): string {
-  return String(text ?? "")
-    .replace(/\r\n/g, "\n")
-    .replace(new RegExp(`\\n\\n${escapeRegExp(STREAM_DISCONNECT_NOTICE)}$`), "")
-    .replace(new RegExp(`\\n\\n${escapeRegExp(LEGACY_STREAM_DISCONNECT_NOTICE)}$`), "")
+  return stripStreamingDisconnectNotice(String(text ?? "").replace(/\r\n/g, "\n"))
     .replace(new RegExp(`(?:^|\\n)${escapeRegExp(EXECUTE_DISCONNECT_NOTICE)}$`), "")
     .trim();
 }
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function stripStreamingDisconnectNotice(text: string): string {
+  return String(text ?? "")
+    .replace(new RegExp(`\\n\\n${escapeRegExp(STREAM_DISCONNECT_NOTICE)}$`), "")
+    .replace(new RegExp(`\\n\\n${escapeRegExp(LEGACY_STREAM_DISCONNECT_NOTICE)}$`), "");
 }
 
 function isTransientExecutePreview(item: ChatItem): boolean {
@@ -269,6 +272,9 @@ export function findProcessInsertIndex(messages: ChatItem[]): number {
  * remaining strictly ahead of live-progress indicators.
  */
 export function findExecuteInsertIndex(messages: ChatItem[]): number {
+  // Keep the execution card below the current turn's existing narrative.
+  // Empty typing placeholders are intentionally included in this boundary so
+  // an execution event cannot visually jump ahead of the assistant stream.
   return getCurrentTurnBounds(messages).end;
 }
 

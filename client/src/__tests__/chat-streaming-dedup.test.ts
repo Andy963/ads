@@ -4,7 +4,7 @@ import { ref } from "vue";
 import type { ChatItem, ProjectRuntime } from "../app/controller";
 import { createStreamingActions } from "../app/chatStreaming";
 import { findLastLiveIndex, isLiveMessageId } from "../app/chatLive";
-import { normalizeTurnSemanticOrder } from "../lib/chat_sync";
+import { normalizeTurnSemanticOrder, STREAM_DISCONNECT_NOTICE } from "../lib/chat_sync";
 
 function createHarness(initial: ChatItem[] = []) {
   const messages = ref<ChatItem[]>(initial);
@@ -68,6 +68,53 @@ describe("chat streaming duplicate protection", () => {
     expect(liveSteps[0]?.content).not.toContain("Inspecting workspace");
     expect(messages.value.find((message) => message.id === "exec-1")?.content).toBe("$ npm test\n");
     expect(messages.value.map((message) => message.id)).toEqual(["u-1", "live-step", "exec-1"]);
+  });
+
+  it("resumes only the unrendered suffix of a cumulative snapshot after a command boundary", () => {
+    const firstPhase = "Step 1: Inspecting the workspace.";
+    const secondPhase = "Step 2: Updating the configuration.";
+    const { messages, runtime, streaming } = createHarness([
+      { id: "u-1", role: "user", kind: "text", content: "run the task" },
+      {
+        id: "a-1",
+        role: "assistant",
+        kind: "text",
+        content: `${firstPhase}\n\n${STREAM_DISCONNECT_NOTICE}`,
+        streaming: false,
+      },
+      { id: "exec-1", role: "system", kind: "execute", content: "$ npm test\n", command: "npm test", streaming: false },
+    ]);
+
+    // Replaying the same cumulative snapshot is a no-op.
+    streaming.replaceStreamingText(firstPhase, runtime);
+    expect(messages.value).toHaveLength(3);
+
+    // The snapshot includes the already-rendered phase, so only its suffix gets a new bubble.
+    streaming.replaceStreamingText(`${firstPhase}${secondPhase}`, runtime);
+
+    const assistantMessages = messages.value.filter((message) => message.role === "assistant" && message.kind === "text");
+    expect(assistantMessages).toHaveLength(2);
+    expect(assistantMessages[0]?.content).toBe(`${firstPhase}\n\n${STREAM_DISCONNECT_NOTICE}`);
+    expect(assistantMessages[1]?.content).toBe(secondPhase);
+    expect(messages.value.map((message) => message.kind)).toEqual(["text", "text", "execute", "text"]);
+  });
+
+  it("appends a recovered suffix to an already-live post-command bubble", () => {
+    const firstPhase = "Step 1: Inspecting the workspace.";
+    const secondPhase = "Step 2: Updating the configuration.";
+    const finalPhase = " Final summary.";
+    const { messages, runtime, streaming } = createHarness([
+      { id: "u-1", role: "user", kind: "text", content: "run the task" },
+      { id: "a-1", role: "assistant", kind: "text", content: firstPhase, streaming: false },
+      { id: "exec-1", role: "system", kind: "execute", content: "$ npm test\n", command: "npm test", streaming: false },
+      { id: "a-2", role: "assistant", kind: "text", content: secondPhase, streaming: true },
+    ]);
+
+    streaming.replaceStreamingText(`${firstPhase}${secondPhase}${finalPhase}`, runtime);
+
+    expect(messages.value.find((message) => message.id === "a-1")?.content).toBe(firstPhase);
+    expect(messages.value.find((message) => message.id === "a-2")?.content).toBe(`${secondPhase}${finalPhase}`);
+    expect(messages.value.filter((message) => message.role === "assistant" && message.kind === "text")).toHaveLength(2);
   });
 
   it("does not replace a substantive snapshot with ignored analysis noise", () => {

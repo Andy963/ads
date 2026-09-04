@@ -1,5 +1,9 @@
 import { clearLiveActivityWindow, renderLiveActivityMarkdown } from "../lib/live_activity";
-import { findAssistantInsertIndex, findProcessInsertIndex } from "../lib/chat_sync";
+import {
+  findAssistantInsertIndex,
+  findProcessInsertIndex,
+  stripStreamingDisconnectNotice,
+} from "../lib/chat_sync";
 
 import type { ChatItem, ProjectRuntime } from "./controller";
 
@@ -30,6 +34,35 @@ function isActionStepTrace(text: string): boolean {
     firstLine.startsWith("[context]") ||
     firstLine.startsWith("[connection]")
   );
+}
+
+function getRenderedAssistantText(items: ChatItem[], isLiveMessageId: (id: string) => boolean): string {
+  let lastUserIndex = -1;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+
+  return items
+    .slice(lastUserIndex + 1)
+    .filter((item) => item.role === "assistant" && item.kind === "text" && !isLiveMessageId(item.id))
+    .map((item) => stripStreamingDisconnectNotice(String(item.content ?? "")))
+    .join("");
+}
+
+function getUnrenderedSnapshotText(
+  items: ChatItem[],
+  snapshot: string,
+  isLiveMessageId: (id: string) => boolean,
+): { text: string; matched: boolean } {
+  const normalizedSnapshot = String(snapshot ?? "").replace(/\r\n/g, "\n");
+  const rendered = getRenderedAssistantText(items, isLiveMessageId).replace(/\r\n/g, "\n");
+  if (!rendered || !normalizedSnapshot.startsWith(rendered)) {
+    return { text: normalizedSnapshot, matched: false };
+  }
+  return { text: normalizedSnapshot.slice(rendered.length), matched: true };
 }
 
 export function createStreamingActions(params: {
@@ -153,16 +186,21 @@ export function createStreamingActions(params: {
     if (!nextText) return;
     dropEmptyAssistantPlaceholder(state);
     const existing = state.messages.value.slice();
+    const recovered = getUnrenderedSnapshotText(existing, nextText, isLiveMessageId);
     const streamIndex = findActiveStreamingAssistantIndex(existing);
     if (streamIndex >= 0) {
-      if (existing[streamIndex]!.content === nextText) return;
+      const current = String(existing[streamIndex]!.content ?? "");
+      const nextContent = recovered.matched ? current + recovered.text : nextText;
+      if (current === nextContent) return;
       existing[streamIndex] = {
         ...existing[streamIndex]!,
-        content: nextText,
+        content: nextContent,
       };
       setMessages(existing.slice(), state);
       return;
     }
+
+    if (recovered.matched && !recovered.text) return;
 
     const sealedExisting = existing.map((m) => {
       if (m.role === "assistant" && m.streaming && !isLiveMessageId(m.id)) {
@@ -175,7 +213,7 @@ export function createStreamingActions(params: {
       id: randomId("stream"),
       role: "assistant",
       kind: "text",
-      content: nextText,
+      content: recovered.text,
       streaming: true,
       ts: Date.now(),
     };

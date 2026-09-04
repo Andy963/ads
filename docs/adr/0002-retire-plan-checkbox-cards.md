@@ -19,6 +19,7 @@ In practice, this implementation suffered from several foundational architectura
 2. **Adopt Interleaved Turn Streaming Architecture**:
    - The agent's real-time step explanations preceding and succeeding command executions are themselves the true, living progress of execution.
    - Establish clean phase boundaries in `client/src/app/chatStreaming.ts`: when a command execution or patch occurs, the preceding assistant stream is sealed (`streaming: false`). Subsequent explanations start as a distinct conversational segment positioned chronologically below the completed actions.
+   - Treat reconnect `delta_snapshot` payloads as cumulative turn text. The client consumes the assistant text already rendered in the current turn and restores only the unrendered suffix, so reconnect catch-up cannot duplicate earlier conversational phases.
    - Unify execution-layer semantic card ordering in `client/src/lib/chat_sync.ts` so that Thought/Live status remains pinned at the cognitive layer, while assistant commentary and command executions interleave strictly according to their natural chronological occurrence:
      `Pre-command explanation -> Active command block -> Post-command explanation / next step -> Next command block -> Final delivery summary`.
 
@@ -32,4 +33,3 @@ In practice, this implementation suffered from several foundational architectura
 ### Trade-offs & Migration
 - Historical `plan:*` entries in existing databases remain harmlessly unrendered or treated as plain legacy text, without causing frontend rendering errors.
 - External prompt constraints or agents no longer expect a synthetic checkbox UI.
-
