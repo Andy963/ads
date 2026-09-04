@@ -181,6 +181,36 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
+  it("blocks dangerous commands at the app-server item boundary", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-safety" } }),
+        "turn/start": () => ({}),
+        "turn/interrupt": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "safety", registry });
+    const events: Array<{ phase: string; title: string; detail?: string }> = [];
+    adapter.onEvent((event) => events.push({ phase: event.phase, title: event.title, detail: event.detail }));
+
+    const sendPromise = adapter.send("run the command");
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("turn/started", { threadId: "thread-safety", turn: { id: "turn-safety" } });
+    fake.notify("item/started", {
+      item: { type: "commandExecution", id: "command-safety", command: "rm -f state.db", status: "in_progress" },
+      threadId: "thread-safety",
+      turnId: "turn-safety",
+    });
+
+    await assert.rejects(sendPromise, /Command blocked by security rule: rm -f state\.db/);
+    await waitForRequestCount(fake, "turn/interrupt", 1);
+    assert(events.some((event) => event.phase === "error" && event.detail?.includes("state.db")));
+    assert.equal(events.some((event) => event.phase === "command"), false);
+
+    await registry.stopAll();
+  });
+
   it("bridges structured turn plan updates as todo_list events", async () => {
     const fake = buildFakeServer({
       autoReplies: {

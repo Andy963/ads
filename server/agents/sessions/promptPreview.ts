@@ -1,9 +1,9 @@
 /**
  * Session previews come from the raw prompt that was sent to the provider, and
- * ADS wraps every prompt in a large preamble (agent instructions, global rules,
- * and skill listings). Rendering that verbatim would make every
- * session in the picker look identical, so this module recovers the part the
- * user actually typed.
+ * Older ADS prompts may carry a large preamble (agent instructions, legacy
+ * rules, and skill listings). Rendering that verbatim would make every session
+ * in the picker look identical, so this module recovers the part the user
+ * actually typed.
  */
 
 /** Marker ADS appends right before the real user request in composed prompts. */

@@ -5,11 +5,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { SystemPromptManager } from "../../server/systemPrompt/manager.js";
-import { resolveWorkspaceStatePath } from "../../server/workspace/adsPaths.js";
 import { installTempAdsStateDir, type TempAdsStateDir } from "../helpers/adsStateDir.js";
 import { setPreference } from "../../server/memory/soul.js";
 
-describe("SystemPromptManager rule reinjection", () => {
+describe("SystemPromptManager prompt injection", () => {
   let workspace: string;
   let templateRoot: string;
   let adsState: TempAdsStateDir | null = null;
@@ -18,9 +17,8 @@ describe("SystemPromptManager rule reinjection", () => {
     adsState = installTempAdsStateDir("ads-state-systemprompt-");
     workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-systemprompt-"));
     templateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-systemprompt-templates-"));
-    fs.mkdirSync(templateRoot, { recursive: true });
     fs.writeFileSync(path.join(templateRoot, "instructions.md"), "System instructions");
-    fs.writeFileSync(path.join(templateRoot, "rules.md"), "Template rules");
+    fs.writeFileSync(path.join(templateRoot, "rules.md"), "Legacy rules must not be injected");
   });
 
   after(() => {
@@ -30,31 +28,7 @@ describe("SystemPromptManager rule reinjection", () => {
     fs.rmSync(templateRoot, { recursive: true, force: true });
   });
 
-  it("re-injects rules every five turns", () => {
-    const manager = new SystemPromptManager({
-      workspaceRoot: workspace,
-      reinjection: { enabled: true, turns: 999, rulesTurns: 5 },
-      templateRoot,
-    });
-
-    const initial = manager.maybeInject();
-    assert(initial);
-    assert.equal(initial.reason, "initial");
-
-    for (let i = 0; i < 4; i += 1) {
-      manager.completeTurn();
-    }
-
-    const beforeThreshold = manager.maybeInject();
-    assert.equal(beforeThreshold, null);
-
-    manager.completeTurn();
-    const reinjected = manager.maybeInject();
-    assert(reinjected);
-    assert.equal(reinjected.reason, "rules-only-5");
-  });
-
-  it("injects rules every eight turns by default", () => {
+  it("does not inject the legacy rules file or use a rules-only cadence", () => {
     const manager = new SystemPromptManager({
       workspaceRoot: workspace,
       reinjection: { enabled: true, turns: 999 },
@@ -64,45 +38,19 @@ describe("SystemPromptManager rule reinjection", () => {
     const initial = manager.maybeInject();
     assert(initial);
     assert.equal(initial.reason, "initial");
+    assert.match(initial.text, /System instructions/);
+    assert.doesNotMatch(initial.text, /Legacy rules/);
 
-    for (let i = 0; i < 7; i += 1) {
+    for (let i = 0; i < 12; i += 1) {
       manager.completeTurn();
-      assert.equal(manager.maybeInject(), null, `unexpected reinjection at turn ${i + 1}`);
+      assert.equal(manager.maybeInject(), null);
     }
-
-    manager.completeTurn();
-    const injection = manager.maybeInject();
-    assert(injection);
-    assert.equal(injection.reason, "rules-only-8");
-  });
-
-  it("reinjects edited rules immediately rather than waiting out the cadence", () => {
-    // The long cadence is only safe because a rule edit still lands on the next
-    // turn. If this breaks, changing a rule silently takes up to 8 turns.
-    const manager = new SystemPromptManager({
-      workspaceRoot: workspace,
-      reinjection: { enabled: true, turns: 999 },
-      templateRoot,
-    });
-
-    assert.equal(manager.maybeInject()?.reason, "initial");
-
-    manager.completeTurn();
-    assert.equal(manager.maybeInject(), null);
-
-    fs.writeFileSync(path.join(templateRoot, "rules.md"), "# Rules\nA newly added rule.\n", "utf8");
-
-    manager.completeTurn();
-    const injection = manager.maybeInject();
-    assert(injection);
-    assert.equal(injection.reason, "rules-updated");
-    assert.match(injection.text, /A newly added rule/);
   });
 
   it("detects instruction updates and workspace switch", () => {
     const manager = new SystemPromptManager({
       workspaceRoot: workspace,
-      reinjection: { enabled: true, turns: 2, rulesTurns: 2 },
+      reinjection: { enabled: true, turns: 2 },
       templateRoot,
     });
 
@@ -110,31 +58,29 @@ describe("SystemPromptManager rule reinjection", () => {
     assert(initial);
     assert.equal(initial.reason, "initial");
 
-    // Modify instructions to trigger pending reason
-    const instructionsPath = path.join(templateRoot, "instructions.md");
-    fs.writeFileSync(instructionsPath, "Updated instructions");
+    fs.writeFileSync(path.join(templateRoot, "instructions.md"), "Updated instructions");
     manager.completeTurn();
     const updated = manager.maybeInject();
     assert(updated);
     assert.equal(updated.reason, "instructions-updated");
+    assert.match(updated.text, /Updated instructions/);
 
-    // Switch workspace and ensure reset
     const nextWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-systemprompt-next-"));
-    const nextAds = resolveWorkspaceStatePath(nextWorkspace, "templates");
-    fs.mkdirSync(nextAds, { recursive: true });
-    fs.writeFileSync(path.join(nextAds, "instructions.md"), "Next instructions");
-    fs.writeFileSync(path.join(nextAds, "rules.md"), "Next rules");
-    manager.setWorkspaceRoot(nextWorkspace);
-    manager.completeTurn();
-    const switched = manager.maybeInject();
-    assert(switched);
-    assert.equal(switched.reason, "workspace-changed");
-
-    fs.rmSync(nextWorkspace, { recursive: true, force: true });
+    try {
+      setPreference(nextWorkspace, "language", "Next English");
+      manager.setWorkspaceRoot(nextWorkspace);
+      const switched = manager.maybeInject();
+      assert(switched);
+      assert.equal(switched.reason, "workspace-changed");
+      assert.match(switched.text, /Updated instructions/);
+      assert.match(switched.text, /Next English/);
+    } finally {
+      fs.rmSync(nextWorkspace, { recursive: true, force: true });
+    }
   });
 
-  it("injects soul content into prompt", () => {
-    setPreference(workspace, "language", "中文");
+  it("injects soul content into the prompt", () => {
+    setPreference(workspace, "language", "English");
     setPreference(workspace, "tone", "casual");
 
     const manager = new SystemPromptManager({ workspaceRoot: workspace, templateRoot });
@@ -142,12 +88,12 @@ describe("SystemPromptManager rule reinjection", () => {
     assert(injection);
     assert.match(injection.text, /<soul>/);
     assert.match(injection.text, /language/);
-    assert.match(injection.text, /中文/);
+    assert.match(injection.text, /English/);
     assert.match(injection.text, /tone/);
     assert.match(injection.text, /casual/);
   });
 
-  it("does not inject soul block when soul file is empty", () => {
+  it("does not inject a soul block when the soul file is empty", () => {
     const emptyWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-systemprompt-nosoul-"));
     try {
       const manager = new SystemPromptManager({ workspaceRoot: emptyWorkspace, templateRoot });
@@ -159,41 +105,15 @@ describe("SystemPromptManager rule reinjection", () => {
     }
   });
 
-  it("does not require explicit init for initial injection", () => {
+  it("does not require explicit workspace initialization", () => {
     const tempWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-systemprompt-uninit-"));
     try {
       const manager = new SystemPromptManager({ workspaceRoot: tempWorkspace, templateRoot });
       const injection = manager.maybeInject();
-      assert(injection, "should inject fallback instructions");
+      assert(injection);
       assert.equal(injection.reason, "initial");
       assert.notEqual(injection.instructionsHash, "missing");
-      assert.ok(injection.text.trim().length > 0, "fallback instructions should not be empty");
-      assert.doesNotMatch(injection.text, /workspace\.json 缺失|workspace notice/i);
-    } finally {
-      fs.rmSync(tempWorkspace, { recursive: true, force: true });
-    }
-  });
-
-  it("ignores legacy workspace instructions when ADS templates are configured", () => {
-    const tempWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-systemprompt-legacy-"));
-    try {
-      const stateTemplatesDir = resolveWorkspaceStatePath(tempWorkspace, "templates");
-      fs.mkdirSync(stateTemplatesDir, { recursive: true });
-      fs.writeFileSync(resolveWorkspaceStatePath(tempWorkspace, "workspace.json"), JSON.stringify({ name: "ws", version: "1.0" }), "utf8");
-
-      const legacyDir = path.join(tempWorkspace, ".ads");
-      fs.mkdirSync(legacyDir, { recursive: true });
-      fs.writeFileSync(path.join(legacyDir, "workspace.json"), JSON.stringify({ name: "legacy", version: "1.0" }), "utf8");
-      fs.writeFileSync(path.join(legacyDir, "instructions.md"), "LEGACY_INSTRUCTIONS_123", "utf8");
-
-      const manager = new SystemPromptManager({
-        workspaceRoot: tempWorkspace,
-        reinjection: { enabled: true, turns: 999, rulesTurns: 999 },
-        templateRoot,
-      });
-      const injection = manager.maybeInject();
-      assert(injection);
-      assert.doesNotMatch(injection.text, /LEGACY_INSTRUCTIONS_123/);
+      assert.ok(injection.text.trim().length > 0);
     } finally {
       fs.rmSync(tempWorkspace, { recursive: true, force: true });
     }

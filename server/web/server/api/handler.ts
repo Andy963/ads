@@ -12,7 +12,6 @@ import { handleAudioRoutes } from "./routes/audio.js";
 import { handlePathRoutes } from "./routes/paths.js";
 import { handleProjectRoutes } from "./routes/projects.js";
 import { handleModelRoutes } from "./routes/models.js";
-import { handleGlobalRuleRoutes } from "./routes/globalRules.js";
 import { handleAttachmentRoutes } from "./routes/attachments.js";
 import { handlePreferenceRoutes } from "./routes/preferences.js";
 import { handleScheduleRoutes } from "./routes/schedules.js";
@@ -101,7 +100,6 @@ export function createApiRequestHandler(deps: {
     ) return true;
     if (await handleScheduleRoutes(routeCtx, { resolveWorkspaceRoot: deps.resolveWorkspaceRoot, scheduleCompiler: deps.scheduleCompiler, scheduler: deps.scheduler })) return true;
     if (await handleModelRoutes(routeCtx)) return true;
-    if (await handleGlobalRuleRoutes(routeCtx)) return true;
     if (await handleAttachmentRoutes(routeCtx, { resolveWorkspaceContext: deps.resolveWorkspaceContext, buildAttachmentRawUrl })) return true;
 
     sendJson(res, 404, { error: "Not Found" });

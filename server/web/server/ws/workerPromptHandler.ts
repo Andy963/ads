@@ -119,13 +119,8 @@ export function attachWorkerPromptHandler(args: {
   let exploredHeaderSent = false;
   const isActive = (): boolean => (args.isActive ? args.isActive() : true);
 
-  /**
-   * Report every command the agent runs to the global-rule gate. The gate ships
-   * in observe mode by default, so this records what would have been blocked
-   * without changing behaviour; flipping ADS_RULE_ENFORCEMENT_MODE=enforce makes
-   * the same decisions actionable.
-   */
-  const evaluateCommandAgainstRules = (commandLine: string): void => {
+  /** Report command safety violations that reach the event bridge. */
+  const evaluateCommandSafety = (commandLine: string): void => {
     try {
       const gate = args.ruleGate ?? getRuleEnforcementGate();
       const result = gate.evaluate({
@@ -314,7 +309,7 @@ export function attachWorkerPromptHandler(args: {
       const isNewCommand = !announcedCommandKeys.has(commandKey);
       if (isNewCommand) {
         announcedCommandKeys.add(commandKey);
-        evaluateCommandAgainstRules(commandLine);
+        evaluateCommandSafety(commandLine);
         const header = `${hasCommandOutput ? "\n" : ""}$ ${commandLine}\n`;
         outputDelta = header + (outputDelta ?? "");
         hasCommandOutput = true;

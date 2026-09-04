@@ -9,30 +9,20 @@ import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { discoverSkills, loadSkillBody, renderCompactSkills, renderSkillMetaInstruction } from "../skills/loader.js";
 import { readSoul } from "../memory/soul.js";
 import { readMemory } from "../memory/memory.js";
-import { getGlobalRuleService, createGlobalRuleService, type GlobalRuleService } from "../rules/globalRuleService.js";
 import { PROJECT_ROOT } from "../utils/projectRoot.js";
 
 export interface ReinjectionConfig {
   enabled: boolean;
   turns: number;
-  rulesTurns?: number;
 }
 
 const DEFAULT_INSTRUCTIONS_REINJECTION_TURNS = 6;
-/**
- * Rules used to be re-sent every turn. Current models hold instructions well
- * enough that this mostly burned tokens restating an unchanged block. Edits to
- * the rules still reinject on the next turn via the "global-rules-updated"
- * pending reason, so a longer cadence does not delay rule changes.
- */
-const DEFAULT_RULES_REINJECTION_TURNS = 8;
 
 export interface SystemPromptManagerOptions {
   workspaceRoot: string;
   reinjection?: Partial<ReinjectionConfig>;
   templateRoot?: string;
   logger?: Logger;
-  globalRuleService?: GlobalRuleService;
   /**
    * Template filename injected only for this lane, resolved under templateRoot.
    * Lets the planner carry role rules the worker must not see.
@@ -51,7 +41,6 @@ export interface PromptInjection {
   text: string;
   reason: string;
   instructionsHash: string;
-  rulesHash: string;
 }
 
 function shortHash(hash: string): string {
@@ -72,7 +61,6 @@ function parseTurns(value: string | undefined): number | undefined {
 export function resolveReinjectionConfig(prefix?: string): ReinjectionConfig {
   const enabledEnvName = prefix ? `${prefix}_REINJECTION_ENABLED` : undefined;
   const turnsEnvName = prefix ? `${prefix}_REINJECTION_TURNS` : undefined;
-  const rulesTurnsEnvName = prefix ? `${prefix}_RULES_REINJECTION_TURNS` : undefined;
 
   const enabledEnv =
     parseOptionalBooleanFlag(enabledEnvName ? process.env[enabledEnvName] : undefined) ??
@@ -80,14 +68,10 @@ export function resolveReinjectionConfig(prefix?: string): ReinjectionConfig {
   const turnsEnv =
     parseTurns(turnsEnvName ? process.env[turnsEnvName] : undefined) ??
     parseTurns(process.env.ADS_REINJECTION_TURNS);
-  const rulesTurnsEnv =
-    parseTurns(rulesTurnsEnvName ? process.env[rulesTurnsEnvName] : undefined) ??
-    parseTurns(process.env.ADS_RULES_REINJECTION_TURNS);
 
   return {
     enabled: enabledEnv ?? true,
     turns: turnsEnv ?? DEFAULT_INSTRUCTIONS_REINJECTION_TURNS,
-    rulesTurns: rulesTurnsEnv ?? DEFAULT_RULES_REINJECTION_TURNS,
   };
 }
 
@@ -96,13 +80,10 @@ export class SystemPromptManager {
   private workspaceInitialized: boolean;
   private readonly templateRoot: string;
   private readonly defaultInstructionsPath: string;
-  private readonly defaultRulesPath: string;
   private readonly laneInstructionsPath: string | null;
   private readonly logger: Logger;
   private readonly reinjection: ReinjectionConfig;
-  private readonly rulesReinjectionTurns: number;
   private instructionsCache: FileCache | null = null;
-  private rulesCache: FileCache | null = null;
   private laneInstructionsCache: FileCache | null = null;
   private lastLaneInstructionsHash: string | null = null;
   private lastSoulHash: string | null = null;
@@ -112,46 +93,27 @@ export class SystemPromptManager {
   private hasInjected = false;
   private turnCount = 0;
   private lastInjectionTurn = -1;
-  private lastRulesInjectionTurn = -1;
   private pendingReason: string | null = null;
   private lastInstructionsHash: string | null = null;
-  private lastRulesHash: string | null = null;
   private instructionsWarningLogged = false;
   private workspaceWarningLogged = false;
-  private rulesWarningLogged = false;
-  private readonly globalRuleService: GlobalRuleService;
-  private globalRulesSeeded = false;
-  private globalRulesDegradedLogged = false;
 
   constructor(options: SystemPromptManagerOptions) {
     this.workspaceRoot = detectWorkspaceFrom(options.workspaceRoot);
     this.workspaceInitialized = this.checkWorkspaceInitialized(this.workspaceRoot);
     this.templateRoot = options.templateRoot ? path.resolve(options.templateRoot) : path.join(PROJECT_ROOT, "templates");
     this.defaultInstructionsPath = path.join(this.templateRoot, "instructions.md");
-    this.defaultRulesPath = path.join(this.templateRoot, "rules.md");
     this.laneInstructionsPath = options.laneInstructionsFile
       ? path.join(this.templateRoot, options.laneInstructionsFile)
       : null;
     this.reinjection = {
       enabled: options.reinjection?.enabled ?? true,
       turns: options.reinjection?.turns ?? DEFAULT_INSTRUCTIONS_REINJECTION_TURNS,
-      rulesTurns: options.reinjection?.rulesTurns ?? DEFAULT_RULES_REINJECTION_TURNS,
     };
     if (this.reinjection.turns < 1) {
       this.reinjection.turns = 10;
     }
-    const ruleTurns = this.reinjection.rulesTurns && this.reinjection.rulesTurns > 0
-      ? this.reinjection.rulesTurns
-      : DEFAULT_RULES_REINJECTION_TURNS;
-    this.rulesReinjectionTurns = ruleTurns;
     this.logger = options.logger ?? createLogger("SystemPrompt");
-    // A custom template root means a caller-scoped bootstrap file (tests, embedded
-    // runtimes), so the rule service must read that copy rather than the shared one.
-    this.globalRuleService =
-      options.globalRuleService ??
-      (options.templateRoot
-        ? createGlobalRuleService({ templateRulesPath: this.defaultRulesPath, logger: this.logger })
-        : getGlobalRuleService());
   }
 
   setWorkspaceRoot(nextRoot: string): void {
@@ -162,14 +124,12 @@ export class SystemPromptManager {
     this.workspaceRoot = normalized;
     this.workspaceInitialized = this.checkWorkspaceInitialized(normalized);
     this.instructionsCache = null;
-    this.rulesCache = null;
     this.lastSoulHash = null;
     this.lastMemoryHash = null;
     this.lastSkillsHash = null;
     this.requestedSkillNames = [];
     this.instructionsWarningLogged = false;
     this.workspaceWarningLogged = false;
-    this.rulesWarningLogged = false;
     this.pendingReason = "workspace-changed";
     this.logger.debug(`Workspace switched to ${normalized}`);
   }
@@ -194,10 +154,9 @@ export class SystemPromptManager {
   }
 
   maybeInject(): PromptInjection | null {
-    // 先刷新缓存以捕获指令/规则变更，确保 pendingReason 在本次判断前就绪
+    // Refresh caches before computing the reason so instruction changes are observed immediately.
     const instructionsCache = this.readInstructions();
     const laneInstructionsCache = this.readLaneInstructions();
-    const rulesCache = this.resolveRules();
     const soulHash = this.computeSoulHash();
     const memoryHash = this.computeMemoryHash();
     const skillsHash = this.computeSkillsHash();
@@ -219,23 +178,18 @@ export class SystemPromptManager {
       return null;
     }
 
-    const rulesOnly = reason.startsWith("rules-only");
-    const instructions = rulesOnly ? null : instructionsCache;
-    const rules = rulesCache;
+    const instructions = instructionsCache;
 
     const textParts: string[] = [];
     const workspaceNotice = this.buildWorkspaceNotice();
     if (workspaceNotice) {
       textParts.push(workspaceNotice);
     }
-    if (!rulesOnly && instructions && instructions.content.trim()) {
+    if (instructions && instructions.content.trim()) {
       textParts.push(instructions.content.trim());
     }
-    if (!rulesOnly && laneInstructionsCache && laneInstructionsCache.content.trim()) {
+    if (laneInstructionsCache && laneInstructionsCache.content.trim()) {
       textParts.push(laneInstructionsCache.content.trim());
-    }
-    if (rules.content.trim()) {
-      textParts.push(rules.content.trim());
     }
     const skillsBlock = this.renderSkillsBlock();
     if (skillsBlock) {
@@ -259,31 +213,25 @@ export class SystemPromptManager {
     const text = textParts.join("\n\n\n");
 
     this.hasInjected = true;
-    // 只有在注入了 instructions 时才刷新指令注入计数，避免 rules-only 流程阻塞周期性指令注入
-    if (!rulesOnly) {
-      this.lastInjectionTurn = this.turnCount;
-    }
-    this.lastRulesInjectionTurn = this.turnCount;
+    this.lastInjectionTurn = this.turnCount;
     this.lastSoulHash = soulHash;
     this.lastMemoryHash = memoryHash;
     this.lastSkillsHash = skillsHash;
-    if (!rulesOnly && instructions) {
+    if (instructions) {
       this.lastInstructionsHash = instructions.hash;
     }
-    if (!rulesOnly && laneInstructionsCache && laneInstructionsCache.hash !== "missing") {
+    if (laneInstructionsCache && laneInstructionsCache.hash !== "missing") {
       this.lastLaneInstructionsHash = laneInstructionsCache.hash;
     }
-    this.lastRulesHash = rules.hash;
     this.requestedSkillNames = [];
     this.logger.debug(
-      `Injected (${reason}) instructions=${rulesOnly || !instructions ? "skip" : shortHash(instructions.hash)} rules=${shortHash(rules.hash)}`,
+      `Injected (${reason}) instructions=${shortHash(instructions.hash)}`,
     );
 
     return {
       text,
       reason,
-      instructionsHash: rulesOnly || !instructions ? this.lastInstructionsHash ?? "" : instructions.hash,
-      rulesHash: rules.hash,
+      instructionsHash: instructions.hash,
     };
   }
 
@@ -404,12 +352,6 @@ export class SystemPromptManager {
       return `turn-${this.turnCount}`;
     }
 
-    if (
-      this.rulesReinjectionTurns > 0 &&
-      this.turnCount - this.lastRulesInjectionTurn >= this.rulesReinjectionTurns
-    ) {
-      return `rules-only-${this.turnCount}`;
-    }
     if (this.requestedSkillNames.length > 0) {
       return `skills-requested-${this.turnCount}`;
     }
@@ -476,86 +418,8 @@ export class SystemPromptManager {
     }
     return [
       "[Workspace Notice] Workspace not initialized (workspace.json missing).",
-      "Using built-in templates for instructions/rules. Some workspace state features may be unavailable.",
+      "Using built-in templates for instructions. Some workspace state features may be unavailable.",
     ].join("\n");
-  }
-
-  /**
-   * Resolve the rules block for this turn.
-   *
-   * Database rules are authoritative. `templates/rules.md` stays as the
-   * read-only bootstrap fallback for a missing/failed database or an empty
-   * rule set.
-   */
-  private resolveRules(): FileCache {
-    if (!this.globalRulesSeeded) {
-      this.globalRulesSeeded = true;
-      try {
-        this.globalRuleService.seedIfNeeded();
-      } catch (error) {
-        this.logger.warn(
-          `global rules seeding failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-
-    let rendered: ReturnType<GlobalRuleService["render"]> | null = null;
-    try {
-      rendered = this.globalRuleService.render();
-    } catch (error) {
-      this.logger.warn(
-        `global rules render failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-
-    if (rendered?.degraded) {
-      if (!this.globalRulesDegradedLogged) {
-        this.logger.warn("global rules database unavailable; degraded to read-only bootstrap rules");
-        this.globalRulesDegradedLogged = true;
-      }
-    } else {
-      this.globalRulesDegradedLogged = false;
-    }
-
-    const usable = rendered && rendered.text.trim() && (!rendered.degraded ? rendered.ruleCount > 0 : true);
-    if (!rendered || !usable) {
-      return this.readRules();
-    }
-
-    const cache: FileCache = {
-      path: rendered.degraded ? this.defaultRulesPath : "state.db:global_rules",
-      mtimeMs: 0,
-      content: rendered.text,
-      hash: rendered.hash,
-    };
-    if (this.lastRulesHash && cache.hash !== this.lastRulesHash) {
-      this.pendingReason = this.pendingReason ?? "global-rules-updated";
-    }
-    return cache;
-  }
-
-  private readRules(): FileCache {
-    const cache = this.readFileWithCache(
-      this.defaultRulesPath,
-      false,
-      "default rules",
-      this.rulesCache,
-    );
-
-    if (cache.hash === "missing") {
-      if (!this.rulesWarningLogged) {
-        this.logger.warn(`default rules missing at ${this.defaultRulesPath}, continuing without rules`);
-        this.rulesWarningLogged = true;
-      }
-    } else {
-      this.rulesWarningLogged = false;
-    }
-
-    this.rulesCache = cache;
-    if (this.lastRulesHash && cache.hash !== this.lastRulesHash && cache.hash !== "missing") {
-      this.pendingReason = this.pendingReason ?? "rules-updated";
-    }
-    return cache;
   }
 
   private readFileWithCache(

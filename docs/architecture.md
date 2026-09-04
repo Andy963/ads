@@ -19,7 +19,7 @@ ADS (Agent Dispatch & Orchestration System) 采用分层解耦的架构设计，
 │  - HTTP API & Auth Router (Cookie Session / Rate Limiter)     │
 │  - WebSocket Hub & Sync Sequencer (Durable Event Log)         │
 │  - Advisor / Worker Prompt Orchestration                      │
-│  - Global Rule Service & Enforcement Gate                     │
+│  - Built-in Safety Guardrails & Enforcement Gate               │
 │  - Scheduler Runtime (Cron Engine & Spec Compiler)            │
 └──────────────┬────────────────────────────────┬───────────────┘
                │                                │
@@ -47,7 +47,7 @@ Web 与 Telegram 保留各自现有的本地存储和消息交付行为。通道
 
 ### 2.1 双层存储模型 (Two-Tier Storage)
 - **全局状态库 (`state.db`)**：
-  - 存放 Web 管理员账号、认证 Session、模型管理配置、跨工作区全局规则（Global Rules）以及多工作区注册表。
+  - 存放 Web 管理员账号、认证 Session、模型管理配置以及多工作区注册表；历史规则表仅作兼容保留。
   - 路径：`$ADS_STATE_DIR/state.db`。
 - **工作区独立存储 (`ads.db`)**：
   - 每个由 ADS 管理的工作区在 `.ads/workspaces/<workspace-id>/ads.db` 维持独立的 SQLite 数据库。

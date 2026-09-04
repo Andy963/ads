@@ -334,11 +334,8 @@ export async function createTelegramCodexStatusUpdater(params: {
     }
   };
 
-  /**
-   * Observe-mode hook: report each new command to the global-rule gate so
-   * Telegram traffic is evaluated against the same rules as the web channel.
-   */
-  const evaluateCommandAgainstRules = (command: string): void => {
+  /** Report command safety violations that reach the Telegram event bridge. */
+  const evaluateCommandSafety = (command: string): void => {
     const commandLine = String(command ?? "").trim();
     if (!commandLine) {
       return;
@@ -355,13 +352,13 @@ export async function createTelegramCodexStatusUpdater(params: {
       });
       if (result.decision !== "allow") {
         params.logWarning(
-          `[RuleGate] ${result.mode}/${result.decision}: ${result.hits
+          `[SafetyGate] ${result.mode}/${result.decision}: ${result.hits
             .map((hit) => `${hit.severity}/${hit.title}`)
             .join("; ")}`,
         );
       }
     } catch (error) {
-      params.logWarning("[RuleGate] evaluation failed", error);
+      params.logWarning("[SafetyGate] evaluation failed", error);
     }
   };
 
@@ -378,7 +375,7 @@ export async function createTelegramCodexStatusUpdater(params: {
       commandHistory[existingIndex] = next;
       return;
     }
-    evaluateCommandAgainstRules(item.command);
+    evaluateCommandSafety(item.command);
     commandHistory.push(next);
     if (commandHistory.length > COMMAND_HISTORY_LIMIT) {
       commandHistory.splice(0, commandHistory.length - COMMAND_HISTORY_LIMIT);
