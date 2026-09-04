@@ -15,7 +15,6 @@ import SessionResumePicker from "./components/SessionResumePicker.vue";
 import { createAppController } from "./app/controller";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
 import { useProjectSidebar } from "./composables/app/useProjectSidebar";
-import { MODEL_AGENT_GROUPS, type AgentKind } from "./lib/model_agent";
 import {
   readMobileWorkspaceTab,
   writeMobileWorkspaceTab,
@@ -128,7 +127,6 @@ type MobileManagerHandle = {
 
 const mobileDrawerOpen = ref(false);
 const mobileDrawerSection = ref<MobileDrawerSection>("projects");
-const mobileModelAgent = ref<AgentKind | null>(null);
 const mobileContextMenuOpen = ref(false);
 const mobileGlobalRuleManagerRef = ref<MobileManagerHandle | null>(null);
 const mobileModelManagerRef = ref<MobileManagerHandle | null>(null);
@@ -215,18 +213,13 @@ const newSessionDisabledReason = computed(() => {
 
 const mobileContextTitle = computed(() => {
   if (mobileDrawerSection.value === "rules") return "规则";
-  if (mobileDrawerSection.value === "models") {
-    const selected = MODEL_AGENT_GROUPS.find((group) => group.kind === mobileModelAgent.value);
-    return selected?.label || "Provider";
-  }
+  if (mobileDrawerSection.value === "models") return "模型管理";
   return activeProject.value?.name?.trim() || "项目";
 });
 
 const mobileContextMenuTitle = computed(() => {
   if (mobileDrawerSection.value === "rules") return "规则操作";
-  if (mobileDrawerSection.value === "models") {
-    return mobileModelAgent.value ? `${mobileContextTitle.value} 操作` : "Provider";
-  }
+  if (mobileDrawerSection.value === "models") return "模型管理操作";
   return "项目操作";
 });
 
@@ -238,7 +231,6 @@ const mobileContextActions = computed<MobileContextAction[]>(() => {
     ];
   }
   if (mobileDrawerSection.value === "models") {
-    if (!mobileModelAgent.value) return [];
     return [
       { id: "create-model", label: "新增模型" },
       { id: "refresh-models", label: "刷新模型列表" },
@@ -271,7 +263,6 @@ function openMobileDrawer(section?: MobileDrawerSection): void {
   if (!isMobile.value) return;
   if (section) {
     mobileDrawerSection.value = section;
-    if (section !== "models") mobileModelAgent.value = null;
   }
   mobileDrawerOpen.value = true;
   mobileContextMenuOpen.value = false;
@@ -296,16 +287,8 @@ function restoreMobileWorkspaceTab(): void {
 
 function selectMobileDrawerSection(section: MobileDrawerSection): void {
   mobileDrawerSection.value = section;
-  if (section !== "models") mobileModelAgent.value = null;
   mobileContextMenuOpen.value = false;
-  if (section === "rules") closeMobileDrawer();
-}
-
-function selectMobileModelAgent(agent: AgentKind): void {
-  mobileDrawerSection.value = "models";
-  mobileModelAgent.value = agent;
-  mobileContextMenuOpen.value = false;
-  closeMobileDrawer();
+  if (section === "rules" || section === "models") closeMobileDrawer();
 }
 
 function toggleMobileContextMenu(): void {
@@ -354,7 +337,6 @@ function openProjectDialogFromDrawer(): void {
 }
 
 function closeMobileModule(): void {
-  mobileModelAgent.value = null;
   mobileDrawerSection.value = "projects";
   closeMobileDrawer();
 }
@@ -619,23 +601,6 @@ const plannerConnectionStatus = computed(() => {
           </button>
         </nav>
 
-        <div v-if="isMobile && mobileDrawerSection === 'models'" class="mobileDrawerSubitems" aria-label="Provider CLI">
-          <button
-            v-for="group in MODEL_AGENT_GROUPS"
-            :key="group.kind"
-            type="button"
-            class="mobileDrawerSubitem"
-            :class="{ active: mobileModelAgent === group.kind }"
-            :data-testid="`mobile-drawer-model-${group.kind}`"
-            @click="selectMobileModelAgent(group.kind)"
-          >
-            <span class="mobileDrawerSubitemText">
-              <strong>{{ group.label }}</strong>
-              <small>{{ group.description }}</small>
-            </span>
-          </button>
-        </div>
-
         <div v-if="!isMobile || mobileDrawerSection === 'projects'" class="projectTree">
           <div class="projectTreeHeader">
             <div class="projectTreeTitle">项目</div>
@@ -711,20 +676,13 @@ const plannerConnectionStatus = computed(() => {
           @close="closeMobileModule"
         />
         <ModelManager
-          v-else-if="mobileDrawerSection === 'models' && mobileModelAgent"
-          :key="mobileModelAgent"
+          v-else-if="mobileDrawerSection === 'models'"
           ref="mobileModelManagerRef"
           :api="api"
-          :agent="mobileModelAgent"
           :show-header="false"
           @close="closeMobileModule"
           @changed="onModelManagerChanged"
         />
-        <div v-else-if="mobileDrawerSection === 'models'" class="mobileModuleEmpty">
-          <el-icon :size="30" aria-hidden="true"><Setting /></el-icon>
-          <strong>选择一个 Provider</strong>
-          <span>打开左上角导航，从 Provider 下面选择 Codex 或 Claude。</span>
-        </div>
       </section>
 
       <section v-if="!isMobile || mobileDrawerSection === 'projects'" class="chatShell">

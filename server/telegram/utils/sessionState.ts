@@ -19,7 +19,6 @@ export type ContextRestoreMode = "fresh" | "thread_resumed" | "history_injection
 
 export type ResumeState = {
   resumeThreadId?: string;
-  resumeThreadIds?: Partial<Record<AgentIdentifier, string>>;
   activeAgentId?: AgentIdentifier;
   shouldInjectHistory: boolean;
   restoreMode: ContextRestoreMode;
@@ -32,20 +31,6 @@ export type ActiveSessionState = {
   activeAgentId?: AgentIdentifier;
 };
 
-type ThreadRecord = NonNullable<ReturnType<ThreadStorage["getRecord"]>>;
-
-function filterAgentThreads(
-  agentThreads: ThreadRecord["agentThreads"],
-): Partial<Record<AgentIdentifier, string>> | undefined {
-  if (!agentThreads) {
-    return undefined;
-  }
-  const filtered = Object.fromEntries(
-    Object.entries(agentThreads).filter(([, value]) => typeof value === "string" && value.trim()),
-  ) as Partial<Record<AgentIdentifier, string>>;
-  return Object.keys(filtered).length > 0 ? filtered : undefined;
-}
-
 export function getSavedSessionState(storage: ThreadStorage | undefined, userId: number): SavedSessionState | undefined {
   const record = storage?.getRecord(userId);
   if (!record) {
@@ -57,7 +42,7 @@ export function getSavedSessionState(storage: ThreadStorage | undefined, userId:
     agentThreads: record.agentThreads,
     model: record.model,
     modelReasoningEffort: record.modelReasoningEffort,
-    activeAgentId: record.activeAgentId as AgentIdentifier | undefined,
+    activeAgentId: record.activeAgentId === "codex" ? "codex" : undefined,
   };
 }
 
@@ -129,14 +114,11 @@ export function resolveResumeState(args: {
   }
 
   const record = args.storage?.getRecord(args.userId);
-  const savedActiveAgentId =
-    typeof record?.activeAgentId === "string" && record.activeAgentId.trim()
-      ? (record.activeAgentId.trim() as AgentIdentifier)
-      : undefined;
-  const candidateThreadId = savedActiveAgentId
-    ? record?.agentThreads?.[savedActiveAgentId]
-    : record?.agentThreads?.codex ?? record?.threadId;
-  const resumeThreadIds = filterAgentThreads(record?.agentThreads);
+  // Legacy records may still say that Claude was active. Claude session ids
+  // are not valid Codex thread ids, so only the canonical Codex binding is
+  // eligible for native resume after the engine consolidation.
+  const savedActiveAgentId = record?.activeAgentId === "codex" ? "codex" : undefined;
+  const candidateThreadId = record?.agentThreads?.codex ?? record?.threadId;
   const savedCwd = normalizeCwd(record?.cwd);
   const currentCwd = normalizeCwd(args.currentCwd);
 
@@ -160,7 +142,6 @@ export function resolveResumeState(args: {
     // real context and once as a user-authored recap.
     return {
       resumeThreadId: candidateThreadId,
-      resumeThreadIds,
       activeAgentId: savedActiveAgentId,
       shouldInjectHistory: false,
       restoreMode: "thread_resumed",
@@ -172,7 +153,6 @@ export function resolveResumeState(args: {
       `[Continuity] user=${args.userId} restore=history_injection reason=saved_state_without_thread agent=${savedActiveAgentId ?? "unknown"}`,
     );
     return {
-      resumeThreadIds,
       activeAgentId: savedActiveAgentId,
       shouldInjectHistory: true,
       restoreMode: "history_injection",
@@ -181,7 +161,6 @@ export function resolveResumeState(args: {
 
   args.logger.info(`[Continuity] user=${args.userId} restore=fresh reason=no_saved_thread`);
   return {
-    resumeThreadIds,
     activeAgentId: savedActiveAgentId,
     shouldInjectHistory: false,
     restoreMode: "fresh",
@@ -251,10 +230,7 @@ export function buildSyncedSessionState(args: {
       args.sessionState?.modelReasoningEffort ||
       args.userModelReasoningEffort ||
       args.storedState?.modelReasoningEffort,
-    activeAgentId:
-      args.sessionState?.activeAgentId ||
-      args.storedState?.activeAgentId ||
-      "codex",
+    activeAgentId: "codex",
   };
 }
 

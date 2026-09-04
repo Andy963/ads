@@ -16,13 +16,13 @@ describe("SessionManager agent allowlists", () => {
   });
 
   it("uses interactive allowlists for telegram and interactive web lanes", () => {
-    assert.deepEqual(resolveSessionAgentAllowlist("telegram"), ["codex", "claude"]);
-    assert.deepEqual(resolveSessionAgentAllowlist("web-worker"), ["codex", "claude"]);
-    assert.deepEqual(resolveSessionAgentAllowlist("web-planner"), ["codex", "claude"]);
+    assert.deepEqual(resolveSessionAgentAllowlist("telegram"), ["codex"]);
+    assert.deepEqual(resolveSessionAgentAllowlist("web-worker"), ["codex"]);
+    assert.deepEqual(resolveSessionAgentAllowlist("web-planner"), ["codex"]);
   });
 
-  it("allows Codex and Claude in the task queue", () => {
-    assert.deepEqual(resolveSessionAgentAllowlist("task-queue"), ["codex", "claude"]);
+  it("allows Codex in the task queue", () => {
+    assert.deepEqual(resolveSessionAgentAllowlist("task-queue"), ["codex"]);
   });
 
   it("uses codex-only allowlists for scheduler surfaces", () => {
@@ -40,7 +40,7 @@ describe("SessionManager agent allowlists", () => {
 
   it("keeps the configured allowlist on SessionManager instances", () => {
     const manager = new SessionManager(1000, 500, "workspace-write", undefined, undefined, undefined, {
-      agentAllowlist: ["codex", "claude"],
+      agentAllowlist: ["codex"],
       createSession: () =>
         ({
           send: async () => ({ response: "ok", usage: null, agentId: "codex" }),
@@ -57,7 +57,7 @@ describe("SessionManager agent allowlists", () => {
     });
 
     try {
-    assert.deepEqual(manager.getConfiguredAgentIds(), ["codex", "claude"]);
+    assert.deepEqual(manager.getConfiguredAgentIds(), ["codex"]);
     } finally {
       manager.destroy();
     }

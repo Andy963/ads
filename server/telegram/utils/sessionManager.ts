@@ -1,7 +1,6 @@
 import type { SandboxMode } from '../config.js';
 import { createLogger } from '../../utils/logger.js';
 import { CodexAppServerAdapter } from '../../agents/adapters/codexAppServerAdapter.js';
-import { ClaudeCliAdapter } from '../../agents/adapters/claudeCliAdapter.js';
 import type { AgentAdapter, AgentIdentifier } from '../../agents/types.js';
 import { HybridOrchestrator } from '../../agents/orchestrator.js';
 import { ConversationLogger } from '../../utils/conversationLogger.js';
@@ -55,7 +54,6 @@ export interface SessionManagerOptions {
     cwd: string;
     resumeThread: boolean;
     resumeThreadId?: string;
-    resumeThreadIds?: Partial<Record<AgentIdentifier, string>>;
     userModel?: string;
     userModelReasoningEffort?: string;
     activeAgentId?: AgentIdentifier;
@@ -74,27 +72,13 @@ export type SessionAgentSurface =
   | "scheduler-runtime"
   | "scheduler-compiler";
 
-const INTERACTIVE_AGENT_ALLOWLIST: AgentIdentifier[] = ["codex", "claude"];
-const TASK_QUEUE_AGENT_ALLOWLIST: AgentIdentifier[] = ["codex", "claude"];
 const CODEX_ONLY_AGENT_ALLOWLIST: AgentIdentifier[] = ["codex"];
 
 export function resolveSessionAgentAllowlist(
-  surface: SessionAgentSurface,
-  env: NodeJS.ProcessEnv = process.env,
+  _surface: SessionAgentSurface,
+  _env: NodeJS.ProcessEnv = process.env,
 ): AgentIdentifier[] {
-  const preferred =
-    surface === "telegram" || surface === "web-worker" || surface === "web-planner"
-      ? INTERACTIVE_AGENT_ALLOWLIST
-      : surface === "task-queue"
-        ? TASK_QUEUE_AGENT_ALLOWLIST
-        : CODEX_ONLY_AGENT_ALLOWLIST;
-
-  return preferred.filter((agentId) => {
-    if (agentId === "claude") {
-      return env.ADS_CLAUDE_ENABLED !== "0";
-    }
-    return true;
-  });
+  return CODEX_ONLY_AGENT_ALLOWLIST;
 }
 
 export class SessionManager {
@@ -187,7 +171,6 @@ export class SessionManager {
       cwd: effectiveCwd,
       resumeThread: Boolean(resumeThread),
       resumeThreadId: resumeState.resumeThreadId,
-      resumeThreadIds: resumeState.resumeThreadIds,
       userModel,
       userModelReasoningEffort,
       activeAgentId,
@@ -197,7 +180,6 @@ export class SessionManager {
     }) ?? this.createSession({
       effectiveCwd,
       resumeThreadId: resumeState.resumeThreadId,
-      resumeThreadIds: resumeState.resumeThreadIds,
       userModel,
       userModelReasoningEffort,
       activeAgentId,
@@ -232,10 +214,6 @@ export class SessionManager {
   }
 
   getConfiguredAgentIds(): AgentIdentifier[] {
-    const configured = this.options.agentAllowlist;
-    if (configured && configured.length > 0) {
-      return [...configured];
-    }
     return ["codex"];
   }
 
@@ -271,33 +249,6 @@ export class SessionManager {
     return getSavedSessionState(this.threadStorage, userId);
   }
 
-  maybeMigrateThreadState(fromUserId: number, toUserId: number): boolean {
-    if (fromUserId === toUserId) {
-      return false;
-    }
-    const storage = this.threadStorage;
-    if (!storage) {
-      return false;
-    }
-
-    const migrated = storage.cloneRecord(fromUserId, toUserId);
-    if (!migrated) {
-      return false;
-    }
-
-    const model = this.userModels.get(fromUserId);
-    if (model && !this.userModels.has(toUserId)) {
-      this.userModels.set(toUserId, model);
-    }
-    const reasoningEffort = this.userReasoningEfforts.get(fromUserId);
-    if (reasoningEffort && !this.userReasoningEfforts.has(toUserId)) {
-      this.userReasoningEfforts.set(toUserId, reasoningEffort);
-    }
-    this.runtime.migrateContinuityState(fromUserId, toUserId);
-
-    return true;
-  }
-
   getSavedResumeThreadId(userId: number): string | undefined {
     return getSavedResumeThreadId(this.threadStorage, userId);
   }
@@ -319,21 +270,14 @@ export class SessionManager {
     if (!record) {
       return { success: false, message: "❌ 没有找到活跃会话" };
     }
+    if (agentId !== "codex") {
+      return { success: false, message: `❌ 不支持代理: ${agentId}，ADS 已统一使用 Codex 引擎` };
+    }
     try {
-      const previousAgentId = record.session.getActiveAgentId?.();
       record.session.switchAgent(agentId);
-      if (previousAgentId && previousAgentId !== agentId) {
-        // Each agent keeps its own provider session. When the target already has
-        // one, the adapter resumes it natively and injecting ADS history on top
-        // would make the model read the same turns twice. Inject only when the
-        // target has nothing to reattach to.
-        if (!this.getSavedThreadId(userId, agentId)) {
-          this.markHistoryInjection(userId);
-        }
-      }
       record.lastActivity = Date.now();
       this.syncStoredState(userId);
-      return { success: true, message: `✅ 已切换到代理: ${agentId}` };
+      return { success: true, message: `✅ 当前代理: ${agentId}` };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       return { success: false, message: `❌ ${msg}` };
@@ -547,7 +491,6 @@ export class SessionManager {
   private createSession(args: {
     effectiveCwd: string;
     resumeThreadId?: string;
-    resumeThreadIds?: Partial<Record<AgentIdentifier, string>>;
     userModel?: string;
     userModelReasoningEffort?: string;
     activeAgentId?: AgentIdentifier;
@@ -578,49 +521,23 @@ export class SessionManager {
   private createAdapters(args: {
     effectiveCwd: string;
     resumeThreadId?: string;
-    resumeThreadIds?: Partial<Record<AgentIdentifier, string>>;
     userModel?: string;
     userModelReasoningEffort?: string;
     workspaceRoot: string;
     projectId?: string;
   }): AgentAdapter[] {
-    const allowlist = this.getConfiguredAgentIds();
-    const adapters: AgentAdapter[] = [];
     const projectId = String(args.projectId ?? "").trim() || deriveProjectSessionId(args.workspaceRoot);
 
-    for (const agentId of allowlist) {
-      if (agentId === "codex") {
-        adapters.push(
-          new CodexAppServerAdapter({
-            projectId,
-            sandboxMode: this.sandboxMode,
-            model: args.userModel,
-            workingDirectory: args.effectiveCwd,
-            resumeThreadId: args.resumeThreadIds?.codex ?? args.resumeThreadId,
-            env: this.codexEnv,
-          }),
-        );
-        continue;
-      }
-
-      if (agentId === "claude") {
-        adapters.push(
-          new ClaudeCliAdapter({
-            sandboxMode: this.sandboxMode,
-            workingDirectory: args.effectiveCwd,
-            sessionId: args.resumeThreadIds?.claude,
-          }),
-        );
-        continue;
-      }
-
-    }
-
-    if (adapters.length === 0) {
-      throw new Error("SessionManager requires at least one enabled agent adapter");
-    }
-
-    return adapters;
+    return [
+      new CodexAppServerAdapter({
+        projectId,
+        sandboxMode: this.sandboxMode,
+        model: args.userModel,
+        workingDirectory: args.effectiveCwd,
+        resumeThreadId: args.resumeThreadId,
+        env: this.codexEnv,
+      }),
+    ];
   }
 
   private syncStoredState(userId: number, options?: { cwd?: string; clearThreads?: boolean }): void {
