@@ -1,6 +1,6 @@
 {
   "name": "ads",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "description": "AI agent workspace and task orchestration with optional Telegram bot support",
   "author": "ADS Contributors",
