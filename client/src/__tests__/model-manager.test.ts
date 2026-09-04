@@ -8,7 +8,7 @@ function makeModel(
   id: string,
   displayName: string,
   provider: string,
-  agent: "codex" | "claude",
+  agent: string = "codex",
   modelId = id,
 ): ModelConfig {
   return {
@@ -39,7 +39,7 @@ describe("ModelManager", () => {
     };
 
     const wrapper = mount(ModelManager, {
-      props: { api: api as any, agent: "claude", showHeader: false },
+      props: { api: api as any, showHeader: false },
       global: { stubs: { "el-icon": true } },
     });
     await settle(wrapper);
@@ -48,7 +48,7 @@ describe("ModelManager", () => {
     expect(wrapper.find(".cliList").exists()).toBe(true);
   });
 
-  it("lists every CLI as one row and creates a codex model from that row", async () => {
+  it("lists models in a flat list and creates a model", async () => {
     const createdModel = makeModel("model-generated", "gpt-5.2", "openai", "codex", "gpt-5.2");
     const initialModels = [
       makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude"),
@@ -62,10 +62,9 @@ describe("ModelManager", () => {
       } satisfies ModelConfig,
     ];
     const api = {
-      get: vi.fn().mockImplementation((path: string) => {
-        if (path === "/api/reviewer-model") return Promise.resolve({ modelConfigId: null, modelId: null, model: null });
-        return Promise.resolve(apiConfigResponses.shift() ?? [makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude"), createdModel]);
-      }),
+      get: vi.fn().mockImplementation(() =>
+        Promise.resolve(apiConfigResponses.shift() ?? [makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude"), createdModel]),
+      ),
       post: vi.fn().mockResolvedValue(createdModel),
       patch: vi.fn(),
       put: vi.fn(),
@@ -81,23 +80,15 @@ describe("ModelManager", () => {
 
     expect(api.get).toHaveBeenCalledWith("/api/model-configs");
 
-    // One row per CLI, both expanded by default.
-    const groups = wrapper.findAll(".cliGroup");
-    expect(groups).toHaveLength(2);
-    expect(groups[0]!.text()).toContain("Codex CLI");
-    expect(groups[1]!.text()).toContain("Claude Code");
+    // Flat list of all models.
+    const rows = wrapper.findAll(".modelRow");
+    expect(rows).toHaveLength(2);
+    expect(wrapper.text()).toContain("Claude Sonnet");
+    expect(wrapper.text()).toContain("Local Model");
 
-    // A model only ever renders under its own CLI, and unknown CLIs are dropped.
-    expect(groups[0]!.text()).not.toContain("Claude Sonnet");
-    expect(groups[1]!.text()).toContain("Claude Sonnet");
-    expect(groups[0]!.text()).not.toContain("Local Model");
-    expect(groups[1]!.text()).not.toContain("Local Model");
-
-    // Adding starts from the CLI row, so the dialog never asks which CLI again.
-    await wrapper.find('[data-testid="model-manager-add-codex"]').trigger("click");
+    // Adding starts from the add button.
+    await wrapper.find('[data-testid="model-manager-add"]').trigger("click");
     expect(wrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="model-manager-agent"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="model-manager-dialog"]').text()).toContain("Codex CLI");
 
     await wrapper.find('[data-testid="model-manager-model-id"]').setValue("gpt-5.2");
     await wrapper.find('[data-testid="model-manager-config-json"]').setValue('{"reasoningEffort":"high"}');
@@ -118,72 +109,6 @@ describe("ModelManager", () => {
     expect(wrapper.find('[data-testid="model-manager-status"]').text()).toContain("模型已添加");
     expect(wrapper.emitted("changed")).toHaveLength(1);
     expect(wrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(false);
-    expect(wrapper.findAll(".cliGroup")[0]!.text()).toContain("gpt-5.2");
-
-    wrapper.unmount();
-  });
-
-  it("filters the manager to the selected CLI", async () => {
-    const api = {
-      get: vi.fn().mockResolvedValue([
-        makeModel("gpt-5.2", "GPT 5.2", "openai", "codex"),
-        makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude"),
-      ]),
-      post: vi.fn(),
-      patch: vi.fn(),
-      put: vi.fn(),
-      delete: vi.fn(),
-    };
-
-    const wrapper = mount(ModelManager, {
-      props: { api: api as any, agent: "claude" },
-      global: { stubs: { "el-icon": true } },
-    });
-    await settle(wrapper);
-
-    expect(wrapper.findAll(".cliGroup")).toHaveLength(1);
-    expect(wrapper.text()).toContain("模型");
-    expect(wrapper.text()).toContain("Claude Sonnet");
-    expect(wrapper.find(".cliGroup").text()).not.toContain("GPT 5.2");
-    expect(wrapper.find(".cliRow").exists()).toBe(false);
-    expect(wrapper.find('[data-testid="model-manager-cli-claude"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="model-manager-add-claude"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="model-manager-add-codex"]').exists()).toBe(false);
-
-    wrapper.unmount();
-  });
-
-  it("collapses and expands a CLI row without touching the other CLI", async () => {
-    const api = {
-      get: vi.fn().mockResolvedValue([
-        makeModel("gpt-5.2", "GPT 5.2", "openai", "codex"),
-        makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude"),
-      ]),
-      post: vi.fn(),
-      patch: vi.fn(),
-      put: vi.fn(),
-      delete: vi.fn(),
-    };
-
-    const wrapper = mount(ModelManager, {
-      props: { api: api as any },
-      global: { stubs: { "el-icon": true } },
-    });
-    await settle(wrapper);
-
-    expect(wrapper.text()).toContain("GPT 5.2");
-    expect(wrapper.text()).toContain("Claude Sonnet");
-
-    await wrapper.find('[data-testid="model-manager-cli-codex"]').trigger("click");
-    expect(wrapper.findAll(".cliGroup")[0]!.text()).not.toContain("GPT 5.2");
-    expect(wrapper.text()).toContain("Claude Sonnet");
-    expect(wrapper.find('[data-testid="model-manager-cli-codex"]').attributes("aria-expanded")).toBe("false");
-    // The CLI row itself stays visible when collapsed.
-    expect(wrapper.text()).toContain("Codex CLI");
-
-    await wrapper.find('[data-testid="model-manager-cli-codex"]').trigger("click");
-    expect(wrapper.text()).toContain("GPT 5.2");
-    expect(wrapper.find('[data-testid="model-manager-cli-codex"]').attributes("aria-expanded")).toBe("true");
 
     wrapper.unmount();
   });
@@ -208,7 +133,6 @@ describe("ModelManager", () => {
     await wrapper.find('[data-testid="model-manager-edit-claude-sonnet"]').trigger("click");
     const dialog = wrapper.find('[data-testid="model-manager-dialog"]');
     expect(dialog.exists()).toBe(true);
-    expect(dialog.text()).toContain("Claude Code");
     // Config JSON is a plain field in the dialog, not a collapsed section.
     expect(dialog.find("details").exists()).toBe(false);
     expect(dialog.find('[data-testid="model-manager-config-json"]').exists()).toBe(true);
@@ -224,7 +148,7 @@ describe("ModelManager", () => {
       provider: "anthropic",
       isEnabled: true,
       isDefault: false,
-      configJson: { allowedAgents: ["claude"] },
+      configJson: { allowedAgents: ["codex"] },
     });
     expect(wrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(false);
 
@@ -256,7 +180,7 @@ describe("ModelManager", () => {
     });
     await settle(wrapper);
 
-    await wrapper.find('[data-testid="model-manager-add-codex"]').trigger("click");
+    await wrapper.find('[data-testid="model-manager-add"]').trigger("click");
     await wrapper.find('[data-testid="model-manager-model-id"]').setValue("gpt-5.2");
     await wrapper.find('[data-testid="model-manager-save"]').trigger("submit");
     await settle(wrapper);
@@ -338,42 +262,6 @@ describe("ModelManager", () => {
     expect(api.patch).toHaveBeenLastCalledWith("/api/model-configs/gpt-5.2", { isDefault: true });
     expect(wrapper.emitted("changed")).toHaveLength(2);
     expect(wrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(false);
-
-    wrapper.unmount();
-  });
-
-  it("selects and persists an enabled concrete reviewer model", async () => {
-    const reviewer = makeModel("reviewer-model", "GPT Reviewer", "openai", "codex", "gpt-5.6-sol");
-    const auto = makeModel("auto-model", "Auto", "openai", "codex", "auto");
-    const api = {
-      get: vi.fn().mockImplementation((path: string) => {
-        if (path === "/api/reviewer-model") {
-          return Promise.resolve({ modelConfigId: null, modelId: null, model: null });
-        }
-        return Promise.resolve([reviewer, auto]);
-      }),
-      post: vi.fn(),
-      patch: vi.fn().mockResolvedValue({ modelConfigId: reviewer.id, modelId: reviewer.modelId, model: reviewer }),
-      put: vi.fn(),
-      delete: vi.fn(),
-    };
-
-    const wrapper = mount(ModelManager, {
-      props: { api: api as any },
-      global: { stubs: { "el-icon": true } },
-    });
-    await settle(wrapper);
-
-    const select = wrapper.find('[data-testid="reviewer-model-select"]');
-    expect(select.exists()).toBe(true);
-    expect(select.findAll("option").map((option) => option.attributes("value"))).toEqual(["", reviewer.id]);
-    expect(select.text()).not.toContain("Auto");
-
-    await select.setValue(reviewer.id);
-    await settle(wrapper);
-
-    expect(api.patch).toHaveBeenCalledWith("/api/reviewer-model", { modelConfigId: reviewer.id });
-    expect(wrapper.find('[data-testid="reviewer-model-panel"]').text()).toContain("已配置");
 
     wrapper.unmount();
   });

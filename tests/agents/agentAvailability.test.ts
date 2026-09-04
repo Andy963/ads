@@ -27,9 +27,9 @@ describe("CliAgentAvailability", () => {
       runner: async () => ({ ok: true }),
     });
 
-    await availability.probeAll(["claude"]);
+    await availability.probeAll(["codex"]);
 
-    const merged = availability.mergeStatus("claude", { ready: false, streaming: true, error: "adapter not configured" });
+    const merged = availability.mergeStatus("codex", { ready: false, streaming: true, error: "adapter not configured" });
     assert.deepEqual(merged, { ready: false, streaming: true, error: "adapter not configured" });
   });
 
@@ -47,8 +47,8 @@ describe("CliAgentAvailability", () => {
       },
     });
 
-    await availability.probeAll(["claude"]);
-    const record = availability.get("claude");
+    await availability.probeAll(["codex"]);
+    const record = availability.get("codex");
     assert.ok(record);
     assert.equal(record.ready, true);
     assert.ok(seen.length >= 1);
@@ -94,34 +94,34 @@ describe("CliAgentAvailability", () => {
     assert.deepEqual(seen[0]?.args, seen[1]?.args);
   });
 
-  it("finds Claude installed in the user's local bin without ADS_CLAUDE_BIN", async () => {
+  it("finds Codex installed in the user's local bin without ADS_CODEX_BIN", async () => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), "ads-agent-home-"));
     const localBin = path.join(home, ".local", "bin");
-    const claudeBin = path.join(localBin, "claude");
+    const codexBin = path.join(localBin, "codex");
     const previousHome = process.env.HOME;
     const previousPath = process.env.PATH;
-    const previousClaudeBin = process.env.ADS_CLAUDE_BIN;
+    const previousCodexBin = process.env.ADS_CODEX_BIN;
 
     await fs.mkdir(localBin, { recursive: true });
-    await fs.writeFile(claudeBin, "#!/usr/bin/env sh\nexit 0\n", "utf-8");
-    await fs.chmod(claudeBin, 0o755);
+    await fs.writeFile(codexBin, "#!/usr/bin/env sh\nexit 0\n", "utf-8");
+    await fs.chmod(codexBin, 0o755);
 
     try {
       process.env.HOME = home;
       process.env.PATH = "/usr/bin:/bin";
-      delete process.env.ADS_CLAUDE_BIN;
+      delete process.env.ADS_CODEX_BIN;
 
       const availability = new CliAgentAvailability({ timeoutMs: 5000 });
-      await availability.probeAll(["claude"]);
+      await availability.probeAll(["codex"]);
 
-      assert.equal(availability.get("claude")?.ready, true);
+      assert.equal(availability.get("codex")?.ready, true);
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
-      if (previousClaudeBin === undefined) delete process.env.ADS_CLAUDE_BIN;
-      else process.env.ADS_CLAUDE_BIN = previousClaudeBin;
+      if (previousCodexBin === undefined) delete process.env.ADS_CODEX_BIN;
+      else process.env.ADS_CODEX_BIN = previousCodexBin;
       await fs.rm(home, { recursive: true, force: true });
     }
   });

@@ -20,8 +20,8 @@ describe("MainChat patch card", () => {
             kind: "patch",
             content: "diff --git a/tests/a.ts b/tests/a.ts\n+hello\n",
             patch: {
-              files: [{ path: "tests/agents/claudeCliAdapter.test.ts", added: 118, removed: 2 }],
-              diff: "diff --git a/tests/agents/claudeCliAdapter.test.ts b/tests/agents/claudeCliAdapter.test.ts\n+hello\n",
+              files: [{ path: "tests/agents/codexAppServerAdapter.test.ts", added: 118, removed: 2 }],
+              diff: "diff --git a/tests/agents/codexAppServerAdapter.test.ts b/tests/agents/codexAppServerAdapter.test.ts\n+hello\n",
               truncated: false,
             },
           },
@@ -43,7 +43,7 @@ describe("MainChat patch card", () => {
 
     expect(wrapper.find(".patchCard").exists()).toBe(true);
     expect(wrapper.findAll(".patchCardRow")).toHaveLength(1);
-    expect(wrapper.find(".patchCardTitle").text()).toContain("tests/agents/claudeCliAdapter.test.ts");
+    expect(wrapper.find(".patchCardTitle").text()).toContain("tests/agents/codexAppServerAdapter.test.ts");
     expect(wrapper.find(".patchCardMeta").text()).toContain("(+118 -2)");
     expect(wrapper.find(".patchCardMeta .patchCardStatAdd").exists()).toBe(true);
     expect(wrapper.find(".patchCardMeta .patchCardStatDel").exists()).toBe(true);
@@ -57,7 +57,7 @@ describe("MainChat patch card", () => {
     await settleUi(wrapper);
 
     expect(wrapper.find(".patchCardDiff").exists()).toBe(true);
-    expect(wrapper.find(".patchCardDiff").text()).toContain("diff --git a/tests/agents/claudeCliAdapter.test.ts");
+    expect(wrapper.find(".patchCardDiff").text()).toContain("diff --git a/tests/agents/codexAppServerAdapter.test.ts");
     expect(wrapper.find(".patchCardDiff .patchCardDiffLine--meta").exists()).toBe(true);
     expect(wrapper.find(".patchCardDiff .patchCardDiffLine--add").exists()).toBe(true);
     expect(wrapper.find('[data-testid="patch-toggle-patch-1-0"]').text()).toContain("收起");

@@ -5,11 +5,7 @@ export function normalizeAgentId(raw: unknown): AgentIdentifier | null {
   return id ? (id as AgentIdentifier) : null;
 }
 
-export function selectAgentForModel(model: string): AgentIdentifier {
-  const normalized = String(model ?? "").trim().toLowerCase();
-  if (normalized.startsWith("claude") || normalized === "sonnet" || normalized === "opus" || normalized === "haiku") {
-    return "claude";
-  }
+export function selectAgentForModel(_model?: string): AgentIdentifier {
   return "codex";
 }
 
@@ -18,5 +14,5 @@ export function selectAgentForTask(input: { agentId?: unknown; modelToUse: strin
   if (agentId) {
     return agentId;
   }
-  return selectAgentForModel(input.modelToUse);
+  return "codex";
 }

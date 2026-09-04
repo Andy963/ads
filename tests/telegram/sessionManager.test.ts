@@ -42,14 +42,12 @@ function createFakeSessionFactory() {
     factory: ({
       cwd,
       resumeThreadId,
-      resumeThreadIds,
       userModel,
       userModelReasoningEffort,
       activeAgentId,
     }: {
       cwd: string;
       resumeThreadId?: string;
-      resumeThreadIds?: Record<string, string>;
       userModel?: string;
       userModelReasoningEffort?: string;
       activeAgentId?: string;
@@ -59,7 +57,7 @@ function createFakeSessionFactory() {
         id: nextId++,
         resetCalls: 0,
         workingDirectory: cwd,
-        threadId: resumeThreadIds?.[initialAgentId] ?? resumeThreadId ?? null,
+        threadId: resumeThreadId ?? null,
         model: userModel,
         modelReasoningEffort: userModelReasoningEffort,
         activeAgentId: initialAgentId,
@@ -92,7 +90,7 @@ function createFakeSessionFactory() {
         listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
         switchAgent: (agentId) => {
           session.activeAgentId = agentId;
-          session.threadId = resumeThreadIds?.[agentId] ?? null;
+          session.threadId = resumeThreadId ?? null;
         },
       };
       created.push(session);
@@ -221,57 +219,11 @@ describe("SessionManager", () => {
     assert.equal(manager.needsHistoryInjection(123456), true);
   });
 
-  it("injects history when switching to an agent with no session of its own", () => {
-    const session = manager.getOrCreate(123456, "/tmp/a") as unknown as FakeSession;
-    session.threadId = "codex-thread";
-    session.switchAgent = (agentId) => {
-      session.activeAgentId = agentId;
-      session.threadId = "claude-thread";
-    };
-
+  it("rejects switching to unsupported non-codex agents in unified engine", () => {
+    manager.getOrCreate(123456, "/tmp/a");
     const result = manager.switchAgent(123456, "claude");
-
-    assert.equal(result.success, true);
-    assert.equal(session.threadId, "claude-thread");
-    // No storage is attached here, so the target has nothing to reattach to and
-    // the ADS history is the only way to carry context across the switch.
-    assert.equal(manager.needsHistoryInjection(123456), true);
-    assert.equal(manager.getContextRestoreMode(123456), "history_injection");
-  });
-
-  it("does not inject history when the target agent has its own saved session", () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-session-manager-"));
-    const storage = new ThreadStorage({
-      namespace: "test",
-      stateDbPath: path.join(tmpDir, "state.db"),
-      storagePath: path.join(tmpDir, "threads.json"),
-      saltPath: path.join(tmpDir, "salt"),
-    });
-    storage.setRecord(321, {
-      threadId: "codex-thread",
-      cwd: "/tmp/a",
-      agentThreads: { codex: "codex-thread", claude: "claude-session" },
-      activeAgentId: "codex",
-    });
-
-    const sessions = createFakeSessionFactory();
-    manager.destroy();
-    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
-      createSession: sessions.factory as never,
-    });
-
-    const session = manager.getOrCreate(321, "/tmp/a", true) as unknown as FakeSession;
-    session.switchAgent = (agentId) => {
-      session.activeAgentId = agentId;
-      session.threadId = "claude-session";
-    };
-
-    const result = manager.switchAgent(321, "claude");
-
-    assert.equal(result.success, true);
-    // Claude resumes its own transcript, so injecting ADS history on top would
-    // make the model read the same turns twice.
-    assert.equal(manager.needsHistoryInjection(321), false);
+    assert.equal(result.success, false);
+    assert.match(result.message, /不支持代理/);
   });
 
   it("tracks user cwd", () => {
@@ -368,10 +320,10 @@ describe("SessionManager", () => {
     storage.setRecord(42, {
       threadId: "codex-thread",
       cwd: "/tmp/project",
-      agentThreads: { codex: "codex-thread", claude: "claude-thread" },
-      model: "claude-sonnet",
+      agentThreads: { codex: "codex-thread" },
+      model: "gpt-5.6-sol",
       modelReasoningEffort: "xhigh",
-      activeAgentId: "claude",
+      activeAgentId: "codex",
     });
 
     const sessions = createFakeSessionFactory();
@@ -381,10 +333,10 @@ describe("SessionManager", () => {
     });
 
     const session = manager.getOrCreate(42, "/tmp/project", true) as unknown as FakeSession;
-    assert.equal(session.getModel(), "claude-sonnet");
+    assert.equal(session.getModel(), "gpt-5.6-sol");
     assert.equal(session.getModelReasoningEffort(), "xhigh");
-    assert.equal(session.getActiveAgentId(), "claude");
-    assert.equal(session.getThreadId(), "claude-thread");
+    assert.equal(session.getActiveAgentId(), "codex");
+    assert.equal(session.getThreadId(), "codex-thread");
     assert.equal(manager.getContextRestoreMode(42), "thread_resumed");
     assert.equal(manager.needsHistoryInjection(42), false);
   });
@@ -451,7 +403,7 @@ describe("SessionManager", () => {
     storage.setRecord(42, {
       threadId: "codex-thread",
       cwd: "/tmp/project",
-      agentThreads: { codex: "codex-thread", claude: "claude-session" },
+      agentThreads: { codex: "codex-thread" },
       activeAgentId: "codex",
     });
     const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
@@ -469,9 +421,7 @@ describe("SessionManager", () => {
     assert.equal(session.getThreadId(), "codex-thread");
     assert.equal(manager.needsHistoryInjection(42), false);
     assert.equal(manager.getContextRestoreMode(42), "thread_resumed");
-    // The other agent's id must survive: the old stale branch replaced the whole
-    // map with `{ resume: <id> }`, silently discarding every other agent.
-    assert.equal(storage.getRecord(42)?.agentThreads?.claude, "claude-session");
+    assert.equal(storage.getRecord(42)?.agentThreads?.codex, "codex-thread");
   });
 
   it("resumes rather than creating a fresh session when the caller omits the flag", () => {

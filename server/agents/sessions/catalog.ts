@@ -1,7 +1,6 @@
 import type { HistoryStore } from "../../utils/historyStore.js";
 import { areSessionCwdsCompatible } from "../../telegram/utils/sessionState.js";
 
-import { listClaudeSessions } from "./claudeSessionSource.js";
 import { listCodexSessions } from "./codexSessionSource.js";
 import { buildSessionTitle, truncatePreview } from "./promptPreview.js";
 import type { AgentSessionListQuery, AgentSessionListResult, AgentSessionRef } from "./types.js";
@@ -218,12 +217,6 @@ export async function listAgentSessions(
     });
     providerItems = result.items;
     providerCursor = result.nextCursor;
-    if (result.degraded) {
-      degraded.push(result.degraded);
-    }
-  } else if (query.agentId === "claude") {
-    const result = await listClaudeSessions({ cwd: query.cwd, limit });
-    providerItems = result.items;
     if (result.degraded) {
       degraded.push(result.degraded);
     }

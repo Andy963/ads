@@ -1,16 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { ArrowRight, Close, Delete, EditPen, Plus, Refresh, StarFilled } from "@element-plus/icons-vue";
+import { Close, EditPen, Plus, Refresh, StarFilled } from "@element-plus/icons-vue";
 
 import type { ApiClient } from "../api/client";
-import type { ModelConfig, ReviewerModelSelection } from "../api/types";
-import { MODEL_AGENT_GROUPS, resolveModelAgentId, type AgentKind } from "../lib/model_agent";
+import type { ModelConfig } from "../api/types";
 
 type ModelForm = {
   id: string;
   modelId: string;
   displayName: string;
-  agent: AgentKind;
+  provider: string;
   isEnabled: boolean;
   isDefault: boolean;
   configJsonText: string;
@@ -19,7 +18,7 @@ type ModelForm = {
 const props = withDefaults(
   defineProps<{
     api: ApiClient;
-    agent?: AgentKind | null;
+    agent?: string | null;
     showHeader?: boolean;
   }>(),
   {
@@ -42,15 +41,12 @@ const editingId = ref<string | null>(null);
 const dialogOpen = ref(false);
 const pendingDeleteId = ref<string | null>(null);
 const selectedModelId = ref<string | null>(null);
-const reviewerModelId = ref<string | null>(null);
-const reviewerSaving = ref(false);
-const expanded = reactive<Record<AgentKind, boolean>>({ codex: true, claude: true });
 
-const emptyForm = (agent: AgentKind = "codex"): ModelForm => ({
+const emptyForm = (): ModelForm => ({
   id: "",
   modelId: "",
   displayName: "",
-  agent,
+  provider: "openai",
   isEnabled: true,
   isDefault: false,
   configJsonText: "{}",
@@ -62,7 +58,7 @@ function assignForm(next: ModelForm): void {
   form.id = next.id;
   form.modelId = next.modelId;
   form.displayName = next.displayName;
-  form.agent = next.agent;
+  form.provider = next.provider;
   form.isEnabled = next.isEnabled;
   form.isDefault = next.isDefault;
   form.configJsonText = next.configJsonText;
@@ -85,64 +81,22 @@ function parseConfigJson(raw: string): Record<string, unknown> | null {
   return parsed as Record<string, unknown>;
 }
 
-function resolveAgent(model: ModelConfig): AgentKind | null {
-  const agentId = resolveModelAgentId(model, ["codex", "claude"]);
-  return agentId === "codex" || agentId === "claude" ? agentId : null;
-}
-
-function providerForAgent(agent: AgentKind): string {
-  return agent === "claude" ? "anthropic" : "openai";
-}
-
-function agentLabel(agent: AgentKind): string {
-  return agent === "claude" ? "Claude Code" : "Codex CLI";
-}
-
 function modelLabel(model: ModelConfig): string {
   return String(model.displayName ?? "").trim() || String(model.modelId ?? model.id ?? "").trim();
 }
 
-const groupedModels = computed(() => {
-  const buckets: Record<AgentKind, ModelConfig[]> = { codex: [], claude: [] };
-  for (const model of modelConfigs.value) {
-    const agent = resolveAgent(model);
-    if (!agent) continue;
-    buckets[agent].push(model);
-  }
-  for (const key of Object.keys(buckets) as AgentKind[]) {
-    buckets[key].sort((a, b) => {
-      if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
-      if (a.isEnabled !== b.isEnabled) return a.isEnabled ? -1 : 1;
-      return modelLabel(a).localeCompare(modelLabel(b));
-    });
-  }
-  return buckets;
+const sortedModels = computed(() => {
+  return [...modelConfigs.value].sort((a, b) => {
+    if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
+    if (a.isEnabled !== b.isEnabled) return a.isEnabled ? -1 : 1;
+    return modelLabel(a).localeCompare(modelLabel(b));
+  });
 });
 
-const visibleGroups = computed(() =>
-  props.agent ? MODEL_AGENT_GROUPS.filter((group) => group.kind === props.agent) : MODEL_AGENT_GROUPS,
-);
-
-const reviewerModels = computed(() =>
-  modelConfigs.value.filter((model) => {
-    const modelId = String(model.modelId ?? model.id ?? "").trim();
-    return model.isEnabled && modelId && modelId.toLowerCase() !== "auto";
-  }),
-);
-
-const reviewerModelSelection = computed(() => {
-  const selected = reviewerModelId.value;
-  return selected && reviewerModels.value.some((model) => model.id === selected) ? selected : null;
-});
-
-function enabledCount(agent: AgentKind): number {
-  return groupedModels.value[agent].filter((model) => model.isEnabled).length;
-}
-
-const busy = computed(() => saving.value || loading.value || reviewerSaving.value || busyRowId.value !== null);
+const enabledCount = computed(() => modelConfigs.value.filter((m) => m.isEnabled).length);
+const busy = computed(() => saving.value || loading.value || busyRowId.value !== null);
 const isEditing = computed(() => Boolean(editingId.value));
 const managerTitle = computed(() => (props.agent ? "模型" : "模型管理"));
-// Each CLI scope keeps an enabled default; selecting a new default replaces only that CLI's default.
 const editingCurrentDefault = computed(
   () => Boolean(editingId.value) && modelConfigs.value.some((model) => model.id === editingId.value && model.isDefault),
 );
@@ -167,36 +121,11 @@ async function loadModelConfigs(): Promise<void> {
   selectedModelId.value = null;
   try {
     modelConfigs.value = await props.api.get<ModelConfig[]>("/api/model-configs");
-    const selection = await props.api.get<ReviewerModelSelection>("/api/reviewer-model");
-    reviewerModelId.value = selection.modelConfigId;
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
   } finally {
     loading.value = false;
   }
-}
-
-async function saveReviewerModel(event: Event): Promise<void> {
-  const modelConfigId = String((event.target as HTMLSelectElement | null)?.value ?? "").trim();
-  if (!modelConfigId || !reviewerModels.value.some((model) => model.id === modelConfigId) || reviewerSaving.value) return;
-  reviewerSaving.value = true;
-  error.value = null;
-  try {
-    const selection = await props.api.patch<ReviewerModelSelection>("/api/reviewer-model", { modelConfigId });
-    reviewerModelId.value = selection.modelConfigId;
-    statusMessage.value = "Reviewer 模型已保存";
-    emit("changed");
-  } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err);
-  } finally {
-    reviewerSaving.value = false;
-  }
-}
-
-function toggleGroup(agent: AgentKind): void {
-  expanded[agent] = !expanded[agent];
-  pendingDeleteId.value = null;
-  selectedModelId.value = null;
 }
 
 function closeDialog(): void {
@@ -207,19 +136,17 @@ function closeDialog(): void {
   selectedModelId.value = null;
 }
 
-function startCreate(agent: AgentKind): void {
-  expanded[agent] = true;
+function startCreate(): void {
   editingId.value = null;
   dialogOpen.value = true;
   pendingDeleteId.value = null;
   selectedModelId.value = null;
-  assignForm(emptyForm(agent));
+  assignForm(emptyForm());
   error.value = null;
   statusMessage.value = null;
 }
 
 function editModel(model: ModelConfig): void {
-  const agent = resolveAgent(model) ?? "codex";
   editingId.value = model.id;
   selectedModelId.value = model.id;
   dialogOpen.value = true;
@@ -228,7 +155,7 @@ function editModel(model: ModelConfig): void {
     id: model.id,
     modelId: model.modelId || model.id,
     displayName: model.displayName,
-    agent,
+    provider: model.provider || "openai",
     isEnabled: model.isEnabled,
     isDefault: model.isDefault,
     configJsonText: stringifyConfigJson(model.configJson),
@@ -242,12 +169,12 @@ function buildPayload(): Omit<ModelConfig, "id"> & { id?: string } {
   const { allowedAgents: _drop, ...rest } = parsed as Record<string, unknown>;
   const configJson: Record<string, unknown> = {
     ...rest,
-    allowedAgents: [form.agent],
+    allowedAgents: ["codex"],
   };
   return {
     modelId: form.modelId.trim(),
     displayName: form.displayName.trim() || form.modelId.trim(),
-    provider: providerForAgent(form.agent),
+    provider: form.provider.trim() || "openai",
     isEnabled: form.isEnabled,
     isDefault: form.isDefault,
     configJson,
@@ -259,18 +186,16 @@ async function saveModel(): Promise<void> {
   saving.value = true;
   error.value = null;
   const wasEditing = Boolean(editingId.value);
-  const targetAgent = form.agent;
   try {
     const payload = buildPayload();
     if (editingId.value) {
-      await props.api.patch<ModelConfig>(`/api/model-configs/${encodeURIComponent(editingId.value)}`, {
+      await props.api.patch<ModelConfig>(`/api/model-configs/` + encodeURIComponent(editingId.value), {
         ...payload,
       });
     } else {
       await props.api.post<ModelConfig>("/api/model-configs", payload);
     }
     await loadModelConfigs();
-    expanded[targetAgent] = true;
     editingId.value = null;
     dialogOpen.value = false;
     assignForm(emptyForm());
@@ -360,7 +285,7 @@ onMounted(() => {
 
 defineExpose({
   refresh: loadModelConfigs,
-  create: () => startCreate(props.agent ?? "codex"),
+  create: () => startCreate(),
 });
 </script>
 
@@ -369,9 +294,19 @@ defineExpose({
     <header v-if="showHeader" class="modelHeader" data-drag-handle>
       <div class="modelHeaderTitle">
         <div class="modelTitle">{{ managerTitle }}</div>
-        <div class="modelSubtitle">每个模型只属于一个 CLI，保存后输入框下拉会立即刷新。</div>
+        <div class="modelSubtitle">统一 Codex 引擎；保存后输入框下拉会立即刷新。</div>
       </div>
       <div class="modelHeaderActions">
+        <button
+          type="button"
+          class="addBtn"
+          :disabled="busy"
+          data-testid="model-manager-add"
+          @click="startCreate"
+        >
+          <el-icon :size="13" aria-hidden="true"><Plus /></el-icon>
+          <span>新增模型</span>
+        </button>
         <button class="modelIconBtn" type="button" title="刷新" :disabled="busy" @click="loadModelConfigs">
           <el-icon :size="16" aria-hidden="true"><Refresh /></el-icon>
         </button>
@@ -387,80 +322,28 @@ defineExpose({
     </div>
 
     <div class="cliList">
-      <section class="reviewerModelPanel" data-testid="reviewer-model-panel">
-        <div class="reviewerModelHeading">
-          <div>
-            <div class="modelLabel">Reviewer 模型</div>
-            <div class="modelHelp">审核任务必须使用这里明确选择的模型，不会继承 Worker 模型。</div>
-          </div>
-          <span v-if="reviewerModelSelection" class="modelPill default">已配置</span>
-        </div>
-        <select
-          class="modelInput reviewerModelSelect"
-          :value="reviewerModelSelection ?? ''"
-          :disabled="busy || reviewerModels.length === 0"
-          data-testid="reviewer-model-select"
-          @change="saveReviewerModel"
+      <div class="modelListHeader">
+        <span class="modelListCount">共 {{ sortedModels.length }} 个模型 · {{ enabledCount }} 已启用</span>
+        <button
+          v-if="!showHeader"
+          type="button"
+          class="addBtn"
+          :disabled="busy"
+          data-testid="model-manager-add"
+          @click="startCreate"
         >
-          <option value="" disabled>选择启用的 Reviewer 模型</option>
-          <option v-for="model in reviewerModels" :key="model.id" :value="model.id">
-            {{ modelLabel(model) }} ({{ model.modelId || model.id }})
-          </option>
-        </select>
-        <div v-if="reviewerModels.length === 0" class="modelHelp invalid">没有可用的启用模型，请先启用一个具体模型。</div>
-        <div v-else-if="!reviewerModelSelection" class="modelHelp invalid">尚未配置；审核任务不会自动继承 Worker 模型。</div>
-      </section>
+          <el-icon :size="13" aria-hidden="true"><Plus /></el-icon>
+          <span>新增模型</span>
+        </button>
+      </div>
 
-      <section
-        v-for="group in visibleGroups"
-        :key="group.kind"
-        class="cliGroup"
-        :class="[`agent-${group.kind}`, { open: expanded[group.kind] }]"
-      >
-        <div v-if="!props.agent" class="cliRow">
-          <button
-            type="button"
-            class="cliToggle"
-            :aria-expanded="expanded[group.kind]"
-            :data-testid="`model-manager-cli-${group.kind}`"
-            @click="toggleGroup(group.kind)"
-          >
-            <el-icon class="cliChevron" :size="13" aria-hidden="true"><ArrowRight /></el-icon>
-            <span class="cliDot" aria-hidden="true" />
-            <span class="cliText">
-              <span class="cliName">{{ group.label }}</span>
-              <span class="cliMeta">{{ group.description }}</span>
-            </span>
-          </button>
-
-          <div class="cliRowActions">
-            <span class="cliCount">
-              {{ groupedModels[group.kind].length }} 个模型 · {{ enabledCount(group.kind) }} 已启用
-            </span>
-            <button
-              type="button"
-              class="addBtn"
-              :disabled="busy"
-              :data-testid="`model-manager-add-${group.kind}`"
-              @click="startCreate(group.kind)"
-            >
-              <el-icon :size="13" aria-hidden="true"><Plus /></el-icon>
-              <span>新增模型</span>
-            </button>
-          </div>
-        </div>
-
-        <div v-if="props.agent || expanded[group.kind]" class="cliModels">
-          <p v-if="groupedModels[group.kind].length === 0" class="cliEmpty">
-            {{
-              props.agent
-                ? "还没有模型，请使用右上角菜单新增。"
-                : `还没有模型，新增后会立即出现在 ${group.label} 的输入框下拉里。`
-            }}
-          </p>
+      <div class="cliModels">
+        <p v-if="sortedModels.length === 0" class="cliEmpty">
+          还没有模型，点击右上角新增模型。
+        </p>
 
           <article
-            v-for="model in groupedModels[group.kind]"
+            v-for="model in sortedModels"
             :key="model.id"
             class="modelRow"
             :class="{ selected: selectedModelId === model.id, off: !model.isEnabled, busy: busyRowId === model.id }"
@@ -549,9 +432,8 @@ defineExpose({
             </div>
           </article>
         </div>
-      </section>
 
-      <p class="listFoot">每个 CLI 独立维护默认模型；未设置默认值时使用该 CLI 列表中的第一个已启用模型。</p>
+      <p class="listFoot">未设置默认模型时优先使用列表中的第一个已启用模型。</p>
     </div>
 
     <div v-if="dialogOpen" class="dialogMask" @click.self="closeDialog">
@@ -560,8 +442,7 @@ defineExpose({
           <div class="dialogHeading">
             <div class="dialogTitle">{{ isEditing ? "编辑模型" : "新增模型" }}</div>
             <div class="dialogSubtitle">
-              <span class="cliChip" :class="`agent-${form.agent}`">{{ agentLabel(form.agent) }}</span>
-              <span class="dialogHint">保存后立即出现在该 CLI 的输入框下拉里</span>
+              <span class="dialogHint">保存后立即出现在输入框下拉里</span>
             </div>
           </div>
           <button class="modelIconBtn" type="button" title="关闭" @click="closeDialog">
@@ -579,13 +460,13 @@ defineExpose({
             <input
               v-model="form.modelId"
               class="modelInput"
-              :placeholder="form.agent === 'claude' ? 'claude-opus-4-8' : 'gpt-5.2'"
+              placeholder="gpt-5.2"
               autocomplete="off"
               autocapitalize="off"
               spellcheck="false"
               data-testid="model-manager-model-id"
             />
-            <span class="modelHelp">必须与 CLI 实际接受的 model 参数完全一致。</span>
+            <span class="modelHelp">必须与 Codex multi-provider 配置实际接受的 model 参数完全一致。</span>
           </label>
 
           <label class="modelField">
@@ -624,7 +505,7 @@ defineExpose({
               <span>
                 <strong>设为默认</strong>
                 <small v-if="editingCurrentDefault">已是默认模型；要更换请在别的模型上设为默认。</small>
-                <small v-else>当前 CLI 的默认模型；未选择模型时优先使用它。</small>
+                <small v-else>默认模型；未选择模型时优先使用它。</small>
               </span>
             </label>
           </div>
@@ -640,7 +521,7 @@ defineExpose({
               data-testid="model-manager-config-json"
             />
             <span v-if="configJsonError" class="modelHelp invalid">JSON 格式有误：{{ configJsonError }}</span>
-            <span v-else class="modelHelp">传给 CLI 的额外参数，例如 {{ "{" }}"reasoningEffort":"high"{{ "}" }}。CLI 归属自动写入，不用手写 allowedAgents。</span>
+            <span v-else class="modelHelp">传给 Codex 引擎的额外参数，例如 {{ "{" }}"reasoningEffort":"high"{{ "}" }}。</span>
           </label>
         </div>
 
@@ -699,7 +580,8 @@ defineExpose({
 
 .modelHeaderActions {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
 }
 
 .modelIconBtn {
@@ -747,7 +629,7 @@ defineExpose({
   color: #047857;
 }
 
-/* ---------- CLI accordion list ---------- */
+/* ---------- list ---------- */
 .cliList {
   flex: 1 1 auto;
   min-height: 0;
@@ -758,130 +640,18 @@ defineExpose({
   padding: 14px 16px 18px;
 }
 
-.reviewerModelPanel {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  padding: 12px;
-  border: 1px solid rgba(37, 99, 235, 0.24);
-  border-radius: 13px;
-  background: rgba(239, 246, 255, 0.64);
-}
-
-.reviewerModelHeading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.reviewerModelSelect {
-  max-width: 520px;
-}
-
-.cliGroup {
-  flex: 0 0 auto;
-  border: 1px solid var(--border);
-  border-radius: 13px;
-  background: var(--surface);
-  overflow: hidden;
-  transition: border-color 0.14s ease, box-shadow 0.14s ease;
-}
-
-.cliGroup.open {
-  box-shadow: 0 2px 12px rgba(15, 23, 42, 0.05);
-}
-
-.cliRow {
+.modelListHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 12px;
-  background: var(--surface-2);
+  padding: 4px 2px;
 }
 
-.cliGroup.open .cliRow {
-  border-bottom: 1px solid var(--border);
-}
-
-.cliToggle {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 2px 0;
-  border: none;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-
-.cliChevron {
-  flex: 0 0 auto;
-  color: var(--muted-2);
-  transition: transform 0.16s ease;
-}
-
-.cliGroup.open .cliChevron {
-  transform: rotate(90deg);
-}
-
-.cliDot {
-  flex: 0 0 auto;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #cbd5e1;
-}
-
-.cliGroup.agent-codex .cliDot {
-  background: var(--accent);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
-}
-
-.cliGroup.agent-claude .cliDot {
-  background: #7c3aed;
-  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.14);
-}
-
-
-.cliText {
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.cliName {
-  color: var(--text);
-  font-size: 13.5px;
-  font-weight: 800;
-  white-space: nowrap;
-}
-
-.cliMeta {
-  overflow: hidden;
-  color: var(--muted-2);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cliRowActions {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.cliCount {
+.modelListCount {
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  white-space: nowrap;
 }
 
 .addBtn {
@@ -917,13 +687,17 @@ defineExpose({
 .cliModels {
   display: flex;
   flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--surface);
+  overflow: hidden;
 }
 
 .cliEmpty {
   margin: 0;
-  padding: 16px 14px;
+  padding: 24px 14px;
   color: var(--muted-2);
-  font-size: 11.5px;
+  font-size: 12px;
   text-align: center;
 }
 
@@ -1215,25 +989,6 @@ defineExpose({
   gap: 8px;
   min-width: 0;
 }
-
-.cliChip {
-  flex: 0 0 auto;
-  padding: 2px 9px;
-  border-radius: 999px;
-  font-size: 10.5px;
-  font-weight: 800;
-}
-
-.cliChip.agent-codex {
-  background: rgba(37, 99, 235, 0.12);
-  color: var(--accent-2);
-}
-
-.cliChip.agent-claude {
-  background: rgba(124, 58, 237, 0.12);
-  color: #6d28d9;
-}
-
 
 .dialogHint {
   overflow: hidden;

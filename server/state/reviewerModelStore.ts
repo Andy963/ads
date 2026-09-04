@@ -1,31 +1,14 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
-import type { AgentIdentifier } from "../agents/types.js";
-import { selectAgentForModel } from "../tasks/agentSelection.js";
-import type { ModelConfig, ReviewerModelSelection } from "../tasks/types.js";
-import { createGlobalModelConfigStore, type GlobalModelConfigStore } from "./globalModelConfigStore.js";
+import type { ReviewerModelSelection } from "../tasks/types.js";
 
-function normalizeString(value: unknown): string {
-  return String(value ?? "").trim();
-}
-
-function isConcreteModel(model: ModelConfig | null | undefined): model is ModelConfig & { modelId: string } {
-  const modelId = normalizeString(model?.modelId ?? model?.id);
-  return Boolean(model && model.isEnabled && modelId && modelId.toLowerCase() !== "auto");
-}
-
-function resolveReviewerAgent(model: ModelConfig, modelId: string): AgentIdentifier {
-  const allowedAgents = model.configJson?.allowedAgents;
-  if (Array.isArray(allowedAgents)) {
-    const configuredAgent = allowedAgents.map((value) => normalizeString(value)).find(Boolean);
-    if (configuredAgent) return configuredAgent;
-  }
-  return selectAgentForModel(modelId);
-}
-
+/**
+ * @deprecated Decommissioned per Issue #133. Retained for backward compatibility
+ * without dropping the underlying table per database safety rules.
+ */
 export function createReviewerModelStore(
   db: DatabaseType,
-  modelStore: GlobalModelConfigStore = createGlobalModelConfigStore(db),
+  _modelStore?: unknown,
 ) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS reviewer_model_settings (
@@ -35,49 +18,11 @@ export function createReviewerModelStore(
     )
   `);
 
-  const getSelectionStmt = db.prepare("SELECT model_config_id AS modelConfigId FROM reviewer_model_settings WHERE id = 1");
-  const setSelectionStmt = db.prepare(`
-    INSERT INTO reviewer_model_settings (id, model_config_id, updated_at)
-    VALUES (1, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      model_config_id = excluded.model_config_id,
-      updated_at = excluded.updated_at
-  `);
-
-  const getReviewerModelConfigId = (): string | null => {
-    const row = getSelectionStmt.get() as { modelConfigId?: unknown } | undefined;
-    const modelConfigId = normalizeString(row?.modelConfigId);
-    return modelConfigId || null;
+  return {
+    getReviewerModelConfigId: (): string | null => null,
+    getConfiguredReviewerModel: (): ReviewerModelSelection | null => null,
+    setReviewerModel: (_modelConfigId: string | null, _now?: number): ReviewerModelSelection | null => null,
   };
-
-  const getConfiguredReviewerModel = (): ReviewerModelSelection | null => {
-    const modelConfigId = getReviewerModelConfigId();
-    if (!modelConfigId) return null;
-    const model = modelStore.getModelConfig(modelConfigId);
-    if (!isConcreteModel(model)) return null;
-    const modelId = normalizeString(model.modelId ?? model.id);
-    return {
-      model: modelId,
-      agentId: resolveReviewerAgent(model, modelId),
-      modelConfigId,
-      modelId,
-      displayName: model.displayName,
-    };
-  };
-
-  const setReviewerModel = (modelConfigId: string | null, now = Date.now()): ReviewerModelSelection | null => {
-    const normalizedId = modelConfigId == null ? null : normalizeString(modelConfigId);
-    if (normalizedId) {
-      const model = modelStore.getModelConfig(normalizedId);
-      if (!isConcreteModel(model)) {
-        throw new Error("Reviewer model must be an enabled concrete model");
-      }
-    }
-    setSelectionStmt.run(normalizedId, now);
-    return getConfiguredReviewerModel();
-  };
-
-  return { getReviewerModelConfigId, getConfiguredReviewerModel, setReviewerModel };
 }
 
 export type ReviewerModelStore = ReturnType<typeof createReviewerModelStore>;

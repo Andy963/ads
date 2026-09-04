@@ -57,8 +57,6 @@ function defaultBinaryForAgent(agentId: AgentIdentifier): string | null {
   switch (agentId) {
     case "codex":
       return process.env.ADS_CODEX_BIN ?? "codex";
-    case "claude":
-      return process.env.ADS_CLAUDE_BIN ?? "claude";
     default:
       return null;
   }
@@ -76,7 +74,6 @@ async function runProbeCommandWithTimeout(options: {
   const timeoutMs = Number.isFinite(options.timeoutMs) ? Math.max(1, Math.floor(options.timeoutMs)) : DEFAULT_PROBE_TIMEOUT_MS;
 
   const probeEnv = withAgentCliPath(process.env);
-  delete probeEnv.CLAUDECODE;
 
   const child = spawn(options.binary, options.args, {
     stdio: ["ignore", "ignore", "pipe"],
@@ -171,7 +168,7 @@ export class CliAgentAvailability implements AgentAvailability {
   }
 
   async probeAll(agentIds?: AgentIdentifier[]): Promise<void> {
-    const targets = (agentIds && agentIds.length > 0 ? agentIds : (["codex", "claude"] as const))
+    const targets = (agentIds && agentIds.length > 0 ? agentIds : (["codex"] as const))
       .map((id) => String(id).trim())
       .filter(Boolean) as AgentIdentifier[];
 
