@@ -75,7 +75,7 @@ describe("web/api/files", () => {
 
     const handled = await handleFileRoutes(
       { req: req as any, res: res as any, url, pathname: "/api/files/content", auth: {} as any } as any,
-      { resolveTaskContext: () => ({ workspaceRoot: tmpDir }) as any },
+      { resolveWorkspaceContext: () => ({ workspaceRoot: tmpDir }) as any },
     );
 
     assert.equal(handled, true);
@@ -112,7 +112,7 @@ describe("web/api/files", () => {
 
     const handled = await handleFileRoutes(
       { req: req as any, res: res as any, url, pathname: "/api/files/content", auth: {} as any } as any,
-      { resolveTaskContext: () => ({ workspaceRoot: tmpDir }) as any },
+      { resolveWorkspaceContext: () => ({ workspaceRoot: tmpDir }) as any },
     );
 
     assert.equal(handled, true);
@@ -146,7 +146,7 @@ describe("web/api/files", () => {
     try {
       const handled = await handleFileRoutes(
         { req: req as any, res: res as any, url, pathname: "/api/files/content", auth: {} as any } as any,
-        { resolveTaskContext: () => ({ workspaceRoot: tmpDir }) as any },
+        { resolveWorkspaceContext: () => ({ workspaceRoot: tmpDir }) as any },
       );
       assert.equal(handled, true);
       assert.equal(res.statusCode, 403);
@@ -168,7 +168,7 @@ describe("web/api/files", () => {
 
     const handled = await handleFileRoutes(
       { req: req as any, res: res as any, url, pathname: "/api/files/content", auth: {} as any } as any,
-      { resolveTaskContext: () => ({ workspaceRoot: tmpDir }) as any },
+      { resolveWorkspaceContext: () => ({ workspaceRoot: tmpDir }) as any },
     );
 
     assert.equal(handled, true);

@@ -132,8 +132,6 @@ export async function handleTaskResumeMessage(
 
   await lock.runExclusive(async () => {
     if (!isLaneCurrent()) return;
-    const taskCtx = deps.tasks.ensureTaskContext(resumeWorkspaceRoot);
-    if (!isLaneCurrent()) return;
     const originalHistoryEntries = cloneHistoryEntries(
       deps.history.historyStore.get(deps.context.historyKey),
     );
@@ -147,19 +145,6 @@ export async function handleTaskResumeMessage(
       }
       deps.transport.safeJsonSend(deps.transport.ws, payload);
     };
-
-    if (taskCtx.queueRunning || taskCtx.taskStore.getActiveTaskId()) {
-      const message = "任务执行中，无法恢复上下文";
-      if (!isLaneCurrent()) return;
-      commitTaskResumeError({
-        historyStore: deps.history.historyStore,
-        historyKey: deps.context.historyKey,
-        previousEntries: originalHistoryEntries,
-        message,
-      });
-      sendError(message);
-      return;
-    }
 
     const sendHistorySnapshot = (metadata?: {
       threadId?: string | null;

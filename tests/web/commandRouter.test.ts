@@ -11,7 +11,7 @@ describe("web command router", () => {
     const result = await runAdsCommandLine("/ads.help");
 
     assert.equal(result.ok, true);
-    assert.match(result.output, /Use the Web UI and skills to drive specs, drafts, and tasks/);
+    assert.match(result.output, /Use the Web UI and skills to drive GitHub Issues and Pull Requests/);
   });
 
   it("rejects removed workflow lifecycle commands", async () => {

@@ -56,7 +56,7 @@ function formatResponse(text: string): string {
 }
 
 function buildAdsHelpMessage(): string {
-  return "User-facing slash commands are disabled. Use the Web UI and skills to drive specs, drafts, and tasks.";
+  return "User-facing slash commands are disabled. Use the Web UI and skills to drive GitHub Issues and Pull Requests.";
 }
 
 const commandRegistry = new Map<string, CommandHandler>([

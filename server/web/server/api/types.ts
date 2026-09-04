@@ -1,7 +1,7 @@
 import type http from "node:http";
 
+import type { WebWorkspaceContext } from "../workspaceContext.js";
 import type { Logger } from "../../../utils/logger.js";
-import type { TaskQueueContext } from "../taskQueue/manager.js";
 
 export type ApiRouteContext = {
   req: http.IncomingMessage;
@@ -15,10 +15,6 @@ export type ApiSharedDeps = {
   logger: Logger;
   allowedDirs: string[];
   workspaceRoot: string;
-  taskQueueAvailable: boolean;
-  resolveTaskContext: (url: URL) => TaskQueueContext;
-  promoteQueuedTasksToPending: (ctx: TaskQueueContext) => void;
-  broadcastToSession: (sessionId: string, payload: unknown) => void;
+  resolveWorkspaceContext: (url: URL) => WebWorkspaceContext;
   buildAttachmentRawUrl: (url: URL, attachmentId: string) => string;
-  scheduleWorkspacePurge?: (ctx: TaskQueueContext) => void;
 };

@@ -10,7 +10,6 @@ import type { DirectoryManager } from "../../../telegram/utils/directoryManager.
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
-import type { TaskQueueContext } from "../taskQueue/manager.js";
 import type { WsMessage } from "./schema.js";
 import type { SessionCacheRegistry } from "./sessionCacheRegistry.js";
 import type { SyncEventStore } from "../sync/store.js";
@@ -111,12 +110,6 @@ export type WsHistoryDeps = {
   plannerHistoryStore: HistoryStore;
 };
 
-export type WsTaskDeps = {
-  ensureTaskContext: (workspaceRoot: string) => TaskQueueContext;
-  promoteQueuedTasksToPending: (ctx: TaskQueueContext) => void;
-  broadcastToSession: (sessionId: string, payload: unknown) => void;
-};
-
 export type WsCommandDeps = {
   runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
   sanitizeInput: (payload: unknown) => string;
@@ -136,7 +129,6 @@ export type AttachWebSocketServerDeps = {
   state: WsStateDeps;
   sessions: WsSessionDeps;
   history: WsHistoryDeps;
-  tasks: WsTaskDeps;
   commands: WsCommandDeps;
   scheduler: WsSchedulerDeps;
   logger: WsLogger;
@@ -185,12 +177,6 @@ export type WsHistoryRuntimeDeps = {
   historyStore: HistoryStore;
 };
 
-export type WsTaskRuntimeDeps = {
-  ensureTaskContext?: (workspaceRoot: string) => TaskQueueContext;
-  promoteQueuedTasksToPending?: (ctx: TaskQueueContext) => void;
-  broadcastToSession?: (sessionId: string, payload: unknown) => void;
-};
-
 export type WsCommandRuntimeDeps = {
   runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
   sanitizeInput: (payload: unknown) => string;
@@ -209,8 +195,6 @@ export type WsCommandStateDeps = Pick<
   closeAfterReset?: () => void;
 };
 
-export type WsTaskResumeDeps = Pick<WsTaskDeps, "ensureTaskContext">;
-
 export type WsPromptHandlerDeps = {
   request: WsRequestDeps;
   transport: WsTransportDeps;
@@ -220,7 +204,6 @@ export type WsPromptHandlerDeps = {
   context: WsConnectionContextDeps;
   sessions: WsSessionRuntimeDeps;
   history: WsHistoryRuntimeDeps;
-  tasks: WsTaskRuntimeDeps;
   scheduler: WsSchedulerDeps;
 };
 
@@ -243,5 +226,4 @@ export type WsTaskResumeHandlerDeps = {
   context: Pick<WsConnectionContextDeps, "userId" | "historyKey" | "currentCwd" | "isLaneCurrent">;
   sessions: Pick<WsSessionRuntimeDeps, "sessionManager" | "orchestrator" | "getWorkspaceLock">;
   history: WsHistoryRuntimeDeps;
-  tasks: WsTaskResumeDeps;
 };

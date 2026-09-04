@@ -37,7 +37,6 @@ export class SchedulerRuntime {
   private readonly idleRecycleMs: number;
   private readonly leaseTtlMs: number;
   private readonly dueLimit: number;
-  private readonly reconcileLimit: number;
   private readonly ownerId: string;
   private readonly runnerPollMs: number;
   private readonly runnerTimeoutSecs: number;
@@ -57,7 +56,6 @@ export class SchedulerRuntime {
     idleRecycleMs?: number;
     leaseTtlMs?: number;
     dueLimit?: number;
-    reconcileLimit?: number;
     ownerId?: string;
     runnerPollMs?: number;
     runnerTimeoutSecs?: number;
@@ -73,7 +71,6 @@ export class SchedulerRuntime {
       options?.idleRecycleMs ?? (Number.isFinite(idleRecycleRaw) && idleRecycleRaw >= 0 ? idleRecycleRaw : 300_000);
     this.leaseTtlMs = options?.leaseTtlMs ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_LEASE_TTL_MS, 30_000);
     this.dueLimit = options?.dueLimit ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_DUE_LIMIT, 20);
-    this.reconcileLimit = options?.reconcileLimit ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_RECONCILE_LIMIT, 200);
     this.ownerId = options?.ownerId ?? crypto.randomUUID();
     this.runnerPollMs = options?.runnerPollMs ?? parsePositiveIntFlag(process.env.ADS_SCHEDULER_RUNNER_POLL_MS, 1000);
     this.runnerTimeoutSecs =
@@ -207,8 +204,6 @@ export class SchedulerRuntime {
 
       const state = this.getState(root);
       const store = state.store;
-
-      store.reconcileRuns({ limit: this.reconcileLimit, nowMs: now });
 
       const dueIds = store.listDueScheduleIds(now, { limit: this.dueLimit });
       for (const scheduleId of dueIds) {

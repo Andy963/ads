@@ -58,7 +58,7 @@ type WsLaneSnapshot = {
 const DEFAULT_WS_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 
 export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocketServer {
-  const { auth, agents, commands, config, history, logger, scheduler, sessions, state, tasks } = deps;
+  const { auth, agents, commands, config, history, logger, scheduler, sessions, state } = deps;
   const wss = new WebSocketServer({
     server: deps.server,
     maxPayload: config.maxPayloadBytes ?? DEFAULT_WS_MAX_PAYLOAD_BYTES,
@@ -952,11 +952,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
             interruptControllers: state.interruptControllers,
             promptRunEpochs: state.promptRunEpochs,
             historyStore: lane.historyStore,
-            tasks: {
-              ensureTaskContext: tasks.ensureTaskContext,
-              promoteQueuedTasksToPending: tasks.promoteQueuedTasksToPending,
-              broadcastToSession: tasks.broadcastToSession,
-            },
             scheduler,
             commands,
             agents: {

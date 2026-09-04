@@ -54,7 +54,6 @@ export async function handleWsControlMessage(args: {
   interruptControllers?: Map<string, AbortController>;
   promptRunEpochs?: Map<string, number>;
   isLaneCurrent?: WsLaneValidityCheck;
-  ensureTaskContext: WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"];
   sendJson: (payload: unknown) => void;
   broadcastJson?: (payload: unknown) => void;
   broadcastSessionReset?: (payload: unknown) => void;
@@ -137,9 +136,6 @@ export async function handleWsControlMessage(args: {
       },
       history: {
         historyStore: args.historyStore,
-      },
-      tasks: {
-        ensureTaskContext: args.ensureTaskContext,
       },
     });
     return { handled: true, orchestrator: resume.orchestrator ?? args.orchestrator };

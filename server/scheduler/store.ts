@@ -37,7 +37,6 @@ export type StoredScheduleRun = {
 };
 
 const DEFAULT_LIST_LIMIT = 50;
-const DEFAULT_RECONCILE_LIMIT = 200;
 const SCHEDULE_RUN_STATUSES: readonly ScheduleRunStatus[] = ["queued", "running", "completed", "failed", "cancelled"];
 
 function normalizeTrimmedString(value: unknown): string {
@@ -56,22 +55,6 @@ function normalizePositiveLimit(value: unknown, fallback: number): number {
 function parseScheduleRunStatus(value: unknown): ScheduleRunStatus {
   const raw = normalizeTrimmedString(value);
   return SCHEDULE_RUN_STATUSES.includes(raw as ScheduleRunStatus) ? (raw as ScheduleRunStatus) : "queued";
-}
-
-function mapTaskStatusToRunStatus(value: unknown): ScheduleRunStatus | null {
-  switch (normalizeTrimmedString(value)) {
-    case "planning":
-    case "running":
-      return "running";
-    case "completed":
-      return "completed";
-    case "failed":
-      return "failed";
-    case "cancelled":
-      return "cancelled";
-    default:
-      return null;
-  }
 }
 
 function parseScheduleRow(row: Record<string, unknown>): StoredSchedule {
@@ -360,70 +343,4 @@ export class ScheduleStore {
     return rows.map((r) => parseScheduleRunRow(r));
   }
 
-  reconcileRuns(options?: { limit?: number; nowMs?: number }): number {
-    const limit = normalizePositiveLimit(options?.limit, DEFAULT_RECONCILE_LIMIT);
-    const now = typeof options?.nowMs === "number" && Number.isFinite(options.nowMs) ? Math.floor(options.nowMs) : Date.now();
-
-    const rows = this.db
-      .prepare(
-        `SELECT r.external_id AS external_id, r.task_id AS task_id, r.status AS status
-         FROM schedule_runs r
-         WHERE r.workspace_id = ? AND r.status IN ('queued', 'running')
-         ORDER BY r.run_at DESC, r.id DESC
-         LIMIT ?`,
-      )
-      .all(this.workspaceId, limit) as Array<{ external_id?: unknown; task_id?: unknown; status?: unknown }>;
-
-    let updated = 0;
-
-    const taskStmt = this.db.prepare(`SELECT status, result, error, started_at, completed_at FROM tasks WHERE workspace_id = ? AND id = ? LIMIT 1`);
-
-    for (const row of rows) {
-      const externalId = normalizeTrimmedString(row.external_id);
-      const taskId = normalizeTrimmedString(row.task_id);
-      if (!externalId || !taskId) {
-        continue;
-      }
-      const task = taskStmt.get(this.workspaceId, taskId) as
-        | { status?: unknown; result?: unknown; error?: unknown; started_at?: unknown; completed_at?: unknown }
-        | undefined;
-      if (!task) {
-        continue;
-      }
-
-      const startedAt = parseOptionalSqliteInt(task.started_at);
-      const completedAt = parseOptionalSqliteInt(task.completed_at);
-      const result = task.result == null ? null : String(task.result ?? "");
-      const error = task.error == null ? null : String(task.error ?? "");
-      const nextStatus = mapTaskStatusToRunStatus(task.status);
-      if (!nextStatus) {
-        continue;
-      }
-
-      const desiredStartedAt = nextStatus === "running" || startedAt != null ? startedAt ?? now : startedAt;
-      const desiredCompletedAt =
-        nextStatus === "completed" || nextStatus === "failed" || nextStatus === "cancelled"
-          ? completedAt ?? now
-          : null;
-
-      try {
-        this.updateRunByExternalId(
-          externalId,
-          {
-            status: nextStatus,
-            startedAt: desiredStartedAt ?? null,
-            completedAt: desiredCompletedAt,
-            result,
-            error,
-          },
-          now,
-        );
-        updated += 1;
-      } catch {
-        // ignore
-      }
-    }
-
-    return updated;
-  }
 }

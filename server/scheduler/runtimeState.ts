@@ -40,8 +40,7 @@ export function createWorkspaceSchedulerState(options: CreateWorkspaceSchedulerS
   });
   patchQueueAttemptDequeue(queue, queueRawDb);
 
-  const schedulerModelOverride =
-    String(process.env.ADS_SCHEDULER_MODEL ?? process.env.TASK_QUEUE_DEFAULT_MODEL ?? "").trim() || undefined;
+  const schedulerModelOverride = String(process.env.ADS_SCHEDULER_MODEL ?? "").trim() || undefined;
   const sessionManager = new SessionManager(
     0,
     0,

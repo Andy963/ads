@@ -28,10 +28,10 @@ describe("web/ws/handleTaskResume", () => {
     process.env.ADS_CODEX_BIN = originalCodexBin;
   });
 
-  it("records busy resume rejections in history so reconnect replay explains the failure", async () => {
+  it("does not consult the retired task context while resuming", async () => {
     const sent: unknown[] = [];
     const sessionSent: unknown[] = [];
-    const historyEntries = [{ role: "user", text: "keep this", ts: 1 }];
+    const historyEntries: { role: string; text: string; ts: number; kind?: string }[] = [];
 
     await handleTaskResumeMessage({
       request: {
@@ -58,10 +58,13 @@ describe("web/ws/handleTaskResume", () => {
         currentCwd: "/mnt/d/code/ADS/ads",
       },
       sessions: {
-        sessionManager: {} as any,
+        sessionManager: {
+          getSavedThreadId: () => undefined,
+          getSavedResumeThreadId: () => undefined,
+        } as any,
         orchestrator: {
           getActiveAgentId: () => "codex",
-          getThreadId: () => "thread-current",
+          getThreadId: () => null,
         } as any,
         getWorkspaceLock: () => ({
           runExclusive: async <T>(fn: () => Promise<T> | T): Promise<T> => await fn(),
@@ -79,24 +82,17 @@ describe("web/ws/handleTaskResume", () => {
         } as any,
       },
       tasks: {
-        ensureTaskContext: () => ({
-          queueRunning: true,
-          taskStore: {
-            getActiveTaskId: () => "task-running",
-          },
-        }),
+        ensureTaskContext: () => {
+          throw new Error("retired task context must not be accessed");
+        },
       },
     } as any);
 
     assert.equal(sent.length, 0);
-    assert.deepEqual(sessionSent, [{ type: "error", message: "任务执行中，无法恢复上下文" }]);
-    assert.deepEqual(
-      historyEntries.map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
-      [
-        { role: "user", text: "keep this", kind: undefined },
-        { role: "status", text: "任务执行中，无法恢复上下文", kind: "error" },
-      ],
-    );
+    assert.deepEqual(sessionSent, [{ type: "error", message: "未找到可用于恢复的任务历史" }]);
+    assert.deepEqual(historyEntries, [
+      { role: "status", text: "未找到可用于恢复的任务历史", ts: historyEntries[0]?.ts, kind: "error" },
+    ]);
   });
 
   it("prefers current lane history over older task transcripts when thread resume is unavailable", async () => {

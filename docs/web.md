@@ -1,6 +1,6 @@
 # ADS Web Console
 
-ADS Web Console 是一个轻量级、响应式且功能完备的 AI 辅助编程与任务编排浏览器端界面。
+ADS Web Console 是一个轻量级、响应式的 AI 辅助编程浏览器端界面。
 
 ---
 
@@ -9,14 +9,14 @@ ADS Web Console 是一个轻量级、响应式且功能完备的 AI 辅助编程
 ### 1. 工作区与双 Lane 结构 (Workspace Dual-Lane)
 Web Console 聚焦于双 Lane 交互界面与 GitHub-Native 交付流：
 - **Advisor (规划 Lane)**：
-  - 默认规划 Lane，用于方案讨论、代码架构设计与任务拆解。
+  - 默认规划 Lane，用于方案讨论、代码架构设计与 Issue 拆解。
   - 采用 GitHub-native 规范：在 GitHub Issues 中追踪需求、根因、范围与验收条件。
   - 支持输出 `ads-schedule` 声明式定时任务指令，由 Scheduler 独立调度执行。
   - 无本地文件写入守卫限制，全面支持通过 GitHub CLI (`gh`) 等工具维护协作记录。
 - **Worker (执行 Lane)**：
   - 专注于代码执行、命令运行与文件修改的执行 Lane，支持直接对话交互。
   - 配合 `worker-pr-lifecycle` 规范，在独立的 worktree 中完成编码、验证、测试与 PR 提交。
-  - 实时展示任务阶段 trace（如 `[analysis]`、`[tool]`、`[editing]`）与命令执行输出；文件变更由 Patch 卡片展示。
+  - 实时展示阶段 trace（如 `[analysis]`、`[tool]`、`[editing]`）与命令执行输出；文件变更由 Patch 卡片展示。
   - Plan 卡片按单轮逻辑计划合并 provider 更新，并在任务完成与历史重连时保持唯一且状态一致。
 
 ### 2. Provider CLI 与全局模型配置 (Provider & Models)
@@ -25,9 +25,8 @@ Web Console 聚焦于双 Lane 交互界面与 GitHub-Native 交付流：
   - 左侧导航可切换 Provider，右侧维护各 Provider 的模型列表。
 - **模型管理**：
   - 在线启用/停用模型、按 CLI 设置默认模型、编辑与新增模型；Codex 与 Claude 的默认模型彼此独立。
-  - 在模型管理顶部单独选择 Reviewer 模型；下拉只展示启用的具体模型，审核任务不会继承 Worker 模型。未配置 Reviewer 模型时，任务完成后的审核子任务不会创建，并会在任务事件中报告配置错误。
   - 输入框模型选择器严格联动：仅展示当前 Agent 兼容且已启用的模型，切换 Agent 时自动恢复对应兼容偏好。页面加载或模型列表刷新不会覆盖已有的自定义模型选择。
-  - 所有模型配置和 Reviewer 模型选择持久化于全局 SQLite 状态库 (`state.db`)。
+  - 所有模型配置持久化于全局 SQLite 状态库 (`state.db`)。
 
 ### 2.1 流式回复增量
 
@@ -51,7 +50,7 @@ WebSocket 流式回复按 Provider 的消息 `itemId` 隔离累计文本；多�
 - Worker 与 Advisor 的清空操作默认只作用于发起操作的 chat lane；跨 lane 清理必须显式请求 shared scope，且 session reset 广播会校验来源 lane。
 
 ### 5. 多模态与文件联动
-- **多模态图片附件**：支持拖拽、粘贴与上传图片，MainChat 与任务创建表单均提供紧凑缩略图预览与大图查看器。
+- **多模态图片附件**：支持拖拽、粘贴与上传图片，MainChat 提供紧凑缩略图预览与大图查看器。
 - **语音输入 (Voice Input)**：内置基于 Whisper / Groq 的语音转写，点击麦克风录音即可实时转为 Prompt 输入文本。
 - **文件与行号跳转预览 (File Preview Modal)**：
   - 对话中输出的代码路径或链接（如 `src/app.ts#L42`）自动渲染为高亮交互链接。
@@ -63,8 +62,8 @@ WebSocket 流式回复按 Provider 的消息 `itemId` 隔离累计文本；多�
 
 Web Console 经过专门的移动端交互优化：
 1. **抽屉式导航 (Drawer Navigation)**：左上角汉堡菜单可无缝滑出抽屉，按 **项目 (Projects)**、**规则 (Rules)**、**Provider** 进行全局模块切换。
-2. **三 Tab 扁平导航**：移动端顶栏按 `Task | Advisor | Worker` 排布；首次使用或项目没有记录时聚焦 Advisor，之后按项目恢复上次打开的 Tab。
-3. **独立上下文菜单 (Context Actions)**：右上角根据当前激活模块提供专属操作（如新增任务、恢复会话、新建会话、新增规则、刷新模型列表等），语言与操作深度统一。
+2. **双 Tab 扁平导航**：移动端顶栏按 `Advisor | Worker` 排布；首次使用或项目没有记录时聚焦 Advisor，之后按项目恢复上次打开的 Tab。
+3. **独立上下文菜单 (Context Actions)**：右上角根据当前激活模块提供专属操作（如恢复会话、新建会话、新增规则、刷新模型列表等），语言与操作深度统一。
 4. **软键盘自适应**：自动侦测移动端虚拟键盘开启与高度，精确调整底部 Composer 避让，消除空白与遮挡。
 
 ---
@@ -83,6 +82,4 @@ Web Console 经过专门的移动端交互优化：
 | `ADS_WEB_LOGIN_LOCKOUT_MS` | `300000` (5分钟) | 登录锁定基础时长 |
 | `ADS_PLANNER_CODEX_MODEL` | 未设置 | Advisor Lane 使用的专属 Codex 模型覆盖 |
 | `ADS_PLANNER_SANDBOX_MODE` | `danger-full-access` | Advisor Lane 沙箱权限覆盖；非法值回退为 `workspace-write` |
-| `TASK_QUEUE_ENABLED` | `true` | 是否开启后台任务队列 |
-| `TASK_QUEUE_AUTO_START` | `false` | 服务启动后是否自动开始运行任务队列 |
-| `TASK_QUEUE_DEFAULT_MODEL` | 未设置 | 任务队列默认执行模型 |
+| `ADS_SCHEDULER_MODEL` | 未设置 | Scheduler 执行定时 Prompt 时使用的模型覆盖 |

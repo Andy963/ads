@@ -4,7 +4,7 @@ import { isOriginAllowedForRequest } from "../../auth/origin.js";
 import { authenticateRequest } from "../auth.js";
 import { isStateChangingMethod, sendJson } from "../http.js";
 import type { Logger } from "../../../utils/logger.js";
-import type { TaskQueueContext } from "../taskQueue/manager.js";
+import type { WebWorkspaceContext } from "../workspaceContext.js";
 
 import type { ApiRouteContext } from "./types.js";
 import { handleAuthRoutes } from "./routes/auth.js";
@@ -32,12 +32,8 @@ export function createApiRequestHandler(deps: {
   workspaceRoot: string;
   sessionTtlSeconds: number;
   sessionPepper: string;
-  taskQueueAvailable: boolean;
-  resolveTaskWorkspaceRoot: (url: URL) => string;
-  resolveTaskContext: (url: URL) => TaskQueueContext;
-  promoteQueuedTasksToPending: (ctx: TaskQueueContext) => void;
-  broadcastToSession: (sessionId: string, payload: unknown) => void;
-  scheduleWorkspacePurge?: (ctx: TaskQueueContext) => void;
+  resolveWorkspaceRoot: (url: URL) => string;
+  resolveWorkspaceContext: (url: URL) => WebWorkspaceContext;
   scheduleCompiler: ScheduleCompiler;
   scheduler: SchedulerRuntime;
   syncEventStore: SyncEventStore;
@@ -83,12 +79,12 @@ export function createApiRequestHandler(deps: {
     if (await handlePathRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handleProjectRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handlePreferenceRoutes(routeCtx, { workspaceRoot: deps.workspaceRoot })) return true;
-    if (await handleFileRoutes(routeCtx, { resolveTaskContext: deps.resolveTaskContext })) return true;
+    if (await handleFileRoutes(routeCtx, { resolveWorkspaceContext: deps.resolveWorkspaceContext })) return true;
     if (
       await handleSyncRoutes(routeCtx, {
         syncEventStore: deps.syncEventStore,
         defaultWorkspaceRoot: deps.workspaceRoot,
-        resolveWorkspaceRoot: deps.resolveTaskWorkspaceRoot,
+        resolveWorkspaceRoot: deps.resolveWorkspaceRoot,
         workerHistoryStore: deps.workerHistoryStore ?? { get: () => [] },
         plannerHistoryStore: deps.plannerHistoryStore ?? { get: () => [] },
         laneGenerationStore: deps.laneGenerationStore,
@@ -97,16 +93,16 @@ export function createApiRequestHandler(deps: {
     if (
       await handleRunRoutes(routeCtx, {
         defaultWorkspaceRoot: deps.workspaceRoot,
-        resolveWorkspaceRoot: deps.resolveTaskWorkspaceRoot,
+        resolveWorkspaceRoot: deps.resolveWorkspaceRoot,
         interruptControllers: deps.interruptControllers,
         promptRunEpochs: deps.promptRunEpochs,
         laneGenerationStore: deps.laneGenerationStore,
       })
     ) return true;
-    if (await handleScheduleRoutes(routeCtx, { resolveWorkspaceRoot: deps.resolveTaskWorkspaceRoot, scheduleCompiler: deps.scheduleCompiler, scheduler: deps.scheduler })) return true;
+    if (await handleScheduleRoutes(routeCtx, { resolveWorkspaceRoot: deps.resolveWorkspaceRoot, scheduleCompiler: deps.scheduleCompiler, scheduler: deps.scheduler })) return true;
     if (await handleModelRoutes(routeCtx)) return true;
     if (await handleGlobalRuleRoutes(routeCtx)) return true;
-    if (await handleAttachmentRoutes(routeCtx, { resolveTaskContext: deps.resolveTaskContext, buildAttachmentRawUrl })) return true;
+    if (await handleAttachmentRoutes(routeCtx, { resolveWorkspaceContext: deps.resolveWorkspaceContext, buildAttachmentRawUrl })) return true;
 
     sendJson(res, 404, { error: "Not Found" });
     return true;

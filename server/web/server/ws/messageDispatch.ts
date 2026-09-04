@@ -2,7 +2,6 @@ import type { WebSocket } from "ws";
 
 import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
 import { handleCommandMessage } from "./handleCommand.js";
-import { handleGoalControlMessage } from "./handleGoalControl.js";
 import type {
   WsCommandHandlerDeps,
   WsCommandRuntimeDeps,
@@ -13,8 +12,6 @@ import type {
   WsRequestDeps,
   WsSchedulerDeps,
   WsSessionRuntimeDeps,
-  WsTaskResumeHandlerDeps,
-  WsTaskRuntimeDeps,
 } from "./deps.js";
 import { handlePromptMessage } from "./handlePrompt.js";
 import { ensureWsSessionLogger, handleWsControlMessage } from "./messageControl.js";
@@ -44,7 +41,6 @@ export async function dispatchWsMessage(args: {
   promptRunEpochs?: Map<string, number>;
   isLaneCurrent?: WsLaneValidityCheck;
   historyStore: WsHistoryRuntimeDeps["historyStore"];
-  tasks: WsTaskRuntimeDeps;
   scheduler: WsSchedulerDeps;
   commands: WsCommandRuntimeDeps;
   agents: WsCommandHandlerDeps["agents"];
@@ -99,7 +95,6 @@ export async function dispatchWsMessage(args: {
       interruptControllers: args.interruptControllers,
       promptRunEpochs: args.promptRunEpochs,
       isLaneCurrent: args.isLaneCurrent,
-      ensureTaskContext: args.tasks.ensureTaskContext as WsTaskResumeHandlerDeps["tasks"]["ensureTaskContext"],
       sendJson: (payload) => args.safeJsonSend(args.ws, payload),
       broadcastJson: args.broadcastJson,
       broadcastSessionReset: args.state.broadcastSessionReset,
@@ -110,22 +105,6 @@ export async function dispatchWsMessage(args: {
     });
     if (control.handled) {
       return { orchestrator: control.orchestrator, currentCwd };
-    }
-    if (args.isLaneCurrent && !args.isLaneCurrent()) {
-      return { orchestrator, currentCwd };
-    }
-
-    const goalHandled = await handleGoalControlMessage({
-      parsed,
-      currentCwd,
-      ensureTaskContext: args.tasks.ensureTaskContext,
-      sessionManager: args.sessionManager,
-      sendJson: (payload) => args.safeJsonSend(args.ws, payload),
-      logger: args.logger,
-      isLaneCurrent: args.isLaneCurrent,
-    });
-    if (goalHandled) {
-      return { orchestrator, currentCwd };
     }
     if (args.isLaneCurrent && !args.isLaneCurrent()) {
       return { orchestrator, currentCwd };
@@ -169,7 +148,6 @@ export async function dispatchWsMessage(args: {
       history: {
         historyStore: args.historyStore,
       },
-      tasks: args.tasks,
       scheduler: args.scheduler,
     });
     if (promptResult.handled) {

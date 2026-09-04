@@ -12,16 +12,16 @@ import { readRawBody, sendJson } from "../../http.js";
 
 export async function handleAttachmentRoutes(
   ctx: ApiRouteContext,
-  deps: Pick<ApiSharedDeps, "resolveTaskContext" | "buildAttachmentRawUrl">,
+  deps: Pick<ApiSharedDeps, "resolveWorkspaceContext" | "buildAttachmentRawUrl">,
 ): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
   const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
   const MAX_BODY_BYTES = MAX_IMAGE_BYTES + 512 * 1024;
 
   if (req.method === "POST" && pathname === "/api/attachments/images") {
-    let taskCtx;
+    let workspaceCtx;
     try {
-      taskCtx = deps.resolveTaskContext(url);
+      workspaceCtx = deps.resolveWorkspaceContext(url);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       sendJson(res, 400, { error: message });
@@ -73,7 +73,7 @@ export async function handleAttachmentRoutes(
 
     const sha256 = crypto.createHash("sha256").update(bytes).digest("hex");
     const storageKey = `attachments/${sha256.slice(0, 2)}/${sha256}.${info.ext}`;
-    const absPath = resolveWorkspaceStatePath(taskCtx.workspaceRoot, storageKey);
+    const absPath = resolveWorkspaceStatePath(workspaceCtx.workspaceRoot, storageKey);
 
     try {
       fs.mkdirSync(path.dirname(absPath), { recursive: true });
@@ -88,7 +88,7 @@ export async function handleAttachmentRoutes(
 
     let attachment;
     try {
-      attachment = taskCtx.attachmentStore.createOrGetImageAttachment({
+      attachment = workspaceCtx.attachmentStore.createOrGetImageAttachment({
         filename: filePart.filename,
         contentType: info.contentType,
         sizeBytes: bytes.length,
@@ -119,9 +119,9 @@ export async function handleAttachmentRoutes(
 
   const attachmentRawMatch = /^\/api\/attachments\/([^/]+)\/raw$/.exec(pathname);
   if (attachmentRawMatch && req.method === "GET") {
-    let taskCtx;
+    let workspaceCtx;
     try {
-      taskCtx = deps.resolveTaskContext(url);
+      workspaceCtx = deps.resolveWorkspaceContext(url);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       sendJson(res, 400, { error: message });
@@ -134,7 +134,7 @@ export async function handleAttachmentRoutes(
       sendJson(res, 400, { error: "Invalid attachment id" });
       return true;
     }
-    const attachment = taskCtx.attachmentStore.getAttachment(id);
+    const attachment = workspaceCtx.attachmentStore.getAttachment(id);
     if (!attachment) {
       sendJson(res, 404, { error: "Attachment not found" });
       return true;
@@ -143,7 +143,7 @@ export async function handleAttachmentRoutes(
       sendJson(res, 415, { error: "Unsupported attachment kind" });
       return true;
     }
-    const absPath = resolveWorkspaceStatePath(taskCtx.workspaceRoot, attachment.storageKey);
+    const absPath = resolveWorkspaceStatePath(workspaceCtx.workspaceRoot, attachment.storageKey);
     let stat: fs.Stats;
     try {
       stat = fs.statSync(absPath);
