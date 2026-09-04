@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { sendJson } from "../../http.js";
 import type { ApiRouteContext, ApiSharedDeps } from "../types.js";
-import { resolveTaskContextOrSendBadRequest } from "./shared.js";
+import { resolveWorkspaceContextOrSendBadRequest } from "./shared.js";
 import { validateWorkspaceFilePath } from "./workspacePath.js";
 
 const MAX_PREVIEW_LINES = 400;
@@ -154,7 +154,7 @@ function sendFilePreviewError(res: ApiRouteContext["res"], status: number, error
 
 export async function handleFileRoutes(
   ctx: ApiRouteContext,
-  deps: Pick<ApiSharedDeps, "resolveTaskContext">,
+  deps: Pick<ApiSharedDeps, "resolveWorkspaceContext">,
 ): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
 
@@ -162,15 +162,15 @@ export async function handleFileRoutes(
     return false;
   }
 
-  const taskCtx = resolveTaskContextOrSendBadRequest(deps, url, res);
-  if (!taskCtx) return true;
+  const workspaceCtx = resolveWorkspaceContextOrSendBadRequest(deps, url, res);
+  if (!workspaceCtx) return true;
 
   const requestedPath = url.searchParams.get("path") ?? "";
   const requestedLine = parseRequestedLine(url.searchParams.get("line"));
   const requestedStartLine = parseRequestedLine(url.searchParams.get("startLine"));
   const validated = validateWorkspaceFilePath({
     candidatePath: requestedPath,
-    workspaceRoot: taskCtx.workspaceRoot,
+    workspaceRoot: workspaceCtx.workspaceRoot,
   });
 
   if (!validated.ok) {

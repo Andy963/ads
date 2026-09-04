@@ -1,4 +1,3 @@
-import type { Task } from "../tasks/types.js";
 import { getErrorMessage } from "../utils/error.js";
 import { notifyTaskTerminalViaTelegram } from "../web/taskNotifications/telegramNotifier.js";
 import { upsertTaskNotificationBinding } from "../web/taskNotifications/store.js";
@@ -15,7 +14,6 @@ import {
   type SchedulerWarningContext,
   type WorkspaceSchedulerState,
 } from "./runtimeSupport.js";
-import type { StoredSchedule } from "./store.js";
 
 type GetState = (workspaceRoot: string) => WorkspaceSchedulerState;
 type WarnScheduler = (context: SchedulerWarningContext, error: unknown) => void;
@@ -30,45 +28,11 @@ export function parseSchedulerJobPayload(raw: unknown): SchedulerJobPayload | nu
   const externalId = String(record.externalId ?? "").trim();
   const runAtRaw = Number(record.runAt);
   const runAt = Number.isFinite(runAtRaw) ? Math.floor(runAtRaw) : Number.NaN;
+  const prompt = typeof record.prompt === "string" ? record.prompt : undefined;
   if (!workspaceRoot || !scheduleId || !externalId || !Number.isFinite(runAt)) {
     return null;
   }
-  return { workspaceRoot, scheduleId, externalId, runAt };
-}
-
-export function ensureTaskForRun(args: {
-  getState: GetState;
-  payload: SchedulerJobPayload;
-  schedule: StoredSchedule;
-  now: number;
-}): Task {
-  const state = args.getState(args.payload.workspaceRoot);
-  const existing = state.taskStore.getTask(args.payload.externalId);
-  if (existing) {
-    return existing;
-  }
-  const effectivePrompt = buildEffectiveTaskPrompt(args.payload, args.schedule);
-  try {
-    return state.taskStore.createTask(
-      {
-        id: args.payload.externalId,
-        title: args.schedule.spec.compiledTask.title,
-        prompt: effectivePrompt,
-        model: "auto",
-        inheritContext: false,
-        maxRetries: Math.max(0, args.schedule.spec.policy.maxRetries),
-        createdBy: "scheduler",
-      },
-      args.now,
-      { status: "pending" },
-    );
-  } catch {
-    const fallback = state.taskStore.getTask(args.payload.externalId);
-    if (!fallback) {
-      throw new Error(`Failed to create scheduler task: ${args.payload.externalId}`);
-    }
-    return fallback;
-  }
+  return { workspaceRoot, scheduleId, externalId, runAt, prompt };
 }
 
 export async function runScheduledJob(args: {
@@ -117,30 +81,11 @@ export async function runScheduledJob(args: {
     return { resultSummary: currentRun.result ?? undefined };
   }
 
-  const task = ensureTaskForRun({
-    getState: args.getState,
-    payload,
-    schedule,
-    now,
-  });
-  const runningTask = state.taskStore.updateTask(
-    task.id,
-    {
-      status: "running",
-      error: null,
-      result: null,
-      startedAt: now,
-      completedAt: null,
-    },
-    now,
-  );
-
   try {
     state.store.updateRunByExternalId(
       payload.externalId,
       {
         status: "running",
-        taskId: runningTask.id,
         error: null,
         startedAt: now,
         completedAt: null,
@@ -154,7 +99,6 @@ export async function runScheduledJob(args: {
         workspaceRoot: payload.workspaceRoot,
         scheduleId: payload.scheduleId,
         externalId: payload.externalId,
-        taskId: runningTask.id,
       },
       persistError,
     );
@@ -165,8 +109,8 @@ export async function runScheduledJob(args: {
       upsertTaskNotificationBinding({
         authUserId: "",
         workspaceRoot: payload.workspaceRoot,
-        taskId: runningTask.id,
-        taskTitle: runningTask.title,
+        taskId: payload.externalId,
+        taskTitle: schedule.spec.compiledTask.title,
         telegramChatId: resolveScheduleTelegramChatId(schedule),
         now,
         logger: args.logger,
@@ -178,17 +122,25 @@ export async function runScheduledJob(args: {
           workspaceRoot: payload.workspaceRoot,
           scheduleId: payload.scheduleId,
           externalId: payload.externalId,
-          taskId: runningTask.id,
         },
         persistError,
       );
     }
   }
 
+  const effectivePrompt = payload.prompt || buildEffectiveTaskPrompt(payload, schedule);
+  const taskDescriptor = {
+    id: payload.externalId,
+    title: schedule.spec.compiledTask.title,
+    prompt: effectivePrompt,
+  };
+
   return await args.executeRun({
     workspaceRoot: payload.workspaceRoot,
     schedule,
-    task: runningTask,
+    payload,
+    prompt: effectivePrompt,
+    task: taskDescriptor,
     signal: args.signal,
   });
 }
@@ -208,6 +160,7 @@ export async function handleScheduledJobComplete(args: {
   const now = Date.now();
   const resultSummary = String(args.result.resultSummary ?? "").trim() || null;
   const schedule = state.store.getSchedule(payload.scheduleId);
+  const currentRun = state.store.getRunByExternalId(payload.externalId);
 
   try {
     state.store.updateRunByExternalId(
@@ -227,63 +180,38 @@ export async function handleScheduledJobComplete(args: {
         workspaceRoot: payload.workspaceRoot,
         scheduleId: payload.scheduleId,
         externalId: payload.externalId,
-        taskId: payload.externalId,
       },
       persistError,
     );
   }
 
-  const task = state.taskStore.getTask(payload.externalId);
-  if (!task) {
-    return;
-  }
-  try {
-    const completed = state.taskStore.updateTask(
-      task.id,
-      {
-        status: "completed",
-        result: resultSummary,
-        error: null,
-        completedAt: now,
-      },
-      now,
-    );
-    if (completed.result && completed.result.trim()) {
-      try {
-        state.taskStore.saveContext(completed.id, { contextType: "summary", content: completed.result }, now);
-      } catch (persistError) {
-        args.warnScheduler(
-          {
-            stage: "save-summary",
-            workspaceRoot: payload.workspaceRoot,
-            scheduleId: payload.scheduleId,
-            externalId: payload.externalId,
-            taskId: completed.id,
-          },
-          persistError,
-        );
-      }
-    }
-    if (schedule && scheduleRequestsTelegramDelivery(schedule)) {
+  if (schedule && scheduleRequestsTelegramDelivery(schedule)) {
+    try {
       notifyTaskTerminalViaTelegram({
         logger: args.logger,
         workspaceRoot: payload.workspaceRoot,
-        task: completed,
+        task: {
+          id: payload.externalId,
+          title: schedule.spec.compiledTask.title,
+          status: "completed",
+          startedAt: currentRun?.startedAt ?? null,
+          completedAt: now,
+          result: resultSummary,
+        },
         terminalStatus: "completed",
         eventTs: now,
       });
+    } catch (notifyError) {
+      args.warnScheduler(
+        {
+          stage: "notify-telegram-completed",
+          workspaceRoot: payload.workspaceRoot,
+          scheduleId: payload.scheduleId,
+          externalId: payload.externalId,
+        },
+        notifyError,
+      );
     }
-  } catch (persistError) {
-    args.warnScheduler(
-      {
-        stage: "mark-task-completed",
-        workspaceRoot: payload.workspaceRoot,
-        scheduleId: payload.scheduleId,
-        externalId: payload.externalId,
-        taskId: task.id,
-      },
-      persistError,
-    );
   }
 }
 
@@ -301,8 +229,8 @@ export async function handleScheduledJobError(args: {
     return;
   }
   const state = args.getState(payload.workspaceRoot);
-  const task = state.taskStore.getTask(payload.externalId);
   const schedule = state.store.getSchedule(payload.scheduleId);
+  const currentRun = state.store.getRunByExternalId(payload.externalId);
   const now = Date.now();
   const terminal = args.numRetriesLeft <= 0;
   const message = getErrorMessage(args.error);
@@ -324,63 +252,37 @@ export async function handleScheduledJobError(args: {
         workspaceRoot: payload.workspaceRoot,
         scheduleId: payload.scheduleId,
         externalId: payload.externalId,
-        taskId: task?.id ?? null,
       },
       persistError,
     );
   }
 
-  if (!task) {
-    return;
-  }
-
-  try {
-    const updated = state.taskStore.updateTask(
-      task.id,
-      {
-        status: terminal ? "failed" : "pending",
-        error: message,
-        result: null,
-        retryCount: Math.max(task.retryCount, args.runNumber + 1),
-        completedAt: terminal ? now : null,
-      },
-      now,
-    );
-    if (terminal) {
-      try {
-        state.taskStore.saveContext(updated.id, { contextType: "summary", content: `[Failed]\n${message}` }, now);
-      } catch (persistError) {
-        args.warnScheduler(
-          {
-            stage: "save-summary",
-            workspaceRoot: payload.workspaceRoot,
-            scheduleId: payload.scheduleId,
-            externalId: payload.externalId,
-            taskId: updated.id,
-          },
-          persistError,
-        );
-      }
-      if (schedule && scheduleRequestsTelegramDelivery(schedule)) {
-        notifyTaskTerminalViaTelegram({
-          logger: args.logger,
-          workspaceRoot: payload.workspaceRoot,
-          task: updated,
-          terminalStatus: "failed",
-          eventTs: now,
-        });
-      }
-    }
-  } catch (persistError) {
-    args.warnScheduler(
-      {
-        stage: terminal ? "mark-task-failed" : "mark-task-pending",
+  if (terminal && schedule && scheduleRequestsTelegramDelivery(schedule)) {
+    try {
+      notifyTaskTerminalViaTelegram({
+        logger: args.logger,
         workspaceRoot: payload.workspaceRoot,
-        scheduleId: payload.scheduleId,
-        externalId: payload.externalId,
-        taskId: task.id,
-      },
-      persistError,
-    );
+        task: {
+          id: payload.externalId,
+          title: schedule.spec.compiledTask.title,
+          status: "failed",
+          startedAt: currentRun?.startedAt ?? null,
+          completedAt: now,
+          result: `[Failed]\n${message}`,
+        },
+        terminalStatus: "failed",
+        eventTs: now,
+      });
+    } catch (notifyError) {
+      args.warnScheduler(
+        {
+          stage: "notify-telegram-failed",
+          workspaceRoot: payload.workspaceRoot,
+          scheduleId: payload.scheduleId,
+          externalId: payload.externalId,
+        },
+        notifyError,
+      );
+    }
   }
 }

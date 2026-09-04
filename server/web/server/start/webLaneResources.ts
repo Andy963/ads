@@ -223,9 +223,7 @@ export function createWebLaneResources(args: {
     }),
     planner: createLaneRuntime({
       namespace: WEB_PLANNER_NAMESPACE,
-      // The Advisor needs danger-full-access for tools like GitHub CLI (gh),
-      // while specWriteGuard protects the local codebase by rolling back any
-      // mutations outside docs/issue/ and docs/spec/ after each turn.
+      // The Advisor uses danger-full-access for planning and GitHub operations (e.g. gh CLI).
       sandboxMode: plannerSandboxMode,
       defaultModel: args.plannerCodexModel,
       sessionTimeoutMs: args.sessionTimeoutMs,

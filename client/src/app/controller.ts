@@ -6,13 +6,12 @@ import { isProjectInProgress } from "../lib/project_status";
 
 import { createChatActions } from "./chat";
 import type { ChatActions } from "./chat";
-import { createTaskBundleDraftActions } from "./taskBundleDrafts";
+import { createLaneActions } from "./laneActions";
+import type { LaneDeps } from "./laneActions";
 import { createProjectRuntime } from "./projectRuntime";
 import type { ProjectRuntime, ProjectTab } from "./controllerTypes";
 import { createProjectActions } from "./projectsWs";
 import type { ProjectDeps } from "./projectsWs";
-import { createTaskActions } from "./tasks";
-import type { TaskDeps } from "./tasks";
 import { createWebSocketActions } from "./projectsWs";
 
 export type {
@@ -55,11 +54,6 @@ export function createAppContext() {
   const projectDialogError = ref<string | null>(null);
   const switchConfirmOpen = ref(false);
   const pendingSwitchProjectId = ref<string | null>(null);
-  const deleteConfirmOpen = ref(false);
-  const pendingDeleteProjectId = ref<string | null>(null);
-  const pendingDeleteTaskId = ref<string | null>(null);
-  const deleteConfirmButtonEl = ref<HTMLButtonElement | null>(null);
-  const taskCreateDialogOpen = ref(false);
   const projectPathEl = ref<HTMLInputElement | null>(null);
   const projectNameEl = ref<HTMLInputElement | null>(null);
   const projectDialogPathStatus = ref<"idle" | "checking" | "ok" | "error">("idle");
@@ -120,40 +114,33 @@ export function createAppContext() {
   const wsError = proxyRuntimeRef((rt) => rt.wsError);
   const threadWarning = proxyRuntimeRef((rt) => rt.threadWarning);
   const activeThreadId = proxyRuntimeRef((rt) => rt.activeThreadId);
-  const queueStatus = proxyRuntimeRef((rt) => rt.queueStatus);
   const workspacePath = proxyRuntimeRef((rt) => rt.workspacePath);
-  const tasks = proxyRuntimeRef((rt) => rt.tasks);
-  const selectedId = proxyRuntimeRef((rt) => rt.selectedId);
-  const runBusyIds = proxyRuntimeRef((rt) => rt.runBusyIds);
+  const tasks = ref<unknown[]>([]);
+  const selectedId = ref<string | null>(null);
+  const runBusyIds = ref<Set<string>>(new Set());
+  const queueStatus = ref(null);
   const busy = proxyRuntimeRef((rt) => rt.busy);
   const messages = proxyRuntimeRef((rt) => rt.messages);
   const recentCommands = proxyRuntimeRef((rt) => rt.recentCommands);
   const pendingImages = proxyRuntimeRef((rt) => rt.pendingImages);
   const queuedPrompts = proxyRuntimeRef((rt) => rt.queuedPrompts);
 
-  const tasksBusy = computed(() => tasks.value.some((t) => t.status === "planning" || t.status === "running"));
-  const agentBusy = computed(() => busy.value || tasksBusy.value);
-  const pendingDeleteTask = computed(() => {
-    const taskId = String(pendingDeleteTaskId.value ?? "").trim();
-    if (!taskId) return null;
-    const pid = normalizeProjectId(pendingDeleteProjectId.value ?? activeProjectId.value);
-    const rt = getRuntime(pid);
-    return rt.tasks.value.find((t) => t.id === taskId) ?? null;
-  });
+  const tasksBusy = computed(() => false);
+  const agentBusy = computed(() => busy.value);
+  const pendingDeleteTask = computed(() => null);
   const apiAuthorized = computed(() => loggedIn.value);
 
   const runtimeOrActive = (rt?: ProjectRuntime): ProjectRuntime => rt ?? activeRuntime.value;
 
-  const runtimeTasksBusy = (rt: ProjectRuntime): boolean =>
-    rt.tasks.value.some((t) => t.status === "planning" || t.status === "running");
+  const runtimeTasksBusy = (_rt: ProjectRuntime): boolean => false;
 
   const runtimeProjectInProgress = (rt: ProjectRuntime): boolean =>
     isProjectInProgress({
-      taskStatuses: rt.tasks.value.map((t) => t.status),
+      taskStatuses: [],
       conversationInProgress: rt.busy.value,
     });
 
-  const runtimeAgentBusy = (rt: ProjectRuntime): boolean => rt.busy.value || runtimeTasksBusy(rt);
+  const runtimeAgentBusy = (rt: ProjectRuntime): boolean => rt.busy.value;
 
   const updateIsMobile = (): void => {
     if (typeof window === "undefined") return;
@@ -223,11 +210,6 @@ export function createAppContext() {
     projectDialogError,
     switchConfirmOpen,
     pendingSwitchProjectId,
-    deleteConfirmOpen,
-    pendingDeleteProjectId,
-    pendingDeleteTaskId,
-    deleteConfirmButtonEl,
-    taskCreateDialogOpen,
     projectPathEl,
     projectNameEl,
     projectDialogPathStatus,
@@ -284,20 +266,11 @@ export type AppContext = ReturnType<typeof createAppContext>;
 export function createAppController() {
   const ctx = createAppContext();
   const chat = createChatActions(ctx as AppContext);
-  const drafts = createTaskBundleDraftActions({
-    api: ctx.api,
-    loggedIn: ctx.loggedIn,
-    activeProjectId: ctx.activeProjectId,
-    normalizeProjectId: ctx.normalizeProjectId,
-    getPlannerRuntime: ctx.getPlannerRuntime,
-    withWorkspaceQueryFor: ctx.withWorkspaceQueryFor,
-  });
-
-  const taskDeps: TaskDeps = {
+  const laneDeps: LaneDeps = {
     connectWs: async () => {},
     connectPlannerWs: async () => {},
   };
-  const tasks = createTaskActions({ ...ctx, ...chat } as AppContext & ChatActions, taskDeps);
+  const laneActions = createLaneActions({ ...ctx, ...chat } as AppContext & ChatActions, laneDeps);
 
   const projectDeps: ProjectDeps = {
     activateProject: async () => {},
@@ -305,17 +278,14 @@ export function createAppController() {
   const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ChatActions, projectDeps);
 
   const ws = createWebSocketActions({ ...ctx, ...chat } as AppContext & ChatActions, {
-    onTaskEvent: tasks.onTaskEvent,
+    onTaskEvent: () => {},
     updateProject: projects.updateProject,
     persistProjects: projects.persistProjects,
-    syncProjectState: async (projectId: string) => {
-      const pid = ctx.normalizeProjectId(projectId);
-      await Promise.all([tasks.loadQueueStatus(pid), tasks.loadTasks(pid)]);
-    },
+    syncProjectState: async () => {},
   });
 
-  taskDeps.connectWs = ws.connectWs;
-  taskDeps.connectPlannerWs = ws.connectPlannerWs;
+  laneDeps.connectWs = ws.connectWs;
+  laneDeps.connectPlannerWs = ws.connectPlannerWs;
 
   const clearRuntimeTimers = (rt: { noticeTimer: number | null; liveActivityTtlTimer: number | null }): void => {
     if (rt.noticeTimer !== null) {
@@ -365,11 +335,8 @@ export function createAppController() {
     plannerRt.wsError.value = null;
     try {
       await Promise.all([
-        tasks.loadQueueStatus(pid),
         (!rt.ws || !rt.connected.value) ? ws.connectWs(pid) : Promise.resolve(),
         (!plannerRt.ws || !plannerRt.connected.value) ? ws.connectPlannerWs(pid) : Promise.resolve(),
-        drafts.loadTaskBundleDrafts(pid),
-        tasks.loadTasks(pid),
       ]);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -380,30 +347,10 @@ export function createAppController() {
   projectDeps.activateProject = activateProject;
   projectDeps.closeProjectConnections = closeProjectConnections;
 
-  const prefetchProjectStatusSpinners = async (): Promise<void> => {
-    if (!ctx.loggedIn.value) return;
-    const activePid = ctx.normalizeProjectId(ctx.activeProjectId.value);
-    const targets = ctx.projects.value.map((p) => ctx.normalizeProjectId(p.id));
-    const seen = new Set<string>();
-    for (const pid of targets) {
-      if (!pid || seen.has(pid)) continue;
-      seen.add(pid);
-      if (pid === activePid) continue;
-      const rt = ctx.getRuntime(pid);
-      if (Array.isArray(rt.tasks.value) && rt.tasks.value.length > 0) continue;
-      try {
-        await tasks.loadTasks(pid, { status: "running", limit: 1, preserveSelection: true, skipIfTasksNonEmpty: true });
-      } catch {
-        // Best-effort only: status spinners should not break boot.
-      }
-    }
-  };
-
   const bootstrap = async (): Promise<void> => {
     if (!ctx.loggedIn.value) return;
     try {
-      await Promise.all([tasks.loadModels(), activateProject(ctx.activeProjectId.value)]);
-      await prefetchProjectStatusSpinners();
+      await Promise.all([laneActions.loadModels(), activateProject(ctx.activeProjectId.value)]);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       ctx.apiError.value = msg;
@@ -464,8 +411,7 @@ export function createAppController() {
   return {
     ...ctx,
     ...chat,
-    ...drafts,
-    ...tasks,
+    ...laneActions,
     ...projects,
     ...ws,
     handleLoggedIn,

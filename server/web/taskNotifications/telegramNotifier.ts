@@ -1,6 +1,6 @@
 import type { Logger } from "../../utils/logger.js";
-import { TaskStore } from "../../tasks/store.js";
 import { safeParseJson } from "../../utils/json.js";
+import { ScheduleStore } from "../../scheduler/store.js";
 
 import {
   claimTaskNotificationSendLease,
@@ -172,14 +172,14 @@ function truncateTelegramText(text: string): string {
   return `${normalized.slice(0, Math.max(0, TELEGRAM_TEXT_LIMIT - 1))}…`;
 }
 
-function loadPersistedTaskResult(workspaceRoot: string, taskId: string): string | null {
+function loadPersistedScheduleRunResult(workspaceRoot: string, externalId: string): string | null {
   const root = String(workspaceRoot ?? "").trim();
-  const id = String(taskId ?? "").trim();
+  const id = String(externalId ?? "").trim();
   if (!root || !id) {
     return null;
   }
   try {
-    const result = new TaskStore({ workspacePath: root }).getTask(id)?.result;
+    const result = new ScheduleStore({ workspacePath: root }).getRunByExternalId(id)?.result;
     const normalized = String(result ?? "").trim();
     return normalized || null;
   } catch {
@@ -320,7 +320,7 @@ export async function attemptSendTaskTerminalTelegramNotification(args: {
 
   const cachedResult = pendingTaskResults.get(taskId) ?? null;
   pendingTaskResults.delete(taskId);
-  const persistedResult = cachedResult ?? loadPersistedTaskResult(row.workspaceRoot, taskId);
+  const persistedResult = cachedResult ?? loadPersistedScheduleRunResult(row.workspaceRoot, taskId);
   const structuredDelivery = interpretStructuredSchedulerTelegramResult(persistedResult);
 
   if (structuredDelivery?.kind === "skip") {

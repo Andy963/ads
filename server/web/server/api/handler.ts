@@ -4,19 +4,16 @@ import { isOriginAllowedForRequest } from "../../auth/origin.js";
 import { authenticateRequest } from "../auth.js";
 import { isStateChangingMethod, sendJson } from "../http.js";
 import type { Logger } from "../../../utils/logger.js";
-import type { TaskQueueContext } from "../taskQueue/manager.js";
+import type { WebWorkspaceContext } from "../workspaceContext.js";
 
-import type { ApiRouteContext, ApiSharedDeps } from "./types.js";
+import type { ApiRouteContext } from "./types.js";
 import { handleAuthRoutes } from "./routes/auth.js";
 import { handleAudioRoutes } from "./routes/audio.js";
 import { handlePathRoutes } from "./routes/paths.js";
 import { handleProjectRoutes } from "./routes/projects.js";
 import { handleModelRoutes } from "./routes/models.js";
 import { handleGlobalRuleRoutes } from "./routes/globalRules.js";
-import { handleTaskQueueRoutes } from "./routes/taskQueue.js";
 import { handleAttachmentRoutes } from "./routes/attachments.js";
-import { handleTaskRoutes } from "./routes/tasks.js";
-import { handleTaskBundleDraftRoutes } from "./routes/taskBundleDrafts.js";
 import { handlePreferenceRoutes } from "./routes/preferences.js";
 import { handleScheduleRoutes } from "./routes/schedules.js";
 import { handleFileRoutes } from "./routes/files.js";
@@ -35,12 +32,8 @@ export function createApiRequestHandler(deps: {
   workspaceRoot: string;
   sessionTtlSeconds: number;
   sessionPepper: string;
-  taskQueueAvailable: boolean;
-  resolveTaskWorkspaceRoot: (url: URL) => string;
-  resolveTaskContext: (url: URL) => TaskQueueContext;
-  promoteQueuedTasksToPending: (ctx: TaskQueueContext) => void;
-  broadcastToSession: (sessionId: string, payload: unknown) => void;
-  scheduleWorkspacePurge?: (ctx: TaskQueueContext) => void;
+  resolveWorkspaceRoot: (url: URL) => string;
+  resolveWorkspaceContext: (url: URL) => WebWorkspaceContext;
   scheduleCompiler: ScheduleCompiler;
   scheduler: SchedulerRuntime;
   syncEventStore: SyncEventStore;
@@ -57,18 +50,6 @@ export function createApiRequestHandler(deps: {
     }
     const qp = `workspace=${encodeURIComponent(workspaceParam)}`;
     return `/api/attachments/${encodeURIComponent(attachmentId)}/raw?${qp}`;
-  };
-
-  const sharedDeps: ApiSharedDeps = {
-    logger: deps.logger,
-    allowedDirs: deps.allowedDirs,
-    workspaceRoot: deps.workspaceRoot,
-    taskQueueAvailable: deps.taskQueueAvailable,
-    resolveTaskContext: deps.resolveTaskContext,
-    promoteQueuedTasksToPending: deps.promoteQueuedTasksToPending,
-    broadcastToSession: deps.broadcastToSession,
-    buildAttachmentRawUrl,
-    scheduleWorkspacePurge: deps.scheduleWorkspacePurge,
   };
 
   return async (req, res) => {
@@ -98,12 +79,12 @@ export function createApiRequestHandler(deps: {
     if (await handlePathRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handleProjectRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handlePreferenceRoutes(routeCtx, { workspaceRoot: deps.workspaceRoot })) return true;
-    if (await handleFileRoutes(routeCtx, { resolveTaskContext: deps.resolveTaskContext })) return true;
+    if (await handleFileRoutes(routeCtx, { resolveWorkspaceContext: deps.resolveWorkspaceContext })) return true;
     if (
       await handleSyncRoutes(routeCtx, {
         syncEventStore: deps.syncEventStore,
         defaultWorkspaceRoot: deps.workspaceRoot,
-        resolveWorkspaceRoot: deps.resolveTaskWorkspaceRoot,
+        resolveWorkspaceRoot: deps.resolveWorkspaceRoot,
         workerHistoryStore: deps.workerHistoryStore ?? { get: () => [] },
         plannerHistoryStore: deps.plannerHistoryStore ?? { get: () => [] },
         laneGenerationStore: deps.laneGenerationStore,
@@ -112,26 +93,16 @@ export function createApiRequestHandler(deps: {
     if (
       await handleRunRoutes(routeCtx, {
         defaultWorkspaceRoot: deps.workspaceRoot,
-        resolveWorkspaceRoot: deps.resolveTaskWorkspaceRoot,
+        resolveWorkspaceRoot: deps.resolveWorkspaceRoot,
         interruptControllers: deps.interruptControllers,
         promptRunEpochs: deps.promptRunEpochs,
         laneGenerationStore: deps.laneGenerationStore,
       })
     ) return true;
-    if (await handleTaskBundleDraftRoutes(routeCtx, sharedDeps)) return true;
-    if (await handleScheduleRoutes(routeCtx, { resolveWorkspaceRoot: deps.resolveTaskWorkspaceRoot, scheduleCompiler: deps.scheduleCompiler, scheduler: deps.scheduler })) return true;
+    if (await handleScheduleRoutes(routeCtx, { resolveWorkspaceRoot: deps.resolveWorkspaceRoot, scheduleCompiler: deps.scheduleCompiler, scheduler: deps.scheduler })) return true;
     if (await handleModelRoutes(routeCtx)) return true;
     if (await handleGlobalRuleRoutes(routeCtx)) return true;
-    if (
-      await handleTaskQueueRoutes(routeCtx, {
-        taskQueueAvailable: deps.taskQueueAvailable,
-        resolveTaskContext: deps.resolveTaskContext,
-        promoteQueuedTasksToPending: deps.promoteQueuedTasksToPending,
-      })
-    )
-      return true;
-    if (await handleAttachmentRoutes(routeCtx, { resolveTaskContext: deps.resolveTaskContext, buildAttachmentRawUrl })) return true;
-    if (await handleTaskRoutes(routeCtx, sharedDeps)) return true;
+    if (await handleAttachmentRoutes(routeCtx, { resolveWorkspaceContext: deps.resolveWorkspaceContext, buildAttachmentRawUrl })) return true;
 
     sendJson(res, 404, { error: "Not Found" });
     return true;

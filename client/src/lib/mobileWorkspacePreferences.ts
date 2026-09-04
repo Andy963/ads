@@ -1,4 +1,4 @@
-export type MobileWorkspaceTab = "tasks" | "planner" | "worker";
+export type MobileWorkspaceTab = "planner" | "worker";
 
 const MOBILE_WORKSPACE_TAB_KEY_PREFIX = "ads.mobileWorkspaceTab";
 const DEFAULT_MOBILE_WORKSPACE_TAB: MobileWorkspaceTab = "planner";
@@ -22,7 +22,7 @@ export function buildMobileWorkspaceTabStorageKey(projectId: string): string {
 }
 
 export function normalizeMobileWorkspaceTab(value: unknown): MobileWorkspaceTab {
-  if (value === "tasks" || value === "planner" || value === "worker") return value;
+  if (value === "planner" || value === "worker") return value;
   return DEFAULT_MOBILE_WORKSPACE_TAB;
 }
 

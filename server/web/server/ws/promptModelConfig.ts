@@ -140,8 +140,8 @@ function trimHistoryInjectionLines(lines: string[], maxChars: number): {
  * ends up never being done.
  *
  * Deliberately conservative: a missing reply alone is NOT enough, because plenty of completed turns
- * never write a `role: "ai"` entry (slash commands answer with `status` entries, tasks skip the ai
- * entry when the result is empty). We require an explicit error terminator, and skip user-initiated
+ * never write a `role: "ai"` entry (slash commands answer with `status` entries, empty results skip the ai
+ * entry). We require an explicit error terminator, and skip user-initiated
  * aborts — re-advertising a request the user cancelled on purpose is worse than missing one.
  */
 function collectUnansweredUserEntries(entries: HistoryInjectionEntry[]): Set<HistoryInjectionEntry> {

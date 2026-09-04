@@ -19,12 +19,7 @@ function createRuntime() {
 
 describe("useLaneRuntimeBridge", () => {
   it("defaults the visible lane to planner", () => {
-    const plannerRuntime = {
-      ...createRuntime(),
-      taskBundleDrafts: ref([]),
-      taskBundleDraftsBusy: ref(false),
-      taskBundleDraftsError: ref<string | null>(null),
-    };
+    const plannerRuntime = createRuntime();
 
     const bridge = useLaneRuntimeBridge({
       activeProjectId: ref("p1"),
@@ -46,12 +41,7 @@ describe("useLaneRuntimeBridge", () => {
   });
 
   it("keeps the worker latest-prompt key stable across chat sessions", () => {
-    const plannerRuntime = {
-      ...createRuntime(),
-      taskBundleDrafts: ref([]),
-      taskBundleDraftsBusy: ref(false),
-      taskBundleDraftsError: ref<string | null>(null),
-    };
+    const plannerRuntime = createRuntime();
     const activeProject = ref({ chatSessionId: "session-1" });
 
     const bridge = useLaneRuntimeBridge({
@@ -80,12 +70,7 @@ describe("useLaneRuntimeBridge", () => {
   });
 
   it("returns planner lane to worker when the active project changes", async () => {
-    const plannerRuntime = {
-      ...createRuntime(),
-      taskBundleDrafts: ref([]),
-      taskBundleDraftsBusy: ref(false),
-      taskBundleDraftsError: ref<string | null>(null),
-    };
+    const plannerRuntime = createRuntime();
     const activeProjectId = ref("p1");
 
     const bridge = useLaneRuntimeBridge({
@@ -121,9 +106,6 @@ describe("useLaneRuntimeBridge", () => {
       activePlannerRuntime: shallowRef({
         ...createRuntime(),
         connected: ref(false),
-        taskBundleDrafts: ref([]),
-        taskBundleDraftsBusy: ref(false),
-        taskBundleDraftsError: ref<string | null>(null),
       }),
       queueStatus: ref(null),
       tasks: ref([]),
@@ -157,9 +139,6 @@ describe("useLaneRuntimeBridge", () => {
       activePlannerRuntime: shallowRef({
         ...createRuntime(),
         connected: ref(true),
-        taskBundleDrafts: ref([]),
-        taskBundleDraftsBusy: ref(false),
-        taskBundleDraftsError: ref<string | null>(null),
       }),
       queueStatus: ref(null),
       tasks: ref([]),

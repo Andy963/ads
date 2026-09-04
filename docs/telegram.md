@@ -34,7 +34,7 @@ node dist/server/cli.js telegram
 |---|---|---|
 | `/start` | 无 | 欢迎信息与可用指令概览 |
 | `/help` | 无 | 详细帮助文档与交互提示 |
-| `/status` | 无 | 查看当前系统状态、活动 Agent、当前工作目录及任务队列概况 |
+| `/status` | 无 | 查看当前系统状态、活动 Agent 及当前工作目录 |
 | `/reset` | 无 | 重置当前会话，开启全新的对话上下文 |
 | `/sessions` | `[关键词]` (可选) | 搜索并列出当前工作目录下最近的 Codex / Claude 原生会话，点击内联按钮直接恢复上下文 |
 | `/resume` | 无 | 快捷提示，引导使用 `/sessions` 选取恢复目标 |
@@ -54,8 +54,8 @@ node dist/server/cli.js telegram
 2. **图片与文档附件**：
    - 发送图片直接作为多模态输入传递给支持 Vision 的模型。
    - 发送文本、代码或配置文档附件，Bot 会自动下载并将其路径注入到当前任务上下文。
-3. **Web 任务通知联动**：
-   - 当 Web 端执行的后台任务到达终态（成功 / 失败 / 阻塞）时，Bot 会自动向绑定的 `TELEGRAM_ALLOWED_USER_ID` 推送任务执行结果摘要与生成的 Git Patch 概况。
+3. **Web 调度通知联动**：
+   - 当 Web 端创建的定时 Prompt 到达终态（成功 / 失败 / 取消）时，Bot 会按调度配置推送执行结果摘要。
 
 ---
 
@@ -77,5 +77,5 @@ node dist/server/cli.js telegram
 | `TELEGRAM_STREAM_UPDATE_INTERVAL` | `1500` | 流式消息向 Telegram 编辑推送的时间间隔（毫秒） |
 | `TELEGRAM_MODEL` | 未设置 | Telegram 端使用的默认模型覆盖 |
 | `TELEGRAM_PROXY_URL` | 未设置 | HTTP / SOCKS5 网络代理地址（如 `http://127.0.0.1:7890`） |
-| `TELEGRAM_SILENT_NOTIFICATIONS` | `true` | 是否静默发送后台任务终态通知 |
-| `ADS_TELEGRAM_NOTIFY_TIMEZONE` | `Asia/Shanghai` | 终态通知卡片中显示的时间时区 |
+| `TELEGRAM_SILENT_NOTIFICATIONS` | `true` | 是否静默发送调度 Prompt 终态通知 |
+| `ADS_TELEGRAM_NOTIFY_TIMEZONE` | `Asia/Shanghai` | 调度终态通知卡片中显示的时间时区 |

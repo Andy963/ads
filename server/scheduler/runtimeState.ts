@@ -4,8 +4,6 @@ import path from "node:path";
 import DatabaseConstructor, { type Database as SqliteDatabase } from "better-sqlite3";
 import { Runner, SqliteQueue, buildDBClient } from "liteque";
 
-import { TaskStore } from "../tasks/store.js";
-import { OrchestratorTaskExecutor } from "../tasks/executor.js";
 import { SessionManager, resolveSessionAgentAllowlist } from "../telegram/utils/sessionManager.js";
 import { ThreadStorage } from "../telegram/utils/threadStorage.js";
 
@@ -14,7 +12,6 @@ import type { SchedulerExecutionResult, SchedulerJobPayload, WorkspaceSchedulerS
 import {
   buildQueueName,
   generateAllocationId,
-  hashTaskId,
   resolveLitequeDbPath,
 } from "./runtimeSupport.js";
 
@@ -31,7 +28,6 @@ type CreateWorkspaceSchedulerStateOptions = {
 
 export function createWorkspaceSchedulerState(options: CreateWorkspaceSchedulerStateOptions): WorkspaceSchedulerState {
   const scheduleStore = new ScheduleStore({ workspacePath: options.workspaceRoot });
-  const taskStore = new TaskStore({ workspacePath: options.workspaceRoot });
   const dbPath = resolveLitequeDbPath(options.workspaceRoot);
   const queueDb = buildDBClient(dbPath, { runMigrations: true });
   const queueRawDb = new DatabaseConstructor(dbPath, { readonly: false, fileMustExist: false });
@@ -44,8 +40,7 @@ export function createWorkspaceSchedulerState(options: CreateWorkspaceSchedulerS
   });
   patchQueueAttemptDequeue(queue, queueRawDb);
 
-  const schedulerModelOverride =
-    String(process.env.ADS_SCHEDULER_MODEL ?? process.env.TASK_QUEUE_DEFAULT_MODEL ?? "").trim() || undefined;
+  const schedulerModelOverride = String(process.env.ADS_SCHEDULER_MODEL ?? "").trim() || undefined;
   const sessionManager = new SessionManager(
     0,
     0,
@@ -60,13 +55,6 @@ export function createWorkspaceSchedulerState(options: CreateWorkspaceSchedulerS
       agentAllowlist: resolveSessionAgentAllowlist("scheduler-runtime"),
     },
   );
-
-  const executor = new OrchestratorTaskExecutor({
-    getOrchestrator: (task) => sessionManager.getOrCreate(hashTaskId(task.id), options.workspaceRoot, true),
-    store: taskStore,
-    workspaceRoot: options.workspaceRoot,
-    autoModelOverride: schedulerModelOverride,
-  });
 
   const runner = new Runner<SchedulerJobPayload, SchedulerExecutionResult>(
     queue,
@@ -88,11 +76,10 @@ export function createWorkspaceSchedulerState(options: CreateWorkspaceSchedulerS
 
   return {
     store: scheduleStore,
-    taskStore,
     queue,
     queueRawDb,
     runner,
-    executor,
+    sessionManager,
     runnerPromise: null,
     lastTouchedAt: Date.now(),
   };

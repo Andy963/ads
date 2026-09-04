@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { shallowMount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
-import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
+import type { ModelConfig, TaskQueueStatus } from "../api/types";
 
 type GetImpl = (url: string) => Promise<unknown>;
 
@@ -68,31 +68,6 @@ vi.mock("../components/LoginGate.vue", () => {
   };
 });
 
-function makeTask(overrides: Partial<Task>): Task {
-  const now = Date.now();
-  return {
-    id: overrides.id ?? `t-${now}`,
-    title: overrides.title ?? "Test Task",
-    prompt: overrides.prompt ?? "",
-    model: overrides.model ?? "mock",
-    status: overrides.status ?? "pending",
-    priority: overrides.priority ?? 0,
-    queueOrder: overrides.queueOrder ?? 0,
-    inheritContext: overrides.inheritContext ?? true,
-    agentId: overrides.agentId ?? null,
-    retryCount: overrides.retryCount ?? 0,
-    maxRetries: overrides.maxRetries ?? 0,
-    createdAt: overrides.createdAt ?? now,
-    queuedAt: overrides.queuedAt ?? null,
-    startedAt: overrides.startedAt ?? null,
-    completedAt: overrides.completedAt ?? null,
-    result: overrides.result ?? null,
-    error: overrides.error ?? null,
-    createdBy: overrides.createdBy ?? null,
-    attachments: overrides.attachments,
-  };
-}
-
 async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Promise<void> {
   await wrapper.vm.$nextTick();
   await Promise.resolve();
@@ -136,26 +111,6 @@ describe("project status spinner", () => {
     expect(wrapper.find(".projectStatus").classes("spinning")).toBe(true);
 
     rt.busy.value = false;
-    await settleUi(wrapper);
-    expect(wrapper.find(".projectStatus").classes("spinning")).toBe(false);
-
-    wrapper.unmount();
-  });
-
-  it("still shows spinner while a task is planning/running", async () => {
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
-
-    const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
-    const rt = (wrapper.vm as any).getRuntime(pid) as { busy: { value: boolean }; tasks: { value: Task[] } };
-
-    rt.busy.value = false;
-    rt.tasks.value = [makeTask({ id: "t-1", status: "running" })];
-    await settleUi(wrapper);
-    expect(wrapper.find(".projectStatus").classes("spinning")).toBe(true);
-
-    rt.tasks.value = [makeTask({ id: "t-1", status: "completed" })];
     await settleUi(wrapper);
     expect(wrapper.find(".projectStatus").classes("spinning")).toBe(false);
 

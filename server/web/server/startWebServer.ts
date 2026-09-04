@@ -16,8 +16,7 @@ import { HistoryMaintenanceScheduler } from "../../state/historyMaintenance.js";
 import { HistoryStore } from "../../utils/historyStore.js";
 import { createLogger } from "../../utils/logger.js";
 import { CliAgentAvailability } from "../../agents/health/agentAvailability.js";
-import { createTaskQueueManager } from "./taskQueue/manager.js";
-import { WorkspacePurgeScheduler } from "./taskQueue/purgeScheduler.js";
+import { createWorkspaceContextResolver } from "./workspaceContext.js";
 import { loadCwdStore, persistCwdStore, isLikelyWebProcess, isProcessRunning, wait, sanitizeInput } from "../utils.js";
 import { runAdsCommandLine } from "../commandRouter.js";
 import { resolveSessionPepper, resolveSessionTtlSeconds, isSessionActiveByTokenHash } from "../auth/sessions.js";
@@ -256,20 +255,8 @@ export async function startWebServer(): Promise<void> {
     laneGenerationStore,
   });
 
-  const taskQueueManager = createTaskQueueManager({
-    workspaceRoot,
-    allowedDirs,
-    adsStateDir,
-    lockForWorkspace: getWorkspaceLock,
-    available: webConfig.taskQueueEnabled,
-    autoStart: webConfig.taskQueueAutoStart,
-    logger,
-    broadcastToSession: wsHub.broadcastToSession,
-  });
-
   startTaskTerminalTelegramRetryLoop({ logger });
-
-  const purgeScheduler = new WorkspacePurgeScheduler({ logger });
+  const workspaceContext = createWorkspaceContextResolver({ workspaceRoot, allowedDirs });
 
   const scheduleCompiler = new AgentScheduleCompiler();
   const scheduler = new SchedulerRuntime();
@@ -336,12 +323,8 @@ export async function startWebServer(): Promise<void> {
     workspaceRoot,
     sessionTtlSeconds,
     sessionPepper,
-    taskQueueAvailable: webConfig.taskQueueEnabled,
-    resolveTaskWorkspaceRoot: taskQueueManager.resolveTaskWorkspaceRoot,
-    resolveTaskContext: taskQueueManager.resolveTaskContext,
-    promoteQueuedTasksToPending: taskQueueManager.promoteQueuedTasksToPending,
-    broadcastToSession: wsHub.broadcastToSession,
-    scheduleWorkspacePurge: (ctx) => purgeScheduler.schedule(ctx),
+    resolveWorkspaceRoot: workspaceContext.resolveWorkspaceRoot,
+    resolveWorkspaceContext: workspaceContext.resolveWorkspaceContext,
     scheduleCompiler,
     scheduler,
     syncEventStore,
@@ -403,11 +386,6 @@ export async function startWebServer(): Promise<void> {
     history: {
       workerHistoryStore: laneResources.worker.historyStore,
       plannerHistoryStore: laneResources.planner.historyStore,
-    },
-    tasks: {
-      ensureTaskContext: taskQueueManager.ensureTaskContext,
-      promoteQueuedTasksToPending: taskQueueManager.promoteQueuedTasksToPending,
-      broadcastToSession: wsHub.broadcastToSession,
     },
     commands: {
       runAdsCommandLine,
