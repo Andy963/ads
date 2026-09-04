@@ -216,10 +216,7 @@ export function getSemanticCardRank(item: ChatItem): number {
   if (item.role === "user") return 0;
   if (item.kind === "plan") return 1;
   if (item.kind === "thought" || isLiveMessageId(item.id)) return 2;
-  if (item.kind === "execute") return 3;
-  if (item.kind === "patch") return 4;
-  if (item.role === "assistant") return 5;
-  return 6;
+  return 3;
 }
 
 type TurnBounds = { start: number; end: number };
@@ -268,26 +265,11 @@ export function findProcessInsertIndex(messages: ChatItem[]): number {
 
 /**
  * Return the insertion point for a command execution card in the current turn.
- * Commands follow process/thought cards and earlier commands, while remaining
- * before patches and the final assistant response.
+ * In an interleaved turn, execution blocks follow the explanation that triggered them,
+ * remaining strictly ahead of live-progress indicators.
  */
 export function findExecuteInsertIndex(messages: ChatItem[]): number {
-  const { start, end } = getCurrentTurnBounds(messages);
-  let insertAt = Math.min(end, start + 1);
-  for (let index = start + 1; index < end; index += 1) {
-    const item = messages[index]!;
-    if (
-      isLiveMessageId(item.id) ||
-      item.kind === "plan" ||
-      item.kind === "thought" ||
-      item.kind === "execute"
-    ) {
-      insertAt = index + 1;
-      continue;
-    }
-    return index;
-  }
-  return insertAt;
+  return getCurrentTurnBounds(messages).end;
 }
 
 /** Return the end of the current turn for a newly-created assistant stream. */
