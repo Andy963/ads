@@ -1,4 +1,4 @@
-import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import type { SessionManager } from "../../../sessions/sessionManager.js";
 
 import { getStateDatabase } from "../../../state/database.js";
 import { createGlobalModelConfigStore } from "../../../state/globalModelConfigStore.js";

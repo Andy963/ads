@@ -1,5 +1,5 @@
 import { parseSlashCommand } from "../../../codexConfig.js";
-import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import type { SessionManager } from "../../../sessions/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import type { WsCommandStateDeps, WsLogger, WsOrchestrator, WsSessionLogger, WsTransportDeps } from "./deps.js";
 

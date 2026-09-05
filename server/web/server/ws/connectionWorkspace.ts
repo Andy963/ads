@@ -1,5 +1,5 @@
-import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
-import type { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
+import type { SessionManager } from "../../../sessions/sessionManager.js";
+import type { DirectoryManager } from "../../../sessions/directoryManager.js";
 
 type PersistCwdStore = (storePath: string, store: Map<string, string>) => void;
 

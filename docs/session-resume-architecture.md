@@ -8,19 +8,19 @@
 
 | 能力 | 实现位置 |
 |---|---|
-| 原生恢复后不再注入历史 | [`sessionState.ts`](../server/telegram/utils/sessionState.ts) `resolveResumeState` 返回 `restoreMode: "thread_resumed"` |
+| 原生恢复后不再注入历史 | [`sessionState.ts`](../server/sessions/sessionState.ts) `resolveResumeState` 返回 `restoreMode: "thread_resumed"` |
 | 廉价可恢复性探测 | [`sessionPaths.ts`](../server/agents/sessions/sessionPaths.ts) `probeSessionOnDisk`、[`taskResumeProbe.ts`](../server/web/server/ws/taskResumeProbe.ts) |
 | 会话目录服务 | [`catalog.ts`](../server/agents/sessions/catalog.ts) `listAgentSessions` |
 | 一次性会话过滤与重名折叠 | [`catalog.ts`](../server/agents/sessions/catalog.ts) `collapseDuplicates`、各数据源的 `singleTurn` 判定 |
 | fork 链折叠（每个对话只留最新 session） | [`historyStore.ts`](../server/utils/historyStore.ts) `selectRecentSessionLinksStmt`、[`catalog.ts`](../server/agents/sessions/catalog.ts) `listLinkedSessions` |
 | 分页游标 | [`types.ts`](../server/agents/sessions/types.ts) `SessionListCursor` |
-| 默认恒恢复（无空闲超时） | [`sessionState.ts`](../server/telegram/utils/sessionState.ts) `resolveResumeState`、`SessionManager.getOrCreate` 的 `resumeThread` 默认 `true` |
+| 默认恒恢复（无空闲超时） | [`sessionState.ts`](../server/sessions/sessionState.ts) `resolveResumeState`、`SessionManager.getOrCreate` 的 `resumeThread` 默认 `true` |
 | 恢复失败自愈降级 | [`missingProviderSession.ts`](../server/agents/adapters/missingProviderSession.ts)、Codex adapter 的 fresh 重试、[`handlePrompt.ts`](../server/web/server/ws/handlePrompt.ts) `onSessionFallback` |
 | Codex 数据源 | [`codexSessionSource.ts`](../server/agents/sessions/codexSessionSource.ts)（app-server + rollout 兜底） |
 | 预览文本提取 | [`promptPreview.ts`](../server/agents/sessions/promptPreview.ts) |
 | WS 协议 | [`handleSessionList.ts`](../server/web/server/ws/handleSessionList.ts)、[`messageControl.ts`](../server/web/server/ws/messageControl.ts) |
 | 前端选择器 | [`SessionResumePicker.vue`](../client/src/components/SessionResumePicker.vue) |
-| Telegram 入口 | [`registerControlCommands.ts`](../server/telegram/commands/registerControlCommands.ts) `/sessions`、[`sessionListMessage.ts`](../server/telegram/utils/sessionListMessage.ts) |
+| Connector 入口 | [`connectors/telegram/src/bot.ts`](../connectors/telegram/src/bot.ts) 通过 Core WebSocket 协议转发会话请求 |
 
 用户操作路径：会话工具条上带文字标签的「历史会话」按钮（`data-testid="lane-resume-thread"`）→ 打开选择器 → 点击列表项。**用户不需要知道或输入任何 session ID**，前端从列表项取出 `sessionId` 填入 `task_resume` 的 payload。
 
@@ -49,7 +49,7 @@ ADS 目前的"恢复上下文"能力存在两条互相竞争的路径：
 
 ### 2.2 Session ID 的持久化
 
-- `SessionManager` 为每个用户保存一个 Codex thread ID：[`sessionManager.ts`](../server/telegram/utils/sessionManager.ts)（`saveThreadId`、`getSavedThreadId`、`getSavedResumeThreadId`）。
+- `SessionManager` 为每个用户保存一个 Codex thread ID：[`sessionManager.ts`](../server/sessions/sessionManager.ts)（`saveThreadId`、`getSavedThreadId`、`getSavedResumeThreadId`）。
 - 每次 prompt 会把 `(historyKey, agentId, providerSessionId, cwd)` 写进 `history_session_links` 表：[`handlePrompt.ts`](../server/web/server/ws/handlePrompt.ts) → [`historyStore.ts`](../server/utils/historyStore.ts)（`linkAgentSession`）。历史记录中的旧非 Codex agent 标记仅作兼容数据，不参与恢复。
 
 **这是关键资产**：ADS 已经有一张"ADS 会话 ↔ provider 原生 session"的映射表，只是从来没有被读出来做列表展示。
@@ -66,7 +66,7 @@ ADS 目前的"恢复上下文"能力存在两条互相竞争的路径：
 
 **限制 C — 恢复成功了还要再注入一遍历史。** `resolveResumeState` 的 `thread_resumed_with_history` 分支同时返回 `resumeThreadId` 和 `shouldInjectHistory: true`，`restoreMode` 却写成 `history_injection`——日志与返回值自相矛盾。下一次 prompt 时 [`handlePrompt.ts`](../server/web/server/ws/handlePrompt.ts) 的 `needsHistoryInjection` 命中，把同一段历史再喂一遍。模型因此看到"原生上下文 + 一份该上下文的文字复述"，这正是"效果并不好"的直接来源。
 
-> 已修复：两个持有 `resumeThreadId` 的分支改为 `shouldInjectHistory: false` / `restoreMode: "thread_resumed"`。回归护栏见 `tests/telegram/sessionState.test.ts` 与 `tests/telegram/sessionManager.test.ts`。
+> 已修复：两个持有 `resumeThreadId` 的分支改为 `shouldInjectHistory: false` / `restoreMode: "thread_resumed"`。回归护栏见 `tests/sessions/sessionState.test.ts` 与 `tests/sessions/sessionManager.test.ts`。
 
 ### 2.4 探活方式的代价（已修复）
 
@@ -229,7 +229,7 @@ const res = await client.request<ThreadListParams, ThreadListResponse>("thread/l
 
 `useStateDbOnly: true` 是列表场景的正确选择：它跳过 JSONL 回扫修复，代价是极少数元数据陈旧的 thread 标题可能为空——对列表展示可接受。
 
-**不要传 `cwd` 给 app-server。** 实测发现 `ThreadListParams.cwd` 是精确字符串匹配，而 ADS 发起的 Codex thread 常把 cwd 记成工作区根目录（`/home/andy/repos`），即使会话实际运行在子目录（`/home/andy/repos/ads`）。传 `cwd: "/home/andy/repos/ads"` 的实测结果是 **0 条**。因此改为取更大一页，再用 [`areSessionCwdsCompatible`](../server/telegram/utils/sessionState.ts) 在本地过滤——该函数已经处理了嵌套目录与工作区根的等价关系。
+**不要传 `cwd` 给 app-server。** 实测发现 `ThreadListParams.cwd` 是精确字符串匹配，而 ADS 发起的 Codex thread 常把 cwd 记成工作区根目录（`/home/andy/repos`），即使会话实际运行在子目录（`/home/andy/repos/ads`）。传 `cwd: "/home/andy/repos/ads"` 的实测结果是 **0 条**。因此改为取更大一页，再用 [`areSessionCwdsCompatible`](../server/sessions/sessionState.ts) 在本地过滤——该函数已经处理了嵌套目录与工作区根的等价关系。
 
 兜底：app-server 拉起失败时扫描 `~/.codex/sessions/**/rollout-*.jsonl`，按 mtime 排序，只读每个文件头部 256 KiB 取 `session_meta`（session_id / cwd / timestamp）与首条用户消息；扫描数量上限 200 个文件。
 
@@ -390,8 +390,8 @@ rollout 文件兜底原计划在 P4，实际已随 P1 一并落地。逐条收�
 - `tests/state/historyMaintenance.test.ts`：`listAgentSessionLinks` 每条对话只返回一行，且 bare column 取自 `last_seen_at` 最新的 fork（同毫秒并列时由 `id` 决定）。
 - `tests/web/sessionList.test.ts`（5 项）：`session_list` 请求解析（含 `includeNoise`、`cursor`）、默认 agent、错误不抛出、翻页与 `appended` 标记。
 - `tests/web/taskResumeProbe.test.ts`（7 项）：三态探测、`unknown` 不被判为永久失败、错误消息能被 `isPermanentTaskResumeFailure` 识别。
-- `tests/telegram/sessionListMessage.test.ts`（6 项）：callback data 编解码与 64 字节上限、空列表文案、按钮与状态标注、折叠/隐藏/降级的回传、长标题按字符截断。
-- `tests/telegram/sessionState.test.ts`、`tests/telegram/sessionManager.test.ts`：原生恢复分支断言 `shouldInjectHistory === false` / `restoreMode === "thread_resumed"`（P0 回归护栏）。
+- Connector session tests：callback data 编解码与 64 字节上限、空列表文案、按钮与状态标注、折叠/隐藏/降级的回传、长标题按字符截断。
+- `tests/sessions/sessionState.test.ts`、`tests/sessions/sessionManager.test.ts`：原生恢复分支断言 `shouldInjectHistory === false` / `restoreMode === "thread_resumed"`（P0 回归护栏）。
 - `tests/web/handleTaskResume.test.ts`：Codex session 原生恢复、磁盘缺失的 saved id 清理、降级文案与未尝试原生恢复时的原有措辞。
 - `client/src/__tests__/session-resume-picker.test.ts`（19 项）：挂载即拉列表、点击派发 `sessionId`、快捷项派发 `undefined`、busy 时不派发、空态、搜索防抖、cwd 开关重新拉取、错误展示、隐藏计数提示、`×N` 折叠标记、禁用原因展示，以及「加载更多」的出现条件与并发抑制、`stale` 标记不影响可点击、fork 折叠说明。
 

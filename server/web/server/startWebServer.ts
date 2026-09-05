@@ -20,7 +20,6 @@ import { createWorkspaceContextResolver } from "./workspaceContext.js";
 import { loadCwdStore, persistCwdStore, isLikelyWebProcess, isProcessRunning, wait, sanitizeInput } from "../utils.js";
 import { runAdsCommandLine } from "../commandRouter.js";
 import { resolveSessionPepper, resolveSessionTtlSeconds, isSessionActiveByTokenHash } from "../auth/sessions.js";
-import { startTaskTerminalTelegramRetryLoop } from "../taskNotifications/telegramNotifier.js";
 import { AgentScheduleCompiler } from "../../scheduler/compiler.js";
 import { SchedulerRuntime } from "../../scheduler/runtime.js";
 import { resolveSharedConfig, resolveWebConfig } from "../../config.js";
@@ -28,7 +27,7 @@ import { closeSharedDatabases } from "../../utils/shutdown.js";
 import { createWebSocketHub } from "./start/webSocketHub.js";
 import { SyncEventStore } from "./sync/store.js";
 import { WebLaneGenerationStore } from "./sync/laneGeneration.js";
-import { DirectoryManager } from "../../telegram/utils/directoryManager.js";
+import { DirectoryManager } from "../../sessions/directoryManager.js";
 import {
   createWebLaneResources,
 } from "./start/webLaneResources.js";
@@ -254,8 +253,6 @@ export async function startWebServer(): Promise<void> {
     syncEventStore,
     laneGenerationStore,
   });
-
-  startTaskTerminalTelegramRetryLoop({ logger });
   const workspaceContext = createWorkspaceContextResolver({ workspaceRoot, allowedDirs });
 
   const scheduleCompiler = new AgentScheduleCompiler();

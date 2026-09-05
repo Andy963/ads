@@ -9,13 +9,13 @@ ADS (Agent Dispatch & Orchestration System) 采用分层解耦的架构设计，
 ```text
 ┌──────────────────────────────────────────────────────────────┐
 │                       交互端 / Clients                        │
-│   Web Console (Vue 3 + Vite)   │   Telegram Bot (GrammY)     │
+│   Web Console (Vue 3 + Vite)   │ Telegram Connector (optional)│
 └──────────────┬─────────────────┴──────────────┬───────────────┘
                │                                │
-               │ HTTP / WebSocket               │ Long Polling
+               │ HTTP / WebSocket               │ Authenticated WebSocket
                ▼                                ▼
 ┌──────────────────────────────────────────────────────────────┐
-│                     服务端服务层 / Server Core                 │
+│                     服务端服务层 / ADS Core                    │
 │  - HTTP API & Auth Router (Cookie Session / Rate Limiter)     │
 │  - WebSocket Hub & Sync Sequencer (Durable Event Log)         │
 │  - Advisor / Worker Prompt Orchestration                      │
@@ -41,7 +41,7 @@ ADS (Agent Dispatch & Orchestration System) 采用分层解耦的架构设计，
 
 ### 2.0 统一会话消息记录
 
-Web 与 Telegram 保留各自现有的本地存储和消息交付行为。通道接受最终用户消息或成功记录最终 Agent 回复后，还会通过 `server/utils/conversationMessageRecorder.ts` 中的共享 `ConversationMessageRecorder` 契约发布规范化消息。
+Web 与独立 Channel Connector 通过 Core WebSocket 协议使用各自隔离的会话与消息交付行为。通道接受最终用户消息或成功记录最终 Agent 回复后，还会通过 `server/utils/conversationMessageRecorder.ts` 中的共享 `ConversationMessageRecorder` 契约发布规范化消息。
 
 该契约携带消息 ID、工作区、会话、来源、角色、正文及可用的 Agent 身份。消费者是可选且隔离的：recorder 抛错不得影响本地持久化、模型调用或通道交付。流式增量、命令、状态事件、工具输出和错误不属于最终会话消息，不通过该契约发布。
 

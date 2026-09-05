@@ -67,8 +67,6 @@ describe("web/api/schedules", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-schedules-route-"));
     process.env.ADS_DATABASE_PATH = path.join(tmpDir, "ads.db");
-    delete process.env.TELEGRAM_ALLOWED_USER_ID;
-    delete process.env.TELEGRAM_ALLOWED_USERS;
     resetDatabaseForTests();
   });
 
@@ -301,9 +299,7 @@ describe("web/api/schedules", () => {
     assert.equal(payload.questions.length, 1);
   });
 
-  it("normalizes telegram delivery with env default chat id on create", async () => {
-    process.env.TELEGRAM_ALLOWED_USER_ID = "123456";
-
+  it("preserves telegram delivery with explicit chat id on create", async () => {
     const workspaceRoot = tmpDir;
     const baseSpec: ScheduleSpec = {
       version: 1,
@@ -311,7 +307,7 @@ describe("web/api/schedules", () => {
       enabled: true,
       schedule: { type: "cron", cron: "*/5 * * * *", timezone: "Asia/Shanghai" },
       instruction: "每 5 分钟给我在 TG 发一个笑话，时区为 Asia/Shanghai",
-      delivery: { channels: ["telegram"], web: { audience: "owner" }, telegram: { chatId: null } },
+      delivery: { channels: ["telegram"], web: { audience: "owner" }, telegram: { chatId: "123456" } },
       policy: {
         workspaceWrite: false,
         network: "deny",
@@ -361,9 +357,6 @@ describe("web/api/schedules", () => {
   });
 
   it("disables telegram delivery schedules when chat id cannot be resolved", async () => {
-    delete process.env.TELEGRAM_ALLOWED_USER_ID;
-    delete process.env.TELEGRAM_ALLOWED_USERS;
-
     const workspaceRoot = tmpDir;
     const baseSpec: ScheduleSpec = {
       version: 1,

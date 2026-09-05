@@ -1,0 +1,27 @@
+{
+  "name": "@ads/connector-telegram",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Standalone Telegram channel connector for ADS",
+  "bin": {
+    "ads-telegram": "./bin/ads-telegram.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node bin/ads-telegram.js start",
+    "test": "node --import tsx --test 'tests/**/*.test.ts'"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "grammy": "^1.38.3",
+    "telegramify-markdown": "^1.3.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "@types/ws": "^8.5.12",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.4"
+  }
+}

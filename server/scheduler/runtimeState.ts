@@ -4,8 +4,8 @@ import path from "node:path";
 import DatabaseConstructor, { type Database as SqliteDatabase } from "better-sqlite3";
 import { Runner, SqliteQueue, buildDBClient } from "liteque";
 
-import { SessionManager, resolveSessionAgentAllowlist } from "../telegram/utils/sessionManager.js";
-import { ThreadStorage } from "../telegram/utils/threadStorage.js";
+import { SessionManager, resolveSessionAgentAllowlist } from "../sessions/sessionManager.js";
+import { ThreadStorage } from "../sessions/threadStorage.js";
 
 import { ScheduleStore } from "./store.js";
 import type { SchedulerExecutionResult, SchedulerJobPayload, WorkspaceSchedulerState, LitequeDequeuedRow } from "./runtimeSupport.js";

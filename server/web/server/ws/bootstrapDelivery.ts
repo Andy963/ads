@@ -1,7 +1,7 @@
 import type { WebSocket } from "ws";
 
 import type { AgentAvailability } from "../../../agents/health/agentAvailability.js";
-import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import type { SessionManager } from "../../../sessions/sessionManager.js";
 import type { HistoryEntry, HistoryStore } from "../../../utils/historyStore.js";
 import { getHistoryClientMessageId } from "../../../utils/historyKind.js";
 import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "./bootstrapState.js";

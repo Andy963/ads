@@ -5,7 +5,7 @@ import type { Database as SqliteDatabase } from "better-sqlite3";
 import type { Runner, SqliteQueue } from "liteque";
 
 import type { Logger } from "../utils/logger.js";
-import type { SessionManager } from "../telegram/utils/sessionManager.js";
+import type { SessionManager } from "../sessions/sessionManager.js";
 import { resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 import { detectWorkspaceFrom, resolveConfiguredDatabasePath } from "../workspace/detector.js";
 

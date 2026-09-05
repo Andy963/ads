@@ -1,5 +1,5 @@
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
-import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import type { SessionManager } from "../../../sessions/sessionManager.js";
 import type { HistoryEntry } from "../../../utils/historyStore.js";
 import { truncateForLog } from "../../utils.js";
 import type {

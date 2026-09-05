@@ -3,7 +3,7 @@ import type { Input } from "../../../agents/protocol/types.js";
 import { getHistoryClientMessageId } from "../../../utils/historyKind.js";
 import type { HistoryEntry } from "../../../utils/historyStore.js";
 import { truncateForLog } from "../../utils.js";
-import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import type { SessionManager } from "../../../sessions/sessionManager.js";
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { resolveWorkspaceStatePath } from "../../../workspace/adsPaths.js";
 import { buildPromptInput, buildUserLogEntry, cleanupTempFiles } from "../../utils.js";
@@ -21,6 +21,7 @@ import { processPromptOutputBlocks } from "./promptOutputProcessing.js";
 import { handlePromptError } from "./promptErrorHandling.js";
 import { beginWsPromptRun, isWsPromptAbort, isWsPromptSilentAbort, raceWsPromptAbort } from "./promptLifecycle.js";
 import { recordConversationMessage } from "../../../utils/conversationMessageRecorder.js";
+import { createCoreMiddlewarePipeline, type MiddlewareChannel } from "../../../middleware/index.js";
 
 export { buildHistoryInjectionContext, prependContextToInput } from "./promptModelConfig.js";
 export { formatWriteExploredSummary } from "./workerPromptHandler.js";
@@ -42,7 +43,14 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     return { handled: false, orchestrator: deps.sessions.orchestrator };
   }
 
-  const sendToChat = (payload: unknown): void => deps.transport.broadcastJson(payload);
+  const sendToChat = (payload: unknown): void => {
+    const clientMessageId = deps.request.clientMessageId;
+    if (payload && typeof payload === "object" && !Array.isArray(payload) && clientMessageId) {
+      deps.transport.broadcastJson({ ...payload as Record<string, unknown>, clientMessageId });
+      return;
+    }
+    deps.transport.broadcastJson(payload);
+  };
   const isLaneCurrent = (): boolean => (deps.context.isLaneCurrent ? deps.context.isLaneCurrent() : true);
 
   let orchestrator = deps.sessions.orchestrator;
@@ -143,6 +151,16 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       cleanupAfter();
       return;
     }
+    const rawPayload = deps.request.parsed.payload;
+    const turnChannel: MiddlewareChannel =
+      typeof rawPayload === "object" && rawPayload !== null && "channel" in rawPayload && typeof (rawPayload as { channel?: unknown }).channel === "string"
+        ? (rawPayload as { channel: MiddlewareChannel }).channel
+        : "web";
+    const turnMetadata =
+      typeof rawPayload === "object" && rawPayload !== null && "metadata" in rawPayload && typeof (rawPayload as { metadata?: unknown }).metadata === "object"
+        ? ((rawPayload as { metadata?: Record<string, unknown> }).metadata ?? undefined)
+        : undefined;
+
     const { unsubscribe, handleExploredEntry, getThoughtText } = attachWorkerPromptHandler({
       orchestrator,
       turnCwd,
@@ -152,7 +170,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       logger: deps.observability.logger,
       sessionLogger: deps.observability.sessionLogger,
       resolveAgentId: () => orchestrator.getActiveAgentId(),
-      channel: "web",
+      channel: turnChannel,
       isActive: promptRun.isActive,
       onSessionFallback: ({ previousSessionId, detail }) => {
         // This turn already ran without the old context; re-sending it now would
@@ -226,6 +244,8 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         deps.sessions.sessionManager.clearHistoryInjection(deps.context.userId);
       }
 
+      const pipeline = deps.middleware ?? createCoreMiddlewarePipeline();
+
       promptRun.ensureActive();
       agentTurnPromise = runAgentTurn(orchestrator, effectiveInput, {
         streaming: true,
@@ -234,6 +254,13 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         cwd: turnCwd,
         workspaceRoot,
         historySessionId: deps.context.historyKey,
+        middleware: pipeline,
+        middlewareContext: {
+          turnId: deps.request.clientMessageId ?? `turn-${Date.now()}`,
+          sessionId: deps.context.historyKey,
+          channel: turnChannel,
+          metadata: turnMetadata,
+        },
       });
       const result = await raceWsPromptAbort({
         controller,

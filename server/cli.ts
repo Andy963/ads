@@ -4,8 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-type AdsTopLevelCommand = "web" | "telegram" | "help" | "version";
-type AdsService = "web" | "telegram";
+type AdsTopLevelCommand = "web" | "help" | "version";
+type AdsService = "web";
 
 export type ParsedAdsCli =
   | { type: "help"; scope: "root" | AdsService }
@@ -30,44 +30,32 @@ function isVersionFlag(value: string): boolean {
 }
 
 function isTopLevelCommand(value: string): value is AdsTopLevelCommand {
-  return value === "web" || value === "telegram" || value === "help" || value === "version";
+  return value === "web" || value === "help" || value === "version";
 }
 
 function normalizeInvokedAs(invokedAs: string): string {
-  const base = path.basename(invokedAs);
-  return base || "ads";
+  return path.basename(invokedAs) || "ads";
 }
 
-function isTelegramAlias(invokedAs: string): boolean {
-  const normalized = normalizeInvokedAs(invokedAs);
-  return normalized === "ads-telegram";
-}
-
-export function parseAdsCli(args: string[], invokedAs: string): ParsedAdsCli {
-  const aliasTelegram = isTelegramAlias(invokedAs);
-
+export function parseAdsCli(args: string[], _invokedAs: string): ParsedAdsCli {
   const token = (args[0] ?? "").trim();
   const sub = (args[1] ?? "").trim();
 
   if (!token) {
-    return aliasTelegram ? { type: "start", service: "telegram" } : { type: "help", scope: "root" };
+    return { type: "help", scope: "root" };
   }
 
   if (isHelpFlag(token)) {
-    return aliasTelegram ? { type: "help", scope: "telegram" } : { type: "help", scope: "root" };
+    return { type: "help", scope: "root" };
   }
 
   if (isVersionFlag(token)) {
     return { type: "version" };
   }
 
-  if (aliasTelegram && (token === "start" || token === "run")) {
-    return { type: "start", service: "telegram" };
-  }
-
   if (isTopLevelCommand(token)) {
     if (token === "help") {
-      return { type: "help", scope: aliasTelegram ? "telegram" : "root" };
+      return { type: "help", scope: "root" };
     }
     if (token === "version") {
       return { type: "version" };
@@ -139,12 +127,8 @@ Usage:
 
 Commands:
   web [start]          Start the Web Console
-  telegram [start]     Start the Telegram bot
   help                 Show this help message
   version              Show version information
-
-Compatibility:
-  ads-telegram [start] Alias for \`ads telegram\`
 `);
 }
 
@@ -162,33 +146,9 @@ Environment:
 `);
 }
 
-function printTelegramHelp(invokedAs: string): void {
-  const usage = isTelegramAlias(invokedAs) ? "ads-telegram [command]" : "ads telegram [command]";
-  writeStdout(`
-ADS Telegram Bot
-
-Usage:
-  ${usage}
-
-Commands:
-  start         Start the Telegram bot (default)
-  help          Show this help message
-  version       Show version information
-
-Environment Variables:
-  TELEGRAM_BOT_TOKEN          Your Telegram bot token (required)
-  TELEGRAM_ALLOWED_USER_ID    Single user ID (required)
-  TELEGRAM_ALLOWED_USERS      Legacy alias (single value only)
-  ADS_PM2_APP_WEB             pm2 app name for web restarts (optional, e.g. ads-web)
-  ALLOWED_DIRS                Comma-separated directory paths (shared by all endpoints)
-  SANDBOX_MODE                Sandbox mode: read-only|workspace-write|danger-full-access (shared)
-`);
-}
-
-async function printVersion(invokedAs: string): Promise<void> {
+async function printVersion(_invokedAs: string): Promise<void> {
   const version = readPackageVersion();
-  const label = isTelegramAlias(invokedAs) ? "Telegram Bot" : "ADS";
-  writeStdout(`${label} v${version ?? "unknown"}`);
+  writeStdout(`ADS v${version ?? "unknown"}`);
 }
 
 function isMainModule(): boolean {
@@ -218,7 +178,6 @@ export async function runAdsFromCli(args: string[], invokedAs: string): Promise<
         printWebHelp();
         return 0;
       }
-      printTelegramHelp(invokedAs);
       return 0;
     }
     case "version": {
@@ -230,12 +189,11 @@ export async function runAdsFromCli(args: string[], invokedAs: string): Promise<
         await import("./web/server.js");
         return 0;
       }
-      await import("./telegram/bot.js");
       return 0;
     }
     case "error": {
       writeStderr(parsed.message);
-      const hint = isTelegramAlias(invokedAs) ? 'Run "ads-telegram help" for usage.' : 'Run "ads --help" for usage.';
+      const hint = 'Run "ads --help" for usage.';
       writeStderr(hint);
       return parsed.exitCode;
     }

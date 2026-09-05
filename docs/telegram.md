@@ -1,81 +1,70 @@
-# ADS Telegram Bot
+# ADS Telegram Connector
 
-ADS 包含一个可选的 Telegram Bot 服务端入口。它不仅仅用于接收任务终态通知，更是一个全功能的远程对话与控制终端，支持在移动设备上无缝与 Agent 交互、执行命令、恢复会话及管理工作区。
+ADS includes a standalone Telegram Channel Connector in `connectors/telegram/`. It runs outside ADS Core and communicates with Core over an authenticated WebSocket. Telegram turns enter Core as `channel: "telegram"` and therefore run through the same `MiddlewarePipeline`, memory recall, and safety rules as Web turns.
 
----
+Core streams prompt output as `delta` frames followed by a `result` frame. Task lifecycle notifications use the transport-neutral `task_terminal` event; only the connector calls the Telegram API.
 
-## 快速配置与启动
+## Configuration and Startup
 
-### 1. 环境变量配置
-在 `.env` 或环境变量中配置以下必填项：
+Configure Core and the connector separately. Core only needs the connector credential; Telegram credentials must be available only to the connector process.
 
 ```bash
-# Telegram Bot Token (向 @BotFather 申请)
+# ADS Core environment
+ADS_CONNECTOR_TOKEN="your-shared-core-token"
+ADS_CONNECTOR_USER_ID="connector"
+
+# Telegram Connector environment
 TELEGRAM_BOT_TOKEN="1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ"
-
-# 授权的单用户 ID (向 @userinfobot 发送消息获取数字 ID)
 TELEGRAM_ALLOWED_USER_ID="123456789"
+ADS_CORE_URL="http://127.0.0.1:8787"
+ADS_CORE_WS_URL="ws://127.0.0.1:8787/ws"
+ADS_CONNECTOR_TOKEN="your-shared-core-token"
 ```
 
-### 2. 启动服务
+Start the two processes independently:
+
 ```bash
-# 先编译构建
-npm run build
+# Start ADS Core
+node dist/server/cli.js web
 
-# 启动 Telegram Bot 守护进程
-node dist/server/cli.js telegram
+# Start the Telegram Connector
+node connectors/telegram/bin/ads-telegram.js start
 ```
 
----
+## Supported Interaction
 
-## 指令清单与交互说明
-
-| 指令 | 参数 / 格式 | 说明 |
+| Command | Arguments | Behavior |
 |---|---|---|
-| `/start` | 无 | 欢迎信息与可用指令概览 |
-| `/help` | 无 | 详细帮助文档与交互提示 |
-| `/status` | 无 | 查看当前系统状态、活动 Agent 及当前工作目录 |
-| `/reset` | 无 | 重置当前会话，开启全新的对话上下文 |
-| `/sessions` | `[关键词]` (可选) | 搜索并列出当前工作目录下最近的 Codex 原生会话，点击内联按钮直接恢复上下文 |
-| `/resume` | 无 | 快捷提示，引导使用 `/sessions` 选取恢复目标 |
-| `/esc` | 无 | 紧急中断当前正在执行的任务或模型生成，保留 Agent 进程环境 |
-| `/pwd` | 无 | 显示当前工作区绝对路径 |
-| `/cd` | `<目标路径>` | 在 `ALLOWED_DIRS` 白名单允许的范围内切换当前工作区目录 |
-| `/pref` | `[list \| add <key> <val> \| del <key>]` | 维护与查询工作区的长期偏好（写入 `soul.md`） |
-| `/mark` | `[on \| off]` | 开启或关闭笔记标记模式，开启时后续对话会自动沉淀到当日 Note 中 |
+| `/start` | None | Confirms that the connector is available. |
+| `/new` | None | Clears history for the current Telegram chat only. |
+| `/stop` | None | Interrupts an active turn for the current Telegram chat only. |
+| Text message | Any non-command text | Sends a `channel: "telegram"` prompt to ADS Core. |
 
----
+Each Telegram chat uses an independent Core chat session. History, `/new`, and `/stop` actions are scoped to that chat and cannot affect another chat.
 
-## 多模态与特殊输入支持
+The connector receives Core `task_terminal` events. A scheduled task with an explicit Telegram `chatId` is delivered to that chat; `TELEGRAM_NOTIFICATION_CHAT_ID` is an optional fallback.
 
-1. **语音消息与音频转写**：
-   - 发送语音消息（Voice Message）或音频文件（如 `.ogg`, `.m4a`, `.mp3`）。
-   - 服务端自动调用内置语音转写模块（支持 Groq Whisper 等引擎），将语音转为文字并直接作为 Prompt 发送给 Agent。
-2. **图片与文档附件**：
-   - 发送图片直接作为多模态输入传递给支持 Vision 的模型。
-   - 发送文本、代码或配置文档附件，Bot 会自动下载并将其路径注入到当前任务上下文。
-3. **Web 调度通知联动**：
-   - 当 Web 端创建的定时 Prompt 到达终态（成功 / 失败 / 取消）时，Bot 会按调度配置推送执行结果摘要。
+This connector version handles text messages only. Voice transcription, image and document attachments, workspace navigation, and session browsing are outside its scope.
 
----
+## Security Boundaries
 
-## 安全与权限控制
+- The connector accepts only users listed in `TELEGRAM_ALLOWED_USER_ID` or `TELEGRAM_ALLOWED_USERS`.
+- `TELEGRAM_*` variables and the Telegram API token belong only to the connector environment. ADS Core never reads them.
+- `ADS_CONNECTOR_TOKEN` is a Core credential. Set the same high-entropy value on Core and the connector, and rotate it if exposed.
+- Core `ALLOWED_DIRS` and sandbox mode limit the workspace access available to Connector-originated prompts.
 
-- **严格单用户锁定**：ADS Telegram Bot 采用白名单校验机制，所有非 `TELEGRAM_ALLOWED_USER_ID` 的消息均会被静默丢弃或直接拦截拒绝，防止公共群组或未经授权的用户调用底层系统权限。
-- **路径沙箱保护**：`/cd` 目录切换受 `ALLOWED_DIRS` 严格约束，无法越权访问白名单之外的宿主机文件系统。
+## Connector Environment Variables
 
----
-
-## Telegram 相关环境变量
-
-| 变量名 | 默认值 | 说明 |
+| Variable | Default | Description |
 |---|---|---|
-| `TELEGRAM_BOT_TOKEN` | 必填 | Telegram Bot API 访问凭据 |
-| `TELEGRAM_ALLOWED_USER_ID` | 必填 | 唯一授权操作的 Telegram 用户数字 ID |
-| `TELEGRAM_MAX_RPM` | `10` | 频率限制：单用户每分钟允许发送的最多请求数 |
-| `TELEGRAM_SESSION_TIMEOUT` | `24h` | 会话空闲超时（例如 `24h`, `120m`，`0` 表示不超时） |
-| `TELEGRAM_STREAM_UPDATE_INTERVAL` | `1500` | 流式消息向 Telegram 编辑推送的时间间隔（毫秒） |
-| `TELEGRAM_MODEL` | 未设置 | Telegram 端使用的默认模型覆盖 |
-| `TELEGRAM_PROXY_URL` | 未设置 | HTTP / SOCKS5 网络代理地址（如 `http://127.0.0.1:7890`） |
-| `TELEGRAM_SILENT_NOTIFICATIONS` | `true` | 是否静默发送调度 Prompt 终态通知 |
-| `ADS_TELEGRAM_NOTIFY_TIMEZONE` | `Asia/Shanghai` | 调度终态通知卡片中显示的时间时区 |
+| `TELEGRAM_BOT_TOKEN` | Required | Telegram Bot API token. |
+| `TELEGRAM_ALLOWED_USER_ID` | Required | Authorized Telegram numeric user ID. |
+| `TELEGRAM_ALLOWED_USERS` | Unset | Comma-separated legacy alternative to the single user variable. |
+| `ADS_CORE_URL` | `http://127.0.0.1:8787` | ADS Core HTTP address. |
+| `ADS_CORE_WS_URL` | Derived from `ADS_CORE_URL` | ADS Core WebSocket endpoint. |
+| `ADS_CONNECTOR_TOKEN` | Required | Bearer token shared with ADS Core. |
+| `ADS_CONNECTOR_USER_ID` | `connector` | Connector logical user ID, configured by Core. |
+| `TELEGRAM_NOTIFICATION_CHAT_ID` | Unset | Fallback target for `task_terminal` notifications. |
+| `TELEGRAM_MAX_REQUESTS_PER_MINUTE` | `30` | Per-user request limit. |
+| `TELEGRAM_PROXY_URL` | Unset | HTTP(S) proxy URL. |
+| `TELEGRAM_SILENT_NOTIFICATIONS` | `true` | Sends replies and notifications silently when enabled. |

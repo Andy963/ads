@@ -1,8 +1,7 @@
 import crypto from "node:crypto";
 
-import { SessionManager, resolveSessionAgentAllowlist } from "../telegram/utils/sessionManager.js";
+import { SessionManager, resolveSessionAgentAllowlist } from "../sessions/sessionManager.js";
 import { parsePositiveIntFlag } from "../utils/flags.js";
-import { resolveTaskNotificationDefaultTelegramChatIdFromEnv } from "../web/taskNotifications/telegramConfig.js";
 
 import { ScheduleSpecSchema, type ScheduleSpec } from "./scheduleSpec.js";
 import { parseSupportedCron, validateTimeZone } from "./cron.js";
@@ -76,15 +75,14 @@ export function normalizeCompiledScheduleSpec(spec: ScheduleSpec, instruction: s
   const deliveryChannels = Array.isArray(merged.delivery?.channels) ? merged.delivery.channels : [];
   if (deliveryChannels.includes("telegram")) {
     const explicitChatId = String(merged.delivery?.telegram?.chatId ?? "").trim();
-    const chatId = explicitChatId || resolveTaskNotificationDefaultTelegramChatIdFromEnv();
     merged.delivery = {
       ...merged.delivery,
       telegram: {
         ...(merged.delivery?.telegram ?? {}),
-        chatId: chatId || null,
+        chatId: explicitChatId || null,
       },
     };
-    if (!chatId) {
+    if (!explicitChatId) {
       merged.questions = normalizeQuestions([...merged.questions, "Which Telegram chatId should receive the schedule result?"]);
     }
   }

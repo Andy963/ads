@@ -87,15 +87,19 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 
 ---
 
-## 6. Telegram Bot
+## 6. Optional Telegram Connector
+
+Telegram variables belong to the standalone `connectors/telegram` package and are not read by ADS Core.
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
-| `TELEGRAM_BOT_TOKEN` | 必填 | Telegram Bot 访问 Token |
+| `TELEGRAM_BOT_TOKEN` | 必填 | Telegram Connector 的 Bot 访问 Token |
 | `TELEGRAM_ALLOWED_USER_ID` | 必填 | 唯一授权操作的 Telegram 用户数字 ID |
-| `TELEGRAM_MAX_RPM` | `10` | 每分钟最高请求频率限制 |
-| `TELEGRAM_SESSION_TIMEOUT` | `24h` | Telegram Agent 会话空闲保持超时 |
-| `TELEGRAM_STREAM_UPDATE_INTERVAL` | `1500` | Telegram 消息流式更新频率（毫秒） |
+| `ADS_CORE_URL` | `http://127.0.0.1:8787` | ADS Core HTTP 地址 |
+| `ADS_CORE_WS_URL` | Derived | ADS Core WebSocket 地址 |
+| `ADS_CONNECTOR_TOKEN` | 必填 | Core connector bearer token；Connector 与 Core 必须配置为同一值 |
+| `ADS_CONNECTOR_USER_ID` | `connector` | Bearer connector 的逻辑用户 ID |
+| `TELEGRAM_MAX_REQUESTS_PER_MINUTE` | `30` | 每分钟最高请求频率限制 |
 | `TELEGRAM_PROXY_URL` | 未设置 | 网络代理地址（如 `http://127.0.0.1:7890`） |
 | `TELEGRAM_SILENT_NOTIFICATIONS` | `true` | 是否静默推送任务完成通知 |
-| `ADS_TELEGRAM_NOTIFY_TIMEZONE` | `Asia/Shanghai` | 任务通知卡片中显示时间采用的时区 |
+| `TELEGRAM_NOTIFICATION_CHAT_ID` | 未设置 | 接收异步任务终态通知的 Chat ID |

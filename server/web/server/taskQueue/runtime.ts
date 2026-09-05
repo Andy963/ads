@@ -1,5 +1,5 @@
 import { safeParseJson } from "../../../utils/json.js";
-import { notifyTaskTerminalViaTelegram } from "../../taskNotifications/telegramNotifier.js";
+import { dispatchTaskTerminalEvent } from "../../taskNotifications/taskNotificationDispatcher.js";
 import { buildWorkspacePatch, type WorkspacePatchPayload } from "../../gitPatch.js";
 import { broadcastTaskStart } from "../../taskStartBroadcast.js";
 import { pauseQueueInManualMode, startQueueInAllMode } from "../../taskQueue/control.js";
@@ -369,11 +369,16 @@ export function bindTaskQueueRuntime(args: {
       ts: Date.now(),
     });
     try {
-      notifyTaskTerminalViaTelegram({
-        logger: args.logger,
+      dispatchTaskTerminalEvent({
+        taskId: task.id,
+        title: task.prompt,
+        status: "completed",
         workspaceRoot: ctx.workspaceRoot,
-        task,
-        terminalStatus: "completed",
+        startedAt: task.startedAt ?? null,
+        completedAt: task.completedAt ?? Date.now(),
+        result: task.result,
+      }, {
+        logger: args.logger,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -405,11 +410,16 @@ export function bindTaskQueueRuntime(args: {
       recordTaskQueueMetric(ctx.metrics, "TASK_COMPLETED", { ts: Date.now(), taskId: task.id });
       recordTaskWorkspacePatchArtifact(ctx, task.id);
       try {
-        notifyTaskTerminalViaTelegram({
-          logger: args.logger,
+        dispatchTaskTerminalEvent({
+          taskId: task.id,
+          title: task.prompt,
+          status: "failed",
           workspaceRoot: ctx.workspaceRoot,
-          task,
-          terminalStatus: "failed",
+          startedAt: task.startedAt ?? null,
+          completedAt: task.completedAt ?? Date.now(),
+          error: task.error,
+        }, {
+          logger: args.logger,
         });
       } catch (notifyError) {
         const message = notifyError instanceof Error ? notifyError.message : String(notifyError);
@@ -434,11 +444,15 @@ export function bindTaskQueueRuntime(args: {
     recordTaskQueueMetric(ctx.metrics, "TASK_COMPLETED", { ts: Date.now(), taskId: task.id });
     recordTaskWorkspacePatchArtifact(ctx, task.id);
     try {
-      notifyTaskTerminalViaTelegram({
-        logger: args.logger,
+      dispatchTaskTerminalEvent({
+        taskId: task.id,
+        title: task.prompt,
+        status: "cancelled",
         workspaceRoot: ctx.workspaceRoot,
-        task,
-        terminalStatus: "cancelled",
+        startedAt: task.startedAt ?? null,
+        completedAt: task.completedAt ?? Date.now(),
+      }, {
+        logger: args.logger,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

@@ -1,7 +1,7 @@
 import path from "node:path";
 
-import { ThreadStorage } from "../../../telegram/utils/threadStorage.js";
-import { SessionManager, resolveSessionAgentAllowlist } from "../../../telegram/utils/sessionManager.js";
+import { ThreadStorage } from "../../../sessions/threadStorage.js";
+import { SessionManager, resolveSessionAgentAllowlist } from "../../../sessions/sessionManager.js";
 import { AttachmentStore } from "../../../attachments/store.js";
 import { OrchestratorTaskExecutor } from "../../../tasks/executor.js";
 import { TaskQueue } from "../../../tasks/queue.js";

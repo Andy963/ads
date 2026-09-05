@@ -68,15 +68,16 @@ We appreciate security researchers who help keep ADS safe:
   ```
 - Ensure the Telegram bot script validates file permissions before starting
 
-#### Telegram Bot Security
+#### Telegram Connector Security
 
-- **Whitelist Users**: Always set `TELEGRAM_ALLOWED_USER_ID` to a specific user ID (legacy: `TELEGRAM_ALLOWED_USERS`)
-- **Limit Directories**: Use `ALLOWED_DIRS`（全端共享）限制可访问路径
+- **Whitelist Users**: Set `TELEGRAM_ALLOWED_USER_ID` in the connector service environment. Do not put Telegram credentials in the ADS Core environment.
+- **Connector Authentication**: Set the same high-entropy `ADS_CONNECTOR_TOKEN` for Core and the connector. Treat it as a credential with access to the configured Core workspace.
+- **Limit Directories**: Use `ALLOWED_DIRS`（全端共享）限制 Core 可访问路径
 - **Sandbox Mode**: Use `read-only` or `workspace-write` mode unless absolutely necessary
-  - `read-only`: Bot can only read files
-  - `workspace-write`: Bot can write within allowed directories
+  - `read-only`: Core can only read files
+  - `workspace-write`: Core can write within allowed directories
   - `danger-full-access`: ⚠️ Use with extreme caution
-- **Token Security**: Keep your `TELEGRAM_BOT_TOKEN` private
+- **Token Security**: Keep `TELEGRAM_BOT_TOKEN` private in the connector service environment
   - If leaked, immediately revoke via [@BotFather](https://t.me/BotFather)
   - Generate a new token
 
@@ -121,12 +122,12 @@ If you accidentally commit a secret:
 
 ### Current Limitations
 
-1. **Telegram Bot Access**: The bot has extensive access to configured directories. Ensure proper configuration of `ALLOWED_DIRS` and `TELEGRAM_SANDBOX_MODE`.
+1. **Telegram Connector Access**: The connector can submit prompts to ADS Core with `ADS_CONNECTOR_TOKEN`. Run it separately, restrict `TELEGRAM_ALLOWED_USER_ID`, and configure Core `ALLOWED_DIRS` and sandbox mode conservatively.
 
 2. **SQLite Database**: Workspace databases live under the centralized ADS state dir (default `.ads/workspaces/<workspaceId>/ads.db`, plus `.ads/state.db` for shared state) and may contain sensitive information. Ensure they are not committed to version control (covered by `.gitignore`).
 
 3. **Environment Files**: `.env` and any overrides contain secrets. Ensure all `.env*` files stay out of Git.
-   - `.env` is shared by web and Telegram; keep any overrides (e.g., `.env.local`) out of version control.
+   - Keep Core and connector environment files separate so Telegram credentials never need to be loaded by ADS Core.
 
 ### Mitigation
 
