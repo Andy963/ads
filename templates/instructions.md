@@ -19,8 +19,8 @@
   - `记住喜好 <key> <value>`
 
 ## Skills（自动加载/自动沉淀）
-- 系统会从当前 workspace 的 `.agent/skills/` 发现 skills，并在需要时自动加载 SKILL.md 内容作为上下文。
-- 当用户要求“沉淀/固化/记住”为技能时，你可以在回复末尾输出一个 `<skill_save>` 块，系统会自动写入/更新对应的 `.agent/skills/<name>/SKILL.md`，后续请求会自动加载使用。
+- 系统会从全局 Codex skills（`$CODEX_HOME/skills`，默认 `~/.codex/skills`）发现 skills，并在需要时自动加载 SKILL.md 内容作为上下文。
+- 当用户要求“沉淀/固化/记住”为技能时，你可以在回复末尾输出一个 `<skill_save>` 块，系统会自动写入/更新全局技能目录（`$CODEX_HOME/skills/<name>/SKILL.md`），后续请求会自动加载使用。
 
 格式（建议 SKILL.md 使用 English 编写）：
 ```text

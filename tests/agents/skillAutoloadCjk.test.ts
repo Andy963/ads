@@ -58,14 +58,8 @@ function makeTempWorkspace(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-cjk-"));
 }
 
-function enableWorkspaceSkills(workspaceRoot: string): void {
-  const skillsRoot = path.join(workspaceRoot, ".agent", "skills");
-  fs.mkdirSync(skillsRoot, { recursive: true });
-  fs.writeFileSync(path.join(skillsRoot, "metadata.yaml"), "enabled: true\n", "utf8");
-}
-
-function writeSkill(workspaceRoot: string, name: string, description: string): void {
-  const skillDir = path.join(workspaceRoot, ".agent", "skills", name);
+function writeSkill(codexHome: string, name: string, description: string): void {
+  const skillDir = path.join(codexHome, "skills", name);
   fs.mkdirSync(skillDir, { recursive: true });
   const skillFile = path.join(skillDir, "SKILL.md");
   const content = ["---", `name: ${name}`, `description: "${description}"`, "---", "", `# ${name}`, ""].join("\n");
@@ -75,9 +69,14 @@ function writeSkill(workspaceRoot: string, name: string, description: string): v
 describe("agents/orchestrator skill autoload (CJK)", () => {
   it("infers requested skills from CJK keywords", async () => {
     const workspaceRoot = makeTempWorkspace();
-    enableWorkspaceSkills(workspaceRoot);
-    writeSkill(workspaceRoot, "cat-requirements", "猫咪需求分析");
-    writeSkill(workspaceRoot, "cat-task", "猫咪转换成任务");
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "ads-cjk-codex-"));
+    const prevCodexHome = process.env.CODEX_HOME;
+    const prevMigrate = process.env.ADS_MIGRATE_LEGACY_SKILLS;
+    process.env.CODEX_HOME = codexHome;
+    process.env.ADS_MIGRATE_LEGACY_SKILLS = "0";
+    try {
+      writeSkill(codexHome, "cat-requirements", "猫咪需求分析");
+      writeSkill(codexHome, "cat-task", "猫咪转换成任务");
 
     const manager = new FakeSystemPromptManager();
     const orchestrator = new HybridOrchestrator({
@@ -92,5 +91,11 @@ describe("agents/orchestrator skill autoload (CJK)", () => {
 
     const requested = manager.requestedSkills.map((s) => s.toLowerCase()).sort();
     assert.deepEqual(requested, ["cat-requirements", "cat-task"].sort());
+    } finally {
+      process.env.CODEX_HOME = prevCodexHome;
+      process.env.ADS_MIGRATE_LEGACY_SKILLS = prevMigrate;
+      fs.rmSync(codexHome, { recursive: true, force: true });
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    }
   });
 });

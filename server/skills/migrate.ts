@@ -1,48 +1,64 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import yaml from "yaml";
-
 import { resolveAdsStateDir } from "../workspace/adsPaths.js";
+import { resolveGlobalSkillsDir } from "./paths.js";
+import { migrateLegacyStateSkills } from "./migration.js";
 
-const skillsRoot = process.argv[2] ? path.resolve(process.argv[2]) : path.join(resolveAdsStateDir(), ".agent", "skills");
-const metadataPath = path.join(skillsRoot, "metadata.yaml");
-const metadata = fs.existsSync(metadataPath) ? yaml.parse(fs.readFileSync(metadataPath, "utf8")) : {};
-const overrides = metadata?.skills && typeof metadata.skills === "object" ? metadata.skills : {};
-const timestamp = Date.now();
+export function runMigrationCli(argv: string[] = process.argv.slice(2)): {
+  source: string;
+  destination: string;
+  migrated: string[];
+  skipped: string[];
+} {
+  let sourceDir: string | undefined;
+  let destDir: string | undefined;
 
-for (const entry of fs.existsSync(skillsRoot) ? fs.readdirSync(skillsRoot, { withFileTypes: true }) : []) {
-  if (!entry.isDirectory() || entry.name.startsWith("_")) continue;
-  const skillMd = path.join(skillsRoot, entry.name, "SKILL.md");
-  if (!fs.existsSync(skillMd)) continue;
-  const content = fs.readFileSync(skillMd, "utf8");
-  const parsed = extractFrontmatter(content);
-  const body = parsed.body;
-  const fm = parsed.frontmatter;
-  const override = overrides[entry.name] ?? {};
-  const next = {
-    name: fm.name ?? entry.name,
-    description: fm.description ?? "No description provided.",
-    version: fm.version ?? 1,
-    provides: override.provides ?? fm.provides ?? [],
-    priority: override.priority ?? fm.priority ?? 100,
-    platforms: fm.platforms ?? ["linux", "macos", "win32"],
-    required_env: fm.required_env ?? [],
-    triggers: fm.triggers ?? { keywords: [], intents: [] },
-    entrypoints: fm.entrypoints ?? [],
-    deprecated: Boolean(override.provides || override.priority),
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--source" && i + 1 < argv.length) {
+      sourceDir = path.resolve(argv[++i]);
+    } else if (arg === "--dest" && i + 1 < argv.length) {
+      destDir = path.resolve(argv[++i]);
+    } else if (!arg.startsWith("-")) {
+      if (!sourceDir) {
+        sourceDir = path.resolve(arg);
+      } else if (!destDir) {
+        destDir = path.resolve(arg);
+      }
+    }
+  }
+
+  const stateDir = sourceDir ? (path.basename(sourceDir) === "skills" && path.basename(path.dirname(sourceDir)) === ".agent" ? path.dirname(path.dirname(sourceDir)) : sourceDir) : resolveAdsStateDir();
+  const resolvedSourceSkillsDir = path.join(stateDir, ".agent", "skills");
+  const resolvedDestSkillsDir = destDir ?? resolveGlobalSkillsDir();
+
+  console.log(`[skills:migrate] Source: ${fs.existsSync(resolvedSourceSkillsDir) ? resolvedSourceSkillsDir : `${sourceDir ?? stateDir} (no .agent/skills found)`}`);
+  console.log(`[skills:migrate] Destination: ${resolvedDestSkillsDir}`);
+
+  const result = migrateLegacyStateSkills({
+    stateDir,
+    globalSkillsDir: resolvedDestSkillsDir,
+  });
+
+  if (result.migrated.length > 0) {
+    console.log(`[skills:migrate] Successfully migrated ${result.migrated.length} skill(s): ${result.migrated.join(", ")}`);
+  } else {
+    console.log("[skills:migrate] No new skills migrated.");
+  }
+  if (result.skipped.length > 0) {
+    console.log(`[skills:migrate] Skipped ${result.skipped.length} existing skill(s): ${result.skipped.join(", ")}`);
+  }
+
+  return {
+    source: stateDir,
+    destination: resolvedDestSkillsDir,
+    migrated: result.migrated,
+    skipped: result.skipped,
   };
-  fs.copyFileSync(skillMd, `${skillMd}.bak.${timestamp}`);
-  fs.writeFileSync(skillMd, `---\n${yaml.stringify(next).trim()}---\n${body.trimStart()}`, "utf8");
-  console.log(`migrated ${entry.name}`);
 }
 
-function extractFrontmatter(content: string): { frontmatter: Record<string, unknown>; body: string } {
-  if (!content.startsWith("---")) return { frontmatter: {}, body: content };
-  const end = content.indexOf("\n---", 3);
-  if (end < 0) return { frontmatter: {}, body: content };
-  const raw = content.slice(content.indexOf("\n") + 1, end);
-  const body = content.slice(end + 4);
-  const parsed = yaml.parse(raw);
-  return { frontmatter: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}, body };
+const isMainModule = !process.env.ADS_TEST_STATE_ROOT && process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname);
+if (isMainModule) {
+  runMigrationCli();
 }

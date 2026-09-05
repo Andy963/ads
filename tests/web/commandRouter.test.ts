@@ -21,10 +21,14 @@ describe("web command router", () => {
     assert.match(result.output, /Unknown command: ads\.status/);
   });
 
-  it("lists skills for the provided workspace root", async () => {
-    const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-command-router-skills-"));
+  it("lists discovered skills via ads.skill.list", async () => {
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "ads-command-router-codex-"));
+    const prevCodexHome = process.env.CODEX_HOME;
+    const prevMigrate = process.env.ADS_MIGRATE_LEGACY_SKILLS;
+    process.env.CODEX_HOME = codexHome;
+    process.env.ADS_MIGRATE_LEGACY_SKILLS = "0";
     try {
-      const skillsRoot = path.join(workspaceRoot, ".agent", "skills");
+      const skillsRoot = path.join(codexHome, "skills");
       const skillDir = path.join(skillsRoot, "telegram-skill");
       fs.mkdirSync(skillDir, { recursive: true });
       fs.writeFileSync(path.join(skillsRoot, "metadata.yaml"), "version: 1\nmode: overlay\n", "utf8");
@@ -33,7 +37,7 @@ describe("web command router", () => {
         [
           "---",
           "name: telegram-skill",
-          "description: \"Telegram workspace skill marker\"",
+          "description: \"Telegram global skill marker\"",
           "---",
           "",
           "# Telegram Skill",
@@ -41,13 +45,45 @@ describe("web command router", () => {
         "utf8",
       );
 
-      const result = await runAdsCommandLine("/ads.skill.list", { workspaceRoot });
+      const result = await runAdsCommandLine("/ads.skill.list");
 
       assert.equal(result.ok, true);
       assert.match(result.output, /telegram-skill/);
-      assert.match(result.output, /Telegram workspace skill marker/);
+      assert.match(result.output, /Telegram global skill marker/);
     } finally {
-      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+      process.env.CODEX_HOME = prevCodexHome;
+      process.env.ADS_MIGRATE_LEGACY_SKILLS = prevMigrate;
+      fs.rmSync(codexHome, { recursive: true, force: true });
+    }
+  });
+
+  it("validates skill and outputs relative path from global skills directory", async () => {
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "ads-command-router-validate-"));
+    const prevCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
+    try {
+      const skillDir = path.join(codexHome, "skills", "valid-skill");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(skillDir, "SKILL.md"),
+        [
+          "---",
+          "name: valid-skill",
+          "description: \"A valid skill description\"",
+          "---",
+          "",
+          "# Valid Skill",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const result = await runAdsCommandLine("/ads.skill.validate valid-skill");
+      assert.equal(result.ok, true);
+      assert.match(result.output, /✅ Skill is valid!/);
+      assert.match(result.output, /目录: valid-skill/);
+    } finally {
+      process.env.CODEX_HOME = prevCodexHome;
+      fs.rmSync(codexHome, { recursive: true, force: true });
     }
   });
 });

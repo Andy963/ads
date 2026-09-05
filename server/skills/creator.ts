@@ -5,6 +5,7 @@ import path from "node:path";
 import yaml from "yaml";
 
 import { SkillFrontmatterV1Schema } from "./schema.js";
+import { resolveGlobalSkillsDir } from "./paths.js";
 
 const MAX_SKILL_NAME_LENGTH = 64;
 const MAX_DESCRIPTION_LENGTH = 1024;
@@ -73,7 +74,6 @@ the output the agent produces.
 `;
 
 export interface InitSkillParams {
-  workspaceRoot: string;
   rawName: string;
   resources?: string[];
   includeExamples?: boolean;
@@ -92,7 +92,6 @@ export interface ValidateSkillResult {
 }
 
 export interface SaveSkillDraftParams {
-  workspaceRoot: string;
   name: string;
   description: string | null;
   body: string;
@@ -130,18 +129,16 @@ function normalizeValidatedSkillName(rawName: string): string {
   return assertValidSkillName(normalizeSkillName(rawName));
 }
 
-function resolveSkillDirectory(workspaceRootInput: string, skillName: string): {
-  workspaceRoot: string;
+export function resolveGlobalSkillDirectory(skillName: string): {
   skillsRoot: string;
   skillDir: string;
 } {
-  const workspaceRoot = path.resolve(workspaceRootInput);
-  const skillsRoot = path.join(workspaceRoot, ".agent", "skills");
+  const skillsRoot = resolveGlobalSkillsDir();
   const skillDir = path.join(skillsRoot, skillName);
   if (!skillDir.startsWith(`${skillsRoot}${path.sep}`) && skillDir !== skillsRoot) {
-    throw new Error("Skill path escapes workspace skills root.");
+    throw new Error("Skill path escapes global skills root.");
   }
-  return { workspaceRoot, skillsRoot, skillDir };
+  return { skillsRoot, skillDir };
 }
 
 export function titleCaseSkillName(skillName: string): string {
@@ -184,7 +181,7 @@ export function initSkill(params: InitSkillParams): InitSkillResult {
   }
 
   const skillName = normalizeValidatedSkillName(rawName);
-  const { skillDir } = resolveSkillDirectory(params.workspaceRoot, skillName);
+  const { skillDir } = resolveGlobalSkillDirectory(skillName);
 
   if (fs.existsSync(skillDir)) {
     throw new Error(`Skill directory already exists: ${skillDir}`);
@@ -326,7 +323,7 @@ export function validateSkillDirectory(skillDir: string): ValidateSkillResult {
 
 export function saveSkillDraftFromBlock(params: SaveSkillDraftParams): SavedSkillDraft {
   const normalizedName = normalizeValidatedSkillName(params.name);
-  const { skillDir } = resolveSkillDirectory(params.workspaceRoot, normalizedName);
+  const { skillDir } = resolveGlobalSkillDirectory(normalizedName);
 
   fs.mkdirSync(skillDir, { recursive: true });
 

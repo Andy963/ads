@@ -8,7 +8,6 @@ import type {
   AgentStatus,
 } from "./types.js";
 import type { SystemPromptManager } from "../systemPrompt/manager.js";
-import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { discoverSkills } from "../skills/loader.js";
 import { loadSkillRegistry } from "../skills/registryMetadata.js";
@@ -331,12 +330,10 @@ export class HybridOrchestrator {
     if (blocks.length === 0) {
       return { cleaned: raw, saved: [] };
     }
-    const workspaceRoot = resolveAdsStateDir();
     const saved: SavedSkillDraft[] = [];
     for (const block of blocks) {
       try {
         const result = saveSkillDraftFromBlock({
-          workspaceRoot,
           name: block.name,
           description: block.description,
           body: block.body,

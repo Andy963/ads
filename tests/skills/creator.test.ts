@@ -5,27 +5,31 @@ import os from "node:os";
 import path from "node:path";
 
 import { initSkill, parseResourceList, saveSkillDraftFromBlock, validateSkillDirectory } from "../../server/skills/creator.js";
+import { resolveGlobalSkillsDir } from "../../server/skills/paths.js";
 
 describe("skills/creator", () => {
-  let workspace: string;
+  let tempCodexHome: string;
+  const originalEnv = { ...process.env };
 
   beforeEach(() => {
-    workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-creator-"));
+    tempCodexHome = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-creator-codex-"));
+    process.env.CODEX_HOME = tempCodexHome;
   });
 
   afterEach(() => {
-    fs.rmSync(workspace, { recursive: true, force: true });
+    process.env = { ...originalEnv };
+    fs.rmSync(tempCodexHome, { recursive: true, force: true });
   });
 
-  it("initializes a skill under workspace .agent/skills", () => {
+  it("initializes a skill under global $CODEX_HOME/skills", () => {
     const created = initSkill({
-      workspaceRoot: workspace,
       rawName: "My Skill",
       resources: ["scripts", "references"],
       includeExamples: true,
     });
 
     assert.equal(created.skillName, "my-skill");
+    assert.equal(path.dirname(created.skillDir), resolveGlobalSkillsDir());
     assert.ok(fs.existsSync(path.join(created.skillDir, "SKILL.md")));
     assert.ok(fs.existsSync(path.join(created.skillDir, "scripts", "example.py")));
     assert.ok(fs.existsSync(path.join(created.skillDir, "references", "api_reference.md")));
@@ -35,7 +39,7 @@ describe("skills/creator", () => {
   });
 
   it("returns a validation error when SKILL.md is missing", () => {
-    const dir = path.join(workspace, ".agent", "skills", "missing");
+    const dir = path.join(resolveGlobalSkillsDir(), "missing");
     fs.mkdirSync(dir, { recursive: true });
     const validated = validateSkillDirectory(dir);
     assert.equal(validated.valid, false);
@@ -48,13 +52,13 @@ describe("skills/creator", () => {
 
   it("normalizes the skill name when saving a skill draft", () => {
     const saved = saveSkillDraftFromBlock({
-      workspaceRoot: workspace,
       name: "My Draft Skill",
       description: "Draft description",
       body: "## Overview\n\nSaved content.",
     });
 
     assert.equal(saved.skillName, "my-draft-skill");
+    assert.equal(path.dirname(saved.skillDir), resolveGlobalSkillsDir());
     assert.equal(saved.backupPath, null);
     assert.ok(fs.existsSync(path.join(saved.skillDir, "SKILL.md")));
 
@@ -69,7 +73,6 @@ describe("skills/creator", () => {
 
   it("restores the previous skill draft when a new body fails validation", () => {
     const saved = saveSkillDraftFromBlock({
-      workspaceRoot: workspace,
       name: "Existing Skill",
       description: "Initial description",
       body: "## Overview\n\nInitial content.",
@@ -80,7 +83,6 @@ describe("skills/creator", () => {
     assert.throws(
       () =>
         saveSkillDraftFromBlock({
-          workspaceRoot: workspace,
           name: "Existing Skill",
           description: "Ignored",
           body: ["---", "name: existing-skill", "---", "", "Broken content"].join("\n"),

@@ -5,24 +5,27 @@ import os from "node:os";
 import path from "node:path";
 
 import { loadSkillRegistry } from "../../server/skills/registryMetadata.js";
+import { resolveGlobalSkillsDir } from "../../server/skills/paths.js";
 
-function writeRegistry(root: string, yamlBody: string): void {
-  const dir = path.join(root, ".agent", "skills");
+function writeGlobalRegistry(yamlBody: string): void {
+  const dir = resolveGlobalSkillsDir();
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "metadata.yaml"), yamlBody, "utf8");
 }
 
-describe("skills/registryMetadata workspace overlay", () => {
+describe("skills/registryMetadata global registry", () => {
   let workspaceRoot: string;
   let adsStateDir: string;
+  let codexHomeDir: string;
   let originalEnv: NodeJS.ProcessEnv;
 
   beforeEach(() => {
     originalEnv = { ...process.env };
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-registry-workspace-"));
     adsStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-registry-state-"));
+    codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-registry-codex-"));
     process.env.ADS_STATE_DIR = adsStateDir;
-    delete process.env.ADS_ENABLE_WORKSPACE_SKILLS;
+    process.env.CODEX_HOME = codexHomeDir;
     delete process.env.ADS_SKILLS_METADATA_PATH;
   });
 
@@ -30,20 +33,11 @@ describe("skills/registryMetadata workspace overlay", () => {
     process.env = { ...originalEnv };
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
     fs.rmSync(adsStateDir, { recursive: true, force: true });
+    fs.rmSync(codexHomeDir, { recursive: true, force: true });
   });
 
-  it("overlays workspace metadata.yaml on top of state metadata.yaml", () => {
-    writeRegistry(adsStateDir, [
-      "version: 1",
-      "mode: overlay",
-      "skills:",
-      "  demo-skill:",
-      "    provides: [demo]",
-      "    priority: 1",
-      "",
-    ].join("\n"));
-
-    writeRegistry(workspaceRoot, [
+  it("loads global metadata.yaml for skill registry overrides", () => {
+    writeGlobalRegistry([
       "version: 1",
       "mode: overlay",
       "skills:",
@@ -61,4 +55,3 @@ describe("skills/registryMetadata workspace overlay", () => {
     assert.deepEqual(entry.provides, ["demo"]);
   });
 });
-

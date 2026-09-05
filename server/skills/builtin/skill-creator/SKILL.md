@@ -13,11 +13,8 @@ Skills are modular, self-contained folders that extend agent capabilities by pro
 
 ### Skill Location Policy
 
-1. ADS state store (shared across workspaces): `$ADS_STATE_DIR/.agent/skills/<skill-name>` (default: `.ads/.agent/skills`)
-2. Project-local (workspace): `$workspace/.agent/skills/<skill-name>` (disabled by default; enable via `ADS_ENABLE_WORKSPACE_SKILLS=1`)
-3. Global: `~/.agent/skills/<skill-name>` (shared across workspaces)
+All custom skills are stored globally in the standard Codex skills location: `$CODEX_HOME/skills/<skill-name>` (default: `~/.codex/skills/<skill-name>`). This ensures skills created in ADS are instantly discoverable across both ADS and native Codex CLI sessions.
 
-Prefer the ADS state store by default. Use project-local only when you intentionally want workspace-scoped skills and have enabled workspace skill loading.
 
 ### Anatomy of a Skill
 
@@ -73,9 +70,8 @@ npx tsx scripts/init-skill.ts <skill-name> --path <output-directory> [--resource
 Examples:
 
 ```bash
-npx tsx scripts/init-skill.ts my-skill --path $ADS_STATE_DIR/.agent/skills
-npx tsx scripts/init-skill.ts my-skill --path $ADS_STATE_DIR/.agent/skills --resources scripts,references
-npx tsx scripts/init-skill.ts my-skill --path $HOME/.agent/skills
+npx tsx scripts/init-skill.ts my-skill --path ~/.codex/skills
+npx tsx scripts/init-skill.ts my-skill --path ~/.codex/skills --resources scripts,references
 ```
 
 The `scripts/` directory referenced above is relative to this skill's own location:
