@@ -1,6 +1,8 @@
 import type { WebSocket } from "ws";
 
 import type { SessionManager } from "../../../sessions/sessionManager.js";
+import { getStateDatabase } from "../../../state/database.js";
+import { createGlobalModelConfigStore } from "../../../state/globalModelConfigStore.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import type {
   WsLaneValidityCheck,
@@ -15,6 +17,37 @@ import { handleTaskResumeMessage } from "./handleTaskResume.js";
 import type { WsMessage } from "./schema.js";
 
 type ClearHistoryScope = "lane" | "shared";
+
+const STANDARD_REASONING_EFFORTS = new Set(["off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+
+function readModelOverridePayload(payload: unknown): { model: string; effort?: string } | { error: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { error: "Model override payload must be an object" };
+  }
+  const record = payload as Record<string, unknown>;
+  const model = String(record.model ?? record.modelId ?? record.model_id ?? "").trim();
+  if (!model) {
+    return { error: "Model id is required" };
+  }
+  const rawEffort = record.model_reasoning_effort ?? record.modelReasoningEffort;
+  if (rawEffort === undefined || rawEffort === null || String(rawEffort).trim() === "") {
+    return { model };
+  }
+  const effort = String(rawEffort).trim().toLowerCase();
+  if (effort === "default") {
+    return { model };
+  }
+  if (!STANDARD_REASONING_EFFORTS.has(effort)) {
+    return { error: `Invalid reasoning effort: ${effort}` };
+  }
+  return { model, effort };
+}
+
+function readConfiguredReasoningEfforts(configJson: unknown): string[] {
+  if (!configJson || typeof configJson !== "object" || Array.isArray(configJson)) return [];
+  const values = (configJson as Record<string, unknown>).reasoningEfforts;
+  return Array.isArray(values) ? values.map((value) => String(value).trim().toLowerCase()).filter(Boolean) : [];
+}
 
 function resolveClearHistoryScope(payload: unknown, chatSessionId: string): ClearHistoryScope {
   if (String(chatSessionId ?? "").trim() === "planner") {
@@ -67,6 +100,45 @@ export async function handleWsControlMessage(args: {
   handled: boolean;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
 }> {
+  if (args.parsed.type === "model_override") {
+    const requestId = String(args.parsed.client_message_id ?? "").trim() || undefined;
+    const parsed = readModelOverridePayload(args.parsed.payload);
+    if ("error" in parsed) {
+      args.sendJson({ type: "result", ok: false, kind: "model_override", output: parsed.error, client_message_id: requestId });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+
+    const modelStore = createGlobalModelConfigStore(getStateDatabase());
+    const modelConfig = modelStore.getModelConfigByAgentModelId(parsed.model) ?? modelStore.getModelConfig(parsed.model);
+    if (!modelConfig || !modelConfig.isEnabled) {
+      args.sendJson({ type: "result", ok: false, kind: "model_override", output: `Unknown or disabled model: ${parsed.model}`, client_message_id: requestId });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+    const allowedEfforts = readConfiguredReasoningEfforts(modelConfig.configJson);
+    if (parsed.effort && allowedEfforts.length > 0 && !allowedEfforts.includes(parsed.effort)) {
+      args.sendJson({ type: "result", ok: false, kind: "model_override", output: `Reasoning effort "${parsed.effort}" is not available for ${modelConfig.modelId}`, client_message_id: requestId });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+
+    const modelId = String(modelConfig.modelId ?? modelConfig.id ?? parsed.model).trim();
+    args.sessionManager.setUserModel(args.userId, modelId);
+    if (parsed.effort !== undefined) {
+      args.sessionManager.setUserModelReasoningEffort(args.userId, parsed.effort);
+    }
+    args.orchestrator.setModelConfig?.(modelConfig.configJson ?? null);
+    const effective = args.sessionManager.getEffectiveState(args.userId);
+    args.sendJson({
+      type: "result",
+      ok: true,
+      kind: "model_override",
+      output: `Model switched to ${modelId}${effective.modelReasoningEffort ? ` (${effective.modelReasoningEffort})` : ""}`,
+      model: effective.model,
+      model_reasoning_effort: effective.modelReasoningEffort,
+      client_message_id: requestId,
+    });
+    return { handled: true, orchestrator: args.orchestrator };
+  }
+
   if (args.parsed.type === "clear_history") {
     const scope = resolveClearHistoryScope(args.parsed.payload, args.chatSessionId);
     if (args.interruptControllers) {

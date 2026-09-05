@@ -2,6 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { ensureWsSessionLogger, handleWsControlMessage } from "../../server/web/server/ws/messageControl.js";
+import { getStateDatabase } from "../../server/state/database.js";
+import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
 
 describe("web/ws/messageControl", () => {
   it("returns null and warns when session logger initialization fails", () => {
@@ -176,6 +178,123 @@ describe("web/ws/messageControl", () => {
       ok: true,
       output: "已清空历史缓存并重置会话",
       kind: "clear_history",
+    });
+  });
+
+  it("validates and applies a connector-safe model override per session", async () => {
+    const modelStore = createGlobalModelConfigStore(getStateDatabase());
+    modelStore.upsertModelConfig({
+      id: "telegram-model-control",
+      modelId: "telegram-test-model",
+      displayName: "Telegram Test Model",
+      provider: "test",
+      isEnabled: true,
+      isDefault: false,
+      configJson: { reasoningEfforts: ["high", "xhigh"] },
+    });
+    let model: string | undefined;
+    let effort: string | undefined;
+    const sent: unknown[] = [];
+    const result = await handleWsControlMessage({
+      parsed: {
+        type: "model_override",
+        client_message_id: "control-1",
+        payload: { model: "telegram-test-model", model_reasoning_effort: "xhigh" },
+      },
+      chatSessionId: "chat-42",
+      userId: 42,
+      historyKey: "telegram-history-42",
+      currentCwd: "/tmp/project",
+      sessionManager: {
+        setUserModel: (_userId: number, value?: string) => { model = value; },
+        setUserModelReasoningEffort: (_userId: number, value?: string) => { effort = value; },
+        getEffectiveState: () => ({ model, modelReasoningEffort: effort, activeAgentId: "codex" }),
+      } as any,
+      orchestrator: { setModelConfig: () => {} } as any,
+      getWorkspaceLock: (() => null) as any,
+      historyStore: { clear: () => {} },
+      sendJson: (payload) => sent.push(payload),
+      logger: { info: () => {}, warn: () => {} },
+    });
+
+    assert.equal(result.handled, true);
+    assert.equal(model, "telegram-test-model");
+    assert.equal(effort, "xhigh");
+    assert.deepEqual(sent[0], {
+      type: "result",
+      ok: true,
+      kind: "model_override",
+      output: "Model switched to telegram-test-model (xhigh)",
+      model: "telegram-test-model",
+      model_reasoning_effort: "xhigh",
+      client_message_id: "control-1",
+    });
+  });
+
+  it("rejects unavailable reasoning efforts without changing session state", async () => {
+    const sent: unknown[] = [];
+    const result = await handleWsControlMessage({
+      parsed: { type: "model_override", payload: { model: "telegram-test-model", model_reasoning_effort: "low" } },
+      chatSessionId: "chat-42",
+      userId: 42,
+      historyKey: "telegram-history-42",
+      currentCwd: "/tmp/project",
+      sessionManager: { setUserModel: () => { throw new Error("must not change"); } } as any,
+      orchestrator: {} as any,
+      getWorkspaceLock: (() => null) as any,
+      historyStore: { clear: () => {} },
+      sendJson: (payload) => sent.push(payload),
+      logger: { info: () => {}, warn: () => {} },
+    });
+
+    assert.equal(result.handled, true);
+    assert.equal((sent[0] as { ok: boolean }).ok, false);
+    assert.match(String((sent[0] as { output: string }).output), /not available/);
+  });
+
+  it("preserves the existing reasoning effort when only the model changes", async () => {
+    const modelStore = createGlobalModelConfigStore(getStateDatabase());
+    modelStore.upsertModelConfig({
+      id: "telegram-model-preserve-effort",
+      modelId: "telegram-preserve-model",
+      displayName: "Telegram Preserve Model",
+      provider: "test",
+      isEnabled: true,
+      isDefault: false,
+      configJson: { reasoningEfforts: ["high"] },
+    });
+    const sent: unknown[] = [];
+    const result = await handleWsControlMessage({
+      parsed: {
+        type: "model_override",
+        client_message_id: "control-preserve-effort",
+        payload: { model: "telegram-preserve-model" },
+      },
+      chatSessionId: "chat-42",
+      userId: 42,
+      historyKey: "telegram-history-42",
+      currentCwd: "/tmp/project",
+      sessionManager: {
+        setUserModel: () => {},
+        setUserModelReasoningEffort: () => { throw new Error("must preserve existing effort"); },
+        getEffectiveState: () => ({ model: "telegram-preserve-model", modelReasoningEffort: "high", activeAgentId: "codex" }),
+      } as any,
+      orchestrator: { setModelConfig: () => {} } as any,
+      getWorkspaceLock: (() => null) as any,
+      historyStore: { clear: () => {} },
+      sendJson: (payload) => sent.push(payload),
+      logger: { info: () => {}, warn: () => {} },
+    });
+
+    assert.equal(result.handled, true);
+    assert.deepEqual(sent[0], {
+      type: "result",
+      ok: true,
+      kind: "model_override",
+      output: "Model switched to telegram-preserve-model (high)",
+      model: "telegram-preserve-model",
+      model_reasoning_effort: "high",
+      client_message_id: "control-preserve-effort",
     });
   });
 

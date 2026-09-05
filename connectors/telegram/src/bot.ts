@@ -5,6 +5,15 @@ import { createAuthMiddleware } from "./middleware/auth.js";
 import { createRateLimitMiddleware } from "./middleware/rateLimit.js";
 import { escapeTelegramMarkdownV2 } from "./utils/markdown.js";
 import { chunkMessage } from "./utils/chunkMessage.js";
+import {
+  allowedReasoningEfforts,
+  buildModelKeyboard,
+  findModel,
+  formatModelMenu,
+  formatModelStatus,
+  parseModelCallback,
+  parseModelCommand,
+} from "./modelCommands.js";
 
 export function createTelegramBot(options?: {
   config?: TelegramConnectorConfig;
@@ -78,6 +87,76 @@ export function createTelegramBot(options?: {
     await ctx.reply("Interrupted running turn.");
   });
 
+  bot.command("model", async (ctx) => {
+    const chatClient = getChatClient(ctx.chat.id);
+    try {
+      await chatClient.connect();
+      await chatClient.waitForWelcome();
+      const models = await chatClient.getModels();
+      const state = chatClient.getModelState();
+      const parsed = parseModelCommand(typeof ctx.match === "string" ? ctx.match : "");
+      if (!parsed.modelId) {
+        await ctx.reply(formatModelMenu(models, state), { reply_markup: buildModelKeyboard(models, state.model) });
+        return;
+      }
+
+      const model = findModel(models, parsed.modelId);
+      if (!model) {
+        await ctx.reply(`Unknown or disabled model: ${parsed.modelId}`);
+        return;
+      }
+      if (parsed.reasoningEffort && !allowedReasoningEfforts(model).includes(parsed.reasoningEffort)) {
+        await ctx.reply(`Invalid reasoning effort for ${model.modelId}: ${parsed.reasoningEffort}`);
+        return;
+      }
+      const next = await chatClient.setModel(model.modelId, parsed.reasoningEffort);
+      await ctx.reply(`Model switched to ${next.model || model.modelId}${next.reasoningEffort ? ` (${next.reasoningEffort})` : ""}.`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await ctx.reply(`Unable to switch model: ${message}`);
+    }
+  });
+
+  bot.command("status", async (ctx) => {
+    const chatClient = getChatClient(ctx.chat.id);
+    try {
+      await chatClient.connect();
+      await chatClient.waitForWelcome();
+      await ctx.reply(formatModelStatus(chatClient.getModelState()));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await ctx.reply(`Unable to read status: ${message}`);
+    }
+  });
+
+  bot.callbackQuery(/^model:/, async (ctx) => {
+    const modelId = parseModelCallback(ctx.callbackQuery.data);
+    if (!modelId) {
+      await ctx.answerCallbackQuery({ text: "Invalid model selection", show_alert: true });
+      return;
+    }
+    try {
+      const chatId = ctx.chat?.id;
+      if (chatId === undefined) {
+        await ctx.answerCallbackQuery({ text: "This selection is not tied to a chat", show_alert: true });
+        return;
+      }
+      const chatClient = getChatClient(chatId);
+      const models = await chatClient.getModels();
+      const model = findModel(models, modelId);
+      if (!model) {
+        await ctx.answerCallbackQuery({ text: "Unknown or disabled model", show_alert: true });
+        return;
+      }
+      const next = await chatClient.setModel(model.modelId);
+      await ctx.answerCallbackQuery({ text: `Switched to ${next.model || model.modelId}` });
+      await ctx.editMessageText(formatModelMenu(models, next), { reply_markup: buildModelKeyboard(models, next.model) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await ctx.answerCallbackQuery({ text: message.slice(0, 190), show_alert: true });
+    }
+  });
+
   bot.on("message:text", async (ctx) => {
     const text = ctx.message.text.trim();
     if (!text || text.startsWith("/")) return;
@@ -120,6 +199,16 @@ export function createTelegramBot(options?: {
     start: async () => {
       await client.connect().catch((err) => {
         console.warn(`[telegram-connector] Could not connect to ADS Core on startup: ${err.message}. Will retry on turn.`);
+      });
+      await bot.api.setMyCommands([
+        { command: "start", description: "Connect to ADS" },
+        { command: "model", description: "Select the active model" },
+        { command: "status", description: "Show model status" },
+        { command: "new", description: "Clear session history" },
+        { command: "stop", description: "Interrupt the current turn" },
+      ]).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[telegram-connector] Could not register bot commands: ${message}`);
       });
       await bot.start();
     },
