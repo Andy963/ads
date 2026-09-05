@@ -43,6 +43,8 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     executePreviewByKey: new Map(),
     executeOrder: [],
     seenCommandIds: new Set(),
+    streamEndOffsets: new Map(),
+    streamSnapshotRevisions: new Map(),
     pendingImages: ref([]),
     queuedPrompts: ref([]),
     composerDraft: ref(""),

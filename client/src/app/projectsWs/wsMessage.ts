@@ -20,6 +20,7 @@ import {
 } from "../../lib/chatPreferences";
 import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
 import { normalizeTurnSemanticOrder } from "../../lib/chat_sync";
+import type { ExecuteBlockUpdate } from "../chatExecute";
 
 import { isReconnectNotice } from "./reconnectNotice";
 
@@ -212,6 +213,139 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
   rt.inputLocked ??= { value: false };
   rt.laneStatus ??= { value: null };
   let recoveredBackendActivitySeen = false;
+  const legacyCommandTracks = new Map<string, {
+    identity: string;
+    terminal: boolean;
+    sawOutput: boolean;
+    endOffset: number;
+    lastOutput: string;
+  }>();
+  const explicitCommandIdentities = new Map<string, string>();
+  const seenCommandFrameIds = new Set<string>();
+  let legacyCommandCounter = 0;
+
+  const finiteOffset = (value: unknown): number | null => {
+    const offset = Number(value);
+    return Number.isFinite(offset) && offset >= 0 ? Math.floor(offset) : null;
+  };
+
+  const finiteTimestamp = (value: unknown): number | undefined => {
+    const timestamp = Number(value);
+    return Number.isFinite(timestamp) && timestamp > 0 ? Math.floor(timestamp) : undefined;
+  };
+
+  const clearStreamTracking = (): void => {
+    rt.streamEndOffsets?.clear();
+    rt.streamSnapshotRevisions?.clear();
+    legacyCommandTracks.clear();
+    explicitCommandIdentities.clear();
+    seenCommandFrameIds.clear();
+  };
+
+  const resolveCommandIdentity = (payload: Record<string, unknown>, command: string, outputDelta: string): string => {
+    const explicit = String(payload.identity ?? "").trim();
+    if (explicit) return explicit;
+    const id = String(payload.id ?? "").trim();
+    if (id) {
+      const key = `${id}\u0000${command}`;
+      const known = explicitCommandIdentities.get(key);
+      if (known) return known;
+      const hasSameId = [...explicitCommandIdentities.keys()].some((entry) => entry.startsWith(`${id}\u0000`));
+      const identity = hasSameId
+        ? `${id}:${Array.from(command).reduce((hash, char) => ((hash * 33) ^ char.charCodeAt(0)) >>> 0, 5381).toString(16)}`
+        : id;
+      explicitCommandIdentities.set(key, identity);
+      return identity;
+    }
+
+    const key = command;
+    const previous = legacyCommandTracks.get(key);
+    const status = String(payload.status ?? "").trim().toLowerCase();
+    const terminal = status === "completed" || status === "failed" || status === "declined" || status === "cancelled";
+    const header = outputDelta.replace(/^\s+/, "").startsWith(`$ ${command}\n`) || outputDelta.replace(/^\s+/, "").startsWith(`$ ${command}\r\n`);
+    const startOffset = Number(payload.outputStartOffset ?? payload.output_start_offset);
+    const endOffset = Number(payload.outputEndOffset ?? payload.output_end_offset);
+    const offsetRollback = Number.isFinite(startOffset) && startOffset >= 0 && previous && startOffset < previous.endOffset;
+    const duplicateTerminal = Boolean(
+      previous?.terminal && terminal &&
+      (!outputDelta || outputDelta === previous.lastOutput || (Number.isFinite(endOffset) && endOffset <= previous.endOffset)),
+    );
+    const startsNew = Boolean(
+      !previous ||
+      (!duplicateTerminal && previous.terminal) ||
+      (!duplicateTerminal && offsetRollback) ||
+      (!duplicateTerminal && header && (previous.sawOutput || previous.terminal)),
+    );
+    const identity = startsNew ? `legacy-command-${++legacyCommandCounter}` : previous.identity;
+    legacyCommandTracks.set(key, {
+      identity,
+      terminal: previous?.terminal === true || terminal,
+      sawOutput: previous?.sawOutput === true || Boolean(outputDelta),
+      endOffset: Number.isFinite(endOffset) && endOffset >= 0
+        ? Math.floor(endOffset)
+        : (previous?.endOffset ?? 0) + outputDelta.length,
+      lastOutput: outputDelta || previous?.lastOutput || "",
+    });
+    return identity;
+  };
+
+  const consumeAssistantDelta = (payload: Record<string, unknown>): void => {
+    const delta = String(payload.delta ?? "");
+    if (!delta) return;
+    const streamId = String(payload.streamId ?? payload.stream_id ?? "").trim();
+    const startOffset = finiteOffset(payload.startOffset ?? payload.start_offset);
+    const endOffset = finiteOffset(payload.endOffset ?? payload.end_offset);
+    let chunk = delta;
+    if (streamId && startOffset !== null && endOffset !== null) {
+      rt.streamEndOffsets ??= new Map<string, number>();
+      const currentEnd = rt.streamEndOffsets.get(streamId) ?? 0;
+      if (endOffset <= currentEnd) return;
+      if (startOffset < currentEnd) {
+        chunk = delta.slice(Math.min(delta.length, currentEnd - startOffset));
+      }
+      rt.streamEndOffsets.set(streamId, endOffset);
+      if (!chunk) return;
+    }
+    const eventTs = finiteTimestamp(payload.ts);
+    upsertStreamingDelta(
+      chunk,
+      rt,
+      eventTs,
+      streamId ? { preserveRepeatedText: true } : undefined,
+    );
+  };
+
+  const consumeAssistantSnapshot = (payload: Record<string, unknown>): void => {
+    const text = String(payload.text ?? "");
+    if (!text) return;
+    const streamId = String(payload.streamId ?? payload.stream_id ?? "").trim();
+    const revisionRaw = Number(payload.revision);
+    const revision = Number.isFinite(revisionRaw) && revisionRaw > 0 ? Math.floor(revisionRaw) : 0;
+    const startOffset = finiteOffset(payload.startOffset ?? payload.start_offset);
+    const endOffset = finiteOffset(payload.endOffset ?? payload.end_offset);
+
+    if (streamId) {
+      rt.streamSnapshotRevisions ??= new Map<string, number>();
+      rt.streamEndOffsets ??= new Map<string, number>();
+      const previousRevision = rt.streamSnapshotRevisions.get(streamId) ?? 0;
+      const previousEnd = rt.streamEndOffsets.get(streamId) ?? 0;
+      if (revision > 0 && revision < previousRevision) return;
+      if (revision > 0 && revision === previousRevision && endOffset !== null && endOffset <= previousEnd) return;
+      if (revision === 0 && endOffset !== null && endOffset <= previousEnd) return;
+      if (revision > 0) rt.streamSnapshotRevisions.set(streamId, Math.max(previousRevision, revision));
+      if (endOffset !== null) rt.streamEndOffsets.set(streamId, Math.max(previousEnd, endOffset));
+    }
+
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    clearRecoveredBackendStatus();
+    const eventTs = finiteTimestamp(payload.ts);
+    replaceStreamingText(text, rt, eventTs);
+    // `startOffset` is consumed by the ordering/dedup checks above. Keeping
+    // the read here makes malformed snapshots explicit without changing the
+    // backwards-compatible wire shape.
+    void startOffset;
+  };
 
   const isGitDiffCommand = (raw: string): boolean => {
     const cmd = String(raw ?? "").trim().toLowerCase();
@@ -679,6 +813,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     rt.awaitingBootstrapHistory = false;
     rt.pendingAckClientMessageId = null;
     rt.queuedPrompts.value = [];
+    clearStreamTracking();
     resetTurnPatchSummary();
     clearPendingPrompt(rt);
     clearStepLive(rt);
@@ -1108,6 +1243,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           );
           continue;
         }
+        // Plans and reasoning remain internal history records for compatibility;
+        // MainChatMessageList filters them from the visible block stream.
         if (kind.startsWith("plan:") || kind === "plan") {
           restoredHistoryStatus = null;
           const planId = kind.startsWith("plan:") ? kind.slice("plan:".length).trim() || `plan-${idx}` : `plan-${idx}`;
@@ -1118,30 +1255,21 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             parsed = null;
           }
           if (!parsed || typeof parsed !== "object") continue;
-          const itemsRaw = Array.isArray(parsed.items) ? parsed.items : [];
           const planItems: ChatPlanItem[] = [];
-          for (const planEntry of itemsRaw) {
+          for (const planEntry of Array.isArray(parsed.items) ? parsed.items : []) {
             if (!planEntry || typeof planEntry !== "object" || Array.isArray(planEntry)) continue;
             const rec = planEntry as Record<string, unknown>;
-            const text = String(rec.text ?? rec.content ?? "").trim();
-            if (!text) continue;
+            const itemText = String(rec.text ?? rec.content ?? "").trim();
+            if (!itemText) continue;
             const itemStatusRaw = String(rec.status ?? "").trim().toLowerCase();
-            const planStatus: ChatPlanItemStatus =
-              itemStatusRaw === "completed"
-                ? "completed"
-                : itemStatusRaw === "in_progress"
-                  ? "in_progress"
-                  : "pending";
-            planItems.push({ text, status: planStatus });
+            const itemStatus: ChatPlanItemStatus =
+              itemStatusRaw === "completed" ? "completed" : itemStatusRaw === "in_progress" ? "in_progress" : "pending";
+            planItems.push({ text: itemText, status: itemStatus });
           }
           if (planItems.length === 0) continue;
           const planStatusRaw = String(parsed.status ?? "").trim().toLowerCase();
           const planStatus: ChatPlan["status"] =
-            planStatusRaw === "completed"
-              ? "completed"
-              : planStatusRaw === "failed"
-                ? "failed"
-                : "in_progress";
+            planStatusRaw === "completed" ? "completed" : planStatusRaw === "failed" ? "failed" : "in_progress";
           const persistedPlanId = String(parsed.planId ?? "").trim() || planId;
           next.push({
             id: `plan:${persistedPlanId}`,
@@ -1157,13 +1285,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
         if (kind === "thought" || role === "thought") {
           restoredHistoryStatus = null;
-          next.push({
-            id: `h-th-${idx}`,
-            role: "assistant",
-            kind: "thought",
-            content: historyText,
-            ts: ts ?? undefined,
-          });
+          next.push({ id: `h-th-${idx}`, role: "assistant", kind: "thought", content: historyText, ts: ts ?? undefined });
           continue;
         }
         if (kind === "session_divider" || (role === "status" && kind === "session_divider") || (role === "system" && kind === "divider")) {
@@ -1197,11 +1319,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           });
         } else if (role === "ai" || role === "assistant") {
           restoredHistoryStatus = null;
-          if (kind === "thought") {
-            next.push({ id: `h-th-${idx}`, role: "assistant", kind: "thought", content: historyText, ts: ts ?? undefined });
-          } else {
-            next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", content: historyText, ts: ts ?? undefined });
-          }
+          next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", content: historyText, ts: ts ?? undefined });
         }
       }
       dropReconnectBusyMessage();
@@ -1242,7 +1360,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const eventTsRaw = Number((msg as { ts?: unknown }).ts);
       const eventTs = Number.isFinite(eventTsRaw) && eventTsRaw > 0 ? Math.floor(eventTsRaw) : Date.now();
       const existing = rt.messages.value;
-      const alreadyHas = clientMessageId ? existing.some((m) => m.id === clientMessageId) : existing.length > 0 && existing[existing.length - 1]?.role === "user" && existing[existing.length - 1]?.content === text;
+      const lastUser = [...existing].reverse().find((m) => m.role === "user");
+      const alreadyHas = clientMessageId
+        ? existing.some((m) => m.id === clientMessageId)
+        : Boolean(lastUser && lastUser.content === text && lastUser.ts === eventTs);
       if (!alreadyHas && text) {
         pushMessageBeforeLive({
           id: clientMessageId || randomId("u"),
@@ -1282,6 +1403,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const source = String(msg.source ?? "").trim();
       if (source === "thought" || source === "reasoning") {
         upsertThoughtDelta?.(String(msg.delta ?? ""), rt);
+        return;
       } else if (source === "step") {
         const delta = String(msg.delta ?? "");
         if (delta.trim().startsWith("[analysis]")) {
@@ -1294,7 +1416,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (shouldIgnoreStepDelta(delta)) return;
         upsertStepLiveDelta(delta, rt);
       } else {
-        upsertStreamingDelta(String(msg.delta ?? ""), rt);
+        consumeAssistantDelta(msg as Record<string, unknown>);
       }
       return;
     }
@@ -1303,15 +1425,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.busy.value = true;
       rt.turnInFlight = true;
       clearRecoveredBackendStatus();
-      const delta = String(
-        (msg as { delta?: unknown }).delta ??
-          (msg as { content?: unknown }).content ??
-          (msg as { text?: unknown }).text ??
-          "",
-      );
-      if (delta) {
-        upsertThoughtDelta?.(delta, rt);
-      }
+      const delta = String(msg.delta ?? msg.content ?? msg.text ?? "");
+      if (delta) upsertThoughtDelta?.(delta, rt);
       return;
     }
 
@@ -1320,14 +1435,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       // assistant text accumulated so far, so a client that reconnected mid-turn
       // resumes the stream instead of losing everything emitted while it was gone.
       // Replaying it is idempotent — the streaming block is rewritten, not appended to.
-      const text = String(msg.text ?? "");
-      if (!text) return;
-      rt.busy.value = true;
-      rt.turnInFlight = true;
-      clearRecoveredBackendStatus();
-      const eventTsRaw = Number((msg as { ts?: unknown }).ts);
-      const eventTs = Number.isFinite(eventTsRaw) && eventTsRaw > 0 ? Math.floor(eventTsRaw) : undefined;
-      replaceStreamingText(text, rt, eventTs);
+      consumeAssistantSnapshot(msg as Record<string, unknown>);
       return;
     }
 
@@ -1471,6 +1579,35 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
+    if (type === "command_snapshot") {
+      const snapshot = msg.command && typeof msg.command === "object" && !Array.isArray(msg.command)
+        ? (msg.command as Record<string, unknown>)
+        : null;
+      const cmd = String(snapshot?.command ?? "").trim();
+      if (!cmd) return;
+      const identity = String(snapshot?.identity ?? snapshot?.id ?? cmd).trim();
+      const key = commandKeyForWsEvent(cmd, identity || null);
+      if (!key) return;
+      const status = String(snapshot?.status ?? "").trim().toLowerCase();
+      const terminal = status === "completed" || status === "failed" || status === "declined" || status === "cancelled";
+      const eventTs = finiteTimestamp((msg as Record<string, unknown>).ts ?? snapshot?.ts);
+      const revision = Number(snapshot?.revision);
+      rt.busy.value = true;
+      rt.turnInFlight = true;
+      clearRecoveredBackendStatus();
+      ingestCommand(cmd, rt, identity || null);
+      upsertExecuteBlock(key, cmd, String(snapshot?.output ?? ""), rt, {
+        snapshot: true,
+        terminal,
+        eventId: String(msg.eventId ?? msg.seq ?? `snapshot:${identity}:${revision || 0}`).trim(),
+        revision: Number.isFinite(revision) && revision > 0 ? Math.floor(revision) : undefined,
+        startOffset: finiteOffset(snapshot?.startOffset),
+        endOffset: finiteOffset(snapshot?.endOffset),
+        ts: eventTs,
+      } satisfies ExecuteBlockUpdate);
+      return;
+    }
+
     if (type === "result") {
       annotatePendingUserMessageExecution(msg as Record<string, unknown>);
       recoveredBackendActivitySeen = false;
@@ -1481,6 +1618,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.busy.value = false;
       rt.turnInFlight = false;
       rt.turnHasPatch = false;
+      clearStreamTracking();
       resetTurnPatchSummary();
       rt.pendingAckClientMessageId = null;
       clearPendingPrompt(rt);
@@ -1586,6 +1724,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.busy.value = false;
       rt.turnInFlight = false;
       rt.turnHasPatch = false;
+      clearStreamTracking();
       resetTurnPatchSummary();
       rt.pendingAckClientMessageId = null;
       clearPendingPrompt(rt);
@@ -1616,10 +1755,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (type === "command") {
       const payload = msg.command && typeof msg.command === "object" ? (msg.command as Record<string, unknown>) : null;
       const cmd = String(payload?.command ?? "").trim();
-      const id = String(payload?.id ?? "").trim();
-      const key = commandKeyForWsEvent(cmd, id || null);
+      const rawOutputDelta = String(payload?.outputDelta ?? "");
+      const identity = resolveCommandIdentity(payload ?? {}, cmd, rawOutputDelta);
+      const key = commandKeyForWsEvent(cmd, identity || null);
       if (!key) return;
-      let outputDelta = String(payload?.outputDelta ?? "");
+      let outputDelta = rawOutputDelta;
       const rawExitCode = payload?.exit_code ?? payload?.exitCode;
       const exitCode = typeof rawExitCode === "number" && Number.isFinite(rawExitCode) ? rawExitCode : null;
       if (exitCode !== null && exitCode !== 0) {
@@ -1633,11 +1773,25 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.busy.value = true;
       rt.turnInFlight = true;
       clearRecoveredBackendStatus();
-      ingestCommand(cmd, rt, id || null);
+      ingestCommand(cmd, rt, identity || null);
+      const eventTsRaw = Number((msg as { ts?: unknown }).ts ?? payload?.ts);
+      const eventTs = Number.isFinite(eventTsRaw) && eventTsRaw > 0 ? Math.floor(eventTsRaw) : undefined;
+      const status = String(payload?.status ?? "").trim().toLowerCase();
+      const terminal = status === "completed" || status === "failed" || status === "declined" || status === "cancelled";
+      const seq = Number((msg as { seq?: unknown }).seq);
+      const eventId = String((msg as { eventId?: unknown }).eventId ?? (Number.isFinite(seq) && seq > 0 ? `seq:${Math.floor(seq)}` : "")).trim();
+      const startOffset = finiteOffset(payload?.outputStartOffset ?? payload?.output_start_offset);
+      const endOffset = finiteOffset(payload?.outputEndOffset ?? payload?.output_end_offset);
       if (rt.turnHasPatch && isGitDiffCommand(cmd) && looksLikeUnifiedDiff(outputDelta)) {
         dropExecuteBlockForKey(key);
       } else {
-        upsertExecuteBlock(key, cmd, outputDelta, rt);
+        upsertExecuteBlock(key, cmd, outputDelta, rt, {
+          ts: eventTs,
+          eventId: eventId || undefined,
+          terminal,
+          startOffset,
+          endOffset,
+        });
       }
       if (cmd) {
         ingestCommandActivity(rt.liveActivity, cmd);

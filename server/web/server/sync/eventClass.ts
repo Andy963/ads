@@ -27,6 +27,7 @@ export const TRANSIENT_SYNC_EVENT_TYPES: readonly string[] = ["delta", "agents"]
 /** Live decoration already reproducible from the `history` bootstrap. */
 export const EPHEMERAL_SYNC_EVENT_TYPES: readonly string[] = [
   "command",
+  "command_snapshot",
   "explored",
   "patch",
   "workspace",

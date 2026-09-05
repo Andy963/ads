@@ -56,7 +56,7 @@ describe("thought card persistence", () => {
     expect(thoughtIndex).toBeLessThan(assistantIndex);
   });
 
-  it("renders collapsible thought card with summary in MainChat", async () => {
+  it("keeps thought blocks internal and does not render standalone thought cards in MainChat", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -79,21 +79,14 @@ describe("thought card persistence", () => {
 
     await wrapper.vm.$nextTick();
 
-    const thoughtCard = wrapper.find(".thoughtCard");
-    expect(thoughtCard.exists()).toBe(true);
-    expect(thoughtCard.text()).toContain("思考");
-    expect(thoughtCard.text()).toContain("Need to check git diff before making changes");
-    expect(thoughtCard.find(".thoughtCardBody").exists()).toBe(false);
-
-    const toggleBtn = thoughtCard.find(".thoughtCardHeader");
-    expect(toggleBtn.exists()).toBe(true);
-    expect(toggleBtn.text()).toContain("展开");
-
-    await toggleBtn.trigger("click");
-    await wrapper.vm.$nextTick();
-
-    expect(thoughtCard.find(".thoughtCardBody").exists()).toBe(true);
-    expect(toggleBtn.text()).toContain("收起");
+    // Thought blocks are internal and must NOT render as standalone cards
+    expect(wrapper.find(".thoughtCard").exists()).toBe(false);
+    expect(wrapper.findAll('.msg[data-kind="thought"]')).toHaveLength(0);
+    // Visible blocks are user prompt and assistant explanation
+    const renderedMsgs = wrapper.findAll(".msg");
+    expect(renderedMsgs).toHaveLength(2);
+    expect(renderedMsgs[0]!.attributes("data-role")).toBe("user");
+    expect(renderedMsgs[1]!.attributes("data-role")).toBe("assistant");
 
     wrapper.unmount();
   });

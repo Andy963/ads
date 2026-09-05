@@ -131,6 +131,22 @@ export type ChatItem = {
   execution?: ChatExecutionContext;
 };
 
+export type ExecutePreviewState = {
+  key: string;
+  command: string;
+  previewLines: string[];
+  fullLines: string[];
+  totalLines: number;
+  remainder: string;
+  /** Canonical wire output used for absolute-offset reconciliation. */
+  outputText?: string;
+  outputStartOffset?: number;
+  outputEndOffset?: number;
+  snapshotRevision?: number;
+  terminal?: boolean;
+  seenEventIds?: Set<string>;
+};
+
 export type BufferedTaskChatEvent =
   | { kind: "message"; role: "user" | "assistant" | "system"; content: string }
   | { kind: "delta"; role: "assistant"; delta: string; source?: "chat" | "step"; modelUsed?: string | null }
@@ -180,10 +196,13 @@ export type ProjectRuntime = {
   turnCommandCount: number;
   executePreviewByKey: Map<
     string,
-    { key: string; command: string; previewLines: string[]; fullLines: string[]; totalLines: number; remainder: string }
+    ExecutePreviewState
   >;
   executeOrder: string[];
   seenCommandIds: Set<string>;
+  /** Last absolute end offset observed for each assistant stream. */
+  streamEndOffsets?: Map<string, number>;
+  streamSnapshotRevisions?: Map<string, number>;
   pendingImages: Ref<IncomingImage[]>;
   queuedPrompts: Ref<QueuedPrompt[]>;
   composerDraft: Ref<string>;

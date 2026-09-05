@@ -79,6 +79,8 @@ export function sendInitialBootstrapMessages(args: {
   latestSeq?: number;
   taskLatestSeq?: number;
   laneGeneration?: number;
+  /** Runtime-only snapshots that are not part of durable chat history. */
+  runtimeSnapshots?: Array<Record<string, unknown>>;
 }): void {
   const bootstrapState = buildWsBootstrapState({
     sessionManager: args.sessionManager,
@@ -125,6 +127,16 @@ export function sendInitialBootstrapMessages(args: {
 
   if (historyPayload) {
     args.safeJsonSend(args.ws, historyPayload);
+  }
+  for (const snapshot of args.runtimeSnapshots ?? []) {
+    if (!snapshot || typeof snapshot !== "object" || snapshot.active === false) continue;
+    const snapshotSeq = Number(snapshot.snapshotSeq ?? snapshot.seq ?? snapshot.afterSeq);
+    const afterSeq = Number.isFinite(snapshotSeq) && snapshotSeq >= 0 ? Math.floor(snapshotSeq) : 0;
+    args.safeJsonSend(args.ws, {
+      ...snapshot,
+      bootstrap: true,
+      ...(afterSeq >= 0 ? { afterSeq } : {}),
+    });
   }
   const restoreStatus = buildContextRestoreStatus(bootstrapState.contextMode);
   if (restoreStatus) {

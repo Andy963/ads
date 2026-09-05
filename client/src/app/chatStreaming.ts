@@ -25,7 +25,7 @@ function trimLiveStepSnapshot(text: string, maxLines: number, maxChars = 2500): 
 }
 
 function isActionStepTrace(text: string): boolean {
-  const firstLine = text.trim().split("\n")[0]!.toLowerCase();
+  const firstLine = String(text ?? "").trim().split("\n")[0]!.toLowerCase();
   return (
     firstLine.startsWith("[tool]") ||
     firstLine.startsWith("[editing]") ||
@@ -133,7 +133,12 @@ export function createStreamingActions(params: {
     return firstLine === "active" || firstLine === "thinking…" || firstLine === "thinking..." || firstLine === "working…";
   };
 
-  const upsertStreamingDelta = (delta: string, rt?: ProjectRuntime): void => {
+  const upsertStreamingDelta = (
+    delta: string,
+    rt?: ProjectRuntime,
+    ts?: number,
+    options?: { preserveRepeatedText?: boolean },
+  ): void => {
     const state = runtimeOrActive(rt);
     const chunk = String(delta ?? "");
     if (!chunk) return;
@@ -142,7 +147,7 @@ export function createStreamingActions(params: {
     const streamIndex = findActiveStreamingAssistantIndex(existing);
     if (streamIndex >= 0) {
       const current = String(existing[streamIndex]!.content ?? "");
-      const nextChunk = stripStreamingOverlap(current, chunk);
+      const nextChunk = options?.preserveRepeatedText ? chunk : stripStreamingOverlap(current, chunk);
       if (!nextChunk) return;
       existing[streamIndex] = {
         ...existing[streamIndex]!,
@@ -166,7 +171,7 @@ export function createStreamingActions(params: {
       kind: "text",
       content: chunk,
       streaming: true,
-      ts: Date.now(),
+      ts: (Number.isFinite(ts) && (ts as number) > 0) ? Math.floor(ts as number) : Date.now(),
     };
     const insertAt = findAssistantInsertIndex(sealedExisting);
     setMessages([...sealedExisting.slice(0, insertAt), nextItem, ...sealedExisting.slice(insertAt)], state);
@@ -211,7 +216,9 @@ export function createStreamingActions(params: {
       existing[streamIndex] = {
         ...existing[streamIndex]!,
         content: nextContent,
-        ...(Number.isFinite(ts) && (ts as number) > 0 ? { ts: Math.floor(ts as number) } : {}),
+        ...(Number.isFinite(ts) && (ts as number) > 0
+          ? { ts: Math.floor(ts as number) }
+          : {}),
       };
       setMessages(existing.slice(), state);
       return;
@@ -238,13 +245,15 @@ export function createStreamingActions(params: {
     setMessages([...sealedExisting.slice(0, insertAt), nextItem, ...sealedExisting.slice(insertAt)], state);
   };
 
+  // Keep reasoning in the internal message state for backwards compatibility
+  // and for history reconciliation. MainChatMessageList deliberately filters
+  // these items, so they never become standalone visible blocks.
   const upsertThoughtDelta = (delta: string, rt?: ProjectRuntime): void => {
     const state = runtimeOrActive(rt);
     const chunk = String(delta ?? "");
     if (!chunk) return;
     dropEmptyAssistantPlaceholder(state);
     const existing = state.messages.value.slice();
-
     const thoughtIndex = existing.findIndex(
       (m) => m.role === "assistant" && m.kind === "thought" && m.streaming,
     );
@@ -344,37 +353,29 @@ export function createStreamingActions(params: {
     const existing = state.messages.value.slice();
     const stepMsg = existing.find((m) => m.id === liveStepId);
     const stepContent = trimLiveStepSnapshot(String(stepMsg?.content ?? "").trim(), 14).trim();
-
     let next = existing.filter((m) => !isLiveMessageId(m.id));
 
-    // Finalize any in-flight thought card
-    next = next.map((m) => {
-      if (m.kind === "thought" && m.streaming) {
-        return { ...m, streaming: false };
-      }
-      return m;
-    });
+    // Finalize the internal reasoning card, if one was streamed. The renderer
+    // hides it; retaining it here keeps older providers/history compatible.
+    next = next.map((m) => (m.kind === "thought" && m.streaming ? { ...m, streaming: false } : m));
 
-    // Action step traces ([tool], [editing], [command], etc.) MUST NEVER be stored as thought.
-    // Only genuine reasoning text (e.g. from legacy producers that prefixed [analysis]) is preserved.
+    // Action traces are not reasoning and must not be promoted to an internal
+    // thought record when the live status card is cleared.
     if (stepContent && !isActionStepTrace(stepContent) && !shouldIgnoreStepDelta(stepContent)) {
       const cleanReasoning = stepContent.startsWith("[analysis]")
         ? stepContent.slice("[analysis]".length).trim()
         : stepContent;
-      if (cleanReasoning) {
-        const alreadyHas = next.some((m) => m.kind === "thought" && m.content.includes(cleanReasoning));
-        if (!alreadyHas) {
-          const thoughtItem: ChatItem = {
-            id: randomId("thought"),
-            role: "assistant",
-            kind: "thought",
-            content: cleanReasoning,
-            streaming: false,
-            ts: stepMsg?.ts ?? Date.now(),
-          };
-          const insertAt = findProcessInsertIndex(next);
-          next.splice(insertAt, 0, thoughtItem);
-        }
+      if (cleanReasoning && !next.some((m) => m.kind === "thought" && m.content.includes(cleanReasoning))) {
+        const thoughtItem: ChatItem = {
+          id: randomId("thought"),
+          role: "assistant",
+          kind: "thought",
+          content: cleanReasoning,
+          streaming: false,
+          ts: stepMsg?.ts ?? Date.now(),
+        };
+        const insertAt = findProcessInsertIndex(next);
+        next.splice(insertAt, 0, thoughtItem);
       }
     }
     if (next.length === existing.length && next.every((m, idx) => m === existing[idx])) return;

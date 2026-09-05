@@ -1,4 +1,4 @@
-import type { ChatItem, ProjectRuntime } from "./controller";
+import type { ChatItem, ExecutePreviewState, ProjectRuntime } from "./controller";
 import { isLiveMessageId as isLiveMessageIdDefault } from "./chatLive";
 import { findExecuteInsertIndex, normalizeTurnSemanticOrder } from "../lib/chat_sync";
 
@@ -25,6 +25,16 @@ function stripCommandHeader(outputDelta: string, command: string): string {
   }
   return normalizedDelta;
 }
+
+export type ExecuteBlockUpdate = {
+  ts?: number;
+  eventId?: string;
+  revision?: number;
+  startOffset?: number;
+  endOffset?: number;
+  snapshot?: boolean;
+  terminal?: boolean;
+};
 
 export function createExecuteActions(params: {
   runtimeOrActive: (rt?: ProjectRuntime) => ProjectRuntime;
@@ -62,67 +72,148 @@ export function createExecuteActions(params: {
 
     // `command_execution.id` is not always unique per visible command (e.g. batched execution that reuses an id
     // while changing the command string). Dedup on (id, command) so we still count distinct commands, while
-    // avoiding overcounting multiple output deltas for the same command.
+    // avoiding overcounting multiple output deltas for the same command. For
+    // id-less frames the server assigns a synthetic identity; the command text
+    // fallback remains useful for legacy producers.
     const normalizedId = String(id ?? "").trim();
-    if (normalizedId) {
-      const key = commandKeyForWsEvent(cmd, normalizedId);
-      if (!key) return;
-      if (state.seenCommandIds.has(key)) return;
-      state.seenCommandIds.add(key);
+    if (!normalizedId) {
+      // There is no stable identity to distinguish two executions of the same
+      // command. Treat each legacy frame as a new command; modern server
+      // frames always carry the synthetic identity and are deduplicated below.
+      pushRecentCommand(cmd, state);
+      return;
     }
+    const key = commandKeyForWsEvent(cmd, normalizedId);
+    if (!key) return;
+    if (state.seenCommandIds.has(key)) return;
+    state.seenCommandIds.add(key);
     pushRecentCommand(cmd, state);
   };
 
-  const upsertExecuteBlock = (key: string, command: string, outputDelta: string, rt?: ProjectRuntime): void => {
+  const upsertExecuteBlock = (
+    key: string,
+    command: string,
+    outputDelta: string,
+    rt?: ProjectRuntime,
+    update?: number | ExecuteBlockUpdate,
+  ): void => {
     const state = runtimeOrActive(rt);
-    dropEmptyAssistantPlaceholder?.(state);
     const normalizedKey = String(key ?? "").trim();
     if (!normalizedKey) return;
     const normalizedCommand = String(command ?? "").trim();
     if (!normalizedCommand) return;
+    dropEmptyAssistantPlaceholder?.(state);
+
+    const options: ExecuteBlockUpdate = typeof update === "number" ? { ts: update } : (update ?? {});
+    const eventTs = Number.isFinite(options.ts) && (options.ts as number) > 0
+      ? Math.floor(options.ts as number)
+      : undefined;
 
     const existing = state.messages.value.slice();
-    const current =
-      state.executePreviewByKey.get(normalizedKey) ??
-      (() => {
-        const created = {
-          key: normalizedKey,
-          command: normalizedCommand,
-          previewLines: [] as string[],
-          fullLines: [] as string[],
-          totalLines: 0,
-          remainder: "",
-        };
-        state.executePreviewByKey.set(normalizedKey, created);
-        state.executeOrder = [...state.executeOrder, normalizedKey];
-        return created;
-      })();
+    const existingItem = existing.find((m) => m.id === `exec:${normalizedKey}`);
+    const prevTs = existingItem?.ts;
+    const current: ExecutePreviewState =
+      state.executePreviewByKey.get(normalizedKey) ?? {
+        key: normalizedKey,
+        command: normalizedCommand,
+        previewLines: [],
+        fullLines: [],
+        totalLines: 0,
+        remainder: "",
+        outputText: "",
+        outputStartOffset: 0,
+        outputEndOffset: 0,
+        snapshotRevision: 0,
+        terminal: false,
+        seenEventIds: new Set<string>(),
+      };
+    if (current.outputText === undefined) {
+      const legacyLines = [...(current.fullLines ?? []), ...(current.remainder ? [current.remainder] : [])];
+      current.outputText = legacyLines.join("\n");
+      current.outputStartOffset = 0;
+      current.outputEndOffset = current.outputText.length;
+    }
+    if (!state.executePreviewByKey.has(normalizedKey)) {
+      state.executePreviewByKey.set(normalizedKey, current);
+      state.executeOrder = [...state.executeOrder, normalizedKey];
+    }
 
-    const cleanedDelta = stripCommandHeader(outputDelta, normalizedCommand).replace(/^\n+/, "");
-    if (cleanedDelta) {
-      const combined = (current.remainder + cleanedDelta).replace(/\r\n/g, "\n");
-      const parts = combined.split("\n");
-      current.remainder = parts.pop() ?? "";
-      for (const rawLine of parts) {
-        const line = trimRightLine(rawLine);
-        if (!line) continue;
-        current.totalLines += 1;
-        current.fullLines.push(line);
-        if (current.previewLines.length < maxExecutePreviewLines) {
-          current.previewLines.push(line);
-        }
+    const eventId = String(options.eventId ?? "").trim();
+    if (eventId) {
+      current.seenEventIds ??= new Set<string>();
+      if (current.seenEventIds.has(eventId)) return;
+      current.seenEventIds.add(eventId);
+      if (current.seenEventIds.size > 256) {
+        const first = current.seenEventIds.values().next().value;
+        if (first) current.seenEventIds.delete(first);
       }
     }
 
-    const preview = current.previewLines.slice();
-    if (preview.length < maxExecutePreviewLines) {
-      const partial = trimRightLine(current.remainder);
-      if (partial) preview.push(partial);
+    const incoming = String(outputDelta ?? "");
+    const incomingStart = Number.isFinite(options.startOffset) && (options.startOffset as number) >= 0
+      ? Math.floor(options.startOffset as number)
+      : null;
+    const incomingEnd = Number.isFinite(options.endOffset) && (options.endOffset as number) >= 0
+      ? Math.floor(options.endOffset as number)
+      : null;
+    const currentStart = Number.isFinite(current.outputStartOffset) ? Math.max(0, current.outputStartOffset as number) : 0;
+    const currentEnd = Number.isFinite(current.outputEndOffset)
+      ? Math.max(currentStart, current.outputEndOffset as number)
+      : currentStart + String(current.outputText ?? "").length;
+
+    current.terminal = current.terminal === true || options.terminal === true;
+
+    if (options.snapshot) {
+      // A snapshot is an absolute replacement, never an append. Older or
+      // duplicate snapshots are harmless; a newer truncated snapshot wins.
+      const snapshotEnd = incomingEnd ?? Math.max(incomingStart ?? 0, (incomingStart ?? 0) + incoming.length);
+      const snapshotRevision = Number.isFinite(options.revision) && (options.revision as number) > 0
+        ? Math.floor(options.revision as number)
+        : 0;
+      const currentRevision = current.snapshotRevision ?? 0;
+      const newerRevision = snapshotRevision > currentRevision;
+      const sameRevisionWithMoreData = snapshotRevision === currentRevision && snapshotEnd > currentEnd;
+      const firstSnapshot = !current.outputText && currentEnd === currentStart;
+      const offsetlessLegacySnapshot = incomingStart === null && incomingEnd === null && snapshotRevision === 0;
+      if (firstSnapshot || newerRevision || sameRevisionWithMoreData || offsetlessLegacySnapshot) {
+        // An offsetless empty snapshot must not erase already received output.
+        if (incoming || !current.outputText || newerRevision) {
+          current.outputText = incoming;
+          current.outputStartOffset = incomingStart ?? Math.max(0, snapshotEnd - incoming.length);
+          current.outputEndOffset = snapshotEnd;
+        }
+        current.snapshotRevision = Math.max(currentRevision, snapshotRevision);
+      }
+    } else if (incoming) {
+      let appendable = incoming;
+      const nextEnd = incomingEnd ?? ((incomingStart ?? currentEnd) + incoming.length);
+      if (incomingStart !== null) {
+        if (nextEnd <= currentEnd) {
+          appendable = "";
+        } else if (incomingStart < currentEnd) {
+          appendable = incoming.slice(Math.min(incoming.length, currentEnd - incomingStart));
+        }
+      }
+      if (appendable) {
+        if (!current.outputText) {
+          current.outputStartOffset = incomingStart ?? currentStart;
+        }
+        current.outputText = `${current.outputText ?? ""}${appendable}`;
+        current.outputEndOffset = nextEnd;
+        current.outputStartOffset = Math.max(0, nextEnd - current.outputText.length);
+      } else if (incomingEnd !== null && incomingEnd > currentEnd) {
+        current.outputEndOffset = incomingEnd;
+      }
     }
 
-    const fullLines = current.fullLines.slice();
-    const partial = trimRightLine(current.remainder);
-    if (partial) fullLines.push(partial);
+    const displayText = stripCommandHeader(String(current.outputText ?? ""), normalizedCommand)
+      .replace(/^\n+/, "")
+      .replace(/\r\n/g, "\n");
+    const fullLines = displayText
+      .split("\n")
+      .map((line) => trimRightLine(line))
+      .filter((line) => Boolean(line));
+    const preview = fullLines.slice(0, maxExecutePreviewLines);
     const hiddenLineCount = Math.max(0, fullLines.length - preview.length);
     const fullContent = fullLines.join("\n");
     const itemId = `exec:${normalizedKey}`;
@@ -136,7 +227,8 @@ export function createExecuteActions(params: {
       hiddenLineCount,
       commandsTotal: state.turnCommandCount,
       commandsLimit: maxTurnCommands,
-      streaming: true,
+      streaming: current.terminal ? false : options.snapshot ? true : existingItem?.streaming !== false,
+      ts: prevTs ?? eventTs,
     };
 
     // Eliminate redundant live-step announcer card if it only announced the command

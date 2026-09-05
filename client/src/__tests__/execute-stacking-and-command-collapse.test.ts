@@ -224,7 +224,7 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("shows only the latest finalized execute history block", async () => {
+  it("shows all finalized execute history blocks in arrival order", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -250,16 +250,14 @@ describe("chat execute stacking and command collapse", () => {
     await settleUi(wrapper);
 
     const blocks = wrapper.findAll(".execute-block");
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0]!.find(".execute-cmd").text()).toContain("cmd-3");
-    expect(blocks[0]!.find(".execute-output").text()).toContain("out-3");
-    expect(blocks[0]!.text()).not.toContain("cmd-1");
-    expect(blocks[0]!.text()).not.toContain("cmd-2");
+    expect(blocks).toHaveLength(3);
+    expect(blocks.map((block) => block.find(".execute-cmd").text())).toEqual(["cmd-1", "cmd-2", "cmd-3"]);
+    expect(blocks.map((block) => block.find(".execute-output").text())).toEqual(["out-1", "out-2", "out-3"]);
 
     wrapper.unmount();
   });
 
-  it("shows only the latest transient execute preview when multiple previews are consecutive", async () => {
+  it("shows every transient execute preview when multiple previews are consecutive", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -285,27 +283,26 @@ describe("chat execute stacking and command collapse", () => {
     await settleUi(wrapper);
 
     const blocks = wrapper.findAll(".execute-block");
-    expect(blocks).toHaveLength(1);
+    expect(blocks).toHaveLength(3);
 
     const left = wrapper.find(".execute-left");
     expect(left.exists()).toBe(true);
     expect(left.find(".prompt-tag").exists()).toBe(true);
     expect(left.find(".execute-cmd").exists()).toBe(true);
-    expect(left.find(".execute-cmd").text()).toContain("cmd-3");
+    expect(left.find(".execute-cmd").text()).toContain("cmd-1");
 
     expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
     expect(wrapper.find(".execute-stack-count").exists()).toBe(false);
 
     const output = wrapper.find(".execute-output");
     expect(output.exists()).toBe(true);
-    expect(output.text()).toContain("out-3");
-    expect(output.text()).not.toContain("out-1");
-    expect(output.text()).not.toContain("out-2");
+    expect(output.text()).toContain("out-1");
+    expect(wrapper.findAll(".execute-output").map((node) => node.text())).toEqual(["out-1", "out-2", "out-3"]);
 
     wrapper.unmount();
   });
 
-  it("shows only the latest transient execute preview even when many previews are consecutive", async () => {
+  it("shows every transient execute preview even when many previews are consecutive", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -331,18 +328,18 @@ describe("chat execute stacking and command collapse", () => {
 
     await settleUi(wrapper);
 
-    expect(wrapper.findAll(".execute-block")).toHaveLength(1);
+    expect(wrapper.findAll(".execute-block")).toHaveLength(4);
 
-    const topCmd = wrapper.find(".execute-cmd");
-    expect(topCmd.exists()).toBe(true);
-    expect(topCmd.text()).toContain("cmd-4");
+    const commands = wrapper.findAll(".execute-cmd");
+    expect(commands).toHaveLength(4);
+    expect(commands.map((node) => node.text())).toEqual(["cmd-1", "cmd-2", "cmd-3", "cmd-4"]);
 
     expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
 
     wrapper.unmount();
   });
 
-  it("does not render underlays even for large stacks", async () => {
+  it("renders all blocks without underlays even for large stacks", async () => {
     const execs = Array.from({ length: 20 }, (_, i) => {
       const n = i + 1;
       return {
@@ -373,18 +370,18 @@ describe("chat execute stacking and command collapse", () => {
 
     await settleUi(wrapper);
 
-    expect(wrapper.findAll(".execute-block")).toHaveLength(1);
+    expect(wrapper.findAll(".execute-block")).toHaveLength(20);
     expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
     expect(wrapper.find(".execute-stack-count").exists()).toBe(false);
 
-    const topCmd = wrapper.find(".execute-cmd");
-    expect(topCmd.exists()).toBe(true);
-    expect(topCmd.text()).toContain("cmd-20");
+    const commands = wrapper.findAll(".execute-cmd");
+    expect(commands).toHaveLength(20);
+    expect(commands.at(-1)?.text()).toContain("cmd-20");
 
     const output = wrapper.find(".execute-output");
     expect(output.exists()).toBe(true);
-    expect(output.text()).toContain("out-20");
-    expect(output.text()).not.toContain("out-1");
+    expect(output.text()).toContain("out-1");
+    expect(wrapper.findAll(".execute-output").at(-1)?.text()).toContain("out-20");
 
     wrapper.unmount();
   });
