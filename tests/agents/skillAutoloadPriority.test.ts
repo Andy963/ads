@@ -56,10 +56,11 @@ class DummyAdapter implements AgentAdapter {
 
 let workspaceRoot: string;
 let adsStateDir: string;
+let codexHomeDir: string;
 let originalEnv: NodeJS.ProcessEnv;
 
 function writeSkill(root: string, name: string, description: string): void {
-  const dir = path.join(root, ".agent", "skills", name);
+  const dir = path.join(root, "skills", name);
   fs.mkdirSync(dir, { recursive: true });
   const skillFile = path.join(dir, "SKILL.md");
   const content = ["---", `name: ${name}`, `description: "${description}"`, "---", "", `# ${name}`, ""].join("\n");
@@ -67,7 +68,7 @@ function writeSkill(root: string, name: string, description: string): void {
 }
 
 function writeRegistryMetadata(workspaceRoot: string, yamlBody: string): void {
-  const dir = path.join(workspaceRoot, ".agent", "skills");
+  const dir = path.join(workspaceRoot, "skills");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "metadata.yaml"), yamlBody, "utf8");
 }
@@ -77,21 +78,24 @@ describe("skills autoload priority registry", () => {
     originalEnv = { ...process.env };
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-registry-workspace-"));
     adsStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-registry-state-"));
+    codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-registry-codex-"));
     process.env.ADS_STATE_DIR = adsStateDir;
-    delete process.env.ADS_ENABLE_WORKSPACE_SKILLS;
+    process.env.CODEX_HOME = codexHomeDir;
+    process.env.ADS_MIGRATE_LEGACY_SKILLS = "0";
   });
 
   afterEach(() => {
     process.env = { ...originalEnv };
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
     fs.rmSync(adsStateDir, { recursive: true, force: true });
+    fs.rmSync(codexHomeDir, { recursive: true, force: true });
   });
 
   it("dedupes same provides group and picks higher priority skill", async () => {
-    writeSkill(adsStateDir, "demo-skill-a", "priodemoalpha priodemobeta priodemogamma");
-    writeSkill(adsStateDir, "demo-skill-b", "priodemoalpha priodemobeta");
+    writeSkill(codexHomeDir, "demo-skill-a", "priodemoalpha priodemobeta priodemogamma");
+    writeSkill(codexHomeDir, "demo-skill-b", "priodemoalpha priodemobeta");
 
-    writeRegistryMetadata(adsStateDir, [
+    writeRegistryMetadata(codexHomeDir, [
       "version: 1",
       "mode: overlay",
       "skills:",

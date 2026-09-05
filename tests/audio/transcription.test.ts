@@ -6,8 +6,8 @@ import path from "node:path";
 
 import { transcribeAudioBuffer } from "../../server/audio/transcription.js";
 
-function writeSkill(adsStateDir: string, name: string): void {
-  const dir = path.join(adsStateDir, ".agent", "skills", name);
+function writeSkill(codexHomeDir: string, name: string): void {
+  const dir = path.join(codexHomeDir, "skills", name);
   fs.mkdirSync(path.join(dir, "scripts"), { recursive: true });
   fs.writeFileSync(
     path.join(dir, "SKILL.md"),
@@ -17,8 +17,8 @@ function writeSkill(adsStateDir: string, name: string): void {
   fs.writeFileSync(path.join(dir, "scripts", "transcribe.py"), "#!/usr/bin/env python3\nprint('noop')\n", "utf8");
 }
 
-function writeRegistry(adsStateDir: string, yamlBody: string): void {
-  const dir = path.join(adsStateDir, ".agent", "skills");
+function writeRegistry(codexHomeDir: string, yamlBody: string): void {
+  const dir = path.join(codexHomeDir, "skills");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "metadata.yaml"), yamlBody, "utf8");
 }
@@ -27,26 +27,30 @@ describe("audio/transcription (skill-based)", () => {
   const originalEnv = { ...process.env };
   let workspaceRoot: string;
   let adsStateDir: string;
+  let codexHomeDir: string;
 
   beforeEach(() => {
     process.env = { ...originalEnv };
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-audio-transcription-"));
     adsStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-audio-transcription-state-"));
+    codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-audio-transcription-codex-"));
     process.env.ADS_STATE_DIR = adsStateDir;
-    delete process.env.ADS_ENABLE_WORKSPACE_SKILLS;
+    process.env.CODEX_HOME = codexHomeDir;
+    process.env.ADS_MIGRATE_LEGACY_SKILLS = "0";
   });
 
   afterEach(() => {
     process.env = { ...originalEnv };
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
     fs.rmSync(adsStateDir, { recursive: true, force: true });
+    fs.rmSync(codexHomeDir, { recursive: true, force: true });
   });
 
   it("picks the highest priority transcription skill", async () => {
-    writeSkill(adsStateDir, "skill-a");
-    writeSkill(adsStateDir, "skill-b");
+    writeSkill(codexHomeDir, "skill-a");
+    writeSkill(codexHomeDir, "skill-b");
 
-    writeRegistry(adsStateDir, [
+    writeRegistry(codexHomeDir, [
       "version: 1",
       "mode: overlay",
       "skills:",
@@ -86,10 +90,10 @@ describe("audio/transcription (skill-based)", () => {
   });
 
   it("falls back to the next skill when the first one fails", async () => {
-    writeSkill(adsStateDir, "skill-a");
-    writeSkill(adsStateDir, "skill-b");
+    writeSkill(codexHomeDir, "skill-a");
+    writeSkill(codexHomeDir, "skill-b");
 
-    writeRegistry(adsStateDir, [
+    writeRegistry(codexHomeDir, [
       "version: 1",
       "mode: overlay",
       "skills:",

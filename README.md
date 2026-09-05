@@ -16,6 +16,7 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编�
   - **Worker (执行 Lane)**：有本地快照时读取批准时固定的 issue/spec 内容，否则直接依据任务 prompt 与 GitHub 引用执行，实时输出紧凑预览。
 - **统一多 Provider 模型支持**：所有模型均通过 **Codex App-Server** 路由（包括 Anthropic Claude、Google Gemini 与 DeepSeek），支持模型可视化启用/停用与即时配置。
 - **确定性安全拦截**：在命令执行边界保护 ADS 自身进程和 SQLite 数据库文件，不依赖模型提示或可变数据库规则。
+- **Codex 标准技能体系**：全局技能原生对齐 `$CODEX_HOME/skills`（默认 `~/.codex/skills`）；支持对话中 `<skill_save>` 自动沉淀与存量遗留技能无损原子迁移，与 native Codex CLI 完全互通。
 - **原生会话恢复 (Session Resume)**：零 Token 冗余恢复底层 CLI 真实历史上下文，断线重连自动增量同步。
 - **多模态与语音转写**：支持拖拽/粘贴图片预览、语音一键转写 Prompt，以及代码文件与行号跳转预览模态框。
 - **远程 Telegram Connector**：可选的独立单用户 Connector，支持文本对话、会话控制与任务终态通知，不将 Telegram 依赖加载到 Core。
@@ -72,6 +73,7 @@ npm run web:init-admin -- --username admin --password-stdin
 
 详细的模块说明与进阶指南请查阅 `docs/` 目录：
 
+- 🎯 **[Codex 技能规范与架构说明](docs/adr/0007-align-skills-with-codex-standard.md)**：全局 `$CODEX_HOME/skills`、优先级（global > builtin）、`<skill_save>` 自动沉淀与迁移机制。
 - 📖 **[Web Console 完整使用指南](docs/web.md)**：工作区 Tab、Provider 模型管理、移动端交互规范与 Web 专属配置。
 - 📱 **[Telegram Connector 配置与使用手册](docs/telegram.md)**：Connector 设置、文本会话与任务终态通知。
 - 🏛 **[系统架构与核心机制](docs/architecture.md)**：双层 SQLite 数据模型、Agent 适配器层、Durable Sync 状态同步协议与调度器引擎。
@@ -88,6 +90,7 @@ npm run web:init-admin -- --username admin --password-stdin
 | `npm run test` | 运行服务端完整单元测试（Node test runner） |
 | `npm run test:web` | 运行前端 Vitest 组件与状态测试 |
 | `npm run lint` | 运行 ESLint 代码规范检查 |
+| `npm run skills:migrate` | 运行技能迁移 CLI，将遗留技能非破坏性迁移至 Codex 标准目录 |
 | `npm run web:reset-admin` | 重置或创建新的 Web 管理员账号 |
 
 ---

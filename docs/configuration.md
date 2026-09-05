@@ -63,8 +63,8 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
 | `ADS_SKILLS_AUTOLOAD` | `true` | 是否根据 Prompt 自动匹配加载相关技能 |
-| `ADS_SKILLS_AUTOSAVE` | `true` | 是否自动将对话生成的技能草稿沉淀至草稿目录 |
-| `ADS_ENABLE_WORKSPACE_SKILLS` | 未设置 | 是否显式允许工作区目录下的 `.agent/skills` |
+| `ADS_SKILLS_AUTOSAVE` | `true` | 是否自动将对话生成的技能（`<skill_save>` 块）沉淀至全局 `$CODEX_HOME/skills` 目录 |
+| `ADS_MIGRATE_LEGACY_SKILLS` | `1` | 是否在技能加载时自动非破坏性迁移遗留的 `$ADS_STATE_DIR/.agent/skills` 技能到 `$CODEX_HOME/skills`（设为 `0` 可关闭） |
 | `ADS_PREFERENCE_DIRECTIVES` | `true` | 是否在对话中自动识别并提取用户长期偏好 |
 | `ADS_MEMORY_INJECTION_ENABLED` | `true` | 是否在系统提示中动态注入工作区长期记忆 |
 | `ADS_MEMORY_MAX_TOKENS` | `1024` | 注入长期记忆的最大 Token 预算 |

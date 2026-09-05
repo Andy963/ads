@@ -13,26 +13,18 @@ import {
   resetSkillFileCacheForTests,
   type SkillMetadata,
 } from "../../server/skills/loader.js";
+import { resolveGlobalSkillsDir } from "../../server/skills/paths.js";
 
 let workspaceRoot: string;
 let adsStateDir: string;
+let codexHomeDir: string;
 let originalEnv: NodeJS.ProcessEnv;
 const NO_BUILTINS = "/nonexistent-builtin-root";
 
-function createSkill(root: string, name: string, frontmatter: string): void {
-  const dir = path.join(root, ".agent", "skills", name);
+function createGlobalSkill(name: string, frontmatter: string): void {
+  const dir = path.join(resolveGlobalSkillsDir(), name);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "SKILL.md"), frontmatter, "utf-8");
-}
-
-function writeWorkspaceSkillsMetadata(workspaceRoot: string): void {
-  const dir = path.join(workspaceRoot, ".agent", "skills");
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, "metadata.yaml"),
-    ["version: 1", "mode: overlay", "skills: {}", ""].join("\n"),
-    "utf8",
-  );
 }
 
 describe("skills/loader", () => {
@@ -40,8 +32,10 @@ describe("skills/loader", () => {
     originalEnv = { ...process.env };
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-workspace-"));
     adsStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-state-"));
+    codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-codex-"));
     process.env.ADS_STATE_DIR = adsStateDir;
-    delete process.env.ADS_ENABLE_WORKSPACE_SKILLS;
+    process.env.CODEX_HOME = codexHomeDir;
+    process.env.ADS_MIGRATE_LEGACY_SKILLS = "0";
     resetSkillFileCacheForTests();
   });
 
@@ -50,10 +44,11 @@ describe("skills/loader", () => {
     resetSkillFileCacheForTests();
     fs.rmSync(workspaceRoot, { recursive: true, force: true });
     fs.rmSync(adsStateDir, { recursive: true, force: true });
+    fs.rmSync(codexHomeDir, { recursive: true, force: true });
   });
 
-  it("discovers skills from ADS state store by default", () => {
-    createSkill(adsStateDir, "my-skill", [
+  it("discovers skills from global Codex skills directory by default", () => {
+    createGlobalSkill("my-skill", [
       "---",
       "name: my-skill",
       "description: A test skill",
@@ -63,47 +58,13 @@ describe("skills/loader", () => {
     ].join("\n"));
 
     const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
-    const skill = skills.find((s) => s.source === "state" && s.name === "my-skill");
+    const skill = skills.find((s) => s.source === "global" && s.name === "my-skill");
     assert.ok(skill);
     assert.equal(skill.description, "A test skill");
   });
 
-  it("ignores workspace .agent/skills by default", () => {
-    const skillName = `workspace-only-${Date.now()}`;
-    createSkill(workspaceRoot, skillName, [
-      "---",
-      `name: ${skillName}`,
-      "description: Workspace skill",
-      "---",
-      "# Workspace Skill",
-      "Body",
-    ].join("\n"));
-
-    const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
-    const found = skills.find((s) => s.name === skillName) ?? null;
-    assert.equal(found, null);
-  });
-
-  it("auto-enables workspace .agent/skills when metadata.yaml exists", () => {
-    writeWorkspaceSkillsMetadata(workspaceRoot);
-    const skillName = `workspace-meta-${Date.now()}`;
-    createSkill(workspaceRoot, skillName, [
-      "---",
-      `name: ${skillName}`,
-      "description: Workspace skill",
-      "---",
-      "# Workspace Skill",
-      "Body",
-    ].join("\n"));
-
-    const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
-    const found = skills.find((s) => s.name === skillName) ?? null;
-    assert.ok(found);
-    assert.equal(found.source, "workspace");
-  });
-
   it("skips directories without SKILL.md", () => {
-    const dir = path.join(adsStateDir, ".agent", "skills", "no-skill-md");
+    const dir = path.join(resolveGlobalSkillsDir(), "no-skill-md");
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "README.md"), "not a skill", "utf-8");
 
@@ -113,7 +74,7 @@ describe("skills/loader", () => {
   });
 
   it("uses directory name when frontmatter has no name", () => {
-    createSkill(adsStateDir, "fallback-name", [
+    createGlobalSkill("fallback-name", [
       "---",
       "description: No name field",
       "---",
@@ -121,25 +82,25 @@ describe("skills/loader", () => {
     ].join("\n"));
 
     const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
-    const skill = skills.find((s) => s.source === "state" && s.name === "fallback-name");
+    const skill = skills.find((s) => s.source === "global" && s.name === "fallback-name");
     assert.ok(skill);
   });
 
   it("handles missing frontmatter gracefully", () => {
-    createSkill(adsStateDir, "no-front", "# Just markdown\nNo frontmatter.");
+    createGlobalSkill("no-front", "# Just markdown\nNo frontmatter.");
 
     const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
-    const skill = skills.find((s) => s.source === "state" && s.name === "no-front");
+    const skill = skills.find((s) => s.source === "global" && s.name === "no-front");
     assert.ok(skill);
     assert.equal(skill.description, "No description provided.");
   });
 
-  it("state skills take precedence over builtin skills with same name", () => {
+  it("global skills take precedence over builtin skills with same name", () => {
     const skillName = `dup-skill-${Date.now()}`;
-    createSkill(adsStateDir, skillName, [
+    createGlobalSkill(skillName, [
       "---",
       `name: ${skillName}`,
-      "description: state version",
+      "description: global version",
       "---",
     ].join("\n"));
 
@@ -156,39 +117,8 @@ describe("skills/loader", () => {
     const skills = discoverSkills(workspaceRoot, builtinRoot);
     const skill = skills.find((s) => s.name === skillName);
     assert.ok(skill);
-    assert.equal(skill.description, "state version");
-    assert.equal(skill.source, "state");
-  });
-
-  it("discovers workspace skills when ADS_ENABLE_WORKSPACE_SKILLS=1", () => {
-    process.env.ADS_ENABLE_WORKSPACE_SKILLS = "1";
-    const skillName = `ws-skill-${Date.now()}`;
-    createSkill(workspaceRoot, skillName, [
-      "---",
-      `name: ${skillName}`,
-      "description: workspace version",
-      "---",
-    ].join("\n"));
-
-    const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
-    const skill = skills.find((s) => s.name === skillName);
-    assert.ok(skill);
-    assert.equal(skill.source, "workspace");
-    assert.equal(skill.description, "workspace version");
-  });
-
-  it("workspace skills take precedence over state skills when enabled", () => {
-    process.env.ADS_ENABLE_WORKSPACE_SKILLS = "1";
-    const skillName = `ws-over-state-${Date.now()}`;
-
-    createSkill(adsStateDir, skillName, ["---", `name: ${skillName}`, "description: state version", "---"].join("\n"));
-    createSkill(workspaceRoot, skillName, ["---", `name: ${skillName}`, "description: workspace version", "---"].join("\n"));
-
-    const skills = discoverSkills(workspaceRoot, NO_BUILTINS);
-    const skill = skills.find((s) => s.name === skillName);
-    assert.ok(skill);
-    assert.equal(skill.source, "workspace");
-    assert.equal(skill.description, "workspace version");
+    assert.equal(skill.description, "global version");
+    assert.equal(skill.source, "global");
   });
 
   it("discovers builtin skills", () => {
@@ -218,7 +148,7 @@ describe("skills/loader", () => {
       "# Body",
       "Some instructions.",
     ].join("\n");
-    createSkill(adsStateDir, skillName, content);
+    createGlobalSkill(skillName, content);
 
     const body = loadSkillBody(skillName, workspaceRoot, NO_BUILTINS);
     assert.equal(body, content);
@@ -230,7 +160,7 @@ describe("skills/loader", () => {
   });
 
   it("removes stale cache entries after a discovered skill file is deleted", () => {
-    createSkill(adsStateDir, "ephemeral-skill", [
+    createGlobalSkill("ephemeral-skill", [
       "---",
       "name: ephemeral-skill",
       "description: Temporary skill",
@@ -244,7 +174,7 @@ describe("skills/loader", () => {
     const cacheSizeBeforeDelete = getSkillFileCacheSizeForTests();
     assert.ok(cacheSizeBeforeDelete >= 1);
 
-    fs.rmSync(path.join(adsStateDir, ".agent", "skills", "ephemeral-skill"), { recursive: true, force: true });
+    fs.rmSync(path.join(resolveGlobalSkillsDir(), "ephemeral-skill"), { recursive: true, force: true });
 
     const secondSkills = discoverSkills(workspaceRoot, NO_BUILTINS);
     assert.equal(secondSkills.some((skill) => skill.name === "ephemeral-skill"), false);
@@ -254,21 +184,21 @@ describe("skills/loader", () => {
 
   it("renderCompactSkills formats skills as XML", () => {
     const skills: SkillMetadata[] = [
-      makeSkillMeta("alpha", "First skill", "/tmp/a", "state"),
+      makeSkillMeta("alpha", "First skill", "/tmp/a", "builtin"),
       makeSkillMeta("beta", "Second skill", "/tmp/b", "global"),
     ];
     const output = renderCompactSkills(skills);
     assert.ok(output.includes("<available_skills>"));
     assert.ok(output.includes('name="alpha"'));
     assert.ok(output.includes('name="beta"'));
-    assert.ok(output.includes('source="state"'));
+    assert.ok(output.includes('source="builtin"'));
     assert.ok(output.includes('source="global"'));
     assert.ok(output.includes("First skill"));
   });
 
   it("tells agents to execute auto-loaded skills without searching for them", () => {
     const output = renderSkillMetaInstruction([
-      makeSkillMeta("alpha", "First skill", "/tmp/a", "state"),
+      makeSkillMeta("alpha", "First skill", "/tmp/a", "global"),
     ]);
 
     assert.match(output, /自动加载匹配 skill/);
@@ -276,7 +206,7 @@ describe("skills/loader", () => {
   });
 
   it("loads SKILL.md v1 frontmatter fields", () => {
-    createSkill(adsStateDir, "v1-skill", [
+    createGlobalSkill("v1-skill", [
       "---",
       "name: v1-skill",
       "description: A v1 skill",
@@ -320,9 +250,9 @@ describe("skills/loader", () => {
 
   it("sorts discovered skills alphabetically", () => {
     const prefix = `sort-${Date.now()}-`;
-    createSkill(adsStateDir, `${prefix}zeta`, `---\nname: ${prefix}zeta\ndescription: z\n---`);
-    createSkill(adsStateDir, `${prefix}alpha`, `---\nname: ${prefix}alpha\ndescription: a\n---`);
-    createSkill(adsStateDir, `${prefix}mid`, `---\nname: ${prefix}mid\ndescription: m\n---`);
+    createGlobalSkill(`${prefix}zeta`, `---\nname: ${prefix}zeta\ndescription: z\n---`);
+    createGlobalSkill(`${prefix}alpha`, `---\nname: ${prefix}alpha\ndescription: a\n---`);
+    createGlobalSkill(`${prefix}mid`, `---\nname: ${prefix}mid\ndescription: m\n---`);
 
     const sorted = discoverSkills(workspaceRoot, NO_BUILTINS)
       .filter((s) => s.name.startsWith(prefix))

@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import yaml from "yaml";
@@ -7,25 +6,24 @@ import yaml from "yaml";
 import { fileURLToPath } from "node:url";
 
 import { createLogger } from "../utils/logger.js";
-import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { loadSkillRegistry } from "./registryMetadata.js";
 import { SkillFrontmatterV1Schema, type SkillFrontmatterV1 } from "./schema.js";
+import {
+  SKILL_FILE_NAME,
+  resolveGlobalSkillsDir,
+} from "./paths.js";
+import { migrateLegacyStateSkills } from "./migration.js";
 
 const logger = createLogger("SkillLoader");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ADS_REPO_ROOT = path.resolve(__dirname, "..", "..");
 const BUILTIN_SKILLS_ROOT = path.resolve(__dirname, "builtin");
-const WORKSPACE_SKILLS_DIR = ".agent/skills";
-const ADS_REPO_SKILLS_DIR = path.join(ADS_REPO_ROOT, WORKSPACE_SKILLS_DIR);
-const SKILL_FILE_NAME = "SKILL.md";
-const WORKSPACE_SKILLS_METADATA_FILE = "metadata.yaml";
 
 export interface SkillMetadata {
   name: string;
   description: string;
   location: string;
-  source: "workspace" | "ads" | "state" | "global" | "builtin";
+  source: "global" | "builtin";
   version: number;
   provides: string[];
   priority: number;
@@ -34,20 +32,6 @@ export interface SkillMetadata {
   triggers: { keywords: string[]; intents: string[] };
   entrypoints: Array<{ cmd: string; script?: string; argsTemplate: string[]; description?: string }>;
   deprecated: boolean;
-}
-
-function isWorkspaceSkillsEnabled(workspacePath: string): boolean {
-  const raw = String(process.env.ADS_ENABLE_WORKSPACE_SKILLS ?? "").trim().toLowerCase();
-  if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") {
-    return true;
-  }
-
-  try {
-    const metadataPath = path.join(path.resolve(workspacePath), WORKSPACE_SKILLS_DIR, WORKSPACE_SKILLS_METADATA_FILE);
-    return fs.existsSync(metadataPath);
-  } catch {
-    return false;
-  }
 }
 
 interface SkillFileCacheEntry {
@@ -188,16 +172,13 @@ function pruneSkillFileCache(activeRoots: Array<{ dir: string; source: SkillMeta
 }
 
 export function discoverSkills(workspacePath: string, builtinRoot?: string): SkillMetadata[] {
-  const resolvedBuiltin = builtinRoot ?? BUILTIN_SKILLS_ROOT;
-  const adsStateSkillsDir = path.join(resolveAdsStateDir(), WORKSPACE_SKILLS_DIR);
-  const roots: Array<{ dir: string; source: SkillMetadata["source"] }> = [];
-  if (isWorkspaceSkillsEnabled(workspacePath)) {
-    roots.push({ dir: path.join(path.resolve(workspacePath), WORKSPACE_SKILLS_DIR), source: "workspace" });
+  if (process.env.ADS_MIGRATE_LEGACY_SKILLS !== "0") {
+    migrateLegacyStateSkills();
   }
+  const resolvedBuiltin = builtinRoot ?? BUILTIN_SKILLS_ROOT;
+  const roots: Array<{ dir: string; source: SkillMetadata["source"] }> = [];
   roots.push(
-    { dir: adsStateSkillsDir, source: "state" },
-    { dir: ADS_REPO_SKILLS_DIR, source: "ads" },
-    { dir: path.join(os.homedir(), WORKSPACE_SKILLS_DIR), source: "global" },
+    { dir: resolveGlobalSkillsDir(), source: "global" },
     { dir: resolvedBuiltin, source: "builtin" },
   );
 
@@ -275,7 +256,7 @@ export function renderSkillMetaInstruction(skills: SkillMetadata[]): string {
       "<skill_system>",
       "当前没有可用的 skill。",
       "当你需要扩展能力时，可以使用 /ads.skill.init <name> 创建新的 skill。",
-      "skill 存放位置：ADS state $ADS_STATE_DIR/.agent/skills/<name>/SKILL.md（默认 .ads/.agent/skills），全局 ~/.agent/skills/<name>/SKILL.md。",
+      "skill 存放位置：全局 $CODEX_HOME/skills/<name>/SKILL.md（默认 ~/.codex/skills）。",
       "</skill_system>",
     ].join("\n");
   }

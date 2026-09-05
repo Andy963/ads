@@ -3,11 +3,11 @@ import path from "node:path";
 import { parseSlashCommand } from "../codexConfig.js";
 import { initWorkspace, getCurrentWorkspace, syncWorkspaceTemplates } from "../workspace/service.js";
 import { detectWorkspace, detectWorkspaceFrom } from "../workspace/detector.js";
-import { resolveAdsStateDir } from "../workspace/adsPaths.js";
 import { listRules, readRules } from "../workspace/rulesService.js";
 import { normalizeOutput } from "../utils/text.js";
 import { initSkill, normalizeSkillName, parseResourceList, validateSkillDirectory } from "../skills/creator.js";
 import { discoverSkills, loadSkillBody, renderSkillList } from "../skills/loader.js";
+import { resolveGlobalSkillsDir } from "../skills/paths.js";
 
 export interface CommandResult {
   ok: boolean;
@@ -105,14 +105,14 @@ const commandRegistry = new Map<string, CommandHandler>([
         };
       }
 
-      const workspaceRoot = resolveAdsStateDir();
       const includeExamples =
         params.examples === "true" || params.examples === "1" || params.examples === "yes" || params.examples === "on";
       const resources = parseResourceList(params.resources);
+      const globalSkillsDir = resolveGlobalSkillsDir();
       try {
-        const created = initSkill({ workspaceRoot, rawName: name, resources, includeExamples });
-        const relDir = path.relative(workspaceRoot, created.skillDir) || created.skillDir;
-        const relFiles = created.createdFiles.map((p) => path.relative(workspaceRoot, p) || p);
+        const created = initSkill({ rawName: name, resources, includeExamples });
+        const relDir = path.relative(globalSkillsDir, created.skillDir) || created.skillDir;
+        const relFiles = created.createdFiles.map((p) => path.relative(globalSkillsDir, p) || p);
         const output = [
           `✅ Skill 已创建: ${created.skillName}`,
           `目录: ${relDir}`,
@@ -159,16 +159,16 @@ const commandRegistry = new Map<string, CommandHandler>([
   [
     "ads.skill.validate",
     async ({ params, positional }) => {
-      const workspaceRoot = resolveAdsStateDir();
       const arg = (params.path ?? positional.join(" ")).trim();
       if (!arg) {
         return { ok: false, output: "❌ Missing skill name/path" };
       }
 
+      const globalSkillsDir = resolveGlobalSkillsDir();
       const looksLikePath = arg.includes("/") || arg.includes("\\") || arg.startsWith(".") || arg.startsWith("~");
-      const skillDir = looksLikePath ? arg : path.join(workspaceRoot, ".agent", "skills", normalizeSkillName(arg));
+      const skillDir = looksLikePath ? arg : path.join(globalSkillsDir, normalizeSkillName(arg));
       const result = validateSkillDirectory(skillDir);
-      const relDir = path.relative(workspaceRoot, result.skillDir) || result.skillDir;
+      const relDir = path.relative(globalSkillsDir, result.skillDir) || result.skillDir;
       const output = `${result.valid ? "✅" : "❌"} ${result.message}\n目录: ${relDir}`;
       return { ok: result.valid, output };
     },
