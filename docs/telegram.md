@@ -36,11 +36,16 @@ node connectors/telegram/bin/ads-telegram.js start
 | Command | Arguments | Behavior |
 |---|---|---|
 | `/start` | None | Confirms that the connector is available. |
+| `/model` | None | Shows an inline keyboard of enabled models from the global ADS model registry. |
+| `/model` | `<modelId> [reasoningEffort]` | Switches the current Telegram chat to the selected global model and optional reasoning effort. |
+| `/status` | None | Shows the active model and reasoning effort for the current Telegram chat. |
 | `/new` | None | Clears history for the current Telegram chat only. |
 | `/stop` | None | Interrupts an active turn for the current Telegram chat only. |
 | Text message | Any non-command text | Sends a `channel: "telegram"` prompt to ADS Core. |
 
 Each Telegram chat uses an independent Core chat session. History, `/new`, and `/stop` actions are scoped to that chat and cannot affect another chat.
+
+The `/model` list is read from ADS Core's global model configuration registry (`/api/models`). Model configuration is not workspace-scoped. A model selection is stored in the chat's Core session, so changing it in one Telegram chat does not change another chat's active model.
 
 The connector receives Core `task_terminal` events. A scheduled task with an explicit Telegram `chatId` is delivered to that chat; `TELEGRAM_NOTIFICATION_CHAT_ID` is an optional fallback.
 

@@ -19,6 +19,21 @@ export interface PromptTurnOptions {
   timeoutMs?: number;
 }
 
+export interface ModelOption {
+  id: string;
+  modelId: string;
+  displayName: string;
+  provider: string;
+  isEnabled: boolean;
+  isDefault: boolean;
+  configJson: Record<string, unknown> | null;
+}
+
+export interface ModelState {
+  model?: string;
+  reasoningEffort?: string;
+}
+
 export interface AdsEvent {
   type: string;
   [key: string]: unknown;
@@ -29,6 +44,9 @@ export class AdsCoreClient {
   private isConnected = false;
   private closed = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private connectPromise: Promise<void> | null = null;
+  private welcomeReceived = false;
+  private readonly welcomeWaiters = new Set<() => void>();
   private readonly eventListeners = new Set<(event: AdsEvent) => void>();
   private pendingPrompts = new Map<string, {
     resolve: (reply: string) => void;
@@ -36,12 +54,22 @@ export class AdsCoreClient {
     accumulatedText: string;
     timer: NodeJS.Timeout;
   }>();
+  private pendingControls = new Map<string, {
+    resolve: (state: ModelState) => void;
+    reject: (err: Error) => void;
+    timer: NodeJS.Timeout;
+  }>();
+  private modelState: ModelState = {};
 
   constructor(private readonly options: AdsClientOptions) {}
 
   async connect(): Promise<void> {
+    if (this.ws?.readyState === WebSocket.OPEN) return;
+    if (this.connectPromise) return this.connectPromise;
+
     this.closed = false;
-    return new Promise((resolve, reject) => {
+    this.welcomeReceived = false;
+    const connectionPromise = new Promise<void>((resolve, reject) => {
       const headers: Record<string, string> = {};
       if (this.options.token) {
         headers["Authorization"] = `Bearer ${this.options.token}`;
@@ -86,6 +114,12 @@ export class AdsCoreClient {
         }
       });
     });
+    this.connectPromise = connectionPromise;
+    try {
+      await connectionPromise;
+    } finally {
+      if (this.connectPromise === connectionPromise) this.connectPromise = null;
+    }
   }
 
   private scheduleReconnect(): void {
@@ -124,6 +158,33 @@ export class AdsCoreClient {
         clearTimeout(pending.timer);
         this.pendingPrompts.delete(resolvedId);
         pending.reject(new Error(String(parsed.error ?? "ADS Core prompt failed")));
+      }
+
+      if (parsed.type === "welcome") {
+        this.modelState = {
+          model: typeof parsed.effectiveModel === "string" ? parsed.effectiveModel : undefined,
+          reasoningEffort: typeof parsed.effectiveModelReasoningEffort === "string" ? parsed.effectiveModelReasoningEffort : undefined,
+        };
+        this.welcomeReceived = true;
+        for (const resolve of this.welcomeWaiters) resolve();
+        this.welcomeWaiters.clear();
+      }
+      if (parsed.type === "result" && parsed.kind === "model_override") {
+        const controlId = typeof parsed.client_message_id === "string" ? parsed.client_message_id : "";
+        const control = this.pendingControls.get(controlId);
+        if (control) {
+          clearTimeout(control.timer);
+          this.pendingControls.delete(controlId);
+          if (parsed.ok === false) {
+            control.reject(new Error(String(parsed.output ?? "Model override failed")));
+          } else {
+            this.modelState = {
+              model: typeof parsed.model === "string" ? parsed.model : undefined,
+              reasoningEffort: typeof parsed.model_reasoning_effort === "string" ? parsed.model_reasoning_effort : undefined,
+            };
+            control.resolve({ ...this.modelState });
+          }
+        }
       }
     } catch {
       // ignore malformed frame
@@ -175,6 +236,67 @@ export class AdsCoreClient {
     await this.sendControl("clear_history");
   }
 
+  async getModels(): Promise<ModelOption[]> {
+    const headers: Record<string, string> = {};
+    if (this.options.token) headers.Authorization = `Bearer ${this.options.token}`;
+    const response = await fetch(`${this.options.coreUrl.replace(/\/$/, "")}/api/models`, { headers });
+    if (!response.ok) throw new Error(`Failed to load models (${response.status})`);
+    const payload = await response.json() as unknown;
+    if (!Array.isArray(payload)) throw new Error("Invalid model list from ADS Core");
+    return payload
+      .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value))
+      .map((value) => ({
+        id: String(value.id ?? ""),
+        modelId: String(value.modelId ?? "").trim(),
+        displayName: String(value.displayName ?? value.modelId ?? "").trim(),
+        provider: String(value.provider ?? "").trim(),
+        isEnabled: value.isEnabled !== false,
+        isDefault: value.isDefault === true,
+        configJson: value.configJson && typeof value.configJson === "object" && !Array.isArray(value.configJson)
+          ? value.configJson as Record<string, unknown>
+          : null,
+      }))
+      .filter((model) => model.modelId && model.isEnabled);
+  }
+
+  getModelState(): ModelState {
+    return { ...this.modelState };
+  }
+
+  async waitForWelcome(timeoutMs = 1_000): Promise<void> {
+    if (this.welcomeReceived) return;
+    await new Promise<void>((resolve) => {
+      const waiter = () => {
+        clearTimeout(timeout);
+        this.welcomeWaiters.delete(waiter);
+        resolve();
+      };
+      const timeout = setTimeout(() => {
+        this.welcomeWaiters.delete(waiter);
+        resolve();
+      }, Math.max(0, timeoutMs));
+      this.welcomeWaiters.add(waiter);
+    });
+  }
+
+  async setModel(model: string, reasoningEffort?: string): Promise<ModelState> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) await this.connect();
+    const clientMessageId = `tg-model-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const finalState = new Promise<ModelState>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingControls.delete(clientMessageId);
+        reject(new Error("Model switch timed out"));
+      }, 15_000);
+      this.pendingControls.set(clientMessageId, { resolve, reject, timer });
+    });
+    this.ws!.send(JSON.stringify({
+      type: "model_override",
+      client_message_id: clientMessageId,
+      payload: { model, ...(reasoningEffort ? { model_reasoning_effort: reasoningEffort } : {}) },
+    }));
+    return finalState;
+  }
+
   private async sendControl(type: "interrupt" | "clear_history"): Promise<void> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       await this.connect();
@@ -200,6 +322,11 @@ export class AdsCoreClient {
       pending.reject(new Error("Client closed"));
     }
     this.pendingPrompts.clear();
+    for (const [, pending] of this.pendingControls) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("Client closed"));
+    }
+    this.pendingControls.clear();
     if (this.ws) {
       try { this.ws.close(); } catch { /* ignore */ }
       this.ws = null;

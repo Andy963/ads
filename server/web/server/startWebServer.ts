@@ -352,7 +352,7 @@ export async function startWebServer(): Promise<void> {
       authenticateRequest: (req) => {
         const auth = authenticateWebRequest(req, { sessionTtlSeconds, sessionPepper });
         return auth.ok
-          ? { ok: true as const, userId: auth.userId, tokenHash: auth.tokenHash }
+          ? { ok: true as const, userId: auth.userId, tokenHash: auth.tokenHash, connector: auth.connector }
           : { ok: false as const };
       },
       revalidateSession: (tokenHash) => isSessionActiveByTokenHash({ tokenHash }),
