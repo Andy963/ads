@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const sourceRoot = path.resolve(path.dirname(scriptPath), "..");
+const telegramConnectorRoot = path.join(sourceRoot, "connectors", "telegram");
 const home = os.homedir();
 const runtimeRoot = path.join(home, ".local", "share", "ads-runtime");
 const releasesDir = path.join(runtimeRoot, "releases");
@@ -18,6 +19,7 @@ const envPath = path.join(sourceRoot, ".env");
 const serviceDir = path.join(home, ".config", "systemd", "user");
 const webServiceName = "ads-web";
 const webServicePath = path.join(serviceDir, "ads-web.service");
+// Keep the existing unit name for compatibility; the process is now standalone.
 const telegramServiceName = "ads-tg";
 const telegramServicePath = path.join(serviceDir, "ads-tg.service");
 const nodeBin = process.execPath;
@@ -172,6 +174,7 @@ function buildServiceUnit(options) {
     "/usr/bin",
     "/bin",
   ].filter(Boolean).join(":");
+  const environmentFile = options.environmentFile ? `EnvironmentFile=-${options.environmentFile}\n` : "";
 
   return `[Unit]
 Description=${options.description}
@@ -186,7 +189,7 @@ Environment=ADS_ENV_PATH=${envPath}
 Environment=ADS_STATE_DIR=${stateDir}
 Environment=ALLOWED_DIRS=${allowedDirs}
 Environment=PATH=${servicePathValue}
-ExecStart=${nodeBin} ${path.join(currentLink, "dist", "server", "cli.js")} ${options.command}
+${environmentFile}ExecStart=${nodeBin} ${options.entrypoint} ${options.command}
 Restart=on-failure
 RestartSec=5s
 
@@ -198,14 +201,17 @@ WantedBy=default.target
 function buildWebServiceUnit() {
   return buildServiceUnit({
     description: "ADS Web Console",
+    entrypoint: path.join(currentLink, "dist", "server", "cli.js"),
     command: "web",
   });
 }
 
 function buildTelegramServiceUnit() {
   return buildServiceUnit({
-    description: "ADS Telegram Bot",
-    command: "telegram",
+    description: "ADS Telegram Connector",
+    entrypoint: path.join(currentLink, "connectors", "telegram", "bin", "ads-telegram.js"),
+    command: "start",
+    environmentFile: envPath,
   });
 }
 
@@ -232,10 +238,26 @@ function assembleRelease() {
     copyFile(path.join(sourceRoot, file), path.join(stagingDir, file));
   }
 
+  if (services.some((service) => service.name === telegramServiceName)) {
+    const connectorStagingRoot = path.join(stagingDir, "connectors", "telegram");
+    copyDirectory(path.join(telegramConnectorRoot, "dist"), path.join(connectorStagingRoot, "dist"));
+    for (const file of ["bin/ads-telegram.js", "package.json", "package-lock.json"]) {
+      copyFile(path.join(telegramConnectorRoot, file), path.join(connectorStagingRoot, file));
+    }
+  }
+
   run(npmBin, ["ci", "--omit=dev", "--no-audit", "--no-fund"], {
     cwd: stagingDir,
     env: toolEnv,
   });
+
+  if (services.some((service) => service.name === telegramServiceName)) {
+    run(npmBin, ["ci", "--omit=dev", "--no-audit", "--no-fund"], {
+      cwd: path.join(stagingDir, "connectors", "telegram"),
+      env: toolEnv,
+    });
+  }
+
   run(nodeBin, [path.join(stagingDir, "dist", "server", "cli.js"), "version"], {
     cwd: stagingDir,
     env: {
@@ -255,18 +277,27 @@ if (process.env[detachedDeployFlag] !== "1" && hostedByAdsService) {
 }
 
 const previousCurrent = readCurrentTarget();
-const services = [
+const serviceDefinitions = [
   {
     name: webServiceName,
     filePath: webServicePath,
     unit: buildWebServiceUnit(),
+    optional: false,
   },
-  {
+];
+const shouldManageTelegramService =
+  fs.existsSync(telegramServicePath) ||
+  serviceIsActive(telegramServiceName) ||
+  serviceIsEnabled(telegramServiceName);
+if (shouldManageTelegramService) {
+  serviceDefinitions.push({
     name: telegramServiceName,
     filePath: telegramServicePath,
     unit: buildTelegramServiceUnit(),
-  },
-].map((service) => ({
+    optional: true,
+  });
+}
+const services = serviceDefinitions.map((service) => ({
   ...service,
   previousUnit: fs.existsSync(service.filePath) ? fs.readFileSync(service.filePath, "utf8") : null,
   wasActive: serviceIsActive(service.name),
@@ -277,6 +308,9 @@ let servicesStopped = false;
 
 try {
   run(npmBin, ["run", "build"], { cwd: sourceRoot, env: toolEnv });
+  if (services.some((service) => service.name === telegramServiceName)) {
+    run(npmBin, ["run", "build"], { cwd: telegramConnectorRoot, env: toolEnv });
+  }
   assembleRelease();
 
   for (const service of services) {
@@ -295,11 +329,21 @@ try {
 
   run("systemctl", ["--user", "daemon-reload"]);
   for (const service of services) {
-    run("systemctl", ["--user", "enable", service.name]);
-    run("systemctl", ["--user", "restart", service.name]);
+    try {
+      run("systemctl", ["--user", "enable", service.name]);
+      run("systemctl", ["--user", "restart", service.name]);
+    } catch (error) {
+      if (!service.optional) throw error;
+      console.error(`Optional service ${service.name} could not be started: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   for (const service of services) {
-    assertServiceStable(service.name);
+    try {
+      assertServiceStable(service.name);
+    } catch (error) {
+      if (!service.optional) throw error;
+      console.error(`Optional service ${service.name} is not stable: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   console.log(`ADS deployed to ${releaseDir}`);
