@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
-import { ThreadStorage } from "../../server/telegram/utils/threadStorage.js";
+import { ThreadStorage } from "../../server/sessions/threadStorage.js";
 import { HistoryStore } from "../../server/utils/historyStore.js";
 
 describe("shared prepared statements on state.db", () => {

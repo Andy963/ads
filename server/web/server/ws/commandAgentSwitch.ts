@@ -1,5 +1,5 @@
 import type { AgentAvailability } from "../../../agents/health/agentAvailability.js";
-import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import type { SessionManager } from "../../../sessions/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import type { WsOrchestrator } from "./deps.js";
 import { preferInMemoryThreadId } from "./threadIds.js";

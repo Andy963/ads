@@ -1,5 +1,5 @@
 import { getErrorMessage } from "../utils/error.js";
-import { notifyTaskTerminalViaTelegram } from "../web/taskNotifications/telegramNotifier.js";
+import { dispatchTaskTerminalEvent } from "../web/taskNotifications/taskNotificationDispatcher.js";
 import { upsertTaskNotificationBinding } from "../web/taskNotifications/store.js";
 
 import {
@@ -187,19 +187,18 @@ export async function handleScheduledJobComplete(args: {
 
   if (schedule && scheduleRequestsTelegramDelivery(schedule)) {
     try {
-      notifyTaskTerminalViaTelegram({
-        logger: args.logger,
+      dispatchTaskTerminalEvent({
+        taskId: payload.externalId,
+        title: schedule.spec.compiledTask.title,
+        status: "completed",
         workspaceRoot: payload.workspaceRoot,
-        task: {
-          id: payload.externalId,
-          title: schedule.spec.compiledTask.title,
-          status: "completed",
-          startedAt: currentRun?.startedAt ?? null,
-          completedAt: now,
-          result: resultSummary,
-        },
-        terminalStatus: "completed",
+        startedAt: currentRun?.startedAt ?? null,
+        completedAt: now,
+        result: resultSummary,
         eventTs: now,
+        telegramChatId: resolveScheduleTelegramChatId(schedule),
+      }, {
+        logger: args.logger,
       });
     } catch (notifyError) {
       args.warnScheduler(
@@ -259,19 +258,18 @@ export async function handleScheduledJobError(args: {
 
   if (terminal && schedule && scheduleRequestsTelegramDelivery(schedule)) {
     try {
-      notifyTaskTerminalViaTelegram({
-        logger: args.logger,
+      dispatchTaskTerminalEvent({
+        taskId: payload.externalId,
+        title: schedule.spec.compiledTask.title,
+        status: "failed",
         workspaceRoot: payload.workspaceRoot,
-        task: {
-          id: payload.externalId,
-          title: schedule.spec.compiledTask.title,
-          status: "failed",
-          startedAt: currentRun?.startedAt ?? null,
-          completedAt: now,
-          result: `[Failed]\n${message}`,
-        },
-        terminalStatus: "failed",
+        startedAt: currentRun?.startedAt ?? null,
+        completedAt: now,
+        result: `[Failed]\n${message}`,
         eventTs: now,
+        telegramChatId: resolveScheduleTelegramChatId(schedule),
+      }, {
+        logger: args.logger,
       });
     } catch (notifyError) {
       args.warnScheduler(

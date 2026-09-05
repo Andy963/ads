@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { DirectoryManager } from "../../../../telegram/utils/directoryManager.js";
+import { DirectoryManager } from "../../../../sessions/directoryManager.js";
 import { detectWorkspaceFrom } from "../../../../workspace/detector.js";
 
 type WorkspacePathValidationFailureReason =

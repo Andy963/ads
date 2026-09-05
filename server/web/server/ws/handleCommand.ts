@@ -1,5 +1,5 @@
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
-import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import type { SessionManager } from "../../../sessions/sessionManager.js";
 import type {
   WsCommandHandlerDeps,
 } from "./deps.js";

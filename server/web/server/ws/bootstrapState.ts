@@ -1,6 +1,6 @@
 import type { AgentAvailability } from "../../../agents/health/agentAvailability.js";
 import type { AgentIdentifier } from "../../../agents/types.js";
-import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import type { SessionManager } from "../../../sessions/sessionManager.js";
 
 import { preferInMemoryThreadId } from "./threadIds.js";
 

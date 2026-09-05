@@ -1,4 +1,4 @@
-import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import type { SessionManager } from "../../../sessions/sessionManager.js";
 import type { WsLogger } from "./deps.js";
 import type { WsMessage } from "./schema.js";
 

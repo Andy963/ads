@@ -1,5 +1,5 @@
 import type { HistoryStore } from "../../utils/historyStore.js";
-import { areSessionCwdsCompatible } from "../../telegram/utils/sessionState.js";
+import { areSessionCwdsCompatible } from "../../sessions/sessionState.js";
 
 import { listCodexSessions } from "./codexSessionSource.js";
 import { buildSessionTitle, truncatePreview } from "./promptPreview.js";

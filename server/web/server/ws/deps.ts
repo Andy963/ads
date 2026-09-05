@@ -6,9 +6,10 @@ import type { AgentAvailability } from "../../../agents/health/agentAvailability
 import type { AgentEvent } from "../../../codex/events.js";
 import type { ScheduleCompiler } from "../../../scheduler/compiler.js";
 import type { SchedulerRuntime } from "../../../scheduler/runtime.js";
-import type { DirectoryManager } from "../../../telegram/utils/directoryManager.js";
-import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import type { DirectoryManager } from "../../../sessions/directoryManager.js";
+import type { SessionManager } from "../../../sessions/sessionManager.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
+import type { MiddlewarePipeline } from "../../../middleware/index.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { WsMessage } from "./schema.js";
 import type { SessionCacheRegistry } from "./sessionCacheRegistry.js";
@@ -71,7 +72,7 @@ export type WsConfigDeps = {
 export type WsAuthDeps = {
   allowedOrigins: Set<string>;
   isOriginAllowed: (req: IncomingMessage, allowedOrigins: Set<string>) => boolean;
-  authenticateRequest: (req: IncomingMessage) => { ok: false } | { ok: true; userId: string; tokenHash?: string };
+  authenticateRequest: (req: IncomingMessage) => { ok: false } | { ok: true; userId: string; tokenHash?: string; connector?: true };
   /**
    * 周期性复核已建立连接的 session 是否仍然有效（未登出/吊销/过期）。
    * 返回 false 时连接会被关闭。未提供则跳过复核（用于测试桩）。
@@ -205,6 +206,7 @@ export type WsPromptHandlerDeps = {
   sessions: WsSessionRuntimeDeps;
   history: WsHistoryRuntimeDeps;
   scheduler: WsSchedulerDeps;
+  middleware?: MiddlewarePipeline;
 };
 
 export type WsCommandHandlerDeps = {

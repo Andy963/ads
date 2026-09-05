@@ -10,6 +10,7 @@ import { ScheduleStore } from "../../server/scheduler/store.js";
 import { resetDatabaseForTests } from "../../server/storage/database.js";
 import { TaskStore } from "../../server/tasks/store.js";
 import { resetStateDatabaseForTests } from "../../server/state/database.js";
+import { onTaskTerminalEvent } from "../../server/web/taskNotifications/taskNotificationDispatcher.js";
 
 function buildScheduleSpec(overrides?: Partial<ScheduleSpec>): ScheduleSpec {
   const base: ScheduleSpec = {
@@ -260,6 +261,48 @@ describe("scheduler/runtime-liteque", () => {
 
     const tasksInStore = new TaskStore({ workspacePath: tmpDir }).listTasks();
     assert.equal(tasksInStore.length, 0);
+  });
+
+  it("forwards an explicit Telegram schedule target in terminal events", async () => {
+    const store = new ScheduleStore({ workspacePath: tmpDir });
+    const now = Date.now();
+    const schedule = store.createSchedule(
+      {
+        instruction: "Send the result to Telegram",
+        spec: buildScheduleSpec({
+          delivery: {
+            channels: ["telegram"],
+            web: { audience: "owner" },
+            telegram: { chatId: "chat-42" },
+          },
+        }),
+        enabled: true,
+        nextRunAt: now - 1000,
+      },
+      now,
+    );
+    const terminalEvents: Array<{ taskId: string; telegramChatId?: string | null }> = [];
+    const unsubscribe = onTaskTerminalEvent((event) => {
+      terminalEvents.push(event);
+    });
+    const runtime = new SchedulerRuntime({
+      enabled: true,
+      runnerPollMs: 20,
+      runnerTimeoutSecs: 10,
+      executeRun: async () => ({ resultSummary: "done" }),
+    });
+
+    try {
+      runtime.registerWorkspace(tmpDir);
+      await runtime.tickWorkspace(tmpDir);
+      await waitFor(() => terminalEvents.length === 1);
+
+      assert.equal(terminalEvents[0]?.taskId, store.listRuns(schedule.id, { limit: 1 })[0]?.externalId);
+      assert.equal(terminalEvents[0]?.telegramChatId, "chat-42");
+    } finally {
+      unsubscribe();
+      runtime.stop();
+    }
   });
 
 

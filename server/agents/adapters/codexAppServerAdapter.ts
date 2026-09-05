@@ -8,7 +8,7 @@ import type {
 } from "../types.js";
 import type { AgentEvent } from "../../codex/events.js";
 import { mapThreadEventToAgentEvent, parseReconnectingMessage } from "../../codex/events.js";
-import type { SandboxMode } from "../../telegram/config.js";
+import type { SandboxMode } from "../../config.js";
 import { createLogger } from "../../utils/logger.js";
 import { findSecurityViolation } from "../../middleware/builtin/globalRulesMiddleware.js";
 import { createAbortError, createSilentAbortError } from "../../utils/abort.js";

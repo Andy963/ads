@@ -3,7 +3,7 @@ import type { TaskQueue } from "../../../tasks/queue.js";
 import type { TaskStore as QueueTaskStore } from "../../../tasks/store.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { TaskRunController } from "../../taskRunController.js";
-import type { SessionManager } from "../../../telegram/utils/sessionManager.js";
+import type { SessionManager } from "../../../sessions/sessionManager.js";
 
 export type TaskQueueMetricName =
   | "TASK_ADDED"

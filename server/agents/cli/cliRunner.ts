@@ -578,7 +578,6 @@ async function runCliWithoutGovernor(
   });
 
   const abortHandler = attachAbortHandler(child, signal);
-  const timeoutHandler = setupRunWatchdog(child, runTimeouts);
   const completionWatcher = createPostCompletionWatcher(
     child,
     options.isRunComplete ? resolvePostCompletionGraceMs(options.postCompletionGraceMs) : 0,
@@ -587,10 +586,12 @@ async function runCliWithoutGovernor(
 
   if (spawnError) {
     abortHandler.dispose();
-    timeoutHandler.dispose();
     completionWatcher.dispose();
     throw new Error(formatSpawnErrorHint(binary, spawnError));
   }
+
+  // Do not count process creation or scheduler delay as child inactivity.
+  const timeoutHandler = setupRunWatchdog(child, runTimeouts);
 
   if (child.stdin) {
     if (stdinData) {

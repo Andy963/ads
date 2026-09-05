@@ -8,19 +8,25 @@ describe("ads unified cli entrypoint", () => {
     assert.deepEqual(parseAdsCli([], "ads"), { type: "help", scope: "root" });
   });
 
-  test("defaults to telegram start for ads-telegram", () => {
-    assert.deepEqual(parseAdsCli([], "ads-telegram"), { type: "start", service: "telegram" });
-  });
-
   test("parses top-level help/version flags", () => {
     assert.deepEqual(parseAdsCli(["--help"], "ads"), { type: "help", scope: "root" });
     assert.deepEqual(parseAdsCli(["-v"], "ads"), { type: "version" });
   });
 
-  test("parses web/telegram subcommands", () => {
+  test("parses web subcommand", () => {
     assert.deepEqual(parseAdsCli(["web"], "ads"), { type: "start", service: "web" });
-    assert.deepEqual(parseAdsCli(["telegram"], "ads"), { type: "start", service: "telegram" });
-    assert.deepEqual(parseAdsCli(["telegram", "help"], "ads"), { type: "help", scope: "telegram" });
+  });
+
+  test("does not recognize removed telegram commands", () => {
+    const parsedTg = parseAdsCli(["telegram"], "ads");
+    assert.deepEqual(parsedTg, {
+      type: "error",
+      exitCode: 2,
+      message: "❌ Unknown command: telegram",
+    });
+
+    const parsedAlias = parseAdsCli([], "ads-telegram");
+    assert.deepEqual(parsedAlias, { type: "help", scope: "root" });
   });
 
   test("unknown subcommand returns an error", () => {
@@ -30,4 +36,3 @@ describe("ads unified cli entrypoint", () => {
     assert.match(parsed.message, /Unknown command/);
   });
 });
-

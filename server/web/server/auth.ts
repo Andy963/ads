@@ -3,12 +3,13 @@ import type http from "node:http";
 import { parseCookies, serializeCookie } from "../auth/cookies.js";
 import {
   ADS_SESSION_COOKIE_NAME,
+  hashSessionToken,
   lookupSessionByToken,
   refreshSessionIfNeeded,
 } from "../auth/sessions.js";
 
 export type RequestAuthContext =
-  | { ok: true; userId: string; username: string; tokenHash: string; setCookie?: string }
+  | { ok: true; userId: string; username: string; tokenHash: string; setCookie?: string; connector?: true }
   | { ok: false };
 
 function isRequestSecure(req: http.IncomingMessage): boolean {
@@ -47,6 +48,13 @@ export function readSessionCookie(req: http.IncomingMessage): string | null {
   return trimmed || null;
 }
 
+function readBearerToken(req: http.IncomingMessage): string | null {
+  const raw = req.headers.authorization;
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  const match = /^Bearer\s+(.+)$/i.exec(String(value ?? "").trim());
+  return match?.[1]?.trim() || null;
+}
+
 export function buildSessionCookie(req: http.IncomingMessage, token: string, ttlSeconds: number): string {
   return serializeCookie(ADS_SESSION_COOKIE_NAME, token, {
     httpOnly: true,
@@ -71,6 +79,19 @@ export function authenticateRequest(
   req: http.IncomingMessage,
   options: { sessionTtlSeconds: number; sessionPepper: string },
 ): RequestAuthContext {
+  const connectorToken = String(process.env.ADS_CONNECTOR_TOKEN ?? "").trim();
+  const bearerToken = readBearerToken(req);
+  if (connectorToken && bearerToken && bearerToken === connectorToken) {
+    const connectorUserId = String(process.env.ADS_CONNECTOR_USER_ID ?? "connector").trim() || "connector";
+    return {
+      ok: true,
+      userId: connectorUserId,
+      username: connectorUserId,
+      tokenHash: hashSessionToken(bearerToken, options.sessionPepper),
+      connector: true,
+    };
+  }
+
   const token = readSessionCookie(req);
   if (!token) {
     return { ok: false };

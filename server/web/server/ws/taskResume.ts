@@ -1,4 +1,4 @@
-import { areSessionCwdsCompatible } from "../../../telegram/utils/sessionState.js";
+import { areSessionCwdsCompatible } from "../../../sessions/sessionState.js";
 
 export type TaskResumeMode = "auto" | "current" | "saved";
 

@@ -1,10 +1,10 @@
-import type { SandboxMode } from "../../../telegram/config.js";
+import type { SandboxMode } from "../../../config.js";
 import {
   SessionManager,
   resolveSessionAgentAllowlist,
   type SessionManagerOptions,
-} from "../../../telegram/utils/sessionManager.js";
-import { ThreadStorage } from "../../../telegram/utils/threadStorage.js";
+} from "../../../sessions/sessionManager.js";
+import { ThreadStorage } from "../../../sessions/threadStorage.js";
 import type { AsyncLock } from "../../../utils/asyncLock.js";
 import { HistoryStore } from "../../../utils/historyStore.js";
 import { WorkspaceLockPool } from "../workspaceLockPool.js";

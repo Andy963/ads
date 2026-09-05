@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { ThreadStorage } from "../../server/telegram/utils/threadStorage.js";
+import { ThreadStorage } from "../../server/sessions/threadStorage.js";
 
 describe("ThreadStorage", () => {
   it("stores thread IDs per agent", () => {

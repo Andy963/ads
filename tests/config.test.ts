@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import {
   resolveAgentConfig,
   resolveSharedConfig,
-  resolveTelegramConfig,
   resolveWebConfig,
 } from "../server/config.js";
 
@@ -133,25 +132,5 @@ describe("server config resolvers", () => {
     assert.strictEqual(config.skillAutoloadEnabled, false);
     assert.strictEqual(config.skillAutosaveEnabled, true);
     assert.strictEqual(config.preferenceDirectiveEnabled, true);
-  });
-
-  it("resolves telegram defaults and normalizes proxy urls", () => {
-    const config = resolveTelegramConfig({
-      env: {
-        TELEGRAM_BOT_TOKEN: "bot-token",
-        TELEGRAM_ALLOWED_USER_ID: "123456",
-        TELEGRAM_PROXY_URL: "127.0.0.1:7890",
-      },
-      fallbackAllowedDir: "/workspace/root",
-    });
-
-    assert.strictEqual(config.botToken, "bot-token");
-    assert.deepStrictEqual(config.allowedUsers, [123456]);
-    assert.deepStrictEqual(config.allowedDirs, ["/workspace/root"]);
-    assert.strictEqual(config.maxRequestsPerMinute, 10);
-    assert.strictEqual(config.sessionTimeoutMs, 24 * 60 * 60 * 1000);
-    assert.strictEqual(config.streamUpdateIntervalMs, 1500);
-    assert.strictEqual(config.sandboxMode, "workspace-write");
-    assert.strictEqual(config.proxyUrl, "http://127.0.0.1:7890");
   });
 });

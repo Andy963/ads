@@ -33,6 +33,7 @@ import { createDeltaStreamCoalescer } from "../sync/deltaStream.js";
 import { createCommandSnapshotCoalescer } from "../sync/commandSnapshot.js";
 import { recordConversationMessage } from "../../../utils/conversationMessageRecorder.js";
 import { WEB_WORKER_NAMESPACE } from "../start/webLaneResources.js";
+import { onTaskTerminalEvent } from "../../taskNotifications/taskNotificationDispatcher.js";
 
 type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number; sessionTokenHash?: string };
 
@@ -66,6 +67,16 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     maxPayload: config.maxPayloadBytes ?? DEFAULT_WS_MAX_PAYLOAD_BYTES,
   });
   const safeJsonSend = createSafeJsonSend(logger);
+  const removeTaskTerminalListener = onTaskTerminalEvent((event) => {
+    const eventWorkspace = String(event.workspaceRoot ?? "").trim();
+    if (!eventWorkspace) return;
+    for (const [candidate, meta] of state.clientMetaByWs.entries()) {
+      if (meta.workspaceRoot && meta.workspaceRoot !== eventWorkspace) continue;
+      if (candidate.readyState === 1) {
+        safeJsonSend(candidate, { type: "task_terminal", event });
+      }
+    }
+  });
   const seenChatSessionIdsBySharedSession = new Map<string, Set<string>>();
   const laneGenerationStore = state.laneGenerationStore;
   const fallbackLaneGenerations = new Map<string, number>();
@@ -240,6 +251,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     if (pingTimer) {
       clearInterval(pingTimer);
     }
+    removeTaskTerminalListener();
   });
 
   wss.on("connection", (ws: WebSocket, req) => {
@@ -250,14 +262,15 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         ? protocolHeader.split(",").map((p) => p.trim()).filter(Boolean)
         : [];
 
-    if (!auth.isOriginAllowed(req, auth.allowedOrigins)) {
-      ws.close(4403, "forbidden");
-      return;
-    }
-
     const authResult = auth.authenticateRequest(req);
     if (!authResult.ok) {
       ws.close(4401, "unauthorized");
+      return;
+    }
+    // Browser sessions remain subject to Origin validation. A standalone
+    // connector uses an explicit Bearer credential and does not send Origin.
+    if (!authResult.connector && !auth.isOriginAllowed(req, auth.allowedOrigins)) {
+      ws.close(4403, "forbidden");
       return;
     }
 

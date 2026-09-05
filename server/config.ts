@@ -38,18 +38,6 @@ export interface AgentConfig {
   preferenceDirectiveEnabled: boolean;
 }
 
-export interface ResolvedTelegramConfig {
-  botToken: string;
-  allowedUsers: number[];
-  allowedDirs: string[];
-  maxRequestsPerMinute: number;
-  sessionTimeoutMs: number;
-  streamUpdateIntervalMs: number;
-  sandboxMode: SandboxMode;
-  defaultModel?: string;
-  proxyUrl?: string;
-}
-
 interface SharedConfigOptions {
   env?: EnvSource;
   fallbackAllowedDir?: string;
@@ -59,10 +47,6 @@ interface SharedConfigOptions {
 
 interface DomainConfigOptions {
   env?: EnvSource;
-}
-
-interface TelegramConfigOptions extends DomainConfigOptions {
-  fallbackAllowedDir?: string;
 }
 
 const sandboxModeSchema = z.enum(["read-only", "workspace-write", "danger-full-access"]);
@@ -95,18 +79,6 @@ const agentConfigSchema = z.object({
   skillAutoloadEnabled: z.boolean(),
   skillAutosaveEnabled: z.boolean(),
   preferenceDirectiveEnabled: z.boolean(),
-});
-
-const telegramConfigSchema = z.object({
-  botToken: z.string().min(1),
-  allowedUsers: z.array(z.number().int().positive()).min(1),
-  allowedDirs: z.array(z.string()),
-  maxRequestsPerMinute: z.number().int().positive(),
-  sessionTimeoutMs: z.number().int().min(0),
-  streamUpdateIntervalMs: z.number().int().positive(),
-  sandboxMode: sandboxModeSchema,
-  defaultModel: z.string().optional(),
-  proxyUrl: z.string().optional(),
 });
 
 function getEnv(options?: DomainConfigOptions): EnvSource {
@@ -143,80 +115,6 @@ function normalizeAllowedDirs(
   return options.resolvePaths ? list.map((dir) => path.resolve(dir)) : list;
 }
 
-function parseRequiredString(raw: string | undefined, name: string): string {
-  const value = raw?.trim();
-  if (!value) {
-    throw new Error(`${name} is required`);
-  }
-  return value;
-}
-
-function parsePositiveInt(raw: string | undefined, label: string): number {
-  const trimmed = raw?.trim() ?? "";
-  const value = Number.parseInt(trimmed, 10);
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`Invalid value for ${label} (must be a positive integer): ${raw ?? ""}`);
-  }
-  return value;
-}
-
-function parseTelegramAllowedUsers(env: EnvSource): number[] {
-  const singleUserRaw = String(env.TELEGRAM_ALLOWED_USER_ID ?? "").trim();
-  const allowedUsersRaw = String(env.TELEGRAM_ALLOWED_USERS ?? "").trim();
-
-  if (singleUserRaw) {
-    const userId = parsePositiveInt(singleUserRaw, "TELEGRAM_ALLOWED_USER_ID");
-    if (allowedUsersRaw) {
-      const parts = allowedUsersRaw.split(",").map((part) => part.trim()).filter(Boolean);
-      if (parts.length !== 1) {
-        throw new Error("TELEGRAM_ALLOWED_USERS must contain exactly one user ID when TELEGRAM_ALLOWED_USER_ID is set");
-      }
-      const legacyId = parsePositiveInt(parts[0] ?? "", "TELEGRAM_ALLOWED_USERS");
-      if (legacyId !== userId) {
-        throw new Error("TELEGRAM_ALLOWED_USER_ID conflicts with TELEGRAM_ALLOWED_USERS (values differ)");
-      }
-    }
-    return [userId];
-  }
-
-  if (!allowedUsersRaw) {
-    throw new Error("TELEGRAM_ALLOWED_USER_ID is required (single user ID)");
-  }
-
-  const parts = allowedUsersRaw.split(",").map((part) => part.trim()).filter(Boolean);
-  if (parts.length !== 1) {
-    throw new Error("TELEGRAM_ALLOWED_USERS must contain exactly one user ID for this bot");
-  }
-  return [parsePositiveInt(parts[0] ?? "", "TELEGRAM_ALLOWED_USERS")];
-}
-
-function parsePositiveNumberWithDefault(raw: string | undefined, defaultValue: number, label: string): number {
-  const value = Number.parseInt(raw ?? String(defaultValue), 10);
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`${label} must be a positive number`);
-  }
-  return value;
-}
-
-function parseNonNegativeNumberWithDefault(raw: string | undefined, defaultValue: number, label: string): number {
-  const value = Number.parseInt(raw ?? String(defaultValue), 10);
-  if (!Number.isFinite(value) || value < 0) {
-    throw new Error(`${label} must be a non-negative number (0 disables timeout)`);
-  }
-  return value;
-}
-
-function normalizeProxyUrl(raw?: string): string | undefined {
-  if (!raw) {
-    return undefined;
-  }
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return undefined;
-  }
-  return /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
-}
-
 function normalizeWebNumber(raw: string | undefined, defaultValue: number, minimum: number): number {
   const parsed = Number(raw ?? defaultValue);
   if (!Number.isFinite(parsed)) {
@@ -236,7 +134,6 @@ function normalizeWebInteger(raw: string | undefined, defaultValue: number, mini
 const HOUR_MS = 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
 const DEFAULT_WEB_SESSION_TIMEOUT_HOURS = 24;
-const DEFAULT_TELEGRAM_SESSION_TIMEOUT_HOURS = 24;
 
 function resolveWebSessionTimeoutMs(env: EnvSource): number {
   const rawMs = normalizeOptionalString(env.ADS_WEB_SESSION_TIMEOUT_MS);
@@ -297,34 +194,5 @@ export function resolveAgentConfig(options: DomainConfigOptions = {}): AgentConf
     skillAutoloadEnabled: parseBooleanFlag(env.ADS_SKILLS_AUTOLOAD, true),
     skillAutosaveEnabled: parseBooleanFlag(env.ADS_SKILLS_AUTOSAVE, true),
     preferenceDirectiveEnabled: parseBooleanFlag(env.ADS_PREFERENCE_DIRECTIVES, true),
-  });
-}
-
-export function resolveTelegramConfig(options: TelegramConfigOptions = {}): ResolvedTelegramConfig {
-  const env = getEnv(options);
-  const shared = resolveSharedConfig({
-    env,
-    fallbackAllowedDir: options.fallbackAllowedDir ?? process.cwd(),
-    resolveAllowedDirPaths: false,
-    fallbackWhenAllowedDirsEmpty: false,
-  });
-  return telegramConfigSchema.parse({
-    botToken: parseRequiredString(env.TELEGRAM_BOT_TOKEN, "TELEGRAM_BOT_TOKEN"),
-    allowedUsers: parseTelegramAllowedUsers(env),
-    allowedDirs: shared.allowedDirs,
-    maxRequestsPerMinute: parsePositiveNumberWithDefault(env.TELEGRAM_MAX_RPM, 10, "TELEGRAM_MAX_RPM"),
-    sessionTimeoutMs: parseNonNegativeNumberWithDefault(
-      env.TELEGRAM_SESSION_TIMEOUT,
-      DEFAULT_TELEGRAM_SESSION_TIMEOUT_HOURS * HOUR_MS,
-      "TELEGRAM_SESSION_TIMEOUT",
-    ),
-    streamUpdateIntervalMs: parsePositiveNumberWithDefault(
-      env.TELEGRAM_STREAM_UPDATE_INTERVAL,
-      1500,
-      "TELEGRAM_STREAM_UPDATE_INTERVAL",
-    ),
-    sandboxMode: shared.sandboxMode,
-    defaultModel: normalizeOptionalString(env.TELEGRAM_MODEL),
-    proxyUrl: normalizeProxyUrl(env.TELEGRAM_PROXY_URL),
   });
 }

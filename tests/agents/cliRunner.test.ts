@@ -164,20 +164,21 @@ describe("cliRunner", () => {
     const node = process.execPath;
     const script = [
       "let count = 0;",
+      "console.log(JSON.stringify({ type: 'tick', count: ++count }));",
       "const timer = setInterval(() => {",
       "  console.log(JSON.stringify({ type: 'tick', count: ++count }));",
-      "  if (count === 5) { clearInterval(timer); process.exit(0); }",
-      "}, 50);",
+      "  if (count === 6) { clearInterval(timer); process.exit(0); }",
+      "}, 100);",
     ].join("");
     const lines: unknown[] = [];
 
     const result = await runCli(
-      { binary: node, args: ["-e", script], idleTimeoutMs: 150, maxRunTimeoutMs: 2000 },
+      { binary: node, args: ["-e", script], idleTimeoutMs: 400, maxRunTimeoutMs: 3000 },
       (line) => lines.push(line),
     );
 
     assert.equal(result.exitCode, 0);
-    assert.equal(lines.length, 5);
+    assert.equal(lines.length, 6);
     assert.doesNotMatch(result.stderr, /空闲超时/);
   });
 

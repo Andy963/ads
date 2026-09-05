@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { SessionManager } from "../../server/telegram/utils/sessionManager.js";
+import { SessionManager } from "../../server/sessions/sessionManager.js";
 import { resetStateDatabaseForTests } from "../../server/state/database.js";
 import { createSessionCacheRegistry } from "../../server/web/server/ws/sessionCacheRegistry.js";
 import { loadCwdStore, persistCwdStore } from "../../server/web/utils.js";
