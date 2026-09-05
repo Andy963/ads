@@ -24,7 +24,7 @@ export function stripStreamingDisconnectNotice(text: string): string {
 }
 
 function isTransientExecutePreview(item: ChatItem): boolean {
-  return item.kind === "execute" && (item.streaming === true || String(item.id ?? "").startsWith("exec:"));
+  return item.kind === "execute" && item.streaming === true;
 }
 
 function withoutLiveAndTransientExecute(items: ChatItem[], liveStepId: string): ChatItem[] {
@@ -311,7 +311,7 @@ export function findProcessInsertIndex(messages: ChatItem[]): number {
   let insertAt = Math.min(end, start + 1);
   for (let index = start + 1; index < end; index += 1) {
     const item = messages[index]!;
-    if (isLiveMessageId(item.id) || item.kind === "plan" || item.kind === "thought") {
+    if (isLiveMessageId(item.id)) {
       insertAt = index + 1;
       continue;
     }

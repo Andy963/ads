@@ -10,7 +10,7 @@ async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Pr
 }
 
 describe("MainChat patch card", () => {
-  it("renders one patch row per file and expands inline", async () => {
+  it("folds one patch row per file into the assistant explanation and expands inline", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -24,6 +24,12 @@ describe("MainChat patch card", () => {
               diff: "diff --git a/tests/agents/codexAppServerAdapter.test.ts b/tests/agents/codexAppServerAdapter.test.ts\n+hello\n",
               truncated: false,
             },
+          },
+          {
+            id: "assistant-1",
+            role: "assistant",
+            kind: "text",
+            content: "Updated the requested file.",
           },
         ],
         queuedPrompts: [],
@@ -41,7 +47,7 @@ describe("MainChat patch card", () => {
 
     await settleUi(wrapper);
 
-    expect(wrapper.find(".patchCard").exists()).toBe(true);
+    expect(wrapper.find(".foldedPatch").exists()).toBe(true);
     expect(wrapper.findAll(".patchCardRow")).toHaveLength(1);
     expect(wrapper.find(".patchCardTitle").text()).toContain("tests/agents/codexAppServerAdapter.test.ts");
     expect(wrapper.find(".patchCardMeta").text()).toContain("(+118 -2)");
@@ -49,7 +55,7 @@ describe("MainChat patch card", () => {
     expect(wrapper.find(".patchCardMeta .patchCardStatDel").exists()).toBe(true);
     expect(wrapper.find(".patchCardDiff").exists()).toBe(false);
 
-    const toggle = wrapper.find('[data-testid="patch-toggle-patch-1-0"]');
+    const toggle = wrapper.find('[data-testid="patch-toggle-assistant-1-0"]');
     expect(toggle.exists()).toBe(true);
     expect(toggle.text()).toContain("展开");
 
@@ -60,12 +66,12 @@ describe("MainChat patch card", () => {
     expect(wrapper.find(".patchCardDiff").text()).toContain("diff --git a/tests/agents/codexAppServerAdapter.test.ts");
     expect(wrapper.find(".patchCardDiff .patchCardDiffLine--meta").exists()).toBe(true);
     expect(wrapper.find(".patchCardDiff .patchCardDiffLine--add").exists()).toBe(true);
-    expect(wrapper.find('[data-testid="patch-toggle-patch-1-0"]').text()).toContain("收起");
+    expect(wrapper.find('[data-testid="patch-toggle-assistant-1-0"]').text()).toContain("收起");
 
     wrapper.unmount();
   });
 
-  it("renders multiple files as separate rows and expands only the target file diff", async () => {
+  it("folds multiple files as separate rows and expands only the target file diff", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -98,6 +104,12 @@ describe("MainChat patch card", () => {
               truncated: false,
             },
           },
+          {
+            id: "assistant-2",
+            role: "assistant",
+            kind: "text",
+            content: "Updated both files.",
+          },
         ],
         queuedPrompts: [],
         pendingImages: [],
@@ -118,7 +130,7 @@ describe("MainChat patch card", () => {
     expect(wrapper.findAll(".patchCardRow")).toHaveLength(2);
     expect(wrapper.findAll(".patchCardDiff")).toHaveLength(0);
 
-    await wrapper.find('[data-testid="patch-toggle-patch-2-1"]').trigger("click");
+    await wrapper.find('[data-testid="patch-toggle-assistant-2-1"]').trigger("click");
     await settleUi(wrapper);
 
     const diffs = wrapper.findAll(".patchCardDiff");

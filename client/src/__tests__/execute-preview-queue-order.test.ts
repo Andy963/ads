@@ -12,7 +12,7 @@ async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Pr
 }
 
 describe("execute preview queue ordering", () => {
-  it("keeps insertion order stable even when older commands receive later output, and renders only the newest", async () => {
+  it("keeps insertion order stable even when older commands receive later output, and renders every block", async () => {
     const rt = {
       messages: ref([] as Array<any>),
       executePreviewByKey: new Map<string, any>(),
@@ -62,9 +62,13 @@ describe("execute preview queue ordering", () => {
 
     await settleUi(wrapper);
 
-    expect(wrapper.findAll(".execute-block")).toHaveLength(1);
-    const topCmd = wrapper.find(".execute-cmd");
-    expect(topCmd.text()).toContain("cmd-4");
+    expect(wrapper.findAll(".execute-block")).toHaveLength(4);
+    expect(wrapper.findAll(".execute-cmd").map((node) => node.text())).toEqual([
+      "cmd-1",
+      "cmd-2",
+      "cmd-3",
+      "cmd-4",
+    ]);
 
     expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
 

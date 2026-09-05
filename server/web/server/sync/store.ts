@@ -34,6 +34,8 @@ export type SyncEventReadResult = {
   truncated: boolean;
 };
 
+export type CoalescedSyncEventRow = SyncEventRow;
+
 const logger = createLogger("SyncEventStore");
 
 function normalizeLimit(value: number | undefined): number {
@@ -253,6 +255,102 @@ export class SyncEventStore {
       this.deleteCoalescedStmt.run(namespace, laneKey, eventType, eventId);
     } catch (error) {
       logger.warn(`[SyncEventStore] Failed to delete coalesced event`, error);
+    }
+  }
+
+  /** Mark a coalesced snapshot as sealed without allocating a new sequence. */
+  markCoalescedInactive(args: { namespace: string; laneKey: string; type: string; eventId: string }): void {
+    const namespace = String(args.namespace ?? "").trim();
+    const laneKey = String(args.laneKey ?? "").trim();
+    const eventType = String(args.type ?? "").trim();
+    const eventId = String(args.eventId ?? "").trim();
+    if (!namespace || !laneKey || !eventType || !eventId) return;
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT payload FROM sync_events
+           WHERE namespace = ? AND lane_key = ? AND event_type = ? AND event_id = ?
+           ORDER BY seq DESC LIMIT 1`,
+        )
+        .get(namespace, laneKey, eventType, eventId) as { payload?: string } | undefined;
+      if (!row?.payload) return;
+      const payload = safeParsePayload(row.payload);
+      payload.active = false;
+      this.db
+        .prepare(
+          `UPDATE sync_events SET payload = ?
+           WHERE namespace = ? AND lane_key = ? AND event_type = ? AND event_id = ?`,
+        )
+        .run(JSON.stringify(payload), namespace, laneKey, eventType, eventId);
+    } catch (error) {
+      logger.warn(`[SyncEventStore] Failed to mark coalesced event inactive`, error);
+    }
+  }
+
+  /**
+   * Read the current coalesced rows for one lane. Coalesced rows are runtime
+   * snapshots (for example an in-flight assistant stream or command), so they
+   * need a direct lookup rather than a cursor-relative replay query.
+   */
+  readCoalesced(args: {
+    namespace: string;
+    laneKey: string;
+    type?: string;
+  }): CoalescedSyncEventRow[] {
+    const namespace = String(args.namespace ?? "").trim();
+    const laneKey = String(args.laneKey ?? "").trim();
+    const type = String(args.type ?? "").trim();
+    if (!namespace || !laneKey) return [];
+    const whereType = type ? " AND event_type = ?" : "";
+    const params = type ? [namespace, laneKey, type] : [namespace, laneKey];
+    try {
+      const rows = this.db
+        .prepare(
+          `SELECT seq, namespace, lane_key, event_type, event_id, revision, payload, ts, run_id
+           FROM sync_events
+           WHERE namespace = ? AND lane_key = ?${whereType}
+           ORDER BY seq ASC`,
+        )
+        .all(...params) as Array<{
+        seq: number;
+        namespace: string;
+        lane_key: string;
+        event_type: string;
+        event_id: string | null;
+        revision: number;
+        payload: string;
+        ts: number;
+        run_id: string | null;
+      }>;
+      return rows.map((row) => ({
+        seq: Number(row.seq) || 0,
+        namespace: row.namespace,
+        laneKey: row.lane_key,
+        type: row.event_type,
+        eventId: row.event_id ?? undefined,
+        revision: Number(row.revision) || 1,
+        payload: safeParsePayload(row.payload),
+        ts: Number(row.ts) || 0,
+        runId: row.run_id ?? undefined,
+      }));
+    } catch (error) {
+      logger.warn(`[SyncEventStore] Failed to read coalesced events`, error);
+      return [];
+    }
+  }
+
+  /** Remove every coalesced row of a type for one lane. */
+  deleteCoalescedByType(args: { namespace: string; laneKey: string; type: string }): void {
+    const namespace = String(args.namespace ?? "").trim();
+    const laneKey = String(args.laneKey ?? "").trim();
+    const type = String(args.type ?? "").trim();
+    if (!namespace || !laneKey || !type) return;
+    try {
+      this.db
+        .prepare(`DELETE FROM sync_events WHERE namespace = ? AND lane_key = ? AND event_type = ?`)
+        .run(namespace, laneKey, type);
+    } catch (error) {
+      logger.warn(`[SyncEventStore] Failed to delete coalesced events`, error);
     }
   }
 

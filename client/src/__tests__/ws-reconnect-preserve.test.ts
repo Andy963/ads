@@ -911,7 +911,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
-  it("drops transient execute previews while reconnecting", async () => {
+  it("preserves active execute previews while reconnecting", async () => {
     const { wrapper, rt } = await mountReconnectHarness();
 
     rt.busy.value = true;
@@ -932,7 +932,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     lastWs!.onClose?.({ code: 1006, reason: "" });
     await settleUi(wrapper);
 
-    expect(rt.messages.value.some((m: any) => m.kind === "execute")).toBe(false);
+    expect(rt.messages.value.some((m: any) => m.kind === "execute")).toBe(true);
     expect(rt.laneStatus.value).toEqual({ kind: "progress", message: RECONNECT_BUSY_MESSAGE });
     wrapper.unmount();
   });

@@ -32,7 +32,6 @@ const emit = defineEmits<{
 const openCommandTrees = ref<Set<string>>(new Set());
 const expandedExecuteIds = ref<Set<string>>(new Set());
 const expandedPatchKeys = ref<Set<string>>(new Set());
-const expandedThoughtIds = ref<Set<string>>(new Set());
 const filePreviewTarget = ref<MarkdownFilePreviewLink | null>(null);
 
 type PatchRenderRow = {
@@ -186,10 +185,69 @@ function togglePatchExpanded(messageId: string, rowKey: string): void {
   expandedPatchKeys.value = next;
 }
 
+const renderMessages = computed<RenderMessage[]>(() => {
+  const rawOrdered = normalizeTurnSemanticOrder(props.messages as ChatItem[]) as ChatMessage[];
+  const turns: ChatMessage[][] = [];
+  let currentTurn: ChatMessage[] = [];
+  for (const msg of rawOrdered) {
+    if (msg.role === "user" && currentTurn.length > 0) {
+      turns.push(currentTurn);
+      currentTurn = [];
+    }
+    currentTurn.push(msg);
+  }
+  if (currentTurn.length > 0) turns.push(currentTurn);
+
+  const processed: ChatMessage[] = [];
+  for (const turn of turns) {
+    const turnPatches = turn
+      .filter((m) => (m.kind === "patch" && Boolean(m.patch || m.content)) || Boolean(m.patch))
+      .map((m) => m.patch ?? (m.content ? { files: [], diff: m.content } : null))
+      .filter(Boolean);
+
+    let mergedPatch: ChatMessage["patch"] | undefined;
+    if (turnPatches.length > 0) {
+      const allFiles = turnPatches.flatMap((p) => p?.files ?? []);
+      const allDiffs = turnPatches.map((p) => p?.diff ?? "").filter(Boolean).join("\n\n");
+      const truncated = turnPatches.some((p) => p?.truncated);
+      if (allFiles.length > 0 || allDiffs.trim()) {
+        mergedPatch = {
+          files: allFiles,
+          diff: allDiffs,
+          truncated: truncated || undefined,
+        };
+      }
+    }
+
+    const visibleTurn: ChatMessage[] = [];
+    for (const msg of turn) {
+      if (msg.kind === "thought" || msg.kind === "plan" || msg.kind === "patch" || msg.kind === "command") {
+        continue;
+      }
+      visibleTurn.push({ ...msg });
+    }
+
+    if (mergedPatch) {
+      // A patch is supplementary metadata, never a standalone message. Only
+      // fold it into a substantive assistant explanation; creating an empty
+      // bubble would make a patch look like an unsolicited response.
+      const target = [...visibleTurn]
+        .reverse()
+        .find((m) => m.role === "assistant" && m.kind === "text" && String(m.content ?? "").trim());
+      if (target) {
+        target.patch = mergedPatch;
+      }
+    }
+
+    processed.push(...visibleTurn);
+  }
+  return processed;
+});
+
 watch(
   () =>
-    props.messages
-      .filter((m) => m.kind === "patch")
+    renderMessages.value
+      .filter((m) => Boolean(m.patch))
       .flatMap((m) =>
         buildPatchRows(m as RenderMessage)
           .map((row) => patchExpandKey(String(m.id ?? "").trim(), row.key))
@@ -205,23 +263,6 @@ watch(
   },
   { immediate: true },
 );
-
-const renderMessages = computed<RenderMessage[]>(() => {
-  // Keep the DOM contract defensive: history replay and test/integration
-  // callers may provide an arrival-ordered snapshot instead of going through
-  // the chat action setter. Rendering must still be deterministic.
-  const ordered = normalizeTurnSemanticOrder(props.messages as ChatItem[]) as ChatMessage[];
-  let latestExecuteId: string | null = null;
-  for (let i = ordered.length - 1; i >= 0; i--) {
-    const m = ordered[i]!;
-    if (m.kind === "execute") {
-      latestExecuteId = m.id;
-      break;
-    }
-  }
-
-  return ordered.filter((m) => m.kind !== "command" && (m.kind !== "execute" || m.id === latestExecuteId));
-});
 
 function getCommands(content: string): string[] {
   return content
@@ -292,25 +333,6 @@ function toggleExecuteExpanded(id: string): void {
   if (next.has(id)) next.delete(id);
   else next.add(id);
   expandedExecuteIds.value = next;
-}
-
-function isThoughtExpanded(id: string): boolean {
-  return expandedThoughtIds.value.has(id);
-}
-
-function toggleThoughtExpanded(id: string): void {
-  const next = new Set(expandedThoughtIds.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  expandedThoughtIds.value = next;
-}
-
-function getThoughtSummary(content: string): string {
-  const normalized = String(content ?? "").trim();
-  if (!normalized) return "过程分析与推理";
-  const firstLine = normalized.split("\n")[0]!.replace(/^\[(?:analysis|thought|step)\]\s*/i, "").replace(/^\*+|\*+$/g, "").trim();
-  if (firstLine.length <= 60) return firstLine;
-  return `${firstLine.slice(0, 57)}…`;
 }
 
 function caretPath(open: boolean): string {
@@ -435,46 +457,6 @@ function closeFilePreview(): void {
         </button>
         <div v-else-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… 还有 {{ m.hiddenLineCount }} 行</div>
       </div>
-      <div v-else-if="m.kind === 'patch'" :class="['bubble', 'bubble--compact', 'patchCard']">
-        <div v-for="(row, rowIdx) in buildPatchRows(m)" :key="row.key" class="patchCardRow">
-          <div class="patchCardHeader">
-            <div class="patchCardSummary">
-              <div class="patchCardTitle" :title="patchRowTitle(row)">{{ patchRowTitle(row) }}</div>
-              <div v-if="patchRowMeta(row)" class="patchCardMeta" v-html="patchRowMeta(row)"></div>
-            </div>
-            <button
-              v-if="row.diff"
-              class="patchCardToggle"
-              type="button"
-              :aria-expanded="isPatchExpanded(m.id, row.key)"
-              :data-testid="`patch-toggle-${m.id}-${rowIdx}`"
-              @click.stop="togglePatchExpanded(m.id, row.key)"
-            >
-              {{ isPatchExpanded(m.id, row.key) ? "收起" : "展开" }}
-            </button>
-          </div>
-          <div v-if="row.diff && isPatchExpanded(m.id, row.key)" class="patchCardBody">
-            <pre class="patchCardDiff" v-html="renderPatchDiffHtml(row.diff)"></pre>
-          </div>
-        </div>
-        <div v-if="m.patch?.truncated" class="patchCardNote">Diff 已截断，避免刷屏。</div>
-      </div>
-      <div v-else-if="m.kind === 'thought'" :class="['bubble', 'bubble--compact', 'thoughtCard']">
-        <button
-          class="thoughtCardHeader"
-          type="button"
-          :aria-expanded="isThoughtExpanded(m.id)"
-          @click.stop="toggleThoughtExpanded(m.id)"
-        >
-          <span class="prompt-tag">思考</span>
-          <span class="thoughtCardSummary">{{ getThoughtSummary(m.content) }}</span>
-          <span v-if="m.streaming" class="thoughtSpinner" aria-label="Thinking..."></span>
-          <span class="thoughtCardToggleText">{{ isThoughtExpanded(m.id) ? "收起" : "展开" }}</span>
-        </button>
-        <div v-if="isThoughtExpanded(m.id)" class="thoughtCardBody">
-          <MarkdownContent :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
-        </div>
-      </div>
       <div v-else-if="m.kind === 'divider'" class="sessionBoundaryDivider" data-testid="session-boundary-divider">
         <div class="sessionBoundaryLine">
           <span class="sessionBoundaryTag">⚡ New Session Initialized</span>
@@ -520,7 +502,33 @@ function closeFilePreview(): void {
             </button>
           </div>
         </div>
-        <MarkdownContent v-else :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
+        <div v-else>
+          <MarkdownContent :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
+          <div v-if="m.patch && buildPatchRows(m).length > 0" class="patchCard foldedPatch">
+            <div v-for="(row, rowIdx) in buildPatchRows(m)" :key="row.key" class="patchCardRow">
+              <div class="patchCardHeader">
+                <div class="patchCardSummary">
+                  <div class="patchCardTitle" :title="patchRowTitle(row)">{{ patchRowTitle(row) }}</div>
+                  <div v-if="patchRowMeta(row)" class="patchCardMeta" v-html="patchRowMeta(row)"></div>
+                </div>
+                <button
+                  v-if="row.diff"
+                  class="patchCardToggle"
+                  type="button"
+                  :aria-expanded="isPatchExpanded(m.id, row.key)"
+                  :data-testid="`patch-toggle-${m.id}-${rowIdx}`"
+                  @click.stop="togglePatchExpanded(m.id, row.key)"
+                >
+                  {{ isPatchExpanded(m.id, row.key) ? "收起" : "展开" }}
+                </button>
+              </div>
+              <div v-if="row.diff && isPatchExpanded(m.id, row.key)" class="patchCardBody">
+                <pre class="patchCardDiff" v-html="renderPatchDiffHtml(row.diff)"></pre>
+              </div>
+            </div>
+            <div v-if="m.patch?.truncated" class="patchCardNote">Diff 已截断，避免刷屏。</div>
+          </div>
+        </div>
         <div v-if="shouldShowMsgActions(m)" class="msgActions">
           <button class="msgCopyBtn" type="button" aria-label="复制消息" @click="emit('copyMessage', m)">
             <svg
@@ -810,6 +818,12 @@ function closeFilePreview(): void {
 .patchCardNote {
   font-size: 12px;
   color: #64748b;
+}
+
+.foldedPatch {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
 }
 
 .command-tree-header {

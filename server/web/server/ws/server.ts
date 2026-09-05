@@ -30,6 +30,7 @@ import { preflightPersistAndAck } from "./preflight.js";
 import { resolveSharedWorkerSyncLaneKey, resolveSyncLaneKeys, resolveSyncNamespace } from "../sync/lane.js";
 import { isStreamTerminalEvent, isTransientSyncEvent } from "../sync/eventClass.js";
 import { createDeltaStreamCoalescer } from "../sync/deltaStream.js";
+import { createCommandSnapshotCoalescer } from "../sync/commandSnapshot.js";
 import { recordConversationMessage } from "../../../utils/conversationMessageRecorder.js";
 import { WEB_WORKER_NAMESPACE } from "../start/webLaneResources.js";
 
@@ -52,6 +53,7 @@ type WsLaneSnapshot = {
   getWorkspaceLock: WsLaneResources["getWorkspaceLock"];
   orchestrator: WsOrchestrator;
   deltaCoalescer: ReturnType<typeof createDeltaStreamCoalescer> | null;
+  commandSnapshotCoalescer: ReturnType<typeof createCommandSnapshotCoalescer> | null;
 };
 
 /** WebSocket 单帧默认上限：16MB（足够容纳带 base64 图片的 prompt，又能挡住内存型 DoS）。 */
@@ -68,6 +70,42 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
   const laneGenerationStore = state.laneGenerationStore;
   const fallbackLaneGenerations = new Map<string, number>();
   const resetClosingConnections = new WeakSet<WebSocket>();
+  const laneSyncRuntimes = new Map<
+    string,
+    {
+      deltaCoalescer: ReturnType<typeof createDeltaStreamCoalescer>;
+      commandSnapshotCoalescer: ReturnType<typeof createCommandSnapshotCoalescer>;
+    }
+  >();
+
+  const syncRuntimeKey = (namespace: string, laneKey: string): string => `${namespace}\u0000${laneKey}`;
+
+  const getLaneSyncRuntime = (namespace: string, laneKey: string, _inFlight: boolean) => {
+    const key = syncRuntimeKey(namespace, laneKey);
+    const existing = laneSyncRuntimes.get(key);
+    if (existing) return existing;
+    const syncEventStore = state.syncEventStore;
+    if (!syncEventStore) return null;
+    // Runtime rows are the source of truth for a reconnect. Do not clear them
+    // merely because the connection was opened before the in-flight map was
+    // observed; that ordering used to erase the command a reconnect needed.
+    const runtime = {
+      deltaCoalescer: createDeltaStreamCoalescer({
+        store: syncEventStore,
+        namespace,
+        laneKey,
+        hydrate: true,
+      }),
+      commandSnapshotCoalescer: createCommandSnapshotCoalescer({
+        store: syncEventStore,
+        namespace,
+        laneKey,
+        hydrate: true,
+      }),
+    };
+    laneSyncRuntimes.set(key, runtime);
+    return runtime;
+  };
 
   const getFallbackLaneGenerationKey = (namespace: string, logicalLaneKey: string): string =>
     `${String(namespace ?? "").trim()}::${String(logicalLaneKey ?? "").trim()}`;
@@ -340,13 +378,9 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       generation: laneGeneration,
     });
     const syncEventStore = state.syncEventStore;
-    let deltaCoalescer = syncEventStore
-      ? createDeltaStreamCoalescer({
-          store: syncEventStore,
-          namespace: syncNamespace,
-        laneKey: historyKey,
-      })
-      : null;
+    const laneSyncRuntime = getLaneSyncRuntime(syncNamespace, historyKey, inFlight);
+    let deltaCoalescer = laneSyncRuntime?.deltaCoalescer ?? null;
+    let commandSnapshotCoalescer = laneSyncRuntime?.commandSnapshotCoalescer ?? null;
     const appendSyncEventForLane = (
       lane: WsLaneSnapshot,
       payload: unknown,
@@ -363,25 +397,68 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       if (isTransientSyncEvent(eventType)) {
         // Live-only frames are broadcast without entering the replay log. Main
         // assistant deltas are folded into one coalesced `delta_snapshot`.
-        if (eventType === "delta" && lane.deltaCoalescer && !String(payloadRecord.source ?? "").trim()) {
-          lane.deltaCoalescer.appendDelta(String(payloadRecord.delta ?? ""));
+        if (eventType === "delta") {
+          const source = String(payloadRecord.source ?? "").trim();
+          const position = !source && lane.deltaCoalescer
+            ? lane.deltaCoalescer.appendDelta(String(payloadRecord.delta ?? ""), Number(payloadRecord.ts))
+            : null;
+          return {
+            ok: true,
+            payload: {
+              ...payloadRecord,
+              afterSeq: syncEventStore.getLatestSeq(lane.laneNamespace, lane.historyKey),
+              ...(position
+                ? {
+                    streamId: position.streamId,
+                    startOffset: position.startOffset,
+                    endOffset: position.endOffset,
+                  }
+                : {}),
+            },
+          };
         }
         return { ok: true, payload };
       }
-      if (lane.deltaCoalescer && isStreamTerminalEvent(eventType)) {
-        lane.deltaCoalescer.finish();
-      } else if (lane.deltaCoalescer && eventType === "phase_complete") {
+      const streamTerminal = isStreamTerminalEvent(eventType);
+      // A command is a hard phase boundary even when the provider omitted an
+      // explicit phase_complete notification. Flush/seal preceding assistant
+      // text before allocating the command sequence.
+      if (lane.deltaCoalescer && (eventType === "command" || eventType === "phase_complete")) {
         lane.deltaCoalescer.finishPhase();
+      } else if (lane.deltaCoalescer && streamTerminal) {
+        lane.deltaCoalescer.finish();
       }
-      const eventId = String(payloadRecord.eventId ?? payloadRecord.event_id ?? "").trim() || undefined;
-      const eventTs = Number(payloadRecord.ts);
+      let eventPayload = payloadRecord;
+      if (eventType === "command" && lane.commandSnapshotCoalescer) {
+        const command = payloadRecord.command && typeof payloadRecord.command === "object" && !Array.isArray(payloadRecord.command)
+          ? (payloadRecord.command as Record<string, unknown>)
+          : null;
+        const snapshotPosition = lane.commandSnapshotCoalescer.record({
+          type: "command",
+          ts: payloadRecord.ts,
+          command: command ?? undefined,
+        });
+        if (snapshotPosition && command) {
+          eventPayload = {
+            ...payloadRecord,
+            command: {
+              ...command,
+              identity: snapshotPosition.identity,
+              outputStartOffset: snapshotPosition.startOffset,
+              outputEndOffset: snapshotPosition.endOffset,
+            },
+          };
+        }
+      }
+      const eventId = String(eventPayload.eventId ?? eventPayload.event_id ?? "").trim() || undefined;
+      const eventTs = Number(eventPayload.ts);
       const seq = syncEventStore.append({
         namespace: lane.laneNamespace,
         laneKey: lane.historyKey,
         type: eventType,
         eventId,
         ts: Number.isFinite(eventTs) && eventTs > 0 ? Math.floor(eventTs) : undefined,
-        payload: payloadRecord,
+        payload: eventPayload,
       });
       if (seq === null) {
         logger.warn(`[WebSocket][Sync] refusing unlogged event type=${eventType} history=${lane.historyKey}`);
@@ -395,7 +472,10 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         }))();
         return { ok: false, payload };
       }
-      return { ok: true, payload: { ...payloadRecord, seq } };
+      if (streamTerminal) {
+        lane.commandSnapshotCoalescer?.finish();
+      }
+      return { ok: true, payload: { ...eventPayload, seq } };
     };
     const broadcastJsonForLane = (lane: WsLaneSnapshot, payload: unknown): void => {
       if (!isLaneGenerationCurrent(lane)) return;
@@ -505,7 +585,13 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       getWorkspaceLock,
       orchestrator,
       deltaCoalescer,
+      commandSnapshotCoalescer,
     });
+
+    const collectRuntimeSnapshots = (lane: WsLaneSnapshot): Array<Record<string, unknown>> => [
+      ...(lane.deltaCoalescer?.getSnapshots?.() ?? []),
+      ...(lane.commandSnapshotCoalescer?.getSnapshots?.() ?? []),
+    ];
 
     let currentLane = captureLane();
 
@@ -690,6 +776,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
           ? 0
           : state.syncEventStore?.getLatestSeq(WEB_WORKER_NAMESPACE, resolveSharedWorkerSyncLaneKey(sessionId)) ?? 0,
       laneGeneration: currentLane.laneGeneration,
+      runtimeSnapshots: collectRuntimeSnapshots(currentLane),
     });
 
     let messageChain = Promise.resolve();
@@ -875,15 +962,16 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
               generation: laneGeneration,
             });
             deltaCoalescer?.finish();
+            commandSnapshotCoalescer?.finish();
             syncNamespace = nextLaneNamespace;
             syncLaneKeys = nextSyncLaneKeys;
-            deltaCoalescer = syncEventStore
-              ? createDeltaStreamCoalescer({
-                  store: syncEventStore,
-                  namespace: syncNamespace,
-                  laneKey: historyKey,
-                })
-              : null;
+            const nextSyncRuntime = getLaneSyncRuntime(
+              syncNamespace,
+              historyKey,
+              state.interruptControllers.has(historyKey),
+            );
+            deltaCoalescer = nextSyncRuntime?.deltaCoalescer ?? null;
+            commandSnapshotCoalescer = nextSyncRuntime?.commandSnapshotCoalescer ?? null;
             currentLane = captureLane();
 
             sendInitialBootstrapMessages({
@@ -905,6 +993,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
                   ? 0
                   : state.syncEventStore?.getLatestSeq(WEB_WORKER_NAMESPACE, resolveSharedWorkerSyncLaneKey(sessionId)) ?? 0,
               laneGeneration: currentLane.laneGeneration,
+              runtimeSnapshots: collectRuntimeSnapshots(currentLane),
             });
 
             logger.info(

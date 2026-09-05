@@ -155,6 +155,10 @@ export function attachWorkerPromptHandler(args: {
     args.sessionLogger?.logEvent(event);
     args.logger.debug(`[Event] phase=${event.phase} title=${event.title} detail=${event.detail?.slice(0, 50)}`);
     const raw = event.raw as ThreadEvent;
+    const eventTimestampRaw = Number(event.timestamp);
+    const eventTimestamp = Number.isFinite(eventTimestampRaw) && eventTimestampRaw > 0
+      ? Math.floor(eventTimestampRaw)
+      : Date.now();
     if (raw.type === "turn.started") {
       lastRespondingTextByItemId.clear();
       activeRespondingItemId = null;
@@ -196,7 +200,7 @@ export function attachWorkerPromptHandler(args: {
       const itemId = rawItem && typeof rawItem === "object" ? String(rawItem.id ?? "").trim() || "__unknown__" : "__unknown__";
       if (activeRespondingItemId && activeRespondingItemId !== itemId && !completedRespondingItemIds.has(activeRespondingItemId)) {
         completedRespondingItemIds.add(activeRespondingItemId);
-        args.sendToChat({ type: "phase_complete", phase: "assistant", ts: Date.now() });
+        args.sendToChat({ type: "phase_complete", phase: "assistant", ts: eventTimestamp });
       }
       activeRespondingItemId = itemId;
       const previous = lastRespondingTextByItemId.get(itemId) ?? "";
@@ -208,7 +212,7 @@ export function attachWorkerPromptHandler(args: {
       const delta = previous ? next.slice(previous.length) : next;
       lastRespondingTextByItemId.set(itemId, next);
       if (delta) {
-        args.sendToChat({ type: "delta", delta });
+        args.sendToChat({ type: "delta", delta, ts: eventTimestamp });
       }
       return;
     }
@@ -221,12 +225,12 @@ export function attachWorkerPromptHandler(args: {
           completedRespondingItemIds.add(itemId);
           if (activeRespondingItemId === itemId) {
             activeRespondingItemId = null;
-            args.sendToChat({ type: "phase_complete", phase: "assistant", ts: Date.now() });
+            args.sendToChat({ type: "phase_complete", phase: "assistant", ts: eventTimestamp });
           }
         }
       } else if (activeRespondingItemId === "__unknown__") {
         activeRespondingItemId = null;
-        args.sendToChat({ type: "phase_complete", phase: "assistant", ts: Date.now() });
+        args.sendToChat({ type: "phase_complete", phase: "assistant", ts: eventTimestamp });
       }
     }
 
@@ -259,7 +263,7 @@ export function attachWorkerPromptHandler(args: {
       if (delta) {
         // Emit pure reasoning delta as structured thought event directly,
         // avoiding smearing cognitive reasoning into generic step traces.
-        args.sendToChat({ type: "delta", delta, source: "thought" });
+        args.sendToChat({ type: "delta", delta, source: "thought", ts: eventTimestamp });
       }
       return;
     }
@@ -271,7 +275,7 @@ export function attachWorkerPromptHandler(args: {
         if (hasSubstantiveStepTrace(line)) {
           latestStepTraceText = line;
         }
-        args.sendToChat({ type: "delta", delta: line, source: "step" });
+        args.sendToChat({ type: "delta", delta: line, source: "step", ts: eventTimestamp });
       }
     }
     if (event.phase === "command") {
@@ -328,6 +332,7 @@ export function attachWorkerPromptHandler(args: {
 
       args.sendToChat({
         type: "command",
+        ts: eventTimestamp,
         detail: event.detail ?? event.title,
         command: {
           id: commandPayload.id,

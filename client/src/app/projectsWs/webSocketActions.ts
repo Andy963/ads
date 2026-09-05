@@ -24,6 +24,7 @@ const TERMINAL_BOOTSTRAP_COVERED_EVENT_TYPES = new Set([
   "error",
   "status",
   "command",
+  "command_snapshot",
   "patch",
   "explored",
   "plan",
@@ -495,7 +496,16 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     let disconnectWasBusy = false;
     const shouldSyncTasks = mode === "worker";
     let handleWsPayload: ((msg: unknown) => void) | null = null;
-    let deferredBootstrapHistory: Record<string, unknown> | null = null;
+    type DeferredBootstrapHistory = {
+      payload: Record<string, unknown>;
+      seq: number | null;
+      afterSeq: number | null;
+      arrivalOrder: number;
+    };
+    let deferredBootstrapHistory: DeferredBootstrapHistory[] = [];
+    let bootstrapHistoryArrivalOrder = 0;
+    let bootstrapHistoryApplyScheduled = false;
+    let deferredRuntimeSnapshots: Record<string, unknown>[] = [];
     let bootstrapBoundarySeq = 0;
     let bootstrapReportedInFlight: boolean | null = null;
     let bootstrapHistoryExpected = false;
@@ -550,6 +560,74 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       resolveBootstrapHistoryWait = null;
     };
 
+    const selectBootstrapHistory = (): Record<string, unknown> | null => {
+      if (deferredBootstrapHistory.length === 0) return null;
+      const candidates = deferredBootstrapHistory.slice().sort((left, right) => {
+        const leftBarrier = left.seq ?? left.afterSeq ?? -1;
+        const rightBarrier = right.seq ?? right.afterSeq ?? -1;
+        return leftBarrier - rightBarrier || left.arrivalOrder - right.arrivalOrder;
+      });
+      return candidates[candidates.length - 1]?.payload ?? null;
+    };
+
+    const clearDeferredBootstrapHistory = (): void => {
+      deferredBootstrapHistory = [];
+    };
+
+    const clearDeferredRuntimeSnapshots = (): void => {
+      deferredRuntimeSnapshots = [];
+    };
+
+    const applyDeferredRuntimeSnapshots = (): void => {
+      if (deferredRuntimeSnapshots.length === 0) return;
+      const snapshots = deferredRuntimeSnapshots.slice();
+      deferredRuntimeSnapshots = [];
+      snapshots.sort((left, right) => {
+        const leftBarrier = Number(left.afterSeq ?? left.snapshotSeq ?? 0);
+        const rightBarrier = Number(right.afterSeq ?? right.snapshotSeq ?? 0);
+        return (Number.isFinite(leftBarrier) ? leftBarrier : 0) - (Number.isFinite(rightBarrier) ? rightBarrier : 0);
+      });
+      for (const snapshot of snapshots) {
+        handleWsPayload?.(snapshot);
+      }
+    };
+
+    const applyIdleBootstrapHistory = (): void => {
+      bootstrapHistoryApplyScheduled = false;
+      if (sequencer.isBuffering() || rt.syncInProgress) return;
+      const history = selectBootstrapHistory();
+      if (!history) return;
+      clearDeferredBootstrapHistory();
+      bootstrapHistoryExpected = false;
+      finishBootstrapHistoryWait();
+      bootstrapHistoryWait = null;
+      clearBootstrapHistoryWatchdog();
+      handleWsPayload?.(history);
+      applyDeferredRuntimeSnapshots();
+    };
+
+    const scheduleIdleBootstrapHistory = (): void => {
+      if (bootstrapHistoryApplyScheduled) return;
+      bootstrapHistoryApplyScheduled = true;
+      Promise.resolve().then(applyIdleBootstrapHistory);
+    };
+
+    const deferBootstrapHistory = (payload: Record<string, unknown>): void => {
+      const seqRaw = Number(payload.seq);
+      const afterRaw = Number(payload.afterSeq);
+      deferredBootstrapHistory.push({
+        payload,
+        seq: Number.isFinite(seqRaw) && seqRaw > 0 ? Math.floor(seqRaw) : null,
+        afterSeq: Number.isFinite(afterRaw) && afterRaw >= 0 ? Math.floor(afterRaw) : null,
+        arrivalOrder: bootstrapHistoryArrivalOrder++,
+      });
+      // The first history frame releases the waiter; selecting the latest
+      // candidate at the barrier below prevents a later sibling/bootstrap
+      // frame from overwriting it with an older snapshot.
+      finishBootstrapHistoryWait();
+      if (!sequencer.isBuffering() && !rt.syncInProgress) scheduleIdleBootstrapHistory();
+    };
+
     const clearBootstrapHistoryWatchdog = (): void => {
       if (bootstrapHistoryWatchdogTimer === null) return;
       try {
@@ -598,7 +676,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       syncRetryAttempts = 0;
       sequencer.abortCatchUp();
       sequencer = createChatSequencer(syncChatSessionId);
-      deferredBootstrapHistory = null;
+      clearDeferredBootstrapHistory();
+      clearDeferredRuntimeSnapshots();
       bootstrapBoundarySeq = 0;
       bootstrapReportedInFlight = null;
       bootstrapHistoryExpected = false;
@@ -615,7 +694,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       syncLaneEpoch += 1;
       sequencer.abortCatchUp();
       sequencer.resetCursor();
-      deferredBootstrapHistory = null;
+      clearDeferredBootstrapHistory();
+      clearDeferredRuntimeSnapshots();
       bootstrapBoundarySeq = 0;
       bootstrapReportedInFlight = null;
       bootstrapHistoryExpected = false;
@@ -803,7 +883,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
               },
             );
             showSyncRecoveryNotice();
-            deferredBootstrapHistory = null;
+            clearDeferredBootstrapHistory();
+            applyDeferredRuntimeSnapshots();
             bootstrapHistoryExpected = false;
             bootstrapHistoryWait = null;
             rt.needsTaskResync = shouldSyncTasks;
@@ -837,8 +918,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         await waitForBootstrapHistory();
         if (!isCurrentSync(operationLaneEpoch)) return;
         rt.needsChatSync = false;
-        const bootstrapHistory = deferredBootstrapHistory;
-        deferredBootstrapHistory = null;
+        const bootstrapHistory = selectBootstrapHistory();
+        clearDeferredBootstrapHistory();
         bootstrapHistoryExpected = false;
         bootstrapHistoryWait = null;
         clearBootstrapHistoryWatchdog();
@@ -924,6 +1005,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           });
         }
         activeSequencer.completeCatchUp();
+        // Bootstrap snapshots are current-state rows rather than another
+        // history stream. Apply them only after the baseline and all cursor
+        // events have committed, so a stale snapshot cannot overwrite a newer
+        // live update.
+        applyDeferredRuntimeSnapshots();
         syncRetryAttempts = 0;
         clearSyncRetryTimer();
         if (shouldSyncTasks && rt.needsTaskResync) {
@@ -934,6 +1020,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         }
       } catch {
         if (isCurrentSync(operationLaneEpoch)) {
+          // Keep barrier-tagged live frames queued for the retry. Dropping them
+          // here loses transient deltas that have no individual replay row;
+          // the retry will first fetch the missing cursor range and then
+          // release the preserved frames in order.
+          activeSequencer.abortCatchUp({ preserveLive: true });
           rt.needsChatSync = true;
           scheduleSyncRetry();
         }
@@ -1055,7 +1146,10 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       finishBootstrapHistoryWait();
       clearStepLive(rt);
       applyStreamingDisconnectCleanup(rt);
-      finalizeCommandBlock(rt);
+      // Keep command previews across a transport disconnect. They are runtime
+      // state and the coalesced command snapshot will reconcile them after the
+      // next connection; clearing them here loses the old block before that
+      // reconciliation can happen.
       if (disconnectWasBusy && showReconnectMessage) {
         const reconnectContent = pickReconnectNotice({
           hasPendingAck: Boolean(String(rt.pendingAckClientMessageId ?? "").trim()),
@@ -1157,9 +1251,19 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       if (msg && typeof msg === "object" && !Array.isArray(msg)) {
         const rec = msg as Record<string, unknown>;
         const seq = Number(rec.seq);
-        if (rec.type === "history" && sequencer.isBuffering() && !(Number.isFinite(seq) && seq > 0)) {
-          deferredBootstrapHistory = rec;
-          finishBootstrapHistoryWait();
+        if (rec.type === "history" && !(Number.isFinite(seq) && seq > 0)) {
+          deferBootstrapHistory(rec);
+          return;
+        }
+        if (
+          rec.bootstrap === true &&
+          (rec.type === "delta_snapshot" || rec.type === "command_snapshot")
+        ) {
+          deferredRuntimeSnapshots.push(rec);
+          if (!sequencer.isBuffering() && !rt.syncInProgress) {
+            if (deferredBootstrapHistory.length > 0) scheduleIdleBootstrapHistory();
+            else applyDeferredRuntimeSnapshots();
+          }
           return;
         }
         if (
@@ -1221,6 +1325,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           if (Number.isFinite(latestSeq) && latestSeq > 0) {
             bootstrapBoundarySeq = Math.floor(latestSeq);
           }
+          if (rec.bootstrapHistory === true) expectBootstrapHistory();
           const taskLatestSeq = Number(rec.taskLatestSeq);
           if (
             shouldSyncTasks &&
@@ -1233,27 +1338,38 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           if (Number.isFinite(latestSeq) && latestSeq > sequencer.getLastAppliedSeq()) {
             rt.needsChatSync = true;
             sequencer.beginCatchUp();
-            if (rec.bootstrapHistory === true) expectBootstrapHistory();
             void syncChatEvents();
           } else {
             rt.needsChatSync = false;
+            // With no cursor gap the history frame is still the baseline for
+            // runtime snapshots sent in the same bootstrap. Apply it through
+            // the deferred path instead of letting a later generic observer
+            // race the snapshot.
+            if (rec.bootstrapHistory !== true) {
+              scheduleIdleBootstrapHistory();
+            }
           }
-        } else if (rec.type === "history" && !rt.awaitingBootstrapHistory && !bootstrapHistoryExpected) {
-          clearBootstrapHistoryWatchdog();
+          // `welcome` establishes the cursor boundary and must not be queued
+          // as an ordinary unsequenced live frame. Queueing it after
+          // beginCatchUp caused duplicate handling and stale barriers.
+          // The message handler owns thread/model/session state updates for
+          // welcome. Invoke it exactly once, outside the sequencer, after the
+          // cursor boundary has been established.
+          handleMessage(msg);
+          // `handleMessage` derives `awaitingBootstrapHistory` from the
+          // welcome context and queued prompts, so arm the watchdog only after
+          // that state has been updated.
+          if (
+            rec.bootstrapHistory === true ||
+            rt.awaitingBootstrapHistory ||
+            rt.inputLocked.value
+          ) {
+            armBootstrapHistoryWatchdog();
+          }
+          return;
         }
       }
       sequencer.observe(msg, () => handleMessage(msg));
-      if (
-        msg &&
-        typeof msg === "object" &&
-        !Array.isArray(msg) &&
-        (msg as Record<string, unknown>).type === "welcome" &&
-        ((msg as Record<string, unknown>).bootstrapHistory === true ||
-          rt.awaitingBootstrapHistory ||
-          rt.inputLocked.value)
-      ) {
-        armBootstrapHistoryWatchdog();
-      }
     };
 
     wsInstance.connect();
