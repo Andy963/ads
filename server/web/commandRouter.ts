@@ -3,8 +3,6 @@ import path from "node:path";
 import { parseSlashCommand } from "../codexConfig.js";
 import { initWorkspace, getCurrentWorkspace, syncWorkspaceTemplates } from "../workspace/service.js";
 import { detectWorkspace, detectWorkspaceFrom } from "../workspace/detector.js";
-import { listRules, readRules } from "../workspace/rulesService.js";
-import { normalizeOutput } from "../utils/text.js";
 import { initSkill, normalizeSkillName, parseResourceList, validateSkillDirectory } from "../skills/creator.js";
 import { discoverSkills, loadSkillBody, renderSkillList } from "../skills/loader.js";
 import { resolveGlobalSkillsDir } from "../skills/paths.js";
@@ -73,18 +71,6 @@ const commandRegistry = new Map<string, CommandHandler>([
       const response = await initWorkspace({ name });
       syncWorkspaceTemplates();
       return { ok: true, output: formatResponse(response) };
-    },
-  ],
-  [
-    "ads.rules",
-    async ({ params, positional }) => {
-      if (params.category || positional.length > 0) {
-        const category = params.category ?? positional.join(" ");
-        const response = await listRules({ category });
-        return { ok: true, output: formatResponse(response) };
-      }
-      const response = await readRules();
-      return { ok: true, output: normalizeOutput(response) };
     },
   ],
   [

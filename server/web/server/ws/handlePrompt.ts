@@ -161,7 +161,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         ? ((rawPayload as { metadata?: Record<string, unknown> }).metadata ?? undefined)
         : undefined;
 
-    const { unsubscribe, handleExploredEntry, getThoughtText } = attachWorkerPromptHandler({
+    const { unsubscribe, handleExploredEntry } = attachWorkerPromptHandler({
       orchestrator,
       turnCwd,
       historyKey: deps.context.historyKey,
@@ -338,16 +338,6 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       if (deps.observability.sessionLogger) {
         deps.observability.sessionLogger.attachThreadId(threadId ?? undefined);
         deps.observability.sessionLogger.logOutput(outputForChat);
-      }
-      const thoughtText = getThoughtText();
-      if (thoughtText) {
-        promptRun.ensureActive();
-        deps.history.historyStore.add(deps.context.historyKey, {
-          role: "assistant",
-          kind: "thought",
-          text: thoughtText,
-          ts: Date.now() - 1,
-        });
       }
       promptRun.ensureActive();
       const persistedAssistant = deps.history.historyStore.add(deps.context.historyKey, { role: "ai", text: outputForChat, ts: Date.now() });

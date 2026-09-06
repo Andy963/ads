@@ -115,7 +115,7 @@ describe("mapThreadEventToAgentEvent", () => {
     assert.equal(completed.detail, undefined);
   });
 
-  it("maps provider plan items to visible plan traces", () => {
+  it("drops provider plan items before they become visible events", () => {
     const mapped = mapThreadEventToAgentEvent(
       {
         type: "item.updated",
@@ -123,9 +123,7 @@ describe("mapThreadEventToAgentEvent", () => {
       } as any,
       0,
     );
-    assert(mapped);
-    assert.equal(mapped.phase, "plan");
-    assert.equal(formatStepTraceLine(mapped), "[plan] Plan update: Inspect the workspace\n");
+    assert.equal(mapped, null);
   });
 
   it("maps context compaction items to context traces", () => {
@@ -141,7 +139,7 @@ describe("mapThreadEventToAgentEvent", () => {
     assert.equal(formatStepTraceLine(mapped), "[context] Context ready\n");
   });
 
-  it("keeps reasoning summaries visible while hiding generic reasoning noise", () => {
+  it("drops reasoning summaries before they become visible events", () => {
     const mapped = mapThreadEventToAgentEvent(
       {
         type: "item.updated",
@@ -149,8 +147,7 @@ describe("mapThreadEventToAgentEvent", () => {
       } as any,
       0,
     );
-    assert(mapped);
-    assert.equal(formatStepTraceLine(mapped), "[analysis] Reasoning summary: Comparing the two implementations\n");
+    assert.equal(mapped, null);
   });
 
   it("maps reconnect errors to connection phase", () => {

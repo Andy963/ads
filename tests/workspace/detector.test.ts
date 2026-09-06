@@ -9,7 +9,6 @@ import {
   detectWorkspace,
   detectWorkspaceFrom,
   getWorkspaceDbPath,
-  getWorkspaceRulesDir,
   isWorkspaceInitialized,
   ensureDefaultTemplates,
 } from "../../server/workspace/detector.js";
@@ -66,7 +65,7 @@ describe("workspace/detector", () => {
     const templatesDir = resolveWorkspaceStatePath(workspace, "templates");
     const files = fs.readdirSync(templatesDir);
     assert.ok(files.includes("instructions.md"), "instructions template should exist");
-    assert.ok(files.includes("rules.md"), "rules template should exist");
+    assert.ok(!files.includes("rules.md"), "rules template should be retired");
   });
 
   it("detects workspace root from a nested directory", () => {
@@ -112,11 +111,10 @@ describe("workspace/detector", () => {
       assert.equal(isWorkspaceInitialized(nested), true);
 
       const dbPath = getWorkspaceDbPath(nested);
-      const rulesDir = getWorkspaceRulesDir(nested);
       ensureDefaultTemplates(nested);
 
       assert.equal(dbPath, resolveWorkspaceStatePath(workspace, "ads.db"));
-      assert.equal(rulesDir, resolveWorkspaceStatePath(workspace, "rules"));
+      assert.equal(fs.existsSync(resolveWorkspaceStatePath(workspace, "rules")), false);
       assert.equal(fs.existsSync(path.join(workspace, "docs", "spec")), false);
       assert.equal(
         fs.existsSync(resolveWorkspaceStatePath(workspace, "templates", "instructions.md")),

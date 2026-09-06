@@ -12,7 +12,7 @@ import { createLogger } from "../utils/logger.js";
 import { isSqliteDbPath } from "../utils/sqlitePaths.js";
 import { getStateDatabase } from "../state/database.js";
 import { prepareMigrationMarkerStatements } from "../state/migrations.js";
-import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
+import { migrateLegacyWorkspaceAdsIfNeeded } from "../workspace/adsPaths.js";
 
 export { truncateForLog } from "../utils/text.js";
 
@@ -221,7 +221,6 @@ export function sanitizeInput(input: unknown): string | null {
 
 export function getWorkspaceState(workspaceRoot: string): WorkspaceState {
   migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot);
-  const rulesPath = resolveWorkspaceStatePath(workspaceRoot, "rules.md");
   let modified: string[] = [];
   let branch = "";
 
@@ -253,7 +252,7 @@ export function getWorkspaceState(workspaceRoot: string): WorkspaceState {
     branch = "";
   }
 
-  return { path: workspaceRoot, rules: rulesPath, modified, branch };
+  return { path: workspaceRoot, modified, branch };
 }
 
 export function resolveImageExt(name: string | undefined, mime: string | undefined): string {

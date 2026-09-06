@@ -9,7 +9,6 @@ import { SystemPromptManager } from "../../server/systemPrompt/manager.js";
 function writeTemplates(templateRoot: string, extra?: Record<string, string>): void {
   fs.mkdirSync(templateRoot, { recursive: true });
   fs.writeFileSync(path.join(templateRoot, "instructions.md"), "# Shared instructions\n", "utf8");
-  fs.writeFileSync(path.join(templateRoot, "rules.md"), "# Shared rules\n", "utf8");
   for (const [name, content] of Object.entries(extra ?? {})) {
     fs.writeFileSync(path.join(templateRoot, name), content, "utf8");
   }

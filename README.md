@@ -3,17 +3,16 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node Version](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
 
-ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编排中枢。它以项目工作区为核心，围绕 Advisor（方案规划）/ Worker（代码执行）/ Task（任务看板与队列）构建了一体化的 AI 开发工作流，并通过 Codex App-Server 统一接入多 Provider 模型和可选的独立 Channel Connector。
+ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编排中枢。它以项目工作区为核心，围绕 Advisor（方案规划）/ Worker（代码执行）双 Lane 构建 AI 开发工作流，并通过 Codex App-Server 统一接入多 Provider 模型和可选的独立 Channel Connector。
 
 ---
 
 ## 核心特性
 
 - **现代 Web Console**：基于 Vue 3 + Vite 构建的响应式控制台，支持移动端抽屉导航与桌面端全功能布局。
-- **三 Tab 协作工作流**：
-  - **Task (任务看板)**：可视化任务排队、执行、重试、错误追踪、开发/审核/返工分类及 Task Bundle 任务草稿审批。
-  - **Advisor (规划 Lane)**：专属架构方案研讨；任务草稿可直接引用 GitHub Issue/PR 或使用自包含 prompt，不要求本地 issue/spec 文档。
-  - **Worker (执行 Lane)**：有本地快照时读取批准时固定的 issue/spec 内容，否则直接依据任务 prompt 与 GitHub 引用执行，实时输出紧凑预览。
+- **双 Lane 协作工作流**：
+  - **Advisor (规划 Lane)**：专属架构方案研讨，可通过 GitHub Issue/PR 追踪设计与交付。
+  - **Worker (执行 Lane)**：专注代码执行、命令运行与文件修改，实时输出紧凑的阶段进展和执行预览。
 - **统一多 Provider 模型支持**：所有模型均通过 **Codex App-Server** 路由（包括 Anthropic Claude、Google Gemini 与 DeepSeek），支持模型可视化启用/停用与即时配置。
 - **确定性安全拦截**：在命令执行边界保护 ADS 自身进程和 SQLite 数据库文件，不依赖模型提示或可变数据库规则。
 - **Codex 标准技能体系**：全局技能原生对齐 `$CODEX_HOME/skills`（默认 `~/.codex/skills`）；支持对话中 `<skill_save>` 自动沉淀与存量遗留技能无损原子迁移，与 native Codex CLI 完全互通。
@@ -104,12 +103,11 @@ ads/
 ├── server/            # Core backend engine
 │   ├── agents/        # Codex App-Server 适配器与执行守护器
 │   ├── middleware/    # Core middleware pipeline (memory, safety, hooks)
-│   ├── rules/         # 内置安全执行网关
+│   ├── middleware/    # Turn 生命周期、中间件与内置安全拦截
 │   ├── scheduler/     # 自然语言定时调度引擎与 Cron 运行时
 │   ├── sessions/      # Session, directory, and thread persistence
 │   ├── state/         # 全局 SQLite (state.db) 数据表与迁移
 │   ├── storage/       # 工作区独立 SQLite (ads.db) 数据表与迁移
-│   ├── tasks/         # 任务队列、执行器与状态流转
 │   └── web/           # Web HTTP API、WebSocket Hub 与鉴权系统
 ├── client/            # 前端 Web Console 源码 (Vue 3 + TypeScript + Vite)
 ├── docs/              # 模块化详细设计与配置文档

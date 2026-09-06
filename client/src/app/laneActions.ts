@@ -16,11 +16,6 @@ export type LaneDeps = {
   connectPlannerWs: (projectId?: string) => Promise<void>;
 };
 
-type QueueRunningShape = { queueStatus?: { value?: { running?: boolean } } };
-function isQueueRunning(rt: unknown): boolean {
-  return Boolean((rt as QueueRunningShape)?.queueStatus?.value?.running);
-}
-
 function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void {
    if (rt.noticeTimer === null) return;
    try {
@@ -45,7 +40,6 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
     models,
     withWorkspaceQuery,
     pendingImages,
-    runtimeTasksBusy,
     clearConversationForResume,
     cancelPendingResume,
     clearPendingPromptReplayState,
@@ -336,12 +330,6 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
     rt.apiError.value = null;
     clearNotice(pid);
 
-    if (runtimeTasksBusy(rt) || isQueueRunning(rt)) {
-      const msg = "任务执行中，无法恢复";
-      rt.apiError.value = msg;
-      rt.laneStatus.value = { kind: "error", message: msg };
-      return;
-    }
     if (rt.inputLocked.value) {
       return;
     }
@@ -407,17 +395,10 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
     options?: { sessionId?: string },
   ): Promise<void> => {
     const pid = normalizeProjectId(projectId);
-    const workerRt = getRuntime(pid);
     const rt = getPlannerRuntime(pid);
     rt.apiError.value = null;
     clearNotice(pid);
 
-    if (runtimeTasksBusy(workerRt) || isQueueRunning(workerRt)) {
-      const msg = "任务执行中，无法恢复";
-      rt.apiError.value = msg;
-      rt.laneStatus.value = { kind: "error", message: msg };
-      return;
-    }
     if (rt.inputLocked.value) {
       return;
     }

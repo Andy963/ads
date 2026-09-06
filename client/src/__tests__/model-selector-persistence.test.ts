@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { shallowMount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
-import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
+import type { ModelConfig } from "../api/types";
 
 const TEST_TIMEOUT_MS = 40_000;
 const OUTBOX_KEY = "ads.outbox.default.main";
@@ -23,7 +23,6 @@ let lastWorkerWs: {
   onOpen?: () => void;
   onClose?: (ev: { code: number; reason?: string }) => void;
   onError?: () => void;
-  onTaskEvent?: (payload: unknown) => void;
   onMessage?: (msg: unknown) => void;
   sendPrompt?: (payload: unknown, clientMessageId?: string) => void;
   clearHistory: () => void;
@@ -62,7 +61,6 @@ vi.mock("../api/ws", () => {
     onOpen?: () => void;
     onClose?: (ev: { code: number; reason?: string }) => void;
     onError?: () => void;
-    onTaskEvent?: (payload: unknown) => void;
     onMessage?: (msg: unknown) => void;
 
     clearHistory = vi.fn();
@@ -144,9 +142,6 @@ describe("Model selector persistence", () => {
     getImpl = async (url: string) => {
       if (url === "/api/models") return models;
       if (url === "/api/projects") return { projects: [], activeProjectId: null };
-      if (url.includes("/api/task-queue/status"))
-        return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
-      if (url.startsWith("/api/tasks")) return [] satisfies Task[];
       if (url.startsWith("/api/paths/validate")) return { ok: false };
       return {};
     };
@@ -201,9 +196,6 @@ describe("Model selector persistence", () => {
           return runtimeModels;
         }
         if (url === "/api/projects") return { projects: [], activeProjectId: null };
-        if (url.includes("/api/task-queue/status"))
-          return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
-        if (url.startsWith("/api/tasks")) return [] satisfies Task[];
         if (url.startsWith("/api/paths/validate")) return { ok: false };
         return {};
       };
@@ -261,9 +253,6 @@ describe("Model selector persistence", () => {
       getImpl = async (url: string) => {
         if (url === "/api/models") return models;
         if (url === "/api/projects") return { projects: [], activeProjectId: null };
-        if (url.includes("/api/task-queue/status"))
-          return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
-        if (url.startsWith("/api/tasks")) return [] satisfies Task[];
         if (url.startsWith("/api/paths/validate")) return { ok: false };
         return {};
       };
@@ -511,4 +500,59 @@ describe("Model selector persistence", () => {
     TEST_TIMEOUT_MS,
   );
 
+  it(
+    "applies unsequenced agents snapshot immediately even during sync catch-up buffering",
+    async () => {
+      let syncResolver: ((val: unknown) => void) | null = null;
+      getImpl = async (url: string) => {
+        if (url === "/api/models") return [makeModel("gpt-4.1", "GPT-4.1")];
+        if (url === "/api/projects") return { projects: [], activeProjectId: null };
+        if (url.startsWith("/api/sync/events")) {
+          return new Promise((resolve) => {
+            syncResolver = resolve;
+          });
+        }
+        return {};
+      };
+
+      const App = (await import("../App.vue")).default;
+      const wrapper = shallowMount(App, {
+        global: { stubs: { LoginGate: false, MainChatView: false, MarkdownContent: true, DraggableModal: true } },
+      });
+      await settleUi(wrapper);
+      await ensureWsConnected(wrapper);
+
+      // Welcome signals cursor gap; sequencer begins catch-up and starts buffering
+      lastWorkerWs!.onMessage?.({
+        type: "welcome",
+        threadId: null,
+        chatSessionId: "main",
+        latestSeq: 10,
+        effectiveModel: "gpt-4.1",
+      });
+      await settleUi(wrapper);
+
+      // Agents frame arrives during catch-up buffering
+      lastWorkerWs!.onMessage?.({
+        type: "agents",
+        activeAgentId: "codex",
+        agents: [
+          { id: "codex", name: "Codex", ready: true },
+          { id: "claude", name: "Claude Code", ready: true },
+        ],
+      });
+      await settleUi(wrapper);
+
+      // Available agents must be populated immediately without waiting for catch-up HTTP to finish
+      expect(wrapper.vm.workerAgents.length).toBe(2);
+      expect(wrapper.vm.workerAgents[0].id).toBe("codex");
+
+      if (syncResolver) {
+        syncResolver({ events: [], latestSeq: 10, hasMore: false });
+      }
+      await settleUi(wrapper);
+      wrapper.unmount();
+    },
+    TEST_TIMEOUT_MS,
+  );
 });

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { shallowMount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
-import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
+import type { ModelConfig } from "../api/types";
 
 type GetImpl = (url: string) => Promise<unknown>;
 type PostImpl = (url: string, body: unknown) => Promise<unknown>;
@@ -54,7 +54,6 @@ vi.mock("../api/ws", () => {
     onOpen?: () => void;
     onClose?: (ev: { code: number; reason?: string }) => void;
     onError?: () => void;
-    onTaskEvent?: (payload: unknown) => void;
     onMessage?: (msg: unknown) => void;
 
     constructor(_: { sessionId: string; chatSessionId?: string }) {}
@@ -116,9 +115,6 @@ describe("App.reorderProjects optimistic update", () => {
     getImpl = async (url: string) => {
       if (url === "/api/models") return [] satisfies ModelConfig[];
       if (url === "/api/projects") return { projects: projectsFromApi, activeProjectId: "p1" };
-      if (url.includes("/api/task-queue/status"))
-        return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
-      if (url.startsWith("/api/tasks")) return [] satisfies Task[];
       if (url.startsWith("/api/paths/validate")) return { ok: false };
       return {};
     };

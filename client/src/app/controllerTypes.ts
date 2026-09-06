@@ -1,9 +1,8 @@
 import type { Ref } from "vue";
 
-import type { Task, TaskQueueStatus } from "../api/types";
 import type { createLiveActivityWindow } from "../lib/live_activity";
 
-export type WorkspaceState = { path?: string; rules?: string; modified?: string[]; branch?: string };
+export type WorkspaceState = { path?: string; modified?: string[]; branch?: string };
 
 export type ProjectTab = {
   id: string;
@@ -147,20 +146,10 @@ export type ExecutePreviewState = {
   seenEventIds?: Set<string>;
 };
 
-export type BufferedTaskChatEvent =
-  | { kind: "message"; role: "user" | "assistant" | "system"; content: string }
-  | { kind: "delta"; role: "assistant"; delta: string; source?: "chat" | "step"; modelUsed?: string | null }
-  | { kind: "command"; command: string };
-
-export type TaskChatBuffer = { firstTs: number; events: BufferedTaskChatEvent[] };
-
 export type ProjectRuntime = {
   projectSessionId: string;
   chatSessionId: string;
   connected: Ref<boolean>;
-  // When the WS disconnects, the UI may miss task status transitions.
-  // Mark the runtime as needing a resync on the next successful connect.
-  needsTaskResync: boolean;
   needsChatSync: boolean;
   syncInProgress: boolean;
   syncGeneration: number;
@@ -177,11 +166,7 @@ export type ProjectRuntime = {
   modelId: Ref<string>;
   modelReasoningEffort: Ref<string>;
   activeThreadId: Ref<string | null>;
-  queueStatus: Ref<TaskQueueStatus | null>;
   workspacePath: Ref<string>;
-  tasks: Ref<Task[]>;
-  selectedId: Ref<string | null>;
-  runBusyIds: Ref<Set<string>>;
   busy: Ref<boolean>;
   inputLocked: Ref<boolean>;
   laneStatus: Ref<LaneStatus | null>;
@@ -199,6 +184,12 @@ export type ProjectRuntime = {
     ExecutePreviewState
   >;
   executeOrder: string[];
+  /** Identity and ordering metadata for the single visible command block. */
+  latestExecuteKey?: string;
+  latestExecuteSequence?: number;
+  latestExecuteTimestamp?: number;
+  /** Command identities superseded during the current turn. */
+  retiredExecuteKeys: Set<string>;
   seenCommandIds: Set<string>;
   /** Last absolute end offset observed for each assistant stream. */
   streamEndOffsets?: Map<string, number>;
@@ -223,8 +214,6 @@ export type ProjectRuntime = {
   noticeTimer: number | null;
   liveActivity: ReturnType<typeof createLiveActivityWindow>;
   liveActivityTtlTimer: number | null;
-  startedTaskIds: Set<string>;
-  taskChatBufferByTaskId: Map<string, TaskChatBuffer>;
 };
 
 export type PathValidateResponse = {

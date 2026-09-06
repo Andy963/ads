@@ -1,6 +1,6 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
-import type { ModelConfig } from "../tasks/types.js";
+import type { ModelConfig } from "./modelConfigTypes.js";
 import { modelConfigScopesOverlap } from "./modelConfigScope.js";
 
 function parseJson(value: unknown): Record<string, unknown> | null {

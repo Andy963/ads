@@ -8,7 +8,6 @@ import { SchedulerRuntime } from "../../server/scheduler/runtime.js";
 import type { ScheduleSpec } from "../../server/scheduler/scheduleSpec.js";
 import { ScheduleStore } from "../../server/scheduler/store.js";
 import { resetDatabaseForTests } from "../../server/storage/database.js";
-import { TaskStore } from "../../server/tasks/store.js";
 import { resetStateDatabaseForTests } from "../../server/state/database.js";
 import { onTaskTerminalEvent } from "../../server/web/taskNotifications/taskNotificationDispatcher.js";
 
@@ -259,8 +258,6 @@ describe("scheduler/runtime-liteque", () => {
     assert.equal(run?.status, "completed");
     assert.equal(run?.result, "done");
 
-    const tasksInStore = new TaskStore({ workspacePath: tmpDir }).listTasks();
-    assert.equal(tasksInStore.length, 0);
   });
 
   it("forwards an explicit Telegram schedule target in terminal events", async () => {
@@ -399,8 +396,6 @@ describe("scheduler/runtime-liteque", () => {
     const run = store.listRuns(schedule.id, { limit: 1 })[0];
     assert.ok(run);
     assert.equal(run?.status, "completed");
-    const tasksInStore = new TaskStore({ workspacePath: tmpDir }).listTasks();
-    assert.equal(tasksInStore.length, 0);
   });
 
   it("freezes the queued run prompt before execution even if the schedule spec changes later", async () => {
@@ -439,8 +434,6 @@ describe("scheduler/runtime-liteque", () => {
     const queuedRun = store.getRunByExternalId(externalId);
     assert.ok(queuedRun);
     assert.equal(queuedRun?.status, "queued");
-    const tasksInStore = new TaskStore({ workspacePath: tmpDir }).listTasks();
-    assert.equal(tasksInStore.length, 0);
 
     const queuedSchedule = store.getSchedule(schedule.id);
     assert.ok(queuedSchedule);

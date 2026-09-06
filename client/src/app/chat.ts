@@ -3,7 +3,7 @@ import { watch } from "vue";
 import { finalizeStreamingOnDisconnect, mergeHistoryFromServer, normalizeTurnSemanticOrder } from "../lib/chat_sync";
 import { ingestCommandActivity, ingestExploredActivity } from "../lib/live_activity";
 
-import type { AppContext, BufferedTaskChatEvent, ChatItem, IncomingImage, ProjectRuntime, QueuedPrompt } from "./controller";
+import type { AppContext, ChatItem, IncomingImage, ProjectRuntime, QueuedPrompt } from "./controller";
 import { createExecuteActions } from "./chatExecute";
 import { findFirstLiveIndex, findLastLiveIndex, isLiveMessageId, LIVE_ACTIVITY_ID, LIVE_MESSAGE_IDS, LIVE_STEP_ID } from "./chatLive";
 export { LIVE_ACTIVITY_ID, LIVE_MESSAGE_IDS, LIVE_STEP_ID } from "./chatLive";
@@ -16,8 +16,6 @@ import {
   type PersistedPrompt,
 } from "./outbox";
 
-export const TASK_CHAT_BUFFER_TTL_MS = 5 * 60_000;
-export const TASK_CHAT_BUFFER_MAX_EVENTS = 64;
 type UploadedImageAttachment = {
   id: string;
   url: string;
@@ -732,66 +730,6 @@ export function createChatActions(ctx: AppContext) {
     pushMessageBeforeLive({ role: "assistant", kind: "text", content: text, ts: (Number.isFinite(ts) && (ts as number) > 0) ? Math.floor(ts as number) : Date.now() }, state);
   };
 
-  const pruneTaskChatBuffer = (rt: ProjectRuntime): void => {
-    const now = Date.now();
-    for (const [taskId, entry] of rt.taskChatBufferByTaskId.entries()) {
-      if (!taskId) {
-        rt.taskChatBufferByTaskId.delete(taskId);
-        continue;
-      }
-      if (entry.events.length === 0 || now - entry.firstTs > TASK_CHAT_BUFFER_TTL_MS) {
-        rt.taskChatBufferByTaskId.delete(taskId);
-      }
-    }
-  };
-
-  const bufferTaskChatEvent = (taskId: string, event: BufferedTaskChatEvent, rt: ProjectRuntime): void => {
-    const id = String(taskId ?? "").trim();
-    if (!id) return;
-    pruneTaskChatBuffer(rt);
-    const existing = rt.taskChatBufferByTaskId.get(id);
-    if (!existing) {
-      rt.taskChatBufferByTaskId.set(id, { firstTs: Date.now(), events: [event] });
-      return;
-    }
-    const nextEvents = [...existing.events, event].slice(-TASK_CHAT_BUFFER_MAX_EVENTS);
-    rt.taskChatBufferByTaskId.set(id, { firstTs: existing.firstTs, events: nextEvents });
-  };
-
-  const markTaskChatStarted = (taskId: string, rt: ProjectRuntime): void => {
-    const id = String(taskId ?? "").trim();
-    if (!id) return;
-    if (!rt.startedTaskIds.has(id)) {
-      rt.startedTaskIds.add(id);
-    }
-    const buffered = rt.taskChatBufferByTaskId.get(id);
-    if (!buffered || buffered.events.length === 0) return;
-    rt.taskChatBufferByTaskId.delete(id);
-
-    for (const ev of buffered.events) {
-      if (ev.kind === "message") {
-        if (ev.role === "assistant") {
-          finalizeAssistant(ev.content, rt);
-        } else {
-      pushMessageBeforeLive({ role: ev.role, kind: "text", content: ev.content, ts: Date.now() }, rt);
-        }
-        continue;
-      }
-      if (ev.kind === "delta") {
-        if (ev.source === "step") {
-          upsertStepLiveDelta(ev.delta, rt);
-        } else {
-          upsertStreamingDelta(ev.delta, rt);
-        }
-        continue;
-      }
-      if (ev.kind === "command") {
-        ingestCommand(ev.command, rt, null);
-        continue;
-      }
-    }
-  };
-
   return {
     isLiveMessageId,
     findFirstLiveIndex,
@@ -833,9 +771,6 @@ export function createChatActions(ctx: AppContext) {
     clearStepLive,
     sealActiveStreamingAssistant,
     finalizeAssistant,
-    pruneTaskChatBuffer,
-    bufferTaskChatEvent,
-    markTaskChatStarted,
   };
 }
 

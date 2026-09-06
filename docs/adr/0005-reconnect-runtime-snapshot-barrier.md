@@ -16,7 +16,7 @@ Without an explicit barrier, an unsequenced live delta can be applied before the
 2. Persist active command snapshots as coalesced `command_snapshot` rows. Each command identity has absolute output offsets, revisions, and a stable event identity. Snapshots remain available through command completion and are removed only after the enclosing result or error.
 3. Persist assistant text as phase-scoped `delta_snapshot` rows. A command or phase-complete event seals the current assistant phase before its own sequence is allocated.
 4. Add `afterSeq` to live delta frames. The client sequencer holds barriered frames until the cursor reaches the barrier and holds unbarriered frames until catch-up completes. Bootstrap runtime snapshots are applied after the baseline history and catch-up events.
-5. Use a visible-block whitelist: user messages, assistant text, execute blocks, and terminal/error/divider messages are renderable. Thought, plan, and patch records remain accepted as internal or supplementary inputs; patches may be folded into an assistant explanation but never create a standalone chat block.
+5. Use a visible-block whitelist: user messages, assistant text, execute blocks, patches, and terminal/error/divider messages are renderable. Thought, plan, and todo records are rejected at the backend event boundary and ignored during history replay; they never create a standalone chat block.
 
 ## Consequences
 

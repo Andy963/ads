@@ -58,7 +58,6 @@ export function buildWelcomePayload(args: {
   bootstrapHistory: boolean;
   completedClientMessageIds: string[];
   latestSeq?: number;
-  taskLatestSeq?: number;
   state: WsBootstrapState;
 }): Record<string, unknown> {
   return {
@@ -71,7 +70,6 @@ export function buildWelcomePayload(args: {
     bootstrapHistory: args.bootstrapHistory,
     completedClientMessageIds: args.completedClientMessageIds,
     ...(typeof args.latestSeq === "number" ? { latestSeq: args.latestSeq } : {}),
-    ...(typeof args.taskLatestSeq === "number" ? { taskLatestSeq: args.taskLatestSeq } : {}),
     ...(typeof args.state.laneGeneration === "number" ? { laneGeneration: args.state.laneGeneration } : {}),
     threadId: args.state.threadId,
     effectiveModel: args.state.effectiveState.model,

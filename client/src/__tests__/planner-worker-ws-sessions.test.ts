@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
-import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
+import type { ModelConfig } from "../api/types";
 import { createAppController } from "../app/controller";
 
 type GetImpl = (url: string) => Promise<unknown>;
@@ -41,7 +41,6 @@ vi.mock("../api/ws", () => {
     onOpen?: () => void;
     onClose?: (ev: { code: number; reason?: string }) => void;
     onError?: () => void;
-    onTaskEvent?: (payload: unknown) => void;
     onMessage?: (msg: unknown) => void;
     send = vi.fn();
 
@@ -113,10 +112,6 @@ describe("Lane websocket sessions", () => {
 
     getImpl = async (url: string) => {
       if (url === "/api/models") return [] satisfies ModelConfig[];
-      if (url.includes("/api/task-queue/status")) {
-        return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
-      }
-      if (url.startsWith("/api/tasks")) return [] satisfies Task[];
       if (url.startsWith("/api/paths/validate")) return { ok: false };
       return {};
     };
@@ -247,7 +242,7 @@ describe("Lane websocket sessions", () => {
     wrapper.unmount();
   });
 
-  it("shows blocked resume attempts as error messages in the target lane", async () => {
+  it("suppresses resume attempts while lane input is locked", async () => {
     const { wrapper, controller } = await mountController();
 
     const workerRt = controller.getRuntime("default");
@@ -255,7 +250,8 @@ describe("Lane websocket sessions", () => {
     const workerWs = wsByChatSessionId.get("main");
     const plannerWs = wsByChatSessionId.get("planner");
 
-    workerRt.queueStatus.value = { enabled: true, running: true, ready: true, streaming: false } satisfies TaskQueueStatus;
+    workerRt.inputLocked.value = true;
+    plannerRt.inputLocked.value = true;
 
     await controller.resumeTaskThread();
     await controller.resumePlannerThread();
@@ -263,14 +259,6 @@ describe("Lane websocket sessions", () => {
 
     expect(workerWs.send).not.toHaveBeenCalledWith("task_resume");
     expect(plannerWs.send).not.toHaveBeenCalledWith("task_resume");
-    expect(workerRt.laneStatus.value).toEqual({
-      kind: "error",
-      message: "任务执行中，无法恢复",
-    });
-    expect(plannerRt.laneStatus.value).toEqual({
-      kind: "error",
-      message: "任务执行中，无法恢复",
-    });
     wrapper.unmount();
   });
 

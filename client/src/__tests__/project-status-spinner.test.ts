@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { shallowMount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
-import type { ModelConfig, TaskQueueStatus } from "../api/types";
+import type { ModelConfig } from "../api/types";
 
 type GetImpl = (url: string) => Promise<unknown>;
 
@@ -38,7 +38,6 @@ vi.mock("../api/ws", () => {
     onOpen?: () => void;
     onClose?: (ev: { code: number; reason?: string }) => void;
     onError?: () => void;
-    onTaskEvent?: (payload: unknown) => void;
     onMessage?: (msg: unknown) => void;
 
     constructor(_: { sessionId: string; chatSessionId?: string }) {}
@@ -78,9 +77,6 @@ describe("project status spinner", () => {
   beforeEach(() => {
     getImpl = async (url: string) => {
       if (url === "/api/models") return [] satisfies ModelConfig[];
-      if (url.includes("/api/task-queue/status"))
-        return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
-      if (url.startsWith("/api/tasks")) return [] satisfies Task[];
       if (url.startsWith("/api/paths/validate")) return { ok: false };
       return {};
     };
@@ -91,7 +87,7 @@ describe("project status spinner", () => {
     vi.clearAllMocks();
   });
 
-  it("shows spinner while a common conversation is in progress, even when no task is running", async () => {
+  it("shows spinner while a conversation is in progress", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await settleUi(wrapper);
@@ -99,8 +95,7 @@ describe("project status spinner", () => {
     const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
     expect(pid).not.toBe("");
 
-    const rt = (wrapper.vm as any).getRuntime(pid) as { busy: { value: boolean }; tasks: { value: Task[] } };
-    rt.tasks.value = [];
+    const rt = (wrapper.vm as any).getRuntime(pid) as { busy: { value: boolean } };
     rt.busy.value = false;
     await settleUi(wrapper);
 

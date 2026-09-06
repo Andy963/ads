@@ -48,6 +48,7 @@ type ActiveCommand = {
   endOffset: number;
   revision: number;
   startedAt: number;
+  lastUpdatedAt: number;
   status?: string;
   exitCode?: number;
   terminal: boolean;
@@ -108,12 +109,12 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 /**
- * Coalesces command output into one durable runtime row per command identity.
+ * Coalesces command output into one durable runtime row for the newest command.
  *
- * Rows survive individual command completion and are removed only after the
- * enclosing result/error. This lets a reconnect restore every command block
- * from one still-running turn. Identity handling differs deliberately for
- * modern and legacy producers:
+ * The row survives individual command completion and is removed only after the
+ * enclosing result/error. This lets a reconnect restore the one command block
+ * from a still-running turn. Identity handling differs deliberately for modern
+ * and legacy producers:
  *
  * - an explicit identity is authoritative;
  * - an id plus command is stable, while the same id with another command gets
@@ -132,54 +133,75 @@ export function createCommandSnapshotCoalescer(args: {
   const active = new Map<string, ActiveCommand>();
   const legacyTracks = new Map<string, LegacyTrack>();
   const explicitIdentities = new Map<string, string>();
+  const retiredIdentities = new Set<string>();
   let anonymousCounter = 0;
   let hydrated = false;
 
   const hydrate = (): void => {
     if (hydrated || !args.hydrate || !args.store.readCoalesced) return;
     hydrated = true;
-    for (const row of args.store.readCoalesced({
+    const rows = args.store.readCoalesced({
       namespace: args.namespace,
       laneKey: args.laneKey,
       type: COMMAND_SNAPSHOT_EVENT_TYPE,
-    })) {
+    });
+    const liveRows = rows.filter((row) => row.payload.active !== false && commandFromPayload(row.payload) !== null);
+    const latestRow = liveRows
+      .slice()
+      .sort((left, right) => (Number(left.seq) || 0) - (Number(right.seq) || 0))
+      .at(-1);
+    for (const row of liveRows) {
+      if (row !== latestRow && row.eventId) {
+        args.store.deleteCoalesced({
+          namespace: args.namespace,
+          laneKey: args.laneKey,
+          type: COMMAND_SNAPSHOT_EVENT_TYPE,
+          eventId: row.eventId,
+        });
+      }
+    }
+    if (latestRow) {
+      const row = latestRow;
       const command = commandFromPayload(row.payload);
-      if (row.payload.active === false || command === null) continue;
-      const identity = String(command.identity ?? command.id ?? "").trim();
-      const commandLine = String(command.command ?? "").trim();
-      if (!identity || !commandLine) continue;
-      const output = String(command.output ?? "").slice(-COMMAND_SNAPSHOT_MAX_CHARS);
-      const endOffset = readOffset(command.endOffset) ?? output.length;
-      const startOffset = readOffset(command.startOffset) ?? Math.max(0, endOffset - output.length);
-      const id = String(command.id ?? "").trim();
-      const status = String(command.status ?? "").trim() || undefined;
-      const terminal = isTerminalStatus(status);
-      const eventId = String(row.eventId ?? commandEventId(identity)).trim() || commandEventId(identity);
-      const entry: ActiveCommand = {
-        eventId,
-        identity,
-        id,
-        command: commandLine,
-        output,
-        startOffset,
-        endOffset,
-        revision: Math.max(1, Math.floor(Number(command.revision) || row.revision || 1)),
-        startedAt: normalizeTimestamp(command.ts, () => row.ts || now()),
-        status,
-        exitCode: isFiniteNumber(command.exit_code) ? command.exit_code : undefined,
-        terminal,
-        snapshotSeq: Number.isFinite(row.seq) && row.seq > 0 ? Math.floor(row.seq) : null,
-        legacyKey: `${id}\u0000${commandLine}`,
-      };
-      active.set(identity, entry);
-      legacyTracks.set(entry.legacyKey, {
-        identity,
-        terminal,
-        sawOutput: Boolean(output),
-        endOffset,
-        lastOutput: output,
-      });
-      if (id) explicitIdentities.set(entry.legacyKey, identity);
+      if (command) {
+        const identity = String(command.identity ?? command.id ?? "").trim();
+        const commandLine = String(command.command ?? "").trim();
+        if (identity && commandLine) {
+          const output = String(command.output ?? "").slice(-COMMAND_SNAPSHOT_MAX_CHARS);
+          const endOffset = readOffset(command.endOffset) ?? output.length;
+          const startOffset = readOffset(command.startOffset) ?? Math.max(0, endOffset - output.length);
+          const id = String(command.id ?? "").trim();
+          const status = String(command.status ?? "").trim() || undefined;
+          const terminal = isTerminalStatus(status);
+          const eventId = String(row.eventId ?? commandEventId(identity)).trim() || commandEventId(identity);
+          const entry: ActiveCommand = {
+            eventId,
+            identity,
+            id,
+            command: commandLine,
+            output,
+            startOffset,
+            endOffset,
+            revision: Math.max(1, Math.floor(Number(command.revision) || row.revision || 1)),
+            startedAt: normalizeTimestamp(command.ts, () => row.ts || now()),
+            lastUpdatedAt: normalizeTimestamp(row.ts, () => now()),
+            status,
+            exitCode: isFiniteNumber(command.exit_code) ? command.exit_code : undefined,
+            terminal,
+            snapshotSeq: Number.isFinite(row.seq) && row.seq > 0 ? Math.floor(row.seq) : null,
+            legacyKey: `${id}\u0000${commandLine}`,
+          };
+          active.set(identity, entry);
+          legacyTracks.set(entry.legacyKey, {
+            identity,
+            terminal,
+            sawOutput: Boolean(output),
+            endOffset,
+            lastOutput: output,
+          });
+          if (id) explicitIdentities.set(entry.legacyKey, identity);
+        }
+      }
     }
   };
 
@@ -251,7 +273,27 @@ export function createCommandSnapshotCoalescer(args: {
     const identity = explicitIdentity ?? resolveLegacyIdentity(commandLine, outputDelta, explicitStart, explicitEnd, terminal);
     const legacyKey = `${id}\u0000${commandLine}`;
     const timestamp = normalizeTimestamp(frame.ts, now);
+    if (retiredIdentities.has(identity)) return null;
+    const current = [...active.values()][0];
+    if (current && current.identity !== identity) {
+      // Only the newest command is reconnectable. A late update for an older
+      // identity must not replace the current snapshot.
+      if (timestamp < current.lastUpdatedAt) {
+        return null;
+      }
+      for (const old of active.values()) {
+        retiredIdentities.add(old.identity);
+        args.store.deleteCoalesced({
+          namespace: args.namespace,
+          laneKey: args.laneKey,
+          type: COMMAND_SNAPSHOT_EVENT_TYPE,
+          eventId: old.eventId,
+        });
+      }
+      active.clear();
+    }
     const existing = active.get(identity);
+    if (existing && timestamp < existing.lastUpdatedAt) return null;
     const entry: ActiveCommand = existing ?? {
       eventId: commandEventId(identity),
       identity,
@@ -262,6 +304,7 @@ export function createCommandSnapshotCoalescer(args: {
       endOffset: explicitStart ?? 0,
       revision: 0,
       startedAt: timestamp,
+      lastUpdatedAt: timestamp,
       terminal: false,
       snapshotSeq: null,
       legacyKey,
@@ -315,6 +358,7 @@ export function createCommandSnapshotCoalescer(args: {
     }
 
     if (!changed && existing) {
+      existing.lastUpdatedAt = Math.max(existing.lastUpdatedAt, timestamp);
       const track = legacyTracks.get(legacyKey);
       if (track) {
         track.terminal = entry.terminal;
@@ -333,6 +377,7 @@ export function createCommandSnapshotCoalescer(args: {
     }
 
     entry.revision = Math.max(1, entry.revision + 1);
+    entry.lastUpdatedAt = Math.max(entry.lastUpdatedAt, timestamp);
     active.set(identity, entry);
     legacyTracks.set(legacyKey, {
       identity,
@@ -401,6 +446,7 @@ export function createCommandSnapshotCoalescer(args: {
     active.clear();
     legacyTracks.clear();
     explicitIdentities.clear();
+    retiredIdentities.clear();
     hydrated = true;
   };
 

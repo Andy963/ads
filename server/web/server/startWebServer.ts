@@ -249,10 +249,7 @@ export async function startWebServer(): Promise<void> {
   const getPlannerWorkspaceLock = laneResources.planner.getWorkspaceLock;
   const syncEventStore = new SyncEventStore({ stateDbPath });
   const laneGenerationStore = new WebLaneGenerationStore({ stateDbPath });
-  const wsHub = createWebSocketHub({
-    syncEventStore,
-    laneGenerationStore,
-  });
+  const wsHub = createWebSocketHub();
   const workspaceContext = createWorkspaceContextResolver({ workspaceRoot, allowedDirs });
 
   const scheduleCompiler = new AgentScheduleCompiler();

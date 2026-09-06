@@ -12,7 +12,7 @@ async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Pr
 }
 
 describe("execute preview queue ordering", () => {
-  it("keeps insertion order stable even when older commands receive later output, and renders every block", async () => {
+  it("keeps only the newest command block when older commands receive later output", async () => {
     const rt = {
       messages: ref([] as Array<any>),
       executePreviewByKey: new Map<string, any>(),
@@ -42,7 +42,7 @@ describe("execute preview queue ordering", () => {
     upsertExecuteBlock("k2", "cmd-2", "tail-2\n", rt);
 
     const executeMessages = rt.messages.value.filter((m: any) => m.kind === "execute");
-    expect(executeMessages.map((m: any) => m.command)).toEqual(["cmd-1", "cmd-2", "cmd-3", "cmd-4"]);
+    expect(executeMessages.map((m: any) => m.command)).toEqual(["cmd-4"]);
 
     const wrapper = mount(MainChat, {
       props: {
@@ -62,13 +62,8 @@ describe("execute preview queue ordering", () => {
 
     await settleUi(wrapper);
 
-    expect(wrapper.findAll(".execute-block")).toHaveLength(4);
-    expect(wrapper.findAll(".execute-cmd").map((node) => node.text())).toEqual([
-      "cmd-1",
-      "cmd-2",
-      "cmd-3",
-      "cmd-4",
-    ]);
+    expect(wrapper.findAll(".execute-block")).toHaveLength(1);
+    expect(wrapper.findAll(".execute-cmd").map((node) => node.text())).toEqual(["cmd-4"]);
 
     expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
 

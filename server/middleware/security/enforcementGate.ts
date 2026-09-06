@@ -1,5 +1,5 @@
-import { createLogger, type Logger } from "../utils/logger.js";
-import { findSecurityViolation } from "../middleware/builtin/globalRulesMiddleware.js";
+import { createLogger, type Logger } from "../../utils/logger.js";
+import { findSecurityViolation } from "../builtin/globalRulesMiddleware.js";
 
 export type EnforcementDecision = "allow" | "require_approval" | "deny";
 export type EnforcementMode = "observe" | "enforce";
@@ -46,7 +46,7 @@ export interface RuleEnforcementGateOptions {
  * safety violation is always effective, including when mode is observe.
  */
 export function createRuleEnforcementGate(options: RuleEnforcementGateOptions = {}) {
-  const logger = options.logger ?? createLogger("RuleGate");
+  const logger = options.logger ?? createLogger("SecurityGate");
   const getMode = (): EnforcementMode => options.mode ?? resolveEnforcementMode();
 
   const evaluate = (request: EnforcementRequest): EnforcementResult => {

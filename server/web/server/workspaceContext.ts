@@ -15,8 +15,8 @@ type WorkspaceContextOptions = {
 
 /**
  * Resolves workspace-scoped Web resources without materializing the retired
- * TaskQueue context. Attachment persistence still uses the shared workspace
- * database, but task execution state is intentionally not opened here.
+ * Attachment persistence still uses the shared workspace database; retired
+ * task execution state is intentionally not opened here.
  */
 export function createWorkspaceContextResolver(args: WorkspaceContextOptions): {
   resolveWorkspaceRoot: (url: URL) => string;

@@ -91,6 +91,20 @@ function reasoningEvent(text: string) {
   };
 }
 
+function liveStepEvent(text: string) {
+  return {
+    phase: "analysis",
+    title: "Provider live step",
+    timestamp: Date.now(),
+    delta: text,
+    liveStep: true,
+    raw: {
+      type: "item.updated",
+      item: { type: "reasoning", id: "reasoning-summary-1", text, summary: true },
+    },
+  };
+}
+
 describe("web/server/ws/workerPromptHandler", () => {
   it("slices cumulative responding text independently for each agent message item", () => {
     const { emit, sent } = createHarness();
@@ -135,7 +149,7 @@ describe("web/server/ws/workerPromptHandler", () => {
     assert.equal(sent.filter((payload) => (payload as { type?: unknown }).type === "command").length, 3);
   });
 
-  it("keeps only the latest substantive step snapshot without mixing it into command history", () => {
+  it("forwards only provider-authored live-step snapshots without mixing them into command history", () => {
     const { emit, handler, history, sent } = createHarness();
 
     emit({
@@ -145,6 +159,7 @@ describe("web/server/ws/workerPromptHandler", () => {
       timestamp: 1,
       raw: { type: "item.started", item: { type: "tool_call" } },
     });
+    emit(liveStepEvent("I will inspect the workspace first."));
     emit(commandEvent({ type: "item.started", id: "cmd-1", command: "npm test", status: "inProgress" }));
     emit({
       phase: "editing",
@@ -153,8 +168,9 @@ describe("web/server/ws/workerPromptHandler", () => {
       timestamp: 2,
       raw: { type: "item.started", item: { type: "file_change" } },
     });
+    emit(liveStepEvent("Now I will update the failing check."));
 
-    assert.equal(handler.getStepTraceText(), "[editing] Updating file: src/index.ts\n");
+    assert.equal(handler.getStepTraceText(), "Now I will update the failing check.");
     const stepDeltas = sent
       .filter((payload) => {
         const item = payload as { type?: unknown; source?: unknown };
@@ -162,15 +178,15 @@ describe("web/server/ws/workerPromptHandler", () => {
       })
       .map((payload) => (payload as { delta?: unknown }).delta);
     assert.deepEqual(stepDeltas, [
-      "[tool] Inspecting workspace: bash\n",
-      "[editing] Updating file: src/index.ts\n",
+      "I will inspect the workspace first.",
+      "Now I will update the failing check.",
     ]);
     assert.equal(sent.filter((payload) => (payload as { type?: unknown }).type === "command").length, 1);
     assert.deepEqual(history, []);
   });
 
-  it("keeps incremental reasoning classified as noise and preserves the completion snapshot", () => {
-    const { emit, handler, sent } = createHarness();
+  it("drops reasoning events without emitting or persisting them", () => {
+    const { emit, handler, sent, history, upserts } = createHarness();
 
     emit({
       phase: "tool",
@@ -182,17 +198,12 @@ describe("web/server/ws/workerPromptHandler", () => {
     emit(reasoningEvent("first reasoning"));
     emit(reasoningEvent("first reasoning plus follow-up"));
 
-    const thoughtDeltas = sent
-      .filter((payload) => {
-        const item = payload as { type?: unknown; source?: unknown };
-        return item.type === "delta" && item.source === "thought";
-      })
-      .map((payload) => (payload as { delta?: unknown }).delta);
-    assert.deepEqual(thoughtDeltas, [
-      "first reasoning",
-      " plus follow-up",
-    ]);
-    assert.equal(handler.getThoughtText(), "first reasoning plus follow-up");
+    assert.equal(sent.some((payload) => {
+      const item = payload as { type?: unknown; source?: unknown };
+      return item.type === "delta" && (item.source === "thought" || item.source === "reasoning");
+    }), false);
+    assert.deepEqual(history, []);
+    assert.deepEqual(upserts, []);
 
     const stepDeltas = sent
       .filter((payload) => {
@@ -200,10 +211,9 @@ describe("web/server/ws/workerPromptHandler", () => {
         return item.type === "delta" && item.source === "step";
       })
       .map((payload) => (payload as { delta?: unknown }).delta);
-    assert.deepEqual(stepDeltas, [
-      "[tool] Inspecting workspace: bash\n",
-    ]);
-    assert.equal(handler.getStepTraceText(), "[tool] Inspecting workspace: bash\n");
+    assert.deepEqual(stepDeltas, []);
+    assert.equal(handler.getStepTraceText(), "");
+    assert.equal("getThoughtText" in handler, false);
   });
 
   it("forwards failed agent command completion without persisting replayable history", () => {

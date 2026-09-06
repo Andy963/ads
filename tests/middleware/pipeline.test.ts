@@ -14,7 +14,7 @@ import {
   type AdsMiddleware,
 } from "../../server/middleware/index.js";
 import { runAgentTurn } from "../../server/agents/turn.js";
-import { createRuleEnforcementGate } from "../../server/rules/enforcementGate.js";
+import { createRuleEnforcementGate } from "../../server/middleware/security/enforcementGate.js";
 
 describe("MiddlewarePipeline & Core Middlewares", () => {
   const baseCtx: TurnContext = {

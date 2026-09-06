@@ -6,9 +6,8 @@ import path from "node:path";
 
 import { AttachmentStore } from "../../server/attachments/store.js";
 import { ScheduleStore } from "../../server/scheduler/store.js";
-import { getDatabase, getWorkspacesDatabase, resetDatabaseForTests } from "../../server/storage/database.js";
+import { getDatabase, getWorkspacesDatabase, resetDatabaseForTests, resolveWorkspaceId } from "../../server/storage/database.js";
 import { migrateLegacyWorkspacesToCentralDb } from "../../server/storage/legacyWorkspaceMigration.js";
-import { TaskStore } from "../../server/tasks/store.js";
 import { deriveWorkspaceStateId } from "../../server/workspace/adsPaths.js";
 
 describe("storage/workspaces database", () => {
@@ -37,10 +36,16 @@ describe("storage/workspaces database", () => {
   });
 
   it("isolates task, schedule, and attachment reads by workspace", () => {
-    const taskA = new TaskStore({ workspacePath: workspaceA }).createTask({ id: "task-a", title: "A", prompt: "A" });
-    const storeB = new TaskStore({ workspacePath: workspaceB });
-    assert.equal(storeB.getTask(taskA.id), null);
-    assert.deepEqual(storeB.listTasks(), []);
+    const db = getWorkspacesDatabase(undefined, workspaceA);
+    const workspaceIdA = resolveWorkspaceId(workspaceA);
+    const workspaceIdB = resolveWorkspaceId(workspaceB);
+    db.prepare(
+      "INSERT INTO tasks (workspace_id, id, title, prompt, model, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(workspaceIdA, "task-a", "A", "A", "auto", "pending", 1);
+    assert.equal(
+      db.prepare("SELECT id FROM tasks WHERE workspace_id = ? AND id = ?").get(workspaceIdB, "task-a"),
+      undefined,
+    );
 
     const scheduleA = new ScheduleStore({ workspacePath: workspaceA }).createSchedule({
       instruction: "Run A",
@@ -89,22 +94,22 @@ describe("storage/workspaces database", () => {
     });
     assert.notEqual(attachmentB.id, attachmentA.id);
 
-    const conversationA = new TaskStore({ workspacePath: workspaceA }).upsertConversation({ id: "shared-conversation", title: "A" });
-    assert.equal(conversationA.title, "A");
-    assert.throws(
-      () => new TaskStore({ workspacePath: workspaceB }).upsertConversation({ id: "shared-conversation", title: "B" }),
-      /collision across workspaces/,
+    db.prepare(
+      "INSERT INTO conversations (workspace_id, id, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(workspaceIdA, "shared-conversation", "A", "active", 1, 1);
+    assert.equal(
+      (db.prepare("SELECT title FROM conversations WHERE workspace_id = ? AND id = ?").get(workspaceIdA, "shared-conversation") as { title?: string } | undefined)?.title,
+      "A",
     );
-    assert.equal(new TaskStore({ workspacePath: workspaceA }).getConversation("shared-conversation")?.title, "A");
+    assert.equal(
+      db.prepare("SELECT id FROM conversations WHERE workspace_id = ? AND id = ?").get(workspaceIdB, "shared-conversation"),
+      undefined,
+    );
 
     assert.throws(
-      () => storeB.addMessage({
-        taskId: taskA.id,
-        planStepId: null,
-        role: "user",
-        content: "cross-workspace reference",
-        createdAt: 1,
-      }),
+      () => db.prepare(
+        "INSERT INTO task_messages (workspace_id, task_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+      ).run(workspaceIdB, "task-a", "user", "cross-workspace reference", 1),
       /task_messages.task_id workspace mismatch/,
     );
   });
@@ -135,13 +140,22 @@ describe("storage/workspaces database", () => {
 
     assert.equal(first.length, 1);
     assert.deepEqual(second, []);
-    assert.equal(new TaskStore({ workspacePath: workspaceA }).getTask("legacy-task")?.title, "Legacy");
-    assert.deepEqual(new TaskStore({ workspacePath: workspaceA }).getReviewSettings(), {
-      automationMode: "human_gated",
-      maxReworkRounds: 1,
-      updatedAt: 2,
+    const migratedTask = central
+      .prepare("SELECT title FROM tasks WHERE workspace_id = ? AND id = ?")
+      .get(workspaceId, "legacy-task") as { title?: string } | undefined;
+    assert.equal(migratedTask?.title, "Legacy");
+    const reviewSettings = central
+      .prepare("SELECT automation_mode, max_rework_rounds, updated_at FROM review_settings WHERE workspace_id = ?")
+      .get(workspaceId) as { automation_mode?: string; max_rework_rounds?: number; updated_at?: number } | undefined;
+    assert.deepEqual(reviewSettings, {
+      automation_mode: "human_gated",
+      max_rework_rounds: 1,
+      updated_at: 2,
     });
-    assert.equal(new TaskStore({ workspacePath: workspaceA }).listReviewActionAudits("legacy-task").length, 1);
+    const auditCount = central
+      .prepare("SELECT COUNT(*) AS count FROM review_action_audits WHERE workspace_id = ? AND task_id = ?")
+      .get(workspaceId, "legacy-task") as { count?: number } | undefined;
+    assert.equal(auditCount?.count, 1);
     const after = fs.statSync(sourcePath);
     assert.equal(after.size, before.size);
     assert.equal(after.mtimeMs, before.mtimeMs);

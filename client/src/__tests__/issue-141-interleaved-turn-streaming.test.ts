@@ -90,8 +90,8 @@ describe("Issue #141: Interleaved turn streaming and elimination of monolithic b
     expect(allTextBubbles).toHaveLength(3);
     expect(allTextBubbles[2]?.content).toBe("Final delivery summary: All tests passed successfully.");
 
-    // Verify complete chronological narrative interleaving
-    // User -> Step 1 -> Command 1 -> Step 2 -> Command 2 -> Summary
+    // The visible contract retains assistant phase text and only the newest
+    // execute block for the active turn. Superseded command blocks are removed.
     const sequence = messages.map((m) => {
       if (m.role === "user") return "User";
       if (m.kind === "execute") return `Cmd:${m.command}`;
@@ -100,11 +100,12 @@ describe("Issue #141: Interleaved turn streaming and elimination of monolithic b
     expect(sequence).toEqual([
       "User",
       "Text:Step 1",
-      "Cmd:ls -la",
       "Text:Step 2",
       "Cmd:npm test",
       "Text:Final ",
     ]);
+    expect(messages.find((m) => m.kind === "execute" && m.command === "ls -la")).toBeUndefined();
+    expect(messages.filter((m) => m.kind === "execute")).toHaveLength(1);
   });
 
   it("does not render retired planCard in MainChat even if legacy plan messages exist", async () => {

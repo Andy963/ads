@@ -2,7 +2,6 @@ import { computed, ref, onBeforeUnmount, onMounted } from "vue";
 
 import { ApiClient } from "../api/client";
 import type { AuthMe, ModelConfig } from "../api/types";
-import { isProjectInProgress } from "../lib/project_status";
 
 import { createChatActions } from "./chat";
 import type { ChatActions } from "./chat";
@@ -15,14 +14,12 @@ import type { ProjectDeps } from "./projectsWs";
 import { createWebSocketActions } from "./projectsWs";
 
 export type {
-  BufferedTaskChatEvent,
   ChatItem,
   IncomingImage,
   PathValidateResponse,
   ProjectRuntime,
   ProjectTab,
   QueuedPrompt,
-  TaskChatBuffer,
   WorkspaceState,
 } from "./controllerTypes";
 
@@ -115,30 +112,18 @@ export function createAppContext() {
   const threadWarning = proxyRuntimeRef((rt) => rt.threadWarning);
   const activeThreadId = proxyRuntimeRef((rt) => rt.activeThreadId);
   const workspacePath = proxyRuntimeRef((rt) => rt.workspacePath);
-  const tasks = ref<unknown[]>([]);
-  const selectedId = ref<string | null>(null);
-  const runBusyIds = ref<Set<string>>(new Set());
-  const queueStatus = ref(null);
   const busy = proxyRuntimeRef((rt) => rt.busy);
   const messages = proxyRuntimeRef((rt) => rt.messages);
   const recentCommands = proxyRuntimeRef((rt) => rt.recentCommands);
   const pendingImages = proxyRuntimeRef((rt) => rt.pendingImages);
   const queuedPrompts = proxyRuntimeRef((rt) => rt.queuedPrompts);
 
-  const tasksBusy = computed(() => false);
   const agentBusy = computed(() => busy.value);
-  const pendingDeleteTask = computed(() => null);
   const apiAuthorized = computed(() => loggedIn.value);
 
   const runtimeOrActive = (rt?: ProjectRuntime): ProjectRuntime => rt ?? activeRuntime.value;
 
-  const runtimeTasksBusy = (_rt: ProjectRuntime): boolean => false;
-
-  const runtimeProjectInProgress = (rt: ProjectRuntime): boolean =>
-    isProjectInProgress({
-      taskStatuses: [],
-      conversationInProgress: rt.busy.value,
-    });
+  const runtimeProjectInProgress = (rt: ProjectRuntime): boolean => rt.busy.value;
 
   const runtimeAgentBusy = (rt: ProjectRuntime): boolean => rt.busy.value;
 
@@ -232,22 +217,15 @@ export function createAppContext() {
     wsError,
     threadWarning,
     activeThreadId,
-    queueStatus,
     workspacePath,
-    tasks,
-    selectedId,
-    runBusyIds,
     busy,
     messages,
     recentCommands,
     pendingImages,
     queuedPrompts,
-    tasksBusy,
     agentBusy,
-    pendingDeleteTask,
     apiAuthorized,
     runtimeOrActive,
-    runtimeTasksBusy,
     runtimeProjectInProgress,
     runtimeAgentBusy,
     updateIsMobile,
@@ -278,10 +256,8 @@ export function createAppController() {
   const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ChatActions, projectDeps);
 
   const ws = createWebSocketActions({ ...ctx, ...chat } as AppContext & ChatActions, {
-    onTaskEvent: () => {},
     updateProject: projects.updateProject,
     persistProjects: projects.persistProjects,
-    syncProjectState: async () => {},
   });
 
   laneDeps.connectWs = ws.connectWs;

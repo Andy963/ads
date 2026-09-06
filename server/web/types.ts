@@ -18,7 +18,6 @@ export interface PromptPayload {
 
 export interface WorkspaceState {
   path: string;
-  rules: string;
   modified: string[];
   branch?: string;
 }

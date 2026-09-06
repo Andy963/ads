@@ -10,7 +10,7 @@ import { PROJECT_ROOT } from "../utils/projectRoot.js";
 const GIT_MARKER = ".git";
 const WORKSPACE_CONFIG_FILE = "workspace.json";
 const TEMPLATE_ROOT_DIR = path.join(PROJECT_ROOT, "templates");
-const REQUIRED_TEMPLATE_FILES = ["instructions.md", "rules.md"];
+const REQUIRED_TEMPLATE_FILES = ["instructions.md"];
 const LEGACY_TEMPLATE_DIRS = ["nodes", "workflows"];
 const logger = createLogger("WorkspaceDetector");
 
@@ -116,11 +116,6 @@ function copyDefaultTemplates(workspaceRoot: string): void {
     fs.copyFileSync(srcPath, destPath);
   }
 
-  const workspaceRulesPath = resolveWorkspaceStatePath(workspaceRoot, "rules.md");
-  const defaultRulesPath = path.join(templatesRoot, "rules.md");
-  if (!existsSync(workspaceRulesPath) && existsSync(defaultRulesPath)) {
-    fs.copyFileSync(defaultRulesPath, workspaceRulesPath);
-  }
 }
 
 function findMarker(marker: string, startDir: string, maxDepth = 10): string | null {
@@ -214,14 +209,6 @@ export function getWorkspaceDbPath(workspace?: string): string {
   return dbPath;
 }
 
-export function getWorkspaceRulesDir(workspace?: string): string {
-  const root = resolveRequestedWorkspaceRoot(workspace);
-  migrateLegacyWorkspaceAdsIfNeeded(root);
-  const rulesDir = resolveWorkspaceStatePath(root, "rules");
-  fs.mkdirSync(rulesDir, { recursive: true });
-  return rulesDir;
-}
-
 export function isWorkspaceInitialized(workspace?: string): boolean {
   const root = resolveRequestedWorkspaceRoot(workspace);
   migrateLegacyWorkspaceAdsIfNeeded(root);
@@ -276,12 +263,6 @@ export function getWorkspaceInfo(workspace?: string): Record<string, unknown> {
     is_initialized: existsSync(configFile) || existsSync(legacyConfigFile),
     db_path: getWorkspaceDbPath(root),
   };
-
-  try {
-    info.rules_dir = getWorkspaceRulesDir(root);
-  } catch {
-    info.rules_dir = null;
-  }
 
   if (existsSync(resolvedConfigFile)) {
     try {

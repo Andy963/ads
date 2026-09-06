@@ -14,8 +14,8 @@ const MarkdownContentStub = defineComponent({
   template: `<div class="md">{{ content }}</div>`,
 });
 
-describe("thought card persistence", () => {
-  it("converts completed live-step reasoning into a persistent thought card on clearStepLive", () => {
+describe("visible step cleanup", () => {
+  it("removes the transient live step without creating a thought card", () => {
     const messages = ref<ChatItem[]>([
       { id: "u-1", role: "user", kind: "text", content: "hello" },
       { id: "live-step", role: "assistant", kind: "text", content: "Diagnosing repository layout and planning next action...", streaming: true },
@@ -44,16 +44,8 @@ describe("thought card persistence", () => {
     streaming.clearStepLive(fakeRt);
 
     expect(messages.value.find((m) => m.id === "live-step")).toBeUndefined();
-    const thought = messages.value.find((m) => m.kind === "thought");
-    expect(thought).toBeDefined();
-    expect(thought?.content).toBe("Diagnosing repository layout and planning next action...");
-    expect(thought?.role).toBe("assistant");
-    expect(thought?.streaming).toBe(false);
-
-    // Thought card is positioned before the assistant response
-    const thoughtIndex = messages.value.findIndex((m) => m.kind === "thought");
-    const assistantIndex = messages.value.findIndex((m) => m.id === "a-1");
-    expect(thoughtIndex).toBeLessThan(assistantIndex);
+    expect(messages.value.filter((m) => m.kind === "thought")).toHaveLength(0);
+    expect(messages.value.find((m) => m.id === "a-1")?.content).toBe("Here is the result");
   });
 
   it("keeps thought blocks internal and does not render standalone thought cards in MainChat", async () => {

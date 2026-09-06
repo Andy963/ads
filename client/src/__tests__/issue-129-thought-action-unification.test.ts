@@ -10,8 +10,8 @@ import { normalizeTurnSemanticOrder, getSemanticCardRank } from "../lib/chat_syn
 import type { ChatItem, ProjectRuntime } from "../app/controller";
 import MainChat from "../components/MainChat.vue";
 
-describe("Issue #129: Thought/Action decoupling, command ordering, and lane parity", () => {
-  it("streams cognitive reasoning into a dedicated thought card", () => {
+describe("Issue #129: Visible execution contract, command ordering, and lane parity", () => {
+  it("drops hidden reasoning and keeps provider-authored live-step text", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const rt = ctx.activeRuntime.value;
@@ -29,29 +29,26 @@ describe("Issue #129: Thought/Action decoupling, command ordering, and lane pari
 
     chat.pushMessageBeforeLive({ id: "u-1", role: "user", kind: "text", content: "Solve bug" }, rt);
 
-    // 1. Model streams reasoning with source: "thought"
+    // Reasoning is an internal provider event and must not become a chat item.
     handler({ type: "delta", source: "thought", delta: "First thinking step... " });
     handler({ type: "delta", source: "thought", delta: "Analyzing files..." });
 
-    const thoughtCard = rt.messages.value.find((m) => m.kind === "thought");
-    expect(thoughtCard).toBeDefined();
-    expect(thoughtCard?.role).toBe("assistant");
-    expect(thoughtCard?.streaming).toBe(true);
-    expect(thoughtCard?.content).toBe("First thinking step... Analyzing files...");
+    expect(rt.messages.value.some((m) => m.kind === "thought")).toBe(false);
 
-    // 2. Action traces ([tool] or [editing]) are NOT mixed into the thought card
-    handler({ type: "delta", source: "step", delta: "[editing] Updating file.ts\n" });
-    expect(thoughtCard?.content).not.toContain("[editing]");
+    // Provider-authored explanation is represented by one replaceable live-step block.
+    handler({ type: "delta", source: "step", delta: "I will update file.ts after checking the current contents.\n" });
+    expect(rt.messages.value.filter((m) => m.id === "live-step")).toHaveLength(1);
+    expect(rt.messages.value.find((m) => m.id === "live-step")?.content).toBe(
+      "I will update file.ts after checking the current contents.\n",
+    );
 
-    // 3. When turn completes, thought is finalized without action lines
+    // When the turn completes, the transient live-step is removed.
     chat.clearStepLive(rt);
-    const finalizedThought = rt.messages.value.find((m) => m.kind === "thought");
-    expect(finalizedThought?.streaming).toBe(false);
-    expect(finalizedThought?.content).toBe("First thinking step... Analyzing files...");
-    expect(rt.messages.value.some((m) => m.kind === "thought" && m.content.includes("[editing]"))).toBe(false);
+    expect(rt.messages.value.some((m) => m.kind === "thought" || m.kind === "plan")).toBe(false);
+    expect(rt.messages.value.find((m) => m.id === "live-step")).toBeUndefined();
   });
 
-  it("suppresses redundant [command] and command tool announcements so execute card is the active step", () => {
+  it("keeps provider explanation separate from the execute block", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const rt = ctx.activeRuntime.value;
@@ -69,10 +66,10 @@ describe("Issue #129: Thought/Action decoupling, command ordering, and lane pari
 
     chat.pushMessageBeforeLive({ id: "u-1", role: "user", kind: "text", content: "Run tests" }, rt);
 
-    // Attempt to announce command via step trace
-    handler({ type: "delta", source: "step", delta: "[command] npm test\n" });
-    // shouldIgnoreStepDelta suppresses redundant [command] announcement
-    expect(rt.messages.value.find((m) => m.id === "live-step")).toBeUndefined();
+    handler({ type: "delta", source: "step", delta: "I will run the test command now.\n" });
+    expect(rt.messages.value.find((m) => m.id === "live-step")?.content).toBe(
+      "I will run the test command now.\n",
+    );
 
     // Actual execute block arrives
     handler({
@@ -84,8 +81,8 @@ describe("Issue #129: Thought/Action decoupling, command ordering, and lane pari
     expect(executeItem).toBeDefined();
     expect(executeItem?.command).toBe("npm test");
     expect(executeItem?.streaming).toBe(true);
-    // Execute card is the sole active action step
-    expect(rt.messages.value.filter((m) => m.id === "live-step")).toHaveLength(0);
+    // The provider explanation remains above the execute block.
+    expect(rt.messages.value.filter((m) => m.id === "live-step")).toHaveLength(1);
   });
 
   it("strictly enforces natural hierarchy: User -> Plan -> Thought -> Execute -> Patch -> Assistant", () => {

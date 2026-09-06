@@ -27,7 +27,7 @@ import {
 } from "./connectionRuntime.js";
 import { resolveWsLaneResources, type WsLaneResources } from "./laneResources.js";
 import { preflightPersistAndAck } from "./preflight.js";
-import { resolveSharedWorkerSyncLaneKey, resolveSyncLaneKeys, resolveSyncNamespace } from "../sync/lane.js";
+import { resolveSyncLaneKeys, resolveSyncNamespace } from "../sync/lane.js";
 import { isStreamTerminalEvent, isTransientSyncEvent } from "../sync/eventClass.js";
 import { createDeltaStreamCoalescer } from "../sync/deltaStream.js";
 import { createCommandSnapshotCoalescer } from "../sync/commandSnapshot.js";
@@ -35,7 +35,7 @@ import { recordConversationMessage } from "../../../utils/conversationMessageRec
 import { WEB_WORKER_NAMESPACE } from "../start/webLaneResources.js";
 import { onTaskTerminalEvent } from "../../taskNotifications/taskNotificationDispatcher.js";
 
-type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number; sessionTokenHash?: string };
+type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number; sessionTokenHash?: string; isConnector?: boolean };
 
 type WsLaneSnapshot = {
   authUserId: string;
@@ -201,9 +201,8 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
             if (candidate.readyState !== 1) {
               continue;
             }
-            // 复核 session 是否仍然有效：握手时一次性鉴权，之后登出/吊销/过期的连接
-            // 仍可执行命令，故每个 ping tick 重新校验，失效则关闭（4401）。
-            if (auth.revalidateSession && candidate.sessionTokenHash) {
+            // Skip browser session revalidation for connector-authenticated sockets.
+            if (auth.revalidateSession && !candidate.isConnector && candidate.sessionTokenHash) {
               let stillValid = true;
               try {
                 stillValid = auth.revalidateSession(candidate.sessionTokenHash);
@@ -306,6 +305,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     aliveWs.isAlive = true;
     aliveWs.missedPongs = 0;
     aliveWs.sessionTokenHash = authResult.tokenHash;
+    aliveWs.isConnector = Boolean(authResult.connector);
     ws.on("pong", () => {
       aliveWs.isAlive = true;
       aliveWs.missedPongs = 0;
@@ -784,10 +784,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       historyStore: currentLane.historyStore,
       historyKey: currentLane.historyKey,
       latestSeq: state.syncEventStore?.getLatestSeqForLanes(currentLane.laneNamespace, currentLane.syncLaneKeys) ?? 0,
-      taskLatestSeq:
-        currentLane.chatSessionId === "planner"
-          ? 0
-          : state.syncEventStore?.getLatestSeq(WEB_WORKER_NAMESPACE, resolveSharedWorkerSyncLaneKey(sessionId)) ?? 0,
       laneGeneration: currentLane.laneGeneration,
       runtimeSnapshots: collectRuntimeSnapshots(currentLane),
     });
@@ -1001,10 +997,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
               historyStore: currentLane.historyStore,
               historyKey: currentLane.historyKey,
               latestSeq: state.syncEventStore?.getLatestSeqForLanes(currentLane.laneNamespace, currentLane.syncLaneKeys) ?? 0,
-              taskLatestSeq:
-                currentLane.chatSessionId === "planner"
-                  ? 0
-                  : state.syncEventStore?.getLatestSeq(WEB_WORKER_NAMESPACE, resolveSharedWorkerSyncLaneKey(sessionId)) ?? 0,
               laneGeneration: currentLane.laneGeneration,
               runtimeSnapshots: collectRuntimeSnapshots(currentLane),
             });

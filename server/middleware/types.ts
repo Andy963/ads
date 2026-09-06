@@ -1,6 +1,6 @@
 import type { ThreadItem } from "../agents/protocol/types.js";
 
-export type MiddlewareChannel = "web" | "telegram" | "task_queue";
+export type MiddlewareChannel = "web" | "telegram";
 
 export interface TurnContext {
   turnId: string;

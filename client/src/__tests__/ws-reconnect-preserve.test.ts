@@ -1418,7 +1418,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.busy.value).toBe(true);
     expect(rt.turnInFlight).toBe(true);
     expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toEqual(["Run tests"]);
-    expect(rt.inputLocked.value).toBe(true);
+    expect(rt.inputLocked.value).toBe(false);
     expect(rt.laneStatus.value?.message).toBe("上一轮仍在执行，正在等待后端结果…");
 
     lastWs!.onMessage?.({
@@ -1433,7 +1433,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
     expect(rt.busy.value).toBe(true);
     expect(rt.turnInFlight).toBe(true);
-    expect(rt.inputLocked.value).toBe(true);
+    expect(rt.inputLocked.value).toBe(false);
     expect(rt.laneStatus.value).toBeNull();
 
     lastWs!.onMessage?.({ type: "result", ok: true, output: "All tests passed", threadId: "thread-1" });
@@ -1465,7 +1465,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
     expect(rt.busy.value).toBe(true);
     expect(rt.turnInFlight).toBe(true);
-    expect(rt.inputLocked.value).toBe(true);
+    expect(rt.inputLocked.value).toBe(false);
     expect(rt.laneStatus.value).toEqual({ kind: "progress", message: "上一轮仍在执行，正在等待后端结果。" });
     expect(rt.messages.value.map((item: any) => item.content)).toEqual(["Run tests", "All tests passed"]);
     wrapper.unmount();

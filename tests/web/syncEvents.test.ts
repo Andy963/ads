@@ -7,12 +7,8 @@ import path from "node:path";
 import { resetStateDatabaseForTests } from "../../server/state/database.js";
 import { deriveProjectSessionId } from "../../server/web/server/projectSessionId.js";
 import { handleSyncRoutes } from "../../server/web/server/api/routes/sync.js";
-import {
-  resolveSharedWorkerSyncLaneKey,
-  resolveSyncLaneKey,
-} from "../../server/web/server/sync/lane.js";
+import { resolveSyncLaneKey } from "../../server/web/server/sync/lane.js";
 import { SyncEventStore } from "../../server/web/server/sync/store.js";
-import { createWebSocketHub } from "../../server/web/server/start/webSocketHub.js";
 import { WEB_WORKER_NAMESPACE } from "../../server/web/server/start/webLaneResources.js";
 
 type FakeRes = {
@@ -99,93 +95,19 @@ describe("web sync events", () => {
     assert.equal(payload.events[0]?.payload?.items?.[0]?.text, "restored");
   });
 
-  it("persists project task events even when no WebSocket client is online", () => {
-    const store = new SyncEventStore({ stateDbPath });
-    const hub = createWebSocketHub({
-      syncEventStore: store,
-    });
-    const sessionId = "project-session";
-
-    hub.broadcastToSession(sessionId, {
-      type: "task:event",
-      event: "task:updated",
-      data: { id: "task-1", status: "running" },
-    });
-    const result = store.readAfter({
-      namespace: WEB_WORKER_NAMESPACE,
-      laneKey: resolveSharedWorkerSyncLaneKey(sessionId),
-      afterSeq: 0,
-    });
-    assert.equal(result.events.length, 1);
-    assert.equal(result.events[0]?.type, "task:event");
-    assert.equal(result.events[0]?.payload.event, "task:updated");
-  });
-
-  it("rejects worker task sync requests from the planner lane", async () => {
-    const workspaceRoot = path.join(tmpDir, "planner-task-sync-workspace");
-    fs.mkdirSync(workspaceRoot);
-    const res = createRes();
-    const handled = await handleSyncRoutes(
-      {
-        req: { method: "GET" } as any,
-        res: res as any,
-        url: new URL("http://localhost/api/sync/events?sessionId=default&chatSessionId=planner&channel=tasks"),
-        pathname: "/api/sync/events",
-        auth: { userId: "u-1", username: "admin" },
-      },
-      {
-        syncEventStore: new SyncEventStore({ stateDbPath }),
-        defaultWorkspaceRoot: workspaceRoot,
-        resolveWorkspaceRoot: () => workspaceRoot,
-        workerHistoryStore: { get: () => [] },
-        plannerHistoryStore: { get: () => [] },
-      },
-    );
-
-    assert.equal(handled, true);
-    assert.equal(res.statusCode, 403);
-    assert.match(res.body, /only available to worker lanes/);
-  });
-
-  it("closes affected clients without broadcasting when the sync log append fails", () => {
-    const sent: string[] = [];
-    const closed: Array<{ code: number; reason: string }> = [];
-    const hub = createWebSocketHub({
-      syncEventStore: { append: () => null } as unknown as SyncEventStore,
-    });
-    const ws = {
-      readyState: 1,
-      send: (text: string) => sent.push(text),
-      close: (code: number, reason: string) => closed.push({ code, reason }),
-    } as any;
-    hub.clientMetaByWs.set(ws, {
-      historyKey: "u::project-session::main",
-      sessionId: "project-session",
-      chatSessionId: "main",
-      connectionId: "conn",
-      authUserId: "u",
-      sessionUserId: 1,
-    });
-
-    hub.broadcastToSession("project-session", { type: "task:event", event: "task:updated" });
-
-    assert.deepEqual(sent, []);
-    assert.deepEqual(closed, [{ code: 1011, reason: "sync persistence failed" }]);
-  });
-
   it("merges user and project lanes in sequence order", () => {
     const store = new SyncEventStore({ stateDbPath });
     const userLane = "user-lane";
-    const sharedLane = "shared-lane";
+    const secondLane = "second-lane";
     store.append({ namespace: WEB_WORKER_NAMESPACE, laneKey: userLane, type: "delta", payload: { type: "delta", delta: "A" } });
-    store.append({ namespace: WEB_WORKER_NAMESPACE, laneKey: sharedLane, type: "task:event", payload: { type: "task:event" } });
+    store.append({ namespace: WEB_WORKER_NAMESPACE, laneKey: secondLane, type: "result", payload: { type: "result" } });
 
     const result = store.readAfterLanes({
       namespace: WEB_WORKER_NAMESPACE,
-      laneKeys: [userLane, sharedLane],
+      laneKeys: [userLane, secondLane],
       afterSeq: 0,
     });
-    assert.deepEqual(result.events.map((event) => event.type), ["delta", "task:event"]);
+    assert.deepEqual(result.events.map((event) => event.type), ["delta", "result"]);
     assert.equal(result.truncated, false);
   });
 
@@ -200,43 +122,6 @@ describe("web sync events", () => {
     assert.equal(result.truncated, true);
     assert.equal(result.events.length, 2);
     assert.deepEqual(result.events.map((event) => event.payload.delta), ["B", "C"]);
-  });
-
-  it("keeps the task sync channel separate from chat snapshots", async () => {
-    const workspaceRoot = path.join(tmpDir, "truncated-workspace");
-    fs.mkdirSync(workspaceRoot);
-    const sessionId = deriveProjectSessionId(workspaceRoot);
-    const sharedLaneKey = resolveSharedWorkerSyncLaneKey(sessionId);
-    const store = new SyncEventStore({ stateDbPath, maxEventsPerLane: 1 });
-    store.append({ namespace: WEB_WORKER_NAMESPACE, laneKey: sharedLaneKey, type: "task:event", payload: { type: "task:event", event: "message:delta" } });
-    store.append({ namespace: WEB_WORKER_NAMESPACE, laneKey: sharedLaneKey, type: "task:event", payload: { type: "task:event", event: "task:completed" } });
-
-    const res = createRes();
-    await handleSyncRoutes(
-      {
-        req: { method: "GET" } as any,
-        res: res as any,
-        url: new URL("http://localhost/api/sync/events?sessionId=default&chatSessionId=main&channel=tasks&afterSeq=0"),
-        pathname: "/api/sync/events",
-        auth: { userId: "u-1", username: "admin" },
-      },
-      {
-        syncEventStore: store,
-        defaultWorkspaceRoot: workspaceRoot,
-        resolveWorkspaceRoot: () => workspaceRoot,
-        workerHistoryStore: { get: () => [] },
-        plannerHistoryStore: { get: () => [] },
-      },
-    );
-
-    assert.equal(res.statusCode, 200);
-    const payload = JSON.parse(res.body) as {
-      truncated: boolean;
-      snapshot?: { items?: Array<{ role?: string; text?: string }> };
-      events?: Array<{ type?: string; payload?: { type?: string; event?: string } }>;
-    };
-    assert.equal(payload.truncated, true);
-    assert.equal(payload.snapshot, null);
   });
 
   it("keeps a burst of ephemeral decoration from evicting conversation state", () => {

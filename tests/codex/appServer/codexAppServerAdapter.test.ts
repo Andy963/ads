@@ -211,7 +211,7 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
-  it("bridges structured turn plan updates as todo_list events", async () => {
+  it("does not bridge structured turn plan updates", async () => {
     const fake = buildFakeServer({
       autoReplies: {
         "thread/start": () => ({ thread: { id: "thread-plan" } }),
@@ -220,8 +220,8 @@ describe("CodexAppServerAdapter", () => {
     });
     const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
     const adapter = new CodexAppServerAdapter({ projectId: "plan-events", registry });
-    const rawEvents: unknown[] = [];
-    adapter.onEvent((event) => rawEvents.push(event.raw));
+    const events: Array<{ phase: string; title: string; detail?: string }> = [];
+    adapter.onEvent((event) => events.push({ phase: event.phase, title: event.title, detail: event.detail }));
 
     const sendPromise = adapter.send("execute the plan");
     await waitForRequestCount(fake, "turn/start", 1);
@@ -239,20 +239,12 @@ describe("CodexAppServerAdapter", () => {
     fake.notify("turn/completed", { threadId: "thread-plan", turn: { id: "turn-plan" } });
     await sendPromise;
 
-    const planEvent = rawEvents.find((event) => {
-      const raw = event as { type?: unknown; item?: { type?: unknown } };
-      return raw.type === "item.updated" && raw.item?.type === "todo_list";
-    }) as { item?: { items?: Array<{ text: string; status: string }> } } | undefined;
-    assert.deepEqual(planEvent?.item?.items, [
-      { text: "Inspect", status: "completed" },
-      { text: "Implement", status: "in_progress" },
-      { text: "Verify", status: "pending" },
-    ]);
+    assert.equal(events.some((event) => event.phase === "plan" || event.title.toLowerCase().includes("plan")), false);
 
     await registry.stopAll();
   });
 
-  it("bridges v2 plan, reasoning summary, and compaction notifications", async () => {
+  it("forwards provider reasoning summaries as live-step snapshots and drops plans", async () => {
     const fake = buildFakeServer({
       autoReplies: {
         "thread/start": () => ({ thread: { id: "thread-v2-events" } }),
@@ -261,8 +253,14 @@ describe("CodexAppServerAdapter", () => {
     });
     const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
     const adapter = new CodexAppServerAdapter({ projectId: "v2-events", registry });
-    const events: Array<{ phase: string; title: string; detail?: string }> = [];
-    adapter.onEvent((event) => events.push({ phase: event.phase, title: event.title, detail: event.detail }));
+    const events: Array<{ phase: string; title: string; detail?: string; delta?: string; liveStep?: boolean }> = [];
+    adapter.onEvent((event) => events.push({
+      phase: event.phase,
+      title: event.title,
+      detail: event.detail,
+      delta: event.delta,
+      liveStep: event.liveStep,
+    }));
 
     const sendPromise = adapter.send("exercise v2 events");
     await waitForRequestCount(fake, "turn/start", 1);
@@ -278,17 +276,30 @@ describe("CodexAppServerAdapter", () => {
       turnId: "turn-v2",
       itemId: "reasoning-v2",
       summaryIndex: 0,
-      delta: "Comparing the existing adapters",
+      delta: "Comparing ",
+    });
+    fake.notify("item/reasoning/summaryTextDelta", {
+      threadId: "thread-v2-events",
+      turnId: "turn-v2",
+      itemId: "reasoning-v2",
+      summaryIndex: 0,
+      delta: "the existing adapters",
+    });
+    fake.notify("item/reasoning/summaryTextDelta", {
+      threadId: "thread-v2-events",
+      turnId: "turn-v2",
+      itemId: "reasoning-v2",
+      summaryIndex: 1,
+      delta: "Running the verification command",
     });
     fake.notify("thread/compacted", { threadId: "thread-v2-events", turnId: "turn-v2" });
     fake.notify("turn/completed", { threadId: "thread-v2-events", turn: { id: "turn-v2" } });
     await sendPromise;
 
-    assert(events.some((event) => event.phase === "plan" && event.detail === "Inspect the workspace"));
-    assert(
-      events.some(
-        (event) => event.phase === "analysis" && event.title === "Reasoning summary" && event.detail === "Comparing the existing adapters",
-      ),
+    assert.equal(events.some((event) => event.phase === "plan" || event.title.toLowerCase().includes("plan")), false);
+    assert.deepEqual(
+      events.filter((event) => event.liveStep).map((event) => event.delta),
+      ["Comparing ", "Comparing the existing adapters", "Running the verification command"],
     );
     assert(events.some((event) => event.phase === "context" && event.title === "Context ready"));
 

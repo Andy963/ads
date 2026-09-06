@@ -3,9 +3,6 @@ import type {
   ChatItem,
   ChatPatch,
   ChatPatchFile,
-  ChatPlan,
-  ChatPlanItem,
-  ChatPlanItemStatus,
   LaneStatus,
   ProjectRuntime,
   ProjectTab,
@@ -174,7 +171,6 @@ export type WsMessageHandlerArgs = {
   upsertExecuteBlock: ChatActions["upsertExecuteBlock"];
   upsertLiveActivity: ChatActions["upsertLiveActivity"];
   upsertStepLiveDelta: ChatActions["upsertStepLiveDelta"];
-  upsertThoughtDelta?: ChatActions["upsertThoughtDelta"];
   upsertStreamingDelta: ChatActions["upsertStreamingDelta"];
   replaceStreamingText: ChatActions["replaceStreamingText"];
 };
@@ -206,12 +202,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     upsertExecuteBlock,
     upsertLiveActivity,
     upsertStepLiveDelta,
-    upsertThoughtDelta,
     upsertStreamingDelta,
     replaceStreamingText,
   } = args;
   rt.inputLocked ??= { value: false };
   rt.laneStatus ??= { value: null };
+  rt.retiredExecuteKeys ??= new Set<string>();
   let recoveredBackendActivitySeen = false;
   const legacyCommandTracks = new Map<string, {
     identity: string;
@@ -240,6 +236,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     legacyCommandTracks.clear();
     explicitCommandIdentities.clear();
     seenCommandFrameIds.clear();
+    rt.latestExecuteKey = undefined;
+    rt.latestExecuteSequence = undefined;
+    rt.latestExecuteTimestamp = undefined;
+    rt.retiredExecuteKeys.clear();
   };
 
   const resolveCommandIdentity = (payload: Record<string, unknown>, command: string, outputDelta: string): string => {
@@ -469,6 +469,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
     rt.executePreviewByKey.delete(normalizedKey);
     rt.executeOrder = rt.executeOrder.filter((k) => k !== normalizedKey);
+    if (rt.latestExecuteKey === normalizedKey) {
+      rt.latestExecuteKey = undefined;
+      rt.latestExecuteSequence = undefined;
+      rt.latestExecuteTimestamp = undefined;
+    }
   };
 
   const dropRedundantDiffExecuteBlocks = (): void => {
@@ -884,62 +889,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
-    if (type === "goal:status") {
-      const data = (msg as { data?: Record<string, unknown> }).data;
-      if (!data || typeof data !== "object") return;
-      const taskId = String(data.taskId ?? "").trim();
-      if (!taskId) return;
-      const list = Array.isArray(rt.tasks.value) ? rt.tasks.value : [];
-      const idx = list.findIndex((t) => t.id === taskId);
-      if (idx < 0) return;
-      const status = String(data.status ?? "").trim() as
-        | "active"
-        | "paused"
-        | "blocked"
-        | "usageLimited"
-        | "budgetLimited"
-        | "complete"
-        | "";
-      const tokensUsed = typeof data.tokensUsed === "number" ? data.tokensUsed : null;
-      const timeUsedSeconds = typeof data.timeUsedSeconds === "number" ? data.timeUsedSeconds : null;
-      const tokenBudget =
-        data.tokenBudget == null
-          ? null
-          : typeof data.tokenBudget === "number"
-            ? data.tokenBudget
-            : Number(data.tokenBudget);
-      const objective = typeof data.objective === "string" ? data.objective : list[idx]?.goalObjective ?? null;
-      const next = {
-        ...list[idx]!,
-        goalMode: true,
-        goalStatus: status || null,
-        goalTokensUsed: tokensUsed,
-        goalTimeUsedSeconds: timeUsedSeconds,
-        goalTokenBudget: Number.isFinite(tokenBudget as number) ? (tokenBudget as number) : null,
-        goalObjective: objective,
-      };
-      rt.tasks.value = [...list.slice(0, idx), next, ...list.slice(idx + 1)];
-      return;
-    }
-
-    if (type === "goal:cleared") {
-      const data = (msg as { data?: Record<string, unknown> }).data;
-      if (!data || typeof data !== "object") return;
-      const taskId = String(data.taskId ?? "").trim();
-      if (!taskId) return;
-      const list = Array.isArray(rt.tasks.value) ? rt.tasks.value : [];
-      const idx = list.findIndex((t) => t.id === taskId);
-      if (idx < 0) return;
-      const next = {
-        ...list[idx]!,
-        goalStatus: null,
-        goalTokensUsed: null,
-        goalTimeUsedSeconds: null,
-      };
-      rt.tasks.value = [...list.slice(0, idx), next, ...list.slice(idx + 1)];
-      return;
-    }
-
     if (type === "ack") {
       const id = String(msg.client_message_id ?? "").trim();
       if (id && rt.pendingAckClientMessageId === id) {
@@ -964,7 +913,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         rt.busy.value = inFlight;
         rt.turnInFlight = inFlight;
         if (inFlight) {
-          rt.inputLocked.value = true;
+          if (!rt.resumeReplacePending && !rt.awaitingBootstrapHistory) {
+            rt.inputLocked.value = false;
+          }
           rt.laneStatus.value = { kind: "progress", message: "上一轮仍在执行，正在等待后端结果…" };
         } else {
           if (!rt.resumeReplacePending) {
@@ -1243,49 +1194,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           );
           continue;
         }
-        // Plans and reasoning remain internal history records for compatibility;
-        // MainChatMessageList filters them from the visible block stream.
-        if (kind.startsWith("plan:") || kind === "plan") {
-          restoredHistoryStatus = null;
-          const planId = kind.startsWith("plan:") ? kind.slice("plan:".length).trim() || `plan-${idx}` : `plan-${idx}`;
-          let parsed: { planId?: unknown; status?: unknown; items?: unknown } | null = null;
-          try {
-            parsed = JSON.parse(historyText) as { planId?: unknown; status?: unknown; items?: unknown };
-          } catch {
-            parsed = null;
-          }
-          if (!parsed || typeof parsed !== "object") continue;
-          const planItems: ChatPlanItem[] = [];
-          for (const planEntry of Array.isArray(parsed.items) ? parsed.items : []) {
-            if (!planEntry || typeof planEntry !== "object" || Array.isArray(planEntry)) continue;
-            const rec = planEntry as Record<string, unknown>;
-            const itemText = String(rec.text ?? rec.content ?? "").trim();
-            if (!itemText) continue;
-            const itemStatusRaw = String(rec.status ?? "").trim().toLowerCase();
-            const itemStatus: ChatPlanItemStatus =
-              itemStatusRaw === "completed" ? "completed" : itemStatusRaw === "in_progress" ? "in_progress" : "pending";
-            planItems.push({ text: itemText, status: itemStatus });
-          }
-          if (planItems.length === 0) continue;
-          const planStatusRaw = String(parsed.status ?? "").trim().toLowerCase();
-          const planStatus: ChatPlan["status"] =
-            planStatusRaw === "completed" ? "completed" : planStatusRaw === "failed" ? "failed" : "in_progress";
-          const persistedPlanId = String(parsed.planId ?? "").trim() || planId;
-          next.push({
-            id: `plan:${persistedPlanId}`,
-            role: "system",
-            kind: "plan",
-            content: planItems
-              .map((entry) => `${entry.status === "completed" ? "[x]" : entry.status === "in_progress" ? "[~]" : "[ ]"} ${entry.text}`)
-              .join("\n"),
-            plan: { planId: persistedPlanId, status: planStatus, items: planItems },
-            ts: ts ?? undefined,
-          });
-          continue;
-        }
-        if (kind === "thought" || role === "thought") {
-          restoredHistoryStatus = null;
-          next.push({ id: `h-th-${idx}`, role: "assistant", kind: "thought", content: historyText, ts: ts ?? undefined });
+        // Intermediate reasoning and planning are intentionally not part of
+        // the visible chat history. Older databases may still contain them;
+        // skip them at the replay boundary instead of relying on the renderer.
+        if (kind.startsWith("plan:") || kind === "plan" || kind === "thought" || role === "thought") {
           continue;
         }
         if (kind === "session_divider" || (role === "status" && kind === "session_divider") || (role === "system" && kind === "divider")) {
@@ -1382,7 +1294,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.busy.value = inFlight;
       rt.turnInFlight = inFlight;
       if (inFlight) {
-        rt.inputLocked.value = true;
+        if (!rt.resumeReplacePending && !rt.awaitingBootstrapHistory) {
+          rt.inputLocked.value = false;
+        }
         rt.laneStatus.value = { kind: "progress", message: "上一轮仍在执行，正在等待后端结果…" };
       } else if (!rt.resumeReplacePending) {
         rt.inputLocked.value = false;
@@ -1402,17 +1316,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       clearRecoveredBackendStatus();
       const source = String(msg.source ?? "").trim();
       if (source === "thought" || source === "reasoning") {
-        upsertThoughtDelta?.(String(msg.delta ?? ""), rt);
         return;
       } else if (source === "step") {
         const delta = String(msg.delta ?? "");
-        if (delta.trim().startsWith("[analysis]")) {
-          const cleanReasoning = delta.trim().slice("[analysis]".length).trim();
-          if (cleanReasoning && !shouldIgnoreStepDelta(delta)) {
-            upsertThoughtDelta?.(cleanReasoning, rt);
-            return;
-          }
-        }
         if (shouldIgnoreStepDelta(delta)) return;
         upsertStepLiveDelta(delta, rt);
       } else {
@@ -1425,8 +1331,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.busy.value = true;
       rt.turnInFlight = true;
       clearRecoveredBackendStatus();
-      const delta = String(msg.delta ?? msg.content ?? msg.text ?? "");
-      if (delta) upsertThoughtDelta?.(delta, rt);
       return;
     }
 
@@ -1468,46 +1372,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "plan") {
-      clearRecoveredBackendStatus();
-      const rec = msg as Record<string, unknown>;
-      const planId = String(rec.planId ?? rec.plan_id ?? "").trim();
-      if (!planId) return;
-      const statusRaw = String(rec.status ?? "").trim().toLowerCase();
-      const status: ChatPlan["status"] =
-        statusRaw === "completed" ? "completed" : statusRaw === "failed" ? "failed" : "in_progress";
-      const itemsRaw = Array.isArray(rec.items) ? rec.items : [];
-      const items: ChatPlanItem[] = [];
-      for (const entry of itemsRaw) {
-        if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-        const obj = entry as Record<string, unknown>;
-        const text = String(obj.text ?? obj.content ?? "").trim();
-        if (!text) continue;
-        const itemStatus = String(obj.status ?? "").trim().toLowerCase();
-        const normalizedStatus: ChatPlanItemStatus =
-          itemStatus === "completed"
-            ? "completed"
-            : itemStatus === "in_progress"
-              ? "in_progress"
-              : "pending";
-        items.push({ text, status: normalizedStatus });
-      }
-      const plan: ChatPlan = { planId, status, items };
-      const tsRaw = Number(rec.ts);
-      const ts = Number.isFinite(tsRaw) && tsRaw > 0 ? tsRaw : Date.now();
-      const itemId = `plan:${planId}`;
-      const existing = Array.isArray(rt.messages.value) ? rt.messages.value.slice() : [];
-      const content = items.map((entry) => `${entry.status === "completed" ? "[x]" : entry.status === "in_progress" ? "[~]" : "[ ]"} ${entry.text}`).join("\n");
-      const matchingIndexes = existing
-        .map((message, index) => String(message?.plan?.planId ?? "").trim() === planId ? index : -1)
-        .filter((index) => index >= 0);
-      const idx = matchingIndexes[0] ?? -1;
-      if (idx >= 0) {
-        existing[idx] = { ...existing[idx]!, content, plan, ts };
-        const duplicates = new Set(matchingIndexes.slice(1));
-        rt.messages.value = normalizeTurnSemanticOrder(existing.filter((_message, index) => !duplicates.has(index)));
-      } else {
-        pushMessageBeforeLive({ id: itemId, role: "system", kind: "plan", content, plan, ts }, rt);
-      }
       return;
     }
 
@@ -1592,6 +1456,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const terminal = status === "completed" || status === "failed" || status === "declined" || status === "cancelled";
       const eventTs = finiteTimestamp((msg as Record<string, unknown>).ts ?? snapshot?.ts);
       const revision = Number(snapshot?.revision);
+      const snapshotSequence = Number((msg as Record<string, unknown>).seq ?? snapshot?.snapshotSeq ?? snapshot?.afterSeq);
       rt.busy.value = true;
       rt.turnInFlight = true;
       clearRecoveredBackendStatus();
@@ -1601,6 +1466,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         terminal,
         eventId: String(msg.eventId ?? msg.seq ?? `snapshot:${identity}:${revision || 0}`).trim(),
         revision: Number.isFinite(revision) && revision > 0 ? Math.floor(revision) : undefined,
+        sequence: Number.isFinite(snapshotSequence) && snapshotSequence >= 0 ? Math.floor(snapshotSequence) : undefined,
         startOffset: finiteOffset(snapshot?.startOffset),
         endOffset: finiteOffset(snapshot?.endOffset),
         ts: eventTs,
@@ -1623,6 +1489,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.pendingAckClientMessageId = null;
       clearPendingPrompt(rt);
       const output = String(msg.output ?? "");
+      const resultKind = String(msg.kind ?? "").trim();
       if (rt.suppressNextClearHistoryResult) {
         rt.suppressNextClearHistoryResult = false;
         const kind = String(msg.kind ?? "").trim();
@@ -1666,15 +1533,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       applyEffectiveState(msg as Record<string, unknown>);
       clearStepLive(rt);
-      finalizeCommandBlock(rt);
-      const resultKind = String(msg.kind ?? "").trim();
+      finalizeCommandBlock(rt, { removeActiveExecuteBlocks: resultKind === "execute" });
       const resultCommand = String(msg.command ?? "").trim();
       if (resultKind === "execute" && resultCommand) {
         finalizeAssistant("", rt);
         const resultTsRaw = Number((msg as { ts?: unknown }).ts);
         const resultTs = Number.isFinite(resultTsRaw) && resultTsRaw > 0 ? Math.floor(resultTsRaw) : Date.now();
         pushMessageBeforeLive(
-          buildExecuteMessage({ id: randomId("exec-result"), command: resultCommand, output, streaming: false, ts: resultTs }),
+          buildExecuteMessage({ id: `exec:${randomId("result")}`, command: resultCommand, output, streaming: false, ts: resultTs }),
           rt,
         );
         void flushQueuedPrompts(rt);
@@ -1788,6 +1654,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         upsertExecuteBlock(key, cmd, outputDelta, rt, {
           ts: eventTs,
           eventId: eventId || undefined,
+          sequence: Number.isFinite(seq) && seq >= 0 ? Math.floor(seq) : undefined,
           terminal,
           startOffset,
           endOffset,

@@ -28,6 +28,7 @@ function stripCommandHeader(outputDelta: string, command: string): string {
 
 export type ExecuteBlockUpdate = {
   ts?: number;
+  sequence?: number;
   eventId?: string;
   revision?: number;
   startOffset?: number;
@@ -98,6 +99,7 @@ export function createExecuteActions(params: {
     update?: number | ExecuteBlockUpdate,
   ): void => {
     const state = runtimeOrActive(rt);
+    state.retiredExecuteKeys ??= new Set<string>();
     const normalizedKey = String(key ?? "").trim();
     if (!normalizedKey) return;
     const normalizedCommand = String(command ?? "").trim();
@@ -110,7 +112,51 @@ export function createExecuteActions(params: {
       : undefined;
 
     const existing = state.messages.value.slice();
-    const existingItem = existing.find((m) => m.id === `exec:${normalizedKey}`);
+    const incomingSequence = Number.isFinite(options.sequence) && (options.sequence as number) >= 0
+      ? Math.floor(options.sequence as number)
+      : undefined;
+    const currentKey = String(state.latestExecuteKey ?? "").trim();
+    const currentSequence = state.latestExecuteSequence;
+    const currentTimestamp = state.latestExecuteTimestamp;
+    if (currentKey && currentKey !== normalizedKey) {
+      if (state.retiredExecuteKeys.has(normalizedKey)) return;
+      if (incomingSequence !== undefined && currentSequence !== undefined && incomingSequence < currentSequence) return;
+      if (incomingSequence === undefined && eventTs !== undefined && currentTimestamp !== undefined && eventTs < currentTimestamp) return;
+
+      // A turn can execute many commands, but the visible contract has one
+      // replaceable command block. Remove only command blocks belonging to
+      // this turn; history from previous user turns remains untouched.
+      state.retiredExecuteKeys.add(currentKey);
+      const previousKeys = new Set(state.executeOrder);
+      for (const previousKey of previousKeys) state.retiredExecuteKeys.add(previousKey);
+      const withoutPreviousCommands = existing.filter((message) => {
+        if (message.kind !== "execute") return true;
+        const messageKey = String(message.id ?? "").startsWith("exec:")
+          ? String(message.id).slice("exec:".length)
+          : "";
+        return !previousKeys.has(messageKey);
+      });
+      state.executePreviewByKey.clear();
+      state.executeOrder = [];
+      state.latestExecuteKey = normalizedKey;
+      state.latestExecuteSequence = incomingSequence;
+      state.latestExecuteTimestamp = eventTs;
+      if (withoutPreviousCommands.length !== existing.length) {
+        setMessages(withoutPreviousCommands, state);
+      }
+    } else if (currentKey === normalizedKey) {
+      if (incomingSequence !== undefined && currentSequence !== undefined && incomingSequence < currentSequence) return;
+      if (incomingSequence !== undefined) state.latestExecuteSequence = incomingSequence;
+      if (eventTs !== undefined) state.latestExecuteTimestamp = Math.max(currentTimestamp ?? eventTs, eventTs);
+    } else {
+      state.latestExecuteKey = normalizedKey;
+      state.latestExecuteSequence = incomingSequence;
+      state.latestExecuteTimestamp = eventTs;
+    }
+
+    const refreshedExisting = state.messages.value.slice();
+    const existingItem = refreshedExisting.find((m) => m.id === `exec:${normalizedKey}`);
+    const startsNewPreview = !state.executePreviewByKey.has(normalizedKey);
     const prevTs = existingItem?.ts;
     const current: ExecutePreviewState =
       state.executePreviewByKey.get(normalizedKey) ?? {
@@ -227,12 +273,21 @@ export function createExecuteActions(params: {
       hiddenLineCount,
       commandsTotal: state.turnCommandCount,
       commandsLimit: maxTurnCommands,
-      streaming: current.terminal ? false : options.snapshot ? true : existingItem?.streaming !== false,
+      streaming: current.terminal
+        ? false
+        : options.snapshot
+          ? true
+          : startsNewPreview
+            ? true
+            : existingItem?.streaming !== false,
       ts: prevTs ?? eventTs,
     };
 
     // Eliminate redundant live-step announcer card if it only announced the command
-    const cleanedExisting = existing.filter((m) => {
+    // A command replacement may have removed the previous block above. Build
+    // the next message list from the current runtime snapshot so that removed
+    // blocks are not reintroduced while inserting the replacement.
+    const cleanedExisting = state.messages.value.slice().filter((m) => {
       if (m.id !== "live-step") return true;
       const content = String(m.content ?? "").toLowerCase().trim();
       return (
@@ -260,31 +315,50 @@ export function createExecuteActions(params: {
 
     setMessages([...sealedExisting.slice(0, insertAt), nextItem, ...sealedExisting.slice(insertAt)], state);
 
-    if (state.executeOrder.length > maxTurnCommands) {
-      const overflow = state.executeOrder.length - maxTurnCommands;
-      const toDrop = state.executeOrder.slice(0, overflow);
-      state.executeOrder = state.executeOrder.slice(overflow);
-      for (const k of toDrop) {
-        state.executePreviewByKey.delete(k);
-      }
-      const pruned = state.messages.value.filter((m) => !(m.kind === "execute" && toDrop.includes(String(m.id).slice("exec:".length))));
-      setMessages(pruned, state);
-    }
   };
 
-  const finalizeCommandBlock = (rt?: ProjectRuntime): void => {
+  const finalizeCommandBlock = (
+    rt?: ProjectRuntime,
+    options?: { removeActiveExecuteBlocks?: boolean },
+  ): void => {
     const state = runtimeOrActive(rt);
     const existing = state.messages.value.slice();
-    const finalized = existing.filter(
-      (m) => !(m.kind === "execute" && (m.streaming === true || String(m.id ?? "").startsWith("exec:"))),
-    );
-    const changed = finalized.length !== existing.length;
+    const activeExecuteKeys = new Set(state.executeOrder);
+    let lastUserIndex = -1;
+    for (let index = existing.length - 1; index >= 0; index -= 1) {
+      if (existing[index]?.role === "user") {
+        lastUserIndex = index;
+        break;
+      }
+    }
+    const finalized = existing.flatMap((m) => {
+      if (options?.removeActiveExecuteBlocks === true && m.kind === "execute") {
+        const messageKey = String(m.id ?? "").startsWith("exec:")
+          ? String(m.id).slice("exec:".length)
+          : "";
+        if (
+          (messageKey && activeExecuteKeys.has(messageKey)) ||
+          (lastUserIndex >= 0 && existing.indexOf(m) > lastUserIndex)
+        ) {
+          return [];
+        }
+      }
+      if (m.kind === "execute" && m.streaming === true) {
+        return [{ ...m, streaming: false }];
+      }
+      return [m];
+    });
+    const changed = finalized.length !== existing.length || finalized.some((m, index) => m !== existing[index]);
 
     state.recentCommands.value = [];
     state.turnCommands = [];
     state.turnCommandCount = 0;
     state.executePreviewByKey.clear();
     state.executeOrder = [];
+    state.latestExecuteKey = undefined;
+    state.latestExecuteSequence = undefined;
+    state.latestExecuteTimestamp = undefined;
+    state.retiredExecuteKeys.clear();
     state.seenCommandIds.clear();
 
     if (changed) setMessages(finalized, state);

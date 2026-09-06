@@ -18,7 +18,6 @@ if (!fs.existsSync(SRC_DIR)) {
 const entries = fs.readdirSync(SRC_DIR, { withFileTypes: true });
 const requiredFiles = new Set([
   "instructions.md",
-  "rules.md",
 ]);
 const unexpectedDirs = entries.filter((entry) => entry.isDirectory());
 if (unexpectedDirs.length > 0) {
@@ -92,5 +91,4 @@ if (fs.existsSync(BUILTIN_SKILLS_SRC)) {
 } else {
   console.warn(`[copy-runtime-assets] Builtin skills not found at ${BUILTIN_SKILLS_SRC}`);
 }
-
 

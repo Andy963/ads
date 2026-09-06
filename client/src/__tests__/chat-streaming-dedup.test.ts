@@ -117,49 +117,48 @@ describe("chat streaming duplicate protection", () => {
     expect(messages.value.filter((message) => message.role === "assistant" && message.kind === "text")).toHaveLength(2);
   });
 
-  it("does not replace a substantive snapshot with ignored analysis noise", () => {
+  it("replaces the provider live-step snapshot verbatim", () => {
     const { messages, runtime, streaming } = createHarness();
 
-    streaming.upsertStepLiveDelta("[tool] Inspecting workspace\n", runtime);
-    streaming.upsertStepLiveDelta("[analysis] Reasoning\n", runtime);
+    streaming.upsertStepLiveDelta("I will inspect the workspace first.\n", runtime);
+    streaming.upsertStepLiveDelta("I will now verify the relevant configuration.\n", runtime);
 
-    expect(messages.value.find((message) => message.id === "live-step")?.content).toBe("[tool] Inspecting workspace\n");
+    expect(messages.value.find((message) => message.id === "live-step")?.content).toBe("I will now verify the relevant configuration.\n");
   });
 
-  it("shows a provider reasoning summary as a live step", () => {
+  it("renders a provider reasoning summary as the live step", () => {
     const { messages, runtime, streaming } = createHarness();
 
-    streaming.upsertStepLiveDelta("[analysis] Reasoning summary: Comparing adapters\n", runtime);
+    streaming.upsertStepLiveDelta("I will compare the adapters before running the check.\n", runtime);
 
     expect(messages.value.find((message) => message.id === "live-step")?.content).toBe(
-      "[analysis] Reasoning summary: Comparing adapters\n",
+      "I will compare the adapters before running the check.\n",
     );
   });
 
-  it("promotes only the latest live snapshot when the turn completes", () => {
+  it("does not persist a live snapshot as a thought card when the turn completes", () => {
     const { messages, runtime, streaming } = createHarness([
       { id: "u-1", role: "user", kind: "text", content: "run the task" },
       { id: "a-1", role: "assistant", kind: "text", content: "Done", streaming: true },
     ]);
 
-    streaming.upsertStepLiveDelta("[analysis] Inspecting workspace\n", runtime);
-    streaming.upsertStepLiveDelta("[analysis] Updating source file\n", runtime);
+    streaming.upsertStepLiveDelta("I will inspect the workspace.\n", runtime);
+    streaming.upsertStepLiveDelta("I will update the source file.\n", runtime);
     streaming.clearStepLive(runtime);
 
     expect(messages.value.find((message) => message.id === "live-step")).toBeUndefined();
-    expect(messages.value.filter((message) => message.kind === "thought")).toHaveLength(1);
-    expect(messages.value.find((message) => message.kind === "thought")?.content).toBe("Updating source file");
+    expect(messages.value.filter((message) => message.kind === "thought")).toHaveLength(0);
     expect(messages.value.some((message) => message.content.includes("Inspecting workspace"))).toBe(false);
   });
 
-  it("does not store action traces like [editing] or [tool] as thought cards upon turn completion", () => {
+  it("does not store provider live-step text as thought cards upon turn completion", () => {
     const { messages, runtime, streaming } = createHarness([
       { id: "u-1", role: "user", kind: "text", content: "run the task" },
       { id: "a-1", role: "assistant", kind: "text", content: "Done", streaming: true },
     ]);
 
-    streaming.upsertStepLiveDelta("[tool] Inspecting workspace\n", runtime);
-    streaming.upsertStepLiveDelta("[editing] Updating source file\n", runtime);
+    streaming.upsertStepLiveDelta("I will inspect the workspace.\n", runtime);
+    streaming.upsertStepLiveDelta("I will update the source file.\n", runtime);
     streaming.clearStepLive(runtime);
 
     expect(messages.value.find((message) => message.id === "live-step")).toBeUndefined();

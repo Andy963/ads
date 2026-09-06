@@ -24,18 +24,6 @@ function trimLiveStepSnapshot(text: string, maxLines: number, maxChars = 2500): 
   return lines.slice(lines.length - maxLines).join("\n");
 }
 
-function isActionStepTrace(text: string): boolean {
-  const firstLine = String(text ?? "").trim().split("\n")[0]!.toLowerCase();
-  return (
-    firstLine.startsWith("[tool]") ||
-    firstLine.startsWith("[editing]") ||
-    firstLine.startsWith("[command]") ||
-    firstLine.startsWith("[boot]") ||
-    firstLine.startsWith("[context]") ||
-    firstLine.startsWith("[connection]")
-  );
-}
-
 function getRenderedAssistantText(items: ChatItem[], isLiveMessageId: (id: string) => boolean): string {
   let lastUserIndex = -1;
   for (let index = items.length - 1; index >= 0; index -= 1) {
@@ -113,24 +101,10 @@ export function createStreamingActions(params: {
   };
 
   const shouldIgnoreStepDelta = (delta: string): boolean => {
-    const normalized = String(delta ?? "");
-    if (!normalized) return true;
-    if (normalized.length > 2000) return false;
-    const trimmed = normalized.trim();
-    if (!trimmed) return true;
-    const firstLine = trimmed.split("\n")[0]!.trim().toLowerCase();
-    if (firstLine.startsWith("[boot]")) {
-      return true;
-    }
-    // Command announcements are redundant with execute cards (Issue #129)
-    if (firstLine.startsWith("[command]")) {
-      return true;
-    }
-    if (firstLine.startsWith("[analysis]")) {
-      const analysisText = firstLine.slice("[analysis]".length).trim();
-      return !analysisText || analysisText === "开始处理请求" || /^reasoning$/i.test(analysisText);
-    }
-    return firstLine === "active" || firstLine === "thinking…" || firstLine === "thinking..." || firstLine === "working…";
+    // Source `step` is provider-authored explanation text. The backend is the
+    // boundary that decides which provider event is a live-step; the client
+    // only rejects an empty frame and must preserve the text verbatim.
+    return !String(delta ?? "").trim();
   };
 
   const upsertStreamingDelta = (
@@ -351,33 +325,11 @@ export function createStreamingActions(params: {
     clearLiveActivityTimer(state);
     clearLiveActivityWindow(state.liveActivity);
     const existing = state.messages.value.slice();
-    const stepMsg = existing.find((m) => m.id === liveStepId);
-    const stepContent = trimLiveStepSnapshot(String(stepMsg?.content ?? "").trim(), 14).trim();
-    let next = existing.filter((m) => !isLiveMessageId(m.id));
-
-    // Finalize the internal reasoning card, if one was streamed. The renderer
-    // hides it; retaining it here keeps older providers/history compatible.
-    next = next.map((m) => (m.kind === "thought" && m.streaming ? { ...m, streaming: false } : m));
-
-    // Action traces are not reasoning and must not be promoted to an internal
-    // thought record when the live status card is cleared.
-    if (stepContent && !isActionStepTrace(stepContent) && !shouldIgnoreStepDelta(stepContent)) {
-      const cleanReasoning = stepContent.startsWith("[analysis]")
-        ? stepContent.slice("[analysis]".length).trim()
-        : stepContent;
-      if (cleanReasoning && !next.some((m) => m.kind === "thought" && m.content.includes(cleanReasoning))) {
-        const thoughtItem: ChatItem = {
-          id: randomId("thought"),
-          role: "assistant",
-          kind: "thought",
-          content: cleanReasoning,
-          streaming: false,
-          ts: stepMsg?.ts ?? Date.now(),
-        };
-        const insertAt = findProcessInsertIndex(next);
-        next.splice(insertAt, 0, thoughtItem);
-      }
-    }
+    // Thought and plan cards are no longer part of the visible or persisted
+    // turn contract. Drop legacy cards as the turn is sealed as well.
+    const next = existing.filter(
+      (m) => !isLiveMessageId(m.id) && m.kind !== "thought" && m.kind !== "plan",
+    );
     if (next.length === existing.length && next.every((m, idx) => m === existing[idx])) return;
     setMessages(next, state);
   };

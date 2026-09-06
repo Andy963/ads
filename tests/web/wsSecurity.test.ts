@@ -16,7 +16,7 @@ import { NoopAgentAvailability } from "../../server/agents/health/agentAvailabil
 import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
 
 type AuthStub = {
-  authenticateRequest?: (req: http.IncomingMessage) => { ok: false } | { ok: true; userId: string; tokenHash?: string };
+  authenticateRequest?: (req: http.IncomingMessage) => { ok: false } | { ok: true; userId: string; tokenHash?: string; connector?: true };
   revalidateSession?: (tokenHash: string) => boolean;
 };
 
@@ -228,6 +228,40 @@ describe("web/server/ws security hardening", () => {
     });
     await new Promise<void>((resolve) => setTimeout(resolve, 300));
     assert.equal(closedCode, null, "valid session should not be terminated by revalidation");
+    assert.equal(client.readyState, WebSocket.OPEN);
+    client.close();
+    await new Promise<void>((resolve) => client.once("close", () => resolve()));
+  });
+
+  it("keeps a connector connection open without browser session revalidation", async (t) => {
+    let revalidateCalled = false;
+    const port = await start(
+      t,
+      { pingIntervalMs: 40, maxMissedPongs: 5 },
+      {
+        authenticateRequest: () => ({ ok: true, userId: "connector", tokenHash: "hash-connector", connector: true }),
+        revalidateSession: () => {
+          revalidateCalled = true;
+          return false;
+        },
+      },
+    );
+    if (port === null) return;
+
+    const client = connect(port);
+    await new Promise<void>((resolve, reject) => {
+      client.once("open", () => resolve());
+      client.once("error", (err) => reject(err));
+      setTimeout(() => reject(new Error("open timeout")), 1500);
+    });
+
+    let closedCode: number | null = null;
+    client.once("close", (c) => {
+      closedCode = c;
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 300));
+    assert.equal(closedCode, null, "connector connection should not be terminated by session revalidation");
+    assert.equal(revalidateCalled, false, "revalidateSession should not be called for connector connections");
     assert.equal(client.readyState, WebSocket.OPEN);
     client.close();
     await new Promise<void>((resolve) => client.once("close", () => resolve()));

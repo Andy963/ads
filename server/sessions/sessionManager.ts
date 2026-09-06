@@ -68,7 +68,6 @@ export type SessionAgentSurface =
   | "telegram"
   | "web-worker"
   | "web-planner"
-  | "task-queue"
   | "scheduler-runtime"
   | "scheduler-compiler";
 

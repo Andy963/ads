@@ -20,10 +20,6 @@ export function resolveSyncLaneKey(args: {
   }).historyKey;
 }
 
-export function resolveSharedWorkerSyncLaneKey(sessionId: string): string {
-  return `shared::${String(sessionId ?? "").trim()}`;
-}
-
 export function resolveSyncLaneKeys(args: {
   authUserId: string;
   sessionId: string;

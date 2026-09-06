@@ -19,7 +19,7 @@ describe("lane connection status", () => {
   });
 
   it("does not mark the Task tab as connected", () => {
-    expect(isLaneConnected("tasks", { planner: true, worker: true })).toBe(false);
+    expect(isLaneConnected("planner", { planner: false, worker: true })).toBe(false);
   });
 
   it("keeps connected lane text green when the tab is active", () => {

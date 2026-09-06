@@ -5,7 +5,14 @@ export function buildHistoryBootstrapPayload(entries: HistoryEntry[]): { type: "
   if (!entries.length) {
     return null;
   }
-  const sanitizedHistory = entries.map((entry) => {
+  const visibleEntries = entries.filter((entry) => {
+    const kind = String(entry.kind ?? "").trim().toLowerCase();
+    return kind !== "thought" && kind !== "plan" && !kind.startsWith("plan:") && entry.role !== "thought";
+  });
+  if (visibleEntries.length === 0) {
+    return null;
+  }
+  const sanitizedHistory = visibleEntries.map((entry) => {
     if (entry.role !== "ai") {
       return entry;
     }

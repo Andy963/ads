@@ -235,11 +235,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     return sessionId ? `ads.syncCursor.${sessionId}.${chatSessionId}` : null;
   };
 
-  const taskSyncCursorKey = (rt: ProjectRuntime): string | null => {
-    const sessionId = String(rt.projectSessionId ?? "").trim();
-    return sessionId ? `ads.taskSyncCursor.${sessionId}` : null;
-  };
-
   const laneGenerationKey = (rt: ProjectRuntime, chatSessionIdOverride?: string): string | null => {
     const sessionId = String(rt.projectSessionId ?? "").trim();
     const chatSessionId = String(chatSessionIdOverride ?? rt.chatSessionId ?? "").trim() || "main";
@@ -308,40 +303,10 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     }
   };
 
-  const readTaskSyncCursor = (rt: ProjectRuntime): number => {
-    const key = taskSyncCursorKey(rt);
-    if (!key) return 0;
-    try {
-      const raw = sessionStorage.getItem(key);
-      if (!raw) return 0;
-      const parsed = JSON.parse(raw) as { lastSeq?: unknown };
-      const seq = Number(parsed.lastSeq);
-      return Number.isFinite(seq) && seq > 0 ? Math.floor(seq) : 0;
-    } catch {
-      return 0;
-    }
-  };
-
-  const writeTaskSyncCursor = (rt: ProjectRuntime, seq: number): void => {
-    const key = taskSyncCursorKey(rt);
-    if (!key) return;
-    try {
-      const lastSeq = Number.isFinite(seq) && seq > 0 ? Math.floor(seq) : 0;
-      if (lastSeq === 0) {
-        sessionStorage.removeItem(key);
-        return;
-      }
-      sessionStorage.setItem(key, JSON.stringify({ lastSeq, updatedAt: Date.now() }));
-    } catch {
-      // ignore
-    }
-  };
-
   const syncEventsPath = (
     rt: ProjectRuntime,
     project: ProjectTab,
     afterSeq: number,
-    channel: "chat" | "tasks" = "chat",
     chatSessionIdOverride?: string,
   ): string | null => {
     const sessionId = String(rt.projectSessionId ?? "").trim();
@@ -353,7 +318,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       afterSeq: String(Math.max(0, Math.floor(afterSeq))),
       limit: "500",
     });
-    if (channel === "tasks") params.set("channel", "tasks");
     const isDefaultProject = String(project.id ?? project.sessionId ?? "").trim() === "default";
     const workspaceRoot = isDefaultProject
       ? ""
@@ -494,7 +458,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     const syncGeneration = rt.syncGeneration;
     let disconnectCleanupDone = false;
     let disconnectWasBusy = false;
-    const shouldSyncTasks = mode === "worker";
     let handleWsPayload: ((msg: unknown) => void) | null = null;
     type DeferredBootstrapHistory = {
       payload: Record<string, unknown>;
@@ -514,8 +477,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     let bootstrapHistoryWatchdogTimer: number | null = null;
     let syncRetryTimer: number | null = null;
     let syncRetryAttempts = 0;
-    let taskSyncRetryTimer: number | null = null;
-    let taskSyncRetryAttempts = 0;
     let syncChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
     let syncLaneEpoch = 0;
     const createChatSequencer = (chatSessionId: string) =>
@@ -524,12 +485,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         writeCursor: (seq) => writeSyncCursor(rt, seq, chatSessionId),
       });
     let sequencer = createChatSequencer(syncChatSessionId);
-    const taskSequencer = createSyncEventSequencer({
-      initialCursor: readTaskSyncCursor(rt),
-      writeCursor: (seq) => writeTaskSyncCursor(rt, seq),
-    });
-    let taskSyncInProgress = false;
-    let needsTaskEventSync = false;
 
     const isCurrentSync = (expectedLaneEpoch: number = syncLaneEpoch): boolean =>
       rt.ws === wsInstance &&
@@ -774,24 +729,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     };
 
     const applySyncPayload = (payload: Record<string, unknown>): void => {
-      if (payload.type === "task:event") {
-        return;
-      }
-      handleWsPayload?.(payload);
-    };
-
-    const applyTaskPayload = (payload: Record<string, unknown>): void => {
-      if (payload.type === "task:event") {
-        deps.onTaskEvent(
-          {
-            event: payload.event,
-            data: payload.data,
-            seq: payload.seq,
-          },
-          rt,
-        );
-        return;
-      }
       handleWsPayload?.(payload);
     };
 
@@ -821,32 +758,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       }, delayMs);
     };
 
-    const clearTaskSyncRetryTimer = (): void => {
-      if (taskSyncRetryTimer === null) return;
-      try {
-        clearTimeout(taskSyncRetryTimer);
-      } catch {
-        // ignore
-      }
-      taskSyncRetryTimer = null;
-    };
-
-    const scheduleTaskSyncRetry = (): void => {
-      if (!isCurrentSync() || taskSyncRetryTimer !== null || !needsTaskEventSync) return;
-      const delayMs = Math.min(15_000, 800 * Math.pow(2, Math.min(6, taskSyncRetryAttempts)));
-      taskSyncRetryAttempts += 1;
-      taskSyncRetryTimer = window.setTimeout(() => {
-        taskSyncRetryTimer = null;
-        if (!isCurrentSync() || !needsTaskEventSync) return;
-        void syncTaskEvents();
-      }, delayMs);
-    };
-
     async function syncChatEvents(): Promise<void> {
       const operationLaneEpoch = syncLaneEpoch;
       const activeSequencer = sequencer;
       if (rt.syncInProgress || !isCurrentSync(operationLaneEpoch)) return;
-      const path = syncEventsPath(rt, project, activeSequencer.getLastAppliedSeq(), "chat", syncChatSessionId);
+      const path = syncEventsPath(rt, project, activeSequencer.getLastAppliedSeq(), syncChatSessionId);
       if (!path) return;
       activeSequencer.beginCatchUp();
       rt.syncInProgress = true;
@@ -856,7 +772,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         let afterSeq = catchUpStartSeq;
         const catchUpPayloads: Record<string, unknown>[] = [];
         for (let page = 0; page < 20; page++) {
-          const pagePath = syncEventsPath(rt, project, afterSeq, "chat", syncChatSessionId);
+          const pagePath = syncEventsPath(rt, project, afterSeq, syncChatSessionId);
           if (!pagePath) throw new Error("Sync path is unavailable");
           const response = await api.get<Partial<SyncEventsResponse>>(pagePath);
           if (!isCurrentSync(operationLaneEpoch)) return;
@@ -887,7 +803,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             applyDeferredRuntimeSnapshots();
             bootstrapHistoryExpected = false;
             bootstrapHistoryWait = null;
-            rt.needsTaskResync = shouldSyncTasks;
             completed = true;
             break;
           }
@@ -1012,12 +927,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         applyDeferredRuntimeSnapshots();
         syncRetryAttempts = 0;
         clearSyncRetryTimer();
-        if (shouldSyncTasks && rt.needsTaskResync) {
-          rt.needsTaskResync = false;
-          void deps.syncProjectState?.(pid).catch(() => {
-            rt.needsTaskResync = true;
-          });
-        }
       } catch {
         if (isCurrentSync(operationLaneEpoch)) {
           // Keep barrier-tagged live frames queued for the retry. Dropping them
@@ -1032,80 +941,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         if (isCurrentSync(operationLaneEpoch)) {
           rt.syncInProgress = false;
         }
-      }
-    }
-
-    async function syncTaskEvents(): Promise<void> {
-      if (taskSyncInProgress || !isCurrentSync()) return;
-      const path = syncEventsPath(rt, project, taskSequencer.getLastAppliedSeq(), "tasks");
-      if (!path) return;
-      taskSyncInProgress = true;
-      taskSequencer.beginCatchUp();
-      try {
-        let completed = false;
-        let truncated = false;
-        let afterSeq = taskSequencer.getLastAppliedSeq();
-        const catchUpPayloads: Record<string, unknown>[] = [];
-        for (let page = 0; page < 20; page += 1) {
-          const pagePath = syncEventsPath(rt, project, afterSeq, "tasks");
-          if (!pagePath) throw new Error("Task sync path is unavailable");
-          const response = await api.get<Partial<SyncEventsResponse>>(pagePath);
-          if (!isCurrentSync()) return;
-          if (response.truncated) {
-            const latestSeq = Number(response.latestSeq);
-            taskSequencer.replaceWithSnapshot(
-              Number.isFinite(latestSeq) && latestSeq > 0 ? Math.floor(latestSeq) : 0,
-              () => {},
-            );
-            truncated = true;
-            completed = true;
-            break;
-          }
-          const events = Array.isArray(response.events) ? response.events : [];
-          for (const event of events) {
-            const seq = Number(event.seq);
-            if (!Number.isFinite(seq) || seq <= afterSeq) continue;
-            const eventTs = Number(event.ts);
-            const payload = event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
-              ? {
-                  ...event.payload,
-                  ...(!Object.prototype.hasOwnProperty.call(event.payload, "ts") && Number.isFinite(eventTs) && eventTs > 0
-                    ? { ts: Math.floor(eventTs) }
-                    : {}),
-                  seq,
-                }
-              : { type: event.type, ...(Number.isFinite(eventTs) && eventTs > 0 ? { ts: Math.floor(eventTs) } : {}), seq };
-            catchUpPayloads.push(payload);
-            afterSeq = Math.floor(seq);
-          }
-          if (!response.hasMore) {
-            completed = true;
-            break;
-          }
-          if (events.length === 0) throw new Error("Task sync response hasMore without events");
-        }
-        if (!completed) throw new Error("Task sync catch-up exceeded page limit");
-        for (const payload of catchUpPayloads) {
-          taskSequencer.applyCatchUp(payload, () => applyTaskPayload(payload));
-        }
-        taskSequencer.completeCatchUp();
-        needsTaskEventSync = false;
-        taskSyncRetryAttempts = 0;
-        clearTaskSyncRetryTimer();
-        if (truncated && shouldSyncTasks) {
-          rt.needsTaskResync = false;
-          await deps.syncProjectState?.(pid);
-        }
-      } catch {
-        // Do not commit live events buffered during a failed request. Their
-        // cursor may be ahead of older offline events that the retry still
-        // needs to fetch.
-        taskSequencer.abortCatchUp();
-        needsTaskEventSync = true;
-        if (shouldSyncTasks) rt.needsTaskResync = true;
-        scheduleTaskSyncRetry();
-      } finally {
-        taskSyncInProgress = false;
       }
     }
 
@@ -1137,11 +972,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       if (disconnectCleanupDone) return;
       disconnectCleanupDone = true;
       disconnectWasBusy = rt.busy.value;
-      rt.needsTaskResync = true;
       rt.needsChatSync = true;
       rt.connected.value = false;
       clearSyncRetryTimer();
-      clearTaskSyncRetryTimer();
       clearBootstrapHistoryWatchdog();
       finishBootstrapHistoryWait();
       clearStepLive(rt);
@@ -1168,13 +1001,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.awaitingBootstrapHistory = false;
       clearReconnectTimer(rt);
       restorePendingPrompt(rt);
-      if (shouldSyncTasks && rt.needsTaskResync) {
-        rt.needsTaskResync = false;
-        void deps.syncProjectState?.(pid).catch(() => {
-          // Best-effort: if sync fails we still keep the connection; next reconnect will retry.
-          rt.needsTaskResync = true;
-        });
-      }
     };
 
     wsInstance.onClose = (ev) => {
@@ -1205,14 +1031,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       scheduleReconnect(mode, pid, rt, "error");
     };
 
-    if (mode === "worker") {
-      wsInstance.onTaskEvent = (payload) => {
-        if (rt.ws !== wsInstance) return;
-        const sequencedPayload = { type: "task:event", ...payload };
-        taskSequencer.observe(sequencedPayload, () => deps.onTaskEvent(payload, rt));
-      };
-    }
-
     const handleMessage = createWsMessageHandler({
       projects,
       pid,
@@ -1240,7 +1058,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       upsertExecuteBlock,
       upsertLiveActivity,
       upsertStepLiveDelta,
-      upsertThoughtDelta: ctx.upsertThoughtDelta,
       upsertStreamingDelta,
       replaceStreamingText,
     });
@@ -1255,6 +1072,13 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           deferBootstrapHistory(rec);
           return;
         }
+        if (rec.type === "agents" && !(Number.isFinite(seq) && seq > 0)) {
+          // Agent availability is transient current-state data from the bootstrap
+          // or agent-switch notification. It must not be queued behind sync catch-up,
+          // otherwise selector UI (agent/model/reasoning) disappears during catch-up.
+          handleMessage(msg);
+          return;
+        }
         if (
           rec.bootstrap === true &&
           (rec.type === "delta_snapshot" || rec.type === "command_snapshot")
@@ -1264,13 +1088,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             if (deferredBootstrapHistory.length > 0) scheduleIdleBootstrapHistory();
             else applyDeferredRuntimeSnapshots();
           }
-          return;
-        }
-        if (
-          mode === "worker" &&
-          (rec.type === "goal:status" || rec.type === "goal:cleared")
-        ) {
-          taskSequencer.observe(rec, () => applyTaskPayload(rec));
           return;
         }
       }
@@ -1326,15 +1143,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             bootstrapBoundarySeq = Math.floor(latestSeq);
           }
           if (rec.bootstrapHistory === true) expectBootstrapHistory();
-          const taskLatestSeq = Number(rec.taskLatestSeq);
-          if (
-            shouldSyncTasks &&
-            Number.isFinite(taskLatestSeq) &&
-            taskLatestSeq > taskSequencer.getLastAppliedSeq()
-          ) {
-            needsTaskEventSync = true;
-            void syncTaskEvents();
-          }
           if (Number.isFinite(latestSeq) && latestSeq > sequencer.getLastAppliedSeq()) {
             rt.needsChatSync = true;
             sequencer.beginCatchUp();

@@ -8,7 +8,6 @@ import { getDatabase, resetDatabaseForTests } from "../../server/storage/databas
 import { computeNextCronRunAt } from "../../server/scheduler/cron.js";
 import { ScheduleStore } from "../../server/scheduler/store.js";
 import type { ScheduleSpec } from "../../server/scheduler/scheduleSpec.js";
-import { TaskStore } from "../../server/tasks/store.js";
 
 describe("scheduler/store", () => {
   let tmpDir: string;
@@ -74,28 +73,14 @@ describe("scheduler/store", () => {
     const runAtIso = new Date(next).toISOString();
     const externalId = `sch:${schedule.id}:${runAtIso}`;
 
-    const taskStore = new TaskStore({ workspacePath: tmpDir });
-    taskStore.createTask(
-      {
-        id: externalId,
-        title: "Sample",
-        prompt: "Return JSON.",
-        model: "auto",
-        inheritContext: false,
-        createdBy: "test",
-      },
-      1500,
-      { status: "pending" },
-    );
-
     const first = store.insertRun(
-      { scheduleId: schedule.id, externalId, runAt: next, taskId: externalId, status: "queued" },
+      { scheduleId: schedule.id, externalId, runAt: next, taskId: null, status: "queued" },
       2000,
     );
     assert.equal(first.inserted, true);
 
     const second = store.insertRun(
-      { scheduleId: schedule.id, externalId, runAt: next, taskId: externalId, status: "queued" },
+      { scheduleId: schedule.id, externalId, runAt: next, taskId: null, status: "queued" },
       2001,
     );
     assert.equal(second.inserted, false);
@@ -140,20 +125,7 @@ describe("scheduler/store", () => {
     );
 
     const externalId = `sch:${schedule.id}:${new Date(next).toISOString()}`;
-    const taskId = `task-${schedule.id}`;
-    new TaskStore({ workspacePath: tmpDir }).createTask(
-      {
-        id: taskId,
-        title: "Sample",
-        prompt: "Return JSON.",
-        model: "auto",
-        inheritContext: false,
-        createdBy: "test",
-      },
-      1500,
-      { status: "pending" },
-    );
-    store.insertRun({ scheduleId: schedule.id, externalId, runAt: next, taskId, status: "queued" }, 2000);
+    store.insertRun({ scheduleId: schedule.id, externalId, runAt: next, taskId: null, status: "queued" }, 2000);
 
     assert.equal(store.listSchedules({ limit: 0 }).length, 1);
     assert.equal(store.listRuns(schedule.id, { limit: Number.NaN }).length, 1);

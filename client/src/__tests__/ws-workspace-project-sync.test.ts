@@ -310,6 +310,23 @@ describe("ws workspace project sync", () => {
     expect(rt.laneStatus.value).toBeNull();
   });
 
+  it("keeps the composer editable while another turn is in flight", () => {
+    const rt = createRuntime();
+    const { handler } = createHandler({
+      projects: [],
+      pid: "default",
+      rt,
+      updateProject: vi.fn(),
+    });
+
+    handler({ type: "in_flight", inFlight: true });
+
+    expect(rt.busy.value).toBe(true);
+    expect(rt.turnInFlight).toBe(true);
+    expect(rt.inputLocked.value).toBe(false);
+    expect(rt.laneStatus.value?.kind).toBe("progress");
+  });
+
   it("restores builtin command results in the fixed lane status", () => {
     const rt = createRuntime();
     const { handler, applyResumeHistory } = createHandler({
@@ -1173,7 +1190,7 @@ describe("ws workspace project sync", () => {
     expect(rt.threadWarning.value).toBeNull();
   });
 
-  it("renders a plan WS broadcast as a plan chat item with checklist", () => {
+  it("drops legacy plan WS broadcasts at the client protocol boundary", () => {
     const rt = createRuntime();
     const updateProject = vi.fn();
     const { handler, pushMessageBeforeLive } = createHandler({
@@ -1195,22 +1212,11 @@ describe("ws workspace project sync", () => {
       ts: 100,
     });
 
-    expect(pushMessageBeforeLive).toHaveBeenCalledTimes(1);
-    const first = pushMessageBeforeLive.mock.calls[0]?.[0] as
-      | { id: string; role: string; kind: string; plan: { items: Array<{ status: string }>; status: string } }
-      | undefined;
-    expect(first?.id).toBe("plan:p1");
-    expect(first?.role).toBe("system");
-    expect(first?.kind).toBe("plan");
-    expect(first?.plan?.status).toBe("in_progress");
-    expect(first?.plan?.items?.map((entry) => entry.status)).toEqual([
-      "completed",
-      "in_progress",
-      "pending",
-    ]);
+    expect(pushMessageBeforeLive).not.toHaveBeenCalled();
+    expect(rt.messages.value.some((message) => message.kind === "plan")).toBe(false);
   });
 
-  it("updates an existing plan chat item in place on later plan broadcasts", () => {
+  it("does not update legacy plan chat items from later broadcasts", () => {
     const rt = createRuntime();
     rt.messages.value = [
       {
@@ -1243,11 +1249,11 @@ describe("ws workspace project sync", () => {
       plan: { status: string; items: Array<{ status: string }> };
     };
     expect(updated.kind).toBe("plan");
-    expect(updated.plan.status).toBe("completed");
-    expect(updated.plan.items[0].status).toBe("completed");
+    expect(updated.plan.status).toBe("in_progress");
+    expect(updated.plan.items[0].status).toBe("pending");
   });
 
-  it("replays plan history entries into plan chat items", () => {
+  it("skips plan history entries during replay", () => {
     const rt = createRuntime();
     const { handler, applyResumeHistory } = createHandler({
       projects: [],
@@ -1276,12 +1282,6 @@ describe("ws workspace project sync", () => {
       kind: string;
       plan?: { planId: string; items: Array<{ status: string }> };
     }>;
-    expect(replayed).toHaveLength(1);
-    expect(replayed[0].id).toBe("plan:p2");
-    expect(replayed[0].kind).toBe("plan");
-    expect(replayed[0].plan?.items.map((entry) => entry.status)).toEqual([
-      "completed",
-      "in_progress",
-    ]);
+    expect(replayed).toHaveLength(0);
   });
 });

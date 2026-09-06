@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 
 import { getStateDatabase } from "../../../../state/database.js";
 import { createGlobalModelConfigStore, type GlobalModelConfigStore } from "../../../../state/globalModelConfigStore.js";
-import type { ModelConfig } from "../../../../tasks/types.js";
+import type { ModelConfig } from "../../../../state/modelConfigTypes.js";
 import type { ApiRouteContext } from "../types.js";
 import { readJsonBody, sendJson } from "../../http.js";
 

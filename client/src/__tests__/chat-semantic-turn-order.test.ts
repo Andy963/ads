@@ -6,7 +6,7 @@ import { createWsMessageHandler } from "../app/projectsWs/wsMessage";
 import type { WsMessage } from "../api/ws";
 
 describe("chat semantic card ordering (Issue #67)", () => {
-  it("places plan card above execute block when command arrives before plan in the same turn", () => {
+  it("does not create a plan card when a legacy plan message arrives", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const rt = ctx.activeRuntime.value;
@@ -48,15 +48,14 @@ describe("chat semantic card ordering (Issue #67)", () => {
     };
     handler(planEvent);
 
-    // 4. Verification: Plan MUST be hoisted above the execute block!
+    // Plan messages are retired at the protocol boundary.
     const kinds = rt.messages.value.map((m) => m.kind ?? m.role);
-    expect(kinds).toEqual(["text", "plan", "execute"]);
+    expect(kinds).toEqual(["text", "execute"]);
     expect(rt.messages.value[0]?.id).toBe("user-msg-1");
-    expect(rt.messages.value[1]?.kind).toBe("plan");
-    expect(rt.messages.value[2]?.kind).toBe("execute");
+    expect(rt.messages.value[1]?.kind).toBe("execute");
   });
 
-  it("maintains plan card pinned above execute cards when plan updates multiple times", () => {
+  it("keeps only the newest execute block when plan updates are ignored", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const rt = ctx.activeRuntime.value;
@@ -104,14 +103,12 @@ describe("chat semantic card ordering (Issue #67)", () => {
       items: [{ text: "Step 1", status: "completed" }],
     });
 
-    // Plan must stay above all execute blocks
+    // Plan updates do not add a visible card; the newest command replaces the prior block.
     const items = rt.messages.value;
     const planIndex = items.findIndex((m) => m.kind === "plan");
-    const firstExecuteIndex = items.findIndex((m) => m.kind === "execute");
-
-    expect(planIndex).toBeGreaterThan(0); // after user
-    expect(firstExecuteIndex).toBeGreaterThan(planIndex); // execute after plan
-    expect(items[planIndex]?.plan?.status).toBe("completed");
+    expect(planIndex).toBe(-1);
+    expect(items.filter((m) => m.kind === "execute")).toHaveLength(1);
+    expect(items.find((m) => m.kind === "execute")?.command).toBe("git diff");
   });
 
   it("keeps a process card above commands when the command arrives first", () => {
@@ -142,7 +139,7 @@ describe("chat semantic card ordering (Issue #67)", () => {
     expect(rt.messages.value.filter((item) => item.id === "live-step")).toHaveLength(1);
   });
 
-  it("keeps the process anchor stable when process arrives before commands and updates repeatedly", () => {
+  it("keeps the process anchor stable and ignores late updates from retired commands", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const rt = ctx.activeRuntime.value;
@@ -171,9 +168,9 @@ describe("chat semantic card ordering (Issue #67)", () => {
     expect(messages.filter((item) => item.id === "live-step")).toHaveLength(1);
     expect(messages.find((item) => item.id === "live-step")?.content).toBe("[editing] Updating checks");
     expect(liveIndex).toBeLessThan(firstExecuteIndex);
-    expect(messages.filter((item) => item.kind === "execute").map((item) => item.command)).toEqual(["npm test", "git diff"]);
-    expect(messages.find((item) => item.command === "npm test")?.content).toContain("first");
-    expect(messages.find((item) => item.command === "npm test")?.content).toContain("tail");
+    expect(messages.filter((item) => item.kind === "execute").map((item) => item.command)).toEqual(["git diff"]);
+    expect(messages.find((item) => item.command === "git diff")?.content).toContain("second");
+    expect(messages.find((item) => item.command === "npm test")).toBeUndefined();
   });
 
   it("reorders persisted history the same way as live events", () => {
@@ -201,7 +198,7 @@ describe("chat semantic card ordering (Issue #67)", () => {
       ],
     });
 
-    expect(rt.messages.value.map((item) => item.kind)).toEqual(["text", "thought", "execute", "text"]);
+    expect(rt.messages.value.map((item) => item.kind)).toEqual(["text", "execute", "text"]);
   });
   it("handles user sync event without duplicating locally rendered user prompt (Issue #143)", () => {
     const ctx = createAppContext();

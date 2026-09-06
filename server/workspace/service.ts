@@ -21,7 +21,6 @@ export async function initWorkspace(params: { name?: string; workspace_path?: st
       },
       created: {
         config: resolveWorkspaceStatePath(workspace, "workspace.json"),
-        rules_dir: resolveWorkspaceStatePath(workspace, "rules"),
         db: resolveWorkspaceStatePath(workspace, "ads.db"),
       },
       message: `工作空间已初始化: ${workspace}`,

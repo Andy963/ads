@@ -21,7 +21,7 @@ describe("ApiClient error responses", () => {
 
     let error: unknown;
     try {
-      await new ApiClient().get("/api/tasks");
+      await new ApiClient().get("/api/models");
     } catch (caught) {
       error = caught;
     }
@@ -34,9 +34,9 @@ describe("ApiClient error responses", () => {
   it("keeps JSON API error messages", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ error: "Task queue disabled" }), { status: 409 })),
+      vi.fn(async () => new Response(JSON.stringify({ error: "Models unavailable" }), { status: 409 })),
     );
 
-    await expect(new ApiClient().post("/api/task-queue/run", {})).rejects.toThrow("Task queue disabled");
+    await expect(new ApiClient().post("/api/models", {})).rejects.toThrow("Models unavailable");
   });
 });

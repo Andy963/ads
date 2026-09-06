@@ -77,7 +77,6 @@ export function sendInitialBootstrapMessages(args: {
   historyStore: HistoryStore;
   historyKey: string;
   latestSeq?: number;
-  taskLatestSeq?: number;
   laneGeneration?: number;
   /** Runtime-only snapshots that are not part of durable chat history. */
   runtimeSnapshots?: Array<Record<string, unknown>>;
@@ -113,7 +112,6 @@ export function sendInitialBootstrapMessages(args: {
       bootstrapHistory: historyPayload !== null,
       completedClientMessageIds: collectCompletedClientMessageIds(historyEntries),
       latestSeq: args.latestSeq,
-      taskLatestSeq: args.taskLatestSeq,
       state: bootstrapState,
     }),
   );

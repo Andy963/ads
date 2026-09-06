@@ -20,8 +20,8 @@ In practice, this implementation suffered from several foundational architectura
    - The agent's real-time step explanations preceding and succeeding command executions are themselves the true, living progress of execution.
    - Establish clean phase boundaries in `client/src/app/chatStreaming.ts`: when a command execution or patch occurs, the preceding assistant stream is sealed (`streaming: false`). Subsequent explanations start as a distinct conversational segment positioned chronologically below the completed actions.
    - Treat reconnect `delta_snapshot` payloads as cumulative turn text. The client consumes the assistant text already rendered in the current turn and restores only the unrendered suffix, so reconnect catch-up cannot duplicate earlier conversational phases.
-   - Unify execution-layer semantic card ordering in `client/src/lib/chat_sync.ts` so that Thought/Live status remains pinned at the cognitive layer, while assistant commentary and command executions interleave strictly according to their natural chronological occurrence:
-     `Pre-command explanation -> Active command block -> Post-command explanation / next step -> Next command block -> Final delivery summary`.
+   - Unify execution-layer ordering around the small visible contract: live-step text is a single replaceable progress block, the Execute block is a single replaceable latest-command block, and final assistant text remains the durable response. Internal thought, plan, and todo items never become visible chat cards:
+     `User -> live-step / assistant output -> latest Execute -> Final delivery summary`.
 
 ## Consequences
 ### Positive

@@ -50,8 +50,6 @@ export function useLaneRuntimeBridge(params: {
   activeProject: Ref<{ chatSessionId?: string } | null>;
   activeRuntime: Ref<unknown>;
   activePlannerRuntime: Ref<unknown>;
-  queueStatus?: Ref<{ running?: boolean } | null>;
-  tasks?: Ref<Array<{ status: string }>>;
   queuedPrompts: Ref<Array<{ id: string; text: string; images: unknown[] }>>;
   pendingImages: Ref<unknown[]>;
   agentBusy: Ref<boolean>;

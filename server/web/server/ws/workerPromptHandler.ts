@@ -1,11 +1,10 @@
 import type { ThreadEvent } from "../../../agents/protocol/types.js";
 
 import { isTransientUpstreamModelError } from "../../../agents/adapters/transientModelRetry.js";
-import { formatStepTraceLine, hasSubstantiveStepTrace, isStepTracePhase, type AgentEvent } from "../../../codex/events.js";
+import type { AgentEvent } from "../../../codex/events.js";
 import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { buildWorkspacePatch } from "../../gitPatch.js";
-import type { HistoryStore } from "../../../utils/historyStore.js";
-import { getRuleEnforcementGate, type RuleEnforcementGate } from "../../../rules/enforcementGate.js";
+import { getRuleEnforcementGate, type RuleEnforcementGate } from "../../../middleware/security/enforcementGate.js";
 import { extractCommandPayload } from "./utils.js";
 
 type FileChangeLike = { kind?: unknown; path?: unknown };
@@ -89,8 +88,10 @@ function isTerminalCommandStatus(status: unknown): boolean {
 export function attachWorkerPromptHandler(args: {
   orchestrator: EventSource;
   turnCwd: string;
-  historyKey: string;
-  historyStore: Pick<HistoryStore, "add" | "upsertEntryByKind">;
+  /** Retained for callers compiled against the pre-ADR handler contract. */
+  historyKey?: string;
+  /** Retained for callers compiled against the pre-ADR handler contract. */
+  historyStore?: unknown;
   sendToChat: (payload: unknown) => void;
   logger: Logger;
   sessionLogger: SessionLogger;
@@ -105,16 +106,15 @@ export function attachWorkerPromptHandler(args: {
   unsubscribe: () => void;
   handleExploredEntry: (entry: ExploredEntry) => void;
   getStepTraceText: () => string;
-  getThoughtText: () => string;
 } {
   const lastRespondingTextByItemId = new Map<string, string>();
   let activeRespondingItemId: string | null = null;
   const completedRespondingItemIds = new Set<string>();
-  let lastReasoningText = "";
   let latestStepTraceText = "";
   const lastCommandOutputsByKey = new Map<string, string>();
   const announcedCommandKeys = new Set<string>();
   const terminalCommandKeys = new Set<string>();
+  let latestCommandKey: string | null = null;
   let hasCommandOutput = false;
   let exploredHeaderSent = false;
   const isActive = (): boolean => (args.isActive ? args.isActive() : true);
@@ -152,9 +152,12 @@ export function attachWorkerPromptHandler(args: {
 
   const unsubscribe = args.orchestrator.onEvent((event: AgentEvent) => {
     if (!isActive()) return;
-    args.sessionLogger?.logEvent(event);
     args.logger.debug(`[Event] phase=${event.phase} title=${event.title} detail=${event.detail?.slice(0, 50)}`);
     const raw = event.raw as ThreadEvent;
+    const rawItem = (raw as { item?: { type?: unknown; id?: unknown } }).item;
+    const rawItemType = rawItem && typeof rawItem === "object"
+      ? String((rawItem as { type?: unknown }).type ?? "").trim()
+      : "";
     const eventTimestampRaw = Number(event.timestamp);
     const eventTimestamp = Number.isFinite(eventTimestampRaw) && eventTimestampRaw > 0
       ? Math.floor(eventTimestampRaw)
@@ -163,12 +166,35 @@ export function attachWorkerPromptHandler(args: {
       lastRespondingTextByItemId.clear();
       activeRespondingItemId = null;
       completedRespondingItemIds.clear();
-      lastReasoningText = "";
       latestStepTraceText = "";
+      lastCommandOutputsByKey.clear();
+      announcedCommandKeys.clear();
+      terminalCommandKeys.clear();
+      latestCommandKey = null;
+      hasCommandOutput = false;
     }
     if (raw.type === "thread.started" && raw.thread_id) {
       args.onThreadStarted?.(raw.thread_id);
     }
+    if (event.liveStep === true) {
+      const liveStepText = typeof event.delta === "string" ? event.delta : "";
+      if (!liveStepText.trim()) return;
+      latestStepTraceText = liveStepText;
+      args.sendToChat({ type: "delta", delta: liveStepText, source: "step", ts: eventTimestamp });
+      return;
+    }
+    // Reasoning, provider plans, and todo lists are internal model protocol
+    // details. They must not enter the ADS websocket or session log.
+    if (
+      rawItemType === "reasoning" ||
+      rawItemType === "plan" ||
+      rawItemType === "todo_list" ||
+      event.phase === "analysis" ||
+      event.phase === "plan"
+    ) {
+      return;
+    }
+    args.sessionLogger?.logEvent(event);
     if (event.sessionFallback) {
       args.onSessionFallback?.({
         previousSessionId: event.sessionFallback.previousSessionId,
@@ -216,8 +242,6 @@ export function attachWorkerPromptHandler(args: {
       }
       return;
     }
-    const rawItem = (raw as { item?: { type?: unknown; id?: unknown } }).item;
-    const rawItemType = rawItem && typeof rawItem === "object" ? String((rawItem as { type?: unknown }).type ?? "").trim() : "";
     if (raw.type === "item.completed" && rawItemType === "agent_message") {
       const itemId = rawItem && typeof rawItem === "object" ? String((rawItem as { id?: unknown }).id ?? "").trim() : "";
       if (itemId) {
@@ -252,32 +276,6 @@ export function attachWorkerPromptHandler(args: {
         args.sendToChat({ type: "patch", patch });
       }
     }
-    if (rawItemType === "reasoning" && typeof event.delta === "string" && event.delta) {
-      const next = event.delta;
-      const prev = lastReasoningText;
-      let delta = next;
-      if (prev && next.startsWith(prev)) {
-        delta = next.slice(prev.length);
-      }
-      lastReasoningText = next;
-      if (delta) {
-        // Emit pure reasoning delta as structured thought event directly,
-        // avoiding smearing cognitive reasoning into generic step traces.
-        args.sendToChat({ type: "delta", delta, source: "thought", ts: eventTimestamp });
-      }
-      return;
-    }
-    if (isStepTracePhase(event.phase)) {
-      const line = formatStepTraceLine(event);
-      if (line) {
-        // Keep the completion thought aligned with the live card: only the
-        // newest substantive stage is retained, never the full event history.
-        if (hasSubstantiveStepTrace(line)) {
-          latestStepTraceText = line;
-        }
-        args.sendToChat({ type: "delta", delta: line, source: "step", ts: eventTimestamp });
-      }
-    }
     if (event.phase === "command") {
       const commandPayload = extractCommandPayload(event);
       args.logger.info(
@@ -298,6 +296,17 @@ export function attachWorkerPromptHandler(args: {
         return;
       }
 
+      const isNewCommand = !announcedCommandKeys.has(commandKey);
+      // A completed command can still produce a late provider update after a
+      // newer command has started. Once a command identity is superseded, do
+      // not let that stale update recreate an older execute block downstream.
+      if (!isNewCommand && latestCommandKey !== commandKey) {
+        return;
+      }
+      if (isNewCommand) {
+        latestCommandKey = commandKey;
+      }
+
       let outputDelta: string | undefined;
       const nextOutput = String(commandPayload.aggregated_output ?? "");
       const prevOutput = lastCommandOutputsByKey.get(commandKey) ?? "";
@@ -310,7 +319,6 @@ export function attachWorkerPromptHandler(args: {
         lastCommandOutputsByKey.set(commandKey, nextOutput);
       }
 
-      const isNewCommand = !announcedCommandKeys.has(commandKey);
       if (isNewCommand) {
         announcedCommandKeys.add(commandKey);
         evaluateCommandSafety(commandLine);
@@ -367,6 +375,5 @@ export function attachWorkerPromptHandler(args: {
     unsubscribe,
     handleExploredEntry,
     getStepTraceText: () => latestStepTraceText,
-    getThoughtText: () => lastReasoningText.trim(),
   };
 }

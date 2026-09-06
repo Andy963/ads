@@ -4,8 +4,7 @@ import type { SyncEventStore } from "../../sync/store.js";
 import { mergeSyncHistory } from "../../sync/history.js";
 import { buildHistoryBootstrapPayload } from "../../ws/bootstrapReplay.js";
 import { resolveLaneRequest } from "../../sync/laneRequest.js";
-import { resolveSharedWorkerSyncLaneKey, resolveSyncNamespace } from "../../sync/lane.js";
-import { WEB_WORKER_NAMESPACE } from "../../start/webLaneResources.js";
+import { resolveSyncNamespace } from "../../sync/lane.js";
 import type { WebLaneGenerationStore } from "../../sync/laneGeneration.js";
 
 type SyncHistoryStore = {
@@ -52,31 +51,20 @@ export async function handleSyncRoutes(
     return true;
   }
   const { namespace, laneKey, laneKeys } = resolved.lane;
-  const channel = String(route.url.searchParams.get("channel") ?? "chat").trim().toLowerCase();
-  const isTaskChannel = channel === "task" || channel === "tasks";
-  if (isTaskChannel && namespace !== WEB_WORKER_NAMESPACE) {
-    sendJson(route.res, 403, { error: "task sync is only available to worker lanes" });
-    return true;
-  }
-  const effectiveNamespace = isTaskChannel ? WEB_WORKER_NAMESPACE : namespace;
-  const effectiveLaneKey = isTaskChannel
-    ? resolveSharedWorkerSyncLaneKey(resolved.lane.sessionId)
-    : laneKey;
-  const effectiveLaneKeys = isTaskChannel ? [effectiveLaneKey] : laneKeys;
 
   const afterSeq = parsePositiveInt(route.url.searchParams.get("afterSeq"), 0);
   const limit = parsePositiveInt(route.url.searchParams.get("limit"), 500);
   const result = deps.syncEventStore.readAfterLanes({
-    namespace: effectiveNamespace,
-    laneKeys: effectiveLaneKeys,
+    namespace,
+    laneKeys,
     afterSeq,
     limit,
   });
-  const historyStore = effectiveNamespace === resolveSyncNamespace("planner")
+  const historyStore = namespace === resolveSyncNamespace("planner")
     ? deps.plannerHistoryStore
     : deps.workerHistoryStore;
-  const snapshotHistory = isTaskChannel ? [] : mergeSyncHistory([historyStore.get(effectiveLaneKey)]);
-  const snapshot = !isTaskChannel && result.truncated
+  const snapshotHistory = mergeSyncHistory([historyStore.get(laneKey)]);
+  const snapshot = result.truncated
     ? buildHistoryBootstrapPayload(snapshotHistory) ?? { type: "history", items: [] }
     : null;
   sendJson(route.res, 200, {

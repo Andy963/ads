@@ -144,8 +144,7 @@ export function migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot: string): boolea
   }
 
   // Always backfill missing state from legacy workspace when available.
-  // This keeps hot-loaded instructions/rules consistent even if the workspace was
-  // initialized before the legacy folder gained new files (or if migration was partial).
+  // This keeps hot-loaded instructions consistent if migration was partial.
   if (hasLegacy) {
     fs.mkdirSync(stateDir, { recursive: true });
     const legacyTemplatesDir = path.join(legacyDir, "templates");
@@ -155,18 +154,15 @@ export function migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot: string): boolea
       [legacyConfig, stateConfig],
       [path.join(legacyDir, "ads.db"), path.join(stateDir, "ads.db")],
       [path.join(legacyDir, "state.db"), path.join(stateDir, "state.db")],
-      [path.join(legacyDir, "rules.md"), path.join(stateDir, "rules.md")],
       [path.join(legacyDir, "intake-state.json"), path.join(stateDir, "intake-state.json")],
       [path.join(legacyDir, "context.json"), path.join(stateDir, "context.json")],
-      // Legacy workspaces stored instructions/rules at the root of `.ads/`. The new system prompt manager
+      // Legacy workspaces stored instructions at the root of `.ads/`. The system prompt manager
       // reads them from the centralized state under `templates/`.
       [path.join(legacyTemplatesDir, "instructions.md"), path.join(stateTemplatesDir, "instructions.md")],
       [path.join(legacyDir, "instructions.md"), path.join(stateTemplatesDir, "instructions.md")],
-      [path.join(legacyTemplatesDir, "rules.md"), path.join(stateTemplatesDir, "rules.md")],
     ];
     const dirPairs: CopyPair[] = [
       [legacyTemplatesDir, stateTemplatesDir],
-      [path.join(legacyDir, "rules"), path.join(stateDir, "rules")],
       [path.join(legacyDir, "commands"), path.join(stateDir, "commands")],
     ];
 

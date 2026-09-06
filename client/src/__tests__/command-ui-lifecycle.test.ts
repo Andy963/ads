@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { shallowMount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
-import type { ModelConfig, Task, TaskQueueStatus } from "../api/types";
+import type { ModelConfig } from "../api/types";
 import { RECONNECT_PENDING_RESEND_NOTICE } from "../app/projectsWs/reconnectNotice";
 
 type GetImpl = (url: string) => Promise<unknown>;
@@ -12,7 +12,6 @@ let lastWs: {
   onOpen?: () => void;
   onClose?: (ev: { code: number; reason?: string }) => void;
   onError?: () => void;
-  onTaskEvent?: (payload: unknown) => void;
   onMessage?: (msg: unknown) => void;
   clearHistory: () => void;
 } | null = null;
@@ -47,7 +46,6 @@ vi.mock("../api/ws", () => {
     onOpen?: () => void;
     onClose?: (ev: { code: number; reason?: string }) => void;
     onError?: () => void;
-    onTaskEvent?: (payload: unknown) => void;
     onMessage?: (msg: unknown) => void;
 
     clearHistory = vi.fn();
@@ -103,9 +101,6 @@ describe("command UI lifecycle", () => {
     lastWs = null;
     getImpl = async (url: string) => {
       if (url === "/api/models") return [] satisfies ModelConfig[];
-      if (url.includes("/api/task-queue/status"))
-        return { enabled: true, running: false, ready: true, streaming: false } satisfies TaskQueueStatus;
-      if (url.startsWith("/api/tasks")) return [] satisfies Task[];
       if (url.startsWith("/api/paths/validate")) return { ok: false };
       return {};
     };
@@ -117,7 +112,7 @@ describe("command UI lifecycle", () => {
     vi.clearAllMocks();
   });
 
-  it("shows per-command execute previews during turn and removes them on completion", async () => {
+  it("shows the latest execute preview during turn and preserves it on completion", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await settleUi(wrapper);
@@ -152,7 +147,11 @@ describe("command UI lifecycle", () => {
     await settleUi(wrapper);
 
     const after = (wrapper.vm as any).messages as Array<any>;
-    expect(after.some((m) => m.kind === "execute")).toBe(false);
+    const completedExecute = after.find((m) => m.kind === "execute");
+    expect(completedExecute).toMatchObject({
+      command: "git status --porcelain",
+      streaming: false,
+    });
     expect(after.some((m) => m.kind === "command")).toBe(false);
     expect(after.some((m) => m.role === "assistant" && m.kind === "text" && m.content.includes("Summary"))).toBe(true);
 
@@ -299,7 +298,7 @@ describe("command UI lifecycle", () => {
     wrapper.unmount();
   });
 
-  it("hides boot/analysis step traces and drops the placeholder once progress arrives", async () => {
+  it("renders provider-authored live-step text and drops the placeholder once progress arrives", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await settleUi(wrapper);
@@ -311,21 +310,14 @@ describe("command UI lifecycle", () => {
     const before = (wrapper.vm as any).messages as Array<any>;
     expect(before.some((m) => m.role === "assistant" && m.streaming && String(m.content).trim() === "")).toBe(true);
 
-    lastWs!.onMessage?.({ type: "delta", delta: "[boot] 初始化 Codex 线程: thread#1\n", source: "step" });
-    lastWs!.onMessage?.({ type: "delta", delta: "[analysis] 开始处理请求\n", source: "step" });
-    await settleUi(wrapper);
-
-    const afterBoot = (wrapper.vm as any).messages as Array<any>;
-    const allText = afterBoot.map((m) => String(m.content ?? "")).join("\n");
-    expect(allText).not.toContain("初始化 Codex 线程");
-    expect(allText).not.toContain("开始处理请求");
-
-    lastWs!.onMessage?.({ type: "delta", delta: "[tool] Tool: shell\n", source: "step" });
+    lastWs!.onMessage?.({ type: "delta", delta: "I will inspect the workspace before running a command.\n", source: "step" });
     await settleUi(wrapper);
 
     const afterProgress = (wrapper.vm as any).messages as Array<any>;
     expect(afterProgress.some((m) => m.role === "assistant" && m.streaming && String(m.content).trim() === "")).toBe(false);
-    expect(afterProgress.map((m) => String(m.content ?? "")).join("\n")).toContain("Tool: shell");
+    expect(afterProgress.map((m) => String(m.content ?? "")).join("\n")).toContain(
+      "I will inspect the workspace before running a command.",
+    );
 
     wrapper.unmount();
   });

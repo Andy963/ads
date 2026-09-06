@@ -5,15 +5,12 @@ import type {
   ItemCompletedEvent,
   ItemStartedEvent,
   ItemUpdatedEvent,
-  PlanItem,
-  ReasoningItem,
   ToolCallItem,
   ThreadErrorEvent,
   ThreadEvent,
   TurnFailedEvent,
   TurnStartedEvent,
   WebSearchItem,
-  TodoListItem,
 } from "../agents/protocol/types.js";
 
 // Shape of `agent_message` items from the SDK.
@@ -50,6 +47,8 @@ export interface AgentEvent {
   detail?: string;
   detailVisible?: boolean;
   delta?: string;
+  /** True only for provider-authored reasoning summary text exposed as live-step. */
+  liveStep?: true;
   timestamp: number;
   raw: ThreadEvent;
   retry?: AgentRetryInfo;
@@ -67,13 +66,9 @@ type ItemEvent = ItemStartedEvent | ItemUpdatedEvent | ItemCompletedEvent;
 
 const DEFAULT_DETAIL_LIMIT = 160;
 
-const NON_ACTIONABLE_ANALYSIS_TITLES = new Set(["开始处理请求"]);
-const STEP_TRACE_MARKER_REGEX = /\[(boot|analysis|plan|context|editing|tool|connection)\]\s*/gi;
+const STEP_TRACE_MARKER_REGEX = /\[(context|editing|tool|connection)\]\s*/i;
 
 export const STEP_TRACE_PHASES: ReadonlySet<string> = new Set([
-  "boot",
-  "analysis",
-  "plan",
   "context",
   "editing",
   "tool",
@@ -95,23 +90,15 @@ export function formatStepTraceLine(event: AgentEvent): string | null {
   if (!title) {
     return null;
   }
-  if (phase === "analysis" && (NON_ACTIONABLE_ANALYSIS_TITLES.has(title) || /^reasoning$/i.test(title))) {
-    return null;
-  }
   const prefix = `[${phase}] `;
-  const detail = phase === "analysis" && !event.detailVisible ? "" : String(event.detail ?? "").trim();
+  const detail = String(event.detail ?? "").trim();
   return detail ? `${prefix}${title}: ${detail}\n` : `${prefix}${title}\n`;
 }
 
-/** Returns whether a trace contains a stage other than pure analysis/reasoning. */
+/** Returns whether a trace contains a user-visible execution stage. */
 export function hasSubstantiveStepTrace(text: unknown): boolean {
   const raw = String(text ?? "");
-  for (const match of raw.matchAll(STEP_TRACE_MARKER_REGEX)) {
-    if (String(match[1] ?? "").trim().toLowerCase() !== "analysis") {
-      return true;
-    }
-  }
-  return false;
+  return STEP_TRACE_MARKER_REGEX.test(raw);
 }
 
 export function isCommandTool(detail?: string): boolean {
@@ -237,7 +224,7 @@ function mapItemEvent(event: ItemEvent, timestamp: number): AgentEvent | null {
     case "tool_call":
       return mapToolCall(event, item, timestamp);
     case "plan":
-      return mapPlanItem(event, item, timestamp);
+      return null;
     case "context":
       return mapContextItem(event, item, timestamp);
     case "agent_message": {
@@ -266,32 +253,12 @@ function mapItemEvent(event: ItemEvent, timestamp: number): AgentEvent | null {
 
       return null;
     }
-    case "reasoning": {
-      const isSummary = (item as ReasoningItem & { summary?: unknown }).summary === true;
-      return {
-        phase: "analysis",
-        title: isSummary ? "Reasoning summary" : "Reasoning",
-        detail: isSummary ? truncate(item.text) : undefined,
-        detailVisible: isSummary,
-        delta: String(item.text ?? ""),
-        timestamp,
-        raw: event,
-      };
-    }
+    case "reasoning":
+      return null;
     case "web_search":
       return mapWebSearch(event, item, timestamp);
-    case "todo_list": {
-      const detail = formatTodoListPreview(item);
-      const title =
-        event.type === "item.started" ? "生成任务计划" : event.type === "item.updated" ? "更新任务计划" : "任务计划完成";
-      return {
-        phase: "analysis",
-        title,
-        detail,
-        timestamp,
-        raw: event,
-      };
-    }
+    case "todo_list":
+      return null;
     case "error":
       return {
         phase: "error",
@@ -361,17 +328,6 @@ function mapWebSearch(event: ItemEvent, item: WebSearchItem, timestamp: number):
   };
 }
 
-function mapPlanItem(event: ItemEvent, item: PlanItem, timestamp: number): AgentEvent {
-  const title = event.type === "item.completed" ? "Plan complete" : event.type === "item.started" ? "Plan started" : "Plan update";
-  return {
-    phase: "plan",
-    title,
-    detail: truncate(item.text),
-    timestamp,
-    raw: event,
-  };
-}
-
 function mapContextItem(event: ItemEvent, item: ContextItem, timestamp: number): AgentEvent {
   const title = event.type === "item.completed" ? "Context ready" : event.type === "item.started" ? "Loading context" : "Context update";
   return {
@@ -381,20 +337,6 @@ function mapContextItem(event: ItemEvent, item: ContextItem, timestamp: number):
     timestamp,
     raw: event,
   };
-}
-
-function formatTodoListPreview(item: TodoListItem): string | undefined {
-  if (!item.items?.length) {
-    return undefined;
-  }
-  const total = item.items.length;
-  const done = item.items.filter((entry) => entry.completed).length;
-  const preview = item.items
-    .slice(0, 3)
-    .map((entry, index) => `${entry.completed ? "✅" : "⬜"} ${entry.text || `Step ${index + 1}`}`)
-    .join(" | ");
-  const suffix = item.items.length > 3 ? " …" : "";
-  return truncate(`共 ${total} 项，已完成 ${done} 项 | ${preview}${suffix}`);
 }
 
 function truncate(text?: string, limit = DEFAULT_DETAIL_LIMIT): string | undefined {

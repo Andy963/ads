@@ -68,7 +68,7 @@ describe("server/sync/commandSnapshot", () => {
     assert.equal(snapshots[0]?.payload.command && (snapshots[0].payload.command as Record<string, unknown>).output, "$ npm test\nPASS one\nPASS two\n");
   });
 
-  it("creates distinct blocks when a command id is reused for another command", () => {
+  it("keeps only the newest command when a command id is reused", () => {
     const store = new SyncEventStore({ stateDbPath });
     const coalescer = createCommandSnapshotCoalescer({
       store,
@@ -87,8 +87,12 @@ describe("server/sync/commandSnapshot", () => {
     });
 
     assert.notEqual(first?.identity, second?.identity);
-    assert.equal(coalescer.getActiveCount(), 2);
-    assert.equal(coalescer.getSnapshots().length, 2);
+    assert.equal(coalescer.getActiveCount(), 1);
+    assert.equal(coalescer.getSnapshots().length, 1);
+    assert.equal(
+      (coalescer.getSnapshots()[0]?.command as Record<string, unknown> | undefined)?.command,
+      "npm run build",
+    );
   });
 
   it("hydrates active snapshots after reconnect and removes them only at turn completion", () => {
@@ -113,5 +117,38 @@ describe("server/sync/commandSnapshot", () => {
 
     writer.finish();
     assert.equal(store.readCoalesced({ namespace: WEB_WORKER_NAMESPACE, laneKey: "command-lane", type: COMMAND_SNAPSHOT_EVENT_TYPE }).length, 0);
+  });
+
+  it("does not restore a retired command from a late update", () => {
+    const store = new SyncEventStore({ stateDbPath });
+    const coalescer = createCommandSnapshotCoalescer({
+      store,
+      namespace: WEB_WORKER_NAMESPACE,
+      laneKey: "command-lane",
+      now: () => 4000,
+    });
+
+    coalescer.record({
+      type: "command",
+      ts: 4000,
+      command: { id: "cmd-1", command: "npm test", outputDelta: "test\n" },
+    });
+    coalescer.record({
+      type: "command",
+      ts: 4001,
+      command: { id: "cmd-2", command: "npm run build", outputDelta: "build\n" },
+    });
+    const late = coalescer.record({
+      type: "command",
+      ts: 4002,
+      command: { id: "cmd-1", command: "npm test", outputDelta: "late\n" },
+    });
+
+    assert.equal(late, null);
+    assert.equal(coalescer.getActiveCount(), 1);
+    assert.equal(
+      (coalescer.getSnapshots()[0]?.command as Record<string, unknown> | undefined)?.command,
+      "npm run build",
+    );
   });
 });

@@ -238,7 +238,7 @@ function assembleRelease() {
     copyFile(path.join(sourceRoot, file), path.join(stagingDir, file));
   }
 
-  if (services.some((service) => service.name === telegramServiceName)) {
+  if (fs.existsSync(telegramConnectorRoot)) {
     const connectorStagingRoot = path.join(stagingDir, "connectors", "telegram");
     copyDirectory(path.join(telegramConnectorRoot, "dist"), path.join(connectorStagingRoot, "dist"));
     for (const file of ["bin/ads-telegram.js", "package.json", "package-lock.json"]) {
@@ -251,13 +251,12 @@ function assembleRelease() {
     env: toolEnv,
   });
 
-  if (services.some((service) => service.name === telegramServiceName)) {
+  if (fs.existsSync(telegramConnectorRoot)) {
     run(npmBin, ["ci", "--omit=dev", "--no-audit", "--no-fund"], {
       cwd: path.join(stagingDir, "connectors", "telegram"),
       env: toolEnv,
     });
   }
-
   run(nodeBin, [path.join(stagingDir, "dist", "server", "cli.js"), "version"], {
     cwd: stagingDir,
     env: {
@@ -308,7 +307,7 @@ let servicesStopped = false;
 
 try {
   run(npmBin, ["run", "build"], { cwd: sourceRoot, env: toolEnv });
-  if (services.some((service) => service.name === telegramServiceName)) {
+  if (fs.existsSync(telegramConnectorRoot)) {
     run(npmBin, ["run", "build"], { cwd: telegramConnectorRoot, env: toolEnv });
   }
   assembleRelease();

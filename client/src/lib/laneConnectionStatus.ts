@@ -1,6 +1,6 @@
 import type { ChatLane } from "../composables/app/useLaneRuntimeBridge";
 
-export type WorkspaceTab = "tasks" | ChatLane;
+export type WorkspaceTab = ChatLane;
 
 export function isLaneConnected(
   tab: WorkspaceTab,

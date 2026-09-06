@@ -133,13 +133,8 @@ function translateItem(appItem: unknown): ThreadItem | null {
         id,
         text: typeof obj.text === "string" ? obj.text : "",
       } as ThreadItem;
-    case "reasoning": {
-      const summary = Array.isArray(obj.summary) ? obj.summary : [];
-      const content = Array.isArray(obj.content) ? obj.content : [];
-      const source = summary.length > 0 ? summary : content;
-      const text = source.filter((part): part is string => typeof part === "string").join("\n");
-      return { type: "reasoning", id, text } as ThreadItem;
-    }
+    case "reasoning":
+      return null;
     case "commandExecution":
       return {
         type: "command_execution",
@@ -180,11 +175,7 @@ function translateItem(appItem: unknown): ThreadItem | null {
         query: typeof obj.query === "string" ? obj.query : "",
       } as ThreadItem;
     case "plan":
-      return {
-        type: "plan",
-        id,
-        text: typeof obj.text === "string" ? obj.text : "",
-      } as ThreadItem;
+      return null;
     case "contextCompaction":
       return {
         type: "context",
@@ -618,24 +609,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
       failed: false,
       failureMessage: null,
     };
-    let safetyBlockTriggered = false;
     const reasoningSummaryBuffers = new Map<string, string>();
-    const planDeltaBuffers = new Map<string, string>();
-
-    const appendDelta = (
-      buffers: Map<string, string>,
-      params: unknown,
-    ): { itemId: string; text: string } | null => {
-      if (!params || typeof params !== "object") return null;
-      const payload = params as Record<string, unknown>;
-      const itemId = typeof payload.itemId === "string" ? payload.itemId : "";
-      const delta = typeof payload.delta === "string" ? payload.delta : "";
-      if (!itemId || !delta) return null;
-      const text = `${buffers.get(itemId) ?? ""}${delta}`;
-      buffers.set(itemId, text);
-      return { itemId, text };
-    };
-
+    let safetyBlockTriggered = false;
     const cleanupFns: Array<() => void> = [];
     const emit = (event: ThreadEvent) => {
       const mapped = mapThreadEventToAgentEvent(event, Date.now());
@@ -696,50 +671,37 @@ export class CodexAppServerAdapter implements AgentAdapter {
       }),
     );
     cleanupFns.push(
-      client.onNotification("turn/plan/updated", (params) => {
-        if (!belongsToThisTurn(params)) return;
-        const payload = params as { plan?: unknown };
-        const steps = Array.isArray(payload.plan) ? payload.plan : [];
-        const items = steps
-          .map((step) => {
-            if (!step || typeof step !== "object") return null;
-            const rec = step as Record<string, unknown>;
-            const text = String(rec.step ?? "").trim();
-            if (!text) return null;
-            const status = String(rec.status ?? "pending").trim().toLowerCase();
-            return {
-              text,
-              status: status === "completed" ? "completed" : status === "inprogress" ? "in_progress" : "pending",
-            };
-          })
-          .filter((item): item is { text: string; status: "pending" | "in_progress" | "completed" } => item !== null);
-        if (items.length === 0) return;
-        const completed = items.every((item) => item.status === "completed");
-        emit({
-          type: "item.updated",
-          item: { type: "todo_list", id: "codex-turn-plan", status: completed ? "completed" : "in_progress", items },
-        });
-      }),
-    );
-    cleanupFns.push(
-      client.onNotification("item/plan/delta", (params) => {
-        if (!belongsToThisTurn(params)) return;
-        const next = appendDelta(planDeltaBuffers, params);
-        if (!next) return;
-        emit({
-          type: "item.updated",
-          item: { type: "plan", id: next.itemId, text: next.text },
-        });
-      }),
-    );
-    cleanupFns.push(
       client.onNotification("item/reasoning/summaryTextDelta", (params) => {
         if (!belongsToThisTurn(params)) return;
-        const next = appendDelta(reasoningSummaryBuffers, params);
-        if (!next) return;
-        emit({
-          type: "item.updated",
-          item: { type: "reasoning", id: next.itemId, text: next.text, summary: true },
+        if (!params || typeof params !== "object") return;
+        const payload = params as Record<string, unknown>;
+        const itemId = typeof payload.itemId === "string" ? payload.itemId.trim() : "";
+        const delta = typeof payload.delta === "string" ? payload.delta : "";
+        const summaryIndex = Number(payload.summaryIndex);
+        if (!itemId || !delta || !Number.isInteger(summaryIndex) || summaryIndex < 0) return;
+
+        // Codex sends deltas for each summary part independently. Keep the
+        // provider text cumulative so the client can replace one live-step
+        // snapshot without inventing or losing any explanation text.
+        const bufferKey = `${itemId}:${summaryIndex}`;
+        const text = `${reasoningSummaryBuffers.get(bufferKey) ?? ""}${delta}`;
+        reasoningSummaryBuffers.set(bufferKey, text);
+        this.emitEvent({
+          phase: "analysis",
+          title: "Provider live step",
+          delta: text,
+          liveStep: true,
+          timestamp: Date.now(),
+          raw: {
+            type: "item.updated",
+            item: {
+              type: "reasoning",
+              id: itemId,
+              text,
+              summary: true,
+              summaryIndex,
+            },
+          },
         });
       }),
     );

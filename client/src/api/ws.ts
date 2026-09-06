@@ -1,5 +1,3 @@
-import type { TaskBundleDraft, TaskEventPayload } from "./types";
-
 type WsCommandPayload = {
   id?: string;
   command?: string;
@@ -56,8 +54,6 @@ type WsMessage =
       agents?: Array<{ id?: string; name?: string; ready?: boolean; error?: string }>;
       threadId?: string | null;
     }
-  | { type: "task:event"; event: TaskEventPayload["event"]; data: unknown; ts?: number; seq?: number }
-  | { type: "task_bundle_draft"; action?: "upsert" | "delete"; draft?: TaskBundleDraft | null }
   | { type: string; seq?: number; [k: string]: unknown };
 
 export class AdsWebSocket {
@@ -69,7 +65,6 @@ export class AdsWebSocket {
   onOpen?: () => void;
   onClose?: (ev: CloseEvent) => void;
   onError?: () => void;
-  onTaskEvent?: (payload: { event: TaskEventPayload["event"]; data: unknown; seq?: number }) => void;
   onMessage?: (msg: WsMessage) => void;
 
   constructor(options: { sessionId?: string; chatSessionId?: string }) {
@@ -139,10 +134,6 @@ export class AdsWebSocket {
       try {
         msg = JSON.parse(raw) as WsMessage;
       } catch {
-        return;
-      }
-      if (msg.type === "task:event") {
-        this.onTaskEvent?.({ event: msg.event, data: msg.data, seq: typeof msg.seq === "number" ? msg.seq : undefined });
         return;
       }
       this.onMessage?.(msg);
