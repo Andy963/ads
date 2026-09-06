@@ -617,29 +617,41 @@
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.laneTab--connected {
-  color: #059669;
+.laneTabStatusDot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: #94a3b8;
 }
 
-.laneTab--disconnected {
-  color: #94a3b8;
+.laneTabStatusDot--connected {
+  background: #059669;
 }
 
-.laneTab:hover {
-  color: #0f172a;
+.laneTabStatusDot--disconnected {
+  background: #94a3b8;
 }
 
 .laneTab.active {
   background: white;
   color: #0f172a;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  font-weight: 800;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.1), 0 1px 2px rgba(15, 23, 42, 0.06);
 }
 
-.laneTab.active.laneTab--connected {
-  color: #059669;
+.laneTab:not(.active) {
+  color: #64748b;
+}
+
+.laneTab:not(.active):hover {
+  color: #334155;
 }
 
 .laneTab:focus-visible {

@@ -22,11 +22,20 @@ describe("lane connection status", () => {
     expect(isLaneConnected("planner", { planner: false, worker: true })).toBe(false);
   });
 
-  it("keeps connected lane text green when the tab is active", () => {
+  it("renders connection state with an independent six-pixel status dot", () => {
     const css = readAppCss();
 
-    expect(css).toMatch(
-      /\.laneTab\.active\.laneTab--connected\s*\{[\s\S]*?color:\s*#059669\s*;/,
-    );
+    expect(css).toMatch(/\.laneTabStatusDot\s*\{[\s\S]*?width:\s*6px;[\s\S]*?height:\s*6px;/);
+    expect(css).toMatch(/\.laneTabStatusDot--connected\s*\{[\s\S]*?background:\s*#059669\s*;/);
+    expect(css).toMatch(/\.laneTabStatusDot--disconnected\s*\{[\s\S]*?background:\s*#94a3b8\s*;/);
+    expect(css).not.toMatch(/\.laneTab\.active\.laneTab--connected/);
+  });
+
+  it("keeps the active lane tab text high contrast", () => {
+    const css = readAppCss();
+
+    expect(css).toMatch(/\.laneTab\.active\s*\{[\s\S]*?color:\s*#0f172a\s*;/);
+    expect(css).toMatch(/\.laneTab:not\(\.active\)\s*\{[\s\S]*?color:\s*#64748b\s*;/);
+    expect(css).toMatch(/\.laneTab:not\(\.active\):hover\s*\{[\s\S]*?color:\s*#334155\s*;/);
   });
 });
