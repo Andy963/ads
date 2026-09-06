@@ -455,7 +455,7 @@ const plannerConnectionStatus = computed(() => {
       <div class="right">
         <button
           v-if="!isMobile"
-            type="button"
+          type="button"
           class="topbarIconBtn"
           title="管理模型"
           aria-label="管理模型"
@@ -628,7 +628,7 @@ const plannerConnectionStatus = computed(() => {
             v-for="tab in workspaceTabs"
             :id="`lane-tab-${tab.id}`"
             :key="tab.id"
-          type="button"
+            type="button"
             class="laneTab"
             :class="{ active: activeWorkspaceTab === tab.id }"
             role="tab"
