@@ -1169,6 +1169,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const params: Record<string, unknown> = {
       experimentalRawEvents: false,
       persistExtendedHistory: false,
+      approvalPolicy: "never",
     };
     if (this.workingDirectory) params.cwd = this.workingDirectory;
     if (this.model) params.model = this.model;
@@ -1187,6 +1188,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const params: Record<string, unknown> = {
       threadId,
       persistExtendedHistory: false,
+      approvalPolicy: "never",
     };
     if (this.workingDirectory) params.cwd = this.workingDirectory;
     if (this.model) params.model = this.model;

@@ -166,6 +166,7 @@ describe("CodexAppServerAdapter", () => {
     // Verify request shape sent to the daemon.
     const threadStartRequest = fake.requests.find((r) => r.method === "thread/start");
     assert(threadStartRequest, "expected thread/start request");
+    assert.equal((threadStartRequest.params as any).approvalPolicy, "never");
     const turnStartRequest = fake.requests.find((r) => r.method === "turn/start");
     assert(turnStartRequest, "expected turn/start request");
     assert.equal((turnStartRequest!.params as any).threadId, "thread-1");
@@ -368,6 +369,9 @@ describe("CodexAppServerAdapter", () => {
     assert.equal(adapter.getThreadId(), "thread-persisted-abc");
     assert.equal(resumeCalls, 1);
     assert.equal(fake.requests.filter((request) => request.method === "thread/start").length, 0);
+    const resumeRequest = fake.requests.find((request) => request.method === "thread/resume");
+    assert(resumeRequest, "expected thread/resume request");
+    assert.equal((resumeRequest.params as any).approvalPolicy, "never");
     assert.equal(
       (fake.requests.find((request) => request.method === "turn/start")?.params as any)?.threadId,
       "thread-persisted-abc",

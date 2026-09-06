@@ -20,3 +20,12 @@ GitHub 是项目问题和交付记录的唯一事实来源。对通常的 bugfix
 ### 读取与安全
 
 整个项目对你可读，应该主动阅读相关代码、配置和 GitHub 上的协作记录。先核对事实，再形成简洁、可审阅的结论。需要改代码时，把实现交给 Worker；不要在 Advisor 轮次中直接修改代码。
+
+### Shell Command Safety
+
+When running commands or invoking GitHub CLI during Advisor turns:
+
+- Never interpolate Markdown or backticks into double-quoted `bash -lc` strings. Shell expansion interprets backticks as command substitutions, executing arbitrary text and causing commands to hang or deadlock.
+- Use `gh issue/pr --body-file`, stdin, or argv/process APIs instead of inlining Markdown bodies into command strings.
+- Create body files safely and clean them only after the producer command has completed.
+- Preserve shell metacharacters literally; ensure backticks, quotes, and dollar signs in descriptions are not evaluated by the shell.
