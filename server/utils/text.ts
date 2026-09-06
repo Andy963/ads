@@ -16,10 +16,3 @@ export function truncateForLog(text: string, limit = 96): string {
   }
   return `${normalized.slice(0, limit - 1)}…`;
 }
-
-export function normalizeOutput(text: string): string {
-  if (typeof text !== "string") {
-    return "(无输出)";
-  }
-  return text.trim() ? text : "(无输出)";
-}
