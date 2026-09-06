@@ -321,6 +321,24 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
     });
   };
 
+  const startNewPlannerSession = (): void => {
+    const rt = activePlannerRuntime.value;
+    rt.queuedPrompts.value = [];
+    clearPendingPromptReplayState(rt);
+    threadReset(rt, {
+      notice: "",
+      warning: null,
+      keepLatestTurn: false,
+      clearBackendHistory: true,
+      clearHistoryPayload: {
+        ...laneClearHistoryPayload(rt),
+        mode: "new_session",
+      },
+      resetThreadId: true,
+      source: "user_new_planner_session",
+    });
+  };
+
   const resumeTaskThread = async (
     projectId: string = activeProjectId.value,
     options?: { sessionId?: string },
@@ -446,31 +464,32 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      activePlannerRuntime.value.queuedPrompts.value = list.filter((p) => p.id !== id);
    };
 
-   return {
-     setNotice,
-     clearNotice,
-     loadModels,
-     sendMainPrompt,
-     sendPlannerPrompt,
-     switchMainAgent,
-     switchPlannerAgent,
-     interruptActive,
-     interruptPlanner,
-     clearActiveChat,
-     clearPlannerChat,
-     resumeTaskThread,
-     listResumableSessions,
-     resumePlannerThread,
-     addPendingImages,
-     clearPendingImages,
-     addPlannerPendingImages,
-     clearPlannerPendingImages,
-     removePlannerQueuedPrompt,
-     setMainModelReasoningEffort,
-     setPlannerModelReasoningEffort,
-     setMainModelId,
-     setPlannerModelId,
-   };
- }
+  return {
+    setNotice,
+    clearNotice,
+    loadModels,
+    sendMainPrompt,
+    sendPlannerPrompt,
+    switchMainAgent,
+    switchPlannerAgent,
+    interruptActive,
+    interruptPlanner,
+    clearActiveChat,
+    clearPlannerChat,
+    startNewPlannerSession,
+    resumeTaskThread,
+    listResumableSessions,
+    resumePlannerThread,
+    addPendingImages,
+    clearPendingImages,
+    addPlannerPendingImages,
+    clearPlannerPendingImages,
+    removePlannerQueuedPrompt,
+    setMainModelReasoningEffort,
+    setPlannerModelReasoningEffort,
+    setMainModelId,
+    setPlannerModelId,
+  };
+}
 
- export type LaneActions = ReturnType<typeof createLaneActions>;
+export type LaneActions = ReturnType<typeof createLaneActions>;

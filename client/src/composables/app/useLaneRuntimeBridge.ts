@@ -55,6 +55,7 @@ export function useLaneRuntimeBridge(params: {
   agentBusy: Ref<boolean>;
   clearActiveChat?: () => void;
   clearPlannerChat: () => void;
+  startNewPlannerSession?: () => void;
   startNewChatSession: () => void;
   resumePlannerThread: () => void;
   resumeTaskThread: (projectId?: string, options?: { sessionId?: string }) => void;
@@ -138,8 +139,15 @@ export function useLaneRuntimeBridge(params: {
 
   function handleLaneNewSession(): void {
     if (activeLaneNewSessionBlocked.value) return;
-    if (activeChatLane.value === "planner") params.clearPlannerChat();
-    else params.startNewChatSession();
+    if (activeChatLane.value === "planner") {
+      if (params.startNewPlannerSession) {
+        params.startNewPlannerSession();
+      } else {
+        params.clearPlannerChat();
+      }
+    } else {
+      params.startNewChatSession();
+    }
   }
 
   function handleLaneClearChat(): void {

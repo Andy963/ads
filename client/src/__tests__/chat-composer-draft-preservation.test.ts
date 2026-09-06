@@ -110,6 +110,26 @@ describe("composer draft preservation on session reset", () => {
     expect(plannerRt.ws?.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "planner" });
   });
 
+  it("uses an in-band new-session reset for the planner lane", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
+      connectWs: vi.fn(async () => {}),
+      connectPlannerWs: vi.fn(async () => {}),
+    });
+
+    ctx.loggedIn.value = true;
+    ctx.activePlannerRuntime.value.ws = { clearHistory: vi.fn() } as any;
+
+    tasks.startNewPlannerSession();
+
+    expect(ctx.activePlannerRuntime.value.ws?.clearHistory).toHaveBeenCalledWith({
+      scope: "lane",
+      sourceChatSessionId: "planner",
+      mode: "new_session",
+    });
+  });
+
   it("downgrades a planner shared clear request to the planner lane", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);

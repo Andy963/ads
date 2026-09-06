@@ -50,7 +50,7 @@ export async function dispatchWsMessage(args: {
     resetSharedSessionState?: (options: {
       sourceChatSessionId: string;
     }) => WsResetResult;
-    closeAfterReset?: () => void;
+    completeAfterReset?: () => void;
   };
   registerSessionCacheBinding: () => void;
   broadcastJson: (payload: unknown) => void;
@@ -100,7 +100,7 @@ export async function dispatchWsMessage(args: {
       broadcastSessionReset: args.state.broadcastSessionReset,
       resetLaneState: args.state.resetLaneState,
       resetSharedSessionState: args.state.resetSharedSessionState,
-      closeAfterReset: args.state.closeAfterReset,
+      completeAfterReset: args.state.completeAfterReset,
       logger: args.logger,
     });
     if (control.handled) {

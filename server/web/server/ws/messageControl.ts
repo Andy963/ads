@@ -94,7 +94,7 @@ export async function handleWsControlMessage(args: {
   resetSharedSessionState?: (options: {
     sourceChatSessionId: string;
   }) => WsResetResult;
-  closeAfterReset?: () => void;
+  completeAfterReset?: () => void;
   logger: Pick<WsLogger, "info" | "warn">;
 }): Promise<{
   handled: boolean;
@@ -175,8 +175,8 @@ export async function handleWsControlMessage(args: {
       }
     }
     args.broadcastSessionReset?.(resetPayload);
+    args.completeAfterReset?.();
     args.sendJson({ type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
-    args.closeAfterReset?.();
     return { handled: true, orchestrator: args.orchestrator };
   }
 

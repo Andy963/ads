@@ -23,7 +23,6 @@ import {
   broadcastJsonToHistoryKey,
   cleanupClosedConnection,
   closeConnectionsForHistoryKey,
-  closeConnectionsForLogicalLane,
 } from "./connectionRuntime.js";
 import { resolveWsLaneResources, type WsLaneResources } from "./laneResources.js";
 import { preflightPersistAndAck } from "./preflight.js";
@@ -55,6 +54,30 @@ type WsLaneSnapshot = {
   orchestrator: WsOrchestrator;
   deltaCoalescer: ReturnType<typeof createDeltaStreamCoalescer> | null;
   commandSnapshotCoalescer: ReturnType<typeof createCommandSnapshotCoalescer> | null;
+  bindingVersion: number;
+};
+
+type WsResetTarget = {
+  authUserId: string;
+  sessionId: string;
+  chatSessionId: string;
+  logicalHistoryKey: string;
+  laneGeneration: number;
+};
+
+type WsInBandResetHandler = (target: WsResetTarget) => void;
+type ResetBarrierScope = "lane" | "shared";
+
+type ResetBarrier = {
+  count: number;
+  promise: Promise<void>;
+  resolve: () => void;
+};
+
+type ResetBarrierToken = {
+  key: string;
+  barrier: ResetBarrier;
+  released: boolean;
 };
 
 /** WebSocket 单帧默认上限：16MB（足够容纳带 base64 图片的 prompt，又能挡住内存型 DoS）。 */
@@ -80,7 +103,8 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
   const seenChatSessionIdsBySharedSession = new Map<string, Set<string>>();
   const laneGenerationStore = state.laneGenerationStore;
   const fallbackLaneGenerations = new Map<string, number>();
-  const resetClosingConnections = new WeakSet<WebSocket>();
+  const inBandResetHandlers = new Map<WebSocket, WsInBandResetHandler>();
+  const resetBarriers = new Map<string, ResetBarrier>();
   const laneSyncRuntimes = new Map<
     string,
     {
@@ -90,6 +114,75 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
   >();
 
   const syncRuntimeKey = (namespace: string, laneKey: string): string => `${namespace}\u0000${laneKey}`;
+
+  const resetBarrierKey = (
+    authUserId: string,
+    sessionId: string,
+    scope: ResetBarrierScope,
+    chatSessionId?: string,
+  ): string =>
+    scope === "shared"
+      ? `${String(authUserId ?? "").trim()}\u0000${String(sessionId ?? "").trim()}\u0000shared`
+      : `${String(authUserId ?? "").trim()}\u0000${String(sessionId ?? "").trim()}\u0000lane\u0000${String(chatSessionId ?? "").trim()}`;
+
+  const resolveResetBarrierScope = (chatSessionId: string, payload: unknown): ResetBarrierScope => {
+    if (String(chatSessionId ?? "").trim() === "planner") {
+      return "lane";
+    }
+    if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+      const scope = String((payload as Record<string, unknown>).scope ?? "").trim().toLowerCase();
+      if (scope === "shared" || scope === "project") {
+        return "shared";
+      }
+    }
+    return "lane";
+  };
+
+  const beginResetBarrier = (args: {
+    authUserId: string;
+    sessionId: string;
+    chatSessionId: string;
+    payload: unknown;
+  }): ResetBarrierToken => {
+    const scope = resolveResetBarrierScope(args.chatSessionId, args.payload);
+    const key = resetBarrierKey(args.authUserId, args.sessionId, scope, args.chatSessionId);
+    const existing = resetBarriers.get(key);
+    if (existing) {
+      existing.count += 1;
+      return { key, barrier: existing, released: false };
+    }
+    let resolve!: () => void;
+    const promise = new Promise<void>((resolvePromise) => {
+      resolve = resolvePromise;
+    });
+    const barrier = { count: 1, promise, resolve };
+    resetBarriers.set(key, barrier);
+    return { key, barrier, released: false };
+  };
+
+  const releaseResetBarrier = (token: ResetBarrierToken | null): void => {
+    if (!token || token.released) return;
+    token.released = true;
+    const barrier = token.barrier;
+    barrier.count -= 1;
+    if (barrier.count > 0) return;
+    if (resetBarriers.get(token.key) === barrier) {
+      resetBarriers.delete(token.key);
+    }
+    barrier.resolve();
+  };
+
+  const waitForResetBarriers = (args: {
+    authUserId: string;
+    sessionId: string;
+    chatSessionId: string;
+  }): Promise<void> => {
+    const waits = [
+      resetBarriers.get(resetBarrierKey(args.authUserId, args.sessionId, "shared"))?.promise,
+      resetBarriers.get(resetBarrierKey(args.authUserId, args.sessionId, "lane", args.chatSessionId))?.promise,
+    ].filter((promise): promise is Promise<void> => Boolean(promise));
+    return waits.length > 0 ? Promise.all(waits).then(() => undefined) : Promise.resolve();
+  };
 
   const getLaneSyncRuntime = (namespace: string, laneKey: string, _inFlight: boolean) => {
     const key = syncRuntimeKey(namespace, laneKey);
@@ -295,6 +388,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       chatSessionId,
       generation: laneGeneration,
     });
+    let bindingVersion = 0;
 
     if (Number.isFinite(config.maxClients) && config.maxClients > 0 && state.clients.size >= config.maxClients) {
       ws.close(4409, `max clients reached (${config.maxClients})`);
@@ -599,6 +693,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       orchestrator,
       deltaCoalescer,
       commandSnapshotCoalescer,
+      bindingVersion,
     });
 
     const collectRuntimeSnapshots = (lane: WsLaneSnapshot, inFlightForLane: boolean): Array<Record<string, unknown>> => {
@@ -614,7 +709,8 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     const isCurrentLane = (lane: WsLaneSnapshot): boolean =>
       currentLane.historyKey === lane.historyKey &&
       currentLane.laneNamespace === lane.laneNamespace &&
-      currentLane.laneGeneration === lane.laneGeneration;
+      currentLane.laneGeneration === lane.laneGeneration &&
+      currentLane.bindingVersion === lane.bindingVersion;
 
     const isLaneCurrent = (lane: WsLaneSnapshot): boolean =>
       isCurrentLane(lane) && isLaneGenerationCurrent(lane);
@@ -626,8 +722,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         historyKey: targetHistoryKey,
       });
 
-    type ResetCloseTarget = Pick<WsLaneSnapshot, "authUserId" | "sessionId" | "chatSessionId" | "logicalHistoryKey">;
-    let resetCloseTargets: ResetCloseTarget[] = [];
+    let resetTargets: WsResetTarget[] = [];
 
     const collectKnownLaneState = (lane: {
       authUserId: string;
@@ -701,24 +796,25 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         namespace: lane.laneNamespace,
         laneKeys: known.historyKeys,
       });
-      resetCloseTargets.push({
+      resetTargets.push({
         authUserId: lane.authUserId,
         sessionId: lane.sessionId,
         chatSessionId: lane.chatSessionId,
         logicalHistoryKey: lane.logicalHistoryKey,
+        laneGeneration: nextGeneration,
       });
       return nextGeneration;
     };
 
     const resetLaneStateForLane = (lane: WsLaneSnapshot): number | undefined => {
-      resetCloseTargets = [];
+      resetTargets = [];
       return resetOneLogicalLane(lane);
     };
 
     const resetSharedSessionStateForLane = (_lane: WsLaneSnapshot, options: {
       sourceChatSessionId: string;
     }): { sourceGeneration?: number; laneGenerations: Record<string, number> } | undefined => {
-      resetCloseTargets = [];
+      resetTargets = [];
       const laneGenerations: Record<string, number> = {};
       for (const trackedChatSessionId of getTrackedSharedChatSessionIds()) {
         const { sessionManager: trackedSessionManager, historyStore: trackedHistoryStore } = resolveWsLaneResources({
@@ -747,31 +843,125 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       return { sourceGeneration, laneGenerations };
     };
 
-    const closeAfterReset = (): void => {
-      const targets = [...resetCloseTargets];
-      resetCloseTargets = [];
+    const rebindCurrentConnection = (target: WsResetTarget): void => {
+      if (
+        target.authUserId !== authUserId ||
+        target.sessionId !== sessionId ||
+        target.chatSessionId !== chatSessionId
+      ) {
+        return;
+      }
+
+      const previousLane = currentLane;
+      // This is a synchronous connection-local state transition. Incrementing
+      // the binding version before changing fields invalidates every async
+      // operation that still holds the previous lane snapshot.
+      bindingVersion += 1;
+      const nextLaneResources = resolveWsLaneResources({
+        chatSessionId: target.chatSessionId,
+        sessions,
+        history,
+      });
+      const nextIdentity = buildWsConnectionIdentity({
+        authUserId,
+        sessionId,
+        chatSessionId: target.chatSessionId,
+        connectionId,
+        generation: target.laneGeneration,
+      });
+      const nextLogicalIdentity = buildWsConnectionIdentity({
+        authUserId,
+        sessionId,
+        chatSessionId: target.chatSessionId,
+        randomHex: () => "",
+      });
+      const workspaceRoot = state.clientMetaByWs.get(ws)?.workspaceRoot;
+
+      chatSessionId = target.chatSessionId;
+      sessionManager = nextLaneResources.sessionManager;
+      historyStore = nextLaneResources.historyStore;
+      getWorkspaceLock = nextLaneResources.getWorkspaceLock;
+      userId = nextIdentity.userId;
+      historyKey = nextIdentity.historyKey;
+      cacheKey = nextIdentity.cacheKey;
+      logicalHistoryKey = nextLogicalIdentity.historyKey;
+      laneNamespace = resolveSyncNamespace(target.chatSessionId);
+      laneGeneration = target.laneGeneration;
+      clientMeta = workspaceRoot
+        ? { ...nextIdentity.clientMeta, workspaceRoot, logicalHistoryKey }
+        : { ...nextIdentity.clientMeta, logicalHistoryKey };
+      state.clientMetaByWs.set(ws, clientMeta);
+      registerSeenChatSessionId(authUserId, sessionId, chatSessionId);
+      registerSessionCacheBinding();
+
+      previousLane.deltaCoalescer?.finish();
+      previousLane.commandSnapshotCoalescer?.finish();
+      syncNamespace = laneNamespace;
+      syncLaneKeys = resolveSyncLaneKeys({
+        authUserId,
+        sessionId,
+        chatSessionId,
+        generation: laneGeneration,
+      });
+      const nextInFlight = state.interruptControllers.has(historyKey);
+      const nextSyncRuntime = getLaneSyncRuntime(syncNamespace, historyKey, nextInFlight);
+      deltaCoalescer = nextSyncRuntime?.deltaCoalescer ?? null;
+      commandSnapshotCoalescer = nextSyncRuntime?.commandSnapshotCoalescer ?? null;
+      orchestrator = sessionManager.getOrCreate(userId, currentCwd, false);
+      currentLane = captureLane();
+
+      sendInitialBootstrapMessages({
+        ws,
+        safeJsonSend,
+        sessionManager: currentLane.sessionManager,
+        orchestrator: currentLane.orchestrator,
+        userId: currentLane.userId,
+        agentAvailability: agents.agentAvailability,
+        sessionId,
+        chatSessionId: currentLane.chatSessionId,
+        workspace: getWorkspaceState(currentLane.currentCwd),
+        inFlight: nextInFlight,
+        historyStore: currentLane.historyStore,
+        historyKey: currentLane.historyKey,
+        latestSeq: state.syncEventStore?.getLatestSeqForLanes(currentLane.laneNamespace, currentLane.syncLaneKeys) ?? 0,
+        laneGeneration: currentLane.laneGeneration,
+        runtimeSnapshots: collectRuntimeSnapshots(currentLane, nextInFlight),
+      });
+
+      logger.info(
+        `[WebSocket] in-band lane reset conn=${connectionId} session=${sessionId} chat=${chatSessionId} generation=${laneGeneration} user=${userId} history=${historyKey}`,
+      );
+    };
+
+    const completeAfterReset = (): void => {
+      const targets = [...resetTargets];
+      resetTargets = [];
+      const rebound = new Set<WebSocket>();
       for (const target of targets) {
         for (const [candidate, meta] of state.clientMetaByWs.entries()) {
           if (
-            meta.authUserId === target.authUserId &&
-            meta.sessionId === target.sessionId &&
-            meta.chatSessionId === target.chatSessionId &&
-            historyKeyBelongsToLogicalLane(meta.historyKey, target.logicalHistoryKey)
+            rebound.has(candidate) ||
+            meta.authUserId !== target.authUserId ||
+            meta.sessionId !== target.sessionId ||
+            meta.chatSessionId !== target.chatSessionId ||
+            !historyKeyBelongsToLogicalLane(meta.historyKey, target.logicalHistoryKey)
           ) {
-            resetClosingConnections.add(candidate);
+            continue;
+          }
+          rebound.add(candidate);
+          const handler = inBandResetHandlers.get(candidate);
+          if (handler) {
+            handler(target);
+          } else {
+            logger.warn(
+              `[WebSocket] missing in-band reset handler session=${target.sessionId} chat=${target.chatSessionId} history=${meta.historyKey}`,
+            );
           }
         }
-        closeConnectionsForLogicalLane({
-          clientMetaByWs: state.clientMetaByWs,
-          logicalHistoryKey: target.logicalHistoryKey,
-          authUserId: target.authUserId,
-          sessionId: target.sessionId,
-          chatSessionId: target.chatSessionId,
-          code: 1012,
-          reason: "session reset",
-        });
       }
     };
+
+    inBandResetHandlers.set(ws, rebindCurrentConnection);
 
     sendInitialBootstrapMessages({
       ws,
@@ -792,6 +982,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     });
 
     let messageChain = Promise.resolve();
+    const pendingResetBarrierTokens = new Set<ResetBarrierToken>();
     let pendingSwitchCount = 0;
     let lastReceivedAt = 0;
 
@@ -859,9 +1050,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       }
 
       const { parsed, receivedAt } = envelope;
-      if (resetClosingConnections.has(ws)) {
-        return;
-      }
       const clientMessageId =
         envelope.clientMessageId ??
         (parsed.type === "prompt" || parsed.type === "command"
@@ -871,7 +1059,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       if (parsed.type === "interrupt" && pendingSwitchCount > 0) {
         messageChain = messageChain
           .then(() => {
-            if (resetClosingConnections.has(ws)) return;
             handleImmediateForLane(currentLane, parsed, receivedAt);
           })
           .catch((error) => {
@@ -881,7 +1068,23 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         return;
       }
 
-      const laneAtReceipt = pendingSwitchCount === 0 ? currentLane : null;
+      const isResetMessage = parsed.type === "clear_history";
+      const resetBarrierToken = isResetMessage
+        ? beginResetBarrier({
+            authUserId,
+            sessionId,
+            chatSessionId,
+            payload: parsed.payload,
+          })
+        : null;
+      if (resetBarrierToken) {
+        pendingResetBarrierTokens.add(resetBarrierToken);
+      }
+      const resetBarrierActive = !isResetMessage && Boolean(
+        resetBarriers.get(resetBarrierKey(authUserId, sessionId, "shared")) ||
+        resetBarriers.get(resetBarrierKey(authUserId, sessionId, "lane", chatSessionId)),
+      );
+      const laneAtReceipt = pendingSwitchCount === 0 && !resetBarrierActive ? currentLane : null;
       if (handleImmediateForLane(laneAtReceipt ?? currentLane, parsed, receivedAt)) {
         return;
       }
@@ -900,6 +1103,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         messageChain = messageChain
           .then(async () => {
             const previousLane = currentLane;
+            bindingVersion += 1;
             const payload = parsed.payload;
             const targetChatSessionId =
               typeof payload === "object" && payload !== null && "chatSessionId" in payload
@@ -1030,77 +1234,90 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       const msg: IncomingWsMessage = { parsed, requestId, clientMessageId, receivedAt };
       messageChain = messageChain
         .then(async () => {
-          if (resetClosingConnections.has(ws)) return;
-          const lane = laneAtReceipt
-            ? currentLane.historyKey === laneAtReceipt.historyKey
-              ? currentLane
-              : laneAtReceipt
-            : currentLane;
-          const queuedPreflight = preflight ?? runPreflight(lane);
-          if (!queuedPreflight.enqueue) {
-            return;
-          }
+          try {
+            if (!isResetMessage) {
+              await waitForResetBarriers({
+                authUserId,
+                sessionId,
+                chatSessionId: currentLane.chatSessionId,
+              });
+            }
+            const lane = laneAtReceipt
+              ? currentLane.historyKey === laneAtReceipt.historyKey
+                ? currentLane
+                : laneAtReceipt
+              : currentLane;
+            const queuedPreflight = preflight ?? runPreflight(lane);
+            if (!queuedPreflight.enqueue) {
+              return;
+            }
 
-          const result = await dispatchWsMessage({
-            msg,
-            ws,
-            authUserId: lane.authUserId,
-            sessionId: lane.sessionId,
-            chatSessionId: lane.chatSessionId,
-            userId: lane.userId,
-            historyKey: lane.historyKey,
-            currentCwd: lane.currentCwd,
-            cacheKey: lane.cacheKey,
-            sessionManager: lane.sessionManager,
-            orchestrator: lane.orchestrator,
-            getWorkspaceLock: lane.getWorkspaceLock,
-            interruptControllers: state.interruptControllers,
-            promptRunEpochs: state.promptRunEpochs,
-            historyStore: lane.historyStore,
-            scheduler,
-            commands,
-            agents: {
-              agentAvailability: agents.agentAvailability,
-            },
-            state: {
-              directoryManager: state.directoryManager,
-              workspaceCache: state.workspaceCache,
-              cwdStore: state.cwdStore,
-              cwdStorePath: state.cwdStorePath,
-              persistCwdStore: state.persistCwdStore,
-              broadcastSessionReset: (payload) => broadcastSessionResetForLane(lane, payload),
-              resetLaneState: () => resetLaneStateForLane(lane),
-              resetSharedSessionState: (options) => resetSharedSessionStateForLane(lane, options),
-              closeAfterReset,
-            },
-            registerSessionCacheBinding: () =>
-              state.sessionCacheRegistry.registerBinding({
-                userId: lane.userId,
-                cacheKey: lane.cacheKey,
-                cwdKeys: [String(lane.userId)],
-              }),
-            broadcastJson: (payload) => broadcastJsonForLane(lane, payload),
-            safeJsonSend,
-            sendWorkspaceState,
-            broadcastWorkspaceState: (workspaceRoot) => broadcastWorkspaceStateForLane(lane, workspaceRoot),
-            traceWsDuplication: config.traceWsDuplication,
-            logger,
-            updateWorkspaceRootMeta: (cwd) => {
-              if (!isCurrentLane(lane)) return;
-              try {
-                const meta = state.clientMetaByWs.get(ws);
-                if (meta) {
-                  meta.workspaceRoot = normalizeWorkspaceRootForMeta(cwd);
+            const result = await dispatchWsMessage({
+              msg,
+              ws,
+              authUserId: lane.authUserId,
+              sessionId: lane.sessionId,
+              chatSessionId: lane.chatSessionId,
+              userId: lane.userId,
+              historyKey: lane.historyKey,
+              currentCwd: lane.currentCwd,
+              cacheKey: lane.cacheKey,
+              sessionManager: lane.sessionManager,
+              orchestrator: lane.orchestrator,
+              getWorkspaceLock: lane.getWorkspaceLock,
+              interruptControllers: state.interruptControllers,
+              promptRunEpochs: state.promptRunEpochs,
+              historyStore: lane.historyStore,
+              scheduler,
+              commands,
+              agents: {
+                agentAvailability: agents.agentAvailability,
+              },
+              state: {
+                directoryManager: state.directoryManager,
+                workspaceCache: state.workspaceCache,
+                cwdStore: state.cwdStore,
+                cwdStorePath: state.cwdStorePath,
+                persistCwdStore: state.persistCwdStore,
+                broadcastSessionReset: (payload) => broadcastSessionResetForLane(lane, payload),
+                resetLaneState: () => resetLaneStateForLane(lane),
+                resetSharedSessionState: (options) => resetSharedSessionStateForLane(lane, options),
+                completeAfterReset,
+              },
+              registerSessionCacheBinding: () =>
+                state.sessionCacheRegistry.registerBinding({
+                  userId: lane.userId,
+                  cacheKey: lane.cacheKey,
+                  cwdKeys: [String(lane.userId)],
+                }),
+              broadcastJson: (payload) => broadcastJsonForLane(lane, payload),
+              safeJsonSend,
+              sendWorkspaceState,
+              broadcastWorkspaceState: (workspaceRoot) => broadcastWorkspaceStateForLane(lane, workspaceRoot),
+              traceWsDuplication: config.traceWsDuplication,
+              logger,
+              updateWorkspaceRootMeta: (cwd) => {
+                if (!isCurrentLane(lane)) return;
+                try {
+                  const meta = state.clientMetaByWs.get(ws);
+                  if (meta) {
+                    meta.workspaceRoot = normalizeWorkspaceRootForMeta(cwd);
+                  }
+                } catch {
+                  // ignore
                 }
-              } catch {
-                // ignore
-              }
-            },
-          });
-          if (isCurrentLane(lane)) {
-            orchestrator = result.orchestrator;
-            currentCwd = result.currentCwd;
-            currentLane = { ...currentLane, orchestrator, currentCwd };
+              },
+            });
+            if (isCurrentLane(lane)) {
+              orchestrator = result.orchestrator;
+              currentCwd = result.currentCwd;
+              currentLane = { ...currentLane, orchestrator, currentCwd };
+            }
+          } finally {
+            if (resetBarrierToken) {
+              pendingResetBarrierTokens.delete(resetBarrierToken);
+            }
+            releaseResetBarrier(resetBarrierToken);
           }
         })
         .catch((error) => {
@@ -1112,6 +1329,11 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     });
 
     ws.on("close", (code, reason) => {
+      for (const token of pendingResetBarrierTokens) {
+        releaseResetBarrier(token);
+      }
+      pendingResetBarrierTokens.clear();
+      inBandResetHandlers.delete(ws);
       cleanupClosedConnection({
         ws,
         code,
