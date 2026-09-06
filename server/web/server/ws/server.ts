@@ -54,6 +54,7 @@ type WsLaneSnapshot = {
   orchestrator: WsOrchestrator;
   deltaCoalescer: ReturnType<typeof createDeltaStreamCoalescer> | null;
   commandSnapshotCoalescer: ReturnType<typeof createCommandSnapshotCoalescer> | null;
+  bindingVersion: number;
 };
 
 type WsResetTarget = {
@@ -71,6 +72,12 @@ type ResetBarrier = {
   count: number;
   promise: Promise<void>;
   resolve: () => void;
+};
+
+type ResetBarrierToken = {
+  key: string;
+  barrier: ResetBarrier;
+  released: boolean;
 };
 
 /** WebSocket 单帧默认上限：16MB（足够容纳带 base64 图片的 prompt，又能挡住内存型 DoS）。 */
@@ -136,29 +143,32 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     sessionId: string;
     chatSessionId: string;
     payload: unknown;
-  }): string => {
+  }): ResetBarrierToken => {
     const scope = resolveResetBarrierScope(args.chatSessionId, args.payload);
     const key = resetBarrierKey(args.authUserId, args.sessionId, scope, args.chatSessionId);
     const existing = resetBarriers.get(key);
     if (existing) {
       existing.count += 1;
-      return key;
+      return { key, barrier: existing, released: false };
     }
     let resolve!: () => void;
     const promise = new Promise<void>((resolvePromise) => {
       resolve = resolvePromise;
     });
-    resetBarriers.set(key, { count: 1, promise, resolve });
-    return key;
+    const barrier = { count: 1, promise, resolve };
+    resetBarriers.set(key, barrier);
+    return { key, barrier, released: false };
   };
 
-  const releaseResetBarrier = (key: string | null): void => {
-    if (!key) return;
-    const barrier = resetBarriers.get(key);
-    if (!barrier) return;
+  const releaseResetBarrier = (token: ResetBarrierToken | null): void => {
+    if (!token || token.released) return;
+    token.released = true;
+    const barrier = token.barrier;
     barrier.count -= 1;
     if (barrier.count > 0) return;
-    resetBarriers.delete(key);
+    if (resetBarriers.get(token.key) === barrier) {
+      resetBarriers.delete(token.key);
+    }
     barrier.resolve();
   };
 
@@ -378,6 +388,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       chatSessionId,
       generation: laneGeneration,
     });
+    let bindingVersion = 0;
 
     if (Number.isFinite(config.maxClients) && config.maxClients > 0 && state.clients.size >= config.maxClients) {
       ws.close(4409, `max clients reached (${config.maxClients})`);
@@ -682,6 +693,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       orchestrator,
       deltaCoalescer,
       commandSnapshotCoalescer,
+      bindingVersion,
     });
 
     const collectRuntimeSnapshots = (lane: WsLaneSnapshot, inFlightForLane: boolean): Array<Record<string, unknown>> => {
@@ -697,7 +709,8 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     const isCurrentLane = (lane: WsLaneSnapshot): boolean =>
       currentLane.historyKey === lane.historyKey &&
       currentLane.laneNamespace === lane.laneNamespace &&
-      currentLane.laneGeneration === lane.laneGeneration;
+      currentLane.laneGeneration === lane.laneGeneration &&
+      currentLane.bindingVersion === lane.bindingVersion;
 
     const isLaneCurrent = (lane: WsLaneSnapshot): boolean =>
       isCurrentLane(lane) && isLaneGenerationCurrent(lane);
@@ -840,6 +853,10 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       }
 
       const previousLane = currentLane;
+      // This is a synchronous connection-local state transition. Incrementing
+      // the binding version before changing fields invalidates every async
+      // operation that still holds the previous lane snapshot.
+      bindingVersion += 1;
       const nextLaneResources = resolveWsLaneResources({
         chatSessionId: target.chatSessionId,
         sessions,
@@ -965,6 +982,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     });
 
     let messageChain = Promise.resolve();
+    const pendingResetBarrierTokens = new Set<ResetBarrierToken>();
     let pendingSwitchCount = 0;
     let lastReceivedAt = 0;
 
@@ -1059,6 +1077,9 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
             payload: parsed.payload,
           })
         : null;
+      if (resetBarrierToken) {
+        pendingResetBarrierTokens.add(resetBarrierToken);
+      }
       const resetBarrierActive = !isResetMessage && Boolean(
         resetBarriers.get(resetBarrierKey(authUserId, sessionId, "shared")) ||
         resetBarriers.get(resetBarrierKey(authUserId, sessionId, "lane", chatSessionId)),
@@ -1082,6 +1103,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         messageChain = messageChain
           .then(async () => {
             const previousLane = currentLane;
+            bindingVersion += 1;
             const payload = parsed.payload;
             const targetChatSessionId =
               typeof payload === "object" && payload !== null && "chatSessionId" in payload
@@ -1292,6 +1314,9 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
               currentLane = { ...currentLane, orchestrator, currentCwd };
             }
           } finally {
+            if (resetBarrierToken) {
+              pendingResetBarrierTokens.delete(resetBarrierToken);
+            }
             releaseResetBarrier(resetBarrierToken);
           }
         })
@@ -1304,6 +1329,10 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     });
 
     ws.on("close", (code, reason) => {
+      for (const token of pendingResetBarrierTokens) {
+        releaseResetBarrier(token);
+      }
+      pendingResetBarrierTokens.clear();
       inBandResetHandlers.delete(ws);
       cleanupClosedConnection({
         ws,

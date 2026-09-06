@@ -89,9 +89,13 @@ function createFakeSessionFactory(prefix: string, options: { blockFirstSend?: bo
   let nextId = 1;
   let firstSend = true;
   let resolveFirstSendStarted: (() => void) | null = null;
+  let resolveFirstSendCompleted: (() => void) | null = null;
   let releaseFirstSend: (() => void) | null = null;
   const firstSendStarted = new Promise<void>((resolve) => {
     resolveFirstSendStarted = resolve;
+  });
+  const firstSendCompleted = new Promise<void>((resolve) => {
+    resolveFirstSendCompleted = resolve;
   });
   const firstSendGate = new Promise<void>((resolve) => {
     releaseFirstSend = resolve;
@@ -108,8 +112,10 @@ function createFakeSessionFactory(prefix: string, options: { blockFirstSend?: bo
         id: "codex" as const,
         metadata: { id: "codex" as const, name: "Codex", capabilities: ["text" as const] },
         send: async (input: unknown) => {
+          let isBlockedFirstSend = false;
           if (options.blockFirstSend && firstSend) {
             firstSend = false;
+            isBlockedFirstSend = true;
             resolveFirstSendStarted?.();
             await firstSendGate;
           }
@@ -119,6 +125,9 @@ function createFakeSessionFactory(prefix: string, options: { blockFirstSend?: bo
             : inputText.includes("second prompt")
               ? "second response"
               : "ok";
+          if (isBlockedFirstSend) {
+            resolveFirstSendCompleted?.();
+          }
           return { response, usage: null, agentId: "codex" };
         },
         onEvent: () => () => {},
@@ -157,6 +166,7 @@ function createFakeSessionFactory(prefix: string, options: { blockFirstSend?: bo
       return orchestrator;
     },
     firstSendStarted,
+    firstSendCompleted,
     releaseFirstSend: () => releaseFirstSend?.(),
   };
 }
@@ -484,6 +494,53 @@ describe("web/server/ws: in-band Planner session reset (Issue #158)", () => {
     await ws2ResultPromise;
     const newHistory = plannerHistoryStore.get(newHistoryKey);
     assert.ok(newHistory.some((e) => e.text === "from ws2 on new generation"));
+  });
+
+  it("does not let an in-flight sibling prompt restore the old lane binding", async () => {
+    const protocols = ["ads-v1", "ads-session.test-session", "ads-chat.planner"];
+    const resetClient = new WebSocket(`ws://127.0.0.1:${port}/ws`, protocols);
+    const activeClient = new WebSocket(`ws://127.0.0.1:${port}/ws`, protocols);
+    sockets.push(resetClient, activeClient);
+
+    const resetWelcomePromise = waitForWsMessage(resetClient, (m) => m.type === "welcome");
+    const activeWelcomePromise = waitForWsMessage(activeClient, (m) => m.type === "welcome");
+    await waitForWsOpen(resetClient);
+    await waitForWsOpen(activeClient);
+    const resetWelcome = await resetWelcomePromise;
+    await activeWelcomePromise;
+    const initialGeneration = Number(resetWelcome.laneGeneration ?? 1);
+
+    const activeAckPromise = waitForWsMessage(activeClient, (m) => m.type === "ack" && m.client_message_id === "active");
+    activeClient.send(JSON.stringify({ type: "prompt", payload: "first prompt", client_message_id: "active" }));
+    await activeAckPromise;
+    await plannerFactory!.firstSendStarted;
+
+    const resetWelcomeAfterPromise = waitForWsMessage(
+      resetClient,
+      (m) => m.type === "welcome" && Number(m.laneGeneration) > initialGeneration,
+    );
+    resetClient.send(JSON.stringify({ type: "clear_history" }));
+    const resetWelcomeAfter = await resetWelcomeAfterPromise;
+    const nextGeneration = Number(resetWelcomeAfter.laneGeneration);
+
+    plannerFactory!.releaseFirstSend();
+    await plannerFactory!.firstSendCompleted;
+
+    const nextHistoryKey = resolveSyncLaneKey({
+      authUserId: "test",
+      sessionId: "test-session",
+      chatSessionId: "planner",
+      generation: nextGeneration,
+    });
+    const nextPromptResultPromise = waitForWsMessage(
+      activeClient,
+      (m) => m.type === "result" && m.output === "second response",
+    );
+    activeClient.send(JSON.stringify({ type: "prompt", payload: "second prompt", client_message_id: "active-next" }));
+    await nextPromptResultPromise;
+
+    assert.equal(activeClient.readyState, WebSocket.OPEN);
+    assert.ok(plannerHistoryStore.get(nextHistoryKey).some((entry) => entry.text === "second prompt"));
   });
 
   it("leaves unrelated worker lanes isolated and undisturbed during a Planner reset", async () => {
