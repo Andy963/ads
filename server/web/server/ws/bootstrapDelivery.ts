@@ -126,7 +126,7 @@ export function sendInitialBootstrapMessages(args: {
   if (historyPayload) {
     args.safeJsonSend(args.ws, historyPayload);
   }
-  for (const snapshot of args.runtimeSnapshots ?? []) {
+  for (const snapshot of (args.inFlight ? (args.runtimeSnapshots ?? []) : [])) {
     if (!snapshot || typeof snapshot !== "object" || snapshot.active === false) continue;
     const snapshotSeq = Number(snapshot.snapshotSeq ?? snapshot.seq ?? snapshot.afterSeq);
     const afterSeq = Number.isFinite(snapshotSeq) && snapshotSeq >= 0 ? Math.floor(snapshotSeq) : 0;

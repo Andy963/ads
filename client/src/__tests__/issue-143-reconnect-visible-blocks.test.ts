@@ -355,4 +355,79 @@ describe("Issue #143 follow-up: Reconnect correctness and visible block contract
 
     wrapper.unmount();
   });
+  it("5. does not set busy=true or lock input on stale/terminal command snapshot replay during idle bootstrap (Issue #152)", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    // Initial state: idle session
+    expect(rt.busy.value).toBe(false);
+    expect(rt.inputLocked.value).toBe(false);
+
+    // Reconnect on idle session (inFlight: false)
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({
+      type: "welcome",
+      inFlight: false,
+      latestSeq: 0,
+      bootstrapHistory: true,
+    });
+    await settleUi(wrapper);
+
+    expect(rt.busy.value).toBe(false);
+    expect(rt.inputLocked.value).toBe(false);
+
+    // Stale completed/failed command snapshot arrives with bootstrap: true
+    lastWs!.onMessage?.({
+      type: "command_snapshot",
+      bootstrap: true,
+      seq: 2,
+      command: {
+        id: "cmd-stale",
+        command: "npm test",
+        output: "PASS tests/stale.test.ts",
+        status: "completed",
+      },
+    });
+    await settleUi(wrapper);
+
+    // Must NOT become busy or lock input
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.inputLocked.value).toBe(false);
+
+    // Terminal command snapshot without bootstrap flag also must not mark turn busy
+    lastWs!.onMessage?.({
+      type: "command_snapshot",
+      seq: 3,
+      command: {
+        id: "cmd-completed-late",
+        command: "git status",
+        output: "nothing to commit",
+        status: "completed",
+      },
+    });
+    await settleUi(wrapper);
+
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.inputLocked.value).toBe(false);
+
+    // Genuine running command outside bootstrap sets busy=true
+    lastWs!.onMessage?.({
+      type: "command",
+      seq: 4,
+      command: {
+        id: "cmd-active",
+        command: "cargo build",
+        outputDelta: "Compiling...",
+        status: "running",
+      },
+    });
+    await settleUi(wrapper);
+
+    expect(rt.busy.value).toBe(true);
+    expect(rt.turnInFlight).toBe(true);
+
+    wrapper.unmount();
+  });
+
 });

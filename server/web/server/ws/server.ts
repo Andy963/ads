@@ -601,10 +601,13 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       commandSnapshotCoalescer,
     });
 
-    const collectRuntimeSnapshots = (lane: WsLaneSnapshot): Array<Record<string, unknown>> => [
-      ...(lane.deltaCoalescer?.getSnapshots?.() ?? []),
-      ...(lane.commandSnapshotCoalescer?.getSnapshots?.() ?? []),
-    ];
+    const collectRuntimeSnapshots = (lane: WsLaneSnapshot, inFlightForLane: boolean): Array<Record<string, unknown>> => {
+      if (!inFlightForLane) return [];
+      return [
+        ...(lane.deltaCoalescer?.getSnapshots?.() ?? []),
+        ...(lane.commandSnapshotCoalescer?.getSnapshots?.() ?? []),
+      ];
+    };
 
     let currentLane = captureLane();
 
@@ -785,7 +788,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       historyKey: currentLane.historyKey,
       latestSeq: state.syncEventStore?.getLatestSeqForLanes(currentLane.laneNamespace, currentLane.syncLaneKeys) ?? 0,
       laneGeneration: currentLane.laneGeneration,
-      runtimeSnapshots: collectRuntimeSnapshots(currentLane),
+      runtimeSnapshots: collectRuntimeSnapshots(currentLane, inFlight),
     });
 
     let messageChain = Promise.resolve();
@@ -974,10 +977,11 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
             commandSnapshotCoalescer?.finish();
             syncNamespace = nextLaneNamespace;
             syncLaneKeys = nextSyncLaneKeys;
+            const nextInFlight = state.interruptControllers.has(historyKey);
             const nextSyncRuntime = getLaneSyncRuntime(
               syncNamespace,
               historyKey,
-              state.interruptControllers.has(historyKey),
+              nextInFlight,
             );
             deltaCoalescer = nextSyncRuntime?.deltaCoalescer ?? null;
             commandSnapshotCoalescer = nextSyncRuntime?.commandSnapshotCoalescer ?? null;
@@ -993,12 +997,12 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
               sessionId,
               chatSessionId: currentLane.chatSessionId,
               workspace: getWorkspaceState(currentLane.currentCwd),
-              inFlight: false,
+              inFlight: nextInFlight,
               historyStore: currentLane.historyStore,
               historyKey: currentLane.historyKey,
               latestSeq: state.syncEventStore?.getLatestSeqForLanes(currentLane.laneNamespace, currentLane.syncLaneKeys) ?? 0,
               laneGeneration: currentLane.laneGeneration,
-              runtimeSnapshots: collectRuntimeSnapshots(currentLane),
+              runtimeSnapshots: collectRuntimeSnapshots(currentLane, nextInFlight),
             });
 
             logger.info(

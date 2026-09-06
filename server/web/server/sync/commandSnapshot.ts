@@ -166,13 +166,20 @@ export function createCommandSnapshotCoalescer(args: {
       if (command) {
         const identity = String(command.identity ?? command.id ?? "").trim();
         const commandLine = String(command.command ?? "").trim();
-        if (identity && commandLine) {
+        const status = String(command.status ?? "").trim() || undefined;
+        const terminal = isTerminalStatus(status);
+        if (terminal && row.eventId) {
+          args.store.deleteCoalesced({
+            namespace: args.namespace,
+            laneKey: args.laneKey,
+            type: COMMAND_SNAPSHOT_EVENT_TYPE,
+            eventId: row.eventId,
+          });
+        } else if (identity && commandLine) {
           const output = String(command.output ?? "").slice(-COMMAND_SNAPSHOT_MAX_CHARS);
           const endOffset = readOffset(command.endOffset) ?? output.length;
           const startOffset = readOffset(command.startOffset) ?? Math.max(0, endOffset - output.length);
           const id = String(command.id ?? "").trim();
-          const status = String(command.status ?? "").trim() || undefined;
-          const terminal = isTerminalStatus(status);
           const eventId = String(row.eventId ?? commandEventId(identity)).trim() || commandEventId(identity);
           const entry: ActiveCommand = {
             eventId,
