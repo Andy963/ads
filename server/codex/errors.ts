@@ -1,6 +1,3 @@
-export const CODEX_THREAD_RESET_HINT =
-  "Codex 线程上下文损坏。请使用 /reset 重置会话后再试。";
-
 export type CodexErrorCode =
   | "thread_corrupted"
   | "model_mismatch"
@@ -188,7 +185,7 @@ const ERROR_PATTERNS: Array<{
     pattern: (msg) =>
       msg.includes("encrypted content") && msg.includes("could not be verified"),
     code: "thread_corrupted",
-    userHint: CODEX_THREAD_RESET_HINT,
+    userHint: "Codex 线程上下文损坏。请使用 /reset 重置会话后再试。",
     retryable: false,
     needsReset: true,
   },
@@ -244,37 +241,4 @@ export class CodexClassifiedError extends Error {
     this.name = "CodexClassifiedError";
     this.info = info;
   }
-}
-
-export class CodexThreadCorruptedError extends Error {
-  readonly originalMessage?: string;
-
-  constructor(originalError?: unknown) {
-    const cause = originalError instanceof Error ? originalError : undefined;
-    super(CODEX_THREAD_RESET_HINT, cause ? { cause } : undefined);
-    this.name = "CodexThreadCorruptedError";
-    this.originalMessage =
-      originalError instanceof Error
-        ? originalError.message
-        : originalError
-          ? String(originalError)
-          : undefined;
-  }
-}
-
-export function isEncryptedThreadError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? "");
-  const normalized = message.toLowerCase();
-  return (
-    normalized.includes("encrypted content") &&
-    normalized.includes("could not be verified")
-  );
-}
-
-export function shouldResetThread(error: unknown): boolean {
-  if (error instanceof CodexThreadCorruptedError) return true;
-  if (error instanceof CodexClassifiedError) return error.info.needsReset;
-  if (isEncryptedThreadError(error)) return true;
-  const info = classifyError(error);
-  return info.needsReset;
 }

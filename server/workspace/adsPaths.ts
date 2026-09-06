@@ -41,21 +41,21 @@ export function deriveWorkspaceStateId(workspaceRoot: string): string {
   return `${slug}-${hash}`;
 }
 
-export function resolveWorkspaceStateDir(workspaceRoot: string): string {
+function workspaceStateDir(workspaceRoot: string): string {
   return path.join(resolveAdsWorkspacesDir(), deriveWorkspaceStateId(workspaceRoot));
 }
 
 export function resolveWorkspaceStatePath(workspaceRoot: string, ...segments: string[]): string {
-  return path.join(resolveWorkspaceStateDir(workspaceRoot), ...segments);
+  return path.join(workspaceStateDir(workspaceRoot), ...segments);
 }
 
-export function resolveLegacyWorkspaceAdsDir(workspaceRoot: string): string {
+function legacyWorkspaceAdsDir(workspaceRoot: string): string {
   const resolved = resolveWorkspacePath(workspaceRoot);
   return path.join(resolved, ".ads");
 }
 
 export function resolveLegacyWorkspaceAdsPath(workspaceRoot: string, ...segments: string[]): string {
-  return path.join(resolveLegacyWorkspaceAdsDir(workspaceRoot), ...segments);
+  return path.join(legacyWorkspaceAdsDir(workspaceRoot), ...segments);
 }
 
 function copyIfMissing(src: string, dest: string): void {
@@ -128,10 +128,10 @@ function ensureWorkspaceConfig(stateDir: string, workspaceRoot: string): void {
 
 export function migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot: string): boolean {
   const resolvedWorkspace = resolveWorkspacePath(workspaceRoot);
-  const legacyDir = resolveLegacyWorkspaceAdsDir(resolvedWorkspace);
+  const legacyDir = legacyWorkspaceAdsDir(resolvedWorkspace);
   const legacyConfig = path.join(legacyDir, "workspace.json");
 
-  const stateDir = resolveWorkspaceStateDir(resolvedWorkspace);
+  const stateDir = workspaceStateDir(resolvedWorkspace);
   const stateConfig = path.join(stateDir, "workspace.json");
 
   let migrated = false;
