@@ -549,4 +549,59 @@ describe("web/ws/bootstrapDelivery", () => {
       historyStore.clear("history-1");
     }
   });
+  it("delivers runtime snapshots only when inFlight is true", () => {
+    const sentIdle: unknown[] = [];
+    const historyStore = new HistoryStore({ namespace: "test-bootstrap-delivery-snapshots", maxEntriesPerSession: 20 });
+    const runtimeSnapshots = [
+      {
+        type: "command_snapshot",
+        eventId: "active-cmd-1",
+        active: true,
+        command: { id: "cmd-1", command: "npm test", status: "completed" },
+      },
+    ];
+
+    const baseArgs = {
+      ws: {} as any,
+      sessionManager: {
+        getSavedThreadId: () => undefined,
+        getContextRestoreMode: () => "fresh",
+        getEffectiveState: () => ({ model: "gpt-4o", modelReasoningEffort: "high", activeAgentId: "codex" }),
+      } as any,
+      orchestrator: {
+        getActiveAgentId: () => "codex",
+        getThreadId: () => null,
+        listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
+      } as any,
+      userId: 7,
+      agentAvailability: { mergeStatus: (_agentId: unknown, status: unknown) => status } as any,
+      sessionId: "session-1",
+      chatSessionId: "main",
+      workspace: { path: "/tmp/project" },
+      historyStore,
+      historyKey: "history-1",
+      runtimeSnapshots,
+    };
+
+    // When idle (inFlight: false), server must not deliver stale runtime snapshots
+    sendInitialBootstrapMessages({
+      ...baseArgs,
+      inFlight: false,
+      safeJsonSend: (_ws, payload) => sentIdle.push(payload),
+    });
+    assert.equal(sentIdle.some((p: any) => p.type === "command_snapshot"), false);
+
+    // When genuinely in flight, server delivers runtime snapshots with bootstrap: true
+    const sentInFlight: unknown[] = [];
+    sendInitialBootstrapMessages({
+      ...baseArgs,
+      inFlight: true,
+      safeJsonSend: (_ws, payload) => sentInFlight.push(payload),
+    });
+    const snapshotMsg = sentInFlight.find((p: any) => p.type === "command_snapshot") as any;
+    assert.ok(snapshotMsg);
+    assert.equal(snapshotMsg.bootstrap, true);
+    assert.equal(snapshotMsg.command?.id, "cmd-1");
+  });
+
 });

@@ -1457,8 +1457,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const eventTs = finiteTimestamp((msg as Record<string, unknown>).ts ?? snapshot?.ts);
       const revision = Number(snapshot?.revision);
       const snapshotSequence = Number((msg as Record<string, unknown>).seq ?? snapshot?.snapshotSeq ?? snapshot?.afterSeq);
-      rt.busy.value = true;
-      rt.turnInFlight = true;
+      const isBootstrapSnapshot = (msg as Record<string, unknown>).bootstrap === true;
+      if (!isBootstrapSnapshot && !terminal) {
+        rt.busy.value = true;
+        rt.turnInFlight = true;
+      }
       clearRecoveredBackendStatus();
       ingestCommand(cmd, rt, identity || null);
       upsertExecuteBlock(key, cmd, String(snapshot?.output ?? ""), rt, {

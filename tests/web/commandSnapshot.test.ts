@@ -151,4 +151,30 @@ describe("server/sync/commandSnapshot", () => {
       "npm run build",
     );
   });
+  it("does not hydrate terminal command snapshots as active", () => {
+    const store = new SyncEventStore({ stateDbPath });
+    // Simulate a previous turn where finish() was never called, but status was completed
+    const writer = createCommandSnapshotCoalescer({
+      store,
+      namespace: WEB_WORKER_NAMESPACE,
+      laneKey: "command-lane",
+      now: () => 5000,
+    });
+    writer.record({
+      type: "command",
+      ts: 5000,
+      command: { id: "cmd-done", command: "npm test", outputDelta: "$ npm test\nPASS\n", status: "completed" },
+    });
+
+    // After server restart/reconnect, hydrate should ignore terminal snapshots
+    const reconnect = createCommandSnapshotCoalescer({
+      store,
+      namespace: WEB_WORKER_NAMESPACE,
+      laneKey: "command-lane",
+      hydrate: true,
+    });
+    assert.equal(reconnect.getActiveCount(), 0);
+    assert.equal(reconnect.getSnapshots().length, 0);
+  });
+
 });
