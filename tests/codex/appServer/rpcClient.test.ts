@@ -186,4 +186,55 @@ describe("CodexAppServerClient", () => {
     assert.equal(closed, true);
     await client.close();
   });
+
+  it("rejects server-initiated requests with error response without notifying", async () => {
+    const { client, stdin, stdout } = await buildStartedClient();
+
+    const notifications: Array<{ method: string; params: unknown }> = [];
+    client.onNotification("item/commandExecution/requestApproval", (params, method) => {
+      notifications.push({ method, params });
+    });
+    client.onNotification("*", (params, method) => {
+      notifications.push({ method, params });
+    });
+
+    const requestId = "srv-approval-1";
+    const startMs = Date.now();
+    let lineDetach: (() => void) | null = null;
+    const responsePromise = new Promise<JsonRpcLine>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("timed out waiting for rejection response")),
+        1000,
+      );
+      lineDetach = readLines(stdin, (msg) => {
+        if (msg.id === requestId) {
+          clearTimeout(timer);
+          resolve(msg);
+        }
+      });
+    });
+
+    send(stdout, {
+      jsonrpc: "2.0",
+      id: requestId,
+      method: "item/commandExecution/requestApproval",
+      params: { itemId: "item-1", command: "echo test" },
+    });
+
+    const response = await responsePromise;
+    const elapsedMs = Date.now() - startMs;
+    lineDetach?.();
+
+    assert(elapsedMs < 1000, `response should be fast (<1000ms), took ${elapsedMs}ms`);
+    assert.equal(response.jsonrpc, "2.0");
+    assert.equal(response.id, requestId);
+    assert.equal(response.error?.code, -32601);
+    assert.match(response.error?.message ?? "", /Unsupported server request/);
+    assert.equal(response.result, undefined);
+
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(notifications.length, 0, "server request should not be dispatched to notification handlers");
+
+    await client.close();
+  });
 });

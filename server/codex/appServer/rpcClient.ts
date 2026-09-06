@@ -260,13 +260,13 @@ export class CodexAppServerClient {
       return;
     }
     const obj = parsed as Record<string, unknown>;
-    if ("id" in obj && (typeof obj.id === "number" || typeof obj.id === "string")) {
-      // Response (success or error). Server-initiated requests will also have
-      // an `id` plus a `method`; we currently treat those as notifications.
-      if ("method" in obj && typeof obj.method === "string") {
-        this.dispatchNotification(obj.method, obj.params);
-        return;
-      }
+    const hasRequestId =
+      "id" in obj && (typeof obj.id === "number" || typeof obj.id === "string");
+    if (hasRequestId && typeof obj.method === "string") {
+      this.rejectServerRequest(obj.id as number | string, obj.method);
+      return;
+    }
+    if (hasRequestId) {
       this.dispatchResponse(obj as unknown as JsonRpcSuccessResponse | JsonRpcErrorResponse);
       return;
     }
@@ -275,6 +275,28 @@ export class CodexAppServerClient {
       return;
     }
     logger.debug(`unrouted JSON-RPC payload: ${line.slice(0, 200)}`);
+  }
+
+  private rejectServerRequest(id: number | string, method: string): void {
+    if (!this.handle || this.closed) {
+      logger.debug(`cannot reject server request after client close: ${method}`);
+      return;
+    }
+    const response: JsonRpcErrorResponse = {
+      jsonrpc: "2.0",
+      id,
+      error: {
+        code: -32601,
+        message: `Unsupported server request: ${method}`,
+      },
+    };
+    try {
+      this.handle.stdin.write(`${JSON.stringify(response)}\n`);
+    } catch (err) {
+      logger.debug(
+        `failed to reject server request ${method}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   private dispatchResponse(payload: JsonRpcSuccessResponse | JsonRpcErrorResponse): void {
