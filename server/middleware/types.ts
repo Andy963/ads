@@ -8,6 +8,8 @@ export interface TurnContext {
   workspaceRoot: string;
   channel: MiddlewareChannel;
   prompt: string;
+  /** Original user-authored prompt before middleware enrichment. */
+  originalPrompt?: string;
   metadata?: Record<string, unknown>;
 }
 
