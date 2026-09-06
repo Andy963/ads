@@ -631,12 +631,20 @@
   background: #94a3b8;
 }
 
-.laneTabStatusDot--connected {
+.laneTabStatusDot--active {
   background: #059669;
 }
 
-.laneTabStatusDot--disconnected {
+.laneTabStatusDot--inactive {
   background: #94a3b8;
+}
+
+.laneTabLabel--connected {
+  color: #059669;
+}
+
+.laneTabLabel--disconnected {
+  color: #94a3b8;
 }
 
 .laneTab.active {

@@ -136,9 +136,11 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find(".chatShell").exists()).toBe(true);
     expect(wrapper.find(".mobileMainPanel").exists()).toBe(false);
     expect(wrapper.findAll(".laneTab").map((tab) => tab.text())).toEqual(["Advisor", "Worker"]);
-    expect(wrapper.find('[data-testid="lane-tab-status-planner"]').classes()).toContain("laneTabStatusDot--connected");
-    expect(wrapper.find('[data-testid="lane-tab-status-worker"]').classes()).toContain("laneTabStatusDot--connected");
     expect(wrapper.find('[data-testid="lane-tab-planner"]').classes()).toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-status-planner"]').classes()).toContain("laneTabStatusDot--active");
+    expect(wrapper.find('[data-testid="lane-tab-status-worker"]').classes()).toContain("laneTabStatusDot--inactive");
+    expect(wrapper.find('[data-testid="lane-tab-planner"] .laneTabLabel').classes()).toContain("laneTabLabel--connected");
+    expect(wrapper.find('[data-testid="lane-tab-worker"] .laneTabLabel').classes()).toContain("laneTabLabel--connected");
 
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
@@ -156,6 +158,10 @@ describe("mobile navigation behavior", () => {
     await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
     await settleUi(wrapper);
     expect(localStorage.getItem("ads.mobileWorkspaceTab.default")).toBe("worker");
+    expect(wrapper.find('[data-testid="lane-tab-planner"]').classes()).not.toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-status-planner"]').classes()).toContain("laneTabStatusDot--inactive");
+    expect(wrapper.find('[data-testid="lane-tab-worker"]').classes()).toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-status-worker"]').classes()).toContain("laneTabStatusDot--active");
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-new-session"]').exists()).toBe(true);

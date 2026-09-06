@@ -639,13 +639,18 @@ const plannerConnectionStatus = computed(() => {
           >
             <span
               class="laneTabStatusDot"
-              :class="isLaneConnected(tab.id, { planner: plannerConnected, worker: connected })
-                ? 'laneTabStatusDot--connected'
-                : 'laneTabStatusDot--disconnected'"
+              :class="activeWorkspaceTab === tab.id
+                ? 'laneTabStatusDot--active'
+                : 'laneTabStatusDot--inactive'"
               :data-testid="`lane-tab-status-${tab.id}`"
               aria-hidden="true"
             />
-            <span class="laneTabLabel">{{ tab.label }}</span>
+            <span
+              class="laneTabLabel"
+              :class="isLaneConnected(tab.id, { planner: plannerConnected, worker: connected })
+                ? 'laneTabLabel--connected'
+                : 'laneTabLabel--disconnected'"
+            >{{ tab.label }}</span>
           </button>
           <span v-if="!isMobile" class="laneTabSpacer" />
           <button
