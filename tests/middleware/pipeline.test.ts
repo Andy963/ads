@@ -293,6 +293,49 @@ describe("MiddlewarePipeline & Core Middlewares", () => {
     ]);
   });
 
+  it("keeps the original prompt and excludes tool traces from after-output middleware", async () => {
+    let afterContext: TurnContext | undefined;
+    let afterReply = "";
+    let invokedInput: unknown;
+    const pipeline = createMiddlewarePipeline([{
+      name: "lifecycle-memory-test",
+      onBeforeInput: (ctx) => ({ modifiedPrompt: `${ctx.prompt} [recalled]` }),
+      onAfterOutput: (ctx, reply) => {
+        afterContext = ctx;
+        afterReply = reply;
+      },
+    }]);
+    const orchestrator = {
+      getActiveAgentId: () => "codex",
+      onEvent: () => () => {},
+      invokeAgent: async (_agentId: string, input: unknown) => {
+        invokedInput = input;
+        return {
+          response: "final response\n<<<tool.unknown>>>internal trace\n>>>",
+          usage: null,
+          agentId: "codex",
+        };
+      },
+    } as any;
+
+    const result = await runAgentTurn(orchestrator, "original prompt", {
+      middleware: pipeline,
+      middlewareContext: {
+        turnId: "turn-1",
+        sessionId: "session-1",
+        channel: "web",
+        originalPrompt: "original prompt",
+      },
+      workspaceRoot: os.tmpdir(),
+    });
+
+    assert.equal(invokedInput, "original prompt [recalled]");
+    assert.equal(result.response, "final response\n\ntool.unknown: rejected (unknown tool)");
+    assert.equal(afterReply, "final response");
+    assert.equal(afterContext?.originalPrompt, "original prompt");
+    assert.equal(afterContext?.prompt, "original prompt [recalled]");
+  });
+
   it("fails closed when an item-start middleware throws", async () => {
     const pipeline = createMiddlewarePipeline([{
       name: "broken-guard",

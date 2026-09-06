@@ -156,10 +156,26 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       typeof rawPayload === "object" && rawPayload !== null && "channel" in rawPayload && typeof (rawPayload as { channel?: unknown }).channel === "string"
         ? (rawPayload as { channel: MiddlewareChannel }).channel
         : "web";
-    const turnMetadata =
+    const clientTurnMetadata =
       typeof rawPayload === "object" && rawPayload !== null && "metadata" in rawPayload && typeof (rawPayload as { metadata?: unknown }).metadata === "object"
-        ? ((rawPayload as { metadata?: Record<string, unknown> }).metadata ?? undefined)
-        : undefined;
+        && !Array.isArray((rawPayload as { metadata?: unknown }).metadata)
+        ? ((rawPayload as { metadata?: Record<string, unknown> }).metadata ?? {})
+        : {};
+    const turnMetadata: Record<string, unknown> = {
+      ...clientTurnMetadata,
+      // These reserved fields are owned by the authenticated WebSocket context.
+      // Client metadata may add channel-specific values but cannot replace them.
+      authUserId: deps.context.authUserId,
+      userId: deps.context.authUserId,
+      sessionId: deps.context.sessionId,
+      chatSessionId: deps.context.chatSessionId,
+    };
+    const originalTurnPrompt = typeof inputToSend === "string"
+      ? inputToSend
+      : inputToSend
+        .filter((part): part is { type: "text"; text: string } => part.type === "text")
+        .map((part) => part.text)
+        .join("\n");
 
     const { unsubscribe, handleExploredEntry } = attachWorkerPromptHandler({
       orchestrator,
@@ -259,6 +275,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           turnId: deps.request.clientMessageId ?? `turn-${Date.now()}`,
           sessionId: deps.context.historyKey,
           channel: turnChannel,
+          originalPrompt: originalTurnPrompt,
           metadata: turnMetadata,
         },
       });
