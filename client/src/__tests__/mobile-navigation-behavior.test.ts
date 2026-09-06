@@ -136,6 +136,8 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find(".chatShell").exists()).toBe(true);
     expect(wrapper.find(".mobileMainPanel").exists()).toBe(false);
     expect(wrapper.findAll(".laneTab").map((tab) => tab.text())).toEqual(["Advisor", "Worker"]);
+    expect(wrapper.find('[data-testid="lane-tab-status-planner"]').classes()).toContain("laneTabStatusDot--connected");
+    expect(wrapper.find('[data-testid="lane-tab-status-worker"]').classes()).toContain("laneTabStatusDot--connected");
     expect(wrapper.find('[data-testid="lane-tab-planner"]').classes()).toContain("active");
 
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");

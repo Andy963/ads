@@ -455,7 +455,7 @@ const plannerConnectionStatus = computed(() => {
       <div class="right">
         <button
           v-if="!isMobile"
-          type="button"
+            type="button"
           class="topbarIconBtn"
           title="管理模型"
           aria-label="管理模型"
@@ -628,20 +628,24 @@ const plannerConnectionStatus = computed(() => {
             v-for="tab in workspaceTabs"
             :id="`lane-tab-${tab.id}`"
             :key="tab.id"
-            type="button"
-          class="laneTab"
-          :class="{
-            active: activeWorkspaceTab === tab.id,
-            'laneTab--connected': isLaneConnected(tab.id, { planner: plannerConnected, worker: connected }),
-            'laneTab--disconnected': !isLaneConnected(tab.id, { planner: plannerConnected, worker: connected }),
-          }"
-          role="tab"
+          type="button"
+            class="laneTab"
+            :class="{ active: activeWorkspaceTab === tab.id }"
+            role="tab"
             :aria-selected="activeWorkspaceTab === tab.id"
             :aria-controls="`lane-panel-${tab.id}`"
             :data-testid="`lane-tab-${tab.id}`"
             @click="selectWorkspaceTab(tab.id)"
           >
-            {{ tab.label }}
+            <span
+              class="laneTabStatusDot"
+              :class="isLaneConnected(tab.id, { planner: plannerConnected, worker: connected })
+                ? 'laneTabStatusDot--connected'
+                : 'laneTabStatusDot--disconnected'"
+              :data-testid="`lane-tab-status-${tab.id}`"
+              aria-hidden="true"
+            />
+            <span class="laneTabLabel">{{ tab.label }}</span>
           </button>
           <span v-if="!isMobile" class="laneTabSpacer" />
           <button
