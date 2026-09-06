@@ -123,6 +123,7 @@ describe("useLaneRuntimeBridge", () => {
 
   it("allows planner lane resets again once its websocket reconnects", () => {
     const clearPlannerChat = vi.fn();
+    const startNewPlannerSession = vi.fn();
 
     const plannerBridge = useLaneRuntimeBridge({
       activeProjectId: ref("p1"),
@@ -136,6 +137,7 @@ describe("useLaneRuntimeBridge", () => {
       pendingImages: ref([]),
       agentBusy: ref(false),
       clearPlannerChat,
+      startNewPlannerSession,
       startNewChatSession: () => {},
       resumePlannerThread: () => {},
       resumeTaskThread: () => {},
@@ -144,6 +146,7 @@ describe("useLaneRuntimeBridge", () => {
     plannerBridge.activeChatLane.value = "planner";
     expect(plannerBridge.activeLaneNewSessionBlocked.value).toBe(false);
     plannerBridge.handleLaneNewSession();
-    expect(clearPlannerChat).toHaveBeenCalledTimes(1);
+    expect(startNewPlannerSession).toHaveBeenCalledTimes(1);
+    expect(clearPlannerChat).not.toHaveBeenCalled();
   });
 });

@@ -193,7 +193,7 @@ export type WsCommandStateDeps = Pick<
   broadcastSessionReset?: (payload: unknown) => void;
   resetLaneState?: () => WsResetResult;
   resetSharedSessionState?: (options: { sourceChatSessionId: string }) => WsResetResult;
-  closeAfterReset?: () => void;
+  completeAfterReset?: () => void;
 };
 
 export type WsPromptHandlerDeps = {
