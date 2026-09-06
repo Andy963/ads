@@ -1,6 +1,6 @@
 {
   "name": "ads",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "type": "module",
   "description": "AI agent workspace and task orchestration with optional channel connectors",
   "author": "ADS Contributors",
