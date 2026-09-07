@@ -1,7 +1,13 @@
 import type { ChatItem } from "../app/controllerTypes";
 import { isLiveMessageId } from "../app/chatLive";
 
-type ComparableChat = { role: ChatItem["role"]; kind: ChatItem["kind"]; content: string; command: string };
+type ComparableChat = {
+  role: ChatItem["role"];
+  kind: ChatItem["kind"];
+  content: string;
+  command: string;
+  identity: string;
+};
 
 const LEGACY_STREAM_DISCONNECT_NOTICE = "[connection lost before this response finished; waiting for reconnect sync]";
 export const STREAM_DISCONNECT_NOTICE = "[连接中断：这段回复尚未完成，正在等待重连同步]";
@@ -57,11 +63,25 @@ function toComparable(items: ChatItem[]): ComparableChat[] {
     kind: m.kind,
     content: normalizeContentForMerge(m.content),
     command: m.kind === "execute" ? String(m.command ?? "").trim() : "",
+    identity: stableUserIdentity(m),
   }));
+}
+
+function stableUserIdentity(item: ChatItem): string {
+  if (item.role !== "user") return "";
+  const id = String(item.id ?? "").trim();
+  if (!id || /^h-u-\d+$/.test(id) || !id.includes("-")) return "";
+  return id;
 }
 
 function comparableKey(chat: ComparableChat): string {
   return `${chat.role}\u0000${chat.kind}\u0000${chat.command}\u0000${chat.content}`;
+}
+
+function comparableMatches(left: ComparableChat, right: ComparableChat): boolean {
+  if (left.role !== right.role || left.kind !== right.kind) return false;
+  if (left.identity && right.identity) return left.identity === right.identity;
+  return comparableKey(left) === comparableKey(right);
 }
 
 function canReplaceLocalTailWithServer(local: ChatItem, server: ChatItem): boolean {
@@ -147,15 +167,14 @@ function findLcsAlignment(
 ): Array<{ localIdx: number; serverIdx: number }> {
   const n = localCmp.length;
   const m = serverCmp.length;
-  if (n === m && localCmp.every((item, i) => comparableKey(item) === comparableKey(serverCmp[i]!))) {
+  if (n === m && localCmp.every((item, i) => comparableMatches(item, serverCmp[i]!))) {
     return localCmp.map((_, i) => ({ localIdx: i, serverIdx: i }));
   }
 
   const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
   for (let i = 0; i < n; i++) {
-    const localKey = comparableKey(localCmp[i]!);
     for (let j = 0; j < m; j++) {
-      if (localKey === comparableKey(serverCmp[j]!)) {
+      if (comparableMatches(localCmp[i]!, serverCmp[j]!)) {
         dp[i + 1]![j + 1] = dp[i]![j]! + 1;
       } else {
         dp[i + 1]![j + 1] = Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
@@ -167,9 +186,7 @@ function findLcsAlignment(
   let i = n;
   let j = m;
   while (i > 0 && j > 0) {
-    const localKey = comparableKey(localCmp[i - 1]!);
-    const serverKey = comparableKey(serverCmp[j - 1]!);
-    if (localKey === serverKey) {
+    if (comparableMatches(localCmp[i - 1]!, serverCmp[j - 1]!)) {
       alignment.unshift({ localIdx: i - 1, serverIdx: j - 1 });
       i--;
       j--;
@@ -230,9 +247,9 @@ function alignAndBackfillHistory(
         }
       }
     } else {
-      const localSliceKeys = new Set(localSlice.map((item) => comparableKey(toComparable([item])[0]!)));
+      const localSliceComparable = toComparable(localSlice);
       const missingFromServer = serverSlice.filter(
-        (item) => !localSliceKeys.has(comparableKey(toComparable([item])[0]!)),
+        (item) => !localSliceComparable.some((localItem) => comparableMatches(localItem, toComparable([item])[0]!)),
       );
       result.push(...missingFromServer, ...localSlice);
 
@@ -245,6 +262,67 @@ function alignAndBackfillHistory(
     prevServerIdx = curServerIdx;
   }
 
+  return result;
+}
+
+function hasTerminalAssistant(server: ChatItem[]): boolean {
+  return server.some(
+    (item) => item.role === "assistant" && item.kind === "text" && Boolean(normalizeContentForMerge(item.content)),
+  );
+}
+
+function insertLocalPendingTurn(result: ChatItem[], turn: ChatItem[]): void {
+  if (turn.length === 0) return;
+  const userTs = Number(turn[0]?.ts);
+  const insertAt = Number.isFinite(userTs) && userTs > 0
+    ? result.findIndex((item) => {
+        const itemTs = Number(item.ts);
+        return Number.isFinite(itemTs) && itemTs > userTs;
+      })
+    : -1;
+  if (insertAt < 0) {
+    result.push(...turn);
+  } else {
+    result.splice(insertAt, 0, ...turn);
+  }
+}
+
+/**
+ * Keep optimistic turns that the server has not acknowledged while treating
+ * persisted terminal assistant messages as authoritative.
+ *
+ * This is the fallback for a snapshot with no exact LCS overlap. It must not
+ * choose one side wholesale: doing so either loses a terminal server reply or
+ * drops the user's still-pending prompt.
+ */
+function mergeWithoutAlignment(local: ChatItem[], server: ChatItem[]): ChatItem[] {
+  if (!hasTerminalAssistant(server)) return local;
+
+  const serverComparable = toComparable(server);
+  const localComparable = toComparable(local);
+  const isServerMatch = (item: ComparableChat): boolean =>
+    serverComparable.some((serverItem) => comparableMatches(item, serverItem));
+  const result = server.slice();
+
+  let pendingTurn: ChatItem[] = [];
+  const flushPendingTurn = (): void => {
+    if (pendingTurn.length === 0) return;
+    insertLocalPendingTurn(result, pendingTurn);
+    pendingTurn = [];
+  };
+
+  for (let index = 0; index < local.length; index += 1) {
+    const item = local[index]!;
+    if (item.role === "user") {
+      flushPendingTurn();
+      if (!isServerMatch(localComparable[index]!)) pendingTurn = [item];
+      continue;
+    }
+    if (pendingTurn.length > 0 && !isServerMatch(localComparable[index]!)) {
+      pendingTurn.push(item);
+    }
+  }
+  flushPendingTurn();
   return result;
 }
 
@@ -262,8 +340,7 @@ export function mergeHistoryFromServer(
   const serverCmp = toComparable(server);
   const alignment = findLcsAlignment(localCmp, serverCmp);
   if (alignment.length === 0) {
-    const hasUserOrAssistant = localCmp.some((m) => m.role === "user" || m.role === "assistant");
-    return hasUserOrAssistant ? local : server;
+    return mergeWithoutAlignment(local, server);
   }
 
   return alignAndBackfillHistory(local, server, alignment);

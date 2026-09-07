@@ -533,7 +533,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       deferredRuntimeSnapshots = [];
     };
 
-    const applyDeferredRuntimeSnapshots = (): void => {
+    const applyDeferredRuntimeSnapshots = (terminalFenceSeq = 0): void => {
       if (deferredRuntimeSnapshots.length === 0) return;
       const snapshots = deferredRuntimeSnapshots.slice();
       deferredRuntimeSnapshots = [];
@@ -543,6 +543,14 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         return (Number.isFinite(leftBarrier) ? leftBarrier : 0) - (Number.isFinite(rightBarrier) ? rightBarrier : 0);
       });
       for (const snapshot of snapshots) {
+        if (terminalFenceSeq > 0) {
+          const barrierRaw = Number(snapshot.afterSeq ?? snapshot.snapshotSeq ?? snapshot.seq);
+          const barrier = Number.isFinite(barrierRaw) && barrierRaw > 0 ? Math.floor(barrierRaw) : 0;
+          // A bootstrap runtime row is a point-in-time view. If a durable
+          // terminal event committed after that point, replaying the row would
+          // resurrect an already-finished stream or command.
+          if (barrier <= 0 || barrier <= terminalFenceSeq) continue;
+        }
         handleWsPayload?.(snapshot);
       }
     };
@@ -558,7 +566,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       bootstrapHistoryWait = null;
       clearBootstrapHistoryWatchdog();
       handleWsPayload?.(history);
-      applyDeferredRuntimeSnapshots();
+      const terminalBootstrapFence =
+        bootstrapReportedInFlight === false && hasTerminalAssistantHistory(history) ? bootstrapBoundarySeq : 0;
+      applyDeferredRuntimeSnapshots(terminalBootstrapFence);
     };
 
     const scheduleIdleBootstrapHistory = (): void => {
@@ -732,7 +742,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       handleWsPayload?.(payload);
     };
 
-    const hasTerminalAssistantHistory = (payload: Record<string, unknown>): boolean => {
+    function hasTerminalAssistantHistory(payload: Record<string, unknown>): boolean {
       const items = Array.isArray(payload.items) ? payload.items : [];
       for (let index = items.length - 1; index >= 0; index -= 1) {
         const item = items[index];
@@ -740,11 +750,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         const role = String((item as Record<string, unknown>).role ?? "").trim();
         const text = String((item as Record<string, unknown>).text ?? "").trim();
         if (!role || !text) continue;
-        if (role === "ai") return true;
+        if (role === "ai" || role === "assistant") return true;
         if (role === "user") return false;
       }
       return false;
-    };
+    }
 
     const scheduleSyncRetry = (): void => {
       if (!isCurrentSync() || syncRetryTimer !== null) return;
@@ -848,6 +858,17 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         }
         const terminalPatchSeqs = new Set<number>();
         let finalTerminalPatchSeq = 0;
+        let terminalFenceSeq = 0;
+        for (const payload of catchUpPayloads) {
+          const payloadType = String(payload.type ?? "").trim();
+          const payloadKind = String(payload.kind ?? "").trim();
+          const transientError = payloadType === "error" && Boolean(payload.transient) && Boolean(payload.retryable);
+          if (transientError || (payloadType !== "error" && !(payloadType === "result" && !payloadKind))) continue;
+          const payloadSeq = Number(payload.seq);
+          if (Number.isFinite(payloadSeq) && payloadSeq > terminalFenceSeq) {
+            terminalFenceSeq = Math.floor(payloadSeq);
+          }
+        }
         if (terminalBootstrapIsAuthoritative) {
           let terminalResultIndex = -1;
           for (let index = catchUpPayloads.length - 1; index >= 0; index -= 1) {
@@ -924,7 +945,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         // history stream. Apply them only after the baseline and all cursor
         // events have committed, so a stale snapshot cannot overwrite a newer
         // live update.
-        applyDeferredRuntimeSnapshots();
+        applyDeferredRuntimeSnapshots(terminalFenceSeq || (terminalBootstrapIsAuthoritative ? bootstrapBoundarySeq : 0));
         syncRetryAttempts = 0;
         clearSyncRetryTimer();
       } catch {

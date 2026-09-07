@@ -703,6 +703,27 @@ describe("chat_sync.mergeHistoryFromServer", () => {
     const out = mergeHistoryFromServer(local, server, LIVE);
     expect(out.map((m) => m.content)).toEqual(["Hi", "Ack", "Intermediate", "Ack", "Tail"]);
   });
+
+  it("preserves server terminal assistant answer and user message when there is no exact LCS alignment", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u-pending", role: "user", content: "Pending user prompt", ts: 2000 }),
+      msg({
+        id: "a-stream",
+        role: "assistant",
+        content: `Partial stream text...\n\n${STREAM_DISCONNECT_NOTICE}`,
+        ts: 2050,
+      }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "s-u-1", role: "user", content: "Earlier server prompt", ts: 1000 }),
+      msg({ id: "s-a-1", role: "assistant", content: "Server terminal assistant response", ts: 1500 }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+    const contents = out.map((m) => m.content);
+    expect(contents).toContain("Server terminal assistant response");
+    expect(contents).toContain("Pending user prompt");
+  });
 });
 
 describe("chat_sync.normalizeTurnSemanticOrder", () => {

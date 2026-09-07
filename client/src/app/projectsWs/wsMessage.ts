@@ -116,7 +116,7 @@ function hasTerminalHistoryTail(items: unknown[]): boolean {
     if (role === "status" && kind === "status" && !replayedLaneStatus(kind, text)) {
       continue;
     }
-    return role === "ai" || (role === "status" && (kind === "execute" || kind === "error" || Boolean(replayedLaneStatus(kind, text))));
+    return role === "ai" || role === "assistant" || (role === "status" && (kind === "execute" || kind === "error" || Boolean(replayedLaneStatus(kind, text))));
   }
   return false;
 }
@@ -134,7 +134,7 @@ function collectCompletedClientMessageIdsFromHistoryItems(items: unknown[]): Set
       continue;
     }
     if (!currentClientMessageId) continue;
-    if (role === "ai" || (role === "status" && (kind === "error" || kind === "execute"))) {
+    if (role === "ai" || role === "assistant" || (role === "status" && (kind === "error" || kind === "execute"))) {
       completed.add(currentClientMessageId);
       currentClientMessageId = "";
     }
@@ -209,6 +209,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
   rt.laneStatus ??= { value: null };
   rt.retiredExecuteKeys ??= new Set<string>();
   let recoveredBackendActivitySeen = false;
+  let terminalFenceActive = false;
+  let terminalFenceSeq = 0;
   const legacyCommandTracks = new Map<string, {
     identity: string;
     terminal: boolean;
@@ -228,6 +230,30 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
   const finiteTimestamp = (value: unknown): number | undefined => {
     const timestamp = Number(value);
     return Number.isFinite(timestamp) && timestamp > 0 ? Math.floor(timestamp) : undefined;
+  };
+
+  const finiteSequence = (value: unknown): number | null => {
+    const sequence = Number(value);
+    return Number.isFinite(sequence) && sequence > 0 ? Math.floor(sequence) : null;
+  };
+
+  const markTurnActive = (payload: Record<string, unknown>): void => {
+    const sequence = finiteSequence(payload.seq);
+    if (terminalFenceActive && terminalFenceSeq > 0 && sequence !== null && sequence <= terminalFenceSeq) return;
+    terminalFenceActive = false;
+  };
+
+  const markTurnTerminal = (payload: Record<string, unknown>): void => {
+    terminalFenceActive = true;
+    const sequence = finiteSequence(payload.seq);
+    if (sequence !== null) terminalFenceSeq = Math.max(terminalFenceSeq, sequence);
+  };
+
+  const isStaleRuntimePayload = (payload: Record<string, unknown>): boolean => {
+    if (!terminalFenceActive) return false;
+    const barrier = finiteSequence(payload.afterSeq ?? payload.snapshotSeq ?? payload.seq);
+    if (terminalFenceSeq > 0 && barrier !== null) return barrier <= terminalFenceSeq;
+    return !rt.busy.value && !rt.turnInFlight;
   };
 
   const clearStreamTracking = (): void => {
@@ -317,7 +343,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
   const consumeAssistantSnapshot = (payload: Record<string, unknown>): void => {
     const text = String(payload.text ?? "");
-    if (!text) return;
+    if (!text || payload.active === false) return;
+    if (isStaleRuntimePayload(payload)) return;
     const streamId = String(payload.streamId ?? payload.stream_id ?? "").trim();
     const revisionRaw = Number(payload.revision);
     const revision = Number.isFinite(revisionRaw) && revisionRaw > 0 ? Math.floor(revisionRaw) : 0;
@@ -935,6 +962,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       applyEffectiveState(msg as Record<string, unknown>);
       const handshakeReset = Boolean(msg.reset);
+      if (handshakeReset) {
+        terminalFenceActive = false;
+        terminalFenceSeq = 0;
+      }
       const contextMode = String(msg.contextMode ?? "").trim();
       const bootstrapHistory = (msg as { bootstrapHistory?: unknown }).bootstrapHistory === true;
       const completedClientMessageIds = new Set(
@@ -1033,6 +1064,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "thread_reset") {
+      terminalFenceActive = false;
+      terminalFenceSeq = 0;
       resetTurnPatchSummary();
       rt.awaitingBootstrapHistory = false;
       threadReset(rt, {
@@ -1087,6 +1120,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (consumeSessionReset && !consumeSessionReset(msg as Record<string, unknown>)) {
         return;
       }
+      terminalFenceActive = false;
+      terminalFenceSeq = 0;
       handleSharedSessionReset(msg as Record<string, unknown>);
       return;
     }
@@ -1221,8 +1256,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (role === "user") {
           restoredHistoryStatus = null;
           const execution = parseExecutionFromHistoryKind(kind);
+          const clientMessageId = parseClientMessageIdFromHistoryKind(kind);
           next.push({
-            id: `h-u-${idx}`,
+            id: clientMessageId.includes("-") ? clientMessageId : `h-u-${idx}`,
             role: "user",
             kind: "text",
             content: historyText,
@@ -1238,6 +1274,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       applyResumeHistory(next, rt);
       const canTreatHistoryAsTerminal = terminalHistoryTail && !rt.busy.value && !rt.turnInFlight;
       if (canTreatHistoryAsTerminal) {
+        terminalFenceActive = true;
+        const historySequence = finiteSequence(msg.seq);
+        if (historySequence !== null) terminalFenceSeq = Math.max(terminalFenceSeq, historySequence);
         clearRecoveredBackendStatus();
         rt.busy.value = false;
         rt.turnInFlight = false;
@@ -1267,6 +1306,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "user") {
+      markTurnActive(msg as Record<string, unknown>);
       const clientMessageId = String(msg.clientMessageId ?? msg.client_message_id ?? "").trim();
       const text = String(msg.text ?? msg.content ?? "").trim();
       const eventTsRaw = Number((msg as { ts?: unknown }).ts);
@@ -1291,6 +1331,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (type === "in_flight") {
       const inFlight = (msg as { inFlight?: unknown }).inFlight;
       if (typeof inFlight !== "boolean") return;
+      if (isStaleRuntimePayload(msg as Record<string, unknown>)) return;
+      if (inFlight) markTurnActive(msg as Record<string, unknown>);
       rt.busy.value = inFlight;
       rt.turnInFlight = inFlight;
       if (inFlight) {
@@ -1311,6 +1353,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "delta") {
+      if (isStaleRuntimePayload(msg as Record<string, unknown>)) return;
+      markTurnActive(msg as Record<string, unknown>);
       rt.busy.value = true;
       rt.turnInFlight = true;
       clearRecoveredBackendStatus();
@@ -1328,6 +1372,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "thought") {
+      if (isStaleRuntimePayload(msg as Record<string, unknown>)) return;
+      markTurnActive(msg as Record<string, unknown>);
       rt.busy.value = true;
       rt.turnInFlight = true;
       clearRecoveredBackendStatus();
@@ -1344,6 +1390,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "explored") {
+      if (isStaleRuntimePayload(msg as Record<string, unknown>)) return;
       rt.busy.value = true;
       rt.turnInFlight = true;
       clearRecoveredBackendStatus();
@@ -1379,6 +1426,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const rec = msg as Record<string, unknown>;
       const terminalArtifactReplay = rec.syncReplayMode === "terminal-artifact";
       const terminalArtifactFinal = rec.syncReplayFinal === true;
+      if (!terminalArtifactReplay && isStaleRuntimePayload(rec)) return;
       if (!terminalArtifactReplay) {
         rt.busy.value = true;
         rt.turnInFlight = true;
@@ -1444,6 +1492,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "command_snapshot") {
+      if (isStaleRuntimePayload(msg as Record<string, unknown>)) return;
       const snapshot = msg.command && typeof msg.command === "object" && !Array.isArray(msg.command)
         ? (msg.command as Record<string, unknown>)
         : null;
@@ -1478,6 +1527,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "result") {
+      markTurnTerminal(msg as Record<string, unknown>);
       annotatePendingUserMessageExecution(msg as Record<string, unknown>);
       recoveredBackendActivitySeen = false;
       clearTransientRetryNotice();
@@ -1586,6 +1636,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         return;
       }
 
+      markTurnTerminal(msg as Record<string, unknown>);
       clearTransientRetryNotice();
       recoveredBackendActivitySeen = false;
       cancelPendingResume(rt);
@@ -1622,6 +1673,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "command") {
+      if (isStaleRuntimePayload(msg as Record<string, unknown>)) return;
+      markTurnActive(msg as Record<string, unknown>);
       const payload = msg.command && typeof msg.command === "object" ? (msg.command as Record<string, unknown>) : null;
       const cmd = String(payload?.command ?? "").trim();
       const rawOutputDelta = String(payload?.outputDelta ?? "");

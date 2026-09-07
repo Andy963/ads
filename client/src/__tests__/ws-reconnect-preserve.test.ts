@@ -7,6 +7,7 @@ import {
   RECONNECT_BUSY_MESSAGE,
   RECONNECT_PENDING_RESEND_NOTICE,
 } from "../app/projectsWs/reconnectNotice";
+import { STREAM_DISCONNECT_NOTICE } from "../lib/chat_sync";
 
 const PENDING_PROMPT_REPLAY_NOTICE = "已恢复断线前未确认发送的请求，并重新发送。";
 
@@ -1035,6 +1036,48 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
+  it("recognizes assistant-role history when confirming a pending prompt", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.pendingAckClientMessageId = "pending-assistant-role";
+    seedOutboxPending("main", {
+      clientMessageId: "pending-assistant-role",
+      text: "pending prompt",
+      createdAt: Date.now(),
+      agentId: "claude",
+    });
+    lastSentPromptPayload = null;
+
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+    lastWs!.onMessage?.({
+      type: "welcome",
+      inFlight: false,
+      contextMode: "thread_resumed",
+      threadId: "thread-1",
+    });
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        {
+          role: "user",
+          text: "persisted prompt",
+          ts: 1,
+          kind: "client_message_id:pending-assistant-role",
+        },
+        { role: "assistant", text: "Completed response", ts: 2 },
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(lastSentPromptPayload).toBeNull();
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(rt.pendingAckClientMessageId).toBeNull();
+    wrapper.unmount();
+  });
+
   it("restores queued prompts that were never sent, not just the pending one", async () => {
     const { wrapper, rt } = await mountReconnectHarness();
 
@@ -1724,6 +1767,340 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(plannerRt.pendingAckClientMessageId).toBeNull();
     expect(plannerRt.queuedPrompts.value).toEqual([]);
     expect(localStorage.getItem("ads.outbox.default.planner")).toBeNull();
+    wrapper.unmount();
+  });
+
+  it("preserves server terminal assistant answer and user message during history reconciliation without exact LCS alignment", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.messages.value = [
+      { id: "u-1", role: "user", kind: "text", content: "Analyze deadlock issue", ts: 1000 },
+      {
+        id: "a-stream-1",
+        role: "assistant",
+        kind: "text",
+        content: `Checking lock tree in memory...\n\n${STREAM_DISCONNECT_NOTICE}`,
+        streaming: false,
+        ts: 1050,
+      },
+    ];
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+
+    lastWs!.onClose?.({ code: 1006, reason: "" });
+    await settleUi(wrapper);
+
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({
+      type: "welcome",
+      inFlight: false,
+      contextMode: "thread_resumed",
+      threadId: "thread-1",
+    });
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        { role: "user", text: "Analyze deadlock issue", ts: 1000, kind: "client_message_id:u-1" },
+        { role: "ai", text: "The deadlock was resolved by fixing lock order.", ts: 2000 },
+      ],
+    });
+    await settleUi(wrapper);
+
+    const contents = rt.messages.value.map((m) => m.content);
+    expect(contents).toContain("Analyze deadlock issue");
+    expect(contents).toContain("The deadlock was resolved by fixing lock order.");
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.inputLocked.value).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("preserves server terminal assistant answer and optimistic user message when history has zero LCS overlap", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.messages.value = [
+      { id: "u-local-pending", role: "user", kind: "text", content: "Offline prompt not on server", ts: 3000 },
+      {
+        id: "a-local-stream",
+        role: "assistant",
+        kind: "text",
+        content: `Starting offline task...\n\n${STREAM_DISCONNECT_NOTICE}`,
+        streaming: false,
+        ts: 3050,
+      },
+    ];
+
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({
+      type: "welcome",
+      inFlight: false,
+      contextMode: "thread_resumed",
+      threadId: "thread-1",
+    });
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        { role: "user", text: "Prior server query", ts: 1000 },
+        { role: "ai", text: "Server terminal assistant reply for prior query", ts: 2000 },
+      ],
+    });
+    await settleUi(wrapper);
+
+    const contents = rt.messages.value.map((m) => m.content);
+    expect(contents).toContain("Server terminal assistant reply for prior query");
+    expect(contents).toContain("Offline prompt not on server");
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("does not make runtime busy or hide final assistant answer when older delta_snapshot replays after terminal result", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.messages.value = [
+      { id: "u-1", role: "user", kind: "text", content: "Generate report", ts: 1000 },
+    ];
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+
+    lastWs!.onMessage?.({
+      type: "result",
+      ok: true,
+      output: "Final completed report answer.",
+      threadId: "thread-1",
+    });
+    await settleUi(wrapper);
+
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.messages.value.some((m) => m.role === "assistant" && m.content === "Final completed report answer.")).toBe(true);
+
+    lastWs!.onMessage?.({
+      type: "delta_snapshot",
+      text: "Generating partial report...",
+      revision: 1,
+    });
+    await settleUi(wrapper);
+
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.inputLocked.value).toBe(false);
+
+    const assistantMessages = rt.messages.value.filter((m) => m.role === "assistant");
+    expect(assistantMessages.some((m) => m.content === "Final completed report answer.")).toBe(true);
+    expect(assistantMessages.some((m) => m.streaming === true)).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("ignores a late in-flight replay after a terminal result but accepts a newer turn", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    lastWs!.onMessage?.({
+      type: "result",
+      ok: true,
+      output: "Final answer",
+      seq: 10,
+    });
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({ type: "in_flight", inFlight: true, seq: 9 });
+    await settleUi(wrapper);
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+
+    lastWs!.onMessage?.({ type: "in_flight", inFlight: true, seq: 11 });
+    await settleUi(wrapper);
+    expect(rt.busy.value).toBe(true);
+    expect(rt.turnInFlight).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("does not make runtime busy or hide final assistant answer when older bootstrap delta_snapshot replays after terminal history", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({
+      type: "welcome",
+      inFlight: false,
+      contextMode: "thread_resumed",
+      threadId: "thread-1",
+      bootstrapHistory: true,
+    });
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        { role: "user", text: "Check disk usage", ts: 1000 },
+        { role: "ai", text: "Disk usage is currently at 42%.", ts: 2000 },
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.messages.value.some((m) => m.role === "assistant" && m.content === "Disk usage is currently at 42%.")).toBe(true);
+
+    lastWs!.onMessage?.({
+      type: "delta_snapshot",
+      text: "Checking filesystem...",
+      revision: 1,
+      bootstrap: true,
+    });
+    await settleUi(wrapper);
+
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.inputLocked.value).toBe(false);
+
+    const assistantMessages = rt.messages.value.filter((m) => m.role === "assistant");
+    expect(assistantMessages.some((m) => m.content === "Disk usage is currently at 42%.")).toBe(true);
+    expect(assistantMessages.some((m) => m.streaming === true)).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("recognizes assistant-role history and ignores a late thought frame after the terminal answer", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({
+      type: "welcome",
+      inFlight: false,
+      contextMode: "thread_resumed",
+      threadId: "thread-1",
+      bootstrapHistory: true,
+    });
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        { role: "user", text: "Check the service", ts: 1000, kind: "client_message_id:msg123" },
+        { role: "assistant", text: "The service is healthy.", ts: 2000 },
+      ],
+    });
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({ type: "thought", seq: 1, text: "old provider reasoning" });
+    await settleUi(wrapper);
+
+    expect(rt.messages.value.map((message) => message.content)).toContain("The service is healthy.");
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+    expect(rt.inputLocked.value).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("preserves worker and planner lane isolation during reconnect and catch-up replay", async () => {
+    const { wrapper, controller, rt } = await mountReconnectHarness();
+    const plannerRt = controller.getPlannerRuntime("default");
+
+    rt.messages.value = [
+      { id: "w-u", role: "user", kind: "text", content: "Worker prompt" },
+      {
+        id: "w-a-stream",
+        role: "assistant",
+        kind: "text",
+        content: `Worker partial stream...\n\n${STREAM_DISCONNECT_NOTICE}`,
+        streaming: false,
+      },
+    ];
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+
+    plannerRt.messages.value = [
+      { id: "p-u", role: "user", kind: "text", content: "Planner goal" },
+      { id: "p-a", role: "assistant", kind: "text", content: "Planner plan step 1", streaming: true },
+    ];
+    plannerRt.busy.value = true;
+    plannerRt.turnInFlight = true;
+
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({
+      type: "welcome",
+      inFlight: false,
+      contextMode: "thread_resumed",
+      threadId: "thread-worker",
+    });
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        { role: "user", text: "Worker prompt", ts: 1000 },
+        { role: "ai", text: "Worker final answer", ts: 2000 },
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(rt.messages.value.map((m) => m.content)).toContain("Worker final answer");
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+
+    expect(plannerRt.messages.value.map((m) => m.content)).toEqual(["Planner goal", "Planner plan step 1"]);
+    expect(plannerRt.busy.value).toBe(true);
+    expect(plannerRt.turnInFlight).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  it("preserves worker and planner lane isolation during reconnect and catch-up delta_snapshot replay", async () => {
+    const { wrapper, controller, rt } = await mountReconnectHarness();
+    const plannerRt = controller.getPlannerRuntime("default");
+
+    rt.messages.value = [
+      { id: "w-u", role: "user", kind: "text", content: "Worker prompt" },
+      {
+        id: "w-a-stream",
+        role: "assistant",
+        kind: "text",
+        content: `Worker partial stream...\n\n${STREAM_DISCONNECT_NOTICE}`,
+        streaming: false,
+      },
+    ];
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+
+    plannerRt.messages.value = [
+      { id: "p-u", role: "user", kind: "text", content: "Planner goal" },
+      { id: "p-a", role: "assistant", kind: "text", content: "Planner plan step 1", streaming: true },
+    ];
+    plannerRt.busy.value = true;
+    plannerRt.turnInFlight = true;
+
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({
+      type: "welcome",
+      inFlight: false,
+      contextMode: "thread_resumed",
+      threadId: "thread-worker",
+    });
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        { role: "user", text: "Worker prompt", ts: 1000 },
+        { role: "ai", text: "Worker final answer", ts: 2000 },
+      ],
+    });
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "delta_snapshot",
+      text: "Old worker snapshot",
+      revision: 1,
+    });
+    await settleUi(wrapper);
+
+    expect(rt.messages.value.map((m) => m.content)).toContain("Worker final answer");
+    expect(rt.busy.value).toBe(false);
+    expect(rt.turnInFlight).toBe(false);
+
+    expect(plannerRt.messages.value.map((m) => m.content)).toEqual(["Planner goal", "Planner plan step 1"]);
+    expect(plannerRt.busy.value).toBe(true);
+    expect(plannerRt.turnInFlight).toBe(true);
+
     wrapper.unmount();
   });
 });
