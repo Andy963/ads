@@ -30,7 +30,6 @@ export function createChatActions(ctx: AppContext) {
   const {
     runtimeOrActive,
     runtimeAgentBusy,
-    maxChatMessages,
     maxExecutePreviewLines,
     maxRecentCommands,
     maxTurnCommands,
@@ -302,8 +301,9 @@ export function createChatActions(ctx: AppContext) {
       if (msg) liveById.set(liveId, msg);
     }
 
-    const nonLive = existing.filter((m) => !isLiveMessageId(m.id));
-    const trimmed = nonLive.length <= maxChatMessages ? nonLive : nonLive.slice(nonLive.length - maxChatMessages);
+    // Keep the complete conversation in memory. The message list owns the DOM
+    // window, so retaining history here does not require mounting every item.
+    const trimmed = existing.filter((m) => !isLiveMessageId(m.id));
     const liveBlock = LIVE_MESSAGE_IDS.map((id) => liveById.get(id)).filter(Boolean) as ChatItem[];
     if (liveBlock.length === 0) {
       return trimmed;

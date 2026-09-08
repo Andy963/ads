@@ -1,3 +1,5 @@
+import { toRaw } from "vue";
+
 import { clearLiveActivityWindow, renderLiveActivityMarkdown } from "../lib/live_activity";
 import {
   findAssistantInsertIndex,
@@ -67,6 +69,37 @@ export function createStreamingActions(params: {
   const { liveStepId, liveActivityId, runtimeOrActive, setMessages, dropEmptyAssistantPlaceholder, isLiveMessageId, randomId } =
     params;
 
+  const pendingFrameStates = new Set<ProjectRuntime>();
+  let pendingFrame: number | null = null;
+
+  const flushStreamingFrame = (): void => {
+    pendingFrame = null;
+    const states = [...pendingFrameStates];
+    pendingFrameStates.clear();
+    for (const state of states) {
+      setMessages(state.messages.value.slice(), state);
+    }
+  };
+
+  const scheduleStreamingFrame = (state: ProjectRuntime): void => {
+    pendingFrameStates.add(state);
+    if (pendingFrame !== null) return;
+
+    const requestFrame = globalThis.requestAnimationFrame;
+    if (typeof requestFrame !== "function") {
+      // Non-visual environments (SSR and jsdom) do not provide a frame clock.
+      // Flush synchronously there so state consumers keep the same contract.
+      flushStreamingFrame();
+      return;
+    }
+
+    // Use a sentinel while invoking requestAnimationFrame because test clocks
+    // are allowed to invoke the callback synchronously.
+    pendingFrame = -1;
+    const frame = requestFrame(() => flushStreamingFrame());
+    if (pendingFrame === -1) pendingFrame = frame;
+  };
+
   const findActiveStreamingAssistantIndex = (items: ChatItem[]): number => {
     for (let i = items.length - 1; i >= 0; i--) {
       const msg = items[i]!;
@@ -123,11 +156,11 @@ export function createStreamingActions(params: {
       const current = String(existing[streamIndex]!.content ?? "");
       const nextChunk = options?.preserveRepeatedText ? chunk : stripStreamingOverlap(current, chunk);
       if (!nextChunk) return;
-      existing[streamIndex] = {
-        ...existing[streamIndex]!,
-        content: current + nextChunk,
-      };
-      setMessages(existing.slice(), state);
+      const rawMessages = toRaw(state.messages.value) as ChatItem[];
+      const rawMessage = toRaw(rawMessages[streamIndex]) as ChatItem | undefined;
+      if (!rawMessage) return;
+      rawMessage.content = current + nextChunk;
+      scheduleStreamingFrame(state);
       return;
     }
 
@@ -148,7 +181,12 @@ export function createStreamingActions(params: {
       ts: (Number.isFinite(ts) && (ts as number) > 0) ? Math.floor(ts as number) : Date.now(),
     };
     const insertAt = findAssistantInsertIndex(sealedExisting);
-    setMessages([...sealedExisting.slice(0, insertAt), nextItem, ...sealedExisting.slice(insertAt)], state);
+    const rawMessages = toRaw(state.messages.value) as ChatItem[];
+    const nextMessages = [...sealedExisting.slice(0, insertAt), nextItem, ...sealedExisting.slice(insertAt)].map(
+      (message) => toRaw(message) as ChatItem,
+    );
+    rawMessages.splice(0, rawMessages.length, ...nextMessages);
+    scheduleStreamingFrame(state);
   };
 
   const sealActiveStreamingAssistant = (rt?: ProjectRuntime): void => {
@@ -343,5 +381,6 @@ export function createStreamingActions(params: {
     upsertLiveActivity,
     clearStepLive,
     sealActiveStreamingAssistant,
+    flushStreamingFrame,
   };
 }

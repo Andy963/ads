@@ -141,6 +141,7 @@ md.renderer.rules.fence = (tokens, idx, options, _env, _self) => {
   const patchPaths = isLikelyPatch ? extractPatchFilePaths(token.content) : [];
   const canCollapse = isLikelyPatch;
   const lineCount = token.content.split("\n").length;
+  const shouldClamp = !canCollapse && lineCount > 30;
 
   const bodyHtml = [
     `<div class="md-codeblock-body">`,
@@ -174,6 +175,15 @@ md.renderer.rules.fence = (tokens, idx, options, _env, _self) => {
       `</summary>`,
       bodyHtml,
       `</details>`,
+    ].join("");
+  }
+
+  if (shouldClamp) {
+    return [
+      `<div class="md-codeblock md-codeblock--clamped"${langAttr} data-expanded="false" data-line-count="${lineCount}">`,
+      bodyHtml,
+      `<button class="md-code-toggle" type="button" aria-expanded="false" aria-label="Show full code">Show full code</button>`,
+      `</div>`,
     ].join("");
   }
 
