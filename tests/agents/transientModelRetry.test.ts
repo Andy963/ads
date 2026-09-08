@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   isTransientByokCapacityError,
+  isStreamDisconnectedUpstreamError,
   isTransientUpstreamModelError,
   resolveTransientRetryDelayMs,
   runWithTransientModelRetry,
@@ -11,6 +12,56 @@ import {
 } from "../../server/agents/adapters/transientModelRetry.js";
 
 describe("transient model retry classification", () => {
+  it("treats upstream stream disconnect messages as retryable", () => {
+    const messages = [
+      "stream disconnected before completion: stream closed before response.completed",
+      "Connection closed while reading the upstream response",
+      "socket hang up",
+      "premature close while receiving the response",
+    ];
+
+    for (const message of messages) {
+      assert.equal(isStreamDisconnectedUpstreamError(message), true, message);
+      assert.equal(isTransientUpstreamModelError(message), true, message);
+    }
+  });
+
+  it("retries an upstream stream disconnect", async () => {
+    const previous = process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
+    process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = "1";
+    let attempts = 0;
+    const retryCounts: number[] = [];
+
+    try {
+      const result = await runWithTransientModelRetry(
+        {
+          agentName: "test",
+          backoffMs: [0],
+          onRetry: (notice) => retryCounts.push(notice.retryCount),
+        },
+        async () => {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error(
+              "stream disconnected before completion: stream closed before response.completed",
+            );
+          }
+          return "ok";
+        },
+      );
+
+      assert.equal(result, "ok");
+      assert.equal(attempts, 2);
+      assert.deepEqual(retryCounts, [1]);
+    } finally {
+      if (previous === undefined) {
+        delete process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
+      } else {
+        process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = previous;
+      }
+    }
+  });
+
   it("treats high-demand upstream messages as retryable", () => {
     assert.equal(
       isTransientUpstreamModelError(
