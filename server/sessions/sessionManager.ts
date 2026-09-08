@@ -20,6 +20,7 @@ import { SessionRuntimeRegistry } from './sessionRuntimeRegistry.js';
 import { SystemPromptManager, resolveReinjectionConfig } from '../systemPrompt/manager.js';
 import { detectWorkspaceFrom } from '../workspace/detector.js';
 import { deriveProjectSessionId } from '../web/server/projectSessionId.js';
+import type { LaneName } from '../state/lanePromptDefaults.js';
 
 function isConversationLoggingEnabled(): boolean {
   const raw = process.env.ADS_CONVERSATION_LOG;
@@ -47,8 +48,10 @@ export interface SessionDisposeInfo {
 
 export interface SessionManagerOptions {
   agentAllowlist?: AgentIdentifier[];
-  /** Template file injected into this lane's system prompt only (see SystemPromptManager). */
-  laneInstructionsFile?: string;
+  /** Optional role lane. Only the Web Advisor and Worker sessions set this value. */
+  lane?: LaneName;
+  /** State database used for the versioned lane prompt store. */
+  stateDbPath?: string;
   createSession?: (args: {
     userId: number;
     cwd: string;
@@ -499,9 +502,10 @@ export class SessionManager {
     const adapters = this.createAdapters(args);
 
     const systemPromptManager = new SystemPromptManager({
-      workspaceRoot: args.workspaceRoot,
+      workspaceRoot: detectWorkspaceFrom(args.workspaceRoot),
+      lane: this.options.lane,
+      stateDbPath: this.options.stateDbPath,
       reinjection: resolveReinjectionConfig(),
-      laneInstructionsFile: this.options.laneInstructionsFile,
     });
 
     const orchestrator = new HybridOrchestrator({

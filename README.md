@@ -111,7 +111,6 @@ ads/
 │   └── web/           # Web HTTP API、WebSocket Hub 与鉴权系统
 ├── client/            # 前端 Web Console 源码 (Vue 3 + TypeScript + Vite)
 ├── docs/              # 模块化详细设计与配置文档
-├── templates/         # 运行时 Prompt 与种子模板
 └── tests/             # 后端完整测试用例集
 ```
 

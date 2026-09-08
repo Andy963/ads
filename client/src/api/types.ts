@@ -28,6 +28,24 @@ export interface ModelConfig {
   configJson?: Record<string, unknown> | null;
 }
 
+export type LaneName = "advisor" | "worker";
+
+export interface LanePromptVersion {
+  lane: LaneName;
+  version: number;
+  prompt: string;
+  isBase: boolean;
+  createdAt: number;
+}
+
+export interface LanePromptSnapshot {
+  lane: LaneName;
+  current: LanePromptVersion;
+  base: LanePromptVersion;
+  versions: LanePromptVersion[];
+  updatedAt: number;
+}
+
 export type FilePreviewResponse = {
   path: string;
   content: string;

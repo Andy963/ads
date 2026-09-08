@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import type { Database as DatabaseType } from "better-sqlite3";
 
+import { ensureLanePromptTables } from "./lanePromptStore.js";
+
 export interface StateSchemaMigration {
   version: number;
   description: string;
@@ -397,6 +399,13 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
           PRIMARY KEY(namespace, lane_key)
         );
       `);
+    },
+  },
+  {
+    version: 14,
+    description: "Versioned Advisor and Worker lane system prompts",
+    up: (db) => {
+      ensureLanePromptTables(db);
     },
   },
 ];

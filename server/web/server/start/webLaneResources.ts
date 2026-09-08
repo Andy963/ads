@@ -133,6 +133,7 @@ export type WebLaneResources = {
 
 function createLaneRuntime(args: {
   namespace: string;
+  lane: "advisor" | "worker";
   sandboxMode: SandboxMode;
   defaultModel?: string;
   sessionTimeoutMs: number;
@@ -173,8 +174,9 @@ function createLaneRuntime(args: {
         undefined,
         {
           agentAllowlist: resolveSessionAgentAllowlist(args.namespace === WEB_PLANNER_NAMESPACE ? "web-planner" : "web-worker"),
-          ...(args.namespace === WEB_PLANNER_NAMESPACE ? { laneInstructionsFile: "planner-instructions.md" } : {}),
           ...args.sessionManagerOptions,
+          lane: args.lane,
+          stateDbPath: args.stateDbPath,
         },
       ),
     args.lazy,
@@ -212,6 +214,7 @@ export function createWebLaneResources(args: {
   return {
     worker: createLaneRuntime({
       namespace: WEB_WORKER_NAMESPACE,
+      lane: "worker",
       sandboxMode: "danger-full-access",
       sessionTimeoutMs: args.sessionTimeoutMs,
       sessionCleanupIntervalMs: args.sessionCleanupIntervalMs,
@@ -223,6 +226,7 @@ export function createWebLaneResources(args: {
     }),
     planner: createLaneRuntime({
       namespace: WEB_PLANNER_NAMESPACE,
+      lane: "advisor",
       // The Advisor uses danger-full-access for planning and GitHub operations (e.g. gh CLI).
       sandboxMode: plannerSandboxMode,
       defaultModel: args.plannerCodexModel,

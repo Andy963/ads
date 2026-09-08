@@ -8,7 +8,6 @@ function findProjectRoot(): string {
   let dir = __dirname;
   for (let i = 0; i < 10; i++) {
     if (
-      fs.existsSync(path.join(dir, "templates")) &&
       fs.existsSync(path.join(dir, "package.json")) &&
       fs.existsSync(path.join(dir, "tsconfig.build.json")) &&
       fs.existsSync(path.join(dir, "scripts"))

@@ -125,7 +125,6 @@ describe("web/server/ws security hardening", () => {
       commands: {
         runAdsCommandLine: async () => ({ ok: true, output: "" }),
         sanitizeInput: (payload) => String(payload ?? ""),
-        syncWorkspaceTemplates: () => {},
       },
       scheduler: {},
     });

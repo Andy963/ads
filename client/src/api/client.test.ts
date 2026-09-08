@@ -39,4 +39,16 @@ describe("ApiClient error responses", () => {
 
     await expect(new ApiClient().post("/api/models", {})).rejects.toThrow("Models unavailable");
   });
+
+  it("sends JSON PUT requests", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.method).toBe("PUT");
+      expect(init?.body).toBe(JSON.stringify({ prompt: "updated" }));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(new ApiClient().put("/api/lane-prompts/advisor", { prompt: "updated" })).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });

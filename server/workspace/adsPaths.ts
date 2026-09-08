@@ -147,22 +147,14 @@ export function migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot: string): boolea
   // This keeps hot-loaded instructions consistent if migration was partial.
   if (hasLegacy) {
     fs.mkdirSync(stateDir, { recursive: true });
-    const legacyTemplatesDir = path.join(legacyDir, "templates");
-    const stateTemplatesDir = path.join(stateDir, "templates");
-
     const filePairs: CopyPair[] = [
       [legacyConfig, stateConfig],
       [path.join(legacyDir, "ads.db"), path.join(stateDir, "ads.db")],
       [path.join(legacyDir, "state.db"), path.join(stateDir, "state.db")],
       [path.join(legacyDir, "intake-state.json"), path.join(stateDir, "intake-state.json")],
       [path.join(legacyDir, "context.json"), path.join(stateDir, "context.json")],
-      // Legacy workspaces stored instructions at the root of `.ads/`. The system prompt manager
-      // reads them from the centralized state under `templates/`.
-      [path.join(legacyTemplatesDir, "instructions.md"), path.join(stateTemplatesDir, "instructions.md")],
-      [path.join(legacyDir, "instructions.md"), path.join(stateTemplatesDir, "instructions.md")],
     ];
     const dirPairs: CopyPair[] = [
-      [legacyTemplatesDir, stateTemplatesDir],
       [path.join(legacyDir, "commands"), path.join(stateDir, "commands")],
     ];
 

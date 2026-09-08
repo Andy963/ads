@@ -10,10 +10,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..", "..");
 const scriptSourcePath = path.join(repoRoot, "scripts", "copy-runtime-assets.js");
 
-const requiredTemplateFiles = [
-  "instructions.md",
-];
-
 describe("scripts/copy-runtime-assets", () => {
   const tempDirs: string[] = [];
 
@@ -23,34 +19,23 @@ describe("scripts/copy-runtime-assets", () => {
     }
   });
 
-  it("copies templates without expecting removed graph config", () => {
+  it("does not require retired prompt templates", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-copy-runtime-assets-"));
     tempDirs.push(tempRoot);
 
     fs.writeFileSync(path.join(tempRoot, "package.json"), JSON.stringify({ type: "module" }), "utf8");
 
     const tempScriptDir = path.join(tempRoot, "scripts");
-    const tempTemplatesDir = path.join(tempRoot, "templates");
     fs.mkdirSync(tempScriptDir, { recursive: true });
-    fs.mkdirSync(tempTemplatesDir, { recursive: true });
 
     const scriptSource = fs.readFileSync(scriptSourcePath, "utf8");
     fs.writeFileSync(path.join(tempScriptDir, "copy-runtime-assets.js"), scriptSource, "utf8");
-    for (const fileName of requiredTemplateFiles) {
-      fs.writeFileSync(path.join(tempTemplatesDir, fileName), `${fileName}\n`, "utf8");
-    }
-
     const output = execFileSync(process.execPath, [path.join(tempScriptDir, "copy-runtime-assets.js")], {
       cwd: tempRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    assert.match(output, /\[copy-runtime-assets\] Templates copied to /);
-    assert.doesNotMatch(output, /Graph config/);
-
-    const copiedTemplate = path.join(tempRoot, "dist", "templates", "instructions.md");
-    assert.equal(fs.readFileSync(copiedTemplate, "utf8"), "instructions.md\n");
-    assert.equal(fs.existsSync(path.join(tempRoot, "dist", "server", "graph")), false);
+    assert.match(output, /No legacy prompt templates to copy/);
   });
 });

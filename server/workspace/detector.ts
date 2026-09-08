@@ -2,17 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { createLogger } from "../utils/logger.js";
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveLegacyWorkspaceAdsPath, resolveWorkspaceStatePath } from "./adsPaths.js";
 import { getWorkspaceContextRoot } from "./asyncWorkspaceContext.js";
-import { PROJECT_ROOT } from "../utils/projectRoot.js";
 
 const GIT_MARKER = ".git";
 const WORKSPACE_CONFIG_FILE = "workspace.json";
-const TEMPLATE_ROOT_DIR = path.join(PROJECT_ROOT, "templates");
-const REQUIRED_TEMPLATE_FILES = ["instructions.md"];
-const LEGACY_TEMPLATE_DIRS = ["nodes", "workflows"];
-const logger = createLogger("WorkspaceDetector");
 
 function existsSync(target: string): boolean {
   try {
@@ -33,89 +27,6 @@ function isSystemTempRoot(dir: string): boolean {
   } catch {
     return path.resolve(dir) === path.resolve(os.tmpdir());
   }
-}
-
-function listTemplateFiles(): string[] {
-  if (!existsSync(TEMPLATE_ROOT_DIR)) {
-    return [];
-  }
-  const entries = fs.readdirSync(TEMPLATE_ROOT_DIR, { withFileTypes: true });
-  const unexpectedDirs = entries.filter((entry) => entry.isDirectory());
-  if (unexpectedDirs.length > 0) {
-    logger.warn(
-      `[Workspace] templates/ 目录包含未使用的子目录: ${unexpectedDirs
-        .map((entry) => entry.name)
-        .join(", ")}`
-    );
-  }
-  const files = entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
-  const missing = REQUIRED_TEMPLATE_FILES.filter((file) => !files.includes(file));
-  if (missing.length > 0) {
-    throw new Error(`templates/ 缺少必需文件: ${missing.join(", ")}`);
-  }
-  return files;
-}
-
-function hasLegacyStructure(dir: string): boolean {
-  if (!existsSync(dir)) {
-    return false;
-  }
-  const entries = fs.readdirSync(dir, { withFileTypes: true });
-  return entries.some((entry) => entry.isDirectory() || LEGACY_TEMPLATE_DIRS.includes(entry.name));
-}
-
-function backupLegacyTemplates(dir: string): void {
-  if (!existsSync(dir)) {
-    return;
-  }
-  const backupDir = `${dir}_legacy_${Date.now()}`;
-  fs.renameSync(dir, backupDir);
-  logger.warn(`[Workspace] 发现旧模板结构，已备份到 ${backupDir}`);
-}
-
-function filesEqual(a: string, b: string): boolean {
-  if (!existsSync(a) || !existsSync(b)) {
-    return false;
-  }
-  const source = fs.readFileSync(a);
-  const target = fs.readFileSync(b);
-  return source.equals(target);
-}
-
-function copyDefaultTemplates(workspaceRoot: string): void {
-  const templateFiles = listTemplateFiles();
-  if (templateFiles.length === 0) {
-    return;
-  }
-
-  const templatesRoot = resolveWorkspaceStatePath(workspaceRoot, "templates");
-  if (hasLegacyStructure(templatesRoot)) {
-    backupLegacyTemplates(templatesRoot);
-  }
-  fs.mkdirSync(templatesRoot, { recursive: true });
-
-  const srcSet = new Set(templateFiles);
-  for (const entry of fs.readdirSync(templatesRoot)) {
-    const entryPath = path.join(templatesRoot, entry);
-    const stat = fs.statSync(entryPath);
-    if (stat.isDirectory()) {
-      fs.rmSync(entryPath, { recursive: true, force: true });
-      continue;
-    }
-    if (!srcSet.has(entry)) {
-      fs.rmSync(entryPath, { force: true });
-    }
-  }
-
-  for (const file of templateFiles) {
-    const srcPath = path.join(TEMPLATE_ROOT_DIR, file);
-    const destPath = path.join(templatesRoot, file);
-    if (filesEqual(srcPath, destPath)) {
-      continue;
-    }
-    fs.copyFileSync(srcPath, destPath);
-  }
-
 }
 
 function findMarker(marker: string, startDir: string, maxDepth = 10): string | null {
@@ -237,18 +148,7 @@ export function initializeWorkspace(workspace?: string, name?: string): string {
     "utf-8"
   );
 
-  // Database will be initialized by getDatabase() when first accessed
-  // Don't create empty file as it would be invalid SQLite database
-
-  copyDefaultTemplates(root);
-
   return root;
-}
-
-export function ensureDefaultTemplates(workspace?: string): void {
-  const root = resolveRequestedWorkspaceRoot(workspace);
-  migrateLegacyWorkspaceAdsIfNeeded(root);
-  copyDefaultTemplates(root);
 }
 
 export function getWorkspaceInfo(workspace?: string): Record<string, unknown> {

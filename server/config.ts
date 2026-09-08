@@ -35,7 +35,6 @@ export interface WebConfig {
 export interface AgentConfig {
   skillAutoloadEnabled: boolean;
   skillAutosaveEnabled: boolean;
-  preferenceDirectiveEnabled: boolean;
 }
 
 interface SharedConfigOptions {
@@ -78,7 +77,6 @@ const webConfigSchema = z.object({
 const agentConfigSchema = z.object({
   skillAutoloadEnabled: z.boolean(),
   skillAutosaveEnabled: z.boolean(),
-  preferenceDirectiveEnabled: z.boolean(),
 });
 
 function getEnv(options?: DomainConfigOptions): EnvSource {
@@ -193,6 +191,5 @@ export function resolveAgentConfig(options: DomainConfigOptions = {}): AgentConf
   return agentConfigSchema.parse({
     skillAutoloadEnabled: parseBooleanFlag(env.ADS_SKILLS_AUTOLOAD, true),
     skillAutosaveEnabled: parseBooleanFlag(env.ADS_SKILLS_AUTOSAVE, true),
-    preferenceDirectiveEnabled: parseBooleanFlag(env.ADS_PREFERENCE_DIRECTIVES, true),
   });
 }

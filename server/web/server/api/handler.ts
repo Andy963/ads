@@ -13,7 +13,7 @@ import { handlePathRoutes } from "./routes/paths.js";
 import { handleProjectRoutes } from "./routes/projects.js";
 import { handleModelRoutes } from "./routes/models.js";
 import { handleAttachmentRoutes } from "./routes/attachments.js";
-import { handlePreferenceRoutes } from "./routes/preferences.js";
+import { handleLanePromptRoutes } from "./routes/lanePrompts.js";
 import { handleScheduleRoutes } from "./routes/schedules.js";
 import { handleFileRoutes } from "./routes/files.js";
 import { handleSyncRoutes } from "./routes/sync.js";
@@ -23,6 +23,7 @@ import type { ScheduleCompiler } from "../../../scheduler/compiler.js";
 import type { SchedulerRuntime } from "../../../scheduler/runtime.js";
 import type { SyncEventStore } from "../sync/store.js";
 import type { WebLaneGenerationStore } from "../sync/laneGeneration.js";
+import type { LanePromptStore } from "../../../state/lanePromptStore.js";
 
 export function createApiRequestHandler(deps: {
   logger: Logger;
@@ -41,6 +42,7 @@ export function createApiRequestHandler(deps: {
   workerHistoryStore?: { get: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }> };
   plannerHistoryStore?: { get: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }> };
   laneGenerationStore?: WebLaneGenerationStore;
+  lanePromptStore?: LanePromptStore;
 }): (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean> {
   const buildAttachmentRawUrl = (url: URL, attachmentId: string): string => {
     const workspaceParam = url.searchParams.get("workspace");
@@ -77,7 +79,7 @@ export function createApiRequestHandler(deps: {
     if (await handleAudioRoutes(routeCtx, { logger: deps.logger })) return true;
     if (await handlePathRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handleProjectRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
-    if (await handlePreferenceRoutes(routeCtx, { workspaceRoot: deps.workspaceRoot })) return true;
+    if (await handleLanePromptRoutes(routeCtx, { lanePromptStore: deps.lanePromptStore })) return true;
     if (await handleFileRoutes(routeCtx, { resolveWorkspaceContext: deps.resolveWorkspaceContext })) return true;
     if (
       await handleSyncRoutes(routeCtx, {

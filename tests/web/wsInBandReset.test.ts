@@ -257,7 +257,6 @@ describe("web/server/ws: in-band Planner session reset (Issue #158)", () => {
       commands: {
         runAdsCommandLine: async () => ({ ok: true, output: "" }),
         sanitizeInput: (payload) => String(payload ?? ""),
-        syncWorkspaceTemplates: () => {},
       },
       scheduler: {},
     });

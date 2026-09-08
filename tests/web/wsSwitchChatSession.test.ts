@@ -214,7 +214,6 @@ describe("web/server/ws: in-band switch_chat_session", () => {
       commands: {
         runAdsCommandLine: async () => ({ ok: true, output: "" }),
         sanitizeInput: (payload) => String(payload ?? ""),
-        syncWorkspaceTemplates: () => {},
       },
       scheduler: {},
     });

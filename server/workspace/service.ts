@@ -4,7 +4,6 @@ import {
   initializeWorkspace,
   detectWorkspace,
   getWorkspaceInfo,
-  ensureDefaultTemplates,
 } from "./detector.js";
 import { resolveWorkspaceStatePath } from "./adsPaths.js";
 import { safeStringify } from "../utils/json.js";
@@ -34,14 +33,9 @@ export async function initWorkspace(params: { name?: string; workspace_path?: st
 export async function getCurrentWorkspace(): Promise<string> {
   try {
     const workspace = detectWorkspace();
-    ensureDefaultTemplates(workspace);
     const info = getWorkspaceInfo(workspace);
     return safeStringify(info);
   } catch (error) {
     return safeStringify({ error: getErrorMessage(error) });
   }
-}
-
-export function syncWorkspaceTemplates(): void {
-  ensureDefaultTemplates();
 }

@@ -99,7 +99,6 @@ describe("web/server/ws/maxClients", () => {
       commands: {
         runAdsCommandLine: async () => ({ ok: true, output: "" }),
         sanitizeInput: (payload) => String(payload ?? ""),
-        syncWorkspaceTemplates: () => {},
       },
       scheduler: {},
     });

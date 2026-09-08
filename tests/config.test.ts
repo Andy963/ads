@@ -131,6 +131,5 @@ describe("server config resolvers", () => {
 
     assert.strictEqual(config.skillAutoloadEnabled, false);
     assert.strictEqual(config.skillAutosaveEnabled, true);
-    assert.strictEqual(config.preferenceDirectiveEnabled, true);
   });
 });

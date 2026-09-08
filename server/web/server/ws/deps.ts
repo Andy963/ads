@@ -114,7 +114,6 @@ export type WsHistoryDeps = {
 export type WsCommandDeps = {
   runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
   sanitizeInput: (payload: unknown) => string;
-  syncWorkspaceTemplates: () => void;
 };
 
 export type WsSchedulerDeps = {
@@ -181,7 +180,6 @@ export type WsHistoryRuntimeDeps = {
 export type WsCommandRuntimeDeps = {
   runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
   sanitizeInput: (payload: unknown) => string;
-  syncWorkspaceTemplates: () => void;
 };
 
 export type WsCommandStateDeps = Pick<

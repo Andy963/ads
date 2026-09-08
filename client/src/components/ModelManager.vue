@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { Close, EditPen, Plus, Refresh, StarFilled } from "@element-plus/icons-vue";
 
 import type { ApiClient } from "../api/client";
-import type { ModelConfig } from "../api/types";
+import type { LaneName, LanePromptSnapshot, ModelConfig } from "../api/types";
 
 type ModelForm = {
   id: string;
@@ -41,6 +41,14 @@ const editingId = ref<string | null>(null);
 const dialogOpen = ref(false);
 const pendingDeleteId = ref<string | null>(null);
 const selectedModelId = ref<string | null>(null);
+const activeTab = ref<"models" | "lane-prompts">("models");
+const lanePromptSnapshots = ref<LanePromptSnapshot[]>([]);
+const selectedLane = ref<LaneName>("advisor");
+const lanePromptText = ref("");
+const lanePromptLoading = ref(false);
+const lanePromptSaving = ref(false);
+const lanePromptError = ref<string | null>(null);
+const lanePromptStatus = ref<string | null>(null);
 
 const emptyForm = (): ModelForm => ({
   id: "",
@@ -114,6 +122,12 @@ const canSubmit = computed(() => {
   return configJsonError.value === null;
 });
 
+const selectedLaneSnapshot = computed(() =>
+  lanePromptSnapshots.value.find((snapshot) => snapshot.lane === selectedLane.value) ?? null,
+);
+
+const lanePromptDirty = computed(() => lanePromptText.value !== (selectedLaneSnapshot.value?.current.prompt ?? ""));
+
 async function loadModelConfigs(): Promise<void> {
   loading.value = true;
   error.value = null;
@@ -125,6 +139,69 @@ async function loadModelConfigs(): Promise<void> {
     error.value = err instanceof Error ? err.message : String(err);
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadLanePrompts(): Promise<void> {
+  lanePromptLoading.value = true;
+  lanePromptError.value = null;
+  try {
+    lanePromptSnapshots.value = await props.api.get<LanePromptSnapshot[]>("/api/lane-prompts");
+    lanePromptText.value = selectedLaneSnapshot.value?.current.prompt ?? "";
+  } catch (err) {
+    lanePromptError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    lanePromptLoading.value = false;
+  }
+}
+
+function selectLane(lane: LaneName): void {
+  selectedLane.value = lane;
+  lanePromptText.value = lanePromptSnapshots.value.find((snapshot) => snapshot.lane === lane)?.current.prompt ?? "";
+  lanePromptError.value = null;
+  lanePromptStatus.value = null;
+}
+
+async function saveLanePrompt(): Promise<void> {
+  if (lanePromptSaving.value || !lanePromptText.value.trim()) return;
+  lanePromptSaving.value = true;
+  lanePromptError.value = null;
+  lanePromptStatus.value = null;
+  try {
+    const snapshot = await props.api.put<LanePromptSnapshot>(
+      `/api/lane-prompts/${encodeURIComponent(selectedLane.value)}`,
+      { prompt: lanePromptText.value },
+    );
+    lanePromptSnapshots.value = lanePromptSnapshots.value.map((item) =>
+      item.lane === snapshot.lane ? snapshot : item,
+    );
+    lanePromptText.value = snapshot.current.prompt;
+    lanePromptStatus.value = "Saved. It applies to the next conversation turn.";
+  } catch (err) {
+    lanePromptError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    lanePromptSaving.value = false;
+  }
+}
+
+async function resetLanePrompt(): Promise<void> {
+  if (lanePromptSaving.value) return;
+  lanePromptSaving.value = true;
+  lanePromptError.value = null;
+  lanePromptStatus.value = null;
+  try {
+    const snapshot = await props.api.post<LanePromptSnapshot>(
+      `/api/lane-prompts/${encodeURIComponent(selectedLane.value)}/reset`,
+    );
+    lanePromptSnapshots.value = lanePromptSnapshots.value.map((item) =>
+      item.lane === snapshot.lane ? snapshot : item,
+    );
+    lanePromptText.value = snapshot.current.prompt;
+    lanePromptStatus.value = "Reset to the default prompt.";
+  } catch (err) {
+    lanePromptError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    lanePromptSaving.value = false;
   }
 }
 
@@ -280,7 +357,7 @@ async function deleteModel(model: ModelConfig): Promise<void> {
 }
 
 onMounted(() => {
-  void loadModelConfigs();
+  void Promise.all([loadModelConfigs(), loadLanePrompts()]);
 });
 
 defineExpose({
@@ -316,12 +393,37 @@ defineExpose({
       </div>
     </header>
 
-    <div v-if="error && !dialogOpen" class="modelBanner error" data-testid="model-manager-error">{{ error }}</div>
+    <nav class="managerTabs" role="tablist" aria-label="Settings sections">
+      <button
+        type="button"
+        role="tab"
+        class="managerTab"
+        :class="{ active: activeTab === 'models' }"
+        :aria-selected="activeTab === 'models'"
+        data-testid="model-manager-tab-models"
+        @click="activeTab = 'models'"
+      >
+        Models
+      </button>
+      <button
+        type="button"
+        role="tab"
+        class="managerTab"
+        :class="{ active: activeTab === 'lane-prompts' }"
+        :aria-selected="activeTab === 'lane-prompts'"
+        data-testid="model-manager-tab-lane-prompts"
+        @click="activeTab = 'lane-prompts'"
+      >
+        Lane Prompts
+      </button>
+    </nav>
+
+    <div v-if="error && !dialogOpen && activeTab === 'models'" class="modelBanner error" data-testid="model-manager-error">{{ error }}</div>
     <div v-else-if="statusMessage && !dialogOpen" class="modelBanner success" data-testid="model-manager-status">
       {{ statusMessage }}
     </div>
 
-    <div class="cliList">
+    <div v-if="activeTab === 'models'" class="cliList">
       <div class="modelListHeader">
         <span class="modelListCount">共 {{ sortedModels.length }} 个模型 · {{ enabledCount }} 已启用</span>
         <button
@@ -434,6 +536,71 @@ defineExpose({
         </div>
 
       <p class="listFoot">未设置默认模型时优先使用列表中的第一个已启用模型。</p>
+    </div>
+
+    <div v-else class="lanePromptPanel" data-testid="lane-prompt-panel">
+      <div class="lanePromptLaneSelector" role="tablist" aria-label="Agent lanes">
+        <button
+          type="button"
+          class="lanePromptLane"
+          :class="{ active: selectedLane === 'advisor' }"
+          :aria-selected="selectedLane === 'advisor'"
+          data-testid="lane-prompt-lane-advisor"
+          @click="selectLane('advisor')"
+        >
+          Advisor
+        </button>
+        <button
+          type="button"
+          class="lanePromptLane"
+          :class="{ active: selectedLane === 'worker' }"
+          :aria-selected="selectedLane === 'worker'"
+          data-testid="lane-prompt-lane-worker"
+          @click="selectLane('worker')"
+        >
+          Worker
+        </button>
+      </div>
+
+      <div v-if="lanePromptError" class="modelBanner error" data-testid="lane-prompt-error">{{ lanePromptError }}</div>
+      <div v-if="lanePromptStatus" class="modelBanner success" data-testid="lane-prompt-status">{{ lanePromptStatus }}</div>
+      <div v-if="lanePromptLoading" class="lanePromptLoading">Loading lane prompts...</div>
+      <template v-else>
+        <label class="modelField lanePromptField">
+          <span class="modelLabel">{{ selectedLane === 'advisor' ? 'Advisor' : 'Worker' }} system prompt</span>
+          <textarea
+            v-model="lanePromptText"
+            class="modelTextarea lanePromptTextarea"
+            rows="18"
+            spellcheck="false"
+            data-testid="lane-prompt-editor"
+          />
+          <span class="modelHelp">{{ lanePromptText.length }} characters. Changes are versioned in SQLite and loaded on the next turn.</span>
+        </label>
+        <div class="lanePromptActions">
+          <button type="button" class="btnSecondary" :disabled="lanePromptSaving || !lanePromptDirty" data-testid="lane-prompt-reset" @click="resetLanePrompt">
+            Reset to Default
+          </button>
+          <button type="button" class="btnPrimary" :disabled="lanePromptSaving || !lanePromptText.trim() || !lanePromptDirty" data-testid="lane-prompt-save" @click="saveLanePrompt">
+            {{ lanePromptSaving ? "Saving..." : "Save Prompt" }}
+          </button>
+        </div>
+        <div v-if="selectedLaneSnapshot" class="lanePromptHistory" data-testid="lane-prompt-history">
+          <div class="lanePromptMeta">
+            <span>Current version: v{{ selectedLaneSnapshot.current.version }}</span>
+            <span>Default version: v{{ selectedLaneSnapshot.base.version }}</span>
+            <span>{{ selectedLaneSnapshot.versions.length }} saved version(s)</span>
+          </div>
+          <details>
+            <summary>Version history</summary>
+            <ul>
+              <li v-for="version in selectedLaneSnapshot.versions" :key="`${version.lane}-${version.version}`">
+                v{{ version.version }}{{ version.isBase ? " (default)" : "" }} · {{ new Date(version.createdAt).toLocaleString() }}
+              </li>
+            </ul>
+          </details>
+        </div>
+      </template>
     </div>
 
     <div v-if="dialogOpen" class="dialogMask" @click.self="closeDialog">
@@ -627,6 +794,121 @@ defineExpose({
   border: 1px solid rgba(16, 185, 129, 0.26);
   background: rgba(16, 185, 129, 0.07);
   color: #047857;
+}
+
+.managerTabs {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+  padding: 8px 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.managerTab,
+.lanePromptLane {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.managerTab {
+  padding: 8px 12px 10px;
+  border-bottom: 2px solid transparent;
+}
+
+.managerTab.active,
+.lanePromptLane.active {
+  color: var(--accent);
+}
+
+.managerTab.active {
+  border-bottom-color: var(--accent);
+}
+
+.lanePromptPanel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px 18px;
+}
+
+.lanePromptLaneSelector {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 14px;
+  padding: 3px;
+  width: fit-content;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2, rgba(15, 23, 42, 0.04));
+}
+
+.lanePromptLane {
+  padding: 7px 14px;
+  border-radius: 7px;
+}
+
+.lanePromptLane.active {
+  background: var(--surface);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
+.lanePromptField {
+  display: flex;
+  min-height: 0;
+}
+
+.lanePromptTextarea {
+  min-height: 300px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  line-height: 1.5;
+}
+
+.lanePromptActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.lanePromptLoading {
+  padding: 32px 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.lanePromptHistory {
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.lanePromptMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.lanePromptHistory details {
+  margin-top: 10px;
+}
+
+.lanePromptHistory summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.lanePromptHistory ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
 }
 
 /* ---------- list ---------- */

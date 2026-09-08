@@ -146,7 +146,6 @@ describe("web/server/ws/interrupt", () => {
       commands: {
         runAdsCommandLine: async (command) => await runAdsCommandLineImpl(command),
         sanitizeInput: (payload) => String(payload ?? ""),
-        syncWorkspaceTemplates: () => {},
       },
       scheduler: {},
     });

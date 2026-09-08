@@ -232,7 +232,6 @@ function assembleRelease() {
   fs.mkdirSync(releasesDir, { recursive: true });
   fs.mkdirSync(stagingDir);
   copyDirectory(path.join(sourceRoot, "dist"), path.join(stagingDir, "dist"));
-  copyDirectory(path.join(sourceRoot, "dist", "templates"), path.join(stagingDir, "templates"));
   copyDirectory(path.join(sourceRoot, "scripts"), path.join(stagingDir, "scripts"));
   for (const file of ["package.json", "package-lock.json", "tsconfig.build.json"]) {
     copyFile(path.join(sourceRoot, file), path.join(stagingDir, file));

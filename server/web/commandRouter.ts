@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import { parseSlashCommand } from "../codexConfig.js";
-import { initWorkspace, getCurrentWorkspace, syncWorkspaceTemplates } from "../workspace/service.js";
+import { initWorkspace, getCurrentWorkspace } from "../workspace/service.js";
 import { detectWorkspace, detectWorkspaceFrom } from "../workspace/detector.js";
 import { initSkill, normalizeSkillName, parseResourceList, validateSkillDirectory } from "../skills/creator.js";
 import { discoverSkills, loadSkillBody, renderSkillList } from "../skills/loader.js";
@@ -69,7 +69,6 @@ const commandRegistry = new Map<string, CommandHandler>([
     async ({ params, positional }) => {
       const name = params.name ?? (positional.length > 0 ? positional.join(" ") : undefined);
       const response = await initWorkspace({ name });
-      syncWorkspaceTemplates();
       return { ok: true, output: formatResponse(response) };
     },
   ],

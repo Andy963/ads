@@ -152,7 +152,6 @@ describe("web/server/ws/preflight-persistence", () => {
       commands: {
         runAdsCommandLine,
         sanitizeInput: (payload) => String(payload ?? ""),
-        syncWorkspaceTemplates: () => {},
       },
       scheduler: {},
     });

@@ -206,7 +206,6 @@ function createCommandDeps(args: {
   agentAvailability?: unknown;
   runAdsCommandLine?: (command: string) => Promise<{ ok: boolean; output: string }>;
   sendWorkspaceState?: (_ws: unknown, root: string) => void;
-  syncWorkspaceTemplates?: () => void;
 }) {
   return {
     request: {
@@ -253,7 +252,6 @@ function createCommandDeps(args: {
     commands: {
       runAdsCommandLine: args.runAdsCommandLine ?? (async () => ({ ok: true, output: "" })),
       sanitizeInput: sanitizeCommandPayload,
-      syncWorkspaceTemplates: args.syncWorkspaceTemplates ?? (() => {}),
     },
   };
 }
@@ -679,7 +677,6 @@ describe("web slash commands", () => {
 
       const nextCwd = path.join(workspaceRoot, "next");
       let cwd = workspaceRoot;
-      let syncCalled = 0;
       let setUserCwdCalled = 0;
       let sessionManagerCwd: string | null = null;
       let recreatedWithResumeThread: boolean | undefined;
@@ -716,9 +713,6 @@ describe("web slash commands", () => {
             return { ok: true, output: "unexpected" };
           },
           sendWorkspaceState: (_ws: unknown, root: string) => clientMessages.push({ type: "workspace", root }),
-          syncWorkspaceTemplates: () => {
-            syncCalled += 1;
-          },
         }),
       );
 
@@ -727,7 +721,6 @@ describe("web slash commands", () => {
       assert.equal(result.currentCwd, nextCwd);
       assert.equal(sessionManagerCwd, nextCwd);
       assert.equal(setUserCwdCalled, 1);
-      assert.equal(syncCalled, 1);
       assert.equal(recreatedWithResumeThread, true);
       assert.equal(chatMessages.length, 0);
       assert.deepEqual(clientMessages, [{ type: "workspace", root: nextCwd }]);

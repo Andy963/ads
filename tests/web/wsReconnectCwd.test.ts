@@ -137,7 +137,6 @@ describe("web/server/ws reconnect cwd restore", () => {
       commands: {
         runAdsCommandLine: async () => ({ ok: true, output: "" }),
         sanitizeInput: (payload) => String(payload ?? ""),
-        syncWorkspaceTemplates: () => {},
       },
       scheduler: {},
     });

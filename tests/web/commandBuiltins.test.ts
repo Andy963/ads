@@ -68,7 +68,6 @@ describe("web/ws/commandBuiltins", () => {
           logOutput: (text) => logged.push(text),
           logError: () => {},
         },
-        syncWorkspaceTemplates: () => {},
       });
 
       assert.equal(result.handled, true);
@@ -129,7 +128,6 @@ describe("web/ws/commandBuiltins", () => {
           logOutput: () => {},
           logError: () => {},
         },
-        syncWorkspaceTemplates: () => {},
       });
 
       const message = "已切换到: /tmp/project/next\n提示: 代理上下文已切换到新目录";
@@ -181,7 +179,6 @@ describe("web/ws/commandBuiltins", () => {
           logOutput: () => {},
           logError: (text) => loggedErrors.push(text),
         },
-        syncWorkspaceTemplates: () => {},
       });
 
       assert.equal(result.handled, true);
@@ -239,7 +236,6 @@ describe("web/ws/commandBuiltins", () => {
           logOutput: () => {},
           logError: (text) => loggedErrors.push(text),
         },
-        syncWorkspaceTemplates: () => {},
       });
 
       assert.equal(result.handled, true);

@@ -1,15 +1,13 @@
-import fs from "node:fs";
-import path from "node:path";
 import crypto from "node:crypto";
 
 import { createLogger, type Logger } from "../utils/logger.js";
 import { parseOptionalBooleanFlag } from "../utils/flags.js";
-import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
-import { detectWorkspaceFrom } from "../workspace/detector.js";
 import { discoverSkills, loadSkillBody, renderCompactSkills, renderSkillMetaInstruction } from "../skills/loader.js";
-import { readSoul } from "../memory/soul.js";
 import { readMemory } from "../memory/memory.js";
-import { PROJECT_ROOT } from "../utils/projectRoot.js";
+import { getStateDatabase } from "../state/database.js";
+import { BASE_LANE_PROMPTS, type LaneName } from "../state/lanePromptDefaults.js";
+import { type ActiveLanePrompt, createLanePromptStore, type LanePromptStore } from "../state/lanePromptStore.js";
+import { detectWorkspaceFrom } from "../workspace/detector.js";
 
 export interface ReinjectionConfig {
   enabled: boolean;
@@ -20,21 +18,11 @@ const DEFAULT_INSTRUCTIONS_REINJECTION_TURNS = 6;
 
 export interface SystemPromptManagerOptions {
   workspaceRoot: string;
+  lane?: LaneName;
+  stateDbPath?: string;
+  lanePromptStore?: LanePromptStore;
   reinjection?: Partial<ReinjectionConfig>;
-  templateRoot?: string;
   logger?: Logger;
-  /**
-   * Template filename injected only for this lane, resolved under templateRoot.
-   * Lets the planner carry role rules the worker must not see.
-   */
-  laneInstructionsFile?: string;
-}
-
-interface FileCache {
-  path: string;
-  mtimeMs: number;
-  hash: string;
-  content: string;
 }
 
 export interface PromptInjection {
@@ -75,18 +63,20 @@ export function resolveReinjectionConfig(prefix?: string): ReinjectionConfig {
   };
 }
 
+function hashLanePrompt(prompt: ActiveLanePrompt): string {
+  return crypto
+    .createHash("sha1")
+    .update(`${prompt.lane}:${prompt.version}:${prompt.prompt}`)
+    .digest("hex");
+}
+
 export class SystemPromptManager {
   private workspaceRoot: string;
-  private workspaceInitialized: boolean;
-  private readonly templateRoot: string;
-  private readonly defaultInstructionsPath: string;
-  private readonly laneInstructionsPath: string | null;
+  private readonly lane: LaneName | null;
+  private readonly lanePromptStore: LanePromptStore | null;
   private readonly logger: Logger;
   private readonly reinjection: ReinjectionConfig;
-  private instructionsCache: FileCache | null = null;
-  private laneInstructionsCache: FileCache | null = null;
-  private lastLaneInstructionsHash: string | null = null;
-  private lastSoulHash: string | null = null;
+  private lastLanePromptHash: string | null = null;
   private lastMemoryHash: string | null = null;
   private lastSkillsHash: string | null = null;
   private requestedSkillNames: string[] = [];
@@ -94,26 +84,35 @@ export class SystemPromptManager {
   private turnCount = 0;
   private lastInjectionTurn = -1;
   private pendingReason: string | null = null;
-  private lastInstructionsHash: string | null = null;
-  private instructionsWarningLogged = false;
-  private workspaceWarningLogged = false;
+  private lanePromptWarningLogged = false;
 
   constructor(options: SystemPromptManagerOptions) {
     this.workspaceRoot = detectWorkspaceFrom(options.workspaceRoot);
-    this.workspaceInitialized = this.checkWorkspaceInitialized(this.workspaceRoot);
-    this.templateRoot = options.templateRoot ? path.resolve(options.templateRoot) : path.join(PROJECT_ROOT, "templates");
-    this.defaultInstructionsPath = path.join(this.templateRoot, "instructions.md");
-    this.laneInstructionsPath = options.laneInstructionsFile
-      ? path.join(this.templateRoot, options.laneInstructionsFile)
-      : null;
+    this.lane = options.lane ?? null;
+    this.logger = options.logger ?? createLogger("SystemPrompt");
     this.reinjection = {
       enabled: options.reinjection?.enabled ?? true,
       turns: options.reinjection?.turns ?? DEFAULT_INSTRUCTIONS_REINJECTION_TURNS,
     };
     if (this.reinjection.turns < 1) {
-      this.reinjection.turns = 10;
+      this.reinjection.turns = DEFAULT_INSTRUCTIONS_REINJECTION_TURNS;
     }
-    this.logger = options.logger ?? createLogger("SystemPrompt");
+
+    if (this.lane) {
+      try {
+        this.lanePromptStore =
+          options.lanePromptStore ?? createLanePromptStore(getStateDatabase(options.stateDbPath));
+      } catch (error) {
+        this.lanePromptStore = null;
+        this.logger.warn(
+          `Lane prompt database unavailable; using the built-in ${this.lane} baseline: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    } else {
+      this.lanePromptStore = null;
+    }
   }
 
   setWorkspaceRoot(nextRoot: string): void {
@@ -122,14 +121,9 @@ export class SystemPromptManager {
       return;
     }
     this.workspaceRoot = normalized;
-    this.workspaceInitialized = this.checkWorkspaceInitialized(normalized);
-    this.instructionsCache = null;
-    this.lastSoulHash = null;
     this.lastMemoryHash = null;
     this.lastSkillsHash = null;
     this.requestedSkillNames = [];
-    this.instructionsWarningLogged = false;
-    this.workspaceWarningLogged = false;
     this.pendingReason = "workspace-changed";
     this.logger.debug(`Workspace switched to ${normalized}`);
   }
@@ -154,16 +148,14 @@ export class SystemPromptManager {
   }
 
   maybeInject(): PromptInjection | null {
-    // Refresh caches before computing the reason so instruction changes are observed immediately.
-    const instructionsCache = this.readInstructions();
-    const laneInstructionsCache = this.readLaneInstructions();
-    const soulHash = this.computeSoulHash();
+    const lanePrompt = this.readLanePrompt();
+    const lanePromptHash = lanePrompt ? hashLanePrompt(lanePrompt) : null;
     const memoryHash = this.computeMemoryHash();
     const skillsHash = this.computeSkillsHash();
 
     if (this.hasInjected) {
-      if (this.lastSoulHash && soulHash !== this.lastSoulHash) {
-        this.pendingReason = this.pendingReason ?? "soul-updated";
+      if (this.lastLanePromptHash && lanePromptHash !== this.lastLanePromptHash) {
+        this.pendingReason = this.pendingReason ?? "lane-prompt-updated";
       }
       if (this.lastMemoryHash && memoryHash !== this.lastMemoryHash) {
         this.pendingReason = this.pendingReason ?? "memory-updated";
@@ -178,18 +170,9 @@ export class SystemPromptManager {
       return null;
     }
 
-    const instructions = instructionsCache;
-
     const textParts: string[] = [];
-    const workspaceNotice = this.buildWorkspaceNotice();
-    if (workspaceNotice) {
-      textParts.push(workspaceNotice);
-    }
-    if (instructions && instructions.content.trim()) {
-      textParts.push(instructions.content.trim());
-    }
-    if (laneInstructionsCache && laneInstructionsCache.content.trim()) {
-      textParts.push(laneInstructionsCache.content.trim());
+    if (lanePrompt?.prompt.trim()) {
+      textParts.push(lanePrompt.prompt.trim());
     }
     const skillsBlock = this.renderSkillsBlock();
     if (skillsBlock) {
@@ -199,10 +182,6 @@ export class SystemPromptManager {
     if (requestedSkillsBlock) {
       textParts.push(requestedSkillsBlock);
     }
-    const soulBlock = this.renderSoulBlock();
-    if (soulBlock) {
-      textParts.push(soulBlock);
-    }
     const memoryBlock = this.renderMemoryBlock();
     if (memoryBlock) {
       textParts.push(memoryBlock);
@@ -210,33 +189,50 @@ export class SystemPromptManager {
     if (textParts.length === 0) {
       return null;
     }
-    const text = textParts.join("\n\n\n");
 
+    const text = textParts.join("\n\n\n");
     this.hasInjected = true;
     this.lastInjectionTurn = this.turnCount;
-    this.lastSoulHash = soulHash;
+    this.lastLanePromptHash = lanePromptHash;
     this.lastMemoryHash = memoryHash;
     this.lastSkillsHash = skillsHash;
-    if (instructions) {
-      this.lastInstructionsHash = instructions.hash;
-    }
-    if (laneInstructionsCache && laneInstructionsCache.hash !== "missing") {
-      this.lastLaneInstructionsHash = laneInstructionsCache.hash;
-    }
     this.requestedSkillNames = [];
     this.logger.debug(
-      `Injected (${reason}) instructions=${shortHash(instructions.hash)}`,
+      `Injected (${reason}) lane=${this.lane ?? "none"} prompt=${lanePromptHash ? shortHash(lanePromptHash) : "none"}`,
     );
 
     return {
       text,
       reason,
-      instructionsHash: instructions.hash,
+      instructionsHash: lanePromptHash ?? "none",
     };
   }
 
   completeTurn(): void {
     this.turnCount += 1;
+  }
+
+  private readLanePrompt(): ActiveLanePrompt | null {
+    if (!this.lane) {
+      return null;
+    }
+    if (!this.lanePromptStore) {
+      return { lane: this.lane, version: 0, prompt: BASE_LANE_PROMPTS[this.lane] };
+    }
+    try {
+      this.lanePromptWarningLogged = false;
+      return this.lanePromptStore.getActiveLanePrompt(this.lane);
+    } catch (error) {
+      if (!this.lanePromptWarningLogged) {
+        this.logger.warn(
+          `Failed to read ${this.lane} lane prompt; using the built-in baseline: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        this.lanePromptWarningLogged = true;
+      }
+      return { lane: this.lane, version: 0, prompt: BASE_LANE_PROMPTS[this.lane] };
+    }
   }
 
   private renderSkillsBlock(): string | null {
@@ -246,19 +242,6 @@ export class SystemPromptManager {
       return [renderSkillMetaInstruction(skills), compactSkills]
         .filter((part) => part && part.trim())
         .join("\n\n");
-    } catch {
-      return null;
-    }
-  }
-
-  private renderSoulBlock(): string | null {
-    try {
-      const content = readSoul(this.workspaceRoot);
-      const trimmed = content.trim();
-      if (!trimmed) {
-        return null;
-      }
-      return `<soul>\n${trimmed}\n</soul>`;
     } catch {
       return null;
     }
@@ -295,23 +278,12 @@ export class SystemPromptManager {
         parts.push(`  <skill name="${name}" missing="true" />`);
         continue;
       }
-      // Agents receive the absolute location, so they do not need to search
-      // the filesystem for a script bundled with an auto-loaded skill.
       parts.push(`  <skill name="${skill.name}" location="${skill.location}">`);
       parts.push(body.trim());
       parts.push("  </skill>");
     }
     parts.push("</requested_skills>");
     return parts.join("\n");
-  }
-
-  private computeSoulHash(): string {
-    try {
-      const content = readSoul(this.workspaceRoot);
-      return crypto.createHash("sha1").update(content ?? "").digest("hex");
-    } catch {
-      return crypto.createHash("sha1").update("").digest("hex");
-    }
   }
 
   private computeMemoryHash(): string {
@@ -326,7 +298,7 @@ export class SystemPromptManager {
   private computeSkillsHash(): string {
     try {
       const skills = discoverSkills(this.workspaceRoot);
-      const payload = skills.map((s) => ({ name: s.name, description: s.description, source: s.source }));
+      const payload = skills.map((skill) => ({ name: skill.name, description: skill.description, source: skill.source }));
       return crypto.createHash("sha1").update(JSON.stringify(payload)).digest("hex");
     } catch {
       return crypto.createHash("sha1").update("[]").digest("hex");
@@ -356,103 +328,5 @@ export class SystemPromptManager {
       return `skills-requested-${this.turnCount}`;
     }
     return null;
-  }
-
-  private readLaneInstructions(): FileCache | null {
-    if (!this.laneInstructionsPath) {
-      return null;
-    }
-    const cache = this.readFileWithCache(this.laneInstructionsPath, false, "lane instructions", this.laneInstructionsCache);
-    this.laneInstructionsCache = cache;
-    if (this.lastLaneInstructionsHash && cache.hash !== this.lastLaneInstructionsHash && cache.hash !== "missing") {
-      this.pendingReason = this.pendingReason ?? "lane-instructions-updated";
-    }
-    return cache;
-  }
-
-  private readInstructions(): FileCache {
-    const cache = this.readFileWithCache(
-      this.defaultInstructionsPath,
-      false,
-      "default instructions",
-      this.instructionsCache,
-    );
-
-    if (cache.hash === "missing") {
-      if (!this.instructionsWarningLogged) {
-        this.logger.warn(`default instructions missing at ${this.defaultInstructionsPath}`);
-        this.instructionsWarningLogged = true;
-      }
-    } else {
-      this.instructionsWarningLogged = false;
-    }
-
-    this.instructionsCache = cache;
-    if (this.lastInstructionsHash && cache.hash !== this.lastInstructionsHash && cache.hash !== "missing") {
-      this.pendingReason = this.pendingReason ?? "instructions-updated";
-    }
-    return cache;
-  }
-
-  private checkWorkspaceInitialized(workspaceRoot: string): boolean {
-    migrateLegacyWorkspaceAdsIfNeeded(workspaceRoot);
-    return fs.existsSync(resolveWorkspaceStatePath(workspaceRoot, "workspace.json"));
-  }
-
-  private buildWorkspaceNotice(): string | null {
-    if (!this.workspaceInitialized) {
-      const nowInitialized = this.checkWorkspaceInitialized(this.workspaceRoot);
-      if (nowInitialized) {
-        this.workspaceInitialized = true;
-        this.workspaceWarningLogged = false;
-      }
-    }
-    if (this.workspaceInitialized) {
-      return null;
-    }
-    if (!this.workspaceWarningLogged) {
-      this.logger.warn(
-        `workspace state not initialized at ${this.workspaceRoot}; continuing with built-in templates.`,
-      );
-      this.workspaceWarningLogged = true;
-    }
-    return [
-      "[Workspace Notice] Workspace not initialized (workspace.json missing).",
-      "Using built-in templates for instructions. Some workspace state features may be unavailable.",
-    ].join("\n");
-  }
-
-  private readFileWithCache(
-    filePath: string,
-    required: boolean,
-    label: string,
-    cache: FileCache | null,
-  ): FileCache {
-    try {
-      const stats = fs.statSync(filePath);
-      if (cache && cache.path === filePath && cache.mtimeMs === stats.mtimeMs) {
-        return cache;
-      }
-      const content = fs.readFileSync(filePath, "utf-8");
-      return {
-        path: filePath,
-        mtimeMs: stats.mtimeMs,
-        content,
-        hash: crypto.createHash("sha1").update(content).digest("hex"),
-      };
-    } catch (error) {
-      if (required) {
-        throw new Error(
-          `[SystemPrompt] 无法读取 ${label}: ${filePath}`,
-          error instanceof Error ? { cause: error } : undefined,
-        );
-      }
-      return {
-        path: filePath,
-        mtimeMs: 0,
-        content: "",
-        hash: "missing",
-      };
-    }
   }
 }

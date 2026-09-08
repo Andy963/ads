@@ -107,7 +107,6 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
       },
       logger: deps.observability.logger,
       sessionLogger: deps.observability.sessionLogger,
-      syncWorkspaceTemplates: deps.commands.syncWorkspaceTemplates,
       isCurrent: deps.context.isLaneCurrent,
     });
     currentCwd = builtinResult.currentCwd;

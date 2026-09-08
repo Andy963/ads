@@ -215,7 +215,6 @@ describe("web/server/ws/broadcast", () => {
       commands: {
         runAdsCommandLine: async (command) => await runAdsCommandLineImpl(command),
         sanitizeInput: (payload) => String(payload ?? ""),
-        syncWorkspaceTemplates: () => {},
       },
       scheduler: {},
     });

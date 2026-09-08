@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 
-import type { ModelConfig } from "../api/types";
+import type { LanePromptSnapshot, ModelConfig } from "../api/types";
 import ModelManager from "../components/ModelManager.vue";
 
 function makeModel(
@@ -29,6 +29,65 @@ async function settle(wrapper: { vm: { $nextTick: () => Promise<void> } }): Prom
 }
 
 describe("ModelManager", () => {
+  it("edits and resets versioned Advisor and Worker prompts", async () => {
+    const advisorPrompt = "Advisor baseline prompt";
+    const workerPrompt = "Worker baseline prompt";
+    const snapshots: LanePromptSnapshot[] = [
+      {
+        lane: "advisor",
+        current: { lane: "advisor", version: 1, prompt: advisorPrompt, isBase: true, createdAt: 1 },
+        base: { lane: "advisor", version: 1, prompt: advisorPrompt, isBase: true, createdAt: 1 },
+        versions: [{ lane: "advisor", version: 1, prompt: advisorPrompt, isBase: true, createdAt: 1 }],
+        updatedAt: 1,
+      },
+      {
+        lane: "worker",
+        current: { lane: "worker", version: 1, prompt: workerPrompt, isBase: true, createdAt: 1 },
+        base: { lane: "worker", version: 1, prompt: workerPrompt, isBase: true, createdAt: 1 },
+        versions: [{ lane: "worker", version: 1, prompt: workerPrompt, isBase: true, createdAt: 1 }],
+        updatedAt: 1,
+      },
+    ];
+    const savedAdvisor = {
+      ...snapshots[0],
+      current: { ...snapshots[0].current, version: 2, prompt: "Custom advisor prompt", isBase: false },
+      versions: [
+        { ...snapshots[0].current, version: 2, prompt: "Custom advisor prompt", isBase: false },
+        ...snapshots[0].versions,
+      ],
+    } as LanePromptSnapshot;
+    const api = {
+      get: vi.fn().mockImplementation((path: string) =>
+        Promise.resolve(path === "/api/lane-prompts" ? snapshots : []),
+      ),
+      post: vi.fn().mockResolvedValue(snapshots[1]),
+      patch: vi.fn(),
+      put: vi.fn().mockResolvedValue(savedAdvisor),
+      delete: vi.fn(),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    await wrapper.find('[data-testid="model-manager-tab-lane-prompts"]').trigger("click");
+    expect((wrapper.find('[data-testid="lane-prompt-editor"]').element as HTMLTextAreaElement).value).toBe(advisorPrompt);
+    expect(wrapper.find('[data-testid="lane-prompt-save"]').attributes("disabled")).toBeDefined();
+
+    await wrapper.find('[data-testid="lane-prompt-editor"]').setValue("Custom advisor prompt");
+    await wrapper.find('[data-testid="lane-prompt-save"]').trigger("click");
+    await settle(wrapper);
+    expect(api.put).toHaveBeenCalledWith("/api/lane-prompts/advisor", { prompt: "Custom advisor prompt" });
+    expect(wrapper.find('[data-testid="lane-prompt-status"]').text()).toContain("next conversation turn");
+    expect(wrapper.text()).toContain("Current version: v2");
+
+    await wrapper.find('[data-testid="lane-prompt-lane-worker"]').trigger("click");
+    expect((wrapper.find('[data-testid="lane-prompt-editor"]').element as HTMLTextAreaElement).value).toBe(workerPrompt);
+    wrapper.unmount();
+  });
+
   it("can hide the desktop header for embedded mobile navigation", async () => {
     const api = {
       get: vi.fn().mockResolvedValue([makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude")]),

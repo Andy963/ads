@@ -1,5 +1,4 @@
 import type { Input } from "./protocol/types.js";
-import type { PreferenceDirective } from "../memory/preferenceDirectives.js";
 
 type SkillSaveBlock = { name: string; description: string | null; body: string };
 
@@ -83,55 +82,4 @@ export function extractSkillSaveBlocks(text: string): SkillSaveBlock[] {
 
 export function stripSkillSaveBlocks(text: string): string {
   return text.replace(/<skill_save\s+name="[^"]+"(?:\s+description="[^"]*")?\s*>[\s\S]*?<\/skill_save>/gi, "");
-}
-
-export function replaceInputText(input: Input, nextText: string): Input {
-  if (typeof input === "string") {
-    return nextText;
-  }
-  if (!Array.isArray(input)) {
-    return String(nextText ?? "");
-  }
-
-  const trimmed = String(nextText ?? "").trim();
-  const out: Input = [];
-  let replaced = false;
-  for (const part of input) {
-    if (part.type === "text") {
-      if (replaced) {
-        continue;
-      }
-      replaced = true;
-      if (trimmed) {
-        out.push({ ...part, text: nextText });
-      }
-      continue;
-    }
-    out.push(part);
-  }
-
-  if (!replaced && trimmed) {
-    out.unshift({ type: "text", text: nextText });
-  }
-
-  return out;
-}
-
-export function isEmptyInput(input: Input): boolean {
-  if (typeof input === "string") return input.trim().length === 0;
-  if (!Array.isArray(input)) return String(input ?? "").trim().length === 0;
-  for (const part of input) {
-    if (part.type === "text" && part.text.trim()) {
-      return false;
-    }
-    if (part.type !== "text") {
-      return false;
-    }
-  }
-  return true;
-}
-
-export function formatSavedPreferencesSuffix(saved: PreferenceDirective[]): string {
-  const formatted = saved.map((p) => `${p.key}=${p.value}`).join(", ");
-  return `（已保存偏好: ${formatted}）`;
 }

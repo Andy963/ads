@@ -10,8 +10,8 @@ import { attachWebSocketServer } from "./ws/server.js";
 
 import { resolveAdsStateDir } from "../../workspace/adsPaths.js";
 import { detectWorkspace } from "../../workspace/detector.js";
-import { syncWorkspaceTemplates } from "../../workspace/service.js";
 import { resolveStateDbPath, getStateDatabase } from "../../state/database.js";
+import { createLanePromptStore } from "../../state/lanePromptStore.js";
 import { HistoryMaintenanceScheduler } from "../../state/historyMaintenance.js";
 import { HistoryStore } from "../../utils/historyStore.js";
 import { createLogger } from "../../utils/logger.js";
@@ -234,6 +234,7 @@ export async function startWebServer(): Promise<void> {
       },
     },
   });
+  const lanePromptStore = createLanePromptStore(getStateDatabase(stateDbPath));
   const sessionManager = laneResources.worker.sessionManager;
   const plannerSessionManager = laneResources.planner.sessionManager;
   sessionCacheRegistry = createSessionCacheRegistry({
@@ -327,6 +328,7 @@ export async function startWebServer(): Promise<void> {
     workerHistoryStore: laneResources.worker.historyStore,
     plannerHistoryStore: laneResources.planner.historyStore,
     laneGenerationStore,
+    lanePromptStore,
   });
 
   const server = createHttpServer({ handleApiRequest: apiHandler, logger });
@@ -384,7 +386,6 @@ export async function startWebServer(): Promise<void> {
     commands: {
       runAdsCommandLine,
       sanitizeInput: (payload) => sanitizeInput(payload) ?? "",
-      syncWorkspaceTemplates,
     },
     scheduler: {
       scheduleCompiler,
@@ -392,11 +393,6 @@ export async function startWebServer(): Promise<void> {
     },
   });
 
-  try {
-    syncWorkspaceTemplates();
-  } catch (error) {
-    logger.warn(`[Web] Failed to sync templates: ${(error as Error).message}`);
-  }
   const { cleanupPidFile } = await ensureWebPidFile();
   registerWebShutdown({
     cleanupPidFile,

@@ -98,7 +98,6 @@ describe("web/ws/sessionBoundary", () => {
       },
       logger: { warn: () => {} } as any,
       sessionLogger: { logOutput: (msg: string) => logged.push(msg) } as any,
-      syncWorkspaceTemplates: () => {},
     });
 
     assert.equal(result.handled, true);

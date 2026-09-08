@@ -4,7 +4,7 @@
 
 ## 当前决策
 
-- `SystemPromptManager` 不再读取或编译 `templates/rules.md`，也不会向任何 agent 注入 `<global_rules>`。
+- `SystemPromptManager` 不再读取或编译 legacy prompt templates，也不会向任何 agent 注入 `<global_rules>`。
 - Web 控制台不再提供 Global Rules 管理界面，服务端也不再注册 `/api/global-rules` 路由。
 - ADS 自身进程保护和数据库文件保护由 `server/middleware/security/enforcementGate.ts` 与 `server/middleware/builtin/globalRulesMiddleware.ts` 中的不可变正则规则执行；`server/rules/` 已不再是生产代码目录。
 - Web 与 Telegram 的事件桥接可以复用同一纯代码安全判断，但不读取规则数据库。

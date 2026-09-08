@@ -88,7 +88,6 @@ export function handleBuiltinCommand(args: {
   transport: Pick<WsTransportDeps, "ws" | "sendWorkspaceState" | "broadcastWorkspaceState">;
   logger: WsLogger;
   sessionLogger: WsSessionLogger;
-  syncWorkspaceTemplates: () => void;
   isCurrent?: () => boolean;
 }): {
   handled: boolean;
@@ -209,11 +208,6 @@ export function handleBuiltinCommand(args: {
   args.state.cwdStore.set(String(args.userId), currentCwd);
   args.state.persistCwdStore(args.state.cwdStorePath, args.state.cwdStore);
   args.sessionManager.setUserCwd(args.userId, currentCwd);
-  try {
-    args.syncWorkspaceTemplates();
-  } catch (error) {
-    args.logger.warn(`[Web] Failed to sync templates after cd: ${(error as Error).message}`);
-  }
   const orchestrator = args.sessionManager.getOrCreate(args.userId, currentCwd, true);
   if (!isCurrent()) {
     return {

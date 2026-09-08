@@ -10,7 +10,6 @@ import {
   detectWorkspaceFrom,
   getWorkspaceDbPath,
   isWorkspaceInitialized,
-  ensureDefaultTemplates,
 } from "../../server/workspace/detector.js";
 import { withWorkspaceContext } from "../../server/workspace/asyncWorkspaceContext.js";
 import { resolveWorkspaceStatePath } from "../../server/workspace/adsPaths.js";
@@ -59,13 +58,9 @@ describe("workspace/detector", () => {
     assert.equal(fs.existsSync(path.join(workspace, "docs", "spec")), false, "docs/spec should not be created during initialization");
   });
 
-  it("ensures default templates are copied", () => {
-    initializeWorkspace(workspace, "Template Copy Test");
-    ensureDefaultTemplates(workspace);
-    const templatesDir = resolveWorkspaceStatePath(workspace, "templates");
-    const files = fs.readdirSync(templatesDir);
-    assert.ok(files.includes("instructions.md"), "instructions template should exist");
-    assert.ok(!files.includes("rules.md"), "rules template should be retired");
+  it("does not create legacy prompt templates", () => {
+    initializeWorkspace(workspace, "No Template Test");
+    assert.equal(fs.existsSync(resolveWorkspaceStatePath(workspace, "templates")), false);
   });
 
   it("detects workspace root from a nested directory", () => {
@@ -111,16 +106,10 @@ describe("workspace/detector", () => {
       assert.equal(isWorkspaceInitialized(nested), true);
 
       const dbPath = getWorkspaceDbPath(nested);
-      ensureDefaultTemplates(nested);
-
       assert.equal(dbPath, resolveWorkspaceStatePath(workspace, "ads.db"));
       assert.equal(fs.existsSync(resolveWorkspaceStatePath(workspace, "rules")), false);
       assert.equal(fs.existsSync(path.join(workspace, "docs", "spec")), false);
-      assert.equal(
-        fs.existsSync(resolveWorkspaceStatePath(workspace, "templates", "instructions.md")),
-        true,
-        "templates should be populated under the workspace root state directory"
-      );
+      assert.equal(fs.existsSync(resolveWorkspaceStatePath(workspace, "templates")), false);
       assert.equal(
         fs.existsSync(path.join(nested, "docs", "spec")),
         false,

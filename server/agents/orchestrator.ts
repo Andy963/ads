@@ -13,8 +13,6 @@ import { discoverSkills } from "../skills/loader.js";
 import { loadSkillRegistry } from "../skills/registryMetadata.js";
 import { saveSkillDraftFromBlock, type SavedSkillDraft } from "../skills/creator.js";
 import { resolveAgentConfig } from "../config.js";
-import { setPreference } from "../memory/soul.js";
-import { extractPreferenceDirectives, type PreferenceDirective } from "../memory/preferenceDirectives.js";
 import {
   extractInputText,
   tokenize,
@@ -22,9 +20,6 @@ import {
   isNonAsciiToken,
   extractSkillSaveBlocks,
   stripSkillSaveBlocks,
-  replaceInputText,
-  isEmptyInput,
-  formatSavedPreferencesSuffix,
 } from "./orchestratorHelpers.js";
 
 interface AgentEntry {
@@ -55,7 +50,6 @@ export class HybridOrchestrator {
   private readonly systemPromptManager?: SystemPromptManager;
   private readonly skillAutoloadEnabled: boolean;
   private readonly skillAutosaveEnabled: boolean;
-  private readonly preferenceDirectiveEnabled: boolean;
 
   constructor(options: HybridOrchestratorOptions) {
     if (!options.adapters.length) {
@@ -65,7 +59,6 @@ export class HybridOrchestrator {
     this.systemPromptManager = options.systemPromptManager;
     this.skillAutoloadEnabled = agentConfig.skillAutoloadEnabled;
     this.skillAutosaveEnabled = agentConfig.skillAutosaveEnabled;
-    this.preferenceDirectiveEnabled = agentConfig.preferenceDirectiveEnabled;
 
     for (const adapter of options.adapters) {
       this.registerAdapter(adapter);
@@ -347,30 +340,6 @@ export class HybridOrchestrator {
     return { cleaned, saved };
   }
 
-  private persistPreferencesFromInput(input: Input): { cleanedInput: Input; saved: PreferenceDirective[] } {
-    if (!this.preferenceDirectiveEnabled) {
-      return { cleanedInput: input, saved: [] };
-    }
-
-    const text = extractInputText(input);
-    if (!text.trim()) {
-      return { cleanedInput: input, saved: [] };
-    }
-
-    const extracted = extractPreferenceDirectives(text);
-    if (extracted.directives.length === 0) {
-      return { cleanedInput: input, saved: [] };
-    }
-
-    const workspaceRoot = detectWorkspaceFrom(this.workingDirectory ?? process.cwd());
-    for (const directive of extracted.directives) {
-      setPreference(workspaceRoot, directive.key, directive.value);
-    }
-
-    const cleanedInput = replaceInputText(input, extracted.cleanedText);
-    return { cleanedInput, saved: extracted.directives };
-  }
-
   private applySystemPrompt(agentId: AgentIdentifier, input: Input): Input {
     if (!this.systemPromptManager) {
       return input;
@@ -389,20 +358,6 @@ export class HybridOrchestrator {
       `You are ${agentName} (id: ${agentId}), the active ADS agent. ` +
       `If the following instructions mention "Codex", treat them as referring to you.`;
 
-    // Extract <soul> block for developer_instructions (higher priority than user messages)
-    const soulMatch = injection.text.match(/<soul>\n?([\s\S]*?)\n?<\/soul>/);
-    if (soulMatch && entry?.adapter.setDeveloperInstructions) {
-      const soulContent = soulMatch[1].trim();
-      const devInstructions = `${aliasNote}\n\n${soulContent}`;
-      entry.adapter.setDeveloperInstructions(devInstructions);
-      // Remove <soul> block from the injection text to avoid duplication
-      const remainingText = injection.text.replace(/<soul>\n?[\s\S]*?\n?<\/soul>/, "").trim();
-      if (!remainingText) {
-        return input;
-      }
-      return this.mergeSystemPrompt(remainingText, input);
-    }
-
     const decorated = `${aliasNote}\n\n${injection.text}`;
     return this.mergeSystemPrompt(decorated, input);
   }
@@ -417,33 +372,12 @@ export class HybridOrchestrator {
 
   private buildResultWithSavedArtifacts(
     result: AgentRunResult,
-    savedPreferences: PreferenceDirective[],
   ): AgentRunResult {
     const persisted = this.persistSkillsFromResponse(result.response);
-    const suffixes: string[] = [];
-    if (persisted.saved.length > 0) {
-      suffixes.push(`（已自动沉淀 skill: ${persisted.saved.map((s) => s.skillName).join(", ")}）`);
-    }
-    if (savedPreferences.length > 0) {
-      suffixes.push(formatSavedPreferencesSuffix(savedPreferences));
-    }
-    const suffix = suffixes.length > 0 ? `\n\n${suffixes.join("\n")}` : "";
+    const suffix = persisted.saved.length > 0
+      ? `\n\n（已自动沉淀 skill: ${persisted.saved.map((s) => s.skillName).join(", ")}）`
+      : "";
     return { ...result, response: `${persisted.cleaned}${suffix}`.trim() };
-  }
-
-  private maybeBuildPreferenceOnlyResult(
-    agentId: AgentIdentifier,
-    cleanedInput: Input,
-    savedPreferences: PreferenceDirective[],
-  ): AgentRunResult | null {
-    if (savedPreferences.length === 0 || !isEmptyInput(cleanedInput)) {
-      return null;
-    }
-    return {
-      response: formatSavedPreferencesSuffix(savedPreferences),
-      usage: null,
-      agentId,
-    };
   }
 
   private async sendWithAgent(
@@ -452,23 +386,10 @@ export class HybridOrchestrator {
     input: Input,
     options?: AgentSendOptions,
   ): Promise<AgentRunResult> {
-    const preferences = this.persistPreferencesFromInput(input);
-    const cleanedInput = preferences.cleanedInput;
-    const savedPreferences = preferences.saved;
-
-    const preferenceOnly = this.maybeBuildPreferenceOnlyResult(
-      agentId,
-      cleanedInput,
-      savedPreferences,
-    );
-    if (preferenceOnly) {
-      return preferenceOnly;
-    }
-
-    const prompt = this.applySystemPrompt(agentId, cleanedInput);
+    const prompt = this.applySystemPrompt(agentId, input);
     try {
       const result = await entry.adapter.send(prompt, options);
-      return this.buildResultWithSavedArtifacts(result, savedPreferences);
+      return this.buildResultWithSavedArtifacts(result);
     } finally {
       this.completeTurn(agentId);
     }
