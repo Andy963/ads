@@ -52,6 +52,7 @@ const emit = defineEmits<{
 }>();
 
 const listRef = ref<HTMLElement | null>(null);
+const messageListRef = ref<{ showLatestMessages?: () => void } | null>(null);
 const autoScroll = ref(true);
 const showScrollToBottom = ref(false);
 
@@ -99,6 +100,9 @@ function onLiveStepScroll(): void {
 
 async function scrollChatToBottom(): Promise<void> {
   if (!listRef.value) return;
+  await nextTick();
+  if (!listRef.value) return;
+  messageListRef.value?.showLatestMessages?.();
   await nextTick();
   if (!listRef.value) return;
   listRef.value.scrollTop = listRef.value.scrollHeight;
@@ -350,6 +354,7 @@ onBeforeUnmount(() => {
     />
     <div ref="listRef" class="chat" @scroll="handleScroll">
       <MainChatMessageList
+        ref="messageListRef"
         :messages="messages"
         :copied-message-id="copiedMessageId"
         :format-message-ts="formatMessageTs"

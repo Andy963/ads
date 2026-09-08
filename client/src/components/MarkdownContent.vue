@@ -35,6 +35,21 @@ async function onClick(ev: MouseEvent): Promise<void> {
   const target = ev.target as HTMLElement | null;
   if (!target) return;
 
+  const toggle = target.closest("button.md-code-toggle") as HTMLButtonElement | null;
+  if (toggle) {
+    const wrapper = toggle.closest(".md-codeblock");
+    if (!wrapper) return;
+    const expanded = wrapper.getAttribute("data-expanded") === "true";
+    const nextExpanded = !expanded;
+    wrapper.setAttribute("data-expanded", String(nextExpanded));
+    wrapper.classList.toggle("md-codeblock--clamped", !nextExpanded);
+    wrapper.classList.toggle("md-codeblock--expanded", nextExpanded);
+    toggle.setAttribute("aria-expanded", String(nextExpanded));
+    toggle.setAttribute("aria-label", nextExpanded ? "Collapse code" : "Show full code");
+    toggle.textContent = nextExpanded ? "Collapse" : "Show full code";
+    return;
+  }
+
   const btn = target.closest("button.md-codecopy") as HTMLButtonElement | null;
   if (btn) {
     const wrapper = btn.closest(".md-codeblock");
@@ -279,10 +294,56 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   background: transparent;
   overflow-x: auto;
   overflow-y: auto;
-  max-height: min(40vh, 360px);
+  max-height: 400px;
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+}
+
+.md :deep(.md-codeblock--clamped .md-codeblock-body) {
+  position: relative;
+}
+
+.md :deep(.md-codeblock--clamped .md-codeblock-body::after) {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 56px;
+  content: "";
+  background: linear-gradient(to bottom, transparent, var(--github-code-bg));
+  pointer-events: none;
+}
+
+.md :deep(.md-codeblock--clamped .md-codeblock-body pre) {
+  overflow-y: hidden;
+}
+
+.md :deep(.md-codeblock--expanded .md-codeblock-body pre) {
+  max-height: none;
+}
+
+.md :deep(.md-code-toggle) {
+  display: block;
+  width: 100%;
+  padding: 7px 12px;
+  border: 0;
+  border-top: 1px solid var(--github-border);
+  background: var(--github-code-header);
+  color: var(--github-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.md :deep(.md-code-toggle:hover) {
+  color: var(--github-text);
+}
+
+.md :deep(.md-code-toggle:focus-visible) {
+  outline: 2px solid rgba(9, 105, 218, 0.28);
+  outline-offset: -2px;
 }
 
 .md :deep(.md-codeblock pre)::-webkit-scrollbar {
