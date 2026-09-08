@@ -13,6 +13,14 @@ export type AudioTranscriptionResult =
   | { ok: true; text: string; provider: string }
   | { ok: false; error: string; errors: string[]; timedOut: boolean };
 
+const DEFAULT_TRANSCRIPTION_PROMPT = "以下是普通话的句子，包含标点符号。";
+const DEFAULT_TRANSCRIPTION_LANGUAGE = "zh";
+
+type TranscriptionOptions = {
+  prompt: string;
+  language: string;
+};
+
 function normalizeContentType(raw: string | undefined): string {
   let contentType = String(raw ?? "").trim();
   if (contentType.includes(";")) {
@@ -36,8 +44,17 @@ function resolveTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(raw) ? Math.max(1000, raw) : 120_000;
 }
 
-function resolveTranscriptionSkillOrder(workspaceRoot: string): string[] {
-  const explicit = parseCsv(process.env.ADS_AUDIO_TRANSCRIPTION_SKILLS);
+function resolveTranscriptionOptions(env: NodeJS.ProcessEnv = process.env): TranscriptionOptions {
+  const prompt = String(env.ADS_AUDIO_TRANSCRIPTION_PROMPT ?? "").trim();
+  const language = String(env.ADS_AUDIO_TRANSCRIPTION_LANGUAGE ?? "").trim();
+  return {
+    prompt: prompt || DEFAULT_TRANSCRIPTION_PROMPT,
+    language: language || DEFAULT_TRANSCRIPTION_LANGUAGE,
+  };
+}
+
+function resolveTranscriptionSkillOrder(workspaceRoot: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const explicit = parseCsv(env.ADS_AUDIO_TRANSCRIPTION_SKILLS);
   if (explicit.length > 0) {
     return explicit;
   }
@@ -108,6 +125,7 @@ async function runTranscriptionSkill(args: {
   skill: SkillMetadata | null;
   audioPath: string;
   timeoutMs: number;
+  transcriptionOptions: TranscriptionOptions;
   signal?: AbortSignal;
   exec?: (req: {
     cmd: string;
@@ -135,7 +153,11 @@ async function runTranscriptionSkill(args: {
     args: [...script.args, "--input", args.audioPath],
     cwd: args.workspaceRoot,
     timeoutMs: args.timeoutMs,
-    env: process.env,
+    env: {
+      ...process.env,
+      ADS_WHISPER_PROMPT: args.transcriptionOptions.prompt,
+      ADS_WHISPER_LANGUAGE: args.transcriptionOptions.language,
+    },
     signal: args.signal,
     allowlist: null,
   });
@@ -181,8 +203,10 @@ export async function transcribeAudioBuffer(args: {
   const ext = resolveAudioExt(contentType);
   const audioPath = writeTempAudioFile(audio, ext);
 
-  const timeoutMs = resolveTimeoutMs();
-  const skills = resolveTranscriptionSkillOrder(workspaceRoot);
+  const env = process.env;
+  const timeoutMs = resolveTimeoutMs(env);
+  const transcriptionOptions = resolveTranscriptionOptions(env);
+  const skills = resolveTranscriptionSkillOrder(workspaceRoot, env);
   const discoveredSkills = discoverSkills(workspaceRoot);
   const skillLookup = indexSkillsByName(discoveredSkills);
   const errors: string[] = [];
@@ -197,6 +221,7 @@ export async function transcribeAudioBuffer(args: {
           skill: skillLookup.get(skillName.toLowerCase()) ?? null,
           audioPath,
           timeoutMs,
+          transcriptionOptions,
           signal: args.signal,
           exec: args.exec,
         });

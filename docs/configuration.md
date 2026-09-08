@@ -71,6 +71,8 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_REINJECTION_TURNS` | `6` | 系统 Instructions 周期性重新注入的轮次间隔 |
 | `ADS_RULE_ENFORCEMENT_MODE` | `observe` | 兼容性日志模式；内置安全拦截始终执行，不由该变量放宽 |
 | `ADS_AUDIO_TRANSCRIPTION_TIMEOUT_MS`| `120000` | 语音转写处理的单次超时时限（毫秒） |
+| `ADS_AUDIO_TRANSCRIPTION_PROMPT` | `以下是普通话的句子，包含标点符号。` | Whisper 转写使用的前缀提示，可覆盖默认值 |
+| `ADS_AUDIO_TRANSCRIPTION_LANGUAGE` | `zh` | Whisper 转写的语言代码，可覆盖默认值 |
 
 ---
 
