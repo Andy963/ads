@@ -138,6 +138,18 @@ export function isClaudeSafeguardError(message: string): boolean {
   );
 }
 
+export function isStreamDisconnectedUpstreamError(message: string): boolean {
+  const normalized = message.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes("stream disconnected before completion") ||
+    normalized.includes("stream closed before response.completed") ||
+    normalized.includes("connection closed") ||
+    normalized.includes("socket hang up") ||
+    normalized.includes("premature close")
+  );
+}
+
 export function isTransientUpstreamModelError(message: string): boolean {
   return (
     isHighDemandUpstreamError(message) ||
@@ -145,7 +157,8 @@ export function isTransientUpstreamModelError(message: string): boolean {
     isHttp503UpstreamError(message) ||
     isHttpGateway5xxUpstreamError(message) ||
     isBadResponseStatusCode400UpstreamError(message) ||
-    isClaudeSafeguardError(message)
+    isClaudeSafeguardError(message) ||
+    isStreamDisconnectedUpstreamError(message)
   );
 }
 

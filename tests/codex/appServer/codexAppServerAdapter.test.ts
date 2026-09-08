@@ -993,6 +993,82 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
+  it("retries a terminal stream disconnect before replaying the turn", async () => {
+    const previous = process.env.ADS_UPSTREAM_RETRY_COUNT;
+    process.env.ADS_UPSTREAM_RETRY_COUNT = "1";
+    let turnStarts = 0;
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "t-retry-stream" } }),
+        "turn/start": () => {
+          turnStarts += 1;
+          return {};
+        },
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "retry-stream", registry });
+    const events: Array<{ phase: string; title: string; detail?: string }> = [];
+    adapter.onEvent((event) => {
+      events.push({ phase: event.phase, title: event.title, detail: event.detail });
+    });
+
+    try {
+      const sendPromise = adapter.send("retry a disconnected stream");
+      await waitForRequestCount(fake, "turn/start", 1);
+      fake.notify("error", {
+        error: {
+          message:
+            "stream disconnected before completion: stream closed before response.completed",
+        },
+        willRetry: false,
+        threadId: "t-retry-stream",
+        turnId: "turn-1",
+      });
+
+      await waitForRequestCount(fake, "turn/start", 2, 3_000);
+      fake.notify("item/completed", {
+        item: { type: "agentMessage", id: "m-stream-recovered", text: "Recovered stream" },
+        threadId: "t-retry-stream",
+        turnId: "turn-2",
+      });
+      fake.notify("turn/completed", {
+        threadId: "t-retry-stream",
+        turn: { id: "turn-2" },
+      });
+
+      const result = await sendPromise;
+      assert.equal(result.response, "Recovered stream");
+      assert.equal(turnStarts, 2);
+      const turnStartRequests = fake.requests.filter((request) => request.method === "turn/start");
+      assert.equal(turnStartRequests.length, 2);
+      assert.deepEqual(
+        (turnStartRequests[0]!.params as any).input,
+        (turnStartRequests[1]!.params as any).input,
+      );
+      assert(
+        events.some(
+          (event) =>
+            event.phase === "connection" &&
+            event.title === "模型请求重试" &&
+            event.detail ===
+              "stream disconnected before completion: stream closed before response.completed",
+        ),
+      );
+      assert.equal(
+        events.some((event) => ["command", "file", "tool"].includes(event.phase)),
+        false,
+      );
+    } finally {
+      await registry.stopAll();
+      if (previous === undefined) {
+        delete process.env.ADS_UPSTREAM_RETRY_COUNT;
+      } else {
+        process.env.ADS_UPSTREAM_RETRY_COUNT = previous;
+      }
+    }
+  });
+
   it("does not retry BYOK 500 capacity errors", async () => {
     let turnStarts = 0;
     const fake = buildFakeServer({
