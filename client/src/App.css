@@ -763,6 +763,12 @@
   to { transform: rotate(360deg); }
 }
 @media (max-width: 900px) {
+  .topbar,
+  .laneTabs {
+    border-bottom: 0;
+    box-shadow: none;
+    background: var(--app-bg);
+  }
   .layout {
     grid-template-columns: 1fr;
     padding: 0;

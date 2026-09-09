@@ -13,6 +13,17 @@ function readUtf8(relFromThisFile: string): string {
 }
 
 describe("MainChat header UI", () => {
+  it("blends mobile navigation into the chat background without horizontal separators", () => {
+    const css = readUtf8("../App.css");
+    const mobileCss = css.slice(css.indexOf("@media (max-width: 900px)"));
+    const navigation = mobileCss.match(/\.topbar,\s*\.laneTabs\s*\{[^}]*\}/)?.[0];
+
+    expect(navigation).toBeDefined();
+    expect(navigation).toMatch(/border-bottom:\s*0\s*;/);
+    expect(navigation).toMatch(/box-shadow:\s*none\s*;/);
+    expect(navigation).toMatch(/background:\s*var\(--app-bg\)\s*;/);
+  });
+
   it("does not render a busy label in the header", () => {
     const wrapper = mount(MainChat, {
       props: {
