@@ -495,7 +495,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 190px;
+  height: 110px;
   z-index: 0;
   background: linear-gradient(to bottom, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.96) 68%, #ffffff 100%);
   pointer-events: none;
@@ -508,7 +508,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .laneStatusBar {
-  width: min(800px, 100%);
+  width: min(960px, 100%);
   box-sizing: border-box;
   display: flex;
   align-items: flex-start;
@@ -561,7 +561,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .queue {
-  width: min(800px, 100%);
+  width: min(960px, 100%);
   display: grid;
   gap: 6px;
   max-height: 140px;
@@ -616,7 +616,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .inputWrap {
-  width: min(800px, 100%);
+  width: min(960px, 100%);
   box-sizing: border-box;
   position: relative;
   border-radius: 24px;
@@ -848,7 +848,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .attachmentsBar {
-  width: min(800px, 100%);
+  width: min(960px, 100%);
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -1050,7 +1050,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   }
 
   .composer::before {
-    height: 160px;
+    height: 90px;
   }
 
   .actionSheet {

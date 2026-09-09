@@ -13,7 +13,7 @@
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
-  padding: 18px clamp(16px, 4vw, 40px) 220px;
+  padding: 18px clamp(16px, 4vw, 40px) 100px;
   background: var(--app-bg, #ffffff);
   min-height: 0;
   position: relative;
@@ -22,7 +22,7 @@
 }
 
 .chat :deep(.messageList) {
-  width: min(920px, 100%);
+  width: min(960px, 100%);
   margin: 0 auto;
 }
 
@@ -37,6 +37,17 @@
 
 .chat::-webkit-scrollbar-track {
   background: transparent;
+}
+
+.threadWarningBanner {
+  flex: 0 0 auto;
+  padding: 8px 16px;
+  background: #fff7ed;
+  border-bottom: 1px solid rgba(251, 146, 60, 0.3);
+  color: #c2410c;
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-word;
 }
 
 .chatHost--planner .chat {

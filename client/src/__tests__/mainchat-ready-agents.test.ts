@@ -1,19 +1,16 @@
 import { describe, it, expect } from "vitest";
 import { mount } from "@vue/test-utils";
 
-import MainChat from "../components/MainChat.vue";
+import MainChatModelPopover from "../components/MainChatModelPopover.vue";
 
 describe("MainChat ready agents", () => {
   const baseProps = {
-    messages: [],
-    queuedPrompts: [],
-    pendingImages: [],
     connected: true,
     busy: false,
   } as const;
 
   it("hides the agent selector and auto-switches when the active agent is not ready", async () => {
-    const wrapper = mount(MainChat, {
+    const wrapper = mount(MainChatModelPopover, {
       props: {
         ...baseProps,
         agents: [
@@ -24,7 +21,6 @@ describe("MainChat ready agents", () => {
         models: [],
         modelId: "auto",
       },
-      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
     await wrapper.vm.$nextTick();
