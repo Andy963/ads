@@ -46,6 +46,7 @@ const {
   reorderProjects,
   removeProject,
   getRuntime,
+  getPlannerRuntime,
   connectWs,
   runtimeProjectInProgress,
   formatProjectBranch,
@@ -191,6 +192,30 @@ const {
   resumeTaskThread,
   listResumableSessions,
 });
+
+type ProjectBusyState = "idle" | "advisor" | "worker" | "both";
+
+function projectBusyState(projectId: string): ProjectBusyState {
+  const advisorBusy = runtimeProjectInProgress(getPlannerRuntime(projectId));
+  const workerBusy = runtimeProjectInProgress(getRuntime(projectId));
+  if (advisorBusy && workerBusy) return "both";
+  if (advisorBusy) return "advisor";
+  if (workerBusy) return "worker";
+  return "idle";
+}
+
+function projectStatusClass(projectId: string): string {
+  const state = projectBusyState(projectId);
+  return state === "idle" ? "" : `spinning spinning--${state}`;
+}
+
+function projectStatusTitle(projectId: string): string | undefined {
+  const state = projectBusyState(projectId);
+  if (state === "advisor") return "Advisor 正在规划…";
+  if (state === "worker") return "Worker 正在执行…";
+  if (state === "both") return "Advisor 与 Worker 均在运行中…";
+  return undefined;
+}
 
 /**
  * Browsing the list is read-only and always allowed; only the resume action is
@@ -376,6 +401,7 @@ const {
 } = useProjectSidebar({
   projects,
   getRuntime,
+  getPlannerRuntime,
   runtimeProjectInProgress,
   requestProjectSwitch: requestProjectSwitchFromMobile,
   reorderProjects,
@@ -573,7 +599,12 @@ const plannerConnectionStatus = computed(() => {
               @dragover="(ev) => onProjectDragOver(ev, p.id)"
               @drop="(ev) => onProjectDrop(ev, p.id)"
             >
-              <span class="projectStatus" :class="{ spinning: runtimeProjectInProgress(getRuntime(p.id)) }" />
+              <span
+                class="projectStatus"
+                :class="projectStatusClass(p.id)"
+                :title="projectStatusTitle(p.id)"
+                :data-testid="`project-status-${p.id}`"
+              />
               <span class="projectText">
                 <span class="projectName">{{ p.name }}</span>
                 <span class="projectBranch">{{ formatProjectBranch(p.branch) }}</span>
@@ -649,6 +680,13 @@ const plannerConnectionStatus = computed(() => {
               aria-hidden="true"
             />
             <span class="laneTabLabel">{{ tab.label }}</span>
+            <span
+              v-if="tab.id === 'planner' ? plannerBusy : agentBusy"
+              class="laneTabBusySpinner"
+              :class="tab.id === 'planner' ? 'laneTabBusySpinner--advisor' : 'laneTabBusySpinner--worker'"
+              :data-testid="`lane-tab-busy-${tab.id}`"
+              aria-hidden="true"
+            />
           </button>
           <span v-if="!isMobile" class="laneTabSpacer" />
           <button

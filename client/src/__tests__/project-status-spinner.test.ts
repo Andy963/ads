@@ -87,7 +87,7 @@ describe("project status spinner", () => {
     vi.clearAllMocks();
   });
 
-  it("shows spinner while a conversation is in progress", async () => {
+  it("shows lane-specific and combined project activity states", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await settleUi(wrapper);
@@ -95,19 +95,43 @@ describe("project status spinner", () => {
     const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
     expect(pid).not.toBe("");
 
-    const rt = (wrapper.vm as any).getRuntime(pid) as { busy: { value: boolean } };
-    rt.busy.value = false;
+    const workerRuntime = (wrapper.vm as any).getRuntime(pid) as { busy: { value: boolean } };
+    const plannerRuntime = (wrapper.vm as any).getPlannerRuntime(pid) as { busy: { value: boolean } };
+    workerRuntime.busy.value = false;
+    plannerRuntime.busy.value = false;
     await settleUi(wrapper);
 
     expect(wrapper.find(".projectStatus").classes("spinning")).toBe(false);
+    expect(wrapper.find(".laneTabBusySpinner").exists()).toBe(false);
 
-    rt.busy.value = true;
+    plannerRuntime.busy.value = true;
     await settleUi(wrapper);
-    expect(wrapper.find(".projectStatus").classes("spinning")).toBe(true);
+    const projectStatus = wrapper.find(".projectStatus");
+    expect(projectStatus.classes()).toEqual(expect.arrayContaining(["spinning", "spinning--advisor"]));
+    expect(projectStatus.attributes("title")).toBe("Advisor 正在规划…");
+    expect(wrapper.find('[data-testid="lane-tab-busy-planner"]').classes()).toEqual(
+      expect.arrayContaining(["laneTabBusySpinner", "laneTabBusySpinner--advisor"]),
+    );
+    expect(wrapper.find('[data-testid="lane-tab-busy-worker"]').exists()).toBe(false);
 
-    rt.busy.value = false;
+    workerRuntime.busy.value = true;
     await settleUi(wrapper);
-    expect(wrapper.find(".projectStatus").classes("spinning")).toBe(false);
+    expect(projectStatus.classes()).toEqual(expect.arrayContaining(["spinning", "spinning--both"]));
+    expect(projectStatus.attributes("title")).toBe("Advisor 与 Worker 均在运行中…");
+    expect(wrapper.find('[data-testid="lane-tab-busy-worker"]').classes()).toEqual(
+      expect.arrayContaining(["laneTabBusySpinner", "laneTabBusySpinner--worker"]),
+    );
+
+    plannerRuntime.busy.value = false;
+    await settleUi(wrapper);
+    expect(projectStatus.classes()).toEqual(expect.arrayContaining(["spinning", "spinning--worker"]));
+    expect(projectStatus.classes("spinning--advisor")).toBe(false);
+    expect(projectStatus.attributes("title")).toBe("Worker 正在执行…");
+
+    workerRuntime.busy.value = false;
+    await settleUi(wrapper);
+    expect(projectStatus.classes("spinning")).toBe(false);
+    expect(projectStatus.attributes("title")).toBeUndefined();
 
     wrapper.unmount();
   });
