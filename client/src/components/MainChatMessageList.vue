@@ -1142,7 +1142,7 @@ function closeFilePreview(): void {
   min-width: 0;
   box-sizing: border-box;
   border-radius: 0;
-  padding: 4px 16px 22px;
+  padding: 4px 0 24px;
   border: none;
   background: transparent;
   box-shadow: none;
@@ -1181,8 +1181,8 @@ function closeFilePreview(): void {
 
 .msgActions {
   position: absolute;
-  left: 10px;
-  bottom: -4px;
+  left: 0;
+  bottom: 2px;
   display: inline-flex;
   gap: 8px;
   align-items: center;
@@ -1226,11 +1226,11 @@ function closeFilePreview(): void {
   max-width: min(90%, 960px);
   min-width: 0;
   box-sizing: border-box;
-  padding: 10px 16px;
-  border: none;
+  padding: 10px 16px 28px 16px;
+  border: 1px solid rgba(9, 105, 218, 0.16);
   border-radius: 18px 18px 4px 18px;
-  background: #f4f4f5;
-  color: #18181b;
+  background: rgba(221, 244, 255, 0.88);
+  color: #0f172a;
   overflow: visible;
 }
 
@@ -1265,6 +1265,7 @@ function closeFilePreview(): void {
 .msg[data-role="user"] .msgActions {
   left: auto;
   right: 10px;
+  bottom: 4px;
 }
 
 .thoughtCard {
