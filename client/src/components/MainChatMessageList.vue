@@ -1466,6 +1466,27 @@ function closeFilePreview(): void {
   vertical-align: middle;
 }
 
+@media (max-width: 768px) {
+  .execute-cmd,
+  .execute-output,
+  .command-tree-branch,
+  .command-cmd,
+  .patchCardDiff {
+    font-size: 14px;
+  }
+
+  .prompt-tag,
+  .patchCardToggle,
+  .retryBadge,
+  .msgTime,
+  .thoughtCardToggleText,
+  .liveStepToggleBtn,
+  .sessionBoundaryTag,
+  .sessionBoundaryNotice {
+    font-size: 12px;
+  }
+}
+
 @keyframes actionSpin {
   to {
     transform: rotate(360deg);

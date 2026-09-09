@@ -587,6 +587,45 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   color: var(--github-text);
 }
 
+@media (max-width: 768px) {
+  .md {
+    font-size: 16px;
+    line-height: 1.6;
+  }
+
+  .md :deep(h1) {
+    font-size: 19px;
+  }
+
+  .md :deep(h2) {
+    font-size: 17px;
+  }
+
+  .md :deep(h3),
+  .md :deep(h4),
+  .md :deep(h5),
+  .md :deep(h6) {
+    font-size: 16px;
+  }
+
+  .md :deep(code),
+  .md :deep(.md-diffstat),
+  .md :deep(.md-codeblock pre),
+  .md :deep(.md-codeblock pre > code),
+  .md :deep(details.md-codeblock > summary) {
+    font-size: 14px;
+  }
+
+  .md :deep(.md-codeblock pre),
+  .md :deep(.md-codeblock pre > code) {
+    line-height: 1.5;
+  }
+
+  .md :deep(.md-code-toggle) {
+    font-size: 12px;
+  }
+}
+
 @media (max-width: 480px) {
   .md :deep(img) {
     max-width: 50%;
