@@ -256,4 +256,28 @@ describe("App.removeProject", () => {
     expect(idsFromVm(wrapper as any)).toEqual(["default", "p1", "p2"]);
     wrapper.unmount();
   });
+
+  it("blocks removal while the Advisor runtime is busy", async () => {
+    projectsFromApi = [
+      { id: "p1", workspaceRoot: "/w/p1", name: "P1", chatSessionId: "main", createdAt: 1, updatedAt: 1 },
+      { id: "p2", workspaceRoot: "/w/p2", name: "P2", chatSessionId: "main", createdAt: 2, updatedAt: 2 },
+    ];
+    activeProjectIdFromApi = "p2";
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await waitForProjectIds(wrapper as any, ["default", "p1", "p2"]);
+
+    const plannerRuntime = (wrapper.vm as any).getPlannerRuntime("p2") as { busy: { value: boolean } };
+    plannerRuntime.busy.value = true;
+    await settleUi(wrapper);
+
+    const removeButton = wrapper.find('[data-testid="project-remove"]');
+    expect(removeButton.classes()).toContain("disabled");
+    await removeButton.trigger("click");
+    expect((wrapper.vm as any).projectRemoveConfirmOpen).toBe(false);
+    expect(deleteCalls).toEqual([]);
+
+    wrapper.unmount();
+  });
 });

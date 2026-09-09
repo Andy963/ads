@@ -28,6 +28,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     activeProject,
     activeRuntime,
     getRuntime,
+    getPlannerRuntime,
     normalizeProjectId,
     runtimeProjectInProgress,
     busy,
@@ -287,7 +288,8 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
 
     const pid = normalizeProjectId(targetId);
     const rt = getRuntime(pid);
-    if (runtimeProjectInProgress(rt)) {
+    const plannerRt = getPlannerRuntime(pid);
+    if (runtimeProjectInProgress(rt) || runtimeProjectInProgress(plannerRt)) {
       apiError.value = "Project is busy; cannot remove right now.";
       return;
     }

@@ -8,6 +8,7 @@ type ProjectLike = {
 export function useProjectSidebar(params: {
   projects: Ref<ProjectLike[]>;
   getRuntime: (projectId: string) => unknown;
+  getPlannerRuntime: (projectId: string) => unknown;
   runtimeProjectInProgress: (runtime: unknown) => boolean;
   requestProjectSwitch: (projectId: string) => void;
   reorderProjects: (ids: string[]) => Promise<void>;
@@ -114,7 +115,10 @@ export function useProjectSidebar(params: {
   function canRemoveProject(id: string): boolean {
     const projectId = String(id ?? "").trim();
     if (!projectId || projectId === "default") return false;
-    return !params.runtimeProjectInProgress(params.getRuntime(projectId));
+    return (
+      !params.runtimeProjectInProgress(params.getRuntime(projectId)) &&
+      !params.runtimeProjectInProgress(params.getPlannerRuntime(projectId))
+    );
   }
 
   function requestRemoveProject(id: string): void {
@@ -134,6 +138,7 @@ export function useProjectSidebar(params: {
     projectRemoveConfirmOpen.value = false;
     pendingRemoveProjectId.value = null;
     if (!projectId) return;
+    if (!canRemoveProject(projectId)) return;
     await params.removeProject(projectId);
   }
 

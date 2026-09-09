@@ -411,6 +411,7 @@
   color: rgba(255, 255, 255, 0.9);
 }
 .projectStatus {
+  --project-status-center: #ffffff;
   width: 14px;
   height: 14px;
   border-radius: 999px;
@@ -440,6 +441,7 @@
   background: transparent;
 }
 .projectNode.active .projectStatus {
+  --project-status-center: #2f80ff;
   border-color: rgba(255, 255, 255, 0.8);
 }
 .projectNode.active .projectStatus.spinning {
@@ -448,6 +450,29 @@
 }
 .projectNode.active .projectStatus.spinning::after {
   background: transparent;
+}
+.projectStatus.spinning--advisor,
+.projectNode.active .projectStatus.spinning--advisor {
+  border-color: #a855f7;
+  border-top-color: transparent;
+}
+.projectStatus.spinning--worker,
+.projectNode.active .projectStatus.spinning--worker {
+  border-color: #10b981;
+  border-top-color: transparent;
+}
+.projectStatus.spinning--both,
+.projectNode.active .projectStatus.spinning--both {
+  border-color: transparent;
+  background: conic-gradient(#a855f7 0deg 180deg, #10b981 180deg 360deg);
+}
+.projectStatus.spinning--both::after,
+.projectNode.active .projectStatus.spinning--both::after {
+  inset: 2px;
+  width: auto;
+  height: auto;
+  margin: 0;
+  background: var(--project-status-center);
 }
 .projectText {
   display: flex;
@@ -637,6 +662,24 @@
 
 .laneTabStatusDot--disconnected {
   background: #94a3b8;
+}
+
+.laneTabBusySpinner {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 10px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.laneTabBusySpinner--advisor {
+  color: #a855f7;
+}
+
+.laneTabBusySpinner--worker {
+  color: #10b981;
 }
 
 .laneTab.active {
