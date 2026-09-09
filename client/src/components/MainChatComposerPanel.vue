@@ -478,37 +478,15 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 20;
-  padding: 0 16px calc(16px + env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));
-  pointer-events: none;
-}
-
-.composer::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 110px;
-  z-index: 0;
-  background: linear-gradient(to bottom, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.96) 68%, #ffffff 100%);
-  pointer-events: none;
-}
-
-.composer > :not(.draggableOverlay) {
+  gap: 8px;
+  padding: 8px 16px calc(12px + env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));
+  background: var(--app-bg, #ffffff);
   position: relative;
-  z-index: 1;
-  pointer-events: auto;
+  z-index: 20;
 }
 
 .laneStatusBar {
-  width: min(960px, 100%);
+  width: 100%;
   box-sizing: border-box;
   display: flex;
   align-items: flex-start;
@@ -561,7 +539,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .queue {
-  width: min(960px, 100%);
+  width: 100%;
   display: grid;
   gap: 6px;
   max-height: 140px;
@@ -616,7 +594,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .inputWrap {
-  width: min(960px, 100%);
+  width: 100%;
   box-sizing: border-box;
   position: relative;
   border-radius: 24px;
@@ -848,7 +826,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .attachmentsBar {
-  width: min(960px, 100%);
+  width: 100%;
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -1047,10 +1025,6 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
     padding-left: 12px;
     padding-right: 12px;
     padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));
-  }
-
-  .composer::before {
-    height: 90px;
   }
 
   .actionSheet {

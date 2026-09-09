@@ -100,9 +100,11 @@ describe("MainChat header UI", () => {
     withHistory.unmount();
   });
 
-  it("reserves room for the floating composer in the chat stream", () => {
+  it("uses natural compact padding in the chat stream without a large bottom dead void", () => {
     const css = readUtf8("../components/MainChat.css");
-    expect(css).toMatch(/\.chat\s*\{[\s\S]*?padding:[\s\S]*?100px/);
+    expect(css).toMatch(/\.chat\s*\{[\s\S]*?padding:\s*12px 16px\s*;/);
+    expect(css).not.toContain("220px");
+    expect(css).not.toContain("100px");
   });
 
   it("renders thread warnings inside the chat pane", () => {

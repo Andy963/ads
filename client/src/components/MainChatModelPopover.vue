@@ -311,19 +311,22 @@ onBeforeUnmount(() => {
 
       <section v-if="reasoningEffortOptions.length" class="modelPopoverSection" aria-labelledby="model-popover-reasoning-title">
         <div id="model-popover-reasoning-title" class="modelPopoverSectionTitle">Reasoning effort</div>
-        <div class="modelPopoverReasoning" role="group" aria-label="Reasoning effort" data-testid="chat-reasoning-effort">
+        <div class="modelPopoverOptions" role="radiogroup" aria-label="Reasoning effort" data-testid="chat-reasoning-effort">
           <button
             v-for="effort in reasoningEffortOptions"
             :key="effort"
-            class="modelPopoverReasoningOption"
+            class="modelPopoverOption"
             :class="{ active: effort === reasoningEffortValue }"
             type="button"
+            role="radio"
+            :aria-checked="effort === reasoningEffortValue"
             :aria-pressed="effort === reasoningEffortValue"
             :disabled="!canChange"
             :data-reasoning-effort="effort"
             @click="selectReasoningEffort(effort)"
           >
-            {{ REASONING_EFFORT_SHORT_LABELS[effort] ?? REASONING_EFFORT_LABELS[effort] ?? effort }}
+            <span class="modelPopoverOptionLabel">{{ REASONING_EFFORT_SHORT_LABELS[effort] ?? REASONING_EFFORT_LABELS[effort] ?? effort }}</span>
+            <span v-if="effort === reasoningEffortValue" class="modelPopoverCheck" aria-hidden="true">✓</span>
           </button>
         </div>
       </section>
@@ -468,14 +471,12 @@ onBeforeUnmount(() => {
   color: #1d4ed8;
 }
 
-.modelPopoverOption:focus-visible,
-.modelPopoverReasoningOption:focus-visible {
+.modelPopoverOption:focus-visible {
   outline: 2px solid rgba(37, 99, 235, 0.5);
   outline-offset: -2px;
 }
 
-.modelPopoverOption:disabled,
-.modelPopoverReasoningOption:disabled {
+.modelPopoverOption:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
@@ -500,37 +501,6 @@ onBeforeUnmount(() => {
   padding: 8px 9px;
   color: #94a3b8;
   font-size: 12px;
-}
-
-.modelPopoverReasoning {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 2px;
-  border-radius: 11px;
-  background: #f1f5f9;
-}
-
-.modelPopoverReasoningOption {
-  flex: 1 1 auto;
-  min-width: 68px;
-  min-height: 30px;
-  padding: 5px 7px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: #64748b;
-  font-size: 11px;
-  font-weight: 800;
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.modelPopoverReasoningOption:hover:not(:disabled),
-.modelPopoverReasoningOption.active {
-  background: #ffffff;
-  color: #1d4ed8;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.1);
 }
 
 @media (max-width: 768px) {
