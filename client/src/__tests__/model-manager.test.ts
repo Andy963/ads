@@ -29,7 +29,7 @@ async function settle(wrapper: { vm: { $nextTick: () => Promise<void> } }): Prom
 }
 
 describe("ModelManager", () => {
-  it("edits and resets versioned Advisor and Worker prompts", async () => {
+  it("edits versioned Advisor and Worker prompts", async () => {
     const advisorPrompt = "Advisor baseline prompt";
     const workerPrompt = "Worker baseline prompt";
     const snapshots: LanePromptSnapshot[] = [
@@ -67,12 +67,11 @@ describe("ModelManager", () => {
     };
 
     const wrapper = mount(ModelManager, {
-      props: { api: api as any },
+      props: { api: api as any, initialTab: "lane-prompts" },
       global: { stubs: { "el-icon": true } },
     });
     await settle(wrapper);
 
-    await wrapper.find('[data-testid="model-manager-tab-lane-prompts"]').trigger("click");
     expect((wrapper.find('[data-testid="lane-prompt-editor"]').element as HTMLTextAreaElement).value).toBe(advisorPrompt);
     expect(wrapper.find('[data-testid="lane-prompt-save"]').attributes("disabled")).toBeDefined();
 
@@ -80,11 +79,112 @@ describe("ModelManager", () => {
     await wrapper.find('[data-testid="lane-prompt-save"]').trigger("click");
     await settle(wrapper);
     expect(api.put).toHaveBeenCalledWith("/api/lane-prompts/advisor", { prompt: "Custom advisor prompt" });
-    expect(wrapper.find('[data-testid="lane-prompt-status"]').text()).toContain("next conversation turn");
-    expect(wrapper.text()).toContain("Current version: v2");
+    expect(wrapper.find('[data-testid="lane-prompt-status"]').text()).toContain("已保存");
+    expect(wrapper.find('[data-testid="lane-prompt-history"]').text()).toContain("当前生效：v2");
+    expect(wrapper.find('[data-testid="lane-prompt-history"] details').exists()).toBe(false);
 
     await wrapper.find('[data-testid="lane-prompt-lane-worker"]').trigger("click");
     expect((wrapper.find('[data-testid="lane-prompt-editor"]').element as HTMLTextAreaElement).value).toBe(workerPrompt);
+    wrapper.unmount();
+  });
+
+  it("selects a historical prompt version and restores it as a new active version", async () => {
+    const advisorBase = "Advisor baseline prompt";
+    const advisorCustom = "Advisor custom prompt";
+    const snapshots: LanePromptSnapshot[] = [
+      {
+        lane: "advisor",
+        current: { lane: "advisor", version: 2, prompt: advisorCustom, isBase: false, createdAt: 2 },
+        base: { lane: "advisor", version: 1, prompt: advisorBase, isBase: true, createdAt: 1 },
+        versions: [
+          { lane: "advisor", version: 2, prompt: advisorCustom, isBase: false, createdAt: 2 },
+          { lane: "advisor", version: 1, prompt: advisorBase, isBase: true, createdAt: 1 },
+        ],
+        updatedAt: 2,
+      },
+      {
+        lane: "worker",
+        current: { lane: "worker", version: 1, prompt: "Worker baseline prompt", isBase: true, createdAt: 1 },
+        base: { lane: "worker", version: 1, prompt: "Worker baseline prompt", isBase: true, createdAt: 1 },
+        versions: [{ lane: "worker", version: 1, prompt: "Worker baseline prompt", isBase: true, createdAt: 1 }],
+        updatedAt: 1,
+      },
+    ];
+    const restored = {
+      ...snapshots[0],
+      current: { lane: "advisor", version: 3, prompt: advisorBase, isBase: false, createdAt: 3 },
+      versions: [
+        { lane: "advisor", version: 3, prompt: advisorBase, isBase: false, createdAt: 3 },
+        ...snapshots[0].versions,
+      ],
+      updatedAt: 3,
+    } satisfies LanePromptSnapshot;
+    const api = {
+      get: vi.fn().mockImplementation((path: string) =>
+        Promise.resolve(path === "/api/lane-prompts" ? snapshots : []),
+      ),
+      post: vi.fn(),
+      patch: vi.fn(),
+      put: vi.fn().mockResolvedValue(restored),
+      delete: vi.fn(),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any, initialTab: "lane-prompts" },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    const versionSelect = wrapper.find('[data-testid="lane-prompt-version-select"]');
+    expect(versionSelect.findAll("option").map((option) => option.text())).toEqual([
+      expect.stringContaining("当前生效"),
+      expect.stringContaining("初始默认"),
+    ]);
+
+    await versionSelect.setValue(1);
+    await settle(wrapper);
+    expect((wrapper.find('[data-testid="lane-prompt-editor"]').element as HTMLTextAreaElement).value).toBe(advisorBase);
+    expect(wrapper.find('[data-testid="lane-prompt-version-notice"]').text()).toContain("当前生效版本为 v2");
+    expect(wrapper.find('[data-testid="lane-prompt-restore"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-prompt-save"]').attributes("disabled")).toBeDefined();
+
+    await wrapper.find('[data-testid="lane-prompt-restore"]').trigger("click");
+    await settle(wrapper);
+    expect(api.put).toHaveBeenCalledWith("/api/lane-prompts/advisor", { prompt: advisorBase });
+    expect((wrapper.find('[data-testid="lane-prompt-editor"]').element as HTMLTextAreaElement).value).toBe(advisorBase);
+    expect(wrapper.find('[data-testid="lane-prompt-history"]').text()).toContain("当前生效：v3");
+    expect(wrapper.find('[data-testid="lane-prompt-version-notice"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="lane-prompt-status"]').text()).toContain("已恢复 v1");
+
+    wrapper.unmount();
+  });
+
+  it("switches between the prompt and model configuration settings tabs", async () => {
+    const api = {
+      get: vi.fn().mockImplementation((path: string) =>
+        Promise.resolve(path === "/api/model-configs" ? [makeModel("gpt-5.2", "GPT 5.2", "openai")] : []),
+      ),
+      post: vi.fn(),
+      patch: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any, initialTab: "lane-prompts" },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    expect(wrapper.find('[data-testid="settings-tab-prompts"]').attributes("aria-selected")).toBe("true");
+    expect(wrapper.find('[data-testid="lane-prompt-panel"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="settings-models-panel"]').exists()).toBe(false);
+
+    await wrapper.find('[data-testid="settings-tab-models"]').trigger("click");
+    expect(wrapper.find('[data-testid="settings-models-panel"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-prompt-panel"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="settings-tab-models"]').attributes("aria-selected")).toBe("true");
+
     wrapper.unmount();
   });
 

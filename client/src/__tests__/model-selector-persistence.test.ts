@@ -221,7 +221,7 @@ describe("Model selector persistence", () => {
       await settleUi(wrapper);
 
       expect(modelFetchCount).toBeGreaterThanOrEqual(1);
-      await wrapper.find('[data-testid="model-manager-open"]').trigger("click");
+      await wrapper.find('[data-testid="settings-open"]').trigger("click");
       await settleUi(wrapper);
 
       runtimeModels = [

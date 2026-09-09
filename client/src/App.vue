@@ -104,9 +104,9 @@ const {
   confirmProjectSwitch,
 } = createAppController();
 
-const modelManagerOpen = ref(false);
+const settingsOpen = ref(false);
 
-type MobileDrawerSection = "projects" | "models";
+type MobileDrawerSection = "projects" | "settings";
 type MobileContextActionId =
   | "resume"
   | "new-session"
@@ -125,7 +125,7 @@ type MobileManagerHandle = {
 const mobileDrawerOpen = ref(false);
 const mobileDrawerSection = ref<MobileDrawerSection>("projects");
 const mobileContextMenuOpen = ref(false);
-const mobileModelManagerRef = ref<MobileManagerHandle | null>(null);
+const mobileSettingsRef = ref<MobileManagerHandle | null>(null);
 
 const chatLanes: Array<{ id: ChatLane; label: string }> = [
   { id: "planner", label: "Advisor" },
@@ -209,17 +209,17 @@ const newSessionDisabledReason = computed(() => {
 });
 
 const mobileContextTitle = computed(() => {
-  if (mobileDrawerSection.value === "models") return "模型管理";
+  if (mobileDrawerSection.value === "settings") return "系统设置";
   return activeProject.value?.name?.trim() || "项目";
 });
 
 const mobileContextMenuTitle = computed(() => {
-  if (mobileDrawerSection.value === "models") return "模型管理操作";
+  if (mobileDrawerSection.value === "settings") return "系统设置操作";
   return "项目操作";
 });
 
 const mobileContextActions = computed<MobileContextAction[]>(() => {
-  if (mobileDrawerSection.value === "models") {
+  if (mobileDrawerSection.value === "settings") {
     return [
       { id: "create-model", label: "新增模型" },
       { id: "refresh-models", label: "刷新模型列表" },
@@ -277,7 +277,7 @@ function restoreMobileWorkspaceTab(): void {
 function selectMobileDrawerSection(section: MobileDrawerSection): void {
   mobileDrawerSection.value = section;
   mobileContextMenuOpen.value = false;
-  if (section === "models") closeMobileDrawer();
+  if (section === "settings") closeMobileDrawer();
 }
 
 function toggleMobileContextMenu(): void {
@@ -298,11 +298,11 @@ function handleMobileContextAction(actionId: MobileContextActionId): void {
     return;
   }
   if (actionId === "create-model") {
-    mobileModelManagerRef.value?.create();
+    mobileSettingsRef.value?.create();
     return;
   }
   if (actionId === "refresh-models") {
-    void mobileModelManagerRef.value?.refresh();
+    void mobileSettingsRef.value?.refresh();
     return;
   }
 }
@@ -381,19 +381,19 @@ const {
   reorderProjects,
   removeProject,
 });
-function openModelManager(): void {
+function openSettings(): void {
   if (isMobile.value) {
-    openMobileDrawer("models");
+    openMobileDrawer("settings");
     return;
   }
-  modelManagerOpen.value = true;
+  settingsOpen.value = true;
 }
 
-function closeModelManager(): void {
-  modelManagerOpen.value = false;
+function closeSettings(): void {
+  settingsOpen.value = false;
 }
 
-async function onModelManagerChanged(): Promise<void> {
+async function onSettingsChanged(): Promise<void> {
   try {
     await loadModels();
   } catch (error) {
@@ -459,10 +459,10 @@ const plannerConnectionStatus = computed(() => {
           v-if="!isMobile"
           type="button"
           class="topbarIconBtn"
-          title="管理模型"
-          aria-label="管理模型"
-          data-testid="model-manager-open"
-          @click="openModelManager"
+          title="系统设置"
+          aria-label="系统设置"
+          data-testid="settings-open"
+          @click="openSettings"
         >
           <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
         </button>
@@ -538,13 +538,13 @@ const plannerConnectionStatus = computed(() => {
           <button
             type="button"
             class="mobileDrawerNavItem"
-            :class="{ active: mobileDrawerSection === 'models' }"
-            :aria-current="mobileDrawerSection === 'models' ? 'page' : undefined"
-            data-testid="mobile-drawer-section-models"
-            @click="selectMobileDrawerSection('models')"
+            :class="{ active: mobileDrawerSection === 'settings' }"
+            :aria-current="mobileDrawerSection === 'settings' ? 'page' : undefined"
+            data-testid="mobile-drawer-section-settings"
+            @click="selectMobileDrawerSection('settings')"
           >
             <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
-            <span>Provider</span>
+            <span>系统设置</span>
           </button>
         </nav>
 
@@ -615,12 +615,13 @@ const plannerConnectionStatus = computed(() => {
 
       <section v-if="isMobile && mobileDrawerSection !== 'projects'" class="mobileMainPanel">
         <ModelManager
-          v-if="mobileDrawerSection === 'models'"
-          ref="mobileModelManagerRef"
+          v-if="mobileDrawerSection === 'settings'"
+          ref="mobileSettingsRef"
           :api="api"
+          initial-tab="lane-prompts"
           :show-header="false"
           @close="closeMobileModule"
-          @changed="onModelManagerChanged"
+          @changed="onSettingsChanged"
         />
       </section>
 
@@ -772,8 +773,13 @@ const plannerConnectionStatus = computed(() => {
       <span class="noticeToastText">{{ apiNotice }}</span>
     </div>
 
-    <DraggableModal v-if="modelManagerOpen" card-variant="large" @close="closeModelManager">
-      <ModelManager :api="api" @close="closeModelManager" @changed="onModelManagerChanged" />
+    <DraggableModal v-if="settingsOpen" card-variant="large" @close="closeSettings">
+      <ModelManager
+        :api="api"
+        initial-tab="lane-prompts"
+        @close="closeSettings"
+        @changed="onSettingsChanged"
+      />
     </DraggableModal>
 
     <DraggableModal v-if="sessionPickerOpen" card-variant="large" @close="closeSessionPicker">

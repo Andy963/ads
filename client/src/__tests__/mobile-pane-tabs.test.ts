@@ -22,19 +22,20 @@ describe("mobile navigation shell", () => {
     expect(sfc).toMatch(/:aria-selected="activeWorkspaceTab === tab.id"/);
   });
 
-  it("uses a unified model manager without provider subitems", async () => {
+  it("uses unified settings without provider subitems", async () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
     expect(sfc).toContain('data-testid="mobile-drawer-toggle"');
     expect(sfc).toContain('data-testid="mobile-drawer-section-projects"');
-    expect(sfc).toContain('data-testid="mobile-drawer-section-models"');
-    expect(sfc).toContain("<span>Provider</span>");
+    expect(sfc).toContain('data-testid="mobile-drawer-section-settings"');
+    expect(sfc).toContain("<span>系统设置</span>");
     expect(sfc).not.toContain('class="mobileDrawerSubitems"');
     expect(sfc).not.toContain("MODEL_AGENT_GROUPS");
     expect(sfc).toContain('class="mobileMainPanel"');
     // projectTasks removed
     expect(sfc).not.toContain('class="lanePanel taskLanePanel"');
     expect(sfc).not.toContain('class="mobileTaskWorkspace"');
-    expect(sfc).toContain('v-if="mobileDrawerSection === \'models\'"');
+    expect(sfc).toContain('v-if="mobileDrawerSection === \'settings\'"');
+    expect(sfc).toContain('initial-tab="lane-prompts"');
     expect(sfc).toContain("flex-direction: column");
     expect(sfc).toContain('v-if="!isMobile && p.id === \'default\'"');
     // create button removed
@@ -59,7 +60,7 @@ describe("mobile navigation shell", () => {
     expect(sfc).not.toContain('label: "选择 Provider"');
     expect(sfc).not.toContain('label: "切换 Provider"');
     expect(sfc).toContain("disabled: activeLaneBusy.value || resumeThreadBlocked.value");
-    expect(sfc).toContain("mobileModelManagerRef.value?.create()");
+    expect(sfc).toContain("mobileSettingsRef.value?.create()");
     expect(sfc).not.toContain("打开项目");
   });
 

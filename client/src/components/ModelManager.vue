@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { Close, EditPen, Plus, Refresh, StarFilled } from "@element-plus/icons-vue";
 
 import type { ApiClient } from "../api/client";
@@ -15,14 +15,18 @@ type ModelForm = {
   configJsonText: string;
 };
 
+type SettingsTab = "lane-prompts" | "models";
+
 const props = withDefaults(
   defineProps<{
     api: ApiClient;
     agent?: string | null;
     showHeader?: boolean;
+    initialTab?: SettingsTab;
   }>(),
   {
     showHeader: true,
+    initialTab: "models",
   },
 );
 
@@ -41,9 +45,10 @@ const editingId = ref<string | null>(null);
 const dialogOpen = ref(false);
 const pendingDeleteId = ref<string | null>(null);
 const selectedModelId = ref<string | null>(null);
-const activeTab = ref<"models" | "lane-prompts">("models");
+const activeTab = ref<SettingsTab>(props.initialTab);
 const lanePromptSnapshots = ref<LanePromptSnapshot[]>([]);
 const selectedLane = ref<LaneName>("advisor");
+const selectedVersion = ref<number | null>(null);
 const lanePromptText = ref("");
 const lanePromptLoading = ref(false);
 const lanePromptSaving = ref(false);
@@ -104,7 +109,10 @@ const sortedModels = computed(() => {
 const enabledCount = computed(() => modelConfigs.value.filter((m) => m.isEnabled).length);
 const busy = computed(() => saving.value || loading.value || busyRowId.value !== null);
 const isEditing = computed(() => Boolean(editingId.value));
-const managerTitle = computed(() => (props.agent ? "模型" : "模型管理"));
+const managerTitle = computed(() => (props.agent ? "模型" : "系统设置"));
+const managerSubtitle = computed(() =>
+  props.agent ? "统一 Codex 引擎；保存后输入框下拉会立即刷新。" : "管理角色指令与模型配置。",
+);
 const editingCurrentDefault = computed(
   () => Boolean(editingId.value) && modelConfigs.value.some((model) => model.id === editingId.value && model.isDefault),
 );
@@ -126,7 +134,49 @@ const selectedLaneSnapshot = computed(() =>
   lanePromptSnapshots.value.find((snapshot) => snapshot.lane === selectedLane.value) ?? null,
 );
 
-const lanePromptDirty = computed(() => lanePromptText.value !== (selectedLaneSnapshot.value?.current.prompt ?? ""));
+const lanePromptVersions = computed(() => {
+  const snapshot = selectedLaneSnapshot.value;
+  if (!snapshot) return [];
+  const historical = snapshot.versions
+    .filter((version) => version.version !== snapshot.current.version)
+    .sort((a, b) => b.version - a.version);
+  return [snapshot.current, ...historical];
+});
+
+const selectedLaneVersion = computed(() => {
+  const snapshot = selectedLaneSnapshot.value;
+  if (!snapshot) return null;
+  if (selectedVersion.value === null) return snapshot.current;
+  return snapshot.versions.find((version) => version.version === selectedVersion.value) ?? snapshot.current;
+});
+
+const isViewingHistoricalVersion = computed(() => {
+  const snapshot = selectedLaneSnapshot.value;
+  const version = selectedLaneVersion.value;
+  return Boolean(snapshot && version && version.version !== snapshot.current.version);
+});
+
+const lanePromptDirty = computed(() => lanePromptText.value !== (selectedLaneVersion.value?.prompt ?? ""));
+
+function formatVersionTimestamp(createdAt: number): string {
+  if (!Number.isFinite(createdAt) || createdAt <= 0) return "未知时间";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(createdAt));
+}
+
+function versionLabel(version: LanePromptSnapshot["current"]): string {
+  const snapshot = selectedLaneSnapshot.value;
+  const suffixes = [
+    snapshot?.current.version === version.version ? "（当前生效）" : null,
+    version.isBase ? "（初始默认）" : null,
+  ].filter((suffix): suffix is string => suffix !== null);
+  const suffix = suffixes.length > 0 ? ` ${suffixes.join(" ")}` : "";
+  return `v${version.version} · ${formatVersionTimestamp(version.createdAt)}${suffix}`;
+}
 
 async function loadModelConfigs(): Promise<void> {
   loading.value = true;
@@ -147,6 +197,7 @@ async function loadLanePrompts(): Promise<void> {
   lanePromptError.value = null;
   try {
     lanePromptSnapshots.value = await props.api.get<LanePromptSnapshot[]>("/api/lane-prompts");
+    selectedVersion.value = null;
     lanePromptText.value = selectedLaneSnapshot.value?.current.prompt ?? "";
   } catch (err) {
     lanePromptError.value = err instanceof Error ? err.message : String(err);
@@ -157,31 +208,43 @@ async function loadLanePrompts(): Promise<void> {
 
 function selectLane(lane: LaneName): void {
   selectedLane.value = lane;
+  selectedVersion.value = null;
   lanePromptText.value = lanePromptSnapshots.value.find((snapshot) => snapshot.lane === lane)?.current.prompt ?? "";
   lanePromptError.value = null;
   lanePromptStatus.value = null;
 }
 
-async function saveLanePrompt(): Promise<void> {
-  if (lanePromptSaving.value || !lanePromptText.value.trim()) return;
+async function persistLanePrompt(prompt: string, successMessage: string): Promise<void> {
+  if (lanePromptSaving.value || !prompt.trim()) return;
   lanePromptSaving.value = true;
   lanePromptError.value = null;
   lanePromptStatus.value = null;
   try {
     const snapshot = await props.api.put<LanePromptSnapshot>(
       `/api/lane-prompts/${encodeURIComponent(selectedLane.value)}`,
-      { prompt: lanePromptText.value },
+      { prompt },
     );
     lanePromptSnapshots.value = lanePromptSnapshots.value.map((item) =>
       item.lane === snapshot.lane ? snapshot : item,
     );
+    selectedVersion.value = null;
     lanePromptText.value = snapshot.current.prompt;
-    lanePromptStatus.value = "Saved. It applies to the next conversation turn.";
+    lanePromptStatus.value = successMessage;
   } catch (err) {
     lanePromptError.value = err instanceof Error ? err.message : String(err);
   } finally {
     lanePromptSaving.value = false;
   }
+}
+
+async function saveLanePrompt(): Promise<void> {
+  await persistLanePrompt(lanePromptText.value, "已保存，将从下一轮对话开始生效。");
+}
+
+async function restoreLanePrompt(): Promise<void> {
+  const version = selectedLaneVersion.value;
+  if (!isViewingHistoricalVersion.value || !version) return;
+  await persistLanePrompt(version.prompt, `已恢复 v${version.version}，并创建新的活动版本。`);
 }
 
 async function resetLanePrompt(): Promise<void> {
@@ -196,6 +259,7 @@ async function resetLanePrompt(): Promise<void> {
     lanePromptSnapshots.value = lanePromptSnapshots.value.map((item) =>
       item.lane === snapshot.lane ? snapshot : item,
     );
+    selectedVersion.value = null;
     lanePromptText.value = snapshot.current.prompt;
     lanePromptStatus.value = "Reset to the default prompt.";
   } catch (err) {
@@ -204,6 +268,18 @@ async function resetLanePrompt(): Promise<void> {
     lanePromptSaving.value = false;
   }
 }
+
+watch(selectedVersion, (version) => {
+  const snapshot = selectedLaneSnapshot.value;
+  if (!snapshot) return;
+  const selected = version === null
+    ? snapshot.current
+    : snapshot.versions.find((item) => item.version === version) ?? snapshot.current;
+  if (lanePromptText.value === selected.prompt) return;
+  lanePromptText.value = selected.prompt;
+  lanePromptError.value = null;
+  lanePromptStatus.value = null;
+});
 
 function closeDialog(): void {
   editingId.value = null;
@@ -367,14 +443,15 @@ defineExpose({
 </script>
 
 <template>
-  <section class="modelManager" data-testid="model-manager">
+  <section class="modelManager" data-testid="settings-panel" data-component="model-manager">
     <header v-if="showHeader" class="modelHeader" data-drag-handle>
       <div class="modelHeaderTitle">
         <div class="modelTitle">{{ managerTitle }}</div>
-        <div class="modelSubtitle">统一 Codex 引擎；保存后输入框下拉会立即刷新。</div>
+        <div class="modelSubtitle">{{ managerSubtitle }}</div>
       </div>
       <div class="modelHeaderActions">
         <button
+          v-if="activeTab === 'models'"
           type="button"
           class="addBtn"
           :disabled="busy"
@@ -384,7 +461,14 @@ defineExpose({
           <el-icon :size="13" aria-hidden="true"><Plus /></el-icon>
           <span>新增模型</span>
         </button>
-        <button class="modelIconBtn" type="button" title="刷新" :disabled="busy" @click="loadModelConfigs">
+        <button
+          v-if="activeTab === 'models'"
+          class="modelIconBtn"
+          type="button"
+          title="刷新模型配置"
+          :disabled="busy"
+          @click="loadModelConfigs"
+        >
           <el-icon :size="16" aria-hidden="true"><Refresh /></el-icon>
         </button>
         <button class="modelIconBtn" type="button" title="关闭" @click="emit('close')">
@@ -393,37 +477,52 @@ defineExpose({
       </div>
     </header>
 
-    <nav class="managerTabs" role="tablist" aria-label="Settings sections">
+    <nav class="settingsTabs" role="tablist" aria-label="系统设置分区" data-testid="settings-tabs">
       <button
         type="button"
         role="tab"
-        class="managerTab"
-        :class="{ active: activeTab === 'models' }"
-        :aria-selected="activeTab === 'models'"
-        data-testid="model-manager-tab-models"
-        @click="activeTab = 'models'"
+        id="settings-tab-lane-prompts"
+        class="settingsTab"
+        :class="{ active: activeTab === 'lane-prompts' }"
+        :aria-selected="activeTab === 'lane-prompts'"
+        aria-controls="settings-panel-lane-prompts"
+        data-testid="settings-tab-prompts"
+        @click="activeTab = 'lane-prompts'"
       >
-        Models
+        角色指令
       </button>
       <button
         type="button"
         role="tab"
-        class="managerTab"
-        :class="{ active: activeTab === 'lane-prompts' }"
-        :aria-selected="activeTab === 'lane-prompts'"
-        data-testid="model-manager-tab-lane-prompts"
-        @click="activeTab = 'lane-prompts'"
+        id="settings-tab-models"
+        class="settingsTab"
+        :class="{ active: activeTab === 'models' }"
+        :aria-selected="activeTab === 'models'"
+        aria-controls="settings-panel-models"
+        data-testid="settings-tab-models"
+        @click="activeTab = 'models'"
       >
-        Lane Prompts
+        模型配置
       </button>
     </nav>
 
-    <div v-if="error && !dialogOpen && activeTab === 'models'" class="modelBanner error" data-testid="model-manager-error">{{ error }}</div>
+    <div
+      v-if="error && !dialogOpen && activeTab === 'models'"
+      class="modelBanner error"
+      data-testid="model-manager-error"
+    >{{ error }}</div>
     <div v-else-if="statusMessage && !dialogOpen" class="modelBanner success" data-testid="model-manager-status">
       {{ statusMessage }}
     </div>
 
-    <div v-if="activeTab === 'models'" class="cliList">
+    <div
+      v-if="activeTab === 'models'"
+      id="settings-panel-models"
+      class="cliList"
+      role="tabpanel"
+      aria-labelledby="settings-tab-models"
+      data-testid="settings-models-panel"
+    >
       <div class="modelListHeader">
         <span class="modelListCount">共 {{ sortedModels.length }} 个模型 · {{ enabledCount }} 已启用</span>
         <button
@@ -538,7 +637,14 @@ defineExpose({
       <p class="listFoot">未设置默认模型时优先使用列表中的第一个已启用模型。</p>
     </div>
 
-    <div v-else class="lanePromptPanel" data-testid="lane-prompt-panel">
+    <div
+      v-else
+      id="settings-panel-lane-prompts"
+      class="lanePromptPanel"
+      role="tabpanel"
+      aria-labelledby="settings-tab-lane-prompts"
+      data-testid="lane-prompt-panel"
+    >
       <div class="lanePromptLaneSelector" role="tablist" aria-label="Agent lanes">
         <button
           type="button"
@@ -566,6 +672,47 @@ defineExpose({
       <div v-if="lanePromptStatus" class="modelBanner success" data-testid="lane-prompt-status">{{ lanePromptStatus }}</div>
       <div v-if="lanePromptLoading" class="lanePromptLoading">Loading lane prompts...</div>
       <template v-else>
+        <div class="lanePromptEditorHeader">
+          <div>
+            <div class="lanePromptEditorTitle">角色指令</div>
+            <div class="lanePromptEditorSubtitle">配置 Advisor 与 Worker 的系统边界和工作方式。</div>
+          </div>
+          <label class="lanePromptVersionField">
+            <span class="modelLabel">版本</span>
+            <select
+              v-model="selectedVersion"
+              class="lanePromptVersionSelect"
+              data-testid="lane-prompt-version-select"
+              :disabled="lanePromptSaving"
+            >
+              <option
+                v-for="version in lanePromptVersions"
+                :key="`${version.lane}-${version.version}`"
+                :value="version.version === selectedLaneSnapshot?.current.version ? null : version.version"
+              >
+                {{ versionLabel(version) }}
+              </option>
+            </select>
+          </label>
+        </div>
+        <div
+          v-if="isViewingHistoricalVersion && selectedLaneVersion"
+          class="lanePromptVersionNotice"
+          data-testid="lane-prompt-version-notice"
+        >
+          <div>
+            正在查看 v{{ selectedLaneVersion.version }}；当前生效版本为 v{{ selectedLaneSnapshot?.current.version }}。
+          </div>
+          <button
+            type="button"
+            class="btnSecondary"
+            :disabled="lanePromptSaving"
+            data-testid="lane-prompt-restore"
+            @click="restoreLanePrompt"
+          >
+            {{ lanePromptSaving ? "恢复中…" : "回滚到此版本（Restore）" }}
+          </button>
+        </div>
         <label class="modelField lanePromptField">
           <span class="modelLabel">{{ selectedLane === 'advisor' ? 'Advisor' : 'Worker' }} system prompt</span>
           <textarea
@@ -586,19 +733,9 @@ defineExpose({
           </button>
         </div>
         <div v-if="selectedLaneSnapshot" class="lanePromptHistory" data-testid="lane-prompt-history">
-          <div class="lanePromptMeta">
-            <span>Current version: v{{ selectedLaneSnapshot.current.version }}</span>
-            <span>Default version: v{{ selectedLaneSnapshot.base.version }}</span>
-            <span>{{ selectedLaneSnapshot.versions.length }} saved version(s)</span>
-          </div>
-          <details>
-            <summary>Version history</summary>
-            <ul>
-              <li v-for="version in selectedLaneSnapshot.versions" :key="`${version.lane}-${version.version}`">
-                v{{ version.version }}{{ version.isBase ? " (default)" : "" }} · {{ new Date(version.createdAt).toLocaleString() }}
-              </li>
-            </ul>
-          </details>
+          <span>{{ lanePromptText.length }} 个字符</span>
+          <span>当前生效：v{{ selectedLaneSnapshot.current.version }}</span>
+          <span v-if="isViewingHistoricalVersion">正在查看：v{{ selectedLaneVersion?.version }}</span>
         </div>
       </template>
     </div>
@@ -796,7 +933,7 @@ defineExpose({
   color: #047857;
 }
 
-.managerTabs {
+.settingsTabs {
   flex: 0 0 auto;
   display: flex;
   gap: 4px;
@@ -804,7 +941,7 @@ defineExpose({
   border-bottom: 1px solid var(--border);
 }
 
-.managerTab,
+.settingsTab,
 .lanePromptLane {
   border: none;
   background: transparent;
@@ -814,17 +951,17 @@ defineExpose({
   font-weight: 700;
 }
 
-.managerTab {
+.settingsTab {
   padding: 8px 12px 10px;
   border-bottom: 2px solid transparent;
 }
 
-.managerTab.active,
+.settingsTab.active,
 .lanePromptLane.active {
   color: var(--accent);
 }
 
-.managerTab.active {
+.settingsTab.active {
   border-bottom-color: var(--accent);
 }
 
@@ -833,6 +970,68 @@ defineExpose({
   min-height: 0;
   overflow-y: auto;
   padding: 14px 16px 18px;
+}
+
+.lanePromptEditorHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.lanePromptEditorTitle {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.lanePromptEditorSubtitle {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.lanePromptVersionField {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.lanePromptVersionField .modelLabel {
+  margin-bottom: 7px;
+}
+
+.lanePromptVersionSelect {
+  min-width: 230px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.lanePromptVersionSelect:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.lanePromptVersionNotice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(37, 99, 235, 0.2);
+  border-radius: 9px;
+  padding: 9px 11px;
+  background: rgba(37, 99, 235, 0.06);
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .lanePromptLaneSelector {
@@ -883,6 +1082,9 @@ defineExpose({
 }
 
 .lanePromptHistory {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
   margin-top: 18px;
   border-top: 1px solid var(--border);
   padding-top: 12px;
@@ -890,25 +1092,35 @@ defineExpose({
   font-size: 11px;
 }
 
-.lanePromptMeta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-}
+@media (max-width: 640px) {
+  .lanePromptEditorHeader {
+    flex-direction: column;
+    gap: 10px;
+  }
 
-.lanePromptHistory details {
-  margin-top: 10px;
-}
+  .lanePromptVersionField {
+    align-items: center;
+    width: 100%;
+  }
 
-.lanePromptHistory summary {
-  cursor: pointer;
-  color: var(--text);
-  font-weight: 700;
-}
+  .lanePromptVersionField .modelLabel {
+    margin-bottom: 0;
+  }
 
-.lanePromptHistory ul {
-  margin: 8px 0 0;
-  padding-left: 18px;
+  .lanePromptVersionSelect {
+    min-width: 0;
+    flex: 1 1 auto;
+    width: 100%;
+  }
+
+  .lanePromptVersionNotice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .lanePromptVersionNotice .btnSecondary {
+    width: 100%;
+  }
 }
 
 /* ---------- list ---------- */
