@@ -65,29 +65,23 @@ const emit = defineEmits<{
 const canInterrupt = computed(() => props.busy);
 
 const agentOptions = computed(() => (Array.isArray(props.agents) ? props.agents : []));
-const readyAgentOptions = computed(() => agentOptions.value.filter((a) => Boolean(a?.ready) && String(a?.id ?? "").trim()));
+const readyAgentIds = computed(() =>
+  agentOptions.value
+    .filter((agent) => Boolean(agent?.ready))
+    .map((agent) => String(agent?.id ?? "").trim())
+    .filter(Boolean),
+);
 const modelOptions = computed(() =>
   (Array.isArray(props.models) ? props.models : []).filter((model) => model?.isEnabled !== false),
 );
 
 const selectedAgentId = computed(() => {
   const active = String(props.activeAgentId ?? "").trim();
-  if (active && readyAgentOptions.value.some((a) => String(a.id ?? "").trim() === active)) {
+  if (active && readyAgentIds.value.includes(active)) {
     return active;
   }
-  const fallback = readyAgentOptions.value[0]?.id ?? "";
-  return String(fallback ?? "").trim();
+  return readyAgentIds.value[0] ?? "";
 });
-
-function formatAgentLabel(agent: AgentOption): string {
-  const id = String(agent.id ?? "").trim();
-  const name = String(agent.name ?? "").trim() || id;
-  if (!id) return name || "agent";
-  const base = name;
-  if (agent.ready) return base || "agent";
-  const suffix = String(agent.error ?? "").trim() || "unavailable";
-  return base ? `${base} - ${suffix}` : suffix;
-}
 
 const lastAutoSwitchedAgentId = ref<string | null>(null);
 
@@ -97,7 +91,7 @@ watch(
     Boolean(props.busy),
     Boolean(props.inputLocked),
     String(props.activeAgentId ?? "").trim(),
-    readyAgentOptions.value.map((a) => String(a.id ?? "").trim()).join("\n"),
+    readyAgentIds.value.join("\n"),
   ],
   () => {
     if (!props.connected || props.busy || props.inputLocked) {
@@ -105,14 +99,13 @@ watch(
       return;
     }
 
-    const options = readyAgentOptions.value;
-    if (options.length === 0) {
+    if (readyAgentIds.value.length === 0) {
       lastAutoSwitchedAgentId.value = null;
       return;
     }
 
     const active = String(props.activeAgentId ?? "").trim();
-    if (active && options.some((a) => String(a.id ?? "").trim() === active)) {
+    if (active && readyAgentIds.value.includes(active)) {
       lastAutoSwitchedAgentId.value = null;
       return;
     }
@@ -126,15 +119,6 @@ watch(
   },
   { immediate: true },
 );
-
-function onAgentChange(ev: Event): void {
-  if (props.inputLocked) return;
-  const value = (ev.target as HTMLSelectElement | null)?.value ?? "";
-  const next = String(value ?? "").trim();
-  if (!next) return;
-  lastAutoSwitchedAgentId.value = null;
-  emit("switchAgent", next);
-}
 
 function normalizeModelId(value: unknown): string {
   return typeof value === "string" ? value.trim() : String(value ?? "").trim();
@@ -221,6 +205,8 @@ const selectedModel = computed(() => {
 });
 
 const reasoningEffortOptions = computed(() => {
+  if (!selectedModel.value) return [];
+
   const fallback = selectedAgentId.value === "codex"
     ? DEFAULT_CODEX_REASONING_EFFORTS
     : DEFAULT_CLAUDE_REASONING_EFFORTS;
@@ -253,6 +239,7 @@ watch(
   ],
   () => {
     if (props.inputLocked) return;
+    if (reasoningEffortOptions.value.length === 0) return;
     const current = String(props.modelReasoningEffort ?? "").trim().toLowerCase();
     if (!current || current === reasoningEffortValue.value) return;
     emit("setReasoningEffort", reasoningEffortValue.value);
@@ -518,19 +505,6 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
               />
             </svg>
           </button>
-          <div v-if="readyAgentOptions.length" class="agentSelect">
-            <select
-              class="agentSelectInput"
-              :value="selectedAgentId"
-              :disabled="!connected || busy || inputLocked"
-              aria-label="Select agent"
-              @change="onAgentChange"
-            >
-              <option v-for="a in readyAgentOptions" :key="a.id" :value="a.id">
-                {{ formatAgentLabel(a) }}
-              </option>
-            </select>
-          </div>
           <div v-if="agentOptions.length" class="agentSelect">
             <select
               class="agentSelectInput"
@@ -546,7 +520,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
               </option>
             </select>
           </div>
-          <div v-if="selectedAgentId === 'codex' || selectedAgentId === 'claude'" class="agentSelect">
+          <div v-if="reasoningEffortOptions.length > 0" class="agentSelect">
             <select
               class="agentSelectInput"
               :value="reasoningEffortValue"
