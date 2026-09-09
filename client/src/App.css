@@ -1,6 +1,6 @@
 .app {
   position: fixed;
-  top: 0;
+  top: var(--app-top, 0px);
   left: 0;
   right: 0;
   height: var(--ads-visual-viewport-height, 100dvh);

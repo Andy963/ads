@@ -46,7 +46,7 @@ export function autosizeTextarea(el: HTMLTextAreaElement, opts: AutosizeTextarea
   const maxHeight = lineHeightPx * maxRows + extraHeight;
 
   // Reset height so scrollHeight reflects the full content and the textarea can shrink.
-  el.style.height = "auto";
+  el.style.height = "0px";
 
   // scrollHeight includes padding but excludes border; adjust for border-box sizing.
   const contentHeight = el.scrollHeight + borderHeight;
@@ -55,4 +55,3 @@ export function autosizeTextarea(el: HTMLTextAreaElement, opts: AutosizeTextarea
   el.style.height = `${Math.ceil(nextHeight)}px`;
   el.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
 }
-

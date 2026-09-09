@@ -104,11 +104,19 @@ export function useMainChatComposer(params: {
   // Some environments/layout changes won't trigger reactive updates (e.g. viewport resize affects wrapping).
   // Attach lightweight native listeners so the composer reliably grows up to maxRows.
   let attachedEl: HTMLTextAreaElement | null = null;
+  let composerResizeObserver: ResizeObserver | null = null;
+  let composerResizeFrame: number | null = null;
   const onNativeInput = (): void => {
     resizeComposer();
   };
 
   const attachNativeListeners = (el: HTMLTextAreaElement | null): void => {
+    composerResizeObserver?.disconnect();
+    composerResizeObserver = null;
+    if (composerResizeFrame !== null) {
+      window.cancelAnimationFrame(composerResizeFrame);
+      composerResizeFrame = null;
+    }
     if (attachedEl) {
       attachedEl.removeEventListener("input", onNativeInput);
       attachedEl = null;
@@ -116,6 +124,21 @@ export function useMainChatComposer(params: {
     if (!el) return;
     attachedEl = el;
     el.addEventListener("input", onNativeInput, { passive: true });
+    if (typeof ResizeObserver !== "undefined") {
+      let observedWidth = -1;
+      composerResizeObserver = new ResizeObserver((entries) => {
+        const width = entries.find((entry) => entry.target === el)?.contentRect.width;
+        if (width === undefined || width === observedWidth) return;
+        observedWidth = width;
+        if (width <= 0) return;
+        if (composerResizeFrame !== null) window.cancelAnimationFrame(composerResizeFrame);
+        composerResizeFrame = window.requestAnimationFrame(() => {
+          composerResizeFrame = null;
+          resizeComposer();
+        });
+      });
+      composerResizeObserver.observe(el);
+    }
   };
 
   watch(

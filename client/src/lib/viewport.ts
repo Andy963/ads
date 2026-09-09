@@ -26,10 +26,7 @@ function applyViewportVars(): void {
   const next = readViewportMetrics();
   const keyboardOpen = isTextInputElement(document.activeElement) && next.bottomPx > 0;
   const heightPx = next.heightPx;
-  // Only shrink the fixed app container when the on-screen keyboard is open.
-  // Some browsers report a non-zero visualViewport bottom inset even when the keyboard is closed,
-  // which created a persistent blank area under the composer.
-  const appTopPx = keyboardOpen ? next.topPx : 0;
+  const appTopPx = next.topPx;
   const appBottomPx = keyboardOpen ? next.bottomPx : 0;
   if (
     appTopPx === lastMetrics.topPx &&

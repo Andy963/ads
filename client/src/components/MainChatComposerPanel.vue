@@ -315,21 +315,6 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
         :disabled="inputLocked"
         @change="onFileInputChange"
       />
-      <textarea
-        ref="inputEl"
-        v-model="input"
-        :disabled="inputLocked"
-        rows="5"
-        class="composer-input"
-        placeholder="输入…（Enter 发送，Shift+Enter 换行，粘贴图片）"
-        @keydown="onInputKeydown"
-        @paste="onPaste"
-        @select="updateTextSelection"
-        @keyup="updateTextSelection"
-        @mouseup="updateTextSelection"
-        @focus="updateTextSelection"
-        @blur="clearTextSelectionState"
-      />
       <div class="composerMainRow">
         <div class="composerMainRowLeft">
           <button
@@ -349,6 +334,23 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
             </svg>
           </button>
         </div>
+        <textarea
+          ref="inputEl"
+          v-model="input"
+          :disabled="inputLocked"
+          rows="1"
+          class="composer-input"
+          aria-label="Message"
+          placeholder="Message..."
+          title="Enter to send, Shift+Enter for a new line. Paste images to attach."
+          @keydown="onInputKeydown"
+          @paste="onPaste"
+          @select="updateTextSelection"
+          @keyup="updateTextSelection"
+          @mouseup="updateTextSelection"
+          @focus="updateTextSelection"
+          @blur="clearTextSelectionState"
+        />
         <div class="composerMainRowRight">
           <div v-if="recording" class="voiceIndicator recording" aria-hidden="true">
             <div class="voiceBars">
@@ -622,9 +624,8 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 
 .composerMainRow {
   display: flex;
-  align-items: center;
-  min-height: 40px;
-  padding: 2px 8px 8px;
+  align-items: flex-end;
+  padding: 8px;
   flex-shrink: 0;
   gap: 6px;
 }
@@ -632,18 +633,10 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 .composerMainRowLeft,
 .composerMainRowRight {
   display: flex;
+  flex: 0 0 auto;
+  min-height: 34px;
   gap: 6px;
   align-items: center;
-}
-
-.composerMainRowLeft {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.composerMainRowRight {
-  flex: 0 0 auto;
-  margin-left: auto;
 }
 
 .attachIcon {
@@ -908,15 +901,16 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .composer-input {
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   resize: none;
   overflow-y: hidden;
-  min-height: 30px;
-  border-radius: 23px 23px 0 0;
+  min-height: 34px;
+  border-radius: 0;
   border: none;
-  padding: 13px 16px 8px;
+  padding: 5px 6px;
   font-size: 16px;
-  line-height: 1.45;
+  line-height: 1.5;
   background: transparent;
   color: #0f172a;
   box-sizing: border-box;

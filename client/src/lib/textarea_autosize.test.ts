@@ -16,6 +16,40 @@ function makeStyle(overrides: Partial<CSSStyleDeclaration>): CSSStyleDeclaration
 }
 
 describe("autosizeTextarea", () => {
+  it("measures content without inheriting the native rows height", () => {
+    const element = document.createElement("textarea");
+    element.rows = 5;
+    document.body.appendChild(element);
+
+    const measuredHeights: string[] = [];
+    Object.defineProperty(element, "scrollHeight", {
+      configurable: true,
+      get: () => {
+        measuredHeights.push(element.style.height);
+        const contentRows = element.value.split("\n").length;
+        const nativeRows = element.style.height === "auto" ? element.rows : 1;
+        return Math.max(contentRows, nativeRows) * 20 + 20;
+      },
+    });
+    vi.spyOn(window, "getComputedStyle").mockReturnValue(makeStyle({}));
+
+    autosizeTextarea(element, { minRows: 1, maxRows: 8 });
+    expect(element.style.height).toBe("42px");
+
+    element.value = Array.from({ length: 12 }, (_, index) => `Line ${index}`).join("\n");
+    autosizeTextarea(element, { minRows: 1, maxRows: 8 });
+    expect(element.style.height).toBe("182px");
+    expect(element.style.overflowY).toBe("auto");
+
+    element.value = "";
+    autosizeTextarea(element, { minRows: 1, maxRows: 8 });
+    expect(element.style.height).toBe("42px");
+    expect(element.style.overflowY).toBe("hidden");
+    expect(measuredHeights).toEqual(["0px", "0px", "0px"]);
+
+    element.remove();
+  });
+
   it("clamps height between minRows/maxRows and toggles overflow", () => {
     const el = document.createElement("textarea");
     document.body.appendChild(el);
@@ -108,4 +142,3 @@ describe("autosizeTextarea", () => {
     el.remove();
   });
 });
-
