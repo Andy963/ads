@@ -1093,3 +1093,13 @@
     white-space: nowrap;
   }
 }
+
+@media (max-width: 768px) {
+  .brandVersion,
+  .projectBranch,
+  .mobileContextMenuTitle,
+  .mobileContextActionHint,
+  .mobileDrawerSubitemText small {
+    font-size: 12px;
+  }
+}
