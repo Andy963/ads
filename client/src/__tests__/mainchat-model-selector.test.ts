@@ -24,7 +24,7 @@ describe("MainChat model selector", () => {
     busy: false,
   } as const;
 
-  it("renders agent/model labels without appending ids", () => {
+  it("renders the model label without an agent selector or appended id", () => {
     const wrapper = mount(MainChat, {
       props: {
         ...baseProps,
@@ -37,9 +37,7 @@ describe("MainChat model selector", () => {
     });
 
     const agentSelect = wrapper.find('select[aria-label="Select agent"]');
-    expect(agentSelect.exists()).toBe(true);
-    expect(agentSelect.text()).toContain("Codex");
-    expect(agentSelect.text()).not.toContain("(codex)");
+    expect(agentSelect.exists()).toBe(false);
 
     const modelSelect = wrapper.find('[data-testid="chat-model-select"]');
     expect(modelSelect.exists()).toBe(true);
@@ -48,6 +46,30 @@ describe("MainChat model selector", () => {
 
     const modelOptions = modelSelect.findAll("option").map((opt) => opt.attributes("value"));
     expect(modelOptions).not.toContain("auto");
+
+    wrapper.unmount();
+  });
+
+  it("renders reasoning efforts for any active agent with model-provided options", () => {
+    const model = makeModel("custom-model", "Custom Model", "custom");
+    model.configJson = {
+      allowedAgents: ["custom"],
+      reasoningEfforts: ["minimal", "high"],
+    };
+    const wrapper = mount(MainChat, {
+      props: {
+        ...baseProps,
+        agents: [{ id: "custom", name: "Custom", ready: true }],
+        activeAgentId: "custom",
+        models: [model],
+        modelId: "custom-model",
+      },
+      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
+    });
+
+    const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
+    expect(effortSelect.exists()).toBe(true);
+    expect(effortSelect.findAll("option").map((option) => option.attributes("value"))).toEqual(["minimal", "high"]);
 
     wrapper.unmount();
   });

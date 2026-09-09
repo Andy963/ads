@@ -12,7 +12,7 @@ describe("MainChat ready agents", () => {
     busy: false,
   } as const;
 
-  it("renders only ready agents and auto-switches when the active agent is not ready", async () => {
+  it("hides the agent selector and auto-switches when the active agent is not ready", async () => {
     const wrapper = mount(MainChat, {
       props: {
         ...baseProps,
@@ -30,11 +30,7 @@ describe("MainChat ready agents", () => {
     await wrapper.vm.$nextTick();
 
     const agentSelect = wrapper.find('select[aria-label="Select agent"]');
-    expect(agentSelect.exists()).toBe(true);
-    expect((agentSelect.element as HTMLSelectElement).value).toBe("claude");
-
-    const values = agentSelect.findAll("option").map((opt) => opt.attributes("value"));
-    expect(values).toEqual(["claude"]);
+    expect(agentSelect.exists()).toBe(false);
 
     expect(wrapper.emitted("switchAgent")?.[0]?.[0]).toBe("claude");
     expect(wrapper.emitted("switchAgent")?.length).toBe(1);
