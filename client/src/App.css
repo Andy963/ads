@@ -595,9 +595,11 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 16px;
+  min-height: 40px;
+  padding: 4px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
+  box-sizing: border-box;
 }
 
 .laneTabGroup {
@@ -1093,18 +1095,21 @@
   }
   .laneTabs {
     width: 100%;
-    padding: 8px 12px;
+    padding: 4px 10px;
+    gap: 6px;
     justify-content: space-between;
   }
 
   .laneTabGroup {
-    flex: 1 1 auto;
+    flex: 0 0 auto;
     min-width: 0;
   }
   .laneTab {
-    flex: 1 1 0;
+    flex: 0 0 auto;
     min-width: 0;
     white-space: nowrap;
+    padding: 4px 10px;
+    font-size: 12px;
   }
 }
 

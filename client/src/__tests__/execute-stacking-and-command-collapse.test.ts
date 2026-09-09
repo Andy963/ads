@@ -166,6 +166,62 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
+  it("truncates multi-line execute content to at most 3 lines even without fullContent", async () => {
+    const longOutput = Array.from({ length: 50 }, (_, i) => `line ${i + 1}`).join("\n");
+    const wrapper = mount(MainChatMessageList, {
+      props: {
+        messages: [
+          {
+            id: "e-long",
+            role: "system",
+            kind: "execute",
+            content: longOutput,
+            command: "git log",
+          },
+        ],
+        copiedMessageId: null,
+        formatMessageTs: () => "",
+        liveStepExpanded: false,
+        liveStepHasOverflow: false,
+        liveStepCanToggleExpanded: false,
+        liveStepOutlineItems: [],
+        liveStepOutlineHiddenCount: 0,
+        liveStepCollapsedTrivialOutline: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+          ChatFilePreviewModal: true,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await settleUi(wrapper);
+
+    const outputText = wrapper.find(".execute-output").text();
+    const renderedLines = outputText.split("\n");
+    expect(renderedLines.length).toBeLessThanOrEqual(3);
+    expect(outputText).toContain("line 1");
+    expect(outputText).toContain("line 3");
+    expect(outputText).not.toContain("line 4");
+
+    const toggle = wrapper.find(".execute-more--button");
+    expect(toggle.exists()).toBe(true);
+    expect(toggle.text()).toContain("还有 47 行");
+
+    await toggle.trigger("click");
+
+    expect(wrapper.find(".execute-output").text()).toContain("line 50");
+    expect(wrapper.find(".execute-more--button").text()).toContain("收起输出");
+
+    await toggle.trigger("click");
+    expect(wrapper.find(".execute-output").text()).not.toContain("line 4");
+    expect(wrapper.find(".execute-more--button").text()).toContain("还有 47 行");
+
+    wrapper.unmount();
+  });
+
   it("renders no execute stack when there are no execute messages", async () => {
     const wrapper = mount(MainChat, {
       props: {

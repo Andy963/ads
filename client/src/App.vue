@@ -7,6 +7,7 @@ const appVersion = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0
 import LoginGate from "./components/LoginGate.vue";
 import DraggableModal from "./components/DraggableModal.vue";
 import MainChatView from "./components/MainChat.vue";
+import MainChatModelPopover from "./components/MainChatModelPopover.vue";
 import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
 import ModelManager from "./components/ModelManager.vue";
 import SessionResumePicker from "./components/SessionResumePicker.vue";
@@ -192,6 +193,56 @@ const {
   resumeTaskThread,
   listResumableSessions,
 });
+
+const activeLaneConnected = computed(() =>
+  activeWorkspaceTab.value === "planner" ? Boolean(plannerConnected.value) : Boolean(connected.value),
+);
+const activeLaneInputLocked = computed(() =>
+  activeWorkspaceTab.value === "planner" ? Boolean(plannerInputLocked.value) : Boolean(workerInputLocked.value),
+);
+const activeLaneAgents = computed(() =>
+  activeWorkspaceTab.value === "planner" ? plannerAgents.value : workerAgents.value,
+);
+const activeLaneActiveAgentId = computed(() =>
+  activeWorkspaceTab.value === "planner" ? plannerActiveAgentId.value : workerActiveAgentId.value,
+);
+const activeLaneModelId = computed(() =>
+  activeWorkspaceTab.value === "planner"
+    ? activePlannerRuntime.value.modelId.value
+    : activeRuntime.value.modelId.value,
+);
+const activeLaneModelReasoningEffort = computed(() =>
+  activeWorkspaceTab.value === "planner"
+    ? activePlannerRuntime.value.modelReasoningEffort.value
+    : activeRuntime.value.modelReasoningEffort.value,
+);
+const hasActiveLaneModelSettings = computed(() =>
+  activeLaneAgents.value !== undefined || models.value !== undefined,
+);
+
+function handleActiveLaneSwitchAgent(agentId: string): void {
+  if (activeWorkspaceTab.value === "planner") {
+    switchPlannerAgent(agentId);
+  } else {
+    switchMainAgent(agentId);
+  }
+}
+
+function handleActiveLaneSetModel(modelId: string): void {
+  if (activeWorkspaceTab.value === "planner") {
+    setPlannerModelId(modelId);
+  } else {
+    setMainModelId(modelId);
+  }
+}
+
+function handleActiveLaneSetReasoningEffort(effort: string): void {
+  if (activeWorkspaceTab.value === "planner") {
+    setPlannerModelReasoningEffort(effort);
+  } else {
+    setMainModelReasoningEffort(effort);
+  }
+}
 
 type ProjectBusyState = "idle" | "advisor" | "worker" | "both";
 
@@ -690,6 +741,20 @@ const plannerConnectionStatus = computed(() => {
               />
             </button>
           </div>
+          <MainChatModelPopover
+            v-if="hasActiveLaneModelSettings"
+            :connected="activeLaneConnected"
+            :busy="activeLaneBusy"
+            :input-locked="activeLaneInputLocked"
+            :agents="activeLaneAgents"
+            :active-agent-id="activeLaneActiveAgentId"
+            :models="models"
+            :model-id="activeLaneModelId"
+            :model-reasoning-effort="activeLaneModelReasoningEffort"
+            @switch-agent="handleActiveLaneSwitchAgent"
+            @set-model="handleActiveLaneSetModel"
+            @set-reasoning-effort="handleActiveLaneSetReasoningEffort"
+          />
           <span v-if="!isMobile" class="laneTabSpacer" />
           <button
             v-if="!isMobile && activeLaneHasResume"
@@ -737,7 +802,6 @@ const plannerConnectionStatus = computed(() => {
             <MainChatView
               :key="plannerChatKey"
               class="chatHost chatHost--planner"
-              title="Advisor"
               :messages="plannerMessages"
               :draft="plannerComposerDraft"
               :latest-prompt-key="plannerChatKey"
@@ -746,19 +810,12 @@ const plannerConnectionStatus = computed(() => {
               :connected="plannerConnected"
               :busy="plannerBusy"
               :input-locked="plannerInputLocked"
-              :agents="plannerAgents"
-              :active-agent-id="plannerActiveAgentId"
-              :models="models"
-              :model-id="activePlannerRuntime.modelId.value"
-              :model-reasoning-effort="activePlannerRuntime.modelReasoningEffort.value"
               :workspace-root="resolveActiveWorkspaceRoot()"
               :connection-status-kind="plannerConnectionStatus?.kind ?? null"
               :connection-status-message="plannerConnectionStatus?.message ?? null"
+              :thread-warning="plannerThreadWarning"
               @send="sendPlannerPrompt"
               @update:draft="plannerComposerDraft = $event"
-              @switchAgent="switchPlannerAgent"
-              @setModel="setPlannerModelId"
-              @setReasoningEffort="setPlannerModelReasoningEffort"
               @interrupt="interruptPlanner"
               @addImages="addPlannerPendingImages"
               @clearImages="clearPlannerPendingImages"
@@ -777,7 +834,6 @@ const plannerConnectionStatus = computed(() => {
             <MainChatView
               :key="workerChatKey"
               class="chatHost"
-              title="Worker"
               :messages="messages"
               :draft="workerComposerDraft"
               :latest-prompt-key="workerLatestPromptKey"
@@ -786,20 +842,13 @@ const plannerConnectionStatus = computed(() => {
               :connected="connected"
               :busy="agentBusy"
               :input-locked="workerInputLocked"
-              :agents="workerAgents"
-              :active-agent-id="workerActiveAgentId"
-              :models="models"
-              :model-id="activeRuntime.modelId.value"
-              :model-reasoning-effort="activeRuntime.modelReasoningEffort.value"
               :workspace-root="resolveActiveWorkspaceRoot()"
               :running-task-count="runningTaskCount"
               :connection-status-kind="workerConnectionStatus?.kind ?? null"
               :connection-status-message="workerConnectionStatus?.message ?? null"
+              :thread-warning="workerThreadWarning"
               @send="sendMainPrompt"
               @update:draft="workerComposerDraft = $event"
-              @switchAgent="switchMainAgent"
-              @setModel="setMainModelId"
-              @setReasoningEffort="setMainModelReasoningEffort"
               @interrupt="interruptActive"
               @clear="clearActiveChat"
               @addImages="addPendingImages"

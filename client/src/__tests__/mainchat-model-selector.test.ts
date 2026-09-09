@@ -4,6 +4,7 @@ import { mount } from "@vue/test-utils";
 import type { ModelConfig } from "../api/types";
 
 import MainChat from "../components/MainChat.vue";
+import MainChatModelPopover from "../components/MainChatModelPopover.vue";
 
 function makeModel(id: string, displayName: string, provider: string): ModelConfig {
   return {
@@ -24,16 +25,20 @@ describe("MainChat model selector", () => {
     busy: false,
   } as const;
 
+  const popoverBaseProps = {
+    connected: true,
+    busy: false,
+  } as const;
+
   it("renders the model label without an agent selector or appended id", () => {
-    const wrapper = mount(MainChat, {
+    const wrapper = mount(MainChatModelPopover, {
       props: {
-        ...baseProps,
+        ...popoverBaseProps,
         agents: [{ id: "codex", name: "Codex", ready: true }],
         activeAgentId: "codex",
         models: [makeModel("gpt-4.1", "GPT-4.1", "openai")],
         modelId: "gpt-4.1",
       },
-      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
     const agentSelect = wrapper.find('select[aria-label="Select agent"]');
@@ -56,15 +61,14 @@ describe("MainChat model selector", () => {
       allowedAgents: ["custom"],
       reasoningEfforts: ["minimal", "high"],
     };
-    const wrapper = mount(MainChat, {
+    const wrapper = mount(MainChatModelPopover, {
       props: {
-        ...baseProps,
+        ...popoverBaseProps,
         agents: [{ id: "custom", name: "Custom", ready: true }],
         activeAgentId: "custom",
         models: [model],
         modelId: "custom-model",
       },
-      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
     const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
@@ -77,17 +81,15 @@ describe("MainChat model selector", () => {
   it("opens one header popover for model and reasoning changes", async () => {
     const model = makeModel("gpt-5.6", "GPT-5.6", "openai");
     model.configJson = { reasoningEfforts: ["low", "high"] };
-    const wrapper = mount(MainChat, {
+    const wrapper = mount(MainChatModelPopover, {
       props: {
-        ...baseProps,
-        title: "Worker",
+        ...popoverBaseProps,
         agents: [{ id: "codex", name: "Codex", ready: true }],
         activeAgentId: "codex",
         models: [model, makeModel("gpt-4.1", "GPT-4.1", "openai")],
         modelId: "gpt-5.6",
         modelReasoningEffort: "low",
       },
-      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
     const toggle = wrapper.get('[data-testid="chat-model-popover-toggle"]');
@@ -104,15 +106,14 @@ describe("MainChat model selector", () => {
   });
 
   it("offers the extended Codex reasoning efforts when a model has no override", () => {
-    const wrapper = mount(MainChat, {
+    const wrapper = mount(MainChatModelPopover, {
       props: {
-        ...baseProps,
+        ...popoverBaseProps,
         agents: [{ id: "codex", name: "Codex", ready: true }],
         activeAgentId: "codex",
         models: [makeModel("gpt-5.6", "GPT-5.6", "openai")],
         modelId: "gpt-5.6",
       },
-      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
     expect(wrapper.find('[data-testid="chat-reasoning-effort"]').findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual([
@@ -130,16 +131,15 @@ describe("MainChat model selector", () => {
     model.configJson = {
       reasoningEfforts: ["medium", "high", "xhigh", "max", "ultra"],
     };
-    const wrapper = mount(MainChat, {
+    const wrapper = mount(MainChatModelPopover, {
       props: {
-        ...baseProps,
+        ...popoverBaseProps,
         agents: [{ id: "codex", name: "Codex", ready: true }],
         activeAgentId: "codex",
         models: [model],
         modelId: "gpt-5.6-sol",
         modelReasoningEffort: "ultra",
       },
-      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
     const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
@@ -159,16 +159,15 @@ describe("MainChat model selector", () => {
     model.configJson = {
       reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
     };
-    const wrapper = mount(MainChat, {
+    const wrapper = mount(MainChatModelPopover, {
       props: {
-        ...baseProps,
+        ...popoverBaseProps,
         agents: [{ id: "claude", name: "Claude", ready: true }],
         activeAgentId: "claude",
         models: [model],
         modelId: "claude-opus-4-8",
         modelReasoningEffort: "max",
       },
-      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
     const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
@@ -218,15 +217,14 @@ describe("MainChat model selector", () => {
   });
 
   it("defaults to the first available model when current is unset", async () => {
-    const wrapper = mount(MainChat, {
+    const wrapper = mount(MainChatModelPopover, {
       props: {
-        ...baseProps,
+        ...popoverBaseProps,
         agents: [{ id: "codex", name: "Codex", ready: true }],
         activeAgentId: "codex",
         models: [makeModel("gpt-4.1", "GPT-4.1", "openai"), makeModel("gpt-4o", "GPT-4o", "openai")],
         modelId: "auto",
       },
-      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
     await wrapper.vm.$nextTick();
@@ -235,9 +233,9 @@ describe("MainChat model selector", () => {
   });
 
   it("falls back to the first filtered model for the active agent", async () => {
-    const wrapper = mount(MainChat, {
+    const wrapper = mount(MainChatModelPopover, {
       props: {
-        ...baseProps,
+        ...popoverBaseProps,
         agents: [
           { id: "claude", name: "Claude", ready: true },
           { id: "codex", name: "Codex", ready: true },
@@ -249,7 +247,6 @@ describe("MainChat model selector", () => {
         ],
         modelId: "gpt-4.1",
       },
-      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
     await wrapper.vm.$nextTick();
@@ -258,9 +255,9 @@ describe("MainChat model selector", () => {
   });
 
   it("shows only models supported by the active CLI and never switches CLI from model selection", async () => {
-    const wrapper = mount(MainChat, {
+    const wrapper = mount(MainChatModelPopover, {
       props: {
-        ...baseProps,
+        ...popoverBaseProps,
         agents: [
           { id: "codex", name: "Codex", ready: true },
           { id: "claude", name: "Claude Code", ready: true },
@@ -272,7 +269,6 @@ describe("MainChat model selector", () => {
         ],
         modelId: "gpt-4.1",
       },
-      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
     const modelSelect = wrapper.find('[data-testid="chat-model-popover-toggle"]');
@@ -287,9 +283,9 @@ describe("MainChat model selector", () => {
   });
 
   it("does not expose models when no CLI is ready", () => {
-    const wrapper = mount(MainChat, {
+    const wrapper = mount(MainChatModelPopover, {
       props: {
-        ...baseProps,
+        ...popoverBaseProps,
         agents: [
           { id: "codex", name: "Codex", ready: false },
           { id: "claude", name: "Claude Code", ready: false },
@@ -301,7 +297,6 @@ describe("MainChat model selector", () => {
         ],
         modelId: "gpt-4.1",
       },
-      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
     const modelSelect = wrapper.find('[data-testid="chat-model-popover-toggle"]');
@@ -318,15 +313,14 @@ describe("MainChat model selector", () => {
     const fable = makeModel("claude-fable-5[1m]", "Claude Fable 5", "anthropic");
     const opus = makeModel("claude-opus-5[1m]", "Claude Opus 5", "anthropic");
     opus.isDefault = true;
-    const wrapper = mount(MainChat, {
+    const wrapper = mount(MainChatModelPopover, {
       props: {
-        ...baseProps,
+        ...popoverBaseProps,
         agents: [{ id: "claude", name: "Claude Code", ready: true }],
         activeAgentId: "claude",
         models: [fable, opus],
         modelId: "auto",
       },
-      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
     await wrapper.vm.$nextTick();
@@ -335,15 +329,14 @@ describe("MainChat model selector", () => {
   });
 
   it("does not emit setModel when the model list is empty", async () => {
-    const wrapper = mount(MainChat, {
+    const wrapper = mount(MainChatModelPopover, {
       props: {
-        ...baseProps,
+        ...popoverBaseProps,
         agents: [{ id: "codex", name: "Codex", ready: true }],
         activeAgentId: "codex",
         models: [],
         modelId: "auto",
       },
-      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
     await wrapper.vm.$nextTick();
@@ -362,9 +355,9 @@ describe("MainChat model selector", () => {
     model.configJson = {
       reasoningEfforts: ["medium", "high"],
     };
-    const wrapper = mount(MainChat, {
+    const wrapper = mount(MainChatModelPopover, {
       props: {
-        ...baseProps,
+        ...popoverBaseProps,
         inputLocked: true,
         agents: [{ id: "codex", name: "Codex", ready: true }],
         activeAgentId: "codex",
@@ -372,7 +365,6 @@ describe("MainChat model selector", () => {
         modelId: "removed-model",
         modelReasoningEffort: "xhigh",
       },
-      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
     await wrapper.vm.$nextTick();

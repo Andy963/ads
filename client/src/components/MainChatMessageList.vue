@@ -462,13 +462,22 @@ function toggleCommandTree(id: string): void {
   openCommandTrees.value = next;
 }
 
-function executeFullContent(m: RenderMessage): string {
-  return String(m.fullContent ?? "").trimEnd();
+function executeRawContent(m: RenderMessage): string {
+  const full = String(m.fullContent ?? "").trimEnd();
+  if (full) return full;
+  return String(m.content ?? "").trimEnd();
+}
+
+function executeAllLines(m: RenderMessage): string[] {
+  const raw = executeRawContent(m);
+  if (!raw) return [];
+  return raw.replace(/\r\n/g, "\n").split("\n");
 }
 
 function hasExpandableExecuteOutput(m: RenderMessage): boolean {
-  const full = executeFullContent(m);
-  return m.kind === "execute" && Boolean(full) && full !== String(m.content ?? "").trimEnd();
+  if (m.kind !== "execute") return false;
+  const lines = executeAllLines(m);
+  return lines.length > 3 || (m.hiddenLineCount !== undefined && m.hiddenLineCount > 0);
 }
 
 function isExecuteExpanded(id: string): boolean {
@@ -476,7 +485,21 @@ function isExecuteExpanded(id: string): boolean {
 }
 
 function getExecuteOutput(m: RenderMessage): string {
-  return hasExpandableExecuteOutput(m) && isExecuteExpanded(m.id) ? executeFullContent(m) : String(m.content ?? "");
+  const lines = executeAllLines(m);
+  if (lines.length === 0) return "";
+  if (isExecuteExpanded(m.id)) {
+    return lines.join("\n");
+  }
+  return lines.slice(0, 3).join("\n");
+}
+
+function getExecuteHiddenCount(m: RenderMessage): number {
+  const lines = executeAllLines(m);
+  const localHidden = Math.max(0, lines.length - 3);
+  if (m.hiddenLineCount && !m.fullContent) {
+    return localHidden + m.hiddenLineCount;
+  }
+  return localHidden;
 }
 
 function toggleExecuteExpanded(id: string): void {
@@ -618,7 +641,7 @@ function closeFilePreview(): void {
         </div>
         <pre
           v-if="getExecuteOutput(m).trim()"
-          :class="['execute-output', { 'execute-output--expanded': hasExpandableExecuteOutput(m) && isExecuteExpanded(m.id) }]"
+          :class="['execute-output', { 'execute-output--expanded': isExecuteExpanded(m.id) }]"
         >{{ getExecuteOutput(m) }}</pre>
         <button
           v-if="hasExpandableExecuteOutput(m)"
@@ -627,9 +650,8 @@ function closeFilePreview(): void {
           :aria-expanded="isExecuteExpanded(m.id)"
           @click="toggleExecuteExpanded(m.id)"
         >
-          {{ isExecuteExpanded(m.id) ? "收起输出" : `… 还有 ${m.hiddenLineCount ?? 0} 行` }}
+          {{ isExecuteExpanded(m.id) ? "收起输出" : `… 还有 ${getExecuteHiddenCount(m)} 行` }}
         </button>
-        <div v-else-if="(m.hiddenLineCount ?? 0) > 0" class="execute-more">… 还有 {{ m.hiddenLineCount }} 行</div>
       </div>
       <div v-else-if="m.kind === 'divider'" class="sessionBoundaryDivider" data-testid="session-boundary-divider">
         <div class="sessionBoundaryLine">
@@ -754,7 +776,10 @@ function closeFilePreview(): void {
 .msg {
   display: flex;
   margin-bottom: 18px;
+  width: 100%;
   max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   overflow: visible;
   justify-content: flex-start;
   content-visibility: auto;
@@ -870,13 +895,14 @@ function closeFilePreview(): void {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
+  max-height: calc(1.35em * 3 + 2px);
   flex: 0 0 auto;
 }
 
 .execute-output--expanded {
   display: block;
   -webkit-line-clamp: unset;
-  max-height: 260px;
+  max-height: 300px;
   overflow: auto;
 }
 
@@ -1113,13 +1139,17 @@ function closeFilePreview(): void {
 .bubble {
   width: 100%;
   max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   border-radius: 0;
-  padding: 4px 0 22px;
+  padding: 4px 16px 22px;
   border: none;
   background: transparent;
   box-shadow: none;
   position: relative;
   overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .bubble--compact {
@@ -1193,11 +1223,14 @@ function closeFilePreview(): void {
 
 .msg[data-role="user"] .bubble {
   width: auto;
-  max-width: min(80%, 720px);
-  padding: 10px 14px;
-  border: 1px solid rgba(9, 105, 218, 0.18);
-  border-radius: 18px 18px 5px 18px;
-  background: rgba(221, 244, 255, 0.82);
+  max-width: min(90%, 960px);
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 18px 18px 4px 18px;
+  background: #f4f4f5;
+  color: #18181b;
   overflow: visible;
 }
 
@@ -1220,10 +1253,12 @@ function closeFilePreview(): void {
 .msg[data-kind="execute"] .bubble {
   width: 100%;
   max-width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--github-border);
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  border: none;
   border-radius: 12px;
-  background: rgba(248, 250, 252, 0.88);
+  background: #f8fafc;
   overflow: hidden;
 }
 

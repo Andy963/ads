@@ -1,16 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import MainChatComposerPanel from "./MainChatComposerPanel.vue";
-import MainChatHeader from "./MainChatHeader.vue";
 import MainChatMessageList from "./MainChatMessageList.vue";
 
 import type { ChatMessage, IncomingImage, QueuedPrompt } from "./mainChat/types";
 import { useCopyMessage } from "./mainChat/useCopyMessage";
 import { analyzeMarkdownOutline } from "../lib/markdown";
-import type { ModelConfig } from "../api/types";
 
 const props = defineProps<{
-  title?: string;
   messages: ChatMessage[];
   queuedPrompts: QueuedPrompt[];
   pendingImages: IncomingImage[];
@@ -20,17 +17,9 @@ const props = defineProps<{
   busy: boolean;
   inputLocked?: boolean;
   readOnly?: boolean;
-  agents?: Array<{ id: string; name: string; ready: boolean; error?: string }>;
-  activeAgentId?: string;
-  models?: ModelConfig[];
-  modelId?: string;
-  modelReasoningEffort?: string;
   apiToken?: string;
   runningTaskCount?: number;
   workspaceRoot?: string | null;
-  headerAction?: { title: string; ariaLabel?: string; testId?: string };
-  headerClearAction?: { title: string; ariaLabel?: string; testId?: string };
-  headerResumeAction?: { title: string; ariaLabel?: string; testId?: string; disabled?: boolean };
   threadWarning?: string | null;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
   connectionStatusMessage?: string | null;
@@ -41,14 +30,9 @@ const emit = defineEmits<{
   (e: "send", content: string): void;
   (e: "interrupt"): void;
   (e: "clear"): void;
-  (e: "newSession"): void;
-  (e: "resumeThread"): void;
   (e: "addImages", images: IncomingImage[]): void;
   (e: "clearImages"): void;
   (e: "removeQueued", id: string): void;
-  (e: "switchAgent", agentId: string): void;
-  (e: "setModel", modelId: string): void;
-  (e: "setReasoningEffort", effort: string): void;
 }>();
 
 const listRef = ref<HTMLElement | null>(null);
@@ -338,28 +322,13 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="detail">
-    <MainChatHeader
-      v-if="title || agents !== undefined || models !== undefined"
-      :title="title || 'Chat'"
-      :busy="busy"
-      :connected="connected"
-      :input-locked="inputLocked"
-      :agents="agents"
-      :active-agent-id="activeAgentId"
-      :models="models"
-      :model-id="modelId"
-      :model-reasoning-effort="modelReasoningEffort"
-      :header-action="headerAction"
-      :header-clear-action="headerClearAction"
-      :header-resume-action="headerResumeAction"
-      :thread-warning="threadWarning"
-      @new-session="emit('newSession')"
-      @clear="emit('clear')"
-      @resume-thread="emit('resumeThread')"
-      @switch-agent="emit('switchAgent', $event)"
-      @set-model="emit('setModel', $event)"
-      @set-reasoning-effort="emit('setReasoningEffort', $event)"
-    />
+    <div
+      v-if="props.threadWarning"
+      class="threadWarningBanner"
+      data-testid="main-chat-thread-warning"
+    >
+      {{ props.threadWarning }}
+    </div>
     <div ref="listRef" class="chat" @scroll="handleScroll">
       <MainChatMessageList
         ref="messageListRef"
