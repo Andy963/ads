@@ -41,6 +41,7 @@ describe("chat visual viewport anchoring", () => {
     viewport = Object.assign(new EventTarget(), { height: 844, offsetTop: 0 });
     vi.stubGlobal("visualViewport", viewport);
     vi.stubGlobal("innerHeight", 844);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     trackListeners(window);
     trackListeners(document);
     input = document.createElement("textarea");
@@ -91,6 +92,7 @@ describe("chat visual viewport anchoring", () => {
 
     expect(cssVariable("--app-top")).toBe("120px");
     expect(cssVariable("--ads-visual-viewport-height")).toBe("440px");
+    expect(cssVariable("--safe-bottom-multiplier")).toBe("0");
 
     updateViewport(844, 0);
     expect(cssVariable("--app-top")).toBe("0px");
@@ -110,6 +112,72 @@ describe("chat visual viewport anchoring", () => {
     vi.advanceTimersByTime(250);
     expect(cssVariable("--app-top")).toBe("0px");
     expect(cssVariable("--ads-visual-viewport-height")).toBe("844px");
+  });
+
+  it("recovers after blur when the keyboard closes after the event burst without a resize event", async () => {
+    const { installViewportCssVars } = await import("./viewport");
+    installViewportCssVars();
+    input.focus();
+    updateViewport(440, 120);
+    input.blur();
+    vi.advanceTimersByTime(2500);
+
+    viewport.height = 844;
+    viewport.offsetTop = 0;
+    vi.advanceTimersByTime(250);
+
+    expect(document.activeElement).not.toBe(input);
+    expect(cssVariable("--app-top")).toBe("0px");
+    expect(cssVariable("--app-bottom")).toBe("0px");
+    expect(cssVariable("--ads-visual-viewport-height")).toBe("844px");
+    expect(cssVariable("--safe-bottom-multiplier")).toBe("1");
+  });
+
+  it("tracks silent browser viewport changes when no input is focused", async () => {
+    const { installViewportCssVars } = await import("./viewport");
+    installViewportCssVars();
+
+    viewport.height = 780;
+    vi.advanceTimersByTime(250);
+    expect(cssVariable("--ads-visual-viewport-height")).toBe("780px");
+
+    viewport.height = 844;
+    vi.advanceTimersByTime(250);
+    expect(cssVariable("--ads-visual-viewport-height")).toBe("844px");
+  });
+
+  it("does not rewrite layout styles when fallback polling reads unchanged metrics", async () => {
+    const { installViewportCssVars } = await import("./viewport");
+    installViewportCssVars();
+    const setProperty = vi.spyOn(document.documentElement.style, "setProperty");
+
+    vi.advanceTimersByTime(1000);
+    expect(setProperty).not.toHaveBeenCalled();
+  });
+
+  it("suspends fallback polling in the background and refreshes when the page becomes visible", async () => {
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    const { installViewportCssVars } = await import("./viewport");
+    installViewportCssVars();
+
+    viewport.height = 780;
+    vi.advanceTimersByTime(1000);
+    expect(cssVariable("--ads-visual-viewport-height")).toBe("844px");
+
+    visibility.mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    vi.advanceTimersByTime(32);
+    expect(cssVariable("--ads-visual-viewport-height")).toBe("780px");
+  });
+
+  it("refreshes immediately when a page is restored from the back-forward cache", async () => {
+    const { installViewportCssVars } = await import("./viewport");
+    installViewportCssVars();
+
+    viewport.height = 780;
+    window.dispatchEvent(new Event("pageshow"));
+    vi.advanceTimersByTime(32);
+    expect(cssVariable("--ads-visual-viewport-height")).toBe("780px");
   });
 
   it("uses the layout viewport when the visual viewport API is unavailable", async () => {

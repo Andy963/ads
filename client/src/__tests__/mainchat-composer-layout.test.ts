@@ -158,4 +158,12 @@ describe("MainChat compact composer layout", () => {
     expect(chat).toMatch(/\.detail\s*\{[^}]*display:\s*flex\s*;[^}]*flex-direction:\s*column\s*;/);
     expect(chat).toMatch(/\.chat\s*\{[^}]*flex:\s*1 1 auto\s*;/);
   });
+
+  it("leaves only the device safe area below the visible input border", async () => {
+    const composer = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
+    const rule = composer.match(/\.composer\s*\{[^}]*\}/)?.[0];
+
+    expect(rule).toContain("padding: 8px 16px calc(env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));");
+    expect(composer).not.toMatch(/padding-bottom:\s*calc\(12px\s*\+/);
+  });
 });

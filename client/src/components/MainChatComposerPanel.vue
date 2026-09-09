@@ -481,7 +481,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px 16px calc(12px + env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));
+  padding: 8px 16px calc(env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));
   background: var(--app-bg, #ffffff);
   position: relative;
   z-index: 20;
@@ -1018,7 +1018,6 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   .composer {
     padding-left: 12px;
     padding-right: 12px;
-    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));
   }
 
   .actionSheet {
