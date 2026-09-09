@@ -78,9 +78,10 @@ const ModelManagerStub = defineComponent({
   props: {
     agent: { type: String, default: null },
     showHeader: { type: Boolean, default: true },
+    initialTab: { type: String, default: "models" },
   },
   template:
-    '<section data-testid="model-manager" :data-show-header="showHeader"><span class="selected-agent">{{ agent }}</span></section>',
+    '<section data-testid="settings-panel" :data-show-header="showHeader" :data-initial-tab="initialTab"><span class="selected-agent">{{ agent }}</span></section>',
   setup(_, { expose }) {
     expose({ create: vi.fn(), refresh: vi.fn() });
     return {};
@@ -165,15 +166,16 @@ describe("mobile navigation behavior", () => {
     await settleUi(wrapper);
     expect(wrapper.findAll(".mobileDrawerNavItem")).toHaveLength(2);
     expect(wrapper.findAll(".mobileDrawerNavItem")[0]?.text()).toContain("项目");
-    expect(wrapper.findAll(".mobileDrawerNavItem")[1]?.text()).toContain("Provider");
+    expect(wrapper.findAll(".mobileDrawerNavItem")[1]?.text()).toContain("系统设置");
 
-    await wrapper.find('[data-testid="mobile-drawer-section-models"]').trigger("click");
+    await wrapper.find('[data-testid="mobile-drawer-section-settings"]').trigger("click");
     await settleUi(wrapper);
     expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
     expect(wrapper.find(".chatShell").exists()).toBe(false);
-    expect(wrapper.find('[data-testid="model-manager"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="settings-panel"]').exists()).toBe(true);
     expect(wrapper.find(".selected-agent").text()).toBe("");
-    expect(wrapper.find('[data-testid="model-manager"]').attributes("data-show-header")).toBe("false");
+    expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-show-header")).toBe("false");
+    expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-initial-tab")).toBe("lane-prompts");
 
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-choose-provider"]').exists()).toBe(false);
