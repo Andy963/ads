@@ -1,12 +1,24 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { ChatDotRound, Delete, Refresh } from "@element-plus/icons-vue";
+
+import type { ModelConfig } from "../api/types";
+import MainChatModelPopover from "./MainChatModelPopover.vue";
 
 type HeaderAction = { title: string; ariaLabel?: string; testId?: string };
 type HeaderResumeAction = { title: string; ariaLabel?: string; testId?: string; disabled?: boolean };
+type AgentOption = { id: string; name: string; ready: boolean; error?: string };
 
 const props = defineProps<{
   title: string;
   busy: boolean;
+  connected: boolean;
+  inputLocked?: boolean;
+  agents?: AgentOption[];
+  activeAgentId?: string;
+  models?: ModelConfig[];
+  modelId?: string;
+  modelReasoningEffort?: string;
   headerAction?: HeaderAction;
   headerClearAction?: HeaderAction;
   headerResumeAction?: HeaderResumeAction;
@@ -17,7 +29,12 @@ const emit = defineEmits<{
   (e: "newSession"): void;
   (e: "clear"): void;
   (e: "resumeThread"): void;
+  (e: "switchAgent", agentId: string): void;
+  (e: "setModel", modelId: string): void;
+  (e: "setReasoningEffort", effort: string): void;
 }>();
+
+const hasModelSettings = computed(() => props.agents !== undefined || props.models !== undefined);
 </script>
 
 <template>
@@ -29,6 +46,20 @@ const emit = defineEmits<{
       </div>
     </div>
     <div class="paneHeaderActions">
+      <MainChatModelPopover
+        v-if="hasModelSettings"
+        :connected="props.connected"
+        :busy="props.busy"
+        :input-locked="props.inputLocked"
+        :agents="props.agents"
+        :active-agent-id="props.activeAgentId"
+        :models="props.models"
+        :model-id="props.modelId"
+        :model-reasoning-effort="props.modelReasoningEffort"
+        @switch-agent="emit('switchAgent', $event)"
+        @set-model="emit('setModel', $event)"
+        @set-reasoning-effort="emit('setReasoningEffort', $event)"
+      />
       <button
         v-if="props.headerResumeAction"
         class="paneHeaderIconBtn"
@@ -114,6 +145,7 @@ const emit = defineEmits<{
 .paneHeaderActions {
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 6px;
   flex: 0 0 auto;
 }

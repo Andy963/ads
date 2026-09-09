@@ -234,8 +234,6 @@ const liveStepCanToggleExpanded = computed(() => {
   if (liveStepCollapsedTrivialOutline.value) return false;
   return liveStepHasMeaningfulBody.value || liveStepOutlineHiddenCount.value > 0 || liveStepHasOverflow.value;
 });
-const showActiveBorder = computed(() => props.busy);
-
 const { copiedMessageId, onCopyMessage, formatMessageTs } = useCopyMessage();
 
 function handleScroll() {
@@ -339,11 +337,18 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="detail" :class="{ 'detail--active': showActiveBorder }">
+  <div class="detail">
     <MainChatHeader
-      v-if="title"
-      :title="title"
+      v-if="title || agents !== undefined || models !== undefined"
+      :title="title || 'Chat'"
       :busy="busy"
+      :connected="connected"
+      :input-locked="inputLocked"
+      :agents="agents"
+      :active-agent-id="activeAgentId"
+      :models="models"
+      :model-id="modelId"
+      :model-reasoning-effort="modelReasoningEffort"
       :header-action="headerAction"
       :header-clear-action="headerClearAction"
       :header-resume-action="headerResumeAction"
@@ -351,6 +356,9 @@ onBeforeUnmount(() => {
       @new-session="emit('newSession')"
       @clear="emit('clear')"
       @resume-thread="emit('resumeThread')"
+      @switch-agent="emit('switchAgent', $event)"
+      @set-model="emit('setModel', $event)"
+      @set-reasoning-effort="emit('setReasoningEffort', $event)"
     />
     <div ref="listRef" class="chat" @scroll="handleScroll">
       <MainChatMessageList
@@ -386,11 +394,6 @@ onBeforeUnmount(() => {
       :connected="connected"
       :busy="busy"
       :input-locked="inputLocked"
-      :agents="agents"
-      :active-agent-id="activeAgentId"
-      :models="models"
-      :model-id="modelId"
-      :model-reasoning-effort="modelReasoningEffort"
       :api-token="apiToken"
       :running-task-count="runningTaskCount"
       :connection-status-kind="connectionStatusKind"
@@ -401,9 +404,6 @@ onBeforeUnmount(() => {
       @add-images="emit('addImages', $event)"
       @clear-images="emit('clearImages')"
       @remove-queued="emit('removeQueued', $event)"
-      @switch-agent="emit('switchAgent', $event)"
-      @set-model="emit('setModel', $event)"
-      @set-reasoning-effort="emit('setReasoningEffort', $event)"
     />
   </div>
 </template>

@@ -53,10 +53,12 @@ describe("MainChat header UI", () => {
     wrapper.unmount();
   });
 
-  it("only toggles the active chat class without restoring the legacy transparent top border", () => {
+  it("keeps the chat detail container flat while busy state remains in the composer", () => {
     const css = readUtf8("../components/MainChat.css");
-    expect(css).toMatch(/\.detail\s*\{[\s\S]*?border-top:\s*none\s*;[\s\S]*?\}/);
-    expect(css).toMatch(/\.detail--active\s*\{[\s\S]*?border-top-color:\s*#22c55e\s*;[\s\S]*?\}/);
+    expect(css).toMatch(/\.detail\s*\{[\s\S]*?position:\s*relative\s*;[\s\S]*?\}/);
+    expect(css).not.toContain("detail--active");
+    expect(css).not.toMatch(/\.detail\s*\{[\s\S]*?box-shadow\s*:/);
+    expect(css).not.toMatch(/\.detail\s*\{[\s\S]*?linear-gradient/);
 
     const baseProps = {
       queuedPrompts: [],
@@ -83,7 +85,7 @@ describe("MainChat header UI", () => {
       },
       global: { stubs: { MarkdownContent: true } },
     });
-    expect(busy.classes()).toContain("detail--active");
+    expect(busy.classes()).not.toContain("detail--active");
     busy.unmount();
 
     const withHistory = mount(MainChat, {
@@ -98,9 +100,9 @@ describe("MainChat header UI", () => {
     withHistory.unmount();
   });
 
-  it("renders a green top border on the chat detail container", () => {
+  it("reserves room for the floating composer in the chat stream", () => {
     const css = readUtf8("../components/MainChat.css");
-    expect(css).toMatch(/\.detail--active\s*\{[\s\S]*?border-top-color:\s*#22c55e\s*;[\s\S]*?\}/);
+    expect(css).toMatch(/\.chat\s*\{[\s\S]*?padding:[\s\S]*?220px/);
   });
 
   it("renders an optional header action button and emits newSession", async () => {

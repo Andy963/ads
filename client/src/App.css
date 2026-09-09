@@ -279,11 +279,9 @@
   flex: 1;
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
-  gap: 12px;
-  padding: 12px 12px 8px 12px;
-  max-width: 1480px;
+  gap: 0;
   width: 100%;
-  margin: 0 auto;
+  margin: 0;
   min-height: 0;
   overflow: hidden;
 }
@@ -295,6 +293,8 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  padding: 12px 12px 8px;
+  border-right: 1px solid var(--border);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -591,15 +591,23 @@
 }
 
 .laneTabs {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border-radius: 16px 16px 0 0;
-  border: 1px solid rgba(208, 215, 222, 0.85);
-  border-bottom: none;
-  background: rgba(248, 250, 252, 0.95);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.laneTabGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 999px;
+  background: rgba(241, 245, 249, 0.92);
 }
 
 .laneTabSpacer {
@@ -637,8 +645,8 @@
   color: #64748b;
   font-size: 13px;
   font-weight: 800;
-  padding: 8px 14px;
-  border-radius: 12px;
+  padding: 6px 14px;
+  border-radius: 999px;
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
@@ -686,7 +694,7 @@
   background: white;
   color: #0f172a;
   font-weight: 800;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.1), 0 1px 2px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
 }
 
 .laneTab:not(.active) {
@@ -755,9 +763,9 @@
 @media (max-width: 900px) {
   .layout {
     grid-template-columns: 1fr;
-    padding: 8px;
-    gap: 8px;
-    max-width: 100%;
+    padding: 0;
+    gap: 0;
+    max-width: none;
     position: relative;
   }
   :deep(input),
@@ -1085,7 +1093,13 @@
   }
   .laneTabs {
     width: 100%;
-    justify-content: stretch;
+    padding: 8px 12px;
+    justify-content: space-between;
+  }
+
+  .laneTabGroup {
+    flex: 1 1 auto;
+    min-width: 0;
   }
   .laneTab {
     flex: 1 1 0;
