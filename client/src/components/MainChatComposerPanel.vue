@@ -1,34 +1,15 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
-import type { ModelConfig } from "../api/types";
-import { normalizeReasoningEffort } from "../lib/chatPreferences";
-import { supportsAgentModel } from "../lib/model_agent";
 import MainChatPendingImageViewer from "./MainChatPendingImageViewer.vue";
 import { resolveComposerImagePreview } from "./mainChat/attachmentPreview";
 import type { IncomingImage, QueuedPrompt } from "./mainChat/types";
 import { useMainChatComposer } from "./mainChat/useComposer";
 
-type AgentOption = { id: string; name: string; ready: boolean; error?: string };
-
 type PendingImagePreview = {
   key: string;
   src: string;
   href: string;
-};
-
-const DEFAULT_CODEX_REASONING_EFFORTS = ["medium", "high", "xhigh", "max", "ultra"] as const;
-const DEFAULT_CLAUDE_REASONING_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
-const REASONING_EFFORT_LABELS: Record<string, string> = {
-  off: "Off",
-  none: "None",
-  minimal: "Minimal",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra High",
-  max: "Max",
-  ultra: "Ultra",
 };
 
 const props = defineProps<{
@@ -39,11 +20,6 @@ const props = defineProps<{
   connected: boolean;
   busy: boolean;
   inputLocked?: boolean;
-  agents?: AgentOption[];
-  activeAgentId?: string;
-  models?: ModelConfig[];
-  modelId?: string;
-  modelReasoningEffort?: string;
   apiToken?: string;
   runningTaskCount?: number;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
@@ -57,205 +33,9 @@ const emit = defineEmits<{
   (e: "addImages", images: IncomingImage[]): void;
   (e: "clearImages"): void;
   (e: "removeQueued", id: string): void;
-  (e: "switchAgent", agentId: string): void;
-  (e: "setModel", modelId: string): void;
-  (e: "setReasoningEffort", effort: string): void;
 }>();
 
 const canInterrupt = computed(() => props.busy);
-
-const agentOptions = computed(() => (Array.isArray(props.agents) ? props.agents : []));
-const readyAgentIds = computed(() =>
-  agentOptions.value
-    .filter((agent) => Boolean(agent?.ready))
-    .map((agent) => String(agent?.id ?? "").trim())
-    .filter(Boolean),
-);
-const modelOptions = computed(() =>
-  (Array.isArray(props.models) ? props.models : []).filter((model) => model?.isEnabled !== false),
-);
-
-const selectedAgentId = computed(() => {
-  const active = String(props.activeAgentId ?? "").trim();
-  if (active && readyAgentIds.value.includes(active)) {
-    return active;
-  }
-  return readyAgentIds.value[0] ?? "";
-});
-
-const lastAutoSwitchedAgentId = ref<string | null>(null);
-
-watch(
-  () => [
-    Boolean(props.connected),
-    Boolean(props.busy),
-    Boolean(props.inputLocked),
-    String(props.activeAgentId ?? "").trim(),
-    readyAgentIds.value.join("\n"),
-  ],
-  () => {
-    if (!props.connected || props.busy || props.inputLocked) {
-      lastAutoSwitchedAgentId.value = null;
-      return;
-    }
-
-    if (readyAgentIds.value.length === 0) {
-      lastAutoSwitchedAgentId.value = null;
-      return;
-    }
-
-    const active = String(props.activeAgentId ?? "").trim();
-    if (active && readyAgentIds.value.includes(active)) {
-      lastAutoSwitchedAgentId.value = null;
-      return;
-    }
-
-    const next = selectedAgentId.value;
-    if (!next || next === active) return;
-    if (lastAutoSwitchedAgentId.value === next) return;
-
-    lastAutoSwitchedAgentId.value = next;
-    emit("switchAgent", next);
-  },
-  { immediate: true },
-);
-
-function normalizeModelId(value: unknown): string {
-  return typeof value === "string" ? value.trim() : String(value ?? "").trim();
-}
-
-function isUnsetModelId(modelId: string): boolean {
-  const id = String(modelId ?? "").trim().toLowerCase();
-  return !id || id === "auto";
-}
-
-const compatibleModelOptions = computed(() => {
-  const agentId = selectedAgentId.value;
-  if (!agentId) return [];
-  return modelOptions.value.filter((model) => supportsAgentModel({ agentId, model }));
-});
-
-function preferredModel(options: readonly ModelConfig[]): ModelConfig | null {
-  return options.find((model) => model.isDefault) ?? options[0] ?? null;
-}
-
-const effectiveModelId = computed(() => {
-  const options = compatibleModelOptions.value;
-  if (options.length === 0) return "";
-  const current = normalizeModelId(props.modelId);
-  const known = modelOptions.value.some((m) => String(m.modelId ?? m.id ?? "").trim() === current);
-  if (!isUnsetModelId(current) && (!known || options.some((m) => String(m.modelId ?? m.id ?? "").trim() === current))) {
-    return current;
-  }
-  const fallback = preferredModel(options);
-  return String(fallback?.modelId ?? fallback?.id ?? "").trim();
-});
-
-watch(
-  () => [
-    Boolean(props.inputLocked),
-    selectedAgentId.value,
-    props.modelId,
-    compatibleModelOptions.value
-      .map((m) => `${String(m.modelId ?? m.id ?? "").trim()}:${m.isDefault ? "default" : "standard"}`)
-      .join("\n"),
-  ],
-  () => {
-    if (props.inputLocked) return;
-    const options = compatibleModelOptions.value;
-    if (options.length === 0) return;
-    const fallback = preferredModel(options);
-    const desired = String(fallback?.modelId ?? fallback?.id ?? "").trim();
-    if (!desired) return;
-
-    const current = normalizeModelId(props.modelId);
-    const known = modelOptions.value.some((m) => String(m.modelId ?? m.id ?? "").trim() === current);
-    if (!isUnsetModelId(current) && (!known || options.some((m) => String(m.modelId ?? m.id ?? "").trim() === current))) {
-      return;
-    }
-
-    if (desired !== current) {
-      emit("setModel", desired);
-    }
-  },
-  { immediate: true },
-);
-
-function formatModelLabel(model: ModelConfig): string {
-  const id = String(model.modelId ?? model.id ?? "").trim();
-  const name = String(model.displayName ?? "").trim() || id;
-  return name || "model";
-}
-
-function onModelChange(ev: Event): void {
-  if (props.inputLocked) return;
-  const value = (ev.target as HTMLSelectElement | null)?.value ?? "";
-  const next = normalizeModelId(value);
-  if (!next || isUnsetModelId(next)) return;
-  const model = compatibleModelOptions.value.find(
-    (option) => String(option.modelId ?? option.id ?? "").trim() === next,
-  );
-  if (!model) return;
-  emit("setModel", next);
-}
-
-const selectedModel = computed(() => {
-  const modelId = effectiveModelId.value;
-  return compatibleModelOptions.value.find((model) => String(model.modelId ?? model.id ?? "").trim() === modelId) ?? null;
-});
-
-const reasoningEffortOptions = computed(() => {
-  if (!selectedModel.value) return [];
-
-  const fallback = selectedAgentId.value === "codex"
-    ? DEFAULT_CODEX_REASONING_EFFORTS
-    : DEFAULT_CLAUDE_REASONING_EFFORTS;
-  const config = selectedModel.value?.configJson;
-  const raw = config && typeof config === "object" && !Array.isArray(config)
-    ? (config as Record<string, unknown>).reasoningEfforts
-    : null;
-  if (!Array.isArray(raw)) return [...fallback];
-
-  const values = raw
-    .map((entry) => String(entry ?? "").trim().toLowerCase())
-    .filter((entry) => Boolean(REASONING_EFFORT_LABELS[entry]));
-  return values.length > 0 ? [...new Set(values)] : [...fallback];
-});
-
-const reasoningEffortValue = computed(() => {
-  const normalized = normalizeReasoningEffort(props.modelReasoningEffort);
-  if (reasoningEffortOptions.value.includes(normalized)) return normalized;
-  if (reasoningEffortOptions.value.includes("high")) return "high";
-  return reasoningEffortOptions.value[0] ?? "high";
-});
-
-watch(
-  () => [
-    Boolean(props.inputLocked),
-    selectedAgentId.value,
-    effectiveModelId.value,
-    String(props.modelReasoningEffort ?? "").trim().toLowerCase(),
-    reasoningEffortOptions.value.join("\n"),
-  ],
-  () => {
-    if (props.inputLocked) return;
-    if (reasoningEffortOptions.value.length === 0) return;
-    const current = String(props.modelReasoningEffort ?? "").trim().toLowerCase();
-    if (!current || current === reasoningEffortValue.value) return;
-    emit("setReasoningEffort", reasoningEffortValue.value);
-  },
-  { immediate: true },
-);
-
-function formatReasoningEffortLabel(effort: string): string {
-  return REASONING_EFFORT_LABELS[effort] ?? effort;
-}
-
-function onReasoningEffortChange(ev: Event): void {
-  if (props.inputLocked) return;
-  const value = (ev.target as HTMLSelectElement | null)?.value ?? "";
-  emit("setReasoningEffort", String(value ?? "").trim());
-}
 
 const normalizedConnectionStatusKind = computed(() => props.connectionStatusKind ?? "info");
 const latestPrompt = ref("");
@@ -365,9 +145,65 @@ const {
   onAddImages: (images) => emit("addImages", images),
 });
 
+const composerRoot = ref<HTMLElement | null>(null);
+const actionMenuOpen = ref(false);
+
+function closeActionMenu(): void {
+  actionMenuOpen.value = false;
+}
+
+function toggleActionMenu(): void {
+  if (props.inputLocked) return;
+  actionMenuOpen.value = !actionMenuOpen.value;
+}
+
+function onActionMenuPointerDown(event: Event): void {
+  const target = event.target;
+  if (target instanceof Node && composerRoot.value?.contains(target)) return;
+  closeActionMenu();
+}
+
+function onActionMenuKeydown(event: KeyboardEvent): void {
+  if (event.key === "Escape") closeActionMenu();
+}
+
+function attachFromActionMenu(): void {
+  closeActionMenu();
+  triggerFileInput();
+}
+
+async function restoreFromActionMenu(): Promise<void> {
+  closeActionMenu();
+  await restoreLatestPrompt();
+}
+
+async function quoteFromActionMenu(): Promise<void> {
+  closeActionMenu();
+  await wrapSelectedTextWithTripleQuotes();
+}
+
+onMounted(() => {
+  document.addEventListener("pointerdown", onActionMenuPointerDown);
+  document.addEventListener("keydown", onActionMenuKeydown);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("pointerdown", onActionMenuPointerDown);
+  document.removeEventListener("keydown", onActionMenuKeydown);
+});
+
 const hasTextSelection = ref(false);
 const canRestoreLatestPrompt = computed(
   () => !props.inputLocked && !input.value.trim() && Boolean(latestPrompt.value.trim()),
+);
+
+watch(
+  () => Boolean(props.inputLocked),
+  (locked) => {
+    if (!locked) return;
+    closeActionMenu();
+    hasTextSelection.value = false;
+  },
 );
 
 function updateTextSelection(): void {
@@ -412,7 +248,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 </script>
 
 <template>
-  <div class="composer">
+  <div ref="composerRoot" class="composer">
     <div
       v-if="connectionStatusMessage"
       class="laneStatusBar"
@@ -485,7 +321,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
         :disabled="inputLocked"
         rows="5"
         class="composer-input"
-        placeholder="输入…（Enter 发送，Alt+Enter 换行，粘贴图片）"
+        placeholder="输入…（Enter 发送，Shift+Enter 换行，粘贴图片）"
         @keydown="onInputKeydown"
         @paste="onPaste"
         @select="updateTextSelection"
@@ -494,74 +330,26 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
         @focus="updateTextSelection"
         @blur="clearTextSelectionState"
       />
-      <div class="inputToolbar">
-        <div class="inputToolbarLeft">
-          <button class="attachIcon" type="button" title="添加图片附件" :disabled="inputLocked" @click="triggerFileInput">
+      <div class="composerMainRow">
+        <div class="composerMainRowLeft">
+          <button
+            class="attachIcon composerActionToggle"
+            type="button"
+            title="更多输入操作"
+            aria-label="更多输入操作"
+            :aria-expanded="actionMenuOpen"
+            aria-haspopup="menu"
+            data-testid="composer-actions-toggle"
+            :disabled="inputLocked"
+            @mousedown.prevent
+            @click.stop="toggleActionMenu"
+          >
             <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path
-                fill-rule="evenodd"
-                d="M15.621 4.379a3.5 3.5 0 0 0-4.95 0l-7.07 7.07a5 5 0 0 0 7.07 7.072l4.95-4.95a.75.75 0 0 0-1.06-1.061l-4.95 4.95a3.5 3.5 0 1 1-4.95-4.95l7.07-7.07a2 2 0 1 1 2.83 2.828l-7.07 7.071a.5.5 0 0 1-.707-.707l4.95-4.95a.75.75 0 1 0-1.06-1.06l-4.95 4.95a2 2 0 0 0 2.828 2.828l7.07-7.071a3.5 3.5 0 0 0 0-4.95Z"
-                clip-rule="evenodd"
-              />
+              <path fill-rule="evenodd" d="M10 3a.75.75 0 0 1 .75.75v5.5h5.5a.75.75 0 0 1 0 1.5h-5.5v5.5a.75.75 0 0 1-1.5 0v-5.5h-5.5a.75.75 0 0 1 0-1.5h5.5v-5.5A.75.75 0 0 1 10 3Z" clip-rule="evenodd" />
             </svg>
           </button>
-          <div v-if="agentOptions.length" class="agentSelect">
-            <select
-              class="agentSelectInput"
-              :value="effectiveModelId"
-              :disabled="!connected || busy || inputLocked || compatibleModelOptions.length === 0"
-              aria-label="Select model"
-              data-testid="chat-model-select"
-              @change="onModelChange"
-            >
-              <option v-if="compatibleModelOptions.length === 0" value="" disabled>No models</option>
-              <option v-for="m in compatibleModelOptions" :key="m.id" :value="m.modelId || m.id">
-                {{ formatModelLabel(m) }}
-              </option>
-            </select>
-          </div>
-          <div v-if="reasoningEffortOptions.length > 0" class="agentSelect">
-            <select
-              class="agentSelectInput"
-              :value="reasoningEffortValue"
-              :disabled="!connected || busy || inputLocked"
-              aria-label="Select reasoning effort"
-              data-testid="chat-reasoning-effort"
-              @change="onReasoningEffortChange"
-            >
-              <option v-for="effort in reasoningEffortOptions" :key="effort" :value="effort">
-                {{ formatReasoningEffortLabel(effort) }}
-              </option>
-            </select>
-          </div>
         </div>
-        <div class="inputToolbarRight">
-          <button
-            class="composerToolIcon"
-            type="button"
-            title="恢复最新 Prompt"
-            aria-label="恢复最新 Prompt"
-            data-testid="restore-latest-prompt"
-            :disabled="!canRestoreLatestPrompt"
-            @mousedown.prevent
-            @click="restoreLatestPrompt"
-          >
-            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-              <path d="M5 3.75A1.75 1.75 0 0 1 6.75 2h6.5A1.75 1.75 0 0 1 15 3.75v13.1a.65.65 0 0 1-1.02.54L10 14.74l-3.98 2.65A.65.65 0 0 1 5 16.85V3.75Z" />
-            </svg>
-          </button>
-          <button
-            class="composerToolIcon composerToolIcon--quote"
-            type="button"
-            title="用三引号包裹选中文本"
-            aria-label="用三引号包裹选中文本"
-            data-testid="wrap-triple-quotes"
-            :disabled="inputLocked || !hasTextSelection"
-            @mousedown.prevent
-            @click="wrapSelectedTextWithTripleQuotes"
-          >
-            <span aria-hidden="true">&quot;&quot;&quot;</span>
-          </button>
+        <div class="composerMainRowRight">
           <div v-if="recording" class="voiceIndicator recording" aria-hidden="true">
             <div class="voiceBars">
               <span class="bar" />
@@ -612,6 +400,51 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
         </div>
       </div>
       <div
+        v-if="actionMenuOpen"
+        class="actionSheet"
+        role="menu"
+        aria-label="输入操作"
+        data-testid="composer-action-sheet"
+        @click.stop
+      >
+        <button
+          class="actionSheetItem"
+          type="button"
+          role="menuitem"
+          data-testid="action-attach-image"
+          :disabled="inputLocked"
+          @mousedown.prevent
+          @click="attachFromActionMenu"
+        >
+          <span class="actionSheetIcon" aria-hidden="true">📎</span>
+          <span>添加图片附件</span>
+        </button>
+        <button
+          class="actionSheetItem"
+          type="button"
+          role="menuitem"
+          data-testid="wrap-triple-quotes"
+          :disabled="inputLocked || !hasTextSelection"
+          @mousedown.prevent
+          @click="quoteFromActionMenu"
+        >
+          <span class="actionSheetIcon actionSheetIcon--mono" aria-hidden="true">&quot;&quot;&quot;</span>
+          <span>快速引用选中文本</span>
+        </button>
+        <button
+          class="actionSheetItem"
+          type="button"
+          role="menuitem"
+          data-testid="restore-latest-prompt"
+          :disabled="!canRestoreLatestPrompt"
+          @mousedown.prevent
+          @click="restoreFromActionMenu"
+        >
+          <span class="actionSheetIcon" aria-hidden="true">↺</span>
+          <span>恢复上一条输入</span>
+        </button>
+      </div>
+      <div
         v-if="(voiceStatusKind === 'ok' || voiceStatusKind === 'error') && voiceStatusMessage"
         class="voiceToast"
         :class="voiceStatusKind"
@@ -645,13 +478,38 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 10px;
-  padding: 12px 12px calc(8px + env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1)) 12px;
-  border-top: 1px solid #e2e8f0;
-  background: white;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  padding: 0 16px calc(16px + env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));
+  pointer-events: none;
+}
+
+.composer::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 190px;
+  z-index: 0;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.96) 68%, #ffffff 100%);
+  pointer-events: none;
+}
+
+.composer > :not(.draggableOverlay) {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
 }
 
 .laneStatusBar {
+  width: min(800px, 100%);
+  box-sizing: border-box;
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -703,6 +561,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .queue {
+  width: min(800px, 100%);
   display: grid;
   gap: 6px;
   max-height: 140px;
@@ -757,18 +616,21 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .inputWrap {
+  width: min(800px, 100%);
+  box-sizing: border-box;
   position: relative;
-  border-radius: 10px;
-  border: 1px solid #e2e8f0;
-  background: transparent;
+  border-radius: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 4px 24px rgba(15, 23, 42, 0.08);
   display: flex;
   flex-direction: column;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .inputWrap:focus-within {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+  border-color: rgba(37, 99, 235, 0.52);
+  box-shadow: 0 4px 24px rgba(15, 23, 42, 0.1), 0 0 0 3px rgba(37, 99, 235, 0.1);
 }
 
 .hiddenFileInput {
@@ -780,77 +642,38 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   pointer-events: none;
 }
 
-.composerToolIcon {
-  width: 26px;
-  height: 26px;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  color: #64748b;
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  transition: color 0.15s, background-color 0.15s, opacity 0.15s;
-}
-
-.composerToolIcon--quote {
-  margin-right: 2px;
-}
-
-.composerToolIcon:hover:not(:disabled) {
-  color: #0f172a;
-  background: rgba(15, 23, 42, 0.06);
-}
-
-.composerToolIcon:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
-}
-
-.composerToolIcon:disabled {
-  cursor: not-allowed;
-  opacity: 0.3;
-}
-
-.composerToolIcon--quote span {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
-  font-weight: 800;
-  line-height: 1;
-  letter-spacing: -1px;
-}
-
-.inputToolbar {
+.composerMainRow {
   display: flex;
   align-items: center;
-  padding: 4px 6px;
+  min-height: 40px;
+  padding: 2px 8px 8px;
   flex-shrink: 0;
   gap: 6px;
 }
 
-.inputToolbarLeft {
+.composerMainRowLeft,
+.composerMainRowRight {
   display: flex;
   gap: 6px;
   align-items: center;
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
 }
 
-.inputToolbarRight {
-  display: flex;
-  gap: 6px;
-  align-items: center;
+.composerMainRowLeft {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.composerMainRowRight {
   flex: 0 0 auto;
   margin-left: auto;
 }
 
 .attachIcon {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
   border: none;
-  background: transparent;
+  background: rgba(15, 23, 42, 0.06);
   color: #64748b;
   display: grid;
   place-items: center;
@@ -858,39 +681,80 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   transition: color 0.15s;
 }
 
-.attachIcon:hover {
+.attachIcon:hover:not(:disabled) {
   color: #0f172a;
+  background: rgba(15, 23, 42, 0.1);
 }
 
-.agentSelect {
+.attachIcon:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.composerActionToggle:focus-visible,
+.micIcon:focus-visible,
+.sendIcon:focus-visible,
+.stopIcon:focus-visible,
+.actionSheetItem:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+}
+
+.actionSheet {
+  position: absolute;
+  left: 8px;
+  bottom: calc(100% + 8px);
+  width: min(270px, calc(100% - 16px));
+  padding: 6px;
+  display: grid;
+  gap: 2px;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16);
+}
+
+.actionSheetItem {
   display: flex;
   align-items: center;
-  min-width: 0;
-}
-
-.agentSelectInput {
-  height: 28px;
-  max-width: 150px;
-  min-width: 0;
-  border-radius: 8px;
-  border: 1px solid rgba(226, 232, 240, 0.95);
-  background: white;
-  color: #0f172a;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 9px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  color: #334155;
+  text-align: left;
   font-size: 12px;
-  font-weight: 600;
-  padding: 0 8px;
+  font-weight: 700;
   cursor: pointer;
 }
 
-.agentSelectInput:disabled {
-  cursor: not-allowed;
-  opacity: 0.65;
+.actionSheetItem:hover:not(:disabled) {
+  background: rgba(37, 99, 235, 0.08);
+  color: #1d4ed8;
 }
 
-.agentSelectInput:focus {
-  outline: none;
-  border-color: rgba(37, 99, 235, 0.65);
-  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+.actionSheetItem:disabled {
+  color: #94a3b8;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.actionSheetIcon {
+  width: 22px;
+  flex: 0 0 22px;
+  text-align: center;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.actionSheetIcon--mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: -1px;
 }
 
 .voiceIndicator {
@@ -984,6 +848,8 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .attachmentsBar {
+  width: min(800px, 100%);
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1067,10 +933,12 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   width: 100%;
   resize: none;
   overflow-y: hidden;
-  border-radius: 10px 10px 0 0;
+  min-height: 30px;
+  border-radius: 23px 23px 0 0;
   border: none;
-  padding: 10px 12px;
+  padding: 13px 16px 8px;
   font-size: 16px;
+  line-height: 1.45;
   background: transparent;
   color: #0f172a;
   box-sizing: border-box;
@@ -1083,9 +951,9 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .micIcon {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
   border: none;
   background: transparent;
   color: #64748b;
@@ -1121,34 +989,34 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .sendIcon {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
   border: none;
-  background: transparent;
-  color: #2563eb;
+  background: #2563eb;
+  color: #ffffff;
   display: grid;
   place-items: center;
   cursor: pointer;
 }
 
 .sendIcon:disabled {
-  opacity: 0.35;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 
 .sendIcon:hover:not(:disabled) {
-  color: #1d4ed8;
+  background: #1d4ed8;
 }
 
 .stopIcon {
   position: relative;
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
   border: none;
-  background: transparent;
-  color: #dc2626;
+  background: #dc2626;
+  color: #ffffff;
   display: grid;
   place-items: center;
   cursor: pointer;
@@ -1171,7 +1039,23 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .stopIcon:hover {
-  color: #b91c1c;
+  background: #b91c1c;
+}
+
+@media (max-width: 768px) {
+  .composer {
+    padding-left: 12px;
+    padding-right: 12px;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));
+  }
+
+  .composer::before {
+    height: 160px;
+  }
+
+  .actionSheet {
+    width: min(270px, calc(100vw - 40px));
+  }
 }
 
 @keyframes voiceBars {

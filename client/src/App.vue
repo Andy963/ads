@@ -658,36 +658,38 @@ const plannerConnectionStatus = computed(() => {
 
       <section v-if="!isMobile || mobileDrawerSection === 'projects'" class="chatShell">
         <div class="laneTabs" role="tablist" aria-label="切换工作区">
-          <button
-            v-for="tab in workspaceTabs"
-            :id="`lane-tab-${tab.id}`"
-            :key="tab.id"
-            type="button"
-            class="laneTab"
-            :class="{ active: activeWorkspaceTab === tab.id }"
-            role="tab"
-            :aria-selected="activeWorkspaceTab === tab.id"
-            :aria-controls="`lane-panel-${tab.id}`"
-            :data-testid="`lane-tab-${tab.id}`"
-            @click="selectWorkspaceTab(tab.id)"
-          >
-            <span
-              class="laneTabStatusDot"
-              :class="isLaneConnected(tab.id, { planner: plannerConnected, worker: connected })
-                ? 'laneTabStatusDot--connected'
-                : 'laneTabStatusDot--disconnected'"
-              :data-testid="`lane-tab-status-${tab.id}`"
-              aria-hidden="true"
-            />
-            <span class="laneTabLabel">{{ tab.label }}</span>
-            <span
-              v-if="tab.id === 'planner' ? plannerBusy : agentBusy"
-              class="laneTabBusySpinner"
-              :class="tab.id === 'planner' ? 'laneTabBusySpinner--advisor' : 'laneTabBusySpinner--worker'"
-              :data-testid="`lane-tab-busy-${tab.id}`"
-              aria-hidden="true"
-            />
-          </button>
+          <div class="laneTabGroup">
+            <button
+              v-for="tab in workspaceTabs"
+              :id="`lane-tab-${tab.id}`"
+              :key="tab.id"
+              type="button"
+              class="laneTab"
+              :class="{ active: activeWorkspaceTab === tab.id }"
+              role="tab"
+              :aria-selected="activeWorkspaceTab === tab.id"
+              :aria-controls="`lane-panel-${tab.id}`"
+              :data-testid="`lane-tab-${tab.id}`"
+              @click="selectWorkspaceTab(tab.id)"
+            >
+              <span
+                class="laneTabStatusDot"
+                :class="isLaneConnected(tab.id, { planner: plannerConnected, worker: connected })
+                  ? 'laneTabStatusDot--connected'
+                  : 'laneTabStatusDot--disconnected'"
+                :data-testid="`lane-tab-status-${tab.id}`"
+                aria-hidden="true"
+              />
+              <span class="laneTabLabel">{{ tab.label }}</span>
+              <span
+                v-if="tab.id === 'planner' ? plannerBusy : agentBusy"
+                class="laneTabBusySpinner"
+                :class="tab.id === 'planner' ? 'laneTabBusySpinner--advisor' : 'laneTabBusySpinner--worker'"
+                :data-testid="`lane-tab-busy-${tab.id}`"
+                aria-hidden="true"
+              />
+            </button>
+          </div>
           <span v-if="!isMobile" class="laneTabSpacer" />
           <button
             v-if="!isMobile && activeLaneHasResume"
@@ -735,6 +737,7 @@ const plannerConnectionStatus = computed(() => {
             <MainChatView
               :key="plannerChatKey"
               class="chatHost chatHost--planner"
+              title="Advisor"
               :messages="plannerMessages"
               :draft="plannerComposerDraft"
               :latest-prompt-key="plannerChatKey"
@@ -774,6 +777,7 @@ const plannerConnectionStatus = computed(() => {
             <MainChatView
               :key="workerChatKey"
               class="chatHost"
+              title="Worker"
               :messages="messages"
               :draft="workerComposerDraft"
               :latest-prompt-key="workerLatestPromptKey"

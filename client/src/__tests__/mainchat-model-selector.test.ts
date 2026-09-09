@@ -39,12 +39,12 @@ describe("MainChat model selector", () => {
     const agentSelect = wrapper.find('select[aria-label="Select agent"]');
     expect(agentSelect.exists()).toBe(false);
 
-    const modelSelect = wrapper.find('[data-testid="chat-model-select"]');
+    const modelSelect = wrapper.find('[data-testid="chat-model-popover-toggle"]');
     expect(modelSelect.exists()).toBe(true);
     expect(modelSelect.text()).toContain("GPT-4.1");
     expect(modelSelect.text()).not.toContain("(gpt-4.1)");
 
-    const modelOptions = modelSelect.findAll("option").map((opt) => opt.attributes("value"));
+    const modelOptions = wrapper.findAll('[data-testid="chat-model-option"]').map((option) => option.attributes("data-model-id"));
     expect(modelOptions).not.toContain("auto");
 
     wrapper.unmount();
@@ -69,8 +69,37 @@ describe("MainChat model selector", () => {
 
     const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
     expect(effortSelect.exists()).toBe(true);
-    expect(effortSelect.findAll("option").map((option) => option.attributes("value"))).toEqual(["minimal", "high"]);
+    expect(effortSelect.findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual(["minimal", "high"]);
 
+    wrapper.unmount();
+  });
+
+  it("opens one header popover for model and reasoning changes", async () => {
+    const model = makeModel("gpt-5.6", "GPT-5.6", "openai");
+    model.configJson = { reasoningEfforts: ["low", "high"] };
+    const wrapper = mount(MainChat, {
+      props: {
+        ...baseProps,
+        title: "Worker",
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [model, makeModel("gpt-4.1", "GPT-4.1", "openai")],
+        modelId: "gpt-5.6",
+        modelReasoningEffort: "low",
+      },
+      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
+    });
+
+    const toggle = wrapper.get('[data-testid="chat-model-popover-toggle"]');
+    expect(wrapper.find('[data-testid="chat-model-popover-menu"]').attributes("aria-hidden")).toBe("true");
+    await toggle.trigger("click");
+    expect(wrapper.find('[data-testid="chat-model-popover-menu"]').attributes("aria-hidden")).toBe("false");
+
+    await wrapper.find('[data-testid="chat-model-option"][data-model-id="gpt-4.1"]').trigger("click");
+    expect(wrapper.emitted("setModel")?.at(-1)?.[0]).toBe("gpt-4.1");
+
+    await wrapper.find('[data-testid="chat-reasoning-effort"] [data-reasoning-effort="high"]').trigger("click");
+    expect(wrapper.emitted("setReasoningEffort")?.at(-1)?.[0]).toBe("high");
     wrapper.unmount();
   });
 
@@ -86,7 +115,7 @@ describe("MainChat model selector", () => {
       global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
-    expect(wrapper.find('[data-testid="chat-reasoning-effort"]').findAll("option").map((option) => option.attributes("value"))).toEqual([
+    expect(wrapper.find('[data-testid="chat-reasoning-effort"]').findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual([
       "medium",
       "high",
       "xhigh",
@@ -114,8 +143,8 @@ describe("MainChat model selector", () => {
     });
 
     const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
-    expect(effortSelect.attributes("value")).toBe("ultra");
-    expect(effortSelect.findAll("option").map((option) => option.attributes("value"))).toEqual([
+    expect(effortSelect.find('[aria-pressed="true"]').attributes("data-reasoning-effort")).toBe("ultra");
+    expect(effortSelect.findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual([
       "medium",
       "high",
       "xhigh",
@@ -143,8 +172,8 @@ describe("MainChat model selector", () => {
     });
 
     const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
-    expect((effortSelect.element as HTMLSelectElement).value).toBe("max");
-    expect(effortSelect.findAll("option").map((option) => option.attributes("value"))).toEqual([
+    expect(effortSelect.find('[aria-pressed="true"]').attributes("data-reasoning-effort")).toBe("max");
+    expect(effortSelect.findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual([
       "low",
       "medium",
       "high",
@@ -246,11 +275,11 @@ describe("MainChat model selector", () => {
       global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
-    const modelSelect = wrapper.find('[data-testid="chat-model-select"]');
-    expect(modelSelect.findAll("option").map((option) => option.attributes("value"))).toEqual(["gpt-4.1"]);
+    const modelSelect = wrapper.find('[data-testid="chat-model-popover-toggle"]');
+    expect(wrapper.findAll('[data-testid="chat-model-option"]').map((option) => option.attributes("data-model-id"))).toEqual(["gpt-4.1"]);
     expect(modelSelect.text()).not.toContain("Claude Opus 5");
 
-    await modelSelect.setValue("gpt-4.1");
+    await wrapper.find('[data-testid="chat-model-option"]').trigger("click");
 
     expect(wrapper.emitted("switchAgent")).toBeUndefined();
     expect(wrapper.emitted("setModel")?.[0]?.[0]).toBe("gpt-4.1");
@@ -275,12 +304,12 @@ describe("MainChat model selector", () => {
       global: { stubs: { MarkdownContent: true, DraggableModal: true } },
     });
 
-    const modelSelect = wrapper.find('[data-testid="chat-model-select"]');
-    expect(modelSelect.attributes("disabled")).toBeDefined();
-    expect(modelSelect.findAll("option").map((option) => option.attributes("value"))).toEqual([""]);
-    expect(modelSelect.text()).toContain("No models");
-    expect(modelSelect.text()).not.toContain("GPT-4.1");
-    expect(modelSelect.text()).not.toContain("Claude Opus 5");
+    const modelSelect = wrapper.find('[data-testid="chat-model-popover-toggle"]');
+    expect(modelSelect.attributes("disabled")).toBeUndefined();
+    expect(wrapper.findAll('[data-testid="chat-model-option"]')).toHaveLength(0);
+    expect(wrapper.find('[data-testid="chat-model-popover-menu"]').text()).toContain("No compatible models");
+    expect(wrapper.find('[data-testid="chat-model-popover-menu"]').text()).not.toContain("GPT-4.1");
+    expect(wrapper.find('[data-testid="chat-model-popover-menu"]').text()).not.toContain("Claude Opus 5");
 
     wrapper.unmount();
   });
@@ -320,10 +349,10 @@ describe("MainChat model selector", () => {
     await wrapper.vm.$nextTick();
     expect(wrapper.emitted("setModel")).toBeUndefined();
 
-    const modelSelect = wrapper.find('[data-testid="chat-model-select"]');
+    const modelSelect = wrapper.find('[data-testid="chat-model-popover-toggle"]');
     expect(modelSelect.exists()).toBe(true);
-    expect(modelSelect.attributes("disabled")).toBeDefined();
-    expect(modelSelect.text()).toContain("No models");
+    expect(modelSelect.attributes("disabled")).toBeUndefined();
+    expect(wrapper.find('[data-testid="chat-model-popover-menu"]').text()).toContain("No compatible models");
 
     wrapper.unmount();
   });

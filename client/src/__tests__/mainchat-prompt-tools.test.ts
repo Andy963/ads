@@ -31,6 +31,11 @@ function mountPromptTools(options?: { inputLocked?: boolean; latestPromptKey?: s
   return mount(Host, { global: { stubs: { MainChatPendingImageViewer: true } } });
 }
 
+async function openActionSheet(wrapper: ReturnType<typeof mount>): Promise<void> {
+  await wrapper.get('[data-testid="composer-actions-toggle"]').trigger("click");
+  await nextTick();
+}
+
 describe("MainChat prompt tools", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -48,6 +53,7 @@ describe("MainChat prompt tools", () => {
     expect((wrapper.vm as { sent: string[] }).sent).toEqual(["Retry this prompt"]);
     expect((textarea.element as HTMLTextAreaElement).value).toBe("");
 
+    await openActionSheet(wrapper);
     const restore = wrapper.get("[data-testid='restore-latest-prompt']");
     expect(restore.attributes("disabled")).toBeUndefined();
     await restore.trigger("click");
@@ -64,8 +70,9 @@ describe("MainChat prompt tools", () => {
 
     const wrapper = mountPromptTools({ latestPromptKey: "project-1:planner" });
     const textarea = wrapper.get("textarea.composer-input");
-    const restore = wrapper.get("[data-testid='restore-latest-prompt']");
     await textarea.setValue("Current draft");
+    await openActionSheet(wrapper);
+    const restore = wrapper.get("[data-testid='restore-latest-prompt']");
 
     expect(restore.attributes("disabled")).toBeDefined();
     await textarea.setValue("");
@@ -86,6 +93,7 @@ describe("MainChat prompt tools", () => {
     element.setSelectionRange(6, 10);
     await textarea.trigger("select");
 
+    await openActionSheet(wrapper);
     const quote = wrapper.get("[data-testid='wrap-triple-quotes']");
     expect(quote.attributes("disabled")).toBeUndefined();
     await quote.trigger("click");
@@ -97,18 +105,12 @@ describe("MainChat prompt tools", () => {
     wrapper.unmount();
   });
 
-  it("places both tools in the bottom toolbar and disables them while input is locked", () => {
+  it("keeps secondary actions behind the plus button and disables the trigger while input is locked", () => {
     localStorage.setItem(STORAGE_KEY, "Stored prompt");
     const wrapper = mountPromptTools({ inputLocked: true });
-    const toolbarRight = wrapper.get(".inputToolbarRight").element;
-    const restoreBtn = wrapper.get("[data-testid='restore-latest-prompt']").element;
-    const quoteBtn = wrapper.get("[data-testid='wrap-triple-quotes']").element;
-    const toolbarChildren = Array.from(toolbarRight.children);
-
-    expect(toolbarChildren).toContain(restoreBtn);
-    expect(toolbarChildren).toContain(quoteBtn);
-    expect(wrapper.get("[data-testid='restore-latest-prompt']").attributes("disabled")).toBeDefined();
-    expect(wrapper.get("[data-testid='wrap-triple-quotes']").attributes("disabled")).toBeDefined();
+    expect(wrapper.find(".inputToolbarRight").exists()).toBe(false);
+    expect(wrapper.get('[data-testid="composer-actions-toggle"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.find('[data-testid="composer-action-sheet"]').exists()).toBe(false);
     wrapper.unmount();
   });
 });

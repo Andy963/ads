@@ -753,12 +753,16 @@ function closeFilePreview(): void {
 
 .msg {
   display: flex;
-  margin-bottom: 10px;
+  margin-bottom: 18px;
   max-width: 100%;
   overflow: visible;
   justify-content: flex-start;
   content-visibility: auto;
   contain-intrinsic-size: auto 150px;
+}
+
+.msg[data-role="user"] {
+  justify-content: flex-end;
 }
 
 .messageHistorySentinel {
@@ -1109,17 +1113,17 @@ function closeFilePreview(): void {
 .bubble {
   width: 100%;
   max-width: 100%;
-  border-radius: 12px;
-  padding: 12px 14px 22px 14px;
-  border: 1px solid var(--github-border);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 1px 0 rgba(27, 31, 36, 0.04);
+  border-radius: 0;
+  padding: 4px 0 22px;
+  border: none;
+  background: transparent;
+  box-shadow: none;
   position: relative;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .bubble--compact {
-  padding: 12px 14px;
+  padding: 0;
 }
 
 .bubble--retryNotice {
@@ -1188,19 +1192,44 @@ function closeFilePreview(): void {
 }
 
 .msg[data-role="user"] .bubble {
+  width: auto;
+  max-width: min(80%, 720px);
+  padding: 10px 14px;
+  border: 1px solid rgba(9, 105, 218, 0.18);
+  border-radius: 18px 18px 5px 18px;
   background: rgba(221, 244, 255, 0.82);
-  border-color: rgba(9, 105, 218, 0.18);
+  overflow: visible;
 }
 
 .msg[data-role="system"] .bubble {
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(208, 215, 222, 0.95);
   background: rgba(246, 248, 250, 0.96);
-  border-color: rgba(208, 215, 222, 0.95);
 }
 
 .msg[data-kind="error"] .bubble {
-  background: rgba(255, 247, 237, 0.96);
+  padding: 10px 14px 22px;
+  border: 1px solid rgba(251, 146, 60, 0.55);
   border-color: rgba(251, 146, 60, 0.55);
+  border-radius: 12px;
+  background: rgba(255, 247, 237, 0.96);
   color: #7c2d12;
+}
+
+.msg[data-kind="execute"] .bubble {
+  width: 100%;
+  max-width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--github-border);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.88);
+  overflow: hidden;
+}
+
+.msg[data-role="user"] .msgActions {
+  left: auto;
+  right: 10px;
 }
 
 .thoughtCard {
