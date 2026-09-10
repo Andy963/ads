@@ -120,6 +120,7 @@ watch(
 const {
   input,
   inputEl,
+  inputExpanded,
   fileInputEl,
   send,
   onInputKeydown,
@@ -315,7 +316,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
         :disabled="inputLocked"
         @change="onFileInputChange"
       />
-      <div class="composerMainRow">
+      <div class="composerMainRow" :class="{ 'composerMainRow--expanded': inputExpanded }">
         <div class="composerMainRowLeft">
           <button
             class="attachIcon composerActionToggle"
@@ -637,6 +638,19 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   min-height: 34px;
   gap: 6px;
   align-items: center;
+}
+
+.composerMainRow--expanded {
+  flex-wrap: wrap;
+}
+
+.composerMainRow--expanded .composer-input {
+  order: -1;
+  flex-basis: 100%;
+}
+
+.composerMainRow--expanded .composerMainRowRight {
+  margin-left: auto;
 }
 
 .attachIcon {

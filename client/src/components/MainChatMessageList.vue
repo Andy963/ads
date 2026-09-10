@@ -30,7 +30,6 @@ const emit = defineEmits<{
 }>();
 
 const openCommandTrees = ref<Set<string>>(new Set());
-const expandedExecuteIds = ref<Set<string>>(new Set());
 const expandedPatchKeys = ref<Set<string>>(new Set());
 const filePreviewTarget = ref<MarkdownFilePreviewLink | null>(null);
 const messageListEl = ref<HTMLElement | null>(null);
@@ -474,23 +473,8 @@ function executeAllLines(m: RenderMessage): string[] {
   return raw.replace(/\r\n/g, "\n").split("\n");
 }
 
-function hasExpandableExecuteOutput(m: RenderMessage): boolean {
-  if (m.kind !== "execute") return false;
-  const lines = executeAllLines(m);
-  return lines.length > 3 || (m.hiddenLineCount !== undefined && m.hiddenLineCount > 0);
-}
-
-function isExecuteExpanded(id: string): boolean {
-  return expandedExecuteIds.value.has(id);
-}
-
 function getExecuteOutput(m: RenderMessage): string {
-  const lines = executeAllLines(m);
-  if (lines.length === 0) return "";
-  if (isExecuteExpanded(m.id)) {
-    return lines.join("\n");
-  }
-  return lines.slice(0, 3).join("\n");
+  return executeAllLines(m).slice(0, 3).join("\n");
 }
 
 function getExecuteHiddenCount(m: RenderMessage): number {
@@ -500,13 +484,6 @@ function getExecuteHiddenCount(m: RenderMessage): number {
     return localHidden + m.hiddenLineCount;
   }
   return localHidden;
-}
-
-function toggleExecuteExpanded(id: string): void {
-  const next = new Set(expandedExecuteIds.value);
-  if (next.has(id)) next.delete(id);
-  else next.add(id);
-  expandedExecuteIds.value = next;
 }
 
 function caretPath(open: boolean): string {
@@ -641,17 +618,11 @@ function closeFilePreview(): void {
         </div>
         <pre
           v-if="getExecuteOutput(m).trim()"
-          :class="['execute-output', { 'execute-output--expanded': isExecuteExpanded(m.id) }]"
+          class="execute-output"
         >{{ getExecuteOutput(m) }}</pre>
-        <button
-          v-if="hasExpandableExecuteOutput(m)"
-          class="execute-more execute-more--button"
-          type="button"
-          :aria-expanded="isExecuteExpanded(m.id)"
-          @click="toggleExecuteExpanded(m.id)"
-        >
-          {{ isExecuteExpanded(m.id) ? "收起输出" : `… 还有 ${getExecuteHiddenCount(m)} 行` }}
-        </button>
+        <div v-if="getExecuteHiddenCount(m) > 0" class="execute-more">
+          {{ `… ${getExecuteHiddenCount(m)} more lines` }}
+        </div>
       </div>
       <div v-else-if="m.kind === 'divider'" class="sessionBoundaryDivider" data-testid="session-boundary-divider">
         <div class="sessionBoundaryLine">
@@ -899,31 +870,11 @@ function closeFilePreview(): void {
   flex: 0 0 auto;
 }
 
-.execute-output--expanded {
-  display: block;
-  -webkit-line-clamp: unset;
-  max-height: 300px;
-  overflow: auto;
-}
-
 .execute-more {
   margin-top: 4px;
   font-size: 12px;
   color: #94a3b8;
   flex: 0 0 auto;
-}
-
-.execute-more--button {
-  align-self: flex-start;
-  border: none;
-  background: transparent;
-  padding: 0;
-  cursor: pointer;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-}
-
-.execute-more--button:hover {
-  color: #0f172a;
 }
 
 .patchCard {

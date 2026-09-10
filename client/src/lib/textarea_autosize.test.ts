@@ -33,16 +33,16 @@ describe("autosizeTextarea", () => {
     });
     vi.spyOn(window, "getComputedStyle").mockReturnValue(makeStyle({}));
 
-    autosizeTextarea(element, { minRows: 1, maxRows: 8 });
+    expect(autosizeTextarea(element, { minRows: 1, maxRows: 8 })).toBe(false);
     expect(element.style.height).toBe("42px");
 
     element.value = Array.from({ length: 12 }, (_, index) => `Line ${index}`).join("\n");
-    autosizeTextarea(element, { minRows: 1, maxRows: 8 });
+    expect(autosizeTextarea(element, { minRows: 1, maxRows: 8 })).toBe(true);
     expect(element.style.height).toBe("182px");
     expect(element.style.overflowY).toBe("auto");
 
     element.value = "";
-    autosizeTextarea(element, { minRows: 1, maxRows: 8 });
+    expect(autosizeTextarea(element, { minRows: 1, maxRows: 8 })).toBe(false);
     expect(element.style.height).toBe("42px");
     expect(element.style.overflowY).toBe("hidden");
     expect(measuredHeights).toEqual(["0px", "0px", "0px"]);

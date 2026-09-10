@@ -91,11 +91,15 @@ export function useMainChatComposer(params: {
     },
   });
   const inputEl = ref<HTMLTextAreaElement | null>(null);
+  const inputExpanded = ref(false);
 
   const resizeComposer = (): void => {
     const el = inputEl.value;
     if (!el) return;
-    autosizeTextarea(el, { minRows: 1, maxRows: 8 });
+    const multiline = autosizeTextarea(el, { minRows: 1, maxRows: 8 });
+    // Keep a nonempty draft wide once it wraps, avoiding a wrap/unwrap feedback
+    // loop when moving the controls below the text gives it more space.
+    inputExpanded.value = el.value.length > 0 && (inputExpanded.value || multiline);
   };
 
   // Resize after Vue commits DOM updates (v-model, conditional UI that affects wrapping, etc).
@@ -574,6 +578,7 @@ export function useMainChatComposer(params: {
   return {
     input,
     inputEl,
+    inputExpanded,
     fileInputEl,
     send,
     onInputKeydown,

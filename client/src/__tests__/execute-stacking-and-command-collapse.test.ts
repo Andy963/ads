@@ -119,7 +119,8 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("expands replayed execute blocks with retained full output", async () => {
+  it("keeps replayed execute output at three lines while preserving full output for copying", async () => {
+    const fullOutput = Array.from({ length: 2500 }, (_, index) => `line ${index + 1}`).join("\n");
     const wrapper = mount(MainChatMessageList, {
       props: {
         messages: [
@@ -128,9 +129,9 @@ describe("chat execute stacking and command collapse", () => {
             role: "system",
             kind: "execute",
             content: "line 1\nline 2\nline 3",
-            fullContent: "line 1\nline 2\nline 3\nline 4\nline 5",
+            fullContent: fullOutput,
             command: "npm test",
-            hiddenLineCount: 2,
+            hiddenLineCount: 2497,
           },
         ],
         copiedMessageId: null,
@@ -154,20 +155,21 @@ describe("chat execute stacking and command collapse", () => {
     await settleUi(wrapper);
 
     expect(wrapper.find(".execute-output").text()).not.toContain("line 5");
-    const toggle = wrapper.find(".execute-more--button");
-    expect(toggle.exists()).toBe(true);
-    expect(toggle.text()).toContain("还有 2 行");
+    expect(wrapper.find(".execute-output").text().split("\n")).toHaveLength(3);
+    expect(wrapper.find(".execute-more--button").exists()).toBe(false);
+    expect(wrapper.find(".execute-more").text()).toContain("2497");
+    await wrapper.get(".execute-more").trigger("click");
+    expect(wrapper.find(".execute-output").text()).not.toContain("line 4");
+    expect(wrapper.find(".execute-output--expanded").exists()).toBe(false);
 
-    await toggle.trigger("click");
-
-    expect(wrapper.find(".execute-output").text()).toContain("line 5");
-    expect(wrapper.find(".execute-more--button").text()).toContain("收起输出");
+    await wrapper.get(".executeCopyBtn").trigger("click");
+    expect(wrapper.emitted("copyMessage")?.[0]?.[0]).toMatchObject({ fullContent: fullOutput });
 
     wrapper.unmount();
   });
 
   it("truncates multi-line execute content to at most 3 lines even without fullContent", async () => {
-    const longOutput = Array.from({ length: 50 }, (_, i) => `line ${i + 1}`).join("\n");
+    const longOutput = Array.from({ length: 1500 }, (_, i) => `line ${i + 1}`).join("\n");
     const wrapper = mount(MainChatMessageList, {
       props: {
         messages: [
@@ -177,6 +179,7 @@ describe("chat execute stacking and command collapse", () => {
             kind: "execute",
             content: longOutput,
             command: "git log",
+            streaming: true,
           },
         ],
         copiedMessageId: null,
@@ -206,18 +209,16 @@ describe("chat execute stacking and command collapse", () => {
     expect(outputText).toContain("line 3");
     expect(outputText).not.toContain("line 4");
 
-    const toggle = wrapper.find(".execute-more--button");
-    expect(toggle.exists()).toBe(true);
-    expect(toggle.text()).toContain("还有 47 行");
-
-    await toggle.trigger("click");
-
-    expect(wrapper.find(".execute-output").text()).toContain("line 50");
-    expect(wrapper.find(".execute-more--button").text()).toContain("收起输出");
-
-    await toggle.trigger("click");
+    expect(wrapper.find(".execute-more--button").exists()).toBe(false);
+    expect(wrapper.find(".execute-more").text()).toContain("1497");
+    await wrapper.get(".execute-more").trigger("click");
     expect(wrapper.find(".execute-output").text()).not.toContain("line 4");
-    expect(wrapper.find(".execute-more--button").text()).toContain("还有 47 行");
+
+    await wrapper.setProps({ messages: [{ id: "e-long", role: "system", kind: "execute", content: `${longOutput}\nlast line`, command: "git log", streaming: false }] });
+    await settleUi(wrapper);
+    expect(wrapper.find(".execute-output").text().split("\n")).toHaveLength(3);
+    expect(wrapper.find(".execute-output").text()).not.toContain("last line");
+    expect(wrapper.find(".execute-more").text()).toContain("1498");
 
     wrapper.unmount();
   });

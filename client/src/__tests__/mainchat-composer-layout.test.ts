@@ -69,9 +69,11 @@ describe("MainChat compact composer layout", () => {
     const longDraft = Array.from({ length: 12 }, (_, index) => `Line ${index}`).join("\n");
 
     expect(element.style.height).toBe("34px");
+    expect(wrapper.get(".composerMainRow").classes()).not.toContain("composerMainRow--expanded");
     await textarea.setValue("First line\nSecond line");
     expect(element.style.height).toBe("58px");
     expect(element.style.overflowY).toBe("hidden");
+    expect(wrapper.get(".composerMainRow").classes()).toContain("composerMainRow--expanded");
 
     await textarea.setValue(longDraft);
     expect(element.style.height).toBe("202px");
@@ -82,10 +84,31 @@ describe("MainChat compact composer layout", () => {
     expect(element.value).toBe("");
     expect(element.style.height).toBe("34px");
     expect(element.style.overflowY).toBe("hidden");
+    expect(wrapper.get(".composerMainRow").classes()).not.toContain("composerMainRow--expanded");
 
     await textarea.setValue(longDraft);
     await textarea.setValue("");
     expect(element.style.height).toBe("34px");
+    expect(wrapper.get(".composerMainRow").classes()).not.toContain("composerMainRow--expanded");
+    wrapper.unmount();
+  });
+
+  it("keeps a wrapped draft full width when the wider layout reduces its line count", async () => {
+    const scrollHeight = vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockReturnValue(34);
+    const wrapper = mount(ComposerHost);
+    const textarea = wrapper.get("textarea.composer-input");
+
+    scrollHeight.mockReturnValue(58);
+    await textarea.setValue("A draft that wraps beside the action buttons");
+    expect(wrapper.get(".composerMainRow").classes()).toContain("composerMainRow--expanded");
+
+    scrollHeight.mockReturnValue(34);
+    window.dispatchEvent(new Event("resize"));
+    await nextTick();
+    expect(wrapper.get(".composerMainRow").classes()).toContain("composerMainRow--expanded");
+
+    await textarea.setValue("");
+    expect(wrapper.get(".composerMainRow").classes()).not.toContain("composerMainRow--expanded");
     wrapper.unmount();
   });
 
@@ -165,5 +188,13 @@ describe("MainChat compact composer layout", () => {
 
     expect(rule).toContain("padding: 8px 16px calc(env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));");
     expect(composer).not.toMatch(/padding-bottom:\s*calc\(12px\s*\+/);
+  });
+
+  it("puts multiline text across the full row with actions underneath", async () => {
+    const composer = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
+
+    expect(composer).toMatch(/\.composerMainRow--expanded\s*\{[^}]*flex-wrap:\s*wrap\s*;/);
+    expect(composer).toMatch(/\.composerMainRow--expanded\s+\.composer-input\s*\{[^}]*order:\s*-1\s*;[^}]*flex-basis:\s*100%\s*;/);
+    expect(composer).toMatch(/\.composerMainRow--expanded\s+\.composerMainRowRight\s*\{[^}]*margin-left:\s*auto\s*;/);
   });
 });
