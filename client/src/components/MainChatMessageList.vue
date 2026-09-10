@@ -1177,10 +1177,10 @@ function closeFilePreview(): void {
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  padding: 10px 16px 8px;
-  border: 1px solid rgba(9, 105, 218, 0.16);
-  border-radius: 18px 18px 4px 18px;
-  background: rgba(221, 244, 255, 0.88);
+  padding: 4px 0 8px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
   color: #0f172a;
   overflow: visible;
 }

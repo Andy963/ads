@@ -625,7 +625,9 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .composerMainRow {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "left input right";
   align-items: flex-end;
   padding: 8px;
   flex-shrink: 0;
@@ -641,17 +643,27 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   align-items: center;
 }
 
+.composerMainRowLeft {
+  grid-area: left;
+}
+
+.composerMainRowRight {
+  grid-area: right;
+}
+
 .composerMainRow--expanded {
-  flex-wrap: wrap;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "input input"
+    "left right";
 }
 
 .composerMainRow--expanded .composer-input {
-  order: -1;
-  flex-basis: 100%;
+  width: 100%;
 }
 
 .composerMainRow--expanded .composerMainRowRight {
-  margin-left: auto;
+  margin-left: 0;
 }
 
 .attachIcon {
@@ -916,6 +928,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .composer-input {
+  grid-area: input;
   flex: 1 1 auto;
   min-width: 0;
   resize: none;

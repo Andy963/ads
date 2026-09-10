@@ -196,8 +196,9 @@ describe("MainChat compact composer layout", () => {
   it("puts multiline text across the full row with actions underneath", async () => {
     const composer = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
 
-    expect(composer).toMatch(/\.composerMainRow--expanded\s*\{[^}]*flex-wrap:\s*wrap\s*;/);
-    expect(composer).toMatch(/\.composerMainRow--expanded\s+\.composer-input\s*\{[^}]*order:\s*-1\s*;[^}]*flex-basis:\s*100%\s*;/);
-    expect(composer).toMatch(/\.composerMainRow--expanded\s+\.composerMainRowRight\s*\{[^}]*margin-left:\s*auto\s*;/);
+    expect(composer).toMatch(/\.composerMainRow\s*\{[^}]*display:\s*grid\s*;[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto\s*;[^}]*grid-template-areas:\s*"left input right"\s*;/);
+    expect(composer).toMatch(/\.composerMainRow--expanded\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto\s*;[^}]*grid-template-areas:\s*[\s\S]*"input input"[\s\S]*"left right"/);
+    expect(composer).toMatch(/\.composerMainRow--expanded\s+\.composer-input\s*\{[^}]*width:\s*100%\s*;/);
+    expect(composer).not.toMatch(/\.composerMainRow--expanded\s*\{[^}]*flex-wrap:\s*wrap\s*;/);
   });
 });

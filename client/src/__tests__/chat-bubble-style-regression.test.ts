@@ -5,15 +5,17 @@ import MainChatMessageList from "../components/MainChatMessageList.vue";
 import { readSfc } from "./readSfc";
 
 describe("chat bubble and popover style regressions", () => {
-  it("keeps user bubbles full width with actions in the normal flow", async () => {
+  it("keeps user messages full width without a visual bubble", async () => {
     const css = await readSfc("../components/MainChatMessageList.vue", import.meta.url);
     const userBubble = css.match(/\.msg\[data-role="user"\]\s+\.bubble\s*\{[^}]*\}/)?.[0];
     const userActions = css.match(/\.msg\[data-role="user"\]\s+\.msgActions\s*\{[^}]*\}/)?.[0];
 
     expect(userBubble).toMatch(/\n\s+width:\s*100%\s*;/);
     expect(userBubble).toMatch(/max-width:\s*100%\s*;/);
-    expect(userBubble).toMatch(/background:\s*rgba\(221,\s*244,\s*255,\s*0\.88\)/);
-    expect(userBubble).toMatch(/padding:\s*10px 16px 8px\s*;/);
+    expect(userBubble).toMatch(/background:\s*transparent\s*;/);
+    expect(userBubble).toMatch(/border:\s*none\s*;/);
+    expect(userBubble).toMatch(/border-radius:\s*0\s*;/);
+    expect(userBubble).toMatch(/padding:\s*4px 0 8px\s*;/);
     expect(userActions).toMatch(/position:\s*static\s*;/);
     expect(userActions).toMatch(/display:\s*flex\s*;/);
     expect(userActions).toMatch(/flex-wrap:\s*wrap\s*;/);
