@@ -201,7 +201,7 @@ describe("Model selector persistence", () => {
 
       const order = Array.from(wrapper.get(".laneTabGroup").element.children).map((element) => element.getAttribute("data-testid"));
       expect(order).toEqual(["lane-tab-planner", "lane-model-controls", "lane-tab-worker"]);
-      const selector = wrapper.findComponent({ name: "MainChatModelPopover" });
+      const selector = wrapper.findComponent({ name: "MainChatModelSelectors" });
       expect(selector.props("modelReasoningEffort")).toBe("medium");
       selector.vm.$emit("setReasoningEffort", "ultra");
       await settleUi(wrapper);

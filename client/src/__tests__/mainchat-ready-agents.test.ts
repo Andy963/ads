@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { mount } from "@vue/test-utils";
 
-import MainChatModelPopover from "../components/MainChatModelPopover.vue";
+import MainChatModelSelectors from "../components/MainChatModelSelectors.vue";
 
 describe("MainChat ready agents", () => {
   const baseProps = {
@@ -10,7 +10,7 @@ describe("MainChat ready agents", () => {
   } as const;
 
   it("hides the agent selector and auto-switches when the active agent is not ready", async () => {
-    const wrapper = mount(MainChatModelPopover, {
+    const wrapper = mount(MainChatModelSelectors, {
       props: {
         ...baseProps,
         agents: [

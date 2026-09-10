@@ -605,7 +605,7 @@
 
 .laneTabGroup {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(76px, 1fr) minmax(0, 320px) minmax(76px, 1fr);
   align-items: center;
   gap: 8px;
   width: 100%;
@@ -653,6 +653,7 @@
 }
 
 .laneTab {
+  justify-self: start;
   border: none;
   background: transparent;
   color: #64748b;
@@ -667,6 +668,10 @@
   align-items: center;
   gap: 7px;
   transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.laneTab:last-child {
+  justify-self: end;
 }
 
 .laneTabStatusDot {
@@ -1122,13 +1127,14 @@
   }
 
   .laneTabGroup {
-    gap: 6px;
+    gap: 4px;
   }
   .laneTab {
     flex: 0 0 auto;
     min-width: 0;
     white-space: nowrap;
-    padding: 4px 10px;
+    padding: 4px;
+    gap: 4px;
     font-size: 12px;
   }
 }

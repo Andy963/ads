@@ -7,7 +7,7 @@ const appVersion = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0
 import LoginGate from "./components/LoginGate.vue";
 import DraggableModal from "./components/DraggableModal.vue";
 import MainChatView from "./components/MainChat.vue";
-import MainChatModelPopover from "./components/MainChatModelPopover.vue";
+import MainChatModelSelectors from "./components/MainChatModelSelectors.vue";
 import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
 import ModelManager from "./components/ModelManager.vue";
 import SessionResumePicker from "./components/SessionResumePicker.vue";
@@ -215,9 +215,6 @@ const activeLaneModelReasoningEffort = computed(() =>
   activeWorkspaceTab.value === "planner"
     ? activePlannerRuntime.value.modelReasoningEffort.value
     : activeRuntime.value.modelReasoningEffort.value,
-);
-const hasActiveLaneModelSettings = computed(() =>
-  activeLaneAgents.value !== undefined || models.value !== undefined,
 );
 
 function handleActiveLaneSwitchAgent(agentId: string): void {
@@ -532,6 +529,38 @@ const plannerConnectionStatus = computed(() => {
         </div>
       </div>
       <div class="right">
+        <div v-if="!isMobile" class="laneSessionActions">
+          <button
+            v-if="activeLaneHasResume"
+            class="laneTabIconBtn"
+            type="button"
+            title="Resume session"
+            data-testid="lane-resume-thread"
+            @click.stop="openSessionPicker"
+          >
+            <el-icon :size="15" aria-hidden="true"><Clock /></el-icon>
+          </button>
+          <button
+            class="laneTabIconBtn"
+            type="button"
+            title="New session"
+            :disabled="activeLaneBusy || activeLaneNewSessionBlocked"
+            data-testid="lane-new-session"
+            @click.stop="handleLaneNewSession"
+          >
+            <el-icon :size="16" aria-hidden="true"><ChatDotRound /></el-icon>
+          </button>
+          <button
+            class="laneTabIconBtn"
+            type="button"
+            title="Clear session"
+            :disabled="activeLaneBusy"
+            data-testid="lane-clear-chat"
+            @click.stop="handleLaneClearChat"
+          >
+            <el-icon :size="15" aria-hidden="true"><Delete /></el-icon>
+          </button>
+        </div>
         <button
           v-if="!isMobile"
           type="button"
@@ -740,8 +769,7 @@ const plannerConnectionStatus = computed(() => {
                 />
               </button>
               <div v-if="tab.id === 'planner'" class="laneModelControls" data-testid="lane-model-controls">
-                <MainChatModelPopover
-                  v-if="hasActiveLaneModelSettings"
+                <MainChatModelSelectors
                   :connected="activeLaneConnected"
                   :busy="activeLaneBusy"
                   :input-locked="activeLaneInputLocked"
@@ -754,38 +782,6 @@ const plannerConnectionStatus = computed(() => {
                   @set-model="handleActiveLaneSetModel"
                   @set-reasoning-effort="handleActiveLaneSetReasoningEffort"
                 />
-                <div v-if="!isMobile" class="laneSessionActions">
-                  <button
-                    v-if="activeLaneHasResume"
-                    class="laneTabIconBtn"
-                    type="button"
-                    title="从历史会话中选择一个恢复"
-                    data-testid="lane-resume-thread"
-                    @click.stop="openSessionPicker"
-                  >
-                    <el-icon :size="15" aria-hidden="true"><Clock /></el-icon>
-                  </button>
-                  <button
-                    class="laneTabIconBtn"
-                    type="button"
-                    title="新会话"
-                    :disabled="activeLaneBusy || activeLaneNewSessionBlocked"
-                    data-testid="lane-new-session"
-                    @click.stop="handleLaneNewSession"
-                  >
-                    <el-icon :size="16" aria-hidden="true"><ChatDotRound /></el-icon>
-                  </button>
-                  <button
-                    class="laneTabIconBtn"
-                    type="button"
-                    title="清空会话"
-                    :disabled="activeLaneBusy"
-                    data-testid="lane-clear-chat"
-                    @click.stop="handleLaneClearChat"
-                  >
-                    <el-icon :size="15" aria-hidden="true"><Delete /></el-icon>
-                  </button>
-                </div>
               </div>
             </template>
           </div>
