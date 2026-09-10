@@ -7,8 +7,9 @@ import { readSfc } from "./readSfc";
 
 const ComposerHost = defineComponent({
   components: { MainChatComposerPanel },
-  setup() {
-    const draft = ref("");
+  props: { initialDraft: { type: String, default: "" } },
+  setup(props) {
+    const draft = ref(props.initialDraft);
     return { draft };
   },
   template: `
@@ -73,7 +74,7 @@ describe("MainChat compact composer layout", () => {
     await textarea.setValue("First line\nSecond line");
     expect(element.style.height).toBe("58px");
     expect(element.style.overflowY).toBe("hidden");
-    expect(wrapper.get(".composerMainRow").classes()).toContain("composerMainRow--expanded");
+    expect(wrapper.get(".composerMainRow").classes()).not.toContain("composerMainRow--expanded");
 
     await textarea.setValue(longDraft);
     expect(element.style.height).toBe("202px");
@@ -93,22 +94,43 @@ describe("MainChat compact composer layout", () => {
     wrapper.unmount();
   });
 
-  it("keeps a wrapped draft full width when the wider layout reduces its line count", async () => {
+  it.each(["", "Short draft"])("starts with one input row for draft %j", async (initialDraft) => {
+    vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockReturnValue(34);
+    const wrapper = mount(ComposerHost, { props: { initialDraft } });
+    await nextTick();
+
+    const textarea = wrapper.get("textarea.composer-input").element as HTMLTextAreaElement;
+    expect(textarea.value).toBe(initialDraft);
+    expect(textarea.rows).toBe(1);
+    expect(textarea.style.height).toBe("34px");
+    expect(wrapper.get(".composerMainRow").classes()).toEqual(["composerMainRow"]);
+    wrapper.unmount();
+  });
+
+  it("shrinks wrapped content without reserving a separate controls row", async () => {
     const scrollHeight = vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockReturnValue(34);
     const wrapper = mount(ComposerHost);
     const textarea = wrapper.get("textarea.composer-input");
 
     scrollHeight.mockReturnValue(58);
     await textarea.setValue("A draft that wraps beside the action buttons");
-    expect(wrapper.get(".composerMainRow").classes()).toContain("composerMainRow--expanded");
+    expect((textarea.element as HTMLTextAreaElement).style.height).toBe("58px");
+    expect(wrapper.get(".composerMainRow").classes()).toEqual(["composerMainRow"]);
 
     scrollHeight.mockReturnValue(34);
+    await textarea.setValue("Short draft");
+    expect((textarea.element as HTMLTextAreaElement).style.height).toBe("34px");
+    expect(wrapper.get(".composerMainRow").classes()).toEqual(["composerMainRow"]);
+
+    scrollHeight.mockReturnValue(58);
     window.dispatchEvent(new Event("resize"));
     await nextTick();
-    expect(wrapper.get(".composerMainRow").classes()).toContain("composerMainRow--expanded");
+    expect((textarea.element as HTMLTextAreaElement).style.height).toBe("58px");
+    expect(wrapper.get(".composerMainRow").classes()).toEqual(["composerMainRow"]);
 
+    scrollHeight.mockReturnValue(34);
     await textarea.setValue("");
-    expect(wrapper.get(".composerMainRow").classes()).not.toContain("composerMainRow--expanded");
+    expect((textarea.element as HTMLTextAreaElement).style.height).toBe("34px");
     wrapper.unmount();
   });
 
@@ -182,23 +204,22 @@ describe("MainChat compact composer layout", () => {
     expect(chat).toMatch(/\.chat\s*\{[^}]*flex:\s*1 1 auto\s*;/);
   });
 
-  it("keeps the visible input border at the viewport bottom with the safe area inside", async () => {
+  it("keeps safe-area protection in the bottom dock, outside the single-row input", async () => {
     const composer = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
     const composerRule = composer.match(/\.composer\s*\{[^}]*\}/)?.[0];
     const inputWrapRule = composer.match(/\.inputWrap\s*\{[^}]*\}/)?.[0];
 
-    expect(composerRule).toContain("padding: 8px 16px 0;");
-    expect(composerRule).not.toContain("safe-area-inset-bottom");
-    expect(inputWrapRule).toContain("padding-bottom: calc(env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));");
+    expect(composerRule).toContain("padding: 8px 16px calc(env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));");
+    expect(inputWrapRule).not.toContain("safe-area-inset-bottom");
+    expect(inputWrapRule).not.toContain("padding-bottom");
     expect(composer).not.toMatch(/padding-bottom:\s*calc\(12px\s*\+/);
   });
 
-  it("puts multiline text across the full row with actions underneath", async () => {
+  it("keeps the textarea and actions in one grid row as content grows", async () => {
     const composer = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
 
     expect(composer).toMatch(/\.composerMainRow\s*\{[^}]*display:\s*grid\s*;[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto\s*;[^}]*grid-template-areas:\s*"left input right"\s*;/);
-    expect(composer).toMatch(/\.composerMainRow--expanded\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\) auto\s*;[^}]*grid-template-areas:\s*[\s\S]*"input input"[\s\S]*"left right"/);
-    expect(composer).toMatch(/\.composerMainRow--expanded\s+\.composer-input\s*\{[^}]*width:\s*100%\s*;/);
-    expect(composer).not.toMatch(/\.composerMainRow--expanded\s*\{[^}]*flex-wrap:\s*wrap\s*;/);
+    expect(composer).toMatch(/\.composer-input\s*\{[^}]*width:\s*100%\s*;/);
+    expect(composer).not.toContain("composerMainRow--expanded");
   });
 });
