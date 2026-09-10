@@ -13,15 +13,15 @@ function readUtf8(relFromThisFile: string): string {
 }
 
 describe("MainChat header UI", () => {
-  it("compacts mobile navigation without shrinking the desktop header", () => {
+  it("compacts both desktop and mobile navigation", () => {
     const css = readUtf8("../App.css");
     const mobileCss = css.slice(css.indexOf("@media (max-width: 900px)"));
     const app = css.match(/\.app\s*\{[^}]*\}/)?.[0];
     const mobileApp = mobileCss.match(/\.app\s*\{[^}]*\}/)?.[0];
 
-    expect(app).toMatch(/--topbar-height:\s*48px\s*;/);
-    expect(mobileApp).toMatch(/--topbar-height:\s*40px\s*;/);
-    expect(mobileCss).toMatch(/\.laneTabs\s*\{[^}]*min-height:\s*36px\s*;[^}]*padding:\s*2px 10px\s*;/);
+    expect(app).toMatch(/--topbar-height:\s*40px\s*;/);
+    expect(mobileApp).toMatch(/--topbar-height:\s*36px\s*;/);
+    expect(mobileCss).toMatch(/\.laneTabs\s*\{[^}]*min-height:\s*32px\s*;[^}]*padding:\s*0 8px\s*;/);
     expect(mobileCss).toMatch(/\.mobileMenuBtn\s*\{[^}]*height:\s*var\(--topbar-height\)\s*;/);
   });
 

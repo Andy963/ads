@@ -1,5 +1,5 @@
 .app {
-  --topbar-height: 48px;
+  --topbar-height: 40px;
   position: fixed;
   top: var(--app-top, 0px);
   left: 0;
@@ -596,8 +596,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 40px;
-  padding: 4px 16px;
+  min-height: 36px;
+  padding: 2px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   box-sizing: border-box;
@@ -648,7 +648,7 @@
   color: #64748b;
   font-size: 13px;
   font-weight: 800;
-  padding: 6px 14px;
+  padding: 4px 12px;
   border-radius: 999px;
   cursor: pointer;
   white-space: nowrap;
@@ -765,7 +765,7 @@
 }
 @media (max-width: 900px) {
   .app {
-    --topbar-height: 40px;
+    --topbar-height: 36px;
   }
   .topbar,
   .laneTabs {
@@ -1105,8 +1105,8 @@
   }
   .laneTabs {
     width: 100%;
-    min-height: 36px;
-    padding: 2px 10px;
+    min-height: 32px;
+    padding: 0 8px;
     gap: 6px;
     justify-content: space-between;
   }
