@@ -1173,11 +1173,11 @@ function closeFilePreview(): void {
 }
 
 .msg[data-role="user"] .bubble {
-  width: auto;
-  max-width: min(90%, 960px);
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  padding: 10px 16px 28px 16px;
+  padding: 10px 16px 8px;
   border: 1px solid rgba(9, 105, 218, 0.16);
   border-radius: 18px 18px 4px 18px;
   background: rgba(221, 244, 255, 0.88);
@@ -1214,9 +1214,11 @@ function closeFilePreview(): void {
 }
 
 .msg[data-role="user"] .msgActions {
-  left: auto;
-  right: 10px;
-  bottom: 4px;
+  position: static;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-top: 4px;
 }
 
 .thoughtCard {
