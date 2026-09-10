@@ -183,7 +183,7 @@ describe("web/ws/bootstrapDelivery", () => {
         type: "history",
         items: [
           { role: "user", text: "npm test", ts: 1, kind: undefined },
-          { role: "status", text: "$ npm test\nTests failed", ts: 2, kind: "execute" },
+          { role: "status", text: "$ npm test", ts: 2, kind: "execute" },
         ],
       });
     } finally {
@@ -228,7 +228,7 @@ describe("web/ws/bootstrapDelivery", () => {
         type: "history",
         items: [
           { role: "user", text: "npm test", ts: 1, kind: undefined },
-          { role: "status", text: "$ npm test\nTests failed", ts: 2, kind: "execute" },
+          { role: "status", text: "$ npm test", ts: 2, kind: "execute" },
         ],
       });
     } finally {
@@ -557,7 +557,7 @@ describe("web/ws/bootstrapDelivery", () => {
         type: "command_snapshot",
         eventId: "active-cmd-1",
         active: true,
-        command: { id: "cmd-1", command: "npm test", status: "completed" },
+        command: { id: "cmd-1", command: "npm test", status: "completed", output: "private command output" },
       },
     ];
 
@@ -602,6 +602,8 @@ describe("web/ws/bootstrapDelivery", () => {
     assert.ok(snapshotMsg);
     assert.equal(snapshotMsg.bootstrap, true);
     assert.equal(snapshotMsg.command?.id, "cmd-1");
+    assert.equal(Object.hasOwn(snapshotMsg.command, "output"), false);
+    assert.doesNotMatch(JSON.stringify(sentInFlight), /private command output/);
   });
 
 });

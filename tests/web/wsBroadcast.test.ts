@@ -17,6 +17,7 @@ import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
 import { resolveSyncLaneKey, resolveSyncNamespace } from "../../server/web/server/sync/lane.js";
 import { WebLaneGenerationStore } from "../../server/web/server/sync/laneGeneration.js";
 import { SyncEventStore } from "../../server/web/server/sync/store.js";
+import type { AgentEvent } from "../../server/codex/events.js";
 
 type WsJson = { type?: unknown; [k: string]: unknown };
 
@@ -25,7 +26,9 @@ type FakeSession = {
   threadId: string | null;
   workingDirectory?: string;
   send: () => Promise<{ response: string }>;
-  onEvent: () => () => void;
+  invokeAgent: () => Promise<{ response: string; agentId: string; usage: null }>;
+  onEvent: (handler: (event: AgentEvent) => void) => () => void;
+  emitEvent: (event: AgentEvent) => void;
   getThreadId: () => string | null;
   reset: () => void;
   setModel: () => void;
@@ -43,12 +46,20 @@ function createFakeSessionFactory(prefix: string) {
   return {
     created,
     factory: ({ cwd }: { cwd: string }) => {
+      const eventHandlers = new Set<(event: AgentEvent) => void>();
       const session: FakeSession = {
         resetCalls: 0,
         threadId: `${prefix}-thread-${nextId++}`,
         workingDirectory: cwd,
         send: async () => ({ response: "ok" }),
-        onEvent: () => () => {},
+        invokeAgent: async () => ({ ...await session.send(), agentId: "codex", usage: null }),
+        onEvent: (handler) => {
+          eventHandlers.add(handler);
+          return () => { eventHandlers.delete(handler); };
+        },
+        emitEvent: (event) => {
+          for (const handler of eventHandlers) handler(event);
+        },
         getThreadId: () => session.threadId,
         reset: () => {
           session.resetCalls += 1;
@@ -86,9 +97,9 @@ function waitForWsOpen(client: WebSocket, timeoutMs = 1500): Promise<void> {
   });
 }
 
-function waitForWsMessage(client: WebSocket, predicate: (msg: WsJson) => boolean, timeoutMs = 1500): Promise<WsJson> {
+function waitForWsMessage(client: WebSocket, predicate: (msg: WsJson) => boolean, timeoutMs = 1500, label = ""): Promise<WsJson> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Timed out waiting for ws message")), timeoutMs);
+    const timer = setTimeout(() => reject(new Error(`Timed out waiting for ws message${label ? `: ${label}` : ""}`)), timeoutMs);
     const handler = (raw: RawData) => {
       let parsed: WsJson | null = null;
       try {
@@ -291,13 +302,15 @@ describe("web/server/ws/broadcast", () => {
     const clientB = new WebSocket(url, protocols, { origin: "http://localhost" });
     await waitForWsOpen(clientB);
 
-    const resultPromise = waitForWsMessage(clientB, (msg) => msg.type === "result" && msg.output === "done");
+    const resultPromise = waitForWsMessage(clientB, (msg) => msg.type === "result" && msg.kind === "execute");
     const workspacePromise = waitForWsMessage(clientB, (msg) => msg.type === "workspace");
     resolveRun?.({ ok: true, output: "done" });
 
     const result = await resultPromise;
     const workspace = await workspacePromise;
     assert.equal(result.type, "result");
+    assert.equal(result.command, "echo hello");
+    assert.equal(Object.hasOwn(result, "output"), false);
     assert.equal(workspace.type, "workspace");
 
     try {
@@ -312,6 +325,78 @@ describe("web/server/ws/broadcast", () => {
       // ignore
     }
   });
+
+  for (const chatSessionId of ["main", "planner"]) {
+    it(`sends metadata-only live and reconnect command frames in ${chatSessionId}`, { timeout: 10_000 }, async () => {
+      const protocols = ["ads-v1", "ads-session.command-stream", `ads-chat.${chatSessionId}`];
+      const url = `ws://127.0.0.1:${port}`;
+      const received: WsJson[] = [];
+      const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+      client.on("message", (raw) => received.push(JSON.parse(raw.toString()) as WsJson));
+      let reconnected: WebSocket | undefined;
+      const finishTurn = Promise.withResolvers<void>();
+      try {
+        await waitForWsOpen(client);
+        const session = (chatSessionId === "planner" ? plannerSessions : workerSessions).at(-1);
+        assert.ok(session);
+        const emitCommand = (type: "item.started" | "item.updated" | "item.completed", status: string) => {
+          session.emitEvent({
+            phase: "command",
+            title: "command",
+            timestamp: Date.now(),
+            raw: {
+              type,
+              item: {
+                type: "command_execution", id: "cmd-1", command: "npm test", status,
+                aggregated_output: "private provider command output",
+                ...(status === "completed" ? { exit_code: 0 } : {}),
+              },
+            },
+          });
+        };
+        session.send = async () => {
+          emitCommand("item.started", "inProgress");
+          emitCommand("item.updated", "inProgress");
+          await finishTurn.promise;
+          emitCommand("item.completed", "completed");
+          return { response: "Assistant summary" };
+        };
+        const startedPromise = waitForWsMessage(client, (frame) => frame.type === "command", 4000, "command start");
+        client.send(JSON.stringify({ type: "prompt", payload: "Run checks", client_message_id: "command-stream-prompt" }));
+        const started = await startedPromise;
+        assert.equal((started.command as Record<string, unknown>).command, "npm test");
+        assert.equal(started.clientMessageId, "command-stream-prompt");
+        const closed = new Promise<void>((resolve) => client.once("close", () => resolve()));
+        client.terminate();
+        await closed;
+
+        reconnected = new WebSocket(url, protocols, { origin: "http://localhost" });
+        reconnected.on("message", (raw) => received.push(JSON.parse(raw.toString()) as WsJson));
+        const snapshotPromise = waitForWsMessage(reconnected, (frame) => frame.type === "command_snapshot", 4000, "reconnect snapshot");
+        await waitForWsOpen(reconnected);
+        const snapshot = await snapshotPromise;
+        assert.equal(snapshot.bootstrap, true);
+        assert.equal((snapshot.command as Record<string, unknown>).identity, (started.command as Record<string, unknown>).identity);
+        assert.equal((snapshot.command as Record<string, unknown>).command, "npm test");
+
+        const completedPromise = waitForWsMessage(reconnected, (frame) => frame.type === "command", 4000, "command completion");
+        const resultPromise = waitForWsMessage(reconnected, (frame) => frame.type === "result", 4000, "assistant result");
+        finishTurn.resolve();
+        const completed = await completedPromise;
+        assert.equal((completed.command as Record<string, unknown>).status, "completed");
+        assert.equal((await resultPromise).output, "Assistant summary");
+        assert.equal(received.filter((frame) => frame.type === "command").length, 2);
+        assert.doesNotMatch(JSON.stringify(received), /private provider command output|outputDelta|aggregated_output/);
+        for (const frame of received.filter((entry) => entry.type === "command" || entry.type === "command_snapshot")) {
+          assert.equal(Object.hasOwn(frame.command as Record<string, unknown>, "output"), false);
+        }
+      } finally {
+        finishTurn.resolve();
+        client.terminate();
+        reconnected?.terminate();
+      }
+    });
+  }
 
   it("broadcasts lane clear_history resets only to sibling connections in the same chat lane", async () => {
     const url = `ws://127.0.0.1:${port}`;

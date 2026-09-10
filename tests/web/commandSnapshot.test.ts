@@ -30,7 +30,7 @@ describe("server/sync/commandSnapshot", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("coalesces duplicate output and preserves absolute offsets", () => {
+  it("coalesces legacy offsets without persisting or returning command output", () => {
     const store = new SyncEventStore({ stateDbPath });
     const coalescer = createCommandSnapshotCoalescer({
       store,
@@ -65,7 +65,9 @@ describe("server/sync/commandSnapshot", () => {
       type: COMMAND_SNAPSHOT_EVENT_TYPE,
     });
     assert.equal(snapshots.length, 1);
-    assert.equal(snapshots[0]?.payload.command && (snapshots[0].payload.command as Record<string, unknown>).output, "$ npm test\nPASS one\nPASS two\n");
+    assert.equal(Object.hasOwn(snapshots[0]!.payload.command as Record<string, unknown>, "output"), false);
+    assert.doesNotMatch(JSON.stringify(snapshots), /PASS one|PASS two/);
+    assert.doesNotMatch(JSON.stringify(coalescer.getSnapshots()), /PASS one|PASS two/);
   });
 
   it("keeps only the newest command when a command id is reused", () => {
@@ -113,7 +115,8 @@ describe("server/sync/commandSnapshot", () => {
       hydrate: true,
     });
     assert.equal(reconnect.getActiveCount(), 1);
-    assert.equal(reconnect.getSnapshots()[0]?.command && (reconnect.getSnapshots()[0]!.command as Record<string, unknown>).output, "$ npm test\nPASS\n");
+    assert.equal((reconnect.getSnapshots()[0]!.command as Record<string, unknown>).command, "npm test");
+    assert.equal(Object.hasOwn(reconnect.getSnapshots()[0]!.command as Record<string, unknown>, "output"), false);
 
     writer.finish();
     assert.equal(store.readCoalesced({ namespace: WEB_WORKER_NAMESPACE, laneKey: "command-lane", type: COMMAND_SNAPSHOT_EVENT_TYPE }).length, 0);

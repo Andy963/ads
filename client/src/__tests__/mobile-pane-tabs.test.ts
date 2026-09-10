@@ -66,8 +66,12 @@ describe("mobile navigation shell", () => {
 
   it("hides duplicate lane session buttons on mobile", async () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
-    expect(sfc).toContain('v-if="!isMobile && activeLaneHasResume"');
-    expect(sfc).toContain('v-if="!isMobile"\n            class="laneTabIconBtn"');
+    const actions = sfc.match(/<div v-if="!isMobile" class="laneSessionActions">([\s\S]*?)<\/div>/)?.[1];
+    expect(actions).toBeDefined();
+    expect(actions).toContain('v-if="activeLaneHasResume"');
+    expect(actions).toContain('data-testid="lane-resume-thread"');
+    expect(actions).toContain('data-testid="lane-new-session"');
+    expect(actions).toContain('data-testid="lane-clear-chat"');
   });
 
   it("keeps lane tab row free of duplicate warning banners", async () => {

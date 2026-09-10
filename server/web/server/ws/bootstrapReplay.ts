@@ -1,5 +1,6 @@
 import { stripLeadingTranslation } from "../../../utils/assistantText.js";
 import type { HistoryEntry } from "../../../utils/historyStore.js";
+import { stripCommandHistoryOutput } from "../commandPresentation.js";
 
 export function buildHistoryBootstrapPayload(entries: HistoryEntry[]): { type: "history"; items: HistoryEntry[] } | null {
   if (!entries.length) {
@@ -13,10 +14,8 @@ export function buildHistoryBootstrapPayload(entries: HistoryEntry[]): { type: "
     return null;
   }
   const sanitizedHistory = visibleEntries.map((entry) => {
-    if (entry.role !== "ai") {
-      return entry;
-    }
-    const cleanedText = stripLeadingTranslation(entry.text);
+    const commandText = stripCommandHistoryOutput(entry.text, entry.kind);
+    const cleanedText = entry.role === "ai" ? stripLeadingTranslation(commandText) : commandText;
     if (cleanedText === entry.text) {
       return entry;
     }

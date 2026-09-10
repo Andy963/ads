@@ -6,6 +6,7 @@ import { buildHistoryBootstrapPayload } from "../../ws/bootstrapReplay.js";
 import { resolveLaneRequest } from "../../sync/laneRequest.js";
 import { resolveSyncNamespace } from "../../sync/lane.js";
 import type { WebLaneGenerationStore } from "../../sync/laneGeneration.js";
+import { projectCommandFrame } from "../../commandPresentation.js";
 
 type SyncHistoryStore = {
   get: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }>;
@@ -75,7 +76,7 @@ export async function handleSyncRoutes(
       revision: event.revision,
       ts: event.ts,
       runId: event.runId ?? null,
-      payload: event.payload,
+      payload: projectCommandFrame(event.payload),
     })),
     latestSeq: result.latestSeq,
     minAvailableSeq: result.minAvailableSeq,

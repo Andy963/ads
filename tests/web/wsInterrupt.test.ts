@@ -225,7 +225,7 @@ describe("web/server/ws/interrupt", () => {
         msg.type === "result" &&
         msg.kind === "execute" &&
         msg.command === "echo hello" &&
-        msg.output === "已中断，输出可能不完整",
+        msg.ok === false,
       1500,
     );
 
@@ -272,7 +272,7 @@ describe("web/server/ws/interrupt", () => {
         msg.type === "result" &&
         msg.kind === "execute" &&
         msg.command === "echo hello" &&
-        msg.output === "已中断，输出可能不完整",
+        msg.ok === false,
       1500,
     );
     clientB.send(JSON.stringify({ type: "interrupt" }));
@@ -333,13 +333,13 @@ describe("web/server/ws/interrupt", () => {
 
     const resultPromise = waitForWsMessage(
       reconnected,
-      (msg) => msg.type === "result" && msg.ok === true && msg.output === "done",
+      (msg) => msg.type === "result" && msg.ok === true && msg.kind === "execute",
       1500,
     );
     resolveRun?.({ ok: true, output: "done" });
 
     const result = await resultPromise;
-    assert.equal(result.output, "done");
+    assert.equal(Object.hasOwn(result, "output"), false);
     assert.equal(interruptControllers.size, 0);
 
     reconnected.terminate();
@@ -370,7 +370,7 @@ describe("web/server/ws/interrupt", () => {
 
     const resultPromise = waitForWsMessage(
       clientA,
-      (msg) => msg.type === "result" && msg.ok === true && msg.output === "done",
+      (msg) => msg.type === "result" && msg.ok === true && msg.kind === "execute",
       1500,
     );
     clientA.send(JSON.stringify({ type: "command", payload: "echo hello" }));
@@ -387,7 +387,7 @@ describe("web/server/ws/interrupt", () => {
     resolveRun?.({ ok: true, output: "done" });
 
     const result = await resultPromise;
-    assert.equal(result.output, "done");
+    assert.equal(Object.hasOwn(result, "output"), false);
     assert.equal(interruptControllers.size, 0);
 
     try {
@@ -438,12 +438,12 @@ describe("web/server/ws/interrupt", () => {
         msg.type === "result" &&
         msg.kind === "execute" &&
         msg.command === "echo hello" &&
-        msg.output === "已中断，输出可能不完整",
+        msg.ok === false,
       1500,
     );
     clientB.send(JSON.stringify({ type: "interrupt" }));
     const interrupted = await interruptedPromise;
-    assert.equal(interrupted.output, "已中断，输出可能不完整");
+    assert.equal(Object.hasOwn(interrupted, "output"), false);
     assert.equal(interruptControllers.size, 0);
 
     resolveRun?.({ ok: true, output: "late output" });

@@ -461,31 +461,6 @@ function toggleCommandTree(id: string): void {
   openCommandTrees.value = next;
 }
 
-function executeRawContent(m: RenderMessage): string {
-  const full = String(m.fullContent ?? "").trimEnd();
-  if (full) return full;
-  return String(m.content ?? "").trimEnd();
-}
-
-function executeAllLines(m: RenderMessage): string[] {
-  const raw = executeRawContent(m);
-  if (!raw) return [];
-  return raw.replace(/\r\n/g, "\n").split("\n");
-}
-
-function getExecuteOutput(m: RenderMessage): string {
-  return executeAllLines(m).slice(0, 3).join("\n");
-}
-
-function getExecuteHiddenCount(m: RenderMessage): number {
-  const lines = executeAllLines(m);
-  const localHidden = Math.max(0, lines.length - 3);
-  if (m.hiddenLineCount && !m.fullContent) {
-    return localHidden + m.hiddenLineCount;
-  }
-  return localHidden;
-}
-
 function caretPath(open: boolean): string {
   return open ? "M6 8l4 4 4-4" : "M8 6l4 4-4 4";
 }
@@ -582,46 +557,6 @@ function closeFilePreview(): void {
             <span class="execute-cmd" :title="m.command || ''">{{ m.command || "" }}</span>
             <span v-if="m.streaming" class="executeSpinner" aria-label="Running..."></span>
           </div>
-          <div class="execute-actions">
-            <button class="msgCopyBtn executeCopyBtn" type="button" aria-label="复制命令输出" @click="emit('copyMessage', m)">
-              <svg
-                v-if="copiedMessageId === m.id"
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M20 6L9 17l-5-5" />
-              </svg>
-              <svg
-                v-else
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.75"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <rect x="9" y="9" width="11" height="11" rx="2" />
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-              </svg>
-            </button>
-          </div>
-        </div>
-        <pre
-          v-if="getExecuteOutput(m).trim()"
-          class="execute-output"
-        >{{ getExecuteOutput(m) }}</pre>
-        <div v-if="getExecuteHiddenCount(m) > 0" class="execute-more">
-          {{ `… ${getExecuteHiddenCount(m)} more lines` }}
         </div>
       </div>
       <div v-else-if="m.kind === 'divider'" class="sessionBoundaryDivider" data-testid="session-boundary-divider">
@@ -831,16 +766,9 @@ function closeFilePreview(): void {
   overflow: hidden;
 }
 
-.execute-actions {
+.execute-left .prompt-tag {
   flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-}
-
-.executeCopyBtn {
-  width: 24px;
-  height: 24px;
+  white-space: nowrap;
 }
 
 .execute-cmd {
@@ -853,28 +781,6 @@ function closeFilePreview(): void {
   overflow: hidden;
   text-overflow: ellipsis;
   text-align: left;
-}
-
-.execute-output {
-  margin: 4px 0 0 0;
-  font-size: 12px;
-  line-height: 1.35;
-  color: #0f172a;
-  overflow: hidden;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  max-height: calc(1.35em * 3 + 2px);
-  flex: 0 0 auto;
-}
-
-.execute-more {
-  margin-top: 4px;
-  font-size: 12px;
-  color: #94a3b8;
-  flex: 0 0 auto;
 }
 
 .patchCard {
@@ -1474,6 +1380,7 @@ function closeFilePreview(): void {
 
 .executeSpinner {
   display: inline-block;
+  flex: 0 0 auto;
   width: 9px;
   height: 9px;
   border: 1.5px solid rgba(148, 163, 184, 0.4);
@@ -1486,7 +1393,6 @@ function closeFilePreview(): void {
 
 @media (max-width: 768px) {
   .execute-cmd,
-  .execute-output,
   .command-tree-branch,
   .command-cmd,
   .patchCardDiff {

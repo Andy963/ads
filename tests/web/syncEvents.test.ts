@@ -7,7 +7,7 @@ import path from "node:path";
 import { resetStateDatabaseForTests } from "../../server/state/database.js";
 import { deriveProjectSessionId } from "../../server/web/server/projectSessionId.js";
 import { handleSyncRoutes } from "../../server/web/server/api/routes/sync.js";
-import { resolveSyncLaneKey } from "../../server/web/server/sync/lane.js";
+import { resolveSyncLaneKey, resolveSyncNamespace } from "../../server/web/server/sync/lane.js";
 import { SyncEventStore } from "../../server/web/server/sync/store.js";
 import { WEB_WORKER_NAMESPACE } from "../../server/web/server/start/webLaneResources.js";
 
@@ -110,6 +110,53 @@ describe("web sync events", () => {
     assert.deepEqual(result.events.map((event) => event.type), ["delta", "result"]);
     assert.equal(result.truncated, false);
   });
+
+  for (const chatSessionId of ["main", "planner"]) {
+    it(`strips legacy command output from ${chatSessionId} HTTP catch-up`, async () => {
+      const workspaceRoot = path.join(tmpDir, "workspace");
+      fs.mkdirSync(workspaceRoot);
+      const sessionId = deriveProjectSessionId(workspaceRoot);
+      const laneKey = resolveSyncLaneKey({ authUserId: "u-1", sessionId, chatSessionId });
+      const namespace = resolveSyncNamespace(chatSessionId);
+      const store = new SyncEventStore({ stateDbPath });
+      const frames = [
+        { type: "command", command: { id: "cmd-1", command: "npm test", outputDelta: "private delta" } },
+        { type: "command_snapshot", command: { id: "cmd-1", command: "npm test", output: "private snapshot" } },
+        { type: "result", kind: "execute", ok: true, command: "npm test", output: "private result" },
+        { type: "history", items: [{ role: "status", kind: "execute", text: "$ npm test\nprivate history", ts: 1 }] },
+      ];
+      for (const frame of frames) {
+        store.append({ namespace, laneKey, type: frame.type, payload: frame });
+      }
+
+      const res = createRes();
+      await handleSyncRoutes(
+        {
+          req: { method: "GET" } as any,
+          res: res as any,
+          url: new URL(`http://localhost/api/sync/events?sessionId=default&chatSessionId=${chatSessionId}&workspace=${encodeURIComponent(workspaceRoot)}`),
+          pathname: "/api/sync/events",
+          auth: { userId: "u-1", username: "admin" },
+        },
+        {
+          syncEventStore: store,
+          defaultWorkspaceRoot: workspaceRoot,
+          resolveWorkspaceRoot: () => workspaceRoot,
+          workerHistoryStore: { get: () => [] },
+          plannerHistoryStore: { get: () => [] },
+        },
+      );
+
+      assert.equal(res.statusCode, 200);
+      const payload = JSON.parse(res.body);
+      assert.equal(payload.events.length, 4);
+      assert.equal(payload.events[0].payload.command.command, "npm test");
+      assert.equal(payload.events[1].payload.command.id, "cmd-1");
+      assert.equal(payload.events[3].payload.items[0].text, "$ npm test");
+      assert.doesNotMatch(res.body, /private|outputDelta|"output"/);
+      assert.match(JSON.stringify(store.readAfter({ namespace, laneKey, afterSeq: 0 })), /private/);
+    });
+  }
 
   it("marks a lane truncated only after retained events were actually removed", () => {
     const store = new SyncEventStore({ stateDbPath, maxEventsPerLane: 2 });

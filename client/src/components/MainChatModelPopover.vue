@@ -338,6 +338,7 @@ onBeforeUnmount(() => {
 .modelPopover {
   position: relative;
   min-width: 0;
+  max-width: 100%;
 }
 
 .modelPopoverToggle {
@@ -345,7 +346,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 7px;
   min-width: 0;
-  max-width: min(280px, 42vw);
+  max-width: min(280px, 100%);
   min-height: 32px;
   padding: 5px 9px;
   border: 1px solid rgba(148, 163, 184, 0.28);
@@ -415,7 +416,8 @@ onBeforeUnmount(() => {
 .modelPopoverMenu {
   position: absolute;
   top: calc(100% + 8px);
-  right: 0;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 220;
   display: flex;
   flex-direction: column;
@@ -504,12 +506,14 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 768px) {
-  .modelPopoverToggle {
-    max-width: min(230px, 60vw);
+  .modelPopoverIcon {
+    display: none;
   }
 
-  .modelPopoverMenu {
-    right: -4px;
+  .modelPopoverToggle {
+    max-width: min(230px, 100%);
+    gap: 4px;
+    padding-inline: 7px;
   }
 }
 </style>

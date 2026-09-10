@@ -185,6 +185,51 @@ describe("Model selector persistence", () => {
     TEST_TIMEOUT_MS,
   );
 
+  it("keeps the centered effort selector scoped to the active lane and outgoing prompt", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    try {
+      await settleUi(wrapper);
+      await ensureWsConnected(wrapper);
+      const controller = wrapper.vm as any;
+      controller.setMainModelId("gpt-4.1");
+      controller.setPlannerModelId("gpt-4o");
+      controller.setMainModelReasoningEffort("medium");
+      controller.setPlannerModelReasoningEffort("high");
+      await wrapper.get('[data-testid="lane-tab-worker"]').trigger("click");
+      await settleUi(wrapper);
+
+      const order = Array.from(wrapper.get(".laneTabGroup").element.children).map((element) => element.getAttribute("data-testid"));
+      expect(order).toEqual(["lane-tab-planner", "lane-model-controls", "lane-tab-worker"]);
+      const selector = wrapper.findComponent({ name: "MainChatModelPopover" });
+      expect(selector.props("modelReasoningEffort")).toBe("medium");
+      selector.vm.$emit("setReasoningEffort", "ultra");
+      await settleUi(wrapper);
+      controller.sendMainPrompt("Worker prompt");
+      await settleUi(wrapper);
+      expect(lastSendPromptPayload).toMatchObject({ text: "Worker prompt", model: "gpt-4.1", model_reasoning_effort: "ultra" });
+
+      lastWorkerWs!.onMessage?.({ type: "result", ok: true, output: "Worker done" });
+      await wrapper.get('[data-testid="lane-tab-planner"]').trigger("click");
+      await settleUi(wrapper);
+      expect(_lastPlannerWs).toBeTruthy();
+      _lastPlannerWs!.onOpen?.();
+      await settleUi(wrapper);
+      expect(selector.props("modelReasoningEffort")).toBe("high");
+      selector.vm.$emit("setReasoningEffort", "max");
+      await settleUi(wrapper);
+      controller.sendPlannerPrompt("Advisor prompt");
+      await settleUi(wrapper);
+      expect(lastSendPromptPayload).toMatchObject({ text: "Advisor prompt", model: "gpt-4o", model_reasoning_effort: "max" });
+
+      await wrapper.get('[data-testid="lane-tab-worker"]').trigger("click");
+      await settleUi(wrapper);
+      expect(selector.props("modelReasoningEffort")).toBe("ultra");
+    } finally {
+      wrapper.unmount();
+    }
+  }, TEST_TIMEOUT_MS);
+
   it(
     "reloads runtime model options after the model manager changes",
     async () => {

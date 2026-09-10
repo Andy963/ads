@@ -4,6 +4,12 @@ import assert from "node:assert/strict";
 import { buildHistoryBootstrapPayload } from "../../server/web/server/ws/bootstrapReplay.js";
 
 describe("web/ws/bootstrapReplay", () => {
+  it("restores only the command from legacy execute history", () => {
+    const entry = { role: "status", kind: "execute", text: "$ npm test\nprivate output\nprivate error", ts: 1 };
+    assert.deepEqual(buildHistoryBootstrapPayload([entry])?.items, [{ ...entry, text: "$ npm test" }]);
+    assert.match(entry.text, /private output/);
+  });
+
   it("does not replay legacy thought or plan history entries", () => {
     const payload = buildHistoryBootstrapPayload([
       { role: "user", text: "hello", ts: 1 },

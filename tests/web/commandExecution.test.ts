@@ -5,7 +5,7 @@ import { HistoryStore } from "../../server/utils/historyStore.js";
 import { executeCommandLine } from "../../server/web/server/ws/commandExecution.js";
 
 describe("web/ws/commandExecution", () => {
-  it("records successful command output as replayable execute history", async () => {
+  it("keeps successful output internally and sends only command metadata", async () => {
     const sent: unknown[] = [];
     const historyStore = new HistoryStore({ namespace: "test-command-execution-ok", maxEntriesPerSession: 10 });
     const interruptControllers = new Map<string, AbortController>();
@@ -35,7 +35,6 @@ describe("web/ws/commandExecution", () => {
         {
           type: "result",
           ok: true,
-          output: "M file.ts\n",
           kind: "execute",
           command: "git status --short",
         },
@@ -81,7 +80,6 @@ describe("web/ws/commandExecution", () => {
         {
           type: "result",
           ok: false,
-          output: "command failed",
           kind: "execute",
           command: "ads task status",
         },
@@ -143,7 +141,7 @@ describe("web/ws/commandExecution", () => {
       resolveRun?.({ ok: true, output: "late output" });
 
       assert.deepEqual(sent, [
-        { type: "result", ok: false, output: "已中断，输出可能不完整", kind: "execute", command: "sleep forever" },
+        { type: "result", ok: false, kind: "execute", command: "sleep forever" },
       ]);
       assert.deepEqual(loggedErrors, ["已中断，输出可能不完整"]);
       assert.deepEqual(
@@ -188,7 +186,7 @@ describe("web/ws/commandExecution", () => {
       });
 
       assert.deepEqual(sent, [
-        { type: "result", ok: false, output: "command crashed", kind: "execute", command: "ads task status" },
+        { type: "result", ok: false, kind: "execute", command: "ads task status" },
       ]);
       assert.deepEqual(loggedErrors, ["command crashed"]);
       assert.deepEqual(

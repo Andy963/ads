@@ -111,11 +111,9 @@ export function attachWorkerPromptHandler(args: {
   let activeRespondingItemId: string | null = null;
   const completedRespondingItemIds = new Set<string>();
   let latestStepTraceText = "";
-  const lastCommandOutputsByKey = new Map<string, string>();
   const announcedCommandKeys = new Set<string>();
   const terminalCommandKeys = new Set<string>();
   let latestCommandKey: string | null = null;
-  let hasCommandOutput = false;
   let exploredHeaderSent = false;
   const isActive = (): boolean => (args.isActive ? args.isActive() : true);
 
@@ -167,11 +165,9 @@ export function attachWorkerPromptHandler(args: {
       activeRespondingItemId = null;
       completedRespondingItemIds.clear();
       latestStepTraceText = "";
-      lastCommandOutputsByKey.clear();
       announcedCommandKeys.clear();
       terminalCommandKeys.clear();
       latestCommandKey = null;
-      hasCommandOutput = false;
     }
     if (raw.type === "thread.started" && raw.thread_id) {
       args.onThreadStarted?.(raw.thread_id);
@@ -307,31 +303,14 @@ export function attachWorkerPromptHandler(args: {
         latestCommandKey = commandKey;
       }
 
-      let outputDelta: string | undefined;
-      const nextOutput = String(commandPayload.aggregated_output ?? "");
-      const prevOutput = lastCommandOutputsByKey.get(commandKey) ?? "";
-      if (nextOutput !== prevOutput) {
-        if (prevOutput && nextOutput.startsWith(prevOutput)) {
-          outputDelta = nextOutput.slice(prevOutput.length);
-        } else {
-          outputDelta = nextOutput;
-        }
-        lastCommandOutputsByKey.set(commandKey, nextOutput);
-      }
-
       if (isNewCommand) {
         announcedCommandKeys.add(commandKey);
         evaluateCommandSafety(commandLine);
-        const header = `${hasCommandOutput ? "\n" : ""}$ ${commandLine}\n`;
-        outputDelta = header + (outputDelta ?? "");
-        hasCommandOutput = true;
-      } else if (outputDelta) {
-        hasCommandOutput = true;
       }
 
       const isTerminalCommand = isTerminalCommandStatus(commandPayload.status);
       const shouldSendTerminalCommand = isTerminalCommand && !terminalCommandKeys.has(commandKey);
-      if (!isNewCommand && !outputDelta && !shouldSendTerminalCommand) {
+      if (!isNewCommand && !shouldSendTerminalCommand) {
         return;
       }
       if (shouldSendTerminalCommand) {
@@ -341,13 +320,11 @@ export function attachWorkerPromptHandler(args: {
       args.sendToChat({
         type: "command",
         ts: eventTimestamp,
-        detail: event.detail ?? event.title,
         command: {
           id: commandPayload.id,
           command: commandLine,
           status: commandPayload.status,
           exit_code: commandPayload.exit_code,
-          outputDelta,
         },
       });
       return;

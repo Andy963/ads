@@ -31,10 +31,10 @@ describe("mobile typography", () => {
     expect(sfc).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.md\s*:deep\(\.md-codeblock pre > code\)[\s\S]*?font-size:\s*14px\s*;/);
   });
 
-  it("enlarges mobile command output and metadata", () => {
+  it("enlarges mobile command text and metadata", () => {
     const sfc = readUtf8("../components/MainChatMessageList.vue");
 
-    expect(sfc).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.execute-output[\s\S]*?font-size:\s*14px\s*;/);
+    expect(sfc).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.execute-cmd[\s\S]*?font-size:\s*14px\s*;/);
     expect(sfc).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.patchCardDiff[\s\S]*?font-size:\s*14px\s*;/);
     expect(sfc).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.msgTime[\s\S]*?font-size:\s*12px\s*;/);
     expect(sfc).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.retryBadge[\s\S]*?font-size:\s*12px\s*;/);

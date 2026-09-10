@@ -30,6 +30,7 @@ import { resolveSyncLaneKeys, resolveSyncNamespace } from "../sync/lane.js";
 import { isStreamTerminalEvent, isTransientSyncEvent } from "../sync/eventClass.js";
 import { createDeltaStreamCoalescer } from "../sync/deltaStream.js";
 import { createCommandSnapshotCoalescer } from "../sync/commandSnapshot.js";
+import { projectCommandFrame } from "../commandPresentation.js";
 import { recordConversationMessage } from "../../../utils/conversationMessageRecorder.js";
 import { WEB_WORKER_NAMESPACE } from "../start/webLaneResources.js";
 import { onTaskTerminalEvent } from "../../taskNotifications/taskNotificationDispatcher.js";
@@ -496,6 +497,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       if (!isLaneGenerationCurrent(lane)) {
         return { ok: false, payload };
       }
+      payload = projectCommandFrame(payload);
       const payloadRecord = payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : null;
       const eventType = String(payloadRecord?.type ?? "").trim();
       if (!payloadRecord || !eventType || !syncEventStore) {

@@ -109,7 +109,7 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 /**
- * Coalesces command output into one durable runtime row for the newest command.
+ * Coalesces command metadata into one durable runtime row for the newest command.
  *
  * The row survives individual command completion and is removed only after the
  * enclosing result/error. This lets a reconnect restore the one command block
@@ -413,7 +413,6 @@ export function createCommandSnapshotCoalescer(args: {
           command: entry.command,
           status: entry.status,
           exit_code: entry.exitCode,
-          output: entry.output,
           startOffset: entry.startOffset,
           endOffset: entry.endOffset,
           revision: entry.revision,
@@ -473,7 +472,6 @@ export function createCommandSnapshotCoalescer(args: {
         command: entry.command,
         status: entry.status,
         exit_code: entry.exitCode,
-        output: entry.output,
         startOffset: entry.startOffset,
         endOffset: entry.endOffset,
         revision: entry.revision,

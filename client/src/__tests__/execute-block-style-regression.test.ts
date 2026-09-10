@@ -2,10 +2,9 @@ import { describe, expect, it } from "vitest";
 import { readSfc } from "./readSfc";
 
 describe("execute block style regression", () => {
-  it("does not force a fixed execute block height and clamps output to 3 lines", async () => {
+  it("keeps only a single ellipsized command line without output or actions", async () => {
     const css = await readSfc("../components/MainChatMessageList.vue", import.meta.url);
 
-    // Execute cards should size to content (up to the output clamp) and not enforce a fixed height.
     expect(css).not.toMatch(/\.execute-block\s*\{[^}]*height:\s*\d+px\s*;/);
     expect(css).not.toMatch(/height:\s*88px\s*;/);
 
@@ -14,9 +13,10 @@ describe("execute block style regression", () => {
     expect(css).toMatch(/\.execute-left\s*\{[\s\S]*?display:\s*flex\s*;[\s\S]*?\}/);
     expect(css).toMatch(/\.execute-left\s*\{[\s\S]*?flex:\s*1\s+1\s+auto\s*;[\s\S]*?\}/);
     expect(css).toMatch(/\.execute-cmd\s*\{[\s\S]*?text-overflow:\s*ellipsis\s*;[\s\S]*?\}/);
-    expect(css).toMatch(/\.execute-output\s*\{[\s\S]*?overflow:\s*hidden\s*;[\s\S]*?\}/);
-    expect(css).toMatch(/\.execute-output\s*\{[\s\S]*?white-space:\s*pre-wrap\s*;[\s\S]*?\}/);
-    expect(css).toMatch(/\.execute-output\s*\{[\s\S]*?-webkit-line-clamp:\s*3\s*;[\s\S]*?\}/);
+    expect(css).toMatch(/\.execute-cmd\s*\{[^}]*white-space:\s*nowrap\s*;/);
+    expect(css).toMatch(/\.execute-left\s+\.prompt-tag\s*\{[^}]*flex:\s*0 0 auto\s*;[^}]*white-space:\s*nowrap\s*;/);
+    expect(css).toMatch(/\.executeSpinner\s*\{[^}]*flex:\s*0 0 auto\s*;/);
+    expect(css).not.toMatch(/execute-output|execute-more|executeCopyBtn|execute-actions/);
 
     // Old stacked-underlay styling should not be present.
     expect(css).not.toMatch(/\.execute-underlay/);

@@ -604,17 +604,27 @@
 }
 
 .laneTabGroup {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 2px;
-  padding: 3px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 999px;
-  background: rgba(241, 245, 249, 0.92);
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
 }
 
-.laneTabSpacer {
-  flex: 1 1 auto;
+.laneModelControls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.laneSessionActions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
 }
 
 .laneTabIconBtn {
@@ -1112,8 +1122,7 @@
   }
 
   .laneTabGroup {
-    flex: 0 0 auto;
-    min-width: 0;
+    gap: 6px;
   }
   .laneTab {
     flex: 0 0 auto;

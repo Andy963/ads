@@ -46,7 +46,7 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("emits copy events from execute blocks", async () => {
+  it("renders the command without any copy button or output", async () => {
     const wrapper = mount(MainChatMessageList, {
       props: {
         messages: [{ id: "e-1", role: "system", kind: "execute", content: "out-1", command: "cmd-1" }],
@@ -69,14 +69,11 @@ describe("chat execute stacking and command collapse", () => {
     });
 
     await settleUi(wrapper);
-    await wrapper.find(".executeCopyBtn").trigger("click");
-
-    expect(wrapper.emitted("copyMessage")?.[0]?.[0]).toMatchObject({
-      id: "e-1",
-      kind: "execute",
-      command: "cmd-1",
-      content: "out-1",
-    });
+    expect(wrapper.get(".execute-cmd").text()).toBe("cmd-1");
+    expect(wrapper.get(".execute-block").findAll("button")).toHaveLength(0);
+    expect(wrapper.find(".execute-output").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("out-1");
+    expect(wrapper.emitted("copyMessage")).toBeUndefined();
 
     wrapper.unmount();
   });
@@ -119,7 +116,7 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("keeps replayed execute output at three lines while preserving full output for copying", async () => {
+  it("never renders legacy full output or output expansion controls", async () => {
     const fullOutput = Array.from({ length: 2500 }, (_, index) => `line ${index + 1}`).join("\n");
     const wrapper = mount(MainChatMessageList, {
       props: {
@@ -154,21 +151,17 @@ describe("chat execute stacking and command collapse", () => {
 
     await settleUi(wrapper);
 
-    expect(wrapper.find(".execute-output").text()).not.toContain("line 5");
-    expect(wrapper.find(".execute-output").text().split("\n")).toHaveLength(3);
-    expect(wrapper.find(".execute-more--button").exists()).toBe(false);
-    expect(wrapper.find(".execute-more").text()).toContain("2497");
-    await wrapper.get(".execute-more").trigger("click");
-    expect(wrapper.find(".execute-output").text()).not.toContain("line 4");
-    expect(wrapper.find(".execute-output--expanded").exists()).toBe(false);
-
-    await wrapper.get(".executeCopyBtn").trigger("click");
-    expect(wrapper.emitted("copyMessage")?.[0]?.[0]).toMatchObject({ fullContent: fullOutput });
+    expect(wrapper.get(".execute-cmd").text()).toBe("npm test");
+    expect(wrapper.find(".execute-output").exists()).toBe(false);
+    expect(wrapper.find(".execute-more").exists()).toBe(false);
+    expect(wrapper.find(".executeCopyBtn").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("line 1");
+    expect(wrapper.text()).not.toContain("2497");
 
     wrapper.unmount();
   });
 
-  it("truncates multi-line execute content to at most 3 lines even without fullContent", async () => {
+  it("keeps output hidden through running and completed command updates", async () => {
     const longOutput = Array.from({ length: 1500 }, (_, i) => `line ${i + 1}`).join("\n");
     const wrapper = mount(MainChatMessageList, {
       props: {
@@ -202,23 +195,19 @@ describe("chat execute stacking and command collapse", () => {
 
     await settleUi(wrapper);
 
-    const outputText = wrapper.find(".execute-output").text();
-    const renderedLines = outputText.split("\n");
-    expect(renderedLines.length).toBeLessThanOrEqual(3);
-    expect(outputText).toContain("line 1");
-    expect(outputText).toContain("line 3");
-    expect(outputText).not.toContain("line 4");
-
-    expect(wrapper.find(".execute-more--button").exists()).toBe(false);
-    expect(wrapper.find(".execute-more").text()).toContain("1497");
-    await wrapper.get(".execute-more").trigger("click");
-    expect(wrapper.find(".execute-output").text()).not.toContain("line 4");
+    expect(wrapper.get(".execute-cmd").text()).toBe("git log");
+    expect(wrapper.find(".executeSpinner").exists()).toBe(true);
+    expect(wrapper.find(".execute-output").exists()).toBe(false);
+    expect(wrapper.find(".execute-more").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("line 1");
 
     await wrapper.setProps({ messages: [{ id: "e-long", role: "system", kind: "execute", content: `${longOutput}\nlast line`, command: "git log", streaming: false }] });
     await settleUi(wrapper);
-    expect(wrapper.find(".execute-output").text().split("\n")).toHaveLength(3);
-    expect(wrapper.find(".execute-output").text()).not.toContain("last line");
-    expect(wrapper.find(".execute-more").text()).toContain("1498");
+    expect(wrapper.get(".execute-cmd").text()).toBe("git log");
+    expect(wrapper.find(".executeSpinner").exists()).toBe(false);
+    expect(wrapper.find(".execute-output").exists()).toBe(false);
+    expect(wrapper.find(".execute-more").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("last line");
 
     wrapper.unmount();
   });
@@ -309,7 +298,8 @@ describe("chat execute stacking and command collapse", () => {
     const blocks = wrapper.findAll(".execute-block");
     expect(blocks).toHaveLength(3);
     expect(blocks.map((block) => block.find(".execute-cmd").text())).toEqual(["cmd-1", "cmd-2", "cmd-3"]);
-    expect(blocks.map((block) => block.find(".execute-output").text())).toEqual(["out-1", "out-2", "out-3"]);
+    expect(wrapper.findAll(".execute-output")).toHaveLength(0);
+    expect(blocks.every((block) => !block.text().includes("out-"))).toBe(true);
 
     wrapper.unmount();
   });
@@ -351,10 +341,9 @@ describe("chat execute stacking and command collapse", () => {
     expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
     expect(wrapper.find(".execute-stack-count").exists()).toBe(false);
 
-    const output = wrapper.find(".execute-output");
-    expect(output.exists()).toBe(true);
-    expect(output.text()).toContain("out-1");
-    expect(wrapper.findAll(".execute-output").map((node) => node.text())).toEqual(["out-1", "out-2", "out-3"]);
+    expect(wrapper.findAll(".execute-output")).toHaveLength(0);
+    expect(wrapper.findAll(".execute-cmd").map((node) => node.text())).toEqual(["cmd-1", "cmd-2", "cmd-3"]);
+    expect(wrapper.text()).not.toContain("out-1");
 
     wrapper.unmount();
   });
@@ -435,10 +424,9 @@ describe("chat execute stacking and command collapse", () => {
     expect(commands).toHaveLength(20);
     expect(commands.at(-1)?.text()).toContain("cmd-20");
 
-    const output = wrapper.find(".execute-output");
-    expect(output.exists()).toBe(true);
-    expect(output.text()).toContain("out-1");
-    expect(wrapper.findAll(".execute-output").at(-1)?.text()).toContain("out-20");
+    expect(wrapper.findAll(".execute-output")).toHaveLength(0);
+    expect(wrapper.text()).not.toContain("out-1");
+    expect(wrapper.text()).not.toContain("out-20");
 
     wrapper.unmount();
   });

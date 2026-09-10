@@ -710,84 +710,85 @@ const plannerConnectionStatus = computed(() => {
       <section v-if="!isMobile || mobileDrawerSection === 'projects'" class="chatShell">
         <div class="laneTabs" role="tablist" aria-label="切换工作区">
           <div class="laneTabGroup">
-            <button
-              v-for="tab in workspaceTabs"
-              :id="`lane-tab-${tab.id}`"
-              :key="tab.id"
-              type="button"
-              class="laneTab"
-              :class="{ active: activeWorkspaceTab === tab.id }"
-              role="tab"
-              :aria-selected="activeWorkspaceTab === tab.id"
-              :aria-controls="`lane-panel-${tab.id}`"
-              :data-testid="`lane-tab-${tab.id}`"
-              @click="selectWorkspaceTab(tab.id)"
-            >
-              <span
-                class="laneTabStatusDot"
-                :class="isLaneConnected(tab.id, { planner: plannerConnected, worker: connected })
-                  ? 'laneTabStatusDot--connected'
-                  : 'laneTabStatusDot--disconnected'"
-                :data-testid="`lane-tab-status-${tab.id}`"
-                aria-hidden="true"
-              />
-              <span class="laneTabLabel">{{ tab.label }}</span>
-              <span
-                v-if="tab.id === 'planner' ? plannerBusy : agentBusy"
-                class="laneTabBusySpinner"
-                :class="tab.id === 'planner' ? 'laneTabBusySpinner--advisor' : 'laneTabBusySpinner--worker'"
-                :data-testid="`lane-tab-busy-${tab.id}`"
-                aria-hidden="true"
-              />
-            </button>
+            <template v-for="tab in workspaceTabs" :key="tab.id">
+              <button
+                :id="`lane-tab-${tab.id}`"
+                type="button"
+                class="laneTab"
+                :class="{ active: activeWorkspaceTab === tab.id }"
+                role="tab"
+                :aria-selected="activeWorkspaceTab === tab.id"
+                :aria-controls="`lane-panel-${tab.id}`"
+                :data-testid="`lane-tab-${tab.id}`"
+                @click="selectWorkspaceTab(tab.id)"
+              >
+                <span
+                  class="laneTabStatusDot"
+                  :class="isLaneConnected(tab.id, { planner: plannerConnected, worker: connected })
+                    ? 'laneTabStatusDot--connected'
+                    : 'laneTabStatusDot--disconnected'"
+                  :data-testid="`lane-tab-status-${tab.id}`"
+                  aria-hidden="true"
+                />
+                <span class="laneTabLabel">{{ tab.label }}</span>
+                <span
+                  v-if="tab.id === 'planner' ? plannerBusy : agentBusy"
+                  class="laneTabBusySpinner"
+                  :class="tab.id === 'planner' ? 'laneTabBusySpinner--advisor' : 'laneTabBusySpinner--worker'"
+                  :data-testid="`lane-tab-busy-${tab.id}`"
+                  aria-hidden="true"
+                />
+              </button>
+              <div v-if="tab.id === 'planner'" class="laneModelControls" data-testid="lane-model-controls">
+                <MainChatModelPopover
+                  v-if="hasActiveLaneModelSettings"
+                  :connected="activeLaneConnected"
+                  :busy="activeLaneBusy"
+                  :input-locked="activeLaneInputLocked"
+                  :agents="activeLaneAgents"
+                  :active-agent-id="activeLaneActiveAgentId"
+                  :models="models"
+                  :model-id="activeLaneModelId"
+                  :model-reasoning-effort="activeLaneModelReasoningEffort"
+                  @switch-agent="handleActiveLaneSwitchAgent"
+                  @set-model="handleActiveLaneSetModel"
+                  @set-reasoning-effort="handleActiveLaneSetReasoningEffort"
+                />
+                <div v-if="!isMobile" class="laneSessionActions">
+                  <button
+                    v-if="activeLaneHasResume"
+                    class="laneTabIconBtn"
+                    type="button"
+                    title="从历史会话中选择一个恢复"
+                    data-testid="lane-resume-thread"
+                    @click.stop="openSessionPicker"
+                  >
+                    <el-icon :size="15" aria-hidden="true"><Clock /></el-icon>
+                  </button>
+                  <button
+                    class="laneTabIconBtn"
+                    type="button"
+                    title="新会话"
+                    :disabled="activeLaneBusy || activeLaneNewSessionBlocked"
+                    data-testid="lane-new-session"
+                    @click.stop="handleLaneNewSession"
+                  >
+                    <el-icon :size="16" aria-hidden="true"><ChatDotRound /></el-icon>
+                  </button>
+                  <button
+                    class="laneTabIconBtn"
+                    type="button"
+                    title="清空会话"
+                    :disabled="activeLaneBusy"
+                    data-testid="lane-clear-chat"
+                    @click.stop="handleLaneClearChat"
+                  >
+                    <el-icon :size="15" aria-hidden="true"><Delete /></el-icon>
+                  </button>
+                </div>
+              </div>
+            </template>
           </div>
-          <MainChatModelPopover
-            v-if="hasActiveLaneModelSettings"
-            :connected="activeLaneConnected"
-            :busy="activeLaneBusy"
-            :input-locked="activeLaneInputLocked"
-            :agents="activeLaneAgents"
-            :active-agent-id="activeLaneActiveAgentId"
-            :models="models"
-            :model-id="activeLaneModelId"
-            :model-reasoning-effort="activeLaneModelReasoningEffort"
-            @switch-agent="handleActiveLaneSwitchAgent"
-            @set-model="handleActiveLaneSetModel"
-            @set-reasoning-effort="handleActiveLaneSetReasoningEffort"
-          />
-          <span v-if="!isMobile" class="laneTabSpacer" />
-          <button
-            v-if="!isMobile && activeLaneHasResume"
-            class="laneTabIconBtn"
-            type="button"
-            title="从历史会话中选择一个恢复"
-            data-testid="lane-resume-thread"
-            @click.stop="openSessionPicker"
-          >
-            <el-icon :size="15" aria-hidden="true"><Clock /></el-icon>
-          </button>
-          <button
-            v-if="!isMobile"
-            class="laneTabIconBtn"
-            type="button"
-            title="新会话"
-            :disabled="activeLaneBusy || activeLaneNewSessionBlocked"
-            data-testid="lane-new-session"
-            @click.stop="handleLaneNewSession"
-          >
-            <el-icon :size="16" aria-hidden="true"><ChatDotRound /></el-icon>
-          </button>
-          <button
-            v-if="!isMobile"
-            class="laneTabIconBtn"
-            type="button"
-            title="清空会话"
-            :disabled="activeLaneBusy"
-            data-testid="lane-clear-chat"
-            @click.stop="handleLaneClearChat"
-          >
-            <el-icon :size="15" aria-hidden="true"><Delete /></el-icon>
-          </button>
         </div>
 
         <div class="lanePanels">

@@ -121,7 +121,7 @@ describe("web/server/ws/workerPromptHandler", () => {
     assert.deepEqual(deltas, ["First response", "Second response", " continued", " continued"]);
   });
 
-  it("forwards live agent command output without persisting replayable history", () => {
+  it("forwards command lifecycle metadata without output or output-only updates", () => {
     const { emit, history, sent } = createHarness();
 
     emit(commandEvent({ type: "item.started", id: "cmd-1", command: "npm test", status: "inProgress" }));
@@ -146,7 +146,15 @@ describe("web/server/ws/workerPromptHandler", () => {
     );
 
     assert.deepEqual(history, []);
-    assert.equal(sent.filter((payload) => (payload as { type?: unknown }).type === "command").length, 3);
+    const commands = sent.filter((payload) => (payload as { type?: unknown }).type === "command") as Array<{
+      command: Record<string, unknown>;
+    }>;
+    assert.equal(commands.length, 2);
+    assert.deepEqual(commands.map((payload) => payload.command), [
+      { id: "cmd-1", command: "npm test", status: "inProgress", exit_code: undefined },
+      { id: "cmd-1", command: "npm test", status: "completed", exit_code: 0 },
+    ]);
+    assert.doesNotMatch(JSON.stringify(sent), /outputDelta|aggregated_output|line 1|line 2/);
   });
 
   it("forwards only provider-authored live-step snapshots without mixing them into command history", () => {
@@ -270,7 +278,7 @@ describe("web/server/ws/workerPromptHandler", () => {
     );
 
     assert.deepEqual(history, []);
-    assert.equal(sent.filter((payload) => (payload as { type?: unknown }).type === "command").length, 3);
+    assert.equal(sent.filter((payload) => (payload as { type?: unknown }).type === "command").length, 2);
   });
 
   it("suppresses retryable upstream turn failures until the outer retry decision", () => {

@@ -39,7 +39,7 @@ export async function executeCommandLine(args: {
     });
     const result = await Promise.race([runPromise, abortPromise]);
     if (!isCurrent()) return;
-    args.sendToCommandScope({ type: "result", ok: result.ok, output: result.output, kind: "execute", command: args.command });
+    args.sendToCommandScope({ type: "result", ok: result.ok, kind: "execute", command: args.command });
     if (!isCurrent()) return;
     args.sessionLogger?.logOutput(result.output);
     args.historyStore.add(args.historyKey, {
@@ -67,7 +67,7 @@ export async function executeCommandLine(args: {
           args.logger.debug(`[Web] runAdsCommandLine settled after abort: ${detail}`);
         });
       }
-      args.sendToCommandScope({ type: "result", ok: false, output, kind: "execute", command: args.command });
+      args.sendToCommandScope({ type: "result", ok: false, kind: "execute", command: args.command });
       if (!isCurrent()) return;
       args.sessionLogger?.logError(output);
       args.historyStore.add(args.historyKey, {
@@ -77,7 +77,7 @@ export async function executeCommandLine(args: {
         kind: "execute",
       });
     } else {
-      args.sendToCommandScope({ type: "result", ok: false, output: message, kind: "execute", command: args.command });
+      args.sendToCommandScope({ type: "result", ok: false, kind: "execute", command: args.command });
       if (!isCurrent()) return;
       args.sessionLogger?.logError(message);
       args.historyStore.add(args.historyKey, {

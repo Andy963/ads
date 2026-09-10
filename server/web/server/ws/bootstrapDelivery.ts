@@ -6,6 +6,7 @@ import type { HistoryEntry, HistoryStore } from "../../../utils/historyStore.js"
 import { getHistoryClientMessageId } from "../../../utils/historyKind.js";
 import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "./bootstrapState.js";
 import { buildHistoryBootstrapPayload } from "./bootstrapReplay.js";
+import { projectCommandFrame } from "../commandPresentation.js";
 
 function buildContextRestoreStatus(contextMode: string): string | null {
   if (contextMode === "thread_resumed") {
@@ -130,11 +131,11 @@ export function sendInitialBootstrapMessages(args: {
     if (!snapshot || typeof snapshot !== "object" || snapshot.active === false) continue;
     const snapshotSeq = Number(snapshot.snapshotSeq ?? snapshot.seq ?? snapshot.afterSeq);
     const afterSeq = Number.isFinite(snapshotSeq) && snapshotSeq >= 0 ? Math.floor(snapshotSeq) : 0;
-    args.safeJsonSend(args.ws, {
+    args.safeJsonSend(args.ws, projectCommandFrame({
       ...snapshot,
       bootstrap: true,
       ...(afterSeq >= 0 ? { afterSeq } : {}),
-    });
+    }));
   }
   const restoreStatus = buildContextRestoreStatus(bootstrapState.contextMode);
   if (restoreStatus) {

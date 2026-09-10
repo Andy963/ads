@@ -98,6 +98,8 @@ async function ensureWsConnected(wrapper: any): Promise<void> {
 
 describe("command UI lifecycle", () => {
   beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
     lastWs = null;
     getImpl = async (url: string) => {
       if (url === "/api/models") return [] satisfies ModelConfig[];
@@ -185,6 +187,39 @@ describe("command UI lifecycle", () => {
     expect(messages.some((m) => m.role === "assistant" && String(m.content ?? "").includes("M file.ts"))).toBe(false);
 
     wrapper.unmount();
+  });
+
+  it("renders and completes commands when the backend sends no output fields", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    try {
+      await settleUi(wrapper);
+      await ensureWsConnected(wrapper);
+      (wrapper.vm as any).sendMainPrompt("Run checks");
+      await settleUi(wrapper);
+
+      lastWs!.onMessage?.({
+        type: "command", ts: 1,
+        command: { id: "cmd-only", identity: "cmd-only", command: "npm test", status: "inProgress" },
+      });
+      await settleUi(wrapper);
+      const running = ((wrapper.vm as any).messages as Array<any>).filter((message) => message.kind === "execute");
+      expect(running).toHaveLength(1);
+      expect(running[0]).toMatchObject({ command: "npm test", content: "", streaming: true });
+
+      lastWs!.onMessage?.({
+        type: "command", ts: 2,
+        command: { id: "cmd-only", identity: "cmd-only", command: "npm test", status: "completed", exit_code: 0 },
+      });
+      await settleUi(wrapper);
+      const completed = ((wrapper.vm as any).messages as Array<any>).filter((message) => message.kind === "execute");
+      expect(completed).toHaveLength(1);
+      expect(completed[0]).toMatchObject({ command: "npm test", content: "", streaming: false });
+      lastWs!.onMessage?.({ type: "result", ok: true, output: "Checks complete" });
+      await settleUi(wrapper);
+    } finally {
+      wrapper.unmount();
+    }
   });
 
   it("truncates long command result blocks while preserving full output", async () => {
