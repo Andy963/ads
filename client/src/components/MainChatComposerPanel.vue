@@ -482,7 +482,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px 16px calc(env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));
+  padding: 8px 16px 0;
   background: var(--app-bg, #ffffff);
   position: relative;
   z-index: 20;
@@ -600,6 +600,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   width: 100%;
   box-sizing: border-box;
   position: relative;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));
   border-radius: 24px;
   border: 1px solid rgba(148, 163, 184, 0.38);
   background: rgba(255, 255, 255, 0.97);

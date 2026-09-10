@@ -182,11 +182,14 @@ describe("MainChat compact composer layout", () => {
     expect(chat).toMatch(/\.chat\s*\{[^}]*flex:\s*1 1 auto\s*;/);
   });
 
-  it("leaves only the device safe area below the visible input border", async () => {
+  it("keeps the visible input border at the viewport bottom with the safe area inside", async () => {
     const composer = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
-    const rule = composer.match(/\.composer\s*\{[^}]*\}/)?.[0];
+    const composerRule = composer.match(/\.composer\s*\{[^}]*\}/)?.[0];
+    const inputWrapRule = composer.match(/\.inputWrap\s*\{[^}]*\}/)?.[0];
 
-    expect(rule).toContain("padding: 8px 16px calc(env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));");
+    expect(composerRule).toContain("padding: 8px 16px 0;");
+    expect(composerRule).not.toContain("safe-area-inset-bottom");
+    expect(inputWrapRule).toContain("padding-bottom: calc(env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));");
     expect(composer).not.toMatch(/padding-bottom:\s*calc\(12px\s*\+/);
   });
 
