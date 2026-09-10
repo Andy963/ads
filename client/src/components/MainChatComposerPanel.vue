@@ -120,6 +120,10 @@ watch(
 const {
   input,
   inputEl,
+  composerRowEl,
+  leftActionsEl,
+  rightActionsEl,
+  composerExpanded,
   fileInputEl,
   send,
   onInputKeydown,
@@ -315,8 +319,8 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
         :disabled="inputLocked"
         @change="onFileInputChange"
       />
-      <div class="composerMainRow">
-        <div class="composerMainRowLeft">
+      <div ref="composerRowEl" class="composerMainRow" :class="{ 'composerMainRow--expanded': composerExpanded }">
+        <div ref="leftActionsEl" class="composerMainRowLeft">
           <button
             class="attachIcon composerActionToggle"
             type="button"
@@ -351,7 +355,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
           @focus="updateTextSelection"
           @blur="clearTextSelectionState"
         />
-        <div class="composerMainRowRight">
+        <div ref="rightActionsEl" class="composerMainRowRight">
           <div v-if="recording" class="voiceIndicator recording" aria-hidden="true">
             <div class="voiceBars">
               <span class="bar" />
@@ -630,6 +634,13 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   padding: 8px;
   flex-shrink: 0;
   gap: 6px;
+}
+
+.composerMainRow--expanded {
+  grid-template-areas:
+    "input input input"
+    "left . right";
+  row-gap: 2px;
 }
 
 .composerMainRowLeft,

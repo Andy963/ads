@@ -218,61 +218,75 @@ function selectReasoningEffort(effort: string): void {
 
 <template>
   <div class="modelSelectors" role="group" aria-label="Model settings">
-    <select
-      class="modelSelect"
-      aria-label="Model"
-      :title="selectedModelLabel"
-      data-testid="chat-model-select"
-      :value="effectiveModelId"
-      :disabled="!canChange || !compatibleModelOptions.length"
-      @change="selectModel(($event.target as HTMLSelectElement).value)"
-    >
-      <option v-if="!compatibleModelOptions.length" value="" disabled>No models</option>
-      <option v-else-if="!selectedModel && effectiveModelId" :value="effectiveModelId" disabled>{{ effectiveModelId }}</option>
-      <option
-        v-for="model in compatibleModelOptions"
-        :key="modelKey(model)"
-        :value="modelKey(model)"
-        data-testid="chat-model-option"
-        :data-model-id="modelKey(model)"
-      >{{ formatModelLabel(model) }}</option>
-    </select>
-    <select
-      class="modelSelect"
-      aria-label="Reasoning effort"
-      :title="REASONING_EFFORT_LABELS[reasoningEffortValue] || 'Reasoning effort'"
-      data-testid="chat-reasoning-effort"
-      :value="reasoningEffortValue"
-      :disabled="!canChange || !reasoningEffortOptions.length"
-      @change="selectReasoningEffort(($event.target as HTMLSelectElement).value)"
-    >
-      <option v-if="!reasoningEffortOptions.length" value="" disabled>Effort</option>
-      <option
-        v-for="effort in reasoningEffortOptions"
-        :key="effort"
-        :value="effort"
-        :aria-label="REASONING_EFFORT_LABELS[effort]"
-        :data-reasoning-effort="effort"
-      >{{ REASONING_EFFORT_SHORT_LABELS[effort] ?? REASONING_EFFORT_LABELS[effort] ?? effort }}</option>
-    </select>
+    <label class="modelField" :class="{ 'modelField--disabled': !canChange || !compatibleModelOptions.length }">
+      <span class="modelFieldValue" aria-hidden="true" data-testid="chat-model-value">
+        {{ compatibleModelOptions.length ? selectedModelLabel : "No models" }}
+      </span>
+      <select
+        class="modelSelect"
+        aria-label="Model"
+        :title="selectedModelLabel"
+        data-testid="chat-model-select"
+        :value="effectiveModelId"
+        :disabled="!canChange || !compatibleModelOptions.length"
+        @change="selectModel(($event.target as HTMLSelectElement).value)"
+      >
+        <option v-if="!compatibleModelOptions.length" value="" disabled>No models</option>
+        <option v-else-if="!selectedModel && effectiveModelId" :value="effectiveModelId" disabled>{{ effectiveModelId }}</option>
+        <option
+          v-for="model in compatibleModelOptions"
+          :key="modelKey(model)"
+          :value="modelKey(model)"
+          data-testid="chat-model-option"
+          :data-model-id="modelKey(model)"
+        >{{ formatModelLabel(model) }}</option>
+      </select>
+    </label>
+    <label class="modelField" :class="{ 'modelField--disabled': !canChange || !reasoningEffortOptions.length }">
+      <span class="modelFieldValue" aria-hidden="true" data-testid="chat-effort-value">
+        {{ REASONING_EFFORT_SHORT_LABELS[reasoningEffortValue] || REASONING_EFFORT_LABELS[reasoningEffortValue] || "Effort" }}
+      </span>
+      <select
+        class="modelSelect"
+        aria-label="Reasoning effort"
+        :title="REASONING_EFFORT_LABELS[reasoningEffortValue] || 'Reasoning effort'"
+        data-testid="chat-reasoning-effort"
+        :value="reasoningEffortValue"
+        :disabled="!canChange || !reasoningEffortOptions.length"
+        @change="selectReasoningEffort(($event.target as HTMLSelectElement).value)"
+      >
+        <option v-if="!reasoningEffortOptions.length" value="" disabled>Effort</option>
+        <option
+          v-for="effort in reasoningEffortOptions"
+          :key="effort"
+          :value="effort"
+          :aria-label="REASONING_EFFORT_LABELS[effort]"
+          :data-reasoning-effort="effort"
+        >{{ REASONING_EFFORT_SHORT_LABELS[effort] ?? REASONING_EFFORT_LABELS[effort] ?? effort }}</option>
+      </select>
+    </label>
   </div>
 </template>
 
 <style scoped>
 .modelSelectors {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 88px;
+  grid-template-columns: minmax(0, 112px) 60px;
   align-items: center;
-  gap: 6px;
-  width: 100%;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
   min-width: 0;
 }
 
-.modelSelect {
-  width: 100%;
+.modelField {
+  position: relative;
+  display: flex;
+  align-items: center;
   min-width: 0;
-  min-height: 32px;
-  padding: 4px 20px 4px 6px;
+  height: 26px;
+  box-sizing: border-box;
+  padding: 3px 18px 3px 6px;
   border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 999px;
   background-color: rgba(248, 250, 252, 0.98);
@@ -281,38 +295,43 @@ function selectReasoningEffort(effort: string): void {
   background-repeat: no-repeat;
   color: #334155;
   font-size: 12px;
-  font-weight: 700;
-  line-height: 1.25;
-  appearance: none;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.modelFieldValue {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: pointer;
 }
 
-.modelSelect:disabled {
+.modelField--disabled {
   opacity: 0.55;
-  cursor: not-allowed;
 }
 
-.modelSelect:hover:not(:disabled) {
+.modelField:hover:not(.modelField--disabled) {
   border-color: rgba(59, 130, 246, 0.35);
   background-color: rgba(239, 246, 255, 0.98);
 }
 
-.modelSelect:focus-visible {
-  outline: none;
+.modelField:focus-within {
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
 }
 
-@media (max-width: 900px) {
-  .modelSelectors {
-    grid-template-columns: minmax(0, 1fr) 80px;
-    gap: 4px;
-  }
+.modelSelect {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  opacity: 0;
+  /* Retain native keyboard/picker behavior without mobile focus zoom. */
+  font-size: 16px;
+  cursor: pointer;
+}
 
-  .modelSelect {
-    font-size: 16px;
-  }
+.modelSelect:disabled {
+  cursor: not-allowed;
 }
 </style>

@@ -5,21 +5,24 @@ import MainChatMessageList from "../components/MainChatMessageList.vue";
 import { readSfc } from "./readSfc";
 
 describe("chat bubble and popover style regressions", () => {
-  it("keeps user messages full width without a visual bubble", async () => {
+  it("right-aligns bounded user messages with compact metadata spacing", async () => {
     const css = await readSfc("../components/MainChatMessageList.vue", import.meta.url);
     const userBubble = css.match(/\.msg\[data-role="user"\]\s+\.bubble\s*\{[^}]*\}/)?.[0];
     const userActions = css.match(/\.msg\[data-role="user"\]\s+\.msgActions\s*\{[^}]*\}/)?.[0];
 
-    expect(userBubble).toMatch(/\n\s+width:\s*100%\s*;/);
-    expect(userBubble).toMatch(/max-width:\s*100%\s*;/);
+    expect(userBubble).toMatch(/\n\s+width:\s*fit-content\s*;/);
+    expect(userBubble).toMatch(/max-width:\s*90%\s*;/);
     expect(userBubble).toMatch(/background:\s*transparent\s*;/);
     expect(userBubble).toMatch(/border:\s*none\s*;/);
     expect(userBubble).toMatch(/border-radius:\s*0\s*;/);
-    expect(userBubble).toMatch(/padding:\s*4px 0 8px\s*;/);
+    expect(userBubble).toMatch(/padding:\s*2px 0\s*;/);
     expect(userActions).toMatch(/position:\s*static\s*;/);
     expect(userActions).toMatch(/display:\s*flex\s*;/);
     expect(userActions).toMatch(/flex-wrap:\s*wrap\s*;/);
     expect(userActions).toMatch(/justify-content:\s*flex-end\s*;/);
+    expect(userActions).toMatch(/margin-top:\s*2px\s*;/);
+    expect(css).toMatch(/\.msg\[data-role="user"\]\s*\{[^}]*justify-content:\s*flex-end\s*;[^}]*margin-bottom:\s*8px\s*;/);
+    expect(css).toMatch(/\.msg\[data-role="user"\]\s+\.msgCopyBtn\s*\{[^}]*width:\s*24px\s*;[^}]*height:\s*24px\s*;/);
     expect(userActions).not.toMatch(/(?:left|right|bottom):/);
 
     // Assistant bubbles must not stack unnecessary horizontal padding

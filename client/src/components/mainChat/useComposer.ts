@@ -91,15 +91,45 @@ export function useMainChatComposer(params: {
     },
   });
   const inputEl = ref<HTMLTextAreaElement | null>(null);
+  const composerRowEl = ref<HTMLElement | null>(null);
+  const leftActionsEl = ref<HTMLElement | null>(null);
+  const rightActionsEl = ref<HTMLElement | null>(null);
+  const composerExpanded = ref(false);
 
   const resizeComposer = (): void => {
     const el = inputEl.value;
     if (!el) return;
+    if (!el.value) {
+      composerExpanded.value = false;
+      autosizeTextarea(el, { minRows: 1, maxRows: 8 });
+      return;
+    }
+
+    const row = composerRowEl.value;
+    const left = leftActionsEl.value;
+    const right = rightActionsEl.value;
+    let compactWidth = 0;
+    if (row && left && right) {
+      const style = window.getComputedStyle(row);
+      const padding = (Number.parseFloat(style.paddingLeft) || 0) + (Number.parseFloat(style.paddingRight) || 0);
+      const gap = Number.parseFloat(style.columnGap) || 0;
+      compactWidth = row.clientWidth - padding - gap * 2 - left.offsetWidth - right.offsetWidth;
+    }
+
+    // Always decide using the compact width; measuring the expanded width would
+    // otherwise alternate between the two layouts near a wrapping boundary.
+    const previousWidth = el.style.width;
+    if (compactWidth > 0) el.style.width = `${compactWidth}px`;
+    try {
+      composerExpanded.value = autosizeTextarea(el, { minRows: 1, maxRows: 8 });
+    } finally {
+      el.style.width = previousWidth;
+    }
     autosizeTextarea(el, { minRows: 1, maxRows: 8 });
   };
 
   // Resize after Vue commits DOM updates (v-model, conditional UI that affects wrapping, etc).
-  watch([input, inputEl], resizeComposer, { flush: "post", immediate: true });
+  watch([input, inputEl, composerExpanded], resizeComposer, { flush: "post", immediate: true });
 
   // Some environments/layout changes won't trigger reactive updates (e.g. viewport resize affects wrapping).
   // Attach lightweight native listeners so the composer reliably grows up to maxRows.
@@ -125,19 +155,25 @@ export function useMainChatComposer(params: {
     attachedEl = el;
     el.addEventListener("input", onNativeInput, { passive: true });
     if (typeof ResizeObserver !== "undefined") {
-      let observedWidth = -1;
+      const observedWidths = new WeakMap<Element, number>();
       composerResizeObserver = new ResizeObserver((entries) => {
-        const width = entries.find((entry) => entry.target === el)?.contentRect.width;
-        if (width === undefined || width === observedWidth) return;
-        observedWidth = width;
-        if (width <= 0) return;
+        let widthChanged = false;
+        for (const entry of entries) {
+          const width = entry.contentRect.width;
+          const previousWidth = observedWidths.get(entry.target);
+          observedWidths.set(entry.target, width);
+          if (width > 0 && width !== previousWidth) widthChanged = true;
+        }
+        if (!widthChanged) return;
         if (composerResizeFrame !== null) window.cancelAnimationFrame(composerResizeFrame);
         composerResizeFrame = window.requestAnimationFrame(() => {
           composerResizeFrame = null;
           resizeComposer();
         });
       });
-      composerResizeObserver.observe(el);
+      for (const target of [el, composerRowEl.value, leftActionsEl.value, rightActionsEl.value]) {
+        if (target) composerResizeObserver.observe(target);
+      }
     }
   };
 
@@ -574,6 +610,10 @@ export function useMainChatComposer(params: {
   return {
     input,
     inputEl,
+    composerRowEl,
+    leftActionsEl,
+    rightActionsEl,
+    composerExpanded,
     fileInputEl,
     send,
     onInputKeydown,

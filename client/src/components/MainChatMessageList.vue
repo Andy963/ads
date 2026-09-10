@@ -694,6 +694,7 @@ function closeFilePreview(): void {
 
 .msg[data-role="user"] {
   justify-content: flex-end;
+  margin-bottom: 8px;
 }
 
 .messageHistorySentinel {
@@ -1079,11 +1080,11 @@ function closeFilePreview(): void {
 }
 
 .msg[data-role="user"] .bubble {
-  width: 100%;
-  max-width: 100%;
+  width: fit-content;
+  max-width: 90%;
   min-width: 0;
   box-sizing: border-box;
-  padding: 4px 0 8px;
+  padding: 2px 0;
   border: none;
   border-radius: 0;
   background: transparent;
@@ -1124,7 +1125,17 @@ function closeFilePreview(): void {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  margin-top: 4px;
+  margin-top: 2px;
+  gap: 6px;
+}
+
+.msg[data-role="user"] .msgCopyBtn {
+  width: 24px;
+  height: 24px;
+}
+
+.msg[data-role="user"] .bubble :deep(.md > :last-child) {
+  margin-bottom: 0;
 }
 
 .thoughtCard {

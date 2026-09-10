@@ -46,6 +46,14 @@ export function autosizeTextarea(el: HTMLTextAreaElement, opts: AutosizeTextarea
   const minHeight = lineHeightPx * minRows + extraHeight;
   const maxHeight = lineHeightPx * maxRows + extraHeight;
 
+  // Empty editors must collapse even when a browser reports stale scroll geometry.
+  if (!el.value) {
+    el.style.height = `${Math.ceil(minHeight)}px`;
+    el.style.overflowY = "hidden";
+    el.scrollTop = 0;
+    return false;
+  }
+
   // Reset height so scrollHeight reflects the full content and the textarea can shrink.
   el.style.height = "0px";
 
