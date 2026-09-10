@@ -52,14 +52,11 @@ describe("chat bubble and popover style regressions", () => {
     wrapper.unmount();
   });
 
-  it("renders reasoning effort options as a vertical list instead of horizontal wrap", async () => {
-    const sfc = await readSfc("../components/MainChatModelPopover.vue", import.meta.url);
+  it("renders reasoning effort options in their own native dropdown", async () => {
+    const sfc = await readSfc("../components/MainChatModelSelectors.vue", import.meta.url);
 
-    // Must not use horizontal wrapping class
-    expect(sfc).not.toContain("modelPopoverReasoningOption");
-    expect(sfc).not.toMatch(/\.modelPopoverReasoning\s*\{[\s\S]*?flex-wrap:\s*wrap/);
-
-    // Must use unified vertical options list
-    expect(sfc).toMatch(/<div[^>]*class="modelPopoverOptions"[^>]*data-testid="chat-reasoning-effort"/);
+    expect(sfc).toMatch(/<select[^>]*aria-label="Reasoning effort"[^>]*data-testid="chat-reasoning-effort"/);
+    expect(sfc).toContain(':data-reasoning-effort="effort"');
+    expect(sfc).not.toContain('role="dialog"');
   });
 });

@@ -18,15 +18,21 @@ describe("MainChat header UI", () => {
     const group = css.match(/\.laneTabGroup\s*\{[^}]*\}/)?.[0];
     const controls = css.match(/\.laneModelControls\s*\{[^}]*\}/)?.[0];
     expect(group).toMatch(/display:\s*grid\s*;/);
-    expect(group).toMatch(/grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto\s*;/);
+    expect(group).toMatch(/grid-template-columns:\s*minmax\(76px,\s*1fr\) minmax\(0,\s*320px\) minmax\(76px,\s*1fr\)\s*;/);
     expect(group).toMatch(/width:\s*100%\s*;/);
     expect(controls).toMatch(/min-width:\s*0\s*;/);
     expect(controls).toMatch(/justify-content:\s*center\s*;/);
 
-    const popover = readUtf8("../components/MainChatModelPopover.vue");
-    expect(popover).toMatch(/\.modelPopoverToggle\s*\{[^}]*max-width:\s*min\(280px,\s*100%\)\s*;/);
-    expect(popover).toMatch(/\.modelPopoverMenu\s*\{[^}]*left:\s*50%\s*;[^}]*transform:\s*translateX\(-50%\)\s*;/);
-    expect(popover).toMatch(/@media\s*\(max-width:\s*768px\)\s*\{\s*\.modelPopoverIcon\s*\{\s*display:\s*none\s*;/);
+    expect(css).toMatch(/\.laneTab\s*\{[^}]*justify-self:\s*start\s*;/);
+    expect(css).toMatch(/\.laneTab:last-child\s*\{[^}]*justify-self:\s*end\s*;/);
+    const selectors = readUtf8("../components/MainChatModelSelectors.vue");
+    expect(selectors.match(/<select\s/g)).toHaveLength(2);
+    expect(selectors).toMatch(/\.modelSelect\s*\{[^}]*width:\s*100%\s*;[^}]*min-width:\s*0\s*;/);
+    expect(selectors).not.toContain('role="dialog"');
+    const app = readUtf8("../App.vue");
+    const header = app.match(/<header class="topbar">([\s\S]*?)<\/header>/)?.[1];
+    expect(header).toContain('data-testid="lane-new-session"');
+    expect(app.slice(app.indexOf('class="laneTabGroup"'))).not.toContain('class="laneSessionActions"');
   });
 
   it("compacts both desktop and mobile navigation", () => {
