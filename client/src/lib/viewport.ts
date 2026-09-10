@@ -24,13 +24,12 @@ let lastMetrics: MetricsState = {
 };
 function applyViewportVars(): void {
   const next = readViewportMetrics();
-  const keyboardOpen = isTextInputElement(document.activeElement) && next.bottomPx > 0;
+  // Blur can precede the keyboard closing animation. Keep safe-area padding
+  // suppressed until the visual viewport actually reaches the layout bottom.
+  const keyboardOpen = next.bottomPx > 0;
   const heightPx = next.heightPx;
-  // Only shrink the fixed app container when the on-screen keyboard is open.
-  // Some browsers report a non-zero visualViewport bottom inset even when the keyboard is closed,
-  // which created a persistent blank area under the composer.
-  const appTopPx = keyboardOpen ? next.topPx : 0;
-  const appBottomPx = keyboardOpen ? next.bottomPx : 0;
+  const appTopPx = next.topPx;
+  const appBottomPx = next.bottomPx;
   if (
     appTopPx === lastMetrics.topPx &&
     appBottomPx === lastMetrics.bottomPx &&
@@ -90,11 +89,19 @@ export function installViewportCssVars(): void {
   installed = true;
 
   applyViewportVars();
+  window.addEventListener("pageshow", scheduleBurst, { passive: true });
   window.addEventListener("resize", scheduleBurst, { passive: true });
   window.addEventListener("orientationchange", scheduleBurst, { passive: true });
   window.addEventListener("scroll", scheduleBurst, { passive: true });
   window.visualViewport?.addEventListener("resize", scheduleBurst, { passive: true });
   window.visualViewport?.addEventListener("scroll", scheduleBurst, { passive: true });
+  document.addEventListener(
+    "visibilitychange",
+    () => {
+      if (document.visibilityState === "visible") scheduleBurst();
+    },
+    { passive: true },
+  );
   document.addEventListener(
     "focusin",
     (ev) => {
@@ -110,11 +117,10 @@ export function installViewportCssVars(): void {
     { passive: true },
   );
 
-  // Some mobile browsers don't reliably fire resize events when the keyboard is dismissed
-  // (e.g. Android back gesture). Poll while a text field is focused to keep the viewport height in sync.
+  // Mobile browsers can omit the final resize after blur or browser toolbar
+  // animations. Poll visible pages even after the text field loses focus.
   window.setInterval(() => {
-    const active = document.activeElement;
-    if (!isTextInputElement(active)) return;
+    if (document.visibilityState !== "visible") return;
     applyViewportVars();
   }, 250);
 }

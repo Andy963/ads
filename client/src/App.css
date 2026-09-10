@@ -1,6 +1,7 @@
 .app {
+  --topbar-height: 40px;
   position: fixed;
-  top: 0;
+  top: var(--app-top, 0px);
   left: 0;
   right: 0;
   height: var(--ads-visual-viewport-height, 100dvh);
@@ -12,7 +13,7 @@
 }
 .topbar {
   flex-shrink: 0;
-  height: calc(48px + env(safe-area-inset-top, 0px));
+  height: calc(var(--topbar-height) + env(safe-area-inset-top, 0px));
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -595,8 +596,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 40px;
-  padding: 4px 16px;
+  min-height: 36px;
+  padding: 2px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   box-sizing: border-box;
@@ -647,7 +648,7 @@
   color: #64748b;
   font-size: 13px;
   font-weight: 800;
-  padding: 6px 14px;
+  padding: 4px 12px;
   border-radius: 999px;
   cursor: pointer;
   white-space: nowrap;
@@ -727,7 +728,7 @@
 .noticeToast {
   position: fixed;
   left: 50%;
-  top: calc(48px + env(safe-area-inset-top, 0px) + 12px);
+  top: calc(var(--topbar-height) + env(safe-area-inset-top, 0px) + 12px);
   transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
@@ -763,6 +764,15 @@
   to { transform: rotate(360deg); }
 }
 @media (max-width: 900px) {
+  .app {
+    --topbar-height: 36px;
+  }
+  .topbar,
+  .laneTabs {
+    border-bottom: 0;
+    box-shadow: none;
+    background: var(--app-bg);
+  }
   .layout {
     grid-template-columns: 1fr;
     padding: 0;
@@ -783,7 +793,7 @@
     display: grid;
     place-items: center;
     width: 44px;
-    height: 44px;
+    height: var(--topbar-height);
     padding: 0;
     flex: 0 0 auto;
     border: none;
@@ -874,7 +884,7 @@
   }
   .left.mobileDrawer {
     position: fixed;
-    top: calc(48px + env(safe-area-inset-top, 0px));
+    top: calc(var(--topbar-height) + env(safe-area-inset-top, 0px));
     bottom: 0;
     left: 0;
     z-index: 110;
@@ -976,7 +986,7 @@
   }
   .mobileDrawerBackdrop {
     position: fixed;
-    inset: calc(48px + env(safe-area-inset-top, 0px)) 0 0;
+    inset: calc(var(--topbar-height) + env(safe-area-inset-top, 0px)) 0 0;
     z-index: 100;
     background: rgba(15, 23, 42, 0.34);
     backdrop-filter: blur(2px);
@@ -1095,7 +1105,8 @@
   }
   .laneTabs {
     width: 100%;
-    padding: 4px 10px;
+    min-height: 32px;
+    padding: 0 8px;
     gap: 6px;
     justify-content: space-between;
   }

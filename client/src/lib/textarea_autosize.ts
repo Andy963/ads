@@ -22,9 +22,10 @@ function resolveLineHeightPx(style: CSSStyleDeclaration): number {
   return 20;
 }
 
-export function autosizeTextarea(el: HTMLTextAreaElement, opts: AutosizeTextareaOptions = {}): void {
-  if (!el) return;
-  if (typeof window === "undefined" || typeof window.getComputedStyle !== "function") return;
+// Returns whether the measured content occupies more than one line.
+export function autosizeTextarea(el: HTMLTextAreaElement, opts: AutosizeTextareaOptions = {}): boolean {
+  if (!el) return false;
+  if (typeof window === "undefined" || typeof window.getComputedStyle !== "function") return false;
 
   const minRows = Math.max(1, Math.floor(opts.minRows ?? 1));
   const maxRows = Math.max(minRows, Math.floor(opts.maxRows ?? minRows));
@@ -46,7 +47,7 @@ export function autosizeTextarea(el: HTMLTextAreaElement, opts: AutosizeTextarea
   const maxHeight = lineHeightPx * maxRows + extraHeight;
 
   // Reset height so scrollHeight reflects the full content and the textarea can shrink.
-  el.style.height = "auto";
+  el.style.height = "0px";
 
   // scrollHeight includes padding but excludes border; adjust for border-box sizing.
   const contentHeight = el.scrollHeight + borderHeight;
@@ -54,5 +55,5 @@ export function autosizeTextarea(el: HTMLTextAreaElement, opts: AutosizeTextarea
 
   el.style.height = `${Math.ceil(nextHeight)}px`;
   el.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
+  return contentHeight > lineHeightPx + extraHeight + 1;
 }
-

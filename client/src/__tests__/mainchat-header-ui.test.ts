@@ -13,6 +13,39 @@ function readUtf8(relFromThisFile: string): string {
 }
 
 describe("MainChat header UI", () => {
+  it("compacts both desktop and mobile navigation", () => {
+    const css = readUtf8("../App.css");
+    const mobileCss = css.slice(css.indexOf("@media (max-width: 900px)"));
+    const app = css.match(/\.app\s*\{[^}]*\}/)?.[0];
+    const mobileApp = mobileCss.match(/\.app\s*\{[^}]*\}/)?.[0];
+
+    expect(app).toMatch(/--topbar-height:\s*40px\s*;/);
+    expect(mobileApp).toMatch(/--topbar-height:\s*36px\s*;/);
+    expect(mobileCss).toMatch(/\.laneTabs\s*\{[^}]*min-height:\s*32px\s*;[^}]*padding:\s*0 8px\s*;/);
+    expect(mobileCss).toMatch(/\.mobileMenuBtn\s*\{[^}]*height:\s*var\(--topbar-height\)\s*;/);
+  });
+
+  it("shares the header height with safe-area drawer and overlay positioning", () => {
+    const css = readUtf8("../App.css");
+
+    expect(css).toMatch(/\.topbar\s*\{[^}]*height:\s*calc\(var\(--topbar-height\) \+ env\(safe-area-inset-top/);
+    expect(css).toMatch(/\.left\.mobileDrawer\s*\{[^}]*top:\s*calc\(var\(--topbar-height\) \+ env\(safe-area-inset-top/);
+    expect(css).toMatch(/\.mobileDrawerBackdrop\s*\{[^}]*inset:\s*calc\(var\(--topbar-height\) \+ env\(safe-area-inset-top/);
+    expect(css).toMatch(/\.noticeToast\s*\{[^}]*top:\s*calc\(var\(--topbar-height\) \+ env\(safe-area-inset-top/);
+    expect(css).not.toMatch(/(?:height|top|inset):\s*calc\(48px \+/);
+  });
+
+  it("blends mobile navigation into the chat background without horizontal separators", () => {
+    const css = readUtf8("../App.css");
+    const mobileCss = css.slice(css.indexOf("@media (max-width: 900px)"));
+    const navigation = mobileCss.match(/\.topbar,\s*\.laneTabs\s*\{[^}]*\}/)?.[0];
+
+    expect(navigation).toBeDefined();
+    expect(navigation).toMatch(/border-bottom:\s*0\s*;/);
+    expect(navigation).toMatch(/box-shadow:\s*none\s*;/);
+    expect(navigation).toMatch(/background:\s*var\(--app-bg\)\s*;/);
+  });
+
   it("does not render a busy label in the header", () => {
     const wrapper = mount(MainChat, {
       props: {
