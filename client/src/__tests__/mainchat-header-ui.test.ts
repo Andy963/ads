@@ -18,7 +18,7 @@ describe("MainChat header UI", () => {
     const group = css.match(/\.laneTabGroup\s*\{[^}]*\}/)?.[0];
     const controls = css.match(/\.laneModelControls\s*\{[^}]*\}/)?.[0];
     expect(group).toMatch(/display:\s*grid\s*;/);
-    expect(group).toMatch(/grid-template-columns:\s*minmax\(76px,\s*1fr\) minmax\(0,\s*320px\) minmax\(76px,\s*1fr\)\s*;/);
+    expect(group).toMatch(/grid-template-columns:\s*minmax\(88px,\s*1fr\) minmax\(0,\s*176px\) minmax\(88px,\s*1fr\)\s*;/);
     expect(group).toMatch(/width:\s*100%\s*;/);
     expect(controls).toMatch(/min-width:\s*0\s*;/);
     expect(controls).toMatch(/justify-content:\s*center\s*;/);
@@ -28,6 +28,9 @@ describe("MainChat header UI", () => {
     const selectors = readUtf8("../components/MainChatModelSelectors.vue");
     expect(selectors.match(/<select\s/g)).toHaveLength(2);
     expect(selectors).toMatch(/\.modelSelect\s*\{[^}]*width:\s*100%\s*;[^}]*min-width:\s*0\s*;/);
+    expect(selectors).toMatch(/\.modelField\s*\{[^}]*height:\s*26px\s*;[^}]*font-size:\s*12px\s*;/);
+    expect(selectors).toMatch(/\.modelSelect\s*\{[^}]*font-size:\s*16px\s*;/);
+    expect(css).toMatch(/\.laneTab\s*\{[^}]*font-size:\s*14px\s*;/);
     expect(selectors).not.toContain('role="dialog"');
     const app = readUtf8("../App.vue");
     const header = app.match(/<header class="topbar">([\s\S]*?)<\/header>/)?.[1];

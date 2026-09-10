@@ -74,7 +74,7 @@ describe("MainChat compact composer layout", () => {
     await textarea.setValue("First line\nSecond line");
     expect(element.style.height).toBe("58px");
     expect(element.style.overflowY).toBe("hidden");
-    expect(wrapper.get(".composerMainRow").classes()).not.toContain("composerMainRow--expanded");
+    expect(wrapper.get(".composerMainRow").classes()).toContain("composerMainRow--expanded");
 
     await textarea.setValue(longDraft);
     expect(element.style.height).toBe("202px");
@@ -107,7 +107,7 @@ describe("MainChat compact composer layout", () => {
     wrapper.unmount();
   });
 
-  it("shrinks wrapped content without reserving a separate controls row", async () => {
+  it("expands wrapped content above the controls and collapses when shortened", async () => {
     const scrollHeight = vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockReturnValue(34);
     const wrapper = mount(ComposerHost);
     const textarea = wrapper.get("textarea.composer-input");
@@ -115,7 +115,7 @@ describe("MainChat compact composer layout", () => {
     scrollHeight.mockReturnValue(58);
     await textarea.setValue("A draft that wraps beside the action buttons");
     expect((textarea.element as HTMLTextAreaElement).style.height).toBe("58px");
-    expect(wrapper.get(".composerMainRow").classes()).toEqual(["composerMainRow"]);
+    expect(wrapper.get(".composerMainRow").classes()).toContain("composerMainRow--expanded");
 
     scrollHeight.mockReturnValue(34);
     await textarea.setValue("Short draft");
@@ -126,11 +126,37 @@ describe("MainChat compact composer layout", () => {
     window.dispatchEvent(new Event("resize"));
     await nextTick();
     expect((textarea.element as HTMLTextAreaElement).style.height).toBe("58px");
-    expect(wrapper.get(".composerMainRow").classes()).toEqual(["composerMainRow"]);
+    expect(wrapper.get(".composerMainRow").classes()).toContain("composerMainRow--expanded");
 
-    scrollHeight.mockReturnValue(34);
     await textarea.setValue("");
     expect((textarea.element as HTMLTextAreaElement).style.height).toBe("34px");
+    expect(wrapper.get(".composerMainRow").classes()).toEqual(["composerMainRow"]);
+    wrapper.unmount();
+  });
+
+  it("keeps a stable expanded layout when text fits only at the expanded width", async () => {
+    const wrapper = mount(ComposerHost);
+    const row = wrapper.get(".composerMainRow");
+    const textarea = wrapper.get("textarea.composer-input");
+    const el = textarea.element as HTMLTextAreaElement;
+    vi.spyOn(row.element, "clientWidth", "get").mockReturnValue(300);
+    vi.spyOn(row.get(".composerMainRowLeft").element, "offsetWidth", "get").mockReturnValue(32);
+    vi.spyOn(row.get(".composerMainRowRight").element, "offsetWidth", "get").mockReturnValue(74);
+    vi.spyOn(el, "scrollHeight", "get").mockImplementation(() => el.style.width === "194px" ? 58 : 34);
+
+    await textarea.setValue("A draft that needs more than the compact input width");
+    expect(row.classes()).toContain("composerMainRow--expanded");
+    expect(el.style.height).toBe("34px");
+    expect(el.style.width).toBe("");
+    for (let index = 0; index < 3; index++) {
+      window.dispatchEvent(new Event("resize"));
+      await nextTick();
+      expect(row.classes()).toContain("composerMainRow--expanded");
+    }
+
+    await textarea.setValue("");
+    expect(row.classes()).toEqual(["composerMainRow"]);
+    expect(el.style.height).toBe("34px");
     wrapper.unmount();
   });
 
@@ -215,11 +241,11 @@ describe("MainChat compact composer layout", () => {
     expect(composer).not.toMatch(/padding-bottom:\s*calc\(12px\s*\+/);
   });
 
-  it("keeps the textarea and actions in one grid row as content grows", async () => {
+  it("spans expanded text across the full row above the actions", async () => {
     const composer = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
 
     expect(composer).toMatch(/\.composerMainRow\s*\{[^}]*display:\s*grid\s*;[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto\s*;[^}]*grid-template-areas:\s*"left input right"\s*;/);
     expect(composer).toMatch(/\.composer-input\s*\{[^}]*width:\s*100%\s*;/);
-    expect(composer).not.toContain("composerMainRow--expanded");
+    expect(composer).toMatch(/\.composerMainRow--expanded\s*\{[^}]*grid-template-areas:\s*"input input input"\s*"left \. right"\s*;/);
   });
 });

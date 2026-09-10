@@ -45,13 +45,14 @@ describe("autosizeTextarea", () => {
     expect(autosizeTextarea(element, { minRows: 1, maxRows: 8 })).toBe(false);
     expect(element.style.height).toBe("42px");
     expect(element.style.overflowY).toBe("hidden");
-    expect(measuredHeights).toEqual(["0px", "0px", "0px"]);
+    expect(measuredHeights).toEqual(["0px"]);
 
     element.remove();
   });
 
   it("clamps height between minRows/maxRows and toggles overflow", () => {
     const el = document.createElement("textarea");
+    el.value = "Measured content";
     document.body.appendChild(el);
 
     const scroll = { value: 0 };
@@ -85,6 +86,7 @@ describe("autosizeTextarea", () => {
 
   it("shrinks when content is reduced", () => {
     const el = document.createElement("textarea");
+    el.value = "Measured content";
     document.body.appendChild(el);
 
     const scroll = { value: 0 };
@@ -108,6 +110,7 @@ describe("autosizeTextarea", () => {
 
   it("falls back to fontSize when lineHeight is normal", () => {
     const el = document.createElement("textarea");
+    el.value = "Measured content";
     document.body.appendChild(el);
 
     const scroll = { value: 0 };
@@ -140,5 +143,21 @@ describe("autosizeTextarea", () => {
     expect(el.style.overflowY).toBe("auto");
 
     el.remove();
+  });
+
+  it("clears stale height and scrolling without measuring an empty editor", () => {
+    const el = document.createElement("textarea");
+    el.style.height = "182px";
+    el.style.overflowY = "auto";
+    el.scrollTop = 100;
+    const scrollHeight = vi.fn(() => 500);
+    Object.defineProperty(el, "scrollHeight", { get: scrollHeight });
+    vi.spyOn(window, "getComputedStyle").mockReturnValue(makeStyle({}));
+
+    expect(autosizeTextarea(el, { minRows: 1, maxRows: 8 })).toBe(false);
+    expect(el.style.height).toBe("42px");
+    expect(el.style.overflowY).toBe("hidden");
+    expect(el.scrollTop).toBe(0);
+    expect(scrollHeight).not.toHaveBeenCalled();
   });
 });
