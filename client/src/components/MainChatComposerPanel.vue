@@ -120,7 +120,6 @@ watch(
 const {
   input,
   inputEl,
-  inputExpanded,
   fileInputEl,
   send,
   onInputKeydown,
@@ -316,7 +315,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
         :disabled="inputLocked"
         @change="onFileInputChange"
       />
-      <div class="composerMainRow" :class="{ 'composerMainRow--expanded': inputExpanded }">
+      <div class="composerMainRow">
         <div class="composerMainRowLeft">
           <button
             class="attachIcon composerActionToggle"
@@ -482,7 +481,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px 16px 0;
+  padding: 8px 16px calc(env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));
   background: var(--app-bg, #ffffff);
   position: relative;
   z-index: 20;
@@ -600,7 +599,6 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   width: 100%;
   box-sizing: border-box;
   position: relative;
-  padding-bottom: calc(env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));
   border-radius: 24px;
   border: 1px solid rgba(148, 163, 184, 0.38);
   background: rgba(255, 255, 255, 0.97);
@@ -649,21 +647,6 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 
 .composerMainRowRight {
   grid-area: right;
-}
-
-.composerMainRow--expanded {
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "input input"
-    "left right";
-}
-
-.composerMainRow--expanded .composer-input {
-  width: 100%;
-}
-
-.composerMainRow--expanded .composerMainRowRight {
-  margin-left: 0;
 }
 
 .attachIcon {
@@ -931,6 +914,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   grid-area: input;
   flex: 1 1 auto;
   min-width: 0;
+  width: 100%;
   resize: none;
   overflow-y: hidden;
   min-height: 34px;
