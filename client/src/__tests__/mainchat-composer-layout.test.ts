@@ -230,12 +230,60 @@ describe("MainChat compact composer layout", () => {
     expect(chat).toMatch(/\.chat\s*\{[^}]*flex:\s*1 1 auto\s*;/);
   });
 
-  it("keeps safe-area protection in the bottom dock, outside the single-row input", async () => {
+  it("reserves the tool row when only the visual viewport height changes", async () => {
+    const viewport = Object.assign(new EventTarget(), { height: 844, offsetTop: 0, width: 390 });
+    vi.stubGlobal("visualViewport", viewport);
+    vi.stubGlobal("innerHeight", 844);
+    vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockReturnValue(800);
+    const Host = defineComponent({
+      components: { ComposerHost },
+      template: '<div class="detail"><div class="chat"></div><ComposerHost /></div>',
+    });
+    const wrapper = mount(Host);
+    const row = wrapper.get(".composerMainRow").element;
+    const textarea = wrapper.get("textarea");
+    const element = textarea.element as HTMLTextAreaElement;
+    const composer = wrapper.get(".composer").element;
+    const inputStyle = window.getComputedStyle(element);
+    vi.mocked(window.getComputedStyle).mockImplementation((target) => {
+      if (target.matches(".chat")) return { ...inputStyle, paddingTop: "12px", paddingBottom: "12px" };
+      if (target.matches(".composerMainRow")) return { ...inputStyle, paddingTop: "8px", paddingBottom: "8px", rowGap: "2px" };
+      return inputStyle;
+    });
+    vi.spyOn(wrapper.element, "getBoundingClientRect").mockImplementation(() => new DOMRect(0, 68, 390, viewport.height - 68));
+    vi.spyOn(wrapper.get(".chat").element, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 68, 390, 0));
+    vi.spyOn(row, "clientWidth", "get").mockReturnValue(356);
+    vi.spyOn(row, "offsetHeight", "get").mockImplementation(() => Number.parseFloat(element.style.height) + 46);
+    vi.spyOn(composer, "offsetHeight", "get").mockImplementation(() => Number.parseFloat(element.style.height) + 56);
+    for (const selector of [".composerMainRowLeft", ".composerMainRowRight"]) {
+      vi.spyOn(wrapper.get(selector).element, "offsetHeight", "get").mockReturnValue(34);
+    }
+
+    await textarea.setValue("Long draft\n".repeat(30));
+    expect(element.style.height).toBe("202px");
+    viewport.height = 300;
+    viewport.dispatchEvent(new Event("resize"));
+    await nextTick();
+    expect(element.style.height).toBe("146px");
+    expect(element.style.overflowY).toBe("auto");
+    expect(wrapper.get(".composerMainRow").classes()).toContain("composerMainRow--expanded");
+
+    viewport.height = 430;
+    viewport.dispatchEvent(new Event("resize"));
+    await nextTick();
+    expect(element.style.height).toBe("202px");
+    await textarea.setValue("");
+    expect(element.style.height).toBe("34px");
+    expect(wrapper.get(".composerMainRow").classes()).not.toContain("composerMainRow--expanded");
+    wrapper.unmount();
+  });
+
+  it("consumes only the root's remaining safe area without adding another input inset", async () => {
     const composer = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
     const composerRule = composer.match(/\.composer\s*\{[^}]*\}/)?.[0];
     const inputWrapRule = composer.match(/\.inputWrap\s*\{[^}]*\}/)?.[0];
 
-    expect(composerRule).toContain("padding: 8px 16px calc(env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));");
+    expect(composerRule).toContain("padding: 8px 16px var(--app-safe-bottom, env(safe-area-inset-bottom, 0px));");
     expect(inputWrapRule).not.toContain("safe-area-inset-bottom");
     expect(inputWrapRule).not.toContain("padding-bottom");
     expect(composer).not.toMatch(/padding-bottom:\s*calc\(12px\s*\+/);

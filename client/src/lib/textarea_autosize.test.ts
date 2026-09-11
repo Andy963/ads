@@ -16,6 +16,31 @@ function makeStyle(overrides: Partial<CSSStyleDeclaration>): CSSStyleDeclaration
 }
 
 describe("autosizeTextarea", () => {
+  it("caps multiline input by the available height without losing expansion state", () => {
+    const element = document.createElement("textarea");
+    element.value = "First line\nSecond line\nThird line";
+    Object.defineProperty(element, "scrollHeight", { get: () => 300 });
+    vi.spyOn(window, "getComputedStyle").mockReturnValue(makeStyle({}));
+
+    expect(autosizeTextarea(element, { minRows: 1, maxRows: 8, maxHeightPx: 90 })).toBe(true);
+    expect(element.style.height).toBe("90px");
+    expect(element.style.overflowY).toBe("auto");
+    expect(autosizeTextarea(element, { minRows: 1, maxRows: 8, maxHeightPx: 0 })).toBe(true);
+    expect(element.style.height).toBe("42px");
+
+    element.value = "";
+    expect(autosizeTextarea(element, { minRows: 1, maxRows: 8, maxHeightPx: 90 })).toBe(false);
+    expect(element.style.height).toBe("42px");
+    expect(element.style.overflowY).toBe("hidden");
+  });
+
+  it("recognizes explicit newlines even before hidden content can be measured", () => {
+    const element = document.createElement("textarea");
+    element.value = "First line\nSecond line";
+    vi.spyOn(window, "getComputedStyle").mockReturnValue(makeStyle({}));
+    expect(autosizeTextarea(element, { minRows: 1, maxRows: 8 })).toBe(true);
+  });
+
   it("measures content without inheriting the native rows height", () => {
     const element = document.createElement("textarea");
     element.rows = 5;

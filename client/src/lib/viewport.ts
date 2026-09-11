@@ -1,39 +1,36 @@
 import { isTextInputElement } from "./dom";
 
-type ViewportMetrics = { topPx: number; bottomPx: number; heightPx: number };
+type ViewportMetrics = { topPx: number; bottomPx: number; heightPx: number; leftPx: number; widthPx: number };
 
-function readViewportMetrics(): ViewportMetrics {
+export function readViewportMetrics(): ViewportMetrics {
   const layoutHeightPx = Math.max(1, Math.round(window.innerHeight));
   const viewport = window.visualViewport;
   if (!viewport) {
-    return { topPx: 0, bottomPx: 0, heightPx: layoutHeightPx };
+    return { topPx: 0, bottomPx: 0, heightPx: layoutHeightPx, leftPx: 0, widthPx: window.innerWidth };
   }
   const topPx = Number.isFinite(viewport.offsetTop) ? Math.max(0, Math.round(viewport.offsetTop)) : 0;
   const heightPx = Number.isFinite(viewport.height) ? Math.max(1, Math.round(viewport.height)) : layoutHeightPx;
   const bottomPx = Math.max(0, layoutHeightPx - topPx - heightPx);
-  return { topPx, bottomPx, heightPx };
+  const leftPx = Number.isFinite(viewport.offsetLeft) ? Math.max(0, viewport.offsetLeft) : 0;
+  const widthPx = Number.isFinite(viewport.width) ? Math.max(1, viewport.width) : window.innerWidth;
+  return { topPx, bottomPx, heightPx, leftPx, widthPx };
 }
 
-type MetricsState = { topPx: number; bottomPx: number; keyboardOpen: boolean; heightPx: number };
+type MetricsState = { topPx: number; bottomPx: number; heightPx: number };
 
 let lastMetrics: MetricsState = {
   topPx: Number.NaN,
   bottomPx: Number.NaN,
-  keyboardOpen: false,
   heightPx: Number.NaN,
 };
 function applyViewportVars(): void {
   const next = readViewportMetrics();
-  // Blur can precede the keyboard closing animation. Keep safe-area padding
-  // suppressed until the visual viewport actually reaches the layout bottom.
-  const keyboardOpen = next.bottomPx > 0;
   const heightPx = next.heightPx;
   const appTopPx = next.topPx;
   const appBottomPx = next.bottomPx;
   if (
     appTopPx === lastMetrics.topPx &&
     appBottomPx === lastMetrics.bottomPx &&
-    keyboardOpen === lastMetrics.keyboardOpen &&
     heightPx === lastMetrics.heightPx
   ) {
     return;
@@ -44,13 +41,10 @@ function applyViewportVars(): void {
   if (appBottomPx !== lastMetrics.bottomPx) {
     document.documentElement.style.setProperty("--app-bottom", `${appBottomPx}px`);
   }
-  if (keyboardOpen !== lastMetrics.keyboardOpen) {
-    document.documentElement.style.setProperty("--safe-bottom-multiplier", keyboardOpen ? "0" : "1");
-  }
   if (heightPx !== lastMetrics.heightPx) {
     document.documentElement.style.setProperty("--ads-visual-viewport-height", `${heightPx}px`);
   }
-  lastMetrics = { topPx: appTopPx, bottomPx: appBottomPx, keyboardOpen, heightPx };
+  lastMetrics = { topPx: appTopPx, bottomPx: appBottomPx, heightPx };
 }
 
 let heightRaf = 0;

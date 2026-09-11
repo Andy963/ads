@@ -2,6 +2,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 
 import type { IncomingImage } from "./types";
 import { autosizeTextarea } from "../../lib/textarea_autosize";
+import { readViewportMetrics } from "../../lib/viewport";
 
 type VoiceStatusKind = "idle" | "recording" | "transcribing" | "error" | "ok";
 type TranscriptionResponse = { ok?: boolean; text?: string; error?: string; message?: string };
@@ -96,6 +97,30 @@ export function useMainChatComposer(params: {
   const rightActionsEl = ref<HTMLElement | null>(null);
   const composerExpanded = ref(false);
 
+  const availableTextareaHeight = (): number | undefined => {
+    const row = composerRowEl.value;
+    const composer = row?.closest<HTMLElement>(".composer");
+    const container = composer?.closest<HTMLElement>(".detail");
+    if (!row || !composer || !container) return undefined;
+    const bounds = container.getBoundingClientRect();
+    if (bounds.height <= 0) return undefined;
+    const viewport = readViewportMetrics();
+    const chat = container.querySelector(".chat");
+    const chatTop = chat?.getBoundingClientRect().top ?? bounds.top;
+    const chatStyle = chat ? window.getComputedStyle(chat) : null;
+    const chatInsets = chatStyle
+      ? [chatStyle.paddingTop, chatStyle.paddingBottom, chatStyle.borderTopWidth, chatStyle.borderBottomWidth]
+        .reduce((total, value) => total + (Number.parseFloat(value) || 0), 0)
+      : 0;
+    const availableHeight = Math.min(bounds.bottom, viewport.topPx + viewport.heightPx)
+      - Math.max(bounds.top, chatTop, viewport.topPx) - chatInsets;
+    const style = window.getComputedStyle(row);
+    const padding = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
+    const toolsHeight = Math.max(leftActionsEl.value?.offsetHeight ?? 0, rightActionsEl.value?.offsetHeight ?? 0);
+    const chromeHeight = composer.offsetHeight - row.offsetHeight + padding + toolsHeight + (Number.parseFloat(style.rowGap) || 0);
+    return Math.max(0, availableHeight - chromeHeight);
+  };
+
   const resizeComposer = (): void => {
     const el = inputEl.value;
     if (!el) return;
@@ -106,8 +131,10 @@ export function useMainChatComposer(params: {
     }
 
     const row = composerRowEl.value;
+    if (row?.closest(".detail") && row.clientWidth === 0) return;
     const left = leftActionsEl.value;
     const right = rightActionsEl.value;
+    const options = { minRows: 1, maxRows: 8, maxHeightPx: availableTextareaHeight() };
     let compactWidth = 0;
     if (row && left && right) {
       const style = window.getComputedStyle(row);
@@ -121,11 +148,11 @@ export function useMainChatComposer(params: {
     const previousWidth = el.style.width;
     if (compactWidth > 0) el.style.width = `${compactWidth}px`;
     try {
-      composerExpanded.value = autosizeTextarea(el, { minRows: 1, maxRows: 8 });
+      composerExpanded.value = autosizeTextarea(el, options);
     } finally {
       el.style.width = previousWidth;
     }
-    autosizeTextarea(el, { minRows: 1, maxRows: 8 });
+    autosizeTextarea(el, options);
   };
 
   // Resize after Vue commits DOM updates (v-model, conditional UI that affects wrapping, etc).
@@ -155,23 +182,27 @@ export function useMainChatComposer(params: {
     attachedEl = el;
     el.addEventListener("input", onNativeInput, { passive: true });
     if (typeof ResizeObserver !== "undefined") {
-      const observedWidths = new WeakMap<Element, number>();
+      const composer = composerRowEl.value?.closest<HTMLElement>(".composer");
+      const container = composer?.closest<HTMLElement>(".detail");
+      const heightTargets = new Set([composer, container, leftActionsEl.value, rightActionsEl.value]);
+      const observedSizes = new WeakMap<Element, { width: number; height: number }>();
       composerResizeObserver = new ResizeObserver((entries) => {
-        let widthChanged = false;
+        let sizeChanged = false;
         for (const entry of entries) {
-          const width = entry.contentRect.width;
-          const previousWidth = observedWidths.get(entry.target);
-          observedWidths.set(entry.target, width);
-          if (width > 0 && width !== previousWidth) widthChanged = true;
+          const { width, height } = entry.contentRect;
+          const previousSize = observedSizes.get(entry.target);
+          observedSizes.set(entry.target, { width, height });
+          if (width > 0 && width !== previousSize?.width) sizeChanged = true;
+          if (heightTargets.has(entry.target as HTMLElement) && height > 0 && height !== previousSize?.height) sizeChanged = true;
         }
-        if (!widthChanged) return;
+        if (!sizeChanged) return;
         if (composerResizeFrame !== null) window.cancelAnimationFrame(composerResizeFrame);
         composerResizeFrame = window.requestAnimationFrame(() => {
           composerResizeFrame = null;
           resizeComposer();
         });
       });
-      for (const target of [el, composerRowEl.value, leftActionsEl.value, rightActionsEl.value]) {
+      for (const target of [el, composerRowEl.value, ...heightTargets]) {
         if (target) composerResizeObserver.observe(target);
       }
     }
@@ -189,9 +220,17 @@ export function useMainChatComposer(params: {
   const onWindowResize = (): void => {
     resizeComposer();
   };
+  const viewport = window.visualViewport;
+  const onVisibilityChange = (): void => {
+    if (document.visibilityState === "visible") resizeComposer();
+  };
 
   onMounted(() => {
     window.addEventListener("resize", onWindowResize, { passive: true });
+    window.addEventListener("pageshow", onWindowResize, { passive: true });
+    viewport?.addEventListener("resize", onWindowResize, { passive: true });
+    viewport?.addEventListener("scroll", onWindowResize, { passive: true });
+    document.addEventListener("visibilitychange", onVisibilityChange);
     resizeComposer();
   });
 
@@ -251,6 +290,10 @@ export function useMainChatComposer(params: {
 
   onBeforeUnmount(() => {
     window.removeEventListener("resize", onWindowResize);
+    window.removeEventListener("pageshow", onWindowResize);
+    viewport?.removeEventListener("resize", onWindowResize);
+    viewport?.removeEventListener("scroll", onWindowResize);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
     attachNativeListeners(null);
   });
 

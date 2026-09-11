@@ -27,6 +27,7 @@
     "build:web": "vite build --config client/vite.config.ts",
     "dev:web": "vite --config client/vite.config.ts",
     "test:web": "vitest --config client/vitest.config.ts run",
+    "test:composer-browser": "node scripts/test-composer-browser.js",
     "postbuild": "node scripts/chmod-bins.js",
     "bundle": "npm run build && node scripts/bundle.js",
     "deploy:local": "node scripts/deploy-local.js",

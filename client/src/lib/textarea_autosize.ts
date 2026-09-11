@@ -1,6 +1,7 @@
 export type AutosizeTextareaOptions = {
   minRows?: number;
   maxRows?: number;
+  maxHeightPx?: number;
 };
 
 function parsePx(value: string): number {
@@ -44,7 +45,10 @@ export function autosizeTextarea(el: HTMLTextAreaElement, opts: AutosizeTextarea
   const extraHeight = paddingTop + paddingBottom + borderHeight;
 
   const minHeight = lineHeightPx * minRows + extraHeight;
-  const maxHeight = lineHeightPx * maxRows + extraHeight;
+  const rowLimit = lineHeightPx * maxRows + extraHeight;
+  const maxHeight = Number.isFinite(opts.maxHeightPx)
+    ? Math.max(minHeight, Math.min(rowLimit, opts.maxHeightPx!))
+    : rowLimit;
 
   // Empty editors must collapse even when a browser reports stale scroll geometry.
   if (!el.value) {
@@ -63,5 +67,5 @@ export function autosizeTextarea(el: HTMLTextAreaElement, opts: AutosizeTextarea
 
   el.style.height = `${Math.ceil(nextHeight)}px`;
   el.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
-  return contentHeight > lineHeightPx + extraHeight + 1;
+  return el.value.includes("\n") || contentHeight > lineHeightPx + extraHeight + 1;
 }

@@ -30,9 +30,10 @@
         position: fixed;
         overflow: hidden;
         top: var(--app-top, 0px);
-        bottom: var(--app-bottom, 0px);
+        height: var(--ads-visual-viewport-height, 100dvh);
         left: 0;
         right: 0;
+        --app-safe-bottom: max(0px, calc(env(safe-area-inset-bottom, 0px) - var(--app-bottom, 0px)));
       }
     </style>
   </head>
