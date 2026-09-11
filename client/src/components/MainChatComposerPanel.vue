@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, ref, useId, watch } from "vue";
 
 import MainChatPendingImageViewer from "./MainChatPendingImageViewer.vue";
 import { resolveComposerImagePreview } from "./mainChat/attachmentPreview";
 import type { IncomingImage, QueuedPrompt } from "./mainChat/types";
 import { useMainChatComposer } from "./mainChat/useComposer";
+import { useComposerActionMenu } from "./mainChat/useComposerActionMenu";
 
 type PendingImagePreview = {
   key: string;
@@ -150,26 +151,15 @@ const {
 });
 
 const composerRoot = ref<HTMLElement | null>(null);
-const actionMenuOpen = ref(false);
-
-function closeActionMenu(): void {
-  actionMenuOpen.value = false;
-}
-
-function toggleActionMenu(): void {
-  if (props.inputLocked) return;
-  actionMenuOpen.value = !actionMenuOpen.value;
-}
-
-function onActionMenuPointerDown(event: Event): void {
-  const target = event.target;
-  if (target instanceof Node && composerRoot.value?.contains(target)) return;
-  closeActionMenu();
-}
-
-function onActionMenuKeydown(event: KeyboardEvent): void {
-  if (event.key === "Escape") closeActionMenu();
-}
+const actionMenuId = useId();
+const {
+  trigger: actionMenuTrigger,
+  menu: actionMenuElement,
+  open: actionMenuOpen,
+  style: actionMenuStyle,
+  toggle: toggleActionMenu,
+  close: closeActionMenu,
+} = useComposerActionMenu(composerRoot, () => Boolean(props.inputLocked));
 
 function attachFromActionMenu(): void {
   closeActionMenu();
@@ -185,16 +175,6 @@ async function quoteFromActionMenu(): Promise<void> {
   closeActionMenu();
   await wrapSelectedTextWithTripleQuotes();
 }
-
-onMounted(() => {
-  document.addEventListener("pointerdown", onActionMenuPointerDown);
-  document.addEventListener("keydown", onActionMenuKeydown);
-});
-
-onBeforeUnmount(() => {
-  document.removeEventListener("pointerdown", onActionMenuPointerDown);
-  document.removeEventListener("keydown", onActionMenuKeydown);
-});
 
 const hasTextSelection = ref(false);
 const canRestoreLatestPrompt = computed(
@@ -322,11 +302,13 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
       <div ref="composerRowEl" class="composerMainRow" :class="{ 'composerMainRow--expanded': composerExpanded }">
         <div ref="leftActionsEl" class="composerMainRowLeft">
           <button
+            ref="actionMenuTrigger"
             class="attachIcon composerActionToggle"
             type="button"
             title="更多输入操作"
             aria-label="更多输入操作"
             :aria-expanded="actionMenuOpen"
+            :aria-controls="actionMenuOpen ? actionMenuId : undefined"
             aria-haspopup="menu"
             data-testid="composer-actions-toggle"
             :disabled="inputLocked"
@@ -405,51 +387,56 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
           </button>
         </div>
       </div>
-      <div
-        v-if="actionMenuOpen"
-        class="actionSheet"
-        role="menu"
-        aria-label="输入操作"
-        data-testid="composer-action-sheet"
-        @click.stop
-      >
-        <button
-          class="actionSheetItem"
-          type="button"
-          role="menuitem"
-          data-testid="action-attach-image"
-          :disabled="inputLocked"
-          @mousedown.prevent
-          @click="attachFromActionMenu"
+      <Teleport to="body">
+        <div
+          v-if="actionMenuOpen"
+          :id="actionMenuId"
+          ref="actionMenuElement"
+          class="actionSheet"
+          :style="actionMenuStyle"
+          role="menu"
+          aria-label="输入操作"
+          data-testid="composer-action-sheet"
+          @click.stop
         >
-          <span class="actionSheetIcon" aria-hidden="true">📎</span>
-          <span>添加图片附件</span>
-        </button>
-        <button
-          class="actionSheetItem"
-          type="button"
-          role="menuitem"
-          data-testid="wrap-triple-quotes"
-          :disabled="inputLocked || !hasTextSelection"
-          @mousedown.prevent
-          @click="quoteFromActionMenu"
-        >
-          <span class="actionSheetIcon actionSheetIcon--mono" aria-hidden="true">&quot;&quot;&quot;</span>
-          <span>快速引用选中文本</span>
-        </button>
-        <button
-          class="actionSheetItem"
-          type="button"
-          role="menuitem"
-          data-testid="restore-latest-prompt"
-          :disabled="!canRestoreLatestPrompt"
-          @mousedown.prevent
-          @click="restoreFromActionMenu"
-        >
-          <span class="actionSheetIcon" aria-hidden="true">↺</span>
-          <span>恢复上一条输入</span>
-        </button>
-      </div>
+          <button
+            class="actionSheetItem"
+            type="button"
+            role="menuitem"
+            data-testid="action-attach-image"
+            :disabled="inputLocked"
+            @mousedown.prevent
+            @click="attachFromActionMenu"
+          >
+            <span class="actionSheetIcon" aria-hidden="true">📎</span>
+            <span>添加图片附件</span>
+          </button>
+          <button
+            class="actionSheetItem"
+            type="button"
+            role="menuitem"
+            data-testid="wrap-triple-quotes"
+            :disabled="inputLocked || !hasTextSelection"
+            @mousedown.prevent
+            @click="quoteFromActionMenu"
+          >
+            <span class="actionSheetIcon actionSheetIcon--mono" aria-hidden="true">&quot;&quot;&quot;</span>
+            <span>快速引用选中文本</span>
+          </button>
+          <button
+            class="actionSheetItem"
+            type="button"
+            role="menuitem"
+            data-testid="restore-latest-prompt"
+            :disabled="!canRestoreLatestPrompt"
+            @mousedown.prevent
+            @click="restoreFromActionMenu"
+          >
+            <span class="actionSheetIcon" aria-hidden="true">↺</span>
+            <span>恢复上一条输入</span>
+          </button>
+        </div>
+      </Teleport>
       <div
         v-if="(voiceStatusKind === 'ok' || voiceStatusKind === 'error') && voiceStatusMessage"
         class="voiceToast"
@@ -485,7 +472,7 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px 16px calc(env(safe-area-inset-bottom, 0px) * var(--safe-bottom-multiplier, 1));
+  padding: 8px 16px var(--app-safe-bottom, env(safe-area-inset-bottom, 0px));
   background: var(--app-bg, #ffffff);
   position: relative;
   z-index: 20;
@@ -633,7 +620,8 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   align-items: flex-end;
   padding: 8px;
   flex-shrink: 0;
-  gap: 6px;
+  column-gap: 6px;
+  row-gap: 2px;
 }
 
 .composerMainRow--expanded {
@@ -693,12 +681,13 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
 }
 
 .actionSheet {
-  position: absolute;
-  left: 8px;
-  bottom: calc(100% + 8px);
-  width: min(270px, calc(100% - 16px));
+  position: fixed;
+  z-index: 200;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 6px;
   display: grid;
+  grid-auto-rows: max-content;
   gap: 2px;
   border: 1px solid rgba(148, 163, 184, 0.3);
   border-radius: 15px;

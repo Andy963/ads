@@ -61,13 +61,20 @@ describe("chat visual viewport anchoring", () => {
     vi.unstubAllGlobals();
   });
 
-  it("anchors the fixed chat page to the reported visual viewport top and height", async () => {
+  it("gives the root sole ownership of visual viewport geometry and remaining safe area", async () => {
     const app = await readSfc("../App.vue", import.meta.url);
+    const html = await readSfc("../../index.html", import.meta.url);
+    const global = await readSfc("../global.css", import.meta.url);
     const rule = app.match(/\.app\s*\{[^}]*\}/)?.[0];
+    const root = html.match(/#app\s*\{[^}]*\}/)?.[0];
     expect(rule).toBeDefined();
-    expect(rule).toMatch(/position:\s*fixed\s*;/);
-    expect(rule).toMatch(/top:\s*var\(--app-top,\s*0px\)\s*;/);
-    expect(rule).toMatch(/height:\s*var\(--ads-visual-viewport-height,\s*100dvh\)\s*;/);
+    expect(rule).toMatch(/height:\s*100%\s*;/);
+    expect(rule).not.toContain("--app-top");
+    expect(root).toMatch(/position:\s*fixed\s*;/);
+    expect(root).toMatch(/top:\s*var\(--app-top,\s*0px\)\s*;/);
+    expect(root).toMatch(/height:\s*var\(--ads-visual-viewport-height,\s*100dvh\)\s*;/);
+    expect(root).toContain("max(0px, calc(env(safe-area-inset-bottom, 0px) - var(--app-bottom, 0px)))");
+    expect(global).not.toMatch(/#app\s*\{[^}]*height:/);
   });
 
   it("tracks keyboard panning even when only a viewport scroll event fires", async () => {
@@ -79,7 +86,7 @@ describe("chat visual viewport anchoring", () => {
 
     expect(cssVariable("--app-top")).toBe("120px");
     expect(cssVariable("--ads-visual-viewport-height")).toBe("440px");
-    expect(cssVariable("--safe-bottom-multiplier")).toBe("0");
+    expect(cssVariable("--app-bottom")).toBe("284px");
   });
 
   it("preserves the viewport offset after blur until the keyboard finishes closing", async () => {
@@ -92,12 +99,12 @@ describe("chat visual viewport anchoring", () => {
 
     expect(cssVariable("--app-top")).toBe("120px");
     expect(cssVariable("--ads-visual-viewport-height")).toBe("440px");
-    expect(cssVariable("--safe-bottom-multiplier")).toBe("0");
+    expect(cssVariable("--app-bottom")).toBe("284px");
 
     updateViewport(844, 0);
     expect(cssVariable("--app-top")).toBe("0px");
     expect(cssVariable("--ads-visual-viewport-height")).toBe("844px");
-    expect(cssVariable("--safe-bottom-multiplier")).toBe("1");
+    expect(cssVariable("--app-bottom")).toBe("0px");
   });
 
   it("recovers after keyboard dismissal without a resize event while input remains focused", async () => {
@@ -130,7 +137,7 @@ describe("chat visual viewport anchoring", () => {
     expect(cssVariable("--app-top")).toBe("0px");
     expect(cssVariable("--app-bottom")).toBe("0px");
     expect(cssVariable("--ads-visual-viewport-height")).toBe("844px");
-    expect(cssVariable("--safe-bottom-multiplier")).toBe("1");
+    expect(cssVariable("--app-bottom")).toBe("0px");
   });
 
   it("tracks silent browser viewport changes when no input is focused", async () => {
