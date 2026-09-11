@@ -38,6 +38,10 @@ function action(selector: string): DOMWrapper<Element> {
   return new DOMWrapper(element);
 }
 
+function dispatchCompatibilityClick(element: Element): void {
+  element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+}
+
 async function openActionSheet(wrapper: ReturnType<typeof mount>): Promise<void> {
   await wrapper.get('[data-testid="composer-actions-toggle"]').trigger("click");
   await nextTick();
@@ -148,15 +152,19 @@ describe("MainChat prompt tools", () => {
     wrapper.unmount();
   });
 
-  it("toggles only on click, dismisses outside and on Escape, and closes when locked", async () => {
+  it("toggles on pointer release or click, dismisses outside and on Escape, and closes when locked", async () => {
     const wrapper = mountPromptTools();
     const toggle = wrapper.get('[data-testid="composer-actions-toggle"]');
     await toggle.trigger("pointerdown", { pointerType: "touch" });
     await toggle.trigger("pointerup", { pointerType: "touch" });
-    expect(toggle.attributes("aria-expanded")).toBe("false");
-    await toggle.trigger("click");
     expect(toggle.attributes("aria-expanded")).toBe("true");
-    await toggle.trigger("click");
+    dispatchCompatibilityClick(toggle.element);
+    await nextTick();
+    expect(toggle.attributes("aria-expanded")).toBe("true");
+    await toggle.trigger("pointerdown", { pointerType: "touch" });
+    await toggle.trigger("pointerup", { pointerType: "touch" });
+    dispatchCompatibilityClick(toggle.element);
+    await nextTick();
     expect(toggle.attributes("aria-expanded")).toBe("false");
 
     await openActionSheet(wrapper);
@@ -170,6 +178,51 @@ describe("MainChat prompt tools", () => {
     await openActionSheet(wrapper);
     await wrapper.setProps({ inputLocked: true });
     expect(toggle.attributes("aria-expanded")).toBe("false");
+    wrapper.unmount();
+  });
+
+  it("opens on a pointer release when no click follows and suppresses the compatibility click", async () => {
+    const wrapper = mountPromptTools();
+    const toggle = wrapper.get('[data-testid="composer-actions-toggle"]');
+
+    await toggle.trigger("pointerdown", { pointerId: 1 });
+    await toggle.trigger("pointerup", { pointerId: 1 });
+    await nextTick();
+    expect(toggle.attributes("aria-expanded")).toBe("true");
+
+    dispatchCompatibilityClick(toggle.element);
+    await nextTick();
+    expect(toggle.attributes("aria-expanded")).toBe("true");
+
+    await toggle.trigger("pointerdown", { pointerId: 2 });
+    await toggle.trigger("pointerup", { pointerId: 2 });
+    dispatchCompatibilityClick(toggle.element);
+    await nextTick();
+    await nextTick();
+    expect(toggle.attributes("aria-expanded")).toBe("false");
+    wrapper.unmount();
+  });
+
+  it("preserves a selected range when touch activation blurs the textarea", async () => {
+    const wrapper = mountPromptTools();
+    const textarea = wrapper.get("textarea.composer-input");
+    const element = textarea.element as HTMLTextAreaElement;
+    await textarea.setValue("alpha beta");
+    element.focus();
+    element.setSelectionRange(6, 10);
+    await textarea.trigger("select");
+
+    const toggle = wrapper.get('[data-testid="composer-actions-toggle"]');
+    await toggle.trigger("pointerdown", { pointerId: 1 });
+    await textarea.trigger("blur");
+    await toggle.trigger("pointerup", { pointerId: 1 });
+    await nextTick();
+
+    const quote = action("[data-testid='wrap-triple-quotes']");
+    expect(quote.attributes("disabled")).toBeUndefined();
+    await quote.trigger("click");
+    await nextTick();
+    expect(element.value).toBe('alpha """beta"""');
     wrapper.unmount();
   });
 

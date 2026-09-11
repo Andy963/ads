@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, useId, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
 
 import MainChatPendingImageViewer from "./MainChatPendingImageViewer.vue";
 import { resolveComposerImagePreview } from "./mainChat/attachmentPreview";
@@ -11,6 +11,11 @@ type PendingImagePreview = {
   key: string;
   src: string;
   href: string;
+};
+
+type TextSelectionRange = {
+  start: number;
+  end: number;
 };
 
 const props = defineProps<{
@@ -152,6 +157,8 @@ const {
 
 const composerRoot = ref<HTMLElement | null>(null);
 const actionMenuId = useId();
+const hasTextSelection = ref(false);
+const actionMenuSelection = ref<TextSelectionRange | null>(null);
 const {
   trigger: actionMenuTrigger,
   menu: actionMenuElement,
@@ -161,22 +168,119 @@ const {
   close: closeActionMenu,
 } = useComposerActionMenu(composerRoot, () => Boolean(props.inputLocked));
 
+const ACTION_MENU_POINTER_SLOP_PX = 10;
+const ACTION_MENU_CLICK_SUPPRESS_MS = 700;
+let actionMenuPointerCandidate: { pointerId: number; x: number; y: number } | null = null;
+let actionMenuPointerActivationAt = 0;
+let actionMenuClickSuppressTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearActionMenuPointerCandidate(): void {
+  actionMenuPointerCandidate = null;
+}
+
+function clearActionMenuClickSuppression(): void {
+  actionMenuPointerActivationAt = 0;
+  if (actionMenuClickSuppressTimer !== null) {
+    clearTimeout(actionMenuClickSuppressTimer);
+    actionMenuClickSuppressTimer = null;
+  }
+}
+
+function rememberActionMenuSelection(): void {
+  const el = inputEl.value;
+  if (!el || props.inputLocked) return;
+  const start = el.selectionStart;
+  const end = el.selectionEnd;
+  if (end <= start) return;
+  actionMenuSelection.value = { start, end };
+  hasTextSelection.value = true;
+}
+
+function releaseActionMenuSelection(): void {
+  actionMenuSelection.value = null;
+}
+
+function toggleActionMenuFromInput(): void {
+  if (actionMenuOpen.value) releaseActionMenuSelection();
+  toggleActionMenu();
+}
+
+function markActionMenuPointerActivation(): void {
+  actionMenuPointerActivationAt = Date.now();
+  if (actionMenuClickSuppressTimer !== null) clearTimeout(actionMenuClickSuppressTimer);
+  actionMenuClickSuppressTimer = setTimeout(() => {
+    actionMenuPointerActivationAt = 0;
+    actionMenuClickSuppressTimer = null;
+  }, ACTION_MENU_CLICK_SUPPRESS_MS);
+}
+
+function onActionMenuPointerDown(event: PointerEvent): void {
+  if (props.inputLocked || event.button > 0) {
+    clearActionMenuPointerCandidate();
+    return;
+  }
+  rememberActionMenuSelection();
+  actionMenuPointerCandidate = { pointerId: event.pointerId, x: event.clientX, y: event.clientY };
+  const target = event.currentTarget;
+  if (target instanceof HTMLElement && target.setPointerCapture) {
+    try {
+      target.setPointerCapture(event.pointerId);
+    } catch {
+      clearActionMenuPointerCandidate();
+    }
+  }
+}
+
+function onActionMenuPointerUp(event: PointerEvent): void {
+  const candidate = actionMenuPointerCandidate;
+  clearActionMenuPointerCandidate();
+  if (!candidate || candidate.pointerId !== event.pointerId || props.inputLocked) return;
+  if (
+    Math.abs(event.clientX - candidate.x) > ACTION_MENU_POINTER_SLOP_PX ||
+    Math.abs(event.clientY - candidate.y) > ACTION_MENU_POINTER_SLOP_PX
+  ) {
+    return;
+  }
+  markActionMenuPointerActivation();
+  toggleActionMenuFromInput();
+}
+
+function onActionMenuPointerCancel(): void {
+  clearActionMenuPointerCandidate();
+}
+
+function onActionMenuClick(event: MouseEvent): void {
+  if (
+    actionMenuPointerActivationAt > 0 &&
+    event.detail > 0 &&
+    Date.now() - actionMenuPointerActivationAt < ACTION_MENU_CLICK_SUPPRESS_MS
+  ) {
+    clearActionMenuClickSuppression();
+    return;
+  }
+  clearActionMenuClickSuppression();
+  toggleActionMenuFromInput();
+}
+
 function attachFromActionMenu(): void {
+  releaseActionMenuSelection();
   closeActionMenu();
   triggerFileInput();
 }
 
 async function restoreFromActionMenu(): Promise<void> {
+  releaseActionMenuSelection();
   closeActionMenu();
   await restoreLatestPrompt();
 }
 
 async function quoteFromActionMenu(): Promise<void> {
+  const selection = actionMenuSelection.value;
+  releaseActionMenuSelection();
   closeActionMenu();
-  await wrapSelectedTextWithTripleQuotes();
+  await wrapSelectedTextWithTripleQuotes(selection);
 }
 
-const hasTextSelection = ref(false);
 const canRestoreLatestPrompt = computed(
   () => !props.inputLocked && !input.value.trim() && Boolean(latestPrompt.value.trim()),
 );
@@ -194,12 +298,20 @@ function updateTextSelection(): void {
   const el = inputEl.value;
   if (!el || props.inputLocked) {
     hasTextSelection.value = false;
+    actionMenuSelection.value = null;
     return;
   }
-  hasTextSelection.value = el.selectionEnd > el.selectionStart;
+  const start = el.selectionStart;
+  const end = el.selectionEnd;
+  hasTextSelection.value = end > start;
+  actionMenuSelection.value = end > start ? { start, end } : null;
 }
 
 function clearTextSelectionState(): void {
+  if (actionMenuSelection.value) {
+    hasTextSelection.value = true;
+    return;
+  }
   hasTextSelection.value = false;
 }
 
@@ -215,12 +327,14 @@ async function restoreLatestPrompt(): Promise<void> {
   updateTextSelection();
 }
 
-async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
+async function wrapSelectedTextWithTripleQuotes(selectionOverride: TextSelectionRange | null = null): Promise<void> {
   const el = inputEl.value;
   if (!el || props.inputLocked) return;
   const current = input.value;
-  const start = el.selectionStart;
-  const end = el.selectionEnd;
+  const currentSelection = { start: el.selectionStart, end: el.selectionEnd };
+  const selection = selectionOverride ?? currentSelection;
+  const start = Math.max(0, Math.min(selection.start, current.length));
+  const end = Math.max(start, Math.min(selection.end, current.length));
   if (end <= start) return;
   const selected = current.slice(start, end);
   input.value = `${current.slice(0, start)}\"\"\"${selected}\"\"\"${current.slice(end)}`;
@@ -229,6 +343,11 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
   el.setSelectionRange(start + 3, end + 3);
   updateTextSelection();
 }
+
+onBeforeUnmount(() => {
+  clearActionMenuPointerCandidate();
+  clearActionMenuClickSuppression();
+});
 </script>
 
 <template>
@@ -312,8 +431,12 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
             aria-haspopup="menu"
             data-testid="composer-actions-toggle"
             :disabled="inputLocked"
-            @mousedown.prevent
-            @click.stop="toggleActionMenu"
+            @pointerdown="onActionMenuPointerDown"
+            @pointerup="onActionMenuPointerUp"
+            @pointercancel="onActionMenuPointerCancel"
+            @touchstart="rememberActionMenuSelection"
+            @mousedown="rememberActionMenuSelection"
+            @click.stop="onActionMenuClick"
           >
             <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path fill-rule="evenodd" d="M10 3a.75.75 0 0 1 .75.75v5.5h5.5a.75.75 0 0 1 0 1.5h-5.5v5.5a.75.75 0 0 1-1.5 0v-5.5h-5.5a.75.75 0 0 1 0-1.5h5.5v-5.5A.75.75 0 0 1 10 3Z" clip-rule="evenodd" />
@@ -405,7 +528,6 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
             role="menuitem"
             data-testid="action-attach-image"
             :disabled="inputLocked"
-            @mousedown.prevent
             @click="attachFromActionMenu"
           >
             <span class="actionSheetIcon" aria-hidden="true">📎</span>
@@ -417,7 +539,6 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
             role="menuitem"
             data-testid="wrap-triple-quotes"
             :disabled="inputLocked || !hasTextSelection"
-            @mousedown.prevent
             @click="quoteFromActionMenu"
           >
             <span class="actionSheetIcon actionSheetIcon--mono" aria-hidden="true">&quot;&quot;&quot;</span>
@@ -429,7 +550,6 @@ async function wrapSelectedTextWithTripleQuotes(): Promise<void> {
             role="menuitem"
             data-testid="restore-latest-prompt"
             :disabled="!canRestoreLatestPrompt"
-            @mousedown.prevent
             @click="restoreFromActionMenu"
           >
             <span class="actionSheetIcon" aria-hidden="true">↺</span>
