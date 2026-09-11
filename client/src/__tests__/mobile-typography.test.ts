@@ -45,6 +45,23 @@ describe("mobile typography", () => {
 
     expect(css).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.drawerBrandVersion,[\s\S]*?font-size:\s*12px\s*;/);
     expect(css).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.projectBranch,[\s\S]*?font-size:\s*12px\s*;/);
-    expect(css).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.mobileContextActionHint[\s\S]*?font-size:\s*12px\s*;/);
+  });
+
+  it("keeps mobile context actions compact without inline hint text", () => {
+    const css = readUtf8("../App.css");
+    const mobileCss = css.slice(css.indexOf("@media (max-width: 900px)"));
+    const menu = mobileCss.match(/\.mobileContextMenu\s*\{[^}]*\}/)?.[0];
+    const action = mobileCss.match(/\.mobileContextAction\s*\{[^}]*\}/)?.[0];
+    const disabled = mobileCss.match(/\.mobileContextAction:disabled\s*\{[^}]*\}/)?.[0];
+
+    expect(menu).toMatch(/width:\s*max-content\s*;/);
+    expect(menu).toMatch(/min-width:\s*140px\s*;/);
+    expect(menu).toMatch(/max-width:\s*calc\(100vw - 24px\)\s*;/);
+    expect(action).toMatch(/align-items:\s*center\s*;/);
+    expect(action).toMatch(/min-height:\s*40px\s*;/);
+    expect(disabled).toMatch(/opacity:\s*0\.72\s*;/);
+    expect(disabled).toMatch(/cursor:\s*not-allowed\s*;/);
+    expect(css).not.toMatch(/\.mobileContextMenuTitle\s*\{/);
+    expect(css).not.toMatch(/\.mobileContextActionHint\s*\{/);
   });
 });

@@ -855,28 +855,23 @@
     right: 8px;
     display: flex;
     flex-direction: column;
-    width: min(250px, calc(100vw - 24px));
-    padding: 7px;
+    width: max-content;
+    min-width: 140px;
+    max-width: calc(100vw - 24px);
+    padding: 6px;
     border: 1px solid var(--border);
     border-radius: 13px;
     background: var(--surface);
     box-shadow: 0 18px 42px rgba(15, 23, 42, 0.18);
     z-index: 140;
   }
-  .mobileContextMenuTitle {
-    padding: 6px 10px 7px;
-    color: var(--muted);
-    font-size: 11px;
-    font-weight: 800;
-  }
   .mobileContextAction {
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 10px;
+    align-items: center;
+    justify-content: flex-start;
     width: 100%;
-    min-height: 42px;
-    padding: 10px;
+    min-height: 40px;
+    padding: 8px 10px;
     border: none;
     border-radius: 9px;
     background: transparent;
@@ -884,6 +879,7 @@
     text-align: left;
     font-size: 13px;
     font-weight: 700;
+    white-space: nowrap;
     cursor: pointer;
   }
   .mobileContextAction:hover:not(:disabled) {
@@ -892,15 +888,8 @@
   }
   .mobileContextAction:disabled {
     color: var(--muted-2);
+    opacity: 0.72;
     cursor: not-allowed;
-  }
-  .mobileContextActionHint {
-    max-width: 130px;
-    color: var(--muted-2);
-    font-size: 10px;
-    font-weight: 500;
-    line-height: 1.35;
-    text-align: right;
   }
   .left {
     display: none;
@@ -1153,8 +1142,6 @@
 @media (max-width: 768px) {
   .drawerBrandVersion,
   .projectBranch,
-  .mobileContextMenuTitle,
-  .mobileContextActionHint,
   .mobileDrawerSubitemText small {
     font-size: 12px;
   }
