@@ -43,7 +43,7 @@ describe("mobile typography", () => {
   it("raises mobile App chrome microcopy to the minimum readable size", () => {
     const css = readUtf8("../App.css");
 
-    expect(css).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.brandVersion,[\s\S]*?font-size:\s*12px\s*;/);
+    expect(css).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.drawerBrandVersion,[\s\S]*?font-size:\s*12px\s*;/);
     expect(css).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.projectBranch,[\s\S]*?font-size:\s*12px\s*;/);
     expect(css).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.mobileContextActionHint[\s\S]*?font-size:\s*12px\s*;/);
   });
