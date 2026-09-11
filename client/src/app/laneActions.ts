@@ -125,14 +125,17 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
 
    const sendMainPrompt = (content: string): void => {
      apiError.value = null;
+     const worker = activeRuntime.value;
      const text = String(content ?? "");
      const images = pendingImages.value.slice();
      pendingImages.value = [];
      if (text.trim().toLowerCase() === "/clear") {
        clearActiveChat();
+       worker.composerDraft.value = "";
        return;
      }
      enqueueMainPrompt(text, images);
+     worker.composerDraft.value = "";
    };
 
    const sendPlannerPrompt = (content: string): void => {
@@ -143,9 +146,11 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      planner.pendingImages.value = [];
      if (text.trim().toLowerCase() === "/clear") {
        clearPlannerChat();
+       planner.composerDraft.value = "";
        return;
      }
      enqueuePrompt(text, images, planner);
+     planner.composerDraft.value = "";
    };
 
    const persistReasoningEffort = (rt: ProjectRuntime): void => {

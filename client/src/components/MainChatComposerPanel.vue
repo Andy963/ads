@@ -149,7 +149,11 @@ const {
   isInputLocked: () => Boolean(props.inputLocked),
   getApiToken: () => String(props.apiToken ?? ""),
   onSend: (content) => {
-    persistLatestPrompt(content);
+    try {
+      persistLatestPrompt(content);
+    } catch {
+      // Browser storage must not prevent the prompt from being dispatched.
+    }
     emit("send", content);
   },
   onAddImages: (images) => emit("addImages", images),
