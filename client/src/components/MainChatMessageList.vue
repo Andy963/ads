@@ -274,6 +274,14 @@ function resolveMessageScrollRoot(): HTMLElement | null {
   return (list.closest(".chat") as HTMLElement | null) ?? list.parentElement;
 }
 
+function attachMessageScrollRoot(): void {
+  const nextRoot = resolveMessageScrollRoot();
+  if (nextRoot === messageScrollRoot) return;
+  messageScrollRoot?.removeEventListener("scroll", handleMessageScroll);
+  messageScrollRoot = nextRoot;
+  messageScrollRoot?.addEventListener("scroll", handleMessageScroll, { passive: true });
+}
+
 function isMessageScrollRootNearBottom(): boolean {
   const root = messageScrollRoot ?? resolveMessageScrollRoot();
   if (!root) return true;
@@ -289,7 +297,15 @@ function showLatestMessages(): void {
   windowEnd.value = total;
 }
 
-defineExpose({ showLatestMessages });
+function refreshAfterVisibility(): void {
+  attachMessageScrollRoot();
+  const total = renderMessages.value.length;
+  const hasWindow = windowEnd.value > windowStart.value && windowStart.value < total;
+  if (total > 0 && !hasWindow) showLatestMessages();
+  void nextTick().then(observeEarlierMessagesSentinel);
+}
+
+defineExpose({ showLatestMessages, refreshAfterVisibility });
 
 function handleMessageScroll(): void {
   if (isMessageScrollRootNearBottom()) showLatestMessages();
@@ -382,8 +398,7 @@ watch(windowStart, () => {
 });
 
 onMounted(() => {
-  messageScrollRoot = resolveMessageScrollRoot();
-  messageScrollRoot?.addEventListener("scroll", handleMessageScroll, { passive: true });
+  attachMessageScrollRoot();
   observeEarlierMessagesSentinel();
 });
 

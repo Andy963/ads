@@ -271,10 +271,10 @@ function selectReasoningEffort(effort: string): void {
 <style scoped>
 .modelSelectors {
   display: grid;
-  grid-template-columns: minmax(0, 112px) 60px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 60px);
   align-items: center;
   gap: 4px;
-  width: fit-content;
+  width: 100%;
   max-width: 100%;
   min-width: 0;
 }
@@ -284,6 +284,7 @@ function selectReasoningEffort(effort: string): void {
   display: flex;
   align-items: center;
   min-width: 0;
+  overflow: hidden;
   height: 26px;
   box-sizing: border-box;
   padding: 3px 18px 3px 6px;
@@ -323,6 +324,7 @@ function selectReasoningEffort(effort: string): void {
   position: absolute;
   inset: 0;
   width: 100%;
+  max-width: 100%;
   min-width: 0;
   height: 100%;
   opacity: 0;

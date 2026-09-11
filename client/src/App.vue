@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 declare const __APP_VERSION__: string | undefined;
 const appVersion = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.0.1";
@@ -134,10 +134,10 @@ const chatLanes: Array<{ id: ChatLane; label: string }> = [
   { id: "worker", label: "Worker" },
 ];
 const workspaceTabs = computed<Array<{ id: ChatLane; label: string }>>(() => chatLanes);
-const activeWorkspaceTab = computed<ChatLane>(() => activeChatLane.value);
 
 const {
   activeChatLane,
+  setActiveChatLane,
   plannerMessages,
   plannerQueuedPrompts,
   plannerPendingImages,
@@ -193,6 +193,15 @@ const {
   resumeTaskThread,
   listResumableSessions,
 });
+
+const activeWorkspaceTab = computed<ChatLane>(() => activeChatLane.value);
+
+type MainChatHandle = {
+  refreshAfterVisibility?: () => void | Promise<void>;
+};
+
+const plannerChatRef = ref<MainChatHandle | null>(null);
+const workerChatRef = ref<MainChatHandle | null>(null);
 
 const activeLaneConnected = computed(() =>
   activeWorkspaceTab.value === "planner" ? Boolean(plannerConnected.value) : Boolean(connected.value),
@@ -336,7 +345,7 @@ function toggleMobileDrawer(): void {
 }
 
 function selectWorkspaceTab(tab: ChatLane): void {
-  activeChatLane.value = tab;
+  setActiveChatLane(tab);
   if (isMobile.value) writeMobileWorkspaceTab(activeProjectId.value, tab);
   closeMobileContextMenu();
 }
@@ -344,7 +353,14 @@ function selectWorkspaceTab(tab: ChatLane): void {
 function restoreMobileWorkspaceTab(): void {
   const projectId = activeProjectId.value.trim();
   const tab = readMobileWorkspaceTab(projectId);
-  activeChatLane.value = tab;
+  setActiveChatLane(tab);
+}
+
+async function refreshVisibleLaneChat(lane: ChatLane): Promise<void> {
+  await nextTick();
+  if (activeWorkspaceTab.value !== lane) return;
+  const chat = lane === "planner" ? plannerChatRef.value : workerChatRef.value;
+  await chat?.refreshAfterVisibility?.();
 }
 
 function selectMobileDrawerSection(section: MobileDrawerSection): void {
@@ -408,16 +424,24 @@ function onMobileKeydown(ev: KeyboardEvent): void {
 
 watch(isMobile, (mobile) => {
   if (mobile) {
-    restoreMobileWorkspaceTab();
+    if (activeProjectId.value.trim()) restoreMobileWorkspaceTab();
     return;
   }
   closeMobileDrawer();
 });
 
 watch(activeProjectId, (projectId, previousProjectId) => {
-  if (!isMobile.value || !projectId.trim() || projectId === previousProjectId) return;
-  restoreMobileWorkspaceTab();
+  if (!projectId.trim() || projectId === previousProjectId) return;
+  if (isMobile.value) {
+    restoreMobileWorkspaceTab();
+    return;
+  }
+  if (previousProjectId?.trim()) setActiveChatLane("worker");
 });
+
+watch(activeWorkspaceTab, (lane) => {
+  void refreshVisibleLaneChat(lane);
+}, { flush: "post" });
 
 onMounted(() => {
   window.addEventListener("keydown", onMobileKeydown);
@@ -797,6 +821,7 @@ const plannerConnectionStatus = computed(() => {
             data-testid="lane-panel-planner"
           >
             <MainChatView
+              ref="plannerChatRef"
               :key="plannerChatKey"
               class="chatHost chatHost--planner"
               :messages="plannerMessages"
@@ -829,6 +854,7 @@ const plannerConnectionStatus = computed(() => {
             data-testid="lane-panel-worker"
           >
             <MainChatView
+              ref="workerChatRef"
               :key="workerChatKey"
               class="chatHost"
               :messages="messages"

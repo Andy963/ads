@@ -36,7 +36,12 @@ const emit = defineEmits<{
 }>();
 
 const listRef = ref<HTMLElement | null>(null);
-const messageListRef = ref<{ showLatestMessages?: () => void } | null>(null);
+type MessageListHandle = {
+  showLatestMessages?: () => void;
+  refreshAfterVisibility?: () => void;
+};
+
+const messageListRef = ref<MessageListHandle | null>(null);
 const autoScroll = ref(true);
 const showScrollToBottom = ref(false);
 
@@ -93,6 +98,17 @@ async function scrollChatToBottom(): Promise<void> {
   autoScroll.value = true;
   showScrollToBottom.value = false;
 }
+
+async function refreshAfterVisibility(): Promise<void> {
+  await nextTick();
+  messageListRef.value?.refreshAfterVisibility?.();
+  await nextTick();
+  if (!listRef.value || !autoScroll.value) return;
+  listRef.value.scrollTop = listRef.value.scrollHeight;
+  showScrollToBottom.value = false;
+}
+
+defineExpose({ refreshAfterVisibility });
 
 const scrollToBottom = scrollChatToBottom;
 

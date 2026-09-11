@@ -614,7 +614,9 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
+  width: 100%;
   min-width: 0;
+  overflow: hidden;
 }
 
 .laneSessionActions {

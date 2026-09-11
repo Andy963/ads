@@ -1,4 +1,4 @@
-import { computed, ref, watch, type Ref } from "vue";
+import { computed, ref, type Ref } from "vue";
 
 export type ChatLane = "planner" | "worker";
 
@@ -65,15 +65,11 @@ export function useLaneRuntimeBridge(params: {
   ) => void;
 }) {
   const activeChatLane = ref<ChatLane>("planner");
-  watch(
-    () => params.activeProjectId.value,
-    (nextProjectId, prevProjectId) => {
-      if (!prevProjectId || nextProjectId === prevProjectId) return;
-      if (activeChatLane.value === "planner") {
-        activeChatLane.value = "worker";
-      }
-    },
-  );
+
+  function setActiveChatLane(lane: ChatLane): void {
+    activeChatLane.value = lane;
+  }
+
   const plannerRuntime = computed(() => asPlannerRuntimeShape(params.activePlannerRuntime.value));
   const workerRuntime = computed(() => asRuntimeShape(params.activeRuntime.value));
 
@@ -207,6 +203,7 @@ export function useLaneRuntimeBridge(params: {
 
   return {
     activeChatLane,
+    setActiveChatLane,
     plannerMessages,
     plannerQueuedPrompts,
     plannerPendingImages,

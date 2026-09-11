@@ -65,7 +65,7 @@ describe("useLaneRuntimeBridge", () => {
     expect(bridge.workerLatestPromptKey.value).toBe("p1:worker");
   });
 
-  it("returns planner lane to worker when the active project changes", async () => {
+  it("does not change the selected lane when the active project changes", async () => {
     const plannerRuntime = createRuntime();
     const activeProjectId = ref("p1");
 
@@ -86,7 +86,7 @@ describe("useLaneRuntimeBridge", () => {
     bridge.activeChatLane.value = "planner";
     activeProjectId.value = "p3";
     await nextTick();
-    expect(bridge.activeChatLane.value).toBe("worker");
+    expect(bridge.activeChatLane.value).toBe("planner");
   });
 
   it("blocks disconnected planner lane resets but keeps worker new-session available", () => {

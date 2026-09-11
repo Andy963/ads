@@ -145,4 +145,35 @@ describe("MainChat auto-scroll on mount", () => {
 
     wrapper.unmount();
   });
+
+  it("refreshes a visible pane without moving a user away from an earlier scroll position", async () => {
+    const messages = Array.from({ length: 65 }, (_, index) => msg(`m-${index}`, "assistant", `line ${index}`));
+    const wrapper = mount(MainChat, {
+      props: {
+        messages,
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: MarkdownContentStub,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    Object.defineProperty(chat, "clientHeight", { configurable: true, get: () => 100 });
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => 1000 });
+    await settleUi(wrapper);
+
+    chat.scrollTop = 100;
+    await wrapper.find(".chat").trigger("scroll");
+    await (wrapper.vm as any).refreshAfterVisibility();
+
+    expect(chat.scrollTop).toBe(100);
+    wrapper.unmount();
+  });
 });
