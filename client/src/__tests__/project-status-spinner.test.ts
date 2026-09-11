@@ -1,8 +1,17 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { shallowMount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
 import type { ModelConfig } from "../api/types";
+
+function readUtf8(relFromThisFile: string): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  return fs.readFileSync(path.resolve(here, relFromThisFile), "utf8");
+}
 
 type GetImpl = (url: string) => Promise<unknown>;
 
@@ -134,5 +143,24 @@ describe("project status spinner", () => {
     expect(projectStatus.attributes("title")).toBeUndefined();
 
     wrapper.unmount();
+  });
+
+  it("uses a transformable full-track spinner", () => {
+    const css = readUtf8("../App.css");
+    const spinner = css.match(/\.laneTabBusySpinner\s*\{[^}]*\}/)?.[0];
+
+    expect(spinner).toBeDefined();
+    expect(spinner).toMatch(/display:\s*inline-block\s*;/);
+    expect(spinner).toMatch(/box-sizing:\s*border-box\s*;/);
+    expect(spinner).toMatch(/width:\s*11px\s*;/);
+    expect(spinner).toMatch(/height:\s*11px\s*;/);
+    expect(spinner).toMatch(/border:\s*2px solid rgba\(148,\s*163,\s*184,\s*0\.32\)\s*;/);
+    expect(spinner).toMatch(/border-top-color:\s*currentColor\s*;/);
+    expect(spinner).toMatch(/transform-origin:\s*center\s*;/);
+    expect(spinner).toMatch(/animation:\s*spin 0\.8s linear infinite\s*;/);
+    expect(spinner).toMatch(/will-change:\s*transform\s*;/);
+    expect(css).toMatch(
+      /@keyframes\s+spin\s*\{[\s\S]*from\s*\{\s*transform:\s*rotate\(0deg\)\s*;[\s\S]*to\s*\{\s*transform:\s*rotate\(360deg\)\s*;/,
+    );
   });
 });
