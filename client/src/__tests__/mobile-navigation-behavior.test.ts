@@ -185,6 +185,46 @@ describe("mobile navigation behavior", () => {
     wrapper.unmount();
   }, 40_000);
 
+  it("keeps disabled context actions compact and hint-free", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, {
+      global: {
+        stubs: {
+          LoginGate: false,
+          MainChatView: false,
+          ModelManager: ModelManagerStub,
+          DraggableModal: true,
+        },
+      },
+    });
+    await settleUi(wrapper);
+
+    const plannerRuntime = (wrapper.vm as any).activePlannerRuntime as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+    };
+    plannerRuntime.busy.value = true;
+    await settleUi(wrapper);
+    await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
+
+    const menu = wrapper.find('[data-testid="mobile-context-menu"]');
+    const actions = menu.findAll("button.mobileContextAction");
+    expect(menu.attributes("aria-label")).toBe("项目操作");
+    expect(menu.find(".mobileContextMenuTitle").exists()).toBe(false);
+    expect(menu.findAll(".mobileContextActionHint")).toHaveLength(0);
+    expect(actions).toHaveLength(2);
+    expect(actions.every((action) => (action.element as HTMLButtonElement).disabled)).toBe(true);
+
+    plannerRuntime.busy.value = false;
+    plannerRuntime.connected.value = false;
+    await settleUi(wrapper);
+    expect((menu.find('[data-testid="mobile-context-action-resume"]').element as HTMLButtonElement).disabled).toBe(false);
+    expect((menu.find('[data-testid="mobile-context-action-new-session"]').element as HTMLButtonElement).disabled).toBe(true);
+    expect(menu.findAll(".mobileContextActionHint")).toHaveLength(0);
+
+    wrapper.unmount();
+  }, 40_000);
+
   it("restores the last tab independently for each project", async () => {
     projectsResponse = {
       projects: [

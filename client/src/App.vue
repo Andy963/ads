@@ -284,12 +284,6 @@ const sessionResumeDisabledReason = computed(() => {
   return "";
 });
 
-const newSessionDisabledReason = computed(() => {
-  if (activeLaneBusy.value) return "当前对话正在生成，结束后才能新建会话";
-  if (activeLaneNewSessionBlocked.value) return "当前 Advisor 尚未连接，暂时无法新建会话";
-  return "";
-});
-
 const mobileContextTitle = computed(() => {
   if (mobileDrawerSection.value === "settings") return "系统设置";
   return activeProject.value?.name?.trim() || "项目";
@@ -375,6 +369,11 @@ function toggleMobileContextMenu(): void {
 }
 
 function handleMobileContextAction(actionId: MobileContextActionId): void {
+  const action = mobileContextActions.value.find((item) => item.id === actionId);
+  if (action?.disabled) {
+    closeMobileContextMenu();
+    return;
+  }
   closeMobileContextMenu();
   if (actionId === "resume") {
     closeMobileDrawer();
@@ -613,7 +612,6 @@ const plannerConnectionStatus = computed(() => {
         data-testid="mobile-context-menu"
         @click.stop
       >
-        <div class="mobileContextMenuTitle">{{ mobileContextMenuTitle }}</div>
         <button
           v-for="action in mobileContextActions"
           :key="action.id"
@@ -625,13 +623,6 @@ const plannerConnectionStatus = computed(() => {
           @click="handleMobileContextAction(action.id)"
         >
           <span>{{ action.label }}</span>
-          <span v-if="action.disabled" class="mobileContextActionHint">
-            {{
-              action.id === "resume"
-                ? sessionResumeDisabledReason
-                : newSessionDisabledReason
-            }}
-          </span>
         </button>
       </div>
     </header>
