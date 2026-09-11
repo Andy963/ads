@@ -227,17 +227,23 @@
 .btnDanger:hover {
   background: var(--danger-2);
 }
-.brand {
+.drawerFooter {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  font-weight: 700;
-  font-size: 14px;
-  color: var(--accent);
-  white-space: nowrap;
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  margin-top: auto;
+  padding: 8px 2px 4px;
+  border-top: 1px solid var(--border);
 }
-.brandVersion {
+.drawerBrandTitle {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.drawerBrandVersion {
   font-size: 11px;
   font-weight: 500;
   color: var(--muted);
@@ -300,11 +306,12 @@
 .projectTree {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   gap: 10px;
   background: rgba(248, 250, 252, 0.95);
   border-radius: 16px;
   padding: 10px;
-  height: 80vh;
+  height: auto;
   min-height: 0;
   overflow: auto;
 }
@@ -1000,6 +1007,9 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .left.mobileDrawer .drawerFooter {
+    padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+  }
   .mobileDrawerBackdrop {
     position: fixed;
     inset: calc(var(--topbar-height) + env(safe-area-inset-top, 0px)) 0 0;
@@ -1141,7 +1151,7 @@
 }
 
 @media (max-width: 768px) {
-  .brandVersion,
+  .drawerBrandVersion,
   .projectBranch,
   .mobileContextMenuTitle,
   .mobileContextActionHint,

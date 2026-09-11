@@ -15,7 +15,7 @@ describe("temporary composer inspection", () => {
     vi.useFakeTimers();
     vi.stubGlobal("matchMedia", () => ({ matches: false }));
     vi.stubGlobal("fetch", vi.fn());
-    document.body.innerHTML = '<div class="app"><span class="brandVersion">v0.2.5</span><div class="detail"><div class="composer"><div class="inputWrap"><div class="composerMainRow"><textarea class="composer-input"></textarea><button data-testid="composer-actions-toggle" aria-expanded="false">+</button></div></div></div></div></div>';
+    document.body.innerHTML = '<div class="app"><span class="drawerBrandVersion">v0.2.5</span><div class="detail"><div class="composer"><div class="inputWrap"><div class="composerMainRow"><textarea class="composer-input"></textarea><button data-testid="composer-actions-toggle" aria-expanded="false">+</button></div></div></div></div></div>';
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(20, 200, 260, 34));
     document.elementFromPoint = vi.fn(() => document.querySelector("button"));
   });

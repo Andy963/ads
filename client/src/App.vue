@@ -543,10 +543,6 @@ const plannerConnectionStatus = computed(() => {
           <rect x="2" y="12.3" width="10" height="2.2" rx="1.1" />
         </svg>
       </button>
-      <div class="brand">
-        <span>ADS</span>
-        <span class="brandVersion">v{{ appVersion }}</span>
-      </div>
       <div class="topbarMain">
         <div v-if="isMobile" class="mobileContextTitle" :title="mobileContextTitle">
           {{ mobileContextTitle }}
@@ -746,6 +742,10 @@ const plannerConnectionStatus = computed(() => {
             </button>
             </div>
         </div>
+        <footer class="drawerFooter" data-testid="drawer-footer">
+          <span class="drawerBrandTitle">ADS</span>
+          <span class="drawerBrandVersion">v{{ appVersion }}</span>
+        </footer>
       </aside>
 
       <section v-if="isMobile && mobileDrawerSection !== 'projects'" class="mobileMainPanel">
