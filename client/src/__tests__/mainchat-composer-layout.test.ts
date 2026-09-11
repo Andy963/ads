@@ -23,6 +23,34 @@ const ComposerHost = defineComponent({
   `,
 });
 
+const DelayedDraftHost = defineComponent({
+  components: { MainChatComposerPanel },
+  setup() {
+    const draft = ref("");
+    const sent = ref<string[]>([]);
+    const pendingDraftUpdates: string[] = [];
+    const onDraftUpdate = (value: string): void => {
+      if (value) draft.value = value;
+      else pendingDraftUpdates.push(value);
+    };
+    const flushDraftUpdate = (): void => {
+      draft.value = pendingDraftUpdates.shift() ?? draft.value;
+    };
+    return { draft, sent, onDraftUpdate, flushDraftUpdate };
+  },
+  template: `
+    <MainChatComposerPanel
+      :draft="draft"
+      :queued-prompts="[]"
+      :pending-images="[]"
+      :connected="true"
+      :busy="false"
+      @update:draft="onDraftUpdate"
+      @send="sent.push($event)"
+    />
+  `,
+});
+
 describe("MainChat compact composer layout", () => {
   beforeEach(() => {
     vi.spyOn(window, "getComputedStyle").mockReturnValue({
@@ -82,6 +110,7 @@ describe("MainChat compact composer layout", () => {
 
     await wrapper.get(".sendIcon").trigger("click");
     expect(wrapper.getComponent(MainChatComposerPanel).emitted("send")).toEqual([[longDraft]]);
+    expect((wrapper.vm as { draft: string }).draft).toBe("");
     expect(element.value).toBe("");
     expect(element.style.height).toBe("34px");
     expect(element.style.overflowY).toBe("hidden");
@@ -91,6 +120,37 @@ describe("MainChat compact composer layout", () => {
     await textarea.setValue("");
     expect(element.style.height).toBe("34px");
     expect(wrapper.get(".composerMainRow").classes()).not.toContain("composerMainRow--expanded");
+    wrapper.unmount();
+  });
+
+  it("clears the textarea and draft when Enter sends a prompt", async () => {
+    const wrapper = mount(ComposerHost);
+    const textarea = wrapper.get("textarea.composer-input");
+    await textarea.setValue("Prompt sent with Enter");
+
+    await textarea.trigger("keydown", { key: "Enter" });
+
+    expect(wrapper.getComponent(MainChatComposerPanel).emitted("send")).toEqual([["Prompt sent with Enter"]]);
+    expect((wrapper.vm as { draft: string }).draft).toBe("");
+    expect((textarea.element as HTMLTextAreaElement).value).toBe("");
+    wrapper.unmount();
+  });
+
+  it("clears the physical textarea before a delayed parent draft update", async () => {
+    const wrapper = mount(DelayedDraftHost);
+    const textarea = wrapper.get("textarea.composer-input");
+    await textarea.setValue("Prompt with delayed draft synchronization");
+
+    await wrapper.get(".sendIcon").trigger("click");
+
+    expect((wrapper.vm as { draft: string }).draft).toBe("Prompt with delayed draft synchronization");
+    expect((textarea.element as HTMLTextAreaElement).value).toBe("");
+    expect((wrapper.vm as { sent: string[] }).sent).toEqual(["Prompt with delayed draft synchronization"]);
+
+    (wrapper.vm as { flushDraftUpdate: () => void }).flushDraftUpdate();
+    await nextTick();
+    expect((wrapper.vm as { draft: string }).draft).toBe("");
+    expect((textarea.element as HTMLTextAreaElement).value).toBe("");
     wrapper.unmount();
   });
 

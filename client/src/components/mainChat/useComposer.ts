@@ -438,6 +438,10 @@ export function useMainChatComposer(params: {
       const accepted = params.onSend(text);
       if (accepted !== false) {
         input.value = "";
+        const el = inputEl.value;
+        if (el) el.value = "";
+        composerExpanded.value = false;
+        resizeComposer();
       }
     } catch {
       // Keep the draft when dispatch fails so the user can retry it.

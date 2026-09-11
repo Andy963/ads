@@ -83,6 +83,22 @@ describe("MainChat prompt tools", () => {
     wrapper.unmount();
   });
 
+  it("still dispatches and clears the composer when latest-prompt storage fails", async () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("storage unavailable");
+    });
+    const wrapper = mountPromptTools();
+    const textarea = wrapper.get("textarea.composer-input");
+
+    await textarea.setValue("Prompt without storage");
+    await textarea.trigger("keydown", { key: "Enter" });
+    await nextTick();
+
+    expect((wrapper.vm as { sent: string[] }).sent).toEqual(["Prompt without storage"]);
+    expect((textarea.element as HTMLTextAreaElement).value).toBe("");
+    wrapper.unmount();
+  });
+
   it("keeps latest prompts isolated by project and lane and does not overwrite a draft", async () => {
     localStorage.setItem(STORAGE_KEY, "Worker prompt");
     localStorage.setItem("ADS_WEB_LATEST_PROMPT:project-1:planner", "Planner prompt");

@@ -84,6 +84,49 @@ describe("composer draft preservation on session reset", () => {
     expect(plannerRt.composerDraft.value).toBe("Planner reset draft");
   });
 
+  it("clears worker and planner drafts after their prompts are queued", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
+      connectWs: vi.fn(async () => {}),
+      connectPlannerWs: vi.fn(async () => {}),
+    });
+
+    const workerRt = ctx.activeRuntime.value;
+    const plannerRt = ctx.activePlannerRuntime.value;
+    workerRt.composerDraft.value = "Worker prompt";
+    plannerRt.composerDraft.value = "Planner prompt";
+
+    tasks.sendMainPrompt("Worker prompt");
+    tasks.sendPlannerPrompt("Planner prompt");
+
+    expect(workerRt.composerDraft.value).toBe("");
+    expect(plannerRt.composerDraft.value).toBe("");
+    expect(workerRt.queuedPrompts.value[0]?.text).toBe("Worker prompt");
+    expect(plannerRt.queuedPrompts.value[0]?.text).toBe("Planner prompt");
+  });
+
+  it("preserves drafts when prompt enqueue fails before dispatch", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const enqueueMainPrompt = vi.fn(() => {
+      throw new Error("dispatch unavailable");
+    });
+    const tasks = createLaneActions(
+      { ...ctx, ...chat, enqueueMainPrompt } as AppContext & ReturnType<typeof createChatActions>,
+      {
+        connectWs: vi.fn(async () => {}),
+        connectPlannerWs: vi.fn(async () => {}),
+      },
+    );
+
+    const workerRt = ctx.activeRuntime.value;
+    workerRt.composerDraft.value = "Retry this prompt";
+
+    expect(() => tasks.sendMainPrompt("Retry this prompt")).toThrow("dispatch unavailable");
+    expect(workerRt.composerDraft.value).toBe("Retry this prompt");
+  });
+
   it("scopes worker and planner backend clears to their originating lanes", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
