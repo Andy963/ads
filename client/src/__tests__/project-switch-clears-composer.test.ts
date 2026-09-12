@@ -117,6 +117,7 @@ describe("Project and lane composer draft isolation", () => {
     });
     await settleUi(wrapper);
 
+    await switchLane(wrapper, "worker");
     const workerTextareaA = getLaneTextarea(wrapper, "worker");
     expect(workerTextareaA.exists()).toBe(true);
     await workerTextareaA.setValue("worker draft text");
@@ -175,6 +176,7 @@ describe("Project and lane composer draft isolation", () => {
     });
     await settleUi(wrapper);
 
+    await switchLane(wrapper, "worker");
     await getLaneTextarea(wrapper, "worker").setValue("worker context A");
     await switchLane(wrapper, "planner");
     await getLaneTextarea(wrapper, "planner").setValue("planner draft A");
