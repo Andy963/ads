@@ -814,7 +814,7 @@ const plannerConnectionStatus = computed(() => {
         <div class="lanePanels">
           <section
             :id="'lane-panel-planner'"
-            v-if="activeWorkspaceTab === 'planner'"
+            v-show="activeWorkspaceTab === 'planner'"
             class="lanePanel"
             role="tabpanel"
             aria-labelledby="lane-tab-planner"
@@ -847,7 +847,7 @@ const plannerConnectionStatus = computed(() => {
 
           <section
             :id="'lane-panel-worker'"
-            v-else
+            v-show="activeWorkspaceTab === 'worker'"
             class="lanePanel"
             role="tabpanel"
             aria-labelledby="lane-tab-worker"

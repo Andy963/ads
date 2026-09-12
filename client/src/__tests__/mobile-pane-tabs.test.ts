@@ -14,8 +14,8 @@ describe("mobile navigation shell", () => {
 
   it("shows only the active lane panel and binds panel visibility to the shared active tab state", async () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
-    expect(sfc).toMatch(/(?:v-show|v-if)="activeWorkspaceTab === 'planner'"/);
-    expect(sfc).toMatch(/(?:v-show="activeWorkspaceTab === 'worker'"|v-else)/);
+    expect(sfc).toMatch(/v-show="activeWorkspaceTab === 'planner'"/);
+    expect(sfc).toMatch(/v-show="activeWorkspaceTab === 'worker'"/);
     expect(sfc).not.toMatch(/v-show="activeWorkspaceTab === 'tasks'"/);
     expect(sfc).not.toMatch(/v-show="activeWorkspaceTab === 'reviewer'"/);
     expect(sfc).toMatch(/:class="\{[\s\S]*active:\s*activeWorkspaceTab === tab.id/);
