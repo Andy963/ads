@@ -6,6 +6,7 @@ import { resolveComposerImagePreview } from "./mainChat/attachmentPreview";
 import type { IncomingImage, QueuedPrompt } from "./mainChat/types";
 import { useMainChatComposer } from "./mainChat/useComposer";
 import { useComposerActionMenu } from "./mainChat/useComposerActionMenu";
+import { createTapActivation } from "../lib/tapActivation";
 
 type PendingImagePreview = {
   key: string;
@@ -132,6 +133,9 @@ const {
   composerExpanded,
   fileInputEl,
   send,
+  onInput,
+  onCompositionStart,
+  onCompositionEnd,
   onInputKeydown,
   onPaste,
   recording,
@@ -160,6 +164,7 @@ const {
   onAddImages: (images) => emit("addImages", images),
 });
 
+const sendActivation = createTapActivation(send, { preserveFocus: true });
 const composerRoot = ref<HTMLElement | null>(null);
 const actionMenuId = useId();
 const hasTextSelection = ref(false);
@@ -450,13 +455,17 @@ onBeforeUnmount(() => {
         </div>
         <textarea
           ref="inputEl"
-          v-model="input"
+          :value="input"
           :disabled="inputLocked"
           rows="1"
           class="composer-input"
           aria-label="Message"
           placeholder="Message..."
           title="Enter to send, Shift+Enter for a new line. Paste images to attach."
+          @input="onInput"
+          @change="onInput"
+          @compositionstart="onCompositionStart"
+          @compositionend="onCompositionEnd"
           @keydown="onInputKeydown"
           @paste="onPaste"
           @select="updateTextSelection"
@@ -503,7 +512,11 @@ onBeforeUnmount(() => {
             :disabled="inputLocked || (!input.trim() && pendingImages.length === 0) || recording || transcribing"
             type="button"
             title="发送"
-            @click="send"
+            @pointerdown="sendActivation.onPointerDown($event, undefined)"
+            @pointermove="sendActivation.onPointerMove"
+            @pointercancel="sendActivation.onPointerCancel"
+            @pointerup="sendActivation.onPointerUp"
+            @click="sendActivation.onClick($event, undefined)"
           >
             <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path
@@ -592,6 +605,13 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.sendIcon,
+.composerActionToggle,
+.micIcon,
+.stopIcon {
+  touch-action: manipulation;
+}
+
 .composer {
   flex-shrink: 0;
   display: flex;

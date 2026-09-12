@@ -105,7 +105,7 @@ describe("MainChat compact composer layout", () => {
     expect(wrapper.get(".composerMainRow").classes()).toContain("composerMainRow--expanded");
 
     await textarea.setValue(longDraft);
-    expect(element.style.height).toBe("202px");
+    expect(element.style.height).toBe("130px");
     expect(element.style.overflowY).toBe("auto");
 
     await wrapper.get(".sendIcon").trigger("click");
@@ -258,14 +258,14 @@ describe("MainChat compact composer layout", () => {
     notifyWidth(240);
     scrollHeight.mockReturnValue(298);
     await textarea.setValue("Wrapped draft content ".repeat(150));
-    expect(element.style.height).toBe("202px");
+    expect(element.style.height).toBe("130px");
 
     notifyWidth(0);
     scrollHeight.mockReturnValue(0);
     window.dispatchEvent(new Event("resize"));
     scrollHeight.mockReturnValue(298);
     notifyWidth(240);
-    expect(element.style.height).toBe("202px");
+    expect(element.style.height).toBe("130px");
     expect(element.style.overflowY).toBe("auto");
 
     scrollHeight.mockClear();
@@ -320,18 +320,24 @@ describe("MainChat compact composer layout", () => {
     }
 
     await textarea.setValue("Long draft\n".repeat(30));
-    expect(element.style.height).toBe("202px");
+    expect(element.style.height).toBe("130px");
+    vi.mocked(wrapper.element.getBoundingClientRect).mockReturnValue(new DOMRect(0, 68, 390, 432));
+    viewport.height = 210;
+    viewport.dispatchEvent(new Event("resize"));
+    await nextTick();
+    expect(Number.parseFloat(element.style.height)).toBeGreaterThanOrEqual(130);
+    vi.mocked(wrapper.element.getBoundingClientRect).mockImplementation(() => new DOMRect(0, 68, 390, viewport.height - 68));
     viewport.height = 300;
     viewport.dispatchEvent(new Event("resize"));
     await nextTick();
-    expect(element.style.height).toBe("146px");
+    expect(element.style.height).toBe("130px");
     expect(element.style.overflowY).toBe("auto");
     expect(wrapper.get(".composerMainRow").classes()).toContain("composerMainRow--expanded");
 
     viewport.height = 430;
     viewport.dispatchEvent(new Event("resize"));
     await nextTick();
-    expect(element.style.height).toBe("202px");
+    expect(element.style.height).toBe("130px");
     await textarea.setValue("");
     expect(element.style.height).toBe("34px");
     expect(wrapper.get(".composerMainRow").classes()).not.toContain("composerMainRow--expanded");

@@ -130,6 +130,30 @@ describe("Issue #198 lane conversation switching", () => {
     localStorage.clear();
   });
 
+  it("commits a touch lane switch only on release and ignores a cancelled gesture", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, {
+      global: { stubs: { LoginGate: false, MainChatView: MainChatViewStub } },
+    });
+    await settleUi(wrapper);
+    const workerTab = wrapper.get('[data-testid="lane-tab-worker"]');
+    const pointer = { pointerId: 1, pointerType: "touch", isPrimary: true };
+
+    await workerTab.trigger("pointerdown", pointer);
+    expect(wrapper.get('[data-testid="lane-tab-planner"]').attributes("aria-selected")).toBe("true");
+    await workerTab.trigger("pointercancel", pointer);
+    await workerTab.trigger("pointerup", pointer);
+    expect(workerTab.attributes("aria-selected")).toBe("false");
+
+    await workerTab.trigger("pointerdown", pointer);
+    await workerTab.trigger("pointerup", pointer);
+    await settleUi(wrapper);
+    expect(workerTab.attributes("aria-selected")).toBe("true");
+    expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-panel-planner"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("switches the visible conversation and refreshes only the selected lane", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, {
@@ -152,7 +176,6 @@ describe("Issue #198 lane conversation switching", () => {
     workerRuntime.messages.value = [message("worker-1", "Worker response")];
     await settleUi(wrapper);
 
-    const plannerPanel = wrapper.find('[data-testid="lane-panel-planner"]');
     expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-planner"]'))).toBe(true);
     expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-worker"]'))).toBe(false);
     expect(wrapper.find('[data-testid="lane-panel-planner"]').text()).toContain("Advisor response");

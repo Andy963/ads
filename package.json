@@ -1,6 +1,6 @@
 {
   "name": "ads",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "type": "module",
   "description": "AI agent workspace and task orchestration with optional channel connectors",
   "author": "ADS Contributors",
@@ -28,6 +28,7 @@
     "dev:web": "vite --config client/vite.config.ts",
     "test:web": "vitest --config client/vitest.config.ts run",
     "test:composer-browser": "node scripts/test-composer-browser.js",
+    "test:chat-browser": "node scripts/test-chat-browser.js",
     "postbuild": "node scripts/chmod-bins.js",
     "bundle": "npm run build && node scripts/bundle.js",
     "deploy:local": "node scripts/deploy-local.js",
@@ -74,6 +75,7 @@
     "highlight.js": "^11.11.1",
     "jsdom": "^27.4.0",
     "markdown-it": "^14.1.0",
+    "playwright": "^1.63.0",
     "tsx": "^4.16.0",
     "typescript": "^5.5.4",
     "typescript-eslint": "^8.46.4",
