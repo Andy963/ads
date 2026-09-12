@@ -28,9 +28,6 @@ export function autosizeTextarea(el: HTMLTextAreaElement, opts: AutosizeTextarea
   if (!el) return false;
   if (typeof window === "undefined" || typeof window.getComputedStyle !== "function") return false;
 
-  const minRows = Math.max(1, Math.floor(opts.minRows ?? 1));
-  const maxRows = Math.max(minRows, Math.floor(opts.maxRows ?? minRows));
-
   const style = window.getComputedStyle(el);
   const boxSizing = String(style.boxSizing ?? "").toLowerCase();
 
@@ -44,6 +41,8 @@ export function autosizeTextarea(el: HTMLTextAreaElement, opts: AutosizeTextarea
   const borderHeight = boxSizing === "border-box" ? borderTop + borderBottom : 0;
   const extraHeight = paddingTop + paddingBottom + borderHeight;
 
+  const minRows = Math.max(1, Math.floor(opts.minRows ?? 1));
+  const maxRows = Math.max(minRows, Math.floor(opts.maxRows ?? minRows));
   const minHeight = lineHeightPx * minRows + extraHeight;
   const rowLimit = lineHeightPx * maxRows + extraHeight;
   const maxHeight = Number.isFinite(opts.maxHeightPx)

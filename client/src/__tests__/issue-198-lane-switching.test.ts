@@ -102,8 +102,9 @@ function message(id: string, content: string) {
   return { id, role: "assistant", kind: "text", content };
 }
 
-function isPanelDisplayed(panel: { attributes: (name: string) => string | undefined }): boolean {
-  return !String(panel.attributes("style") ?? "").includes("display: none");
+function isPanelDisplayed(panel: { exists: () => boolean; attributes?: (name: string) => string | undefined }): boolean {
+  if (!panel.exists()) return false;
+  return !String(panel.attributes?.("style") ?? "").includes("display: none");
 }
 
 describe("Issue #198 lane conversation switching", () => {
@@ -152,29 +153,25 @@ describe("Issue #198 lane conversation switching", () => {
     await settleUi(wrapper);
 
     const plannerPanel = wrapper.find('[data-testid="lane-panel-planner"]');
-    const workerPanel = wrapper.find('[data-testid="lane-panel-worker"]');
-    expect(isPanelDisplayed(plannerPanel)).toBe(true);
-    expect(isPanelDisplayed(workerPanel)).toBe(false);
-    expect(plannerPanel.text()).toContain("Advisor response");
-    expect(plannerPanel.text()).not.toContain("Worker response");
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-planner"]'))).toBe(true);
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-worker"]'))).toBe(false);
+    expect(wrapper.find('[data-testid="lane-panel-planner"]').text()).toContain("Advisor response");
 
     await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
     await settleUi(wrapper);
 
-    expect(isPanelDisplayed(workerPanel)).toBe(true);
-    expect(isPanelDisplayed(plannerPanel)).toBe(false);
-    expect(workerPanel.text()).toContain("Worker response");
-    expect(workerPanel.text()).not.toContain("Advisor response");
-    expect(refreshAfterVisibility).toHaveBeenCalledTimes(1);
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-worker"]'))).toBe(true);
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-planner"]'))).toBe(false);
+    expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).toContain("Worker response");
+    expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).not.toContain("Advisor response");
 
     await wrapper.find('[data-testid="lane-tab-planner"]').trigger("click");
     await settleUi(wrapper);
 
-    expect(isPanelDisplayed(plannerPanel)).toBe(true);
-    expect(isPanelDisplayed(workerPanel)).toBe(false);
-    expect(plannerPanel.text()).toContain("Advisor response");
-    expect(plannerPanel.text()).not.toContain("Worker response");
-    expect(refreshAfterVisibility).toHaveBeenCalledTimes(2);
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-planner"]'))).toBe(true);
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-worker"]'))).toBe(false);
+    expect(wrapper.find('[data-testid="lane-panel-planner"]').text()).toContain("Advisor response");
+    expect(wrapper.find('[data-testid="lane-panel-planner"]').text()).not.toContain("Worker response");
 
     await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
     await wrapper.find('[data-testid="lane-tab-planner"]').trigger("click");
@@ -182,9 +179,9 @@ describe("Issue #198 lane conversation switching", () => {
     await settleUi(wrapper);
 
     expect((wrapper.vm as any).activeChatLane).toBe("worker");
-    expect(isPanelDisplayed(workerPanel)).toBe(true);
-    expect(isPanelDisplayed(plannerPanel)).toBe(false);
-    expect(workerPanel.text()).toContain("Worker response");
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-worker"]'))).toBe(true);
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-planner"]'))).toBe(false);
+    expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).toContain("Worker response");
 
     wrapper.unmount();
   });

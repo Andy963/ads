@@ -143,6 +143,7 @@ const {
   onFileInputChange,
 } = useMainChatComposer({
   getDraft: () => String(props.draft ?? ""),
+  getDraftScope: () => String(props.latestPromptKey ?? ""),
   onDraftChange: (draft) => emit("update:draft", draft),
   pendingImages: props.pendingImages,
   isBusy: () => props.busy,

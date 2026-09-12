@@ -300,8 +300,7 @@ function showLatestMessages(): void {
 function refreshAfterVisibility(): void {
   attachMessageScrollRoot();
   const total = renderMessages.value.length;
-  const hasWindow = windowEnd.value > windowStart.value && windowStart.value < total;
-  if (total > 0 && !hasWindow) showLatestMessages();
+  if (total > 0) showLatestMessages();
   void nextTick().then(observeEarlierMessagesSentinel);
 }
 

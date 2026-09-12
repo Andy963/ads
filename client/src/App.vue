@@ -339,6 +339,13 @@ function toggleMobileDrawer(): void {
 }
 
 function selectWorkspaceTab(tab: ChatLane): void {
+  if (activeWorkspaceTab.value === tab) {
+    closeMobileContextMenu();
+    return;
+  }
+  if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+    document.activeElement.blur();
+  }
   setActiveChatLane(tab);
   if (isMobile.value) writeMobileWorkspaceTab(activeProjectId.value, tab);
   closeMobileContextMenu();
@@ -764,6 +771,8 @@ const plannerConnectionStatus = computed(() => {
                 :aria-selected="activeWorkspaceTab === tab.id"
                 :aria-controls="`lane-panel-${tab.id}`"
                 :data-testid="`lane-tab-${tab.id}`"
+                @pointerdown="selectWorkspaceTab(tab.id)"
+                @touchstart.passive="selectWorkspaceTab(tab.id)"
                 @click="selectWorkspaceTab(tab.id)"
               >
                 <span
@@ -805,7 +814,7 @@ const plannerConnectionStatus = computed(() => {
         <div class="lanePanels">
           <section
             :id="'lane-panel-planner'"
-            v-show="activeWorkspaceTab === 'planner'"
+            v-if="activeWorkspaceTab === 'planner'"
             class="lanePanel"
             role="tabpanel"
             aria-labelledby="lane-tab-planner"
@@ -838,7 +847,7 @@ const plannerConnectionStatus = computed(() => {
 
           <section
             :id="'lane-panel-worker'"
-            v-show="activeWorkspaceTab === 'worker'"
+            v-else
             class="lanePanel"
             role="tabpanel"
             aria-labelledby="lane-tab-worker"

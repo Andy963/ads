@@ -7,6 +7,9 @@ import { readViewportMetrics } from "../../lib/viewport";
 type VoiceStatusKind = "idle" | "recording" | "transcribing" | "error" | "ok";
 type TranscriptionResponse = { ok?: boolean; text?: string; error?: string; message?: string };
 
+const COMPOSER_MIN_ROWS = 1;
+const COMPOSER_MAX_ROWS = 8;
+
 function pickRecorderMime(): string {
   if (typeof MediaRecorder === "undefined") return "";
   const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/ogg", "audio/mp4"];
@@ -77,6 +80,7 @@ async function readImagesFromNavigatorClipboard(maxBytes: number): Promise<Incom
 
 export function useMainChatComposer(params: {
   getDraft: () => string;
+  getDraftScope?: () => string;
   onDraftChange: (draft: string) => void;
   pendingImages: ReadonlyArray<IncomingImage>;
   isBusy: () => boolean;
@@ -85,13 +89,29 @@ export function useMainChatComposer(params: {
   onSend: (content: string) => boolean | void;
   onAddImages: (images: IncomingImage[]) => void;
 }) {
-  const input = computed({
-    get: () => String(params.getDraft() ?? ""),
-    set: (value: string) => {
-      params.onDraftChange(String(value ?? ""));
-    },
-  });
   const inputEl = ref<HTMLTextAreaElement | null>(null);
+  const input = ref(String(params.getDraft() ?? ""));
+
+  watch(
+    [() => params.getDraft(), () => params.getDraftScope?.() ?? ""],
+    ([nextDraft]) => {
+      const normalized = String(nextDraft ?? "");
+      if (normalized !== input.value || (inputEl.value && inputEl.value.value !== normalized)) {
+        input.value = normalized;
+        const el = inputEl.value;
+        if (el && el.value !== normalized) {
+          el.value = normalized;
+        }
+        resizeComposer();
+      }
+    },
+    { immediate: true },
+  );
+
+  watch(input, (nextValue) => {
+    params.onDraftChange(nextValue);
+  });
+
   const composerRowEl = ref<HTMLElement | null>(null);
   const leftActionsEl = ref<HTMLElement | null>(null);
   const rightActionsEl = ref<HTMLElement | null>(null);
@@ -126,7 +146,7 @@ export function useMainChatComposer(params: {
     if (!el) return;
     if (!el.value) {
       composerExpanded.value = false;
-      autosizeTextarea(el, { minRows: 1, maxRows: 8 });
+      autosizeTextarea(el, { minRows: COMPOSER_MIN_ROWS, maxRows: COMPOSER_MAX_ROWS });
       return;
     }
 
@@ -134,7 +154,7 @@ export function useMainChatComposer(params: {
     if (row?.closest(".detail") && row.clientWidth === 0) return;
     const left = leftActionsEl.value;
     const right = rightActionsEl.value;
-    const options = { minRows: 1, maxRows: 8, maxHeightPx: availableTextareaHeight() };
+    const options = { minRows: COMPOSER_MIN_ROWS, maxRows: COMPOSER_MAX_ROWS, maxHeightPx: availableTextareaHeight() };
     let compactWidth = 0;
     if (row && left && right) {
       const style = window.getComputedStyle(row);
@@ -147,11 +167,18 @@ export function useMainChatComposer(params: {
     // otherwise alternate between the two layouts near a wrapping boundary.
     const previousWidth = el.style.width;
     if (compactWidth > 0) el.style.width = `${compactWidth}px`;
+    let nextExpanded = composerExpanded.value;
     try {
-      composerExpanded.value = autosizeTextarea(el, options);
+      nextExpanded = autosizeTextarea(el, options);
     } finally {
       el.style.width = previousWidth;
     }
+
+    if (nextExpanded !== composerExpanded.value) {
+      composerExpanded.value = nextExpanded;
+      return;
+    }
+
     autosizeTextarea(el, options);
   };
 
@@ -433,12 +460,13 @@ export function useMainChatComposer(params: {
   const send = (): void => {
     if (recording.value || transcribing.value) return;
     const text = input.value.trim();
+    const el = inputEl.value;
     if (!text && params.pendingImages.length === 0) return;
     try {
       const accepted = params.onSend(text);
       if (accepted !== false) {
         input.value = "";
-        const el = inputEl.value;
+        params.onDraftChange("");
         if (el) el.value = "";
         composerExpanded.value = false;
         resizeComposer();

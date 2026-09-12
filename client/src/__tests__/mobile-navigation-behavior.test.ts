@@ -148,8 +148,8 @@ describe("mobile navigation behavior", () => {
 
     await wrapper.find('[data-testid="lane-tab-planner"]').trigger("click");
     await settleUi(wrapper);
-    expect(wrapper.find('[data-testid="lane-panel-planner"]').isVisible()).toBe(true);
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').isVisible()).toBe(false);
+    expect(wrapper.find('[data-testid="lane-panel-planner"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(false);
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-new-session"]').exists()).toBe(true);
