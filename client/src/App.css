@@ -659,6 +659,7 @@
 }
 
 .laneTab {
+  touch-action: manipulation;
   justify-self: start;
   min-height: 32px;
   border: none;

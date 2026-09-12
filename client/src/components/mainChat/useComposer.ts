@@ -2,13 +2,12 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 
 import type { IncomingImage } from "./types";
 import { autosizeTextarea } from "../../lib/textarea_autosize";
-import { readViewportMetrics } from "../../lib/viewport";
 
 type VoiceStatusKind = "idle" | "recording" | "transcribing" | "error" | "ok";
 type TranscriptionResponse = { ok?: boolean; text?: string; error?: string; message?: string };
 
 const COMPOSER_MIN_ROWS = 1;
-const COMPOSER_MAX_ROWS = 8;
+const COMPOSER_MAX_ROWS = 5;
 
 function pickRecorderMime(): string {
   if (typeof MediaRecorder === "undefined") return "";
@@ -90,14 +89,32 @@ export function useMainChatComposer(params: {
   onAddImages: (images: IncomingImage[]) => void;
 }) {
   const inputEl = ref<HTMLTextAreaElement | null>(null);
-  const input = ref(String(params.getDraft() ?? ""));
+  const draftValue = ref(String(params.getDraft() ?? ""));
+  const input = computed({
+    get: () => draftValue.value,
+    set: (value: string) => {
+      draftValue.value = value;
+      params.onDraftChange(value);
+    },
+  });
+  let composing = false;
+  const onInput = (): void => {
+    if (inputEl.value) input.value = inputEl.value.value;
+  };
+  const onCompositionStart = (): void => {
+    composing = true;
+  };
+  const onCompositionEnd = (): void => {
+    composing = false;
+    onInput();
+  };
 
   watch(
     [() => params.getDraft(), () => params.getDraftScope?.() ?? ""],
     ([nextDraft]) => {
       const normalized = String(nextDraft ?? "");
       if (normalized !== input.value || (inputEl.value && inputEl.value.value !== normalized)) {
-        input.value = normalized;
+        draftValue.value = normalized;
         const el = inputEl.value;
         if (el && el.value !== normalized) {
           el.value = normalized;
@@ -107,10 +124,6 @@ export function useMainChatComposer(params: {
     },
     { immediate: true },
   );
-
-  watch(input, (nextValue) => {
-    params.onDraftChange(nextValue);
-  });
 
   const composerRowEl = ref<HTMLElement | null>(null);
   const leftActionsEl = ref<HTMLElement | null>(null);
@@ -124,7 +137,6 @@ export function useMainChatComposer(params: {
     if (!row || !composer || !container) return undefined;
     const bounds = container.getBoundingClientRect();
     if (bounds.height <= 0) return undefined;
-    const viewport = readViewportMetrics();
     const chat = container.querySelector(".chat");
     const chatTop = chat?.getBoundingClientRect().top ?? bounds.top;
     const chatStyle = chat ? window.getComputedStyle(chat) : null;
@@ -132,8 +144,7 @@ export function useMainChatComposer(params: {
       ? [chatStyle.paddingTop, chatStyle.paddingBottom, chatStyle.borderTopWidth, chatStyle.borderBottomWidth]
         .reduce((total, value) => total + (Number.parseFloat(value) || 0), 0)
       : 0;
-    const availableHeight = Math.min(bounds.bottom, viewport.topPx + viewport.heightPx)
-      - Math.max(bounds.top, chatTop, viewport.topPx) - chatInsets;
+    const availableHeight = bounds.bottom - Math.max(bounds.top, chatTop) - chatInsets;
     const style = window.getComputedStyle(row);
     const padding = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
     const toolsHeight = Math.max(leftActionsEl.value?.offsetHeight ?? 0, rightActionsEl.value?.offsetHeight ?? 0);
@@ -458,16 +469,17 @@ export function useMainChatComposer(params: {
   };
 
   const send = (): void => {
-    if (recording.value || transcribing.value) return;
-    const text = input.value.trim();
+    if (recording.value || transcribing.value || params.isInputLocked?.()) return;
     const el = inputEl.value;
+    if (composing) el?.blur();
+    const text = (el?.value ?? input.value).trim();
     if (!text && params.pendingImages.length === 0) return;
     try {
       const accepted = params.onSend(text);
       if (accepted !== false) {
         input.value = "";
-        params.onDraftChange("");
         if (el) el.value = "";
+        composing = false;
         composerExpanded.value = false;
         resizeComposer();
       }
@@ -478,7 +490,7 @@ export function useMainChatComposer(params: {
 
   const onInputKeydown = (ev: KeyboardEvent): void => {
     if (ev.key !== "Enter") return;
-    if ((ev as { isComposing?: boolean }).isComposing) return;
+    if (composing || ev.isComposing || ev.keyCode === 229) return;
     if (ev.altKey) return;
     if (ev.shiftKey || ev.ctrlKey || ev.metaKey) return;
     ev.preventDefault();
@@ -691,6 +703,9 @@ export function useMainChatComposer(params: {
     composerExpanded,
     fileInputEl,
     send,
+    onInput,
+    onCompositionStart,
+    onCompositionEnd,
     onInputKeydown,
     onPaste,
     recording,

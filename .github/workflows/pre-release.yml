@@ -45,6 +45,12 @@ jobs:
       - name: Run web tests
         run: npm run test:web
 
+      - name: Install browser engines
+        run: npx --no playwright install --with-deps webkit chromium
+
+      - name: Run chat browser regressions
+        run: npm run test:chat-browser
+
       - name: Resolve pre-release version and tag
         id: vars
         run: |

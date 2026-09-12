@@ -15,6 +15,7 @@ import SessionResumePicker from "./components/SessionResumePicker.vue";
 import { createAppController } from "./app/controller";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
 import { useProjectSidebar } from "./composables/app/useProjectSidebar";
+import { createTapActivation } from "./lib/tapActivation";
 import {
   readMobileWorkspaceTab,
   writeMobileWorkspaceTab,
@@ -350,6 +351,8 @@ function selectWorkspaceTab(tab: ChatLane): void {
   if (isMobile.value) writeMobileWorkspaceTab(activeProjectId.value, tab);
   closeMobileContextMenu();
 }
+
+const laneActivation = createTapActivation(selectWorkspaceTab, { preserveFocus: true });
 
 function restoreMobileWorkspaceTab(): void {
   const projectId = activeProjectId.value.trim();
@@ -771,9 +774,11 @@ const plannerConnectionStatus = computed(() => {
                 :aria-selected="activeWorkspaceTab === tab.id"
                 :aria-controls="`lane-panel-${tab.id}`"
                 :data-testid="`lane-tab-${tab.id}`"
-                @pointerdown="selectWorkspaceTab(tab.id)"
-                @touchstart.passive="selectWorkspaceTab(tab.id)"
-                @click="selectWorkspaceTab(tab.id)"
+                @pointerdown="laneActivation.onPointerDown($event, tab.id)"
+                @pointermove="laneActivation.onPointerMove"
+                @pointercancel="laneActivation.onPointerCancel"
+                @pointerup="laneActivation.onPointerUp"
+                @click="laneActivation.onClick($event, tab.id)"
               >
                 <span
                   class="laneTabStatusDot"

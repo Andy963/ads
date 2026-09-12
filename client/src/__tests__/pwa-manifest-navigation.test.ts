@@ -10,4 +10,11 @@ describe("PWA manifest navigation", () => {
     expect(config).toContain("start_url: base");
     expect(config).toContain("scope: base");
   });
+
+  it("activates updates even when the installed page has an older registration script", async () => {
+    const config = await readSfc("../../vite.config.ts", import.meta.url);
+    expect(config).toContain("injectRegister: false");
+    expect(config).toContain("skipWaiting: true");
+    expect(config).toContain("clientsClaim: true");
+  });
 });

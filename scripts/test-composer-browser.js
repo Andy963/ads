@@ -202,16 +202,23 @@ try {
     await send("Emulation.setTouchEmulationEnabled", { enabled: touch });
     await send("Emulation.setSafeAreaInsetsOverride", { insets: { top: 0, left: 0, right: 0, bottom: touch ? 34 : 0 } });
     await send("Page.navigate", { url: origin });
-    await evaluate(`new Promise((resolve, reject) => {
-      const deadline = Date.now() + 15000;
-      const check = () => {
+    const readyDeadline = Date.now() + 15000;
+    let readySince = 0;
+    let readyDocument = 0;
+    while (true) {
+      const state = await evaluate(`(() => {
         const input = window.__visibleComposerElement?.(".composer-input");
-        if (input && !input.disabled) return resolve(true);
-        if (Date.now() > deadline) return reject(new Error("Composer did not become ready"));
-        setTimeout(check, 40);
-      };
-      check();
-    })`);
+        return { ready: document.readyState === "complete" && Boolean(input && !input.disabled && navigator.serviceWorker.controller), document: performance.timeOrigin };
+      })()`).catch(() => null);
+      if (state?.ready && state.document === readyDocument) {
+        if (Date.now() - readySince >= 150) break;
+      } else {
+        readySince = Date.now();
+        readyDocument = state?.ready ? state.document : 0;
+      }
+      assert.ok(Date.now() < readyDeadline, "Composer did not stabilize after service-worker activation");
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
     await settle();
     const initial = await metrics();
     for (const height of touch ? [844, 430, 360, 300] : [844]) {
