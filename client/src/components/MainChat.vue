@@ -103,9 +103,8 @@ async function refreshAfterVisibility(): Promise<void> {
   await nextTick();
   messageListRef.value?.refreshAfterVisibility?.();
   await nextTick();
-  if (!listRef.value) return;
+  if (!listRef.value || !autoScroll.value) return;
   listRef.value.scrollTop = listRef.value.scrollHeight;
-  autoScroll.value = true;
   showScrollToBottom.value = false;
 }
 
