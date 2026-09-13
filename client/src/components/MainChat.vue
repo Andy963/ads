@@ -280,7 +280,11 @@ const liveActivityMessage = computed(
 );
 
 watch(
-  [() => lastMessage.value?.id ?? "", () => lastMessage.value?.content.length ?? 0, () => Boolean(lastMessage.value?.streaming)],
+  [
+    () => lastMessage.value?.id ?? "",
+    () => String(lastMessage.value?.content ?? "").length,
+    () => Boolean(lastMessage.value?.streaming),
+  ],
   () => {
     scheduleChatScrollToBottom();
   },
@@ -288,7 +292,10 @@ watch(
 );
 
 watch(
-  [() => Boolean(liveActivityMessage.value), () => liveActivityMessage.value?.content.length ?? 0],
+  [
+    () => Boolean(liveActivityMessage.value),
+    () => String(liveActivityMessage.value?.content ?? "").length,
+  ],
   () => {
     scheduleChatScrollToBottom();
   },

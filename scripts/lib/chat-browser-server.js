@@ -1,6 +1,8 @@
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -12,10 +14,29 @@ import { resetStateDatabaseForTests } from "../../dist/server/state/database.js"
 import { AsyncLock } from "../../dist/server/utils/asyncLock.js";
 import { HistoryStore } from "../../dist/server/utils/historyStore.js";
 import { SyncEventStore } from "../../dist/server/web/server/sync/store.js";
+import { sanitizeInput } from "../../dist/server/web/utils.js";
 import { attachWebSocketServer } from "../../dist/server/web/server/ws/server.js";
 
-export async function startChatBrowserServer(buildRoot, { legacyWorker = false } = {}) {
+const execFile = promisify(execFileCallback);
+
+export async function startChatBrowserServer(buildRoot, { legacyWorker = false, projects = false } = {}) {
   const workspaceRoot = await mkdtemp(path.join(tmpdir(), "ads-chat-browser-server-"));
+  const projectFixtures = projects
+    ? [
+        { id: "browser-project-a", root: path.join(workspaceRoot, "project-a"), name: "Project A", chatSessionId: "browser-chat-a" },
+        { id: "browser-project-b", root: path.join(workspaceRoot, "project-b"), name: "Project B", chatSessionId: "browser-chat-b" },
+      ]
+    : [];
+  await Promise.all(projectFixtures.map((project) => mkdir(project.root, { recursive: true })));
+  const fixtureRoots = [workspaceRoot, ...projectFixtures.map((project) => project.root)];
+  for (const fixtureRoot of fixtureRoots) {
+    await writeFile(path.join(fixtureRoot, "fixture.txt"), "baseline\n");
+    await execFile("git", ["init", "-q"], { cwd: fixtureRoot });
+    await execFile("git", ["config", "user.email", "fixture@example.invalid"], { cwd: fixtureRoot });
+    await execFile("git", ["config", "user.name", "Browser Fixture"], { cwd: fixtureRoot });
+    await execFile("git", ["add", "fixture.txt"], { cwd: fixtureRoot });
+    await execFile("git", ["commit", "-qm", "baseline"], { cwd: fixtureRoot });
+  }
   const statePath = path.join(workspaceRoot, "state.db");
   process.env.ADS_STATE_DB_PATH = statePath;
   process.env.CODEX_HOME = path.join(workspaceRoot, "codex");
@@ -55,6 +76,19 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false }
       }
       if (pathname.startsWith("/api/")) {
         requests.push({ method: request.method, pathname });
+        if (pathname === "/api/projects" && projectFixtures.length > 0) {
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(JSON.stringify({
+            projects: projectFixtures.map((project) => ({
+              id: project.id,
+              workspaceRoot: project.root,
+              name: project.name,
+              chatSessionId: project.chatSessionId,
+            })),
+            activeProjectId: projectFixtures[0].id,
+          }));
+          return;
+        }
         const fixtures = {
           "/api/auth/status": { initialized: true },
           "/api/auth/me": { id: "browser-fixture", username: "Browser fixture" },
@@ -80,25 +114,53 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false }
   const clientMetaByWs = new Map();
   const workerHistoryStore = new HistoryStore({ storagePath: statePath, namespace: "web-worker" });
   const plannerHistoryStore = new HistoryStore({ storagePath: statePath, namespace: "web-planner" });
-  const createSession = (lane) => ({ cwd }) => new HybridOrchestrator({
-    initialWorkingDirectory: cwd,
-    initialModel: "browser-model",
-    adapters: [{
-      id: "codex",
-      metadata: { id: "codex", name: "Browser fixture", capabilities: ["text"] },
-      send: async (input) => {
-        const marker = String(input).match(/browser-(?:advisor|worker)-[a-z0-9-]+/g)?.at(-1) ?? "unrecognized";
-        received.push({ lane, marker });
-        await (heldReplies.get(marker)?.ready ?? new Promise((resolve) => setTimeout(resolve, 200)));
-        return { response: `${lane} reply: ${marker}`, usage: null, agentId: "codex" };
-      },
-      onEvent: () => () => {},
-      getThreadId: () => `${lane}-browser-thread`,
-      reset: () => {},
-      setWorkingDirectory: () => {},
-      status: () => ({ ready: true, streaming: false }),
-    }],
-  });
+  const createSession = (lane) => ({ cwd }) => {
+    const eventHandlers = new Set();
+    let currentCwd = cwd;
+    const emit = (event) => {
+      for (const handler of eventHandlers) handler(event);
+    };
+
+    return new HybridOrchestrator({
+      initialWorkingDirectory: cwd,
+      initialModel: "browser-model",
+      adapters: [{
+        id: "codex",
+        metadata: { id: "codex", name: "Browser fixture", capabilities: ["text"] },
+        send: async (input) => {
+          const marker = String(input).match(/browser-(?:advisor|worker)-[a-z0-9-]+/g)?.at(-1) ?? "unrecognized";
+          received.push({ lane, marker });
+          await (heldReplies.get(marker)?.ready ?? new Promise((resolve) => setTimeout(resolve, 200)));
+
+          if (lane === "Worker" && marker.startsWith("browser-worker-")) {
+            const ts = Date.now();
+            const commandId = `fixture-command-${marker}`;
+            const answerId = `fixture-answer-${marker}`;
+            const changedFile = path.join(currentCwd, "fixture.txt");
+            await writeFile(changedFile, `updated by ${marker}\n`);
+            emit({ phase: "analysis", title: "Inspecting workspace", detail: "fixture step", delta: "Inspecting workspace", liveStep: true, timestamp: ts, raw: { type: "item.started", item: { type: "reasoning", id: `fixture-step-${marker}` } } });
+            emit({ phase: "command", title: "Run fixture command", detail: "npm test", timestamp: ts + 1, raw: { type: "item.started", item: { type: "command_execution", id: commandId, command: "npm test", status: "in_progress" } } });
+            emit({ phase: "command", title: "Run fixture command", detail: "npm test", timestamp: ts + 2, raw: { type: "item.completed", item: { type: "command_execution", id: commandId, command: "npm test", status: "completed", exit_code: 0, aggregated_output: "passed\n" } } });
+            emit({ phase: "tool", title: "Update fixture", detail: "fixture.txt", timestamp: ts + 3, raw: { type: "item.completed", item: { type: "file_change", changes: [{ kind: "update", path: "fixture.txt" }] } } });
+            emit({ phase: "responding", title: "Fixture answer", detail: "Worker response", delta: `Worker answer for ${marker}`, timestamp: ts + 4, raw: { type: "item.started", item: { type: "agent_message", id: answerId } } });
+            emit({ phase: "responding", title: "Fixture answer", detail: "Worker response complete", timestamp: ts + 5, raw: { type: "item.completed", item: { type: "agent_message", id: answerId } } });
+          }
+
+          return { response: `${lane} reply: ${marker}`, usage: null, agentId: "codex" };
+        },
+        onEvent: (handler) => {
+          eventHandlers.add(handler);
+          return () => eventHandlers.delete(handler);
+        },
+        getThreadId: () => `${lane}-browser-thread`,
+        reset: () => {},
+        setWorkingDirectory: (workingDirectory) => {
+          if (workingDirectory) currentCwd = workingDirectory;
+        },
+        status: () => ({ ready: true, streaming: false }),
+      }],
+    });
+  };
   const workerLock = new AsyncLock();
   const plannerLock = new AsyncLock();
   const sockets = attachWebSocketServer({
@@ -148,7 +210,7 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false }
     },
     commands: {
       runAdsCommandLine: async () => ({ ok: true, output: "" }),
-      sanitizeInput: (payload) => String(payload ?? ""),
+      sanitizeInput: (payload) => sanitizeInput(payload) ?? "",
     },
     scheduler: {},
   });

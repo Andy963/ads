@@ -61,6 +61,23 @@ describe("web/commandPresentation", () => {
     assert.equal(projectCommandFrame(assistantResult), assistantResult);
   });
 
+  it("normalizes object-shaped execute results before they reach clients", () => {
+    const commandResult = {
+      type: "result",
+      kind: "execute",
+      ok: true,
+      command: { id: "cmd-1", command: "npm test", output: "private output" },
+      output: "private output",
+    };
+
+    assert.deepEqual(projectCommandFrame(commandResult), {
+      type: "result",
+      kind: "execute",
+      ok: true,
+      command: "npm test",
+    });
+  });
+
   it("strips legacy history output without changing conversation text", () => {
     const frame = {
       type: "history",

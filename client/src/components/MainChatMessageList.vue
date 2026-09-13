@@ -428,8 +428,8 @@ watch(
   { immediate: true },
 );
 
-function getCommands(content: string): string[] {
-  return content
+function getCommands(content: unknown): string[] {
+  return String(content ?? "")
     .split("\n")
     .filter((line) => line.match(/^\$\s*/))
     .map((line) => line.replace(/^\$\s*/, ""));
@@ -480,7 +480,7 @@ function caretPath(open: boolean): string {
 }
 
 function shouldShowMsgActions(m: RenderMessage): boolean {
-  if (m.streaming && m.content.length === 0) return false;
+  if (m.streaming && String(m.content ?? "").length === 0) return false;
   if (m.kind === "patch" || m.kind === "thought" || m.kind === "divider") return false;
   return true;
 }
@@ -592,7 +592,7 @@ function closeFilePreview(): void {
         ]"
       >
         <span v-if="m.kind === 'error' && (m.retryCount ?? 0) > 0" class="retryBadge">x{{ m.retryCount }}</span>
-        <div v-if="m.role === 'assistant' && m.kind === 'text' && m.streaming && m.content.length === 0" class="typing" aria-label="AI is thinking">
+        <div v-if="m.role === 'assistant' && m.kind === 'text' && m.streaming && String(m.content ?? '').length === 0" class="typing" aria-label="AI is thinking">
           <span class="thinkingText">thinking</span>
         </div>
         <div v-else-if="isLiveStepRenderMessage(m)" class="liveStep">
