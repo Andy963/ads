@@ -15,6 +15,13 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function commandLine(value: unknown): string {
+  if (typeof value === "string") return value;
+  const record = asRecord(value);
+  if (!record) return "";
+  return typeof record.command === "string" ? record.command : "";
+}
+
 function pickFields(record: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {
   return Object.fromEntries(fields.filter((field) => Object.hasOwn(record, field)).map((field) => [field, record[field]]));
 }
@@ -37,7 +44,11 @@ export function projectCommandFrame(payload: unknown): unknown {
   }
 
   if (frame.type === "result" && frame.kind === "execute") {
-    return { ...pickFields(frame, FRAME_FIELDS), command: frame.command };
+    const command = commandLine(frame.command);
+    return {
+      ...pickFields(frame, FRAME_FIELDS),
+      ...(command ? { command } : {}),
+    };
   }
 
   if (frame.type === "history" && Array.isArray(frame.items)) {

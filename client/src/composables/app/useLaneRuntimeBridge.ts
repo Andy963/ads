@@ -1,4 +1,4 @@
-import { computed, ref, type Ref } from "vue";
+import { computed, ref, watch, type Ref } from "vue";
 
 export type ChatLane = "planner" | "worker";
 
@@ -65,9 +65,24 @@ export function useLaneRuntimeBridge(params: {
   ) => void;
 }) {
   const activeChatLane = ref<ChatLane>("planner");
+  const projectContextGeneration = ref(0);
+
+  watch(
+    () => params.activeProjectId.value,
+    (projectId, previousProjectId) => {
+      if (!String(projectId ?? "").trim() || projectId === previousProjectId) return;
+      // The project id normally changes with the context, but a server-side
+      // identity resolution can reuse an id. Keep a local generation as an
+      // explicit remount barrier for the visible chat panels.
+      projectContextGeneration.value += 1;
+    },
+    { flush: "sync" },
+  );
 
   function setActiveChatLane(lane: ChatLane): void {
+    if (activeChatLane.value === lane) return;
     activeChatLane.value = lane;
+    projectContextGeneration.value += 1;
   }
 
   const plannerRuntime = computed(() => asPlannerRuntimeShape(params.activePlannerRuntime.value));
@@ -91,7 +106,12 @@ export function useLaneRuntimeBridge(params: {
   const plannerAgents = computed(() => plannerRuntime.value.availableAgents.value);
   const plannerActiveAgentId = computed(() => plannerRuntime.value.activeAgentId.value);
   const plannerThreadWarning = computed(() => plannerRuntime.value.threadWarning.value);
-  const plannerChatKey = computed(() => `${params.activeProjectId.value}:planner`);
+  const plannerChatKey = computed(
+    () => `${params.activeProjectId.value}:planner`,
+  );
+  const plannerPanelKey = computed(
+    () => `${params.activeProjectId.value}:${projectContextGeneration.value}:planner`,
+  );
 
   const workerAgents = computed(() => workerRuntime.value.availableAgents.value);
   const workerInputLocked = computed(() => workerRuntime.value.inputLocked.value);
@@ -104,9 +124,15 @@ export function useLaneRuntimeBridge(params: {
     },
   });
   const workerThreadWarning = computed(() => workerRuntime.value.threadWarning.value);
-  const workerLatestPromptKey = computed(() => `${params.activeProjectId.value}:worker`);
+  const workerLatestPromptKey = computed(
+    () => `${params.activeProjectId.value}:worker`,
+  );
   const workerChatKey = computed(
     () => `${params.activeProjectId.value}:${params.activeProject.value?.chatSessionId ?? "main"}`,
+  );
+  const workerPanelKey = computed(
+    () =>
+      `${params.activeProjectId.value}:${projectContextGeneration.value}:${params.activeProject.value?.chatSessionId ?? "main"}`,
   );
   const workerQueuedPrompts = computed(() => mapQueuedPrompts(params.queuedPrompts.value));
   const resumableSessions = computed(() => workerRuntime.value.resumableSessions.value);
@@ -216,6 +242,7 @@ export function useLaneRuntimeBridge(params: {
     plannerActiveAgentId,
     plannerThreadWarning,
     plannerChatKey,
+    plannerPanelKey,
     workerAgents,
     workerInputLocked,
     workerLaneStatus,
@@ -224,6 +251,7 @@ export function useLaneRuntimeBridge(params: {
     workerThreadWarning,
     workerLatestPromptKey,
     workerChatKey,
+    workerPanelKey,
     workerQueuedPrompts,
     resumableSessions,
     resumableSessionsBusy,

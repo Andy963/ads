@@ -151,6 +151,7 @@ const {
   plannerActiveAgentId,
   plannerThreadWarning,
   plannerChatKey,
+  plannerPanelKey,
   workerAgents,
   workerInputLocked,
   workerLaneStatus,
@@ -159,6 +160,7 @@ const {
   workerThreadWarning,
   workerLatestPromptKey,
   workerChatKey,
+  workerPanelKey,
   workerQueuedPrompts,
   resumableSessions,
   resumableSessionsBusy,
@@ -535,7 +537,17 @@ const plannerConnectionStatus = computed(() => {
 <template>
   <ExecuteBlockFixture v-if="isExecuteBlockFixture" />
   <LoginGate v-else-if="!loggedIn" @logged-in="handleLoggedIn" />
-  <div v-else class="app" @click="closeMobileContextMenu">
+  <div
+    v-else
+    class="app"
+    :data-active-lane="activeWorkspaceTab"
+    :data-project-id="activeProjectId"
+    :data-worker-message-count="messages.length"
+    :data-planner-message-count="plannerMessages.length"
+    :data-worker-panel-key="workerPanelKey"
+    :data-planner-panel-key="plannerPanelKey"
+    @click="closeMobileContextMenu"
+  >
     <header class="topbar">
       <button
         v-if="isMobile"
@@ -824,10 +836,12 @@ const plannerConnectionStatus = computed(() => {
             role="tabpanel"
             aria-labelledby="lane-tab-planner"
             data-testid="lane-panel-planner"
+            :data-message-count="plannerMessages.length"
+            :data-panel-key="plannerPanelKey"
           >
             <MainChatView
               ref="plannerChatRef"
-              :key="plannerChatKey"
+              :key="plannerPanelKey"
               class="chatHost chatHost--planner"
               :messages="plannerMessages"
               :draft="plannerComposerDraft"
@@ -857,10 +871,12 @@ const plannerConnectionStatus = computed(() => {
             role="tabpanel"
             aria-labelledby="lane-tab-worker"
             data-testid="lane-panel-worker"
+            :data-message-count="messages.length"
+            :data-panel-key="workerPanelKey"
           >
             <MainChatView
               ref="workerChatRef"
-              :key="workerChatKey"
+              :key="workerPanelKey"
               class="chatHost"
               :messages="messages"
               :draft="workerComposerDraft"

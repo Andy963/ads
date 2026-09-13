@@ -2,6 +2,8 @@ import type { ProjectTab } from "../controller";
 
 export type ProjectDeps = {
   activateProject: (projectId: string) => Promise<void>;
+  /** Invalidate sockets before the visible project context changes. */
+  invalidateProjectConnections?: (projectId: string) => void;
   closeProjectConnections?: (projectId: string) => void;
 };
 

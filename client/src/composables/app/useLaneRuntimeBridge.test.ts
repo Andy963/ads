@@ -57,11 +57,13 @@ describe("useLaneRuntimeBridge", () => {
     });
 
     expect(bridge.workerChatKey.value).toBe("p1:session-1");
+    expect(bridge.workerPanelKey.value).toBe("p1:0:session-1");
     expect(bridge.workerLatestPromptKey.value).toBe("p1:worker");
 
     activeProject.value = { chatSessionId: "session-2" };
 
     expect(bridge.workerChatKey.value).toBe("p1:session-2");
+    expect(bridge.workerPanelKey.value).toBe("p1:0:session-2");
     expect(bridge.workerLatestPromptKey.value).toBe("p1:worker");
   });
 
@@ -87,6 +89,28 @@ describe("useLaneRuntimeBridge", () => {
     activeProjectId.value = "p3";
     await nextTick();
     expect(bridge.activeChatLane.value).toBe("planner");
+  });
+
+  it("changes the panel key when the visible lane changes without changing prompt storage scope", () => {
+    const bridge = useLaneRuntimeBridge({
+      activeProjectId: ref("p1"),
+      activeProject: ref({ chatSessionId: "main" }),
+      activeRuntime: shallowRef(createRuntime()),
+      activePlannerRuntime: shallowRef(createRuntime()),
+      queuedPrompts: ref([]),
+      pendingImages: ref([]),
+      agentBusy: ref(false),
+      clearPlannerChat: () => {},
+      startNewChatSession: () => {},
+      resumePlannerThread: () => {},
+      resumeTaskThread: () => {},
+    });
+
+    const initialPanelKey = bridge.workerPanelKey.value;
+    bridge.setActiveChatLane("worker");
+
+    expect(bridge.workerPanelKey.value).not.toBe(initialPanelKey);
+    expect(bridge.workerLatestPromptKey.value).toBe("p1:worker");
   });
 
   it("blocks disconnected planner lane resets but keeps worker new-session available", () => {

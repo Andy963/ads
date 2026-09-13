@@ -37,8 +37,44 @@ const SELECTION_NOTICE_PATTERNS = [
   /^模型已切换到.+，已启动新会话线程。?$/,
 ];
 
+function normalizeWirePrimitive(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return "";
+}
+
+function normalizeWireText(value: unknown): string {
+  const primitive = normalizeWirePrimitive(value);
+  if (primitive) return primitive;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+
+  const record = value as Record<string, unknown>;
+  for (const key of ["text", "content", "output"]) {
+    const nested = normalizeWirePrimitive(record[key]);
+    if (nested) return nested;
+  }
+  return "";
+}
+
+function firstWireText(...values: unknown[]): string {
+  for (const value of values) {
+    const text = normalizeWireText(value);
+    if (text) return text;
+  }
+  return "";
+}
+
+function normalizeWireCommand(value: unknown): string {
+  const primitive = normalizeWirePrimitive(value);
+  if (primitive) return primitive;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+
+  const record = value as Record<string, unknown>;
+  return normalizeWirePrimitive(record.command ?? record.commandLine ?? record.text);
+}
+
 function stripSelectionChangeNotices(content: string): string {
-  return String(content ?? "")
+  return normalizeWireText(content)
     .split("\n")
     .filter((line) => !SELECTION_NOTICE_PATTERNS.some((pattern) => pattern.test(line.trim())))
     .join("\n")
@@ -111,7 +147,7 @@ function hasTerminalHistoryTail(items: unknown[]): boolean {
     const rec = entry as Record<string, unknown>;
     const role = String(rec.role ?? "");
     const kind = String(rec.kind ?? "");
-    const text = String(rec.text ?? "").trim();
+    const text = normalizeWireText(rec.text).trim();
     if (!text) continue;
     if (role === "status" && kind === "status" && !replayedLaneStatus(kind, text)) {
       continue;
@@ -316,7 +352,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
   };
 
   const consumeAssistantDelta = (payload: Record<string, unknown>): void => {
-    const delta = String(payload.delta ?? "");
+    const delta = normalizeWireText(payload.delta);
     if (!delta) return;
     const streamId = String(payload.streamId ?? payload.stream_id ?? "").trim();
     const startOffset = finiteOffset(payload.startOffset ?? payload.start_offset);
@@ -342,7 +378,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
   };
 
   const consumeAssistantSnapshot = (payload: Record<string, unknown>): void => {
-    const text = String(payload.text ?? "");
+    const text = normalizeWireText(payload.text);
     if (!text || payload.active === false) return;
     if (isStaleRuntimePayload(payload)) return;
     const streamId = String(payload.streamId ?? payload.stream_id ?? "").trim();
@@ -445,7 +481,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         serverUserClientMessageIds.add(clientMessageId);
       }
       if (!newestServerUser) {
-        newestServerUser = String(entry.text ?? "").trim();
+        newestServerUser = normalizeWireText(entry.text).trim();
       }
     }
     const completedClientMessageIds = collectCompletedClientMessageIdsFromHistoryItems(items);
@@ -474,7 +510,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
   };
 
   const upsertTransientRetryNotice = (message: string, retryCount?: unknown): void => {
-    const content = String(message ?? "").trim() || "Upstream model request failed temporarily; retrying.";
+    const content = normalizeWireText(message).trim() || "Upstream model request failed temporarily; retrying.";
     const explicitCount = Number(retryCount);
     const nextCount = Number.isFinite(explicitCount) && explicitCount > 0
       ? Math.floor(explicitCount)
@@ -508,8 +544,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (existing.length === 0) return;
     for (const msg of existing) {
       if (!msg || msg.kind !== "execute") continue;
-      const cmd = String(msg.command ?? "").trim();
-      const preview = String(msg.content ?? "");
+      const cmd = normalizeWireCommand(msg.command).trim();
+      const preview = normalizeWireText(msg.content);
       if (!cmd) continue;
       if (!isGitDiffCommand(cmd)) continue;
       if (!looksLikeUnifiedDiff(preview)) continue;
@@ -590,7 +626,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     turnPatchMessageId = String(patchMessage.id ?? "").trim() || null;
     turnPatchSummaryTruncated = Boolean(patchMessage.patch.truncated);
     for (const file of patchMessage.patch.files ?? []) {
-      const filePath = String(file.path ?? "").trim();
+      const filePath = normalizeWireText(file.path).trim();
       if (!filePath) continue;
       if (!turnPatchFilesByPath.has(filePath)) {
         turnPatchOrder.push(filePath);
@@ -600,7 +636,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         removed: typeof file.removed === "number" && Number.isFinite(file.removed) ? file.removed : null,
       });
     }
-    for (const [filePath, section] of splitUnifiedDiffByPath(String(patchMessage.patch.diff ?? "")).entries()) {
+    for (const [filePath, section] of splitUnifiedDiffByPath(normalizeWireText(patchMessage.patch.diff)).entries()) {
       if (!filePath || !section.trim()) continue;
       if (!turnPatchDiffByPath.has(filePath) && !turnPatchOrder.includes(filePath)) {
         turnPatchOrder.push(filePath);
@@ -1130,7 +1166,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       // The provider lost the session mid-turn: this turn already ran without
       // the old context, so say so in the composer status surface.
       const rec = msg as Record<string, unknown>;
-      const message = String(rec.message ?? "").trim();
+      const message = firstWireText(rec.message, rec.output, rec.text).trim();
       rt.laneStatus.value = {
         kind: "info",
         message: message || "原生会话已不存在，已改用新会话继续；下一轮会带上最近聊天历史。",
@@ -1152,7 +1188,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "status") {
-      const content = String(msg.message ?? msg.output ?? msg.text ?? "").trim();
+      const content = firstWireText(msg.message, msg.output, msg.text).trim();
       if (!content) return;
       if (recoveredBackendActivitySeen && BACKEND_WAITING_STATUS_MESSAGES.has(content)) return;
       const kind = String(msg.kind ?? "").trim() === "error"
@@ -1205,7 +1241,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       for (let idx = 0; idx < items.length; idx++) {
         const entry = items[idx] as { role?: unknown; text?: unknown; kind?: unknown; ts?: unknown };
         const role = String(entry.role ?? "");
-        const text = String(entry.text ?? "");
+        const text = normalizeWireText(entry.text);
         const kind = String(entry.kind ?? "");
         const rawTs = entry.ts;
         const ts = typeof rawTs === "number" && Number.isFinite(rawTs) && rawTs > 0 ? Math.floor(rawTs) : null;
@@ -1308,7 +1344,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (type === "user") {
       markTurnActive(msg as Record<string, unknown>);
       const clientMessageId = String(msg.clientMessageId ?? msg.client_message_id ?? "").trim();
-      const text = String(msg.text ?? msg.content ?? "").trim();
+      const text = firstWireText(msg.text, msg.content).trim();
       const eventTsRaw = Number((msg as { ts?: unknown }).ts);
       const eventTs = Number.isFinite(eventTsRaw) && eventTsRaw > 0 ? Math.floor(eventTsRaw) : Date.now();
       const existing = rt.messages.value;
@@ -1362,7 +1398,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (source === "thought" || source === "reasoning") {
         return;
       } else if (source === "step") {
-        const delta = String(msg.delta ?? "");
+        const delta = normalizeWireText(msg.delta);
         if (shouldIgnoreStepDelta(delta)) return;
         upsertStepLiveDelta(delta, rt);
       } else {
@@ -1397,8 +1433,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const entry = msg.entry;
       if (entry && typeof entry === "object") {
         const typed = entry as { category?: unknown; summary?: unknown };
-        const category = String(typed.category ?? "").trim();
-        const summary = String(typed.summary ?? "").trim();
+        const category = normalizeWireText(typed.category).trim();
+        const summary = normalizeWireText(typed.summary).trim();
         if (category === "Execute") {
           return;
         }
@@ -1436,7 +1472,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (!patch || typeof patch !== "object") return;
 
       const typed = patch as { files?: unknown; diff?: unknown; truncated?: unknown };
-      const diff = String(typed.diff ?? "").trimEnd();
+      const diff = normalizeWireText(typed.diff).trimEnd();
       if (!diff.trim()) return;
       if (terminalArtifactReplay && turnPatchOrder.length === 0) {
         hydrateTurnPatchSummaryFromCurrentTurn();
@@ -1454,7 +1490,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const files = Array.isArray(typed.files) ? (typed.files as Array<{ path?: unknown; added?: unknown; removed?: unknown }>) : [];
 
       for (const f of files) {
-        const filePath = String(f.path ?? "").trim();
+        const filePath = normalizeWireText(f.path).trim();
         if (!filePath) continue;
         const added = typeof f.added === "number" && Number.isFinite(f.added) ? Math.max(0, Math.floor(f.added)) : null;
         const removed = typeof f.removed === "number" && Number.isFinite(f.removed) ? Math.max(0, Math.floor(f.removed)) : null;
@@ -1496,9 +1532,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const snapshot = msg.command && typeof msg.command === "object" && !Array.isArray(msg.command)
         ? (msg.command as Record<string, unknown>)
         : null;
-      const cmd = String(snapshot?.command ?? "").trim();
+      const cmd = normalizeWireCommand(snapshot?.command).trim();
       if (!cmd) return;
-      const identity = String(snapshot?.identity ?? snapshot?.id ?? cmd).trim();
+      const identity = firstWireText(snapshot?.identity, snapshot?.id, cmd).trim();
       const key = commandKeyForWsEvent(cmd, identity || null);
       if (!key) return;
       const status = String(snapshot?.status ?? "").trim().toLowerCase();
@@ -1513,7 +1549,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       clearRecoveredBackendStatus();
       ingestCommand(cmd, rt, identity || null);
-      upsertExecuteBlock(key, cmd, String(snapshot?.output ?? ""), rt, {
+      upsertExecuteBlock(key, cmd, normalizeWireText(snapshot?.output), rt, {
         snapshot: true,
         terminal,
         eventId: String(msg.eventId ?? msg.seq ?? `snapshot:${identity}:${revision || 0}`).trim(),
@@ -1541,7 +1577,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       resetTurnPatchSummary();
       rt.pendingAckClientMessageId = null;
       clearPendingPrompt(rt);
-      const output = String(msg.output ?? "");
+      const output = normalizeWireText(msg.output);
       const resultKind = String(msg.kind ?? "").trim();
       if (rt.suppressNextClearHistoryResult) {
         rt.suppressNextClearHistoryResult = false;
@@ -1587,7 +1623,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       applyEffectiveState(msg as Record<string, unknown>);
       clearStepLive(rt);
       finalizeCommandBlock(rt, { removeActiveExecuteBlocks: resultKind === "execute" });
-      const resultCommand = String(msg.command ?? "").trim();
+      const resultCommand = normalizeWireCommand(msg.command).trim();
       if (resultKind === "execute" && resultCommand) {
         finalizeAssistant("", rt);
         const resultTsRaw = Number((msg as { ts?: unknown }).ts);
@@ -1632,7 +1668,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (type === "error") {
       const isTransientRetry = Boolean(msg.transient) && Boolean(msg.retryable);
       if (isTransientRetry) {
-        upsertTransientRetryNotice(String(msg.message ?? ""), msg.retryCount);
+        upsertTransientRetryNotice(normalizeWireText(msg.message), msg.retryCount);
         return;
       }
 
@@ -1659,7 +1695,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         ? (msg.errorInfo as { code?: string; retryable?: boolean; needsReset?: boolean })
         : undefined;
 
-      const userMessage = String(msg.message ?? "error");
+      const userMessage = normalizeWireText(msg.message) || "error";
       const errorContent = errorInfo
         ? `⚠️ ${userMessage}\n\n` +
           `错误类型: ${errorInfo.code ?? "unknown"}\n` +
@@ -1676,8 +1712,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (isStaleRuntimePayload(msg as Record<string, unknown>)) return;
       markTurnActive(msg as Record<string, unknown>);
       const payload = msg.command && typeof msg.command === "object" ? (msg.command as Record<string, unknown>) : null;
-      const cmd = String(payload?.command ?? "").trim();
-      const rawOutputDelta = String(payload?.outputDelta ?? "");
+      const cmd = normalizeWireCommand(payload?.command).trim();
+      const rawOutputDelta = normalizeWireText(payload?.outputDelta);
       const identity = resolveCommandIdentity(payload ?? {}, cmd, rawOutputDelta);
       const key = commandKeyForWsEvent(cmd, identity || null);
       if (!key) return;

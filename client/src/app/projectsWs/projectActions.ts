@@ -484,7 +484,14 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
   const performProjectSwitch = (id: string): void => {
     const nextId = String(id ?? "").trim();
     if (!nextId) return;
-    if (nextId === activeProjectId.value) return;
+    const previousId = activeProjectId.value;
+    if (nextId === previousId) return;
+
+    // Stop both the old and target project sockets before changing the visible
+    // identity. This invalidates any in-flight bootstrap/history callbacks so a
+    // late WebSocket frame cannot cross the project boundary on mobile browsers.
+    deps.invalidateProjectConnections?.(previousId);
+    deps.invalidateProjectConnections?.(nextId);
 
     activeProjectId.value = nextId;
     setExpandedExclusive(nextId, true);

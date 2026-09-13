@@ -21,7 +21,7 @@ const selected = process.env.ADS_CHAT_BROWSER;
 assert.ok(!selected || ["webkit", "chromium"].includes(selected), "Unsupported browser engine");
 
 for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
-  const fixture = await startChatBrowserServer(buildRoot, { legacyWorker: true });
+  const fixture = await startChatBrowserServer(buildRoot, { legacyWorker: true, projects: true });
   let context;
   let page;
   const profile = path.join(artifacts, `${engine}-profile`);
@@ -72,6 +72,16 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       await activate(`[data-testid="lane-tab-${lane}"]`);
       assert.equal(await page.locator(`[data-testid="lane-tab-${lane}"]`).getAttribute("aria-selected"), "true");
       assert.equal(await page.locator(".lanePanel:visible").count(), 1);
+    };
+    const chooseProject = async (projectName, projectId) => {
+      if (mobile) await activate('[data-testid="mobile-drawer-toggle"]');
+      const row = page.locator("button.projectRow").filter({ hasText: projectName });
+      await row.waitFor({ state: "visible" });
+      if (mobile) await row.tap();
+      else await row.click();
+      await settle();
+      await page.waitForFunction((expected) => document.querySelector(".app")?.getAttribute("data-project-id") === expected, projectId);
+      assert.equal(await page.locator(".app").getAttribute("data-project-id"), projectId);
     };
     const waitForReply = (text) => page.waitForFunction((expected) => document.querySelector(".chat")?.textContent.includes(expected), text);
     const send = async (text) => {
@@ -124,6 +134,24 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     assert.ok(!(await page.locator(".chat").innerText()).includes("Advisor reply"));
     assert.ok(frames.some((frame) => frame.type === "history" && frame.historySize > 0), "Reload must replay persisted nonempty history through the real server");
     result.checks.push("Persisted history replay and lane isolation after page reload");
+
+    await chooseProject("Project B", "browser-project-b");
+    await chooseLane("worker");
+    const projectBSnapshot = await page.evaluate(() => ({
+      app: document.querySelector(".app")?.outerHTML.slice(0, 1200) ?? "",
+      chat: document.querySelector(".chat")?.textContent ?? "",
+      diagnostics: window.__ADS_RUNTIME_DIAGNOSTICS__ ?? [],
+    }));
+    result.projectBSnapshot = projectBSnapshot;
+    assert.ok(!projectBSnapshot.chat.includes("Worker reply: browser-worker-first"));
+    await send("browser-worker-project-b");
+    await waitForReply("Worker reply: browser-worker-project-b");
+    assert.ok(!(await page.locator(".chat").innerText()).includes("Worker reply: browser-worker-first"));
+    await chooseProject("Project A", "browser-project-a");
+    await chooseLane("worker");
+    await waitForReply("Worker reply: browser-worker-first");
+    assert.ok(!(await page.locator(".chat").innerText()).includes("Worker reply: browser-worker-project-b"));
+    result.checks.push("Project switching replaces the visible runtime and restores project-local history");
 
     if (mobile) {
       await chooseLane("planner");
@@ -193,7 +221,13 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     await input().fill("Short");
     await settle();
     assert.equal(await input().evaluate((element) => element.getBoundingClientRect().height), rowMetrics[0].height);
+    const runtimeDiagnostics = await page.evaluate(() => {
+      const diagnostics = window.__ADS_RUNTIME_DIAGNOSTICS__;
+      return Array.isArray(diagnostics) ? diagnostics : [];
+    });
+    result.runtimeDiagnostics = runtimeDiagnostics;
     assert.deepEqual(errors, [], "The browser must not report runtime errors");
+    assert.deepEqual(runtimeDiagnostics, [], "The app must not record runtime diagnostics during the switching flow");
     result.serviceWorkerControlled = await page.evaluate(() => Boolean(navigator.serviceWorker.controller));
     assert.equal(result.serviceWorkerControlled, true, "The tested page must remain controlled by the new service worker");
     result.status = "passed";
@@ -205,6 +239,9 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       inputDisabled: document.querySelector("textarea")?.disabled,
       inputLength: document.querySelector("textarea")?.value.length,
       selectedLane: document.querySelector('[role="tab"][aria-selected="true"]')?.id,
+      app: document.querySelector(".app")?.outerHTML.slice(0, 1600),
+      chat: document.querySelector(".chat")?.textContent,
+      diagnostics: window.__ADS_RUNTIME_DIAGNOSTICS__ ?? [],
     })).catch(() => null);
     if (page) await page.screenshot({ path: path.join(artifacts, `${engine}-failure.png`) }).catch(() => {});
     process.exitCode = 1;

@@ -299,6 +299,21 @@ export function createAppController() {
 
   };
 
+  const invalidateProjectConnections = (projectId: string): void => {
+    const pid = ctx.normalizeProjectId(projectId);
+    const workerRt = ctx.runtimeByProjectId.get(pid);
+    if (workerRt) {
+      ws.closeRuntimeConnection(workerRt);
+      clearRuntimeTimers(workerRt);
+    }
+
+    const plannerRt = ctx.plannerRuntimeByProjectId.get(pid);
+    if (plannerRt) {
+      ws.closeRuntimeConnection(plannerRt);
+      clearRuntimeTimers(plannerRt);
+    }
+  };
+
   const activateProject = async (projectId: string): Promise<void> => {
     const pid = ctx.normalizeProjectId(projectId);
     const rt = ctx.getRuntime(pid);
@@ -319,6 +334,7 @@ export function createAppController() {
   };
 
   projectDeps.activateProject = activateProject;
+  projectDeps.invalidateProjectConnections = invalidateProjectConnections;
   projectDeps.closeProjectConnections = closeProjectConnections;
 
   const bootstrap = async (): Promise<void> => {
