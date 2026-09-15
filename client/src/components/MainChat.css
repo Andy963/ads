@@ -45,23 +45,23 @@
   word-break: break-word;
 }
 
-.chatHost--planner .chat {
-  /* The planner pane sits in the middle column; keep its scrollbar visually light. */
+.chatHost--advisor .chat {
+  /* The advisor pane sits in the middle column; keep its scrollbar visually light. */
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: rgba(148, 163, 184, 0.75) transparent;
 }
 
-.chatHost--planner .chat::-webkit-scrollbar {
+.chatHost--advisor .chat::-webkit-scrollbar {
   width: 6px;
 }
 
-.chatHost--planner .chat::-webkit-scrollbar-thumb {
+.chatHost--advisor .chat::-webkit-scrollbar-thumb {
   background: rgba(148, 163, 184, 0.7);
   border-radius: 999px;
 }
 
-.chatHost--planner .chat::-webkit-scrollbar-track {
+.chatHost--advisor .chat::-webkit-scrollbar-track {
   background: transparent;
 }
 

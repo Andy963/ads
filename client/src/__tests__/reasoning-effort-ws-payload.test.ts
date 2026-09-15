@@ -15,9 +15,9 @@ let lastWs: {
   sendPrompt?: (payload: unknown, clientMessageId?: string) => void;
   clearHistory: () => void;
 } | null = null;
-let lastPlannerWs: typeof lastWs = null;
+let lastAdvisorWs: typeof lastWs = null;
 let lastSendPromptPayload: unknown = null;
-let lastPlannerSendPromptPayload: unknown = null;
+let lastAdvisorSendPromptPayload: unknown = null;
 
 vi.mock("../api/client", () => {
   class ApiClient {
@@ -55,8 +55,8 @@ vi.mock("../api/ws", () => {
 
     constructor(options: { sessionId: string; chatSessionId?: string }) {
       const chatSessionId = String(options.chatSessionId ?? "main").trim() || "main";
-      if (chatSessionId === "planner") {
-        lastPlannerWs = this as unknown as typeof lastWs;
+      if (chatSessionId === "advisor") {
+        lastAdvisorWs = this as unknown as typeof lastWs;
         return;
       } else {
         lastWs = this as unknown as typeof lastWs;
@@ -68,8 +68,8 @@ vi.mock("../api/ws", () => {
 
     send(): void {}
     sendPrompt(payload: unknown): void {
-      if (this === lastPlannerWs) {
-        lastPlannerSendPromptPayload = payload;
+      if (this === lastAdvisorWs) {
+        lastAdvisorSendPromptPayload = payload;
       } else {
         lastSendPromptPayload = payload;
       }
@@ -109,21 +109,21 @@ async function ensureWsConnected(wrapper: any): Promise<void> {
   await settleUi(wrapper);
 }
 
-async function ensurePlannerWsConnected(wrapper: any): Promise<void> {
-  for (let i = 0; i < 10 && !lastPlannerWs; i += 1) {
+async function ensureAdvisorWsConnected(wrapper: any): Promise<void> {
+  for (let i = 0; i < 10 && !lastAdvisorWs; i += 1) {
     await settleUi(wrapper);
   }
-  expect(lastPlannerWs).toBeTruthy();
-  lastPlannerWs!.onOpen?.();
+  expect(lastAdvisorWs).toBeTruthy();
+  lastAdvisorWs!.onOpen?.();
   await settleUi(wrapper);
 }
 
 describe("reasoning effort WS payload", () => {
   beforeEach(() => {
     lastWs = null;
-    lastPlannerWs = null;
+    lastAdvisorWs = null;
     lastSendPromptPayload = null;
-    lastPlannerSendPromptPayload = null;
+    lastAdvisorSendPromptPayload = null;
     try {
       localStorage.clear();
       sessionStorage.clear();
@@ -140,9 +140,9 @@ describe("reasoning effort WS payload", () => {
   afterEach(() => {
     getImpl = null;
     lastWs = null;
-    lastPlannerWs = null;
+    lastAdvisorWs = null;
     lastSendPromptPayload = null;
-    lastPlannerSendPromptPayload = null;
+    lastAdvisorSendPromptPayload = null;
     vi.clearAllMocks();
     try {
       sessionStorage.clear();
@@ -257,28 +257,28 @@ describe("reasoning effort WS payload", () => {
     wrapper.unmount();
   });
 
-  it("keeps planner default model_reasoning_effort at high", async () => {
+  it("keeps advisor default model_reasoning_effort at high", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await settleUi(wrapper);
     await ensureWsConnected(wrapper);
-    await ensurePlannerWsConnected(wrapper);
+    await ensureAdvisorWsConnected(wrapper);
 
-    wrapper.vm.sendPlannerPrompt?.("hello");
+    wrapper.vm.sendAdvisorPrompt?.("hello");
     await settleUi(wrapper);
 
-    expect(lastPlannerSendPromptPayload).toBeTruthy();
-    expect(lastPlannerSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "high", model: "auto" });
+    expect(lastAdvisorSendPromptPayload).toBeTruthy();
+    expect(lastAdvisorSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "high", model: "auto" });
   });
 
-  it("uses an optimistically selected planner agent for immediate planner prompts", async () => {
+  it("uses an optimistically selected advisor agent for immediate advisor prompts", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await settleUi(wrapper);
     await ensureWsConnected(wrapper);
-    await ensurePlannerWsConnected(wrapper);
+    await ensureAdvisorWsConnected(wrapper);
 
-    lastPlannerWs!.onMessage?.({
+    lastAdvisorWs!.onMessage?.({
       type: "agents",
       activeAgentId: "codex",
       agents: [
@@ -288,12 +288,12 @@ describe("reasoning effort WS payload", () => {
     });
     await settleUi(wrapper);
 
-    wrapper.vm.switchPlannerAgent?.("claude");
-    wrapper.vm.sendPlannerPrompt?.("hello");
+    wrapper.vm.switchAdvisorAgent?.("claude");
+    wrapper.vm.sendAdvisorPrompt?.("hello");
     await settleUi(wrapper);
 
-    expect(lastPlannerSendPromptPayload).toBeTruthy();
-    expect(lastPlannerSendPromptPayload).toMatchObject({ text: "hello", agentId: "claude" });
+    expect(lastAdvisorSendPromptPayload).toBeTruthy();
+    expect(lastAdvisorSendPromptPayload).toMatchObject({ text: "hello", agentId: "claude" });
     wrapper.unmount();
   });
 

@@ -16,12 +16,16 @@ import { createAppController } from "./app/controller";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
 import { useProjectSidebar } from "./composables/app/useProjectSidebar";
 import { createTapActivation } from "./lib/tapActivation";
+import { diagAlert } from "./lib/diagAlert";
+import { crumb } from "./lib/diagBreadcrumbs";
+import { errorRecoveryGeneration } from "./lib/errorRecovery";
 import {
   readMobileWorkspaceTab,
   writeMobileWorkspaceTab,
   type MobileWorkspaceTab,
 } from "./lib/mobileWorkspacePreferences";
 import {
+  ArrowRight,
   CirclePlus,
   ChatDotRound,
   Delete,
@@ -48,7 +52,7 @@ const {
   reorderProjects,
   removeProject,
   getRuntime,
-  getPlannerRuntime,
+  getAdvisorRuntime,
   connectWs,
   runtimeProjectInProgress,
   formatProjectBranch,
@@ -57,33 +61,33 @@ const {
   apiAuthorized,
   resumeTaskThread,
   listResumableSessions,
-  resumePlannerThread,
+  resumeAdvisorThread,
   clearActiveChat,
-  clearPlannerChat,
-  startNewPlannerSession,
+  clearAdvisorChat,
+  startNewAdvisorSession,
   startNewChatSession,
   messages,
   activeRuntime,
-  activePlannerRuntime,
+  activeAdvisorRuntime,
   queuedPrompts,
   pendingImages,
   agentBusy,
   sendMainPrompt,
-  sendPlannerPrompt,
+  sendAdvisorPrompt,
   setMainModelId,
-  setPlannerModelId,
+  setAdvisorModelId,
   setMainModelReasoningEffort,
-  setPlannerModelReasoningEffort,
+  setAdvisorModelReasoningEffort,
   switchMainAgent,
-  switchPlannerAgent,
+  switchAdvisorAgent,
   interruptActive,
-  interruptPlanner,
+  interruptAdvisor,
   addPendingImages,
   clearPendingImages,
-  addPlannerPendingImages,
-  clearPlannerPendingImages,
+  addAdvisorPendingImages,
+  clearAdvisorPendingImages,
   removeQueuedPrompt,
-  removePlannerQueuedPrompt,
+  removeAdvisorQueuedPrompt,
   apiNotice,
   resolveActiveWorkspaceRoot,
   projectDialogOpen,
@@ -131,7 +135,7 @@ const mobileContextMenuOpen = ref(false);
 const mobileSettingsRef = ref<MobileManagerHandle | null>(null);
 
 const chatLanes: Array<{ id: ChatLane; label: string }> = [
-  { id: "planner", label: "Advisor" },
+  { id: "advisor", label: "Advisor" },
   { id: "worker", label: "Worker" },
 ];
 const workspaceTabs = computed<Array<{ id: ChatLane; label: string }>>(() => chatLanes);
@@ -139,19 +143,19 @@ const workspaceTabs = computed<Array<{ id: ChatLane; label: string }>>(() => cha
 const {
   activeChatLane,
   setActiveChatLane,
-  plannerMessages,
-  plannerQueuedPrompts,
-  plannerPendingImages,
-  plannerConnected,
-  plannerBusy,
-  plannerInputLocked,
-  plannerLaneStatus,
-  plannerComposerDraft,
-  plannerAgents,
-  plannerActiveAgentId,
-  plannerThreadWarning,
-  plannerChatKey,
-  plannerPanelKey,
+  advisorMessages,
+  advisorQueuedPrompts,
+  advisorPendingImages,
+  advisorConnected,
+  advisorBusy,
+  advisorInputLocked,
+  advisorLaneStatus,
+  advisorComposerDraft,
+  advisorAgents,
+  advisorActiveAgentId,
+  advisorThreadWarning,
+  advisorChatKey,
+  advisorPanelKey,
   workerAgents,
   workerInputLocked,
   workerLaneStatus,
@@ -184,15 +188,15 @@ const {
   activeProjectId,
   activeProject,
   activeRuntime,
-  activePlannerRuntime,
+  activeAdvisorRuntime,
   queuedPrompts,
   pendingImages,
   agentBusy,
   clearActiveChat,
-  clearPlannerChat,
-  startNewPlannerSession,
+  clearAdvisorChat,
+  startNewAdvisorSession,
   startNewChatSession,
-  resumePlannerThread,
+  resumeAdvisorThread,
   resumeTaskThread,
   listResumableSessions,
 });
@@ -203,51 +207,51 @@ type MainChatHandle = {
   refreshAfterVisibility?: () => void | Promise<void>;
 };
 
-const plannerChatRef = ref<MainChatHandle | null>(null);
+const advisorChatRef = ref<MainChatHandle | null>(null);
 const workerChatRef = ref<MainChatHandle | null>(null);
 
 const activeLaneConnected = computed(() =>
-  activeWorkspaceTab.value === "planner" ? Boolean(plannerConnected.value) : Boolean(connected.value),
+  activeWorkspaceTab.value === "advisor" ? Boolean(advisorConnected.value) : Boolean(connected.value),
 );
 const activeLaneInputLocked = computed(() =>
-  activeWorkspaceTab.value === "planner" ? Boolean(plannerInputLocked.value) : Boolean(workerInputLocked.value),
+  activeWorkspaceTab.value === "advisor" ? Boolean(advisorInputLocked.value) : Boolean(workerInputLocked.value),
 );
 const activeLaneAgents = computed(() =>
-  activeWorkspaceTab.value === "planner" ? plannerAgents.value : workerAgents.value,
+  activeWorkspaceTab.value === "advisor" ? advisorAgents.value : workerAgents.value,
 );
 const activeLaneActiveAgentId = computed(() =>
-  activeWorkspaceTab.value === "planner" ? plannerActiveAgentId.value : workerActiveAgentId.value,
+  activeWorkspaceTab.value === "advisor" ? advisorActiveAgentId.value : workerActiveAgentId.value,
 );
 const activeLaneModelId = computed(() =>
-  activeWorkspaceTab.value === "planner"
-    ? activePlannerRuntime.value.modelId.value
+  activeWorkspaceTab.value === "advisor"
+    ? activeAdvisorRuntime.value.modelId.value
     : activeRuntime.value.modelId.value,
 );
 const activeLaneModelReasoningEffort = computed(() =>
-  activeWorkspaceTab.value === "planner"
-    ? activePlannerRuntime.value.modelReasoningEffort.value
+  activeWorkspaceTab.value === "advisor"
+    ? activeAdvisorRuntime.value.modelReasoningEffort.value
     : activeRuntime.value.modelReasoningEffort.value,
 );
 
 function handleActiveLaneSwitchAgent(agentId: string): void {
-  if (activeWorkspaceTab.value === "planner") {
-    switchPlannerAgent(agentId);
+  if (activeWorkspaceTab.value === "advisor") {
+    switchAdvisorAgent(agentId);
   } else {
     switchMainAgent(agentId);
   }
 }
 
 function handleActiveLaneSetModel(modelId: string): void {
-  if (activeWorkspaceTab.value === "planner") {
-    setPlannerModelId(modelId);
+  if (activeWorkspaceTab.value === "advisor") {
+    setAdvisorModelId(modelId);
   } else {
     setMainModelId(modelId);
   }
 }
 
 function handleActiveLaneSetReasoningEffort(effort: string): void {
-  if (activeWorkspaceTab.value === "planner") {
-    setPlannerModelReasoningEffort(effort);
+  if (activeWorkspaceTab.value === "advisor") {
+    setAdvisorModelReasoningEffort(effort);
   } else {
     setMainModelReasoningEffort(effort);
   }
@@ -256,7 +260,7 @@ function handleActiveLaneSetReasoningEffort(effort: string): void {
 type ProjectBusyState = "idle" | "advisor" | "worker" | "both";
 
 function projectBusyState(projectId: string): ProjectBusyState {
-  const advisorBusy = runtimeProjectInProgress(getPlannerRuntime(projectId));
+  const advisorBusy = runtimeProjectInProgress(getAdvisorRuntime(projectId));
   const workerBusy = runtimeProjectInProgress(getRuntime(projectId));
   if (advisorBusy && workerBusy) return "both";
   if (advisorBusy) return "advisor";
@@ -349,12 +353,43 @@ function selectWorkspaceTab(tab: ChatLane): void {
   if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
     document.activeElement.blur();
   }
+  const before = {
+    lane: activeWorkspaceTab.value,
+    workerCount: messages.length,
+    advisorCount: advisorMessages.length,
+  };
   setActiveChatLane(tab);
+  crumb(`lane:${activeWorkspaceTab.value}->${tab}`);
   if (isMobile.value) writeMobileWorkspaceTab(activeProjectId.value, tab);
   closeMobileContextMenu();
+  // Temporary diagnostic: verify the lane switch actually landed in the DOM.
+  const expectedKey = `${tab === "advisor" ? advisorPanelKey.value : workerPanelKey.value}:${errorRecoveryGeneration.value}`;
+  window.setTimeout(() => {
+    try {
+      const appEl = document.querySelector(".app");
+      const activeLane = appEl?.getAttribute("data-active-lane");
+      const panel = document.getElementById(`lane-panel-${tab}`);
+      const panelKey = panel?.getAttribute("data-panel-key");
+      const visibleCount = panel?.getAttribute("data-message-count");
+      const hidden = Boolean(panel) && panel?.style.display === "none";
+      if (activeLane !== tab || !panel || hidden || panelKey !== expectedKey) {
+        diagAlert("lane切换未生效", {
+          clicked: tab,
+          activeLane,
+          panelKey,
+          expectedKey,
+          visibleCount,
+          hidden,
+          before,
+        });
+      }
+    } catch {
+      // diagnostics must never break switching
+    }
+  }, 400);
 }
 
-const laneActivation = createTapActivation(selectWorkspaceTab, { preserveFocus: true });
+const laneActivation = createTapActivation(selectWorkspaceTab, { preserveFocus: true, name: "lane-tab" });
 
 function restoreMobileWorkspaceTab(): void {
   const projectId = activeProjectId.value.trim();
@@ -365,7 +400,7 @@ function restoreMobileWorkspaceTab(): void {
 async function refreshVisibleLaneChat(lane: ChatLane): Promise<void> {
   await nextTick();
   if (activeWorkspaceTab.value !== lane) return;
-  const chat = lane === "planner" ? plannerChatRef.value : workerChatRef.value;
+  const chat = lane === "advisor" ? advisorChatRef.value : workerChatRef.value;
   await chat?.refreshAfterVisibility?.();
 }
 
@@ -433,6 +468,104 @@ function onMobileKeydown(ev: KeyboardEvent): void {
   }
 }
 
+const mobileDrawerToggleRef = ref<HTMLButtonElement | null>(null);
+const mobileDrawerRef = ref<HTMLElement | null>(null);
+
+const DRAWER_SWIPE_EDGE_PX = 28;
+const DRAWER_SWIPE_TRIGGER_PX = 32;
+const DRAWER_SWIPE_RATIO = 1.4;
+
+type DrawerSwipe = { startX: number; startY: number; triggered: boolean };
+let drawerEdgeSwipe: DrawerSwipe | null = null;
+let drawerCloseSwipe: DrawerSwipe | null = null;
+
+function readSwipeTouch(ev: TouchEvent): { x: number; y: number } | null {
+  if (ev.touches.length !== 1) return null;
+  return { x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+}
+
+function isHorizontalSwipe(dx: number, dy: number): boolean {
+  return Math.abs(dx) > DRAWER_SWIPE_TRIGGER_PX && Math.abs(dx) > Math.abs(dy) * DRAWER_SWIPE_RATIO;
+}
+
+function onDrawerEdgeTouchStart(ev: TouchEvent): void {
+  if (!isMobile.value || mobileDrawerOpen.value) return;
+  const touch = readSwipeTouch(ev);
+  if (!touch || touch.x > DRAWER_SWIPE_EDGE_PX) return;
+  drawerEdgeSwipe = { startX: touch.x, startY: touch.y, triggered: false };
+}
+
+function onDrawerEdgeTouchMove(ev: TouchEvent): void {
+  const swipe = drawerEdgeSwipe;
+  if (!swipe || swipe.triggered) return;
+  const touch = readSwipeTouch(ev);
+  if (!touch) return;
+  if (touch.x - swipe.startX > 0 && isHorizontalSwipe(touch.x - swipe.startX, touch.y - swipe.startY)) {
+    swipe.triggered = true;
+    openMobileDrawer();
+  }
+}
+
+function onDrawerSwipeTouchStart(ev: TouchEvent): void {
+  if (!isMobile.value) return;
+  const touch = readSwipeTouch(ev);
+  if (!touch) return;
+  drawerCloseSwipe = { startX: touch.x, startY: touch.y, triggered: false };
+}
+
+function onDrawerSwipeTouchMove(ev: TouchEvent): void {
+  const swipe = drawerCloseSwipe;
+  if (!swipe || swipe.triggered) return;
+  const touch = readSwipeTouch(ev);
+  if (!touch) return;
+  const dx = touch.x - swipe.startX;
+  if (dx < 0 && isHorizontalSwipe(dx, touch.y - swipe.startY)) {
+    swipe.triggered = true;
+    closeMobileDrawer();
+  }
+}
+
+function onDrawerSwipeTouchEnd(): void {
+  drawerEdgeSwipe = null;
+  drawerCloseSwipe = null;
+}
+
+function onDrawerKeydown(ev: KeyboardEvent): void {
+  if (ev.key !== "Tab") return;
+  const drawer = mobileDrawerRef.value;
+  if (!drawer) return;
+  const focusable = Array.from(
+    drawer.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])'
+    )
+  ).filter((el) => el.getClientRects().length > 0);
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (ev.shiftKey && (active === first || !drawer.contains(active))) {
+    ev.preventDefault();
+    last.focus();
+  } else if (!ev.shiftKey && (active === last || !drawer.contains(active))) {
+    ev.preventDefault();
+    first.focus();
+  }
+}
+
+watch(mobileDrawerOpen, async (open) => {
+  if (typeof document === "undefined") return;
+  document.body.style.overflow = open && isMobile.value ? "hidden" : "";
+  if (!isMobile.value) return;
+  await nextTick();
+  if (open) {
+    mobileDrawerRef.value
+      ?.querySelector<HTMLElement>('[data-testid="mobile-drawer-section-projects"]')
+      ?.focus();
+  } else {
+    mobileDrawerToggleRef.value?.focus();
+  }
+});
+
 watch(isMobile, (mobile) => {
   if (mobile) {
     if (activeProjectId.value.trim()) restoreMobileWorkspaceTab();
@@ -454,12 +587,53 @@ watch(activeWorkspaceTab, (lane) => {
   void refreshVisibleLaneChat(lane);
 }, { flush: "post" });
 
+// Drafts live only in memory; iOS can kill the PWA (and the crash recovery
+// reload drops them too). Stash on pagehide and restore on next mount.
+const DRAFT_STASH_KEY = "ADS_WEB_DRAFT_STASH";
+
+function stashComposerDrafts(): void {
+  try {
+    const worker = String(workerComposerDraft.value ?? "");
+    const advisor = String(advisorComposerDraft.value ?? "");
+    if (!worker && !advisor) {
+      sessionStorage.removeItem(DRAFT_STASH_KEY);
+      return;
+    }
+    sessionStorage.setItem(
+      DRAFT_STASH_KEY,
+      JSON.stringify({ projectId: activeProjectId.value, worker, advisor }),
+    );
+  } catch {
+    // ignore
+  }
+}
+
+function restoreStashedComposerDrafts(): void {
+  try {
+    const raw = sessionStorage.getItem(DRAFT_STASH_KEY);
+    if (!raw) return;
+    sessionStorage.removeItem(DRAFT_STASH_KEY);
+    const stash = JSON.parse(raw) as { projectId?: unknown; worker?: unknown; advisor?: unknown };
+    if (String(stash.projectId ?? "") !== activeProjectId.value) return;
+    const worker = String(stash.worker ?? "");
+    const advisor = String(stash.advisor ?? "");
+    if (worker && !workerComposerDraft.value) workerComposerDraft.value = worker;
+    if (advisor && !advisorComposerDraft.value) advisorComposerDraft.value = advisor;
+  } catch {
+    // ignore
+  }
+}
+
 onMounted(() => {
   window.addEventListener("keydown", onMobileKeydown);
+  window.addEventListener("pagehide", stashComposerDrafts);
+  restoreStashedComposerDrafts();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onMobileKeydown);
+  window.removeEventListener("pagehide", stashComposerDrafts);
+  document.body.style.overflow = "";
 });
 
 const {
@@ -484,7 +658,7 @@ const {
 } = useProjectSidebar({
   projects,
   getRuntime,
-  getPlannerRuntime,
+  getAdvisorRuntime,
   runtimeProjectInProgress,
   requestProjectSwitch: requestProjectSwitchFromMobile,
   reorderProjects,
@@ -523,12 +697,12 @@ const workerConnectionStatus = computed(() => {
   return laneStatus;
 });
 
-const plannerConnectionStatus = computed(() => {
-  const laneStatus = plannerLaneStatus.value;
-  if (!plannerConnected.value && laneStatus?.kind === "progress") return laneStatus;
-  const error = String(activePlannerRuntime.value.wsError.value ?? "").trim();
+const advisorConnectionStatus = computed(() => {
+  const laneStatus = advisorLaneStatus.value;
+  if (!advisorConnected.value && laneStatus?.kind === "progress") return laneStatus;
+  const error = String(activeAdvisorRuntime.value.wsError.value ?? "").trim();
   if (error) return { kind: "error" as const, message: error };
-  if (!plannerConnected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
+  if (!advisorConnected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
   return laneStatus;
 });
 
@@ -543,14 +717,19 @@ const plannerConnectionStatus = computed(() => {
     :data-active-lane="activeWorkspaceTab"
     :data-project-id="activeProjectId"
     :data-worker-message-count="messages.length"
-    :data-planner-message-count="plannerMessages.length"
+    :data-advisor-message-count="advisorMessages.length"
     :data-worker-panel-key="workerPanelKey"
-    :data-planner-panel-key="plannerPanelKey"
+    :data-advisor-panel-key="advisorPanelKey"
     @click="closeMobileContextMenu"
+    @touchstart.passive="onDrawerEdgeTouchStart"
+    @touchmove.passive="onDrawerEdgeTouchMove"
+    @touchend="onDrawerSwipeTouchEnd"
+    @touchcancel="onDrawerSwipeTouchEnd"
   >
     <header class="topbar">
       <button
         v-if="isMobile"
+        ref="mobileDrawerToggleRef"
         type="button"
         class="mobileMenuBtn"
         :title="mobileDrawerOpen ? '关闭导航' : '打开导航'"
@@ -650,18 +829,27 @@ const plannerConnectionStatus = computed(() => {
     </header>
 
     <main class="layout">
-      <div
-        v-if="isMobile && mobileDrawerOpen"
-        class="mobileDrawerBackdrop"
-        data-testid="mobile-drawer-backdrop"
-        @click="closeMobileDrawer"
-      />
-      <aside
-        v-if="!isMobile || mobileDrawerOpen"
-        class="left"
-        :class="{ mobileDrawer: isMobile }"
-        data-testid="mobile-drawer"
-      >
+      <Transition name="mobile-fade">
+        <div
+          v-if="isMobile && mobileDrawerOpen"
+          class="mobileDrawerBackdrop"
+          data-testid="mobile-drawer-backdrop"
+          @click="closeMobileDrawer"
+        />
+      </Transition>
+      <Transition name="mobile-drawer">
+        <aside
+          v-if="!isMobile || mobileDrawerOpen"
+          ref="mobileDrawerRef"
+          class="left"
+          :class="{ mobileDrawer: isMobile }"
+          data-testid="mobile-drawer"
+          @touchstart.passive="onDrawerSwipeTouchStart"
+          @touchmove.passive="onDrawerSwipeTouchMove"
+          @touchend="onDrawerSwipeTouchEnd"
+          @touchcancel="onDrawerSwipeTouchEnd"
+          @keydown="onDrawerKeydown"
+        >
         <nav v-if="isMobile" class="mobileDrawerNav" aria-label="导航模块">
           <button
             type="button"
@@ -676,14 +864,13 @@ const plannerConnectionStatus = computed(() => {
           </button>
           <button
             type="button"
-            class="mobileDrawerNavItem"
-            :class="{ active: mobileDrawerSection === 'settings' }"
-            :aria-current="mobileDrawerSection === 'settings' ? 'page' : undefined"
+            class="mobileDrawerNavItem mobileDrawerNavItem--link"
             data-testid="mobile-drawer-section-settings"
             @click="selectMobileDrawerSection('settings')"
           >
             <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
             <span>系统设置</span>
+            <el-icon class="mobileDrawerNavChevron" :size="14" aria-hidden="true"><ArrowRight /></el-icon>
           </button>
         </nav>
 
@@ -759,7 +946,8 @@ const plannerConnectionStatus = computed(() => {
           <span class="drawerBrandTitle">ADS</span>
           <span class="drawerBrandVersion">v{{ appVersion }}</span>
         </footer>
-      </aside>
+        </aside>
+      </Transition>
 
       <section v-if="isMobile && mobileDrawerSection !== 'projects'" class="mobileMainPanel">
         <ModelManager
@@ -774,8 +962,8 @@ const plannerConnectionStatus = computed(() => {
       </section>
 
       <section v-if="!isMobile || mobileDrawerSection === 'projects'" class="chatShell">
-        <div class="laneTabs" role="tablist" aria-label="切换工作区">
-          <div class="laneTabGroup">
+        <div class="laneTabs">
+          <div class="laneTabGroup" role="tablist" aria-label="切换工作区">
             <template v-for="tab in workspaceTabs" :key="tab.id">
               <button
                 :id="`lane-tab-${tab.id}`"
@@ -794,7 +982,7 @@ const plannerConnectionStatus = computed(() => {
               >
                 <span
                   class="laneTabStatusDot"
-                  :class="isLaneConnected(tab.id, { planner: plannerConnected, worker: connected })
+                  :class="isLaneConnected(tab.id, { advisor: advisorConnected, worker: connected })
                     ? 'laneTabStatusDot--connected'
                     : 'laneTabStatusDot--disconnected'"
                   :data-testid="`lane-tab-status-${tab.id}`"
@@ -802,65 +990,65 @@ const plannerConnectionStatus = computed(() => {
                 />
                 <span class="laneTabLabel">{{ tab.label }}</span>
                 <span
-                  v-if="tab.id === 'planner' ? plannerBusy : agentBusy"
+                  v-if="tab.id === 'advisor' ? advisorBusy : agentBusy"
                   class="laneTabBusySpinner"
-                  :class="tab.id === 'planner' ? 'laneTabBusySpinner--advisor' : 'laneTabBusySpinner--worker'"
+                  :class="tab.id === 'advisor' ? 'laneTabBusySpinner--advisor' : 'laneTabBusySpinner--worker'"
                   :data-testid="`lane-tab-busy-${tab.id}`"
                   aria-hidden="true"
                 />
               </button>
-              <div v-if="tab.id === 'planner'" class="laneModelControls" data-testid="lane-model-controls">
-                <MainChatModelSelectors
-                  :connected="activeLaneConnected"
-                  :busy="activeLaneBusy"
-                  :input-locked="activeLaneInputLocked"
-                  :agents="activeLaneAgents"
-                  :active-agent-id="activeLaneActiveAgentId"
-                  :models="models"
-                  :model-id="activeLaneModelId"
-                  :model-reasoning-effort="activeLaneModelReasoningEffort"
-                  @switch-agent="handleActiveLaneSwitchAgent"
-                  @set-model="handleActiveLaneSetModel"
-                  @set-reasoning-effort="handleActiveLaneSetReasoningEffort"
-                />
-              </div>
             </template>
+          </div>
+          <div class="laneModelControls" data-testid="lane-model-controls">
+            <MainChatModelSelectors
+              :connected="activeLaneConnected"
+              :busy="activeLaneBusy"
+              :input-locked="activeLaneInputLocked"
+              :agents="activeLaneAgents"
+              :active-agent-id="activeLaneActiveAgentId"
+              :models="models"
+              :model-id="activeLaneModelId"
+              :model-reasoning-effort="activeLaneModelReasoningEffort"
+              @switch-agent="handleActiveLaneSwitchAgent"
+              @set-model="handleActiveLaneSetModel"
+              @set-reasoning-effort="handleActiveLaneSetReasoningEffort"
+            />
           </div>
         </div>
 
         <div class="lanePanels">
           <section
-            :id="'lane-panel-planner'"
-            v-if="activeWorkspaceTab === 'planner'"
+            :id="'lane-panel-advisor'"
+            v-if="activeWorkspaceTab === 'advisor'"
             class="lanePanel"
             role="tabpanel"
-            aria-labelledby="lane-tab-planner"
-            data-testid="lane-panel-planner"
-            :data-message-count="plannerMessages.length"
-            :data-panel-key="plannerPanelKey"
+            aria-labelledby="lane-tab-advisor"
+            data-testid="lane-panel-advisor"
+            :data-message-count="advisorMessages.length"
+            :data-panel-key="`${advisorPanelKey}:${errorRecoveryGeneration}`"
           >
             <MainChatView
-              ref="plannerChatRef"
-              :key="plannerPanelKey"
-              class="chatHost chatHost--planner"
-              :messages="plannerMessages"
-              :draft="plannerComposerDraft"
-              :latest-prompt-key="plannerChatKey"
-              :queued-prompts="plannerQueuedPrompts"
-              :pending-images="plannerPendingImages"
-              :connected="plannerConnected"
-              :busy="plannerBusy"
-              :input-locked="plannerInputLocked"
+              ref="advisorChatRef"
+              :key="`${advisorPanelKey}:${errorRecoveryGeneration}`"
+              class="chatHost chatHost--advisor"
+              :messages="advisorMessages"
+              :draft="advisorComposerDraft"
+              :latest-prompt-key="advisorChatKey"
+              :queued-prompts="advisorQueuedPrompts"
+              :pending-images="advisorPendingImages"
+              :connected="advisorConnected"
+              :busy="advisorBusy"
+              :input-locked="advisorInputLocked"
               :workspace-root="resolveActiveWorkspaceRoot()"
-              :connection-status-kind="plannerConnectionStatus?.kind ?? null"
-              :connection-status-message="plannerConnectionStatus?.message ?? null"
-              :thread-warning="plannerThreadWarning"
-              @send="sendPlannerPrompt"
-              @update:draft="plannerComposerDraft = $event"
-              @interrupt="interruptPlanner"
-              @addImages="addPlannerPendingImages"
-              @clearImages="clearPlannerPendingImages"
-              @removeQueued="removePlannerQueuedPrompt"
+              :connection-status-kind="advisorConnectionStatus?.kind ?? null"
+              :connection-status-message="advisorConnectionStatus?.message ?? null"
+              :thread-warning="advisorThreadWarning"
+              @send="sendAdvisorPrompt"
+              @update:draft="advisorComposerDraft = $event"
+              @interrupt="interruptAdvisor"
+              @addImages="addAdvisorPendingImages"
+              @clearImages="clearAdvisorPendingImages"
+              @removeQueued="removeAdvisorQueuedPrompt"
             />
           </section>
 
@@ -872,11 +1060,11 @@ const plannerConnectionStatus = computed(() => {
             aria-labelledby="lane-tab-worker"
             data-testid="lane-panel-worker"
             :data-message-count="messages.length"
-            :data-panel-key="workerPanelKey"
+            :data-panel-key="`${workerPanelKey}:${errorRecoveryGeneration}`"
           >
             <MainChatView
               ref="workerChatRef"
-              :key="workerPanelKey"
+              :key="`${workerPanelKey}:${errorRecoveryGeneration}`"
               class="chatHost"
               :messages="messages"
               :draft="workerComposerDraft"

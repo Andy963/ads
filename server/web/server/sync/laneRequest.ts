@@ -1,5 +1,5 @@
 import { deriveProjectSessionId } from "../projectSessionId.js";
-import { normalizeRequestedSessionId } from "../ws/session.js";
+import { normalizeLaneChatSessionId, normalizeRequestedSessionId } from "../ws/session.js";
 import { resolveSyncLaneKey, resolveSyncLaneKeys, resolveSyncNamespace } from "./lane.js";
 
 export type ResolvedLaneRequest = {
@@ -33,7 +33,7 @@ export function resolveLaneRequest(args: {
   resolveGeneration?: (namespace: string, logicalLaneKey: string) => number;
 }): { ok: true; lane: ResolvedLaneRequest } | { ok: false; failure: LaneRequestFailure } {
   const requestedSessionId = String(args.url.searchParams.get("sessionId") ?? "").trim();
-  const chatSessionId = String(args.url.searchParams.get("chatSessionId") ?? "main").trim() || "main";
+  const chatSessionId = normalizeLaneChatSessionId(args.url.searchParams.get("chatSessionId")) || "main";
   if (!requestedSessionId) {
     return { ok: false, failure: { status: 400, error: "sessionId is required" } };
   }

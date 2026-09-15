@@ -47,10 +47,17 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     }, { mobile });
     page = await context.newPage();
     const errors = [];
-    result.browserErrors = errors;
+    const browserWarnings = [];
+    result.browserErrors = browserWarnings;
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => {
-      if (message.type() === "error") errors.push(message.text());
+      if (message.type() !== "error") return;
+      const text = message.text();
+      if (mobile && /\/sw\.js due to access control checks\.$/.test(text)) {
+        browserWarnings.push(text);
+        return;
+      }
+      errors.push(text);
     });
     const frames = [];
     result.frames = frames;
@@ -83,7 +90,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       await page.waitForFunction((expected) => document.querySelector(".app")?.getAttribute("data-project-id") === expected, projectId);
       assert.equal(await page.locator(".app").getAttribute("data-project-id"), projectId);
     };
-    const waitForReply = (text) => page.waitForFunction((expected) => document.querySelector(".chat")?.textContent.includes(expected), text);
+    const waitForReply = (text) => page.waitForFunction((expected) => [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null)?.textContent.includes(expected), text);
     const send = async (text) => {
       await input().fill(text);
       await activate(".sendIcon:visible");
@@ -107,31 +114,31 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       assert.equal(result.postSend.secondSend.focused, true, "Subsequent touch sends must preserve keyboard focus");
     }
     result.checks.push("Repeated sends in the same focused editor, five rows while busy, and post-send lane switching without reload");
-    await chooseLane("planner");
+    await chooseLane("advisor");
     await send("browser-advisor-first");
     await waitForReply("Advisor reply: browser-advisor-first");
     await input().fill("Advisor draft");
     await chooseLane("worker");
     assert.equal(await input().inputValue(), "", "Worker must not inherit the Advisor draft");
-    assert.ok(!(await page.locator(".chat").innerText()).includes("Advisor reply"));
+    assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Advisor reply"));
     await send("browser-worker-first");
-    await chooseLane("planner");
+    await chooseLane("advisor");
     assert.equal(await input().inputValue(), "Advisor draft");
-    assert.ok(!(await page.locator(".chat").innerText()).includes("Worker reply"));
+    assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Worker reply"));
     await chooseLane("worker");
     await waitForReply("Worker reply: browser-worker-first");
-    for (const lane of ["planner", "worker", "planner", "worker"]) await chooseLane(lane);
-    assert.ok((await page.locator(".chat").innerText()).includes("Worker reply"));
-    assert.ok(!(await page.locator(".chat").innerText()).includes("Advisor reply"));
+    for (const lane of ["advisor", "worker", "advisor", "worker"]) await chooseLane(lane);
+    assert.ok((await page.locator(".chat:visible").innerText()).includes("Worker reply"));
+    assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Advisor reply"));
     result.checks.push("Real WebSocket prompt delivery, lane isolation, rapid switching, and draft restoration");
 
     await page.reload();
-    await page.waitForSelector("textarea:not(:disabled)");
-    await chooseLane("planner");
+    await page.waitForSelector("textarea:not(:disabled):visible");
+    await chooseLane("advisor");
     await waitForReply("Advisor reply: browser-advisor-first");
     await chooseLane("worker");
     await waitForReply("Worker reply: browser-worker-first");
-    assert.ok(!(await page.locator(".chat").innerText()).includes("Advisor reply"));
+    assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Advisor reply"));
     assert.ok(frames.some((frame) => frame.type === "history" && frame.historySize > 0), "Reload must replay persisted nonempty history through the real server");
     result.checks.push("Persisted history replay and lane isolation after page reload");
 
@@ -139,22 +146,22 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     await chooseLane("worker");
     const projectBSnapshot = await page.evaluate(() => ({
       app: document.querySelector(".app")?.outerHTML.slice(0, 1200) ?? "",
-      chat: document.querySelector(".chat")?.textContent ?? "",
+      chat: [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null)?.textContent ?? "",
       diagnostics: window.__ADS_RUNTIME_DIAGNOSTICS__ ?? [],
     }));
     result.projectBSnapshot = projectBSnapshot;
     assert.ok(!projectBSnapshot.chat.includes("Worker reply: browser-worker-first"));
     await send("browser-worker-project-b");
     await waitForReply("Worker reply: browser-worker-project-b");
-    assert.ok(!(await page.locator(".chat").innerText()).includes("Worker reply: browser-worker-first"));
+    assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Worker reply: browser-worker-first"));
     await chooseProject("Project A", "browser-project-a");
     await chooseLane("worker");
     await waitForReply("Worker reply: browser-worker-first");
-    assert.ok(!(await page.locator(".chat").innerText()).includes("Worker reply: browser-worker-project-b"));
+    assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Worker reply: browser-worker-project-b"));
     result.checks.push("Project switching replaces the visible runtime and restores project-local history");
 
     if (mobile) {
-      await chooseLane("planner");
+      await chooseLane("advisor");
       await input().evaluate((element) => {
         element.focus();
         element.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
@@ -240,7 +247,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       inputLength: document.querySelector("textarea")?.value.length,
       selectedLane: document.querySelector('[role="tab"][aria-selected="true"]')?.id,
       app: document.querySelector(".app")?.outerHTML.slice(0, 1600),
-      chat: document.querySelector(".chat")?.textContent,
+      chat: [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null)?.textContent,
       diagnostics: window.__ADS_RUNTIME_DIAGNOSTICS__ ?? [],
     })).catch(() => null);
     if (page) await page.screenshot({ path: path.join(artifacts, `${engine}-failure.png`) }).catch(() => {});

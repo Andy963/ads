@@ -1,8 +1,8 @@
 import { buildWsConnectionIdentity } from "../ws/connectionIdentity.js";
-import { WEB_PLANNER_NAMESPACE, WEB_WORKER_NAMESPACE } from "../start/webLaneResources.js";
+import { WEB_ADVISOR_NAMESPACE, WEB_WORKER_NAMESPACE } from "../start/webLaneResources.js";
 
 export function resolveSyncNamespace(chatSessionId: string): string {
-  return String(chatSessionId ?? "").trim() === "planner" ? WEB_PLANNER_NAMESPACE : WEB_WORKER_NAMESPACE;
+  return String(chatSessionId ?? "").trim() === "advisor" ? WEB_ADVISOR_NAMESPACE : WEB_WORKER_NAMESPACE;
 }
 
 export function resolveSyncLaneKey(args: {

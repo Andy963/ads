@@ -9,7 +9,7 @@ import { resolveWorkspaceStatePath } from "../../../workspace/adsPaths.js";
 import { buildPromptInput, buildUserLogEntry, cleanupTempFiles } from "../../utils.js";
 import { runAgentTurn } from "../../../agents/turn.js";
 import type { WsPromptHandlerDeps } from "./deps.js";
-import { processScheduleOutput } from "../planner/scheduleHandler.js";
+import { processScheduleOutput } from "../advisor/scheduleHandler.js";
 import { preferInMemoryThreadId } from "./threadIds.js";
 import {
   buildHistoryInjectionDetails,

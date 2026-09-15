@@ -1,3 +1,5 @@
+import { diagAlert } from "./diagAlert";
+
 type Press<Value> = {
   pointerId: number;
   target: EventTarget | null;
@@ -6,13 +8,23 @@ type Press<Value> = {
   value: Value;
 };
 
-export function createTapActivation<Value>(activate: (value: Value) => void, options: { preserveFocus?: boolean } = {}) {
+export function createTapActivation<Value>(
+  activate: (value: Value) => void,
+  options: { preserveFocus?: boolean; name?: string } = {},
+) {
   let press: Press<Value> | null = null;
+  let lastActivateAt = 0;
   const suppressedClicks = new WeakMap<EventTarget, number>();
 
   const suppressClick = (target: EventTarget | null): void => {
     if (target) suppressedClicks.set(target, Date.now() + 700);
   };
+
+  function describeTarget(target: EventTarget | null): string {
+    if (!(target instanceof HTMLElement)) return String(target);
+    const testId = target.getAttribute?.("data-testid");
+    return target.className ? `${target.tagName}.${String(target.className).split(" ")[0]}${testId ? `#${testId}` : ""}` : target.tagName;
+  }
 
   const onPointerDown = (event: PointerEvent, value: Value): void => {
     if (event.pointerType === "mouse") {
@@ -50,16 +62,33 @@ export function createTapActivation<Value>(activate: (value: Value) => void, opt
     const current = press;
     press = null;
     suppressClick(current.target);
-    if (current.target !== event.currentTarget) return;
+    if (current.target !== event.currentTarget) {
+      diagAlert(`${options.name ?? "tap"}: 抬起时目标已漂移,点击被忽略`, {
+        down: describeTarget(current.target),
+        up: describeTarget(event.currentTarget),
+      });
+      return;
+    }
     event.preventDefault();
+    lastActivateAt = Date.now();
     activate(current.value);
   };
 
   const onClick = (event: MouseEvent, value: Value): void => {
     if (event.detail !== 0 && event.currentTarget && Date.now() < (suppressedClicks.get(event.currentTarget) ?? 0)) {
       event.preventDefault();
+      // The suppression window only exists to swallow the synthetic click that
+      // follows a pointerup we already activated on. If nothing was activated
+      // (pointer stream was interrupted by pointercancel, a drag, or target
+      // drift), this click is the tap's only chance to land — eating it makes
+      // the control dead until the user retries.
+      if (Date.now() - lastActivateAt > 500) {
+        lastActivateAt = Date.now();
+        activate(value);
+      }
       return;
     }
+    lastActivateAt = Date.now();
     activate(value);
   };
 

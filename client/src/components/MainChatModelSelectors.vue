@@ -270,12 +270,10 @@ function selectReasoningEffort(effort: string): void {
 
 <style scoped>
 .modelSelectors {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 60px);
+  display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   width: 100%;
-  max-width: 100%;
   min-width: 0;
 }
 
@@ -283,21 +281,29 @@ function selectReasoningEffort(effort: string): void {
   position: relative;
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
   min-width: 0;
+  max-width: 240px;
   overflow: hidden;
-  height: 26px;
+  height: 28px;
   box-sizing: border-box;
-  padding: 3px 18px 3px 6px;
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 999px;
-  background-color: rgba(248, 250, 252, 0.98);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 20 20' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpath d='m5 7 5 5 5-5'/%3E%3C/svg%3E");
-  background-position: right 5px center;
+  padding: 3px 20px 3px 8px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 8px;
+  background-color: var(--surface);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 20 20' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath d='m5 7 5 5 5-5'/%3E%3C/svg%3E");
+  background-position: right 6px center;
   background-repeat: no-repeat;
-  color: #334155;
+  color: var(--text);
   font-size: 12px;
   font-weight: 500;
-  line-height: 18px;
+  line-height: 20px;
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.modelField:last-child {
+  flex: 0 0 auto;
+  min-width: 58px;
 }
 
 .modelFieldValue {
@@ -312,8 +318,8 @@ function selectReasoningEffort(effort: string): void {
 }
 
 .modelField:hover:not(.modelField--disabled) {
-  border-color: rgba(59, 130, 246, 0.35);
-  background-color: rgba(239, 246, 255, 0.98);
+  border-color: rgba(37, 99, 235, 0.35);
+  background-color: rgba(37, 99, 235, 0.05);
 }
 
 .modelField:focus-within {

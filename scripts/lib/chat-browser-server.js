@@ -113,7 +113,7 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
   const clients = new Set();
   const clientMetaByWs = new Map();
   const workerHistoryStore = new HistoryStore({ storagePath: statePath, namespace: "web-worker" });
-  const plannerHistoryStore = new HistoryStore({ storagePath: statePath, namespace: "web-planner" });
+  const advisorHistoryStore = new HistoryStore({ storagePath: statePath, namespace: "web-advisor" });
   const createSession = (lane) => ({ cwd }) => {
     const eventHandlers = new Set();
     let currentCwd = cwd;
@@ -162,7 +162,7 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
     });
   };
   const workerLock = new AsyncLock();
-  const plannerLock = new AsyncLock();
+  const advisorLock = new AsyncLock();
   const sockets = attachWebSocketServer({
     server,
     logger: { info: () => {}, warn: () => {}, debug: () => {} },
@@ -196,13 +196,13 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
       workerSessionManager: new SessionManager(0, 0, "workspace-write", "browser-model", undefined, undefined, {
         createSession: createSession("Worker"),
       }),
-      plannerSessionManager: new SessionManager(0, 0, "read-only", "browser-model", undefined, undefined, {
+      advisorSessionManager: new SessionManager(0, 0, "read-only", "browser-model", undefined, undefined, {
         createSession: createSession("Advisor"),
       }),
       getWorkspaceLock: () => workerLock,
-      getPlannerWorkspaceLock: () => plannerLock,
+      getAdvisorWorkspaceLock: () => advisorLock,
     },
-    history: { workerHistoryStore, plannerHistoryStore },
+    history: { workerHistoryStore, advisorHistoryStore },
     tasks: {
       ensureTaskContext: () => ({}),
       promoteQueuedTasksToPending: () => {},

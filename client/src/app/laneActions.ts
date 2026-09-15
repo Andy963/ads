@@ -3,8 +3,10 @@
    buildReasoningEffortStorageKey,
    normalizeModelId,
    normalizeReasoningEffort,
+   readLanePreferenceWithLegacyFallback,
  } from "../lib/chatPreferences";
  import { supportsAgentModel } from "../lib/model_agent";
+ import { crumb } from "../lib/diagBreadcrumbs";
 
  import type { ModelConfig } from "../api/types";
  import type { AppContext } from "./controller";
@@ -13,7 +15,7 @@
 
 export type LaneDeps = {
   connectWs: (projectId?: string) => Promise<void>;
-  connectPlannerWs: (projectId?: string) => Promise<void>;
+  connectAdvisorWs: (projectId?: string) => Promise<void>;
 };
 
 function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void {
@@ -33,9 +35,9 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      activeProject,
      normalizeProjectId,
      getRuntime,
-     getPlannerRuntime,
+     getAdvisorRuntime,
      activeRuntime,
-     activePlannerRuntime,
+     activeAdvisorRuntime,
     apiError,
     models,
     withWorkspaceQuery,
@@ -96,12 +98,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
        const fallback = compatibleModels.find((model) => model.isDefault) ?? compatibleModels[0] ?? null;
        const fallbackModelId = String(fallback?.modelId ?? fallback?.id ?? "").trim();
        const key = buildModelIdStorageKey(sessionId, rt.chatSessionId, agentId);
-       let stored: string | null = null;
-       try {
-         stored = localStorage.getItem(key);
-       } catch {
-         // ignore
-       }
+       const stored = readLanePreferenceWithLegacyFallback(buildModelIdStorageKey, sessionId, rt.chatSessionId, agentId);
 
        const storedModelId = stored === null ? null : normalizeModelId(stored);
        let candidate = storedModelId ?? normalizeModelId(rt.modelId.value);
@@ -120,10 +117,11 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      };
 
      ensureRuntimeModelId(activeRuntime.value);
-     ensureRuntimeModelId(activePlannerRuntime.value);
+     ensureRuntimeModelId(activeAdvisorRuntime.value);
    };
 
    const sendMainPrompt = (content: string): void => {
+     crumb(`send:worker(${String(content ?? "").length}字)`);
      apiError.value = null;
      const worker = activeRuntime.value;
      const text = String(content ?? "");
@@ -138,19 +136,20 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      worker.composerDraft.value = "";
    };
 
-   const sendPlannerPrompt = (content: string): void => {
+   const sendAdvisorPrompt = (content: string): void => {
+     crumb(`send:advisor(${String(content ?? "").length}字)`);
      apiError.value = null;
      const text = String(content ?? "");
-     const planner = activePlannerRuntime.value;
-     const images = planner.pendingImages.value.slice();
-     planner.pendingImages.value = [];
+     const advisor = activeAdvisorRuntime.value;
+     const images = advisor.pendingImages.value.slice();
+     advisor.pendingImages.value = [];
      if (text.trim().toLowerCase() === "/clear") {
-       clearPlannerChat();
-       planner.composerDraft.value = "";
+       clearAdvisorChat();
+       advisor.composerDraft.value = "";
        return;
      }
-     enqueuePrompt(text, images, planner);
-     planner.composerDraft.value = "";
+     enqueuePrompt(text, images, advisor);
+     advisor.composerDraft.value = "";
    };
 
    const persistReasoningEffort = (rt: ProjectRuntime): void => {
@@ -191,16 +190,16 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      persistModelId(rt);
    };
 
-   const setPlannerModelReasoningEffort = (effort: string): void => {
+   const setAdvisorModelReasoningEffort = (effort: string): void => {
      apiError.value = null;
-     const rt = activePlannerRuntime.value;
+     const rt = activeAdvisorRuntime.value;
      rt.modelReasoningEffort.value = normalizeReasoningEffort(effort);
      persistReasoningEffort(rt);
    };
 
-   const setPlannerModelId = (modelId: string): void => {
+   const setAdvisorModelId = (modelId: string): void => {
      apiError.value = null;
-     const rt = activePlannerRuntime.value;
+     const rt = activeAdvisorRuntime.value;
      rt.modelId.value = normalizeModelId(modelId);
      persistModelId(rt);
    };
@@ -211,12 +210,15 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      const sessionId = resolveStorageSessionId(rt);
      if (sessionId) {
        try {
-         const storedModel = localStorage.getItem(buildModelIdStorageKey(sessionId, rt.chatSessionId, nextAgentId));
+         const storedModel = readLanePreferenceWithLegacyFallback(buildModelIdStorageKey, sessionId, rt.chatSessionId, nextAgentId);
          if (storedModel !== null) {
            rt.modelId.value = normalizeModelId(storedModel);
          }
-         const storedEffort = localStorage.getItem(
-           buildReasoningEffortStorageKey(sessionId, rt.chatSessionId, nextAgentId),
+         const storedEffort = readLanePreferenceWithLegacyFallback(
+           buildReasoningEffortStorageKey,
+           sessionId,
+           rt.chatSessionId,
+           nextAgentId,
          );
          if (storedEffort !== null) {
            rt.modelReasoningEffort.value = normalizeReasoningEffort(storedEffort);
@@ -258,11 +260,11 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      rt.ws?.send?.("set_agent", { agentId: next });
    };
 
-   const switchPlannerAgent = (agentId: string): void => {
+   const switchAdvisorAgent = (agentId: string): void => {
      apiError.value = null;
      const next = String(agentId ?? "").trim();
      if (!next) return;
-     const rt = activePlannerRuntime.value;
+     const rt = activeAdvisorRuntime.value;
      if (!rt.availableAgents.value.some((agent) => agent.id === next && agent.ready)) return;
      rt.activeAgentId.value = next;
      alignRuntimeModelForAgent(rt, next);
@@ -287,8 +289,8 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      interruptRuntime(activeRuntime.value);
    };
 
-   const interruptPlanner = (): void => {
-     interruptRuntime(activePlannerRuntime.value);
+   const interruptAdvisor = (): void => {
+     interruptRuntime(activeAdvisorRuntime.value);
    };
 
    const laneClearHistoryPayload = (rt: ProjectRuntime): { scope: "lane"; sourceChatSessionId: string } => ({
@@ -311,8 +313,8 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
     });
   };
 
-  const clearPlannerChat = (): void => {
-    const rt = activePlannerRuntime.value;
+  const clearAdvisorChat = (): void => {
+    const rt = activeAdvisorRuntime.value;
     rt.queuedPrompts.value = [];
     clearPendingPromptReplayState(rt);
     threadReset(rt, {
@@ -322,12 +324,12 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
       clearBackendHistory: true,
       clearHistoryPayload: laneClearHistoryPayload(rt),
       resetThreadId: true,
-      source: "user_clear_planner_context",
+      source: "user_clear_advisor_context",
     });
   };
 
-  const startNewPlannerSession = (): void => {
-    const rt = activePlannerRuntime.value;
+  const startNewAdvisorSession = (): void => {
+    const rt = activeAdvisorRuntime.value;
     rt.queuedPrompts.value = [];
     clearPendingPromptReplayState(rt);
     threadReset(rt, {
@@ -340,7 +342,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
         mode: "new_session",
       },
       resetThreadId: true,
-      source: "user_new_planner_session",
+      source: "user_new_advisor_session",
     });
   };
 
@@ -413,12 +415,12 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      }
    };
 
-  const resumePlannerThread = async (
+  const resumeAdvisorThread = async (
     projectId: string = activeProjectId.value,
     options?: { sessionId?: string },
   ): Promise<void> => {
     const pid = normalizeProjectId(projectId);
-    const rt = getPlannerRuntime(pid);
+    const rt = getAdvisorRuntime(pid);
     rt.apiError.value = null;
     clearNotice(pid);
 
@@ -431,7 +433,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
 
     try {
       if (!rt.ws || !rt.connected.value) {
-        await deps.connectPlannerWs(pid);
+        await deps.connectAdvisorWs(pid);
       }
       const sessionId = options?.sessionId?.trim();
       const sent = sessionId ? rt.ws?.send("task_resume", { threadId: sessionId }) : rt.ws?.send("task_resume");
@@ -454,19 +456,19 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      pendingImages.value = [];
    };
 
-   const addPlannerPendingImages = (images: IncomingImage[]): void => {
-     activePlannerRuntime.value.pendingImages.value.push(...images);
+   const addAdvisorPendingImages = (images: IncomingImage[]): void => {
+     activeAdvisorRuntime.value.pendingImages.value.push(...images);
    };
 
-   const clearPlannerPendingImages = (): void => {
-     activePlannerRuntime.value.pendingImages.value = [];
+   const clearAdvisorPendingImages = (): void => {
+     activeAdvisorRuntime.value.pendingImages.value = [];
    };
 
-   const removePlannerQueuedPrompt = (promptId: string): void => {
+   const removeAdvisorQueuedPrompt = (promptId: string): void => {
      const id = String(promptId ?? "").trim();
      if (!id) return;
-     const list = activePlannerRuntime.value.queuedPrompts.value;
-     activePlannerRuntime.value.queuedPrompts.value = list.filter((p) => p.id !== id);
+     const list = activeAdvisorRuntime.value.queuedPrompts.value;
+     activeAdvisorRuntime.value.queuedPrompts.value = list.filter((p) => p.id !== id);
    };
 
   return {
@@ -474,26 +476,26 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
     clearNotice,
     loadModels,
     sendMainPrompt,
-    sendPlannerPrompt,
+    sendAdvisorPrompt,
     switchMainAgent,
-    switchPlannerAgent,
+    switchAdvisorAgent,
     interruptActive,
-    interruptPlanner,
+    interruptAdvisor,
     clearActiveChat,
-    clearPlannerChat,
-    startNewPlannerSession,
+    clearAdvisorChat,
+    startNewAdvisorSession,
     resumeTaskThread,
     listResumableSessions,
-    resumePlannerThread,
+    resumeAdvisorThread,
     addPendingImages,
     clearPendingImages,
-    addPlannerPendingImages,
-    clearPlannerPendingImages,
-    removePlannerQueuedPrompt,
+    addAdvisorPendingImages,
+    clearAdvisorPendingImages,
+    removeAdvisorQueuedPrompt,
     setMainModelReasoningEffort,
-    setPlannerModelReasoningEffort,
+    setAdvisorModelReasoningEffort,
     setMainModelId,
-    setPlannerModelId,
+    setAdvisorModelId,
   };
 }
 

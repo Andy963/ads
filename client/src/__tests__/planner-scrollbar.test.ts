@@ -8,12 +8,12 @@ function resolveFromHere(relativePath: string): string {
   return path.resolve(here, relativePath);
 }
 
-describe("planner scrollbar styling", () => {
-  it("uses a thinner scrollbar for the planner chat list", async () => {
+describe("advisor scrollbar styling", () => {
+  it("uses a thinner scrollbar for the advisor chat list", async () => {
     const cssPath = resolveFromHere("../components/MainChat.css");
     const css = await readFile(cssPath, "utf8");
 
-    const selector = ".chatHost--planner .chat";
+    const selector = ".chatHost--advisor .chat";
     expect(css).toContain(selector);
     expect(css).toContain(`${selector} {`);
 

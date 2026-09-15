@@ -202,7 +202,9 @@ describe("MainChat compact composer layout", () => {
     vi.spyOn(row.element, "clientWidth", "get").mockReturnValue(300);
     vi.spyOn(row.get(".composerMainRowLeft").element, "offsetWidth", "get").mockReturnValue(32);
     vi.spyOn(row.get(".composerMainRowRight").element, "offsetWidth", "get").mockReturnValue(74);
-    vi.spyOn(el, "scrollHeight", "get").mockImplementation(() => el.style.width === "194px" ? 58 : 34);
+    vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLTextAreaElement) {
+      return this.style.width === "194px" ? 58 : 34;
+    });
 
     await textarea.setValue("A draft that needs more than the compact input width");
     expect(row.classes()).toContain("composerMainRow--expanded");

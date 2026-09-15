@@ -71,14 +71,14 @@ describe("web/ws/connectionRuntime", () => {
   it("closes every lane in an affected authenticated session", () => {
     const closed: string[] = [];
     const worker = { close: () => closed.push("worker") } as any;
-    const planner = { close: () => closed.push("planner") } as any;
+    const advisor = { close: () => closed.push("advisor") } as any;
     const otherSession = { close: () => closed.push("other-session") } as any;
     const otherUser = { close: () => closed.push("other-user") } as any;
 
     closeConnectionsForSession({
       clientMetaByWs: new Map([
         [worker, { authUserId: "u1", sessionId: "s1", chatSessionId: "main" } as any],
-        [planner, { authUserId: "u1", sessionId: "s1", chatSessionId: "planner" } as any],
+        [advisor, { authUserId: "u1", sessionId: "s1", chatSessionId: "advisor" } as any],
         [otherSession, { authUserId: "u1", sessionId: "s2", chatSessionId: "main" } as any],
         [otherUser, { authUserId: "u2", sessionId: "s1", chatSessionId: "main" } as any],
       ]),
@@ -86,7 +86,7 @@ describe("web/ws/connectionRuntime", () => {
       sessionId: "s1",
     });
 
-    assert.deepEqual(closed, ["worker", "planner"]);
+    assert.deepEqual(closed, ["worker", "advisor"]);
   });
 
   it("aborts in-flight work when present", () => {

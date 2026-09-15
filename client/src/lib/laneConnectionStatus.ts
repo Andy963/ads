@@ -4,9 +4,9 @@ export type WorkspaceTab = ChatLane;
 
 export function isLaneConnected(
   tab: WorkspaceTab,
-  states: { planner: boolean; worker: boolean },
+  states: { advisor: boolean; worker: boolean },
 ): boolean {
-  if (tab === "planner") return states.planner;
+  if (tab === "advisor") return states.advisor;
   if (tab === "worker") return states.worker;
   return false;
 }

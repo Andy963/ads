@@ -28,7 +28,7 @@ export interface WebConfig {
   sessionTimeoutMs: number;
   sessionCleanupIntervalMs: number;
   allowedOriginsRaw?: string;
-  plannerCodexModel?: string;
+  advisorCodexModel?: string;
   traceWsDuplication: boolean;
 }
 
@@ -70,7 +70,7 @@ const webConfigSchema = z.object({
   sessionTimeoutMs: z.number().int().min(0),
   sessionCleanupIntervalMs: z.number().int().min(0),
   allowedOriginsRaw: z.string().optional(),
-  plannerCodexModel: z.string().optional(),
+  advisorCodexModel: z.string().optional(),
   traceWsDuplication: z.boolean(),
 });
 
@@ -181,7 +181,7 @@ export function resolveWebConfig(options: DomainConfigOptions = {}): WebConfig {
     sessionTimeoutMs: resolveWebSessionTimeoutMs(env),
     sessionCleanupIntervalMs: resolveWebSessionCleanupIntervalMs(env),
     allowedOriginsRaw: env.ADS_WEB_ALLOWED_ORIGINS,
-    plannerCodexModel: normalizeOptionalString(env.ADS_PLANNER_CODEX_MODEL),
+    advisorCodexModel: normalizeOptionalString(env.ADS_ADVISOR_CODEX_MODEL ?? env.ADS_PLANNER_CODEX_MODEL),
     traceWsDuplication: parseBooleanFlag(env.ADS_TRACE_WS_DUPLICATION, false),
   });
 }

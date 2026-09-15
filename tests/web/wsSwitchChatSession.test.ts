@@ -137,7 +137,7 @@ describe("web/server/ws: in-band switch_chat_session", () => {
   let tmpDir: string;
   let workspaceRoot: string;
   let workerHistoryStore: HistoryStore;
-  let plannerHistoryStore: HistoryStore;
+  let advisorHistoryStore: HistoryStore;
   let syncEventStore: SyncEventStore;
   let workerFactory: ReturnType<typeof createFakeSessionFactory> | null = null;
   const sockets: WebSocket[] = [];
@@ -152,14 +152,14 @@ describe("web/server/ws: in-band switch_chat_session", () => {
     const clients = new Set<import("ws").WebSocket>();
     const clientMetaByWs = new Map<import("ws").WebSocket, any>();
     workerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-worker" });
-    plannerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-planner" });
+    advisorHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-advisor" });
     syncEventStore = new SyncEventStore({ stateDbPath: process.env.ADS_STATE_DB_PATH });
     const lock = new AsyncLock();
     const agentAvailability = new NoopAgentAvailability();
     const directoryManager = new DirectoryManager([workspaceRoot]);
     const nextWorkerFactory = createFakeSessionFactory("worker", { blockFirstSend: true });
     workerFactory = nextWorkerFactory;
-    const plannerFactory = createFakeSessionFactory("planner");
+    const advisorFactory = createFakeSessionFactory("advisor");
 
     attachWebSocketServer({
       server,
@@ -196,15 +196,15 @@ describe("web/server/ws: in-band switch_chat_session", () => {
         workerSessionManager: new SessionManager(0, 0, "workspace-write", "test-model", undefined, undefined, {
           createSession: nextWorkerFactory.factory as never,
         }),
-        plannerSessionManager: new SessionManager(0, 0, "read-only", "test-model", undefined, undefined, {
-          createSession: plannerFactory.factory as never,
+        advisorSessionManager: new SessionManager(0, 0, "read-only", "test-model", undefined, undefined, {
+          createSession: advisorFactory.factory as never,
         }),
         getWorkspaceLock: () => lock,
-        getPlannerWorkspaceLock: () => lock,
+        getAdvisorWorkspaceLock: () => lock,
       },
       history: {
         workerHistoryStore,
-        plannerHistoryStore,
+        advisorHistoryStore,
       },
       tasks: {
         ensureTaskContext: () => ({} as unknown as any),
@@ -248,7 +248,7 @@ describe("web/server/ws: in-band switch_chat_session", () => {
   });
 
   it("switches chatSessionId in-band without dropping the socket connection", async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["ads-v1", "ads-session.main", "ads-chat.planner"]);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["ads-v1", "ads-session.main", "ads-chat.advisor"]);
     sockets.push(ws);
 
     let isClosed = false;
@@ -260,7 +260,7 @@ describe("web/server/ws: in-band switch_chat_session", () => {
     await waitForWsOpen(ws);
 
     const initialWelcome = await welcomePromise;
-    assert.equal(initialWelcome.chatSessionId, "planner");
+    assert.equal(initialWelcome.chatSessionId, "advisor");
 
     // Send in-band switch message and wait for new welcome
     const switchPromise = waitForWsMessage(ws, (m) => m.type === "welcome" && m.chatSessionId === "session-switched");
@@ -287,10 +287,10 @@ describe("web/server/ws: in-band switch_chat_session", () => {
     const initialLaneKey = resolveSyncLaneKey({
       authUserId: "test",
       sessionId: "main",
-      chatSessionId: "planner",
+      chatSessionId: "advisor",
     });
     assert.ok(syncEventStore.getLatestSeqForLanes(resolveSyncNamespace("session-switched"), [switchedLaneKey]) > 0);
-    assert.equal(syncEventStore.getLatestSeqForLanes(resolveSyncNamespace("planner"), [initialLaneKey]), 0);
+    assert.equal(syncEventStore.getLatestSeqForLanes(resolveSyncNamespace("advisor"), [initialLaneKey]), 0);
 
     // Connection must have remained open
     assert.equal(isClosed, false);

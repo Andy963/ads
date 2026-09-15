@@ -1,6 +1,7 @@
 import { toRaw } from "vue";
 
 import { clearLiveActivityWindow, renderLiveActivityMarkdown } from "../lib/live_activity";
+import { diagAlert } from "../lib/diagAlert";
 import {
   findAssistantInsertIndex,
   findProcessInsertIndex,
@@ -71,15 +72,46 @@ export function createStreamingActions(params: {
 
   const pendingFrameStates = new Set<ProjectRuntime>();
   let pendingFrame: number | null = null;
+  let fallbackFlushTimer: number | null = null;
+  let lastFrameAt = Date.now();
+  let stuckAlerted = false;
+
+  // iOS can suspend requestAnimationFrame for minutes at a time (PWA backgrounding,
+  // compositor stalls, low-power mode). rAF must remain an optimization, never the
+  // only publish path — flush via timer when the frame clock stops.
+  const FALLBACK_FLUSH_MS = 250;
+
+  const clearFallbackFlushTimer = (): void => {
+    if (fallbackFlushTimer === null) return;
+    clearTimeout(fallbackFlushTimer);
+    fallbackFlushTimer = null;
+  };
 
   const flushStreamingFrame = (): void => {
     pendingFrame = null;
+    clearFallbackFlushTimer();
+    lastFrameAt = Date.now();
+    stuckAlerted = false;
     const states = [...pendingFrameStates];
     pendingFrameStates.clear();
     for (const state of states) {
       setMessages(state.messages.value.slice(), state);
     }
   };
+
+  // Temporary diagnostic: rAF is the only publish path for streaming updates.
+  // On iOS it can be suspended/dropped; surface that instead of freezing silently.
+  if (typeof window !== "undefined") {
+    window.setInterval(() => {
+      if (pendingFrame !== null && !stuckAlerted && Date.now() - lastFrameAt > 1200) {
+        stuckAlerted = true;
+        diagAlert("流式刷新卡死: rAF长时间未触发", {
+          pendingStates: pendingFrameStates.size,
+          msSinceLastFrame: Date.now() - lastFrameAt,
+        });
+      }
+    }, 600);
+  }
 
   const scheduleStreamingFrame = (state: ProjectRuntime): void => {
     pendingFrameStates.add(state);
@@ -98,6 +130,15 @@ export function createStreamingActions(params: {
     pendingFrame = -1;
     const frame = requestFrame(() => flushStreamingFrame());
     if (pendingFrame === -1) pendingFrame = frame;
+    if (pendingFrame === null) return; // synchronous test clock already flushed
+    fallbackFlushTimer = setTimeout(() => {
+      fallbackFlushTimer = null;
+      if (pendingFrame === null) return;
+      if (typeof globalThis.cancelAnimationFrame === "function" && pendingFrame > 0) {
+        globalThis.cancelAnimationFrame(pendingFrame);
+      }
+      flushStreamingFrame();
+    }, FALLBACK_FLUSH_MS);
   };
 
   const findActiveStreamingAssistantIndex = (items: ChatItem[]): number => {

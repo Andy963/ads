@@ -5,17 +5,18 @@ describe("mobile navigation shell", () => {
   it("renders Advisor and Worker in one shared mobile workspace tab shell", async () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
     expect(sfc).toContain('const chatLanes: Array<{ id: ChatLane; label: string }> = [');
-    expect(sfc).toContain('{ id: "planner", label: "Advisor" }');
+    expect(sfc).toContain('{ id: "advisor", label: "Advisor" }');
     expect(sfc).toContain('{ id: "worker", label: "Worker" }');
     expect(sfc).not.toContain('{ id: "tasks", label: "Task" }');
         expect(sfc).not.toContain('{ id: "reviewer", label: "Reviewer" }');
-    expect(sfc).toMatch(/<div class="laneTabs"[^>]*role="tablist"[^>]*>/);
+    expect(sfc).toMatch(/<div class="laneTabGroup"[^>]*role="tablist"[^>]*>/);
   });
 
   it("shows only the active lane panel and binds panel visibility to the shared active tab state", async () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
-    expect(sfc).toMatch(/(?:v-show|v-if)="activeWorkspaceTab === 'planner'"/);
-    expect(sfc).toMatch(/(?:v-show="activeWorkspaceTab === 'worker'"|v-else)/);
+    expect(sfc).toMatch(/v-if="activeWorkspaceTab === 'advisor'"/);
+    expect(sfc).toMatch(/v-else/);
+    expect(sfc).not.toMatch(/v-show="activeWorkspaceTab/);
     expect(sfc).not.toMatch(/v-show="activeWorkspaceTab === 'tasks'"/);
     expect(sfc).not.toMatch(/v-show="activeWorkspaceTab === 'reviewer'"/);
     expect(sfc).toMatch(/:class="\{[\s\S]*active:\s*activeWorkspaceTab === tab.id/);

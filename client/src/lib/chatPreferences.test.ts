@@ -5,6 +5,7 @@ import {
   buildReasoningEffortStorageKey,
   normalizeModelId,
   normalizeReasoningEffort,
+  readLanePreferenceWithLegacyFallback,
 } from "./chatPreferences";
 
 describe("chatPreferences", () => {
@@ -27,11 +28,23 @@ describe("chatPreferences", () => {
   it("builds stable localStorage keys with trimmed fallback segments", () => {
     expect(buildReasoningEffortStorageKey(" default ", " main ")).toBe("ads.reasoningEffort.default.main");
     expect(buildReasoningEffortStorageKey("", "")).toBe("ads.reasoningEffort.unknown.main");
-    expect(buildModelIdStorageKey(" session-1 ", " planner ")).toBe("ads.modelId.session-1.planner");
+    expect(buildModelIdStorageKey(" session-1 ", " advisor ")).toBe("ads.modelId.session-1.advisor");
     expect(buildModelIdStorageKey("", "")).toBe("ads.modelId.unknown.main");
     expect(buildModelIdStorageKey("default", "main", "codex")).toBe("ads.modelId.default.main.codex");
     expect(buildReasoningEffortStorageKey("default", "main", "claude")).toBe(
       "ads.reasoningEffort.default.main.claude",
     );
+  });
+
+  it("falls back to the legacy planner key when the advisor key has no value", () => {
+    localStorage.setItem("ads.modelId.session-1.planner", "gpt-legacy");
+    const legacy = readLanePreferenceWithLegacyFallback(buildModelIdStorageKey, "session-1", "advisor");
+    expect(legacy).toBe("gpt-legacy");
+
+    // Advisor key wins once present; worker and custom lanes never fall back.
+    localStorage.setItem("ads.modelId.session-1.advisor", "gpt-new");
+    expect(readLanePreferenceWithLegacyFallback(buildModelIdStorageKey, "session-1", "advisor")).toBe("gpt-new");
+    expect(readLanePreferenceWithLegacyFallback(buildModelIdStorageKey, "session-1", "worker")).toBeNull();
+    expect(readLanePreferenceWithLegacyFallback(buildModelIdStorageKey, "session-1", "room-a")).toBeNull();
   });
 });

@@ -13,24 +13,23 @@ function readUtf8(relFromThisFile: string): string {
 }
 
 describe("MainChat header UI", () => {
-  it("keeps lane buttons at opposite ends with shrinkable model controls between them", () => {
+  it("groups lane buttons in a segmented control with model controls pushed right", () => {
     const css = readUtf8("../App.css");
     const group = css.match(/\.laneTabGroup\s*\{[^}]*\}/)?.[0];
     const controls = css.match(/\.laneModelControls\s*\{[^}]*\}/)?.[0];
-    expect(group).toMatch(/display:\s*grid\s*;/);
-    expect(group).toMatch(/grid-template-columns:\s*minmax\(88px,\s*1fr\) minmax\(0,\s*176px\) minmax\(88px,\s*1fr\)\s*;/);
-    expect(group).toMatch(/width:\s*100%\s*;/);
+    expect(group).toMatch(/display:\s*inline-flex\s*;/);
+    expect(group).toMatch(/border-radius:\s*10px\s*;/);
     expect(controls).toMatch(/min-width:\s*0\s*;/);
-    expect(controls).toMatch(/justify-content:\s*center\s*;/);
+    expect(controls).toMatch(/margin-left:\s*auto\s*;/);
+    expect(controls).toMatch(/justify-content:\s*flex-end\s*;/);
 
-    expect(css).toMatch(/\.laneTab\s*\{[^}]*justify-self:\s*start\s*;/);
-    expect(css).toMatch(/\.laneTab:last-child\s*\{[^}]*justify-self:\s*end\s*;/);
+    expect(css).not.toMatch(/\.laneTab\s*\{[^}]*justify-self\s*;/);
     const selectors = readUtf8("../components/MainChatModelSelectors.vue");
     expect(selectors.match(/<select\s/g)).toHaveLength(2);
     expect(selectors).toMatch(/\.modelSelect\s*\{[^}]*width:\s*100%\s*;[^}]*min-width:\s*0\s*;/);
-    expect(selectors).toMatch(/\.modelField\s*\{[^}]*height:\s*26px\s*;[^}]*font-size:\s*12px\s*;/);
+    expect(selectors).toMatch(/\.modelField\s*\{[^}]*height:\s*28px\s*;[^}]*font-size:\s*12px\s*;/);
     expect(selectors).toMatch(/\.modelSelect\s*\{[^}]*font-size:\s*16px\s*;/);
-    expect(css).toMatch(/\.laneTab\s*\{[^}]*font-size:\s*14px\s*;/);
+    expect(css).toMatch(/\.laneTab\s*\{[^}]*font-size:\s*13px\s*;/);
     expect(selectors).not.toContain('role="dialog"');
     const app = readUtf8("../App.vue");
     const header = app.match(/<header class="topbar">([\s\S]*?)<\/header>/)?.[1];
@@ -46,7 +45,7 @@ describe("MainChat header UI", () => {
 
     expect(app).toMatch(/--topbar-height:\s*40px\s*;/);
     expect(mobileApp).toMatch(/--topbar-height:\s*36px\s*;/);
-    expect(mobileCss).toMatch(/\.laneTabs\s*\{[^}]*min-height:\s*32px\s*;[^}]*padding:\s*0 8px\s*;/);
+    expect(mobileCss).toMatch(/\.laneTabs\s*\{[^}]*min-height:\s*38px\s*;[^}]*padding:\s*2px 8px\s*;/);
     expect(mobileCss).toMatch(/\.mobileMenuBtn\s*\{[^}]*height:\s*var\(--topbar-height\)\s*;/);
   });
 

@@ -1,10 +1,12 @@
 import { AdsWebSocket } from "../../api/ws";
 import type { SyncEventsResponse } from "../../api/types";
+import { diagAlert } from "../../lib/diagAlert";
 import {
   buildModelIdStorageKey,
   buildReasoningEffortStorageKey,
   normalizeModelId,
   normalizeReasoningEffort,
+  readLanePreferenceWithLegacyFallback,
 } from "../../lib/chatPreferences";
 
 import type { AppContext, PathValidateResponse, ProjectRuntime, ProjectTab } from "../controller";
@@ -41,10 +43,10 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     activeProjectId,
     pendingSwitchProjectId,
     runtimeByProjectId,
-    plannerRuntimeByProjectId,
+    advisorRuntimeByProjectId,
     normalizeProjectId,
     getRuntime,
-    getPlannerRuntime,
+    getAdvisorRuntime,
     maxTurnCommands,
   } = ctx;
 
@@ -78,28 +80,18 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   const restoreReasoningEffort = (rt: ProjectRuntime): void => {
     const sessionId = String(rt.projectSessionId ?? "").trim();
     if (!sessionId) return;
-    const key = buildReasoningEffortStorageKey(sessionId, rt.chatSessionId);
-    try {
-      const stored = localStorage.getItem(key);
-      if (stored !== null) {
-        rt.modelReasoningEffort.value = normalizeReasoningEffort(stored);
-      }
-    } catch {
-      // ignore
+    const stored = readLanePreferenceWithLegacyFallback(buildReasoningEffortStorageKey, sessionId, rt.chatSessionId);
+    if (stored !== null) {
+      rt.modelReasoningEffort.value = normalizeReasoningEffort(stored);
     }
   };
 
   const restoreModelId = (rt: ProjectRuntime): void => {
     const sessionId = String(rt.projectSessionId ?? "").trim();
     if (!sessionId) return;
-    const key = buildModelIdStorageKey(sessionId, rt.chatSessionId);
-    try {
-      const stored = localStorage.getItem(key);
-      if (stored !== null) {
-        rt.modelId.value = normalizeModelId(stored);
-      }
-    } catch {
-      // ignore
+    const stored = readLanePreferenceWithLegacyFallback(buildModelIdStorageKey, sessionId, rt.chatSessionId);
+    if (stored !== null) {
+      rt.modelId.value = normalizeModelId(stored);
     }
   };
 
@@ -137,7 +129,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     for (const rt of runtimeByProjectId.values()) {
       closeRuntimeConnection(rt);
     }
-    for (const rt of plannerRuntimeByProjectId.values()) {
+    for (const rt of advisorRuntimeByProjectId.values()) {
       closeRuntimeConnection(rt);
     }
   };
@@ -180,15 +172,19 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       if (rt) {
         if (!runtimeByProjectId.has(nextKey)) {
           runtimeByProjectId.set(nextKey, rt);
+        } else if (rt.ws || rt.connected.value) {
+          diagAlert("runtime分裂: worker旧runtime被丢弃且连接未关闭", { oldKey, nextKey });
         }
         runtimeByProjectId.delete(oldKey);
       }
-      const plannerRt = plannerRuntimeByProjectId.get(oldKey);
-      if (plannerRt) {
-        if (!plannerRuntimeByProjectId.has(nextKey)) {
-          plannerRuntimeByProjectId.set(nextKey, plannerRt);
+      const advisorRt = advisorRuntimeByProjectId.get(oldKey);
+      if (advisorRt) {
+        if (!advisorRuntimeByProjectId.has(nextKey)) {
+          advisorRuntimeByProjectId.set(nextKey, advisorRt);
+        } else if (advisorRt.ws || advisorRt.connected.value) {
+          diagAlert("runtime分裂: advisor旧runtime被丢弃且连接未关闭", { oldKey, nextKey });
         }
-        plannerRuntimeByProjectId.delete(oldKey);
+        advisorRuntimeByProjectId.delete(oldKey);
       }
     }
     deps.persistProjects();
@@ -220,11 +216,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     }
   };
 
-  type WsMode = "worker" | "planner";
+  type WsMode = "worker" | "advisor";
 
   const resolveChatSessionId = (project: ProjectTab, mode: WsMode): string => {
-    if (mode === "planner") {
-      return "planner";
+    if (mode === "advisor") {
+      return "advisor";
     }
     return String(project.chatSessionId ?? "").trim() || "main";
   };
@@ -341,7 +337,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     rt.reconnectAttempts += 1;
     rt.reconnectTimer = window.setTimeout(() => {
       rt.reconnectTimer = null;
-      const connectFn = mode === "planner" ? connectPlannerWs : connectWs;
+      const connectFn = mode === "advisor" ? connectAdvisorWs : connectWs;
       void connectFn(projectId).catch(() => {
         scheduleReconnect(mode, projectId, rt, "connect failed");
       });
@@ -349,8 +345,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   };
 
   const getRuntimeForMode = (mode: WsMode, pid: string): ProjectRuntime => {
-    if (mode === "planner") {
-      return getPlannerRuntime(pid);
+    if (mode === "advisor") {
+      return getAdvisorRuntime(pid);
     }
     return getRuntime(pid);
   };
@@ -615,7 +611,15 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         }
 
         if (!rt.awaitingBootstrapHistory && !rt.inputLocked.value) return;
-        if (rt.busy.value || rt.turnInFlight || rt.resumeReplacePending) return;
+        if (rt.busy.value || rt.turnInFlight || rt.resumeReplacePending) {
+          diagAlert("bootstrap看门狗放弃解锁(busy)", {
+            chatSessionId: rt.chatSessionId,
+            busy: rt.busy.value,
+            turnInFlight: rt.turnInFlight,
+            awaiting: rt.awaitingBootstrapHistory,
+          });
+          return;
+        }
 
         rt.awaitingBootstrapHistory = false;
         rt.inputLocked.value = false;
@@ -679,7 +683,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
       const resetScope = String(payload.scope ?? "").trim().toLowerCase() || "lane";
       const sourceChatSessionId = String(payload.sourceChatSessionId ?? "").trim();
-      if (resetScope === "shared" && effectiveChatSessionId === "planner") {
+      if (resetScope === "shared" && effectiveChatSessionId === "advisor") {
         return false;
       }
       if (resetScope !== "shared" && sourceChatSessionId !== effectiveChatSessionId) {
@@ -1207,14 +1211,14 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   const connectWs = async (projectId: string = activeProjectId.value): Promise<void> =>
     connectWsInternal("worker", projectId);
 
-  const connectPlannerWs = async (projectId: string = activeProjectId.value): Promise<void> =>
-    connectWsInternal("planner", projectId);
+  const connectAdvisorWs = async (projectId: string = activeProjectId.value): Promise<void> =>
+    connectWsInternal("advisor", projectId);
 
   return {
     clearReconnectTimer,
     closeRuntimeConnection,
     closeAllConnections,
     connectWs,
-    connectPlannerWs,
+    connectAdvisorWs,
   };
 }

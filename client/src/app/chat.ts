@@ -10,11 +10,13 @@ export { LIVE_ACTIVITY_ID, LIVE_MESSAGE_IDS, LIVE_STEP_ID } from "./chatLive";
 import { createStreamingActions } from "./chatStreaming";
 import {
   createOutboxStore,
+  isEmptyOutboxSnapshot,
   legacyPendingPromptStorageKey,
   outboxStorageKey,
   type OutboxSnapshot,
   type PersistedPrompt,
 } from "./outbox";
+import { ADVISOR_LANE_ID, LEGACY_ADVISOR_LANE_ID } from "../lib/laneIds";
 
 type UploadedImageAttachment = {
   id: string;
@@ -123,6 +125,20 @@ export function createChatActions(ctx: AppContext) {
     return sessionId ? outboxStorageKey(sessionId, rt.chatSessionId) : "";
   };
 
+  // Reads fall back to the legacy planner key so an outbox persisted before the
+  // Advisor rename is not lost; the next persistOutbox write lands on the new key.
+  const readOutboxFor = (rt: ProjectRuntime): OutboxSnapshot => {
+    const key = outboxKeyFor(rt);
+    if (!key) return { pending: null, queued: [] };
+    const snapshot = outbox.read(key);
+    if (!isEmptyOutboxSnapshot(snapshot) || rt.chatSessionId !== ADVISOR_LANE_ID) {
+      return snapshot;
+    }
+    const sessionId = String(rt.projectSessionId ?? "").trim();
+    if (!sessionId) return snapshot;
+    return outbox.read(outboxStorageKey(sessionId, LEGACY_ADVISOR_LANE_ID));
+  };
+
   const toPersistedPrompt = (prompt: QueuedPrompt): PersistedPrompt | null => {
     // Images are in-memory blobs; a prompt carrying them cannot be restored later.
     if (prompt.images.length > 0) return null;
@@ -142,7 +158,7 @@ export function createChatActions(ctx: AppContext) {
     if (applyingRemoteOutbox) return;
     const key = outboxKeyFor(rt);
     if (!key) return;
-    const nextPending = pending === undefined ? outbox.read(key).pending : pending;
+    const nextPending = pending === undefined ? readOutboxFor(rt).pending : pending;
     outbox.write(key, {
       pending: nextPending,
       queued: rt.queuedPrompts.value.map(toPersistedPrompt).filter(Boolean) as PersistedPrompt[],
@@ -222,7 +238,7 @@ export function createChatActions(ctx: AppContext) {
   const readPendingPrompt = (rt: ProjectRuntime): PersistedPrompt | null => {
     if (!rt.projectSessionId) return null;
     ensureOutboxBinding(rt);
-    return outbox.read(outboxKeyFor(rt)).pending;
+    return readOutboxFor(rt).pending;
   };
 
   const clearPendingPromptReplayState = (rt: ProjectRuntime): void => {
@@ -245,7 +261,7 @@ export function createChatActions(ctx: AppContext) {
   const restorePendingPrompt = (rt: ProjectRuntime): void => {
     if (!rt.projectSessionId) return;
     ensureOutboxBinding(rt);
-    const snapshot = outbox.read(outboxKeyFor(rt));
+    const snapshot = readOutboxFor(rt);
     const queuedByClientMessageId = new Set(
       rt.queuedPrompts.value.map((q) => String(q.clientMessageId ?? "").trim()),
     );
@@ -400,7 +416,7 @@ export function createChatActions(ctx: AppContext) {
       : {};
     const requestedScope = String(payloadRecord.scope ?? "").trim().toLowerCase();
     const chatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
-    if (requestedScope === "shared" && chatSessionId !== "planner") {
+    if (requestedScope === "shared" && chatSessionId !== "advisor") {
       return { ...payloadRecord, scope: "shared" };
     }
     return {

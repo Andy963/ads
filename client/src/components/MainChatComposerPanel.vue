@@ -127,6 +127,7 @@ watch(
 const {
   input,
   inputEl,
+  hasContent,
   composerRowEl,
   leftActionsEl,
   rightActionsEl,
@@ -455,7 +456,6 @@ onBeforeUnmount(() => {
         </div>
         <textarea
           ref="inputEl"
-          :value="input"
           :disabled="inputLocked"
           rows="1"
           class="composer-input"
@@ -509,7 +509,7 @@ onBeforeUnmount(() => {
           <button
             v-else
             class="sendIcon"
-            :disabled="inputLocked || (!input.trim() && pendingImages.length === 0) || recording || transcribing"
+            :disabled="inputLocked || (!hasContent && pendingImages.length === 0) || recording || transcribing"
             type="button"
             title="发送"
             @pointerdown="sendActivation.onPointerDown($event, undefined)"

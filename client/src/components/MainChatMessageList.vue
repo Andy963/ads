@@ -135,7 +135,7 @@ function buildPatchRows(m: RenderMessage): PatchRenderRow[] {
 
   for (const file of files) {
     const filePath = String(file?.path ?? "").trim();
-    if (!filePath) continue;
+    if (!filePath || seen.has(filePath)) continue;
     const rowDiff = diffByPath.get(filePath) ?? (!fallbackUsed && files.length === 1 ? fallbackDiff : "");
     if (rowDiff === fallbackDiff && rowDiff) fallbackUsed = true;
     rows.push({
