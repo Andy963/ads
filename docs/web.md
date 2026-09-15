@@ -103,6 +103,6 @@ JSON.stringify(composerReport, null, 2);
 | `ADS_WEB_COOKIE_SECURE` | `auto` | Cookie Secure 策略 (`auto` / `true` / `false`) |
 | `ADS_WEB_LOGIN_MAX_ATTEMPTS` | `5` | 登录重试超限锁定阈值 |
 | `ADS_WEB_LOGIN_LOCKOUT_MS` | `300000` (5分钟) | 登录锁定基础时长 |
-| `ADS_PLANNER_CODEX_MODEL` | 未设置 | Advisor Lane 使用的专属 Codex 模型覆盖 |
-| `ADS_PLANNER_SANDBOX_MODE` | `danger-full-access` | Advisor Lane 沙箱权限覆盖；非法值回退为 `workspace-write` |
+| `ADS_ADVISOR_CODEX_MODEL` | 未设置 | Advisor Lane 使用的专属 Codex 模型覆盖（旧名 `ADS_PLANNER_CODEX_MODEL` 仍兼容，已弃用） |
+| `ADS_ADVISOR_SANDBOX_MODE` | `danger-full-access` | Advisor Lane 沙箱权限覆盖；非法值回退为 `workspace-write`（旧名 `ADS_PLANNER_SANDBOX_MODE` 仍兼容，已弃用） |
 | `ADS_SCHEDULER_MODEL` | 未设置 | Scheduler 执行定时 Prompt 时使用的模型覆盖 |

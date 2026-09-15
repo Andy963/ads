@@ -48,9 +48,18 @@ export function resolveWebSocketSessionId(args: { protocols: string[]; workspace
   return crypto.randomBytes(4).toString("hex");
 }
 
+export const ADVISOR_CHAT_SESSION_ID = "advisor";
+/** Pre-rename lane id. Accepted from legacy clients and mapped to the advisor id. */
+export const LEGACY_ADVISOR_CHAT_SESSION_ID = "planner";
+
+export function normalizeLaneChatSessionId(value: string | null | undefined): string {
+  const normalized = String(value ?? "").trim();
+  return normalized === LEGACY_ADVISOR_CHAT_SESSION_ID ? ADVISOR_CHAT_SESSION_ID : normalized;
+}
+
 export function resolveWebSocketChatSessionId(args: { protocols: string[] }): string {
   const requested = parseWsChatSessionFromProtocols(args.protocols);
-  const normalized = String(requested ?? "").trim();
+  const normalized = normalizeLaneChatSessionId(requested);
   return normalized || "main";
 }
 

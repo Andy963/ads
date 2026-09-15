@@ -26,7 +26,7 @@ export async function handleSyncRoutes(
     defaultWorkspaceRoot: string;
     resolveWorkspaceRoot: (url: URL) => string;
     workerHistoryStore: SyncHistoryStore;
-    plannerHistoryStore: SyncHistoryStore;
+    advisorHistoryStore: SyncHistoryStore;
     laneGenerationStore?: WebLaneGenerationStore;
   },
 ): Promise<boolean> {
@@ -61,8 +61,8 @@ export async function handleSyncRoutes(
     afterSeq,
     limit,
   });
-  const historyStore = namespace === resolveSyncNamespace("planner")
-    ? deps.plannerHistoryStore
+  const historyStore = namespace === resolveSyncNamespace("advisor")
+    ? deps.advisorHistoryStore
     : deps.workerHistoryStore;
   const snapshotHistory = mergeSyncHistory([historyStore.get(laneKey)]);
   const snapshot = result.truncated

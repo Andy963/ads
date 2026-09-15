@@ -1,6 +1,6 @@
 import { computed, onBeforeUnmount, ref, watch, type Ref } from "vue";
 
-export type ChatLane = "planner" | "worker";
+export type ChatLane = "advisor" | "worker";
 
 type RuntimePrompt = { id: string; text: string; images: unknown[] };
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
@@ -26,14 +26,14 @@ type RuntimeShape = {
   resumableSessionsHidden: Ref<ResumableSessionsHiddenShape | null>;
   resumableSessionsNextCursor: Ref<string | null>;
 };
-type PlannerRuntimeShape = RuntimeShape;
+type AdvisorRuntimeShape = RuntimeShape;
 
 function asRuntimeShape(value: unknown): RuntimeShape {
   return value as RuntimeShape;
 }
 
-function asPlannerRuntimeShape(value: unknown): PlannerRuntimeShape {
-  return value as PlannerRuntimeShape;
+function asAdvisorRuntimeShape(value: unknown): AdvisorRuntimeShape {
+  return value as AdvisorRuntimeShape;
 }
 
 function mapQueuedPrompts(
@@ -50,22 +50,22 @@ export function useLaneRuntimeBridge(params: {
   activeProjectId: Ref<string>;
   activeProject: Ref<{ chatSessionId?: string } | null>;
   activeRuntime: Ref<unknown>;
-  activePlannerRuntime: Ref<unknown>;
+  activeAdvisorRuntime: Ref<unknown>;
   queuedPrompts: Ref<Array<{ id: string; text: string; images: unknown[] }>>;
   pendingImages: Ref<unknown[]>;
   agentBusy: Ref<boolean>;
   clearActiveChat?: () => void;
-  clearPlannerChat: () => void;
-  startNewPlannerSession?: () => void;
+  clearAdvisorChat: () => void;
+  startNewAdvisorSession?: () => void;
   startNewChatSession: () => void;
-  resumePlannerThread: () => void;
+  resumeAdvisorThread: () => void;
   resumeTaskThread: (projectId?: string, options?: { sessionId?: string }) => void;
   listResumableSessions: (
     projectId?: string,
     options?: { search?: string; includeAllCwds?: boolean; includeNoise?: boolean; cursor?: string },
   ) => void;
 }) {
-  const activeChatLane = ref<ChatLane>("planner");
+  const activeChatLane = ref<ChatLane>("advisor");
   const projectContextGeneration = ref(0);
   // Latched panel context: while a turn is streaming, the panel key must stay
   // frozen even if the project identity is rewritten in the background. The
@@ -80,9 +80,9 @@ export function useLaneRuntimeBridge(params: {
 
   const lanesBusy = (): boolean =>
     Boolean(params.agentBusy.value) ||
-    Boolean(asPlannerRuntimeShape(params.activePlannerRuntime.value).busy.value) ||
+    Boolean(asAdvisorRuntimeShape(params.activeAdvisorRuntime.value).busy.value) ||
     Boolean(params.activeRuntime.value && (params.activeRuntime.value as RuntimeShape).turnInFlight) ||
-    Boolean(asPlannerRuntimeShape(params.activePlannerRuntime.value).turnInFlight);
+    Boolean(asAdvisorRuntimeShape(params.activeAdvisorRuntime.value).turnInFlight);
 
   /**
    * Re-keying a lane panel unmounts+remounts the entire chat tree. Triggering
@@ -163,32 +163,32 @@ export function useLaneRuntimeBridge(params: {
     activeChatLane.value = lane;
   }
 
-  const plannerRuntime = computed(() => asPlannerRuntimeShape(params.activePlannerRuntime.value));
+  const advisorRuntime = computed(() => asAdvisorRuntimeShape(params.activeAdvisorRuntime.value));
   const workerRuntime = computed(() => asRuntimeShape(params.activeRuntime.value));
 
-  const plannerMessages = computed(() => plannerRuntime.value.messages.value);
-  const plannerQueuedPrompts = computed(() =>
-    mapQueuedPrompts(plannerRuntime.value.queuedPrompts.value),
+  const advisorMessages = computed(() => advisorRuntime.value.messages.value);
+  const advisorQueuedPrompts = computed(() =>
+    mapQueuedPrompts(advisorRuntime.value.queuedPrompts.value),
   );
-  const plannerPendingImages = computed(() => plannerRuntime.value.pendingImages.value);
-  const plannerConnected = computed(() => plannerRuntime.value.connected.value);
-  const plannerBusy = computed(() => plannerRuntime.value.busy.value);
-  const plannerInputLocked = computed(() => plannerRuntime.value.inputLocked.value);
-  const plannerLaneStatus = computed(() => plannerRuntime.value.laneStatus.value);
-  const plannerComposerDraft = computed({
-    get: () => plannerRuntime.value.composerDraft.value,
+  const advisorPendingImages = computed(() => advisorRuntime.value.pendingImages.value);
+  const advisorConnected = computed(() => advisorRuntime.value.connected.value);
+  const advisorBusy = computed(() => advisorRuntime.value.busy.value);
+  const advisorInputLocked = computed(() => advisorRuntime.value.inputLocked.value);
+  const advisorLaneStatus = computed(() => advisorRuntime.value.laneStatus.value);
+  const advisorComposerDraft = computed({
+    get: () => advisorRuntime.value.composerDraft.value,
     set: (value: string) => {
-      plannerRuntime.value.composerDraft.value = value;
+      advisorRuntime.value.composerDraft.value = value;
     },
   });
-  const plannerAgents = computed(() => plannerRuntime.value.availableAgents.value);
-  const plannerActiveAgentId = computed(() => plannerRuntime.value.activeAgentId.value);
-  const plannerThreadWarning = computed(() => plannerRuntime.value.threadWarning.value);
-  const plannerChatKey = computed(
-    () => `${params.activeProjectId.value}:planner`,
+  const advisorAgents = computed(() => advisorRuntime.value.availableAgents.value);
+  const advisorActiveAgentId = computed(() => advisorRuntime.value.activeAgentId.value);
+  const advisorThreadWarning = computed(() => advisorRuntime.value.threadWarning.value);
+  const advisorChatKey = computed(
+    () => `${params.activeProjectId.value}:advisor`,
   );
-  const plannerPanelKey = computed(
-    () => `${panelContextKey.value}:${projectContextGeneration.value}:planner`,
+  const advisorPanelKey = computed(
+    () => `${panelContextKey.value}:${projectContextGeneration.value}:advisor`,
   );
 
   const workerAgents = computed(() => workerRuntime.value.availableAgents.value);
@@ -221,28 +221,28 @@ export function useLaneRuntimeBridge(params: {
   const resumeThreadBlocked = computed(() => false);
 
   const activeLaneBusy = computed(() => {
-    if (activeChatLane.value === "planner") return plannerBusy.value;
+    if (activeChatLane.value === "advisor") return advisorBusy.value;
     return params.agentBusy.value;
   });
 
   const activeLaneThreadWarning = computed(() => {
-    if (activeChatLane.value === "planner") return plannerThreadWarning.value;
+    if (activeChatLane.value === "advisor") return advisorThreadWarning.value;
     return workerThreadWarning.value;
   });
 
   const activeLaneHasResume = computed(() => true);
   const activeLaneNewSessionBlocked = computed(() => {
-    if (activeChatLane.value === "planner") return !plannerConnected.value;
+    if (activeChatLane.value === "advisor") return !advisorConnected.value;
     return false;
   });
 
   function handleLaneNewSession(): void {
     if (activeLaneNewSessionBlocked.value) return;
-    if (activeChatLane.value === "planner") {
-      if (params.startNewPlannerSession) {
-        params.startNewPlannerSession();
+    if (activeChatLane.value === "advisor") {
+      if (params.startNewAdvisorSession) {
+        params.startNewAdvisorSession();
       } else {
-        params.clearPlannerChat();
+        params.clearAdvisorChat();
       }
     } else {
       params.startNewChatSession();
@@ -251,18 +251,18 @@ export function useLaneRuntimeBridge(params: {
 
   function handleLaneClearChat(): void {
     if (activeLaneBusy.value) return;
-    if (activeChatLane.value === "planner") params.clearPlannerChat();
+    if (activeChatLane.value === "advisor") params.clearAdvisorChat();
     else params.clearActiveChat?.();
   }
 
   function handleLaneResumeThread(): void {
-    if (activeChatLane.value === "planner") params.resumePlannerThread();
+    if (activeChatLane.value === "advisor") params.resumeAdvisorThread();
     else if (activeChatLane.value === "worker") params.resumeTaskThread();
   }
 
   /**
    * The picker only backs the worker lane, where provider sessions are tracked.
-   * The planner lane keeps the original one-click resume.
+   * The advisor lane keeps the original one-click resume.
    */
   const sessionPickerOpen = ref(false);
   const sessionPickerSupported = computed(() => activeChatLane.value === "worker");
@@ -270,7 +270,7 @@ export function useLaneRuntimeBridge(params: {
 
   function openSessionPicker(): void {
     if (!sessionPickerSupported.value) {
-      params.resumePlannerThread();
+      params.resumeAdvisorThread();
       return;
     }
     sessionPickerOpen.value = true;
@@ -307,19 +307,19 @@ export function useLaneRuntimeBridge(params: {
   return {
     activeChatLane,
     setActiveChatLane,
-    plannerMessages,
-    plannerQueuedPrompts,
-    plannerPendingImages,
-    plannerConnected,
-    plannerBusy,
-    plannerInputLocked,
-    plannerLaneStatus,
-    plannerComposerDraft,
-    plannerAgents,
-    plannerActiveAgentId,
-    plannerThreadWarning,
-    plannerChatKey,
-    plannerPanelKey,
+    advisorMessages,
+    advisorQueuedPrompts,
+    advisorPendingImages,
+    advisorConnected,
+    advisorBusy,
+    advisorInputLocked,
+    advisorLaneStatus,
+    advisorComposerDraft,
+    advisorAgents,
+    advisorActiveAgentId,
+    advisorThreadWarning,
+    advisorChatKey,
+    advisorPanelKey,
     workerAgents,
     workerInputLocked,
     workerLaneStatus,

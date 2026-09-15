@@ -10,9 +10,12 @@ import { HistoryStore } from "../../../utils/historyStore.js";
 import { WorkspaceLockPool } from "../workspaceLockPool.js";
 
 export const WEB_WORKER_NAMESPACE = "web-worker";
-export const WEB_PLANNER_NAMESPACE = "web-planner";
+// Storage namespace persisted in state.db / thread storage since before the
+// Advisor rename. The VALUE must stay "web-planner" so existing history and
+// thread rows keep resolving; only the identifier was renamed.
+export const WEB_ADVISOR_NAMESPACE = "web-planner";
 
-export function resolvePlannerSandboxMode(raw: string | undefined): SandboxMode {
+export function resolveAdvisorSandboxMode(raw: string | undefined): SandboxMode {
   const value = raw?.trim();
   if (value === undefined || value === "") {
     return "danger-full-access";
@@ -128,7 +131,7 @@ export type WebLaneRuntime = {
 
 export type WebLaneResources = {
   worker: WebLaneRuntime;
-  planner: WebLaneRuntime;
+  advisor: WebLaneRuntime;
 };
 
 function createLaneRuntime(args: {
@@ -173,7 +176,7 @@ function createLaneRuntime(args: {
         threadStorage.value,
         undefined,
         {
-          agentAllowlist: resolveSessionAgentAllowlist(args.namespace === WEB_PLANNER_NAMESPACE ? "web-planner" : "web-worker"),
+          agentAllowlist: resolveSessionAgentAllowlist(args.namespace === WEB_ADVISOR_NAMESPACE ? "web-advisor" : "web-worker"),
           ...args.sessionManagerOptions,
           lane: args.lane,
           stateDbPath: args.stateDbPath,
@@ -202,14 +205,19 @@ export function createWebLaneResources(args: {
   sessionCleanupIntervalMs: number;
   historyMaxEntriesPerSession?: number;
   historyMaxTextLength?: number;
-  plannerCodexModel?: string;
-  plannerSandboxMode?: SandboxMode;
+  advisorCodexModel?: string;
+  advisorSandboxMode?: SandboxMode;
   workerSessionManagerOptions?: SessionManagerOptions;
-  plannerSessionManagerOptions?: SessionManagerOptions;
+  advisorSessionManagerOptions?: SessionManagerOptions;
 }): WebLaneResources {
-  const plannerSandboxMode =
-    args.plannerSandboxMode ??
-    resolvePlannerSandboxMode(process.env.ADS_PLANNER_SANDBOX_MODE);
+  const advisorSandboxMode =
+    args.advisorSandboxMode ??
+    resolveAdvisorSandboxMode(
+      process.env.ADS_ADVISOR_SANDBOX_MODE ?? process.env.ADS_PLANNER_SANDBOX_MODE,
+    );
+  if (!args.advisorSandboxMode && process.env.ADS_ADVISOR_SANDBOX_MODE === undefined && process.env.ADS_PLANNER_SANDBOX_MODE !== undefined) {
+    console.warn("[config] ADS_PLANNER_SANDBOX_MODE is deprecated; use ADS_ADVISOR_SANDBOX_MODE");
+  }
 
   return {
     worker: createLaneRuntime({
@@ -224,19 +232,19 @@ export function createWebLaneResources(args: {
       lazy: false,
       sessionManagerOptions: args.workerSessionManagerOptions,
     }),
-    planner: createLaneRuntime({
-      namespace: WEB_PLANNER_NAMESPACE,
+    advisor: createLaneRuntime({
+      namespace: WEB_ADVISOR_NAMESPACE,
       lane: "advisor",
       // The Advisor uses danger-full-access for planning and GitHub operations (e.g. gh CLI).
-      sandboxMode: plannerSandboxMode,
-      defaultModel: args.plannerCodexModel,
+      sandboxMode: advisorSandboxMode,
+      defaultModel: args.advisorCodexModel,
       sessionTimeoutMs: args.sessionTimeoutMs,
       sessionCleanupIntervalMs: args.sessionCleanupIntervalMs,
       stateDbPath: args.stateDbPath,
       historyMaxEntriesPerSession: args.historyMaxEntriesPerSession ?? 200,
       historyMaxTextLength: args.historyMaxTextLength ?? 64 * 1024,
       lazy: true,
-      sessionManagerOptions: args.plannerSessionManagerOptions,
+      sessionManagerOptions: args.advisorSessionManagerOptions,
     }),
   };
 }

@@ -100,7 +100,7 @@ await page.reload();
 await page.waitForSelector("textarea:not(:disabled):visible");
 
 // Seed a long history in BOTH lanes so message windowing (>30) is active.
-await chooseLane("planner");
+await chooseLane("advisor");
 for (let i = 0; i < 18; i += 1) {
   await send(`browser-advisor-seed-${i}`);
   await page.waitForFunction((marker) => [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null)?.textContent.includes(`Advisor reply: ${marker}`), `browser-advisor-seed-${i}`);
@@ -114,14 +114,14 @@ console.log("seeded history");
 let crashed = false;
 
 // Phase 1: type with IME simulation while busy (held reply), then switch lanes mid-stream.
-await chooseLane("planner");
+await chooseLane("advisor");
 const release = fixture.holdReply("browser-advisor-hold-a");
 await send("browser-advisor-hold-a");
 await page.locator(".stopIcon:visible").waitFor();
 await typeLikeIme("打字测试一");
 await chooseLane("worker");
 await typeLikeIme("worker typing");
-await chooseLane("planner");
+await chooseLane("advisor");
 await typeLikeIme("继续输入更多中文内容");
 crashed ||= dumpErrors("phase1: type during stream + lane switches");
 release();
@@ -131,9 +131,9 @@ const release2 = fixture.holdReply("browser-advisor-hold-b");
 await send("browser-advisor-hold-b");
 await page.locator(".stopIcon:visible").waitFor();
 await chooseLane("worker");
-await chooseLane("planner");
+await chooseLane("advisor");
 await chooseLane("worker");
-await chooseLane("planner");
+await chooseLane("advisor");
 await typeLikeIme("流式期间快速切换后输入");
 crashed ||= dumpErrors("phase2: rapid lane taps during stream");
 release2();
@@ -174,7 +174,7 @@ try {
   await send("browser-worker-hold-e");
   await page.locator(".stopIcon:visible").waitFor();
   await typeLikeIme("新会话后立即输入中文");
-  await chooseLane("planner");
+  await chooseLane("advisor");
   await chooseLane("worker");
   await typeLikeIme("继续输入更多内容");
   release5();

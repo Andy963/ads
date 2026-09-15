@@ -8,6 +8,7 @@ import type { ChatActions } from "./chat";
 import { createLaneActions } from "./laneActions";
 import type { LaneDeps } from "./laneActions";
 import { createProjectRuntime } from "./projectRuntime";
+import { ADVISOR_LANE_ID } from "../lib/laneIds";
 import type { ProjectRuntime, ProjectTab } from "./controllerTypes";
 import { createProjectActions } from "./projectsWs";
 import type { ProjectDeps } from "./projectsWs";
@@ -64,7 +65,7 @@ export function createAppContext() {
   const activeProject = computed(() => projects.value.find((p) => p.id === activeProjectId.value) ?? null);
 
   const runtimeByProjectId = new Map<string, ProjectRuntime>();
-  const plannerRuntimeByProjectId = new Map<string, ProjectRuntime>();
+  const advisorRuntimeByProjectId = new Map<string, ProjectRuntime>();
 
   const normalizeProjectId = (id: string | null | undefined): string => {
     const trimmed = String(id ?? "").trim();
@@ -81,18 +82,18 @@ export function createAppContext() {
     return created;
   };
 
-  const getPlannerRuntime = (projectId: string | null | undefined): ProjectRuntime => {
+  const getAdvisorRuntime = (projectId: string | null | undefined): ProjectRuntime => {
     const id = normalizeProjectId(projectId);
-    const existing = plannerRuntimeByProjectId.get(id);
+    const existing = advisorRuntimeByProjectId.get(id);
     if (existing) return existing;
     const created = createProjectRuntime({ maxLiveActivitySteps });
-    created.chatSessionId = "planner";
-    plannerRuntimeByProjectId.set(id, created);
+    created.chatSessionId = ADVISOR_LANE_ID;
+    advisorRuntimeByProjectId.set(id, created);
     return created;
   };
 
   const activeRuntime = computed(() => getRuntime(activeProjectId.value));
-  const activePlannerRuntime = computed(() => getPlannerRuntime(activeProjectId.value));
+  const activeAdvisorRuntime = computed(() => getAdvisorRuntime(activeProjectId.value));
 
   type RefLike<T> = { value: T };
 
@@ -203,12 +204,12 @@ export function createAppContext() {
     isMobile,
     activeProject,
     runtimeByProjectId,
-    plannerRuntimeByProjectId,
+    advisorRuntimeByProjectId,
     normalizeProjectId,
     getRuntime,
-    getPlannerRuntime,
+    getAdvisorRuntime,
     activeRuntime,
-    activePlannerRuntime,
+    activeAdvisorRuntime,
     connected,
     apiError,
     apiNotice,
@@ -244,7 +245,7 @@ export function createAppController() {
   const chat = createChatActions(ctx as AppContext);
   const laneDeps: LaneDeps = {
     connectWs: async () => {},
-    connectPlannerWs: async () => {},
+    connectAdvisorWs: async () => {},
   };
   const laneActions = createLaneActions({ ...ctx, ...chat } as AppContext & ChatActions, laneDeps);
 
@@ -259,7 +260,7 @@ export function createAppController() {
   });
 
   laneDeps.connectWs = ws.connectWs;
-  laneDeps.connectPlannerWs = ws.connectPlannerWs;
+  laneDeps.connectAdvisorWs = ws.connectAdvisorWs;
 
   const clearRuntimeTimers = (rt: { noticeTimer: number | null; liveActivityTtlTimer: number | null }): void => {
     if (rt.noticeTimer !== null) {
@@ -290,11 +291,11 @@ export function createAppController() {
       ctx.runtimeByProjectId.delete(pid);
     }
 
-    const plannerRt = ctx.plannerRuntimeByProjectId.get(pid);
-    if (plannerRt) {
-      ws.closeRuntimeConnection(plannerRt);
-      clearRuntimeTimers(plannerRt);
-      ctx.plannerRuntimeByProjectId.delete(pid);
+    const advisorRt = ctx.advisorRuntimeByProjectId.get(pid);
+    if (advisorRt) {
+      ws.closeRuntimeConnection(advisorRt);
+      clearRuntimeTimers(advisorRt);
+      ctx.advisorRuntimeByProjectId.delete(pid);
     }
 
   };
@@ -307,25 +308,25 @@ export function createAppController() {
       clearRuntimeTimers(workerRt);
     }
 
-    const plannerRt = ctx.plannerRuntimeByProjectId.get(pid);
-    if (plannerRt) {
-      ws.closeRuntimeConnection(plannerRt);
-      clearRuntimeTimers(plannerRt);
+    const advisorRt = ctx.advisorRuntimeByProjectId.get(pid);
+    if (advisorRt) {
+      ws.closeRuntimeConnection(advisorRt);
+      clearRuntimeTimers(advisorRt);
     }
   };
 
   const activateProject = async (projectId: string): Promise<void> => {
     const pid = ctx.normalizeProjectId(projectId);
     const rt = ctx.getRuntime(pid);
-    const plannerRt = ctx.getPlannerRuntime(pid);
+    const advisorRt = ctx.getAdvisorRuntime(pid);
     if (!ctx.loggedIn.value) return;
     rt.apiError.value = null;
     rt.wsError.value = null;
-    plannerRt.wsError.value = null;
+    advisorRt.wsError.value = null;
     try {
       await Promise.all([
         (!rt.ws || !rt.connected.value) ? ws.connectWs(pid) : Promise.resolve(),
-        (!plannerRt.ws || !plannerRt.connected.value) ? ws.connectPlannerWs(pid) : Promise.resolve(),
+        (!advisorRt.ws || !advisorRt.connected.value) ? ws.connectAdvisorWs(pid) : Promise.resolve(),
       ]);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -390,7 +391,7 @@ export function createAppController() {
   onBeforeUnmount(() => {
     window.removeEventListener("resize", ctx.updateIsMobile);
     (ctx as AppContext & { __connectivityCleanup?: () => void }).__connectivityCleanup?.();
-    for (const rt of [...ctx.runtimeByProjectId.values(), ...ctx.plannerRuntimeByProjectId.values()]) {
+    for (const rt of [...ctx.runtimeByProjectId.values(), ...ctx.advisorRuntimeByProjectId.values()]) {
       if (rt.liveActivityTtlTimer === null) continue;
       window.clearTimeout(rt.liveActivityTtlTimer);
       rt.liveActivityTtlTimer = null;

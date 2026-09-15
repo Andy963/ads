@@ -93,6 +93,17 @@ function isHistoryInsertTraceEnabled(): boolean {
   return parseBooleanFlag(process.env.ADS_TRACE_HISTORY_INSERT, false);
 }
 
+// History keys embed the lane chat session id: "<user>::<project>::advisor"
+// (optionally "…:generation:N"). Before the Advisor rename the advisor lane
+// used "planner" instead. Only the exact advisor segment maps — arbitrary
+// custom chat session ids (uuids) never match.
+const ADVISOR_HISTORY_KEY_PATTERN = /::advisor(:generation:\d+)?$/;
+
+function resolveLegacyAdvisorHistoryKey(key: string): string | null {
+  if (!ADVISOR_HISTORY_KEY_PATTERN.test(key)) return null;
+  return key.replace(/::advisor/, "::planner");
+}
+
 export class HistoryStore {
   private storagePath: string;
   private readonly namespace: string;
@@ -139,6 +150,18 @@ export class HistoryStore {
     if (!normalizedKey) {
       return [];
     }
+    const entries = this.getByKey(normalizedKey);
+    if (entries.length > 0) {
+      return entries;
+    }
+    // Pre-rename advisor lane keys embedded the "planner" chat session id.
+    // New writes use "advisor"; reads fall back to the legacy key so existing
+    // lane history keeps replaying (read-old / write-new, no data migration).
+    const legacyKey = resolveLegacyAdvisorHistoryKey(normalizedKey);
+    return legacyKey ? this.getByKey(legacyKey) : [];
+  }
+
+  private getByKey(normalizedKey: string): HistoryEntry[] {
     if (!this.useSqlite || !this.db || !this.selectStmt) {
       return this.store.get(normalizedKey) ?? [];
     }

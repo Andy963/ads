@@ -1,7 +1,7 @@
-export type MobileWorkspaceTab = "planner" | "worker";
+export type MobileWorkspaceTab = "advisor" | "worker";
 
 const MOBILE_WORKSPACE_TAB_KEY_PREFIX = "ads.mobileWorkspaceTab";
-const DEFAULT_MOBILE_WORKSPACE_TAB: MobileWorkspaceTab = "planner";
+const DEFAULT_MOBILE_WORKSPACE_TAB: MobileWorkspaceTab = "advisor";
 
 function normalizeProjectId(projectId: unknown): string {
   const normalized = typeof projectId === "string" ? projectId.trim() : String(projectId ?? "").trim();
@@ -22,7 +22,9 @@ export function buildMobileWorkspaceTabStorageKey(projectId: string): string {
 }
 
 export function normalizeMobileWorkspaceTab(value: unknown): MobileWorkspaceTab {
-  if (value === "planner" || value === "worker") return value;
+  // Legacy stored value from before the Advisor rename.
+  if (value === "planner") return "advisor";
+  if (value === "advisor" || value === "worker") return value;
   return DEFAULT_MOBILE_WORKSPACE_TAB;
 }
 

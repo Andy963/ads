@@ -12,14 +12,14 @@ function readAppCss(): string {
 
 describe("lane connection status", () => {
   it("maps the Advisor and Worker tabs to their independent runtime states", () => {
-    const states = { planner: true, worker: false };
+    const states = { advisor: true, worker: false };
 
-    expect(isLaneConnected("planner", states)).toBe(true);
+    expect(isLaneConnected("advisor", states)).toBe(true);
     expect(isLaneConnected("worker", states)).toBe(false);
   });
 
   it("does not mark the Task tab as connected", () => {
-    expect(isLaneConnected("planner", { planner: false, worker: true })).toBe(false);
+    expect(isLaneConnected("advisor", { advisor: false, worker: true })).toBe(false);
   });
 
   it("renders connection state with an independent six-pixel status dot", () => {

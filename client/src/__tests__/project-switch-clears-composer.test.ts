@@ -76,11 +76,11 @@ async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Pr
   await wrapper.vm.$nextTick();
 }
 
-function getLaneTextarea(wrapper: any, lane: "planner" | "worker"): any {
+function getLaneTextarea(wrapper: any, lane: "advisor" | "worker"): any {
   return wrapper.get(`[data-testid="lane-panel-${lane}"] textarea.composer-input`);
 }
 
-async function switchLane(wrapper: any, lane: "planner" | "worker"): Promise<void> {
+async function switchLane(wrapper: any, lane: "advisor" | "worker"): Promise<void> {
   await wrapper.get(`[data-testid="lane-tab-${lane}"]`).trigger("click");
   await settleUi(wrapper);
 }
@@ -123,17 +123,17 @@ describe("Project and lane composer draft isolation", () => {
     await workerTextareaA.setValue("worker draft text");
     expect((workerTextareaA.element as HTMLTextAreaElement).value).toBe("worker draft text");
 
-    await switchLane(wrapper, "planner");
-    const plannerTextareaA = getLaneTextarea(wrapper, "planner");
-    await plannerTextareaA.setValue("planner draft line 1\nplanner draft line 2");
-    expect((plannerTextareaA.element as HTMLTextAreaElement).value).toBe("planner draft line 1\nplanner draft line 2");
+    await switchLane(wrapper, "advisor");
+    const advisorTextareaA = getLaneTextarea(wrapper, "advisor");
+    await advisorTextareaA.setValue("advisor draft line 1\nadvisor draft line 2");
+    expect((advisorTextareaA.element as HTMLTextAreaElement).value).toBe("advisor draft line 1\nadvisor draft line 2");
 
     await switchLane(wrapper, "worker");
     expect((getLaneTextarea(wrapper, "worker").element as HTMLTextAreaElement).value).toBe("worker draft text");
 
-    await switchLane(wrapper, "planner");
-    expect((getLaneTextarea(wrapper, "planner").element as HTMLTextAreaElement).value).toBe(
-      "planner draft line 1\nplanner draft line 2",
+    await switchLane(wrapper, "advisor");
+    expect((getLaneTextarea(wrapper, "advisor").element as HTMLTextAreaElement).value).toBe(
+      "advisor draft line 1\nadvisor draft line 2",
     );
 
     await switchLane(wrapper, "worker");
@@ -151,8 +151,8 @@ describe("Project and lane composer draft isolation", () => {
     expect(workerTextareaB.exists()).toBe(true);
     expect((workerTextareaB.element as HTMLTextAreaElement).value).toBe("");
 
-    await switchLane(wrapper, "planner");
-    expect((getLaneTextarea(wrapper, "planner").element as HTMLTextAreaElement).value).toBe("");
+    await switchLane(wrapper, "advisor");
+    expect((getLaneTextarea(wrapper, "advisor").element as HTMLTextAreaElement).value).toBe("");
 
     const rowA = projectRows.find((row) => row.text().includes("A")) ?? null;
     expect(rowA).toBeTruthy();
@@ -161,9 +161,9 @@ describe("Project and lane composer draft isolation", () => {
 
     await switchLane(wrapper, "worker");
     expect((getLaneTextarea(wrapper, "worker").element as HTMLTextAreaElement).value).toBe("worker draft text");
-    await switchLane(wrapper, "planner");
-    expect((getLaneTextarea(wrapper, "planner").element as HTMLTextAreaElement).value).toBe(
-      "planner draft line 1\nplanner draft line 2",
+    await switchLane(wrapper, "advisor");
+    expect((getLaneTextarea(wrapper, "advisor").element as HTMLTextAreaElement).value).toBe(
+      "advisor draft line 1\nadvisor draft line 2",
     );
 
     wrapper.unmount();
@@ -178,9 +178,9 @@ describe("Project and lane composer draft isolation", () => {
 
     await switchLane(wrapper, "worker");
     await getLaneTextarea(wrapper, "worker").setValue("worker context A");
-    await switchLane(wrapper, "planner");
-    await getLaneTextarea(wrapper, "planner").setValue("planner draft A");
-    expect((wrapper.vm as any).activeChatLane).toBe("planner");
+    await switchLane(wrapper, "advisor");
+    await getLaneTextarea(wrapper, "advisor").setValue("advisor draft A");
+    expect((wrapper.vm as any).activeChatLane).toBe("advisor");
 
     const projectRows = wrapper.findAll("button.projectRow");
     const rowB = projectRows.find((row) => row.text().includes("B")) ?? null;

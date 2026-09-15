@@ -85,7 +85,7 @@ describe("web sync events", () => {
         defaultWorkspaceRoot: workspaceRoot,
         resolveWorkspaceRoot: () => workspaceRoot,
         workerHistoryStore: { get: () => [] },
-        plannerHistoryStore: { get: () => [] },
+        advisorHistoryStore: { get: () => [] },
       },
     );
 
@@ -111,7 +111,7 @@ describe("web sync events", () => {
     assert.equal(result.truncated, false);
   });
 
-  for (const chatSessionId of ["main", "planner"]) {
+  for (const chatSessionId of ["main", "advisor"]) {
     it(`strips legacy command output from ${chatSessionId} HTTP catch-up`, async () => {
       const workspaceRoot = path.join(tmpDir, "workspace");
       fs.mkdirSync(workspaceRoot);
@@ -143,7 +143,7 @@ describe("web sync events", () => {
           defaultWorkspaceRoot: workspaceRoot,
           resolveWorkspaceRoot: () => workspaceRoot,
           workerHistoryStore: { get: () => [] },
-          plannerHistoryStore: { get: () => [] },
+          advisorHistoryStore: { get: () => [] },
         },
       );
 

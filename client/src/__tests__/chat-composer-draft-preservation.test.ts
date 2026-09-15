@@ -58,7 +58,7 @@ describe("composer draft preservation on session reset", () => {
     expect(rt.composerDraft.value).toBe("Draft for a new clean session");
   });
 
-  it("preserves drafts when resetting worker and planner chat state", async () => {
+  it("preserves drafts when resetting worker and advisor chat state", async () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
@@ -66,44 +66,44 @@ describe("composer draft preservation on session reset", () => {
     });
     const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       connectWs: vi.fn(async () => {}),
-      connectPlannerWs: vi.fn(async () => {}),
+      connectAdvisorWs: vi.fn(async () => {}),
     });
 
     ctx.loggedIn.value = true;
     projects.initializeProjects();
 
     const workerRt = ctx.activeRuntime.value;
-    const plannerRt = ctx.activePlannerRuntime.value;
+    const advisorRt = ctx.activeAdvisorRuntime.value;
     workerRt.composerDraft.value = "Worker reset draft";
-    plannerRt.composerDraft.value = "Planner reset draft";
+    advisorRt.composerDraft.value = "Advisor reset draft";
 
     tasks.clearActiveChat();
-    tasks.clearPlannerChat();
+    tasks.clearAdvisorChat();
 
     expect(workerRt.composerDraft.value).toBe("Worker reset draft");
-    expect(plannerRt.composerDraft.value).toBe("Planner reset draft");
+    expect(advisorRt.composerDraft.value).toBe("Advisor reset draft");
   });
 
-  it("clears worker and planner drafts after their prompts are queued", () => {
+  it("clears worker and advisor drafts after their prompts are queued", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       connectWs: vi.fn(async () => {}),
-      connectPlannerWs: vi.fn(async () => {}),
+      connectAdvisorWs: vi.fn(async () => {}),
     });
 
     const workerRt = ctx.activeRuntime.value;
-    const plannerRt = ctx.activePlannerRuntime.value;
+    const advisorRt = ctx.activeAdvisorRuntime.value;
     workerRt.composerDraft.value = "Worker prompt";
-    plannerRt.composerDraft.value = "Planner prompt";
+    advisorRt.composerDraft.value = "Advisor prompt";
 
     tasks.sendMainPrompt("Worker prompt");
-    tasks.sendPlannerPrompt("Planner prompt");
+    tasks.sendAdvisorPrompt("Advisor prompt");
 
     expect(workerRt.composerDraft.value).toBe("");
-    expect(plannerRt.composerDraft.value).toBe("");
+    expect(advisorRt.composerDraft.value).toBe("");
     expect(workerRt.queuedPrompts.value[0]?.text).toBe("Worker prompt");
-    expect(plannerRt.queuedPrompts.value[0]?.text).toBe("Planner prompt");
+    expect(advisorRt.queuedPrompts.value[0]?.text).toBe("Advisor prompt");
   });
 
   it("preserves drafts when prompt enqueue fails before dispatch", () => {
@@ -116,7 +116,7 @@ describe("composer draft preservation on session reset", () => {
       { ...ctx, ...chat, enqueueMainPrompt } as AppContext & ReturnType<typeof createChatActions>,
       {
         connectWs: vi.fn(async () => {}),
-        connectPlannerWs: vi.fn(async () => {}),
+        connectAdvisorWs: vi.fn(async () => {}),
       },
     );
 
@@ -127,7 +127,7 @@ describe("composer draft preservation on session reset", () => {
     expect(workerRt.composerDraft.value).toBe("Retry this prompt");
   });
 
-  it("scopes worker and planner backend clears to their originating lanes", () => {
+  it("scopes worker and advisor backend clears to their originating lanes", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
@@ -135,60 +135,60 @@ describe("composer draft preservation on session reset", () => {
     });
     const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       connectWs: vi.fn(async () => {}),
-      connectPlannerWs: vi.fn(async () => {}),
+      connectAdvisorWs: vi.fn(async () => {}),
     });
 
     ctx.loggedIn.value = true;
     projects.initializeProjects();
 
     const workerRt = ctx.activeRuntime.value;
-    const plannerRt = ctx.activePlannerRuntime.value;
+    const advisorRt = ctx.activeAdvisorRuntime.value;
     workerRt.ws = { clearHistory: vi.fn() } as any;
-    plannerRt.ws = { clearHistory: vi.fn() } as any;
+    advisorRt.ws = { clearHistory: vi.fn() } as any;
 
     tasks.clearActiveChat();
-    tasks.clearPlannerChat();
+    tasks.clearAdvisorChat();
 
     expect(workerRt.ws?.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "main" });
-    expect(plannerRt.ws?.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "planner" });
+    expect(advisorRt.ws?.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "advisor" });
   });
 
-  it("uses an in-band new-session reset for the planner lane", () => {
+  it("uses an in-band new-session reset for the advisor lane", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       connectWs: vi.fn(async () => {}),
-      connectPlannerWs: vi.fn(async () => {}),
+      connectAdvisorWs: vi.fn(async () => {}),
     });
 
     ctx.loggedIn.value = true;
-    ctx.activePlannerRuntime.value.ws = { clearHistory: vi.fn() } as any;
+    ctx.activeAdvisorRuntime.value.ws = { clearHistory: vi.fn() } as any;
 
-    tasks.startNewPlannerSession();
+    tasks.startNewAdvisorSession();
 
-    expect(ctx.activePlannerRuntime.value.ws?.clearHistory).toHaveBeenCalledWith({
+    expect(ctx.activeAdvisorRuntime.value.ws?.clearHistory).toHaveBeenCalledWith({
       scope: "lane",
-      sourceChatSessionId: "planner",
+      sourceChatSessionId: "advisor",
       mode: "new_session",
     });
   });
 
-  it("downgrades a planner shared clear request to the planner lane", () => {
+  it("downgrades a advisor shared clear request to the advisor lane", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
-    const plannerRt = ctx.activePlannerRuntime.value;
-    plannerRt.ws = { clearHistory: vi.fn() } as any;
+    const advisorRt = ctx.activeAdvisorRuntime.value;
+    advisorRt.ws = { clearHistory: vi.fn() } as any;
 
-    chat.threadReset(plannerRt, {
+    chat.threadReset(advisorRt, {
       notice: "",
       clearBackendHistory: true,
       clearHistoryPayload: { scope: "shared" },
       resetThreadId: true,
     });
 
-    expect(plannerRt.ws?.clearHistory).toHaveBeenCalledWith({
+    expect(advisorRt.ws?.clearHistory).toHaveBeenCalledWith({
       scope: "lane",
-      sourceChatSessionId: "planner",
+      sourceChatSessionId: "advisor",
     });
   });
 });

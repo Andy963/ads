@@ -862,7 +862,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
     const resetScope = String(payload.scope ?? "").trim().toLowerCase() || "lane";
     const sourceChatSessionId = String(payload.sourceChatSessionId ?? "").trim();
-    if (resetScope === "shared" && effectiveChatSessionId === "planner") {
+    if (resetScope === "shared" && effectiveChatSessionId === "advisor") {
       return;
     }
     if (resetScope !== "shared" && sourceChatSessionId !== effectiveChatSessionId) {

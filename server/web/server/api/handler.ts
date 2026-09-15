@@ -40,7 +40,7 @@ export function createApiRequestHandler(deps: {
   interruptControllers: Map<string, AbortController>;
   promptRunEpochs?: Map<string, number>;
   workerHistoryStore?: { get: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }> };
-  plannerHistoryStore?: { get: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }> };
+  advisorHistoryStore?: { get: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }> };
   laneGenerationStore?: WebLaneGenerationStore;
   lanePromptStore?: LanePromptStore;
 }): (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean> {
@@ -87,7 +87,7 @@ export function createApiRequestHandler(deps: {
         defaultWorkspaceRoot: deps.workspaceRoot,
         resolveWorkspaceRoot: deps.resolveWorkspaceRoot,
         workerHistoryStore: deps.workerHistoryStore ?? { get: () => [] },
-        plannerHistoryStore: deps.plannerHistoryStore ?? { get: () => [] },
+        advisorHistoryStore: deps.advisorHistoryStore ?? { get: () => [] },
         laneGenerationStore: deps.laneGenerationStore,
       })
     ) return true;

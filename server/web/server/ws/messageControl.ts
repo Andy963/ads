@@ -50,7 +50,7 @@ function readConfiguredReasoningEfforts(configJson: unknown): string[] {
 }
 
 function resolveClearHistoryScope(payload: unknown, chatSessionId: string): ClearHistoryScope {
-  if (String(chatSessionId ?? "").trim() === "planner") {
+  if (String(chatSessionId ?? "").trim() === "advisor") {
     return "lane";
   }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {

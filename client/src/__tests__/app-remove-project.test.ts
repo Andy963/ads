@@ -175,7 +175,7 @@ describe("App.removeProject", () => {
     expect(deleteCalls).toEqual(["/api/projects/p2"]);
     expect(idsFromVm(wrapper as any)).toEqual(["default", "p1", "p3"]);
     expect((wrapper.vm as any).activeProjectId).toBe("p1");
-    expect([...wsCloseCalls].sort()).toEqual(["p2:main", "p2:planner"].sort());
+    expect([...wsCloseCalls].sort()).toEqual(["p2:main", "p2:advisor"].sort());
 
     wrapper.unmount();
   });
@@ -268,8 +268,8 @@ describe("App.removeProject", () => {
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await waitForProjectIds(wrapper as any, ["default", "p1", "p2"]);
 
-    const plannerRuntime = (wrapper.vm as any).getPlannerRuntime("p2") as { busy: { value: boolean } };
-    plannerRuntime.busy.value = true;
+    const advisorRuntime = (wrapper.vm as any).getAdvisorRuntime("p2") as { busy: { value: boolean } };
+    advisorRuntime.busy.value = true;
     await settleUi(wrapper);
 
     const removeButton = wrapper.find('[data-testid="project-remove"]');

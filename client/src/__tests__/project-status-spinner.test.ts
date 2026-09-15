@@ -105,20 +105,20 @@ describe("project status spinner", () => {
     expect(pid).not.toBe("");
 
     const workerRuntime = (wrapper.vm as any).getRuntime(pid) as { busy: { value: boolean } };
-    const plannerRuntime = (wrapper.vm as any).getPlannerRuntime(pid) as { busy: { value: boolean } };
+    const advisorRuntime = (wrapper.vm as any).getAdvisorRuntime(pid) as { busy: { value: boolean } };
     workerRuntime.busy.value = false;
-    plannerRuntime.busy.value = false;
+    advisorRuntime.busy.value = false;
     await settleUi(wrapper);
 
     expect(wrapper.find(".projectStatus").classes("spinning")).toBe(false);
     expect(wrapper.find(".laneTabBusySpinner").exists()).toBe(false);
 
-    plannerRuntime.busy.value = true;
+    advisorRuntime.busy.value = true;
     await settleUi(wrapper);
     const projectStatus = wrapper.find(".projectStatus");
     expect(projectStatus.classes()).toEqual(expect.arrayContaining(["spinning", "spinning--advisor"]));
     expect(projectStatus.attributes("title")).toBe("Advisor 正在规划…");
-    expect(wrapper.find('[data-testid="lane-tab-busy-planner"]').classes()).toEqual(
+    expect(wrapper.find('[data-testid="lane-tab-busy-advisor"]').classes()).toEqual(
       expect.arrayContaining(["laneTabBusySpinner", "laneTabBusySpinner--advisor"]),
     );
     expect(wrapper.find('[data-testid="lane-tab-busy-worker"]').exists()).toBe(false);
@@ -131,7 +131,7 @@ describe("project status spinner", () => {
       expect.arrayContaining(["laneTabBusySpinner", "laneTabBusySpinner--worker"]),
     );
 
-    plannerRuntime.busy.value = false;
+    advisorRuntime.busy.value = false;
     await settleUi(wrapper);
     expect(projectStatus.classes()).toEqual(expect.arrayContaining(["spinning", "spinning--worker"]));
     expect(projectStatus.classes("spinning--advisor")).toBe(false);

@@ -44,7 +44,7 @@ const stateDbPath = resolveStateDbPath();
 const LEGACY_WEB_NAMESPACE = "web";
 function migrateLegacyWebLaneNamespaces(): void {
   // Keep the raw legacy namespace available as an archive. Generation one
-  // reuses only the already-partitioned web-worker/web-planner keys; never copy
+  // reuses only the already-partitioned web-worker/web-advisor keys; never copy
   // an undifferentiated legacy thread id into either active lane.
   try {
     void new HistoryStore({
@@ -220,14 +220,14 @@ export async function startWebServer(): Promise<void> {
     sessionCleanupIntervalMs: webSessionCleanupIntervalMs,
     historyMaxEntriesPerSession: webConfig.historyMaxEntriesPerSession,
     historyMaxTextLength: webConfig.historyMaxTextLength,
-    plannerCodexModel: webConfig.plannerCodexModel,
+    advisorCodexModel: webConfig.advisorCodexModel,
     workerSessionManagerOptions: {
       onDispose: ({ userId }) => {
         directoryManager.clearUserCwd(userId);
         sessionCacheRegistry?.clearForUser(userId);
       },
     },
-    plannerSessionManagerOptions: {
+    advisorSessionManagerOptions: {
       onDispose: ({ userId }) => {
         directoryManager.clearUserCwd(userId);
         sessionCacheRegistry?.clearForUser(userId);
@@ -236,7 +236,7 @@ export async function startWebServer(): Promise<void> {
   });
   const lanePromptStore = createLanePromptStore(getStateDatabase(stateDbPath));
   const sessionManager = laneResources.worker.sessionManager;
-  const plannerSessionManager = laneResources.planner.sessionManager;
+  const advisorSessionManager = laneResources.advisor.sessionManager;
   sessionCacheRegistry = createSessionCacheRegistry({
     workspaceCache,
     cwdStore,
@@ -244,10 +244,10 @@ export async function startWebServer(): Promise<void> {
     persistCwdStore,
     hasActiveSession: (userId) =>
       sessionManager.hasSession(userId) ||
-      plannerSessionManager.hasSession(userId),
+      advisorSessionManager.hasSession(userId),
   });
   const getWorkspaceLock = laneResources.worker.getWorkspaceLock;
-  const getPlannerWorkspaceLock = laneResources.planner.getWorkspaceLock;
+  const getAdvisorWorkspaceLock = laneResources.advisor.getWorkspaceLock;
   const syncEventStore = new SyncEventStore({ stateDbPath });
   const laneGenerationStore = new WebLaneGenerationStore({ stateDbPath });
   const wsHub = createWebSocketHub();
@@ -271,14 +271,14 @@ export async function startWebServer(): Promise<void> {
   const webAgentIds = Array.from(
     new Set([
       ...sessionManager.getConfiguredAgentIds(),
-      ...plannerSessionManager.getConfiguredAgentIds(),
+      ...advisorSessionManager.getConfiguredAgentIds(),
     ]),
   );
   const broadcastAgentsSnapshot = (): void => {
     for (const [ws, meta] of wsHub.clientMetaByWs.entries()) {
       const manager =
-        meta.chatSessionId === "planner"
-          ? plannerSessionManager
+        meta.chatSessionId === "advisor"
+          ? advisorSessionManager
           : sessionManager;
       const currentCwdForUser = manager.getUserCwd(meta.sessionUserId);
       const orchestrator = manager.getOrCreate(meta.sessionUserId, currentCwdForUser);
@@ -326,7 +326,7 @@ export async function startWebServer(): Promise<void> {
     interruptControllers,
     promptRunEpochs,
     workerHistoryStore: laneResources.worker.historyStore,
-    plannerHistoryStore: laneResources.planner.historyStore,
+    advisorHistoryStore: laneResources.advisor.historyStore,
     laneGenerationStore,
     lanePromptStore,
   });
@@ -375,13 +375,13 @@ export async function startWebServer(): Promise<void> {
     },
     sessions: {
       workerSessionManager: sessionManager,
-      plannerSessionManager,
+      advisorSessionManager,
       getWorkspaceLock,
-      getPlannerWorkspaceLock,
+      getAdvisorWorkspaceLock,
     },
     history: {
       workerHistoryStore: laneResources.worker.historyStore,
-      plannerHistoryStore: laneResources.planner.historyStore,
+      advisorHistoryStore: laneResources.advisor.historyStore,
     },
     commands: {
       runAdsCommandLine,
@@ -398,7 +398,7 @@ export async function startWebServer(): Promise<void> {
     cleanupPidFile,
     scheduler,
     historyMaintenance,
-    sessionManagers: [sessionManager, plannerSessionManager],
+    sessionManagers: [sessionManager, advisorSessionManager],
   });
   await listenServer(server, webConfig.port, webConfig.host);
   logger.info(`WebSocket server listening on ws://${webConfig.host}:${webConfig.port}`);

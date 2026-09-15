@@ -43,7 +43,7 @@ export async function verifyPostSendInteractions({ page, fixture, mobile }) {
     return metrics;
   };
 
-  await chooseLane("planner");
+  await chooseLane("advisor");
   await input().fill("");
   await activate("textarea.composer-input:visible");
   await setKeyboardViewport(430);
@@ -114,13 +114,13 @@ export async function verifyPostSendInteractions({ page, fixture, mobile }) {
   assert.ok(!(await page.locator(".chat:visible").innerText()).includes(secondPrompt));
   await input().pressSequentially("Worker draft after two sends");
   await setKeyboardViewport(430, 24);
-  await chooseLane("planner");
+  await chooseLane("advisor");
   assert.equal(await input().inputValue(), "Advisor draft after two sends");
   assert.ok((await page.locator(".chat:visible").innerText()).includes(secondPrompt));
   await chooseLane("worker");
   assert.equal(await input().inputValue(), "Worker draft after two sends");
   releaseActiveReply();
-  await chooseLane("planner");
+  await chooseLane("advisor");
   await page.waitForFunction((marker) => [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null)?.textContent.includes(`Advisor reply: ${marker}`), activePrompt);
   assert.equal(await input().inputValue(), "Advisor draft after two sends");
   assert.equal(fixture.received.filter(({ marker }) => marker === firstPrompt).length, 1);
@@ -129,7 +129,7 @@ export async function verifyPostSendInteractions({ page, fixture, mobile }) {
   await input().fill("");
   await chooseLane("worker");
   await input().fill("");
-  await chooseLane("planner");
+  await chooseLane("advisor");
   await setKeyboardViewport(mobile ? 844 : 900);
   await originalEditor.dispose();
   return { firstSend, secondSend, composedSend, rowsAfterSending };
