@@ -5,9 +5,12 @@ import type { ChatActions } from "../chat";
 
 import { deriveProjectNameFromPath } from "./projectName";
 import type { ProjectDeps } from "./types";
+import { diagAlert } from "../../lib/diagAlert";
 
 const PROJECTS_KEY = "ADS_WEB_PROJECTS";
 const ACTIVE_PROJECT_KEY = "ADS_WEB_ACTIVE_PROJECT";
+const LAST_REAL_PROJECT_KEY = "ADS_WEB_LAST_REAL_PROJECT";
+const LAST_REAL_PROJECT_TAB_KEY = "ADS_WEB_LAST_REAL_PROJECT_TAB";
 type StoredProjectTabInput = Partial<ProjectTab> & { chatSessionId?: unknown };
 type RemoteProjectInput = {
   id?: unknown;
@@ -124,28 +127,67 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     try {
       localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects.value));
       localStorage.setItem(ACTIVE_PROJECT_KEY, activeProjectId.value);
+      const activeId = normalizeString(activeProjectId.value);
+      if (activeId && activeId !== "default") {
+        localStorage.setItem(LAST_REAL_PROJECT_KEY, activeId);
+        const activeTab = projects.value.find((p) => p.id === activeId) ?? null;
+        if (activeTab) {
+          localStorage.setItem(LAST_REAL_PROJECT_TAB_KEY, JSON.stringify(activeTab));
+        }
+      }
     } catch {
       // ignore
     }
   };
 
+  // initializeProjects can only restore a project that is still present in the
+  // stored list. If the list lost the entry (older schema, storage rewrite,
+  // server rebuild), re-insert the last known tab so the selection still
+  // restores instead of silently landing on "default".
+  const restoreLastRealProjectTab = (normalized: ProjectTab[], lastRealActive: string): ProjectTab[] => {
+    if (!lastRealActive || lastRealActive === "default") return normalized;
+    if (normalized.some((p) => p.id === lastRealActive)) return normalized;
+    const stored = safeJsonParse<StoredProjectTabInput>(localStorage.getItem(LAST_REAL_PROJECT_TAB_KEY));
+    const tab = stored ? normalizeStoredProject(stored) : null;
+    if (!tab || tab.id !== lastRealActive) return normalized;
+    const insertAt = normalized.some((p) => p.id === "default") ? 1 : 0;
+    const next = normalized.slice();
+    next.splice(insertAt, 0, tab);
+    return next;
+  };
+
   const initializeProjects = (): void => {
     const stored = safeJsonParse<ProjectTab[]>(localStorage.getItem(PROJECTS_KEY));
-    const normalized: ProjectTab[] = Array.isArray(stored)
+    const parsed: ProjectTab[] = Array.isArray(stored)
       ? stored
           .map((item) => normalizeStoredProject(item as StoredProjectTabInput))
           .filter((p): p is ProjectTab => Boolean(p))
       : [];
 
-    if (!normalized.some((p) => p.id === "default")) {
-      normalized.unshift(createProjectTab({ path: "", initialized: true }));
+    if (!parsed.some((p) => p.id === "default")) {
+      parsed.unshift(createProjectTab({ path: "", initialized: true }));
     }
 
     const storedActive = String(localStorage.getItem(ACTIVE_PROJECT_KEY) ?? "").trim();
+    const lastRealActive = String(localStorage.getItem(LAST_REAL_PROJECT_KEY) ?? "").trim();
+    const normalized = restoreLastRealProjectTab(parsed, lastRealActive);
+    const hasStoredProject = (id: string): boolean => Boolean(id) && normalized.some((p) => p.id === id);
+    // "default" is a workspace affordance, not a real project. Never land on it
+    // when a real project selection can be restored — starting on default forces
+    // a background id rewrite once the server resolves the workspace identity.
     const initialActive =
-      normalized.some((p) => p.id === storedActive)
+      storedActive !== "default" && hasStoredProject(storedActive)
         ? storedActive
-        : normalized.find((p) => p.id !== "default")?.id ?? "default";
+        : hasStoredProject(lastRealActive)
+          ? lastRealActive
+          : normalized.find((p) => p.id !== "default")?.id ?? "default";
+    if (initialActive === "default" && lastRealActive && lastRealActive !== "default") {
+      diagAlert("项目恢复失败:仍落到default", {
+        storedActive,
+        lastRealActive,
+        storedIds: normalized.map((p) => p.id).slice(0, 8),
+      });
+    }
     activeProjectId.value = initialActive;
     projects.value = normalized.map((p) => ({ ...p, expanded: p.id === initialActive }));
     persistProjects();
@@ -223,6 +265,12 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
         next.find((p) => p.id !== "default")?.id ||
         "default";
 
+      // A default→real rewrite is the intended merge of the default workspace
+      // with its server-known identity; only a rewrite that moves away from a
+      // REAL selection is an anomaly worth surfacing.
+      if (currentActive && currentActive !== "default" && nextActive !== currentActive) {
+        diagAlert("activeProjectId被后台改写", { from: currentActive, to: nextActive });
+      }
       activeProjectId.value = nextActive;
       projects.value = next.map((p) => ({ ...p, expanded: p.id === nextActive }));
       persistProjects();

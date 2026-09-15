@@ -5,6 +5,7 @@
    normalizeReasoningEffort,
  } from "../lib/chatPreferences";
  import { supportsAgentModel } from "../lib/model_agent";
+ import { crumb } from "../lib/diagBreadcrumbs";
 
  import type { ModelConfig } from "../api/types";
  import type { AppContext } from "./controller";
@@ -124,6 +125,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
    };
 
    const sendMainPrompt = (content: string): void => {
+     crumb(`send:worker(${String(content ?? "").length}字)`);
      apiError.value = null;
      const worker = activeRuntime.value;
      const text = String(content ?? "");
@@ -139,6 +141,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
    };
 
    const sendPlannerPrompt = (content: string): void => {
+     crumb(`send:planner(${String(content ?? "").length}字)`);
      apiError.value = null;
      const text = String(content ?? "");
      const planner = activePlannerRuntime.value;

@@ -16,6 +16,9 @@ import { createAppController } from "./app/controller";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
 import { useProjectSidebar } from "./composables/app/useProjectSidebar";
 import { createTapActivation } from "./lib/tapActivation";
+import { diagAlert } from "./lib/diagAlert";
+import { crumb } from "./lib/diagBreadcrumbs";
+import { errorRecoveryGeneration } from "./lib/errorRecovery";
 import {
   readMobileWorkspaceTab,
   writeMobileWorkspaceTab,
@@ -349,12 +352,43 @@ function selectWorkspaceTab(tab: ChatLane): void {
   if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
     document.activeElement.blur();
   }
+  const before = {
+    lane: activeWorkspaceTab.value,
+    workerCount: messages.length,
+    plannerCount: plannerMessages.length,
+  };
   setActiveChatLane(tab);
+  crumb(`lane:${activeWorkspaceTab.value}->${tab}`);
   if (isMobile.value) writeMobileWorkspaceTab(activeProjectId.value, tab);
   closeMobileContextMenu();
+  // Temporary diagnostic: verify the lane switch actually landed in the DOM.
+  const expectedKey = `${tab === "planner" ? plannerPanelKey.value : workerPanelKey.value}:${errorRecoveryGeneration.value}`;
+  window.setTimeout(() => {
+    try {
+      const appEl = document.querySelector(".app");
+      const activeLane = appEl?.getAttribute("data-active-lane");
+      const panel = document.getElementById(`lane-panel-${tab}`);
+      const panelKey = panel?.getAttribute("data-panel-key");
+      const visibleCount = panel?.getAttribute("data-message-count");
+      const hidden = Boolean(panel) && panel?.style.display === "none";
+      if (activeLane !== tab || !panel || hidden || panelKey !== expectedKey) {
+        diagAlert("lane切换未生效", {
+          clicked: tab,
+          activeLane,
+          panelKey,
+          expectedKey,
+          visibleCount,
+          hidden,
+          before,
+        });
+      }
+    } catch {
+      // diagnostics must never break switching
+    }
+  }, 400);
 }
 
-const laneActivation = createTapActivation(selectWorkspaceTab, { preserveFocus: true });
+const laneActivation = createTapActivation(selectWorkspaceTab, { preserveFocus: true, name: "lane-tab" });
 
 function restoreMobileWorkspaceTab(): void {
   const projectId = activeProjectId.value.trim();
@@ -454,12 +488,52 @@ watch(activeWorkspaceTab, (lane) => {
   void refreshVisibleLaneChat(lane);
 }, { flush: "post" });
 
+// Drafts live only in memory; iOS can kill the PWA (and the crash recovery
+// reload drops them too). Stash on pagehide and restore on next mount.
+const DRAFT_STASH_KEY = "ADS_WEB_DRAFT_STASH";
+
+function stashComposerDrafts(): void {
+  try {
+    const worker = String(workerComposerDraft.value ?? "");
+    const planner = String(plannerComposerDraft.value ?? "");
+    if (!worker && !planner) {
+      sessionStorage.removeItem(DRAFT_STASH_KEY);
+      return;
+    }
+    sessionStorage.setItem(
+      DRAFT_STASH_KEY,
+      JSON.stringify({ projectId: activeProjectId.value, worker, planner }),
+    );
+  } catch {
+    // ignore
+  }
+}
+
+function restoreStashedComposerDrafts(): void {
+  try {
+    const raw = sessionStorage.getItem(DRAFT_STASH_KEY);
+    if (!raw) return;
+    sessionStorage.removeItem(DRAFT_STASH_KEY);
+    const stash = JSON.parse(raw) as { projectId?: unknown; worker?: unknown; planner?: unknown };
+    if (String(stash.projectId ?? "") !== activeProjectId.value) return;
+    const worker = String(stash.worker ?? "");
+    const planner = String(stash.planner ?? "");
+    if (worker && !workerComposerDraft.value) workerComposerDraft.value = worker;
+    if (planner && !plannerComposerDraft.value) plannerComposerDraft.value = planner;
+  } catch {
+    // ignore
+  }
+}
+
 onMounted(() => {
   window.addEventListener("keydown", onMobileKeydown);
+  window.addEventListener("pagehide", stashComposerDrafts);
+  restoreStashedComposerDrafts();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onMobileKeydown);
+  window.removeEventListener("pagehide", stashComposerDrafts);
 });
 
 const {
@@ -837,11 +911,11 @@ const plannerConnectionStatus = computed(() => {
             aria-labelledby="lane-tab-planner"
             data-testid="lane-panel-planner"
             :data-message-count="plannerMessages.length"
-            :data-panel-key="plannerPanelKey"
+            :data-panel-key="`${plannerPanelKey}:${errorRecoveryGeneration}`"
           >
             <MainChatView
               ref="plannerChatRef"
-              :key="plannerPanelKey"
+              :key="`${plannerPanelKey}:${errorRecoveryGeneration}`"
               class="chatHost chatHost--planner"
               :messages="plannerMessages"
               :draft="plannerComposerDraft"
@@ -872,11 +946,11 @@ const plannerConnectionStatus = computed(() => {
             aria-labelledby="lane-tab-worker"
             data-testid="lane-panel-worker"
             :data-message-count="messages.length"
-            :data-panel-key="workerPanelKey"
+            :data-panel-key="`${workerPanelKey}:${errorRecoveryGeneration}`"
           >
             <MainChatView
               ref="workerChatRef"
-              :key="workerPanelKey"
+              :key="`${workerPanelKey}:${errorRecoveryGeneration}`"
               class="chatHost"
               :messages="messages"
               :draft="workerComposerDraft"

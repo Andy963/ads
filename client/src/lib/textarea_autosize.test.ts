@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { autosizeTextarea } from "./textarea_autosize";
+import { autosizeTextarea, createTextareaWrapMeasurer } from "./textarea_autosize";
 
 function makeStyle(overrides: Partial<CSSStyleDeclaration>): CSSStyleDeclaration {
   return {
@@ -184,5 +184,53 @@ describe("autosizeTextarea", () => {
     expect(el.style.overflowY).toBe("hidden");
     expect(el.scrollTop).toBe(0);
     expect(scrollHeight).not.toHaveBeenCalled();
+  });
+});
+
+describe("createTextareaWrapMeasurer", () => {
+  it("measures compact wrapping without changing or reading the live editor's geometry", () => {
+    const element = document.createElement("textarea");
+    element.value = "A draft that wraps at compact width";
+    element.style.width = "380px";
+    element.style.height = "82px";
+    element.style.overflowY = "auto";
+    element.scrollTop = 24;
+    const originalStyle = element.style.cssText;
+    vi.spyOn(window, "getComputedStyle").mockReturnValue(makeStyle({ fontFamily: "monospace", letterSpacing: "1px" }));
+    const liveScrollHeight = vi.spyOn(element, "scrollHeight", "get").mockReturnValue(500);
+    vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLTextAreaElement) {
+      return this.style.width === "200px" ? 60 : 40;
+    });
+    const measurer = createTextareaWrapMeasurer();
+    try {
+      expect(measurer.measure(element, 200)).toBe(true);
+      const mirror = document.querySelector<HTMLTextAreaElement>("[data-composer-measure]")!;
+      expect(mirror.value).toBe(element.value);
+      expect(mirror.style.fontFamily).toBe("monospace");
+      expect(mirror.style.letterSpacing).toBe("1px");
+      expect(mirror.style.visibility).toBe("hidden");
+      expect(mirror.style.overflow).toBe("hidden");
+      expect(mirror.getAttribute("aria-hidden")).toBe("true");
+      expect(mirror.tabIndex).toBe(-1);
+
+      expect(measurer.measure(element, 400)).toBe(false);
+      expect(document.querySelector("[data-composer-measure]")).toBe(mirror);
+      expect(element.style.cssText).toBe(originalStyle);
+      expect(element.scrollTop).toBe(24);
+      expect(liveScrollHeight).not.toHaveBeenCalled();
+    } finally {
+      measurer.dispose();
+    }
+    expect(document.querySelector("[data-composer-measure]")).toBeNull();
+  });
+
+  it("handles empty text and explicit newlines without allocating a measurement node", () => {
+    const element = document.createElement("textarea");
+    const measurer = createTextareaWrapMeasurer();
+    expect(measurer.measure(element, 200)).toBe(false);
+    element.value = "First line\nSecond line";
+    expect(measurer.measure(element, 200)).toBe(true);
+    expect(document.querySelector("[data-composer-measure]")).toBeNull();
+    measurer.dispose();
   });
 });

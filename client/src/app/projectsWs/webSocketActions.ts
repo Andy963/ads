@@ -1,5 +1,6 @@
 import { AdsWebSocket } from "../../api/ws";
 import type { SyncEventsResponse } from "../../api/types";
+import { diagAlert } from "../../lib/diagAlert";
 import {
   buildModelIdStorageKey,
   buildReasoningEffortStorageKey,
@@ -180,6 +181,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       if (rt) {
         if (!runtimeByProjectId.has(nextKey)) {
           runtimeByProjectId.set(nextKey, rt);
+        } else if (rt.ws || rt.connected.value) {
+          diagAlert("runtime分裂: worker旧runtime被丢弃且连接未关闭", { oldKey, nextKey });
         }
         runtimeByProjectId.delete(oldKey);
       }
@@ -187,6 +190,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       if (plannerRt) {
         if (!plannerRuntimeByProjectId.has(nextKey)) {
           plannerRuntimeByProjectId.set(nextKey, plannerRt);
+        } else if (plannerRt.ws || plannerRt.connected.value) {
+          diagAlert("runtime分裂: planner旧runtime被丢弃且连接未关闭", { oldKey, nextKey });
         }
         plannerRuntimeByProjectId.delete(oldKey);
       }
@@ -615,7 +620,15 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         }
 
         if (!rt.awaitingBootstrapHistory && !rt.inputLocked.value) return;
-        if (rt.busy.value || rt.turnInFlight || rt.resumeReplacePending) return;
+        if (rt.busy.value || rt.turnInFlight || rt.resumeReplacePending) {
+          diagAlert("bootstrap看门狗放弃解锁(busy)", {
+            chatSessionId: rt.chatSessionId,
+            busy: rt.busy.value,
+            turnInFlight: rt.turnInFlight,
+            awaiting: rt.awaitingBootstrapHistory,
+          });
+          return;
+        }
 
         rt.awaitingBootstrapHistory = false;
         rt.inputLocked.value = false;

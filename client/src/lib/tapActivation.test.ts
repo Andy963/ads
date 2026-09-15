@@ -54,21 +54,23 @@ describe("touch activation", () => {
     expect(activate.mock.calls).toEqual([["worker"], ["planner"]]);
   });
 
-  it.each(["pointercancel", "pointermove"])("rejects a gesture after %s", (eventType) => {
+  it.each(["pointercancel", "pointermove"])("recovers the tap through the synthetic click after %s", (eventType) => {
     const { activate, worker } = setup();
     worker.pointer("pointerdown");
     worker.pointer(eventType, { clientY: 30 });
     worker.pointer("pointerup");
-    worker.click();
     expect(activate).not.toHaveBeenCalled();
+    worker.click();
+    expect(activate.mock.calls).toEqual([["worker"]]);
   });
 
-  it("rejects a distant release even without intermediate move events", () => {
+  it("recovers a distant release through the synthetic click", () => {
     const { activate, worker } = setup();
     worker.pointer("pointerdown");
     worker.pointer("pointerup", { clientX: 30 });
-    worker.click();
     expect(activate).not.toHaveBeenCalled();
+    worker.click();
+    expect(activate.mock.calls).toEqual([["worker"]]);
   });
 
   it("ignores secondary pointers without cancelling the primary touch", () => {

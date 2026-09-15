@@ -23,6 +23,57 @@ function resolveLineHeightPx(style: CSSStyleDeclaration): number {
   return 20;
 }
 
+const WRAP_MEASUREMENT_STYLES = [
+  "boxSizing", "fontFamily", "fontSize", "fontStyle", "fontWeight", "fontVariant",
+  "fontStretch", "fontFeatureSettings", "fontVariationSettings", "lineHeight",
+  "letterSpacing", "wordSpacing", "textIndent", "textTransform", "tabSize",
+  "whiteSpace", "wordBreak", "overflowWrap", "direction",
+  "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+  "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth",
+  "borderTopStyle", "borderRightStyle", "borderBottomStyle", "borderLeftStyle",
+] as const;
+
+// The live editor's scroll geometry depends on its grid row, scroll position,
+// and IME state. Measure wrapping outside that layout so expanding the editor
+// cannot change the next expansion decision for the same text and width.
+export function createTextareaWrapMeasurer() {
+  let mirror: HTMLTextAreaElement | null = null;
+
+  const dispose = (): void => {
+    mirror?.remove();
+    mirror = null;
+  };
+
+  const measure = (el: HTMLTextAreaElement, width: number): boolean => {
+    if (!el.value) return false;
+    if (el.value.includes("\n")) return true;
+    const view = el.ownerDocument.defaultView;
+    if (!view) return false;
+    const style = view.getComputedStyle(el);
+    if (!mirror || mirror.ownerDocument !== el.ownerDocument) {
+      dispose();
+      mirror = el.ownerDocument.createElement("textarea");
+      mirror.setAttribute("data-composer-measure", "");
+      mirror.setAttribute("aria-hidden", "true");
+      mirror.tabIndex = -1;
+      mirror.disabled = true;
+      mirror.rows = 1;
+      mirror.style.cssText = "position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none;height:0;min-height:0;max-height:none;min-width:0;max-width:none;overflow:hidden;resize:none;";
+      el.ownerDocument.body.appendChild(mirror);
+    }
+    for (const property of WRAP_MEASUREMENT_STYLES) {
+      mirror.style[property] = style[property];
+    }
+    mirror.style.width = `${Math.max(1, width)}px`;
+    mirror.wrap = el.wrap;
+    mirror.value = el.value;
+    const singleRowHeight = resolveLineHeightPx(style) + parsePx(style.paddingTop) + parsePx(style.paddingBottom);
+    return mirror.scrollHeight > singleRowHeight + 1;
+  };
+
+  return { measure, dispose };
+}
+
 // Returns whether the measured content occupies more than one line.
 export function autosizeTextarea(el: HTMLTextAreaElement, opts: AutosizeTextareaOptions = {}): boolean {
   if (!el) return false;

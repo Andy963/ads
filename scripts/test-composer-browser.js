@@ -65,6 +65,10 @@ try {
   socket.addEventListener("message", (event) => {
     const message = JSON.parse(event.data);
     if (message.method === "Page.fileChooserOpened") fileChoosers++;
+    if (message.method === "Page.javascriptDialogOpening") {
+      report.dialogs = (report.dialogs ?? []).concat(message.params?.message ?? "");
+      void send("Page.handleJavaScriptDialog", { accept: true }).catch(() => {});
+    }
     const request = pending.get(message.id);
     if (!request) return;
     pending.delete(message.id);

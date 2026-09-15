@@ -1,7 +1,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import type { IncomingImage } from "./types";
-import { autosizeTextarea } from "../../lib/textarea_autosize";
+import { autosizeTextarea, createTextareaWrapMeasurer } from "../../lib/textarea_autosize";
+import { diagAlert } from "../../lib/diagAlert";
 
 type VoiceStatusKind = "idle" | "recording" | "transcribing" | "error" | "ok";
 type TranscriptionResponse = { ok?: boolean; text?: string; error?: string; message?: string };
@@ -90,10 +91,18 @@ export function useMainChatComposer(params: {
 }) {
   const inputEl = ref<HTMLTextAreaElement | null>(null);
   const draftValue = ref(String(params.getDraft() ?? ""));
+  // Keep native/IME editing independent of parent draft echoes. External draft
+  // changes still synchronize explicitly with the DOM and send-button state.
+  const hasContent = ref(draftValue.value.trim().length > 0);
   const input = computed({
     get: () => draftValue.value,
     set: (value: string) => {
       draftValue.value = value;
+      hasContent.value = value.trim().length > 0;
+      const el = inputEl.value;
+      if (el && el.value !== value) {
+        el.value = value;
+      }
       params.onDraftChange(value);
     },
   });
@@ -115,6 +124,7 @@ export function useMainChatComposer(params: {
       const normalized = String(nextDraft ?? "");
       if (normalized !== input.value || (inputEl.value && inputEl.value.value !== normalized)) {
         draftValue.value = normalized;
+        hasContent.value = normalized.trim().length > 0;
         const el = inputEl.value;
         if (el && el.value !== normalized) {
           el.value = normalized;
@@ -129,6 +139,7 @@ export function useMainChatComposer(params: {
   const leftActionsEl = ref<HTMLElement | null>(null);
   const rightActionsEl = ref<HTMLElement | null>(null);
   const composerExpanded = ref(false);
+  const wrapMeasurer = createTextareaWrapMeasurer();
 
   const availableTextareaHeight = (): number | undefined => {
     const row = composerRowEl.value;
@@ -149,15 +160,40 @@ export function useMainChatComposer(params: {
     const padding = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
     const toolsHeight = Math.max(leftActionsEl.value?.offsetHeight ?? 0, rightActionsEl.value?.offsetHeight ?? 0);
     const chromeHeight = composer.offsetHeight - row.offsetHeight + padding + toolsHeight + (Number.parseFloat(style.rowGap) || 0);
-    return Math.max(0, availableHeight - chromeHeight);
+    const cap = Math.max(0, availableHeight - chromeHeight);
+    // Temporary diagnostic: five rows need ~130px. If the budget drops below
+    // that while the user is composing, the input gets crushed to ~2 rows.
+    if (cap > 0 && cap < 130) {
+      diagAlert("输入框高度上限被压缩(<5行)", {
+        capBucket: `约${Math.round(cap / 24) * 24}px(${Math.round((cap - 10) / 24)}行)`,
+        detailHeight: Math.round(bounds.height),
+        toolsHeight: Math.round(toolsHeight),
+        chromeHeight: Math.round(chromeHeight),
+        expanded: composerExpanded.value,
+      });
+    }
+    return cap;
+  };
+
+  const resizeComposerHeight = (): void => {
+    const el = inputEl.value;
+    if (!el) return;
+    const row = composerRowEl.value;
+    if (row?.closest(".detail") && row.clientWidth === 0) return;
+    autosizeTextarea(el, {
+      minRows: COMPOSER_MIN_ROWS,
+      maxRows: COMPOSER_MAX_ROWS,
+      ...(el.value ? { maxHeightPx: availableTextareaHeight() } : {}),
+    });
   };
 
   const resizeComposer = (): void => {
     const el = inputEl.value;
     if (!el) return;
     if (!el.value) {
+      wrapMeasurer.dispose();
       composerExpanded.value = false;
-      autosizeTextarea(el, { minRows: COMPOSER_MIN_ROWS, maxRows: COMPOSER_MAX_ROWS });
+      resizeComposerHeight();
       return;
     }
 
@@ -165,8 +201,7 @@ export function useMainChatComposer(params: {
     if (row?.closest(".detail") && row.clientWidth === 0) return;
     const left = leftActionsEl.value;
     const right = rightActionsEl.value;
-    const options = { minRows: COMPOSER_MIN_ROWS, maxRows: COMPOSER_MAX_ROWS, maxHeightPx: availableTextareaHeight() };
-    let compactWidth = 0;
+    let compactWidth = el.getBoundingClientRect().width;
     if (row && left && right) {
       const style = window.getComputedStyle(row);
       const padding = (Number.parseFloat(style.paddingLeft) || 0) + (Number.parseFloat(style.paddingRight) || 0);
@@ -174,33 +209,25 @@ export function useMainChatComposer(params: {
       compactWidth = row.clientWidth - padding - gap * 2 - left.offsetWidth - right.offsetWidth;
     }
 
-    // Always decide using the compact width; measuring the expanded width would
-    // otherwise alternate between the two layouts near a wrapping boundary.
-    const previousWidth = el.style.width;
-    if (compactWidth > 0) el.style.width = `${compactWidth}px`;
-    let nextExpanded = composerExpanded.value;
-    try {
-      nextExpanded = autosizeTextarea(el, options);
-    } finally {
-      el.style.width = previousWidth;
-    }
-
+    const nextExpanded = wrapMeasurer.measure(el, compactWidth);
     if (nextExpanded !== composerExpanded.value) {
       composerExpanded.value = nextExpanded;
       return;
     }
-
-    autosizeTextarea(el, options);
+    resizeComposerHeight();
   };
 
-  // Resize after Vue commits DOM updates (v-model, conditional UI that affects wrapping, etc).
-  watch([input, inputEl, composerExpanded], resizeComposer, { flush: "post", immediate: true });
+  // Expansion is an output, never an input to wrap measurement. Feeding it
+  // back into the post watcher can recursively flush Vue's production scheduler.
+  watch([input, inputEl], resizeComposer, { flush: "post", immediate: true });
+  watch(composerExpanded, resizeComposerHeight, { flush: "post" });
 
   // Some environments/layout changes won't trigger reactive updates (e.g. viewport resize affects wrapping).
   // Attach lightweight native listeners so the composer reliably grows up to maxRows.
   let attachedEl: HTMLTextAreaElement | null = null;
   let composerResizeObserver: ResizeObserver | null = null;
   let composerResizeFrame: number | null = null;
+  let composerResizeNeedsMeasurement = false;
   const onNativeInput = (): void => {
     resizeComposer();
   };
@@ -208,6 +235,7 @@ export function useMainChatComposer(params: {
   const attachNativeListeners = (el: HTMLTextAreaElement | null): void => {
     composerResizeObserver?.disconnect();
     composerResizeObserver = null;
+    composerResizeNeedsMeasurement = false;
     if (composerResizeFrame !== null) {
       window.cancelAnimationFrame(composerResizeFrame);
       composerResizeFrame = null;
@@ -223,6 +251,7 @@ export function useMainChatComposer(params: {
       const composer = composerRowEl.value?.closest<HTMLElement>(".composer");
       const container = composer?.closest<HTMLElement>(".detail");
       const heightTargets = new Set([composer, container, leftActionsEl.value, rightActionsEl.value]);
+      const wrapWidthTargets = new Set([composerRowEl.value, container, leftActionsEl.value, rightActionsEl.value]);
       const observedSizes = new WeakMap<Element, { width: number; height: number }>();
       composerResizeObserver = new ResizeObserver((entries) => {
         let sizeChanged = false;
@@ -230,14 +259,20 @@ export function useMainChatComposer(params: {
           const { width, height } = entry.contentRect;
           const previousSize = observedSizes.get(entry.target);
           observedSizes.set(entry.target, { width, height });
-          if (width > 0 && width !== previousSize?.width) sizeChanged = true;
+          if (width > 0 && width !== previousSize?.width) {
+            sizeChanged = true;
+            if (wrapWidthTargets.has(entry.target as HTMLElement)) composerResizeNeedsMeasurement = true;
+          }
           if (heightTargets.has(entry.target as HTMLElement) && height > 0 && height !== previousSize?.height) sizeChanged = true;
         }
         if (!sizeChanged) return;
         if (composerResizeFrame !== null) window.cancelAnimationFrame(composerResizeFrame);
         composerResizeFrame = window.requestAnimationFrame(() => {
           composerResizeFrame = null;
-          resizeComposer();
+          const needsMeasurement = composerResizeNeedsMeasurement;
+          composerResizeNeedsMeasurement = false;
+          if (needsMeasurement) resizeComposer();
+          else resizeComposerHeight();
         });
       });
       for (const target of [el, composerRowEl.value, ...heightTargets]) {
@@ -245,6 +280,18 @@ export function useMainChatComposer(params: {
       }
     }
   };
+
+  // Sync the uncontrolled textarea's value the moment the ref binds; layout
+  // work stays in the post-flush watcher below.
+  watch(
+    inputEl,
+    (el) => {
+      if (el && el.value !== draftValue.value) {
+        el.value = draftValue.value;
+      }
+    },
+    { flush: "sync", immediate: true },
+  );
 
   watch(
     inputEl,
@@ -333,6 +380,7 @@ export function useMainChatComposer(params: {
     viewport?.removeEventListener("scroll", onWindowResize);
     document.removeEventListener("visibilitychange", onVisibilityChange);
     attachNativeListeners(null);
+    wrapMeasurer.dispose();
   });
 
   const insertIntoComposer = async (text: string): Promise<void> => {
@@ -697,6 +745,7 @@ export function useMainChatComposer(params: {
   return {
     input,
     inputEl,
+    hasContent,
     composerRowEl,
     leftActionsEl,
     rightActionsEl,

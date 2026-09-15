@@ -10,11 +10,17 @@ function createRuntime() {
     pendingImages: ref([]),
     connected: ref(false),
     busy: ref(false),
+    turnInFlight: false,
     composerDraft: ref(""),
     availableAgents: ref([]),
     activeAgentId: ref(""),
     threadWarning: ref<string | null>(null),
   };
+}
+
+async function flushRemountBarrier(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  await nextTick();
 }
 
 describe("useLaneRuntimeBridge", () => {
@@ -38,7 +44,7 @@ describe("useLaneRuntimeBridge", () => {
     expect(bridge.activeChatLane.value).toBe("planner");
   });
 
-  it("keeps the worker latest-prompt key stable across chat sessions", () => {
+  it("keeps the worker latest-prompt key stable across chat sessions", async () => {
     const plannerRuntime = createRuntime();
     const activeProject = ref({ chatSessionId: "session-1" });
 
@@ -57,13 +63,15 @@ describe("useLaneRuntimeBridge", () => {
     });
 
     expect(bridge.workerChatKey.value).toBe("p1:session-1");
-    expect(bridge.workerPanelKey.value).toBe("p1:0:session-1");
+    expect(bridge.workerPanelKey.value).toBe("p1:session-1:0:worker");
     expect(bridge.workerLatestPromptKey.value).toBe("p1:worker");
 
     activeProject.value = { chatSessionId: "session-2" };
+    await nextTick();
+    await flushRemountBarrier();
 
     expect(bridge.workerChatKey.value).toBe("p1:session-2");
-    expect(bridge.workerPanelKey.value).toBe("p1:0:session-2");
+    expect(bridge.workerPanelKey.value).toBe("p1:session-2:1:worker");
     expect(bridge.workerLatestPromptKey.value).toBe("p1:worker");
   });
 
@@ -88,10 +96,11 @@ describe("useLaneRuntimeBridge", () => {
     bridge.activeChatLane.value = "planner";
     activeProjectId.value = "p3";
     await nextTick();
+    await flushRemountBarrier();
     expect(bridge.activeChatLane.value).toBe("planner");
   });
 
-  it("changes the panel key when the visible lane changes without changing prompt storage scope", () => {
+  it("keeps the panel key stable across lane switches so panels stay mounted", () => {
     const bridge = useLaneRuntimeBridge({
       activeProjectId: ref("p1"),
       activeProject: ref({ chatSessionId: "main" }),
@@ -106,11 +115,94 @@ describe("useLaneRuntimeBridge", () => {
       resumeTaskThread: () => {},
     });
 
-    const initialPanelKey = bridge.workerPanelKey.value;
+    const initialWorkerPanelKey = bridge.workerPanelKey.value;
+    const initialPlannerPanelKey = bridge.plannerPanelKey.value;
     bridge.setActiveChatLane("worker");
 
-    expect(bridge.workerPanelKey.value).not.toBe(initialPanelKey);
+    expect(bridge.workerPanelKey.value).toBe(initialWorkerPanelKey);
+    expect(bridge.plannerPanelKey.value).toBe(initialPlannerPanelKey);
     expect(bridge.workerLatestPromptKey.value).toBe("p1:worker");
+  });
+
+  it("bumps the panel key when the active project changes", async () => {
+    const activeProjectId = ref("p1");
+    const bridge = useLaneRuntimeBridge({
+      activeProjectId,
+      activeProject: ref({ chatSessionId: "main" }),
+      activeRuntime: shallowRef(createRuntime()),
+      activePlannerRuntime: shallowRef(createRuntime()),
+      queuedPrompts: ref([]),
+      pendingImages: ref([]),
+      agentBusy: ref(false),
+      clearPlannerChat: () => {},
+      startNewChatSession: () => {},
+      resumePlannerThread: () => {},
+      resumeTaskThread: () => {},
+    });
+
+    const initialPanelKey = bridge.plannerPanelKey.value;
+    activeProjectId.value = "p3";
+    await nextTick();
+    await flushRemountBarrier();
+    expect(bridge.plannerPanelKey.value).not.toBe(initialPanelKey);
+  });
+
+  it("defers the remount barrier while a lane is busy and applies it once idle", async () => {
+    const activeProjectId = ref("p1");
+    const agentBusy = ref(false);
+    const bridge = useLaneRuntimeBridge({
+      activeProjectId,
+      activeProject: ref({ chatSessionId: "main" }),
+      activeRuntime: shallowRef(createRuntime()),
+      activePlannerRuntime: shallowRef(createRuntime()),
+      queuedPrompts: ref([]),
+      pendingImages: ref([]),
+      agentBusy,
+      clearPlannerChat: () => {},
+      startNewChatSession: () => {},
+      resumePlannerThread: () => {},
+      resumeTaskThread: () => {},
+    });
+
+    const initialPanelKey = bridge.workerPanelKey.value;
+    expect(initialPanelKey).toBe("p1:main:0:worker");
+    agentBusy.value = true;
+    activeProjectId.value = "p3";
+    await nextTick();
+    expect(bridge.workerPanelKey.value).toBe(initialPanelKey);
+
+    agentBusy.value = false;
+    await nextTick();
+    await flushRemountBarrier();
+    expect(bridge.workerPanelKey.value).toBe("p3:main:1:worker");
+  });
+
+  it("retries the remount barrier when only turnInFlight changes to idle", async () => {
+    const activeProjectId = ref("p1");
+    const activeRuntime = createRuntime();
+    activeRuntime.turnInFlight = true;
+    const bridge = useLaneRuntimeBridge({
+      activeProjectId,
+      activeProject: ref({ chatSessionId: "main" }),
+      activeRuntime: shallowRef(activeRuntime),
+      activePlannerRuntime: shallowRef(createRuntime()),
+      queuedPrompts: ref([]),
+      pendingImages: ref([]),
+      agentBusy: ref(false),
+      clearPlannerChat: () => {},
+      startNewChatSession: () => {},
+      resumePlannerThread: () => {},
+      resumeTaskThread: () => {},
+    });
+
+    const initialPanelKey = bridge.workerPanelKey.value;
+    activeProjectId.value = "p3";
+    await nextTick();
+    expect(bridge.workerPanelKey.value).toBe(initialPanelKey);
+
+    activeRuntime.turnInFlight = false;
+    await flushRemountBarrier();
+    expect(bridge.workerPanelKey.value).toBe("p3:main:1:worker");
   });
 
   it("blocks disconnected planner lane resets but keeps worker new-session available", () => {

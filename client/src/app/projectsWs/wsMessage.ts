@@ -17,6 +17,8 @@ import {
 } from "../../lib/chatPreferences";
 import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
 import { normalizeTurnSemanticOrder } from "../../lib/chat_sync";
+import { diagAlert } from "../../lib/diagAlert";
+import { crumb } from "../../lib/diagBreadcrumbs";
 import type { ExecuteBlockUpdate } from "../chatExecute";
 
 import { isReconnectNotice } from "./reconnectNotice";
@@ -1210,6 +1212,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (!resumeReplacePending && rt.ignoreNextHistory) {
         rt.ignoreNextHistory = false;
         dropReconnectBusyMessage();
+        diagAlert("history帧被ignoreNextHistory吞掉", {
+          chatSessionId: rt.chatSessionId,
+          items: items.length,
+          busy: rt.busy.value,
+          terminalTail: terminalHistoryTail,
+        });
         if (!rt.busy.value && !rt.turnInFlight) {
           rt.inputLocked.value = false;
           if (rt.laneStatus.value?.kind === "progress") {
@@ -1761,6 +1769,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
   };
 
   return (msg: unknown): void => {
+    crumb(`ws:${String((msg as { type?: unknown })?.type ?? "?")}`);
     applyMessage(msg);
     const current = Array.isArray(rt.messages.value) ? rt.messages.value : [];
     const normalized = normalizeTurnSemanticOrder(current);

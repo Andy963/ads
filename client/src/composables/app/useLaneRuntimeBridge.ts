@@ -1,4 +1,4 @@
-import { computed, ref, watch, type Ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch, type Ref } from "vue";
 
 export type ChatLane = "planner" | "worker";
 
@@ -13,6 +13,7 @@ type RuntimeShape = {
   pendingImages: Ref<unknown[]>;
   connected: Ref<boolean>;
   busy: Ref<boolean>;
+  turnInFlight?: boolean;
   inputLocked: Ref<boolean>;
   laneStatus: Ref<LaneStatus | null>;
   composerDraft: Ref<string>;
@@ -66,6 +67,63 @@ export function useLaneRuntimeBridge(params: {
 }) {
   const activeChatLane = ref<ChatLane>("planner");
   const projectContextGeneration = ref(0);
+  // Latched panel context: while a turn is streaming, the panel key must stay
+  // frozen even if the project identity is rewritten in the background. The
+  // latched value catches up (and remounts once) when both lanes go idle.
+  const panelContextKey = ref(
+    `${params.activeProjectId.value}:${params.activeProject.value?.chatSessionId ?? "main"}`,
+  );
+  let remountBarrierPending = false;
+  let remountBarrierTimer: ReturnType<typeof setTimeout> | null = null;
+  let remountBarrierToken = 0;
+  const REMOUNT_BARRIER_RETRY_MS = 16;
+
+  const lanesBusy = (): boolean =>
+    Boolean(params.agentBusy.value) ||
+    Boolean(asPlannerRuntimeShape(params.activePlannerRuntime.value).busy.value) ||
+    Boolean(params.activeRuntime.value && (params.activeRuntime.value as RuntimeShape).turnInFlight) ||
+    Boolean(asPlannerRuntimeShape(params.activePlannerRuntime.value).turnInFlight);
+
+  /**
+   * Re-keying a lane panel unmounts+remounts the entire chat tree. Triggering
+   * that while a turn is streaming raced with in-flight patches and crashed the
+   * renderer on iOS (stack overflow mid-patch, then null-el fallout). Panel
+   * content follows the runtime reactively, so deferring the structural
+   * remount until idle loses nothing.
+   */
+  const applyRemountBarrier = (): void => {
+    const next = `${params.activeProjectId.value}:${params.activeProject.value?.chatSessionId ?? "main"}`;
+    if (next === panelContextKey.value) return;
+    panelContextKey.value = next;
+    projectContextGeneration.value += 1;
+  };
+
+  const cancelRemountBarrierTimer = (): void => {
+    remountBarrierToken += 1;
+    if (remountBarrierTimer === null) return;
+    clearTimeout(remountBarrierTimer);
+    remountBarrierTimer = null;
+  };
+
+  const scheduleRemountBarrier = (delayMs = 0): void => {
+    if (!remountBarrierPending || remountBarrierTimer !== null) return;
+    const token = ++remountBarrierToken;
+    remountBarrierTimer = setTimeout(() => {
+      remountBarrierTimer = null;
+      if (token !== remountBarrierToken || !remountBarrierPending) return;
+      if (lanesBusy()) {
+        scheduleRemountBarrier(REMOUNT_BARRIER_RETRY_MS);
+        return;
+      }
+      remountBarrierPending = false;
+      applyRemountBarrier();
+    }, delayMs);
+  };
+
+  const requestPanelRemountBarrier = (): void => {
+    remountBarrierPending = true;
+    scheduleRemountBarrier();
+  };
 
   watch(
     () => params.activeProjectId.value,
@@ -74,15 +132,35 @@ export function useLaneRuntimeBridge(params: {
       // The project id normally changes with the context, but a server-side
       // identity resolution can reuse an id. Keep a local generation as an
       // explicit remount barrier for the visible chat panels.
-      projectContextGeneration.value += 1;
+      requestPanelRemountBarrier();
     },
-    { flush: "sync" },
   );
+
+  watch(
+    () => params.activeProject.value?.chatSessionId,
+    (chatSessionId, previousChatSessionId) => {
+      if (!chatSessionId || chatSessionId === previousChatSessionId) return;
+      requestPanelRemountBarrier();
+    },
+  );
+
+  watch(
+    () => lanesBusy(),
+    (busy) => {
+      if (!busy) scheduleRemountBarrier();
+    },
+  );
+
+  onBeforeUnmount(() => {
+    cancelRemountBarrierTimer();
+  });
 
   function setActiveChatLane(lane: ChatLane): void {
     if (activeChatLane.value === lane) return;
+    // Lane switches do not change the panel identity. App keeps only the
+    // selected lane mounted, so inactive composers cannot patch in the
+    // background or leave Teleport nodes behind in document.body.
     activeChatLane.value = lane;
-    projectContextGeneration.value += 1;
   }
 
   const plannerRuntime = computed(() => asPlannerRuntimeShape(params.activePlannerRuntime.value));
@@ -110,7 +188,7 @@ export function useLaneRuntimeBridge(params: {
     () => `${params.activeProjectId.value}:planner`,
   );
   const plannerPanelKey = computed(
-    () => `${params.activeProjectId.value}:${projectContextGeneration.value}:planner`,
+    () => `${panelContextKey.value}:${projectContextGeneration.value}:planner`,
   );
 
   const workerAgents = computed(() => workerRuntime.value.availableAgents.value);
@@ -131,8 +209,7 @@ export function useLaneRuntimeBridge(params: {
     () => `${params.activeProjectId.value}:${params.activeProject.value?.chatSessionId ?? "main"}`,
   );
   const workerPanelKey = computed(
-    () =>
-      `${params.activeProjectId.value}:${projectContextGeneration.value}:${params.activeProject.value?.chatSessionId ?? "main"}`,
+    () => `${panelContextKey.value}:${projectContextGeneration.value}:worker`,
   );
   const workerQueuedPrompts = computed(() => mapQueuedPrompts(params.queuedPrompts.value));
   const resumableSessions = computed(() => workerRuntime.value.resumableSessions.value);
