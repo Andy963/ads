@@ -38,7 +38,7 @@ describe("web/ws/messageControl", () => {
 
     const clearedHistory = await handleWsControlMessage({
       parsed: { type: "clear_history" },
-      chatSessionId: "planner",
+      chatSessionId: "advisor",
       userId: 7,
       historyKey: "history-1",
       currentCwd: "/tmp/project",
@@ -72,7 +72,7 @@ describe("web/ws/messageControl", () => {
     assert.equal(localSessionResets, 1);
     assert.equal(promptRunEpochs.get("history-1"), 2);
     assert.deepEqual(broadcasted, [
-      { type: "session_reset", source: "clear_history", sourceChatSessionId: "planner", scope: "lane" },
+      { type: "session_reset", source: "clear_history", sourceChatSessionId: "advisor", scope: "lane" },
     ]);
     assert.deepEqual(sent[0], {
       type: "result",
@@ -131,7 +131,7 @@ describe("web/ws/messageControl", () => {
     });
   });
 
-  it("downgrades a planner shared reset request to a planner-lane reset", async () => {
+  it("downgrades a advisor shared reset request to a advisor-lane reset", async () => {
     const sent: unknown[] = [];
     const broadcasted: unknown[] = [];
     let sharedResetCalls = 0;
@@ -139,9 +139,9 @@ describe("web/ws/messageControl", () => {
 
     const clearedHistory = await handleWsControlMessage({
       parsed: { type: "clear_history", payload: { scope: "shared" } },
-      chatSessionId: "planner",
+      chatSessionId: "advisor",
       userId: 7,
-      historyKey: "planner-history-1",
+      historyKey: "advisor-history-1",
       currentCwd: "/tmp/project",
       sessionManager: { reset: () => {} } as any,
       orchestrator: { id: "orch" } as any,
@@ -168,7 +168,7 @@ describe("web/ws/messageControl", () => {
       {
         type: "session_reset",
         source: "clear_history",
-        sourceChatSessionId: "planner",
+        sourceChatSessionId: "advisor",
         scope: "lane",
         laneGeneration: 2,
       },

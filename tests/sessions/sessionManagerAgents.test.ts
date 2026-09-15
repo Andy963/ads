@@ -18,7 +18,7 @@ describe("SessionManager agent allowlists", () => {
   it("uses interactive allowlists for telegram and interactive web lanes", () => {
     assert.deepEqual(resolveSessionAgentAllowlist("telegram"), ["codex"]);
     assert.deepEqual(resolveSessionAgentAllowlist("web-worker"), ["codex"]);
-    assert.deepEqual(resolveSessionAgentAllowlist("web-planner"), ["codex"]);
+    assert.deepEqual(resolveSessionAgentAllowlist("web-advisor"), ["codex"]);
   });
 
   it("uses codex-only allowlists for scheduler surfaces", () => {

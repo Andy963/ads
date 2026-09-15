@@ -137,18 +137,18 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find(".chatShell").exists()).toBe(true);
     expect(wrapper.find(".mobileMainPanel").exists()).toBe(false);
     expect(wrapper.findAll(".laneTab").map((tab) => tab.text())).toEqual(["Advisor", "Worker"]);
-    expect(wrapper.find('[data-testid="lane-tab-status-planner"]').classes()).toContain("laneTabStatusDot--connected");
+    expect(wrapper.find('[data-testid="lane-tab-status-advisor"]').classes()).toContain("laneTabStatusDot--connected");
     expect(wrapper.find('[data-testid="lane-tab-status-worker"]').classes()).toContain("laneTabStatusDot--connected");
-    expect(wrapper.find('[data-testid="lane-tab-planner"]').classes()).toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
 
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-new-session"]').exists()).toBe(true);
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
 
-    await wrapper.find('[data-testid="lane-tab-planner"]').trigger("click");
+    await wrapper.find('[data-testid="lane-tab-advisor"]').trigger("click");
     await settleUi(wrapper);
-    expect(wrapper.find('[data-testid="lane-panel-planner"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(false);
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
@@ -199,11 +199,11 @@ describe("mobile navigation behavior", () => {
     });
     await settleUi(wrapper);
 
-    const plannerRuntime = (wrapper.vm as any).activePlannerRuntime as {
+    const advisorRuntime = (wrapper.vm as any).activeAdvisorRuntime as {
       busy: { value: boolean };
       connected: { value: boolean };
     };
-    plannerRuntime.busy.value = true;
+    advisorRuntime.busy.value = true;
     await settleUi(wrapper);
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
 
@@ -215,8 +215,8 @@ describe("mobile navigation behavior", () => {
     expect(actions).toHaveLength(2);
     expect(actions.every((action) => (action.element as HTMLButtonElement).disabled)).toBe(true);
 
-    plannerRuntime.busy.value = false;
-    plannerRuntime.connected.value = false;
+    advisorRuntime.busy.value = false;
+    advisorRuntime.connected.value = false;
     await settleUi(wrapper);
     expect((menu.find('[data-testid="mobile-context-action-resume"]').element as HTMLButtonElement).disabled).toBe(false);
     expect((menu.find('[data-testid="mobile-context-action-new-session"]').element as HTMLButtonElement).disabled).toBe(true);
@@ -234,7 +234,7 @@ describe("mobile navigation behavior", () => {
       activeProjectId: "p1",
     };
     localStorage.setItem("ads.mobileWorkspaceTab.p1", "worker");
-    localStorage.setItem("ads.mobileWorkspaceTab.p2", "planner");
+    localStorage.setItem("ads.mobileWorkspaceTab.p2", "advisor");
 
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, {
@@ -250,7 +250,7 @@ describe("mobile navigation behavior", () => {
     await settleUi(wrapper);
 
     expect(wrapper.find('[data-testid="lane-tab-worker"]').classes()).toContain("active");
-    expect(wrapper.find('[data-testid="lane-tab-planner"]').classes()).not.toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).not.toContain("active");
 
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
     await settleUi(wrapper);
@@ -258,7 +258,7 @@ describe("mobile navigation behavior", () => {
     expect(projectB).toBeDefined();
     await projectB!.trigger("click");
     await settleUi(wrapper);
-    expect(wrapper.find('[data-testid="lane-tab-planner"]').classes()).toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
 
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
     await settleUi(wrapper);
@@ -267,7 +267,7 @@ describe("mobile navigation behavior", () => {
     await projectA!.trigger("click");
     await settleUi(wrapper);
     expect(wrapper.find('[data-testid="lane-tab-worker"]').classes()).toContain("active");
-    expect(wrapper.find('[data-testid="lane-tab-planner"]').classes()).not.toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).not.toContain("active");
 
     wrapper.unmount();
   }, 40_000);

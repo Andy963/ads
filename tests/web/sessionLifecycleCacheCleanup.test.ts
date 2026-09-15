@@ -75,14 +75,14 @@ describe("web session lifecycle cache cleanup", () => {
     const cwdStore = new Map([
       ["101", "/workspace/worker"],
       ["1001", "/workspace/worker-legacy"],
-      ["202", "/workspace/planner"],
-      ["2002", "/workspace/planner-legacy"],
+      ["202", "/workspace/advisor"],
+      ["2002", "/workspace/advisor-legacy"],
     ]);
     const persistedSnapshots: Array<Array<[string, string]>> = [];
 
     const workerSessions = createFakeSessionFactory();
-    const plannerSessions = createFakeSessionFactory();
-    const managers: { worker?: SessionManager; planner?: SessionManager } = {};
+    const advisorSessions = createFakeSessionFactory();
+    const managers: { worker?: SessionManager; advisor?: SessionManager } = {};
     const registry = createSessionCacheRegistry({
       workspaceCache,
       cwdStore,
@@ -90,26 +90,26 @@ describe("web session lifecycle cache cleanup", () => {
       persistCwdStore: (_storePath, store) => {
         persistedSnapshots.push(Array.from(store.entries()));
       },
-      hasActiveSession: (userId) => Boolean(managers.worker?.hasSession(userId) || managers.planner?.hasSession(userId)),
+      hasActiveSession: (userId) => Boolean(managers.worker?.hasSession(userId) || managers.advisor?.hasSession(userId)),
     });
 
     const workerManager = new SessionManager(1000, 500, "workspace-write", undefined, undefined, undefined, {
       createSession: workerSessions.factory as never,
       onDispose: ({ userId }) => registry.clearForUser(userId),
     });
-    const plannerManager = new SessionManager(1000, 500, "read-only", undefined, undefined, undefined, {
-      createSession: plannerSessions.factory as never,
+    const advisorManager = new SessionManager(1000, 500, "read-only", undefined, undefined, undefined, {
+      createSession: advisorSessions.factory as never,
       onDispose: ({ userId }) => registry.clearForUser(userId),
     });
     managers.worker = workerManager;
-    managers.planner = plannerManager;
+    managers.advisor = advisorManager;
 
     try {
       registry.registerBinding({ userId: 101, cacheKey: "user::session", cwdKeys: ["101", "1001"] });
       registry.registerBinding({ userId: 202, cacheKey: "user::session", cwdKeys: ["202", "2002"] });
 
       workerManager.getOrCreate(101, "/workspace/worker", false);
-      plannerManager.getOrCreate(202, "/workspace/planner", false);
+      advisorManager.getOrCreate(202, "/workspace/advisor", false);
 
       workerManager.dropSession(101);
       assert.equal(workerSessions.created[0]?.resetCalls, 1);
@@ -117,28 +117,28 @@ describe("web session lifecycle cache cleanup", () => {
       assert.equal(cwdStore.has("1001"), false);
       assert.equal(workspaceCache.get("user::session"), "/workspace");
 
-      plannerManager.dropSession(202);
-      assert.equal(plannerSessions.created[0]?.resetCalls, 1);
+      advisorManager.dropSession(202);
+      assert.equal(advisorSessions.created[0]?.resetCalls, 1);
       assert.equal(cwdStore.has("202"), false);
       assert.equal(cwdStore.has("2002"), false);
       assert.equal(workspaceCache.has("user::session"), false);
       assert.equal(persistedSnapshots.length, 2);
     } finally {
       workerManager.destroy();
-      plannerManager.destroy();
+      advisorManager.destroy();
     }
   });
 
   it("persists cwd deletions for sqlite-backed stores", () => {
     const cwdStore = new Map<string, string>([
       ["101", "/workspace/worker"],
-      ["202", "/workspace/planner"],
+      ["202", "/workspace/advisor"],
     ]);
 
     persistCwdStore(stateDbPath, cwdStore);
     cwdStore.delete("101");
     persistCwdStore(stateDbPath, cwdStore);
 
-    assert.deepEqual(Array.from(loadCwdStore(stateDbPath).entries()), [["202", "/workspace/planner"]]);
+    assert.deepEqual(Array.from(loadCwdStore(stateDbPath).entries()), [["202", "/workspace/advisor"]]);
   });
 });

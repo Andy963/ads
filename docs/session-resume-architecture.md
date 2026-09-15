@@ -295,7 +295,7 @@ Codex 定位靠文件名（`rollout-<ts>-<threadId>.jsonl`），不需要打开�
 - 入口：`lane-resume-thread` 按钮从"直接恢复"改为"打开选择器"；选择器顶部保留"恢复最近一次会话"快捷项（`session-picker-latest`），等价于改造前的行为。
 - 列表项展示：标题/预览、相对时间、消息数、来源徽标（`Codex` / `ADS 记录` / `本地文件`）、`当前` 标记。
 - 搜索输入 250 ms 防抖；"显示全部目录"开关对应 `includeAllCwds`。
-- 选择器只服务 worker lane（provider session 在此追踪）；planner lane 仍走一键恢复。
+- 选择器只服务 worker lane（provider session 在此追踪）；advisor lane 仍走一键恢复。
 - 移动端：与全局规则管理器一致，`width: min(900px, 100%)` 自适应，不额外做窄屏隐藏。
 
 ### 4.8 恢复语义矩阵

@@ -72,6 +72,6 @@ describe("SystemPromptManager prompt injection", () => {
 
     assert(injection);
     assert.doesNotMatch(injection.text, /secret preference/);
-    assert.doesNotMatch(injection.text, /planner-instructions|System instructions/);
+    assert.doesNotMatch(injection.text, /advisor-instructions|System instructions/);
   });
 });

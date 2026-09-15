@@ -100,7 +100,7 @@ if (!crashed) {
 // Phase C: wrap typing immediately after lane switches (remount fresh composer).
 if (!crashed) {
   for (let i = 0; i < 6 && !crashed; i += 1) {
-    await chooseLane("planner");
+    await chooseLane("advisor");
     await chooseLane("worker");
     crashed ||= await wrapHammer(`lane-${i}`, 3);
   }

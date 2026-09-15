@@ -51,7 +51,7 @@ const {
   reorderProjects,
   removeProject,
   getRuntime,
-  getPlannerRuntime,
+  getAdvisorRuntime,
   connectWs,
   runtimeProjectInProgress,
   formatProjectBranch,
@@ -60,33 +60,33 @@ const {
   apiAuthorized,
   resumeTaskThread,
   listResumableSessions,
-  resumePlannerThread,
+  resumeAdvisorThread,
   clearActiveChat,
-  clearPlannerChat,
-  startNewPlannerSession,
+  clearAdvisorChat,
+  startNewAdvisorSession,
   startNewChatSession,
   messages,
   activeRuntime,
-  activePlannerRuntime,
+  activeAdvisorRuntime,
   queuedPrompts,
   pendingImages,
   agentBusy,
   sendMainPrompt,
-  sendPlannerPrompt,
+  sendAdvisorPrompt,
   setMainModelId,
-  setPlannerModelId,
+  setAdvisorModelId,
   setMainModelReasoningEffort,
-  setPlannerModelReasoningEffort,
+  setAdvisorModelReasoningEffort,
   switchMainAgent,
-  switchPlannerAgent,
+  switchAdvisorAgent,
   interruptActive,
-  interruptPlanner,
+  interruptAdvisor,
   addPendingImages,
   clearPendingImages,
-  addPlannerPendingImages,
-  clearPlannerPendingImages,
+  addAdvisorPendingImages,
+  clearAdvisorPendingImages,
   removeQueuedPrompt,
-  removePlannerQueuedPrompt,
+  removeAdvisorQueuedPrompt,
   apiNotice,
   resolveActiveWorkspaceRoot,
   projectDialogOpen,
@@ -134,7 +134,7 @@ const mobileContextMenuOpen = ref(false);
 const mobileSettingsRef = ref<MobileManagerHandle | null>(null);
 
 const chatLanes: Array<{ id: ChatLane; label: string }> = [
-  { id: "planner", label: "Advisor" },
+  { id: "advisor", label: "Advisor" },
   { id: "worker", label: "Worker" },
 ];
 const workspaceTabs = computed<Array<{ id: ChatLane; label: string }>>(() => chatLanes);
@@ -142,19 +142,19 @@ const workspaceTabs = computed<Array<{ id: ChatLane; label: string }>>(() => cha
 const {
   activeChatLane,
   setActiveChatLane,
-  plannerMessages,
-  plannerQueuedPrompts,
-  plannerPendingImages,
-  plannerConnected,
-  plannerBusy,
-  plannerInputLocked,
-  plannerLaneStatus,
-  plannerComposerDraft,
-  plannerAgents,
-  plannerActiveAgentId,
-  plannerThreadWarning,
-  plannerChatKey,
-  plannerPanelKey,
+  advisorMessages,
+  advisorQueuedPrompts,
+  advisorPendingImages,
+  advisorConnected,
+  advisorBusy,
+  advisorInputLocked,
+  advisorLaneStatus,
+  advisorComposerDraft,
+  advisorAgents,
+  advisorActiveAgentId,
+  advisorThreadWarning,
+  advisorChatKey,
+  advisorPanelKey,
   workerAgents,
   workerInputLocked,
   workerLaneStatus,
@@ -187,15 +187,15 @@ const {
   activeProjectId,
   activeProject,
   activeRuntime,
-  activePlannerRuntime,
+  activeAdvisorRuntime,
   queuedPrompts,
   pendingImages,
   agentBusy,
   clearActiveChat,
-  clearPlannerChat,
-  startNewPlannerSession,
+  clearAdvisorChat,
+  startNewAdvisorSession,
   startNewChatSession,
-  resumePlannerThread,
+  resumeAdvisorThread,
   resumeTaskThread,
   listResumableSessions,
 });
@@ -206,51 +206,51 @@ type MainChatHandle = {
   refreshAfterVisibility?: () => void | Promise<void>;
 };
 
-const plannerChatRef = ref<MainChatHandle | null>(null);
+const advisorChatRef = ref<MainChatHandle | null>(null);
 const workerChatRef = ref<MainChatHandle | null>(null);
 
 const activeLaneConnected = computed(() =>
-  activeWorkspaceTab.value === "planner" ? Boolean(plannerConnected.value) : Boolean(connected.value),
+  activeWorkspaceTab.value === "advisor" ? Boolean(advisorConnected.value) : Boolean(connected.value),
 );
 const activeLaneInputLocked = computed(() =>
-  activeWorkspaceTab.value === "planner" ? Boolean(plannerInputLocked.value) : Boolean(workerInputLocked.value),
+  activeWorkspaceTab.value === "advisor" ? Boolean(advisorInputLocked.value) : Boolean(workerInputLocked.value),
 );
 const activeLaneAgents = computed(() =>
-  activeWorkspaceTab.value === "planner" ? plannerAgents.value : workerAgents.value,
+  activeWorkspaceTab.value === "advisor" ? advisorAgents.value : workerAgents.value,
 );
 const activeLaneActiveAgentId = computed(() =>
-  activeWorkspaceTab.value === "planner" ? plannerActiveAgentId.value : workerActiveAgentId.value,
+  activeWorkspaceTab.value === "advisor" ? advisorActiveAgentId.value : workerActiveAgentId.value,
 );
 const activeLaneModelId = computed(() =>
-  activeWorkspaceTab.value === "planner"
-    ? activePlannerRuntime.value.modelId.value
+  activeWorkspaceTab.value === "advisor"
+    ? activeAdvisorRuntime.value.modelId.value
     : activeRuntime.value.modelId.value,
 );
 const activeLaneModelReasoningEffort = computed(() =>
-  activeWorkspaceTab.value === "planner"
-    ? activePlannerRuntime.value.modelReasoningEffort.value
+  activeWorkspaceTab.value === "advisor"
+    ? activeAdvisorRuntime.value.modelReasoningEffort.value
     : activeRuntime.value.modelReasoningEffort.value,
 );
 
 function handleActiveLaneSwitchAgent(agentId: string): void {
-  if (activeWorkspaceTab.value === "planner") {
-    switchPlannerAgent(agentId);
+  if (activeWorkspaceTab.value === "advisor") {
+    switchAdvisorAgent(agentId);
   } else {
     switchMainAgent(agentId);
   }
 }
 
 function handleActiveLaneSetModel(modelId: string): void {
-  if (activeWorkspaceTab.value === "planner") {
-    setPlannerModelId(modelId);
+  if (activeWorkspaceTab.value === "advisor") {
+    setAdvisorModelId(modelId);
   } else {
     setMainModelId(modelId);
   }
 }
 
 function handleActiveLaneSetReasoningEffort(effort: string): void {
-  if (activeWorkspaceTab.value === "planner") {
-    setPlannerModelReasoningEffort(effort);
+  if (activeWorkspaceTab.value === "advisor") {
+    setAdvisorModelReasoningEffort(effort);
   } else {
     setMainModelReasoningEffort(effort);
   }
@@ -259,7 +259,7 @@ function handleActiveLaneSetReasoningEffort(effort: string): void {
 type ProjectBusyState = "idle" | "advisor" | "worker" | "both";
 
 function projectBusyState(projectId: string): ProjectBusyState {
-  const advisorBusy = runtimeProjectInProgress(getPlannerRuntime(projectId));
+  const advisorBusy = runtimeProjectInProgress(getAdvisorRuntime(projectId));
   const workerBusy = runtimeProjectInProgress(getRuntime(projectId));
   if (advisorBusy && workerBusy) return "both";
   if (advisorBusy) return "advisor";
@@ -355,14 +355,14 @@ function selectWorkspaceTab(tab: ChatLane): void {
   const before = {
     lane: activeWorkspaceTab.value,
     workerCount: messages.length,
-    plannerCount: plannerMessages.length,
+    advisorCount: advisorMessages.length,
   };
   setActiveChatLane(tab);
   crumb(`lane:${activeWorkspaceTab.value}->${tab}`);
   if (isMobile.value) writeMobileWorkspaceTab(activeProjectId.value, tab);
   closeMobileContextMenu();
   // Temporary diagnostic: verify the lane switch actually landed in the DOM.
-  const expectedKey = `${tab === "planner" ? plannerPanelKey.value : workerPanelKey.value}:${errorRecoveryGeneration.value}`;
+  const expectedKey = `${tab === "advisor" ? advisorPanelKey.value : workerPanelKey.value}:${errorRecoveryGeneration.value}`;
   window.setTimeout(() => {
     try {
       const appEl = document.querySelector(".app");
@@ -399,7 +399,7 @@ function restoreMobileWorkspaceTab(): void {
 async function refreshVisibleLaneChat(lane: ChatLane): Promise<void> {
   await nextTick();
   if (activeWorkspaceTab.value !== lane) return;
-  const chat = lane === "planner" ? plannerChatRef.value : workerChatRef.value;
+  const chat = lane === "advisor" ? advisorChatRef.value : workerChatRef.value;
   await chat?.refreshAfterVisibility?.();
 }
 
@@ -495,14 +495,14 @@ const DRAFT_STASH_KEY = "ADS_WEB_DRAFT_STASH";
 function stashComposerDrafts(): void {
   try {
     const worker = String(workerComposerDraft.value ?? "");
-    const planner = String(plannerComposerDraft.value ?? "");
-    if (!worker && !planner) {
+    const advisor = String(advisorComposerDraft.value ?? "");
+    if (!worker && !advisor) {
       sessionStorage.removeItem(DRAFT_STASH_KEY);
       return;
     }
     sessionStorage.setItem(
       DRAFT_STASH_KEY,
-      JSON.stringify({ projectId: activeProjectId.value, worker, planner }),
+      JSON.stringify({ projectId: activeProjectId.value, worker, advisor }),
     );
   } catch {
     // ignore
@@ -514,12 +514,12 @@ function restoreStashedComposerDrafts(): void {
     const raw = sessionStorage.getItem(DRAFT_STASH_KEY);
     if (!raw) return;
     sessionStorage.removeItem(DRAFT_STASH_KEY);
-    const stash = JSON.parse(raw) as { projectId?: unknown; worker?: unknown; planner?: unknown };
+    const stash = JSON.parse(raw) as { projectId?: unknown; worker?: unknown; advisor?: unknown };
     if (String(stash.projectId ?? "") !== activeProjectId.value) return;
     const worker = String(stash.worker ?? "");
-    const planner = String(stash.planner ?? "");
+    const advisor = String(stash.advisor ?? "");
     if (worker && !workerComposerDraft.value) workerComposerDraft.value = worker;
-    if (planner && !plannerComposerDraft.value) plannerComposerDraft.value = planner;
+    if (advisor && !advisorComposerDraft.value) advisorComposerDraft.value = advisor;
   } catch {
     // ignore
   }
@@ -558,7 +558,7 @@ const {
 } = useProjectSidebar({
   projects,
   getRuntime,
-  getPlannerRuntime,
+  getAdvisorRuntime,
   runtimeProjectInProgress,
   requestProjectSwitch: requestProjectSwitchFromMobile,
   reorderProjects,
@@ -597,12 +597,12 @@ const workerConnectionStatus = computed(() => {
   return laneStatus;
 });
 
-const plannerConnectionStatus = computed(() => {
-  const laneStatus = plannerLaneStatus.value;
-  if (!plannerConnected.value && laneStatus?.kind === "progress") return laneStatus;
-  const error = String(activePlannerRuntime.value.wsError.value ?? "").trim();
+const advisorConnectionStatus = computed(() => {
+  const laneStatus = advisorLaneStatus.value;
+  if (!advisorConnected.value && laneStatus?.kind === "progress") return laneStatus;
+  const error = String(activeAdvisorRuntime.value.wsError.value ?? "").trim();
   if (error) return { kind: "error" as const, message: error };
-  if (!plannerConnected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
+  if (!advisorConnected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
   return laneStatus;
 });
 
@@ -617,9 +617,9 @@ const plannerConnectionStatus = computed(() => {
     :data-active-lane="activeWorkspaceTab"
     :data-project-id="activeProjectId"
     :data-worker-message-count="messages.length"
-    :data-planner-message-count="plannerMessages.length"
+    :data-advisor-message-count="advisorMessages.length"
     :data-worker-panel-key="workerPanelKey"
-    :data-planner-panel-key="plannerPanelKey"
+    :data-advisor-panel-key="advisorPanelKey"
     @click="closeMobileContextMenu"
   >
     <header class="topbar">
@@ -868,7 +868,7 @@ const plannerConnectionStatus = computed(() => {
               >
                 <span
                   class="laneTabStatusDot"
-                  :class="isLaneConnected(tab.id, { planner: plannerConnected, worker: connected })
+                  :class="isLaneConnected(tab.id, { advisor: advisorConnected, worker: connected })
                     ? 'laneTabStatusDot--connected'
                     : 'laneTabStatusDot--disconnected'"
                   :data-testid="`lane-tab-status-${tab.id}`"
@@ -876,14 +876,14 @@ const plannerConnectionStatus = computed(() => {
                 />
                 <span class="laneTabLabel">{{ tab.label }}</span>
                 <span
-                  v-if="tab.id === 'planner' ? plannerBusy : agentBusy"
+                  v-if="tab.id === 'advisor' ? advisorBusy : agentBusy"
                   class="laneTabBusySpinner"
-                  :class="tab.id === 'planner' ? 'laneTabBusySpinner--advisor' : 'laneTabBusySpinner--worker'"
+                  :class="tab.id === 'advisor' ? 'laneTabBusySpinner--advisor' : 'laneTabBusySpinner--worker'"
                   :data-testid="`lane-tab-busy-${tab.id}`"
                   aria-hidden="true"
                 />
               </button>
-              <div v-if="tab.id === 'planner'" class="laneModelControls" data-testid="lane-model-controls">
+              <div v-if="tab.id === 'advisor'" class="laneModelControls" data-testid="lane-model-controls">
                 <MainChatModelSelectors
                   :connected="activeLaneConnected"
                   :busy="activeLaneBusy"
@@ -904,37 +904,37 @@ const plannerConnectionStatus = computed(() => {
 
         <div class="lanePanels">
           <section
-            :id="'lane-panel-planner'"
-            v-if="activeWorkspaceTab === 'planner'"
+            :id="'lane-panel-advisor'"
+            v-if="activeWorkspaceTab === 'advisor'"
             class="lanePanel"
             role="tabpanel"
-            aria-labelledby="lane-tab-planner"
-            data-testid="lane-panel-planner"
-            :data-message-count="plannerMessages.length"
-            :data-panel-key="`${plannerPanelKey}:${errorRecoveryGeneration}`"
+            aria-labelledby="lane-tab-advisor"
+            data-testid="lane-panel-advisor"
+            :data-message-count="advisorMessages.length"
+            :data-panel-key="`${advisorPanelKey}:${errorRecoveryGeneration}`"
           >
             <MainChatView
-              ref="plannerChatRef"
-              :key="`${plannerPanelKey}:${errorRecoveryGeneration}`"
-              class="chatHost chatHost--planner"
-              :messages="plannerMessages"
-              :draft="plannerComposerDraft"
-              :latest-prompt-key="plannerChatKey"
-              :queued-prompts="plannerQueuedPrompts"
-              :pending-images="plannerPendingImages"
-              :connected="plannerConnected"
-              :busy="plannerBusy"
-              :input-locked="plannerInputLocked"
+              ref="advisorChatRef"
+              :key="`${advisorPanelKey}:${errorRecoveryGeneration}`"
+              class="chatHost chatHost--advisor"
+              :messages="advisorMessages"
+              :draft="advisorComposerDraft"
+              :latest-prompt-key="advisorChatKey"
+              :queued-prompts="advisorQueuedPrompts"
+              :pending-images="advisorPendingImages"
+              :connected="advisorConnected"
+              :busy="advisorBusy"
+              :input-locked="advisorInputLocked"
               :workspace-root="resolveActiveWorkspaceRoot()"
-              :connection-status-kind="plannerConnectionStatus?.kind ?? null"
-              :connection-status-message="plannerConnectionStatus?.message ?? null"
-              :thread-warning="plannerThreadWarning"
-              @send="sendPlannerPrompt"
-              @update:draft="plannerComposerDraft = $event"
-              @interrupt="interruptPlanner"
-              @addImages="addPlannerPendingImages"
-              @clearImages="clearPlannerPendingImages"
-              @removeQueued="removePlannerQueuedPrompt"
+              :connection-status-kind="advisorConnectionStatus?.kind ?? null"
+              :connection-status-message="advisorConnectionStatus?.message ?? null"
+              :thread-warning="advisorThreadWarning"
+              @send="sendAdvisorPrompt"
+              @update:draft="advisorComposerDraft = $event"
+              @interrupt="interruptAdvisor"
+              @addImages="addAdvisorPendingImages"
+              @clearImages="clearAdvisorPendingImages"
+              @removeQueued="removeAdvisorQueuedPrompt"
             />
           </section>
 

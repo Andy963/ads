@@ -243,7 +243,7 @@ describe("session boundary divider and status feedback", () => {
     expect(rt.laneStatus.value).toBeNull();
   });
 
-  it("handles /clear slash command in sendMainPrompt and sendPlannerPrompt by executing full clear", () => {
+  it("handles /clear slash command in sendMainPrompt and sendAdvisorPrompt by executing full clear", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
@@ -251,30 +251,30 @@ describe("session boundary divider and status feedback", () => {
     });
     const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       connectWs: vi.fn(async () => {}),
-      connectPlannerWs: vi.fn(async () => {}),
+      connectAdvisorWs: vi.fn(async () => {}),
     });
 
     ctx.loggedIn.value = true;
     projects.initializeProjects();
 
     const workerRt = ctx.activeRuntime.value;
-    const plannerRt = ctx.activePlannerRuntime.value;
+    const advisorRt = ctx.activeAdvisorRuntime.value;
     workerRt.ws = { clearHistory: vi.fn() } as any;
-    plannerRt.ws = { clearHistory: vi.fn() } as any;
+    advisorRt.ws = { clearHistory: vi.fn() } as any;
 
     workerRt.messages.value = [
       { id: "m1", role: "user", kind: "text", content: "something" },
     ];
-    plannerRt.messages.value = [
-      { id: "p1", role: "user", kind: "text", content: "planner something" },
+    advisorRt.messages.value = [
+      { id: "p1", role: "user", kind: "text", content: "advisor something" },
     ];
 
     tasks.sendMainPrompt("/clear");
     expect(workerRt.messages.value).toHaveLength(0);
     expect(workerRt.ws?.clearHistory).toHaveBeenCalled();
 
-    tasks.sendPlannerPrompt("  /CLEAR  ");
-    expect(plannerRt.messages.value).toHaveLength(0);
-    expect(plannerRt.ws?.clearHistory).toHaveBeenCalled();
+    tasks.sendAdvisorPrompt("  /CLEAR  ");
+    expect(advisorRt.messages.value).toHaveLength(0);
+    expect(advisorRt.ws?.clearHistory).toHaveBeenCalled();
   });
 });

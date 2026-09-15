@@ -101,9 +101,9 @@ describe("MainChat prompt tools", () => {
 
   it("keeps latest prompts isolated by project and lane and does not overwrite a draft", async () => {
     localStorage.setItem(STORAGE_KEY, "Worker prompt");
-    localStorage.setItem("ADS_WEB_LATEST_PROMPT:project-1:planner", "Planner prompt");
+    localStorage.setItem("ADS_WEB_LATEST_PROMPT:project-1:advisor", "Advisor prompt");
 
-    const wrapper = mountPromptTools({ latestPromptKey: "project-1:planner" });
+    const wrapper = mountPromptTools({ latestPromptKey: "project-1:advisor" });
     const textarea = wrapper.get("textarea.composer-input");
     await textarea.setValue("Current draft");
     await openActionSheet(wrapper);
@@ -114,7 +114,7 @@ describe("MainChat prompt tools", () => {
     await restore.trigger("click");
     await nextTick();
 
-    expect((textarea.element as HTMLTextAreaElement).value).toBe("Planner prompt");
+    expect((textarea.element as HTMLTextAreaElement).value).toBe("Advisor prompt");
     wrapper.unmount();
   });
 

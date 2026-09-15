@@ -122,7 +122,7 @@ describe("Lane websocket sessions", () => {
     localStorage.clear();
   });
 
-  it("opens worker and planner chat sessions for the default project", async () => {
+  it("opens worker and advisor chat sessions for the default project", async () => {
     const { wrapper } = await mountController();
 
     const chats = wsConnections
@@ -131,7 +131,7 @@ describe("Lane websocket sessions", () => {
       .sort();
 
     expect(chats).toContain("main");
-    expect(chats).toContain("planner");
+    expect(chats).toContain("advisor");
     wrapper.unmount();
   });
 
@@ -139,62 +139,62 @@ describe("Lane websocket sessions", () => {
     const { wrapper, controller } = await mountController();
 
     const workerRt = controller.getRuntime("default");
-    const plannerRt = controller.getPlannerRuntime("default");
+    const advisorRt = controller.getAdvisorRuntime("default");
     const workerWs = wsByChatSessionId.get("main");
-    const plannerWs = wsByChatSessionId.get("planner");
+    const advisorWs = wsByChatSessionId.get("advisor");
 
     expect(workerWs).toBeTruthy();
-    expect(plannerWs).toBeTruthy();
+    expect(advisorWs).toBeTruthy();
 
     workerRt.messages.value = [{ id: "w-1", role: "assistant", kind: "text", content: "worker history" }];
-    plannerRt.messages.value = [{ id: "p-1", role: "assistant", kind: "text", content: "planner history" }];
+    advisorRt.messages.value = [{ id: "p-1", role: "assistant", kind: "text", content: "advisor history" }];
     workerRt.busy.value = false;
-    plannerRt.busy.value = true;
+    advisorRt.busy.value = true;
     await settleUi(wrapper as any);
 
-    plannerWs.onClose?.({ code: 1006, reason: "" });
+    advisorWs.onClose?.({ code: 1006, reason: "" });
     await settleUi(wrapper as any);
 
-    expect(plannerRt.connected.value).toBe(false);
+    expect(advisorRt.connected.value).toBe(false);
     expect(workerRt.connected.value).toBe(true);
-    expect(plannerRt.busy.value).toBe(true);
+    expect(advisorRt.busy.value).toBe(true);
     expect(workerRt.busy.value).toBe(false);
 
-    plannerWs.onOpen?.();
+    advisorWs.onOpen?.();
     await settleUi(wrapper as any);
-    plannerWs.onMessage?.({ type: "welcome", inFlight: false });
+    advisorWs.onMessage?.({ type: "welcome", inFlight: false });
     await settleUi(wrapper as any);
 
-    expect(plannerRt.connected.value).toBe(true);
+    expect(advisorRt.connected.value).toBe(true);
 
-    plannerRt.messages.value = [];
-    plannerWs.onMessage?.({
+    advisorRt.messages.value = [];
+    advisorWs.onMessage?.({
       type: "history",
-      items: [{ role: "ai", text: "planner restored only", kind: "text", ts: Date.now() }],
+      items: [{ role: "ai", text: "advisor restored only", kind: "text", ts: Date.now() }],
     });
     await settleUi(wrapper as any);
 
-    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toContain("planner restored only");
+    expect(advisorRt.messages.value.map((entry: any) => entry.content)).toContain("advisor restored only");
     expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
 
-    await controller.resumePlannerThread();
-    expect(plannerWs.send).toHaveBeenCalledWith("task_resume");
+    await controller.resumeAdvisorThread();
+    expect(advisorWs.send).toHaveBeenCalledWith("task_resume");
     expect(workerWs.send).not.toHaveBeenCalledWith("task_resume");
-    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner restored only"]);
+    expect(advisorRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor restored only"]);
     expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
 
-    plannerWs.onMessage?.({
+    advisorWs.onMessage?.({
       type: "history",
-      items: [{ role: "ai", text: "planner resumed only", kind: "text", ts: Date.now() }],
+      items: [{ role: "ai", text: "advisor resumed only", kind: "text", ts: Date.now() }],
     });
     await settleUi(wrapper as any);
 
-    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner resumed only"]);
+    expect(advisorRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor resumed only"]);
 
     await controller.resumeTaskThread();
     expect(workerWs.send).toHaveBeenCalledWith("task_resume");
     expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
-    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner resumed only"]);
+    expect(advisorRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor resumed only"]);
 
     workerWs.onMessage?.({
       type: "history",
@@ -203,23 +203,23 @@ describe("Lane websocket sessions", () => {
     await settleUi(wrapper as any);
 
     expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker resumed only"]);
-    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner resumed only"]);
+    expect(advisorRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor resumed only"]);
     wrapper.unmount();
   });
 
-  it("keeps existing chat visible when worker or planner resume fails", async () => {
+  it("keeps existing chat visible when worker or advisor resume fails", async () => {
     const { wrapper, controller } = await mountController();
 
     const workerRt = controller.getRuntime("default");
-    const plannerRt = controller.getPlannerRuntime("default");
+    const advisorRt = controller.getAdvisorRuntime("default");
     const workerWs = wsByChatSessionId.get("main");
-    const plannerWs = wsByChatSessionId.get("planner");
+    const advisorWs = wsByChatSessionId.get("advisor");
 
     expect(workerWs).toBeTruthy();
-    expect(plannerWs).toBeTruthy();
+    expect(advisorWs).toBeTruthy();
 
     workerRt.messages.value = [{ id: "w-1", role: "assistant", kind: "text", content: "worker history" }];
-    plannerRt.messages.value = [{ id: "p-1", role: "assistant", kind: "text", content: "planner history" }];
+    advisorRt.messages.value = [{ id: "p-1", role: "assistant", kind: "text", content: "advisor history" }];
     await settleUi(wrapper as any);
 
     await controller.resumeTaskThread();
@@ -231,14 +231,14 @@ describe("Lane websocket sessions", () => {
     expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
     expect(workerRt.laneStatus.value).toEqual({ kind: "error", message: "worker resume failed" });
 
-    await controller.resumePlannerThread();
-    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner history"]);
+    await controller.resumeAdvisorThread();
+    expect(advisorRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor history"]);
 
-    plannerWs.onMessage?.({ type: "error", message: "planner resume failed" });
+    advisorWs.onMessage?.({ type: "error", message: "advisor resume failed" });
     await settleUi(wrapper as any);
 
-    expect(plannerRt.messages.value.map((entry: any) => entry.content)).toEqual(["planner history"]);
-    expect(plannerRt.laneStatus.value).toEqual({ kind: "error", message: "planner resume failed" });
+    expect(advisorRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor history"]);
+    expect(advisorRt.laneStatus.value).toEqual({ kind: "error", message: "advisor resume failed" });
     wrapper.unmount();
   });
 
@@ -246,19 +246,19 @@ describe("Lane websocket sessions", () => {
     const { wrapper, controller } = await mountController();
 
     const workerRt = controller.getRuntime("default");
-    const plannerRt = controller.getPlannerRuntime("default");
+    const advisorRt = controller.getAdvisorRuntime("default");
     const workerWs = wsByChatSessionId.get("main");
-    const plannerWs = wsByChatSessionId.get("planner");
+    const advisorWs = wsByChatSessionId.get("advisor");
 
     workerRt.inputLocked.value = true;
-    plannerRt.inputLocked.value = true;
+    advisorRt.inputLocked.value = true;
 
     await controller.resumeTaskThread();
-    await controller.resumePlannerThread();
+    await controller.resumeAdvisorThread();
     await settleUi(wrapper as any);
 
     expect(workerWs.send).not.toHaveBeenCalledWith("task_resume");
-    expect(plannerWs.send).not.toHaveBeenCalledWith("task_resume");
+    expect(advisorWs.send).not.toHaveBeenCalledWith("task_resume");
     wrapper.unmount();
   });
 

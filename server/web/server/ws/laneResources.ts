@@ -1,7 +1,7 @@
 import type { AttachWebSocketServerDeps } from "./deps.js";
 
 export type WsLaneResources = {
-  isPlannerChat: boolean;
+  isAdvisorChat: boolean;
   sessionManager: AttachWebSocketServerDeps["sessions"]["workerSessionManager"];
   historyStore: AttachWebSocketServerDeps["history"]["workerHistoryStore"];
   getWorkspaceLock: AttachWebSocketServerDeps["sessions"]["getWorkspaceLock"];
@@ -13,12 +13,12 @@ export function resolveWsLaneResources(args: {
   history: AttachWebSocketServerDeps["history"];
 }): WsLaneResources {
   const { chatSessionId, sessions, history } = args;
-  const isPlannerChat = chatSessionId === "planner";
+  const isAdvisorChat = chatSessionId === "advisor";
 
   return {
-    isPlannerChat,
-    sessionManager: isPlannerChat ? sessions.plannerSessionManager : sessions.workerSessionManager,
-    historyStore: isPlannerChat ? history.plannerHistoryStore : history.workerHistoryStore,
-    getWorkspaceLock: isPlannerChat ? sessions.getPlannerWorkspaceLock : sessions.getWorkspaceLock,
+    isAdvisorChat,
+    sessionManager: isAdvisorChat ? sessions.advisorSessionManager : sessions.workerSessionManager,
+    historyStore: isAdvisorChat ? history.advisorHistoryStore : history.workerHistoryStore,
+    getWorkspaceLock: isAdvisorChat ? sessions.getAdvisorWorkspaceLock : sessions.getWorkspaceLock,
   };
 }

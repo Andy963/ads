@@ -7,7 +7,7 @@ import path from "node:path";
 import { resetDatabaseForTests } from "../../server/storage/database.js";
 import { ScheduleStore } from "../../server/scheduler/store.js";
 import { handlePromptMessage } from "../../server/web/server/ws/handlePrompt.js";
-import { processScheduleOutput } from "../../server/web/server/planner/scheduleHandler.js";
+import { processScheduleOutput } from "../../server/web/server/advisor/scheduleHandler.js";
 
 type HistoryEntry = { role: string; text: string; ts: number; kind?: string };
 

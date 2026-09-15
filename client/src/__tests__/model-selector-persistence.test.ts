@@ -27,7 +27,7 @@ let lastWorkerWs: {
   sendPrompt?: (payload: unknown, clientMessageId?: string) => void;
   clearHistory: () => void;
 } | null = null;
-let _lastPlannerWs: typeof lastWorkerWs = null;
+let _lastAdvisorWs: typeof lastWorkerWs = null;
 
 let lastSendPromptPayload: unknown = null;
 
@@ -67,8 +67,8 @@ vi.mock("../api/ws", () => {
 
     constructor(options: { sessionId: string; chatSessionId?: string }) {
       const chatSessionId = String(options.chatSessionId ?? "main").trim() || "main";
-      if (chatSessionId === "planner") {
-        _lastPlannerWs = this as unknown as typeof lastWorkerWs;
+      if (chatSessionId === "advisor") {
+        _lastAdvisorWs = this as unknown as typeof lastWorkerWs;
       } else {
         lastWorkerWs = this as unknown as typeof lastWorkerWs;
       }
@@ -129,7 +129,7 @@ function makeModel(id: string, displayName: string, provider = "openai"): ModelC
 describe("Model selector persistence", () => {
   beforeEach(() => {
     lastWorkerWs = null;
-    _lastPlannerWs = null;
+    _lastAdvisorWs = null;
     lastSendPromptPayload = null;
     try {
       localStorage.clear();
@@ -150,7 +150,7 @@ describe("Model selector persistence", () => {
   afterEach(() => {
     getImpl = null;
     lastWorkerWs = null;
-    _lastPlannerWs = null;
+    _lastAdvisorWs = null;
     lastSendPromptPayload = null;
     vi.clearAllMocks();
     try {
@@ -193,14 +193,14 @@ describe("Model selector persistence", () => {
       await ensureWsConnected(wrapper);
       const controller = wrapper.vm as any;
       controller.setMainModelId("gpt-4.1");
-      controller.setPlannerModelId("gpt-4o");
+      controller.setAdvisorModelId("gpt-4o");
       controller.setMainModelReasoningEffort("medium");
-      controller.setPlannerModelReasoningEffort("high");
+      controller.setAdvisorModelReasoningEffort("high");
       await wrapper.get('[data-testid="lane-tab-worker"]').trigger("click");
       await settleUi(wrapper);
 
       const order = Array.from(wrapper.get(".laneTabGroup").element.children).map((element) => element.getAttribute("data-testid"));
-      expect(order).toEqual(["lane-tab-planner", "lane-model-controls", "lane-tab-worker"]);
+      expect(order).toEqual(["lane-tab-advisor", "lane-model-controls", "lane-tab-worker"]);
       const selector = wrapper.findComponent({ name: "MainChatModelSelectors" });
       expect(selector.props("modelReasoningEffort")).toBe("medium");
       selector.vm.$emit("setReasoningEffort", "ultra");
@@ -210,15 +210,15 @@ describe("Model selector persistence", () => {
       expect(lastSendPromptPayload).toMatchObject({ text: "Worker prompt", model: "gpt-4.1", model_reasoning_effort: "ultra" });
 
       lastWorkerWs!.onMessage?.({ type: "result", ok: true, output: "Worker done" });
-      await wrapper.get('[data-testid="lane-tab-planner"]').trigger("click");
+      await wrapper.get('[data-testid="lane-tab-advisor"]').trigger("click");
       await settleUi(wrapper);
-      expect(_lastPlannerWs).toBeTruthy();
-      _lastPlannerWs!.onOpen?.();
+      expect(_lastAdvisorWs).toBeTruthy();
+      _lastAdvisorWs!.onOpen?.();
       await settleUi(wrapper);
       expect(selector.props("modelReasoningEffort")).toBe("high");
       selector.vm.$emit("setReasoningEffort", "max");
       await settleUi(wrapper);
-      controller.sendPlannerPrompt("Advisor prompt");
+      controller.sendAdvisorPrompt("Advisor prompt");
       await settleUi(wrapper);
       expect(lastSendPromptPayload).toMatchObject({ text: "Advisor prompt", model: "gpt-4o", model_reasoning_effort: "max" });
 

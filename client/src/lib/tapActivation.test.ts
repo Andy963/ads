@@ -30,7 +30,7 @@ function setup() {
       },
     };
   };
-  return { activate, planner: button("planner"), worker: button("worker") };
+  return { activate, advisor: button("advisor"), worker: button("worker") };
 }
 
 describe("touch activation", () => {
@@ -44,14 +44,14 @@ describe("touch activation", () => {
   });
 
   it("deduplicates delayed clicks independently for rapid switches between tabs", () => {
-    const { activate, planner, worker } = setup();
+    const { activate, advisor, worker } = setup();
     worker.pointer("pointerdown");
     worker.pointer("pointerup");
-    planner.pointer("pointerdown");
-    planner.pointer("pointerup");
+    advisor.pointer("pointerdown");
+    advisor.pointer("pointerup");
     worker.click();
-    planner.click();
-    expect(activate.mock.calls).toEqual([["worker"], ["planner"]]);
+    advisor.click();
+    expect(activate.mock.calls).toEqual([["worker"], ["advisor"]]);
   });
 
   it.each(["pointercancel", "pointermove"])("recovers the tap through the synthetic click after %s", (eventType) => {

@@ -11,7 +11,7 @@ import { getWorkspaceState } from "../../utils.js";
 import type { AttachWebSocketServerDeps, WsOrchestrator } from "./deps.js";
 import { dispatchWsMessage, type IncomingWsMessage } from "./messageDispatch.js";
 import { handleImmediateWsMessage, parseIncomingWsEnvelope } from "./messageIntake.js";
-import { resolveWebSocketChatSessionId, resolveWebSocketSessionId } from "./session.js";
+import { normalizeLaneChatSessionId, resolveWebSocketChatSessionId, resolveWebSocketSessionId } from "./session.js";
 import { createSafeJsonSend, summarizeWsPayloadForLog } from "./utils.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
 import { sendInitialBootstrapMessages } from "./bootstrapDelivery.js";
@@ -127,7 +127,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       : `${String(authUserId ?? "").trim()}\u0000${String(sessionId ?? "").trim()}\u0000lane\u0000${String(chatSessionId ?? "").trim()}`;
 
   const resolveResetBarrierScope = (chatSessionId: string, payload: unknown): ResetBarrierScope => {
-    if (String(chatSessionId ?? "").trim() === "planner") {
+    if (String(chatSessionId ?? "").trim() === "advisor") {
       return "lane";
     }
     if (payload && typeof payload === "object" && !Array.isArray(payload)) {
@@ -261,7 +261,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
 
   const registerSeenChatSessionId = (authUserId: string, sessionId: string, chatSessionId: string): void => {
     const registryKey = getSharedSessionRegistryKey(authUserId, sessionId);
-    const normalizedChatSessionId = String(chatSessionId ?? "").trim();
+    const normalizedChatSessionId = normalizeLaneChatSessionId(chatSessionId);
     if (!registryKey || !normalizedChatSessionId) {
       return;
     }
@@ -270,7 +270,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       existing.add(normalizedChatSessionId);
       return;
     }
-    seenChatSessionIdsBySharedSession.set(registryKey, new Set(["main", "planner", normalizedChatSessionId]));
+    seenChatSessionIdsBySharedSession.set(registryKey, new Set(["main", "advisor", normalizedChatSessionId]));
   };
 
   wss.on("error", (error) => {
@@ -640,7 +640,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     const broadcastSessionResetForLane = (_lane: WsLaneSnapshot, payload: unknown): void => {
       const payloadRecord = payload && typeof payload === "object" && !Array.isArray(payload) ? (payload as Record<string, unknown>) : {};
       const resetScope = String(payloadRecord.scope ?? "").trim().toLowerCase();
-      const sourceChatSessionId = String(payloadRecord.sourceChatSessionId ?? "").trim();
+      const sourceChatSessionId = normalizeLaneChatSessionId(String(payloadRecord.sourceChatSessionId ?? "").trim() || null);
       // A reset is a control signal, not chat history. It has no sequence
       // number and must never enter a lane replay log, otherwise another lane
       // can consume a sequence that belongs to the source lane.
@@ -648,7 +648,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         if (meta.authUserId !== authUserId || meta.sessionId !== sessionId) {
           continue;
         }
-        if (resetScope === "shared" && meta.chatSessionId === "planner") {
+        if (resetScope === "shared" && meta.chatSessionId === "advisor") {
           continue;
         }
         if (resetScope !== "shared" && sourceChatSessionId && meta.chatSessionId !== sourceChatSessionId) {
@@ -661,7 +661,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       const registryKey = getSharedSessionRegistryKey(authUserId, sessionId);
       const tracked = new Set<string>(["main"]);
       for (const seenChatSessionId of seenChatSessionIdsBySharedSession.get(registryKey) ?? []) {
-        if (seenChatSessionId !== "planner") {
+        if (seenChatSessionId !== "advisor") {
           tracked.add(seenChatSessionId);
         }
       }
@@ -670,7 +670,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
           continue;
         }
         const candidateChatSessionId = String(meta.chatSessionId ?? "").trim();
-        if (candidateChatSessionId && candidateChatSessionId !== "planner") {
+        if (candidateChatSessionId && candidateChatSessionId !== "advisor") {
           tracked.add(candidateChatSessionId);
         }
       }

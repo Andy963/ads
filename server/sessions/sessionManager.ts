@@ -70,7 +70,7 @@ export interface SessionManagerOptions {
 export type SessionAgentSurface =
   | "telegram"
   | "web-worker"
-  | "web-planner"
+  | "web-advisor"
   | "scheduler-runtime"
   | "scheduler-compiler";
 

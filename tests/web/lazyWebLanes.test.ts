@@ -18,7 +18,7 @@ function destroySessionManagerIfMaterialized(sessionManager: { destroy: () => vo
   sessionManager.destroy();
 }
 
-describe("web lazy planner lane", () => {
+describe("web lazy advisor lane", () => {
   let tmpDir: string;
   let workspaceRoot: string;
   const originalEnv = { ...process.env };
@@ -49,38 +49,38 @@ describe("web lazy planner lane", () => {
     }
   });
 
-  it("keeps planner lane cold until first use and then reuses the initialized runtime", async () => {
+  it("keeps advisor lane cold until first use and then reuses the initialized runtime", async () => {
     const lanes = createWebLaneResources({
       stateDbPath: process.env.ADS_STATE_DB_PATH!,
       sessionTimeoutMs: 0,
       sessionCleanupIntervalMs: 0,
-      plannerCodexModel: "test-model",
+      advisorCodexModel: "test-model",
     });
     try {
-      assert.deepEqual(lanes.planner.inspectMaterialization(), {
+      assert.deepEqual(lanes.advisor.inspectMaterialization(), {
         threadStorage: { materialized: false, materializeCount: 0 },
         historyStore: { materialized: false, materializeCount: 0 },
         sessionManager: { materialized: false, materializeCount: 0 },
         workspaceLockPool: { materialized: false, materializeCount: 0 },
       });
-      assert.equal(lanes.planner.sessionManager.getStats().sandboxMode, "danger-full-access");
-      const firstOrchestrator = lanes.planner.sessionManager.getOrCreate(123, workspaceRoot, false);
+      assert.equal(lanes.advisor.sessionManager.getStats().sandboxMode, "danger-full-access");
+      const firstOrchestrator = lanes.advisor.sessionManager.getOrCreate(123, workspaceRoot, false);
       assert.equal(firstOrchestrator.status().streaming, true);
-      assert.equal(lanes.planner.historyStore.add("planner::session", { role: "user", text: "/pwd", ts: Date.now() }), true);
-      const firstLock = lanes.planner.getWorkspaceLock(workspaceRoot);
+      assert.equal(lanes.advisor.historyStore.add("advisor::session", { role: "user", text: "/pwd", ts: Date.now() }), true);
+      const firstLock = lanes.advisor.getWorkspaceLock(workspaceRoot);
       await firstLock.runExclusive(() => "ok");
 
-      assert.deepEqual(lanes.planner.inspectMaterialization(), {
+      assert.deepEqual(lanes.advisor.inspectMaterialization(), {
         threadStorage: { materialized: true, materializeCount: 1 },
         historyStore: { materialized: true, materializeCount: 1 },
         sessionManager: { materialized: true, materializeCount: 1 },
         workspaceLockPool: { materialized: true, materializeCount: 1 },
       });
-      const secondOrchestrator = lanes.planner.sessionManager.getOrCreate(123, workspaceRoot, false);
+      const secondOrchestrator = lanes.advisor.sessionManager.getOrCreate(123, workspaceRoot, false);
       assert.equal(secondOrchestrator, firstOrchestrator);
-      const secondLock = lanes.planner.getWorkspaceLock(workspaceRoot);
+      const secondLock = lanes.advisor.getWorkspaceLock(workspaceRoot);
       assert.equal(secondLock, firstLock);
-      assert.deepEqual(lanes.planner.inspectMaterialization(), {
+      assert.deepEqual(lanes.advisor.inspectMaterialization(), {
         threadStorage: { materialized: true, materializeCount: 1 },
         historyStore: { materialized: true, materializeCount: 1 },
         sessionManager: { materialized: true, materializeCount: 1 },
@@ -88,52 +88,52 @@ describe("web lazy planner lane", () => {
       });
     } finally {
       lanes.worker.sessionManager.destroy();
-      destroySessionManagerIfMaterialized(lanes.planner.sessionManager);
+      destroySessionManagerIfMaterialized(lanes.advisor.sessionManager);
     }
   });
 
-  it("supports overriding planner sandbox mode via environment variable and explicit argument", () => {
+  it("supports overriding advisor sandbox mode via environment variable and explicit argument", () => {
     try {
-      process.env.ADS_PLANNER_SANDBOX_MODE = "workspace-write";
+      process.env.ADS_ADVISOR_SANDBOX_MODE = "workspace-write";
       const envLanes = createWebLaneResources({
         stateDbPath: process.env.ADS_STATE_DB_PATH!,
         sessionTimeoutMs: 0,
         sessionCleanupIntervalMs: 0,
       });
       try {
-        assert.equal(envLanes.planner.sessionManager.getStats().sandboxMode, "workspace-write");
+        assert.equal(envLanes.advisor.sessionManager.getStats().sandboxMode, "workspace-write");
       } finally {
         envLanes.worker.sessionManager.destroy();
-        destroySessionManagerIfMaterialized(envLanes.planner.sessionManager);
+        destroySessionManagerIfMaterialized(envLanes.advisor.sessionManager);
       }
 
-      process.env.ADS_PLANNER_SANDBOX_MODE = "not-a-sandbox-mode";
+      process.env.ADS_ADVISOR_SANDBOX_MODE = "not-a-sandbox-mode";
       const invalidEnvLanes = createWebLaneResources({
         stateDbPath: process.env.ADS_STATE_DB_PATH!,
         sessionTimeoutMs: 0,
         sessionCleanupIntervalMs: 0,
       });
       try {
-        assert.equal(invalidEnvLanes.planner.sessionManager.getStats().sandboxMode, "workspace-write");
+        assert.equal(invalidEnvLanes.advisor.sessionManager.getStats().sandboxMode, "workspace-write");
       } finally {
         invalidEnvLanes.worker.sessionManager.destroy();
-        destroySessionManagerIfMaterialized(invalidEnvLanes.planner.sessionManager);
+        destroySessionManagerIfMaterialized(invalidEnvLanes.advisor.sessionManager);
       }
 
       const argLanes = createWebLaneResources({
         stateDbPath: process.env.ADS_STATE_DB_PATH!,
         sessionTimeoutMs: 0,
         sessionCleanupIntervalMs: 0,
-        plannerSandboxMode: "read-only",
+        advisorSandboxMode: "read-only",
       });
       try {
-        assert.equal(argLanes.planner.sessionManager.getStats().sandboxMode, "read-only");
+        assert.equal(argLanes.advisor.sessionManager.getStats().sandboxMode, "read-only");
       } finally {
         argLanes.worker.sessionManager.destroy();
-        destroySessionManagerIfMaterialized(argLanes.planner.sessionManager);
+        destroySessionManagerIfMaterialized(argLanes.advisor.sessionManager);
       }
     } finally {
-      delete process.env.ADS_PLANNER_SANDBOX_MODE;
+      delete process.env.ADS_ADVISOR_SANDBOX_MODE;
     }
   });
 });

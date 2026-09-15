@@ -101,14 +101,14 @@ export type WsStateDeps = {
 
 export type WsSessionDeps = {
   workerSessionManager: SessionManager;
-  plannerSessionManager: SessionManager;
+  advisorSessionManager: SessionManager;
   getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
-  getPlannerWorkspaceLock: (workspaceRoot: string) => AsyncLock;
+  getAdvisorWorkspaceLock: (workspaceRoot: string) => AsyncLock;
 };
 
 export type WsHistoryDeps = {
   workerHistoryStore: HistoryStore;
-  plannerHistoryStore: HistoryStore;
+  advisorHistoryStore: HistoryStore;
 };
 
 export type WsCommandDeps = {

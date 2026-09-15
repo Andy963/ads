@@ -1020,7 +1020,7 @@ describe("ws workspace project sync", () => {
       updateProject: vi.fn(),
     });
 
-    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "planner", scope: "lane" });
+    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "advisor", scope: "lane" });
 
     expect(clearPendingPrompt).not.toHaveBeenCalled();
     expect(clearStepLive).not.toHaveBeenCalled();
@@ -1043,7 +1043,7 @@ describe("ws workspace project sync", () => {
       updateProject: vi.fn(),
     });
 
-    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "planner" });
+    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "advisor" });
 
     expect(threadReset).not.toHaveBeenCalled();
     expect(rt.activeThreadId.value).toBe("thread-keep");
@@ -1064,7 +1064,7 @@ describe("ws workspace project sync", () => {
       updateProject: vi.fn(),
     });
 
-    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "planner", scope: "shared" });
+    handler({ type: "session_reset", source: "clear_history", sourceChatSessionId: "advisor", scope: "shared" });
 
     expect(clearPendingPrompt).toHaveBeenCalledWith(rt);
     expect(clearStepLive).toHaveBeenCalledWith(rt);
@@ -1083,11 +1083,11 @@ describe("ws workspace project sync", () => {
     expect(rt.activeThreadId.value).toBeNull();
   });
 
-  it("ignores a shared reset delivered to the planner lane", () => {
+  it("ignores a shared reset delivered to the advisor lane", () => {
     const rt = createRuntime();
-    rt.chatSessionId = "planner";
+    rt.chatSessionId = "advisor";
     rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "keep me" }];
-    rt.activeThreadId.value = "planner-thread";
+    rt.activeThreadId.value = "advisor-thread";
     rt.busy.value = true;
     rt.turnInFlight = true;
     rt.queuedPrompts.value = ["queued"];
@@ -1107,7 +1107,7 @@ describe("ws workspace project sync", () => {
     expect(rt.busy.value).toBe(true);
     expect(rt.turnInFlight).toBe(true);
     expect(rt.queuedPrompts.value).toEqual(["queued"]);
-    expect(rt.activeThreadId.value).toBe("planner-thread");
+    expect(rt.activeThreadId.value).toBe("advisor-thread");
     expect(rt.messages.value).toHaveLength(1);
   });
 

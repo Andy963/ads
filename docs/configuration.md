@@ -36,8 +36,8 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_WEB_LOGIN_MAX_ATTEMPTS` | `5` | 触发 IP 锁定的连续密码错误阈值 |
 | `ADS_WEB_LOGIN_LOCKOUT_MS` | `300000` (5分钟) | 触发锁定后的基础冷却时长 |
 | `ADS_WEB_SESSION_SLIDING` | `false` | 是否开启滑动刷新 Session 有效期 |
-| `ADS_PLANNER_CODEX_MODEL` | 未设置 | Advisor (规划 Lane) 专用的 Codex 模型覆盖 |
-| `ADS_PLANNER_SANDBOX_MODE` | `danger-full-access` | Advisor Lane 沙箱权限覆盖；用于需要调用 GitHub CLI 的场景。非法值安全回退为 `workspace-write` |
+| `ADS_ADVISOR_CODEX_MODEL` | 未设置 | Advisor Lane 专用的 Codex 模型覆盖（旧名 `ADS_PLANNER_CODEX_MODEL` 仍兼容，已弃用） |
+| `ADS_ADVISOR_SANDBOX_MODE` | `danger-full-access` | Advisor Lane 沙箱权限覆盖；用于需要调用 GitHub CLI 的场景。非法值安全回退为 `workspace-write`（旧名 `ADS_PLANNER_SANDBOX_MODE` 仍兼容，已弃用） |
 | `ADS_SCHEDULER_MODEL` | 未设置 | Scheduler 执行定时 Prompt 时使用的模型覆盖 |
 
 ---

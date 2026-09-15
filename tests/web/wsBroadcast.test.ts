@@ -131,9 +131,9 @@ describe("web/server/ws/broadcast", () => {
   let wss: import("ws").WebSocketServer;
   let runAdsCommandLineImpl: (command: string) => Promise<{ ok: boolean; output: string }>;
   let workerSessions: FakeSession[];
-  let plannerSessions: FakeSession[];
+  let advisorSessions: FakeSession[];
   let workerHistoryStore: HistoryStore;
-  let plannerHistoryStore: HistoryStore;
+  let advisorHistoryStore: HistoryStore;
   let syncEventStore: SyncEventStore;
   let laneGenerationStore: WebLaneGenerationStore;
   const originalEnv = { ...process.env };
@@ -161,16 +161,16 @@ describe("web/server/ws/broadcast", () => {
       }
     >();
     workerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-worker" });
-    plannerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-planner" });
+    advisorHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-advisor" });
     syncEventStore = new SyncEventStore({ stateDbPath: process.env.ADS_STATE_DB_PATH });
     laneGenerationStore = new WebLaneGenerationStore({ stateDbPath: process.env.ADS_STATE_DB_PATH });
     const lock = new AsyncLock();
     const agentAvailability = new NoopAgentAvailability();
     const directoryManager = new DirectoryManager([workspaceRoot]);
     const workerFactory = createFakeSessionFactory("worker");
-    const plannerFactory = createFakeSessionFactory("planner");
+    const advisorFactory = createFakeSessionFactory("advisor");
     workerSessions = workerFactory.created;
-    plannerSessions = plannerFactory.created;
+    advisorSessions = advisorFactory.created;
 
     wss = attachWebSocketServer({
       server,
@@ -208,15 +208,15 @@ describe("web/server/ws/broadcast", () => {
         workerSessionManager: new SessionManager(0, 0, "workspace-write", "test-model", undefined, undefined, {
           createSession: workerFactory.factory as never,
         }),
-        plannerSessionManager: new SessionManager(0, 0, "read-only", "test-model", undefined, undefined, {
-          createSession: plannerFactory.factory as never,
+        advisorSessionManager: new SessionManager(0, 0, "read-only", "test-model", undefined, undefined, {
+          createSession: advisorFactory.factory as never,
         }),
         getWorkspaceLock: () => lock,
-        getPlannerWorkspaceLock: () => lock,
+        getAdvisorWorkspaceLock: () => lock,
       },
       history: {
         workerHistoryStore,
-        plannerHistoryStore,
+        advisorHistoryStore,
       },
       tasks: {
         ensureTaskContext: () => ({} as unknown as any),
@@ -326,7 +326,7 @@ describe("web/server/ws/broadcast", () => {
     }
   });
 
-  for (const chatSessionId of ["main", "planner"]) {
+  for (const chatSessionId of ["main", "advisor"]) {
     it(`sends metadata-only live and reconnect command frames in ${chatSessionId}`, { timeout: 10_000 }, async () => {
       const protocols = ["ads-v1", "ads-session.command-stream", `ads-chat.${chatSessionId}`];
       const url = `ws://127.0.0.1:${port}`;
@@ -337,7 +337,7 @@ describe("web/server/ws/broadcast", () => {
       const finishTurn = Promise.withResolvers<void>();
       try {
         await waitForWsOpen(client);
-        const session = (chatSessionId === "planner" ? plannerSessions : workerSessions).at(-1);
+        const session = (chatSessionId === "advisor" ? advisorSessions : workerSessions).at(-1);
         assert.ok(session);
         const emitCommand = (type: "item.started" | "item.updated" | "item.completed", status: string) => {
           session.emitEvent({
@@ -453,7 +453,7 @@ describe("web/server/ws/broadcast", () => {
     );
     assert.equal(workerSessions[0]?.resetCalls, 1);
     assert.equal(workerSessions[1]?.resetCalls, 0);
-    assert.equal(plannerSessions.length, 0);
+    assert.equal(advisorSessions.length, 0);
     assert.equal(workerSessions[0]?.threadId, null);
     assert.notEqual(workerSessions[1]?.threadId, null);
 
@@ -481,15 +481,15 @@ describe("web/server/ws/broadcast", () => {
     }
   });
 
-  it("does not allow the planner lane to reset any worker lane", async () => {
+  it("does not allow the advisor lane to reset any worker lane", async () => {
     const url = `ws://127.0.0.1:${port}`;
     const mainProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
-    const plannerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.planner"];
+    const advisorProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.advisor"];
 
     const mainClient = new WebSocket(url, mainProtocols, { origin: "http://localhost" });
-    const plannerClient = new WebSocket(url, plannerProtocols, { origin: "http://localhost" });
+    const advisorClient = new WebSocket(url, advisorProtocols, { origin: "http://localhost" });
     await waitForWsOpen(mainClient);
-    await waitForWsOpen(plannerClient);
+    await waitForWsOpen(advisorClient);
 
     const mainMessages: WsJson[] = [];
     const mainHandler = (raw: RawData) => {
@@ -502,24 +502,24 @@ describe("web/server/ws/broadcast", () => {
     mainClient.on("message", mainHandler);
 
     const resetPromise = waitForWsMessage(
-      plannerClient,
-      (msg) => msg.type === "session_reset" && msg.sourceChatSessionId === "planner" && msg.scope === "lane",
+      advisorClient,
+      (msg) => msg.type === "session_reset" && msg.sourceChatSessionId === "advisor" && msg.scope === "lane",
       1500,
     );
     const resultPromise = waitForWsMessage(
-      plannerClient,
+      advisorClient,
       (msg) => msg.type === "result" && msg.kind === "clear_history" && msg.ok === true,
       1500,
     );
 
-    plannerClient.send(JSON.stringify({ type: "clear_history", payload: { scope: "shared" } }));
+    advisorClient.send(JSON.stringify({ type: "clear_history", payload: { scope: "shared" } }));
 
     const reset = await resetPromise;
     const result = await resultPromise;
     assert.equal(reset.type, "session_reset");
     assert.equal(result.type, "result");
     assert.equal(workerSessions[0]?.resetCalls, 0);
-    assert.equal(plannerSessions[0]?.resetCalls, 1);
+    assert.equal(advisorSessions[0]?.resetCalls, 1);
     assert.equal(mainClient.readyState, WebSocket.OPEN);
 
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -535,32 +535,32 @@ describe("web/server/ws/broadcast", () => {
       // ignore
     }
     try {
-      plannerClient.terminate();
+      advisorClient.terminate();
     } catch {
       // ignore
     }
   });
 
-  it("resets disconnected worker lanes while keeping the planner lane isolated", async () => {
+  it("resets disconnected worker lanes while keeping the advisor lane isolated", async () => {
     const url = `ws://127.0.0.1:${port}`;
     const mainProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
-    const plannerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.planner"];
+    const advisorProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.advisor"];
     const customWorkerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.worker-custom"];
 
     const mainClient = new WebSocket(url, mainProtocols, { origin: "http://localhost" });
-    const plannerClient = new WebSocket(url, plannerProtocols, { origin: "http://localhost" });
+    const advisorClient = new WebSocket(url, advisorProtocols, { origin: "http://localhost" });
     const customWorkerClient = new WebSocket(url, customWorkerProtocols, { origin: "http://localhost" });
     await waitForWsOpen(mainClient);
-    await waitForWsOpen(plannerClient);
+    await waitForWsOpen(advisorClient);
     await waitForWsOpen(customWorkerClient);
 
     workerHistoryStore.add(
       resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "main", generation: 1 }),
       { role: "user", text: "main stale", ts: Date.now() },
     );
-    plannerHistoryStore.add(
-      resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "planner", generation: 1 }),
-      { role: "user", text: "planner stale", ts: Date.now() },
+    advisorHistoryStore.add(
+      resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "advisor", generation: 1 }),
+      { role: "user", text: "advisor stale", ts: Date.now() },
     );
     workerHistoryStore.add(
       resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "worker-custom", generation: 1 }),
@@ -585,19 +585,19 @@ describe("web/server/ws/broadcast", () => {
 
     assert.equal(workerSessions[0]?.resetCalls, 1);
     assert.equal(workerSessions[1]?.resetCalls, 1);
-    assert.equal(plannerSessions[0]?.resetCalls, 0);
+    assert.equal(advisorSessions[0]?.resetCalls, 0);
     assert.deepEqual(
       workerHistoryStore.get(
         resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "main", generation: 1 }),
       ),
       [],
     );
-    assert.equal(plannerSessions[0]?.threadId === null, false);
+    assert.equal(advisorSessions[0]?.threadId === null, false);
     assert.equal(
-      plannerHistoryStore.get(
-        resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "planner", generation: 1 }),
+      advisorHistoryStore.get(
+        resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "advisor", generation: 1 }),
       )[0]?.text,
-      "planner stale",
+      "advisor stale",
     );
     assert.deepEqual(
       workerHistoryStore.get(
@@ -620,7 +620,7 @@ describe("web/server/ws/broadcast", () => {
       // ignore
     }
     try {
-      plannerClient.terminate();
+      advisorClient.terminate();
     } catch {
       // ignore
     }

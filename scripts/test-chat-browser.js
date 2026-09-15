@@ -114,7 +114,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       assert.equal(result.postSend.secondSend.focused, true, "Subsequent touch sends must preserve keyboard focus");
     }
     result.checks.push("Repeated sends in the same focused editor, five rows while busy, and post-send lane switching without reload");
-    await chooseLane("planner");
+    await chooseLane("advisor");
     await send("browser-advisor-first");
     await waitForReply("Advisor reply: browser-advisor-first");
     await input().fill("Advisor draft");
@@ -122,19 +122,19 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     assert.equal(await input().inputValue(), "", "Worker must not inherit the Advisor draft");
     assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Advisor reply"));
     await send("browser-worker-first");
-    await chooseLane("planner");
+    await chooseLane("advisor");
     assert.equal(await input().inputValue(), "Advisor draft");
     assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Worker reply"));
     await chooseLane("worker");
     await waitForReply("Worker reply: browser-worker-first");
-    for (const lane of ["planner", "worker", "planner", "worker"]) await chooseLane(lane);
+    for (const lane of ["advisor", "worker", "advisor", "worker"]) await chooseLane(lane);
     assert.ok((await page.locator(".chat:visible").innerText()).includes("Worker reply"));
     assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Advisor reply"));
     result.checks.push("Real WebSocket prompt delivery, lane isolation, rapid switching, and draft restoration");
 
     await page.reload();
     await page.waitForSelector("textarea:not(:disabled):visible");
-    await chooseLane("planner");
+    await chooseLane("advisor");
     await waitForReply("Advisor reply: browser-advisor-first");
     await chooseLane("worker");
     await waitForReply("Worker reply: browser-worker-first");
@@ -161,7 +161,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     result.checks.push("Project switching replaces the visible runtime and restores project-local history");
 
     if (mobile) {
-      await chooseLane("planner");
+      await chooseLane("advisor");
       await input().evaluate((element) => {
         element.focus();
         element.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
