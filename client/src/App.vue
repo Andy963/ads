@@ -25,6 +25,7 @@ import {
   type MobileWorkspaceTab,
 } from "./lib/mobileWorkspacePreferences";
 import {
+  ArrowRight,
   CirclePlus,
   ChatDotRound,
   Delete,
@@ -467,6 +468,104 @@ function onMobileKeydown(ev: KeyboardEvent): void {
   }
 }
 
+const mobileDrawerToggleRef = ref<HTMLButtonElement | null>(null);
+const mobileDrawerRef = ref<HTMLElement | null>(null);
+
+const DRAWER_SWIPE_EDGE_PX = 28;
+const DRAWER_SWIPE_TRIGGER_PX = 32;
+const DRAWER_SWIPE_RATIO = 1.4;
+
+type DrawerSwipe = { startX: number; startY: number; triggered: boolean };
+let drawerEdgeSwipe: DrawerSwipe | null = null;
+let drawerCloseSwipe: DrawerSwipe | null = null;
+
+function readSwipeTouch(ev: TouchEvent): { x: number; y: number } | null {
+  if (ev.touches.length !== 1) return null;
+  return { x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+}
+
+function isHorizontalSwipe(dx: number, dy: number): boolean {
+  return Math.abs(dx) > DRAWER_SWIPE_TRIGGER_PX && Math.abs(dx) > Math.abs(dy) * DRAWER_SWIPE_RATIO;
+}
+
+function onDrawerEdgeTouchStart(ev: TouchEvent): void {
+  if (!isMobile.value || mobileDrawerOpen.value) return;
+  const touch = readSwipeTouch(ev);
+  if (!touch || touch.x > DRAWER_SWIPE_EDGE_PX) return;
+  drawerEdgeSwipe = { startX: touch.x, startY: touch.y, triggered: false };
+}
+
+function onDrawerEdgeTouchMove(ev: TouchEvent): void {
+  const swipe = drawerEdgeSwipe;
+  if (!swipe || swipe.triggered) return;
+  const touch = readSwipeTouch(ev);
+  if (!touch) return;
+  if (touch.x - swipe.startX > 0 && isHorizontalSwipe(touch.x - swipe.startX, touch.y - swipe.startY)) {
+    swipe.triggered = true;
+    openMobileDrawer();
+  }
+}
+
+function onDrawerSwipeTouchStart(ev: TouchEvent): void {
+  if (!isMobile.value) return;
+  const touch = readSwipeTouch(ev);
+  if (!touch) return;
+  drawerCloseSwipe = { startX: touch.x, startY: touch.y, triggered: false };
+}
+
+function onDrawerSwipeTouchMove(ev: TouchEvent): void {
+  const swipe = drawerCloseSwipe;
+  if (!swipe || swipe.triggered) return;
+  const touch = readSwipeTouch(ev);
+  if (!touch) return;
+  const dx = touch.x - swipe.startX;
+  if (dx < 0 && isHorizontalSwipe(dx, touch.y - swipe.startY)) {
+    swipe.triggered = true;
+    closeMobileDrawer();
+  }
+}
+
+function onDrawerSwipeTouchEnd(): void {
+  drawerEdgeSwipe = null;
+  drawerCloseSwipe = null;
+}
+
+function onDrawerKeydown(ev: KeyboardEvent): void {
+  if (ev.key !== "Tab") return;
+  const drawer = mobileDrawerRef.value;
+  if (!drawer) return;
+  const focusable = Array.from(
+    drawer.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])'
+    )
+  ).filter((el) => el.getClientRects().length > 0);
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (ev.shiftKey && (active === first || !drawer.contains(active))) {
+    ev.preventDefault();
+    last.focus();
+  } else if (!ev.shiftKey && (active === last || !drawer.contains(active))) {
+    ev.preventDefault();
+    first.focus();
+  }
+}
+
+watch(mobileDrawerOpen, async (open) => {
+  if (typeof document === "undefined") return;
+  document.body.style.overflow = open && isMobile.value ? "hidden" : "";
+  if (!isMobile.value) return;
+  await nextTick();
+  if (open) {
+    mobileDrawerRef.value
+      ?.querySelector<HTMLElement>('[data-testid="mobile-drawer-section-projects"]')
+      ?.focus();
+  } else {
+    mobileDrawerToggleRef.value?.focus();
+  }
+});
+
 watch(isMobile, (mobile) => {
   if (mobile) {
     if (activeProjectId.value.trim()) restoreMobileWorkspaceTab();
@@ -534,6 +633,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onMobileKeydown);
   window.removeEventListener("pagehide", stashComposerDrafts);
+  document.body.style.overflow = "";
 });
 
 const {
@@ -621,10 +721,15 @@ const advisorConnectionStatus = computed(() => {
     :data-worker-panel-key="workerPanelKey"
     :data-advisor-panel-key="advisorPanelKey"
     @click="closeMobileContextMenu"
+    @touchstart.passive="onDrawerEdgeTouchStart"
+    @touchmove.passive="onDrawerEdgeTouchMove"
+    @touchend="onDrawerSwipeTouchEnd"
+    @touchcancel="onDrawerSwipeTouchEnd"
   >
     <header class="topbar">
       <button
         v-if="isMobile"
+        ref="mobileDrawerToggleRef"
         type="button"
         class="mobileMenuBtn"
         :title="mobileDrawerOpen ? '关闭导航' : '打开导航'"
@@ -724,18 +829,27 @@ const advisorConnectionStatus = computed(() => {
     </header>
 
     <main class="layout">
-      <div
-        v-if="isMobile && mobileDrawerOpen"
-        class="mobileDrawerBackdrop"
-        data-testid="mobile-drawer-backdrop"
-        @click="closeMobileDrawer"
-      />
-      <aside
-        v-if="!isMobile || mobileDrawerOpen"
-        class="left"
-        :class="{ mobileDrawer: isMobile }"
-        data-testid="mobile-drawer"
-      >
+      <Transition name="mobile-fade">
+        <div
+          v-if="isMobile && mobileDrawerOpen"
+          class="mobileDrawerBackdrop"
+          data-testid="mobile-drawer-backdrop"
+          @click="closeMobileDrawer"
+        />
+      </Transition>
+      <Transition name="mobile-drawer">
+        <aside
+          v-if="!isMobile || mobileDrawerOpen"
+          ref="mobileDrawerRef"
+          class="left"
+          :class="{ mobileDrawer: isMobile }"
+          data-testid="mobile-drawer"
+          @touchstart.passive="onDrawerSwipeTouchStart"
+          @touchmove.passive="onDrawerSwipeTouchMove"
+          @touchend="onDrawerSwipeTouchEnd"
+          @touchcancel="onDrawerSwipeTouchEnd"
+          @keydown="onDrawerKeydown"
+        >
         <nav v-if="isMobile" class="mobileDrawerNav" aria-label="导航模块">
           <button
             type="button"
@@ -750,14 +864,13 @@ const advisorConnectionStatus = computed(() => {
           </button>
           <button
             type="button"
-            class="mobileDrawerNavItem"
-            :class="{ active: mobileDrawerSection === 'settings' }"
-            :aria-current="mobileDrawerSection === 'settings' ? 'page' : undefined"
+            class="mobileDrawerNavItem mobileDrawerNavItem--link"
             data-testid="mobile-drawer-section-settings"
             @click="selectMobileDrawerSection('settings')"
           >
             <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
             <span>系统设置</span>
+            <el-icon class="mobileDrawerNavChevron" :size="14" aria-hidden="true"><ArrowRight /></el-icon>
           </button>
         </nav>
 
@@ -833,7 +946,8 @@ const advisorConnectionStatus = computed(() => {
           <span class="drawerBrandTitle">ADS</span>
           <span class="drawerBrandVersion">v{{ appVersion }}</span>
         </footer>
-      </aside>
+        </aside>
+      </Transition>
 
       <section v-if="isMobile && mobileDrawerSection !== 'projects'" class="mobileMainPanel">
         <ModelManager

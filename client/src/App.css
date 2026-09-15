@@ -936,13 +936,26 @@
     background: transparent;
     color: var(--muted);
     font-size: 14px;
-    font-weight: 800;
+    font-weight: 600;
     cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
   }
   .mobileDrawerNavItem.active {
-    background: var(--surface);
+    background: var(--surface-2);
     color: var(--accent-2);
-    box-shadow: var(--shadow-sm);
+  }
+  .mobileDrawerNavItem--link {
+    margin-top: 6px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .mobileDrawerNavItem--link:active {
+    background: var(--surface-2);
+  }
+  .mobileDrawerNavChevron {
+    margin-left: auto;
+    color: var(--muted-2);
   }
   .mobileDrawerNavItem:focus-visible,
   .mobileDrawerSubitem:focus-visible {
@@ -960,6 +973,8 @@
     padding: 10px 0 0;
     border-top: 1px solid var(--border);
     overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
   }
   .mobileDrawerSubitem {
     display: flex;
@@ -1011,6 +1026,30 @@
     background: rgba(15, 23, 42, 0.34);
     backdrop-filter: blur(2px);
   }
+  .mobile-drawer-enter-from,
+  .mobile-drawer-leave-to {
+    transform: translateX(-104%);
+  }
+  .mobile-drawer-enter-active,
+  .mobile-drawer-leave-active {
+    transition: transform 0.28s cubic-bezier(0.3, 0.8, 0.4, 1);
+  }
+  .mobile-fade-enter-from,
+  .mobile-fade-leave-to {
+    opacity: 0;
+  }
+  .mobile-fade-enter-active,
+  .mobile-fade-leave-active {
+    transition: opacity 0.28s ease;
+  }
+  .projectRemove {
+    position: relative;
+  }
+  .projectRemove::after {
+    content: "";
+    position: absolute;
+    inset: -13px;
+  }
   .projectTree {
     flex: 1 1 auto;
     width: 100%;
@@ -1018,6 +1057,8 @@
     min-height: 0;
     border-radius: 13px;
     padding: 8px;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
   }
   .projectTreeHeader {
     flex: 0 0 auto;
