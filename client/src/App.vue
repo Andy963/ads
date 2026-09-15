@@ -962,8 +962,8 @@ const advisorConnectionStatus = computed(() => {
       </section>
 
       <section v-if="!isMobile || mobileDrawerSection === 'projects'" class="chatShell">
-        <div class="laneTabs" role="tablist" aria-label="切换工作区">
-          <div class="laneTabGroup">
+        <div class="laneTabs">
+          <div class="laneTabGroup" role="tablist" aria-label="切换工作区">
             <template v-for="tab in workspaceTabs" :key="tab.id">
               <button
                 :id="`lane-tab-${tab.id}`"
@@ -997,22 +997,22 @@ const advisorConnectionStatus = computed(() => {
                   aria-hidden="true"
                 />
               </button>
-              <div v-if="tab.id === 'advisor'" class="laneModelControls" data-testid="lane-model-controls">
-                <MainChatModelSelectors
-                  :connected="activeLaneConnected"
-                  :busy="activeLaneBusy"
-                  :input-locked="activeLaneInputLocked"
-                  :agents="activeLaneAgents"
-                  :active-agent-id="activeLaneActiveAgentId"
-                  :models="models"
-                  :model-id="activeLaneModelId"
-                  :model-reasoning-effort="activeLaneModelReasoningEffort"
-                  @switch-agent="handleActiveLaneSwitchAgent"
-                  @set-model="handleActiveLaneSetModel"
-                  @set-reasoning-effort="handleActiveLaneSetReasoningEffort"
-                />
-              </div>
             </template>
+          </div>
+          <div class="laneModelControls" data-testid="lane-model-controls">
+            <MainChatModelSelectors
+              :connected="activeLaneConnected"
+              :busy="activeLaneBusy"
+              :input-locked="activeLaneInputLocked"
+              :agents="activeLaneAgents"
+              :active-agent-id="activeLaneActiveAgentId"
+              :models="models"
+              :model-id="activeLaneModelId"
+              :model-reasoning-effort="activeLaneModelReasoningEffort"
+              @switch-agent="handleActiveLaneSwitchAgent"
+              @set-model="handleActiveLaneSetModel"
+              @set-reasoning-effort="handleActiveLaneSetReasoningEffort"
+            />
           </div>
         </div>
 

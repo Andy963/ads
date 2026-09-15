@@ -152,8 +152,8 @@ describe("project status spinner", () => {
     expect(spinner).toBeDefined();
     expect(spinner).toMatch(/display:\s*inline-block\s*;/);
     expect(spinner).toMatch(/box-sizing:\s*border-box\s*;/);
-    expect(spinner).toMatch(/width:\s*11px\s*;/);
-    expect(spinner).toMatch(/height:\s*11px\s*;/);
+    expect(spinner).toMatch(/width:\s*12px\s*;/);
+    expect(spinner).toMatch(/height:\s*12px\s*;/);
     expect(spinner).toMatch(/border:\s*2px solid rgba\(148,\s*163,\s*184,\s*0\.32\)\s*;/);
     expect(spinner).toMatch(/border-top-color:\s*currentColor\s*;/);
     expect(spinner).toMatch(/transform-origin:\s*center\s*;/);

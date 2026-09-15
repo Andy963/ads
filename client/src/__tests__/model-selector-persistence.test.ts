@@ -200,7 +200,8 @@ describe("Model selector persistence", () => {
       await settleUi(wrapper);
 
       const order = Array.from(wrapper.get(".laneTabGroup").element.children).map((element) => element.getAttribute("data-testid"));
-      expect(order).toEqual(["lane-tab-advisor", "lane-model-controls", "lane-tab-worker"]);
+      expect(order).toEqual(["lane-tab-advisor", "lane-tab-worker"]);
+      expect(wrapper.get('[data-testid="lane-model-controls"]').classes()).toContain("laneModelControls");
       const selector = wrapper.findComponent({ name: "MainChatModelSelectors" });
       expect(selector.props("modelReasoningEffort")).toBe("medium");
       selector.vm.$emit("setReasoningEffort", "ultra");

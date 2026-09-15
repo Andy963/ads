@@ -599,30 +599,34 @@
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 36px;
-  padding: 2px 12px;
+  gap: 12px;
+  min-height: 40px;
+  padding: 3px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   box-sizing: border-box;
 }
 
 .laneTabGroup {
-  display: grid;
-  grid-template-columns: minmax(88px, 1fr) minmax(0, 176px) minmax(88px, 1fr);
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
+  flex: 0 0 auto;
+  gap: 2px;
   min-width: 0;
+  padding: 3px;
+  border: 1px solid rgba(15, 23, 42, 0.04);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.05);
 }
 
 .laneModelControls {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-end;
   gap: 8px;
-  width: 100%;
+  flex: 1 1 auto;
   min-width: 0;
+  margin-left: auto;
   overflow: hidden;
 }
 
@@ -660,39 +664,35 @@
 
 .laneTab {
   touch-action: manipulation;
-  justify-self: start;
-  min-height: 32px;
+  min-height: 28px;
   border: none;
   background: transparent;
-  color: #64748b;
-  font-size: 14px;
-  line-height: 20px;
-  font-weight: 800;
-  padding: 4px 12px;
-  border-radius: 999px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+  padding: 4px 14px;
+  border-radius: 8px;
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.laneTab:last-child {
-  justify-self: end;
-}
-
 .laneTabStatusDot {
-  width: 6px;
-  height: 6px;
-  flex: 0 0 6px;
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
   border-radius: 50%;
   background: #94a3b8;
 }
 
 .laneTabStatusDot--connected {
   background: #059669;
+  box-shadow: 0 0 0 2.5px rgba(5, 150, 105, 0.14);
 }
 
 .laneTabStatusDot--disconnected {
@@ -702,9 +702,9 @@
 .laneTabBusySpinner {
   display: inline-block;
   box-sizing: border-box;
-  width: 11px;
-  height: 11px;
-  flex: 0 0 11px;
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
   border: 2px solid rgba(148, 163, 184, 0.32);
   border-top-color: currentColor;
   border-radius: 50%;
@@ -723,17 +723,17 @@
 
 .laneTab.active {
   background: white;
-  color: #0f172a;
-  font-weight: 800;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
 }
 
 .laneTab:not(.active) {
-  color: #64748b;
+  color: var(--muted);
 }
 
 .laneTab:not(.active):hover {
-  color: #334155;
+  color: var(--text);
 }
 
 .laneTab:focus-visible {
@@ -1166,22 +1166,26 @@
   }
   .laneTabs {
     width: 100%;
-    min-height: 32px;
-    padding: 0 8px;
-    gap: 6px;
-    justify-content: space-between;
+    min-height: 38px;
+    padding: 2px 8px;
+    gap: 8px;
   }
 
   .laneTabGroup {
-    gap: 4px;
+    padding: 2px;
+    gap: 2px;
   }
   .laneTab {
     flex: 0 0 auto;
     min-width: 0;
     white-space: nowrap;
-    padding: 4px;
-    gap: 4px;
-    font-size: 14px;
+    padding: 4px 10px;
+    gap: 5px;
+    font-size: 13px;
+  }
+  .laneModelControls {
+    flex: 1 1 auto;
+    gap: 6px;
   }
 }
 

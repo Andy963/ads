@@ -9,7 +9,7 @@ describe("mobile navigation shell", () => {
     expect(sfc).toContain('{ id: "worker", label: "Worker" }');
     expect(sfc).not.toContain('{ id: "tasks", label: "Task" }');
         expect(sfc).not.toContain('{ id: "reviewer", label: "Reviewer" }');
-    expect(sfc).toMatch(/<div class="laneTabs"[^>]*role="tablist"[^>]*>/);
+    expect(sfc).toMatch(/<div class="laneTabGroup"[^>]*role="tablist"[^>]*>/);
   });
 
   it("shows only the active lane panel and binds panel visibility to the shared active tab state", async () => {
