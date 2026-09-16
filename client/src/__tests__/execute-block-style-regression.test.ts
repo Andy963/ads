@@ -15,7 +15,10 @@ describe("execute block style regression", () => {
     expect(css).toMatch(/\.execute-cmd\s*\{[\s\S]*?text-overflow:\s*ellipsis\s*;[\s\S]*?\}/);
     expect(css).toMatch(/\.execute-cmd\s*\{[^}]*white-space:\s*nowrap\s*;/);
     expect(css).toMatch(/\.execute-left\s+\.prompt-tag\s*\{[^}]*flex:\s*0 0 auto\s*;[^}]*white-space:\s*nowrap\s*;/);
-    expect(css).toMatch(/\.executeSpinner\s*\{[^}]*flex:\s*0 0 auto\s*;/);
+    expect(css).toMatch(/\.executeLoadingDots\s*\{[^}]*flex:\s*0 0 auto\s*;/);
+    expect(css).toMatch(/\.executeLoadingDot\s*\{[\s\S]*?border-radius:\s*50%\s*;[\s\S]*?\}/);
+    expect(css).toMatch(/@keyframes\s+executeDotPulse\s*\{/);
+    expect(css).not.toMatch(/\.executeSpinner/);
     expect(css).not.toMatch(/execute-output|execute-more|executeCopyBtn|execute-actions/);
 
     // Old stacked-underlay styling should not be present.

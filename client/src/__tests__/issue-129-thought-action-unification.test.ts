@@ -160,8 +160,9 @@ describe("Issue #129: Visible execution contract, command ordering, and lane par
 
     await wrapper.vm.$nextTick();
 
-    const spinner = wrapper.find(".executeSpinner");
-    expect(spinner.exists()).toBe(true);
+    const loadingDots = wrapper.find(".executeLoadingDots");
+    expect(loadingDots.exists()).toBe(true);
+    expect(loadingDots.findAll(".executeLoadingDot")).toHaveLength(3);
 
     // When command completes streaming
     await wrapper.setProps({
@@ -172,7 +173,7 @@ describe("Issue #129: Visible execution contract, command ordering, and lane par
     });
     await wrapper.vm.$nextTick();
 
-    expect(wrapper.find(".executeSpinner").exists()).toBe(false);
+    expect(wrapper.find(".executeLoadingDots").exists()).toBe(false);
     wrapper.unmount();
   });
 });

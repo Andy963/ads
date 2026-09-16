@@ -569,7 +569,11 @@ function closeFilePreview(): void {
           <div class="execute-left">
             <span class="prompt-tag">&gt;_</span>
             <span class="execute-cmd" :title="m.command || ''">{{ m.command || "" }}</span>
-            <span v-if="m.streaming" class="executeSpinner" aria-label="Running..."></span>
+            <span v-if="m.streaming" class="executeLoadingDots" aria-label="Running...">
+              <span class="executeLoadingDot"></span>
+              <span class="executeLoadingDot"></span>
+              <span class="executeLoadingDot"></span>
+            </span>
           </div>
         </div>
       </div>
@@ -1403,17 +1407,41 @@ function closeFilePreview(): void {
   vertical-align: middle;
 }
 
-.executeSpinner {
-  display: inline-block;
+.executeLoadingDots {
+  display: inline-flex;
   flex: 0 0 auto;
-  width: 9px;
-  height: 9px;
-  border: 1.5px solid rgba(148, 163, 184, 0.4);
-  border-top-color: var(--accent, #0969da);
-  border-radius: 50%;
-  animation: actionSpin 0.8s linear infinite;
+  align-items: center;
+  gap: 3px;
   margin-left: 6px;
-  vertical-align: middle;
+}
+
+.executeLoadingDot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent, #0969da);
+  animation: executeDotPulse 1.2s ease-in-out infinite;
+}
+
+.executeLoadingDot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.executeLoadingDot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes executeDotPulse {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.85);
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 @media (max-width: 768px) {
