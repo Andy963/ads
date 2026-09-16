@@ -196,7 +196,7 @@ describe("chat execute stacking and command collapse", () => {
     await settleUi(wrapper);
 
     expect(wrapper.get(".execute-cmd").text()).toBe("git log");
-    expect(wrapper.find(".executeSpinner").exists()).toBe(true);
+    expect(wrapper.find(".executeLoadingDots").exists()).toBe(true);
     expect(wrapper.find(".execute-output").exists()).toBe(false);
     expect(wrapper.find(".execute-more").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("line 1");
@@ -204,7 +204,7 @@ describe("chat execute stacking and command collapse", () => {
     await wrapper.setProps({ messages: [{ id: "e-long", role: "system", kind: "execute", content: `${longOutput}\nlast line`, command: "git log", streaming: false }] });
     await settleUi(wrapper);
     expect(wrapper.get(".execute-cmd").text()).toBe("git log");
-    expect(wrapper.find(".executeSpinner").exists()).toBe(false);
+    expect(wrapper.find(".executeLoadingDots").exists()).toBe(false);
     expect(wrapper.find(".execute-output").exists()).toBe(false);
     expect(wrapper.find(".execute-more").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("last line");
