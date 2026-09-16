@@ -424,4 +424,114 @@ describe("ModelManager", () => {
 
     wrapper.unmount();
   });
+
+  it("duplicates a model from the row copy action with isDefault forced off", async () => {
+    const source = {
+      ...makeModel("gpt-5.2", "GPT 5.2", "openai", "codex"),
+      isDefault: true,
+      configJson: { reasoningEffort: "high", allowedAgents: ["codex"] },
+    };
+    const existingCopy = makeModel("gpt-5.2-copy", "GPT 5.2 (Copy)", "openai", "codex", "gpt-5.2-copy");
+    const api = {
+      get: vi.fn().mockResolvedValue([source, existingCopy]),
+      post: vi.fn().mockResolvedValue({}),
+      patch: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    const copyButton = wrapper.find('[data-testid="model-manager-copy-gpt-5.2"]');
+    expect(copyButton.exists()).toBe(true);
+    await copyButton.trigger("click");
+    await settle(wrapper);
+
+    const dialog = wrapper.find('[data-testid="model-manager-dialog"]');
+    expect(dialog.exists()).toBe(true);
+    expect(dialog.text()).toContain("新增模型");
+    expect((wrapper.find('[data-testid="model-manager-model-id"]').element as HTMLInputElement).value).toBe("gpt-5.2-copy-2");
+    expect((wrapper.find('[data-testid="model-manager-display-name"]').element as HTMLInputElement).value).toBe("GPT 5.2 (Copy)");
+    expect((wrapper.find('[data-testid="model-manager-default"]').element as HTMLInputElement).checked).toBe(false);
+    expect((wrapper.find('[data-testid="model-manager-enabled"]').element as HTMLInputElement).checked).toBe(true);
+    expect((wrapper.find('[data-testid="model-manager-config-json"]').element as HTMLTextAreaElement).value).toContain(
+      '"reasoningEffort": "high"',
+    );
+
+    await wrapper.find('[data-testid="model-manager-save"]').trigger("submit");
+    await settle(wrapper);
+
+    expect(api.post).toHaveBeenCalledWith("/api/model-configs", {
+      modelId: "gpt-5.2-copy-2",
+      displayName: "GPT 5.2 (Copy)",
+      provider: "openai",
+      isEnabled: true,
+      isDefault: false,
+      configJson: { reasoningEffort: "high", allowedAgents: ["codex"] },
+    });
+    expect(api.patch).not.toHaveBeenCalled();
+
+    wrapper.unmount();
+  });
+
+  it("discovers and imports selected upstream models without adding autocomplete", async () => {
+    const existingModel = makeModel("existing-model", "Existing Model", "openai", "codex", "existing-model");
+    const api = {
+      get: vi.fn().mockImplementation((path: string) =>
+        Promise.resolve(path === "/api/model-configs" ? [existingModel] : []),
+      ),
+      post: vi.fn().mockImplementation((path: string) => {
+        if (path === "/api/models/upstream") {
+          return Promise.resolve({ ok: true, models: ["gpt-5.6-sol", "existing-model"] });
+        }
+        return Promise.resolve({});
+      }),
+      patch: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    await wrapper.find('[data-testid="model-manager-sync"]').trigger("click");
+    expect(wrapper.find('[data-testid="model-manager-sync-dialog"]').exists()).toBe(true);
+    await wrapper.find('[data-testid="model-manager-sync-base-url"]').setValue("https://provider.test/v1");
+    await wrapper.find('[data-testid="model-manager-sync-api-key"]').setValue("sk-test");
+    await wrapper.find('[data-testid="model-manager-sync-provider"]').setValue("custom");
+    await wrapper.find('[data-testid="model-manager-sync-dialog"]').trigger("submit");
+    await settle(wrapper);
+
+    expect(api.post).toHaveBeenCalledWith("/api/models/upstream", {
+      baseUrl: "https://provider.test/v1",
+      apiKey: "sk-test",
+    });
+    expect(wrapper.find('[data-testid="model-manager-sync-model-gpt-5.6-sol"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="model-manager-sync-model-existing-model"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.find('[data-testid="model-manager-sync-import"]').text()).toContain("导入 1 个模型");
+
+    await wrapper.find('[data-testid="model-manager-sync-import"]').trigger("click");
+    await settle(wrapper);
+
+    expect(api.post).toHaveBeenCalledWith("/api/model-configs", {
+      modelId: "gpt-5.6-sol",
+      displayName: "gpt-5.6-sol",
+      provider: "custom",
+      isEnabled: true,
+      isDefault: false,
+      configJson: { allowedAgents: ["codex"] },
+    });
+    expect(wrapper.find('[data-testid="model-manager-sync-dialog"]').exists()).toBe(false);
+    expect(wrapper.emitted("changed")).toHaveLength(1);
+    expect(wrapper.find("datalist").exists()).toBe(false);
+
+    wrapper.unmount();
+  });
 });

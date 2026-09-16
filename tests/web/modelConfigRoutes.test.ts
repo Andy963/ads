@@ -7,7 +7,7 @@ import path from "node:path";
 import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
 
 import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
-import { handleModelRoutes } from "../../server/web/server/api/routes/models.js";
+import { handleModelRoutes, resetUpstreamModelsCache } from "../../server/web/server/api/routes/models.js";
 
 type FakeReq = {
   method: string;
@@ -68,6 +68,7 @@ describe("web/model-config routes", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-model-config-routes-"));
     db = new DatabaseConstructor(path.join(tmpDir, "state.db"));
     modelStore = createGlobalModelConfigStore(db);
+    resetUpstreamModelsCache();
   });
 
   afterEach(() => {
@@ -331,5 +332,209 @@ describe("web/model-config routes", () => {
     assert.equal(modelStore.getModelConfig("codex-default")?.isDefault, false);
     assert.equal(modelStore.getModelConfig("codex-next")?.isDefault, true);
     assert.equal(modelStore.getModelConfig("claude-default")?.isDefault, false);
+  });
+
+  it("GET /api/models/upstream returns sorted unique model ids from the provider catalog", async () => {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    const fetchImpl = (async (url: unknown, init: { headers: Record<string, string> }) => {
+      calls.push({ url: String(url), headers: init.headers });
+      return new Response(
+        JSON.stringify({
+          data: [
+            { id: "gpt-5.6-sol" },
+            { id: "" },
+            { id: null },
+            { id: "gemini-3.7-flash" },
+            { id: "gpt-5.6-sol" },
+            "malformed-entry",
+            { id: {} },
+            { id: 42 },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+
+    const res = createRes();
+    assert.equal(
+      await handleModelRoutes(
+        {
+          req: createReq("GET") as any,
+          res: res as any,
+          url: new URL("http://localhost/api/models/upstream"),
+          pathname: "/api/models/upstream",
+        } as any,
+        {
+          modelStore,
+          resolveConfig: () => ({ baseUrl: "https://provider.test/v1/", apiKey: "sk-test", authMode: "apiKey" }),
+          fetchImpl,
+        },
+      ),
+      true,
+    );
+
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(parseJson<{ ok: boolean; models: string[] }>(res.body), {
+      ok: true,
+      models: ["gemini-3.7-flash", "gpt-5.6-sol"],
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "https://provider.test/v1/models");
+    assert.equal(calls[0].headers.Authorization, "Bearer sk-test");
+  });
+
+  it("POST /api/models/upstream/discover accepts one-off provider credentials", async () => {
+    let receivedOverrides: { baseUrl?: string; apiKey?: string } | undefined;
+    const fetchImpl = (async (url: unknown, init: { headers: Record<string, string> }) => {
+      assert.equal(String(url), "https://custom-provider.test/v1/models");
+      assert.equal(init.headers.Authorization, "Bearer custom-key");
+      return new Response(JSON.stringify({ data: [{ id: "custom-model" }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const res = createRes();
+
+    assert.equal(
+      await handleModelRoutes(
+        {
+          req: createReq("POST", { baseUrl: "https://custom-provider.test/v1", apiKey: "custom-key" }) as any,
+          res: res as any,
+          url: new URL("http://localhost/api/models/upstream/discover"),
+          pathname: "/api/models/upstream/discover",
+        } as any,
+        {
+          modelStore,
+          resolveConfig: (overrides) => {
+            receivedOverrides = overrides;
+            return {
+              baseUrl: overrides?.baseUrl,
+              apiKey: overrides?.apiKey,
+              authMode: "apiKey",
+            };
+          },
+          fetchImpl,
+        },
+      ),
+      true,
+    );
+
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(parseJson<{ ok: boolean; models: string[] }>(res.body), {
+      ok: true,
+      models: ["custom-model"],
+    });
+    assert.deepEqual(receivedOverrides, {
+      baseUrl: "https://custom-provider.test/v1",
+      apiKey: "custom-key",
+    });
+  });
+
+  it("GET /api/models/upstream serves the cached catalog within the TTL", async () => {
+    let fetchCount = 0;
+    const fetchImpl = (async () => {
+      fetchCount += 1;
+      return new Response(JSON.stringify({ data: [{ id: "gpt-5.6-sol" }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const deps = {
+      modelStore,
+      resolveConfig: () => ({ baseUrl: "https://provider.test/v1", apiKey: "sk-test", authMode: "apiKey" as const }),
+      fetchImpl,
+    };
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const res = createRes();
+      assert.equal(
+        await handleModelRoutes(
+          {
+            req: createReq("GET") as any,
+            res: res as any,
+            url: new URL("http://localhost/api/models/upstream"),
+            pathname: "/api/models/upstream",
+          } as any,
+          deps,
+        ),
+        true,
+      );
+      assert.deepEqual(parseJson<{ ok: boolean; models: string[] }>(res.body), {
+        ok: true,
+        models: ["gpt-5.6-sol"],
+      });
+    }
+    assert.equal(fetchCount, 1);
+  });
+
+  it("GET /api/models/upstream degrades gracefully when credentials are missing", async () => {
+    const res = createRes();
+    assert.equal(
+      await handleModelRoutes(
+        {
+          req: createReq("GET") as any,
+          res: res as any,
+          url: new URL("http://localhost/api/models/upstream"),
+          pathname: "/api/models/upstream",
+        } as any,
+        {
+          modelStore,
+          resolveConfig: () => {
+            throw new Error("Codex credentials not found");
+          },
+        },
+      ),
+      true,
+    );
+
+    assert.equal(res.statusCode, 200);
+    const payload = parseJson<{ ok: boolean; models: string[]; error?: string }>(res.body);
+    assert.equal(payload.ok, false);
+    assert.deepEqual(payload.models, []);
+    assert.match(payload.error ?? "", /credentials not found/);
+  });
+
+  it("GET /api/models/upstream degrades gracefully on network and HTTP failures", async () => {
+    const resolveConfig = () => ({ baseUrl: "https://provider.test/v1", apiKey: "sk-test", authMode: "apiKey" as const });
+
+    const networkFailure = createRes();
+    assert.equal(
+      await handleModelRoutes(
+        {
+          req: createReq("GET") as any,
+          res: networkFailure as any,
+          url: new URL("http://localhost/api/models/upstream"),
+          pathname: "/api/models/upstream",
+        } as any,
+        {
+          modelStore,
+          resolveConfig,
+          fetchImpl: (async () => {
+            throw new Error("connect ETIMEDOUT");
+          }) as unknown as typeof fetch,
+        },
+      ),
+      true,
+    );
+    const networkPayload = parseJson<{ ok: boolean; models: string[]; error?: string }>(networkFailure.body);
+    assert.equal(networkPayload.ok, false);
+    assert.deepEqual(networkPayload.models, []);
+    assert.match(networkPayload.error ?? "", /ETIMEDOUT/);
+
+    const httpFailure = createRes();
+    assert.equal(
+      await handleModelRoutes(
+        {
+          req: createReq("GET") as any,
+          res: httpFailure as any,
+          url: new URL("http://localhost/api/models/upstream"),
+          pathname: "/api/models/upstream",
+        } as any,
+        {
+          modelStore,
+          resolveConfig,
+          fetchImpl: (async () => new Response("upstream down", { status: 503 })) as unknown as typeof fetch,
+        },
+      ),
+      true,
+    );
+    const httpPayload = parseJson<{ ok: boolean; models: string[]; error?: string }>(httpFailure.body);
+    assert.equal(httpPayload.ok, false);
+    assert.deepEqual(httpPayload.models, []);
+    assert.match(httpPayload.error ?? "", /HTTP 503/);
   });
 });
