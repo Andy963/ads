@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { getStateDatabase } from "../../../../state/database.js";
 import { createGlobalModelConfigStore, type GlobalModelConfigStore } from "../../../../state/globalModelConfigStore.js";
 import type { ModelConfig } from "../../../../state/modelConfigTypes.js";
+import { resolveCodexConfig, type CodexResolvedConfig } from "../../../../codexConfig.js";
 import type { ApiRouteContext } from "../types.js";
 import { readJsonBody, sendJson } from "../../http.js";
 
@@ -41,7 +42,59 @@ type UpdateModelConfigInput = z.infer<typeof updateModelConfigSchema>;
 
 type ModelRouteDeps = {
   modelStore?: GlobalModelConfigStore;
+  resolveConfig?: () => CodexResolvedConfig;
+  fetchImpl?: typeof fetch;
 };
+
+const UPSTREAM_MODELS_CACHE_TTL_MS = 5 * 60 * 1000;
+const UPSTREAM_MODELS_TIMEOUT_MS = 5000;
+
+let upstreamModelsCache: { expiresAt: number; models: string[] } | null = null;
+
+export function resetUpstreamModelsCache(): void {
+  upstreamModelsCache = null;
+}
+
+async function loadUpstreamModels(deps: ModelRouteDeps): Promise<{ models: string[]; error?: string }> {
+  const now = Date.now();
+  if (upstreamModelsCache && upstreamModelsCache.expiresAt > now) {
+    return { models: upstreamModelsCache.models };
+  }
+
+  let config: CodexResolvedConfig;
+  try {
+    config = (deps.resolveConfig ?? resolveCodexConfig)();
+  } catch (err) {
+    return { models: [], error: err instanceof Error ? err.message : String(err) };
+  }
+  if (!config.baseUrl || !config.apiKey) {
+    return { models: [], error: "Upstream model discovery requires an API key and base URL" };
+  }
+
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  try {
+    const response = await fetchImpl(`${config.baseUrl.replace(/\/+$/, "")}/models`, {
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+      signal: AbortSignal.timeout(UPSTREAM_MODELS_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      return { models: [], error: `Upstream model endpoint returned HTTP ${response.status}` };
+    }
+    const body = (await response.json()) as { data?: unknown };
+    const entries = Array.isArray(body?.data) ? body.data : [];
+    const models = [
+      ...new Set(
+        entries
+          .map((entry) => normalizeString((entry as { id?: unknown } | null | undefined)?.id))
+          .filter((id) => id.length > 0),
+      ),
+    ].sort();
+    upstreamModelsCache = { expiresAt: now + UPSTREAM_MODELS_CACHE_TTL_MS, models };
+    return { models };
+  } catch (err) {
+    return { models: [], error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 function normalizeString(value: unknown): string {
   return String(value ?? "").trim();
@@ -85,6 +138,11 @@ export async function handleModelRoutes(ctx: ApiRouteContext, deps: ModelRouteDe
     const modelStore = getModelStore();
     const configured = modelStore.listModelConfigs();
     sendJson(res, 200, configured.filter((model) => model.isEnabled));
+    return true;
+  }
+
+  if (req.method === "GET" && pathname === "/api/models/upstream") {
+    sendJson(res, 200, await loadUpstreamModels(deps));
     return true;
   }
 

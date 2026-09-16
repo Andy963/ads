@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
-import { Close, EditPen, Plus, Refresh, StarFilled } from "@element-plus/icons-vue";
+import { Close, CopyDocument, EditPen, Plus, Refresh, StarFilled } from "@element-plus/icons-vue";
 
 import type { ApiClient } from "../api/client";
 import type { LaneName, LanePromptSnapshot, ModelConfig } from "../api/types";
@@ -319,6 +319,25 @@ function editModel(model: ModelConfig): void {
   statusMessage.value = null;
 }
 
+function duplicateModel(model: ModelConfig): void {
+  editingId.value = null;
+  selectedModelId.value = model.id;
+  dialogOpen.value = true;
+  pendingDeleteId.value = null;
+  const sourceLabel = model.displayName || model.modelId || model.id;
+  assignForm({
+    id: "",
+    modelId: `${model.modelId || model.id}-copy`,
+    displayName: `${sourceLabel} (Copy)`,
+    provider: model.provider || "openai",
+    isEnabled: model.isEnabled,
+    isDefault: false,
+    configJsonText: stringifyConfigJson(model.configJson),
+  });
+  error.value = null;
+  statusMessage.value = null;
+}
+
 function buildPayload(): Omit<ModelConfig, "id"> & { id?: string } {
   const parsed = parseConfigJson(form.configJsonText) ?? {};
   const { allowedAgents: _drop, ...rest } = parsed as Record<string, unknown>;
@@ -618,6 +637,17 @@ defineExpose({
                     @click="editModel(model)"
                   >
                     <el-icon :size="15" aria-hidden="true"><EditPen /></el-icon>
+                  </button>
+
+                  <button
+                    type="button"
+                    class="rowAction icon"
+                    title="复制"
+                    :disabled="busy"
+                    :data-testid="`model-manager-copy-${model.id}`"
+                    @click="duplicateModel(model)"
+                  >
+                    <el-icon :size="15" aria-hidden="true"><CopyDocument /></el-icon>
                   </button>
 
                   <button

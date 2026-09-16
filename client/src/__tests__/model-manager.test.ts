@@ -424,4 +424,57 @@ describe("ModelManager", () => {
 
     wrapper.unmount();
   });
+
+  it("duplicates a model from the row copy action with isDefault forced off", async () => {
+    const source = {
+      ...makeModel("gpt-5.2", "GPT 5.2", "openai", "codex"),
+      isDefault: true,
+      configJson: { reasoningEffort: "high", allowedAgents: ["codex"] },
+    };
+    const api = {
+      get: vi.fn().mockResolvedValue([source]),
+      post: vi.fn().mockResolvedValue({}),
+      patch: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    const copyButton = wrapper.find('[data-testid="model-manager-copy-gpt-5.2"]');
+    expect(copyButton.exists()).toBe(true);
+    await copyButton.trigger("click");
+    await settle(wrapper);
+
+    // Duplication opens the creation dialog, not the edit dialog.
+    const dialog = wrapper.find('[data-testid="model-manager-dialog"]');
+    expect(dialog.exists()).toBe(true);
+    expect(dialog.text()).toContain("新增模型");
+    expect((wrapper.find('[data-testid="model-manager-model-id"]').element as HTMLInputElement).value).toBe("gpt-5.2-copy");
+    expect((wrapper.find('[data-testid="model-manager-display-name"]').element as HTMLInputElement).value).toBe("GPT 5.2 (Copy)");
+    expect((wrapper.find('[data-testid="model-manager-default"]').element as HTMLInputElement).checked).toBe(false);
+    expect((wrapper.find('[data-testid="model-manager-enabled"]').element as HTMLInputElement).checked).toBe(true);
+    expect((wrapper.find('[data-testid="model-manager-config-json"]').element as HTMLTextAreaElement).value).toContain(
+      '"reasoningEffort": "high"',
+    );
+
+    await wrapper.find('[data-testid="model-manager-save"]').trigger("submit");
+    await settle(wrapper);
+
+    expect(api.post).toHaveBeenCalledWith("/api/model-configs", {
+      modelId: "gpt-5.2-copy",
+      displayName: "GPT 5.2 (Copy)",
+      provider: "openai",
+      isEnabled: true,
+      isDefault: false,
+      configJson: { reasoningEffort: "high", allowedAgents: ["codex"] },
+    });
+    expect(api.patch).not.toHaveBeenCalled();
+
+    wrapper.unmount();
+  });
 });
