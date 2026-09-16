@@ -17,6 +17,17 @@ type ModelForm = {
 
 type SettingsTab = "lane-prompts" | "models";
 
+type UpstreamDiscoveryResponse = {
+  ok: boolean;
+  models: string[];
+  error?: string;
+};
+
+type UpstreamModelRow = {
+  modelId: string;
+  configured: boolean;
+};
+
 const props = withDefaults(
   defineProps<{
     api: ApiClient;
@@ -56,6 +67,16 @@ const lanePromptLoading = ref(false);
 const lanePromptSaving = ref(false);
 const lanePromptError = ref<string | null>(null);
 const lanePromptStatus = ref<string | null>(null);
+const syncDialogOpen = ref(false);
+const syncLoading = ref(false);
+const syncImporting = ref(false);
+const syncError = ref<string | null>(null);
+const syncBaseUrl = ref("");
+const syncApiKey = ref("");
+const syncProvider = ref("openai");
+const upstreamModels = ref<string[]>([]);
+const selectedUpstreamModels = ref<string[]>([]);
+const upstreamModelsLoaded = ref(false);
 
 const emptyForm = (): ModelForm => ({
   id: "",
@@ -109,7 +130,7 @@ const sortedModels = computed(() => {
 });
 
 const enabledCount = computed(() => modelConfigs.value.filter((m) => m.isEnabled).length);
-const busy = computed(() => saving.value || loading.value || busyRowId.value !== null);
+const busy = computed(() => saving.value || loading.value || busyRowId.value !== null || syncLoading.value || syncImporting.value);
 const isEditing = computed(() => Boolean(editingId.value));
 const managerTitle = computed(() => (props.agent ? "模型" : "系统设置"));
 const managerSubtitle = computed(() =>
@@ -131,6 +152,17 @@ const canSubmit = computed(() => {
   if (!form.modelId.trim()) return false;
   return configJsonError.value === null;
 });
+
+const upstreamModelRows = computed<UpstreamModelRow[]>(() => {
+  const configuredIds = new Set(modelConfigs.value.map((model) => model.modelId || model.id));
+  return upstreamModels.value.map((modelId) => ({ modelId, configured: configuredIds.has(modelId) }));
+});
+
+const newUpstreamModels = computed(() => upstreamModelRows.value.filter((row) => !row.configured));
+const selectedUpstreamModelCount = computed(() => selectedUpstreamModels.value.length);
+const allNewUpstreamModelsSelected = computed(
+  () => newUpstreamModels.value.length > 0 && newUpstreamModels.value.every((row) => selectedUpstreamModels.value.includes(row.modelId)),
+);
 
 const selectedLaneSnapshot = computed(() =>
   lanePromptSnapshots.value.find((snapshot) => snapshot.lane === selectedLane.value) ?? null,
@@ -191,6 +223,137 @@ async function loadModelConfigs(): Promise<void> {
     error.value = err instanceof Error ? err.message : String(err);
   } finally {
     loading.value = false;
+  }
+}
+
+function getDuplicateModelId(model: ModelConfig): string {
+  const sourceModelId = String(model.modelId || model.id).trim();
+  const configuredIds = new Set(modelConfigs.value.map((item) => String(item.modelId || item.id).trim()));
+  const baseModelId = `${sourceModelId}-copy`;
+  if (!configuredIds.has(baseModelId)) return baseModelId;
+  let suffix = 2;
+  while (configuredIds.has(`${baseModelId}-${suffix}`)) {
+    suffix += 1;
+  }
+  return `${baseModelId}-${suffix}`;
+}
+
+function openSyncDialog(): void {
+  syncDialogOpen.value = true;
+  syncLoading.value = false;
+  syncImporting.value = false;
+  syncError.value = null;
+  syncBaseUrl.value = "";
+  syncApiKey.value = "";
+  syncProvider.value = "openai";
+  upstreamModels.value = [];
+  selectedUpstreamModels.value = [];
+  upstreamModelsLoaded.value = false;
+}
+
+function closeSyncDialog(force = false): void {
+  if (!force && (syncLoading.value || syncImporting.value)) return;
+  syncDialogOpen.value = false;
+  syncError.value = null;
+  syncApiKey.value = "";
+}
+
+function toggleUpstreamModel(modelId: string, selected: boolean): void {
+  if (selected) {
+    if (!selectedUpstreamModels.value.includes(modelId)) {
+      selectedUpstreamModels.value = [...selectedUpstreamModels.value, modelId];
+    }
+    return;
+  }
+  selectedUpstreamModels.value = selectedUpstreamModels.value.filter((item) => item !== modelId);
+}
+
+function handleUpstreamModelChange(modelId: string, event: Event): void {
+  toggleUpstreamModel(modelId, (event.target as HTMLInputElement).checked);
+}
+
+function toggleAllNewUpstreamModels(): void {
+  if (allNewUpstreamModelsSelected.value) {
+    selectedUpstreamModels.value = [];
+    return;
+  }
+  selectedUpstreamModels.value = newUpstreamModels.value.map((row) => row.modelId);
+}
+
+async function discoverUpstreamModels(): Promise<void> {
+  if (syncLoading.value || syncImporting.value) return;
+  syncLoading.value = true;
+  syncError.value = null;
+  const payload: Record<string, string> = {};
+  const baseUrl = syncBaseUrl.value.trim();
+  const apiKey = syncApiKey.value.trim();
+  if (baseUrl) payload.baseUrl = baseUrl;
+  if (apiKey) payload.apiKey = apiKey;
+  try {
+    const result = await props.api.post<UpstreamDiscoveryResponse>("/api/models/upstream", payload);
+    if (!result.ok) {
+      upstreamModels.value = [];
+      selectedUpstreamModels.value = [];
+      upstreamModelsLoaded.value = false;
+      syncError.value = result.error || "上游模型同步失败";
+      return;
+    }
+    upstreamModels.value = [...new Set(result.models.filter((modelId) => typeof modelId === "string" && modelId.trim()))]
+      .map((modelId) => modelId.trim())
+      .sort();
+    selectedUpstreamModels.value = upstreamModelRows.value
+      .filter((row) => !row.configured)
+      .map((row) => row.modelId);
+    upstreamModelsLoaded.value = true;
+  } catch (err) {
+    upstreamModels.value = [];
+    selectedUpstreamModels.value = [];
+    upstreamModelsLoaded.value = false;
+    syncError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    syncLoading.value = false;
+  }
+}
+
+async function importUpstreamModels(): Promise<void> {
+  if (syncLoading.value || syncImporting.value) return;
+  const configuredIds = new Set(modelConfigs.value.map((model) => model.modelId || model.id));
+  const modelIds = selectedUpstreamModels.value.filter((modelId) => !configuredIds.has(modelId));
+  if (modelIds.length === 0) return;
+  syncImporting.value = true;
+  syncError.value = null;
+  const provider = syncProvider.value.trim() || "openai";
+  const failed: string[] = [];
+  let imported = 0;
+  try {
+    for (const modelId of modelIds) {
+      try {
+        await props.api.post<ModelConfig>("/api/model-configs", {
+          modelId,
+          displayName: modelId,
+          provider,
+          isEnabled: true,
+          isDefault: false,
+          configJson: { allowedAgents: ["codex"] },
+        });
+        imported += 1;
+      } catch {
+        failed.push(modelId);
+      }
+    }
+    if (imported > 0) {
+      await loadModelConfigs();
+      emit("changed");
+    }
+    selectedUpstreamModels.value = failed;
+    if (failed.length > 0) {
+      syncError.value = `${imported} 个模型已导入，以下模型导入失败：${failed.join(", ")}`;
+      return;
+    }
+    statusMessage.value = `已导入 ${imported} 个上游模型`;
+    closeSyncDialog(true);
+  } finally {
+    syncImporting.value = false;
   }
 }
 
@@ -327,7 +490,7 @@ function duplicateModel(model: ModelConfig): void {
   const sourceLabel = model.displayName || model.modelId || model.id;
   assignForm({
     id: "",
-    modelId: `${model.modelId || model.id}-copy`,
+    modelId: getDuplicateModelId(model),
     displayName: `${sourceLabel} (Copy)`,
     provider: model.provider || "openai",
     isEnabled: model.isEnabled,
@@ -474,6 +637,18 @@ defineExpose({
         <button
           v-if="activeTab === 'models'"
           type="button"
+          class="syncBtn"
+          title="同步上游模型"
+          :disabled="busy"
+          data-testid="model-manager-sync"
+          @click="openSyncDialog"
+        >
+          <el-icon :size="13" aria-hidden="true"><Refresh /></el-icon>
+          <span>同步上游</span>
+        </button>
+        <button
+          v-if="activeTab === 'models'"
+          type="button"
           class="addBtn"
           :disabled="busy"
           data-testid="model-manager-add"
@@ -546,17 +721,29 @@ defineExpose({
     >
       <div class="modelListHeader">
         <span class="modelListCount">共 {{ sortedModels.length }} 个模型 · {{ enabledCount }} 已启用</span>
-        <button
-          v-if="!showHeader"
-          type="button"
-          class="addBtn"
-          :disabled="busy"
-          data-testid="model-manager-add"
-          @click="startCreate"
-        >
-          <el-icon :size="13" aria-hidden="true"><Plus /></el-icon>
-          <span>新增模型</span>
-        </button>
+        <div v-if="!showHeader" class="modelListHeaderActions">
+          <button
+            type="button"
+            class="syncBtn"
+            title="同步上游模型"
+            :disabled="busy"
+            data-testid="model-manager-sync"
+            @click="openSyncDialog"
+          >
+            <el-icon :size="13" aria-hidden="true"><Refresh /></el-icon>
+            <span>同步上游</span>
+          </button>
+          <button
+            type="button"
+            class="addBtn"
+            :disabled="busy"
+            data-testid="model-manager-add"
+            @click="startCreate"
+          >
+            <el-icon :size="13" aria-hidden="true"><Plus /></el-icon>
+            <span>新增模型</span>
+          </button>
+        </div>
       </div>
 
       <div class="cliModels">
@@ -773,6 +960,145 @@ defineExpose({
       </template>
     </div>
 
+    <div v-if="syncDialogOpen" class="dialogMask" @click.self="closeSyncDialog">
+      <form
+        class="dialogCard syncDialogCard"
+        role="dialog"
+        aria-modal="true"
+        data-testid="model-manager-sync-dialog"
+        @submit.prevent="discoverUpstreamModels"
+      >
+        <header class="dialogHeader">
+          <div class="dialogHeading">
+            <div class="dialogTitle">从上游同步模型</div>
+            <div class="dialogSubtitle">
+              <span class="dialogHint">凭据仅用于本次探测，不会写入模型配置。</span>
+            </div>
+          </div>
+          <button
+            class="modelIconBtn"
+            type="button"
+            title="关闭"
+            :disabled="syncLoading || syncImporting"
+            @click="closeSyncDialog"
+          >
+            <el-icon :size="16" aria-hidden="true"><Close /></el-icon>
+          </button>
+        </header>
+
+        <div class="dialogBody">
+          <div v-if="syncError" class="modelBanner error dialogError" data-testid="model-manager-sync-error">
+            {{ syncError }}
+          </div>
+
+          <label class="modelField">
+            <span class="modelLabel">Base URL</span>
+            <input
+              v-model="syncBaseUrl"
+              class="modelInput"
+              placeholder="留空使用服务器配置"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              data-testid="model-manager-sync-base-url"
+              :disabled="syncLoading || syncImporting"
+            />
+            <span class="modelHelp">例如 https://api.openai.com/v1；留空时使用服务器已有配置。</span>
+          </label>
+
+          <label class="modelField">
+            <span class="modelLabel">API Key</span>
+            <input
+              v-model="syncApiKey"
+              class="modelInput"
+              type="password"
+              placeholder="留空使用服务器配置"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              data-testid="model-manager-sync-api-key"
+              :disabled="syncLoading || syncImporting"
+            />
+          </label>
+
+          <label class="modelField">
+            <span class="modelLabel">Provider</span>
+            <input
+              v-model="syncProvider"
+              class="modelInput"
+              placeholder="openai"
+              autocomplete="off"
+              data-testid="model-manager-sync-provider"
+              :disabled="syncLoading || syncImporting"
+            />
+            <span class="modelHelp">导入模型使用的 provider 标签，默认是 openai。</span>
+          </label>
+
+          <div class="syncDiscoverActions">
+            <button
+              type="submit"
+              class="btnSecondary"
+              :disabled="syncLoading || syncImporting"
+              data-testid="model-manager-sync-discover"
+            >
+              {{ syncLoading ? "探测中…" : "探测模型" }}
+            </button>
+            <span v-if="upstreamModelsLoaded" class="modelHelp">
+              发现 {{ upstreamModels.length }} 个模型，{{ newUpstreamModels.length }} 个可导入。
+            </span>
+          </div>
+
+          <div v-if="upstreamModelsLoaded" class="syncResults" data-testid="model-manager-sync-results">
+            <div class="syncResultsHeader">
+              <strong>模型列表</strong>
+              <button
+                type="button"
+                class="btnSecondary syncSelectAll"
+                :disabled="syncImporting || newUpstreamModels.length === 0"
+                @click="toggleAllNewUpstreamModels"
+              >
+                {{ allNewUpstreamModelsSelected ? "取消全选" : "全选新模型" }}
+              </button>
+            </div>
+            <p v-if="upstreamModelRows.length === 0" class="syncEmpty">上游没有返回可用模型。</p>
+            <div v-else class="syncModelList">
+              <label
+                v-for="row in upstreamModelRows"
+                :key="row.modelId"
+                class="syncModelRow"
+                :class="{ configured: row.configured }"
+              >
+                <input
+                  type="checkbox"
+                  :checked="selectedUpstreamModels.includes(row.modelId)"
+                  :disabled="row.configured || syncImporting"
+                  :data-testid="`model-manager-sync-model-${row.modelId}`"
+                  @change="handleUpstreamModelChange(row.modelId, $event)"
+                />
+                <code>{{ row.modelId }}</code>
+                <span class="syncModelStatus">{{ row.configured ? "已存在" : "新模型" }}</span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <footer class="dialogActions">
+          <button type="button" class="btnSecondary" :disabled="syncLoading || syncImporting" @click="closeSyncDialog">
+            取消
+          </button>
+          <button
+            type="button"
+            class="btnPrimary"
+            :disabled="syncLoading || syncImporting || selectedUpstreamModelCount === 0"
+            data-testid="model-manager-sync-import"
+            @click="importUpstreamModels"
+          >
+            {{ syncImporting ? "导入中…" : `导入 ${selectedUpstreamModelCount} 个模型` }}
+          </button>
+        </footer>
+      </form>
+    </div>
+
     <div v-if="dialogOpen" class="dialogMask" @click.self="closeDialog">
       <form class="dialogCard" role="dialog" aria-modal="true" data-testid="model-manager-dialog" @submit.prevent="saveModel">
         <header class="dialogHeader">
@@ -919,6 +1245,32 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.syncBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+
+.syncBtn:hover:not(:disabled) {
+  border-color: rgba(37, 99, 235, 0.32);
+  background: rgba(37, 99, 235, 0.06);
+}
+
+.syncBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .modelIconBtn {
@@ -1212,6 +1564,12 @@ defineExpose({
   justify-content: space-between;
   gap: 12px;
   padding: 4px 2px;
+}
+
+.modelListHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .modelListCount {
@@ -1531,6 +1889,10 @@ defineExpose({
   box-shadow: 0 18px 44px rgba(15, 23, 42, 0.22);
 }
 
+.syncDialogCard {
+  width: min(640px, 100%);
+}
+
 .dialogHeader {
   flex: 0 0 auto;
   display: flex;
@@ -1580,6 +1942,92 @@ defineExpose({
 /* Save failures must surface inside the dialog — the page-level banner sits under the mask. */
 .dialogError {
   margin: 0;
+}
+
+.syncDiscoverActions,
+.syncResultsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.syncResults {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.syncResultsHeader strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.syncResultsHeader .syncSelectAll {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+.syncEmpty {
+  margin: 4px 0;
+  color: var(--muted-2);
+  font-size: 11.5px;
+  text-align: center;
+}
+
+.syncModelList {
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.syncModelRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 7px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.syncModelRow:hover:not(.configured) {
+  background: rgba(37, 99, 235, 0.06);
+}
+
+.syncModelRow.configured {
+  opacity: 0.62;
+  cursor: default;
+}
+
+.syncModelRow input {
+  accent-color: var(--accent);
+}
+
+.syncModelRow code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.syncModelStatus {
+  color: var(--muted-2);
+  font-size: 10.5px;
+  font-weight: 700;
 }
 
 .modelField {

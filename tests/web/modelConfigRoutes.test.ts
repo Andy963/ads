@@ -347,6 +347,8 @@ describe("web/model-config routes", () => {
             { id: "gemini-3.7-flash" },
             { id: "gpt-5.6-sol" },
             "malformed-entry",
+            { id: {} },
+            { id: 42 },
           ],
         }),
         { status: 200, headers: { "content-type": "application/json" } },
@@ -372,12 +374,57 @@ describe("web/model-config routes", () => {
     );
 
     assert.equal(res.statusCode, 200);
-    assert.deepEqual(parseJson<{ models: string[] }>(res.body), {
+    assert.deepEqual(parseJson<{ ok: boolean; models: string[] }>(res.body), {
+      ok: true,
       models: ["gemini-3.7-flash", "gpt-5.6-sol"],
     });
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, "https://provider.test/v1/models");
     assert.equal(calls[0].headers.Authorization, "Bearer sk-test");
+  });
+
+  it("POST /api/models/upstream/discover accepts one-off provider credentials", async () => {
+    let receivedOverrides: { baseUrl?: string; apiKey?: string } | undefined;
+    const fetchImpl = (async (url: unknown, init: { headers: Record<string, string> }) => {
+      assert.equal(String(url), "https://custom-provider.test/v1/models");
+      assert.equal(init.headers.Authorization, "Bearer custom-key");
+      return new Response(JSON.stringify({ data: [{ id: "custom-model" }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const res = createRes();
+
+    assert.equal(
+      await handleModelRoutes(
+        {
+          req: createReq("POST", { baseUrl: "https://custom-provider.test/v1", apiKey: "custom-key" }) as any,
+          res: res as any,
+          url: new URL("http://localhost/api/models/upstream/discover"),
+          pathname: "/api/models/upstream/discover",
+        } as any,
+        {
+          modelStore,
+          resolveConfig: (overrides) => {
+            receivedOverrides = overrides;
+            return {
+              baseUrl: overrides?.baseUrl,
+              apiKey: overrides?.apiKey,
+              authMode: "apiKey",
+            };
+          },
+          fetchImpl,
+        },
+      ),
+      true,
+    );
+
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(parseJson<{ ok: boolean; models: string[] }>(res.body), {
+      ok: true,
+      models: ["custom-model"],
+    });
+    assert.deepEqual(receivedOverrides, {
+      baseUrl: "https://custom-provider.test/v1",
+      apiKey: "custom-key",
+    });
   });
 
   it("GET /api/models/upstream serves the cached catalog within the TTL", async () => {
@@ -406,7 +453,10 @@ describe("web/model-config routes", () => {
         ),
         true,
       );
-      assert.deepEqual(parseJson<{ models: string[] }>(res.body), { models: ["gpt-5.6-sol"] });
+      assert.deepEqual(parseJson<{ ok: boolean; models: string[] }>(res.body), {
+        ok: true,
+        models: ["gpt-5.6-sol"],
+      });
     }
     assert.equal(fetchCount, 1);
   });
@@ -432,7 +482,8 @@ describe("web/model-config routes", () => {
     );
 
     assert.equal(res.statusCode, 200);
-    const payload = parseJson<{ models: string[]; error?: string }>(res.body);
+    const payload = parseJson<{ ok: boolean; models: string[]; error?: string }>(res.body);
+    assert.equal(payload.ok, false);
     assert.deepEqual(payload.models, []);
     assert.match(payload.error ?? "", /credentials not found/);
   });
@@ -459,7 +510,8 @@ describe("web/model-config routes", () => {
       ),
       true,
     );
-    const networkPayload = parseJson<{ models: string[]; error?: string }>(networkFailure.body);
+    const networkPayload = parseJson<{ ok: boolean; models: string[]; error?: string }>(networkFailure.body);
+    assert.equal(networkPayload.ok, false);
     assert.deepEqual(networkPayload.models, []);
     assert.match(networkPayload.error ?? "", /ETIMEDOUT/);
 
@@ -480,7 +532,8 @@ describe("web/model-config routes", () => {
       ),
       true,
     );
-    const httpPayload = parseJson<{ models: string[]; error?: string }>(httpFailure.body);
+    const httpPayload = parseJson<{ ok: boolean; models: string[]; error?: string }>(httpFailure.body);
+    assert.equal(httpPayload.ok, false);
     assert.deepEqual(httpPayload.models, []);
     assert.match(httpPayload.error ?? "", /HTTP 503/);
   });
