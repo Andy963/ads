@@ -61,7 +61,7 @@ describe("SystemPromptManager prompt injection", () => {
     const injection = manager.maybeInject();
 
     if (injection) {
-      assert.doesNotMatch(injection.text, /Advisor lane|Worker lane/);
+      assert.doesNotMatch(injection.text, /You are the ADS (?:Advisor|Worker)/);
     }
   });
 

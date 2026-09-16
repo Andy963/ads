@@ -101,7 +101,17 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     fixture.useCurrentServiceWorker();
     await page.evaluate(async () => {
       window.__previousChatWorker = navigator.serviceWorker.controller;
-      await (await navigator.serviceWorker.getRegistration()).update();
+      const registration = await navigator.serviceWorker.getRegistration();
+      await registration.update();
+      const waiting = registration.waiting || (await new Promise((resolve) => {
+        registration.addEventListener("updatefound", () => {
+          const worker = registration.installing;
+          worker?.addEventListener("statechange", () => {
+            if (worker.state === "installed") resolve(worker);
+          });
+        });
+      }));
+      waiting?.postMessage({ type: "SKIP_WAITING" });
     });
     await page.waitForFunction(() => navigator.serviceWorker.controller && navigator.serviceWorker.controller !== window.__previousChatWorker);
     result.checks.push("New service worker activates without an updated registration script in the old page");
