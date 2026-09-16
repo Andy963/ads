@@ -89,6 +89,30 @@ describe("chat visual viewport anchoring", () => {
     expect(cssVariable("--app-bottom")).toBe("284px");
   });
 
+  it("floors fractional viewport heights so #app never extends below the visual viewport", async () => {
+    const { installViewportCssVars } = await import("./viewport");
+    installViewportCssVars();
+    input.focus();
+    updateViewport(440.7, 0);
+
+    expect(cssVariable("--app-top")).toBe("0px");
+    expect(cssVariable("--ads-visual-viewport-height")).toBe("440px");
+    expect(cssVariable("--app-bottom")).toBe("404px");
+  });
+
+  it("keeps the app bottom edge inside the visual viewport when panning is fractional", async () => {
+    const { installViewportCssVars } = await import("./viewport");
+    installViewportCssVars();
+    input.focus();
+    updateViewport(440, 120.6);
+
+    // Raw visual viewport spans [120.6, 560.6]; rounding the top up to 121 must not
+    // push the bottom edge (121 + height) past 560.6.
+    expect(cssVariable("--app-top")).toBe("121px");
+    expect(cssVariable("--ads-visual-viewport-height")).toBe("439px");
+    expect(cssVariable("--app-bottom")).toBe("284px");
+  });
+
   it("preserves the viewport offset after blur until the keyboard finishes closing", async () => {
     const { installViewportCssVars } = await import("./viewport");
     installViewportCssVars();

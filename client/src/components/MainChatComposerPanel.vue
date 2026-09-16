@@ -629,13 +629,13 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border-radius: 10px;
   border: 1px solid rgba(251, 191, 36, 0.45);
   background: #fffbeb;
   color: #92400e;
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .laneStatusBar--error {
@@ -693,9 +693,9 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 10px;
   padding: 8px 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: #f8fafc;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: #ffffff;
 }
 
 .queue-text {
@@ -706,7 +706,7 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   font-size: 12px;
   color: #0f172a;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .queue-sub {
@@ -736,17 +736,17 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   position: relative;
   border-radius: 24px;
-  border: 1px solid rgba(148, 163, 184, 0.38);
-  background: rgba(255, 255, 255, 0.97);
-  box-shadow: 0 4px 24px rgba(15, 23, 42, 0.08);
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 8px 24px rgba(15, 23, 42, 0.06);
   display: flex;
   flex-direction: column;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .inputWrap:focus-within {
-  border-color: rgba(37, 99, 235, 0.52);
-  box-shadow: 0 4px 24px rgba(15, 23, 42, 0.1), 0 0 0 3px rgba(37, 99, 235, 0.1);
+  border-color: rgba(37, 99, 235, 0.55);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 8px 24px rgba(15, 23, 42, 0.08), 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
 .hiddenFileInput {
@@ -794,21 +794,21 @@ onBeforeUnmount(() => {
 }
 
 .attachIcon {
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   border: none;
-  background: rgba(15, 23, 42, 0.06);
-  color: #64748b;
+  background: transparent;
+  color: var(--muted, #64748b);
   display: grid;
   place-items: center;
   cursor: pointer;
-  transition: color 0.15s;
+  transition: color 0.15s, background-color 0.15s;
 }
 
 .attachIcon:hover:not(:disabled) {
-  color: #0f172a;
-  background: rgba(15, 23, 42, 0.1);
+  color: var(--text, #0f172a);
+  background: rgba(15, 23, 42, 0.06);
 }
 
 .attachIcon:disabled {
@@ -834,8 +834,8 @@ onBeforeUnmount(() => {
   display: grid;
   grid-auto-rows: max-content;
   gap: 2px;
-  border: 1px solid rgba(148, 163, 184, 0.3);
-  border-radius: 15px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
   background: rgba(255, 255, 255, 0.98);
   box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16);
 }
@@ -845,15 +845,15 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 36px;
-  padding: 7px 9px;
+  min-height: 40px;
+  padding: 8px 10px;
   border: none;
   border-radius: 9px;
   background: transparent;
   color: #334155;
   text-align: left;
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
 }
 
@@ -1065,12 +1065,16 @@ onBeforeUnmount(() => {
   min-height: 34px;
   border-radius: 0;
   border: none;
-  padding: 5px 6px;
+  padding: 6px 4px;
   font-size: 16px;
   line-height: 1.5;
   background: transparent;
   color: #0f172a;
   box-sizing: border-box;
+}
+
+.composer-input::placeholder {
+  color: var(--muted-2, #94a3b8);
 }
 
 .composer-input:focus {
@@ -1080,16 +1084,16 @@ onBeforeUnmount(() => {
 }
 
 .micIcon {
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   border: none;
   background: transparent;
-  color: #64748b;
+  color: var(--muted, #64748b);
   display: grid;
   place-items: center;
   cursor: pointer;
-  transition: color 0.15s, transform 0.1s;
+  transition: color 0.15s, background-color 0.15s, transform 0.1s;
 }
 
 .micIcon:hover:not(:disabled) {
@@ -1127,15 +1131,23 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   cursor: pointer;
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35);
+  transition: background-color 0.15s, box-shadow 0.15s, transform 0.1s;
 }
 
 .sendIcon:disabled {
-  opacity: 0.4;
+  background: #e2e8f0;
+  color: #94a3b8;
+  box-shadow: none;
   cursor: not-allowed;
 }
 
 .sendIcon:hover:not(:disabled) {
   background: #1d4ed8;
+}
+
+.sendIcon:active:not(:disabled) {
+  transform: scale(0.94);
 }
 
 .stopIcon {
@@ -1144,11 +1156,12 @@ onBeforeUnmount(() => {
   height: 34px;
   border-radius: 50%;
   border: none;
-  background: #dc2626;
+  background: #ef4444;
   color: #ffffff;
   display: grid;
   place-items: center;
   cursor: pointer;
+  transition: background-color 0.15s;
 }
 
 .runningBadge {
@@ -1168,7 +1181,7 @@ onBeforeUnmount(() => {
 }
 
 .stopIcon:hover {
-  background: #b91c1c;
+  background: #dc2626;
 }
 
 @media (max-width: 768px) {

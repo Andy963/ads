@@ -8,8 +8,14 @@ export function readViewportMetrics(): ViewportMetrics {
   if (!viewport) {
     return { topPx: 0, bottomPx: 0, heightPx: layoutHeightPx, leftPx: 0, widthPx: window.innerWidth };
   }
-  const topPx = Number.isFinite(viewport.offsetTop) ? Math.max(0, Math.round(viewport.offsetTop)) : 0;
-  const heightPx = Number.isFinite(viewport.height) ? Math.max(1, Math.round(viewport.height)) : layoutHeightPx;
+  const rawTop = Number.isFinite(viewport.offsetTop) ? Math.max(0, viewport.offsetTop) : 0;
+  const topPx = Math.round(rawTop);
+  // #app is anchored at topPx with this height. Deriving the height from the raw
+  // bottom edge (and flooring it) guarantees the app never extends below the visual
+  // viewport; any rounding overshoot would push the composer's bottom border under
+  // the on-screen keyboard.
+  const rawBottom = Number.isFinite(viewport.height) ? rawTop + viewport.height : layoutHeightPx;
+  const heightPx = Math.max(1, Math.floor(rawBottom - topPx));
   const bottomPx = Math.max(0, layoutHeightPx - topPx - heightPx);
   const leftPx = Number.isFinite(viewport.offsetLeft) ? Math.max(0, viewport.offsetLeft) : 0;
   const widthPx = Number.isFinite(viewport.width) ? Math.max(1, viewport.width) : window.innerWidth;

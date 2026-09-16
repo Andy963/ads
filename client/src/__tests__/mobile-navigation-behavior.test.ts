@@ -78,10 +78,11 @@ const ModelManagerStub = defineComponent({
   props: {
     agent: { type: String, default: null },
     showHeader: { type: Boolean, default: true },
+    showTabs: { type: Boolean, default: true },
     initialTab: { type: String, default: "models" },
   },
   template:
-    '<section data-testid="settings-panel" :data-show-header="showHeader" :data-initial-tab="initialTab"><span class="selected-agent">{{ agent }}</span></section>',
+    '<section data-testid="settings-panel" :data-show-header="showHeader" :data-show-tabs="showTabs" :data-initial-tab="initialTab"><span class="selected-agent">{{ agent }}</span></section>',
   setup(_, { expose }) {
     expose({ create: vi.fn(), refresh: vi.fn() });
     return {};
@@ -164,18 +165,28 @@ describe("mobile navigation behavior", () => {
 
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
     await settleUi(wrapper);
-    expect(wrapper.findAll(".mobileDrawerNavItem")).toHaveLength(2);
+    expect(wrapper.findAll(".mobileDrawerNavItem")).toHaveLength(3);
     expect(wrapper.findAll(".mobileDrawerNavItem")[0]?.text()).toContain("项目");
-    expect(wrapper.findAll(".mobileDrawerNavItem")[1]?.text()).toContain("系统设置");
+    expect(wrapper.findAll(".mobileDrawerNavItem")[1]?.text()).toContain("角色指令");
+    expect(wrapper.findAll(".mobileDrawerNavItem")[2]?.text()).toContain("模型配置");
 
-    await wrapper.find('[data-testid="mobile-drawer-section-settings"]').trigger("click");
+    await wrapper.find('[data-testid="mobile-drawer-section-prompts"]').trigger("click");
     await settleUi(wrapper);
     expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
     expect(wrapper.find(".chatShell").exists()).toBe(false);
     expect(wrapper.find('[data-testid="settings-panel"]').exists()).toBe(true);
     expect(wrapper.find(".selected-agent").text()).toBe("");
     expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-show-header")).toBe("false");
+    expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-show-tabs")).toBe("false");
     expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-initial-tab")).toBe("lane-prompts");
+    // Role prompts expose no contextual actions, so the menu button hides.
+    expect(wrapper.find('[data-testid="mobile-context-menu-toggle"]').exists()).toBe(false);
+
+    await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
+    await settleUi(wrapper);
+    await wrapper.find('[data-testid="mobile-drawer-section-models"]').trigger("click");
+    await settleUi(wrapper);
+    expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-initial-tab")).toBe("models");
 
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-choose-provider"]').exists()).toBe(false);

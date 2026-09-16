@@ -263,9 +263,9 @@
   overflow: hidden;
 }
 .topbarIconBtn {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
   border: none;
   background: transparent;
   color: #64748b;
@@ -273,6 +273,7 @@
   place-items: center;
   cursor: pointer;
   flex: 0 0 auto;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 .topbarIconBtn:hover {
   background: rgba(15, 23, 42, 0.06);
@@ -846,8 +847,8 @@
     min-width: 0;
     overflow: hidden;
     color: var(--text);
-    font-size: 13px;
-    font-weight: 800;
+    font-size: 14px;
+    font-weight: 600;
     text-align: center;
     text-overflow: ellipsis;
     transform: translateX(-50%);
@@ -875,7 +876,7 @@
     align-items: center;
     justify-content: flex-start;
     width: 100%;
-    min-height: 40px;
+    min-height: 44px;
     padding: 8px 10px;
     border: none;
     border-radius: 9px;
@@ -883,7 +884,7 @@
     color: var(--text);
     text-align: left;
     font-size: 13px;
-    font-weight: 700;
+    font-weight: 600;
     white-space: nowrap;
     cursor: pointer;
   }
@@ -945,10 +946,12 @@
     color: var(--accent-2);
   }
   .mobileDrawerNavItem--link {
+    color: var(--muted);
+  }
+  .mobileDrawerNavItem--divider {
     margin-top: 6px;
     padding-top: 10px;
     border-top: 1px solid var(--border);
-    color: var(--muted);
   }
   .mobileDrawerNavItem--link:active {
     background: var(--surface-2);

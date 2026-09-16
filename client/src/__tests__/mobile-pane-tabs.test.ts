@@ -27,8 +27,10 @@ describe("mobile navigation shell", () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
     expect(sfc).toContain('data-testid="mobile-drawer-toggle"');
     expect(sfc).toContain('data-testid="mobile-drawer-section-projects"');
-    expect(sfc).toContain('data-testid="mobile-drawer-section-settings"');
-    expect(sfc).toContain("<span>系统设置</span>");
+    expect(sfc).toContain('data-testid="mobile-drawer-section-prompts"');
+    expect(sfc).toContain('data-testid="mobile-drawer-section-models"');
+    expect(sfc).toContain("<span>角色指令</span>");
+    expect(sfc).toContain("<span>模型配置</span>");
     expect(sfc).not.toContain('class="mobileDrawerSubitems"');
     expect(sfc).not.toContain("MODEL_AGENT_GROUPS");
     expect(sfc).toContain('class="mobileMainPanel"');

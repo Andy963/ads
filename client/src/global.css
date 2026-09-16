@@ -44,6 +44,7 @@
 html,
 body {
   height: 100%;
+  touch-action: manipulation;
 }
 
 body {
@@ -58,6 +59,15 @@ input,
 select,
 textarea {
   font-family: inherit;
+}
+
+/* iOS Safari 在聚焦字号 <16px 的表单控件时会自动放大页面 */
+@media (max-width: 768px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
 }
 
 code,

@@ -11,11 +11,11 @@ describe("chat bubble and popover style regressions", () => {
     const userActions = css.match(/\.msg\[data-role="user"\]\s+\.msgActions\s*\{[^}]*\}/)?.[0];
 
     expect(userBubble).toMatch(/\n\s+width:\s*fit-content\s*;/);
-    expect(userBubble).toMatch(/max-width:\s*90%\s*;/);
-    expect(userBubble).toMatch(/background:\s*transparent\s*;/);
+    expect(userBubble).toMatch(/max-width:\s*78%\s*;/);
+    expect(userBubble).toMatch(/background:\s*rgba\(37, 99, 235, 0\.1\)\s*;/);
     expect(userBubble).toMatch(/border:\s*none\s*;/);
-    expect(userBubble).toMatch(/border-radius:\s*0\s*;/);
-    expect(userBubble).toMatch(/padding:\s*2px 0\s*;/);
+    expect(userBubble).toMatch(/border-radius:\s*18px 18px 4px 18px\s*;/);
+    expect(userBubble).toMatch(/padding:\s*9px 14px\s*;/);
     expect(userActions).toMatch(/position:\s*static\s*;/);
     expect(userActions).toMatch(/display:\s*flex\s*;/);
     expect(userActions).toMatch(/flex-wrap:\s*wrap\s*;/);

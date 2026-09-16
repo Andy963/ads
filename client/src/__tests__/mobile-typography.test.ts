@@ -10,14 +10,16 @@ function readUtf8(relFromThisFile: string): string {
 }
 
 describe("mobile typography", () => {
-  it("allows the browser to zoom the PWA viewport", () => {
+  it("disables page zoom in the PWA viewport and keeps mobile form controls at 16px", () => {
     const html = readUtf8("../../index.html");
 
     expect(html).toContain(
-      '<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />',
+      '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />',
     );
-    expect(html).not.toMatch(/maximum-scale\s*=\s*1(?:\.0)?/);
-    expect(html).not.toMatch(/user-scalable\s*=\s*no/);
+
+    // iOS Safari auto-zooms when focusing form controls below 16px.
+    const css = readUtf8("../global.css");
+    expect(css).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?textarea\s*\{[\s\S]*?font-size:\s*16px\s*;/);
   });
 
   it("keeps compact desktop Markdown styles and adds readable mobile sizes", () => {
@@ -58,7 +60,7 @@ describe("mobile typography", () => {
     expect(menu).toMatch(/min-width:\s*140px\s*;/);
     expect(menu).toMatch(/max-width:\s*calc\(100vw - 24px\)\s*;/);
     expect(action).toMatch(/align-items:\s*center\s*;/);
-    expect(action).toMatch(/min-height:\s*40px\s*;/);
+    expect(action).toMatch(/min-height:\s*44px\s*;/);
     expect(disabled).toMatch(/opacity:\s*0\.72\s*;/);
     expect(disabled).toMatch(/cursor:\s*not-allowed\s*;/);
     expect(css).not.toMatch(/\.mobileContextMenuTitle\s*\{/);

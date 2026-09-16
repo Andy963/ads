@@ -292,17 +292,18 @@ const sessionResumeDisabledReason = computed(() => {
 });
 
 const mobileContextTitle = computed(() => {
-  if (mobileDrawerSection.value === "settings") return "系统设置";
+  if (mobileDrawerSection.value === "settings") return mobileSettingsTab.value === "models" ? "模型配置" : "角色指令";
   return activeProject.value?.name?.trim() || "项目";
 });
 
 const mobileContextMenuTitle = computed(() => {
-  if (mobileDrawerSection.value === "settings") return "系统设置操作";
+  if (mobileDrawerSection.value === "settings") return mobileSettingsTab.value === "models" ? "模型配置操作" : "角色指令操作";
   return "项目操作";
 });
 
 const mobileContextActions = computed<MobileContextAction[]>(() => {
   if (mobileDrawerSection.value === "settings") {
+    if (mobileSettingsTab.value !== "models") return [];
     return [
       { id: "create-model", label: "新增模型" },
       { id: "refresh-models", label: "刷新模型列表" },
@@ -408,6 +409,13 @@ function selectMobileDrawerSection(section: MobileDrawerSection): void {
   mobileDrawerSection.value = section;
   mobileContextMenuOpen.value = false;
   if (section === "settings") closeMobileDrawer();
+}
+
+const mobileSettingsTab = ref<"lane-prompts" | "models">("lane-prompts");
+
+function selectMobileDrawerSettings(tab: "lane-prompts" | "models"): void {
+  mobileSettingsTab.value = tab;
+  selectMobileDrawerSection("settings");
 }
 
 function toggleMobileContextMenu(): void {
@@ -793,7 +801,7 @@ const advisorConnectionStatus = computed(() => {
           <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
         </button>
         <button
-          v-if="isMobile"
+          v-if="isMobile && mobileContextActions.length"
           type="button"
           class="topbarIconBtn mobileContextMenuBtn"
           title="当前模块操作"
@@ -864,12 +872,24 @@ const advisorConnectionStatus = computed(() => {
           </button>
           <button
             type="button"
+            class="mobileDrawerNavItem mobileDrawerNavItem--link mobileDrawerNavItem--divider"
+            :class="{ active: mobileDrawerSection === 'settings' && mobileSettingsTab === 'lane-prompts' }"
+            data-testid="mobile-drawer-section-prompts"
+            @click="selectMobileDrawerSettings('lane-prompts')"
+          >
+            <el-icon :size="16" aria-hidden="true"><ChatDotRound /></el-icon>
+            <span>角色指令</span>
+            <el-icon class="mobileDrawerNavChevron" :size="14" aria-hidden="true"><ArrowRight /></el-icon>
+          </button>
+          <button
+            type="button"
             class="mobileDrawerNavItem mobileDrawerNavItem--link"
-            data-testid="mobile-drawer-section-settings"
-            @click="selectMobileDrawerSection('settings')"
+            :class="{ active: mobileDrawerSection === 'settings' && mobileSettingsTab === 'models' }"
+            data-testid="mobile-drawer-section-models"
+            @click="selectMobileDrawerSettings('models')"
           >
             <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
-            <span>系统设置</span>
+            <span>模型配置</span>
             <el-icon class="mobileDrawerNavChevron" :size="14" aria-hidden="true"><ArrowRight /></el-icon>
           </button>
         </nav>
@@ -952,10 +972,12 @@ const advisorConnectionStatus = computed(() => {
       <section v-if="isMobile && mobileDrawerSection !== 'projects'" class="mobileMainPanel">
         <ModelManager
           v-if="mobileDrawerSection === 'settings'"
+          :key="mobileSettingsTab"
           ref="mobileSettingsRef"
           :api="api"
-          initial-tab="lane-prompts"
+          :initial-tab="mobileSettingsTab"
           :show-header="false"
+          :show-tabs="false"
           @close="closeMobileModule"
           @changed="onSettingsChanged"
         />

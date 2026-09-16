@@ -1095,13 +1095,13 @@ function closeFilePreview(): void {
 
 .msg[data-role="user"] .bubble {
   width: fit-content;
-  max-width: 90%;
+  max-width: 78%;
   min-width: 0;
   box-sizing: border-box;
-  padding: 2px 0;
+  padding: 9px 14px;
   border: none;
-  border-radius: 0;
-  background: transparent;
+  border-radius: 18px 18px 4px 18px;
+  background: rgba(37, 99, 235, 0.1);
   color: #0f172a;
   overflow: visible;
 }

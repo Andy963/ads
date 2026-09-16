@@ -22,10 +22,12 @@ const props = withDefaults(
     api: ApiClient;
     agent?: string | null;
     showHeader?: boolean;
+    showTabs?: boolean;
     initialTab?: SettingsTab;
   }>(),
   {
     showHeader: true,
+    showTabs: true,
     initialTab: "models",
   },
 );
@@ -261,7 +263,7 @@ async function resetLanePrompt(): Promise<void> {
     );
     selectedVersion.value = null;
     lanePromptText.value = snapshot.current.prompt;
-    lanePromptStatus.value = "Reset to the default prompt.";
+    lanePromptStatus.value = "已恢复为默认指令。";
   } catch (err) {
     lanePromptError.value = err instanceof Error ? err.message : String(err);
   } finally {
@@ -477,7 +479,7 @@ defineExpose({
       </div>
     </header>
 
-    <nav class="settingsTabs" role="tablist" aria-label="系统设置分区" data-testid="settings-tabs">
+    <nav v-if="showTabs" class="settingsTabs" role="tablist" aria-label="系统设置分区" data-testid="settings-tabs">
       <button
         type="button"
         role="tab"
@@ -551,85 +553,86 @@ defineExpose({
             :data-testid="`model-manager-row-${model.id}`"
             @click="selectModel(model)"
           >
-            <div class="modelRowMain">
+            <div class="modelRowTop">
               <div class="modelRowHeader">
                 <span class="modelRowText">{{ modelLabel(model) || model.id }}</span>
                 <span v-if="model.isDefault" class="modelPill default">默认</span>
               </div>
-              <code class="modelRowId">{{ model.modelId || model.id }}</code>
+              <button
+                type="button"
+                class="rowSwitch"
+                :class="{ on: model.isEnabled }"
+                role="switch"
+                :aria-checked="model.isEnabled"
+                :aria-label="model.isEnabled ? '已启用，点击停用' : '已停用，点击启用'"
+                :title="
+                  model.isDefault
+                    ? '默认模型不能停用'
+                    : model.isEnabled
+                      ? '点击停用（从输入框下拉中移除）'
+                      : '点击启用（加入输入框下拉）'
+                "
+                :disabled="busy || model.isDefault"
+                :data-testid="`model-manager-toggle-${model.id}`"
+                @click.stop="toggleEnabled(model)"
+              >
+                <span class="rowSwitchTrack" aria-hidden="true"><span class="rowSwitchThumb" /></span>
+              </button>
             </div>
 
-            <div class="modelRowActions" @click.stop>
-              <template v-if="pendingDeleteId === model.id">
-                <span class="confirmText">确定删除？</span>
-                <button
-                  type="button"
-                  class="rowAction danger solid"
-                  :disabled="busy"
-                  :data-testid="`model-manager-delete-confirm-${model.id}`"
-                  @click="deleteModel(model)"
-                >
-                  确认删除
-                </button>
-                <button type="button" class="rowAction" :disabled="busy" @click="cancelDelete">取消</button>
-              </template>
-              <template v-else>
-                <button
-                  type="button"
-                  class="rowSwitch"
-                  :class="{ on: model.isEnabled }"
-                  role="switch"
-                  :aria-checked="model.isEnabled"
-                  :title="
-                    model.isDefault
-                      ? '默认模型不能停用'
-                      : model.isEnabled
-                        ? '点击停用（从输入框下拉中移除）'
-                        : '点击启用（加入输入框下拉）'
-                  "
-                  :disabled="busy || model.isDefault"
-                  :data-testid="`model-manager-toggle-${model.id}`"
-                  @click="toggleEnabled(model)"
-                >
-                  <span class="rowSwitchTrack" aria-hidden="true"><span class="rowSwitchThumb" /></span>
-                  <span class="rowSwitchText">{{ model.isEnabled ? "已启用" : "已停用" }}</span>
-                </button>
+            <div class="modelRowBottom">
+              <code class="modelRowId">{{ model.modelId || model.id }}</code>
+              <div class="modelRowActions" @click.stop>
+                <template v-if="pendingDeleteId === model.id">
+                  <span class="confirmText">确定删除？</span>
+                  <button
+                    type="button"
+                    class="rowAction danger solid"
+                    :disabled="busy"
+                    :data-testid="`model-manager-delete-confirm-${model.id}`"
+                    @click="deleteModel(model)"
+                  >
+                    确认删除
+                  </button>
+                  <button type="button" class="rowAction" :disabled="busy" @click="cancelDelete">取消</button>
+                </template>
+                <template v-else>
+                  <button
+                    type="button"
+                    class="rowAction icon star"
+                    :class="{ active: model.isDefault }"
+                    :title="model.isDefault ? '当前默认模型' : '设为默认模型'"
+                    :disabled="busy || model.isDefault"
+                    :data-testid="`model-manager-default-${model.id}`"
+                    @click="setDefaultModel(model)"
+                  >
+                    <el-icon :size="15" aria-hidden="true"><StarFilled /></el-icon>
+                  </button>
 
-                <button
-                  type="button"
-                  class="rowAction icon star"
-                  :class="{ active: model.isDefault }"
-                  :title="model.isDefault ? '当前默认模型' : '设为默认模型'"
-                  :disabled="busy || model.isDefault"
-                  :data-testid="`model-manager-default-${model.id}`"
-                  @click="setDefaultModel(model)"
-                >
-                  <el-icon :size="14" aria-hidden="true"><StarFilled /></el-icon>
-                </button>
+                  <button
+                    type="button"
+                    class="rowAction icon"
+                    title="编辑"
+                    :disabled="busy"
+                    :data-testid="`model-manager-edit-${model.id}`"
+                    @click="editModel(model)"
+                  >
+                    <el-icon :size="15" aria-hidden="true"><EditPen /></el-icon>
+                  </button>
 
-                <button
-                  type="button"
-                  class="rowAction icon"
-                  title="编辑"
-                  :disabled="busy"
-                  :data-testid="`model-manager-edit-${model.id}`"
-                  @click="editModel(model)"
-                >
-                  <el-icon :size="14" aria-hidden="true"><EditPen /></el-icon>
-                </button>
-
-                <button
-                  v-if="selectedModelId === model.id"
-                  type="button"
-                  class="rowAction icon danger"
-                  :title="model.isDefault ? '默认模型不能删除' : '删除'"
-                  :disabled="busy || model.isDefault"
-                  :data-testid="`model-manager-delete-${model.id}`"
-                  @click="requestDelete(model)"
-                >
-                  <el-icon :size="14" aria-hidden="true"><Close /></el-icon>
-                </button>
-              </template>
+                  <button
+                    v-if="selectedModelId === model.id"
+                    type="button"
+                    class="rowAction icon danger"
+                    :title="model.isDefault ? '默认模型不能删除' : '删除'"
+                    :disabled="busy || model.isDefault"
+                    :data-testid="`model-manager-delete-${model.id}`"
+                    @click="requestDelete(model)"
+                  >
+                    <el-icon :size="15" aria-hidden="true"><Close /></el-icon>
+                  </button>
+                </template>
+              </div>
             </div>
           </article>
         </div>
@@ -670,10 +673,10 @@ defineExpose({
 
       <div v-if="lanePromptError" class="modelBanner error" data-testid="lane-prompt-error">{{ lanePromptError }}</div>
       <div v-if="lanePromptStatus" class="modelBanner success" data-testid="lane-prompt-status">{{ lanePromptStatus }}</div>
-      <div v-if="lanePromptLoading" class="lanePromptLoading">Loading lane prompts...</div>
+      <div v-if="lanePromptLoading" class="lanePromptLoading">正在加载角色指令…</div>
       <template v-else>
-        <div class="lanePromptEditorHeader">
-          <div>
+        <div class="lanePromptEditorHeader" :class="{ 'lanePromptEditorHeader--compact': !showTabs }">
+          <div v-if="showTabs">
             <div class="lanePromptEditorTitle">角色指令</div>
             <div class="lanePromptEditorSubtitle">配置 Advisor 与 Worker 的系统边界和工作方式。</div>
           </div>
@@ -714,7 +717,7 @@ defineExpose({
           </button>
         </div>
         <label class="modelField lanePromptField">
-          <span class="modelLabel">{{ selectedLane === 'advisor' ? 'Advisor' : 'Worker' }} system prompt</span>
+          <span class="modelLabel">{{ selectedLane === 'advisor' ? 'Advisor' : 'Worker' }} 系统指令</span>
           <textarea
             v-model="lanePromptText"
             class="modelTextarea lanePromptTextarea"
@@ -722,14 +725,14 @@ defineExpose({
             spellcheck="false"
             data-testid="lane-prompt-editor"
           />
-          <span class="modelHelp">{{ lanePromptText.length }} characters. Changes are versioned in SQLite and loaded on the next turn.</span>
+          <span class="modelHelp">保存后生成新版本，从下一轮对话开始生效。</span>
         </label>
         <div class="lanePromptActions">
           <button type="button" class="btnSecondary" :disabled="lanePromptSaving || !lanePromptDirty" data-testid="lane-prompt-reset" @click="resetLanePrompt">
-            Reset to Default
+            恢复默认
           </button>
           <button type="button" class="btnPrimary" :disabled="lanePromptSaving || !lanePromptText.trim() || !lanePromptDirty" data-testid="lane-prompt-save" @click="saveLanePrompt">
-            {{ lanePromptSaving ? "Saving..." : "Save Prompt" }}
+            {{ lanePromptSaving ? "保存中…" : "保存指令" }}
           </button>
         </div>
         <div v-if="selectedLaneSnapshot" class="lanePromptHistory" data-testid="lane-prompt-history">
@@ -935,10 +938,14 @@ defineExpose({
 
 .settingsTabs {
   flex: 0 0 auto;
+  align-self: flex-start;
   display: flex;
-  gap: 4px;
-  padding: 8px 16px 0;
-  border-bottom: 1px solid var(--border);
+  gap: 2px;
+  margin: 10px 16px 0;
+  padding: 3px;
+  border: 1px solid rgba(15, 23, 42, 0.04);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.05);
 }
 
 .settingsTab,
@@ -947,22 +954,24 @@ defineExpose({
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .settingsTab {
-  padding: 8px 12px 10px;
-  border-bottom: 2px solid transparent;
-}
-
-.settingsTab.active,
-.lanePromptLane.active {
-  color: var(--accent);
+  padding: 5px 14px;
+  border-radius: 8px;
+  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .settingsTab.active {
-  border-bottom-color: var(--accent);
+  background: #ffffff;
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
+}
+
+.lanePromptLane.active {
+  color: var(--accent);
 }
 
 .lanePromptPanel {
@@ -1000,7 +1009,27 @@ defineExpose({
 }
 
 .lanePromptVersionField .modelLabel {
+  flex: 0 0 auto;
   margin-bottom: 7px;
+  white-space: nowrap;
+}
+
+.lanePromptEditorHeader--compact {
+  align-items: center;
+}
+
+.lanePromptEditorHeader--compact .lanePromptVersionField {
+  flex: 1 1 auto;
+  align-items: center;
+}
+
+.lanePromptEditorHeader--compact .lanePromptVersionField .modelLabel {
+  margin-bottom: 0;
+}
+
+.lanePromptEditorHeader--compact .lanePromptVersionSelect {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .lanePromptVersionSelect {
@@ -1096,6 +1125,19 @@ defineExpose({
   .lanePromptEditorHeader {
     flex-direction: column;
     gap: 10px;
+  }
+
+  .lanePromptEditorHeader--compact {
+    flex-direction: row;
+  }
+
+  .lanePromptLaneSelector {
+    width: 100%;
+  }
+
+  .lanePromptLane {
+    flex: 1 1 0;
+    text-align: center;
   }
 
   .lanePromptVersionField {
@@ -1197,11 +1239,10 @@ defineExpose({
 
 /* ---------- model rows ---------- */
 .modelRow {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  padding: 9px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 11px 14px;
   border-top: 1px solid var(--border);
   cursor: pointer;
   transition: background 0.14s ease, opacity 0.14s ease;
@@ -1232,16 +1273,17 @@ defineExpose({
   opacity: 0.6;
 }
 
-.modelRowMain {
-  min-width: 0;
-  flex: 1 1 auto;
+.modelRowTop,
+.modelRowBottom {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
 }
 
 .modelRowHeader {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -1284,44 +1326,36 @@ defineExpose({
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
 }
 
 .confirmText {
   color: var(--danger-2);
   font-size: 11.5px;
   font-weight: 700;
+  margin-right: 4px;
 }
 
 .rowSwitch {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  height: 28px;
-  padding: 0 10px 0 8px;
-  border: 1px solid var(--border);
+  padding: 3px;
+  border: none;
   border-radius: 999px;
-  background: var(--surface);
-  color: var(--muted);
-  font-size: 11.5px;
-  font-weight: 700;
+  background: transparent;
   cursor: pointer;
-  transition: border-color 0.14s ease, color 0.14s ease;
-}
-
-.rowSwitch:hover:not(:disabled) {
-  border-color: rgba(100, 116, 139, 0.5);
 }
 
 .rowSwitch:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 .rowSwitchTrack {
   position: relative;
-  width: 26px;
-  height: 15px;
+  width: 40px;
+  height: 23px;
   border-radius: 999px;
   background: #cbd5e1;
   transition: background 0.16s ease;
@@ -1331,17 +1365,12 @@ defineExpose({
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 11px;
-  height: 11px;
+  width: 19px;
+  height: 19px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.25);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.3);
   transition: transform 0.16s ease;
-}
-
-.rowSwitch.on {
-  border-color: rgba(16, 185, 129, 0.4);
-  color: #047857;
 }
 
 .rowSwitch.on .rowSwitchTrack {
@@ -1349,11 +1378,11 @@ defineExpose({
 }
 
 .rowSwitch.on .rowSwitchThumb {
-  transform: translateX(11px);
+  transform: translateX(17px);
 }
 
 .rowAction {
-  min-height: 28px;
+  min-height: 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1370,8 +1399,12 @@ defineExpose({
 }
 
 .rowAction.icon {
-  width: 28px;
+  width: 30px;
+  min-height: 30px;
   padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
 }
 
 .rowAction:hover:not(:disabled) {
@@ -1380,26 +1413,38 @@ defineExpose({
   color: var(--text);
 }
 
+.rowAction.icon:hover:not(:disabled) {
+  border-color: transparent;
+  background: rgba(15, 23, 42, 0.07);
+  color: var(--text);
+}
+
 .rowAction.star {
   color: var(--muted-2);
 }
 
 .rowAction.star:hover:not(:disabled) {
-  border-color: rgba(245, 158, 11, 0.45);
-  background: rgba(245, 158, 11, 0.08);
+  border-color: transparent;
+  background: rgba(245, 158, 11, 0.12);
   color: #d97706;
 }
 
 .rowAction.star.active,
 .rowAction.star.active:disabled {
-  border-color: rgba(245, 158, 11, 0.4);
-  background: rgba(245, 158, 11, 0.12);
+  border-color: transparent;
+  background: transparent;
   color: #d97706;
   opacity: 1;
   cursor: default;
 }
 
 .rowAction.danger {
+  color: var(--danger-2);
+}
+
+.rowAction.icon.danger:hover:not(:disabled) {
+  border-color: transparent;
+  background: rgba(239, 68, 68, 0.1);
   color: var(--danger-2);
 }
 
@@ -1700,20 +1745,6 @@ defineExpose({
 
   .cliCount {
     display: none;
-  }
-
-  .modelRow {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .modelRowMain {
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-
-  .modelRowActions {
-    justify-content: flex-end;
-    flex-wrap: wrap;
   }
 
   .modelToggleGrid {
