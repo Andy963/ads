@@ -37,12 +37,6 @@ const emit = defineEmits<{
 }>();
 
 const listRef = ref<HTMLElement | null>(null);
-type MessageListHandle = {
-  showLatestMessages?: () => void;
-  refreshAfterVisibility?: () => void;
-};
-
-const messageListRef = ref<MessageListHandle | null>(null);
 const autoScroll = ref(true);
 const showScrollToBottom = ref(false);
 
@@ -91,8 +85,6 @@ function onLiveStepScroll(): void {
 async function scrollChatToBottom(): Promise<void> {
   if (!listRef.value) return;
   await nextTick();
-  if (!listRef.value) return;
-  messageListRef.value?.showLatestMessages?.();
   await nextTick();
   if (!listRef.value) return;
   listRef.value.scrollTop = listRef.value.scrollHeight;
@@ -101,8 +93,6 @@ async function scrollChatToBottom(): Promise<void> {
 }
 
 async function refreshAfterVisibility(): Promise<void> {
-  await nextTick();
-  messageListRef.value?.refreshAfterVisibility?.();
   await nextTick();
   if (!listRef.value || !autoScroll.value) return;
   listRef.value.scrollTop = listRef.value.scrollHeight;
@@ -355,7 +345,6 @@ onBeforeUnmount(() => {
     </div>
     <div ref="listRef" class="chat" @scroll="handleScroll">
       <MainChatMessageList
-        ref="messageListRef"
         :messages="messages"
         :copied-message-id="copiedMessageId"
         :format-message-ts="formatMessageTs"

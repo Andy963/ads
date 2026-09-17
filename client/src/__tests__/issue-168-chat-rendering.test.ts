@@ -1,6 +1,6 @@
 import { mount } from "@vue/test-utils";
 import { nextTick, ref } from "vue";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { createAppContext } from "../app/controller";
 import type { ChatItem, ProjectRuntime } from "../app/controller";
@@ -39,7 +39,7 @@ describe("Issue #168 chat rendering", () => {
     document.body.innerHTML = "";
   });
 
-  it("mounts a recent message window and preserves the scroll anchor when loading earlier messages", async () => {
+  it("renders the complete message history continuously without windowed slicing (Issue #223)", async () => {
     const messages = Array.from({ length: 65 }, (_, index) => message(`m-${index}`));
     const host = document.createElement("div");
     host.className = "chat";
@@ -50,7 +50,7 @@ describe("Issue #168 chat rendering", () => {
       attachTo: host,
     });
 
-    let height = 10;
+    const height = 10;
     Object.defineProperty(host, "clientHeight", { configurable: true, get: () => 100 });
     Object.defineProperty(host, "scrollHeight", {
       configurable: true,
@@ -58,25 +58,19 @@ describe("Issue #168 chat rendering", () => {
     });
     host.scrollTop = 40;
 
-    expect(wrapper.findAll(".msg")).toHaveLength(30);
-    expect(wrapper.find('.msg[data-id="m-35"]').exists()).toBe(true);
-    expect(wrapper.find('.msg[data-id="m-34"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="load-earlier-messages"]').exists()).toBe(true);
-
-    height = 10;
-    await wrapper.find('[data-testid="load-earlier-messages"]').trigger("click");
-    await vi.waitFor(() => {
-      expect(wrapper.findAll(".msg")).toHaveLength(50);
-    });
-
-    expect(wrapper.find('.msg[data-id="m-15"]').exists()).toBe(true);
-    expect(wrapper.find('.msg[data-id="m-14"]').exists()).toBe(false);
-    expect(host.scrollTop).toBe(240);
+    expect(wrapper.findAll(".msg")).toHaveLength(65);
+    expect(wrapper.find('.msg[data-id="m-0"]').exists()).toBe(true);
+    expect(wrapper.find('.msg[data-id="m-64"]').exists()).toBe(true);
+    // No pagination affordance and no manual scrollTop compensation: the
+    // browser's native scroll anchoring keeps the viewport stable instead.
+    expect(wrapper.find('[data-testid="load-earlier-messages"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="load-earlier-sentinel"]').exists()).toBe(false);
+    expect(host.scrollTop).toBe(40);
 
     wrapper.unmount();
   });
 
-  it("keeps the complete message history in the application state while the list owns only a window", async () => {
+  it("keeps the complete message history in the application state and renders it in full", async () => {
     const chat = createChatActions(createAppContext());
     const stateItems = Array.from({ length: 240 }, (_, index) => ({
       id: `m-${index}`,
@@ -94,7 +88,7 @@ describe("Issue #168 chat rendering", () => {
     await nextTick();
     expect(messages).toHaveLength(100);
     expect(wrapper.find('[data-total-messages="100"]').exists()).toBe(true);
-    expect(wrapper.findAll(".msg")).toHaveLength(30);
+    expect(wrapper.findAll(".msg")).toHaveLength(100);
 
     wrapper.unmount();
   });
