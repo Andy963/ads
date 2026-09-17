@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 
 import MarkdownContent from "./MarkdownContent.vue";
 import ChatFilePreviewModal from "./ChatFilePreviewModal.vue";
@@ -34,17 +34,6 @@ const openCommandTrees = ref<Set<string>>(new Set());
 const expandedPatchKeys = ref<Set<string>>(new Set());
 const filePreviewTarget = ref<MarkdownFilePreviewLink | null>(null);
 const messageListEl = ref<HTMLElement | null>(null);
-const earlierMessagesSentinel = ref<HTMLElement | null>(null);
-const windowStart = ref(0);
-const windowEnd = ref(0);
-const loadingEarlierMessages = ref(false);
-
-const INITIAL_MESSAGE_WINDOW = 30;
-const EARLIER_MESSAGE_PAGE_SIZE = 20;
-const CHAT_BOTTOM_THRESHOLD_PX = 80;
-
-let messageScrollRoot: HTMLElement | null = null;
-let earlierMessagesObserver: IntersectionObserver | null = null;
 
 type PatchRenderRow = {
   key: string;
@@ -256,159 +245,6 @@ const renderMessages = computed<RenderMessage[]>(() => {
   return processed;
 });
 
-const hasEarlierMessages = computed(() => windowStart.value > 0);
-
-const windowedMessages = computed<RenderMessage[]>(() => {
-  const end = Math.min(windowEnd.value || renderMessages.value.length, renderMessages.value.length);
-  const start = Math.min(windowStart.value, end);
-  return renderMessages.value.slice(start, end);
-});
-
-function sameMessageIds(left: RenderMessage[] | undefined, right: RenderMessage[]): boolean {
-  if (!left || left.length !== right.length) return false;
-  return left.every((message, index) => message.id === right[index]?.id);
-}
-
-function resolveMessageScrollRoot(): HTMLElement | null {
-  const list = messageListEl.value;
-  if (!list) return null;
-  return (list.closest(".chat") as HTMLElement | null) ?? list.parentElement;
-}
-
-function attachMessageScrollRoot(): void {
-  const nextRoot = resolveMessageScrollRoot();
-  if (nextRoot === messageScrollRoot) return;
-  messageScrollRoot?.removeEventListener("scroll", handleMessageScroll);
-  messageScrollRoot = nextRoot;
-  messageScrollRoot?.addEventListener("scroll", handleMessageScroll, { passive: true });
-}
-
-function isMessageScrollRootNearBottom(): boolean {
-  const root = messageScrollRoot ?? resolveMessageScrollRoot();
-  if (!root) return true;
-  const distance = root.scrollHeight - root.scrollTop - root.clientHeight;
-  return root.scrollHeight <= root.clientHeight || distance <= CHAT_BOTTOM_THRESHOLD_PX;
-}
-
-function showLatestMessages(): void {
-  const total = renderMessages.value.length;
-  const nextStart = Math.max(0, total - INITIAL_MESSAGE_WINDOW);
-  if (windowEnd.value === total && windowStart.value === nextStart) return;
-  windowStart.value = nextStart;
-  windowEnd.value = total;
-}
-
-function refreshAfterVisibility(): void {
-  attachMessageScrollRoot();
-  const total = renderMessages.value.length;
-  if (total > 0) showLatestMessages();
-  void nextTick().then(observeEarlierMessagesSentinel);
-}
-
-defineExpose({ showLatestMessages, refreshAfterVisibility });
-
-function handleMessageScroll(): void {
-  if (isMessageScrollRootNearBottom()) showLatestMessages();
-}
-
-async function loadEarlierMessages(): Promise<void> {
-  if (loadingEarlierMessages.value || !hasEarlierMessages.value) return;
-
-  const root = messageScrollRoot ?? resolveMessageScrollRoot();
-  const previousScrollTop = root?.scrollTop ?? 0;
-  const previousScrollHeight = root?.scrollHeight ?? 0;
-  const nextStart = Math.max(0, windowStart.value - EARLIER_MESSAGE_PAGE_SIZE);
-
-  loadingEarlierMessages.value = true;
-  windowStart.value = nextStart;
-  try {
-    await nextTick();
-    if (root) {
-      root.scrollTop = previousScrollTop + (root.scrollHeight - previousScrollHeight);
-    }
-  } finally {
-    loadingEarlierMessages.value = false;
-  }
-}
-
-function observeEarlierMessagesSentinel(): void {
-  earlierMessagesObserver?.disconnect();
-  earlierMessagesObserver = null;
-
-  const sentinel = earlierMessagesSentinel.value;
-  if (!sentinel || typeof IntersectionObserver === "undefined") return;
-
-  earlierMessagesObserver = new IntersectionObserver(
-    (entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) void loadEarlierMessages();
-    },
-    {
-      root: messageScrollRoot,
-      rootMargin: "240px 0px 0px 0px",
-    },
-  );
-  earlierMessagesObserver.observe(sentinel);
-}
-
-watch(
-  renderMessages,
-  (next, previous) => {
-    if (!previous || previous.length === 0 || next.length === 0) {
-      windowStart.value = Math.max(0, next.length - INITIAL_MESSAGE_WINDOW);
-      windowEnd.value = next.length;
-      return;
-    }
-
-    if (sameMessageIds(previous, next)) return;
-
-    const isTailAppend =
-      next.length >= previous.length &&
-      previous.every((message, index) => message.id === next[index]?.id);
-    if (isTailAppend) {
-      if (isMessageScrollRootNearBottom()) {
-        showLatestMessages();
-      } else {
-        windowEnd.value = Math.min(windowEnd.value || previous.length, previous.length);
-      }
-      return;
-    }
-
-    if (isMessageScrollRootNearBottom()) {
-      showLatestMessages();
-      return;
-    }
-
-    const currentStartId = previous[windowStart.value]?.id;
-    const preservedStart = currentStartId ? next.findIndex((message) => message.id === currentStartId) : -1;
-    if (preservedStart >= 0) {
-      const visibleCount = Math.max(0, (windowEnd.value || previous.length) - windowStart.value);
-      windowStart.value = preservedStart;
-      windowEnd.value = Math.min(next.length, preservedStart + visibleCount);
-      return;
-    }
-
-    windowStart.value = Math.max(0, next.length - INITIAL_MESSAGE_WINDOW);
-    windowEnd.value = next.length;
-  },
-  { immediate: true },
-);
-
-watch(windowStart, () => {
-  void nextTick().then(observeEarlierMessagesSentinel);
-});
-
-onMounted(() => {
-  attachMessageScrollRoot();
-  observeEarlierMessagesSentinel();
-});
-
-onBeforeUnmount(() => {
-  earlierMessagesObserver?.disconnect();
-  earlierMessagesObserver = null;
-  messageScrollRoot?.removeEventListener("scroll", handleMessageScroll);
-  messageScrollRoot = null;
-});
-
 watch(
   () =>
     renderMessages.value
@@ -506,30 +342,11 @@ function closeFilePreview(): void {
     ref="messageListEl"
     class="messageList"
     :data-total-messages="renderMessages.length"
-    :data-window-start="windowStart"
-    :data-window-end="windowEnd"
   >
     <div v-if="messages.length === 0" class="chat-empty">
       <span>直接开始对话…</span>
     </div>
-    <div
-      v-if="hasEarlierMessages"
-      ref="earlierMessagesSentinel"
-      class="messageHistorySentinel"
-      data-testid="load-earlier-sentinel"
-      aria-hidden="true"
-    ></div>
-    <button
-      v-if="hasEarlierMessages"
-      class="loadEarlierMessages"
-      type="button"
-      data-testid="load-earlier-messages"
-      :disabled="loadingEarlierMessages"
-      @click="loadEarlierMessages"
-    >
-      {{ loadingEarlierMessages ? "正在加载…" : "加载更早消息" }}
-    </button>
-    <div v-for="m in windowedMessages" :key="m.id" class="msg" :data-id="m.id" :data-role="m.role" :data-kind="m.kind">
+    <div v-for="m in renderMessages" :key="m.id" class="msg" :data-id="m.id" :data-role="m.role" :data-kind="m.kind">
       <div v-if="m.kind === 'command'" class="command-block">
         <button
           class="command-tree-header"
@@ -722,34 +539,6 @@ function closeFilePreview(): void {
 .msg[data-role="user"] {
   justify-content: flex-end;
   margin-bottom: 8px;
-}
-
-.messageHistorySentinel {
-  width: 100%;
-  height: 1px;
-  pointer-events: none;
-}
-
-.loadEarlierMessages {
-  display: block;
-  margin: 0 auto 10px;
-  padding: 5px 12px;
-  border: 1px solid var(--github-border);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.9);
-  color: var(--github-muted);
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.loadEarlierMessages:hover:not(:disabled) {
-  color: var(--github-text);
-  background: #ffffff;
-}
-
-.loadEarlierMessages:disabled {
-  cursor: wait;
-  opacity: 0.7;
 }
 
 .command-block {
