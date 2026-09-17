@@ -8,6 +8,8 @@ import type { ChatActions } from "./chat";
 import { createLaneActions } from "./laneActions";
 import type { LaneDeps } from "./laneActions";
 import { createProjectRuntime } from "./projectRuntime";
+import { createTranscriptCache } from "./transcriptCache";
+import { clearPersistedOutboxes } from "./outbox";
 import { ADVISOR_LANE_ID } from "../lib/laneIds";
 import type { ProjectRuntime, ProjectTab } from "./controllerTypes";
 import { createProjectActions } from "./projectsWs";
@@ -41,6 +43,9 @@ export function createAppContext() {
 
   const loggedIn = ref(false);
   const currentUser = ref<AuthMe | null>(null);
+  const transcriptCache = createTranscriptCache();
+  const cachedTranscriptAvailable = ref(false);
+  const accountGeneration = ref(0);
 
   const projects = ref<ProjectTab[]>([]);
   const activeProjectId = ref("");
@@ -72,28 +77,72 @@ export function createAppContext() {
     return trimmed || "default";
   };
 
+  const attachTranscript = (id: string, rt: ProjectRuntime, advisor = false): void => {
+    const project = projects.value.find((item) => item.id === id);
+    if (!project) return;
+    transcriptCache.attach(rt, {
+      projectId: id,
+      sessionId: project.sessionId,
+      chatSessionId: advisor ? ADVISOR_LANE_ID : project.chatSessionId || "main",
+      workspace: project.path,
+    });
+    if (rt.transcriptRestored && rt.messages.value.length > 0) cachedTranscriptAvailable.value = true;
+  };
+
   const getRuntime = (projectId: string | null | undefined): ProjectRuntime => {
     const id = normalizeProjectId(projectId);
     const existing = runtimeByProjectId.get(id);
-    if (existing) return existing;
+    if (existing) {
+      attachTranscript(id, existing);
+      return existing;
+    }
     const created = createProjectRuntime({ maxLiveActivitySteps });
     created.modelReasoningEffort.value = "xhigh";
     runtimeByProjectId.set(id, created);
+    attachTranscript(id, created);
     return created;
   };
 
   const getAdvisorRuntime = (projectId: string | null | undefined): ProjectRuntime => {
     const id = normalizeProjectId(projectId);
     const existing = advisorRuntimeByProjectId.get(id);
-    if (existing) return existing;
+    if (existing) {
+      attachTranscript(id, existing, true);
+      return existing;
+    }
     const created = createProjectRuntime({ maxLiveActivitySteps });
     created.chatSessionId = ADVISOR_LANE_ID;
     advisorRuntimeByProjectId.set(id, created);
+    attachTranscript(id, created, true);
     return created;
   };
 
-  const activeRuntime = computed(() => getRuntime(activeProjectId.value));
-  const activeAdvisorRuntime = computed(() => getAdvisorRuntime(activeProjectId.value));
+  const activeRuntime = computed(() => { void accountGeneration.value; return getRuntime(activeProjectId.value); });
+  const activeAdvisorRuntime = computed(() => { void accountGeneration.value; return getAdvisorRuntime(activeProjectId.value); });
+
+  const handleAuthRequired = (): void => {
+    loggedIn.value = false;
+    currentUser.value = null;
+    cachedTranscriptAvailable.value = false;
+    transcriptCache.clear();
+    for (const rt of [...runtimeByProjectId.values(), ...advisorRuntimeByProjectId.values()]) {
+      rt.syncGeneration += 1;
+      const socket = rt.ws as { close: () => void } | null;
+      rt.ws = null;
+      socket?.close();
+      rt.connected.value = false;
+      rt.queuedPrompts.value = [];
+      rt.pendingImages.value = [];
+      rt.composerDraft.value = "";
+      for (const timer of [rt.reconnectTimer, rt.noticeTimer, rt.liveActivityTtlTimer]) {
+        if (timer !== null) window.clearTimeout(timer);
+      }
+    }
+    runtimeByProjectId.clear();
+    advisorRuntimeByProjectId.clear();
+    accountGeneration.value += 1;
+    clearPersistedOutboxes();
+  };
 
   type RefLike<T> = { value: T };
 
@@ -186,6 +235,10 @@ export function createAppContext() {
     isExecuteBlockFixture,
     loggedIn,
     currentUser,
+    transcriptCache,
+    cachedTranscriptAvailable,
+    accountGeneration,
+    handleAuthRequired,
     projects,
     activeProjectId,
     projectDialogOpen,
@@ -288,6 +341,7 @@ export function createAppController() {
     if (workerRt) {
       ws.closeRuntimeConnection(workerRt);
       clearRuntimeTimers(workerRt);
+      ctx.transcriptCache.detach(workerRt);
       ctx.runtimeByProjectId.delete(pid);
     }
 
@@ -295,6 +349,7 @@ export function createAppController() {
     if (advisorRt) {
       ws.closeRuntimeConnection(advisorRt);
       clearRuntimeTimers(advisorRt);
+      ctx.transcriptCache.detach(advisorRt);
       ctx.advisorRuntimeByProjectId.delete(pid);
     }
 
@@ -351,20 +406,31 @@ export function createAppController() {
   let appMounted = false;
 
   const handleLoggedIn = (me: AuthMe): void => {
+    if (ctx.transcriptCache.owner.value && ctx.transcriptCache.owner.value !== me.id) ctx.handleAuthRequired();
+    ctx.transcriptCache.setOwner(me.id);
     ctx.loggedIn.value = true;
     ctx.currentUser.value = me;
     ws.closeAllConnections();
+    ctx.getRuntime(ctx.activeProjectId.value);
+    ctx.getAdvisorRuntime(ctx.activeProjectId.value);
     if (!appMounted) return;
+    const account = ctx.accountGeneration.value;
     void (async () => {
       await projects.loadProjectsFromServer();
+      if (ctx.accountGeneration.value !== account) return;
       await bootstrap();
     })();
   };
 
+  // Restore project identity and both transcripts during setup, before the
+  // first render or LoginGate's authentication requests.
+  projects.initializeProjects();
+  ctx.getRuntime(ctx.activeProjectId.value);
+  ctx.getAdvisorRuntime(ctx.activeProjectId.value);
+  ctx.updateIsMobile();
+
   onMounted(() => {
     appMounted = true;
-    projects.initializeProjects();
-    ctx.updateIsMobile();
     window.addEventListener("resize", ctx.updateIsMobile);
     const handleConnectivityRestored = (): void => {
       if (!ctx.loggedIn.value) return;
@@ -373,8 +439,11 @@ export function createAppController() {
     const handleVisibilityChange = (): void => {
       if (document.visibilityState === "visible") {
         handleConnectivityRestored();
+      } else {
+        ctx.transcriptCache.flush();
       }
     };
+    window.addEventListener("pagehide", ctx.transcriptCache.flush);
     window.addEventListener("online", handleConnectivityRestored);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     (ctx as AppContext & {
@@ -382,6 +451,7 @@ export function createAppController() {
     }).__connectivityCleanup = () => {
       window.removeEventListener("online", handleConnectivityRestored);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pagehide", ctx.transcriptCache.flush);
     };
     if (ctx.loggedIn.value) {
       void bootstrap();
@@ -397,6 +467,8 @@ export function createAppController() {
       rt.liveActivityTtlTimer = null;
     }
     ws.closeAllConnections();
+    ctx.transcriptCache.flush();
+    ctx.transcriptCache.dispose();
   });
 
   return {

@@ -374,6 +374,7 @@ describe("web/ws/preflight", () => {
         sessionId: "session-1",
         userId: 7,
         emitUserSyncEvent: (ev) => { emittedUserEvents.push(ev); return { ok: true }; },
+        broadcastPersistedHistory: () => assert.fail("An incremental user event must not also broadcast full history"),
       });
 
       assert.deepEqual(res, { enqueue: true });
@@ -384,9 +385,39 @@ describe("web/ws/preflight", () => {
         text: "hello sync",
         ts: 1234567,
         eventId: "user:u-sync-1",
+        kind: "client_message_id:u-sync-1",
       });
     } finally {
       historyStore.clear("history-user-sync");
+    }
+  });
+  it("publishes command input incrementally and rolls it back when sync persistence fails", () => {
+    const historyStore = new HistoryStore({ namespace: "test-preflight-command-sync", maxEntriesPerSession: 20 });
+    const sent: unknown[] = [];
+    const events: unknown[] = [];
+    let persistSync = false;
+    const args = {
+      parsed: { type: "command" as const, payload: "npm test", client_message_id: "command-1" },
+      requestId: "request-1", clientMessageId: "command-1", receivedAt: 10,
+      historyStore, historyKey: "command-lane", sanitizeInput: (value: unknown) => String(value),
+      sendJson: (payload: unknown) => sent.push(payload), traceWsDuplication: false, warn: () => {},
+      sessionId: "session-1", userId: 7,
+      emitUserSyncEvent: (event: unknown) => { events.push(event); return { ok: persistSync }; },
+      broadcastPersistedHistory: () => assert.fail("Command input should not replace the transcript"),
+    };
+    try {
+      assert.equal(preflightPersistAndAck(args).enqueue, false);
+      assert.equal(historyStore.get(args.historyKey).length, 0);
+      assert.equal((sent.at(-1) as { type: string }).type, "error");
+      persistSync = true;
+      assert.equal(preflightPersistAndAck(args).enqueue, true);
+      assert.equal(historyStore.get(args.historyKey).length, 1);
+      assert.deepEqual(sent.at(-1), { type: "ack", client_message_id: "command-1", duplicate: false });
+      assert.deepEqual(events.at(-1), { type: "user", text: "npm test", clientMessageId: "command-1", ts: 10, eventId: "user:command-1", kind: "client_message_id:command-1" });
+      assert.equal(preflightPersistAndAck(args).enqueue, false);
+      assert.equal(events.length, 2);
+    } finally {
+      historyStore.clear(args.historyKey);
     }
   });
   it("preserves stable eventId and does not duplicate user event on duplicate preflight (Issue #143 Finding 5)", () => {

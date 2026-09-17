@@ -6,9 +6,11 @@ import MainChatMessageList from "./MainChatMessageList.vue";
 import type { ChatMessage, IncomingImage, QueuedPrompt } from "./mainChat/types";
 import { useCopyMessage } from "./mainChat/useCopyMessage";
 import { analyzeMarkdownOutline } from "../lib/markdown";
+import type { TranscriptViewport } from "../app/transcriptCache";
 
 const props = defineProps<{
   messages: ChatMessage[];
+  viewport?: TranscriptViewport | null;
   queuedPrompts: QueuedPrompt[];
   pendingImages: IncomingImage[];
   draft?: string;
@@ -27,6 +29,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "update:draft", value: string): void;
+  (e: "update:viewport", value: TranscriptViewport): void;
   (e: "send", content: string): void;
   (e: "retryMessage", message: ChatMessage): void;
   (e: "interrupt"): void;
@@ -37,8 +40,34 @@ const emit = defineEmits<{
 }>();
 
 const listRef = ref<HTMLElement | null>(null);
-const autoScroll = ref(true);
+const initialViewport = props.viewport;
+const autoScroll = ref(initialViewport?.following ?? true);
 const showScrollToBottom = ref(false);
+let viewportFrame: number | null = null;
+
+function saveViewport(): void {
+  const host = listRef.value;
+  if (!host || host.clientHeight === 0) return;
+  const rows = [...host.querySelectorAll<HTMLElement>(".messageList > .msg")];
+  const top = host.getBoundingClientRect().top;
+  const anchor = rows.find((row) => row.getBoundingClientRect().bottom > top);
+  emit("update:viewport", {
+    following: autoScroll.value,
+    firstLoadedId: rows[0]?.dataset.id ?? "",
+    anchorId: anchor?.dataset.id ?? "",
+    anchorOffset: anchor ? anchor.getBoundingClientRect().top - top : 0,
+    scrollTop: Math.max(0, host.scrollTop),
+  });
+}
+
+function scheduleViewportSave(): void {
+  if (viewportFrame !== null) return;
+  viewportFrame = scheduleFrame(() => { viewportFrame = null; saveViewport(); });
+}
+
+function saveBeforeBackground(): void {
+  if (document.visibilityState === "hidden") saveViewport();
+}
 
 const LIVE_STEP_MESSAGE_ID = "live-step";
 const LIVE_STEP_STICKY_THRESHOLD_PX = 16;
@@ -117,6 +146,7 @@ function scheduleChatScrollToBottom(): void {
       if (!host) return;
       host.scrollTop = host.scrollHeight;
       showScrollToBottom.value = false;
+      scheduleViewportSave();
     } finally {
       chatScrollQueued = false;
     }
@@ -233,14 +263,25 @@ function handleScroll() {
   const distance = scrollHeight - scrollTop - clientHeight;
   autoScroll.value = distance < CHAT_STICKY_THRESHOLD_PX;
   showScrollToBottom.value = distance >= CHAT_STICKY_THRESHOLD_PX;
+  scheduleViewportSave();
 }
 
 onMounted(() => {
-  // Project switches remount this component (keyed by activeProjectId). Ensure we start at the newest message.
-  autoScroll.value = true;
-  scrollChatToBottom();
-
   const host = listRef.value;
+  if (host && initialViewport && !initialViewport.following) {
+    const anchor = [...host.querySelectorAll<HTMLElement>(".msg")]
+      .find((row) => row.dataset.id === initialViewport.anchorId);
+    // This is initial restoration only. History prepends continue to use
+    // native scroll anchoring and never receive a scrollTop correction.
+    host.scrollTop = anchor
+      ? Math.max(0, host.scrollTop + anchor.getBoundingClientRect().top - host.getBoundingClientRect().top - initialViewport.anchorOffset)
+      : initialViewport.scrollTop;
+    showScrollToBottom.value = true;
+  } else {
+    scrollChatToBottom();
+  }
+  window.addEventListener("pagehide", saveViewport);
+  document.addEventListener("visibilitychange", saveBeforeBackground);
   if (host && typeof ResizeObserver !== "undefined") {
     chatResizeObserver = new ResizeObserver(() => {
       // If the chat pane is initially hidden (e.g. mobile tab), scrollHeight can be 0.
@@ -311,6 +352,9 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  window.removeEventListener("pagehide", saveViewport);
+  document.removeEventListener("visibilitychange", saveBeforeBackground);
+  if (viewportFrame !== null) cancelFrame(viewportFrame);
   detachLiveStepScrollEl();
   if (liveStepScrollFrame !== null) {
     cancelFrame(liveStepScrollFrame);
@@ -340,6 +384,8 @@ onBeforeUnmount(() => {
     <div ref="listRef" class="chat" @scroll="handleScroll">
       <MainChatMessageList
         :messages="messages"
+        :initial-first-loaded-id="initialViewport?.following === false ? initialViewport.firstLoadedId : undefined"
+        :initial-anchor-id="initialViewport?.following === false ? initialViewport.anchorId : undefined"
         :copied-message-id="copiedMessageId"
         :format-message-ts="formatMessageTs"
         :live-step-expanded="liveStepExpanded"

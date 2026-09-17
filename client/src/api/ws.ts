@@ -29,6 +29,7 @@ type WsMessage =
       reset?: boolean;
       inFlight?: boolean;
       bootstrapHistory?: boolean;
+      historyMode?: "resume" | "snapshot";
       completedClientMessageIds?: string[];
     }
   | { type: "ack"; client_message_id?: string; duplicate?: boolean }
@@ -60,6 +61,7 @@ export class AdsWebSocket {
   private ws: WebSocket | null = null;
   private readonly sessionId: string;
   private chatSessionId: string;
+  private readonly resume?: { afterSeq: number; laneGeneration: number };
   private pingTimer: number | null = null;
 
   onOpen?: () => void;
@@ -67,9 +69,10 @@ export class AdsWebSocket {
   onError?: () => void;
   onMessage?: (msg: WsMessage) => void;
 
-  constructor(options: { sessionId?: string; chatSessionId?: string }) {
+  constructor(options: { sessionId?: string; chatSessionId?: string; resume?: { afterSeq: number; laneGeneration: number } }) {
     this.sessionId = options.sessionId ?? cryptoRandomId();
     this.chatSessionId = String(options.chatSessionId ?? "").trim() || "main";
+    this.resume = options.resume;
   }
 
   send(type: string, payload?: unknown, options?: { clientMessageId?: string }): boolean {
@@ -112,7 +115,10 @@ export class AdsWebSocket {
 
   connect(): void {
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
-    const url = proto + location.host + "/ws";
+    const query = this.resume ? `?${new URLSearchParams({
+      afterSeq: String(this.resume.afterSeq), laneGeneration: String(this.resume.laneGeneration),
+    })}` : "";
+    const url = proto + location.host + "/ws" + query;
     const protocols = ["ads-v1", `ads-session.${this.sessionId}`, `ads-chat.${this.chatSessionId}`].filter(Boolean);
 
     this.ws = new WebSocket(url, protocols);

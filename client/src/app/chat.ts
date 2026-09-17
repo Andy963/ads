@@ -1,4 +1,4 @@
-import { watch } from "vue";
+import { getCurrentScope, onScopeDispose, watch } from "vue";
 
 import { finalizeStreamingOnDisconnect, mergeHistoryFromServer, normalizeTurnSemanticOrder } from "../lib/chat_sync";
 import { ingestCommandActivity, ingestExploredActivity } from "../lib/live_activity";
@@ -116,11 +116,25 @@ export function createChatActions(ctx: AppContext) {
 
   const outbox = createOutboxStore();
   const boundOutboxRuntimes = new WeakSet<ProjectRuntime>();
+  const outboxGenerations = new WeakMap<ProjectRuntime, number>();
+  const outboxBindingStops = new Set<() => void>();
   const runtimesByOutboxKey = new Map<string, Set<ProjectRuntime>>();
   /** Set while a sibling tab's snapshot is being applied, so we don't echo it back. */
   let applyingRemoteOutbox = false;
 
+  const disposeOutboxBindings = (): void => {
+    for (const stop of outboxBindingStops) stop();
+    outboxBindingStops.clear();
+    runtimesByOutboxKey.clear();
+    outbox.close();
+  };
+  if (ctx.accountGeneration) watch(ctx.accountGeneration, disposeOutboxBindings, { flush: "sync" });
+  if (getCurrentScope()) onScopeDispose(disposeOutboxBindings);
+
   const outboxKeyFor = (rt: ProjectRuntime): string => {
+    const generation = ctx.accountGeneration?.value ?? 0;
+    if (!outboxGenerations.has(rt)) outboxGenerations.set(rt, generation);
+    if (outboxGenerations.get(rt) !== generation) return "";
     const sessionId = String(rt.projectSessionId ?? "").trim();
     return sessionId ? outboxStorageKey(sessionId, rt.chatSessionId) : "";
   };
@@ -221,7 +235,7 @@ export function createChatActions(ctx: AppContext) {
     }
     peers.add(rt);
     // `sync` so a queue change survives an immediate tab close.
-    watch(rt.queuedPrompts, () => persistOutbox(rt), { flush: "sync" });
+    outboxBindingStops.add(watch(rt.queuedPrompts, () => persistOutbox(rt), { flush: "sync" }));
   };
 
   const savePendingPrompt = (rt: ProjectRuntime, prompt: QueuedPrompt): void => {
@@ -438,6 +452,9 @@ export function createChatActions(ctx: AppContext) {
       source?: string;
     },
   ): void => {
+    rt.transcriptCache?.invalidate();
+    rt.transcriptReady = false;
+    rt.transcriptCursor = 0;
     rt.threadWarning.value = params.warning ?? null;
     rt.ignoreNextHistory = true;
     rt.resumeReplacePending = false;
@@ -454,6 +471,8 @@ export function createChatActions(ctx: AppContext) {
   };
 
   const clearConversationForResume = (rt: ProjectRuntime): void => {
+    rt.transcriptCache?.invalidate();
+    rt.transcriptReady = false;
     rt.threadWarning.value = null;
     rt.ignoreNextHistory = false;
     rt.resumeReplacePending = true;
@@ -637,12 +656,15 @@ export function createChatActions(ctx: AppContext) {
     options?: { preserveErrorStatus?: boolean },
   ): Promise<void> => {
     const state = runtimeOrActive(rt);
+    if (state.syncInProgress || state.awaitingBootstrapHistory) return;
     if (state.inputLocked.value && !state.queuedPrompts.value[0]?.restoredFromStorage) return;
     if (runtimeAgentBusy(state)) return;
     if (!state.connected.value) return;
     if (!state.ws) return;
     if (state.queuedPrompts.value.length === 0) return;
 
+    const account = ctx.accountGeneration?.value;
+    const isCurrentAccount = (): boolean => ctx.accountGeneration?.value === account;
     const next = state.queuedPrompts.value[0]!;
     state.queuedPrompts.value = state.queuedPrompts.value.slice(1);
     let sendAccepted = false;
@@ -672,6 +694,7 @@ export function createChatActions(ctx: AppContext) {
               : `[图片 x${next.images.length}]`;
       }
 
+      if (!isCurrentAccount()) return;
       finalizeCommandBlock(state);
       clearStepLive(state);
       const queuedEffort = String(next.modelReasoningEffort ?? "").trim();
@@ -715,6 +738,7 @@ export function createChatActions(ctx: AppContext) {
         state.laneStatus.value = { kind: "progress", message: "请求已重新发送，正在等待后端结果…" };
       }
     } catch {
+      if (!isCurrentAccount()) return;
       dropEmptyAssistantPlaceholder(state);
       state.busy.value = false;
       state.turnInFlight = false;

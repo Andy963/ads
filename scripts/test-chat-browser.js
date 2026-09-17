@@ -8,6 +8,7 @@ import { chromium, webkit } from "playwright";
 import { startChatBrowserServer } from "./lib/chat-browser-server.js";
 import { verifyPostSendInteractions } from "./lib/chat-browser-post-send.js";
 import { verifyMonotonicHistory } from "./lib/chat-browser-history.js";
+import { verifyLocalFirstTranscript } from "./lib/chat-browser-local-first.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const buildRoot = path.resolve(process.env.ADS_CHAT_BUILD_DIR || path.join(repoRoot, "dist/client"));
@@ -50,10 +51,28 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     const errors = [];
     const browserWarnings = [];
     result.browserErrors = browserWarnings;
-    page.on("pageerror", (error) => errors.push(error.message));
+    result.dialogs = [];
+    page.on("dialog", async (dialog) => {
+      result.dialogs.push({ type: dialog.type(), message: dialog.message() });
+      await dialog.dismiss();
+    });
+    page.on("pageerror", (error) => {
+      if (mobile && result.localFirst?.offlineMode?.startsWith("origin-unreachable") && /\/sw\.js due to access control checks\.$/.test(error.message)) {
+        // WebKit may surface the deliberately refused worker update as a page
+        // error instead of a console network error. Keep it in the report; the
+        // cached reload and continuing SW control are still asserted below.
+        browserWarnings.push(error.message);
+        return;
+      }
+      errors.push(error.message);
+    });
     page.on("console", (message) => {
       if (message.type() !== "error") return;
       const text = message.text();
+      if (result.localFirst?.offline && /load failed|failed to load resource|network|WebSocket connection/i.test(text)) {
+        browserWarnings.push(text);
+        return;
+      }
       if (mobile && /\/sw\.js due to access control checks\.$/.test(text)) {
         browserWarnings.push(text);
         return;
@@ -65,7 +84,8 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     page.on("websocket", (socket) => {
       socket.on("framereceived", ({ payload }) => {
         const frame = JSON.parse(String(payload));
-        frames.push({ type: frame.type, historySize: Array.isArray(frame.items) ? frame.items.length : undefined });
+        frames.push({ type: frame.type, historyMode: frame.historyMode, chatSessionId: frame.chatSessionId,
+          latestSeq: frame.latestSeq, historySize: Array.isArray(frame.items) ? frame.items.length : undefined });
       });
     });
     page.setDefaultTimeout(15000);
@@ -116,8 +136,8 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     });
     await page.waitForFunction(() => navigator.serviceWorker.controller && navigator.serviceWorker.controller !== window.__previousChatWorker);
     result.checks.push("New service worker activates without an updated registration script in the old page");
-    await page.goto(fixture.origin);
-    await page.reload();
+    await page.goto(fixture.origin, { waitUntil: "domcontentloaded" });
+    await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => navigator.serviceWorker.controller && document.querySelector("textarea:not(:disabled)"));
     result.postSend = await verifyPostSendInteractions({ page, fixture, mobile });
     if (mobile) {
@@ -174,17 +194,36 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Advisor reply"));
     result.checks.push("Real WebSocket prompt delivery, lane isolation, rapid switching, and draft restoration");
 
-    await page.reload();
+    await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector("textarea:not(:disabled):visible");
     await chooseLane("advisor");
     await waitForReply("Advisor reply: browser-advisor-first");
     await chooseLane("worker");
     await waitForReply("Worker reply: browser-worker-first");
     assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Advisor reply"));
-    assert.ok(frames.some((frame) => frame.type === "history" && frame.historySize > 0), "Reload must replay persisted nonempty history through the real server");
-    result.checks.push("Persisted history replay and lane isolation after page reload");
+    assert.ok(frames.some((frame) => frame.type === "welcome" && frame.historyMode === "resume"), "Reload must validate the cached baseline through the real server");
+    result.checks.push("Cached transcript resume and lane isolation after page reload");
 
-    await chooseProject("Project B", "browser-project-b");
+    // A client without a cache must still receive the authoritative snapshot.
+    await page.evaluate(() => {
+      for (const key of Object.keys(localStorage)) if (key.startsWith("ads.transcript.v1.")) localStorage.removeItem(key);
+    });
+    const uncachedStart = frames.length;
+    // Clear after pagehide persistence as well, using a one-shot startup script.
+    await page.evaluate(() => sessionStorage.setItem("browser-clear-transcript-cache", "1"));
+    await page.addInitScript(() => {
+      if (sessionStorage.getItem("browser-clear-transcript-cache") !== "1") return;
+      sessionStorage.removeItem("browser-clear-transcript-cache");
+      for (const key of Object.keys(localStorage)) if (key.startsWith("ads.transcript.v1.")) localStorage.removeItem(key);
+    });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("textarea:not(:disabled):visible");
+    await chooseLane("worker");
+    await waitForReply("Worker reply: browser-worker-first");
+    assert.ok(frames.slice(uncachedStart).some((frame) => frame.type === "history" && frame.historySize > 0), "An uncached client must receive real persisted history");
+    result.checks.push("Uncached authoritative bootstrap remains available");
+
+    await chooseProject("Project B", fixture.projects[1].id);
     await chooseLane("worker");
     const projectBSnapshot = await page.evaluate(() => ({
       app: document.querySelector(".app")?.outerHTML.slice(0, 1200) ?? "",
@@ -196,7 +235,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     await send("browser-worker-project-b");
     await waitForReply("Worker reply: browser-worker-project-b");
     assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Worker reply: browser-worker-first"));
-    await chooseProject("Project A", "browser-project-a");
+    await chooseProject("Project A", fixture.projects[0].id);
     await chooseLane("worker");
     await waitForReply("Worker reply: browser-worker-first");
     assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Worker reply: browser-worker-project-b"));
@@ -225,6 +264,9 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     result.history = {};
     await verifyMonotonicHistory({ page, send, waitForReply, chooseLane, settle, report: result.history });
     result.checks.push("Bounded initial history, native prepend anchoring, zero scroll writes, and stable DOM rows across direction changes");
+    result.localFirst = {};
+    await verifyLocalFirstTranscript({ page, context, fixture, frames, send, waitForReply, chooseLane, settle, report: result.localFirst, engine });
+    result.checks.push("Cached first frame, retained scroll anchor, offline reload, unchanged reconnect and real HTTP delta catch-up");
 
     const rowMetrics = [];
     for (const height of mobile ? [844, 430, 300] : [900]) {
@@ -281,6 +323,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     });
     result.runtimeDiagnostics = runtimeDiagnostics;
     assert.deepEqual(errors, [], "The browser must not report runtime errors");
+    assert.deepEqual(result.dialogs, [], "Cache and lane navigation must not open unexpected diagnostic dialogs");
     assert.deepEqual(runtimeDiagnostics, [], "The app must not record runtime diagnostics during the switching flow");
     result.serviceWorkerControlled = await page.evaluate(() => Boolean(navigator.serviceWorker.controller));
     assert.equal(result.serviceWorkerControlled, true, "The tested page must remain controlled by the new service worker");

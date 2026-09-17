@@ -68,6 +68,7 @@ export type SyncEvent = {
 };
 
 export type SyncEventsResponse = {
+  laneGeneration?: number;
   events: SyncEvent[];
   latestSeq: number;
   minAvailableSeq: number;

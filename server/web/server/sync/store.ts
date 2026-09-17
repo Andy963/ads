@@ -477,11 +477,11 @@ export class SyncEventStore {
   }
 
   private trimLane(namespace: string, laneKey: string): void {
-    // Ephemeral decoration is dropped silently: the `history` bootstrap already
-    // reproduces it, so losing it must not push clients onto the truncated path.
-    this.trimClass(namespace, laneKey, this.ephemeralTrim, this.maxEphemeralEventsPerLane, false);
-    // Losing durable conversation state is exactly what `truncated` exists to signal.
-    this.trimClass(namespace, laneKey, this.durableTrim, this.maxEventsPerLane, true);
+    // A cursor-only bootstrap no longer supplies command/patch history. Losing
+    // either class requires a snapshot for cursors that missed those rows; the
+    // separate quotas still prevent decoration from evicting conversation text.
+    this.trimClass(namespace, laneKey, this.ephemeralTrim, this.maxEphemeralEventsPerLane);
+    this.trimClass(namespace, laneKey, this.durableTrim, this.maxEventsPerLane);
   }
 
   private trimClass(
@@ -489,7 +489,6 @@ export class SyncEventStore {
     laneKey: string,
     statements: TrimStatements,
     keep: number,
-    advanceTrimmedThrough: boolean,
   ): void {
     const classParams = statements.classParams;
     const cutoff = statements.cutoff.get(namespace, laneKey, ...classParams, Math.max(0, keep - 1)) as
@@ -503,8 +502,6 @@ export class SyncEventStore {
     const trimmedThroughSeq = Number(deletedRow?.seq) || 0;
     if (trimmedThroughSeq <= 0) return;
     statements.deleteOlder.run(namespace, laneKey, ...classParams, cutoffSeq);
-    if (advanceTrimmedThrough) {
-      this.upsertTrimmedThroughStmt.run(namespace, laneKey, trimmedThroughSeq);
-    }
+    this.upsertTrimmedThroughStmt.run(namespace, laneKey, trimmedThroughSeq);
   }
 }

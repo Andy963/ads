@@ -61,7 +61,7 @@ export function preflightPersistAndAck(args: {
   sessionId: string;
   userId: number;
   onPersistedMessage?: (message: { clientMessageId: string; role: "user"; text: string }) => void;
-  emitUserSyncEvent?: (event: { type: "user"; clientMessageId: string; text: string; ts: number; eventId?: string }) => { ok: boolean };
+  emitUserSyncEvent?: (event: { type: "user"; clientMessageId: string; text: string; ts: number; eventId?: string; kind?: string }) => { ok: boolean };
 }): { enqueue: boolean } {
   if (args.isLaneCurrent && !args.isLaneCurrent() && args.parsed.type !== "clear_history") {
     return { enqueue: false };
@@ -136,6 +136,7 @@ export function preflightPersistAndAck(args: {
         text: textResult.text,
         ts: args.receivedAt,
         eventId: "user:" + args.clientMessageId,
+        kind: entryKind,
       });
       if (!syncRes.ok) {
         // Roll back only the prompt inserted by this attempt so a retry can succeed.
@@ -150,7 +151,7 @@ export function preflightPersistAndAck(args: {
     }
     args.sendJson({ type: "ack", client_message_id: args.clientMessageId, duplicate: false });
     args.onPersistedMessage?.({ clientMessageId: args.clientMessageId, role: "user", text: textResult.text });
-    args.broadcastPersistedHistory?.();
+    if (!args.emitUserSyncEvent) args.broadcastPersistedHistory?.();
     args.broadcastInFlight?.();
     return { enqueue: true };
   }
@@ -180,8 +181,8 @@ export function preflightPersistAndAck(args: {
       args.sendJson({ type: "error", message: "消息保存失败，请重试" });
       return { enqueue: false };
     }
-    args.sendJson({ type: "ack", client_message_id: args.clientMessageId, duplicate: persistence === "duplicate" });
     if (persistence === "duplicate") {
+      args.sendJson({ type: "ack", client_message_id: args.clientMessageId, duplicate: true });
       if (args.traceWsDuplication) {
         args.warn(
           `[WebSocket][Dedupe] req=${args.requestId} session=${args.sessionId} user=${args.userId} history=${args.historyKey} client_message_id=${args.clientMessageId}`,
@@ -189,7 +190,16 @@ export function preflightPersistAndAck(args: {
       }
       return { enqueue: false };
     }
-    args.broadcastPersistedHistory?.();
+    if (args.emitUserSyncEvent && !args.emitUserSyncEvent({
+      type: "user", clientMessageId: args.clientMessageId, text: cmd.command,
+      ts: args.receivedAt, eventId: "user:" + args.clientMessageId, kind: entryKind,
+    }).ok) {
+      args.historyStore.removeByExactKind(args.historyKey, entryKind);
+      args.sendJson({ type: "error", message: "Failed to save message; please retry." });
+      return { enqueue: false };
+    }
+    args.sendJson({ type: "ack", client_message_id: args.clientMessageId, duplicate: false });
+    if (!args.emitUserSyncEvent) args.broadcastPersistedHistory?.();
     args.broadcastInFlight?.();
     return { enqueue: true };
   }

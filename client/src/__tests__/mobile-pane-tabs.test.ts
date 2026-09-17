@@ -71,7 +71,7 @@ describe("mobile navigation shell", () => {
     const sfc = await readSfc("../App.vue", import.meta.url);
     const actions = sfc.match(/<div v-if="!isMobile" class="laneSessionActions">([\s\S]*?)<\/div>/)?.[1];
     expect(actions).toBeDefined();
-    expect(actions).toContain('v-if="activeLaneHasResume"');
+    expect(actions).toContain('v-if="activeLaneHasResume && loggedIn"');
     expect(actions).toContain('data-testid="lane-resume-thread"');
     expect(actions).toContain('data-testid="lane-new-session"');
     expect(actions).toContain('data-testid="lane-clear-chat"');

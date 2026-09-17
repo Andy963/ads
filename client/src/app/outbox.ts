@@ -36,6 +36,20 @@ export const OUTBOX_CHANNEL_NAME = "ads.outbox";
 
 const EMPTY: OutboxSnapshot = { pending: null, queued: [] };
 
+/** An explicit auth boundary must not replay another account's private input. */
+export function clearPersistedOutboxes(): void {
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith("ads.outbox.")) localStorage.removeItem(key);
+    }
+  } catch { /* Storage may be disabled. */ }
+  try {
+    for (const key of Object.keys(sessionStorage)) {
+      if (key.startsWith("ads.pendingPrompt.")) sessionStorage.removeItem(key);
+    }
+  } catch { /* Storage may be disabled. */ }
+}
+
 export function outboxStorageKey(sessionId: string, chatSessionId: string): string {
   const session = String(sessionId ?? "").trim() || "unknown";
   const chat = String(chatSessionId ?? "").trim() || "main";

@@ -1,6 +1,7 @@
 import type { Ref } from "vue";
 
 import type { createLiveActivityWindow } from "../lib/live_activity";
+import type { TranscriptViewport } from "./transcriptCache";
 
 export type WorkspaceState = { path?: string; modified?: string[]; branch?: string };
 
@@ -153,6 +154,11 @@ export type ProjectRuntime = {
   needsChatSync: boolean;
   syncInProgress: boolean;
   syncGeneration: number;
+  transcriptCursor: number;
+  transcriptReady: boolean;
+  transcriptRestored: boolean;
+  transcriptViewport: Ref<TranscriptViewport | null>;
+  transcriptCache?: { schedule: () => void; invalidate: () => void };
   laneGeneration?: number;
   laneGenerationScope?: string;
   lastConsumedResetGeneration?: number;

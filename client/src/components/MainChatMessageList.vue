@@ -23,6 +23,8 @@ const props = defineProps<{
   liveStepOutlineHiddenCount: number;
   liveStepCollapsedTrivialOutline: boolean;
   workspaceRoot?: string | null;
+  initialFirstLoadedId?: string;
+  initialAnchorId?: string;
 }>();
 
 const emit = defineEmits<{
@@ -305,7 +307,10 @@ watch(
     }
 
     if (!previous?.length) {
-      loadedStart.value = Math.max(0, next.length - INITIAL_MESSAGE_WINDOW);
+      const restoredIndex = next.findIndex((message) => message.id === props.initialFirstLoadedId);
+      const anchorIndex = next.findIndex((message) => message.id === props.initialAnchorId);
+      const restored = [restoredIndex, anchorIndex].filter((index) => index >= 0);
+      loadedStart.value = restored.length > 0 ? Math.min(...restored) : Math.max(0, next.length - INITIAL_MESSAGE_WINDOW);
       return;
     }
 

@@ -14,6 +14,8 @@ import { SessionManager } from "../../server/sessions/sessionManager.js";
 import { DirectoryManager } from "../../server/sessions/directoryManager.js";
 import { NoopAgentAvailability } from "../../server/agents/health/agentAvailability.js";
 import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
+import { SyncEventStore } from "../../server/web/server/sync/store.js";
+import { resolveSyncNamespace } from "../../server/web/server/sync/lane.js";
 
 type WsJson = { type?: unknown; [k: string]: unknown };
 
@@ -64,6 +66,9 @@ describe("web/server/ws/preflight-persistence", () => {
   let port: number;
   let wss: import("ws").WebSocketServer;
   let historyStore: HistoryStore;
+  let syncEventStore: SyncEventStore;
+  let lock: AsyncLock;
+  let unblockCommands: (() => void) | null;
   const originalEnv = { ...process.env };
 
   beforeEach(async (t) => {
@@ -91,13 +96,14 @@ describe("web/server/ws/preflight-persistence", () => {
     const workerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-worker" });
     const advisorHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-advisor" });
     historyStore = workerHistoryStore;
-    const lock = new AsyncLock();
+    syncEventStore = new SyncEventStore({ stateDbPath: process.env.ADS_STATE_DB_PATH });
+    lock = new AsyncLock();
     const agentAvailability = new NoopAgentAvailability();
     const directoryManager = new DirectoryManager([workspaceRoot]);
 
-    let unblock: (() => void) | null = null;
+    unblockCommands = null;
     const blocked = new Promise<void>((resolve) => {
-      unblock = resolve;
+      unblockCommands = resolve;
     });
     const runAdsCommandLine = async (): Promise<{ ok: boolean; output: string }> => {
       await blocked;
@@ -124,6 +130,7 @@ describe("web/server/ws/preflight-persistence", () => {
         agentAvailability,
       },
       state: {
+        syncEventStore,
         directoryManager,
         workspaceCache: new Map(),
         sessionCacheRegistry: { registerBinding: () => {}, clearForUser: () => {} },
@@ -156,15 +163,6 @@ describe("web/server/ws/preflight-persistence", () => {
       scheduler: {},
     });
 
-    // Make sure tests can always unblock the pending command.
-    t.after(() => {
-      try {
-        unblock?.();
-      } catch {
-        // ignore
-      }
-    });
-
     try {
       await new Promise<void>((resolve, reject) => {
         server.listen(0, "127.0.0.1", () => resolve());
@@ -184,6 +182,9 @@ describe("web/server/ws/preflight-persistence", () => {
   });
 
   afterEach(async () => {
+    // Drain held work before closing its history/sync database.
+    unblockCommands?.();
+    await lock.runExclusive(async () => {});
     try {
       wss.close();
     } catch {
@@ -280,30 +281,21 @@ describe("web/server/ws/preflight-persistence", () => {
     }
   });
 
-  it("broadcasts preflight-persisted user history to sibling lane connections", async () => {
+  it("broadcasts a persisted user delta to both lane connections without replacing history", async () => {
     const url = `ws://127.0.0.1:${port}`;
     const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
     const sender = new WebSocket(url, protocols, { origin: "http://localhost" });
     const sibling = new WebSocket(url, protocols, { origin: "http://localhost" });
+    const frames: WsJson[] = [];
+    for (const client of [sender, sibling]) client.on("message", (raw) => frames.push(JSON.parse(raw.toString("utf8"))));
 
     try {
       await Promise.all([waitForWsOpen(sender), waitForWsOpen(sibling)]);
 
-      const siblingHistory = waitForWsMessage(
-        sibling,
-        (msg) =>
-          msg.type === "history" &&
-          Array.isArray(msg.items) &&
-          msg.items.some((entry) => {
-            const candidate = entry as { role?: unknown; text?: unknown; kind?: unknown };
-            return (
-              candidate.role === "user" &&
-              candidate.text === "echo queued" &&
-              candidate.kind === "client_message_id:m2"
-            );
-        }),
-        2000,
-      );
+      const isQueuedUser = (msg: WsJson): boolean => msg.type === "user" && msg.clientMessageId === "m2";
+      const siblingUser = waitForWsMessage(sibling, isQueuedUser, 2000);
+      const senderUser = waitForWsMessage(sender, isQueuedUser, 2000);
+      const senderAck = waitForWsMessage(sender, (msg) => msg.type === "ack" && msg.client_message_id === "m2", 2000);
       const siblingInFlight = waitForWsMessage(
         sibling,
         (msg) => msg.type === "in_flight" && msg.inFlight === true,
@@ -313,23 +305,17 @@ describe("web/server/ws/preflight-persistence", () => {
       sender.send(JSON.stringify({ type: "command", payload: "echo slow" }));
       sender.send(JSON.stringify({ type: "command", payload: "echo queued", client_message_id: "m2" }));
 
-      const history = await siblingHistory;
-      assert.equal(history.type, "history");
-      const inFlight = await siblingInFlight;
-      assert.deepEqual(inFlight, { type: "in_flight", inFlight: true });
-
-      const senderHistory = await Promise.race([
-        waitForWsMessage(
-          sender,
-          (msg) =>
-            msg.type === "history" &&
-            Array.isArray(msg.items) &&
-            msg.items.some((entry) => (entry as { text?: unknown }).text === "echo queued"),
-          250,
-        ).catch(() => null),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 300)),
-      ]);
-      assert.equal(senderHistory, null);
+      const [user, senderCopy, ack, inFlight] = await Promise.all([siblingUser, senderUser, senderAck, siblingInFlight]);
+      assert.equal(user.text, "echo queued");
+      assert.equal(user.kind, "client_message_id:m2");
+      assert.ok(Number.isSafeInteger(user.seq) && Number(user.seq) > 0);
+      assert.deepEqual(senderCopy, user);
+      assert.equal(ack.duplicate, false);
+      assert.equal(inFlight.inFlight, true);
+      assert.equal(frames.some((frame) => frame.type === "history"), false);
+      const replay = syncEventStore.readAfter({ namespace: resolveSyncNamespace("main"), laneKey: "test::test::main" });
+      assert.equal(replay.events.filter((event) => event.payload.clientMessageId === "m2").length, 1);
+      assert.equal(replay.events.some((event) => event.type === "history"), false);
     } finally {
       try {
         sender.terminate();

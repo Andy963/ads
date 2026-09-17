@@ -15,6 +15,7 @@ import { normalizeLaneChatSessionId, resolveWebSocketChatSessionId, resolveWebSo
 import { createSafeJsonSend, summarizeWsPayloadForLog } from "./utils.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
 import { sendInitialBootstrapMessages } from "./bootstrapDelivery.js";
+import { parseTranscriptResume } from "./transcriptResume.js";
 import { buildHistoryBootstrapPayload } from "./bootstrapReplay.js";
 import { restoreConnectionWorkspace } from "./connectionWorkspace.js";
 import { buildWsConnectionIdentity } from "./connectionIdentity.js";
@@ -978,6 +979,12 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       inFlight,
       historyStore: currentLane.historyStore,
       historyKey: currentLane.historyKey,
+      resume: parseTranscriptResume(req.url),
+      sync: state.syncEventStore ? {
+        store: state.syncEventStore,
+        namespace: currentLane.laneNamespace,
+        laneKeys: currentLane.syncLaneKeys,
+      } : undefined,
       latestSeq: state.syncEventStore?.getLatestSeqForLanes(currentLane.laneNamespace, currentLane.syncLaneKeys) ?? 0,
       laneGeneration: currentLane.laneGeneration,
       runtimeSnapshots: collectRuntimeSnapshots(currentLane, inFlight),
@@ -1027,7 +1034,18 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         isLaneCurrent: () => isLaneCurrent(lane),
         traceWsDuplication: config.traceWsDuplication,
         warn: (message) => logger.warn(message),
-        emitUserSyncEvent: (userEv) => { const res = appendSyncEventForLane(lane, userEv); return { ok: res.ok }; },
+        emitUserSyncEvent: (userEv) => {
+          const res = appendSyncEventForLane(lane, userEv);
+          if (res.ok) broadcastJsonToHistoryKey({
+            clientMetaByWs: state.clientMetaByWs,
+            historyKey: lane.historyKey,
+            logicalHistoryKey: lane.logicalHistoryKey,
+            laneGeneration: lane.laneGeneration,
+            payload: res.payload,
+            sendJson: safeJsonSend,
+          });
+          return { ok: res.ok };
+        },
         sessionId: lane.sessionId,
         userId: lane.userId,
         onPersistedMessage: ({ clientMessageId: persistedId, text }) => {
