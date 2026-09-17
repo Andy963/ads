@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 
 import MarkdownContent from "./MarkdownContent.vue";
 import ChatFilePreviewModal from "./ChatFilePreviewModal.vue";
+import ThinkingDots from "./mainChat/ThinkingDots.vue";
 import type { ChatMessage, RenderMessage } from "./mainChat/types";
 import type { ChatItem } from "../app/controllerTypes";
 import { PATCH_DIFF_FALLBACK_KEY, splitUnifiedDiffByPath } from "../lib/patchDiff";
@@ -416,11 +417,7 @@ function closeFilePreview(): void {
         <span v-if="m.kind === 'error' && (m.retryCount ?? 0) > 0" class="retryBadge">x{{ m.retryCount }}</span>
         <div v-if="m.role === 'assistant' && m.kind === 'text' && m.streaming && String(m.content ?? '').length === 0" class="typing" aria-label="AI is thinking">
           <span class="thinkingLabel">thinking</span>
-          <span class="thinkingDots" aria-hidden="true">
-            <span class="thinkingDot"></span>
-            <span class="thinkingDot"></span>
-            <span class="thinkingDot"></span>
-          </span>
+          <ThinkingDots />
         </div>
         <div v-else-if="isLiveStepRenderMessage(m)" class="liveStep">
           <div
@@ -1141,43 +1138,6 @@ function closeFilePreview(): void {
 
 .thinkingLabel {
   font-style: italic;
-}
-
-.thinkingDots {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 3px;
-  margin-left: 5px;
-}
-
-.thinkingDot {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: currentColor;
-  animation: thinkingDotPulse 1.2s ease-in-out infinite;
-}
-
-.thinkingDot:nth-child(2) {
-  animation-delay: 0.15s;
-}
-
-.thinkingDot:nth-child(3) {
-  animation-delay: 0.3s;
-}
-
-@keyframes thinkingDotPulse {
-  0%,
-  60%,
-  100% {
-    opacity: 0.3;
-    transform: scale(0.85);
-  }
-  30% {
-    opacity: 1;
-    transform: scale(1);
-  }
 }
 
 .msg[data-kind="divider"] {
