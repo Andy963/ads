@@ -28,6 +28,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "update:draft", value: string): void;
   (e: "send", content: string): void;
+  (e: "retryMessage", message: ChatMessage): void;
   (e: "interrupt"): void;
   (e: "clear"): void;
   (e: "addImages", images: IncomingImage[]): void;
@@ -366,6 +367,7 @@ onBeforeUnmount(() => {
         :live-step-collapsed-trivial-outline="liveStepCollapsedTrivialOutline"
         :workspace-root="workspaceRoot"
         @copy-message="onCopyMessage($event)"
+        @retry-message="emit('retryMessage', $event)"
         @toggle-live-step-expanded="toggleLiveStepExpanded"
       />
       <button v-if="showScrollToBottom" class="scrollToBottom" type="button" aria-label="Scroll to bottom" title="回到底部"

@@ -74,6 +74,7 @@ const {
   agentBusy,
   sendMainPrompt,
   sendAdvisorPrompt,
+  retryPrompt,
   setMainModelId,
   setAdvisorModelId,
   setMainModelReasoningEffort,
@@ -1102,6 +1103,7 @@ const advisorConnectionStatus = computed(() => {
               :connection-status-message="workerConnectionStatus?.message ?? null"
               :thread-warning="workerThreadWarning"
               @send="sendMainPrompt"
+              @retry-message="retryPrompt"
               @update:draft="workerComposerDraft = $event"
               @interrupt="interruptActive"
               @clear="clearActiveChat"

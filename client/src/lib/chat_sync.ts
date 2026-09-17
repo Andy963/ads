@@ -296,7 +296,9 @@ function insertLocalPendingTurn(result: ChatItem[], turn: ChatItem[]): void {
  * drops the user's still-pending prompt.
  */
 function mergeWithoutAlignment(local: ChatItem[], server: ChatItem[]): ChatItem[] {
-  if (!hasTerminalAssistant(server)) return local;
+  if (!hasTerminalAssistant(server)) {
+    return preserveServerUserTurnsWithoutAssistant(local, server);
+  }
 
   const serverComparable = toComparable(server);
   const localComparable = toComparable(local);
@@ -323,6 +325,29 @@ function mergeWithoutAlignment(local: ChatItem[], server: ChatItem[]): ChatItem[
     }
   }
   flushPendingTurn();
+  return result;
+}
+
+/**
+ * No-overlap fallback when the server snapshot has no terminal assistant
+ * entry (for example a turn that failed before any assistant output). The
+ * server snapshot is still authoritative for the user prompts and failure
+ * cards it persisted, so keep those even though the bulk of the local
+ * transcript wins.
+ */
+function preserveServerUserTurnsWithoutAssistant(local: ChatItem[], server: ChatItem[]): ChatItem[] {
+  const preservable = server.filter((item) => item.role === "user" || item.kind === "error");
+  if (preservable.length === 0) return local;
+  const localComparable = toComparable(local);
+  const missing = preservable.filter((item) => {
+    const comparable = toComparable([item])[0]!;
+    return !localComparable.some((localItem) => comparableMatches(localItem, comparable));
+  });
+  if (missing.length === 0) return local;
+  const result = local.slice();
+  for (const item of missing) {
+    insertLocalPendingTurn(result, [item]);
+  }
   return result;
 }
 

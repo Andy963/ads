@@ -593,6 +593,45 @@ export function createChatActions(ctx: AppContext) {
 
   const enqueueMainPrompt = (text: string, images: IncomingImage[]): void => enqueuePrompt(text, images);
 
+  const retryPrompt = (message: ChatItem, rt?: ProjectRuntime): void => {
+    const state = runtimeOrActive(rt);
+    if (message.kind !== "error") return;
+    const existing = state.messages.value;
+    const cardIndex = existing.findIndex((item) => item.id === message.id);
+    if (cardIndex < 0) return;
+    let userIndex = -1;
+    for (let index = cardIndex - 1; index >= 0; index -= 1) {
+      if (existing[index]!.role === "user") {
+        userIndex = index;
+        break;
+      }
+    }
+    if (userIndex < 0) return;
+    const userItem = existing[userIndex]!;
+    const text = String(userItem.content ?? "").trim();
+    if (!text) return;
+    // Clear the failure state before re-dispatching; a new failure anchors a
+    // fresh card to the retried turn instead.
+    setMessages(existing.filter((item) => item.id !== message.id), state);
+    ensureOutboxBinding(state);
+    const execution = userItem.execution ?? {};
+    const agentId = String(execution.agentId ?? "").trim() || String(state.activeAgentId.value ?? "").trim();
+    state.queuedPrompts.value = [
+      ...state.queuedPrompts.value,
+      {
+        id: randomId("q"),
+        clientMessageId: randomUuid(),
+        text,
+        images: [],
+        createdAt: Date.now(),
+        ...(agentId ? { agentId } : {}),
+        ...(execution.model ? { model: execution.model } : {}),
+        ...(execution.modelReasoningEffort ? { modelReasoningEffort: execution.modelReasoningEffort } : {}),
+      },
+    ];
+    void flushQueuedPrompts(state);
+  };
+
   const flushQueuedPrompts = async (
     rt?: ProjectRuntime,
     options?: { preserveErrorStatus?: boolean },
@@ -778,6 +817,7 @@ export function createChatActions(ctx: AppContext) {
     removeQueuedPrompt,
     enqueuePrompt,
     enqueueMainPrompt,
+    retryPrompt,
     flushQueuedPrompts,
     upsertStreamingDelta,
     replaceStreamingText,
