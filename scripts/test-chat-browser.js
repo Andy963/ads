@@ -125,6 +125,37 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     }
     result.checks.push("Repeated sends in the same focused editor, five rows while busy, and post-send lane switching without reload");
     await chooseLane("advisor");
+    if (mobile) {
+      const releaseThinkingReply = fixture.holdReply("browser-advisor-thinking-dots");
+      try {
+        await send("browser-advisor-thinking-dots");
+        const dots = page.locator(".thinkingDots:visible");
+        await dots.waitFor();
+        assert.equal(await dots.locator(".thinkingDot").count(), 3);
+        const initialDot = await dots.locator(".thinkingDot").first().evaluate((dot) => ({
+          opacity: Number(getComputedStyle(dot).opacity),
+          top: dot.getBoundingClientRect().top,
+        }));
+        await page.waitForFunction((initial) => {
+          const dot = document.querySelector(".chat .thinkingDot");
+          return dot && Math.abs(Number(getComputedStyle(dot).opacity) - initial.opacity) > 0.3
+            && Math.abs(dot.getBoundingClientRect().top - initial.top) > 0.8;
+        }, initialDot);
+
+        const initialPixels = await dots.screenshot();
+        let pixelsChanged = false;
+        for (let sample = 0; sample < 6 && !pixelsChanged; sample += 1) {
+          await page.waitForTimeout(180);
+          pixelsChanged = !initialPixels.equals(await dots.screenshot());
+        }
+        assert.ok(pixelsChanged, "Thinking dots must produce different painted pixels, not only different classes");
+      } finally {
+        releaseThinkingReply();
+      }
+      await waitForReply("Advisor reply: browser-advisor-thinking-dots");
+      assert.equal(await page.locator(".thinkingDots:visible").count(), 0);
+      result.checks.push("Thinking dots change opacity, position, and painted pixels in mobile WebKit, then disappear on reply");
+    }
     await send("browser-advisor-first");
     await waitForReply("Advisor reply: browser-advisor-first");
     await input().fill("Advisor draft");
