@@ -142,11 +142,12 @@ export function isStreamDisconnectedUpstreamError(message: string): boolean {
   const normalized = message.replace(/\s+/g, " ").trim().toLowerCase();
   if (!normalized) return false;
   return (
-    normalized.includes("stream disconnected before completion") ||
+    /stream.?disconnect|sse.?error|connection.?(?:closed|reset|aborted)/.test(normalized) ||
+    /\b(?:econnreset|etimedout|econnrefused)\b/.test(normalized) ||
     normalized.includes("stream closed before response.completed") ||
-    normalized.includes("connection closed") ||
-    normalized.includes("socket hang up") ||
-    normalized.includes("premature close")
+    /socket hang ?up/.test(normalized) ||
+    normalized.includes("premature close") ||
+    normalized.includes("fetch failed")
   );
 }
 
