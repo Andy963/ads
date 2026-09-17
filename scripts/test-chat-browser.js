@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { chromium, webkit } from "playwright";
 import { startChatBrowserServer } from "./lib/chat-browser-server.js";
 import { verifyPostSendInteractions } from "./lib/chat-browser-post-send.js";
+import { verifyMonotonicHistory } from "./lib/chat-browser-history.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const buildRoot = path.resolve(process.env.ADS_CHAT_BUILD_DIR || path.join(repoRoot, "dist/client"));
@@ -218,7 +219,12 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       await waitForReply("Advisor reply: browser-advisor-composition");
       assert.equal(fixture.received.length, sentCount + 1, "One touch must dispatch exactly one prompt");
       result.checks.push("Composition-aware touch submission and empty draft after compositionend");
+
     }
+
+    result.history = {};
+    await verifyMonotonicHistory({ page, send, waitForReply, chooseLane, settle, report: result.history });
+    result.checks.push("Bounded initial history, native prepend anchoring, zero scroll writes, and stable DOM rows across direction changes");
 
     const rowMetrics = [];
     for (const height of mobile ? [844, 430, 300] : [900]) {

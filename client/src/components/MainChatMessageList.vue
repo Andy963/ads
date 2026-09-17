@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import MarkdownContent from "./MarkdownContent.vue";
 import ChatFilePreviewModal from "./ChatFilePreviewModal.vue";
@@ -29,12 +29,22 @@ const emit = defineEmits<{
   (e: "copyMessage", message: RenderMessage): void;
   (e: "retryMessage", message: RenderMessage): void;
   (e: "toggleLiveStepExpanded"): void;
+  (e: "beforeHistoryPrepend"): void;
 }>();
 
 const openCommandTrees = ref<Set<string>>(new Set());
 const expandedPatchKeys = ref<Set<string>>(new Set());
 const filePreviewTarget = ref<MarkdownFilePreviewLink | null>(null);
 const messageListEl = ref<HTMLElement | null>(null);
+
+const INITIAL_MESSAGE_WINDOW = 30;
+const EARLIER_MESSAGE_PAGE_SIZE = 20;
+const CHAT_TOP_THRESHOLD_PX = 240;
+
+const loadedStart = ref(0);
+const loadingEarlierMessages = ref(false);
+let messageScrollRoot: HTMLElement | null = null;
+let earlierMessagesObserver: IntersectionObserver | null = null;
 
 type PatchRenderRow = {
   key: string;
@@ -246,6 +256,87 @@ const renderMessages = computed<RenderMessage[]>(() => {
   return processed;
 });
 
+const loadedMessages = computed<RenderMessage[]>(() =>
+  renderMessages.value.slice(loadedStart.value),
+);
+
+const hasEarlierMessages = computed(() => loadedStart.value > 0);
+
+function isNearTop(): boolean {
+  const root = messageScrollRoot;
+  if (!root) return false;
+  return root.scrollTop <= CHAT_TOP_THRESHOLD_PX;
+}
+
+async function loadEarlierMessages(): Promise<void> {
+  if (loadingEarlierMessages.value || !hasEarlierMessages.value) return;
+  loadingEarlierMessages.value = true;
+  emit("beforeHistoryPrepend");
+  loadedStart.value = Math.max(0, loadedStart.value - EARLIER_MESSAGE_PAGE_SIZE);
+  try {
+    await nextTick();
+  } finally {
+    loadingEarlierMessages.value = false;
+  }
+}
+
+function observeEarlierMessagesSentinel(): void {
+  earlierMessagesObserver?.disconnect();
+  earlierMessagesObserver = null;
+
+  const sentinel = messageListEl.value?.querySelector<HTMLElement>("[data-testid='load-earlier-sentinel']");
+  if (!sentinel || !messageScrollRoot || typeof IntersectionObserver === "undefined") return;
+
+  earlierMessagesObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((entry) => entry.isIntersecting) && isNearTop()) void loadEarlierMessages();
+    },
+    { root: messageScrollRoot, rootMargin: `${CHAT_TOP_THRESHOLD_PX}px 0px 0px 0px` },
+  );
+  earlierMessagesObserver.observe(sentinel);
+}
+
+watch(
+  renderMessages,
+  (next, previous) => {
+    if (next.length === 0) {
+      loadedStart.value = 0;
+      return;
+    }
+
+    if (!previous?.length) {
+      loadedStart.value = Math.max(0, next.length - INITIAL_MESSAGE_WINDOW);
+      return;
+    }
+
+    // Anchor to the previous window, not a slice of the already-updated transcript.
+    // Tail appends, backfills, and live-row removal must retain every surviving loaded row.
+    const loadedIds = new Set(previous.slice(loadedStart.value).map((message) => message.id));
+    const firstSurvivingIndex = next.findIndex((message) => loadedIds.has(message.id));
+    loadedStart.value = firstSurvivingIndex >= 0
+      ? firstSurvivingIndex
+      : Math.max(0, next.length - INITIAL_MESSAGE_WINDOW);
+  },
+  { immediate: true },
+);
+
+// Reobserve only when the sentinel mounts or disappears. Rearming it after every
+// page can repeatedly fire while still intersecting and eagerly mount all history.
+watch(hasEarlierMessages, observeEarlierMessagesSentinel, { flush: "post" });
+
+onMounted(() => {
+  messageScrollRoot = (messageListEl.value?.closest(".chat") as HTMLElement | null) ?? messageListEl.value?.parentElement ?? null;
+  observeEarlierMessagesSentinel();
+});
+
+onBeforeUnmount(() => {
+  earlierMessagesObserver?.disconnect();
+  earlierMessagesObserver = null;
+  messageScrollRoot = null;
+});
+
+defineExpose({ loadEarlierMessages });
+
 watch(
   () =>
     renderMessages.value
@@ -343,11 +434,19 @@ function closeFilePreview(): void {
     ref="messageListEl"
     class="messageList"
     :data-total-messages="renderMessages.length"
+    :data-loaded-messages="loadedMessages.length"
+    :data-loaded-start="loadedStart"
   >
     <div v-if="messages.length === 0" class="chat-empty">
       <span>直接开始对话…</span>
     </div>
-    <div v-for="m in renderMessages" :key="m.id" class="msg" :data-id="m.id" :data-role="m.role" :data-kind="m.kind">
+    <div
+      v-if="hasEarlierMessages"
+      class="messageHistorySentinel"
+      data-testid="load-earlier-sentinel"
+      aria-hidden="true"
+    ></div>
+    <div v-for="m in loadedMessages" :key="m.id" class="msg" :data-id="m.id" :data-role="m.role" :data-kind="m.kind">
       <div v-if="m.kind === 'command'" class="command-block">
         <button
           class="command-tree-header"
@@ -520,6 +619,8 @@ function closeFilePreview(): void {
   font-size: 13px;
 }
 
+/* Loaded rows need real geometry for native prepend anchoring in WebKit.
+   The history window bounds mount cost instead of substituting intrinsic heights. */
 .msg {
   display: flex;
   margin-bottom: 18px;
@@ -529,8 +630,6 @@ function closeFilePreview(): void {
   box-sizing: border-box;
   overflow: visible;
   justify-content: flex-start;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 150px;
 }
 
 .msg[data-role="user"] {
