@@ -200,6 +200,38 @@ function findLcsAlignment(
   return alignment;
 }
 
+function isEmptyAssistantPlaceholder(item: ChatItem): boolean {
+  return item.role === "assistant" && (item.kind === "text" || item.kind === "thought") &&
+    !normalizeContentForMerge(item.content);
+}
+
+function reconcileEmptyAssistantGap(local: ChatItem[], server: ChatItem[], nextAnchor?: ChatItem): [ChatItem[], ChatItem[]] {
+  // Only reconcile within a shared turn. A later optimistic user turn still
+  // needs its own waiting indicator until the server acknowledges it.
+  if (server.some((item) => item.role === "user")) return [local, server];
+  const pendingUserIndex = local.findIndex((item) => item.role === "user");
+  if (pendingUserIndex >= 0) {
+    const prefix = local.slice(0, pendingUserIndex);
+    if (prefix.length === 0 || !prefix.every(isEmptyAssistantPlaceholder)) return [local, server];
+    const [pending, completed] = reconcileEmptyAssistantGap(prefix, server, nextAnchor);
+    return [[...pending, ...completed, ...local.slice(pendingUserIndex)], []];
+  }
+  const placeholders = local.filter(isEmptyAssistantPlaceholder);
+  if (placeholders.length === 0) return [local, server];
+  const isReply = (item: ChatItem): boolean => item.role === "assistant" &&
+    (item.kind === "text" || item.kind === "thought") && item.streaming !== true &&
+    Boolean(normalizeContentForMerge(item.content));
+  const reply = server.find(isReply);
+  const terminal = reply || server.some((item) => item.kind === "error") ||
+    (nextAnchor && (isReply(nextAnchor) || nextAnchor.kind === "error"));
+  if (!terminal) return [local, server];
+  const placeholder = reply && placeholders.find((item) => item.kind === reply.kind);
+  return [
+    local.filter((item) => !isEmptyAssistantPlaceholder(item)),
+    placeholder ? server.map((item) => item === reply ? { ...item, id: placeholder.id, streaming: false } : item) : server,
+  ];
+}
+
 function alignAndBackfillHistory(
   local: ChatItem[],
   server: ChatItem[],
@@ -214,8 +246,11 @@ function alignAndBackfillHistory(
     const curLocalIdx = pair ? pair.localIdx : local.length;
     const curServerIdx = pair ? pair.serverIdx : server.length;
 
-    const localSlice = local.slice(prevLocalIdx + 1, curLocalIdx);
-    const serverSlice = server.slice(prevServerIdx + 1, curServerIdx);
+    const [localSlice, serverSlice] = reconcileEmptyAssistantGap(
+      local.slice(prevLocalIdx + 1, curLocalIdx),
+      server.slice(prevServerIdx + 1, curServerIdx),
+      pair ? server[curServerIdx] : undefined,
+    );
 
     if (k === alignment.length) {
       let hydratedTail = localSlice;
