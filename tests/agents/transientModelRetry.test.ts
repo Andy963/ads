@@ -7,58 +7,162 @@ import {
   isTransientUpstreamModelError,
   resolveTransientRetryDelayMs,
   runWithTransientModelRetry,
+  TransientModelRetryAttemptError,
   TransientModelRetryExhaustedError,
   TRANSIENT_MODEL_RETRY_COUNT_ENV,
 } from "../../server/agents/adapters/transientModelRetry.js";
+import type { ThreadItem } from "../../server/agents/protocol/types.js";
+
+const streamDisconnectMessages = [
+  "stream disconnected before completion: stream closed before response.completed",
+  "stream closed before response.completed",
+  "stream disconnected: connection reset by peer",
+  "stream disconnected",
+  "[stream_disconnected] Upstream request failed",
+  "stream-disconnection during response generation",
+  "SSE error while reading the upstream response",
+  "sse_error",
+  "Connection closed while reading the upstream response",
+  "connection reset by peer",
+  "connection aborted",
+  "socket hang up",
+  "socket hangup",
+  "premature close while receiving the response",
+  "read ECONNRESET",
+  "connect ETIMEDOUT 127.0.0.1:443",
+  "connect ECONNREFUSED 127.0.0.1:443",
+  "TypeError: fetch failed",
+  "  STREAM\n  DISCONNECTED  ",
+];
 
 describe("transient model retry classification", () => {
   it("treats upstream stream disconnect messages as retryable", () => {
-    const messages = [
-      "stream disconnected before completion: stream closed before response.completed",
-      "Connection closed while reading the upstream response",
-      "socket hang up",
-      "premature close while receiving the response",
-    ];
-
-    for (const message of messages) {
+    for (const message of streamDisconnectMessages) {
       assert.equal(isStreamDisconnectedUpstreamError(message), true, message);
       assert.equal(isTransientUpstreamModelError(message), true, message);
     }
   });
 
-  it("retries an upstream stream disconnect", async () => {
-    const previous = process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
-    process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = "1";
-    let attempts = 0;
-    const retryCounts: number[] = [];
+  it("does not classify permanent or unrelated errors as transport failures", () => {
+    const messages = [
+      "", "  ", "HTTP 401 Unauthorized", "HTTP 403 Forbidden",
+      "Invalid prompt", "AbortError", "ECONNRESETTING", "ETIMEDOUT_SETTING",
+    ];
+    for (const message of messages) {
+      assert.equal(isStreamDisconnectedUpstreamError(message), false, message);
+      assert.equal(isTransientUpstreamModelError(message), false, message);
+    }
+  });
 
-    try {
-      const result = await runWithTransientModelRetry(
-        {
-          agentName: "test",
-          backoffMs: [0],
-          onRetry: (notice) => retryCounts.push(notice.retryCount),
-        },
-        async () => {
+  for (const message of streamDisconnectMessages) {
+    it(`retries an upstream transport error: ${JSON.stringify(message)}`, async () => {
+      const previous = process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
+      process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = "1";
+      let attempts = 0;
+      const retryCounts: number[] = [];
+
+      try {
+        const result = await runWithTransientModelRetry(
+          {
+            agentName: "test",
+            backoffMs: [0],
+            onRetry: (notice) => retryCounts.push(notice.retryCount),
+          },
+          async (state) => {
+            attempts += 1;
+            state.markSideEffect({ type: "reasoning", text: "Planning the response" });
+            if (attempts === 1) {
+              throw new Error(message);
+            }
+            return "ok";
+          },
+        );
+
+        assert.equal(result, "ok");
+        assert.equal(attempts, 2);
+        assert.deepEqual(retryCounts, [1]);
+      } finally {
+        if (previous === undefined) {
+          delete process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
+        } else {
+          process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = previous;
+        }
+      }
+    });
+  }
+
+  const sideEffectItems: ThreadItem[] = [
+    { type: "command_execution", command: "echo test" },
+    { type: "file_change", changes: [{ kind: "update", path: "file.txt" }] },
+    { type: "tool_call", tool: "write_file" },
+  ];
+  for (const item of sideEffectItems) {
+    it(`does not replay a turn after ${item.type} starts`, async () => {
+      let attempts = 0;
+      let retries = 0;
+      const failure = new Error("stream disconnected: read ECONNRESET");
+      await assert.rejects(
+        runWithTransientModelRetry(
+          { agentName: "test", backoffMs: [0], onRetry: () => { retries += 1; } },
+          async (state) => {
+            attempts += 1;
+            state.markSideEffect({ type: "item.started", item });
+            throw failure;
+          },
+        ),
+        (error: unknown) => error === failure,
+      );
+      assert.equal(attempts, 1);
+      assert.equal(retries, 0);
+    });
+  }
+
+  it("preserves explicit retry refusal, adapter side effects, and user cancellation", async () => {
+    const failures = [
+      new TransientModelRetryAttemptError("fetch failed", { retryable: false, sideEffectObserved: false }),
+      new TransientModelRetryAttemptError("fetch failed", { retryable: true, sideEffectObserved: true }),
+      Object.assign(new Error("connection aborted"), { name: "AbortError" }),
+    ];
+    for (const failure of failures) {
+      let attempts = 0;
+      await assert.rejects(
+        runWithTransientModelRetry({ agentName: "test", backoffMs: [0] }, async () => {
           attempts += 1;
-          if (attempts === 1) {
-            throw new Error(
-              "stream disconnected before completion: stream closed before response.completed",
-            );
-          }
-          return "ok";
+          throw failure;
+        }),
+        (error: unknown) => error === failure,
+      );
+      assert.equal(attempts, 1);
+    }
+  });
+
+  it("retries a transport failure through the configured budget before reporting exhaustion", async () => {
+    const previous = process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
+    process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = "100";
+    const attempts: number[] = [];
+    const retryCounts: number[] = [];
+    const failure = new Error("read ECONNRESET");
+    try {
+      await assert.rejects(
+        runWithTransientModelRetry(
+          { agentName: "test", backoffMs: [0], onRetry: (notice) => retryCounts.push(notice.retryCount) },
+          async (state) => {
+            attempts.push(state.attempt);
+            throw failure;
+          },
+        ),
+        (error: unknown) => {
+          assert.ok(error instanceof TransientModelRetryExhaustedError);
+          assert.equal(error.attempts, 101);
+          assert.equal(error.cause, failure);
+          return true;
         },
       );
-
-      assert.equal(result, "ok");
-      assert.equal(attempts, 2);
-      assert.deepEqual(retryCounts, [1]);
+      assert.equal(attempts.length, 101);
+      assert.deepEqual(retryCounts, attempts.slice(0, -1));
     } finally {
-      if (previous === undefined) {
-        delete process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
-      } else {
-        process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = previous;
-      }
+      if (previous === undefined) delete process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV];
+      else process.env[TRANSIENT_MODEL_RETRY_COUNT_ENV] = previous;
     }
   });
 
