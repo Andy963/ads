@@ -131,7 +131,9 @@ describe("error placeholder cleanup", () => {
 
     const afterError = (wrapper.vm as any).messages as Array<any>;
     expect(afterError.some((m) => m.role === "assistant" && m.streaming)).toBe(false);
-    expect(afterError.some((m) => m.role === "system" && m.kind === "error")).toBe(false);
+    const failureCards = afterError.filter((m) => m.role === "system" && m.kind === "error");
+    expect(failureCards).toHaveLength(1);
+    expect(failureCards[0].content).toBe("boom");
     expect((wrapper.vm as any).workerConnectionStatus).toEqual({ kind: "error", message: "boom" });
 
     (wrapper.vm as any).sendMainPrompt("second");

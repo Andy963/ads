@@ -26,6 +26,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "copyMessage", message: RenderMessage): void;
+  (e: "retryMessage", message: RenderMessage): void;
   (e: "toggleLiveStepExpanded"): void;
 }>();
 
@@ -629,6 +630,9 @@ function closeFilePreview(): void {
         </div>
         <div v-else>
           <MarkdownContent :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
+          <div v-if="m.kind === 'error'" class="turnFailureActions">
+            <button class="turnFailureRetryBtn" type="button" @click="emit('retryMessage', m)">重试</button>
+          </div>
           <div v-if="m.patch && buildPatchRows(m).length > 0" class="patchCard foldedPatch">
             <div v-for="(row, rowIdx) in buildPatchRows(m)" :key="row.key" class="patchCardRow">
               <div class="patchCardHeader">
@@ -1039,6 +1043,29 @@ function closeFilePreview(): void {
 
 .bubble--retryNotice {
   padding-right: 52px;
+}
+
+.turnFailureActions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.turnFailureRetryBtn {
+  border: 1px solid rgba(220, 38, 38, 0.35);
+  background: rgba(254, 242, 242, 0.95);
+  color: #b91c1c;
+  border-radius: 999px;
+  padding: 4px 14px;
+  font-size: 12px;
+  line-height: 1.3;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.turnFailureRetryBtn:hover {
+  background: rgba(254, 226, 226, 0.98);
+  border-color: rgba(220, 38, 38, 0.55);
 }
 
 .retryBadge {

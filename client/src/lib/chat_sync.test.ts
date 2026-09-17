@@ -724,6 +724,61 @@ describe("chat_sync.mergeHistoryFromServer", () => {
     expect(contents).toContain("Server terminal assistant response");
     expect(contents).toContain("Pending user prompt");
   });
+
+  it("preserves a solitary failed user turn from the server when it has no terminal assistant (Issue #221)", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u-local", role: "user", content: "Unrelated local prompt", ts: 3000 }),
+      msg({ id: "a-local", role: "assistant", content: "Unrelated local answer", ts: 3050 }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "s-u-failed", role: "user", content: "Failed server prompt", ts: 1000 }),
+      msg({ id: "turn-failure:s-u-failed", role: "system", kind: "error", content: "[server_overloaded] 服务过载", ts: 1010 }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+    expect(out.map((m) => [m.role, m.kind, m.content])).toEqual([
+      ["user", "text", "Failed server prompt"],
+      ["system", "error", "[server_overloaded] 服务过载"],
+      ["user", "text", "Unrelated local prompt"],
+      ["assistant", "text", "Unrelated local answer"],
+    ]);
+  });
+
+  it("does not duplicate failed-turn items that the local transcript already has (Issue #221)", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u-failed", role: "user", content: "Failed prompt", ts: 3000 }),
+      msg({ id: "turn-failure:u-failed", role: "system", kind: "error", content: "[rate_limit] 请求过多", ts: 3010 }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "u-failed", role: "user", content: "Failed prompt", ts: 3000 }),
+      msg({ id: "turn-failure:u-failed", role: "system", kind: "error", content: "[rate_limit] 请求过多", ts: 3010 }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+    expect(out).toHaveLength(2);
+    expect(out.map((m) => m.kind)).toEqual(["text", "error"]);
+  });
+
+  it("keeps a trailing failed user turn when earlier history still aligns (Issue #221)", () => {
+    const local: ChatItem[] = [
+      msg({ id: "u-1", role: "user", content: "first", ts: 1000 }),
+      msg({ id: "a-1", role: "assistant", content: "first answer", ts: 1050 }),
+    ];
+    const server: ChatItem[] = [
+      msg({ id: "u-1", role: "user", content: "first", ts: 1000 }),
+      msg({ id: "s-a-1", role: "assistant", content: "first answer", ts: 1050 }),
+      msg({ id: "s-u-failed", role: "user", content: "failed follow-up", ts: 2000 }),
+      msg({ id: "turn-failure:s-u-failed", role: "system", kind: "error", content: "[timeout] 请求超时", ts: 2010 }),
+    ];
+
+    const out = mergeHistoryFromServer(local, server, LIVE);
+    expect(out.map((m) => [m.role, m.kind, m.content])).toEqual([
+      ["user", "text", "first"],
+      ["assistant", "text", "first answer"],
+      ["user", "text", "failed follow-up"],
+      ["system", "error", "[timeout] 请求超时"],
+    ]);
+  });
 });
 
 describe("chat_sync.normalizeTurnSemanticOrder", () => {

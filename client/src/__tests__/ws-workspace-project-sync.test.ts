@@ -276,6 +276,13 @@ describe("ws workspace project sync", () => {
       [
         { id: "h-u-0", role: "user", kind: "text", content: "hello", ts: 10 },
         {
+          id: "turn-failure:h-u-0",
+          role: "system",
+          kind: "error",
+          content: "command failed",
+          ts: 14,
+        },
+        {
           id: "h-x-5",
           role: "system",
           kind: "execute",
