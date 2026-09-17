@@ -1026,6 +1026,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       rt.awaitingBootstrapHistory =
         !handshakeReset &&
+        msg.historyMode !== "resume" &&
         (contextMode === "thread_resumed" ||
           contextMode === "history_injection" ||
           Boolean(rawServerThreadId) ||
@@ -1368,12 +1369,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         ? existing.some((m) => m.id === clientMessageId)
         : Boolean(lastUser && lastUser.content === text && lastUser.ts === eventTs);
       if (!alreadyHas && text) {
+        const execution = parseExecutionFromHistoryKind(String(msg.kind ?? ""));
         pushMessageBeforeLive({
           id: clientMessageId || randomId("u"),
           role: "user",
           kind: "text",
           content: text,
           ts: eventTs,
+          ...(execution ? { execution } : {}),
         }, rt);
       }
       return;

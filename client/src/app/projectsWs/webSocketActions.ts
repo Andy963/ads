@@ -271,20 +271,15 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   };
 
   const readSyncCursor = (rt: ProjectRuntime, chatSessionIdOverride?: string): number => {
-    const key = syncCursorKey(rt, chatSessionIdOverride);
-    if (!key) return 0;
-    try {
-      const raw = sessionStorage.getItem(key);
-      if (!raw) return 0;
-      const parsed = JSON.parse(raw) as { lastSeq?: unknown };
-      const seq = Number(parsed.lastSeq);
-      return Number.isFinite(seq) && seq > 0 ? Math.floor(seq) : 0;
-    } catch {
-      return 0;
-    }
+    // A detached sessionStorage cursor does not prove that its transcript
+    // survived a reload. Only the in-memory or atomically hydrated pair does.
+    if (chatSessionIdOverride && chatSessionIdOverride !== rt.chatSessionId) return 0;
+    return rt.transcriptReady ? rt.transcriptCursor : 0;
   };
 
   const writeSyncCursor = (rt: ProjectRuntime, seq: number, chatSessionIdOverride?: string): void => {
+    rt.transcriptCursor = Number.isSafeInteger(seq) && seq > 0 ? seq : 0;
+    rt.transcriptCache?.schedule();
     const key = syncCursorKey(rt, chatSessionIdOverride);
     if (!key) return;
     try {
@@ -298,6 +293,10 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       // ignore
     }
   };
+
+  const resumeOptions = (rt: ProjectRuntime): { afterSeq: number; laneGeneration: number } | undefined =>
+    rt.transcriptReady && Number.isSafeInteger(rt.transcriptCursor) && rt.transcriptCursor >= 0 && rt.laneGeneration
+      ? { afterSeq: rt.transcriptCursor, laneGeneration: rt.laneGeneration } : undefined;
 
   const syncEventsPath = (
     rt: ProjectRuntime,
@@ -386,7 +385,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       // ignore
     }
 
-    const provisionalWs = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: rt.chatSessionId });
+    const provisionalWs = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: rt.chatSessionId, resume: resumeOptions(rt) });
     rt.ws = provisionalWs;
 
     const identity = await resolveProjectIdentity(project);
@@ -446,12 +445,12 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         // ignore
       }
 
-      wsInstance = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: rt.chatSessionId });
+      wsInstance = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: rt.chatSessionId, resume: resumeOptions(rt) });
       rt.ws = wsInstance;
     }
 
     rt.ws = wsInstance;
-    const syncGeneration = rt.syncGeneration;
+    let syncGeneration = rt.syncGeneration;
     let disconnectCleanupDone = false;
     let disconnectWasBusy = false;
     let handleWsPayload: ((msg: unknown) => void) | null = null;
@@ -468,6 +467,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     let bootstrapBoundarySeq = 0;
     let bootstrapReportedInFlight: boolean | null = null;
     let bootstrapHistoryExpected = false;
+    let snapshotBootstrapPending = false;
+    let observedTerminalSeq = 0;
+    let welcomeSeen = false;
     let bootstrapHistoryWait: Promise<void> | null = null;
     let resolveBootstrapHistoryWait: (() => void) | null = null;
     let bootstrapHistoryWatchdogTimer: number | null = null;
@@ -553,7 +555,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
     const applyIdleBootstrapHistory = (): void => {
       bootstrapHistoryApplyScheduled = false;
-      if (sequencer.isBuffering() || rt.syncInProgress) return;
+      if (rt.ws !== wsInstance || rt.syncGeneration !== syncGeneration) return;
+      if (!snapshotBootstrapPending && (sequencer.isBuffering() || rt.syncInProgress)) return;
       const history = selectBootstrapHistory();
       if (!history) return;
       clearDeferredBootstrapHistory();
@@ -561,10 +564,22 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       finishBootstrapHistoryWait();
       bootstrapHistoryWait = null;
       clearBootstrapHistoryWatchdog();
-      handleWsPayload?.(history);
+      if (snapshotBootstrapPending) {
+        sequencer.replaceWithSnapshot(bootstrapBoundarySeq, () => applyAuthoritativeHistory(history));
+        snapshotBootstrapPending = false;
+        sequencer.completeCatchUp();
+        rt.syncInProgress = false;
+        rt.needsChatSync = false;
+      } else {
+        handleWsPayload?.(history);
+      }
+      rt.transcriptReady = true;
+      rt.transcriptRestored = false;
+      rt.transcriptCache?.schedule();
       const terminalBootstrapFence =
         bootstrapReportedInFlight === false && hasTerminalAssistantHistory(history) ? bootstrapBoundarySeq : 0;
-      applyDeferredRuntimeSnapshots(terminalBootstrapFence);
+      applyDeferredRuntimeSnapshots(Math.max(terminalBootstrapFence, observedTerminalSeq));
+      void flushQueuedPrompts(rt);
     };
 
     const scheduleIdleBootstrapHistory = (): void => {
@@ -586,7 +601,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       // candidate at the barrier below prevents a later sibling/bootstrap
       // frame from overwriting it with an older snapshot.
       finishBootstrapHistoryWait();
-      if (!sequencer.isBuffering() && !rt.syncInProgress) scheduleIdleBootstrapHistory();
+      if (snapshotBootstrapPending || (!sequencer.isBuffering() && !rt.syncInProgress)) scheduleIdleBootstrapHistory();
     };
 
     const clearBootstrapHistoryWatchdog = (): void => {
@@ -604,6 +619,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       bootstrapHistoryWatchdogTimer = window.setTimeout(() => {
         bootstrapHistoryWatchdogTimer = null;
         if (!isCurrentSync()) return;
+
+        if (snapshotBootstrapPending) {
+          wsInstance.close();
+          return;
+        }
 
         if (bootstrapHistoryExpected) {
           bootstrapHistoryExpected = false;
@@ -640,6 +660,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       if (nextChatSessionId === syncChatSessionId) return false;
 
       syncLaneEpoch += 1;
+      rt.transcriptCache?.invalidate();
+      rt.transcriptReady = false;
+      rt.transcriptCursor = 0;
+      snapshotBootstrapPending = false;
+      observedTerminalSeq = 0;
       syncChatSessionId = nextChatSessionId;
       clearSyncRetryTimer();
       syncRetryAttempts = 0;
@@ -661,6 +686,10 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
     const resetChatSyncForGeneration = (options?: { invalidateConnection?: boolean }): void => {
       syncLaneEpoch += 1;
+      rt.transcriptCache?.invalidate();
+      rt.transcriptReady = false;
+      snapshotBootstrapPending = false;
+      observedTerminalSeq = 0;
       sequencer.abortCatchUp();
       sequencer.resetCursor();
       clearDeferredBootstrapHistory();
@@ -676,6 +705,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.awaitingBootstrapHistory = false;
       if (options?.invalidateConnection) {
         rt.syncGeneration += 1;
+        // Lane epochs fence the outstanding request; the current socket must
+        // still be able to accept the subsequent in-band reset bootstrap.
+        syncGeneration = rt.syncGeneration;
       }
     };
 
@@ -743,7 +775,26 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     };
 
     const applySyncPayload = (payload: Record<string, unknown>): void => {
+      if ((payload.type === "result" && !payload.kind) || (payload.type === "error" && !payload.transient)) {
+        observedTerminalSeq = Math.max(observedTerminalSeq, Number(payload.seq) || 0);
+      }
       handleWsPayload?.(payload);
+    };
+
+    const applyAuthoritativeHistory = (payload: Record<string, unknown>): void => {
+      clearStepLive(rt);
+      finalizeCommandBlock(rt);
+      setMessages([], rt);
+      rt.recentCommands.value = [];
+      rt.seenCommandIds.clear();
+      rt.executePreviewByKey.clear();
+      rt.executeOrder = [];
+      rt.turnCommands = [];
+      rt.turnCommandCount = 0;
+      rt.streamEndOffsets?.clear();
+      rt.streamSnapshotRevisions?.clear();
+      rt.ignoreNextHistory = false;
+      applySyncPayload(payload);
     };
 
     function hasTerminalAssistantHistory(payload: Record<string, unknown>): boolean {
@@ -790,6 +841,15 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           if (!pagePath) throw new Error("Sync path is unavailable");
           const response = await api.get<Partial<SyncEventsResponse>>(pagePath);
           if (!isCurrentSync(operationLaneEpoch)) return;
+          if (!Array.isArray(response.events) || !Number.isSafeInteger(response.latestSeq)) {
+            throw new Error("Invalid sync response");
+          }
+          if (response.laneGeneration !== undefined && response.laneGeneration !== rt.laneGeneration) {
+            rt.transcriptCache?.invalidate();
+            rt.transcriptReady = false;
+            wsInstance.close();
+            return;
+          }
           if (response.truncated) {
             await waitForBootstrapHistory();
             if (!isCurrentSync(operationLaneEpoch)) return;
@@ -798,23 +858,16 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             activeSequencer.replaceWithSnapshot(
               Number.isFinite(latestSeq) && latestSeq > 0 ? Math.floor(latestSeq) : 0,
               () => {
-                clearStepLive(rt);
-                finalizeCommandBlock(rt);
-                setMessages([], rt);
-                rt.recentCommands.value = [];
-                rt.seenCommandIds.clear();
-                rt.executePreviewByKey.clear();
-                rt.executeOrder = [];
-                rt.turnCommands = [];
-                rt.turnCommandCount = 0;
                 if (snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)) {
-                  applySyncPayload(snapshot);
+                  applyAuthoritativeHistory(snapshot);
+                } else {
+                  throw new Error("Missing sync snapshot");
                 }
               },
             );
             showSyncRecoveryNotice();
             clearDeferredBootstrapHistory();
-            applyDeferredRuntimeSnapshots();
+            applyDeferredRuntimeSnapshots(snapshot && hasTerminalAssistantHistory(snapshot) ? Number(response.latestSeq) : 0);
             bootstrapHistoryExpected = false;
             bootstrapHistoryWait = null;
             completed = true;
@@ -945,6 +998,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           });
         }
         activeSequencer.completeCatchUp();
+        rt.transcriptReady = true;
+        rt.transcriptRestored = false;
         // Bootstrap snapshots are current-state rows rather than another
         // history stream. Apply them only after the baseline and all cursor
         // events have committed, so a stale snapshot cannot overwrite a newer
@@ -965,6 +1020,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       } finally {
         if (isCurrentSync(operationLaneEpoch)) {
           rt.syncInProgress = false;
+          rt.transcriptCache?.schedule();
+          if (!rt.needsChatSync) void flushQueuedPrompts(rt);
         }
       }
     }
@@ -1036,6 +1093,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       if (ev.code === 4401) {
         cleanupTerminalCloseState();
         rt.wsError.value = "Unauthorized";
+        ctx.handleAuthRequired?.();
         return;
       }
       if (ev.code === 4409) {
@@ -1093,6 +1151,12 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       if (msg && typeof msg === "object" && !Array.isArray(msg)) {
         const rec = msg as Record<string, unknown>;
         const seq = Number(rec.seq);
+        if (rec.type === "session_reset") {
+          // Reset is a control barrier, not a replay event. It must invalidate
+          // an outstanding HTTP range before that old generation can commit.
+          handleMessage(msg);
+          return;
+        }
         if (rec.type === "history" && !(Number.isFinite(seq) && seq > 0)) {
           deferBootstrapHistory(rec);
           return;
@@ -1109,7 +1173,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           (rec.type === "delta_snapshot" || rec.type === "command_snapshot")
         ) {
           deferredRuntimeSnapshots.push(rec);
-          if (!sequencer.isBuffering() && !rt.syncInProgress) {
+          if (snapshotBootstrapPending && deferredBootstrapHistory.length > 0) {
+            scheduleIdleBootstrapHistory();
+          } else if (!sequencer.isBuffering() && !rt.syncInProgress) {
             if (deferredBootstrapHistory.length > 0) scheduleIdleBootstrapHistory();
             else applyDeferredRuntimeSnapshots();
           }
@@ -1136,7 +1202,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           if (
             hasServerLaneGeneration &&
             previousLaneGeneration !== null &&
-            Math.floor(serverLaneGeneration) < previousLaneGeneration
+            Math.floor(serverLaneGeneration) < previousLaneGeneration &&
+            (welcomeSeen || rec.historyMode !== "snapshot")
           ) {
             try {
               wsInstance.close();
@@ -1145,6 +1212,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             }
             return;
           }
+          welcomeSeen = true;
           const generationChanged =
             hasServerLaneGeneration &&
             previousLaneGeneration !== null &&
@@ -1168,7 +1236,14 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             bootstrapBoundarySeq = Math.floor(latestSeq);
           }
           if (rec.bootstrapHistory === true) expectBootstrapHistory();
-          if (Number.isFinite(latestSeq) && latestSeq > sequencer.getLastAppliedSeq()) {
+          snapshotBootstrapPending = rec.historyMode === "snapshot" && rec.bootstrapHistory === true;
+          if (rec.historyMode === "snapshot") {
+            // The server's authoritative snapshot already covers latestSeq.
+            // Buffer concurrent live frames until that baseline is committed.
+            rt.syncInProgress = true;
+            rt.transcriptReady = false;
+            sequencer.beginCatchUp();
+          } else if (rec.historyMode !== "snapshot" && Number.isFinite(latestSeq) && latestSeq > sequencer.getLastAppliedSeq()) {
             rt.needsChatSync = true;
             sequencer.beginCatchUp();
             void syncChatEvents();
@@ -1189,6 +1264,16 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           // welcome. Invoke it exactly once, outside the sequencer, after the
           // cursor boundary has been established.
           handleMessage(msg);
+          if (rec.historyMode === "snapshot" && rec.bootstrapHistory !== true) {
+            sequencer.replaceWithSnapshot(bootstrapBoundarySeq, () => applyAuthoritativeHistory({ type: "history", items: [] }));
+            sequencer.completeCatchUp();
+            rt.syncInProgress = false;
+            rt.needsChatSync = false;
+            rt.transcriptReady = true;
+            rt.transcriptRestored = false;
+            rt.transcriptCache?.schedule();
+            void flushQueuedPrompts(rt);
+          }
           // `handleMessage` derives `awaitingBootstrapHistory` from the
           // welcome context and queued prompts, so arm the watchdog only after
           // that state has been updated.
@@ -1202,7 +1287,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           return;
         }
       }
-      sequencer.observe(msg, () => handleMessage(msg));
+      sequencer.observe(msg, () => applySyncPayload(msg as Record<string, unknown>));
     };
 
     wsInstance.connect();

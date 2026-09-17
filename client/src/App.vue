@@ -38,6 +38,9 @@ import { isLaneConnected } from "./lib/laneConnectionStatus";
 const {
   isExecuteBlockFixture,
   loggedIn,
+  cachedTranscriptAvailable,
+  handleAuthRequired,
+  accountGeneration,
   handleLoggedIn,
   isMobile,
   api,
@@ -365,10 +368,13 @@ function selectWorkspaceTab(tab: ChatLane): void {
   if (isMobile.value) writeMobileWorkspaceTab(activeProjectId.value, tab);
   closeMobileContextMenu();
   // Temporary diagnostic: verify the lane switch actually landed in the DOM.
-  const expectedKey = `${tab === "advisor" ? advisorPanelKey.value : workerPanelKey.value}:${errorRecoveryGeneration.value}`;
   window.setTimeout(() => {
     try {
+      // A later lane/project selection supersedes this diagnostic timer.
+      if (activeWorkspaceTab.value !== tab) return;
       const appEl = document.querySelector(".app");
+      if (!appEl) return;
+      const expectedKey = `${tab === "advisor" ? advisorPanelKey.value : workerPanelKey.value}:${errorRecoveryGeneration.value}`;
       const activeLane = appEl?.getAttribute("data-active-lane");
       const panel = document.getElementById(`lane-panel-${tab}`);
       const panelKey = panel?.getAttribute("data-panel-key");
@@ -415,6 +421,7 @@ function selectMobileDrawerSection(section: MobileDrawerSection): void {
 const mobileSettingsTab = ref<"lane-prompts" | "models">("lane-prompts");
 
 function selectMobileDrawerSettings(tab: "lane-prompts" | "models"): void {
+  if (!loggedIn.value) return;
   mobileSettingsTab.value = tab;
   selectMobileDrawerSection("settings");
 }
@@ -581,7 +588,7 @@ watch(isMobile, (mobile) => {
     return;
   }
   closeMobileDrawer();
-});
+}, { immediate: true });
 
 watch(activeProjectId, (projectId, previousProjectId) => {
   if (!projectId.trim() || projectId === previousProjectId) return;
@@ -599,6 +606,18 @@ watch(activeWorkspaceTab, (lane) => {
 // Drafts live only in memory; iOS can kill the PWA (and the crash recovery
 // reload drops them too). Stash on pagehide and restore on next mount.
 const DRAFT_STASH_KEY = "ADS_WEB_DRAFT_STASH";
+
+watch(accountGeneration, () => {
+  settingsOpen.value = false;
+  mobileDrawerSection.value = "projects";
+  closeMobileDrawer();
+  try {
+    sessionStorage.removeItem(DRAFT_STASH_KEY);
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith("ADS_WEB_LATEST_PROMPT:")) localStorage.removeItem(key);
+    }
+  } catch { /* Private input must not be restored across accounts. */ }
+}, { flush: "sync" });
 
 function stashComposerDrafts(): void {
   try {
@@ -674,6 +693,7 @@ const {
   removeProject,
 });
 function openSettings(): void {
+  if (!loggedIn.value) return;
   if (isMobile.value) {
     openMobileDrawer("settings");
     return;
@@ -698,6 +718,7 @@ const runningTaskCount = computed(() => 0);
 const disconnectedStatusMessage = "连接已断开，正在重连…";
 
 const workerConnectionStatus = computed(() => {
+  if (!loggedIn.value) return { kind: "info" as const, message: "Cached conversation: read-only until sign-in." };
   const laneStatus = workerLaneStatus.value;
   if (!connected.value && laneStatus?.kind === "progress") return laneStatus;
   const error = String(wsError.value ?? "").trim();
@@ -707,6 +728,7 @@ const workerConnectionStatus = computed(() => {
 });
 
 const advisorConnectionStatus = computed(() => {
+  if (!loggedIn.value) return { kind: "info" as const, message: "Cached conversation: read-only until sign-in." };
   const laneStatus = advisorLaneStatus.value;
   if (!advisorConnected.value && laneStatus?.kind === "progress") return laneStatus;
   const error = String(activeAdvisorRuntime.value.wsError.value ?? "").trim();
@@ -719,10 +741,16 @@ const advisorConnectionStatus = computed(() => {
 
 <template>
   <ExecuteBlockFixture v-if="isExecuteBlockFixture" />
-  <LoginGate v-else-if="!loggedIn" @logged-in="handleLoggedIn" />
+  <LoginGate
+    v-if="!isExecuteBlockFixture && !loggedIn"
+    v-show="!cachedTranscriptAvailable"
+    @logged-in="handleLoggedIn"
+    @auth-required="handleAuthRequired"
+  />
   <div
-    v-else
+    v-if="!isExecuteBlockFixture && (loggedIn || cachedTranscriptAvailable)"
     class="app"
+    :data-cache-read-only="!loggedIn"
     :data-active-lane="activeWorkspaceTab"
     :data-project-id="activeProjectId"
     :data-worker-message-count="messages.length"
@@ -760,7 +788,7 @@ const advisorConnectionStatus = computed(() => {
       <div class="right">
         <div v-if="!isMobile" class="laneSessionActions">
           <button
-            v-if="activeLaneHasResume"
+            v-if="activeLaneHasResume && loggedIn"
             class="laneTabIconBtn"
             type="button"
             title="Resume session"
@@ -773,7 +801,7 @@ const advisorConnectionStatus = computed(() => {
             class="laneTabIconBtn"
             type="button"
             title="New session"
-            :disabled="activeLaneBusy || activeLaneNewSessionBlocked"
+            :disabled="!loggedIn || activeLaneBusy || activeLaneNewSessionBlocked"
             data-testid="lane-new-session"
             @click.stop="handleLaneNewSession"
           >
@@ -783,7 +811,7 @@ const advisorConnectionStatus = computed(() => {
             class="laneTabIconBtn"
             type="button"
             title="Clear session"
-            :disabled="activeLaneBusy"
+            :disabled="!loggedIn || activeLaneBusy"
             data-testid="lane-clear-chat"
             @click.stop="handleLaneClearChat"
           >
@@ -797,12 +825,13 @@ const advisorConnectionStatus = computed(() => {
           title="系统设置"
           aria-label="系统设置"
           data-testid="settings-open"
+          :disabled="!loggedIn"
           @click="openSettings"
         >
           <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
         </button>
         <button
-          v-if="isMobile && mobileContextActions.length"
+          v-if="isMobile && loggedIn && mobileContextActions.length"
           type="button"
           class="topbarIconBtn mobileContextMenuBtn"
           title="当前模块操作"
@@ -876,6 +905,7 @@ const advisorConnectionStatus = computed(() => {
             class="mobileDrawerNavItem mobileDrawerNavItem--link mobileDrawerNavItem--divider"
             :class="{ active: mobileDrawerSection === 'settings' && mobileSettingsTab === 'lane-prompts' }"
             data-testid="mobile-drawer-section-prompts"
+            :disabled="!loggedIn"
             @click="selectMobileDrawerSettings('lane-prompts')"
           >
             <el-icon :size="16" aria-hidden="true"><ChatDotRound /></el-icon>
@@ -887,6 +917,7 @@ const advisorConnectionStatus = computed(() => {
             class="mobileDrawerNavItem mobileDrawerNavItem--link"
             :class="{ active: mobileDrawerSection === 'settings' && mobileSettingsTab === 'models' }"
             data-testid="mobile-drawer-section-models"
+            :disabled="!loggedIn"
             @click="selectMobileDrawerSettings('models')"
           >
             <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
@@ -899,7 +930,7 @@ const advisorConnectionStatus = computed(() => {
           <div class="projectTreeHeader">
             <div class="projectTreeTitle">项目</div>
             <div class="projectTreeHeaderActions">
-              <button type="button" class="projectAdd" title="添加项目" @click="openProjectDialogFromDrawer"><el-icon :size="16" aria-hidden="true" class="icon"><CirclePlus /></el-icon></button>
+              <button type="button" class="projectAdd" title="添加项目" :disabled="!loggedIn" @click="openProjectDialogFromDrawer"><el-icon :size="16" aria-hidden="true" class="icon"><CirclePlus /></el-icon></button>
             </div>
           </div>
 
@@ -913,12 +944,12 @@ const advisorConnectionStatus = computed(() => {
                 dropAfter: dropTargetProjectId === p.id && dropTargetPosition === 'after',
               }"
               :title="p.name"
-              @pointerdown="(ev) => onProjectRowPointerDown(ev, p.id)"
+              @pointerdown="(ev) => loggedIn && onProjectRowPointerDown(ev, p.id)"
               @pointerup="(ev) => onProjectRowPointerUp(ev, p.id)"
               @pointercancel="onProjectRowPointerCancel"
               @click="onProjectRowClick(p.id)"
               @dragover="(ev) => onProjectDragOver(ev, p.id)"
-              @drop="(ev) => onProjectDrop(ev, p.id)"
+              @drop="(ev) => loggedIn && onProjectDrop(ev, p.id)"
             >
               <span
                 class="projectStatus"
@@ -932,7 +963,7 @@ const advisorConnectionStatus = computed(() => {
               </span>
               <span class="projectRowActions">
                 <span
-                  v-if="p.id !== 'default' && p.id === activeProjectId"
+                  v-if="loggedIn && p.id !== 'default' && p.id === activeProjectId"
                   class="projectRemove"
                   :class="{ disabled: !canRemoveProject(p.id) }"
                   title="Remove project"
@@ -946,7 +977,7 @@ const advisorConnectionStatus = computed(() => {
                 </span>
                 <span v-if="!isMobile && p.id === 'default'" class="projectDragSpacer" aria-hidden="true" />
                 <span
-                  v-else-if="!isMobile"
+                  v-else-if="!isMobile && loggedIn"
                   class="projectDragHandle"
                   draggable="true"
                   title="Drag to reorder"
@@ -1026,7 +1057,7 @@ const advisorConnectionStatus = computed(() => {
             <MainChatModelSelectors
               :connected="activeLaneConnected"
               :busy="activeLaneBusy"
-              :input-locked="activeLaneInputLocked"
+              :input-locked="!loggedIn || activeLaneInputLocked"
               :agents="activeLaneAgents"
               :active-agent-id="activeLaneActiveAgentId"
               :models="models"
@@ -1052,22 +1083,24 @@ const advisorConnectionStatus = computed(() => {
           >
             <MainChatView
               ref="advisorChatRef"
-              :key="`${advisorPanelKey}:${errorRecoveryGeneration}`"
+              :key="`${advisorPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
               class="chatHost chatHost--advisor"
               :messages="advisorMessages"
+              :viewport="activeAdvisorRuntime.transcriptViewport?.value"
               :draft="advisorComposerDraft"
               :latest-prompt-key="advisorChatKey"
               :queued-prompts="advisorQueuedPrompts"
               :pending-images="advisorPendingImages"
               :connected="advisorConnected"
               :busy="advisorBusy"
-              :input-locked="advisorInputLocked"
+              :input-locked="!loggedIn || advisorInputLocked"
               :workspace-root="resolveActiveWorkspaceRoot()"
               :connection-status-kind="advisorConnectionStatus?.kind ?? null"
               :connection-status-message="advisorConnectionStatus?.message ?? null"
               :thread-warning="advisorThreadWarning"
               @send="sendAdvisorPrompt"
               @update:draft="advisorComposerDraft = $event"
+              @update:viewport="activeAdvisorRuntime.transcriptViewport && (activeAdvisorRuntime.transcriptViewport.value = $event)"
               @interrupt="interruptAdvisor"
               @addImages="addAdvisorPendingImages"
               @clearImages="clearAdvisorPendingImages"
@@ -1087,24 +1120,26 @@ const advisorConnectionStatus = computed(() => {
           >
             <MainChatView
               ref="workerChatRef"
-              :key="`${workerPanelKey}:${errorRecoveryGeneration}`"
+              :key="`${workerPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
               class="chatHost"
               :messages="messages"
+              :viewport="activeRuntime.transcriptViewport?.value"
               :draft="workerComposerDraft"
               :latest-prompt-key="workerLatestPromptKey"
               :queued-prompts="workerQueuedPrompts"
               :pending-images="pendingImages"
               :connected="connected"
               :busy="agentBusy"
-              :input-locked="workerInputLocked"
+              :input-locked="!loggedIn || workerInputLocked"
               :workspace-root="resolveActiveWorkspaceRoot()"
               :running-task-count="runningTaskCount"
               :connection-status-kind="workerConnectionStatus?.kind ?? null"
               :connection-status-message="workerConnectionStatus?.message ?? null"
               :thread-warning="workerThreadWarning"
               @send="sendMainPrompt"
-              @retry-message="retryPrompt"
+              @retry-message="loggedIn && retryPrompt($event)"
               @update:draft="workerComposerDraft = $event"
+              @update:viewport="activeRuntime.transcriptViewport && (activeRuntime.transcriptViewport.value = $event)"
               @interrupt="interruptActive"
               @clear="clearActiveChat"
               @addImages="addPendingImages"

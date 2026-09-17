@@ -14,6 +14,9 @@ import { resetStateDatabaseForTests } from "../../dist/server/state/database.js"
 import { AsyncLock } from "../../dist/server/utils/asyncLock.js";
 import { HistoryStore } from "../../dist/server/utils/historyStore.js";
 import { SyncEventStore } from "../../dist/server/web/server/sync/store.js";
+import { WebLaneGenerationStore } from "../../dist/server/web/server/sync/laneGeneration.js";
+import { deriveProjectSessionId } from "../../dist/server/web/server/projectSessionId.js";
+import { handleSyncRoutes } from "../../dist/server/web/server/api/routes/sync.js";
 import { sanitizeInput } from "../../dist/server/web/utils.js";
 import { attachWebSocketServer } from "../../dist/server/web/server/ws/server.js";
 
@@ -23,10 +26,11 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
   const workspaceRoot = await mkdtemp(path.join(tmpdir(), "ads-chat-browser-server-"));
   const projectFixtures = projects
     ? [
-        { id: "browser-project-a", root: path.join(workspaceRoot, "project-a"), name: "Project A", chatSessionId: "browser-chat-a" },
-        { id: "browser-project-b", root: path.join(workspaceRoot, "project-b"), name: "Project B", chatSessionId: "browser-chat-b" },
+        { root: path.join(workspaceRoot, "project-a"), name: "Project A", chatSessionId: "browser-chat-a" },
+        { root: path.join(workspaceRoot, "project-b"), name: "Project B", chatSessionId: "browser-chat-b" },
       ]
     : [];
+  for (const project of projectFixtures) project.id = deriveProjectSessionId(project.root);
   await Promise.all(projectFixtures.map((project) => mkdir(project.root, { recursive: true })));
   const fixtureRoots = [workspaceRoot, ...projectFixtures.map((project) => project.root)];
   for (const fixtureRoot of fixtureRoots) {
@@ -46,6 +50,8 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
   const received = [];
   const requests = [];
   const heldReplies = new Map();
+  let heldAuthentication = null;
+  let originOffline = false;
   const contentTypes = {
     ".html": "text/html",
     ".js": "application/javascript",
@@ -57,8 +63,13 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
     ".ico": "image/x-icon",
   };
   const server = createServer(async (request, response) => {
+    if (originOffline) {
+      request.socket.destroy();
+      return;
+    }
     try {
-      const pathname = new URL(request.url, "http://localhost").pathname;
+      const url = new URL(request.url, "http://localhost");
+      const pathname = url.pathname;
       if (pathname === "/favicon.ico") {
         response.writeHead(204);
         response.end();
@@ -75,7 +86,32 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
         return;
       }
       if (pathname.startsWith("/api/")) {
-        requests.push({ method: request.method, pathname });
+        requests.push({ method: request.method, pathname, afterSeq: url.searchParams.get("afterSeq") });
+        if (pathname === "/api/auth/status" && heldAuthentication) {
+          heldAuthentication.requests += 1;
+          await heldAuthentication.ready;
+        }
+        if (pathname === "/api/sync/events") {
+          await handleSyncRoutes({ req: request, res: response, url, pathname, auth: { userId: "browser-fixture", username: "Browser fixture" } }, {
+            syncEventStore, laneGenerationStore, defaultWorkspaceRoot: workspaceRoot,
+            resolveWorkspaceRoot: (target) => {
+              const root = target.searchParams.get("workspace");
+              if (!fixtureRoots.includes(root)) throw new Error("Invalid fixture workspace");
+              return root;
+            },
+            workerHistoryStore, advisorHistoryStore,
+          });
+          return;
+        }
+        if (pathname === "/api/paths/validate") {
+          const root = url.searchParams.get("path");
+          const ok = fixtureRoots.includes(root);
+          response.writeHead(200, { "Content-Type": "application/json" });
+          response.end(JSON.stringify({ ok, allowed: ok, exists: ok, isDirectory: ok,
+            ...(ok ? { projectSessionId: deriveProjectSessionId(root), workspaceRoot: root, resolvedPath: root } : {}),
+          }));
+          return;
+        }
         if (pathname === "/api/projects" && projectFixtures.length > 0) {
           response.writeHead(200, { "Content-Type": "application/json" });
           response.end(JSON.stringify({
@@ -114,6 +150,8 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
   const clientMetaByWs = new Map();
   const workerHistoryStore = new HistoryStore({ storagePath: statePath, namespace: "web-worker" });
   const advisorHistoryStore = new HistoryStore({ storagePath: statePath, namespace: "web-advisor" });
+  const syncEventStore = new SyncEventStore({ stateDbPath: statePath });
+  const laneGenerationStore = new WebLaneGenerationStore({ stateDbPath: statePath });
   const createSession = (lane) => ({ cwd }) => {
     const eventHandlers = new Set();
     let currentCwd = cwd;
@@ -190,7 +228,8 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
       cwdStore: new Map(),
       cwdStorePath: statePath,
       persistCwdStore: () => {},
-      syncEventStore: new SyncEventStore({ stateDbPath: statePath }),
+      syncEventStore,
+      laneGenerationStore,
     },
     sessions: {
       workerSessionManager: new SessionManager(0, 0, "workspace-write", "browser-model", undefined, undefined, {
@@ -220,6 +259,25 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
     origin: `http://127.0.0.1:${server.address().port}`,
     received,
     requests,
+    projects: projectFixtures,
+    holdAuthentication() {
+      if (heldAuthentication) throw new Error("Authentication is already held");
+      let release;
+      const ready = new Promise((resolve) => { release = resolve; });
+      const gate = { ready, release, requests: 0 };
+      heldAuthentication = gate;
+      return {
+        received: () => gate.requests,
+        release: () => { heldAuthentication = null; gate.release(); },
+      };
+    },
+    disconnectClients() {
+      for (const client of clients) client.terminate();
+    },
+    setOriginOffline(value) {
+      originOffline = value;
+      if (value) for (const client of clients) client.terminate();
+    },
     holdReply(marker) {
       if (heldReplies.has(marker)) throw new Error(`Reply is already held: ${marker}`);
       let release;
@@ -234,6 +292,7 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
       legacyWorker = false;
     },
     async close() {
+      heldAuthentication?.release();
       for (const { release } of heldReplies.values()) release();
       heldReplies.clear();
       for (const client of clients) client.terminate();

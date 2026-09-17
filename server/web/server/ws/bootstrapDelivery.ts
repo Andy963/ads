@@ -7,6 +7,7 @@ import { getHistoryClientMessageId } from "../../../utils/historyKind.js";
 import { buildAgentsPayload, buildWelcomePayload, buildWsBootstrapState } from "./bootstrapState.js";
 import { buildHistoryBootstrapPayload } from "./bootstrapReplay.js";
 import { projectCommandFrame } from "../commandPresentation.js";
+import { canResumeTranscript } from "./transcriptResume.js";
 
 function buildContextRestoreStatus(contextMode: string): string | null {
   if (contextMode === "thread_resumed") {
@@ -79,6 +80,8 @@ export function sendInitialBootstrapMessages(args: {
   historyKey: string;
   latestSeq?: number;
   laneGeneration?: number;
+  resume?: Parameters<typeof canResumeTranscript>[0]["resume"];
+  sync?: Parameters<typeof canResumeTranscript>[0]["sync"];
   /** Runtime-only snapshots that are not part of durable chat history. */
   runtimeSnapshots?: Array<Record<string, unknown>>;
 }): void {
@@ -92,6 +95,9 @@ export function sendInitialBootstrapMessages(args: {
   });
   const primaryHistoryEntries = args.historyStore.get(args.historyKey);
   const historyEntries = primaryHistoryEntries;
+  const resumed = canResumeTranscript({
+    resume: args.resume, sync: args.sync, laneGeneration: args.laneGeneration, hasHistory: historyEntries.length > 0,
+  });
   const shouldReplayHistory =
     historyEntries.length > 0 ||
     args.inFlight ||
@@ -99,7 +105,7 @@ export function sendInitialBootstrapMessages(args: {
     Boolean(bootstrapState.threadId);
   const replayHistoryEntries =
     bootstrapState.contextMode === "fresh" ? trimTrailingFreshStatusNotices(historyEntries) : historyEntries;
-  const historyPayload = shouldReplayHistory
+  const historyPayload = !resumed && shouldReplayHistory
     ? buildHistoryBootstrapPayload(replayHistoryEntries) ?? { type: "history", items: [] }
     : null;
 
@@ -111,6 +117,7 @@ export function sendInitialBootstrapMessages(args: {
       workspace: args.workspace,
       inFlight: args.inFlight,
       bootstrapHistory: historyPayload !== null,
+      historyMode: resumed ? "resume" : "snapshot",
       completedClientMessageIds: collectCompletedClientMessageIds(historyEntries),
       latestSeq: args.latestSeq,
       state: bootstrapState,

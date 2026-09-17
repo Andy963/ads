@@ -56,6 +56,7 @@ export function buildWelcomePayload(args: {
   workspace: unknown;
   inFlight: boolean;
   bootstrapHistory: boolean;
+  historyMode?: "resume" | "snapshot";
   completedClientMessageIds: string[];
   latestSeq?: number;
   state: WsBootstrapState;
@@ -68,6 +69,7 @@ export function buildWelcomePayload(args: {
     chatSessionId: args.chatSessionId,
     inFlight: args.inFlight,
     bootstrapHistory: args.bootstrapHistory,
+    ...(args.historyMode ? { historyMode: args.historyMode } : {}),
     completedClientMessageIds: args.completedClientMessageIds,
     ...(typeof args.latestSeq === "number" ? { latestSeq: args.latestSeq } : {}),
     ...(typeof args.state.laneGeneration === "number" ? { laneGeneration: args.state.laneGeneration } : {}),

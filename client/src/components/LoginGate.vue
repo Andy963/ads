@@ -4,7 +4,10 @@ import { ApiClient } from "../api/client";
 import type { AuthMe, AuthStatus } from "../api/types";
 import { isTextInputElement } from "../lib/dom";
 
-const emit = defineEmits<{ (e: "logged-in", me: AuthMe): void }>();
+const emit = defineEmits<{
+  (e: "logged-in", me: AuthMe): void;
+  (e: "auth-required"): void;
+}>();
 
 const api = new ApiClient({ baseUrl: "" });
 
@@ -18,6 +21,9 @@ const error = ref<string | null>(null);
 const busy = ref(false);
 const keyboardOpen = ref(false);
 let focusOutTimer: number | null = null;
+let refreshing = false;
+let refreshRequested = false;
+let disposed = false;
 
 const canSubmit = computed(() => Boolean(username.value.trim()) && Boolean(password.value));
 
@@ -39,25 +45,38 @@ function handleFocusOut(): void {
 }
 
 async function refresh(): Promise<void> {
+  if (disposed) return;
+  if (refreshing) {
+    refreshRequested = true;
+    return;
+  }
+  refreshing = true;
   loading.value = true;
   error.value = null;
   try {
     const status = await api.get<AuthStatus>("/api/auth/status");
+    if (disposed) return;
     initialized.value = status.initialized;
     if (!status.initialized) {
       me.value = null;
+      emit("auth-required");
       return;
     }
-    try {
-      me.value = await api.get<AuthMe>("/api/auth/me");
-      emit("logged-in", me.value);
-    } catch {
-      me.value = null;
-    }
+    me.value = await api.get<AuthMe>("/api/auth/me");
+    if (disposed) return;
+    emit("logged-in", me.value);
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    me.value = null;
+    const status = e instanceof Error ? (e.cause as { status?: number } | undefined)?.status : undefined;
+    if (!disposed && (status === 401 || status === 403)) emit("auth-required");
+    else error.value = e instanceof Error ? e.message : String(e);
   } finally {
     loading.value = false;
+    refreshing = false;
+    if (refreshRequested) {
+      refreshRequested = false;
+      void refresh();
+    }
   }
 }
 
@@ -83,9 +102,18 @@ function togglePassword(): void {
 onMounted(() => {
   updateKeyboardOpenFromActiveElement();
   void refresh();
+  window.addEventListener("online", refresh);
+  document.addEventListener("visibilitychange", refreshWhenVisible);
 });
 
+function refreshWhenVisible(): void {
+  if (document.visibilityState === "visible") void refresh();
+}
+
 onBeforeUnmount(() => {
+  disposed = true;
+  window.removeEventListener("online", refresh);
+  document.removeEventListener("visibilitychange", refreshWhenVisible);
   // Prevent stray timers if the component is torn down while a blur is pending.
   if (focusOutTimer !== null) window.clearTimeout(focusOutTimer);
 });

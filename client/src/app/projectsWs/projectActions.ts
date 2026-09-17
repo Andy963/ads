@@ -11,6 +11,11 @@ const PROJECTS_KEY = "ADS_WEB_PROJECTS";
 const ACTIVE_PROJECT_KEY = "ADS_WEB_ACTIVE_PROJECT";
 const LAST_REAL_PROJECT_KEY = "ADS_WEB_LAST_REAL_PROJECT";
 const LAST_REAL_PROJECT_TAB_KEY = "ADS_WEB_LAST_REAL_PROJECT_TAB";
+
+function readProjectPreference(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
 type StoredProjectTabInput = Partial<ProjectTab> & { chatSessionId?: unknown };
 type RemoteProjectInput = {
   id?: unknown;
@@ -70,11 +75,14 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     normalizeString(allowedProjectRoots.value[0]) || normalizeString(fallback);
 
   const loadProjectSubdirs = async (): Promise<void> => {
+    const account = ctx.accountGeneration?.value;
     try {
       const result = await api.get<{ dirs: string[]; allowedDirs: string[] }>("/api/paths/subdirs");
+      if (ctx.accountGeneration?.value !== account) return;
       projectDialogSubdirs.value = result.dirs ?? [];
       allowedProjectRoots.value = normalizeAllowedProjectRoots(result.allowedDirs);
     } catch {
+      if (ctx.accountGeneration?.value !== account) return;
       projectDialogSubdirs.value = [];
       allowedProjectRoots.value = [];
     }
@@ -99,6 +107,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
   };
 
   const normalizeStoredProject = (input: StoredProjectTabInput): ProjectTab | null => {
+    if (!input || typeof input !== "object" || Array.isArray(input)) return null;
     const sessionId = normalizeString(input.sessionId);
     if (!sessionId) return null;
     const path = normalizeString(input.path);
@@ -147,7 +156,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
   const restoreLastRealProjectTab = (normalized: ProjectTab[], lastRealActive: string): ProjectTab[] => {
     if (!lastRealActive || lastRealActive === "default") return normalized;
     if (normalized.some((p) => p.id === lastRealActive)) return normalized;
-    const stored = safeJsonParse<StoredProjectTabInput>(localStorage.getItem(LAST_REAL_PROJECT_TAB_KEY));
+    const stored = safeJsonParse<StoredProjectTabInput>(readProjectPreference(LAST_REAL_PROJECT_TAB_KEY));
     const tab = stored ? normalizeStoredProject(stored) : null;
     if (!tab || tab.id !== lastRealActive) return normalized;
     const insertAt = normalized.some((p) => p.id === "default") ? 1 : 0;
@@ -157,7 +166,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
   };
 
   const initializeProjects = (): void => {
-    const stored = safeJsonParse<ProjectTab[]>(localStorage.getItem(PROJECTS_KEY));
+    const stored = safeJsonParse<ProjectTab[]>(readProjectPreference(PROJECTS_KEY));
     const parsed: ProjectTab[] = Array.isArray(stored)
       ? stored
           .map((item) => normalizeStoredProject(item as StoredProjectTabInput))
@@ -168,8 +177,8 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
       parsed.unshift(createProjectTab({ path: "", initialized: true }));
     }
 
-    const storedActive = String(localStorage.getItem(ACTIVE_PROJECT_KEY) ?? "").trim();
-    const lastRealActive = String(localStorage.getItem(LAST_REAL_PROJECT_KEY) ?? "").trim();
+    const storedActive = String(readProjectPreference(ACTIVE_PROJECT_KEY) ?? "").trim();
+    const lastRealActive = String(readProjectPreference(LAST_REAL_PROJECT_KEY) ?? "").trim();
     const normalized = restoreLastRealProjectTab(parsed, lastRealActive);
     const hasStoredProject = (id: string): boolean => Boolean(id) && normalized.some((p) => p.id === id);
     // "default" is a workspace affordance, not a real project. Never land on it
@@ -195,6 +204,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
 
   const loadProjectsFromServer = async (): Promise<void> => {
     if (!loggedIn.value) return;
+    const account = ctx.accountGeneration?.value;
     try {
       const [, result] = await Promise.all([
         loadProjectSubdirs(),
@@ -205,6 +215,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
           "/api/projects",
         ),
       ]);
+      if (!loggedIn.value || ctx.accountGeneration?.value !== account) return;
       const remote = Array.isArray(result.projects) ? result.projects : [];
 
       // Server is the source of truth. Rebuild the list to avoid localStorage duplicates.

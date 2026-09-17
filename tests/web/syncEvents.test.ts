@@ -9,6 +9,7 @@ import { deriveProjectSessionId } from "../../server/web/server/projectSessionId
 import { handleSyncRoutes } from "../../server/web/server/api/routes/sync.js";
 import { resolveSyncLaneKey, resolveSyncNamespace } from "../../server/web/server/sync/lane.js";
 import { SyncEventStore } from "../../server/web/server/sync/store.js";
+import { canResumeTranscript } from "../../server/web/server/ws/transcriptResume.js";
 import { WEB_WORKER_NAMESPACE } from "../../server/web/server/start/webLaneResources.js";
 
 type FakeRes = {
@@ -186,14 +187,63 @@ describe("web sync events", () => {
     store.append({ namespace: WEB_WORKER_NAMESPACE, laneKey, type: "result", payload: { type: "result", ok: true } });
 
     const result = store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: 0 });
-    // Both durable events survive the flood, and dropping decoration must not
-    // push the client onto the full-snapshot path.
+    // Both durable events survive the flood. A cursor that missed decorations
+    // must recover them from history instead of silently accepting an incomplete
+    // local-first transcript; current cursors still resume without a snapshot.
     assert.deepEqual(
       result.events.filter((event) => event.type !== "command").map((event) => event.type),
       ["history", "result"],
     );
     assert.equal(result.events.filter((event) => event.type === "command").length, 2);
-    assert.equal(result.truncated, false);
+    assert.equal(result.truncated, true);
+    assert.equal(store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: result.latestSeq }).truncated, false);
+  });
+
+  for (const type of ["result", "patch"]) {
+    it(`rejects transcript resume after actual ${type} retention loss`, () => {
+      const store = new SyncEventStore({ stateDbPath, maxEventsPerLane: 2, maxEphemeralEventsPerLane: 2 });
+      const laneKey = "resume-retention-lane";
+      const namespace = WEB_WORKER_NAMESPACE;
+      const cursor = store.append({ namespace, laneKey, type: "user", payload: { type: "user", text: "Cached question" } })!;
+      for (let index = 0; index < 4; index += 1) {
+        store.append({ namespace, laneKey, type, payload: { type, index } });
+      }
+      const args = { laneGeneration: 2, hasHistory: true, sync: { store, namespace, laneKeys: [laneKey] } };
+      assert.equal(canResumeTranscript({ ...args, resume: { afterSeq: cursor, laneGeneration: 2 } }), false);
+      assert.equal(canResumeTranscript({ ...args, resume: { afterSeq: store.getLatestSeq(namespace, laneKey), laneGeneration: 2 } }), true);
+    });
+  }
+
+  it("returns authoritative history for an ahead-of-server cursor but does not read history for a current cursor", async () => {
+    const workspaceRoot = path.join(tmpDir, "workspace");
+    fs.mkdirSync(workspaceRoot);
+    const laneKey = resolveSyncLaneKey({ authUserId: "u-1", sessionId: deriveProjectSessionId(workspaceRoot), chatSessionId: "main" });
+    const store = new SyncEventStore({ stateDbPath });
+    const latestSeq = store.append({ namespace: WEB_WORKER_NAMESPACE, laneKey, type: "result", payload: { type: "result", ok: true, output: "Server answer" } })!;
+    let historyReads = 0;
+    const read = async (afterSeq: number) => {
+      const res = createRes();
+      await handleSyncRoutes({
+        req: { method: "GET" } as any, res: res as any,
+        url: new URL(`http://localhost/api/sync/events?sessionId=default&chatSessionId=main&workspace=${encodeURIComponent(workspaceRoot)}&afterSeq=${afterSeq}`),
+        pathname: "/api/sync/events", auth: { userId: "u-1", username: "admin" },
+      }, {
+        syncEventStore: store, defaultWorkspaceRoot: workspaceRoot, resolveWorkspaceRoot: () => workspaceRoot,
+        workerHistoryStore: { get: () => { historyReads += 1; return [{ role: "ai", text: "Server answer", ts: 1 }]; } },
+        advisorHistoryStore: { get: () => [] },
+      });
+      assert.equal(res.statusCode, 200);
+      return JSON.parse(res.body);
+    };
+    const current = await read(latestSeq);
+    assert.equal(current.truncated, false);
+    assert.equal(current.snapshot, null);
+    assert.equal(historyReads, 0);
+    const ahead = await read(latestSeq + 10);
+    assert.equal(ahead.truncated, true);
+    assert.equal(ahead.latestSeq, latestSeq);
+    assert.equal(ahead.snapshot.items[0].text, "Server answer");
+    assert.equal(historyReads, 1);
   });
 
   it("collapses a streaming turn into one resumable delta_snapshot row", () => {

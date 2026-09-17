@@ -10,9 +10,9 @@
  *
  * - `durable`   — conversation state. Full quota; trimming one advances the lane's
  *                 `trimmed_through` watermark so clients fall back to a snapshot.
- * - `ephemeral` — live UI decoration that the `history` bootstrap already covers
- *                 (see TERMINAL_BOOTSTRAP_COVERED_EVENT_TYPES on the client).
- *                 Small quota; trimming one must NOT force a full resync.
+ * - `ephemeral` — command/patch decoration kept in a separate, smaller quota.
+ *                 Trimming it does not evict conversation text, but a cursor
+ *                 that missed it needs history rather than a cursor-only resume.
  * - `transient` — never persisted. Per-token `delta` frames are represented in the
  *                 log by a single coalesced `delta_snapshot`; current-state control
  *                 snapshots such as `agents` are rebuilt during every bootstrap.
@@ -24,7 +24,7 @@ export const DELTA_SNAPSHOT_EVENT_TYPE = "delta_snapshot";
 /** Live-only frames. Broadcast immediately, never written to the replay log. */
 export const TRANSIENT_SYNC_EVENT_TYPES: readonly string[] = ["delta", "agents"];
 
-/** Live decoration already reproducible from the `history` bootstrap. */
+/** Decoration reproducible from history when its replay window has expired. */
 export const EPHEMERAL_SYNC_EVENT_TYPES: readonly string[] = [
   "command",
   "command_snapshot",

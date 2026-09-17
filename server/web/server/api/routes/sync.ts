@@ -64,9 +64,9 @@ export async function handleSyncRoutes(
   const historyStore = namespace === resolveSyncNamespace("advisor")
     ? deps.advisorHistoryStore
     : deps.workerHistoryStore;
-  const snapshotHistory = mergeSyncHistory([historyStore.get(laneKey)]);
-  const snapshot = result.truncated
-    ? buildHistoryBootstrapPayload(snapshotHistory) ?? { type: "history", items: [] }
+  const truncated = result.truncated || afterSeq > result.latestSeq;
+  const snapshot = truncated
+    ? buildHistoryBootstrapPayload(mergeSyncHistory([historyStore.get(laneKey)])) ?? { type: "history", items: [] }
     : null;
   sendJson(route.res, 200, {
     events: result.events.map((event) => ({
@@ -81,7 +81,8 @@ export async function handleSyncRoutes(
     latestSeq: result.latestSeq,
     minAvailableSeq: result.minAvailableSeq,
     hasMore: result.hasMore,
-    truncated: result.truncated,
+    truncated,
+    ...(resolved.lane.generation ? { laneGeneration: resolved.lane.generation } : {}),
     snapshot,
   });
   return true;
