@@ -82,14 +82,14 @@ function onLiveStepScroll(): void {
   liveStepPinnedToBottom.value = isNearBottom(el, LIVE_STEP_STICKY_THRESHOLD_PX);
 }
 
-async function scrollChatToBottom(): Promise<void> {
-  if (!listRef.value) return;
-  await nextTick();
-  await nextTick();
-  if (!listRef.value) return;
-  listRef.value.scrollTop = listRef.value.scrollHeight;
+function scrollChatToBottom(): void {
   autoScroll.value = true;
-  showScrollToBottom.value = false;
+  scheduleChatScrollToBottom();
+}
+
+function pauseChatAutoScroll(): void {
+  autoScroll.value = false;
+  showScrollToBottom.value = true;
 }
 
 async function refreshAfterVisibility(): Promise<void> {
@@ -238,7 +238,7 @@ function handleScroll() {
 onMounted(() => {
   // Project switches remount this component (keyed by activeProjectId). Ensure we start at the newest message.
   autoScroll.value = true;
-  void scrollChatToBottom();
+  scrollChatToBottom();
 
   const host = listRef.value;
   if (host && typeof ResizeObserver !== "undefined") {
@@ -253,15 +253,9 @@ onMounted(() => {
 
 watch(
   () => props.messages.length,
-  async () => {
-    if (autoScroll.value && listRef.value) {
-      await nextTick();
-      if (!listRef.value) return;
-      listRef.value.scrollTop = listRef.value.scrollHeight;
-      showScrollToBottom.value = false;
-      return;
-    }
-    showScrollToBottom.value = true;
+  () => {
+    if (autoScroll.value) scheduleChatScrollToBottom();
+    else showScrollToBottom.value = true;
   },
 );
 
@@ -358,6 +352,7 @@ onBeforeUnmount(() => {
         @copy-message="onCopyMessage($event)"
         @retry-message="emit('retryMessage', $event)"
         @toggle-live-step-expanded="toggleLiveStepExpanded"
+        @before-history-prepend="pauseChatAutoScroll"
       />
       <button v-if="showScrollToBottom" class="scrollToBottom" type="button" aria-label="Scroll to bottom" title="回到底部"
         @click="scrollToBottom">
