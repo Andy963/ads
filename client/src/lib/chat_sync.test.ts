@@ -111,6 +111,48 @@ describe("chat_sync.finalizeStreamingOnDisconnect", () => {
 });
 
 describe("chat_sync.mergeHistoryFromServer", () => {
+  it.each(["text", "thought"] as const)("replaces an empty %s placeholder with the completed server reply", (kind) => {
+    const user = msg({ id: "user-1", role: "user", content: "Question" });
+    const local = [user, msg({ id: "waiting-1", kind, content: "", streaming: true })];
+    const server = [user, msg({ id: "server-reply", kind, content: "Answer" })];
+
+    const merged = mergeHistoryFromServer(local, server, LIVE);
+    expect(merged).toHaveLength(2);
+    expect(merged[1]).toMatchObject({ id: "waiting-1", content: "Answer", streaming: false });
+    expect(mergeHistoryFromServer(merged, server, LIVE)).toEqual(merged);
+  });
+
+  it("reconciles an older turn without dropping a newer pending placeholder", () => {
+    const user = msg({ id: "user-1", role: "user", content: "First" });
+    const pendingUser = msg({ id: "user-2", role: "user", content: "Second" });
+    const pending = msg({ id: "waiting-2", streaming: true });
+    const local = [user, msg({ id: "waiting-1", streaming: true }), pendingUser, pending];
+    const server = [user, msg({ id: "answer-1", content: "Done" }), pendingUser];
+
+    const merged = mergeHistoryFromServer(local, server, LIVE);
+    expect(merged.map((item) => item.id)).toEqual(["user-1", "waiting-1", "user-2", "waiting-2"]);
+    expect(merged[1]).toMatchObject({ content: "Done", streaming: false });
+    expect(merged[3]).toBe(pending);
+    expect(mergeHistoryFromServer(local, server.slice(0, 2), LIVE)).toEqual(merged);
+  });
+
+  it("removes stale empty slots before an overlapping answer or a failure", () => {
+    const user = msg({ id: "user-1", role: "user", content: "Question" });
+    const reply = msg({ id: "answer-1", content: "Done" });
+    const placeholder = msg({ id: "waiting-1", streaming: true });
+    expect(mergeHistoryFromServer([user, placeholder, reply], [user, reply], LIVE)).toEqual([user, reply]);
+
+    const failure = msg({ id: "failure-1", role: "system", kind: "error", content: "Unavailable" });
+    expect(mergeHistoryFromServer([user, placeholder], [user, failure], LIVE)).toEqual([user, failure]);
+  });
+
+  it("preserves a waiting placeholder when preflight history has no completed counterpart", () => {
+    const user = msg({ id: "user-1", role: "user", content: "Question" });
+    const pending = msg({ id: "waiting-1", streaming: true });
+    expect(mergeHistoryFromServer([user, pending], [user], LIVE)).toEqual([user, pending]);
+    expect(mergeHistoryFromServer([user, pending], [], LIVE)).toEqual([user, pending]);
+  });
+
   it("keeps only the newest snapshot for a duplicated logical plan", () => {
     const plan = (id: string, status: "in_progress" | "completed", itemStatus: "pending" | "completed") =>
       msg({

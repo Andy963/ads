@@ -114,6 +114,30 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     sessionStorage.clear();
   });
 
+  it("replaces a thinking placeholder when synchronized history completes its turn (Issue #235)", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+    rt.messages.value = [
+      { id: "user-235", role: "user", kind: "text", content: "Finish in background" },
+      { id: "waiting-235", role: "assistant", kind: "text", content: "", streaming: true },
+    ];
+    const history = {
+      type: "history", seq: 1,
+      items: [
+        { role: "user", text: "Finish in background", kind: "client_message_id:user-235", ts: 1 },
+        { role: "ai", text: "Finished", ts: 2 },
+      ],
+    };
+    lastWs!.onMessage?.(history);
+    await settleUi(wrapper);
+    expect(rt.messages.value).toHaveLength(2);
+    expect(rt.messages.value[1]).toMatchObject({ id: "waiting-235", content: "Finished", streaming: false });
+    expect(rt.messages.value.some((item) => item.streaming && !item.content.trim())).toBe(false);
+    lastWs!.onMessage?.(history);
+    await settleUi(wrapper);
+    expect(rt.messages.value).toHaveLength(2);
+    wrapper.unmount();
+  });
+
   it("does not clear messages on ws close", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const { wrapper, rt } = await mountReconnectHarness();
