@@ -1,7 +1,11 @@
 if ("serviceWorker" in navigator) {
   let refreshing = false;
+  // Capture whether a controller existed before this page load. When the worker
+  // claims the page for the first time (clientsClaim), controllerchange fires
+  // without a prior controller and must not reload the page.
+  const hadController = Boolean(navigator.serviceWorker.controller);
   navigator.serviceWorker.addEventListener("controllerchange", () => {
-    if (refreshing) return;
+    if (refreshing || !hadController) return;
     refreshing = true;
     window.location.reload();
   });
@@ -27,27 +31,10 @@ if ("serviceWorker" in navigator) {
     document.body.appendChild(toast);
   }
 
-  function applyWaitingWorker(registration) {
-    if (registration && registration.waiting) {
-      registration.waiting.postMessage({ type: "SKIP_WAITING" });
-      return true;
-    }
-    return false;
-  }
-
-  // A previously downloaded update is applied right away on cold start, before the
-  // app becomes interactive, so the reload blends into the initial load instead of
-  // flashing after the UI appears.
-  navigator.serviceWorker
-    .getRegistration("/")
-    .then((registration) => applyWaitingWorker(registration))
-    .catch(() => {});
-
   window.addEventListener("load", () => {
     navigator.serviceWorker
       .register("/sw.js", { scope: "/", updateViaCache: "none" })
       .then((registration) => {
-        applyWaitingWorker(registration);
         registration.addEventListener("updatefound", () => {
           const installing = registration.installing;
           if (!installing) return;
