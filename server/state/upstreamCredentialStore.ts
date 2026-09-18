@@ -15,6 +15,7 @@ const envelopeSchema = z.object({
   version: z.literal(1),
   baseUrl: z.string().min(1).max(2048),
   provider: z.string().min(1).max(128),
+  profile: z.string().max(128).optional(),
   iv: z.string().max(32),
   tag: z.string().max(32),
   ciphertext: z.string().min(1).max(32_768),
@@ -57,28 +58,48 @@ export function createUpstreamCredentialStore(db: Database, options: { pepper?: 
     if (!owner?.trim()) throw new Error("An authenticated owner is required");
     return owner;
   };
-  const envelope = (owner: string) => {
-    const row = read.get(namespace, ownerKey(owner)) as { value: string } | undefined;
+  const profileKey = (profile?: string): string => {
+    const normalized = String(profile ?? "").trim();
+    if (normalized.length > 128) throw new Error("Credential profile is too long");
+    if (normalized && !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(normalized)) {
+      throw new Error("Credential profile must contain only letters, numbers, dots, underscores, and hyphens");
+    }
+    return normalized;
+  };
+  const recordKey = (owner: string, profile?: string): string => {
+    const normalizedProfile = profileKey(profile);
+    return normalizedProfile ? `${ownerKey(owner)}\u0000profile:${normalizedProfile}` : ownerKey(owner);
+  };
+  const envelope = (owner: string, profile?: string) => {
+    const row = read.get(namespace, recordKey(owner, profile)) as { value: string } | undefined;
     if (!row) return null;
     try { return envelopeSchema.parse(JSON.parse(row.value)); }
     catch { throw new Error("Saved upstream configuration is invalid; re-enter the endpoint and API key"); }
   };
-  const aad = (owner: string, value: { baseUrl: string; provider: string }): Buffer =>
-    Buffer.from(JSON.stringify([namespace, owner, value.baseUrl, value.provider]));
+  const aad = (owner: string, profile: string, value: { baseUrl: string; provider: string }): Buffer =>
+    Buffer.from(
+      profile
+        ? JSON.stringify([namespace, owner, profile, value.baseUrl, value.provider])
+        : JSON.stringify([namespace, owner, value.baseUrl, value.provider]),
+    );
 
-  const getMetadata = (owner: string): UpstreamCredentialMetadata | null => {
-    const value = envelope(owner);
+  const getMetadata = (owner: string, profile?: string): UpstreamCredentialMetadata | null => {
+    const value = envelope(owner, profile);
     return value ? { baseUrl: value.baseUrl, provider: value.provider, hasApiKey: true } : null;
   };
-  const getCredentials = (owner: string): UpstreamCredentials | null => {
-    const value = envelope(owner);
+  const getCredentials = (owner: string, profile?: string): UpstreamCredentials | null => {
+    const normalizedProfile = profileKey(profile);
+    const value = envelope(owner, normalizedProfile);
     if (!value) return null;
+    if ((value.profile ?? "") !== normalizedProfile) {
+      throw new Error("Saved upstream credentials cannot be decrypted; re-enter the API key");
+    }
     try {
       const iv = Buffer.from(value.iv, "base64");
       const tag = Buffer.from(value.tag, "base64");
       if (iv.length !== 12 || tag.length !== 16) throw new Error("Invalid envelope");
       const decipher = createDecipheriv("aes-256-gcm", encryptionKey(), iv);
-      decipher.setAAD(aad(owner, value));
+      decipher.setAAD(aad(owner, normalizedProfile, value));
       decipher.setAuthTag(tag);
       const apiKey = Buffer.concat([decipher.update(Buffer.from(value.ciphertext, "base64")), decipher.final()]).toString("utf8");
       return { baseUrl: value.baseUrl, provider: value.provider, apiKey };
@@ -86,14 +107,15 @@ export function createUpstreamCredentialStore(db: Database, options: { pepper?: 
       throw new Error("Saved upstream credentials cannot be decrypted; re-enter the API key");
     }
   };
-  const save = (owner: string, input: UpstreamCredentials): void => {
+  const save = (owner: string, input: UpstreamCredentials, profile?: string): void => {
+    const normalizedProfile = profileKey(profile);
     ownerKey(owner);
     const value = { baseUrl: normalizeUpstreamBaseUrl(input.baseUrl), provider: input.provider.trim() || "openai" };
     const key = input.apiKey.trim();
     if (!key || Buffer.byteLength(key) > 16_384 || value.provider.length > 128) throw new Error("Invalid upstream credentials");
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", encryptionKey(), iv);
-    cipher.setAAD(aad(owner, value));
+    cipher.setAAD(aad(owner, normalizedProfile, value));
     const ciphertext = Buffer.concat([cipher.update(key, "utf8"), cipher.final()]);
     // Restrict the database and its already-open WAL companions before the
     // encrypted record is written. No plaintext secret ever reaches SQLite.
@@ -103,8 +125,19 @@ export function createUpstreamCredentialStore(db: Database, options: { pepper?: 
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       }
     }
-    write.run(namespace, owner, JSON.stringify({ version: 1, ...value, iv: iv.toString("base64"),
-      tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64") }), Date.now());
+    write.run(
+      namespace,
+      recordKey(owner, normalizedProfile),
+      JSON.stringify({
+        version: 1,
+        ...value,
+        ...(normalizedProfile ? { profile: normalizedProfile } : {}),
+        iv: iv.toString("base64"),
+        tag: cipher.getAuthTag().toString("base64"),
+        ciphertext: ciphertext.toString("base64"),
+      }),
+      Date.now(),
+    );
   };
   return { getMetadata, getCredentials, save };
 }

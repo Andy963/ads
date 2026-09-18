@@ -1,10 +1,16 @@
 import type { Input, Usage } from "./protocol/types.js";
 import type { AgentEvent } from "../codex/events.js";
 import type { IntakeClassification } from "../intake/types.js";
+import type { MiddlewarePipeline, TurnContext } from "../middleware/index.js";
 
 export type AgentCapability = "text" | "images" | "files" | "commands";
 
 export type AgentIdentifier = "codex" | string;
+
+export type AgentMiddlewareContext = Omit<TurnContext, "prompt" | "workspaceRoot"> & {
+  prompt?: string;
+  workspaceRoot?: string;
+};
 
 export interface AgentMetadata {
   id: AgentIdentifier;
@@ -26,6 +32,9 @@ export interface AgentSendOptions {
   outputSchema?: unknown;
   signal?: AbortSignal;
   env?: Record<string, string>;
+  /** Optional turn hooks used by in-process runtimes before and after tools. */
+  middleware?: MiddlewarePipeline;
+  middlewareContext?: AgentMiddlewareContext;
 }
 
 export interface AgentRunResult {

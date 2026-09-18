@@ -1,6 +1,6 @@
 import type { Input } from "./protocol/types.js";
 
-import type { AgentRunResult, AgentSendOptions } from "./types.js";
+import type { AgentMiddlewareContext, AgentRunResult, AgentSendOptions } from "./types.js";
 import type { HybridOrchestrator } from "./orchestrator.js";
 import { ActivityTracker, resolveExploredConfig, type ExploredEntry, type ExploredEntryCallback } from "../utils/activityTracker.js";
 import { executeToolDirectives, stripToolDirectives } from "../skills/builtinTools.js";
@@ -13,7 +13,7 @@ export interface AgentTurnOptions extends AgentSendOptions {
   historySessionId?: string;
   onExploredEntry?: ExploredEntryCallback;
   middleware?: MiddlewarePipeline;
-  middlewareContext?: Omit<TurnContext, "prompt" | "workspaceRoot"> & { workspaceRoot?: string };
+  middlewareContext?: AgentMiddlewareContext;
 }
 
 export interface AgentTurnResult extends AgentRunResult {
@@ -79,6 +79,8 @@ export async function runAgentTurn(
     outputSchema: activeAgentId === "codex" ? options.outputSchema : undefined,
     signal: options.signal,
     env: options.env,
+    middleware: options.middleware,
+    middlewareContext,
   };
 
   try {

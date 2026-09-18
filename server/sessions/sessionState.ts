@@ -133,6 +133,17 @@ export function resolveResumeState(args: {
     };
   }
 
+  if (candidateThreadId?.startsWith("native-")) {
+    args.logger.info(
+      `[Continuity] user=${args.userId} restore=history_injection reason=native_runtime_thread agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,
+    );
+    return {
+      activeAgentId: savedActiveAgentId,
+      shouldInjectHistory: true,
+      restoreMode: "history_injection",
+    };
+  }
+
   if (candidateThreadId) {
     args.logger.info(
       `[Continuity] user=${args.userId} restore=thread_resumed agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,

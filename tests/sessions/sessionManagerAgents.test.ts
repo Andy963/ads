@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import { resolveSessionAgentAllowlist, SessionManager } from "../../server/sessions/sessionManager.js";
 import { CodexAppServerAdapter } from "../../server/agents/adapters/codexAppServerAdapter.js";
+import { NativeAgentAdapter } from "../../server/agents/adapters/nativeAgentAdapter.js";
 
 describe("SessionManager agent allowlists", () => {
   const originalEnv = process.env;
@@ -66,6 +67,28 @@ describe("SessionManager agent allowlists", () => {
       const adapter = session.getAdapter("codex");
 
       assert(adapter instanceof CodexAppServerAdapter);
+      assert.equal(adapter?.id, "codex");
+      assert.equal(adapter?.preservesThreadOnModelChange, true);
+    } finally {
+      manager.destroy();
+    }
+  });
+
+  it("selects the native adapter only when explicitly enabled", () => {
+    const manager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      undefined,
+      { ADS_AGENT_RUNTIME: "native", ADS_WEB_SESSION_PEPPER: "test-only-pepper" },
+    );
+
+    try {
+      const session = manager.getOrCreate(123457, "/tmp/ads-native-runtime-session");
+      const adapter = session.getAdapter("codex");
+
+      assert(adapter instanceof NativeAgentAdapter);
       assert.equal(adapter?.id, "codex");
       assert.equal(adapter?.preservesThreadOnModelChange, true);
     } finally {
