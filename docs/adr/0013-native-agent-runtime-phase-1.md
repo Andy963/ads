@@ -18,7 +18,9 @@ provider 请求采用 OpenAI-compatible `/chat/completions` SSE。每个 turn �
 
 本阶段提供四个受限工具：`exec_command`、`read_file`、`search` 和 `apply_patch`。文件工具限制在 workspace 及其真实路径内，命令工具在 native runtime 中运行于 project-scoped sandbox，简单命令仍使用 `shell: false`，并保留超时、输出上限、allowlist 和现有 middleware 安全规则；命令环境过滤明显的 secret-shaped variables。patch 在写入前完成全部 context 校验，并在写入失败时尝试回滚。
 
-native 事件桥接为现有 `AgentEvent`：文本使用累计 snapshot，工具、命令、文件变更、turn completion 和错误使用现有 thread item 形状。工具执行器把参数校验、路径解析、命令退出失败和 patch context 失败编码为 tool result，交还模型进行下一轮自愈；上游传输、取消和 runtime 构造失败仍然结束 turn。工具循环达到最大轮数后返回正常的 continuation notice，不把配置上限误报成 turn failure。
+native 事件桥接为现有 `AgentEvent`：文本使用累计 snapshot，工具、命令、文件变更、turn completion 和错误使用现有 thread item 形状。工具执行器把参数校验、路径解析、命令退出失败和 patch context 失败编码为 tool result，交还模型进行下一轮自愈；上游传输、取消和 runtime 构造失败仍然结束 turn。工具循环默认无限执行，只有显式配置正整数 `ADS_AGENT_MAX_TOOL_ROUNDS` 或兼容的 `ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS` 时才启用轮次上限；达到显式上限后返回正常的 continuation notice，不把配置上限误报成 turn failure。
+
+native turn 默认不设置全局 wall-clock deadline。`ADS_NATIVE_RUNTIME_TURN_TIMEOUT_MS` 未配置或设为 `0` 时，turn 仅受用户取消、上游传输终止和各工具自身的执行超时约束；配置正整数时才启用可选的总 turn 超时。
 
 对于不包含 Shell 元字符的命令，native runtime 继续使用 direct executable 加参数数组。包含管道、重定向或复合操作符的命令进入受控 Shell 路径：Linux 上通过 `bubblewrap` 创建 project-scoped mount namespace，只把 workspace 以可写方式挂载，把必要的系统运行目录以只读方式挂载，并隐藏 host home、临时目录和其他根文件；找不到沙箱能力时 fail closed。命令仍经过全局安全规则、git push 拦截、超时、输出上限、取消和可选 executable allowlist。Shell 路径不改变模型凭据边界，命令环境同样过滤 secret-shaped variables。
 

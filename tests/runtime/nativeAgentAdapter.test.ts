@@ -168,6 +168,100 @@ describe("NativeAgentAdapter", () => {
     }
   });
 
+  it("continues through many tool rounds when no explicit limit is configured", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-unlimited-"));
+    try {
+      fs.writeFileSync(path.join(workspace, "hello.txt"), "hello\n", "utf8");
+      const toolRounds = 20;
+      let requestNumber = 0;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        env: {
+          ADS_AGENT_MAX_TOOL_ROUNDS: undefined,
+          ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS: undefined,
+        },
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-api-key",
+            provider: "test",
+          }),
+        },
+        fetchImpl: async () => {
+          requestNumber += 1;
+          if (requestNumber <= toolRounds) {
+            return sse([
+              JSON.stringify({
+                choices: [{
+                  delta: {
+                    tool_calls: [{
+                      index: 0,
+                      id: `read-${requestNumber}`,
+                      function: { name: "read_file", arguments: '{"file":"hello.txt"}' },
+                    }],
+                  },
+                }],
+              }),
+              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+            ]);
+          }
+          return sse([
+            JSON.stringify({ choices: [{ delta: { content: "Completed after many rounds" }, finish_reason: "stop" }] }),
+          ]);
+        },
+      });
+
+      const result = await adapter.send("Inspect the file repeatedly");
+
+      assert.equal(result.response, "Completed after many rounds");
+      assert.equal(requestNumber, toolRounds + 1);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts both native runtime round-limit environment variables", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-env-limit-"));
+    try {
+      for (const env of [
+        { ADS_AGENT_MAX_TOOL_ROUNDS: "1", ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS: undefined },
+        { ADS_AGENT_MAX_TOOL_ROUNDS: undefined, ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS: "1" },
+      ]) {
+        let requestNumber = 0;
+        const adapter = new NativeAgentAdapter({
+          credentialOwner: "test-owner",
+          workspaceRoot: workspace,
+          env,
+          modelResolver: {
+            resolve: () => ({
+              model: "test-model",
+              baseUrl: "https://provider.test/v1",
+              apiKey: "test-api-key",
+              provider: "test",
+            }),
+          },
+          fetchImpl: async () => {
+            requestNumber += 1;
+            return sse([
+              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "env-limit-1", function: { name: "read_file", arguments: '{"file":"missing.txt"}' } }] } }] }),
+              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+            ]);
+          },
+        });
+
+        const result = await adapter.send("Inspect the missing file");
+
+        assert.match(result.response, /tool-round limit/);
+        assert.equal(requestNumber, 1);
+      }
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("completes with a continuation notice at the tool-round limit", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-limit-"));
     try {
