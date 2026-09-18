@@ -3,7 +3,7 @@ import path from "node:path";
 
 import type { MiddlewarePipeline, TurnContext } from "../middleware/index.js";
 import { findSecurityViolation } from "../middleware/builtin/globalRulesMiddleware.js";
-import { getExecAllowlistFromEnv, runCommand } from "../utils/commandRunner.js";
+import { getExecAllowlistFromEnv, hasShellSyntax, runCommand, tokenizeCommandLine } from "../utils/commandRunner.js";
 import type { ThreadItem } from "../agents/protocol/types.js";
 import type { NativeChatToolCall, NativeToolDefinition } from "./openAiCompatibleClient.js";
 
@@ -21,12 +21,12 @@ export const NATIVE_TOOL_DEFINITIONS: NativeToolDefinition[] = [
     type: "function",
     function: {
       name: "exec_command",
-      description: "Run one executable with an argument array in the workspace. Shell interpolation is disabled.",
+      description: "Run a workspace command. Use an argument array for simple commands; pipelines and compound commands may use standard shell syntax.",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
-          cmd: { type: "string", description: "Bare executable name, for example npm or git." },
+          cmd: { type: "string", maxLength: 32768, description: "Executable name or complete shell command, for example npm or git log -n 5 | head -n 2." },
           args: { type: "array", items: { type: "string" }, maxItems: 128 },
           cwd: { type: "string", description: "Optional workspace-relative working directory." },
           timeout_ms: { type: "integer", minimum: 1, maximum: MAX_COMMAND_TIMEOUT_MS },
@@ -179,57 +179,6 @@ function commandEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     if (value !== undefined) output[key] = value;
   }
   return output;
-}
-
-function tokenizeCommandLine(value: string): string[] {
-  const tokens: string[] = [];
-  let token = "";
-  let tokenStarted = false;
-  let quote: "'" | '"' | null = null;
-  let escaped = false;
-
-  for (const character of value) {
-    if (escaped) {
-      token += character;
-      tokenStarted = true;
-      escaped = false;
-      continue;
-    }
-    if (character === "\\" && quote !== "'") {
-      escaped = true;
-      tokenStarted = true;
-      continue;
-    }
-    if (quote) {
-      if (character === quote) {
-        quote = null;
-      } else {
-        token += character;
-      }
-      tokenStarted = true;
-      continue;
-    }
-    if (character === "'" || character === '"') {
-      quote = character;
-      tokenStarted = true;
-      continue;
-    }
-    if (/\s/.test(character)) {
-      if (tokenStarted) {
-        tokens.push(token);
-        token = "";
-        tokenStarted = false;
-      }
-      continue;
-    }
-    token += character;
-    tokenStarted = true;
-  }
-
-  if (escaped) throw new Error("exec_command cmd has a dangling escape");
-  if (quote) throw new Error("exec_command cmd has an unterminated quote");
-  if (tokenStarted) tokens.push(token);
-  return tokens;
 }
 
 function normalizePatchPath(value: string): string {
@@ -453,15 +402,16 @@ export class NativeToolExecutor {
       : Array.isArray(rawArgs)
         ? rawArgs.map((value) => String(value))
         : (() => { throw new Error("Tool argument args must be an array"); })();
-    const commandParts = providedArgs.length === 0 ? tokenizeCommandLine(rawCommand) : [rawCommand];
+    const useShell = providedArgs.length === 0 && hasShellSyntax(rawCommand);
+    const commandParts = useShell ? [rawCommand] : (providedArgs.length === 0 ? tokenizeCommandLine(rawCommand) : [rawCommand]);
     if (commandParts.length === 0) throw new Error("Tool argument cmd is required");
-    if (commandParts.length > 1 && providedArgs.length > 0) {
+    if (!useShell && commandParts.length > 1 && providedArgs.length > 0) {
       throw new Error("exec_command cmd cannot contain spaces when args is provided");
     }
-    const cmd = commandParts[0] ?? rawCommand;
-    const commandArgs = commandParts.length > 1 ? commandParts.slice(1) : providedArgs;
+    const cmd = useShell ? rawCommand : (commandParts[0] ?? rawCommand);
+    const commandArgs = useShell ? [] : (commandParts.length > 1 ? commandParts.slice(1) : providedArgs);
     if (commandArgs.length > 128) throw new Error("Too many command arguments");
-    const commandLine = [cmd, ...commandArgs].join(" ").trim();
+    const commandLine = useShell ? rawCommand : [cmd, ...commandArgs].join(" ").trim();
     const violation = findSecurityViolation(commandLine);
     if (violation) throw new Error(`Command blocked by security rule: ${violation}`);
     const item: ThreadItem = { type: "command_execution", id: callId, command: commandLine, status: "in_progress" };
@@ -472,6 +422,8 @@ export class NativeToolExecutor {
     const result = await runCommand({
       cmd,
       args: commandArgs,
+      shell: useShell,
+      workspaceRoot: this.workspaceRoot,
       cwd,
       timeoutMs,
       env: this.env,
@@ -542,6 +494,7 @@ export class NativeToolExecutor {
       cmd: "rg",
       args: commandArgs,
       cwd: this.workspaceRoot,
+      workspaceRoot: this.workspaceRoot,
       timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
       env: this.env,
       maxOutputBytes: 128 * 1024,
