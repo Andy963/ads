@@ -152,6 +152,27 @@ describe("web/model-config routes", () => {
     assert.equal(typeof updated.updatedAt, "number");
   });
 
+  it("rejects API keys embedded in model config JSON", async () => {
+    const res = createRes();
+    assert.equal(
+      await handleModelRoutes({
+        req: createReq("POST", {
+          modelId: "unsafe-model",
+          provider: "openai",
+          configJson: { credentialProfile: "default", transport: { apiKey: "must-not-persist" } },
+        }) as any,
+        res: res as any,
+        url: new URL("http://localhost/api/model-configs"),
+        pathname: "/api/model-configs",
+      } as any, { modelStore }),
+      true,
+    );
+
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body, /invalid payload/i);
+    assert.equal(modelStore.getModelConfigByAgentModelId("unsafe-model"), null);
+  });
+
   it("PATCH can update the agent model id without changing the row id", async () => {
     modelStore.upsertModelConfig({
       id: "old-model",

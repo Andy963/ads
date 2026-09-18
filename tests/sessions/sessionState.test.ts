@@ -208,6 +208,27 @@ describe("telegram/sessionState helpers", () => {
     assert.equal(resume.shouldInjectHistory, false);
   });
 
+  it("uses history injection instead of resuming a native runtime thread", () => {
+    storage.setRecord(17, {
+      threadId: "native-turn-17",
+      cwd: "/tmp/project",
+      agentThreads: { codex: "native-turn-17" },
+      activeAgentId: "codex",
+    });
+
+    const resume = resolveResumeState({
+      userId: 17,
+      resumeThread: true,
+      storage,
+      logger: { info: () => {} },
+      currentCwd: "/tmp/project",
+    });
+
+    assert.equal(resume.restoreMode, "history_injection");
+    assert.equal(resume.resumeThreadId, undefined);
+    assert.equal(resume.shouldInjectHistory, true);
+  });
+
   it("keeps auto-resume when reconnect normalizes to a compatible project cwd", () => {
     storage.setRecord(13, {
       threadId: "thread-13",

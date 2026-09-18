@@ -61,6 +61,18 @@ describe("upstream credential storage", () => {
     fs.chmodSync(keyPath, 0o644);
     assert.throws(() => store.getCredentials("alice"), /cannot be decrypted/);
   });
+
+  it("supports independent encrypted credential profiles", () => {
+    const store = createUpstreamCredentialStore(db, { pepper: "test-only-pepper" });
+    store.save("alice", { baseUrl: "https://one.test/v1", apiKey: "profile-one-secret", provider: "one" }, "one");
+    store.save("alice", { baseUrl: "https://two.test/v1", apiKey: "profile-two-secret", provider: "two" }, "two");
+
+    const raw = JSON.stringify(db.prepare("SELECT * FROM kv_state").all());
+    assert.doesNotMatch(raw, /profile-one-secret|profile-two-secret/);
+    assert.equal(store.getCredentials("alice", "one")?.apiKey, "profile-one-secret");
+    assert.equal(store.getCredentials("alice", "two")?.apiKey, "profile-two-secret");
+    assert.equal(store.getCredentials("alice")?.apiKey, undefined);
+  });
 });
 
 describe("upstream model endpoint normalization", () => {

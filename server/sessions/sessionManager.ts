@@ -1,6 +1,7 @@
 import type { SandboxMode } from '../config.js';
 import { createLogger } from '../utils/logger.js';
 import { CodexAppServerAdapter } from '../agents/adapters/codexAppServerAdapter.js';
+import { NativeAgentAdapter } from '../agents/adapters/nativeAgentAdapter.js';
 import type { AgentAdapter, AgentIdentifier } from '../agents/types.js';
 import { HybridOrchestrator } from '../agents/orchestrator.js';
 import { ConversationLogger } from '../utils/conversationLogger.js';
@@ -21,6 +22,7 @@ import { SystemPromptManager, resolveReinjectionConfig } from '../systemPrompt/m
 import { detectWorkspaceFrom } from '../workspace/detector.js';
 import { deriveProjectSessionId } from '../web/server/projectSessionId.js';
 import type { LaneName } from '../state/lanePromptDefaults.js';
+import { resolveAgentRuntime } from '../runtime/config.js';
 
 function isConversationLoggingEnabled(): boolean {
   const raw = process.env.ADS_CONVERSATION_LOG;
@@ -149,15 +151,23 @@ export class SessionManager {
     const userModelReasoningEffort = this.userReasoningEfforts.get(userId) || savedState?.modelReasoningEffort;
     const effectiveCwd = cwd || savedState?.cwd || process.cwd();
     const workspaceRoot = detectWorkspaceFrom(effectiveCwd);
+    const nativeRuntime = resolveAgentRuntime(this.codexEnv ?? process.env) === "native";
 
     let activeAgentId: AgentIdentifier | undefined = savedState?.activeAgentId;
-    const resumeState = resolveResumeState({
+    let resumeState = resolveResumeState({
       userId,
       resumeThread,
       storage: this.threadStorage,
       logger: this.logger,
       currentCwd: effectiveCwd,
     });
+    if (nativeRuntime && resumeState.resumeThreadId) {
+      resumeState = {
+        activeAgentId: resumeState.activeAgentId,
+        shouldInjectHistory: true,
+        restoreMode: "history_injection",
+      };
+    }
     activeAgentId = resumeState.activeAgentId ?? activeAgentId;
     if (resumeState.shouldInjectHistory) {
       this.runtime.markHistoryInjection(userId);
@@ -172,7 +182,7 @@ export class SessionManager {
       userId,
       cwd: effectiveCwd,
       resumeThread: Boolean(resumeThread),
-      resumeThreadId: resumeState.resumeThreadId,
+      resumeThreadId: nativeRuntime ? undefined : resumeState.resumeThreadId,
       userModel,
       userModelReasoningEffort,
       activeAgentId,
@@ -180,6 +190,7 @@ export class SessionManager {
       sandboxMode: this.sandboxMode,
       codexEnv: this.codexEnv,
     }) ?? this.createSession({
+      userId,
       effectiveCwd,
       resumeThreadId: resumeState.resumeThreadId,
       userModel,
@@ -491,6 +502,7 @@ export class SessionManager {
   }
 
   private createSession(args: {
+    userId: number;
     effectiveCwd: string;
     resumeThreadId?: string;
     userModel?: string;
@@ -522,6 +534,7 @@ export class SessionManager {
   }
 
   private createAdapters(args: {
+    userId: number;
     effectiveCwd: string;
     resumeThreadId?: string;
     userModel?: string;
@@ -530,6 +543,21 @@ export class SessionManager {
     projectId?: string;
   }): AgentAdapter[] {
     const projectId = String(args.projectId ?? "").trim() || deriveProjectSessionId(args.workspaceRoot);
+
+    if (resolveAgentRuntime(this.codexEnv ?? process.env) === "native") {
+      return [
+        new NativeAgentAdapter({
+          credentialOwner: String(args.userId),
+          stateDbPath: this.options.stateDbPath,
+          workspaceRoot: args.workspaceRoot,
+          workingDirectory: args.effectiveCwd,
+          model: args.userModel,
+          modelReasoningEffort: args.userModelReasoningEffort,
+          resumeThreadId: args.resumeThreadId,
+          env: this.codexEnv,
+        }),
+      ];
+    }
 
     return [
       new CodexAppServerAdapter({

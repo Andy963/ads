@@ -12,13 +12,59 @@ import { readJsonBody, sendJson } from "../../http.js";
 
 const trimmedNonEmptyString = z.string().trim().min(1);
 
+const forbiddenModelCredentialKeys = new Set([
+  "apikey",
+  "api_key",
+  "accesstoken",
+  "access_token",
+  "clientsecret",
+  "client_secret",
+  "password",
+  "secret",
+  "secretkey",
+  "secret_key",
+]);
+
+function findModelCredentialKey(value: unknown, path: string[] = []): string | null {
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const found = findModelCredentialKey(value[index], [...path, String(index)]);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  for (const [key, child] of Object.entries(value)) {
+    if (forbiddenModelCredentialKeys.has(key.trim().toLowerCase())) {
+      return [...path, key].join(".");
+    }
+    const found = findModelCredentialKey(child, [...path, key]);
+    if (found) return found;
+  }
+  return null;
+}
+
+const modelConfigJsonSchema = z
+  .record(z.unknown())
+  .nullable()
+  .optional()
+  .superRefine((value, ctx) => {
+    const key = findModelCredentialKey(value);
+    if (key) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Model config must not contain credentials: ${key}`,
+      });
+    }
+  });
+
 const modelConfigFieldsSchema = {
   modelId: trimmedNonEmptyString.optional(),
   displayName: z.string().trim().optional(),
   provider: trimmedNonEmptyString,
   isEnabled: z.boolean().optional(),
   isDefault: z.boolean().optional(),
-  configJson: z.record(z.unknown()).nullable().optional(),
+  configJson: modelConfigJsonSchema,
 } as const;
 
 const createModelConfigSchema = z
@@ -54,6 +100,7 @@ const upstreamDiscoverySchema = z
     baseUrl: z.string().trim().min(1).max(2048).optional(),
     apiKey: trimmedNonEmptyString.max(16_384).optional(),
     provider: trimmedNonEmptyString.max(128).optional(),
+    credentialProfile: z.string().trim().max(128).optional(),
   })
   .strict();
 
@@ -160,12 +207,13 @@ function resolveDiscoveryCredentials(
   owner: string,
   input: z.infer<typeof upstreamDiscoverySchema>,
 ): UpstreamCredentials {
+  const credentialProfile = input.credentialProfile;
   // Explicit credentials can repair an unreadable saved record without ever
   // decrypting it or falling back to a different provider's key.
   if (input.baseUrl && input.apiKey) {
     return { baseUrl: normalizeUpstreamBaseUrl(input.baseUrl), apiKey: input.apiKey, provider: input.provider ?? "openai" };
   }
-  const saved = store.getMetadata(owner);
+  const saved = store.getMetadata(owner, credentialProfile);
   const fallback = saved ? null : (deps.resolveConfig ?? resolveCodexConfig)();
   const configuredUrl = saved?.baseUrl ?? fallback?.baseUrl;
   if (!configuredUrl) throw new Error("Upstream model discovery requires an API key and base URL");
@@ -173,7 +221,7 @@ function resolveDiscoveryCredentials(
   if (!input.apiKey && baseUrl !== normalizeUpstreamBaseUrl(configuredUrl)) {
     throw new Error("Enter an API key for the changed upstream endpoint; saved keys are bound to their endpoint");
   }
-  const apiKey = input.apiKey ?? (saved ? store.getCredentials(owner)?.apiKey : fallback?.apiKey);
+  const apiKey = input.apiKey ?? (saved ? store.getCredentials(owner, credentialProfile)?.apiKey : fallback?.apiKey);
   if (!apiKey) throw new Error("Upstream model discovery requires an API key and base URL");
   return { baseUrl, apiKey, provider: input.provider ?? saved?.provider ?? "openai" };
 }
@@ -260,7 +308,7 @@ export async function handleModelRoutes(ctx: ApiRouteContext, deps: ModelRouteDe
       const store = getUpstreamStore();
       const config = resolveDiscoveryCredentials(deps, store, ctx.auth.userId, parsed.data);
       const result = await loadUpstreamModels(deps, config);
-      if (result.ok) store.save(ctx.auth.userId, config);
+      if (result.ok) store.save(ctx.auth.userId, config, parsed.data.credentialProfile);
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 200, { ok: false, models: [], error: getUpstreamError(error) });
