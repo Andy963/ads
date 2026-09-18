@@ -106,6 +106,19 @@ function usageFromCompletion(value: NativeCompletionResult["usage"]): Usage | nu
   };
 }
 
+function addUsage(total: Usage | null, round: NativeCompletionResult["usage"]): Usage | null {
+  const current = usageFromCompletion(round);
+  if (!current) return total;
+  const next: Usage = { ...(total ?? {}) };
+  for (const key of ["input_tokens", "output_tokens", "total_tokens"] as const) {
+    const value = current[key];
+    if (typeof value !== "number" || !Number.isFinite(value)) continue;
+    const previous = next[key];
+    next[key] = typeof previous === "number" && Number.isFinite(previous) ? previous + value : value;
+  }
+  return next;
+}
+
 function formatToolError(error: unknown, apiKey: string): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.replaceAll(apiKey, "[redacted]").slice(0, 4_000);
@@ -321,7 +334,7 @@ export class NativeAgentAdapter implements AgentAdapter {
             this.emitResponseSnapshot(itemId, roundText);
           },
         });
-        usage = usageFromCompletion(completion.usage) ?? usage;
+        usage = addUsage(usage, completion.usage);
         responseText += completion.text;
         const assistantMessage: NativeChatMessage = {
           role: "assistant",
@@ -331,7 +344,7 @@ export class NativeAgentAdapter implements AgentAdapter {
         if (completion.toolCalls.length === 0) {
           this.emitRaw({ type: "item.completed", item: { type: "agent_message", id: itemId, text: completion.text } });
           this.appendConversation([...turnMessages, assistantMessage]);
-          this.emitRaw({ type: "turn.completed", usage: completion.usage ?? undefined });
+          this.emitRaw({ type: "turn.completed", usage: usage ?? undefined });
           return { response: responseText.trim(), usage, agentId: this.id };
         }
 

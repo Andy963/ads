@@ -30,6 +30,7 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
   if (deps.request.parsed.type === "set_agent") {
     orchestrator = handleSetAgentCommand({
       payload: deps.request.parsed.payload,
+      authUserId: deps.context.authUserId,
       userId: deps.context.userId,
       historyKey: deps.context.historyKey,
       currentCwd,
@@ -91,6 +92,7 @@ export async function handleCommandMessage(deps: WsCommandHandlerDeps): Promise<
 
     const builtinResult = handleBuiltinCommand({
       request: commandRequest,
+      authUserId: deps.context.authUserId,
       userId: deps.context.userId,
       historyKey: deps.context.historyKey,
       currentCwd,

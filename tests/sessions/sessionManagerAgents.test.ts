@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { resolveSessionAgentAllowlist, SessionManager } from "../../server/sessions/sessionManager.js";
 import { CodexAppServerAdapter } from "../../server/agents/adapters/codexAppServerAdapter.js";
 import { NativeAgentAdapter } from "../../server/agents/adapters/nativeAgentAdapter.js";
+import { closeAllStateDatabases, getStateDatabase } from "../../server/state/database.js";
+import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
+import { createUpstreamCredentialStore } from "../../server/state/upstreamCredentialStore.js";
 
 describe("SessionManager agent allowlists", () => {
   const originalEnv = process.env;
@@ -93,6 +99,49 @@ describe("SessionManager agent allowlists", () => {
       assert.equal(adapter?.preservesThreadOnModelChange, true);
     } finally {
       manager.destroy();
+    }
+  });
+
+  it("uses the authenticated owner when a native web session resolves credentials", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-session-owner-"));
+    const dbPath = path.join(directory, "state.db");
+    const db = getStateDatabase(dbPath);
+    const modelStore = createGlobalModelConfigStore(db);
+    const credentials = createUpstreamCredentialStore(db, { pepper: "test-only-pepper" });
+    credentials.save("auth-user-uuid", {
+      baseUrl: "https://provider.test/v1",
+      provider: "custom",
+      apiKey: "profile-secret",
+    }, "custom-profile");
+    modelStore.upsertModelConfig({
+      id: "model-custom",
+      modelId: "custom-model",
+      displayName: "Custom",
+      provider: "custom",
+      isEnabled: true,
+      isDefault: false,
+      configJson: { credentialProfile: "custom-profile" },
+    });
+
+    const manager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      undefined,
+      { ADS_AGENT_RUNTIME: "native", ADS_WEB_SESSION_PEPPER: "test-only-pepper" },
+      { stateDbPath: dbPath },
+    );
+    try {
+      const session = manager.getOrCreate(123457, directory, true, { authUserId: "auth-user-uuid" });
+      session.setModel("custom-model");
+      session.setModelConfig({ credentialProfile: "custom-profile" });
+
+      assert.equal(session.status().ready, true);
+    } finally {
+      manager.destroy();
+      closeAllStateDatabases();
+      fs.rmSync(directory, { recursive: true, force: true });
     }
   });
 });

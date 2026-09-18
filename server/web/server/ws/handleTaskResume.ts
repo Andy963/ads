@@ -197,7 +197,9 @@ export async function handleTaskResumeMessage(
         }
         deps.sessions.sessionManager.dropSession(deps.context.userId);
 
-        orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, deps.context.currentCwd, true);
+        orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, deps.context.currentCwd, true, {
+          authUserId: deps.context.authUserId,
+        });
         orchestrator.setWorkingDirectory(deps.context.currentCwd);
 
         const status = orchestrator.status();
@@ -284,7 +286,9 @@ export async function handleTaskResumeMessage(
 
     if (!isLaneCurrent()) return;
     deps.sessions.sessionManager.dropSession(deps.context.userId);
-    orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, deps.context.currentCwd, false);
+    orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, deps.context.currentCwd, false, {
+      authUserId: deps.context.authUserId,
+    });
     orchestrator.setWorkingDirectory(deps.context.currentCwd);
 
     const status = orchestrator.status();

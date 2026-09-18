@@ -40,7 +40,7 @@ describe("NativeAgentAdapter", () => {
           if (requestNumber === 1) {
             return sse([
               JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "read-1", function: { name: "read_file", arguments: '{"file":"hello.txt"}' } }] } }] }),
-              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 } }),
             ]);
           }
           return sse([
@@ -50,12 +50,17 @@ describe("NativeAgentAdapter", () => {
         },
       });
       const events: string[] = [];
-      adapter.onEvent((event) => events.push(`${event.phase}:${event.title}`));
+      let completedUsage: unknown;
+      adapter.onEvent((event) => {
+        events.push(`${event.phase}:${event.title}`);
+        if (event.raw.type === "turn.completed") completedUsage = event.raw.usage;
+      });
 
       const result = await adapter.send("Inspect the file");
 
       assert.equal(result.response, "The file says hello.");
-      assert.deepEqual(result.usage, { input_tokens: 12, output_tokens: 5, total_tokens: 17 });
+      assert.deepEqual(result.usage, { input_tokens: 15, output_tokens: 9, total_tokens: 24 });
+      assert.deepEqual(completedUsage, { input_tokens: 15, output_tokens: 9, total_tokens: 24 });
       assert.equal(requests.length, 2);
       assert.equal(requests[1]?.messages.at(-1)?.role, "tool");
       assert.ok(events.some((event) => event.startsWith("boot:")));

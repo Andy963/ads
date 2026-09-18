@@ -471,7 +471,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     // read-only `getOrCreate` (an agents broadcast, a model override) put a
     // fresh session in memory first, after which this branch never resumed
     // again and the saved thread id was stranded for the rest of the process.
-    let orchestrator = sessionManager.getOrCreate(userId, currentCwd, true);
+    let orchestrator = sessionManager.getOrCreate(userId, currentCwd, true, { authUserId });
     const contextMode = sessionManager.getContextRestoreMode(userId);
 
     logger.info(
@@ -910,7 +910,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       const nextSyncRuntime = getLaneSyncRuntime(syncNamespace, historyKey, nextInFlight);
       deltaCoalescer = nextSyncRuntime?.deltaCoalescer ?? null;
       commandSnapshotCoalescer = nextSyncRuntime?.commandSnapshotCoalescer ?? null;
-      orchestrator = sessionManager.getOrCreate(userId, currentCwd, false);
+      orchestrator = sessionManager.getOrCreate(userId, currentCwd, false, { authUserId });
       currentLane = captureLane();
 
       sendInitialBootstrapMessages({
@@ -1168,7 +1168,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
             registerSeenChatSessionId(authUserId, sessionId, chatSessionId);
 
             registerSessionCacheBinding();
-            orchestrator = sessionManager.getOrCreate(userId, currentCwd, true);
+            orchestrator = sessionManager.getOrCreate(userId, currentCwd, true, { authUserId });
 
             if (
               previousLane.historyKey !== nextIdentity.historyKey &&
