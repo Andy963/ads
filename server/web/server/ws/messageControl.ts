@@ -77,6 +77,7 @@ export function ensureWsSessionLogger(args: {
 export async function handleWsControlMessage(args: {
   parsed: WsMessage;
   chatSessionId: string;
+  authUserId?: string;
   userId: number;
   historyKey: string;
   currentCwd: string;
@@ -196,6 +197,7 @@ export async function handleWsControlMessage(args: {
         },
       },
       context: {
+        authUserId: args.authUserId,
         userId: args.userId,
         historyKey: args.historyKey,
         currentCwd: args.currentCwd,

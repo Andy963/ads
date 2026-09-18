@@ -281,7 +281,9 @@ export async function startWebServer(): Promise<void> {
           ? advisorSessionManager
           : sessionManager;
       const currentCwdForUser = manager.getUserCwd(meta.sessionUserId);
-      const orchestrator = manager.getOrCreate(meta.sessionUserId, currentCwdForUser);
+      const orchestrator = manager.getOrCreate(meta.sessionUserId, currentCwdForUser, true, {
+        authUserId: meta.authUserId,
+      });
       const activeAgentId = orchestrator.getActiveAgentId();
 	      wsHub.safeSendJson(ws, {
 	        type: "agents",

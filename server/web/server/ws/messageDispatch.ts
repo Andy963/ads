@@ -85,6 +85,7 @@ export async function dispatchWsMessage(args: {
     const control = await handleWsControlMessage({
       parsed,
       chatSessionId: args.chatSessionId,
+      authUserId: args.authUserId,
       userId: args.userId,
       historyKey: args.historyKey,
       currentCwd,
@@ -174,13 +175,14 @@ export async function dispatchWsMessage(args: {
         sessionLogger,
         traceWsDuplication: args.traceWsDuplication,
       },
-        context: {
-          sessionId: args.sessionId,
-          userId: args.userId,
-          historyKey: args.historyKey,
-          currentCwd,
-          isLaneCurrent: args.isLaneCurrent,
-        },
+      context: {
+        authUserId: args.authUserId,
+        sessionId: args.sessionId,
+        userId: args.userId,
+        historyKey: args.historyKey,
+        currentCwd,
+        isLaneCurrent: args.isLaneCurrent,
+      },
       agents: args.agents,
       state: {
         directoryManager: args.state.directoryManager,

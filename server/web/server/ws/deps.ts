@@ -211,7 +211,9 @@ export type WsCommandHandlerDeps = {
   request: Pick<WsRequestDeps, "parsed" | "clientMessageId">;
   transport: WsTransportDeps;
   observability: WsObservabilityDeps;
-  context: Pick<WsConnectionContextDeps, "sessionId" | "userId" | "historyKey" | "currentCwd" | "isLaneCurrent">;
+  context: Omit<Pick<WsConnectionContextDeps, "authUserId" | "sessionId" | "userId" | "historyKey" | "currentCwd" | "isLaneCurrent">, "authUserId"> & {
+    authUserId?: string;
+  };
   agents: WsAgentDeps;
   state: WsCommandStateDeps;
   sessions: WsSessionRuntimeDeps;
@@ -223,7 +225,9 @@ export type WsTaskResumeHandlerDeps = {
   request: Pick<WsRequestDeps, "parsed">;
   transport: Pick<WsTransportDeps, "ws" | "safeJsonSend"> & Partial<Pick<WsTransportDeps, "broadcastJson">>;
   observability: Pick<WsObservabilityDeps, "logger">;
-  context: Pick<WsConnectionContextDeps, "userId" | "historyKey" | "currentCwd" | "isLaneCurrent">;
+  context: Omit<Pick<WsConnectionContextDeps, "authUserId" | "userId" | "historyKey" | "currentCwd" | "isLaneCurrent">, "authUserId"> & {
+    authUserId?: string;
+  };
   sessions: Pick<WsSessionRuntimeDeps, "sessionManager" | "orchestrator" | "getWorkspaceLock">;
   history: WsHistoryRuntimeDeps;
 };

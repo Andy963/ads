@@ -76,6 +76,7 @@ export function logCommandInput(args: {
 
 export function handleBuiltinCommand(args: {
   request: WsParsedCommandRequest;
+  authUserId?: string;
   userId: number;
   historyKey: string;
   currentCwd: string;
@@ -208,7 +209,9 @@ export function handleBuiltinCommand(args: {
   args.state.cwdStore.set(String(args.userId), currentCwd);
   args.state.persistCwdStore(args.state.cwdStorePath, args.state.cwdStore);
   args.sessionManager.setUserCwd(args.userId, currentCwd);
-  const orchestrator = args.sessionManager.getOrCreate(args.userId, currentCwd, true);
+  const orchestrator = args.sessionManager.getOrCreate(args.userId, currentCwd, true, {
+    authUserId: args.authUserId,
+  });
   if (!isCurrent()) {
     return {
       handled: true,

@@ -102,12 +102,15 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       isCurrent: deps.context.isLaneCurrent,
     });
     const controller = promptRun.controller;
-    orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, turnCwd, true);
+    orchestrator = deps.sessions.sessionManager.getOrCreate(deps.context.userId, turnCwd, true, {
+      authUserId: deps.context.authUserId,
+    });
     orchestrator.setWorkingDirectory(turnCwd);
     try {
       promptRun.ensureActive();
       applySessionOverrides({
         sessionManager: deps.sessions.sessionManager,
+        authUserId: deps.context.authUserId,
         userId: deps.context.userId,
         payload: deps.request.parsed.payload,
       });

@@ -56,6 +56,7 @@ export interface SessionManagerOptions {
   stateDbPath?: string;
   createSession?: (args: {
     userId: number;
+    authUserId?: string;
     cwd: string;
     resumeThread: boolean;
     resumeThreadId?: string;
@@ -128,7 +129,7 @@ export class SessionManager {
     userId: number,
     cwd?: string,
     resumeThread: boolean = true,
-    options?: { projectId?: string },
+    options?: { projectId?: string; authUserId?: string },
   ): HybridOrchestrator {
     const existing = this.runtime.touch(userId);
     
@@ -180,6 +181,7 @@ export class SessionManager {
 
     const session = this.options.createSession?.({
       userId,
+      authUserId: options?.authUserId,
       cwd: effectiveCwd,
       resumeThread: Boolean(resumeThread),
       resumeThreadId: nativeRuntime ? undefined : resumeState.resumeThreadId,
@@ -191,6 +193,7 @@ export class SessionManager {
       codexEnv: this.codexEnv,
     }) ?? this.createSession({
       userId,
+      authUserId: options?.authUserId,
       effectiveCwd,
       resumeThreadId: resumeState.resumeThreadId,
       userModel,
@@ -503,6 +506,7 @@ export class SessionManager {
 
   private createSession(args: {
     userId: number;
+    authUserId?: string;
     effectiveCwd: string;
     resumeThreadId?: string;
     userModel?: string;
@@ -535,6 +539,7 @@ export class SessionManager {
 
   private createAdapters(args: {
     userId: number;
+    authUserId?: string;
     effectiveCwd: string;
     resumeThreadId?: string;
     userModel?: string;
@@ -547,7 +552,7 @@ export class SessionManager {
     if (resolveAgentRuntime(this.codexEnv ?? process.env) === "native") {
       return [
         new NativeAgentAdapter({
-          credentialOwner: String(args.userId),
+          credentialOwner: String(args.authUserId ?? args.userId),
           stateDbPath: this.options.stateDbPath,
           workspaceRoot: args.workspaceRoot,
           workingDirectory: args.effectiveCwd,

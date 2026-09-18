@@ -181,6 +181,57 @@ function commandEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return output;
 }
 
+function tokenizeCommandLine(value: string): string[] {
+  const tokens: string[] = [];
+  let token = "";
+  let tokenStarted = false;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+
+  for (const character of value) {
+    if (escaped) {
+      token += character;
+      tokenStarted = true;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      tokenStarted = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) {
+        quote = null;
+      } else {
+        token += character;
+      }
+      tokenStarted = true;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      tokenStarted = true;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      if (tokenStarted) {
+        tokens.push(token);
+        token = "";
+        tokenStarted = false;
+      }
+      continue;
+    }
+    token += character;
+    tokenStarted = true;
+  }
+
+  if (escaped) throw new Error("exec_command cmd has a dangling escape");
+  if (quote) throw new Error("exec_command cmd has an unterminated quote");
+  if (tokenStarted) tokens.push(token);
+  return tokens;
+}
+
 function normalizePatchPath(value: string): string {
   const normalized = value.trim().replace(/^a\//, "").replace(/^b\//, "");
   if (!normalized || normalized === "/dev/null") return "";
@@ -283,14 +334,26 @@ function applyUpdateHunks(original: string, patchLines: string[], filePath: stri
     if (oldLines.length === 0 && newLines.length === 0) continue;
     let matchAt = -1;
     for (let index = searchFrom; index <= lines.length - oldLines.length; index += 1) {
-      if (oldLines.every((line, offset) => lines[index + offset] === line)) {
+      if (oldLines.every((line, offset) => lines[index + offset]?.trimEnd() === line.trimEnd())) {
         matchAt = index;
         break;
       }
     }
     if (matchAt < 0) throw new Error(`Patch context did not match ${filePath}`);
-    lines = [...lines.slice(0, matchAt), ...newLines, ...lines.slice(matchAt + oldLines.length)];
-    searchFrom = matchAt + newLines.length;
+    const replacement: string[] = [];
+    let oldOffset = 0;
+    for (const line of hunkLines) {
+      if (line.startsWith(" ")) {
+        replacement.push(lines[matchAt + oldOffset] ?? line.slice(1));
+        oldOffset += 1;
+      } else if (line.startsWith("-")) {
+        oldOffset += 1;
+      } else if (line.startsWith("+")) {
+        replacement.push(line.slice(1));
+      }
+    }
+    lines = [...lines.slice(0, matchAt), ...replacement, ...lines.slice(matchAt + oldLines.length)];
+    searchFrom = matchAt + replacement.length;
   }
 
   const output = lines.join("\n");
@@ -383,14 +446,20 @@ export class NativeToolExecutor {
   }
 
   private async execCommand(callId: string, args: JsonRecord): Promise<NativeToolExecutionResult> {
-    const cmd = stringArgument(args, "cmd");
-    if (/\s/.test(cmd)) throw new Error("exec_command cmd must be a bare executable name; pass arguments separately");
+    const rawCommand = stringArgument(args, "cmd");
     const rawArgs = args.args;
-    const commandArgs = rawArgs === undefined
+    const providedArgs = rawArgs === undefined
       ? []
       : Array.isArray(rawArgs)
         ? rawArgs.map((value) => String(value))
         : (() => { throw new Error("Tool argument args must be an array"); })();
+    const commandParts = providedArgs.length === 0 ? tokenizeCommandLine(rawCommand) : [rawCommand];
+    if (commandParts.length === 0) throw new Error("Tool argument cmd is required");
+    if (commandParts.length > 1 && providedArgs.length > 0) {
+      throw new Error("exec_command cmd cannot contain spaces when args is provided");
+    }
+    const cmd = commandParts[0] ?? rawCommand;
+    const commandArgs = commandParts.length > 1 ? commandParts.slice(1) : providedArgs;
     if (commandArgs.length > 128) throw new Error("Too many command arguments");
     const commandLine = [cmd, ...commandArgs].join(" ").trim();
     const violation = findSecurityViolation(commandLine);

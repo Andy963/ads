@@ -75,6 +75,24 @@ describe("NativeToolExecutor", () => {
     assert.equal(fs.readFileSync(path.join(workspace, "src", "file.txt"), "utf8"), "before\nafter\n");
   });
 
+  it("preserves trailing whitespace on matched patch context lines", async () => {
+    fs.writeFileSync(path.join(workspace, "whitespace.txt"), "before  \nkeep\n", "utf8");
+    const executor = new NativeToolExecutor({ workspaceRoot: workspace });
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: whitespace.txt",
+      "@@",
+      " before",
+      "-keep",
+      "+after",
+      "*** End Patch",
+    ].join("\n");
+
+    await executor.execute(call("apply_patch", { patch }));
+
+    assert.equal(fs.readFileSync(path.join(workspace, "whitespace.txt"), "utf8"), "before  \nafter\n");
+  });
+
   it("does not write any file when a later patch hunk fails", async () => {
     fs.writeFileSync(path.join(workspace, "one.txt"), "one\n", "utf8");
     fs.writeFileSync(path.join(workspace, "two.txt"), "two\n", "utf8");
@@ -110,6 +128,15 @@ describe("NativeToolExecutor", () => {
 
     assert.match(result.output, /missing/);
     assert.doesNotMatch(result.output, /should-not-be-visible/);
+  });
+
+  it("tokenizes a complete command string without invoking a shell", async () => {
+    const executor = new NativeToolExecutor({ workspaceRoot: workspace });
+    const result = await executor.execute(call("exec_command", {
+      cmd: `${process.execPath} -e "process.stdout.write(process.argv.slice(1).join('|'))" "first value" second`,
+    }));
+
+    assert.match(result.output, /first value\|second/);
   });
 
   it("propagates aborts to a running command", async () => {

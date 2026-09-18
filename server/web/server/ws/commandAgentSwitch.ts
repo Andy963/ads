@@ -14,6 +14,7 @@ function readAgentId(payload: unknown): string {
 
 export function handleSetAgentCommand(args: {
   payload: unknown;
+  authUserId?: string;
   userId: number;
   historyKey: string;
   currentCwd: string;
@@ -47,7 +48,9 @@ export function handleSetAgentCommand(args: {
     return args.orchestrator;
   }
 
-  const orchestrator = args.sessionManager.getOrCreate(args.userId, args.currentCwd, true);
+  const orchestrator = args.sessionManager.getOrCreate(args.userId, args.currentCwd, true, {
+    authUserId: args.authUserId,
+  });
   if (!isLaneCurrent()) {
     return args.orchestrator;
   }

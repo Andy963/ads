@@ -10,10 +10,11 @@ import {
 
 export function applySessionOverrides(args: {
   sessionManager: SessionManager;
+  authUserId?: string;
   userId: number;
   payload: unknown;
 }): void {
-  const { sessionManager, userId, payload } = args;
+  const { sessionManager, authUserId, userId, payload } = args;
 
   const agentOverride = parseAgentIdFromPayload(payload);
   if (agentOverride.present && agentOverride.agentId) {
@@ -29,7 +30,9 @@ export function applySessionOverrides(args: {
     const modelStore = createGlobalModelConfigStore(getStateDatabase());
     const modelConfig =
       modelStore.getModelConfigByAgentModelId(modelOverride.model) ?? modelStore.getModelConfig(modelOverride.model);
-    const orchestrator = typeof sessionManager.getOrCreate === "function" ? sessionManager.getOrCreate(userId) : null;
+    const orchestrator = typeof sessionManager.getOrCreate === "function"
+      ? sessionManager.getOrCreate(userId, undefined, true, { authUserId })
+      : null;
     if (previousModel !== modelOverride.model) {
       sessionManager.setUserModel(userId, modelOverride.model);
     }
