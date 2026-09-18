@@ -26,6 +26,9 @@ jobs:
           command -v bwrap
           bwrap --version
 
+      - name: Configure native runtime sandbox
+        run: echo "ADS_NATIVE_RUNTIME_BWRAP_PATH=${GITHUB_WORKSPACE}/scripts/ci/bwrap-root-wrapper.sh" >> "$GITHUB_ENV"
+
       - name: Setup Node
         uses: actions/setup-node@v7
         with:
