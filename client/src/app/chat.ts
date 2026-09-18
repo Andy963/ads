@@ -165,6 +165,7 @@ export function createChatActions(ctx: AppContext) {
       ...(prompt.agentId ? { agentId: prompt.agentId } : {}),
       ...(prompt.model ? { model: prompt.model } : {}),
       ...(prompt.modelReasoningEffort ? { modelReasoningEffort: prompt.modelReasoningEffort } : {}),
+      ...(prompt.replayIncomplete ? { replayIncomplete: true } : {}),
     };
   };
 
@@ -194,6 +195,7 @@ export function createChatActions(ctx: AppContext) {
         agentId: String(prompt.agentId ?? ""),
         model: String(prompt.model ?? ""),
         modelReasoningEffort: String(prompt.modelReasoningEffort ?? prompt.model_reasoning_effort ?? ""),
+        ...(prompt.replayIncomplete ? { replayIncomplete: true } : {}),
       } satisfies QueuedPrompt);
     });
     const next = [...shared, ...localOnly];
@@ -316,6 +318,7 @@ export function createChatActions(ctx: AppContext) {
         agentId: String(queued.agentId ?? "").trim(),
         model: String(queued.model ?? "").trim(),
         modelReasoningEffort: String(queued.modelReasoningEffort ?? queued.model_reasoning_effort ?? "").trim(),
+        ...(queued.replayIncomplete ? { replayIncomplete: true } : {}),
       });
     }
 
@@ -646,6 +649,7 @@ export function createChatActions(ctx: AppContext) {
         ...(agentId ? { agentId } : {}),
         ...(execution.model ? { model: execution.model } : {}),
         ...(execution.modelReasoningEffort ? { modelReasoningEffort: execution.modelReasoningEffort } : {}),
+        replayIncomplete: true,
       },
     ];
     void flushQueuedPrompts(state);
@@ -721,7 +725,7 @@ export function createChatActions(ctx: AppContext) {
       state.busy.value = true;
       state.turnInFlight = true;
       state.pendingAckClientMessageId = next.clientMessageId;
-      const recovery = next.restoredFromStorage ? { replay_incomplete: true } : {};
+      const recovery = next.restoredFromStorage || next.replayIncomplete ? { replay_incomplete: true } : {};
       const payload =
         next.images.length > 0
           ? { text: promptText, images: next.images, model_reasoning_effort: effort, model, agentId, ...recovery }

@@ -21,6 +21,7 @@ export type PersistedPrompt = {
   agentId?: string;
   model?: string;
   modelReasoningEffort?: string;
+  replayIncomplete?: boolean;
   /** Legacy key kept for entries written before the rename. */
   model_reasoning_effort?: string;
 };
@@ -69,6 +70,7 @@ function normalizePrompt(value: unknown): PersistedPrompt | null {
   const clientMessageId = String(record.clientMessageId ?? "").trim();
   if (!clientMessageId) return null;
   const effort = String(record.modelReasoningEffort ?? record.model_reasoning_effort ?? "").trim();
+  const replayIncomplete = record.replayIncomplete === true || record.replay_incomplete === true;
   const prompt: PersistedPrompt = {
     clientMessageId,
     text: String(record.text ?? ""),
@@ -79,6 +81,7 @@ function normalizePrompt(value: unknown): PersistedPrompt | null {
   if (agentId) prompt.agentId = agentId;
   if (model) prompt.model = model;
   if (effort) prompt.modelReasoningEffort = effort;
+  if (replayIncomplete) prompt.replayIncomplete = true;
   return prompt;
 }
 

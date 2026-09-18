@@ -8,14 +8,21 @@ import {
 import type { HistoryEntry } from "../../../utils/historyStore.js";
 import { buildPromptHistoryText } from "./promptHistory.js";
 
-export function isClientMessageCompleted(entries: HistoryEntry[], clientMessageId: string): boolean {
+export function isClientMessageCompleted(
+  entries: HistoryEntry[],
+  clientMessageId: string,
+  options: { allowErrorReplay?: boolean } = {},
+): boolean {
   let awaitingTerminal = false;
   for (const entry of entries) {
     if (entry.role === "user") {
       awaitingTerminal = getHistoryClientMessageId(entry.kind) === clientMessageId;
       continue;
     }
-    if (awaitingTerminal && (entry.role === "ai" || (entry.role === "status" && entry.kind === "error"))) {
+    if (
+      awaitingTerminal &&
+      (entry.role === "ai" || (entry.role === "status" && entry.kind === "error" && !options.allowErrorReplay))
+    ) {
       return true;
     }
   }
@@ -118,7 +125,7 @@ export function preflightPersistAndAck(args: {
         payload.replay_incomplete === true &&
         !args.inFlight &&
         persistedPrompt?.text === textResult.text &&
-        !isClientMessageCompleted(historyEntries, args.clientMessageId);
+        !isClientMessageCompleted(historyEntries, args.clientMessageId, { allowErrorReplay: true });
       if (args.traceWsDuplication) {
         args.warn(
           `[WebSocket][Dedupe] req=${args.requestId} session=${args.sessionId} user=${args.userId} history=${args.historyKey} client_message_id=${args.clientMessageId} replay_incomplete=${replayIncomplete}`,
