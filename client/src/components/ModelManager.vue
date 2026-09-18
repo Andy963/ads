@@ -1233,6 +1233,7 @@ defineExpose({
   width: 100%;
   height: min(660px, 86vh);
   max-height: min(660px, 86vh);
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2011,10 +2012,50 @@ defineExpose({
 
 .syncModelList {
   max-height: 240px;
+  min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 5px;
+}
+
+.lanePromptPanel,
+.cliList,
+.dialogBody,
+.syncModelList {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.55) transparent;
+}
+
+.lanePromptPanel::-webkit-scrollbar,
+.cliList::-webkit-scrollbar,
+.dialogBody::-webkit-scrollbar,
+.syncModelList::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.lanePromptPanel::-webkit-scrollbar-thumb,
+.cliList::-webkit-scrollbar-thumb,
+.dialogBody::-webkit-scrollbar-thumb,
+.syncModelList::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.55);
+  border-radius: 4px;
+}
+
+.lanePromptPanel::-webkit-scrollbar-thumb:hover,
+.cliList::-webkit-scrollbar-thumb:hover,
+.dialogBody::-webkit-scrollbar-thumb:hover,
+.syncModelList::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.72);
+}
+
+.lanePromptPanel::-webkit-scrollbar-track,
+.cliList::-webkit-scrollbar-track,
+.dialogBody::-webkit-scrollbar-track,
+.syncModelList::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .syncModelRow {
