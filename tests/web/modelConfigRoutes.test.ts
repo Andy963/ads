@@ -6,6 +6,7 @@ import path from "node:path";
 
 import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
 
+import { createUpstreamCredentialStore } from "../../server/state/upstreamCredentialStore.js";
 import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
 import { handleModelRoutes, resetUpstreamModelsCache } from "../../server/web/server/api/routes/models.js";
 
@@ -47,7 +48,7 @@ function createRes(): FakeRes {
     },
     writeHead(status: number, headers: Record<string, string>) {
       this.statusCode = status;
-      this.headers = headers;
+      this.headers = { ...this.headers, ...Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value])) };
     },
     end(body: string) {
       this.body = body;
@@ -63,11 +64,13 @@ describe("web/model-config routes", () => {
   let tmpDir: string;
   let db: DatabaseType;
   let modelStore: ReturnType<typeof createGlobalModelConfigStore>;
+  let upstreamStore: ReturnType<typeof createUpstreamCredentialStore>;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-model-config-routes-"));
     db = new DatabaseConstructor(path.join(tmpDir, "state.db"));
     modelStore = createGlobalModelConfigStore(db);
+    upstreamStore = createUpstreamCredentialStore(db, { pepper: "test-only-pepper" });
     resetUpstreamModelsCache();
   });
 
@@ -362,10 +365,11 @@ describe("web/model-config routes", () => {
           req: createReq("GET") as any,
           res: res as any,
           url: new URL("http://localhost/api/models/upstream"),
+          auth: { userId: "user-234", username: "tester" },
           pathname: "/api/models/upstream",
         } as any,
         {
-          modelStore,
+          modelStore, upstreamStore,
           resolveConfig: () => ({ baseUrl: "https://provider.test/v1/", apiKey: "sk-test", authMode: "apiKey" }),
           fetchImpl,
         },
@@ -383,8 +387,77 @@ describe("web/model-config routes", () => {
     assert.equal(calls[0].headers.Authorization, "Bearer sk-test");
   });
 
-  it("POST /api/models/upstream/discover accepts one-off provider credentials", async () => {
-    let receivedOverrides: { baseUrl?: string; apiKey?: string } | undefined;
+  it("prefills metadata and reuses a saved key only for its canonical endpoint", async () => {
+    const calls: Array<{ url: string; key: string }> = [];
+    const fetchImpl = (async (url: unknown, init: RequestInit) => {
+      assert.equal(init.redirect, "error");
+      calls.push({ url: String(url), key: new Headers(init.headers).get("Authorization")! });
+      return new Response(JSON.stringify({ data: [{ id: "selected-model" }] }));
+    }) as typeof fetch;
+    const deps = { modelStore, upstreamStore, fetchImpl,
+      resolveConfig: () => ({ authMode: "apiKey" as const }) };
+    const call = async (method: string, pathname: string, body?: unknown, userId = "alice") => {
+      const res = createRes();
+      await handleModelRoutes({ req: createReq(method, body) as any, res: res as any,
+        url: new URL(pathname, "http://localhost"), pathname, auth: { userId, username: userId } }, deps);
+      return res;
+    };
+    const saved = await call("POST", "/api/models/upstream", { baseUrl: "provider.test", apiKey: "custom-test-key", provider: "custom" });
+    assert.equal(JSON.parse(saved.body).ok, true);
+    const config = await call("GET", "/api/models/upstream/config");
+    assert.deepEqual(JSON.parse(config.body), { baseUrl: "https://provider.test/v1", provider: "custom", hasApiKey: true, source: "saved" });
+    assert.equal(config.headers["cache-control"], "no-store");
+    assert.ok(!config.body.includes("custom-test-key"));
+    resetUpstreamModelsCache();
+    const reused = await call("POST", "/api/models/upstream", { baseUrl: "https://provider.test/v1/responses" });
+    assert.equal(JSON.parse(reused.body).ok, true);
+    assert.deepEqual(calls, [
+      { url: "https://provider.test/v1/models", key: "Bearer custom-test-key" },
+      { url: "https://provider.test/v1/models", key: "Bearer custom-test-key" },
+    ]);
+    const rejected = await call("POST", "/api/models/upstream", { baseUrl: "https://different.test" });
+    assert.equal(JSON.parse(rejected.body).ok, false);
+    assert.match(JSON.parse(rejected.body).error, /bound to their endpoint/);
+    assert.equal(calls.length, 2);
+    const isolated = await call("GET", "/api/models/upstream/config", undefined, "bob");
+    assert.equal(JSON.parse(isolated.body).hasApiKey, false);
+    assert.equal(JSON.parse((await call("POST", "/api/models/upstream", {}, "bob")).body).ok, false);
+    assert.equal(calls.length, 2);
+  });
+
+  it("never combines a new endpoint with the default server key or replaces saved credentials on failure", async () => {
+    let fetchCount = 0;
+    const deps = { modelStore, upstreamStore,
+      resolveConfig: () => ({ baseUrl: "https://default.test/v1", apiKey: "default-test-key", authMode: "apiKey" as const }),
+      fetchImpl: (async () => { fetchCount += 1; return new Response("unavailable", { status: 503 }); }) as typeof fetch };
+    const call = async (body: unknown) => {
+      const res = createRes();
+      await handleModelRoutes({ req: createReq("POST", body) as any, res: res as any,
+        url: new URL("http://localhost/api/models/upstream"), pathname: "/api/models/upstream",
+        auth: { userId: "alice", username: "alice" } }, deps);
+      return JSON.parse(res.body);
+    };
+    assert.equal((await call({ baseUrl: "https://different.test" })).ok, false);
+    assert.equal(fetchCount, 0);
+    upstreamStore.save("alice", { baseUrl: "https://saved.test/v1", apiKey: "saved-test-key", provider: "saved" });
+    assert.equal((await call({ baseUrl: "https://new.test", apiKey: "new-test-key" })).ok, false);
+    assert.equal(upstreamStore.getCredentials("alice")?.apiKey, "saved-test-key");
+    assert.equal(fetchCount, 1);
+  });
+
+  it("does not echo credentials even if an upstream transport error includes them", async () => {
+    const res = createRes();
+    await handleModelRoutes({ req: createReq("POST", { baseUrl: "https://provider.test", apiKey: "test-sensitive-key" }) as any,
+      res: res as any, url: new URL("http://localhost/api/models/upstream"), pathname: "/api/models/upstream",
+      auth: { userId: "alice", username: "alice" } }, { modelStore, upstreamStore,
+      fetchImpl: (async () => { throw new Error("Failed with test-sensitive-key"); }) as typeof fetch });
+    assert.equal(JSON.parse(res.body).ok, false);
+    assert.ok(!res.body.includes("test-sensitive-key"));
+    assert.equal(upstreamStore.getMetadata("alice"), null);
+  });
+
+  it("POST /api/models/upstream/discover persists custom provider credentials without reading defaults", async () => {
+    let resolvedDefaults = false;
     const fetchImpl = (async (url: unknown, init: { headers: Record<string, string> }) => {
       assert.equal(String(url), "https://custom-provider.test/v1/models");
       assert.equal(init.headers.Authorization, "Bearer custom-key");
@@ -398,12 +471,13 @@ describe("web/model-config routes", () => {
           req: createReq("POST", { baseUrl: "https://custom-provider.test/v1", apiKey: "custom-key" }) as any,
           res: res as any,
           url: new URL("http://localhost/api/models/upstream/discover"),
+          auth: { userId: "user-234", username: "tester" },
           pathname: "/api/models/upstream/discover",
         } as any,
         {
-          modelStore,
+          modelStore, upstreamStore,
           resolveConfig: (overrides) => {
-            receivedOverrides = overrides;
+            resolvedDefaults = true;
             return {
               baseUrl: overrides?.baseUrl,
               apiKey: overrides?.apiKey,
@@ -421,10 +495,9 @@ describe("web/model-config routes", () => {
       ok: true,
       models: ["custom-model"],
     });
-    assert.deepEqual(receivedOverrides, {
-      baseUrl: "https://custom-provider.test/v1",
-      apiKey: "custom-key",
-    });
+    assert.equal(resolvedDefaults, false);
+    assert.equal(upstreamStore.getCredentials("user-234")?.apiKey, "custom-key");
+    assert.ok(!JSON.stringify(db.prepare("SELECT value FROM kv_state").all()).includes("custom-key"));
   });
 
   it("GET /api/models/upstream serves the cached catalog within the TTL", async () => {
@@ -434,7 +507,7 @@ describe("web/model-config routes", () => {
       return new Response(JSON.stringify({ data: [{ id: "gpt-5.6-sol" }] }), { status: 200 });
     }) as unknown as typeof fetch;
     const deps = {
-      modelStore,
+      modelStore, upstreamStore,
       resolveConfig: () => ({ baseUrl: "https://provider.test/v1", apiKey: "sk-test", authMode: "apiKey" as const }),
       fetchImpl,
     };
@@ -447,7 +520,8 @@ describe("web/model-config routes", () => {
             req: createReq("GET") as any,
             res: res as any,
             url: new URL("http://localhost/api/models/upstream"),
-            pathname: "/api/models/upstream",
+            auth: { userId: "user-234", username: "tester" },
+          pathname: "/api/models/upstream",
           } as any,
           deps,
         ),
@@ -469,10 +543,11 @@ describe("web/model-config routes", () => {
           req: createReq("GET") as any,
           res: res as any,
           url: new URL("http://localhost/api/models/upstream"),
+          auth: { userId: "user-234", username: "tester" },
           pathname: "/api/models/upstream",
         } as any,
         {
-          modelStore,
+          modelStore, upstreamStore,
           resolveConfig: () => {
             throw new Error("Codex credentials not found");
           },
@@ -498,10 +573,11 @@ describe("web/model-config routes", () => {
           req: createReq("GET") as any,
           res: networkFailure as any,
           url: new URL("http://localhost/api/models/upstream"),
+          auth: { userId: "user-234", username: "tester" },
           pathname: "/api/models/upstream",
         } as any,
         {
-          modelStore,
+          modelStore, upstreamStore,
           resolveConfig,
           fetchImpl: (async () => {
             throw new Error("connect ETIMEDOUT");
@@ -522,10 +598,11 @@ describe("web/model-config routes", () => {
           req: createReq("GET") as any,
           res: httpFailure as any,
           url: new URL("http://localhost/api/models/upstream"),
+          auth: { userId: "user-234", username: "tester" },
           pathname: "/api/models/upstream",
         } as any,
         {
-          modelStore,
+          modelStore, upstreamStore,
           resolveConfig,
           fetchImpl: (async () => new Response("upstream down", { status: 503 })) as unknown as typeof fetch,
         },
