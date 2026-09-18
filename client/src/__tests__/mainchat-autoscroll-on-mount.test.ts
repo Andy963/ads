@@ -119,6 +119,119 @@ describe("MainChat auto-scroll on mount", () => {
     wrapper.unmount();
   });
 
+  it("discards a stale viewport when the transcript tail has advanced", async () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        messages: [msg("m-1", "assistant", "latest")],
+        viewport: {
+          following: false,
+          firstLoadedId: "old-1",
+          anchorId: "old-1",
+          anchorOffset: 0,
+          scrollTop: 100,
+          tailMessageId: "old-tail",
+        },
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: MarkdownContentStub,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => 900 });
+    chat.scrollTop = 0;
+
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(900);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it("restores a current viewport while the transcript tail is unchanged", async () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        messages: Array.from({ length: 65 }, (_, index) => msg(`m-${index}`, "assistant", `line ${index}`)),
+        viewport: {
+          following: false,
+          firstLoadedId: "m-35",
+          anchorId: "missing-anchor",
+          anchorOffset: 0,
+          scrollTop: 180,
+          tailMessageId: "m-64",
+        },
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: MarkdownContentStub,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => 900 });
+    chat.scrollTop = 0;
+
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(180);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  it("moves to the bottom when new messages arrive before the restored viewport is used", async () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        messages: [msg("m-1", "assistant", "previous")],
+        viewport: {
+          following: false,
+          firstLoadedId: "m-1",
+          anchorId: "missing-anchor",
+          anchorOffset: 0,
+          scrollTop: 120,
+          tailMessageId: "m-1",
+        },
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: MarkdownContentStub,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    let height = 500;
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => height });
+    chat.scrollTop = 0;
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(120);
+
+    height = 900;
+    await wrapper.setProps({ messages: [msg("m-1", "assistant", "previous"), msg("m-2", "assistant", "newest")] });
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(900);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
   it("does not crash when mounting an empty project and still aligns to the bottom edge", async () => {
     const wrapper = mount(MainChat, {
       props: {

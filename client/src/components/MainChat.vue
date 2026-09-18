@@ -42,7 +42,17 @@ const emit = defineEmits<{
 
 const listRef = ref<HTMLElement | null>(null);
 const initialViewport = props.viewport;
-const autoScroll = ref(initialViewport?.following ?? true);
+const initialTailMessage = props.messages.at(-1);
+const initialTailMessageId = initialTailMessage?.id ?? "";
+const initialTailContent = String(initialTailMessage?.content ?? "");
+const initialTailStreaming = Boolean(initialTailMessage?.streaming);
+const restorableViewport = initialViewport?.following === false &&
+  initialViewport.tailMessageId === initialTailMessageId &&
+  Boolean(initialViewport.tailMessageId)
+  ? initialViewport
+  : null;
+const autoScroll = ref(!restorableViewport);
+let initialViewportActive = Boolean(restorableViewport);
 const showScrollToBottom = ref(false);
 let viewportFrame: number | null = null;
 
@@ -58,6 +68,7 @@ function saveViewport(): void {
     anchorId: anchor?.dataset.id ?? "",
     anchorOffset: anchor ? anchor.getBoundingClientRect().top - top : 0,
     scrollTop: Math.max(0, host.scrollTop),
+    tailMessageId: props.messages.at(-1)?.id ?? "",
   });
 }
 
@@ -160,6 +171,7 @@ function pauseChatAutoScroll(): void {
 
 function onChatScrollIntent(event: Event): void {
   if (event instanceof KeyboardEvent && !["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) return;
+  initialViewportActive = false;
   if (settlingBottom) pauseChatAutoScroll();
 }
 
@@ -317,15 +329,21 @@ function handleScroll() {
 
 onMounted(() => {
   const host = listRef.value;
-  if (host && initialViewport && !initialViewport.following) {
-    const anchor = [...host.querySelectorAll<HTMLElement>(".msg")]
-      .find((row) => row.dataset.id === initialViewport.anchorId);
-    // This is initial restoration only. History prepends continue to use
-    // native scroll anchoring and never receive a scrollTop correction.
-    host.scrollTop = anchor
-      ? Math.max(0, host.scrollTop + anchor.getBoundingClientRect().top - host.getBoundingClientRect().top - initialViewport.anchorOffset)
-      : initialViewport.scrollTop;
-    showScrollToBottom.value = true;
+  if (host && restorableViewport) {
+    // Wait for the initial message window and layout to commit. This also
+    // makes restoration reliable when the pane was mounted while hidden.
+    void nextTick().then(() => {
+      const currentHost = listRef.value;
+      if (!currentHost || !initialViewportActive) return;
+      const anchor = [...currentHost.querySelectorAll<HTMLElement>(".msg")]
+        .find((row) => row.dataset.id === restorableViewport.anchorId);
+      // This is initial restoration only. History prepends continue to use
+      // native scroll anchoring and never receive a scrollTop correction.
+      currentHost.scrollTop = anchor
+        ? Math.max(0, currentHost.scrollTop + anchor.getBoundingClientRect().top - currentHost.getBoundingClientRect().top - restorableViewport.anchorOffset)
+        : restorableViewport.scrollTop;
+      showScrollToBottom.value = true;
+    });
   } else {
     scrollChatToBottom();
   }
@@ -359,10 +377,18 @@ const liveActivityMessage = computed(
 watch(
   [
     () => lastMessage.value?.id ?? "",
-    () => String(lastMessage.value?.content ?? "").length,
+    () => String(lastMessage.value?.content ?? ""),
     () => Boolean(lastMessage.value?.streaming),
   ],
-  () => {
+  ([messageId, content, streaming]) => {
+    const tailAdvanced = messageId !== initialTailMessageId ||
+      content !== initialTailContent ||
+      streaming !== initialTailStreaming;
+    if (initialViewportActive && tailAdvanced) {
+      initialViewportActive = false;
+      scrollChatToBottom();
+      return;
+    }
     scheduleChatScrollToBottom();
   },
   { flush: "post" },
@@ -444,8 +470,8 @@ onBeforeUnmount(() => {
       >
         <MainChatMessageList
           :messages="messages"
-          :initial-first-loaded-id="initialViewport?.following === false ? initialViewport.firstLoadedId : undefined"
-          :initial-anchor-id="initialViewport?.following === false ? initialViewport.anchorId : undefined"
+          :initial-first-loaded-id="restorableViewport?.firstLoadedId"
+          :initial-anchor-id="restorableViewport?.anchorId"
           :copied-message-id="copiedMessageId"
           :format-message-ts="formatMessageTs"
           :live-step-expanded="liveStepExpanded"
