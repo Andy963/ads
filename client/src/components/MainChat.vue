@@ -53,6 +53,7 @@ const restorableViewport = initialViewport?.following === false &&
   : null;
 const autoScroll = ref(!restorableViewport);
 let initialViewportActive = Boolean(restorableViewport);
+let initialViewportRestored = false;
 const showScrollToBottom = ref(false);
 let viewportFrame: number | null = null;
 
@@ -327,23 +328,30 @@ function handleScroll() {
   scheduleViewportSave();
 }
 
+function restoreInitialViewport(): void {
+  const host = listRef.value;
+  if (!host || !restorableViewport || !initialViewportActive || initialViewportRestored) return;
+  // A hidden pane cannot apply a scroll position yet. The resize observer below
+  // retries once the lane becomes visible.
+  if (host.scrollHeight === 0) return;
+  const anchor = [...host.querySelectorAll<HTMLElement>(".msg")]
+    .find((row) => row.dataset.id === restorableViewport.anchorId);
+  // This is initial restoration only. History prepends continue to use native
+  // scroll anchoring and never receive a scrollTop correction.
+  host.scrollTop = anchor
+    ? Math.max(0, host.scrollTop + anchor.getBoundingClientRect().top - host.getBoundingClientRect().top - restorableViewport.anchorOffset)
+    : restorableViewport.scrollTop;
+  initialViewportRestored = true;
+  showScrollToBottom.value = true;
+}
+
 onMounted(() => {
   const host = listRef.value;
   if (host && restorableViewport) {
-    // Wait for the initial message window and layout to commit. This also
-    // makes restoration reliable when the pane was mounted while hidden.
-    void nextTick().then(() => {
-      const currentHost = listRef.value;
-      if (!currentHost || !initialViewportActive) return;
-      const anchor = [...currentHost.querySelectorAll<HTMLElement>(".msg")]
-        .find((row) => row.dataset.id === restorableViewport.anchorId);
-      // This is initial restoration only. History prepends continue to use
-      // native scroll anchoring and never receive a scrollTop correction.
-      currentHost.scrollTop = anchor
-        ? Math.max(0, currentHost.scrollTop + anchor.getBoundingClientRect().top - currentHost.getBoundingClientRect().top - restorableViewport.anchorOffset)
-        : restorableViewport.scrollTop;
-      showScrollToBottom.value = true;
-    });
+    // Restore synchronously when the cached pane is already laid out so the
+    // first visible frame does not briefly jump to the default scroll position.
+    restoreInitialViewport();
+    if (!initialViewportRestored) void nextTick().then(restoreInitialViewport);
   } else {
     scrollChatToBottom();
   }
@@ -351,6 +359,7 @@ onMounted(() => {
   document.addEventListener("visibilitychange", saveBeforeBackground);
   if (host && typeof ResizeObserver !== "undefined") {
     chatResizeObserver = new ResizeObserver(() => {
+      restoreInitialViewport();
       // If the chat pane is initially hidden (e.g. mobile tab), scrollHeight can be 0.
       // Once the pane becomes visible, ensure we still land at the bottom.
       scheduleChatScrollToBottom();
