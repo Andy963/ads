@@ -49,6 +49,7 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
   resetStateDatabaseForTests(statePath);
   const received = [];
   const requests = [];
+  const refusedRequests = new Set();
   const heldReplies = new Map();
   let heldAuthentication = null;
   let originOffline = false;
@@ -64,6 +65,7 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
   };
   const server = createServer(async (request, response) => {
     if (originOffline) {
+      refusedRequests.add(request.url);
       request.socket.destroy();
       return;
     }
@@ -259,6 +261,7 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
     origin: `http://127.0.0.1:${server.address().port}`,
     received,
     requests,
+    refusedRequests,
     projects: projectFixtures,
     holdAuthentication() {
       if (heldAuthentication) throw new Error("Authentication is already held");

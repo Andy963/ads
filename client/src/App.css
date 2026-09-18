@@ -819,6 +819,7 @@
     padding-right: 12px;
   }
   .mobileMenuBtn {
+    touch-action: manipulation;
     display: grid;
     place-items: center;
     width: 44px;

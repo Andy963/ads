@@ -120,6 +120,38 @@ describe("mobile navigation behavior", () => {
     vi.clearAllMocks();
   });
 
+  it("activates a menu tap once without starting a topbar edge swipe (Issue #236)", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false, ModelManager: ModelManagerStub } } });
+    await settleUi(wrapper);
+    const button = wrapper.get('[data-testid="mobile-drawer-toggle"]');
+    await button.get("rect").trigger("touchstart", { touches: [{ clientX: 12, clientY: 20 }] });
+    await wrapper.get(".app").trigger("touchmove", { touches: [{ clientX: 70, clientY: 20 }] });
+    expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
+    await wrapper.get(".app").trigger("touchend", { touches: [] });
+
+    for (const type of ["pointerdown", "pointerup"]) {
+      const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 12, clientY: 20 });
+      Object.defineProperties(event, {
+        pointerType: { value: "touch" }, pointerId: { value: 1 }, isPrimary: { value: true },
+      });
+      button.element.dispatchEvent(event);
+      await nextTick();
+    }
+    expect(wrapper.find(".mobileDrawer").exists()).toBe(true);
+    button.element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+    await nextTick();
+    expect(wrapper.find(".mobileDrawer").exists()).toBe(true);
+    button.element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+    await nextTick();
+    expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
+
+    await wrapper.get(".app").trigger("touchstart", { touches: [{ clientX: 5, clientY: 200 }] });
+    await wrapper.get(".app").trigger("touchmove", { touches: [{ clientX: 60, clientY: 200 }] });
+    expect(wrapper.find(".mobileDrawer").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
   it("switches the main area and contextual actions across mobile modules", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, {

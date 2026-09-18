@@ -142,6 +142,8 @@ describe("Issue #228 monotonic history window", () => {
 });
 
 describe("Issue #228 bottom-following intent", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   function mountChat() {
     const wrapper = mount(MainChat, {
       props: {
@@ -157,17 +159,18 @@ describe("Issue #228 bottom-following intent", () => {
     });
     const host = wrapper.get(".chat").element as HTMLElement;
     let top = 0;
-    const writeScrollTop = vi.fn((value: number) => { top = value; });
+    let height = 1000;
+    const writeScrollTop = vi.fn((value: number) => { top = Math.max(0, Math.min(value, height - 200)); });
     Object.defineProperties(host, {
       clientHeight: { get: () => 200 },
-      scrollHeight: { get: () => 1000 },
+      scrollHeight: { get: () => height },
       scrollTop: { get: () => top, set: writeScrollTop },
     });
     const scrollAway = () => {
       top = 400;
       host.dispatchEvent(new Event("scroll"));
     };
-    return { wrapper, host, writeScrollTop, scrollAway };
+    return { wrapper, host, writeScrollTop, scrollAway, grow: (value: number) => { height = value; } };
   }
 
   it("cancels a pending initial bottom scroll before older rows are prepended", async () => {
@@ -194,5 +197,59 @@ describe("Issue #228 bottom-following intent", () => {
     await wrapper.get(".scrollToBottom").trigger("click");
     await settle();
     expect(writeScrollTop).toHaveBeenCalledWith(1000);
+  });
+
+  it("settles an explicit jump after a delayed layout without disabling following (Issue #236)", async () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextId = 0;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.set(++nextId, callback); return nextId; });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+    const tick = () => {
+      const callbacks = [...frames.values()];
+      frames.clear();
+      callbacks.forEach((callback) => callback(0));
+    };
+    const { wrapper, host, grow, scrollAway } = mountChat();
+    await settle();
+    scrollAway();
+    await settle();
+    const button = wrapper.get(".scrollToBottom");
+    expect(button.element.parentElement).toBe(host.parentElement);
+    await button.trigger("click");
+    await settle();
+    grow(1600);
+    host.dispatchEvent(new Event("scroll"));
+    for (let frame = 0; frame < 10; frame += 1) tick();
+    await settle();
+    expect(host.scrollTop).toBe(1400);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+    grow(1800);
+    await wrapper.setProps({ messages: messages(67) });
+    await settle();
+    expect(host.scrollTop).toBe(1600);
+    wrapper.unmount();
+    expect(frames.size).toBe(0);
+  });
+
+  it("cancels pending bottom correction as soon as the user scrolls away", async () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let nextId = 0;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.set(++nextId, callback); return nextId; });
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
+    const { wrapper, host, grow, scrollAway, writeScrollTop } = mountChat();
+    await settle();
+    scrollAway();
+    await settle();
+    await wrapper.get(".scrollToBottom").trigger("click");
+    await settle();
+    host.dispatchEvent(new WheelEvent("wheel", { deltaY: -200 }));
+    scrollAway();
+    grow(1600);
+    writeScrollTop.mockClear();
+    [...frames.values()].forEach((callback) => callback(0));
+    await settle();
+    expect(host.scrollTop).toBe(400);
+    expect(writeScrollTop).not.toHaveBeenCalled();
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
   });
 });
