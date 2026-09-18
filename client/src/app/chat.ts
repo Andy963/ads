@@ -639,7 +639,7 @@ export function createChatActions(ctx: AppContext) {
       ...state.queuedPrompts.value,
       {
         id: randomId("q"),
-        clientMessageId: randomUuid(),
+        clientMessageId: userItem.id,
         text,
         images: [],
         createdAt: Date.now(),

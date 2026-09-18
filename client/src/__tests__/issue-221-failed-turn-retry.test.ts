@@ -155,11 +155,55 @@ describe("failed turn preservation and in-place retry (Issue #221)", () => {
     const afterRetry = wrapper.vm.messages as Array<any>;
     expect(afterRetry.some((m) => m.id === failureCards[0]!.id)).toBe(false);
     const retriedUsers = afterRetry.filter((m) => m.role === "user" && String(m.content ?? "").includes("please retry me"));
-    expect(retriedUsers).toHaveLength(2);
+    expect(retriedUsers).toHaveLength(1);
     expect(lastWs!.sendPrompt.mock.calls.length).toBe(sendCallsBefore + 1);
     const retriedPayload = lastWs!.sendPrompt.mock.calls.at(-1)?.[0] as Record<string, unknown>;
     expect(String(retriedPayload.text ?? "")).toContain("please retry me");
     expect(afterRetry.some((m) => m.role === "assistant" && m.streaming)).toBe(true);
+
+    lastWs!.onMessage?.({ type: "error", message: "second failure" });
+    await settleUi(wrapper);
+    const secondFailure = (wrapper.vm.messages as Array<any>).find((m) => m.role === "system" && m.kind === "error");
+    expect(secondFailure).toBeTruthy();
+    wrapper.vm.retryPrompt(secondFailure);
+    await settleUi(wrapper);
+    expect((wrapper.vm.messages as Array<any>).filter((m) => m.role === "user" && String(m.content ?? "").includes("please retry me"))).toHaveLength(1);
+
+    wrapper.unmount();
+  });
+
+  it("keeps an intentional interrupt in lane status without adding a failure card", async () => {
+    const wrapper = await mountApp();
+
+    wrapper.vm.sendMainPrompt("please stop me");
+    await settleUi(wrapper);
+    const interruptMessage = "\u5df2\u4e2d\u65ad\uff0c\u8f93\u51fa\u53ef\u80fd\u4e0d\u5b8c\u6574";
+    lastWs!.onMessage?.({ type: "error", message: interruptMessage });
+    await settleUi(wrapper);
+
+    const messages = wrapper.vm.messages as Array<any>;
+    expect(messages.filter((m) => m.role === "system" && m.kind === "error")).toHaveLength(0);
+    expect(wrapper.vm.workerConnectionStatus).toEqual({ kind: "error", message: interruptMessage });
+
+    wrapper.unmount();
+  });
+
+  it("does not restore an intentional interrupt as a failure card", async () => {
+    const wrapper = await mountApp();
+    const interruptMessage = "\u5df2\u4e2d\u65ad\uff0c\u8f93\u51fa\u53ef\u80fd\u4e0d\u5b8c\u6574";
+
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        { role: "user", text: "interrupted before reload", kind: "client_message_id:u-interrupted-1", ts: 1000 },
+        { role: "status", kind: "error", text: interruptMessage, ts: 1010 },
+      ],
+    });
+    await settleUi(wrapper);
+
+    const messages = wrapper.vm.messages as Array<any>;
+    expect(messages.filter((m) => m.role === "system" && m.kind === "error")).toHaveLength(0);
+    expect(wrapper.vm.workerConnectionStatus).toEqual({ kind: "error", message: interruptMessage });
 
     wrapper.unmount();
   });

@@ -17,7 +17,7 @@ import {
 } from "../../lib/chatPreferences";
 import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
 import { normalizeTurnSemanticOrder } from "../../lib/chat_sync";
-import { upsertTurnFailureCard } from "../../lib/turnFailure";
+import { isUserAbortFailure, upsertTurnFailureCard } from "../../lib/turnFailure";
 import { diagAlert } from "../../lib/diagAlert";
 import { crumb } from "../../lib/diagBreadcrumbs";
 import type { ExecuteBlockUpdate } from "../chatExecute";
@@ -1297,7 +1297,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
         if (role === "status") {
           restoredHistoryStatus = replayedLaneStatus(kind, historyText);
-          if (kind === "error") {
+          if (kind === "error" && !isUserAbortFailure(historyText)) {
             // Anchor persisted turn failures to their user prompt so the
             // failed turn keeps a visible error card after reconnects and
             // reloads instead of vanishing with the transient lane banner.
@@ -1714,6 +1714,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         : undefined;
 
       const userMessage = normalizeWireText(msg.message) || "error";
+      const isUserAbort = isUserAbortFailure(userMessage, (msg as { aborted?: unknown }).aborted);
       const errorContent = errorInfo
         ? `⚠️ ${userMessage}\n\n` +
           `错误类型: ${errorInfo.code ?? "unknown"}\n` +
@@ -1722,16 +1723,19 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         : userMessage;
 
       rt.laneStatus.value = { kind: "error", message: errorContent };
-      // Persist a failure card on the user turn so the error survives lane
+      // Persist genuine failures on the user turn so the error survives lane
       // status cleanup and page reloads, and so the turn can be retried in
-      // place. The content mirrors the history entry persisted by the server
-      // (`[code] hint`) so replay and live events converge on one card.
-      const failureCardContent = errorInfo?.code ? `[${errorInfo.code}] ${userMessage}` : userMessage;
-      rt.messages.value = upsertTurnFailureCard(
-        rt.messages.value,
-        failureCardContent,
-        finiteTimestamp((msg as { ts?: unknown }).ts),
-      );
+      // place. Intentional user aborts remain lane status only. The card
+      // content mirrors the history entry persisted by the server (`[code]
+      // hint`) so replay and live events converge on one card.
+      if (!isUserAbort) {
+        const failureCardContent = errorInfo?.code ? `[${errorInfo.code}] ${userMessage}` : userMessage;
+        rt.messages.value = upsertTurnFailureCard(
+          rt.messages.value,
+          failureCardContent,
+          finiteTimestamp((msg as { ts?: unknown }).ts),
+        );
+      }
       void flushQueuedPrompts(rt, { preserveErrorStatus: true });
       return;
     }
