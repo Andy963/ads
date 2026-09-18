@@ -8,6 +8,9 @@ export type TranscriptViewport = {
   anchorId: string;
   anchorOffset: number;
   scrollTop: number;
+  // Optional for backwards compatibility with v1 records written before
+  // viewport freshness was tracked.
+  tailMessageId?: string;
 };
 
 export type TranscriptScope = {
@@ -77,7 +80,8 @@ function validViewport(value: unknown): value is TranscriptViewport {
   return record(value) && typeof value.following === "boolean" &&
     typeof value.firstLoadedId === "string" && typeof value.anchorId === "string" &&
     typeof value.anchorOffset === "number" && Number.isFinite(value.anchorOffset) &&
-    typeof value.scrollTop === "number" && Number.isFinite(value.scrollTop) && value.scrollTop >= 0;
+    typeof value.scrollTop === "number" && Number.isFinite(value.scrollTop) && value.scrollTop >= 0 &&
+    (value.tailMessageId === undefined || typeof value.tailMessageId === "string");
 }
 
 export function readCachedTranscript(key: string): CachedTranscript | null {
