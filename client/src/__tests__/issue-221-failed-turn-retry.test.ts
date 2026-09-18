@@ -159,6 +159,7 @@ describe("failed turn preservation and in-place retry (Issue #221)", () => {
     expect(lastWs!.sendPrompt.mock.calls.length).toBe(sendCallsBefore + 1);
     const retriedPayload = lastWs!.sendPrompt.mock.calls.at(-1)?.[0] as Record<string, unknown>;
     expect(String(retriedPayload.text ?? "")).toContain("please retry me");
+    expect(retriedPayload.replay_incomplete).toBe(true);
     expect(afterRetry.some((m) => m.role === "assistant" && m.streaming)).toBe(true);
 
     lastWs!.onMessage?.({ type: "error", message: "second failure" });

@@ -242,6 +242,78 @@ describe("web/ws/preflight", () => {
     }
   });
 
+  it("requeues an explicitly replayed failed prompt but not a completed one", () => {
+    const historyStore = new HistoryStore({ namespace: "test-preflight-failed-replay", maxEntriesPerSession: 20 });
+    const base = {
+      requestId: "req-failed-replay",
+      clientMessageId: "p-failed-replay",
+      historyStore,
+      historyKey: "history-failed-replay",
+      sanitizeInput: (payload: unknown) => typeof payload === "string" ? payload : String((payload as { text?: unknown })?.text ?? ""),
+      sendJson: () => {},
+      traceWsDuplication: false,
+      warn: () => {},
+      sessionId: "session-1",
+      userId: 7,
+      inFlight: false,
+    };
+
+    try {
+      assert.deepEqual(
+        preflightPersistAndAck({
+          ...base,
+          parsed: { type: "prompt", payload: { text: "retry failed turn" }, client_message_id: "p-failed-replay" },
+          receivedAt: 1,
+        }),
+        { enqueue: true },
+      );
+      historyStore.add("history-failed-replay", {
+        role: "status",
+        text: "[server_overloaded] try again",
+        ts: 2,
+        kind: "error",
+      });
+
+      assert.deepEqual(
+        preflightPersistAndAck({
+          ...base,
+          parsed: { type: "prompt", payload: { text: "retry failed turn" }, client_message_id: "p-failed-replay" },
+          receivedAt: 2.5,
+        }),
+        { enqueue: false },
+      );
+
+      assert.deepEqual(
+        preflightPersistAndAck({
+          ...base,
+          parsed: {
+            type: "prompt",
+            payload: { text: "retry failed turn", replay_incomplete: true },
+            client_message_id: "p-failed-replay",
+          },
+          receivedAt: 3,
+        }),
+        { enqueue: true },
+      );
+
+      historyStore.add("history-failed-replay", { role: "ai", text: "completed", ts: 4 });
+      assert.deepEqual(
+        preflightPersistAndAck({
+          ...base,
+          parsed: {
+            type: "prompt",
+            payload: { text: "retry failed turn", replay_incomplete: true },
+            client_message_id: "p-failed-replay",
+          },
+          receivedAt: 5,
+        }),
+        { enqueue: false },
+      );
+    } finally {
+      historyStore.clear("history-failed-replay");
+    }
+  });
+
   it("does not execute or acknowledge a prompt when durable persistence fails", () => {
     const historyStore = new HistoryStore({ namespace: "test-preflight-failure", maxEntriesPerSession: 20 });
     historyStore.addWithResult = () => "failed";
