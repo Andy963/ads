@@ -6,6 +6,7 @@ import MainChatMessageList from "./MainChatMessageList.vue";
 import type { ChatMessage, IncomingImage, QueuedPrompt } from "./mainChat/types";
 import { useCopyMessage } from "./mainChat/useCopyMessage";
 import { analyzeMarkdownOutline } from "../lib/markdown";
+import { createTapActivation } from "../lib/tapActivation";
 import type { TranscriptViewport } from "../app/transcriptCache";
 
 const props = defineProps<{
@@ -83,6 +84,8 @@ const liveStepHasOverflow = ref(false);
 
 let chatResizeObserver: ResizeObserver | null = null;
 let chatScrollQueued = false;
+let bottomSettleFrame: number | null = null;
+let settlingBottom = false;
 
 function scheduleFrame(cb: () => void): number {
   if (typeof requestAnimationFrame === "function") return requestAnimationFrame(cb);
@@ -111,14 +114,53 @@ function onLiveStepScroll(): void {
   liveStepPinnedToBottom.value = isNearBottom(el, LIVE_STEP_STICKY_THRESHOLD_PX);
 }
 
-function scrollChatToBottom(): void {
+function cancelBottomSettlement(): void {
+  settlingBottom = false;
+  if (bottomSettleFrame !== null) cancelFrame(bottomSettleFrame);
+  bottomSettleFrame = null;
+}
+
+function settleBottomLayout(): void {
+  if (!settlingBottom || bottomSettleFrame !== null) return;
+  let frames = 0;
+  let stableFrames = 0;
+  let previousHeight = -1;
+  const settle = (): void => {
+    bottomSettleFrame = null;
+    const host = listRef.value;
+    if (!host || !autoScroll.value || !settlingBottom) return;
+    const height = host.scrollHeight;
+    const distance = height - host.scrollTop - host.clientHeight;
+    stableFrames = height === previousHeight && distance <= 2 ? stableFrames + 1 : 0;
+    previousHeight = height;
+    if (distance > 2) host.scrollTop = height;
+    if (++frames >= 8 || stableFrames >= 2) {
+      settlingBottom = false;
+      handleScroll();
+      return;
+    }
+    bottomSettleFrame = scheduleFrame(settle);
+  };
+  bottomSettleFrame = scheduleFrame(settle);
+}
+
+function scrollChatToBottom(explicit = false): void {
+  cancelBottomSettlement();
+  settlingBottom = explicit;
   autoScroll.value = true;
+  showScrollToBottom.value = false;
   scheduleChatScrollToBottom();
 }
 
 function pauseChatAutoScroll(): void {
+  cancelBottomSettlement();
   autoScroll.value = false;
   showScrollToBottom.value = true;
+}
+
+function onChatScrollIntent(event: Event): void {
+  if (event instanceof KeyboardEvent && !["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) return;
+  if (settlingBottom) pauseChatAutoScroll();
 }
 
 async function refreshAfterVisibility(): Promise<void> {
@@ -130,7 +172,7 @@ async function refreshAfterVisibility(): Promise<void> {
 
 defineExpose({ refreshAfterVisibility });
 
-const scrollToBottom = scrollChatToBottom;
+const bottomActivation = createTapActivation<boolean>(() => scrollChatToBottom(true), { name: "scroll-to-bottom" });
 
 function scheduleChatScrollToBottom(): void {
   if (!autoScroll.value) return;
@@ -146,6 +188,7 @@ function scheduleChatScrollToBottom(): void {
       if (!host) return;
       host.scrollTop = host.scrollHeight;
       showScrollToBottom.value = false;
+      settleBottomLayout();
       scheduleViewportSave();
     } finally {
       chatScrollQueued = false;
@@ -259,6 +302,12 @@ const { copiedMessageId, onCopyMessage, formatMessageTs } = useCopyMessage();
 
 function handleScroll() {
   if (!listRef.value) return;
+  // Layout-induced scroll events during an explicit jump are not a request
+  // to stop following. Actual wheel/touch/key input cancels the bounded loop.
+  if (settlingBottom) {
+    scheduleViewportSave();
+    return;
+  }
   const { scrollTop, scrollHeight, clientHeight } = listRef.value;
   const distance = scrollHeight - scrollTop - clientHeight;
   autoScroll.value = distance < CHAT_STICKY_THRESHOLD_PX;
@@ -289,6 +338,8 @@ onMounted(() => {
       scheduleChatScrollToBottom();
     });
     chatResizeObserver.observe(host);
+    const content = host.querySelector(".messageList");
+    if (content) chatResizeObserver.observe(content);
   }
 });
 
@@ -352,6 +403,7 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  cancelBottomSettlement();
   window.removeEventListener("pagehide", saveViewport);
   document.removeEventListener("visibilitychange", saveBeforeBackground);
   if (viewportFrame !== null) cancelFrame(viewportFrame);
@@ -381,27 +433,40 @@ onBeforeUnmount(() => {
     >
       {{ props.threadWarning }}
     </div>
-    <div ref="listRef" class="chat" @scroll="handleScroll">
-      <MainChatMessageList
-        :messages="messages"
-        :initial-first-loaded-id="initialViewport?.following === false ? initialViewport.firstLoadedId : undefined"
-        :initial-anchor-id="initialViewport?.following === false ? initialViewport.anchorId : undefined"
-        :copied-message-id="copiedMessageId"
-        :format-message-ts="formatMessageTs"
-        :live-step-expanded="liveStepExpanded"
-        :live-step-has-overflow="liveStepHasOverflow"
-        :live-step-can-toggle-expanded="liveStepCanToggleExpanded"
-        :live-step-outline-items="liveStepOutlineItems"
-        :live-step-outline-hidden-count="liveStepOutlineHiddenCount"
-        :live-step-collapsed-trivial-outline="liveStepCollapsedTrivialOutline"
-        :workspace-root="workspaceRoot"
-        @copy-message="onCopyMessage($event)"
-        @retry-message="emit('retryMessage', $event)"
-        @toggle-live-step-expanded="toggleLiveStepExpanded"
-        @before-history-prepend="pauseChatAutoScroll"
-      />
-      <button v-if="showScrollToBottom" class="scrollToBottom" type="button" aria-label="Scroll to bottom" title="回到底部"
-        @click="scrollToBottom">
+    <div class="chatViewport">
+      <div
+        ref="listRef"
+        class="chat"
+        @scroll="handleScroll"
+        @wheel.passive="onChatScrollIntent"
+        @touchstart.passive="onChatScrollIntent"
+        @keydown="onChatScrollIntent"
+      >
+        <MainChatMessageList
+          :messages="messages"
+          :initial-first-loaded-id="initialViewport?.following === false ? initialViewport.firstLoadedId : undefined"
+          :initial-anchor-id="initialViewport?.following === false ? initialViewport.anchorId : undefined"
+          :copied-message-id="copiedMessageId"
+          :format-message-ts="formatMessageTs"
+          :live-step-expanded="liveStepExpanded"
+          :live-step-has-overflow="liveStepHasOverflow"
+          :live-step-can-toggle-expanded="liveStepCanToggleExpanded"
+          :live-step-outline-items="liveStepOutlineItems"
+          :live-step-outline-hidden-count="liveStepOutlineHiddenCount"
+          :live-step-collapsed-trivial-outline="liveStepCollapsedTrivialOutline"
+          :workspace-root="workspaceRoot"
+          @copy-message="onCopyMessage($event)"
+          @retry-message="emit('retryMessage', $event)"
+          @toggle-live-step-expanded="toggleLiveStepExpanded"
+          @before-history-prepend="pauseChatAutoScroll"
+        />
+      </div>
+      <button v-if="showScrollToBottom" class="scrollToBottom" type="button" aria-label="Scroll to bottom" title="Scroll to bottom"
+        @pointerdown.stop="bottomActivation.onPointerDown($event, true)"
+        @pointermove.stop="bottomActivation.onPointerMove"
+        @pointercancel.stop="bottomActivation.onPointerCancel"
+        @pointerup.stop="bottomActivation.onPointerUp"
+        @click.stop="bottomActivation.onClick($event, true)">
         <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"
           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M4 8l6 6 6-6" />

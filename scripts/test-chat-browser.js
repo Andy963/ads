@@ -9,6 +9,7 @@ import { startChatBrowserServer } from "./lib/chat-browser-server.js";
 import { verifyPostSendInteractions } from "./lib/chat-browser-post-send.js";
 import { verifyMonotonicHistory } from "./lib/chat-browser-history.js";
 import { verifyLocalFirstTranscript } from "./lib/chat-browser-local-first.js";
+import { verifyChatNavigation } from "./lib/chat-browser-navigation.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const buildRoot = path.resolve(process.env.ADS_CHAT_BUILD_DIR || path.join(repoRoot, "dist/client"));
@@ -49,7 +50,15 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     }, { mobile });
     page = await context.newPage();
     const errors = [];
+    result.errorDetails = [];
+    result.failedRequests = [];
+    page.on("requestfailed", (request) => result.failedRequests.push({
+      url: request.url(), failure: request.failure(), offline: result.localFirst?.offline,
+    }));
     const browserWarnings = [];
+    const isExpectedOutageError = (text) => mobile && result.localFirst?.offline &&
+      [...fixture.refusedRequests].some((requestPath) =>
+        text.endsWith(`${new URL(fixture.origin).host}${requestPath} due to access control checks.`));
     result.browserErrors = browserWarnings;
     result.dialogs = [];
     page.on("dialog", async (dialog) => {
@@ -57,6 +66,10 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       await dialog.dismiss();
     });
     page.on("pageerror", (error) => {
+      if (isExpectedOutageError(error.message)) {
+        browserWarnings.push(error.message);
+        return;
+      }
       if (mobile && result.localFirst?.offlineMode?.startsWith("origin-unreachable") && /\/sw\.js due to access control checks\.$/.test(error.message)) {
         // WebKit may surface the deliberately refused worker update as a page
         // error instead of a console network error. Keep it in the report; the
@@ -65,10 +78,15 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
         return;
       }
       errors.push(error.message);
+      result.errorDetails.push({ source: "pageerror", text: error.message, offline: result.localFirst?.offline, refused: [...fixture.refusedRequests] });
     });
     page.on("console", (message) => {
       if (message.type() !== "error") return;
       const text = message.text();
+      if (isExpectedOutageError(text)) {
+        browserWarnings.push(text);
+        return;
+      }
       if (result.localFirst?.offline && /load failed|failed to load resource|network|WebSocket connection/i.test(text)) {
         browserWarnings.push(text);
         return;
@@ -78,6 +96,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
         return;
       }
       errors.push(text);
+      result.errorDetails.push({ source: "console", text, offline: result.localFirst?.offline, refused: [...fixture.refusedRequests] });
     });
     const frames = [];
     result.frames = frames;
@@ -264,6 +283,8 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     result.history = {};
     await verifyMonotonicHistory({ page, send, waitForReply, chooseLane, settle, report: result.history });
     result.checks.push("Bounded initial history, native prepend anchoring, zero scroll writes, and stable DOM rows across direction changes");
+    result.navigation = await verifyChatNavigation({ page, mobile, settle });
+    result.checks.push("Repeated left-edge menu taps, reachable 44px bottom control, and complete bottom navigation");
     result.localFirst = {};
     await verifyLocalFirstTranscript({ page, context, fixture, frames, send, waitForReply, chooseLane, settle, report: result.localFirst, engine });
     result.checks.push("Cached first frame, retained scroll anchor, offline reload, unchanged reconnect and real HTTP delta catch-up");

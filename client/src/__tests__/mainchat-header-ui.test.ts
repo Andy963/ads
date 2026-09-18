@@ -114,8 +114,8 @@ describe("MainChat header UI", () => {
     const css = readUtf8("../components/MainChat.css");
     expect(css).toMatch(/\.detail\s*\{[\s\S]*?position:\s*relative\s*;[\s\S]*?\}/);
     expect(css).not.toContain("detail--active");
-    expect(css).not.toMatch(/\.detail\s*\{[\s\S]*?box-shadow\s*:/);
-    expect(css).not.toMatch(/\.detail\s*\{[\s\S]*?linear-gradient/);
+    expect(css).not.toMatch(/\.detail\s*\{[^}]*box-shadow\s*:/);
+    expect(css).not.toMatch(/\.detail\s*\{[^}]*linear-gradient/);
 
     const baseProps = {
       queuedPrompts: [],

@@ -350,6 +350,8 @@ function toggleMobileDrawer(): void {
   else openMobileDrawer();
 }
 
+const drawerActivation = createTapActivation<boolean>(toggleMobileDrawer, { name: "mobile-drawer" });
+
 function selectWorkspaceTab(tab: ChatLane): void {
   if (activeWorkspaceTab.value === tab) {
     closeMobileContextMenu();
@@ -505,7 +507,11 @@ function isHorizontalSwipe(dx: number, dy: number): boolean {
 }
 
 function onDrawerEdgeTouchStart(ev: TouchEvent): void {
+  drawerEdgeSwipe = null;
   if (!isMobile.value || mobileDrawerOpen.value) return;
+  // SVG descendants are Elements too; button taps must not start a competing
+  // edge swipe or be interpreted as navigation drags by the parent container.
+  if (ev.target instanceof Element && ev.target.closest(".topbar, button, a, input, textarea, select, [role='button']")) return;
   const touch = readSwipeTouch(ev);
   if (!touch || touch.x > DRAWER_SWIPE_EDGE_PX) return;
   drawerEdgeSwipe = { startX: touch.x, startY: touch.y, triggered: false };
@@ -773,7 +779,11 @@ const advisorConnectionStatus = computed(() => {
         :aria-label="mobileDrawerOpen ? '关闭导航' : '打开导航'"
         :aria-expanded="mobileDrawerOpen"
         data-testid="mobile-drawer-toggle"
-        @click.stop="toggleMobileDrawer"
+        @pointerdown.stop="drawerActivation.onPointerDown($event, true)"
+        @pointermove.stop="drawerActivation.onPointerMove"
+        @pointercancel.stop="drawerActivation.onPointerCancel"
+        @pointerup.stop="drawerActivation.onPointerUp"
+        @click.stop="drawerActivation.onClick($event, true)"
       >
         <svg class="mobileMenuIcon" width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
           <rect x="2" y="5.5" width="16" height="2.2" rx="1.1" />

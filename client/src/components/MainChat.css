@@ -8,6 +8,13 @@
   overflow: hidden;
 }
 
+.chatViewport {
+  flex: 1 1 auto;
+  display: flex;
+  position: relative;
+  min-height: 0;
+}
+
 .chat {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -69,16 +76,21 @@
 }
 
 .scrollToBottom {
-  position: sticky;
-  float: right;
+  position: absolute;
   bottom: 12px;
   right: 12px;
-  margin-top: 8px;
-  border: none;
-  background: transparent;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 50%;
+  background: var(--app-bg, #ffffff);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.14);
   color: #475569;
   cursor: pointer;
-  padding: 2px;
+  padding: 10px;
+  touch-action: manipulation;
   z-index: 2;
 }
 

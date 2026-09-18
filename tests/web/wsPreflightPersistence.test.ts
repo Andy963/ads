@@ -4,10 +4,12 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import WebSocket, { type RawData } from "ws";
 
 import { resetStateDatabaseForTests } from "../../server/state/database.js";
+import { HybridOrchestrator } from "../../server/agents/orchestrator.js";
 import { AsyncLock } from "../../server/utils/asyncLock.js";
 import { HistoryStore } from "../../server/utils/historyStore.js";
 import { SessionManager } from "../../server/sessions/sessionManager.js";
@@ -75,6 +77,9 @@ describe("web/server/ws/preflight-persistence", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-ws-preflight-"));
     workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-web-ws-workspace-"));
     process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
+    process.env.CODEX_HOME = path.join(tmpDir, "codex");
+    delete process.env.CFMEM_URL;
+    delete process.env.CFMEM_API_KEY;
     resetStateDatabaseForTests();
 
     server = http.createServer();
@@ -91,8 +96,19 @@ describe("web/server/ws/preflight-persistence", () => {
         workspaceRoot?: string;
       }
     >();
-    const workerSessionManager = new SessionManager(0, 0, "workspace-write", "test-model");
-    const advisorSessionManager = new SessionManager(0, 0, "read-only", "test-model");
+    const createSession = ({ cwd }: { cwd: string }): HybridOrchestrator => new HybridOrchestrator({
+      initialWorkingDirectory: cwd,
+      adapters: [{
+        id: "codex",
+        metadata: { id: "codex", name: "Preflight fixture", capabilities: ["text"] },
+        send: async () => ({ response: "Fixture reply", usage: null, agentId: "codex" }),
+        status: () => ({ ready: true, streaming: false }),
+        onEvent: () => () => {},
+        reset: () => {},
+      }],
+    });
+    const workerSessionManager = new SessionManager(0, 0, "workspace-write", "test-model", undefined, undefined, { createSession });
+    const advisorSessionManager = new SessionManager(0, 0, "read-only", "test-model", undefined, undefined, { createSession });
     const workerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-worker" });
     const advisorHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-advisor" });
     historyStore = workerHistoryStore;
@@ -182,9 +198,20 @@ describe("web/server/ws/preflight-persistence", () => {
   });
 
   afterEach(async () => {
-    // Drain held work before closing its history/sync database.
+    // The next message has not necessarily entered the workspace lock yet.
+    // Wait for every accepted turn, not just the currently held command.
     unblockCommands?.();
-    await lock.runExclusive(async () => {});
+    const historyKey = "test::test::main";
+    const expectedTurns = historyStore.get(historyKey).filter((entry) => entry.role === "user").length;
+    const deadline = Date.now() + 3000;
+    while (true) {
+      const completedTurns = historyStore.get(historyKey).filter((entry) =>
+        entry.role === "ai" || (entry.role === "status" && ["execute", "error"].includes(entry.kind ?? "")),
+      ).length;
+      if (completedTurns >= expectedTurns && !lock.isBusy()) break;
+      assert.ok(Date.now() < deadline, "Queued fixture turns must finish before database teardown");
+      await delay(5);
+    }
     try {
       wss.close();
     } catch {
