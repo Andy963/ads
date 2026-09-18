@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { Close, CopyDocument, EditPen, Plus, Refresh, StarFilled } from "@element-plus/icons-vue";
 
 import type { ApiClient } from "../api/client";
@@ -22,6 +22,8 @@ type UpstreamDiscoveryResponse = {
   models: string[];
   error?: string;
 };
+
+type UpstreamConfig = { baseUrl: string; provider: string; hasApiKey: boolean };
 
 type UpstreamModelRow = {
   modelId: string;
@@ -74,6 +76,9 @@ const syncError = ref<string | null>(null);
 const syncBaseUrl = ref("");
 const syncApiKey = ref("");
 const syncProvider = ref("openai");
+const syncHasSavedKey = ref(false);
+const syncConfigLoading = ref(false);
+let syncConfigGeneration = 0;
 const upstreamModels = ref<string[]>([]);
 const selectedUpstreamModels = ref<string[]>([]);
 const upstreamModelsLoaded = ref(false);
@@ -238,7 +243,8 @@ function getDuplicateModelId(model: ModelConfig): string {
   return `${baseModelId}-${suffix}`;
 }
 
-function openSyncDialog(): void {
+async function openSyncDialog(): Promise<void> {
+  const generation = ++syncConfigGeneration;
   syncDialogOpen.value = true;
   syncLoading.value = false;
   syncImporting.value = false;
@@ -246,17 +252,37 @@ function openSyncDialog(): void {
   syncBaseUrl.value = "";
   syncApiKey.value = "";
   syncProvider.value = "openai";
+  syncHasSavedKey.value = false;
+  syncConfigLoading.value = true;
   upstreamModels.value = [];
   selectedUpstreamModels.value = [];
   upstreamModelsLoaded.value = false;
+  try {
+    const saved = await props.api.get<UpstreamConfig>("/api/models/upstream/config");
+    if (generation !== syncConfigGeneration || !syncDialogOpen.value) return;
+    syncBaseUrl.value = typeof saved?.baseUrl === "string" ? saved.baseUrl : "";
+    syncProvider.value = typeof saved?.provider === "string" && saved.provider ? saved.provider : "openai";
+    syncHasSavedKey.value = saved?.hasApiKey === true;
+  } catch {
+    if (generation === syncConfigGeneration) syncError.value = "Could not load saved settings; enter the endpoint and API key manually.";
+  } finally {
+    if (generation === syncConfigGeneration) syncConfigLoading.value = false;
+  }
 }
 
 function closeSyncDialog(force = false): void {
   if (!force && (syncLoading.value || syncImporting.value)) return;
+  syncConfigGeneration += 1;
+  syncConfigLoading.value = false;
   syncDialogOpen.value = false;
   syncError.value = null;
   syncApiKey.value = "";
 }
+
+onBeforeUnmount(() => {
+  syncConfigGeneration += 1;
+  syncApiKey.value = "";
+});
 
 function toggleUpstreamModel(modelId: string, selected: boolean): void {
   if (selected) {
@@ -281,10 +307,10 @@ function toggleAllNewUpstreamModels(): void {
 }
 
 async function discoverUpstreamModels(): Promise<void> {
-  if (syncLoading.value || syncImporting.value) return;
+  if (syncLoading.value || syncImporting.value || syncConfigLoading.value) return;
   syncLoading.value = true;
   syncError.value = null;
-  const payload: Record<string, string> = {};
+  const payload: Record<string, string> = { provider: syncProvider.value.trim() || "openai" };
   const baseUrl = syncBaseUrl.value.trim();
   const apiKey = syncApiKey.value.trim();
   if (baseUrl) payload.baseUrl = baseUrl;
@@ -305,6 +331,8 @@ async function discoverUpstreamModels(): Promise<void> {
       .filter((row) => !row.configured)
       .map((row) => row.modelId);
     upstreamModelsLoaded.value = true;
+    syncApiKey.value = "";
+    syncHasSavedKey.value = true;
   } catch (err) {
     upstreamModels.value = [];
     selectedUpstreamModels.value = [];
@@ -1001,7 +1029,7 @@ defineExpose({
               autocapitalize="off"
               spellcheck="false"
               data-testid="model-manager-sync-base-url"
-              :disabled="syncLoading || syncImporting"
+              :disabled="syncLoading || syncImporting || syncConfigLoading"
             />
             <span class="modelHelp">例如 https://api.openai.com/v1；留空时使用服务器已有配置。</span>
           </label>
@@ -1012,12 +1040,12 @@ defineExpose({
               v-model="syncApiKey"
               class="modelInput"
               type="password"
-              placeholder="留空使用服务器配置"
+              :placeholder="syncHasSavedKey ? 'Key configured on server; leave blank to reuse' : 'Enter an API key'"
               autocomplete="off"
               autocapitalize="off"
               spellcheck="false"
               data-testid="model-manager-sync-api-key"
-              :disabled="syncLoading || syncImporting"
+              :disabled="syncLoading || syncImporting || syncConfigLoading"
             />
           </label>
 
@@ -1029,7 +1057,7 @@ defineExpose({
               placeholder="openai"
               autocomplete="off"
               data-testid="model-manager-sync-provider"
-              :disabled="syncLoading || syncImporting"
+              :disabled="syncLoading || syncImporting || syncConfigLoading"
             />
             <span class="modelHelp">导入模型使用的 provider 标签，默认是 openai。</span>
           </label>
@@ -1038,7 +1066,7 @@ defineExpose({
             <button
               type="submit"
               class="btnSecondary"
-              :disabled="syncLoading || syncImporting"
+              :disabled="syncLoading || syncImporting || syncConfigLoading"
               data-testid="model-manager-sync-discover"
             >
               {{ syncLoading ? "探测中…" : "探测模型" }}

@@ -29,6 +29,61 @@ async function settle(wrapper: { vm: { $nextTick: () => Promise<void> } }): Prom
 }
 
 describe("ModelManager", () => {
+  it("prefills server metadata across remounts without persisting or returning an API key", async () => {
+    localStorage.clear();
+    const api = {
+      get: vi.fn().mockImplementation((url: string) => Promise.resolve(url === "/api/models/upstream/config"
+        ? { baseUrl: "https://saved.test/v1", provider: "custom", hasApiKey: true } : [])),
+      post: vi.fn().mockResolvedValue({ ok: true, models: [] }), patch: vi.fn(), delete: vi.fn(),
+    };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const wrapper = mount(ModelManager, { props: { api: api as any }, global: { stubs: { "el-icon": true } } });
+      await settle(wrapper);
+      await wrapper.get('[data-testid="model-manager-sync"]').trigger("click");
+      await settle(wrapper);
+      expect((wrapper.get('[data-testid="model-manager-sync-base-url"]').element as HTMLInputElement).value).toBe("https://saved.test/v1");
+      expect((wrapper.get('[data-testid="model-manager-sync-provider"]').element as HTMLInputElement).value).toBe("custom");
+      const key = wrapper.get('[data-testid="model-manager-sync-api-key"]');
+      expect((key.element as HTMLInputElement).value).toBe("");
+      expect(key.attributes("placeholder")).toContain("configured on server");
+      await wrapper.get('[data-testid="model-manager-sync-dialog"]').trigger("submit");
+      await settle(wrapper);
+      expect(api.post).toHaveBeenLastCalledWith("/api/models/upstream", { baseUrl: "https://saved.test/v1", provider: "custom" });
+      await key.setValue("new-test-secret");
+      await wrapper.get('[data-testid="model-manager-sync-dialog"]').trigger("submit");
+      await settle(wrapper);
+      expect((key.element as HTMLInputElement).value).toBe("");
+      expect(JSON.stringify(localStorage)).not.toContain("new-test-secret");
+      wrapper.unmount();
+    }
+    expect(api.get.mock.calls.filter(([url]) => url === "/api/models/upstream/config")).toHaveLength(2);
+  });
+
+  it("imports only checked discoveries and never reimports configured models", async () => {
+    const existing = makeModel("existing", "Existing", "openai");
+    const api = {
+      get: vi.fn().mockImplementation((url: string) => Promise.resolve(url === "/api/model-configs" ? [existing] : {})),
+      post: vi.fn().mockImplementation((url: string) => Promise.resolve(url === "/api/models/upstream"
+        ? { ok: true, models: ["existing", "chosen", "ignored"] } : {})),
+      patch: vi.fn(), delete: vi.fn(),
+    };
+    const wrapper = mount(ModelManager, { props: { api: api as any }, global: { stubs: { "el-icon": true } } });
+    await settle(wrapper);
+    await wrapper.get('[data-testid="model-manager-sync"]').trigger("click");
+    await settle(wrapper);
+    await wrapper.get('[data-testid="model-manager-sync-dialog"]').trigger("submit");
+    await settle(wrapper);
+    expect((wrapper.get('[data-testid="model-manager-sync-model-existing"]').element as HTMLInputElement).disabled).toBe(true);
+    await wrapper.get('[data-testid="model-manager-sync-model-ignored"]').setValue(false);
+    await wrapper.get('[data-testid="model-manager-sync-import"]').trigger("click");
+    await settle(wrapper);
+    const imports = api.post.mock.calls.filter(([url]) => url === "/api/model-configs");
+    expect(imports).toHaveLength(1);
+    expect(imports[0]?.[1]).toMatchObject({ modelId: "chosen" });
+    expect(JSON.stringify(imports)).not.toContain("apiKey");
+    wrapper.unmount();
+  });
+
   it("edits versioned Advisor and Worker prompts", async () => {
     const advisorPrompt = "Advisor baseline prompt";
     const workerPrompt = "Worker baseline prompt";
@@ -512,6 +567,7 @@ describe("ModelManager", () => {
     expect(api.post).toHaveBeenCalledWith("/api/models/upstream", {
       baseUrl: "https://provider.test/v1",
       apiKey: "sk-test",
+      provider: "custom",
     });
     expect(wrapper.find('[data-testid="model-manager-sync-model-gpt-5.6-sol"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="model-manager-sync-model-existing-model"]').attributes("disabled")).toBeDefined();

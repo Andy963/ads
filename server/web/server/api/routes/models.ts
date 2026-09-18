@@ -5,6 +5,8 @@ import { getStateDatabase } from "../../../../state/database.js";
 import { createGlobalModelConfigStore, type GlobalModelConfigStore } from "../../../../state/globalModelConfigStore.js";
 import type { ModelConfig } from "../../../../state/modelConfigTypes.js";
 import { resolveCodexConfig, type CodexOverrides, type CodexResolvedConfig } from "../../../../codexConfig.js";
+import { createUpstreamCredentialStore, type UpstreamCredentialStore, type UpstreamCredentials } from "../../../../state/upstreamCredentialStore.js";
+import { buildModelsEndpoint, normalizeUpstreamBaseUrl } from "../../../../utils/upstreamUrl.js";
 import type { ApiRouteContext } from "../types.js";
 import { readJsonBody, sendJson } from "../../http.js";
 
@@ -44,12 +46,14 @@ type ModelRouteDeps = {
   modelStore?: GlobalModelConfigStore;
   resolveConfig?: (overrides?: CodexOverrides) => CodexResolvedConfig;
   fetchImpl?: typeof fetch;
+  upstreamStore?: UpstreamCredentialStore;
 };
 
 const upstreamDiscoverySchema = z
   .object({
-    baseUrl: z.string().trim().url().optional(),
-    apiKey: trimmedNonEmptyString.optional(),
+    baseUrl: z.string().trim().min(1).max(2048).optional(),
+    apiKey: trimmedNonEmptyString.max(16_384).optional(),
+    provider: trimmedNonEmptyString.max(128).optional(),
   })
   .strict();
 
@@ -75,21 +79,6 @@ export function resetUpstreamModelsCache(): void {
 
 function getUpstreamError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-function buildModelsEndpoint(baseUrl: string): string {
-  const url = new URL(baseUrl);
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("Upstream base URL must use HTTP or HTTPS");
-  }
-  if (url.username || url.password) {
-    throw new Error("Upstream base URL must not contain credentials");
-  }
-  const path = url.pathname.replace(/\/+$/, "");
-  url.pathname = `${path}/models`;
-  url.search = "";
-  url.hash = "";
-  return url.toString();
 }
 
 function getUpstreamCacheKey(endpoint: string, apiKey: string): string {
@@ -125,16 +114,9 @@ function getCachedUpstreamModels(cacheKey: string, now: number): string[] | null
 
 async function loadUpstreamModels(
   deps: ModelRouteDeps,
-  overrides: CodexOverrides = {},
+  config: UpstreamCredentials,
 ): Promise<UpstreamDiscoveryResult> {
   const now = Date.now();
-
-  let config: CodexResolvedConfig;
-  try {
-    config = (deps.resolveConfig ?? resolveCodexConfig)(overrides);
-  } catch (err) {
-    return { ok: false, models: [], error: getUpstreamError(err) };
-  }
   if (!config.baseUrl || !config.apiKey) {
     return { ok: false, models: [], error: "Upstream model discovery requires an API key and base URL" };
   }
@@ -156,6 +138,7 @@ async function loadUpstreamModels(
     const response = await fetchImpl(endpoint, {
       headers: { Authorization: `Bearer ${config.apiKey}` },
       signal: AbortSignal.timeout(UPSTREAM_MODELS_TIMEOUT_MS),
+      redirect: "error",
     });
     if (!response.ok) {
       return { ok: false, models: [], error: `Upstream model endpoint returned HTTP ${response.status}` };
@@ -167,8 +150,32 @@ async function loadUpstreamModels(
     upstreamModelsCache.set(cacheKey, { expiresAt: now + UPSTREAM_MODELS_CACHE_TTL_MS, models });
     return { ok: true, models };
   } catch (err) {
-    return { ok: false, models: [], error: getUpstreamError(err) };
+    return { ok: false, models: [], error: getUpstreamError(err).replaceAll(config.apiKey, "[redacted]") };
   }
+}
+
+function resolveDiscoveryCredentials(
+  deps: ModelRouteDeps,
+  store: UpstreamCredentialStore,
+  owner: string,
+  input: z.infer<typeof upstreamDiscoverySchema>,
+): UpstreamCredentials {
+  // Explicit credentials can repair an unreadable saved record without ever
+  // decrypting it or falling back to a different provider's key.
+  if (input.baseUrl && input.apiKey) {
+    return { baseUrl: normalizeUpstreamBaseUrl(input.baseUrl), apiKey: input.apiKey, provider: input.provider ?? "openai" };
+  }
+  const saved = store.getMetadata(owner);
+  const fallback = saved ? null : (deps.resolveConfig ?? resolveCodexConfig)();
+  const configuredUrl = saved?.baseUrl ?? fallback?.baseUrl;
+  if (!configuredUrl) throw new Error("Upstream model discovery requires an API key and base URL");
+  const baseUrl = normalizeUpstreamBaseUrl(input.baseUrl || configuredUrl);
+  if (!input.apiKey && baseUrl !== normalizeUpstreamBaseUrl(configuredUrl)) {
+    throw new Error("Enter an API key for the changed upstream endpoint; saved keys are bound to their endpoint");
+  }
+  const apiKey = input.apiKey ?? (saved ? store.getCredentials(owner)?.apiKey : fallback?.apiKey);
+  if (!apiKey) throw new Error("Upstream model discovery requires an API key and base URL");
+  return { baseUrl, apiKey, provider: input.provider ?? saved?.provider ?? "openai" };
 }
 
 function normalizeString(value: unknown): string {
@@ -208,6 +215,25 @@ function buildModelConfigPayload(
 export async function handleModelRoutes(ctx: ApiRouteContext, deps: ModelRouteDeps = {}): Promise<boolean> {
   const { req, res, pathname } = ctx;
   const getModelStore = () => deps.modelStore ?? createGlobalModelConfigStore(getStateDatabase());
+  const getUpstreamStore = () => deps.upstreamStore ?? createUpstreamCredentialStore(getStateDatabase());
+
+  if (req.method === "GET" && pathname === "/api/models/upstream/config") {
+    res.setHeader("Cache-Control", "no-store");
+    try {
+      const saved = getUpstreamStore().getMetadata(ctx.auth.userId);
+      if (saved) {
+        sendJson(res, 200, { ...saved, source: "saved" });
+      } else {
+        let config: CodexResolvedConfig | null = null;
+        try { config = (deps.resolveConfig ?? resolveCodexConfig)(); } catch { /* Manual configuration remains available. */ }
+        sendJson(res, 200, { baseUrl: config?.baseUrl ? normalizeUpstreamBaseUrl(config.baseUrl) : "",
+          provider: "openai", hasApiKey: Boolean(config?.apiKey), source: config?.apiKey ? "server" : "none" });
+      }
+    } catch {
+      sendJson(res, 200, { baseUrl: "", provider: "openai", hasApiKey: false, source: "none" });
+    }
+    return true;
+  }
 
   if (req.method === "GET" && pathname === "/api/models") {
     const modelStore = getModelStore();
@@ -229,12 +255,27 @@ export async function handleModelRoutes(ctx: ApiRouteContext, deps: ModelRouteDe
       sendJson(res, 400, { ok: false, models: [], error: "Invalid upstream discovery payload" });
       return true;
     }
-    sendJson(res, 200, await loadUpstreamModels(deps, parsed.data));
+    res.setHeader("Cache-Control", "no-store");
+    try {
+      const store = getUpstreamStore();
+      const config = resolveDiscoveryCredentials(deps, store, ctx.auth.userId, parsed.data);
+      const result = await loadUpstreamModels(deps, config);
+      if (result.ok) store.save(ctx.auth.userId, config);
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 200, { ok: false, models: [], error: getUpstreamError(error) });
+    }
     return true;
   }
 
   if (req.method === "GET" && pathname === "/api/models/upstream") {
-    sendJson(res, 200, await loadUpstreamModels(deps));
+    res.setHeader("Cache-Control", "no-store");
+    try {
+      const config = resolveDiscoveryCredentials(deps, getUpstreamStore(), ctx.auth.userId, {});
+      sendJson(res, 200, await loadUpstreamModels(deps, config));
+    } catch (error) {
+      sendJson(res, 200, { ok: false, models: [], error: getUpstreamError(error) });
+    }
     return true;
   }
 
