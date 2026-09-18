@@ -118,6 +118,8 @@ function waitForChildProcess(args: {
 export interface CommandRunRequest {
   cmd: string;
   args?: string[];
+  shell?: boolean;
+  workspaceRoot?: string;
   cwd: string;
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
@@ -139,6 +141,18 @@ export interface CommandRunResult {
 }
 
 let PIPE_STDIOS_SUPPORTED: boolean | null = null;
+
+const SHELL_BUILTINS = new Set([
+  "[",
+  "cd",
+  "echo",
+  "false",
+  "printf",
+  "pwd",
+  "test",
+  "true",
+  "unset",
+]);
 
 function supportsPipedStdios(): boolean {
   if (PIPE_STDIOS_SUPPORTED !== null) {
@@ -162,11 +176,140 @@ function hasPathSeparator(value: string): boolean {
   return value.includes("/") || value.includes("\\");
 }
 
+export function tokenizeCommandLine(value: string): string[] {
+  const tokens: string[] = [];
+  let token = "";
+  let tokenStarted = false;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+
+  for (const character of value) {
+    if (escaped) {
+      token += character;
+      tokenStarted = true;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      tokenStarted = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) {
+        quote = null;
+      } else {
+        token += character;
+      }
+      tokenStarted = true;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      tokenStarted = true;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      if (tokenStarted) {
+        tokens.push(token);
+        token = "";
+        tokenStarted = false;
+      }
+      continue;
+    }
+    token += character;
+    tokenStarted = true;
+  }
+
+  if (escaped) throw new Error("exec_command cmd has a dangling escape");
+  if (quote) throw new Error("exec_command cmd has an unterminated quote");
+  if (tokenStarted) tokens.push(token);
+  return tokens;
+}
+
+export function hasShellSyntax(value: string): boolean {
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if ("|;&<>*?\n\r".includes(character)) return true;
+    if (character === "`" || (character === "$" && /[({A-Za-z_]/.test(value[index + 1] ?? ""))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function splitShellCommandSegments(value: string): string[] {
+  const segments: string[] = [];
+  let start = 0;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+
+  const push = (end: number): void => {
+    const segment = value.slice(start, end).trim();
+    if (segment) segments.push(segment);
+  };
+
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+
+    const next = value[index + 1];
+    if (character === "|" || character === "&") {
+      push(index);
+      if (next === character) index += 1;
+      start = index + 1;
+    } else if (character === ";" || character === "\n") {
+      push(index);
+      start = index + 1;
+    }
+  }
+  push(value.length);
+  return segments;
+}
+
 export function isGitPushCommand(cmd: string, args: string[] = []): boolean {
   const executable = path.basename(cmd).toLowerCase();
   if (executable !== "git") return false;
   const first = String(args[0] ?? "").toLowerCase();
   return first === "push";
+}
+
+function containsGitPushCommand(command: string): boolean {
+  return /\bgit\s+push\b/i.test(command);
 }
 
 export function assertCommandAllowed(cmd: string, args: string[], allowlist: string[] | null | undefined): void {
@@ -181,6 +324,31 @@ export function assertCommandAllowed(cmd: string, args: string[], allowlist: str
 
   if (isGitPushCommand(cmd, args)) {
     throw new Error("git push is blocked; push manually if needed");
+  }
+}
+
+export function assertShellCommandAllowed(command: string, allowlist: string[] | null | undefined): void {
+  if (containsGitPushCommand(command)) {
+    throw new Error("git push is blocked; push manually if needed");
+  }
+  if (allowlist && /`|\$\(/.test(command)) {
+    throw new Error("command substitution is not allowed when an executable allowlist is enabled");
+  }
+  if (!allowlist) return;
+
+  for (const segment of splitShellCommandSegments(command)) {
+    const tokens = tokenizeCommandLine(segment);
+    let executableIndex = 0;
+    while (tokens[executableIndex] && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[executableIndex])) {
+      executableIndex += 1;
+    }
+    const executable = tokens[executableIndex];
+    if (!executable) throw new Error("shell command segment has no executable");
+    const normalized = path.basename(executable).toLowerCase();
+    if (SHELL_BUILTINS.has(normalized)) continue;
+    if (!allowlist.includes(normalized)) {
+      throw new Error(`command not allowed: ${normalized}`);
+    }
   }
 }
 
@@ -201,6 +369,95 @@ export function getExecAllowlistFromEnv(env: NodeJS.ProcessEnv = process.env): s
   return parsed;
 }
 
+function isWithinPath(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function resolveBubblewrap(env: NodeJS.ProcessEnv): string {
+  const configured = String(env.ADS_NATIVE_RUNTIME_BWRAP_PATH ?? "").trim();
+  const candidates = configured ? [configured] : ["/usr/bin/bwrap", "/bin/bwrap"];
+  for (const candidate of candidates) {
+    if (!path.isAbsolute(candidate)) continue;
+    try {
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch {
+      // Try the next configured location.
+    }
+  }
+  throw new Error("Native command execution requires bubblewrap at /usr/bin/bwrap or /bin/bwrap");
+}
+
+function buildSandboxArgs(args: {
+  command: string;
+  commandArgs: string[];
+  shell: boolean;
+  cwd: string;
+  workspaceRoot: string;
+  env: NodeJS.ProcessEnv;
+}): { executable: string; args: string[] } {
+  if (process.platform !== "linux") {
+    throw new Error("Native command execution requires a Linux workspace sandbox");
+  }
+  const workspaceRoot = path.resolve(args.workspaceRoot);
+  const cwd = path.resolve(args.cwd);
+  if (workspaceRoot === "/" || workspaceRoot === "/home" || workspaceRoot === "/root" || workspaceRoot === "/tmp") {
+    throw new Error("Native command execution requires a project-scoped workspace root");
+  }
+  if (!isWithinPath(workspaceRoot, cwd)) {
+    throw new Error("Working directory must be inside the workspace root");
+  }
+
+  const executable = resolveBubblewrap(args.env);
+  const sandboxArgs = [
+    "--die-with-parent",
+    "--new-session",
+    "--unshare-pid",
+    "--tmpfs", "/",
+    "--tmpfs", "/tmp",
+  ];
+
+  for (const mount of ["/usr", "/bin", "/sbin", "/lib", "/lib64"]) {
+    if (fs.existsSync(mount)) sandboxArgs.push("--ro-bind", mount, mount);
+  }
+
+  const readonlyBinds: string[] = [];
+  const addReadonlyBind = (candidate: string): void => {
+    if (readonlyBinds.some((existing) => isWithinPath(existing, candidate))) return;
+    readonlyBinds.push(candidate);
+    sandboxArgs.push("--ro-bind", candidate, candidate);
+  };
+  const processRoot = path.resolve(path.dirname(process.execPath), "..");
+  if (
+    processRoot !== "/" &&
+    fs.existsSync(processRoot) &&
+    !["/usr", "/bin", "/sbin", "/lib", "/lib64"].some((mount) => isWithinPath(mount, processRoot))
+  ) {
+    addReadonlyBind(processRoot);
+  }
+  const pathEntries = String(args.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  pathEntries.push(path.dirname(process.execPath));
+  for (const entry of pathEntries) {
+    const candidate = path.resolve(entry);
+    if (!path.isAbsolute(entry) || !fs.existsSync(candidate) || isWithinPath(workspaceRoot, candidate)) continue;
+    if (["/usr", "/bin", "/sbin", "/lib", "/lib64"].some((mount) => isWithinPath(mount, candidate))) continue;
+    addReadonlyBind(candidate);
+  }
+
+  sandboxArgs.push(
+    "--bind", workspaceRoot, workspaceRoot,
+    "--proc", "/proc",
+    "--dev", "/dev",
+    "--setenv", "HOME", workspaceRoot,
+    "--setenv", "TMPDIR", "/tmp",
+    "--setenv", "PWD", cwd,
+    "--chdir", cwd,
+    "--",
+    ...(args.shell ? ["/bin/sh", "-c", args.command] : [args.command, ...args.commandArgs]),
+  );
+  return { executable, args: sandboxArgs };
+}
+
 export async function runCommand(request: CommandRunRequest): Promise<CommandRunResult> {
   const cmd = String(request.cmd ?? "").trim();
   if (!cmd) {
@@ -215,16 +472,37 @@ export async function runCommand(request: CommandRunRequest): Promise<CommandRun
     : DEFAULT_MAX_OUTPUT_BYTES;
 
   const allowlist = request.allowlist;
-  assertCommandAllowed(cmd, args, allowlist);
-
-  const commandLine = [cmd, ...args].join(" ").trim();
-  const startedAt = Date.now();
-
-  if (!supportsPipedStdios()) {
-    return await runCommandViaFiles({ cmd, args, cwd, env, timeoutMs, signal: request.signal, maxOutputBytes, startedAt, commandLine });
+  if (request.shell) {
+    if (args.length > 0) throw new Error("shell commands cannot use an argument array");
+    if (!request.workspaceRoot) throw new Error("shell commands require a workspace root");
+    assertShellCommandAllowed(cmd, allowlist);
+  } else {
+    assertCommandAllowed(cmd, args, allowlist);
   }
 
-  const child = spawn(cmd, args, {
+  const commandLine = request.shell ? cmd : [cmd, ...args].join(" ").trim();
+  const startedAt = Date.now();
+
+  let spawnCommand = cmd;
+  let spawnArgs = args;
+  if (request.workspaceRoot) {
+    const sandbox = buildSandboxArgs({
+      command: cmd,
+      commandArgs: args,
+      shell: request.shell === true,
+      cwd,
+      workspaceRoot: request.workspaceRoot,
+      env,
+    });
+    spawnCommand = sandbox.executable;
+    spawnArgs = sandbox.args;
+  }
+
+  if (!supportsPipedStdios()) {
+    return await runCommandViaFiles({ cmd: spawnCommand, args: spawnArgs, cwd, env, timeoutMs, signal: request.signal, maxOutputBytes, startedAt, commandLine });
+  }
+
+  const child = spawn(spawnCommand, spawnArgs, {
     cwd,
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],

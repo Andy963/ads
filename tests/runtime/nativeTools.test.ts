@@ -139,6 +139,62 @@ describe("NativeToolExecutor", () => {
     assert.match(result.output, /first value\|second/);
   });
 
+  it("runs pipelines and compound commands inside the workspace sandbox", async () => {
+    fs.mkdirSync(path.join(workspace, "nested"));
+    fs.writeFileSync(path.join(workspace, "nested", "value.txt"), "hello\n", "utf8");
+    const executor = new NativeToolExecutor({ workspaceRoot: workspace });
+
+    const pipeline = await executor.execute(call("exec_command", {
+      cmd: "printf 'hello\\nworld\\n' | head -n 1",
+    }));
+    const compound = await executor.execute(call("exec_command", {
+      cmd: "cd nested && cat value.txt",
+    }));
+    const nodePipeline = await executor.execute(call("exec_command", {
+      cmd: `${process.execPath} -e "process.stdout.write('node\\n')" | head -n 1`,
+    }));
+
+    const pipelineOutput = JSON.parse(pipeline.output) as { stdout?: string };
+    const compoundOutput = JSON.parse(compound.output) as { stdout?: string };
+    const nodePipelineOutput = JSON.parse(nodePipeline.output) as { stdout?: string };
+    assert.equal(pipelineOutput.stdout, "hello");
+    assert.equal(compoundOutput.stdout, "hello");
+    assert.equal(nodePipelineOutput.stdout, "node");
+  });
+
+  it("does not expose host files outside the workspace to shell commands", async () => {
+    const executor = new NativeToolExecutor({ workspaceRoot: workspace });
+    const result = await executor.execute(call("exec_command", {
+      cmd: "test -e /etc/passwd && echo visible || echo hidden",
+    }));
+
+    const output = JSON.parse(result.output) as { stdout?: string };
+    assert.equal(output.stdout, "hidden");
+  });
+
+  it("keeps direct executable invocations inside the same workspace sandbox", async () => {
+    const executor = new NativeToolExecutor({ workspaceRoot: workspace });
+    const result = await executor.execute(call("exec_command", {
+      cmd: process.execPath,
+      args: ["-e", "process.stdout.write(require('node:fs').existsSync('/etc/passwd') ? 'visible' : 'hidden')"],
+    }));
+
+    const output = JSON.parse(result.output) as { stdout?: string };
+    assert.equal(output.stdout, "hidden");
+  });
+
+  it("enforces executable allowlists for each shell pipeline segment", async () => {
+    const executor = new NativeToolExecutor({
+      workspaceRoot: workspace,
+      env: { PATH: process.env.PATH, AGENT_EXEC_TOOL_ALLOWLIST: "printf" },
+    });
+
+    await assert.rejects(
+      executor.execute(call("exec_command", { cmd: "printf hello | cat" })),
+      /command not allowed: cat/i,
+    );
+  });
+
   it("propagates aborts to a running command", async () => {
     const controller = new AbortController();
     const executor = new NativeToolExecutor({ workspaceRoot: workspace, signal: controller.signal });

@@ -118,6 +118,160 @@ describe("NativeAgentAdapter", () => {
     }
   });
 
+  it("returns tool failures to the model so a later round can recover", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-recovery-"));
+    try {
+      let requestNumber = 0;
+      let recoveryMessages: Array<{ role: string; content: string | null }> = [];
+      const resolver: NativeModelResolver = {
+        resolve: () => ({
+          model: "test-model",
+          baseUrl: "https://provider.test/v1",
+          apiKey: "test-api-key",
+          provider: "test",
+          supportsReasoningEffort: false,
+        }),
+      };
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: resolver,
+        fetchImpl: async (_input, init) => {
+          const body = JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ role: string; content: string | null }> };
+          requestNumber += 1;
+          if (requestNumber === 2) recoveryMessages = body.messages ?? [];
+          if (requestNumber === 1) {
+            return sse([
+              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "missing-1", function: { name: "read_file", arguments: '{"file":"missing.txt"}' } }] } }] }),
+              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+            ]);
+          }
+          return sse([
+            JSON.stringify({ choices: [{ delta: { content: "Recovered after the tool error." } }] }),
+            JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+          ]);
+        },
+      });
+      const rawEvents: string[] = [];
+      adapter.onEvent((event) => rawEvents.push(event.raw.type));
+
+      const result = await adapter.send("Inspect the missing file");
+
+      assert.equal(result.response, "Recovered after the tool error.");
+      assert.equal(requestNumber, 2);
+      assert.equal(recoveryMessages.at(-1)?.role, "tool");
+      assert.match(recoveryMessages.at(-1)?.content ?? "", /Path does not exist/);
+      assert.equal(rawEvents.includes("turn.failed"), false);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("completes with a continuation notice at the tool-round limit", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-limit-"));
+    try {
+      let requestNumber = 0;
+      const resolver: NativeModelResolver = {
+        resolve: () => ({
+          model: "test-model",
+          baseUrl: "https://provider.test/v1",
+          apiKey: "test-api-key",
+          provider: "test",
+          supportsReasoningEffort: false,
+        }),
+      };
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: resolver,
+        maxToolRounds: 1,
+        fetchImpl: async () => {
+          requestNumber += 1;
+          return sse([
+            JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "limit-1", function: { name: "read_file", arguments: '{"file":"missing.txt"}' } }] } }] }),
+            JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+          ]);
+        },
+      });
+      const rawEvents: string[] = [];
+      adapter.onEvent((event) => rawEvents.push(event.raw.type));
+
+      const result = await adapter.send("Inspect the missing file");
+
+      assert.match(result.response, /tool-round limit/);
+      assert.equal(requestNumber, 1);
+      assert.equal(rawEvents.includes("turn.completed"), true);
+      assert.equal(rawEvents.includes("turn.failed"), false);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("omits reasoning_effort for models without explicit reasoning support", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-reasoning-"));
+    try {
+      let requestBody: Record<string, unknown> | null = null;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelReasoningEffort: "high",
+        modelResolver: {
+          resolve: () => ({
+            model: "gpt-4o",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-api-key",
+            provider: "test",
+            options: { reasoningEffort: "high" },
+            supportsReasoningEffort: false,
+          }),
+        },
+        fetchImpl: async (_input, init) => {
+          requestBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+          return sse([JSON.stringify({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] })]);
+        },
+      });
+
+      await adapter.send("hello");
+
+      assert.equal(requestBody?.reasoning_effort, undefined);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("includes reasoning_effort for models with explicit reasoning support", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-reasoning-supported-"));
+    try {
+      let requestBody: Record<string, unknown> | null = null;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelReasoningEffort: "high",
+        modelResolver: {
+          resolve: () => ({
+            model: "reasoning-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-api-key",
+            provider: "test",
+            supportsReasoningEffort: true,
+          }),
+        },
+        fetchImpl: async (_input, init) => {
+          requestBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+          return sse([JSON.stringify({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] })]);
+        },
+      });
+
+      await adapter.send("hello");
+
+      assert.equal(requestBody?.reasoning_effort, "high");
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("propagates aborts from a running tool without starting another upstream round", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-abort-"));
     const controller = new AbortController();

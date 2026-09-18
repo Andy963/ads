@@ -33,6 +33,8 @@ const MAX_TURN_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TOOL_ROUNDS = 8;
 const MAX_MAX_TOOL_ROUNDS = 16;
 const MAX_CONVERSATION_MESSAGES = 200;
+const TOOL_ROUND_LIMIT_MESSAGE =
+  "Native runtime reached the configured tool-round limit. The completed tool results are available above; continue with the next prompt if you want to proceed.";
 
 const DEFAULT_METADATA: AgentMetadata = {
   id: NATIVE_ADAPTER_ID,
@@ -283,7 +285,10 @@ export class NativeAgentAdapter implements AgentAdapter {
     const model = this.resolver.resolve(this.model, this.modelConfig);
     const requestOptions = {
       ...model.options,
-      reasoningEffort: this.modelReasoningEffort ?? model.options?.reasoningEffort,
+      supportsReasoningEffort: model.supportsReasoningEffort === true,
+      reasoningEffort: model.supportsReasoningEffort === true
+        ? this.modelReasoningEffort ?? model.options?.reasoningEffort
+        : undefined,
     };
     const combined = createCombinedSignal(options.signal, this.turnTimeoutMs);
     const turnId = `native-turn-${randomUUID()}`;
@@ -317,7 +322,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     let usage: Usage | null = null;
 
     try {
-      for (let round = 0; round <= this.maxToolRounds; round += 1) {
+      for (let round = 0; round < this.maxToolRounds; round += 1) {
         const itemId = `${turnId}-message-${round}`;
         let roundText = "";
         const completion = await completeNativeChat({
@@ -356,8 +361,19 @@ export class NativeAgentAdapter implements AgentAdapter {
           currentMessages.push({ role: "tool", content: result.output, tool_call_id: call.id });
           turnMessages.push({ role: "tool", content: result.output, tool_call_id: call.id });
         }
-        if (round === this.maxToolRounds) {
-          throw new Error(`Native runtime exceeded the ${this.maxToolRounds}-round tool limit`);
+
+        if (round + 1 >= this.maxToolRounds) {
+          const limitItemId = `${turnId}-tool-limit`;
+          const limitText = responseText.trim()
+            ? `${responseText.trim()}\n\n${TOOL_ROUND_LIMIT_MESSAGE}`
+            : TOOL_ROUND_LIMIT_MESSAGE;
+          this.emitRaw({
+            type: "item.completed",
+            item: { type: "agent_message", id: limitItemId, text: TOOL_ROUND_LIMIT_MESSAGE },
+          });
+          this.appendConversation([...turnMessages]);
+          this.emitRaw({ type: "turn.completed", usage: usage ?? undefined });
+          return { response: limitText, usage, agentId: this.id };
         }
       }
     } catch (error) {
