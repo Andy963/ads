@@ -312,6 +312,7 @@ describe("failed turn retry button", () => {
     const retryButton = wrapper.get(".turnFailureRetryBtn");
     expect(retryButton.attributes("aria-label")).toBe("Retry message");
     expect(wrapper.find('[data-role="user"] .turnFailureRetryBtn').exists()).toBe(true);
+    expect(retryButton.element.closest(".bubble")).toBeNull();
     expect(wrapper.find('[data-role="system"][data-kind="error"]').exists()).toBe(false);
     await retryButton.trigger("click");
     expect(wrapper.emitted("retryMessage")).toHaveLength(1);
