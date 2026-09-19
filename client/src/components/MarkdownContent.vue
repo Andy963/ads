@@ -69,16 +69,31 @@ async function onClick(ev: MouseEvent): Promise<void> {
     return;
   }
 
-  if (!props.enableFilePreview) return;
-  const anchor = target.closest("a[data-md-link-kind='file-preview']") as HTMLAnchorElement | null;
+  const anchor = target.closest("a") as HTMLAnchorElement | null;
   if (!anchor) return;
 
-  const rawPath = String(anchor.getAttribute("data-md-file-path") ?? "").trim();
-  if (!rawPath) return;
-  const rawLine = String(anchor.getAttribute("data-md-file-line") ?? "").trim();
-  const line = /^\d+$/.test(rawLine) ? Number.parseInt(rawLine, 10) : null;
-  ev.preventDefault();
-  emit("openFilePreview", { path: rawPath, line: Number.isFinite(line ?? NaN) ? line : null });
+  if (anchor.getAttribute("data-md-link-kind") === "file-preview") {
+    if (!props.enableFilePreview) return;
+
+    const rawPath = String(anchor.getAttribute("data-md-file-path") ?? "").trim();
+    if (!rawPath) return;
+    const rawLine = String(anchor.getAttribute("data-md-file-line") ?? "").trim();
+    const line = /^\d+$/.test(rawLine) ? Number.parseInt(rawLine, 10) : null;
+    ev.preventDefault();
+    emit("openFilePreview", { path: rawPath, line: Number.isFinite(line ?? NaN) ? line : null });
+    return;
+  }
+
+  if (anchor.getAttribute("target") === "_blank") {
+    // Defense-in-depth: never let an external markdown link hijack the SPA host
+    // window (standalone PWA windows have no navigation chrome to go back).
+    if (ev.defaultPrevented) return;
+    if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+    const href = String(anchor.getAttribute("href") ?? "").trim();
+    if (!/^https?:\/\//i.test(href)) return;
+    ev.preventDefault();
+    window.open(href, "_blank", "noopener,noreferrer");
+  }
 }
 
 const html = computed(() => renderMarkdownToHtml(props.content));

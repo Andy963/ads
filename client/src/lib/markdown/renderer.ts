@@ -74,6 +74,10 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   const preview = parseMarkdownFilePreviewHref(href);
   if (preview) {
     applyFilePreviewAttrs(token, preview);
+  } else if (!href.trim().startsWith("#")) {
+    // External links must not unload the SPA host window; open them in a new tab.
+    token.attrSet("target", "_blank");
+    token.attrSet("rel", "noreferrer noopener");
   }
   return defaultLinkOpenRenderer(tokens, idx, options, env, self);
 };
