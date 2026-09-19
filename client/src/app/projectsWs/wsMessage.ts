@@ -1299,8 +1299,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           restoredHistoryStatus = replayedLaneStatus(kind, historyText);
           if (kind === "error" && !isUserAbortFailure(historyText)) {
             // Anchor persisted turn failures to their user prompt so the
-            // failed turn keeps a visible error card after reconnects and
-            // reloads instead of vanishing with the transient lane banner.
+            // failed turn keeps a retry target after reconnects and reloads
+            // instead of vanishing with the transient lane banner.
             next.splice(0, next.length, ...upsertTurnFailureCard(next, historyText, ts ?? undefined));
           }
           continue;
@@ -1725,9 +1725,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.laneStatus.value = { kind: "error", message: errorContent };
       // Persist genuine failures on the user turn so the error survives lane
       // status cleanup and page reloads, and so the turn can be retried in
-      // place. Intentional user aborts remain lane status only. The card
+      // place. Intentional user aborts remain lane status only. The record
       // content mirrors the history entry persisted by the server (`[code]
-      // hint`) so replay and live events converge on one card.
+      // hint`) so replay and live events converge on one retry target.
       if (!isUserAbort) {
         const failureCardContent = errorInfo?.code ? `[${errorInfo.code}] ${userMessage}` : userMessage;
         rt.messages.value = upsertTurnFailureCard(

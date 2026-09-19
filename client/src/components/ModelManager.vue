@@ -1638,6 +1638,7 @@ defineExpose({
 }
 
 .cliModels {
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border);
