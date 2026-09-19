@@ -592,6 +592,30 @@ function closeFilePreview(): void {
             </div>
           </div>
           <div v-if="shouldShowMsgActions(m)" class="msgActions">
+          <button
+            v-if="m.role === 'user' && getTurnFailureForUser(m, messageIndex)"
+            class="turnFailureRetryBtn"
+            type="button"
+            data-testid="inline-turn-retry"
+            aria-label="Retry message"
+            title="Retry"
+            @click="retryUserTurn(m, messageIndex)"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 5v4h4" />
+              <path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 19v-4h-4" />
+            </svg>
+          </button>
           <button class="msgCopyBtn" type="button" aria-label="复制消息" @click="emit('copyMessage', m)">
             <svg
               v-if="copiedMessageId === m.id"
@@ -626,34 +650,6 @@ function closeFilePreview(): void {
           <span v-if="m.ts" class="msgTime">{{ formatMessageTs(m.ts) }}</span>
           </div>
         </div>
-        <div
-          v-if="m.role === 'user' && getTurnFailureForUser(m, messageIndex)"
-          class="turnFailureActions"
-          data-testid="inline-turn-retry"
-        >
-          <button
-            class="turnFailureRetryBtn"
-            type="button"
-            aria-label="Retry message"
-            title="Retry"
-            @click="retryUserTurn(m, messageIndex)"
-          >
-            <svg
-              width="15"
-              height="15"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 5v4h4" />
-              <path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 19v-4h-4" />
-            </svg>
-          </button>
-        </div>
       </div>
     </template>
     <ChatFilePreviewModal :workspace-root="workspaceRoot" :target="filePreviewTarget" @close="closeFilePreview" />
@@ -683,8 +679,6 @@ function closeFilePreview(): void {
 
 .msg[data-role="user"] {
   justify-content: flex-end;
-  flex-direction: column;
-  align-items: flex-end;
   margin-bottom: 8px;
 }
 
@@ -981,12 +975,6 @@ function closeFilePreview(): void {
   padding-right: 52px;
 }
 
-.turnFailureActions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 2px;
-}
-
 .turnFailureRetryBtn {
   width: 24px;
   height: 24px;
@@ -996,15 +984,13 @@ function closeFilePreview(): void {
   border: none;
   border-radius: 999px;
   background: transparent;
-  color: #64748b;
+  color: #b91c1c;
   cursor: pointer;
-  opacity: 0.7;
 }
 
 .turnFailureRetryBtn:hover {
-  background: rgba(37, 99, 235, 0.1);
-  color: #2563eb;
-  opacity: 1;
+  background: rgba(220, 38, 38, 0.12);
+  color: #991b1b;
 }
 
 .retryBadge {
