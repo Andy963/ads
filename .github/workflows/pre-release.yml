@@ -85,6 +85,7 @@ jobs:
         with:
           name: "ADS ${{ steps.vars.outputs.tag }} (Pre-release)"
           tag_name: ${{ steps.vars.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           prerelease: true
           generate_release_notes: true
           files: |
