@@ -26,10 +26,12 @@ ADS (Agent Dispatch & Orchestration System) 采用分层解耦的架构设计，
                ▼                                ▼
 ┌──────────────────────────────┐ ┌──────────────────────────────┐
 │       Agent 适配器层          │ │        双层存储系统          │
-│ - Codex App Server (RPC)     │ │ - 全局库: state.db           │
-│   (统一路由所有 Provider 模型) │ │   (用户/会话/模型配置)       │
-│                              │ │ - 工作区库: <ws>/ads.db      │
-│                              │ │   (附件/调度/历史)            │
+│ - CodexAppServerAdapter      │ │ - 全局库: state.db           │
+│   (默认, 经 Codex App-Server)│ │   (用户/会话/模型配置)       │
+│ - NativeAgentAdapter         │ │ - 工作区库: <ws>/ads.db      │
+│   (可选, ADS_AGENT_RUNTIME=  │ │   (附件/调度/历史)            │
+│    native, 进程内直连        │ │                              │
+│    OpenAI 兼容端点 + 沙箱)   │ │                              │
 └──────────────────────────────┘ └──────────────────────────────┘
 ```
 
@@ -56,8 +58,10 @@ Web 与独立 Channel Connector 通过 Core WebSocket 协议使用各自隔离�
 
 ### 2.2 多 Agent 抽象与容错执行
 - **统一适配器抽象 (`AgentAdapter`)**：
-  - 通过 Codex App-Server 标准化封装多 Provider 模型的 RPC 调用、结构化事件与进程生命周期。
-  - 支持 Codex App Server JSON-RPC 长连接与一次性 CLI 的无缝降级。
+  - 双运行时引擎实现同一 `AgentAdapter` / `AgentEvent` 契约，WebSocket 协议与前端无需感知后端差异：
+    - **`CodexAppServerAdapter`（默认）**：通过 Codex App-Server 标准化封装多 Provider 模型的 RPC 调用、结构化事件与进程生命周期，支持 Codex App Server JSON-RPC 长连接与一次性 CLI 的无缝降级。
+    - **`NativeAgentAdapter`（可选，`ADS_AGENT_RUNTIME=native`）**：进程内直连 OpenAI 兼容 `/chat/completions` SSE，按模型配置与认证用户解析 endpoint、model 与加密凭据 profile；内置 `exec_command` / `read_file` / `search` / `apply_patch` 四个受限工具，文件工具限制在工作区内，含 Shell 元字符的命令经 Linux `bubblewrap` 项目级沙箱执行，找不到沙箱能力时 fail closed。
+  - Native conversation 仅保留在当前 adapter 生命周期内，跨进程恢复依赖既有 history injection（详见 [ADR 0013](adr/0013-native-agent-runtime-phase-1.md)）。
 - **上游重试与自愈 (Upstream Retry & Healing)**：
   - 自动识别限流（429）、服务器高负载（503）、Cloudflare/网关超时（520–524）以及上游安全拦截。
   - 仅在未产生命令执行或文件写入等副作用前，自动指数退避重试，保障网络波动下的任务可靠性。

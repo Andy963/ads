@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node Version](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
 
-ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编排中枢。它以项目工作区为核心，围绕 Advisor（方案规划）/ Worker（代码执行）双 Lane 构建 AI 开发工作流，并通过 Codex App-Server 统一接入多 Provider 模型和可选的独立 Channel Connector。
+ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编排中枢。它以项目工作区为核心，围绕 Advisor（方案规划）/ Worker（代码执行）双 Lane 构建 AI 开发工作流。Agent 运行时提供双引擎：默认通过 Codex App-Server 统一接入多 Provider 模型，也可通过 `ADS_AGENT_RUNTIME=native` 切换到进程内原生运行时（Native Runtime），直连 OpenAI 兼容端点并在项目级沙箱中执行工具。同时还支持可选的独立 Channel Connector。
 
 ---
 
@@ -13,7 +13,7 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编�
 - **双 Lane 协作工作流**：
   - **Advisor (规划 Lane)**：专属架构方案研讨，可通过 GitHub Issue/PR 追踪设计与交付。
   - **Worker (执行 Lane)**：专注代码执行、命令运行与文件修改，实时输出紧凑的阶段进展和执行预览。
-- **统一多 Provider 模型支持**：所有模型均通过 **Codex App-Server** 路由（包括 Anthropic Claude、Google Gemini 与 DeepSeek），支持模型可视化启用/停用与即时配置。
+- **双引擎 Agent 运行时**：默认经 **Codex App-Server** 路由多 Provider 模型（包括 Anthropic Claude、Google Gemini 与 DeepSeek）；设置 `ADS_AGENT_RUNTIME=native` 可切换到进程内 **Native Runtime**，直连 OpenAI 兼容端点并在项目级沙箱内执行工具。支持模型可视化启用/停用与即时配置。
 - **确定性安全拦截**：在命令执行边界保护 ADS 自身进程和 SQLite 数据库文件，不依赖模型提示或可变数据库规则。
 - **Codex 标准技能体系**：全局技能原生对齐 `$CODEX_HOME/skills`（默认 `~/.codex/skills`）；支持对话中 `<skill_save>` 自动沉淀与存量遗留技能无损原子迁移，与 native Codex CLI 完全互通。
 - **原生会话恢复 (Session Resume)**：零 Token 冗余恢复底层 CLI 真实历史上下文，断线重连自动增量同步。
@@ -27,7 +27,7 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编�
 ### 1. 环境依赖
 - **Node.js**: `>= 24.0.0`
 - **npm**: 确保具备 C++ 编译环境以支持 `better-sqlite3` 原生模块构建。
-- **Agent runtime**: 本机已安装并配置 `codex` App-Server CLI。
+- **Agent runtime**: 默认后端需本机已安装并配置 `codex` App-Server CLI；若使用 `ADS_AGENT_RUNTIME=native` 原生运行时，则无需 `codex` CLI（需要 Linux `bubblewrap` 提供项目级命令沙箱）。
 
 ### 2. 安装与构建
 ```bash
@@ -72,7 +72,9 @@ npm run web:init-admin -- --username admin --password-stdin
 
 详细的模块说明与进阶指南请查阅 `docs/` 目录：
 
+- 🗂️ **[架构决策记录 (ADR) 索引](docs/adr/README.md)**：ADR 0001–0013 全部已接受决策的链接索引表。
 - 🎯 **[Codex 技能规范与架构说明](docs/adr/0007-align-skills-with-codex-standard.md)**：全局 `$CODEX_HOME/skills`、优先级（global > builtin）、`<skill_save>` 自动沉淀与迁移机制。
+- 🏗 **[原生 Agent 运行时 (ADR 0013)](docs/adr/0013-native-agent-runtime-phase-1.md)**：进程内 Native Runtime 的设计、工具沙箱与凭据边界。
 - 📖 **[Web Console 完整使用指南](docs/web.md)**：工作区 Tab、Provider 模型管理、移动端交互规范与 Web 专属配置。
 - 📱 **[Telegram Connector 配置与使用手册](docs/telegram.md)**：Connector 设置、文本会话与任务终态通知。
 - 🏛 **[系统架构与核心机制](docs/architecture.md)**：双层 SQLite 数据模型、Agent 适配器层、Durable Sync 状态同步协议与调度器引擎。
@@ -101,7 +103,7 @@ ads/
 ├── connectors/        # Channel Connectors (e.g. telegram)
 │   └── telegram/      # Standalone Telegram channel connector
 ├── server/            # Core backend engine
-│   ├── agents/        # Codex App-Server 适配器与执行守护器
+│   ├── agents/        # Agent 适配器（Codex App-Server / Native Runtime）与执行守护器
 │   ├── middleware/    # Core middleware pipeline (memory, safety, hooks)
 │   ├── middleware/    # Turn 生命周期、中间件与内置安全拦截
 │   ├── scheduler/     # 自然语言定时调度引擎与 Cron 运行时

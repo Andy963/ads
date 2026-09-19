@@ -42,10 +42,11 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 
 ---
 
-## 3. Codex App-Server 与执行器配置
+## 3. Agent 运行时与执行器配置
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
+| `ADS_AGENT_RUNTIME` | `codex-app-server` | Agent 运行时后端：`codex-app-server`（默认，经 Codex App-Server daemon）或 `native`（进程内原生运行时，直连 OpenAI 兼容端点；兼容别名 `in-process`） |
 | `ADS_CODEX_BIN` | `codex` | Codex 二进制执行文件路径或别名；ADS 通过 `codex app-server` 启动 |
 | `ADS_AGENT_PROBE_TIMEOUT_MS` | `5000` | 启动时探测 Agent 可用性的超时时间（毫秒） |
 | `ADS_AGENT_IDLE_TIMEOUT_MS` | `3600000` (1小时) | CLI 连续无标准输出/错误的空闲看门狗超时，`0` 表示禁用 |
@@ -58,7 +59,19 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 
 ---
 
-## 4. 技能、记忆与安全系统
+## 4. 原生运行时 (Native Runtime)
+
+仅当 `ADS_AGENT_RUNTIME=native` 时生效；详见 [ADR 0013](adr/0013-native-agent-runtime-phase-1.md)。
+
+| 变量名 | 默认值 | 说明 |
+|---|---|---|
+| `ADS_AGENT_MAX_TOOL_ROUNDS` | `0`（不限制） | 单次 turn 内模型-工具循环的最大轮数；仅配置正整数时才启用上限，达到上限返回正常的 continuation notice（兼容旧名 `ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS`） |
+| `ADS_NATIVE_RUNTIME_TURN_TIMEOUT_MS` | `0`（不限制） | 原生 turn 的总 wall-clock 超时（毫秒），上限 `600000`；`0` 或未设置时 turn 仅受用户取消与各工具自身超时约束 |
+| `ADS_NATIVE_RUNTIME_BWRAP_PATH` | `/usr/bin/bwrap` 或 `/bin/bwrap` | 原生命令沙箱 `bubblewrap` 可执行文件的绝对路径；仅 Linux 生效，找不到沙箱能力时含 Shell 元字符的命令执行 fail closed |
+
+---
+
+## 5. 技能、记忆与安全系统
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
@@ -76,7 +89,7 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 
 ---
 
-## 5. 定时调度器 (Scheduler)
+## 6. 定时调度器 (Scheduler)
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
@@ -88,7 +101,7 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 
 ---
 
-## 6. Optional Telegram Connector
+## 7. Optional Telegram Connector
 
 Telegram variables belong to the standalone `connectors/telegram` package and are not read by ADS Core.
 
