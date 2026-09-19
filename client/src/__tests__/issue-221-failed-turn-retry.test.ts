@@ -276,7 +276,7 @@ describe("failed turn preservation and in-place retry (Issue #221)", () => {
 });
 
 describe("failed turn retry button", () => {
-  it("renders an inline retry icon below the failed user message", async () => {
+  it("renders the inline retry icon inside the failed user message action row", async () => {
     const errorMessage = {
       id: "turn-failure:u-1",
       role: "system" as const,
@@ -309,10 +309,14 @@ describe("failed turn retry button", () => {
     });
     await settleUi(wrapper);
 
-    const retryButton = wrapper.get(".turnFailureRetryBtn");
+    const retryButton = wrapper.get(".bubble .msgActions .turnFailureRetryBtn");
     expect(retryButton.attributes("aria-label")).toBe("Retry message");
     expect(wrapper.find('[data-role="user"] .turnFailureRetryBtn').exists()).toBe(true);
-    expect(retryButton.element.closest(".bubble")).toBeNull();
+    const msgActions = retryButton.element.closest(".msgActions");
+    expect(msgActions).not.toBeNull();
+    expect(msgActions!.querySelector(".msgCopyBtn")).not.toBeNull();
+    expect(retryButton.element.closest(".bubble")).toBe(msgActions!.closest(".bubble"));
+    expect(wrapper.find(".turnFailureActions").exists()).toBe(false);
     expect(wrapper.find('[data-role="system"][data-kind="error"]').exists()).toBe(false);
     await retryButton.trigger("click");
     expect(wrapper.emitted("retryMessage")).toHaveLength(1);
