@@ -22,10 +22,10 @@ export function findLastUserMessageIndex(items: ChatItem[]): number {
 }
 
 /**
- * Anchor a persistent failure card to the newest user turn. The card id is
- * derived from the user message id so repeated failures of the same turn
- * replace the previous card instead of stacking duplicates, and so live
- * errors and history replay converge on the same card.
+ * Anchor a persistent failure record to the newest user turn. The record id
+ * is derived from the user message id so repeated failures of the same turn
+ * replace the previous record instead of stacking duplicates, and so live
+ * errors and history replay converge on the same retry target.
  */
 export function upsertTurnFailureCard(items: ChatItem[], content: string, ts?: number): ChatItem[] {
   const userIndex = findLastUserMessageIndex(items);

@@ -147,6 +147,7 @@ describe("failed turn preservation and in-place retry (Issue #221)", () => {
     expect(userIndex).toBeGreaterThanOrEqual(0);
     expect(cardIndex).toBeGreaterThan(userIndex);
     expect(afterError.some((m) => m.role === "assistant" && m.streaming)).toBe(false);
+    const originalClientMessageId = afterError[userIndex]!.id;
 
     const sendCallsBefore = lastWs!.sendPrompt.mock.calls.length;
     wrapper.vm.retryPrompt(failureCards[0]);
@@ -158,6 +159,7 @@ describe("failed turn preservation and in-place retry (Issue #221)", () => {
     expect(retriedUsers).toHaveLength(1);
     expect(lastWs!.sendPrompt.mock.calls.length).toBe(sendCallsBefore + 1);
     const retriedPayload = lastWs!.sendPrompt.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(lastWs!.sendPrompt.mock.calls.at(-1)?.[1]).toBe(originalClientMessageId);
     expect(String(retriedPayload.text ?? "")).toContain("please retry me");
     expect(retriedPayload.replay_incomplete).toBe(true);
     expect(afterRetry.some((m) => m.role === "assistant" && m.streaming)).toBe(true);
@@ -274,7 +276,7 @@ describe("failed turn preservation and in-place retry (Issue #221)", () => {
 });
 
 describe("failed turn retry button", () => {
-  it("renders a retry button on error cards and emits retryMessage", async () => {
+  it("renders an inline retry icon below the failed user message", async () => {
     const errorMessage = {
       id: "turn-failure:u-1",
       role: "system" as const,
@@ -308,7 +310,10 @@ describe("failed turn retry button", () => {
     await settleUi(wrapper);
 
     const retryButton = wrapper.get(".turnFailureRetryBtn");
-    expect(retryButton.text()).toBe("重试");
+    expect(retryButton.attributes("aria-label")).toBe("Retry message");
+    expect(wrapper.find('[data-role="user"] .turnFailureRetryBtn').exists()).toBe(true);
+    expect(retryButton.element.closest(".bubble")).toBeNull();
+    expect(wrapper.find('[data-role="system"][data-kind="error"]').exists()).toBe(false);
     await retryButton.trigger("click");
     expect(wrapper.emitted("retryMessage")).toHaveLength(1);
     expect(wrapper.emitted("retryMessage")![0]).toEqual([errorMessage]);

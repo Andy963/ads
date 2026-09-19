@@ -9,6 +9,7 @@ import type { ChatItem } from "../app/controllerTypes";
 import { PATCH_DIFF_FALLBACK_KEY, splitUnifiedDiffByPath } from "../lib/patchDiff";
 import { normalizeTurnSemanticOrder } from "../lib/chat_sync";
 import type { MarkdownFilePreviewLink } from "../lib/markdown";
+import { TURN_FAILURE_CARD_PREFIX, turnFailureCardId } from "../lib/turnFailure";
 
 const LIVE_STEP_MESSAGE_ID = "live-step";
 
@@ -423,6 +424,22 @@ function shouldUseCompactBubble(m: RenderMessage): boolean {
   return !shouldShowMsgActions(m);
 }
 
+function isTurnFailureCard(m: RenderMessage): boolean {
+  return m.role === "system" && m.kind === "error" && m.id.startsWith(TURN_FAILURE_CARD_PREFIX);
+}
+
+function getTurnFailureForUser(message: RenderMessage, index: number): RenderMessage | null {
+  if (message.role !== "user") return null;
+  const failure = loadedMessages.value[index + 1];
+  if (!failure || !isTurnFailureCard(failure)) return null;
+  return failure.id === turnFailureCardId(message.id) ? failure : null;
+}
+
+function retryUserTurn(message: RenderMessage, index: number): void {
+  const failure = getTurnFailureForUser(message, index);
+  if (failure) emit("retryMessage", failure);
+}
+
 function openFilePreview(payload: MarkdownFilePreviewLink): void {
   if (!String(props.workspaceRoot ?? "").trim()) return;
   filePreviewTarget.value = payload;
@@ -451,8 +468,9 @@ function closeFilePreview(): void {
       data-testid="load-earlier-sentinel"
       aria-hidden="true"
     ></div>
-    <div v-for="m in loadedMessages" :key="m.id" class="msg" :data-id="m.id" :data-role="m.role" :data-kind="m.kind">
-      <div v-if="m.kind === 'command'" class="command-block">
+    <template v-for="(m, messageIndex) in loadedMessages" :key="m.id">
+      <div v-if="!isTurnFailureCard(m)" class="msg" :data-id="m.id" :data-role="m.role" :data-kind="m.kind">
+        <div v-if="m.kind === 'command'" class="command-block">
         <button
           class="command-tree-header"
           type="button"
@@ -486,8 +504,8 @@ function closeFilePreview(): void {
             <span class="command-cmd">{{ cmd }}</span>
           </div>
         </div>
-      </div>
-      <div v-else-if="m.kind === 'execute'" :class="['bubble', 'bubble--compact', 'execute-block', { 'execute-block--running': m.streaming }]">
+        </div>
+        <div v-else-if="m.kind === 'execute'" :class="['bubble', 'bubble--compact', 'execute-block', { 'execute-block--running': m.streaming }]">
         <div class="execute-header">
           <div class="execute-left">
             <span class="prompt-tag">&gt;_</span>
@@ -499,26 +517,26 @@ function closeFilePreview(): void {
             </span>
           </div>
         </div>
-      </div>
-      <div v-else-if="m.kind === 'divider'" class="sessionBoundaryDivider" data-testid="session-boundary-divider">
+        </div>
+        <div v-else-if="m.kind === 'divider'" class="sessionBoundaryDivider" data-testid="session-boundary-divider">
         <div class="sessionBoundaryLine">
           <span class="sessionBoundaryTag">⚡ New Session Initialized</span>
         </div>
         <div class="sessionBoundaryNotice">
           {{ m.content || "Previous messages above are retained for review only and are NOT injected into model prompt context." }}
         </div>
-      </div>
-      <div
-        v-else
-        :class="[
-          'bubble',
-          {
-            'bubble--compact': shouldUseCompactBubble(m),
-            'bubble--retryNotice': m.kind === 'error' && (m.retryCount ?? 0) > 0,
-          },
-        ]"
-      >
-        <span v-if="m.kind === 'error' && (m.retryCount ?? 0) > 0" class="retryBadge">x{{ m.retryCount }}</span>
+        </div>
+        <div
+          v-else
+          :class="[
+            'bubble',
+            {
+              'bubble--compact': shouldUseCompactBubble(m),
+              'bubble--retryNotice': m.kind === 'error' && (m.retryCount ?? 0) > 0,
+            },
+          ]"
+        >
+          <span v-if="m.kind === 'error' && (m.retryCount ?? 0) > 0" class="retryBadge">x{{ m.retryCount }}</span>
         <div v-if="m.role === 'assistant' && m.kind === 'text' && m.streaming && String(m.content ?? '').length === 0" class="typing" aria-label="AI is thinking">
           <span class="thinkingLabel">thinking</span>
           <ThinkingDots />
@@ -546,37 +564,34 @@ function closeFilePreview(): void {
             </button>
           </div>
         </div>
-        <div v-else>
-          <MarkdownContent :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
-          <div v-if="m.kind === 'error'" class="turnFailureActions">
-            <button class="turnFailureRetryBtn" type="button" @click="emit('retryMessage', m)">重试</button>
-          </div>
-          <div v-if="m.patch && buildPatchRows(m).length > 0" class="patchCard foldedPatch">
-            <div v-for="(row, rowIdx) in buildPatchRows(m)" :key="row.key" class="patchCardRow">
-              <div class="patchCardHeader">
-                <div class="patchCardSummary">
-                  <div class="patchCardTitle" :title="patchRowTitle(row)">{{ patchRowTitle(row) }}</div>
-                  <div v-if="patchRowMeta(row)" class="patchCardMeta" v-html="patchRowMeta(row)"></div>
+          <div v-else>
+            <MarkdownContent :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
+            <div v-if="m.patch && buildPatchRows(m).length > 0" class="patchCard foldedPatch">
+              <div v-for="(row, rowIdx) in buildPatchRows(m)" :key="row.key" class="patchCardRow">
+                <div class="patchCardHeader">
+                  <div class="patchCardSummary">
+                    <div class="patchCardTitle" :title="patchRowTitle(row)">{{ patchRowTitle(row) }}</div>
+                    <div v-if="patchRowMeta(row)" class="patchCardMeta" v-html="patchRowMeta(row)"></div>
+                  </div>
+                  <button
+                    v-if="row.diff"
+                    class="patchCardToggle"
+                    type="button"
+                    :aria-expanded="isPatchExpanded(m.id, row.key)"
+                    :data-testid="`patch-toggle-${m.id}-${rowIdx}`"
+                    @click.stop="togglePatchExpanded(m.id, row.key)"
+                  >
+                    {{ isPatchExpanded(m.id, row.key) ? "收起" : "展开" }}
+                  </button>
                 </div>
-                <button
-                  v-if="row.diff"
-                  class="patchCardToggle"
-                  type="button"
-                  :aria-expanded="isPatchExpanded(m.id, row.key)"
-                  :data-testid="`patch-toggle-${m.id}-${rowIdx}`"
-                  @click.stop="togglePatchExpanded(m.id, row.key)"
-                >
-                  {{ isPatchExpanded(m.id, row.key) ? "收起" : "展开" }}
-                </button>
+                <div v-if="row.diff && isPatchExpanded(m.id, row.key)" class="patchCardBody">
+                  <pre class="patchCardDiff" v-html="renderPatchDiffHtml(row.diff)"></pre>
+                </div>
               </div>
-              <div v-if="row.diff && isPatchExpanded(m.id, row.key)" class="patchCardBody">
-                <pre class="patchCardDiff" v-html="renderPatchDiffHtml(row.diff)"></pre>
-              </div>
+              <div v-if="m.patch?.truncated" class="patchCardNote">Diff 已截断，避免刷屏。</div>
             </div>
-            <div v-if="m.patch?.truncated" class="patchCardNote">Diff 已截断，避免刷屏。</div>
           </div>
-        </div>
-        <div v-if="shouldShowMsgActions(m)" class="msgActions">
+          <div v-if="shouldShowMsgActions(m)" class="msgActions">
           <button class="msgCopyBtn" type="button" aria-label="复制消息" @click="emit('copyMessage', m)">
             <svg
               v-if="copiedMessageId === m.id"
@@ -609,9 +624,38 @@ function closeFilePreview(): void {
             </svg>
           </button>
           <span v-if="m.ts" class="msgTime">{{ formatMessageTs(m.ts) }}</span>
+          </div>
+        </div>
+        <div
+          v-if="m.role === 'user' && getTurnFailureForUser(m, messageIndex)"
+          class="turnFailureActions"
+          data-testid="inline-turn-retry"
+        >
+          <button
+            class="turnFailureRetryBtn"
+            type="button"
+            aria-label="Retry message"
+            title="Retry"
+            @click="retryUserTurn(m, messageIndex)"
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 5v4h4" />
+              <path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 19v-4h-4" />
+            </svg>
+          </button>
         </div>
       </div>
-    </div>
+    </template>
     <ChatFilePreviewModal :workspace-root="workspaceRoot" :target="filePreviewTarget" @close="closeFilePreview" />
   </div>
 </template>
@@ -639,6 +683,8 @@ function closeFilePreview(): void {
 
 .msg[data-role="user"] {
   justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
   margin-bottom: 8px;
 }
 
@@ -938,24 +984,27 @@ function closeFilePreview(): void {
 .turnFailureActions {
   display: flex;
   justify-content: flex-end;
-  margin-top: 8px;
+  margin-top: 2px;
 }
 
 .turnFailureRetryBtn {
-  border: 1px solid rgba(220, 38, 38, 0.35);
-  background: rgba(254, 242, 242, 0.95);
-  color: #b91c1c;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
   border-radius: 999px;
-  padding: 4px 14px;
-  font-size: 12px;
-  line-height: 1.3;
-  font-weight: 600;
+  background: transparent;
+  color: #64748b;
   cursor: pointer;
+  opacity: 0.7;
 }
 
 .turnFailureRetryBtn:hover {
-  background: rgba(254, 226, 226, 0.98);
-  border-color: rgba(220, 38, 38, 0.55);
+  background: rgba(37, 99, 235, 0.1);
+  color: #2563eb;
+  opacity: 1;
 }
 
 .retryBadge {

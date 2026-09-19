@@ -17,5 +17,7 @@ describe("model manager scrollbar styling", () => {
     expect(css).toContain("scrollbar-gutter: stable;");
     expect(css).toContain("scrollbar-color: rgba(148, 163, 184, 0.55) transparent;");
     expect(css).toContain("width: 8px;");
+
+    expect(css).toMatch(/\.cliModels\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?overflow:\s*hidden;/);
   });
 });
