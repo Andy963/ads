@@ -1,10 +1,12 @@
  import {
-   buildModelIdStorageKey,
-   buildReasoningEffortStorageKey,
    normalizeModelId,
    normalizeReasoningEffort,
-   readLanePreferenceWithLegacyFallback,
  } from "../lib/chatPreferences";
+ import {
+   readModelIdPreference,
+   readReasoningEffortPreference,
+   writeModelPreference,
+ } from "../lib/preferencesStore";
  import { supportsAgentModel } from "../lib/model_agent";
  import { crumb } from "../lib/diagBreadcrumbs";
 
@@ -97,8 +99,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
        );
        const fallback = compatibleModels.find((model) => model.isDefault) ?? compatibleModels[0] ?? null;
        const fallbackModelId = String(fallback?.modelId ?? fallback?.id ?? "").trim();
-       const key = buildModelIdStorageKey(sessionId, rt.chatSessionId, agentId);
-       const stored = readLanePreferenceWithLegacyFallback(buildModelIdStorageKey, sessionId, rt.chatSessionId, agentId);
+       const stored = readModelIdPreference(sessionId, rt.chatSessionId, agentId);
 
        const storedModelId = stored === null ? null : normalizeModelId(stored);
        let candidate = storedModelId ?? normalizeModelId(rt.modelId.value);
@@ -108,11 +109,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
 
        rt.modelId.value = candidate;
        if (candidate !== "auto" && storedModelId !== candidate) {
-         try {
-           localStorage.setItem(key, candidate);
-         } catch {
-           // ignore
-         }
+         writeModelPreference(sessionId, rt.chatSessionId, agentId, { modelId: candidate });
        }
      };
 
@@ -155,25 +152,15 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
    const persistReasoningEffort = (rt: ProjectRuntime): void => {
      const sessionId = resolveStorageSessionId(rt);
      if (!sessionId) return;
-     const key = buildReasoningEffortStorageKey(sessionId, rt.chatSessionId, rt.activeAgentId.value);
      const effort = normalizeReasoningEffort(rt.modelReasoningEffort.value);
-     try {
-       localStorage.setItem(key, effort);
-     } catch {
-       // ignore
-     }
+     writeModelPreference(sessionId, rt.chatSessionId, rt.activeAgentId.value, { effort });
    };
 
    const persistModelId = (rt: ProjectRuntime): void => {
      const sessionId = resolveStorageSessionId(rt);
      if (!sessionId) return;
-     const key = buildModelIdStorageKey(sessionId, rt.chatSessionId, rt.activeAgentId.value);
      const modelId = normalizeModelId(rt.modelId.value);
-     try {
-       localStorage.setItem(key, modelId);
-     } catch {
-       // ignore
-     }
+     writeModelPreference(sessionId, rt.chatSessionId, rt.activeAgentId.value, { modelId });
    };
 
    const setMainModelReasoningEffort = (effort: string): void => {
@@ -210,16 +197,11 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      const sessionId = resolveStorageSessionId(rt);
      if (sessionId) {
        try {
-         const storedModel = readLanePreferenceWithLegacyFallback(buildModelIdStorageKey, sessionId, rt.chatSessionId, nextAgentId);
+         const storedModel = readModelIdPreference(sessionId, rt.chatSessionId, nextAgentId);
          if (storedModel !== null) {
            rt.modelId.value = normalizeModelId(storedModel);
          }
-         const storedEffort = readLanePreferenceWithLegacyFallback(
-           buildReasoningEffortStorageKey,
-           sessionId,
-           rt.chatSessionId,
-           nextAgentId,
-         );
+         const storedEffort = readReasoningEffortPreference(sessionId, rt.chatSessionId, nextAgentId);
          if (storedEffort !== null) {
            rt.modelReasoningEffort.value = normalizeReasoningEffort(storedEffort);
          }
@@ -241,11 +223,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      if (!fallbackId || fallbackId === current) return;
      rt.modelId.value = normalizeModelId(fallbackId);
      if (sessionId) {
-       try {
-         localStorage.setItem(buildModelIdStorageKey(sessionId, rt.chatSessionId, nextAgentId), rt.modelId.value);
-       } catch {
-         // ignore
-       }
+       writeModelPreference(sessionId, rt.chatSessionId, nextAgentId, { modelId: rt.modelId.value });
      }
    };
 

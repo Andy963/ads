@@ -24,6 +24,7 @@ import {
   writeMobileWorkspaceTab,
   type MobileWorkspaceTab,
 } from "./lib/mobileWorkspacePreferences";
+import { purgeLatestPromptPreferences } from "./lib/preferencesStore";
 import {
   ArrowRight,
   CirclePlus,
@@ -619,9 +620,7 @@ watch(accountGeneration, () => {
   closeMobileDrawer();
   try {
     sessionStorage.removeItem(DRAFT_STASH_KEY);
-    for (const key of Object.keys(localStorage)) {
-      if (key.startsWith("ADS_WEB_LATEST_PROMPT:")) localStorage.removeItem(key);
-    }
+    purgeLatestPromptPreferences();
   } catch { /* Private input must not be restored across accounts. */ }
 }, { flush: "sync" });
 

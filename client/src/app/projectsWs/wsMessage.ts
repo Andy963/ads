@@ -10,11 +10,10 @@ import type {
   WorkspaceState,
 } from "../controllerTypes";
 import {
-  buildModelIdStorageKey,
-  buildReasoningEffortStorageKey,
   normalizeModelId,
   normalizeReasoningEffort,
 } from "../../lib/chatPreferences";
+import { writeModelPreference } from "../../lib/preferencesStore";
 import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
 import { normalizeTurnSemanticOrder } from "../../lib/chat_sync";
 import { isUserAbortFailure, upsertTurnFailureCard } from "../../lib/turnFailure";
@@ -785,16 +784,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const sessionId = String(rt.projectSessionId ?? "").trim();
     const chatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
     if (!sessionId) return;
-    try {
-      const agentId = String(rt.activeAgentId.value ?? "").trim();
-      localStorage.setItem(buildModelIdStorageKey(sessionId, chatSessionId, agentId), normalizeModelId(rt.modelId.value));
-      localStorage.setItem(
-        buildReasoningEffortStorageKey(sessionId, chatSessionId, agentId),
-        normalizeReasoningEffort(rt.modelReasoningEffort.value),
-      );
-    } catch {
-      // ignore
-    }
+    const agentId = String(rt.activeAgentId.value ?? "").trim();
+    writeModelPreference(sessionId, chatSessionId, agentId, {
+      modelId: normalizeModelId(rt.modelId.value),
+      effort: normalizeReasoningEffort(rt.modelReasoningEffort.value),
+    });
   };
 
   const applyEffectiveState = (payload: Record<string, unknown>): void => {

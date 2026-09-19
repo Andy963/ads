@@ -7,6 +7,13 @@ import type { ModelConfig } from "../api/types";
 const TEST_TIMEOUT_MS = 40_000;
 const OUTBOX_KEY = "ads.outbox.default.main";
 
+function readStoredModelId(projectId: string, lane: string, agentId?: string): string | null {
+  const raw = localStorage.getItem(`ads.prefs.${projectId}`);
+  if (!raw) return null;
+  const prefs = JSON.parse(raw) as { models?: Record<string, Record<string, { modelId?: string }>> };
+  return prefs.models?.[lane]?.[agentId?.trim() || "default"]?.modelId ?? null;
+}
+
 /** The outbox lives in localStorage so a reload in any tab still finds the prompt. */
 function seedPendingPrompt(pending: Record<string, unknown>): void {
   localStorage.setItem(OUTBOX_KEY, JSON.stringify({ pending, queued: [] }));
@@ -178,7 +185,7 @@ describe("Model selector persistence", () => {
 
       expect(lastSendPromptPayload).toBeTruthy();
       expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "gpt-4o" });
-      expect(localStorage.getItem("ads.modelId.default.main")).toBe("gpt-4o");
+      expect(readStoredModelId("default", "main")).toBe("gpt-4o");
 
       wrapper.unmount();
     },
@@ -331,7 +338,7 @@ describe("Model selector persistence", () => {
         agentId: "claude",
         model: "claude-opus-5[1m]",
       });
-      expect(localStorage.getItem("ads.modelId.default.main.claude")).toBe("claude-opus-5[1m]");
+      expect(readStoredModelId("default", "main", "claude")).toBe("claude-opus-5[1m]");
 
       wrapper.unmount();
     },
@@ -355,7 +362,7 @@ describe("Model selector persistence", () => {
 
       expect(lastSendPromptPayload).toBeTruthy();
       expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "not-a-real-model" });
-      expect(localStorage.getItem("ads.modelId.default.main")).toBe("not-a-real-model");
+      expect(readStoredModelId("default", "main")).toBe("not-a-real-model");
 
       wrapper.unmount();
     },
@@ -385,7 +392,7 @@ describe("Model selector persistence", () => {
 
       expect(lastSendPromptPayload).toBeTruthy();
       expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "gpt-4.1" });
-      expect(localStorage.getItem("ads.modelId.default.main")).toBe("gpt-4.1");
+      expect(readStoredModelId("default", "main")).toBe("gpt-4.1");
 
       wrapper.unmount();
     },
