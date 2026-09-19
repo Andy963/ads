@@ -32,6 +32,7 @@ describe("web/ws/bootstrapDelivery", () => {
         inFlight: false,
         historyStore,
         historyKey: "history-1",
+        laneGeneration: 3,
       });
 
       assert.equal((sent[0] as { type?: unknown }).type, "welcome");
@@ -39,6 +40,7 @@ describe("web/ws/bootstrapDelivery", () => {
       assert.equal((sent[1] as { type?: unknown }).type, "agents");
       assert.deepEqual(sent[2], {
         type: "history",
+        laneGeneration: 3,
         items: [{ role: "user", text: "hello", ts: 1, kind: undefined }],
       });
     } finally {

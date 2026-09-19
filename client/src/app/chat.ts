@@ -459,7 +459,11 @@ export function createChatActions(ctx: AppContext) {
     rt.transcriptReady = false;
     rt.transcriptCursor = 0;
     rt.threadWarning.value = params.warning ?? null;
-    rt.ignoreNextHistory = true;
+    // A local clear may be followed by an empty bootstrap. Keep a one-shot
+    // fence for that response, but associate it with the generation that was
+    // current before the reset so a newer generation can never be discarded.
+    rt.ignoreNextHistory = params.clearBackendHistory === true;
+    rt.ignoreNextHistoryGeneration = rt.ignoreNextHistory ? rt.laneGeneration : undefined;
     rt.resumeReplacePending = false;
     rt.inputLocked.value = false;
     resetConversation(rt, params.notice, params.keepLatestTurn ?? false);
@@ -478,6 +482,7 @@ export function createChatActions(ctx: AppContext) {
     rt.transcriptReady = false;
     rt.threadWarning.value = null;
     rt.ignoreNextHistory = false;
+    rt.ignoreNextHistoryGeneration = undefined;
     rt.resumeReplacePending = true;
     rt.inputLocked.value = true;
     rt.laneStatus.value = { kind: "progress", message: "正在恢复上下文…" };
@@ -597,6 +602,10 @@ export function createChatActions(ctx: AppContext) {
     const content = String(text ?? "").trim();
     const imgs = Array.isArray(images) ? images : [];
     if (!content && imgs.length === 0) return;
+    // A newly queued prompt belongs to the current lane generation. It must
+    // not inherit a stale one-shot reset fence from an earlier clear.
+    state.ignoreNextHistory = false;
+    state.ignoreNextHistoryGeneration = undefined;
     const agentId = String(state.activeAgentId.value ?? "").trim();
     ensureOutboxBinding(state);
     state.queuedPrompts.value = [
@@ -635,6 +644,8 @@ export function createChatActions(ctx: AppContext) {
     // Clear the failure state before re-dispatching; a new failure anchors a
     // fresh card to the retried turn instead.
     setMessages(existing.filter((item) => item.id !== message.id), state);
+    state.ignoreNextHistory = false;
+    state.ignoreNextHistoryGeneration = undefined;
     ensureOutboxBinding(state);
     const execution = userItem.execution ?? {};
     const agentId = String(execution.agentId ?? "").trim() || String(state.activeAgentId.value ?? "").trim();
@@ -671,6 +682,8 @@ export function createChatActions(ctx: AppContext) {
     const isCurrentAccount = (): boolean => ctx.accountGeneration?.value === account;
     const next = state.queuedPrompts.value[0]!;
     state.queuedPrompts.value = state.queuedPrompts.value.slice(1);
+    state.ignoreNextHistory = false;
+    state.ignoreNextHistoryGeneration = undefined;
     let sendAccepted = false;
 
     try {

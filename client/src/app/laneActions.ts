@@ -326,6 +326,8 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
       resetThreadId: true,
       source: "user_clear_advisor_context",
     });
+    rt.ignoreNextHistory = false;
+    rt.ignoreNextHistoryGeneration = undefined;
   };
 
   const startNewAdvisorSession = (): void => {
@@ -344,6 +346,8 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
       resetThreadId: true,
       source: "user_new_advisor_session",
     });
+    rt.ignoreNextHistory = false;
+    rt.ignoreNextHistoryGeneration = undefined;
   };
 
   const resumeTaskThread = async (

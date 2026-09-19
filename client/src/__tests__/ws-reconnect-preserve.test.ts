@@ -1281,6 +1281,8 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     const { wrapper, rt } = await mountReconnectHarness();
 
     rt.ignoreNextHistory = true;
+    rt.ignoreNextHistoryGeneration = 1;
+    rt.laneGeneration = 2;
     rt.pendingAckClientMessageId = "pending-ignored";
     seedOutboxPending("main", { clientMessageId: "pending-ignored", text: "run ignored", createdAt: Date.now(), agentId: "claude" });
     lastSentPromptPayload = null;
@@ -1289,6 +1291,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     await settleUi(wrapper);
     lastWs!.onMessage?.({
       type: "welcome",
+      laneGeneration: 2,
       inFlight: false,
       contextMode: "fresh",
       bootstrapHistory: true,
@@ -1300,6 +1303,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
     lastWs!.onMessage?.({
       type: "history",
+      laneGeneration: 1,
       items: [
         {
           role: "user",
@@ -1319,6 +1323,32 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(localStorage.getItem("ads.outbox.default.main")).toBeNull();
     expect(lastSentPromptPayload).toBeNull();
     expect(rt.inputLocked.value).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("preserves non-empty history from the current generation after a reset fence", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    rt.laneGeneration = 2;
+    rt.ignoreNextHistory = true;
+    rt.ignoreNextHistoryGeneration = 1;
+
+    lastWs!.onMessage?.({
+      type: "history",
+      laneGeneration: 2,
+      items: [
+        { role: "user", text: "recover this turn", ts: 1 },
+        { role: "ai", text: "Recovered answer", ts: 2 },
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(rt.ignoreNextHistory).toBe(false);
+    expect(rt.ignoreNextHistoryGeneration).toBeUndefined();
+    expect(rt.messages.value.map((message: any) => message.content)).toEqual([
+      "recover this turn",
+      "Recovered answer",
+    ]);
     wrapper.unmount();
   });
 
@@ -1785,12 +1815,37 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     const advisorRt = controller.getAdvisorRuntime("default");
 
     seedPendingReplayState(advisorRt, "advisor", "advisor-ack");
+    advisorRt.ignoreNextHistory = true;
+    advisorRt.ignoreNextHistoryGeneration = 1;
     controller.clearAdvisorChat();
     await settleUi(wrapper);
 
     expect(advisorRt.pendingAckClientMessageId).toBeNull();
     expect(advisorRt.queuedPrompts.value).toEqual([]);
+    expect(advisorRt.ignoreNextHistory).toBe(false);
+    expect(advisorRt.ignoreNextHistoryGeneration).toBeUndefined();
+
+    advisorRt.ignoreNextHistory = true;
+    advisorRt.ignoreNextHistoryGeneration = 2;
+    controller.startNewAdvisorSession();
+    await settleUi(wrapper);
+
+    expect(advisorRt.ignoreNextHistory).toBe(false);
+    expect(advisorRt.ignoreNextHistoryGeneration).toBeUndefined();
     expect(localStorage.getItem("ads.outbox.default.advisor")).toBeNull();
+    wrapper.unmount();
+  });
+
+  it("clears a stale history fence when a new prompt is queued", async () => {
+    const { wrapper, controller, rt } = await mountReconnectHarness();
+
+    rt.ignoreNextHistory = true;
+    rt.ignoreNextHistoryGeneration = 1;
+    controller.enqueuePrompt("new prompt", [], rt);
+    await settleUi(wrapper);
+
+    expect(rt.ignoreNextHistory).toBe(false);
+    expect(rt.ignoreNextHistoryGeneration).toBeUndefined();
     wrapper.unmount();
   });
 
