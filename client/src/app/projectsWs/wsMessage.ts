@@ -1212,22 +1212,38 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const terminalHistoryTail = hasTerminalHistoryTail(items);
       reconcilePendingPromptsFromBootstrapHistory(items, terminalHistoryTail);
       if (!resumeReplacePending && rt.ignoreNextHistory) {
+        const historyGenerationRaw = Number((msg as Record<string, unknown>).laneGeneration);
+        const historyGeneration = Number.isFinite(historyGenerationRaw) && historyGenerationRaw >= 1
+          ? Math.floor(historyGenerationRaw)
+          : null;
+        const ignoredGenerationRaw = Number(rt.ignoreNextHistoryGeneration);
+        const ignoredGeneration = Number.isFinite(ignoredGenerationRaw) && ignoredGenerationRaw >= 1
+          ? Math.floor(ignoredGenerationRaw)
+          : null;
+        const isObsoleteGeneration =
+          historyGeneration !== null && ignoredGeneration !== null && historyGeneration <= ignoredGeneration;
+        const shouldDropHistory = items.length === 0 || isObsoleteGeneration;
         rt.ignoreNextHistory = false;
-        dropReconnectBusyMessage();
-        diagAlert("history帧被ignoreNextHistory吞掉", {
-          chatSessionId: rt.chatSessionId,
-          items: items.length,
-          busy: rt.busy.value,
-          terminalTail: terminalHistoryTail,
-        });
-        if (!rt.busy.value && !rt.turnInFlight) {
-          rt.inputLocked.value = false;
-          if (rt.laneStatus.value?.kind === "progress") {
-            rt.laneStatus.value = null;
+        rt.ignoreNextHistoryGeneration = undefined;
+        if (shouldDropHistory) {
+          dropReconnectBusyMessage();
+          diagAlert("history帧被ignoreNextHistory吞掉", {
+            chatSessionId: rt.chatSessionId,
+            items: items.length,
+            busy: rt.busy.value,
+            terminalTail: terminalHistoryTail,
+            historyGeneration,
+            ignoredGeneration,
+          });
+          if (!rt.busy.value && !rt.turnInFlight) {
+            rt.inputLocked.value = false;
+            if (rt.laneStatus.value?.kind === "progress") {
+              rt.laneStatus.value = null;
+            }
+            void flushQueuedPrompts(rt);
           }
-          void flushQueuedPrompts(rt);
+          return;
         }
-        return;
       }
       const historyThreadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
       const historyContextMode = String((msg as { contextMode?: unknown }).contextMode ?? "").trim();
@@ -1597,6 +1613,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       clearPendingPrompt(rt);
       const output = normalizeWireText(msg.output);
       const resultKind = String(msg.kind ?? "").trim();
+      if (msg.ok === true && resultKind === "clear_history") {
+        rt.ignoreNextHistory = false;
+        rt.ignoreNextHistoryGeneration = undefined;
+      }
       if (rt.suppressNextClearHistoryResult) {
         rt.suppressNextClearHistoryResult = false;
         const kind = String(msg.kind ?? "").trim();

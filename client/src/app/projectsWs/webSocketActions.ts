@@ -794,6 +794,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.streamEndOffsets?.clear();
       rt.streamSnapshotRevisions?.clear();
       rt.ignoreNextHistory = false;
+      rt.ignoreNextHistoryGeneration = undefined;
       applySyncPayload(payload);
     };
 

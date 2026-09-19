@@ -106,7 +106,12 @@ export function sendInitialBootstrapMessages(args: {
   const replayHistoryEntries =
     bootstrapState.contextMode === "fresh" ? trimTrailingFreshStatusNotices(historyEntries) : historyEntries;
   const historyPayload = !resumed && shouldReplayHistory
-    ? buildHistoryBootstrapPayload(replayHistoryEntries) ?? { type: "history", items: [] }
+    ? (() => {
+        const payload = buildHistoryBootstrapPayload(replayHistoryEntries) ?? { type: "history", items: [] };
+        return typeof args.laneGeneration === "number"
+          ? { ...payload, laneGeneration: args.laneGeneration }
+          : payload;
+      })()
     : null;
 
   args.safeJsonSend(

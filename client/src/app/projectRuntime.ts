@@ -54,6 +54,7 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     resumableSessionsHidden: ref(null),
     resumableSessionsNextCursor: ref<string | null>(null),
     ignoreNextHistory: false,
+    ignoreNextHistoryGeneration: undefined,
     resumeReplacePending: false,
     awaitingBootstrapHistory: false,
     ws: null,

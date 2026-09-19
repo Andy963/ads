@@ -480,6 +480,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     updateProject(pid, { chatSessionId: newChatSessionId });
     activeRuntime.value.chatSessionId = newChatSessionId;
     activeRuntime.value.ignoreNextHistory = false;
+    activeRuntime.value.ignoreNextHistoryGeneration = undefined;
     activeRuntime.value.suppressNextClearHistoryResult = false;
 
     busy.value = false;

@@ -211,6 +211,8 @@ export type ProjectRuntime = {
   /** Continuation token for the next page, or null when the list is exhausted. */
   resumableSessionsNextCursor: Ref<string | null>;
   ignoreNextHistory: boolean;
+  /** Generation captured before a local history reset requested a bootstrap fence. */
+  ignoreNextHistoryGeneration?: number;
   resumeReplacePending: boolean;
   awaitingBootstrapHistory: boolean;
   ws: unknown;
