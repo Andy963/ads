@@ -6,15 +6,11 @@ import type { ChatActions } from "../chat";
 import { deriveProjectNameFromPath } from "./projectName";
 import type { ProjectDeps } from "./types";
 import { diagAlert } from "../../lib/diagAlert";
-
-const PROJECTS_KEY = "ADS_WEB_PROJECTS";
-const ACTIVE_PROJECT_KEY = "ADS_WEB_ACTIVE_PROJECT";
-const LAST_REAL_PROJECT_KEY = "ADS_WEB_LAST_REAL_PROJECT";
-const LAST_REAL_PROJECT_TAB_KEY = "ADS_WEB_LAST_REAL_PROJECT_TAB";
-
-function readProjectPreference(key: string): string | null {
-  try { return localStorage.getItem(key); } catch { return null; }
-}
+import {
+  readAppNavigationState,
+  removeProjectPreferences,
+  writeAppNavigationState,
+} from "../../lib/preferencesStore";
 
 type StoredProjectTabInput = Partial<ProjectTab> & { chatSessionId?: unknown };
 type RemoteProjectInput = {
@@ -55,7 +51,6 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     lastValidatedProjectPath,
     projectPathEl,
     projectNameEl,
-    safeJsonParse,
     randomId,
     switchConfirmOpen,
     pendingSwitchProjectId,
@@ -134,16 +129,19 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
 
   const persistProjects = (): void => {
     try {
-      localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects.value));
-      localStorage.setItem(ACTIVE_PROJECT_KEY, activeProjectId.value);
       const activeId = normalizeString(activeProjectId.value);
-      if (activeId && activeId !== "default") {
-        localStorage.setItem(LAST_REAL_PROJECT_KEY, activeId);
-        const activeTab = projects.value.find((p) => p.id === activeId) ?? null;
-        if (activeTab) {
-          localStorage.setItem(LAST_REAL_PROJECT_TAB_KEY, JSON.stringify(activeTab));
-        }
-      }
+      const isRealActive = Boolean(activeId) && activeId !== "default";
+      // lastRealProject* keep the previous non-default selection while the
+      // active project is "default", matching the legacy scattered-key semantics.
+      const previous = readAppNavigationState();
+      writeAppNavigationState({
+        projects: projects.value,
+        activeProject: activeId || null,
+        lastRealProject: isRealActive ? activeId : (previous.lastRealProject ?? null),
+        lastRealProjectTab: isRealActive
+          ? (projects.value.find((p) => p.id === activeId) ?? null)
+          : (previous.lastRealProjectTab ?? null),
+      });
     } catch {
       // ignore
     }
@@ -153,10 +151,12 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
   // stored list. If the list lost the entry (older schema, storage rewrite,
   // server rebuild), re-insert the last known tab so the selection still
   // restores instead of silently landing on "default".
-  const restoreLastRealProjectTab = (normalized: ProjectTab[], lastRealActive: string): ProjectTab[] => {
+  const restoreLastRealProjectTab = (normalized: ProjectTab[], lastRealActive: string, storedTab: unknown): ProjectTab[] => {
     if (!lastRealActive || lastRealActive === "default") return normalized;
     if (normalized.some((p) => p.id === lastRealActive)) return normalized;
-    const stored = safeJsonParse<StoredProjectTabInput>(readProjectPreference(LAST_REAL_PROJECT_TAB_KEY));
+    const stored = storedTab && typeof storedTab === "object" && !Array.isArray(storedTab)
+      ? (storedTab as StoredProjectTabInput)
+      : null;
     const tab = stored ? normalizeStoredProject(stored) : null;
     if (!tab || tab.id !== lastRealActive) return normalized;
     const insertAt = normalized.some((p) => p.id === "default") ? 1 : 0;
@@ -166,9 +166,10 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
   };
 
   const initializeProjects = (): void => {
-    const stored = safeJsonParse<ProjectTab[]>(readProjectPreference(PROJECTS_KEY));
-    const parsed: ProjectTab[] = Array.isArray(stored)
-      ? stored
+    const stored = readAppNavigationState();
+    const storedProjects = stored.projects;
+    const parsed: ProjectTab[] = Array.isArray(storedProjects)
+      ? storedProjects
           .map((item) => normalizeStoredProject(item as StoredProjectTabInput))
           .filter((p): p is ProjectTab => Boolean(p))
       : [];
@@ -177,9 +178,9 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
       parsed.unshift(createProjectTab({ path: "", initialized: true }));
     }
 
-    const storedActive = String(readProjectPreference(ACTIVE_PROJECT_KEY) ?? "").trim();
-    const lastRealActive = String(readProjectPreference(LAST_REAL_PROJECT_KEY) ?? "").trim();
-    const normalized = restoreLastRealProjectTab(parsed, lastRealActive);
+    const storedActive = String(stored.activeProject ?? "").trim();
+    const lastRealActive = String(stored.lastRealProject ?? "").trim();
+    const normalized = restoreLastRealProjectTab(parsed, lastRealActive, stored.lastRealProjectTab);
     const hasStoredProject = (id: string): boolean => Boolean(id) && normalized.some((p) => p.id === id);
     // "default" is a workspace affordance, not a real project. Never land on it
     // when a real project selection can be restored — starting on default forces
@@ -369,6 +370,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     persistProjects();
 
     if (!loggedIn.value) {
+      removeProjectPreferences(pid);
       return;
     }
 
@@ -380,6 +382,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
         throw new Error("Failed to remove project");
       }
 
+      removeProjectPreferences(pid);
       deps.closeProjectConnections?.(pid);
       await loadProjectsFromServer();
       await deps.activateProject(activeProjectId.value);

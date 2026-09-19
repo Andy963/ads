@@ -2,12 +2,16 @@ import { AdsWebSocket } from "../../api/ws";
 import type { SyncEventsResponse } from "../../api/types";
 import { diagAlert } from "../../lib/diagAlert";
 import {
-  buildModelIdStorageKey,
-  buildReasoningEffortStorageKey,
   normalizeModelId,
   normalizeReasoningEffort,
-  readLanePreferenceWithLegacyFallback,
 } from "../../lib/chatPreferences";
+import {
+  readLaneGenerationPreference,
+  readModelIdPreference,
+  readReasoningEffortPreference,
+  renameProjectPreferences,
+  writeLaneGenerationPreference,
+} from "../../lib/preferencesStore";
 
 import type { AppContext, PathValidateResponse, ProjectRuntime, ProjectTab } from "../controller";
 import type { ChatActions } from "../chat";
@@ -80,7 +84,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   const restoreReasoningEffort = (rt: ProjectRuntime): void => {
     const sessionId = String(rt.projectSessionId ?? "").trim();
     if (!sessionId) return;
-    const stored = readLanePreferenceWithLegacyFallback(buildReasoningEffortStorageKey, sessionId, rt.chatSessionId);
+    const stored = readReasoningEffortPreference(sessionId, rt.chatSessionId);
     if (stored !== null) {
       rt.modelReasoningEffort.value = normalizeReasoningEffort(stored);
     }
@@ -89,7 +93,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   const restoreModelId = (rt: ProjectRuntime): void => {
     const sessionId = String(rt.projectSessionId ?? "").trim();
     if (!sessionId) return;
-    const stored = readLanePreferenceWithLegacyFallback(buildModelIdStorageKey, sessionId, rt.chatSessionId);
+    const stored = readModelIdPreference(sessionId, rt.chatSessionId);
     if (stored !== null) {
       rt.modelId.value = normalizeModelId(stored);
     }
@@ -186,6 +190,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         }
         advisorRuntimeByProjectId.delete(oldKey);
       }
+      renameProjectPreferences(oldKey, nextKey);
     }
     deps.persistProjects();
   };
@@ -231,12 +236,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     return sessionId ? `ads.syncCursor.${sessionId}.${chatSessionId}` : null;
   };
 
-  const laneGenerationKey = (rt: ProjectRuntime, chatSessionIdOverride?: string): string | null => {
-    const sessionId = String(rt.projectSessionId ?? "").trim();
-    const chatSessionId = String(chatSessionIdOverride ?? rt.chatSessionId ?? "").trim() || "main";
-    return sessionId ? `ads.laneGeneration.${sessionId}.${chatSessionId}` : null;
-  };
-
   const laneGenerationScopeKey = (rt: ProjectRuntime, chatSessionIdOverride?: string): string => {
     const sessionId = String(rt.projectSessionId ?? "").trim();
     const chatSessionId = String(chatSessionIdOverride ?? rt.chatSessionId ?? "").trim() || "main";
@@ -244,24 +243,17 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   };
 
   const readLaneGeneration = (rt: ProjectRuntime, chatSessionIdOverride?: string): number | null => {
-    const key = laneGenerationKey(rt, chatSessionIdOverride);
-    if (!key) return null;
-    try {
-      const value = Number(localStorage.getItem(key));
-      return Number.isFinite(value) && value >= 1 ? Math.floor(value) : null;
-    } catch {
-      return null;
-    }
+    const sessionId = String(rt.projectSessionId ?? "").trim();
+    if (!sessionId) return null;
+    const chatSessionId = String(chatSessionIdOverride ?? rt.chatSessionId ?? "").trim() || "main";
+    return readLaneGenerationPreference(sessionId, chatSessionId);
   };
 
   const writeLaneGeneration = (rt: ProjectRuntime, generation: number, chatSessionIdOverride?: string): void => {
-    const key = laneGenerationKey(rt, chatSessionIdOverride);
-    if (!key) return;
-    try {
-      localStorage.setItem(key, String(Math.max(1, Math.floor(generation))));
-    } catch {
-      // ignore
-    }
+    const sessionId = String(rt.projectSessionId ?? "").trim();
+    if (!sessionId) return;
+    const chatSessionId = String(chatSessionIdOverride ?? rt.chatSessionId ?? "").trim() || "main";
+    writeLaneGenerationPreference(sessionId, chatSessionId, generation);
   };
 
   const clearOutboxForGenerationChange = (rt: ProjectRuntime): void => {

@@ -8,6 +8,7 @@ import {
   RECONNECT_PENDING_RESEND_NOTICE,
 } from "../app/projectsWs/reconnectNotice";
 import { STREAM_DISCONNECT_NOTICE } from "../lib/chat_sync";
+import { readLaneGenerationPreference } from "../lib/preferencesStore";
 
 const PENDING_PROMPT_REPLAY_NOTICE = "已恢复断线前未确认发送的请求，并重新发送。";
 
@@ -282,7 +283,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
     expect(closeSpy).toHaveBeenCalled();
     expect(rt.messages.value.map((m) => m.content)).toEqual(["keep me"]);
-    expect(localStorage.getItem("ads.laneGeneration.default.main")).toBe("3");
+    expect(readLaneGenerationPreference("default", "main")).toBe(3);
     expect(rt.laneGeneration).toBe(3);
     wrapper.unmount();
   });

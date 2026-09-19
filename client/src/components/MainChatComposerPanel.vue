@@ -7,6 +7,10 @@ import type { IncomingImage, QueuedPrompt } from "./mainChat/types";
 import { useMainChatComposer } from "./mainChat/useComposer";
 import { useComposerActionMenu } from "./mainChat/useComposerActionMenu";
 import { createTapActivation } from "../lib/tapActivation";
+import {
+  readLatestPromptPreference,
+  writeLatestPromptPreference,
+} from "../lib/preferencesStore";
 
 type PendingImagePreview = {
   key: string;
@@ -46,19 +50,26 @@ const canInterrupt = computed(() => props.busy);
 
 const normalizedConnectionStatusKind = computed(() => props.connectionStatusKind ?? "info");
 const latestPrompt = ref("");
-const latestPromptStorageKey = computed(() => {
-  const scope = String(props.latestPromptKey ?? "").trim();
-  return scope ? `ADS_WEB_LATEST_PROMPT:${scope}` : "";
-});
+const latestPromptScopeKey = computed(() => String(props.latestPromptKey ?? "").trim());
+
+function resolveLatestPromptScope(): { projectId: string; lane: string } {
+  const scope = latestPromptScopeKey.value;
+  const separator = scope.indexOf(":");
+  if (!scope || separator <= 0) return { projectId: "", lane: "" };
+  return {
+    projectId: scope.slice(0, separator).trim(),
+    lane: scope.slice(separator + 1).trim(),
+  };
+}
 
 function loadLatestPrompt(): void {
-  const key = latestPromptStorageKey.value;
-  if (!key) {
+  const { projectId, lane } = resolveLatestPromptScope();
+  if (!projectId || !lane) {
     latestPrompt.value = "";
     return;
   }
   try {
-    latestPrompt.value = String(localStorage.getItem(key) ?? "").trim();
+    latestPrompt.value = readLatestPromptPreference(projectId, lane) ?? "";
   } catch {
     latestPrompt.value = "";
   }
@@ -68,16 +79,16 @@ function persistLatestPrompt(content: string): void {
   const prompt = String(content ?? "").trim();
   if (!prompt) return;
   latestPrompt.value = prompt;
-  const key = latestPromptStorageKey.value;
-  if (!key) return;
+  const { projectId, lane } = resolveLatestPromptScope();
+  if (!projectId || !lane) return;
   try {
-    localStorage.setItem(key, prompt);
+    writeLatestPromptPreference(projectId, lane, prompt);
   } catch {
     // Keep the in-memory fallback when browser storage is unavailable.
   }
 }
 
-watch(latestPromptStorageKey, loadLatestPrompt, { immediate: true });
+watch(latestPromptScopeKey, loadLatestPrompt, { immediate: true });
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));

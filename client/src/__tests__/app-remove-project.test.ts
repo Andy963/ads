@@ -227,7 +227,10 @@ describe("App.removeProject", () => {
     expect(idsFromVm(wrapper as any)).toEqual(["default"]);
     expect((wrapper.vm as any).activeProjectId).toBe("default");
 
-    const persisted = JSON.parse(localStorage.getItem("ADS_WEB_PROJECTS") ?? "[]") as Array<{ id?: string; sessionId?: string }>;
+    const appState = JSON.parse(localStorage.getItem("ads.app_state") ?? "{}") as {
+      projects?: Array<{ id?: string; sessionId?: string }>;
+    };
+    const persisted = appState.projects ?? [];
     expect(persisted.some((p) => p.id === "stale-1" || p.sessionId === "stale-1")).toBe(false);
 
     wrapper.unmount();

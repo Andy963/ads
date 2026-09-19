@@ -1,20 +1,21 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  buildMobileWorkspaceTabStorageKey,
   normalizeMobileWorkspaceTab,
   readMobileWorkspaceTab,
   writeMobileWorkspaceTab,
 } from "./mobileWorkspacePreferences";
 
+function readStoredMobileTab(projectId: string): string | null {
+  const raw = localStorage.getItem(`ads.prefs.${projectId}`);
+  if (!raw) return null;
+  const prefs = JSON.parse(raw) as { mobileTab?: string };
+  return prefs.mobileTab ?? null;
+}
+
 describe("mobileWorkspacePreferences", () => {
   afterEach(() => {
     localStorage.clear();
-  });
-
-  it("builds project-scoped keys and defaults empty project ids safely", () => {
-    expect(buildMobileWorkspaceTabStorageKey(" p1 ")).toBe("ads.mobileWorkspaceTab.p1");
-    expect(buildMobileWorkspaceTabStorageKey("")).toBe("ads.mobileWorkspaceTab.unknown");
   });
 
   it("normalizes invalid values to Advisor", () => {
@@ -31,6 +32,13 @@ describe("mobileWorkspacePreferences", () => {
     expect(readMobileWorkspaceTab("p-legacy")).toBe("advisor");
   });
 
+  it("lazily migrates the legacy scattered key into the unified project record", () => {
+    localStorage.setItem("ads.mobileWorkspaceTab.p1", "worker");
+    expect(readMobileWorkspaceTab("p1")).toBe("worker");
+    expect(readStoredMobileTab("p1")).toBe("worker");
+    expect(localStorage.getItem("ads.mobileWorkspaceTab.p1")).toBeNull();
+  });
+
   it("reads and writes values independently for each project", () => {
     writeMobileWorkspaceTab("p1", "worker");
     writeMobileWorkspaceTab("p2", "advisor");
@@ -38,11 +46,13 @@ describe("mobileWorkspacePreferences", () => {
     expect(readMobileWorkspaceTab("p1")).toBe("worker");
     expect(readMobileWorkspaceTab("p2")).toBe("advisor");
     expect(readMobileWorkspaceTab("p3")).toBe("advisor");
+    expect(readStoredMobileTab("p1")).toBe("worker");
+    expect(readStoredMobileTab("p2")).toBe("advisor");
   });
 
   it("does not create a shared key for an empty project id", () => {
     writeMobileWorkspaceTab("", "worker");
-    expect(localStorage.getItem("ads.mobileWorkspaceTab.unknown")).toBeNull();
+    expect(localStorage.getItem("ads.prefs.unknown")).toBeNull();
     expect(readMobileWorkspaceTab("")).toBe("advisor");
   });
 });
