@@ -6,6 +6,13 @@ import type { ModelConfig } from "../api/types";
 
 type GetImpl = (url: string) => Promise<unknown>;
 
+function readStoredMobileTab(projectId: string): string | null {
+  const raw = localStorage.getItem(`ads.prefs.${projectId}`);
+  if (!raw) return null;
+  const prefs = JSON.parse(raw) as { mobileTab?: string };
+  return prefs.mobileTab ?? null;
+}
+
 let getImpl: GetImpl | null = null;
 let projectsResponse: {
   projects: Array<{ id: string; workspaceRoot: string; name: string; chatSessionId: string }>;
@@ -189,7 +196,8 @@ describe("mobile navigation behavior", () => {
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
     await settleUi(wrapper);
-    expect(localStorage.getItem("ads.mobileWorkspaceTab.default")).toBe("worker");
+    expect(readStoredMobileTab("default")).toBe("worker");
+    expect(localStorage.getItem("ads.mobileWorkspaceTab.default")).toBeNull();
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-new-session"]').exists()).toBe(true);

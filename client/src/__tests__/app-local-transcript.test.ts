@@ -4,7 +4,6 @@ import { flushPromises, mount } from "@vue/test-utils";
 import App from "../App.vue";
 import { createProjectRuntime } from "../app/projectRuntime";
 import { createTranscriptCache, TRANSCRIPT_CACHE_PREFIX, TRANSCRIPT_OWNER_KEY } from "../app/transcriptCache";
-import { buildMobileWorkspaceTabStorageKey } from "../lib/mobileWorkspacePreferences";
 import { legacyPendingPromptStorageKey, outboxStorageKey } from "../app/outbox";
 
 const state = vi.hoisted(() => ({ get: vi.fn() }));
@@ -57,7 +56,7 @@ describe("cached app bootstrap and authentication", () => {
   it("restores the selected mobile lane before its first render", () => {
     const width = window.innerWidth;
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
-    localStorage.setItem(buildMobileWorkspaceTabStorageKey("default"), "worker");
+    localStorage.setItem("ads.mobileWorkspaceTab.default", "worker");
     state.get.mockReturnValue(new Promise(() => {}));
     try {
       const wrapper = mountApp();

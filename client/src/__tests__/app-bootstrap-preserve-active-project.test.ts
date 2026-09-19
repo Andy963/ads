@@ -116,7 +116,9 @@ describe("App bootstrap preserves the visible active project", () => {
     await settleUi(wrapper);
 
     expect((wrapper.vm as any).activeProjectId).toBe("p2");
-    expect(localStorage.getItem("ADS_WEB_ACTIVE_PROJECT")).toBe("p2");
+    const appState = JSON.parse(localStorage.getItem("ads.app_state") ?? "{}") as { activeProject?: string };
+    expect(appState.activeProject).toBe("p2");
+    expect(localStorage.getItem("ADS_WEB_ACTIVE_PROJECT")).toBeNull();
 
     wrapper.unmount();
   });

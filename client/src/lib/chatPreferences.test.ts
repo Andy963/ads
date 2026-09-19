@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  buildModelIdStorageKey,
-  buildReasoningEffortStorageKey,
   normalizeModelId,
   normalizeReasoningEffort,
-  readLanePreferenceWithLegacyFallback,
 } from "./chatPreferences";
 
 describe("chatPreferences", () => {
@@ -23,28 +20,5 @@ describe("chatPreferences", () => {
     expect(normalizeModelId(" gpt-5 ")).toBe("gpt-5");
     expect(normalizeModelId("")).toBe("auto");
     expect(normalizeModelId(null)).toBe("auto");
-  });
-
-  it("builds stable localStorage keys with trimmed fallback segments", () => {
-    expect(buildReasoningEffortStorageKey(" default ", " main ")).toBe("ads.reasoningEffort.default.main");
-    expect(buildReasoningEffortStorageKey("", "")).toBe("ads.reasoningEffort.unknown.main");
-    expect(buildModelIdStorageKey(" session-1 ", " advisor ")).toBe("ads.modelId.session-1.advisor");
-    expect(buildModelIdStorageKey("", "")).toBe("ads.modelId.unknown.main");
-    expect(buildModelIdStorageKey("default", "main", "codex")).toBe("ads.modelId.default.main.codex");
-    expect(buildReasoningEffortStorageKey("default", "main", "claude")).toBe(
-      "ads.reasoningEffort.default.main.claude",
-    );
-  });
-
-  it("falls back to the legacy planner key when the advisor key has no value", () => {
-    localStorage.setItem("ads.modelId.session-1.planner", "gpt-legacy");
-    const legacy = readLanePreferenceWithLegacyFallback(buildModelIdStorageKey, "session-1", "advisor");
-    expect(legacy).toBe("gpt-legacy");
-
-    // Advisor key wins once present; worker and custom lanes never fall back.
-    localStorage.setItem("ads.modelId.session-1.advisor", "gpt-new");
-    expect(readLanePreferenceWithLegacyFallback(buildModelIdStorageKey, "session-1", "advisor")).toBe("gpt-new");
-    expect(readLanePreferenceWithLegacyFallback(buildModelIdStorageKey, "session-1", "worker")).toBeNull();
-    expect(readLanePreferenceWithLegacyFallback(buildModelIdStorageKey, "session-1", "room-a")).toBeNull();
   });
 });

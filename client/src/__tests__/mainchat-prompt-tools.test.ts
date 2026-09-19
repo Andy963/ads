@@ -6,6 +6,13 @@ import MainChatComposerPanel from "../components/MainChatComposerPanel.vue";
 
 const STORAGE_KEY = "ADS_WEB_LATEST_PROMPT:project-1:main";
 
+function readStoredLatestPrompts(): Record<string, string> {
+  const raw = localStorage.getItem("ads.prefs.project-1");
+  if (!raw) return {};
+  const prefs = JSON.parse(raw) as { latestPrompts?: Record<string, string> };
+  return prefs.latestPrompts ?? {};
+}
+
 function mountPromptTools(options?: { inputLocked?: boolean; latestPromptKey?: string }) {
   const Host = defineComponent({
     components: { MainChatComposerPanel },
@@ -68,7 +75,8 @@ describe("MainChat prompt tools", () => {
     await wrapper.get("button.sendIcon").trigger("click");
     await nextTick();
 
-    expect(localStorage.getItem(STORAGE_KEY)).toBe("Retry this prompt");
+    expect(readStoredLatestPrompts().main).toBe("Retry this prompt");
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
     expect((wrapper.vm as { sent: string[] }).sent).toEqual(["Retry this prompt"]);
     expect((textarea.element as HTMLTextAreaElement).value).toBe("");
 
