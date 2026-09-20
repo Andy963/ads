@@ -253,7 +253,7 @@ describe("CodexAppServerAdapter", () => {
       },
     });
     const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
-    const adapter = new CodexAppServerAdapter({ projectId: "v2-events", registry });
+    const adapter = new CodexAppServerAdapter({ projectId: "v2-events", model: "gpt-5.6-luna", registry });
     const events: Array<{ phase: string; title: string; detail?: string; delta?: string; liveStep?: boolean }> = [];
     adapter.onEvent((event) => events.push({
       phase: event.phase,
@@ -303,6 +303,47 @@ describe("CodexAppServerAdapter", () => {
       ["Comparing ", "Comparing the existing adapters", "Running the verification command"],
     );
     assert(events.some((event) => event.phase === "context" && event.title === "Context ready"));
+
+    await registry.stopAll();
+  });
+
+  it("suppresses reasoning summaries for Gemini while preserving the GPT summary path", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-gemini-summary" } }),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({
+      projectId: "gemini-summary",
+      model: "gemini-3.8-flash-high",
+      registry,
+    });
+    const events: Array<{ delta?: string; liveStep?: boolean }> = [];
+    adapter.onEvent((event) => events.push({ delta: event.delta, liveStep: event.liveStep }));
+
+    const sendPromise = adapter.send("exercise Gemini reasoning summary");
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("turn/started", { threadId: "thread-gemini-summary", turn: { id: "turn-gemini" } });
+    fake.notify("item/reasoning/summaryTextDelta", {
+      threadId: "thread-gemini-summary",
+      turnId: "turn-gemini",
+      itemId: "reasoning-gemini",
+      summaryIndex: 0,
+      delta: "Internal chain-of-thought must remain private.",
+    });
+    fake.notify("item/reasoning/textDelta", {
+      threadId: "thread-gemini-summary",
+      turnId: "turn-gemini",
+      itemId: "reasoning-gemini",
+      delta: "Another private reasoning fragment.",
+    });
+    fake.notify("turn/completed", { threadId: "thread-gemini-summary", turn: { id: "turn-gemini" } });
+    await sendPromise;
+
+    assert.equal(events.some((event) => event.liveStep), false);
+    assert.equal(events.some((event) => (event.delta ?? "").includes("private")), false);
 
     await registry.stopAll();
   });

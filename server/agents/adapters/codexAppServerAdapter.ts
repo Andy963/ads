@@ -47,6 +47,11 @@ const logger = createLogger("CodexAppServerAdapter");
 export const CODEX_ADAPTER_ID = "codex";
 const DEFAULT_AUTO_COMPACT_TIMEOUT_MS = 120_000;
 const COMPACT_INTERRUPT_GRACE_MS = 5_000;
+const GEMINI_MODEL_NAME = /(^|[^a-z0-9])gemini(?:[^a-z0-9]|$)/i;
+
+export function isGeminiModel(model?: string): boolean {
+  return GEMINI_MODEL_NAME.test(String(model ?? "").trim());
+}
 
 const DEFAULT_METADATA: AgentMetadata = {
   id: CODEX_ADAPTER_ID,
@@ -673,6 +678,11 @@ export class CodexAppServerAdapter implements AgentAdapter {
     cleanupFns.push(
       client.onNotification("item/reasoning/summaryTextDelta", (params) => {
         if (!belongsToThisTurn(params)) return;
+        // CPA currently maps Gemini's raw chain-of-thought into summary_text.
+        // GPT models use the same notification for curated, user-visible
+        // progress summaries, so suppress this at the model boundary rather
+        // than removing the shared notification path for every provider.
+        if (isGeminiModel(this.model)) return;
         if (!params || typeof params !== "object") return;
         const payload = params as Record<string, unknown>;
         const itemId = typeof payload.itemId === "string" ? payload.itemId.trim() : "";
