@@ -1,5 +1,6 @@
 import { resolveCodexConfig } from "../codexConfig.js";
 import { createGlobalModelConfigStore } from "../state/globalModelConfigStore.js";
+import { normalizeConfiguredReasoningEffort } from "../state/modelConfigTypes.js";
 import { createUpstreamCredentialStore } from "../state/upstreamCredentialStore.js";
 import { getStateDatabase } from "../state/database.js";
 import { normalizeUpstreamBaseUrl } from "../utils/upstreamUrl.js";
@@ -78,7 +79,7 @@ function requestOptions(config: Record<string, unknown> | null | undefined): Nat
   const temperature = readFiniteNumber(config, "temperature", { min: 0, max: 2 });
   const topP = readFiniteNumber(config, "topP", { min: 0, max: 1 });
   const maxTokens = readFiniteNumber(config, "maxTokens", { min: 1, max: 1_000_000, integer: true });
-  const reasoningEffort = readString(config, "reasoningEffort");
+  const reasoningEffort = normalizeConfiguredReasoningEffort(config?.reasoningEffort);
   if (temperature === undefined && topP === undefined && maxTokens === undefined && reasoningEffort === undefined) {
     return undefined;
   }

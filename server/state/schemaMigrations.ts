@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Database as DatabaseType } from "better-sqlite3";
 
 import { ensureLanePromptTables } from "./lanePromptStore.js";
+import { sanitizeModelConfigJson } from "./modelConfigTypes.js";
 
 export interface StateSchemaMigration {
   version: number;
@@ -417,7 +418,6 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
         .all() as Array<{ id?: unknown; config_json?: unknown }>;
       const update = db.prepare("UPDATE model_configs SET config_json = ?, updated_at = ? WHERE id = ?");
       const now = Date.now();
-      const invalidEfforts = new Set(["xhigh", "max", "ultra"]);
 
       for (const row of rows) {
         if (typeof row.id !== "string" || typeof row.config_json !== "string") continue;
@@ -430,30 +430,10 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
           continue;
         }
 
-        const rawEfforts = Array.isArray(config.reasoningEfforts)
-          ? config.reasoningEfforts.map((effort) => String(effort).trim().toLowerCase()).filter(Boolean)
-          : [];
-        const efforts = [...new Set(rawEfforts.filter((effort) => !invalidEfforts.has(effort)))];
-        const defaultEffort = typeof config.defaultReasoningEffort === "string"
-          ? config.defaultReasoningEffort.trim().toLowerCase()
-          : "";
-
-        let changed = false;
-        if (efforts.length === 0) {
-          config.reasoningEfforts = ["high"];
-          config.defaultReasoningEffort = "high";
-          changed = true;
-        } else {
-          if (JSON.stringify(efforts) !== JSON.stringify(rawEfforts)) {
-            config.reasoningEfforts = efforts;
-            changed = true;
-          }
-          if (invalidEfforts.has(defaultEffort)) {
-            config.defaultReasoningEffort = "high";
-            changed = true;
-          }
+        const sanitized = sanitizeModelConfigJson(config, { defaultUnconfigured: true });
+        if (sanitized && JSON.stringify(sanitized) !== row.config_json) {
+          update.run(JSON.stringify(sanitized), now, row.id);
         }
-        if (changed) update.run(JSON.stringify(config), now, row.id);
       }
     },
   },

@@ -152,6 +152,34 @@ describe("web/model-config routes", () => {
     assert.equal(typeof updated.updatedAt, "number");
   });
 
+  it("sanitizes invalid reasoning effort config fields on write", async () => {
+    const res = createRes();
+    assert.equal(
+      await handleModelRoutes({
+        req: createReq("POST", {
+          modelId: "invalid-reasoning-model",
+          provider: "openai",
+          configJson: {
+            reasoningEfforts: ["low", "max", "high", "ultra"],
+            defaultReasoningEffort: "xhigh",
+            reasoningEffort: "max",
+          },
+        }) as any,
+        res: res as any,
+        url: new URL("http://localhost/api/model-configs"),
+        pathname: "/api/model-configs",
+      } as any, { modelStore }),
+      true,
+    );
+
+    assert.equal(res.statusCode, 200);
+    const created = parseJson<{ configJson: Record<string, unknown> }>(res.body);
+    assert.deepEqual(created.configJson, {
+      reasoningEfforts: ["low", "high"],
+      defaultReasoningEffort: "high",
+    });
+  });
+
   it("rejects API keys embedded in model config JSON", async () => {
     const res = createRes();
     assert.equal(

@@ -144,7 +144,7 @@ describe("state/database", () => {
       "test-invalid",
       "Invalid",
       "test",
-      JSON.stringify({ reasoningEfforts: ["high", "xhigh", "max", "ultra"], defaultReasoningEffort: "xhigh" }),
+      JSON.stringify({ reasoningEfforts: ["high", "xhigh", "max", "ultra"], defaultReasoningEffort: "xhigh", reasoningEffort: "max" }),
       now,
     );
     insert.run("model-test-empty", "test-empty", "Empty", "test", JSON.stringify({ reasoningEfforts: [] }), now);
@@ -180,14 +180,19 @@ describe("state/database", () => {
 
     assert.deepStrictEqual(
       rows.map((row) => {
-        const config = JSON.parse(row.config_json) as { reasoningEfforts: string[]; defaultReasoningEffort?: string };
-        return { modelId: row.model_id, reasoningEfforts: config.reasoningEfforts, defaultReasoningEffort: config.defaultReasoningEffort };
+        const config = JSON.parse(row.config_json) as { reasoningEfforts: string[]; defaultReasoningEffort?: string; reasoningEffort?: string };
+        return {
+          modelId: row.model_id,
+          reasoningEfforts: config.reasoningEfforts,
+          defaultReasoningEffort: config.defaultReasoningEffort,
+          reasoningEffort: config.reasoningEffort,
+        };
       }),
       [
-        { modelId: "test-empty", reasoningEfforts: ["high"], defaultReasoningEffort: "high" },
-        { modelId: "test-invalid", reasoningEfforts: ["high"], defaultReasoningEffort: "high" },
-        { modelId: "test-unconfigured", reasoningEfforts: ["high"], defaultReasoningEffort: "high" },
-        { modelId: "test-valid", reasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium" },
+        { modelId: "test-empty", reasoningEfforts: ["high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
+        { modelId: "test-invalid", reasoningEfforts: ["high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
+        { modelId: "test-unconfigured", reasoningEfforts: ["high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
+        { modelId: "test-valid", reasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium", reasoningEffort: undefined },
       ],
     );
   });

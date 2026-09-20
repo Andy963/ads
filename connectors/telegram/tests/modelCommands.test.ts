@@ -30,6 +30,7 @@ describe("Telegram model commands", () => {
     assert.equal(findModel(models, "disabled"), undefined);
     assert.deepEqual(allowedReasoningEfforts(models[0]!), ["high", "medium"]);
     assert.deepEqual(allowedReasoningEfforts({ ...models[0]!, configJson: { reasoningEfforts: [] } }), ["high"]);
+    assert.deepEqual(allowedReasoningEfforts({ ...models[0]!, configJson: { reasoningEfforts: ["max"] } }), ["high"]);
   });
 
   it("marks the active model and round-trips callback data", () => {
