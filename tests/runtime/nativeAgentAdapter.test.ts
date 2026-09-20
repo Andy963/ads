@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { NativeAgentAdapter } from "../../server/agents/adapters/nativeAgentAdapter.js";
 import type { NativeModelResolver } from "../../server/runtime/modelResolver.js";
+import { ActivityTracker } from "../../server/utils/activityTracker.js";
 
 function sse(events: string[]): Response {
   return new Response(`${events.map((event) => `data: ${event}\n\n`).join("")}data: [DONE]\n\n`, {
@@ -49,10 +50,16 @@ describe("NativeAgentAdapter", () => {
           ]);
         },
       });
-      const events: string[] = [];
+      const events: Array<{ key: string; liveStep?: boolean; delta?: string; rawItemType?: string }> = [];
       let completedUsage: unknown;
       adapter.onEvent((event) => {
-        events.push(`${event.phase}:${event.title}`);
+        const rawItem = (event.raw as { item?: { type?: string } }).item;
+        events.push({
+          key: `${event.phase}:${event.title}`,
+          liveStep: event.liveStep,
+          delta: event.delta,
+          rawItemType: rawItem?.type,
+        });
         if (event.raw.type === "turn.completed") completedUsage = event.raw.usage;
       });
 
@@ -63,10 +70,139 @@ describe("NativeAgentAdapter", () => {
       assert.deepEqual(completedUsage, { input_tokens: 15, output_tokens: 9, total_tokens: 24 });
       assert.equal(requests.length, 2);
       assert.equal(requests[1]?.messages.at(-1)?.role, "tool");
-      assert.ok(events.some((event) => event.startsWith("boot:")));
-      assert.ok(events.some((event) => event.startsWith("tool:")));
-      assert.ok(events.some((event) => event.startsWith("responding:")));
-      assert.ok(events.some((event) => event.startsWith("completed:")));
+      assert.ok(events.some((event) => event.key.startsWith("boot:")));
+      assert.ok(
+        events.some(
+          (event) =>
+            event.key === "analysis:Native live step" &&
+            event.liveStep === true &&
+            event.delta === "Inspecting hello.txt...",
+        ),
+      );
+      assert.ok(events.some((event) => event.key.startsWith("responding:")));
+      assert.ok(events.some((event) => event.key.startsWith("completed:")));
+      // Internal tool mechanics stay silent: no raw tool_call items reach consumers.
+      assert.equal(events.some((event) => event.key.startsWith("tool:")), false);
+      assert.equal(events.some((event) => event.rawItemType === "tool_call"), false);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("synthesizes human-readable live steps for every internal tool", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-live-steps-"));
+    try {
+      fs.writeFileSync(path.join(workspace, "hello.txt"), "hello from the workspace\n", "utf8");
+      const patch = [
+        "*** Begin Patch",
+        "*** Update File: hello.txt",
+        "@@",
+        "-hello from the workspace",
+        "+hello patched",
+        "*** End Patch",
+      ].join("\n");
+      const toolCalls = [
+        { id: "read-1", name: "read_file", arguments: JSON.stringify({ file: "hello.txt" }) },
+        { id: "search-1", name: "search", arguments: JSON.stringify({ pattern: "hello" }) },
+        { id: "patch-1", name: "apply_patch", arguments: JSON.stringify({ patch }) },
+        { id: "exec-1", name: "exec_command", arguments: JSON.stringify({ cmd: "echo", args: ["hi"] }) },
+      ];
+      let requestNumber = 0;
+      const resolver: NativeModelResolver = {
+        resolve: () => ({
+          model: "test-model",
+          baseUrl: "https://provider.test/v1",
+          apiKey: "test-api-key",
+          provider: "test",
+        }),
+      };
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: resolver,
+        fetchImpl: async () => {
+          requestNumber += 1;
+          const call = toolCalls[requestNumber - 1];
+          if (call) {
+            return sse([
+              JSON.stringify({
+                choices: [{ delta: { tool_calls: [{ index: 0, id: call.id, function: { name: call.name, arguments: call.arguments } }] } }],
+              }),
+              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+            ]);
+          }
+          return sse([
+            JSON.stringify({ choices: [{ delta: { content: "All done." }, finish_reason: "stop" }] }),
+          ]);
+        },
+      });
+      const liveSteps: string[] = [];
+      const rawItemTypes: string[] = [];
+      adapter.onEvent((event) => {
+        if (event.liveStep === true) liveSteps.push(String(event.delta ?? ""));
+        const rawItem = (event.raw as { item?: { type?: string } }).item;
+        if (rawItem?.type) rawItemTypes.push(rawItem.type);
+      });
+
+      const result = await adapter.send("Inspect, search, patch, and run");
+
+      assert.equal(result.response, "All done.");
+      assert.deepEqual(liveSteps, [
+        "Inspecting hello.txt...",
+        'Searching for "hello"...',
+        "Applying file changes...",
+        "Running echo hi...",
+      ]);
+      // Command execution blocks and patch cards still render via their own items.
+      assert.equal(rawItemTypes.filter((type) => type === "command_execution").length, 2);
+      assert.ok(rawItemTypes.includes("file_change"));
+      // Raw tool_call items never reach consumers (no `- **Tool: native.*` leaks).
+      assert.equal(rawItemTypes.includes("tool_call"), false);
+      assert.equal(fs.readFileSync(path.join(workspace, "hello.txt"), "utf8"), "hello patched\n");
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps internal native tool activity out of ActivityTracker explored entries", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-explored-"));
+    try {
+      fs.writeFileSync(path.join(workspace, "hello.txt"), "hello from the workspace\n", "utf8");
+      let requestNumber = 0;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-api-key",
+            provider: "test",
+          }),
+        },
+        fetchImpl: async () => {
+          requestNumber += 1;
+          if (requestNumber === 1) {
+            return sse([
+              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "read-1", function: { name: "read_file", arguments: '{"file":"hello.txt"}' } }] } }] }),
+              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+            ]);
+          }
+          return sse([
+            JSON.stringify({ choices: [{ delta: { content: "The file says hello." }, finish_reason: "stop" }] }),
+          ]);
+        },
+      });
+      const tracker = new ActivityTracker();
+      adapter.onEvent((event) => tracker.ingestThreadEvent(event.raw));
+
+      const result = await adapter.send("Inspect the file");
+
+      assert.equal(result.response, "The file says hello.");
+      const entries = tracker.compact({ maxItems: 20, dedupe: "none" });
+      assert.deepEqual(entries, []);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }

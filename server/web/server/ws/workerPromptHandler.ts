@@ -259,15 +259,6 @@ export function attachWorkerPromptHandler(args: {
       const changes = Array.isArray(item.changes) ? (item.changes as Array<{ kind?: unknown; path?: unknown }>) : [];
       const paths = changes.map((c) => String(c.path ?? "").trim()).filter(Boolean);
       const patch = buildWorkspacePatch(args.turnCwd, paths);
-      const summary = formatWriteExploredSummary(changes, patch?.files);
-      if (summary) {
-        args.sendToChat({
-          type: "explored",
-          header: false,
-          entry: { category: "Write", summary },
-        });
-      }
-
       if (patch) {
         args.sendToChat({ type: "patch", patch });
       }

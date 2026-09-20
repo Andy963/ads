@@ -307,6 +307,159 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
+  it("synthesizes incremental live steps from raw reasoning textDelta for thinking providers", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-v2-text-delta" } }),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "v2-text-delta", registry });
+    const events: Array<{ phase: string; title: string; delta?: string; liveStep?: boolean }> = [];
+    adapter.onEvent((event) => events.push({
+      phase: event.phase,
+      title: event.title,
+      delta: event.delta,
+      liveStep: event.liveStep,
+    }));
+
+    const sendPromise = adapter.send("exercise thinking streams");
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("turn/started", { threadId: "thread-v2-text-delta", turn: { id: "turn-v2-text" } });
+    // Gemini-style thinking stream: raw reasoning text arrives as textDelta
+    // without any authored summary parts.
+    fake.notify("item/reasoning/textDelta", {
+      threadId: "thread-v2-text-delta",
+      turnId: "turn-v2-text",
+      itemId: "reasoning-gemini",
+      delta: "Let me inspect ",
+    });
+    fake.notify("item/reasoning/textDelta", {
+      threadId: "thread-v2-text-delta",
+      turnId: "turn-v2-text",
+      itemId: "reasoning-gemini",
+      delta: "the failing test first. ",
+    });
+    fake.notify("item/reasoning/textDelta", {
+      threadId: "thread-v2-text-delta",
+      turnId: "turn-v2-text",
+      itemId: "reasoning-gemini",
+      delta: "Then I will run the checks. Interlude note.\n",
+    });
+    // An unterminated tail stays buffered until its sentence completes.
+    fake.notify("item/reasoning/textDelta", {
+      threadId: "thread-v2-text-delta",
+      turnId: "turn-v2-text",
+      itemId: "reasoning-gemini",
+      delta: "Finally summarizing",
+    });
+    fake.notify("item/completed", {
+      item: { type: "reasoning", id: "reasoning-gemini", text: "Finally summarizing" },
+      threadId: "thread-v2-text-delta",
+      turnId: "turn-v2-text",
+    });
+    fake.notify("item/completed", {
+      item: { type: "agentMessage", id: "msg-text", text: "Done." },
+      threadId: "thread-v2-text-delta",
+      turnId: "turn-v2-text",
+    });
+    fake.notify("turn/completed", { threadId: "thread-v2-text-delta", turn: { id: "turn-v2-text" } });
+    await sendPromise;
+
+    const liveSteps = events.filter((event) => event.liveStep).map((event) => event.delta);
+    // One delta completing two sentences forwards the newest snapshot only.
+    assert.deepEqual(liveSteps, [
+      "Let me inspect the failing test first.",
+      "Interlude note.",
+      "Finally summarizing",
+    ]);
+
+    await registry.stopAll();
+  });
+
+  it("keeps dotted identifiers intact and flushes an unterminated tail at turn completion", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-v2-dotted-tail" } }),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "v2-dotted-tail", registry });
+    const events: Array<{ delta?: string; liveStep?: boolean }> = [];
+    adapter.onEvent((event) => events.push({ delta: event.delta, liveStep: event.liveStep }));
+
+    const sendPromise = adapter.send("exercise dotted reasoning text");
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("turn/started", { threadId: "thread-v2-dotted-tail", turn: { id: "turn-v2-dotted" } });
+    fake.notify("item/reasoning/textDelta", {
+      threadId: "thread-v2-dotted-tail",
+      turnId: "turn-v2-dotted",
+      itemId: "reasoning-dotted",
+      delta: "Inspect server/agents/adapters/codexAppServerAdapter.ts at version v0.1.7 and compare foo.bar",
+    });
+    fake.notify("turn/completed", { threadId: "thread-v2-dotted-tail", turn: { id: "turn-v2-dotted" } });
+    await sendPromise;
+
+    assert.deepEqual(
+      events.filter((event) => event.liveStep).map((event) => event.delta),
+      ["Inspect server/agents/adapters/codexAppServerAdapter.ts at version v0.1.7 and compare foo.bar"],
+    );
+
+    await registry.stopAll();
+  });
+
+  it("prefers authored summary deltas over raw textDelta for the same reasoning item", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-v2-mixed-delta" } }),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "v2-mixed-delta", registry });
+    const events: Array<{ phase: string; title: string; delta?: string; liveStep?: boolean }> = [];
+    adapter.onEvent((event) => events.push({
+      phase: event.phase,
+      title: event.title,
+      delta: event.delta,
+      liveStep: event.liveStep,
+    }));
+
+    const sendPromise = adapter.send("exercise mixed reasoning streams");
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("turn/started", { threadId: "thread-v2-mixed-delta", turn: { id: "turn-v2-mixed" } });
+    fake.notify("item/reasoning/textDelta", {
+      threadId: "thread-v2-mixed-delta",
+      turnId: "turn-v2-mixed",
+      itemId: "reasoning-mixed",
+      delta: "Raw thought one. ",
+    });
+    fake.notify("item/reasoning/summaryTextDelta", {
+      threadId: "thread-v2-mixed-delta",
+      turnId: "turn-v2-mixed",
+      itemId: "reasoning-mixed",
+      summaryIndex: 0,
+      delta: "Authored summary",
+    });
+    // Once authored summaries arrive, raw text deltas for the same item must
+    // not compete with the canonical live-step stream.
+    fake.notify("item/reasoning/textDelta", {
+      threadId: "thread-v2-mixed-delta",
+      turnId: "turn-v2-mixed",
+      itemId: "reasoning-mixed",
+      delta: " ignored raw tail.",
+    });
+    fake.notify("turn/completed", { threadId: "thread-v2-mixed-delta", turn: { id: "turn-v2-mixed" } });
+    await sendPromise;
+
+    const liveSteps = events.filter((event) => event.liveStep).map((event) => event.delta);
+    assert.deepEqual(liveSteps, ["Raw thought one.", "Authored summary"]);
+
+    await registry.stopAll();
+  });
+
   it("reuses an existing threadId on a subsequent send", async () => {
     const fake = buildFakeServer({
       autoReplies: {

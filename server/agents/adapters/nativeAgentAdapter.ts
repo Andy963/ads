@@ -126,6 +126,52 @@ function formatToolError(error: unknown, apiKey: string): string {
   return message.replaceAll(apiKey, "[redacted]").slice(0, 4_000);
 }
 
+const LIVE_STEP_TEXT_LIMIT = 160;
+
+function truncateLiveStepText(text: string): string {
+  const normalized = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= LIVE_STEP_TEXT_LIMIT) return normalized;
+  return `${normalized.slice(0, LIVE_STEP_TEXT_LIMIT - 1)}…`;
+}
+
+/**
+ * Human-readable, high-level progress line synthesized before a native tool
+ * runs. Internal tool mechanics (read_file/apply_patch/search) must never
+ * surface as raw tool bullets, so the live-step text is the only user-facing
+ * trace of those steps, mirroring the Codex provider-summary experience.
+ */
+function describeNativeToolCall(call: NativeChatToolCall): string | null {
+  let args: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(call.function.arguments || "{}") as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      args = parsed as Record<string, unknown>;
+    }
+  } catch {
+    args = {};
+  }
+  switch (call.function.name) {
+    case "read_file": {
+      const file = typeof args.file === "string" ? args.file.trim() : "";
+      return file ? `Inspecting ${truncateLiveStepText(file)}...` : "Inspecting file...";
+    }
+    case "search": {
+      const pattern = typeof args.pattern === "string" ? args.pattern.trim() : "";
+      return pattern ? `Searching for "${truncateLiveStepText(pattern)}"...` : "Searching workspace...";
+    }
+    case "apply_patch":
+      return "Applying file changes...";
+    case "exec_command": {
+      const cmd = typeof args.cmd === "string" ? args.cmd.trim() : "";
+      const argv = Array.isArray(args.args) ? args.args.map((value) => String(value)) : [];
+      const command = [cmd, ...argv].join(" ").trim();
+      return command ? `Running ${truncateLiveStepText(command)}...` : "Running command...";
+    }
+    default:
+      return null;
+  }
+}
+
 export class NativeAgentAdapter implements AgentAdapter {
   readonly preservesThreadOnModelChange = true;
   readonly id: string;
@@ -265,6 +311,27 @@ export class NativeAgentAdapter implements AgentAdapter {
     this.emitRaw({ type, item });
   }
 
+  private emitLiveStep(text: string, itemId: string): void {
+    const event: AgentEvent = {
+      phase: "analysis",
+      title: "Native live step",
+      delta: text,
+      liveStep: true,
+      timestamp: Date.now(),
+      raw: {
+        type: "item.updated",
+        item: { type: "reasoning", id: itemId, text },
+      },
+    };
+    for (const handler of this.listeners) {
+      try {
+        handler(event);
+      } catch (error) {
+        logger.warn(`event handler failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
   private buildMessages(userText: string): NativeChatMessage[] {
     const messages: NativeChatMessage[] = [];
     if (this.developerInstructions) {
@@ -396,14 +463,14 @@ export class NativeAgentAdapter implements AgentAdapter {
     executor: NativeToolExecutor,
     apiKey: string,
   ): Promise<NativeToolExecutionResult> {
-    const toolItem: ThreadItem = {
-      type: "tool_call",
-      id: call.id,
-      status: "in_progress",
-      server: "native",
-      tool: call.function.name,
-    };
-    this.emitToolEvent("item.started", toolItem);
+    // Internal tool invocations never become raw tool_call items: those were
+    // intercepted by ActivityTracker and leaked low-level `- **Tool**` bullets
+    // into the chat. The synthesized live step plus the command_execution /
+    // file_change artifacts below carry the whole user-facing story.
+    const liveStep = describeNativeToolCall(call);
+    if (liveStep) {
+      this.emitLiveStep(liveStep, `${call.id}-live-step`);
+    }
     let command: NativeToolExecutionResult["command"];
     if (call.function.name === "exec_command") {
       try {
@@ -460,10 +527,6 @@ export class NativeAgentAdapter implements AgentAdapter {
         changes: result.changedFiles,
       });
     }
-    this.emitToolEvent("item.completed", {
-      ...toolItem,
-      status: result.failed || result.command?.status === "failed" ? "failed" : "completed",
-    });
     return result;
   }
 }

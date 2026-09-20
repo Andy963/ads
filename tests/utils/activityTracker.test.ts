@@ -120,6 +120,21 @@ describe("utils/activityTracker", () => {
     );
   });
 
+  it("does not expose structured file changes as Write activity", () => {
+    const tracker = new ActivityTracker();
+
+    tracker.ingestThreadEvent({
+      type: "item.completed",
+      item: {
+        id: "file-change-1",
+        type: "file_change",
+        changes: [{ kind: "modify", path: "src/index.ts" }],
+      },
+    } as ThreadEvent);
+
+    assert.deepEqual(tracker.compact({ maxItems: 20, dedupe: "none" }), []);
+  });
+
   it("caps merged consecutive reads", () => {
     const tracker = new ActivityTracker();
 

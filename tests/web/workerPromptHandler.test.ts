@@ -1,9 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { attachWorkerPromptHandler } from "../../server/web/server/ws/workerPromptHandler.js";
 
-function createHarness() {
+function createHarness(turnCwd = "/tmp/project") {
   const sent: unknown[] = [];
   const history: Array<{ role: string; text: string; kind?: string }> = [];
   const upserts: Array<{ role: string; text: string; kind?: string }> = [];
@@ -18,7 +22,7 @@ function createHarness() {
         };
       },
     },
-    turnCwd: "/tmp/project",
+    turnCwd,
     historyKey: "history-1",
     historyStore: {
       add: (_key, entry) => {
@@ -191,6 +195,46 @@ describe("web/server/ws/workerPromptHandler", () => {
     ]);
     assert.equal(sent.filter((payload) => (payload as { type?: unknown }).type === "command").length, 1);
     assert.deepEqual(history, []);
+  });
+
+  it("forwards structured file changes as patches without visible Write activity", () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-worker-patch-"));
+    try {
+      const filePath = path.join(workspace, "file.txt");
+      fs.writeFileSync(filePath, "before\n");
+      childProcess.execFileSync("git", ["init", "--quiet"], { cwd: workspace });
+      childProcess.execFileSync("git", ["add", "file.txt"], { cwd: workspace });
+      childProcess.execFileSync(
+        "git",
+        ["-c", "user.name=ADS Tests", "-c", "user.email=ads-tests@example.com", "commit", "--quiet", "-m", "initial"],
+        { cwd: workspace },
+      );
+      fs.writeFileSync(filePath, "after\n");
+
+      const { emit, sent } = createHarness(workspace);
+      emit({
+        phase: "editing",
+        title: "File change",
+        timestamp: Date.now(),
+        raw: {
+          type: "item.completed",
+          item: {
+            type: "file_change",
+            id: "file-change-1",
+            changes: [{ kind: "update", path: "file.txt" }],
+          },
+        },
+      });
+
+      assert.equal(sent.some((payload) => (payload as { type?: unknown }).type === "explored"), false);
+      const patches = sent.filter((payload) => (payload as { type?: unknown }).type === "patch") as Array<{
+        patch?: { diff?: string };
+      }>;
+      assert.equal(patches.length, 1);
+      assert.match(patches[0]?.patch?.diff ?? "", /after/);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it("drops reasoning events without emitting or persisting them", () => {

@@ -1,6 +1,5 @@
 import type {
   CommandExecutionItem,
-  FileChangeItem,
   ToolCallItem,
   ThreadEvent,
   WebSearchItem,
@@ -85,7 +84,8 @@ export class ActivityTracker {
         this.ingestCommandExecution(item as CommandExecutionItem);
         break;
       case "file_change":
-        this.ingestFileChange(item as FileChangeItem);
+        // Structured file changes are rendered through the patch payload, not
+        // as a duplicate visible Write activity entry.
         break;
       case "tool_call":
         this.ingestToolCall(item as ToolCallItem);
@@ -313,32 +313,6 @@ export class ActivityTracker {
       summary,
       source: "codex_event",
       meta: { command: commandLine },
-    });
-  }
-
-  private ingestFileChange(item: FileChangeItem): void {
-    const seenKey = `codex:file_change:${item.id}`;
-    if (!this.markSeen(seenKey)) {
-      return;
-    }
-
-    if (Array.isArray(item.changes) && item.changes.length > 0) {
-      const summary =
-        item.changes.length <= 3
-          ? item.changes.map((change) => displayPath(change.path)).join(", ")
-          : `${item.changes.slice(0, 2).map((change) => displayPath(change.path)).join(", ")}, … (${item.changes.length} files)`;
-      this.add({
-        category: "Write",
-        summary,
-        source: "codex_event",
-      });
-      return;
-    }
-
-    this.add({
-      category: "Write",
-      summary: "files",
-      source: "codex_event",
     });
   }
 
