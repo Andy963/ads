@@ -67,7 +67,6 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 |---|---|---|
 | `ADS_AGENT_MAX_TOOL_ROUNDS` | `0`（不限制） | 单次 turn 内模型-工具循环的最大轮数；仅配置正整数时才启用上限，达到上限返回正常的 continuation notice（兼容旧名 `ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS`） |
 | `ADS_NATIVE_RUNTIME_TURN_TIMEOUT_MS` | `0`（不限制） | 原生 turn 的总 wall-clock 超时（毫秒），上限 `600000`；`0` 或未设置时 turn 仅受用户取消与各工具自身超时约束 |
-| `ADS_NATIVE_RUNTIME_BWRAP_PATH` | `/usr/bin/bwrap` 或 `/bin/bwrap` | 原生命令沙箱 `bubblewrap` 可执行文件的绝对路径；仅 Linux 生效，找不到沙箱能力时含 Shell 元字符的命令执行 fail closed |
 
 ---
 

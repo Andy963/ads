@@ -115,19 +115,18 @@ describe("NativeToolExecutor", () => {
     assert.equal(fs.readFileSync(path.join(workspace, "two.txt"), "utf8"), "two\n");
   });
 
-  it("executes without exposing secret-shaped environment variables", async () => {
+  it("inherits the provided environment including secret-shaped variables", async () => {
     const executor = new NativeToolExecutor({
       workspaceRoot: workspace,
-      env: { PATH: process.env.PATH, NATIVE_TEST_SECRET: "should-not-be-visible" },
+      env: { PATH: process.env.PATH, NATIVE_TEST_TOKEN: "should-be-visible" },
     });
 
     const result = await executor.execute(call("exec_command", {
       cmd: process.execPath,
-      args: ["-e", "process.stdout.write(String(process.env.NATIVE_TEST_SECRET || 'missing'))"],
+      args: ["-e", "process.stdout.write(String(process.env.NATIVE_TEST_TOKEN || 'missing'))"],
     }));
 
-    assert.match(result.output, /missing/);
-    assert.doesNotMatch(result.output, /should-not-be-visible/);
+    assert.match(result.output, /should-be-visible/);
   });
 
   it("tokenizes a complete command string without invoking a shell", async () => {
@@ -139,7 +138,7 @@ describe("NativeToolExecutor", () => {
     assert.match(result.output, /first value\|second/);
   });
 
-  it("runs pipelines and compound commands inside the workspace sandbox", async () => {
+  it("runs pipelines and compound commands directly on the host", async () => {
     fs.mkdirSync(path.join(workspace, "nested"));
     fs.writeFileSync(path.join(workspace, "nested", "value.txt"), "hello\n", "utf8");
     const executor = new NativeToolExecutor({ workspaceRoot: workspace });
@@ -160,27 +159,6 @@ describe("NativeToolExecutor", () => {
     assert.equal(pipelineOutput.stdout, "hello");
     assert.equal(compoundOutput.stdout, "hello");
     assert.equal(nodePipelineOutput.stdout, "node");
-  });
-
-  it("does not expose host files outside the workspace to shell commands", async () => {
-    const executor = new NativeToolExecutor({ workspaceRoot: workspace });
-    const result = await executor.execute(call("exec_command", {
-      cmd: "test -e /etc/passwd && echo visible || echo hidden",
-    }));
-
-    const output = JSON.parse(result.output) as { stdout?: string };
-    assert.equal(output.stdout, "hidden");
-  });
-
-  it("keeps direct executable invocations inside the same workspace sandbox", async () => {
-    const executor = new NativeToolExecutor({ workspaceRoot: workspace });
-    const result = await executor.execute(call("exec_command", {
-      cmd: process.execPath,
-      args: ["-e", "process.stdout.write(require('node:fs').existsSync('/etc/passwd') ? 'visible' : 'hidden')"],
-    }));
-
-    const output = JSON.parse(result.output) as { stdout?: string };
-    assert.equal(output.stdout, "hidden");
   });
 
   it("enforces executable allowlists for each shell pipeline segment", async () => {

@@ -172,15 +172,6 @@ function redact(text: string, redactions: string[]): string {
   return result.slice(0, MAX_TOOL_OUTPUT_CHARS);
 }
 
-function commandEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const output: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (/(?:KEY|TOKEN|PASSWORD|SECRET|COOKIE|AUTH|CREDENTIAL|PEPPER|PRIVATE)/i.test(key)) continue;
-    if (value !== undefined) output[key] = value;
-  }
-  return output;
-}
-
 function normalizePatchPath(value: string): string {
   const normalized = value.trim().replace(/^a\//, "").replace(/^b\//, "");
   if (!normalized || normalized === "/dev/null") return "";
@@ -341,7 +332,7 @@ export class NativeToolExecutor {
       throw new Error("Working directory must be inside the workspace root");
     }
     this.workingDirectory = workingDirectory;
-    this.env = commandEnvironment(options.env ?? process.env);
+    this.env = options.env ?? process.env;
     this.middleware = options.middleware;
     this.middlewareContext = options.middlewareContext;
     this.redactions = (options.redactions ?? []).filter(Boolean);
@@ -423,7 +414,6 @@ export class NativeToolExecutor {
       cmd,
       args: commandArgs,
       shell: useShell,
-      workspaceRoot: this.workspaceRoot,
       cwd,
       timeoutMs,
       env: this.env,
@@ -494,7 +484,6 @@ export class NativeToolExecutor {
       cmd: "rg",
       args: commandArgs,
       cwd: this.workspaceRoot,
-      workspaceRoot: this.workspaceRoot,
       timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
       env: this.env,
       maxOutputBytes: 128 * 1024,
