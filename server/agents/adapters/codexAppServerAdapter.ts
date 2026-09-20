@@ -207,7 +207,8 @@ function markNativeCollaborationAsSideEffect(
   });
 }
 
-const REASONING_SENTENCE_DELIMITERS = new Set([".", "。", "!", "?", "！", "？", ";", "；", "\n", "\r"]);
+const REASONING_SENTENCE_DELIMITERS = new Set(["。", "！", "？", "；", "\n", "\r"]);
+const REASONING_ASCII_SENTENCE_DELIMITERS = new Set([".", "!", "?", ";"]);
 const REASONING_LIVE_STEP_MAX_CHARS = 240;
 /** Emit a truncated snapshot when one unterminated sentence grows past this size. */
 const REASONING_LIVE_STEP_TAIL_CAP = 360;
@@ -217,18 +218,32 @@ interface ReasoningLiveStep {
   nextCursor: number;
 }
 
+function isReasoningSentenceDelimiter(buffer: string, index: number, flushTail: boolean): boolean {
+  const character = buffer[index];
+  if (!character) return false;
+  if (REASONING_SENTENCE_DELIMITERS.has(character)) return true;
+  if (!REASONING_ASCII_SENTENCE_DELIMITERS.has(character)) return false;
+
+  const nextCharacter = buffer[index + 1];
+  return nextCharacter === undefined ? flushTail : /\s/u.test(nextCharacter);
+}
+
 /**
  * Thinking-only providers (e.g. Gemini via CPA) stream raw reasoning text
  * without authored summary parts. Extract the next completed sentence as a
  * human-readable live-step snapshot so the turn no longer sits on a blank
  * `thinking` placeholder until the final answer arrives.
  */
-function nextReasoningLiveStep(buffer: string, cursor: number): ReasoningLiveStep | null {
+function nextReasoningLiveStep(
+  buffer: string,
+  cursor: number,
+  flushTail = false,
+): ReasoningLiveStep | null {
   let current = cursor;
   while (current < buffer.length) {
     let end = -1;
     for (let i = current; i < buffer.length; i += 1) {
-      if (REASONING_SENTENCE_DELIMITERS.has(buffer[i]!)) {
+      if (isReasoningSentenceDelimiter(buffer, i, flushTail)) {
         end = i;
         break;
       }
@@ -241,6 +256,9 @@ function nextReasoningLiveStep(buffer: string, cursor: number): ReasoningLiveSte
     } else if (buffer.length - current > REASONING_LIVE_STEP_TAIL_CAP) {
       sentence = buffer.slice(current, current + REASONING_LIVE_STEP_MAX_CHARS);
       nextCursor = current + REASONING_LIVE_STEP_MAX_CHARS;
+    } else if (flushTail) {
+      sentence = buffer.slice(current);
+      nextCursor = buffer.length;
     } else {
       return null;
     }
@@ -691,6 +709,38 @@ export class CodexAppServerAdapter implements AgentAdapter {
       return notificationThreadId === expected;
     };
 
+    const emitReasoningLiveSteps = (itemId: string, flushTail = false): void => {
+      if (reasoningSummaryItemIds.has(itemId)) return;
+      const buffer = reasoningTextBuffers.get(itemId) ?? "";
+      let step = nextReasoningLiveStep(
+        buffer,
+        reasoningTextCursors.get(itemId) ?? 0,
+        flushTail,
+      );
+      let latest: ReasoningLiveStep | null = null;
+      while (step) {
+        latest = step;
+        step = nextReasoningLiveStep(buffer, step.nextCursor, flushTail);
+      }
+      if (!latest) return;
+      reasoningTextCursors.set(itemId, latest.nextCursor);
+      this.emitEvent({
+        phase: "analysis",
+        title: "Provider live step",
+        delta: latest.text,
+        liveStep: true,
+        timestamp: Date.now(),
+        raw: {
+          type: "item.updated",
+          item: {
+            type: "reasoning",
+            id: itemId,
+            text: latest.text,
+          },
+        },
+      });
+    };
+
     cleanupFns.push(
       client.onNotification("thread/started", (params) => {
         const threadId = extractThreadId(params);
@@ -717,6 +767,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
         const usage = extractUsageFromTurnPayload(params);
         if (usage) {
           state.usage = usage;
+        }
+        for (const itemId of reasoningTextBuffers.keys()) {
+          emitReasoningLiveSteps(itemId, true);
         }
         emit({ type: "turn.completed", usage: usage ?? undefined });
         turnDone();
@@ -776,29 +829,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
         reasoningTextBuffers.set(itemId, buffer);
         // The live-step card renders only the newest snapshot, so when one
         // delta completes several sentences, forward the last of them.
-        let step = nextReasoningLiveStep(buffer, reasoningTextCursors.get(itemId) ?? 0);
-        let latest: ReasoningLiveStep | null = null;
-        while (step) {
-          latest = step;
-          step = nextReasoningLiveStep(buffer, step.nextCursor);
-        }
-        if (!latest) return;
-        reasoningTextCursors.set(itemId, latest.nextCursor);
-        this.emitEvent({
-          phase: "analysis",
-          title: "Provider live step",
-          delta: latest.text,
-          liveStep: true,
-          timestamp: Date.now(),
-          raw: {
-            type: "item.updated",
-            item: {
-              type: "reasoning",
-              id: itemId,
-              text: latest.text,
-            },
-          },
-        });
+        emitReasoningLiveSteps(itemId);
       }),
     );
     cleanupFns.push(
@@ -864,6 +895,14 @@ export class CodexAppServerAdapter implements AgentAdapter {
       client.onNotification("item/completed", (params) => {
         if (!belongsToThisTurn(params)) return;
         const item = (params as { item?: unknown }).item;
+        const rawItem = item && typeof item === "object" ? item as Record<string, unknown> : null;
+        const itemId = typeof rawItem?.id === "string" ? rawItem.id.trim() : "";
+        if (rawItem?.type === "reasoning" && itemId && !reasoningSummaryItemIds.has(itemId)) {
+          if (!reasoningTextBuffers.has(itemId) && typeof rawItem.text === "string") {
+            reasoningTextBuffers.set(itemId, rawItem.text);
+          }
+          emitReasoningLiveSteps(itemId, true);
+        }
         const translated = translateItem(item);
         if (!translated) {
           markNativeCollaborationAsSideEffect(item, retryState);

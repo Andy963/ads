@@ -355,6 +355,11 @@ describe("CodexAppServerAdapter", () => {
       delta: "Finally summarizing",
     });
     fake.notify("item/completed", {
+      item: { type: "reasoning", id: "reasoning-gemini", text: "Finally summarizing" },
+      threadId: "thread-v2-text-delta",
+      turnId: "turn-v2-text",
+    });
+    fake.notify("item/completed", {
       item: { type: "agentMessage", id: "msg-text", text: "Done." },
       threadId: "thread-v2-text-delta",
       turnId: "turn-v2-text",
@@ -367,7 +372,40 @@ describe("CodexAppServerAdapter", () => {
     assert.deepEqual(liveSteps, [
       "Let me inspect the failing test first.",
       "Interlude note.",
+      "Finally summarizing",
     ]);
+
+    await registry.stopAll();
+  });
+
+  it("keeps dotted identifiers intact and flushes an unterminated tail at turn completion", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-v2-dotted-tail" } }),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "v2-dotted-tail", registry });
+    const events: Array<{ delta?: string; liveStep?: boolean }> = [];
+    adapter.onEvent((event) => events.push({ delta: event.delta, liveStep: event.liveStep }));
+
+    const sendPromise = adapter.send("exercise dotted reasoning text");
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("turn/started", { threadId: "thread-v2-dotted-tail", turn: { id: "turn-v2-dotted" } });
+    fake.notify("item/reasoning/textDelta", {
+      threadId: "thread-v2-dotted-tail",
+      turnId: "turn-v2-dotted",
+      itemId: "reasoning-dotted",
+      delta: "Inspect server/agents/adapters/codexAppServerAdapter.ts at version v0.1.7 and compare foo.bar",
+    });
+    fake.notify("turn/completed", { threadId: "thread-v2-dotted-tail", turn: { id: "turn-v2-dotted" } });
+    await sendPromise;
+
+    assert.deepEqual(
+      events.filter((event) => event.liveStep).map((event) => event.delta),
+      ["Inspect server/agents/adapters/codexAppServerAdapter.ts at version v0.1.7 and compare foo.bar"],
+    );
 
     await registry.stopAll();
   });
@@ -396,7 +434,7 @@ describe("CodexAppServerAdapter", () => {
       threadId: "thread-v2-mixed-delta",
       turnId: "turn-v2-mixed",
       itemId: "reasoning-mixed",
-      delta: "Raw thought one.",
+      delta: "Raw thought one. ",
     });
     fake.notify("item/reasoning/summaryTextDelta", {
       threadId: "thread-v2-mixed-delta",
