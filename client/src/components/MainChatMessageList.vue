@@ -1394,6 +1394,11 @@ function closeFilePreview(): void {
     font-size: 14px;
   }
 
+  .msg[data-role="user"] .bubble {
+    width: 100%;
+    max-width: 100%;
+  }
+
   .prompt-tag,
   .patchCardToggle,
   .retryBadge,

@@ -29,6 +29,23 @@ describe("chat bubble and popover style regressions", () => {
     expect(css).toMatch(/\.bubble\s*\{[\s\S]*?padding:\s*4px 0 24px/);
   });
 
+  it("expands user message bubbles to full width on mobile viewports", async () => {
+    const css = await readSfc("../components/MainChatMessageList.vue", import.meta.url);
+    const mobileUserBubble = css.match(
+      /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.msg\[data-role="user"\]\s+\.bubble\s*\{[^}]*\}/,
+    )?.[0];
+
+    expect(mobileUserBubble).toBeTruthy();
+    expect(mobileUserBubble).toMatch(/width:\s*100%\s*;/);
+    expect(mobileUserBubble).toMatch(/max-width:\s*100%\s*;/);
+
+    // Desktop alignment keeps the bounded bubble; the media query only overrides width.
+    const desktopUserBubble = css.match(/\.msg\[data-role="user"\]\s+\.bubble\s*\{[^}]*\}/)?.[0];
+    expect(desktopUserBubble).toMatch(/max-width:\s*78%\s*;/);
+    expect(desktopUserBubble).toMatch(/\n\s+width:\s*fit-content\s*;/);
+    expect(css).toMatch(/\.msg\[data-role="user"\]\s+\.msgActions\s*\{[^}]*justify-content:\s*flex-end\s*;/);
+  });
+
   it.each([
     { label: "short text", content: "a" },
     { label: "wrapped text", content: "A longer user message ".repeat(20) },
