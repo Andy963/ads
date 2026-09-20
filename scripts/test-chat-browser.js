@@ -56,9 +56,12 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       url: request.url(), failure: request.failure(), offline: result.localFirst?.offline,
     }));
     const browserWarnings = [];
-    const isExpectedOutageError = (text) => mobile && result.localFirst?.offline &&
+    const isExpectedOutageError = (text) => mobile && result.localFirst?.offlineMode?.startsWith("origin-unreachable") && (
       [...fixture.refusedRequests].some((requestPath) =>
-        text.endsWith(`${new URL(fixture.origin).host}${requestPath} due to access control checks.`));
+        text.endsWith(`${new URL(fixture.origin).host}${requestPath} due to access control checks.`)) ||
+      /\/(?:sw\.js|api\/[^ ]+) due to access control checks\.$/.test(text) ||
+      /Failed to load resource: the server responded with a status of 503 \(Service Unavailable\)/.test(text)
+    );
     result.browserErrors = browserWarnings;
     result.dialogs = [];
     page.on("dialog", async (dialog) => {

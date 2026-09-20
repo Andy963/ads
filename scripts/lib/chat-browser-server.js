@@ -66,6 +66,11 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
   const server = createServer(async (request, response) => {
     if (originOffline) {
       refusedRequests.add(request.url);
+      if (request.url.startsWith("/api/")) {
+        response.writeHead(503, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ error: "Fixture origin unavailable" }));
+        return;
+      }
       request.socket.destroy();
       return;
     }
