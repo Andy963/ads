@@ -78,7 +78,7 @@ describe("native model resolver", () => {
       configJson: {
         credentialProfile: "custom-profile",
         reasoningEfforts: ["high"],
-        reasoningEffort: "max",
+        reasoningEffort: "bogus",
       },
     });
 
@@ -91,9 +91,16 @@ describe("native model resolver", () => {
     assert.equal(
       resolver.resolve("custom-model-invalid-reasoning", {
         credentialProfile: "custom-profile",
-        reasoningEffort: "ultra",
+        reasoningEffort: "bogus",
       }).options,
       undefined,
+    );
+    assert.deepEqual(
+      resolver.resolve("custom-model-invalid-reasoning", {
+        credentialProfile: "custom-profile",
+        reasoningEffort: "ultra",
+      }).options,
+      { reasoningEffort: "ultra" },
     );
   });
 

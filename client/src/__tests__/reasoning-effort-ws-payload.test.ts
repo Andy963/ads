@@ -322,14 +322,14 @@ describe("reasoning effort WS payload", () => {
     await settleUi(wrapper);
     await ensureWsConnected(wrapper);
 
-    wrapper.vm.setMainModelReasoningEffort?.("low");
+    wrapper.vm.setMainModelReasoningEffort?.("xhigh");
     await settleUi(wrapper);
 
     wrapper.vm.sendMainPrompt?.("hello");
     await settleUi(wrapper);
 
     expect(lastSendPromptPayload).toBeTruthy();
-    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "low", model: "auto" });
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "xhigh", model: "auto" });
   });
 
   it("restores persisted model id and includes it in payload", async () => {

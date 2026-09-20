@@ -120,7 +120,7 @@ describe("web/ws/preflight", () => {
       const second = preflightPersistAndAck({
         parsed: {
           type: "prompt",
-          payload: { text: "hello again", agentId: "codex", model: "gpt-4.1", model_reasoning_effort: "low" },
+          payload: { text: "hello again", agentId: "codex", model: "gpt-4.1", model_reasoning_effort: "xhigh" },
           client_message_id: "p1",
         },
         requestId: "req-2",

@@ -1,7 +1,7 @@
 import { InlineKeyboard } from "grammy";
 import type { ModelOption, ModelState } from "./client/adsClient.js";
 
-export const REASONING_EFFORTS = ["off", "none", "minimal", "low", "medium", "high"] as const;
+export const REASONING_EFFORTS = ["off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 
 export type ParsedModelCommand = { modelId?: string; reasoningEffort?: string };
 

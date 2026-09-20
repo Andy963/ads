@@ -152,15 +152,15 @@ describe("web/model-config routes", () => {
     assert.equal(typeof updated.updatedAt, "number");
   });
 
-  it("sanitizes invalid reasoning effort config fields on write", async () => {
+  it("preserves the full reasoning effort spectrum and strips only invalid values on write", async () => {
     const res = createRes();
     assert.equal(
       await handleModelRoutes({
         req: createReq("POST", {
-          modelId: "invalid-reasoning-model",
+          modelId: "extended-reasoning-model",
           provider: "openai",
           configJson: {
-            reasoningEfforts: ["low", "max", "high", "ultra"],
+            reasoningEfforts: ["low", "max", "high", "ultra", "xhigh", "bogus"],
             defaultReasoningEffort: "xhigh",
             reasoningEffort: "max",
           },
@@ -175,7 +175,36 @@ describe("web/model-config routes", () => {
     assert.equal(res.statusCode, 200);
     const created = parseJson<{ configJson: Record<string, unknown> }>(res.body);
     assert.deepEqual(created.configJson, {
-      reasoningEfforts: ["low", "high"],
+      reasoningEfforts: ["low", "max", "high", "ultra", "xhigh"],
+      defaultReasoningEffort: "xhigh",
+      reasoningEffort: "max",
+    });
+  });
+
+  it("falls back to high when no valid reasoning effort remains after sanitizing", async () => {
+    const res = createRes();
+    assert.equal(
+      await handleModelRoutes({
+        req: createReq("POST", {
+          modelId: "invalid-reasoning-model",
+          provider: "openai",
+          configJson: {
+            reasoningEfforts: ["bogus", "extreme"],
+            defaultReasoningEffort: "xhigh",
+            reasoningEffort: "bogus",
+          },
+        }) as any,
+        res: res as any,
+        url: new URL("http://localhost/api/model-configs"),
+        pathname: "/api/model-configs",
+      } as any, { modelStore }),
+      true,
+    );
+
+    assert.equal(res.statusCode, 200);
+    const created = parseJson<{ configJson: Record<string, unknown> }>(res.body);
+    assert.deepEqual(created.configJson, {
+      reasoningEfforts: ["high"],
       defaultReasoningEffort: "high",
     });
   });

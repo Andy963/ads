@@ -15,10 +15,16 @@ const REASONING_EFFORT_LABELS: Record<string, string> = {
   low: "Low",
   medium: "Medium",
   high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+  ultra: "Ultra",
 };
 const REASONING_EFFORT_SHORT_LABELS: Record<string, string> = {
   minimal: "Min",
   medium: "Med",
+  xhigh: "XHigh",
+  max: "Max",
+  ultra: "Ultra",
 };
 
 const props = defineProps<{

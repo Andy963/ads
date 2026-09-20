@@ -437,4 +437,45 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
       }
     },
   },
+  {
+    version: 16,
+    description: "Restore full reasoning effort spectrum for gpt-5.6-luna",
+    up: (db) => {
+      const now = Date.now();
+      const restore: Record<string, unknown> = {
+        allowedAgents: ["codex"],
+        reasoningEfforts: ["high", "xhigh", "max"],
+        defaultReasoningEffort: "max",
+      };
+      const row = db
+        .prepare("SELECT id, config_json FROM model_configs WHERE model_id = ?")
+        .get("gpt-5.6-luna") as { id?: unknown; config_json?: unknown } | undefined;
+
+      if (row && typeof row.id === "string") {
+        let config: Record<string, unknown> = { ...restore };
+        if (typeof row.config_json === "string") {
+          try {
+            const parsed: unknown = JSON.parse(row.config_json);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              config = { ...(parsed as Record<string, unknown>), ...restore };
+            }
+          } catch {
+            // Fall back to the restored config below.
+          }
+        }
+        db.prepare("UPDATE model_configs SET config_json = ?, updated_at = ? WHERE id = ?").run(
+          JSON.stringify(config),
+          now,
+          row.id,
+        );
+        return;
+      }
+
+      db.prepare(`
+        INSERT INTO model_configs
+          (id, model_id, display_name, provider, is_enabled, is_default, config_json, updated_at)
+        VALUES (?, ?, ?, ?, 1, 0, ?, ?)
+      `).run("model-seed-droid-gpt-5-6-luna", "gpt-5.6-luna", "GPT-5.6 Luna", "openai", JSON.stringify(restore), now);
+    },
+  },
 ];

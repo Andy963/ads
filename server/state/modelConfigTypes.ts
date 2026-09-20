@@ -16,6 +16,9 @@ const STANDARD_MODEL_REASONING_EFFORTS = [
   "low",
   "medium",
   "high",
+  "xhigh",
+  "max",
+  "ultra",
 ] as const;
 
 const standardModelReasoningEfforts = new Set<string>(STANDARD_MODEL_REASONING_EFFORTS);

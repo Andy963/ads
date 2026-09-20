@@ -89,7 +89,7 @@ describe("state/database", () => {
     assert.strictEqual(info.needsMigration, false);
   });
 
-  it("sanitizes legacy seeded reasoning efforts to high after migrations", () => {
+  it("keeps the full reasoning effort spectrum for seeded models during migrations", () => {
     const seedDb = getStateDatabase();
     const rows = seedDb
       .prepare(
@@ -125,8 +125,8 @@ describe("state/database", () => {
     assert.deepStrictEqual(
       configs.map((row) => ({ modelId: row.model_id, reasoningEfforts: (JSON.parse(row.config_json) as { reasoningEfforts: string[] }).reasoningEfforts })),
       [
-        { modelId: "claude-opus-4.8", reasoningEfforts: ["high"] },
-        { modelId: "gpt-5.5", reasoningEfforts: ["high"] },
+        { modelId: "claude-opus-4.8", reasoningEfforts: ["high", "xhigh", "max"] },
+        { modelId: "gpt-5.5", reasoningEfforts: ["high", "xhigh", "max", "ultra"] },
       ],
     );
   });
@@ -144,7 +144,15 @@ describe("state/database", () => {
       "test-invalid",
       "Invalid",
       "test",
-      JSON.stringify({ reasoningEfforts: ["high", "xhigh", "max", "ultra"], defaultReasoningEffort: "xhigh", reasoningEffort: "max" }),
+      JSON.stringify({ reasoningEfforts: ["bogus", "extreme"], defaultReasoningEffort: "xhigh", reasoningEffort: "bogus" }),
+      now,
+    );
+    insert.run(
+      "model-test-mixed",
+      "test-mixed",
+      "Mixed",
+      "test",
+      JSON.stringify({ reasoningEfforts: ["high", "xhigh", "bogus"], defaultReasoningEffort: "xhigh", reasoningEffort: "max" }),
       now,
     );
     insert.run("model-test-empty", "test-empty", "Empty", "test", JSON.stringify({ reasoningEfforts: [] }), now);
@@ -191,10 +199,51 @@ describe("state/database", () => {
       [
         { modelId: "test-empty", reasoningEfforts: ["high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
         { modelId: "test-invalid", reasoningEfforts: ["high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
+        { modelId: "test-mixed", reasoningEfforts: ["high", "xhigh"], defaultReasoningEffort: "xhigh", reasoningEffort: "max" },
         { modelId: "test-unconfigured", reasoningEfforts: ["high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
         { modelId: "test-valid", reasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium", reasoningEffort: undefined },
       ],
     );
+  });
+
+  it("seeds gpt-5.6-luna with the full reasoning effort spectrum during migrations", () => {
+    const seedDb = getStateDatabase();
+    seedDb.exec("UPDATE schema_version SET version = 15 WHERE id = 1");
+    seedDb.prepare("DELETE FROM model_configs WHERE model_id = 'gpt-5.6-luna'").run();
+
+    resetStateDatabaseForTests();
+
+    const db = getStateDatabase();
+    const rows = db
+      .prepare("SELECT config_json FROM model_configs WHERE model_id = 'gpt-5.6-luna'")
+      .all() as Array<{ config_json: string }>;
+    assert.strictEqual(rows.length, 1);
+    assert.deepStrictEqual(JSON.parse(rows[0]!.config_json), {
+      allowedAgents: ["codex"],
+      reasoningEfforts: ["high", "xhigh", "max"],
+      defaultReasoningEffort: "max",
+    });
+  });
+
+  it("restores a wiped gpt-5.6-luna reasoning config during migrations", () => {
+    const seedDb = getStateDatabase();
+    seedDb
+      .prepare("UPDATE model_configs SET config_json = ? WHERE model_id = 'gpt-5.6-luna'")
+      .run(JSON.stringify({ allowedAgents: ["codex"], reasoningEfforts: ["high"], defaultReasoningEffort: "high" }));
+    seedDb.exec("UPDATE schema_version SET version = 15 WHERE id = 1");
+
+    resetStateDatabaseForTests();
+
+    const db = getStateDatabase();
+    const rows = db
+      .prepare("SELECT config_json FROM model_configs WHERE model_id = 'gpt-5.6-luna'")
+      .all() as Array<{ config_json: string }>;
+    assert.strictEqual(rows.length, 1);
+    assert.deepStrictEqual(JSON.parse(rows[0]!.config_json), {
+      allowedAgents: ["codex"],
+      reasoningEfforts: ["high", "xhigh", "max"],
+      defaultReasoningEffort: "max",
+    });
   });
 
   it("should upgrade legacy state databases without schema_version metadata", () => {

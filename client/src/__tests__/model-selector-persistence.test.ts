@@ -211,11 +211,11 @@ describe("Model selector persistence", () => {
       expect(wrapper.get('[data-testid="lane-model-controls"]').classes()).toContain("laneModelControls");
       const selector = wrapper.findComponent({ name: "MainChatModelSelectors" });
       expect(selector.props("modelReasoningEffort")).toBe("medium");
-      selector.vm.$emit("setReasoningEffort", "low");
+      selector.vm.$emit("setReasoningEffort", "ultra");
       await settleUi(wrapper);
       controller.sendMainPrompt("Worker prompt");
       await settleUi(wrapper);
-      expect(lastSendPromptPayload).toMatchObject({ text: "Worker prompt", model: "gpt-4.1", model_reasoning_effort: "low" });
+      expect(lastSendPromptPayload).toMatchObject({ text: "Worker prompt", model: "gpt-4.1", model_reasoning_effort: "ultra" });
 
       lastWorkerWs!.onMessage?.({ type: "result", ok: true, output: "Worker done" });
       await wrapper.get('[data-testid="lane-tab-advisor"]').trigger("click");
@@ -224,15 +224,15 @@ describe("Model selector persistence", () => {
       _lastAdvisorWs!.onOpen?.();
       await settleUi(wrapper);
       expect(selector.props("modelReasoningEffort")).toBe("high");
-      selector.vm.$emit("setReasoningEffort", "medium");
+      selector.vm.$emit("setReasoningEffort", "max");
       await settleUi(wrapper);
       controller.sendAdvisorPrompt("Advisor prompt");
       await settleUi(wrapper);
-      expect(lastSendPromptPayload).toMatchObject({ text: "Advisor prompt", model: "gpt-4o", model_reasoning_effort: "medium" });
+      expect(lastSendPromptPayload).toMatchObject({ text: "Advisor prompt", model: "gpt-4o", model_reasoning_effort: "max" });
 
       await wrapper.get('[data-testid="lane-tab-worker"]').trigger("click");
       await settleUi(wrapper);
-      expect(selector.props("modelReasoningEffort")).toBe("low");
+      expect(selector.props("modelReasoningEffort")).toBe("ultra");
     } finally {
       wrapper.unmount();
     }

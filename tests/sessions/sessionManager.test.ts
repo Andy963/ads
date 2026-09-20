@@ -322,7 +322,7 @@ describe("SessionManager", () => {
       cwd: "/tmp/project",
       agentThreads: { codex: "codex-thread" },
       model: "gpt-5.6-sol",
-      modelReasoningEffort: "medium",
+      modelReasoningEffort: "xhigh",
       activeAgentId: "codex",
     });
 
@@ -334,7 +334,7 @@ describe("SessionManager", () => {
 
     const session = manager.getOrCreate(42, "/tmp/project", true) as unknown as FakeSession;
     assert.equal(session.getModel(), "gpt-5.6-sol");
-    assert.equal(session.getModelReasoningEffort(), "medium");
+    assert.equal(session.getModelReasoningEffort(), "xhigh");
     assert.equal(session.getActiveAgentId(), "codex");
     assert.equal(session.getThreadId(), "codex-thread");
     assert.equal(manager.getContextRestoreMode(42), "thread_resumed");
