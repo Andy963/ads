@@ -86,6 +86,7 @@ const LIVE_STEP_MESSAGE_ID = "live-step";
 const LIVE_STEP_STICKY_THRESHOLD_PX = 16;
 const LIVE_ACTIVITY_MESSAGE_ID = "live-activity";
 const CHAT_STICKY_THRESHOLD_PX = 80;
+const TURN_ANCHOR_TOP_OFFSET_PX = 8;
 
 const liveStepPinnedToBottom = ref(true);
 let liveStepScrollEl: HTMLElement | null = null;
@@ -98,6 +99,18 @@ let chatResizeObserver: ResizeObserver | null = null;
 let chatScrollQueued = false;
 let bottomSettleFrame: number | null = null;
 let settlingBottom = false;
+
+// Top-anchored reading viewport: while a turn streams, the newest user
+// message (the turn start) is held near the viewport top instead of pinning
+// the tail to the bottom. Any explicit follow request (scroll-to-bottom
+// click) or user scroll takeover clears the anchor and resumes the previous
+// bottom-following behavior.
+let turnAnchorEl: HTMLElement | null = null;
+let turnAnchorScrollTop: number | null = null;
+let turnAnchorPending = false;
+let turnAnchorSeq = 0;
+let followEpoch = 0;
+let observedMessageCount = props.messages.length;
 
 function scheduleFrame(cb: () => void): number {
   if (typeof requestAnimationFrame === "function") return requestAnimationFrame(cb);
@@ -156,7 +169,46 @@ function settleBottomLayout(): void {
   bottomSettleFrame = scheduleFrame(settle);
 }
 
+function clearTurnAnchor(): void {
+  turnAnchorEl = null;
+  turnAnchorScrollTop = null;
+}
+
+function alignTurnAnchorToViewportTop(): void {
+  const host = listRef.value;
+  const anchor = turnAnchorEl;
+  if (!host || !anchor || !anchor.isConnected) return;
+  const delta =
+    anchor.getBoundingClientRect().top - host.getBoundingClientRect().top - TURN_ANCHOR_TOP_OFFSET_PX;
+  if (Math.abs(delta) >= 1) host.scrollTop += delta;
+  turnAnchorScrollTop = host.scrollTop;
+  scheduleViewportSave();
+}
+
+function maintainTurnAnchor(): void {
+  const host = listRef.value;
+  const anchor = turnAnchorEl;
+  if (!host || !anchor) return;
+  if (!anchor.isConnected) {
+    clearTurnAnchor();
+    return;
+  }
+  if (turnAnchorScrollTop !== null && host.scrollTop !== turnAnchorScrollTop) {
+    // The viewport moved without an explicit follow request (user scroll
+    // takeover or native scroll anchoring). Hand control back instead of
+    // fighting the new position.
+    clearTurnAnchor();
+    return;
+  }
+  // Growth below the anchor leaves it in place; this only corrects drift
+  // caused by layout changes above it (e.g. images finishing loading).
+  alignTurnAnchorToViewportTop();
+}
+
 function scrollChatToBottom(explicit = false): void {
+  followEpoch += 1;
+  clearTurnAnchor();
+  turnAnchorPending = false;
   cancelBottomSettlement();
   settlingBottom = explicit;
   autoScroll.value = true;
@@ -165,6 +217,9 @@ function scrollChatToBottom(explicit = false): void {
 }
 
 function pauseChatAutoScroll(): void {
+  followEpoch += 1;
+  clearTurnAnchor();
+  turnAnchorPending = false;
   cancelBottomSettlement();
   autoScroll.value = false;
   showScrollToBottom.value = true;
@@ -173,6 +228,9 @@ function pauseChatAutoScroll(): void {
 function onChatScrollIntent(event: Event): void {
   if (event instanceof KeyboardEvent && !["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) return;
   initialViewportActive = false;
+  followEpoch += 1;
+  clearTurnAnchor();
+  turnAnchorPending = false;
   if (settlingBottom) pauseChatAutoScroll();
 }
 
@@ -188,7 +246,7 @@ defineExpose({ refreshAfterVisibility });
 const bottomActivation = createTapActivation<boolean>(() => scrollChatToBottom(true), { name: "scroll-to-bottom" });
 
 function scheduleChatScrollToBottom(): void {
-  if (!autoScroll.value) return;
+  if (!turnAnchorEl && !autoScroll.value) return;
   if (chatScrollQueued) return;
   chatScrollQueued = true;
   void (async () => {
@@ -196,6 +254,10 @@ function scheduleChatScrollToBottom(): void {
       // Allow Vue + MarkdownContent to commit DOM updates before measuring scrollHeight.
       await nextTick();
       await nextTick();
+      if (turnAnchorEl) {
+        maintainTurnAnchor();
+        return;
+      }
       if (!autoScroll.value) return;
       const host = listRef.value;
       if (!host) return;
@@ -321,6 +383,14 @@ function handleScroll() {
     scheduleViewportSave();
     return;
   }
+  if (turnAnchorEl) {
+    // Reading-viewport mode: keep the turn start visible and let the user
+    // finish reading before they choose to jump back to the bottom.
+    autoScroll.value = false;
+    showScrollToBottom.value = true;
+    scheduleViewportSave();
+    return;
+  }
   const { scrollTop, scrollHeight, clientHeight } = listRef.value;
   const distance = scrollHeight - scrollTop - clientHeight;
   autoScroll.value = distance < CHAT_STICKY_THRESHOLD_PX;
@@ -370,9 +440,59 @@ onMounted(() => {
   }
 });
 
+function beginTurnAnchor(messageId: string): void {
+  turnAnchorPending = true;
+  const seq = ++turnAnchorSeq;
+  const epoch = followEpoch;
+  void (async () => {
+    try {
+      // Allow Vue + MarkdownContent to commit the new row before measuring it.
+      await nextTick();
+      await nextTick();
+      if (epoch !== followEpoch) return;
+      const host = listRef.value;
+      if (!host) return;
+      const row = host.querySelector<HTMLElement>(`.msg[data-id="${escapeSelectorValue(messageId)}"]`);
+      if (!row) return;
+      cancelBottomSettlement();
+      settlingBottom = false;
+      turnAnchorEl = row;
+      turnAnchorScrollTop = null;
+      autoScroll.value = false;
+      showScrollToBottom.value = true;
+      alignTurnAnchorToViewportTop();
+    } finally {
+      if (turnAnchorSeq === seq) turnAnchorPending = false;
+    }
+  })();
+}
+
+function escapeSelectorValue(value: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") return CSS.escape(value);
+  return value.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+}
+
+const lastUserMessageId = computed(() => {
+  for (let index = props.messages.length - 1; index >= 0; index -= 1) {
+    if (props.messages[index]?.role === "user") return props.messages[index].id;
+  }
+  return "";
+});
+
+watch(lastUserMessageId, (id, previousId) => {
+  if (!id || id === previousId) return;
+  const currentMessageCount = props.messages.length;
+  const isInitialTranscriptHydration = currentMessageCount >= observedMessageCount + 2;
+  observedMessageCount = currentMessageCount;
+  if (isInitialTranscriptHydration) return;
+  beginTurnAnchor(id);
+});
+
 watch(
   () => props.messages.length,
   () => {
+    observedMessageCount = props.messages.length;
+    if (turnAnchorEl || turnAnchorPending) return;
     if (autoScroll.value) scheduleChatScrollToBottom();
     else showScrollToBottom.value = true;
   },
@@ -395,7 +515,9 @@ watch(
       streaming !== initialTailStreaming;
     if (initialViewportActive && tailAdvanced) {
       initialViewportActive = false;
-      scrollChatToBottom();
+      // A freshly submitted turn anchors to the viewport top instead of
+      // jumping to the bottom; other tail advances keep the old behavior.
+      if (!turnAnchorEl && !turnAnchorPending) scrollChatToBottom();
       return;
     }
     scheduleChatScrollToBottom();
