@@ -319,6 +319,13 @@ watch(
     // Tail appends, backfills, and live-row removal must retain every surviving loaded row.
     const loadedIds = new Set(previous.slice(loadedStart.value).map((message) => message.id));
     const firstSurvivingIndex = next.findIndex((message) => loadedIds.has(message.id));
+    // A reload can hydrate a short cached prefix with the complete transcript.
+    // Keep only the newest page in that case; otherwise the old prefix keeps
+    // the history sentinel in view and eagerly expands every earlier page.
+    if (loadedStart.value === 0 && firstSurvivingIndex === 0 && next.length > previous.length + 2) {
+      loadedStart.value = Math.max(0, next.length - INITIAL_MESSAGE_WINDOW);
+      return;
+    }
     loadedStart.value = firstSurvivingIndex >= 0
       ? firstSurvivingIndex
       : Math.max(0, next.length - INITIAL_MESSAGE_WINDOW);

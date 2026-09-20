@@ -110,6 +110,7 @@ let turnAnchorScrollTop: number | null = null;
 let turnAnchorPending = false;
 let turnAnchorSeq = 0;
 let followEpoch = 0;
+let observedMessageCount = props.messages.length;
 
 function scheduleFrame(cb: () => void): number {
   if (typeof requestAnimationFrame === "function") return requestAnimationFrame(cb);
@@ -480,12 +481,17 @@ const lastUserMessageId = computed(() => {
 
 watch(lastUserMessageId, (id, previousId) => {
   if (!id || id === previousId) return;
+  const currentMessageCount = props.messages.length;
+  const isInitialTranscriptHydration = currentMessageCount >= observedMessageCount + 2;
+  observedMessageCount = currentMessageCount;
+  if (isInitialTranscriptHydration) return;
   beginTurnAnchor(id);
 });
 
 watch(
   () => props.messages.length,
   () => {
+    observedMessageCount = props.messages.length;
     if (turnAnchorEl || turnAnchorPending) return;
     if (autoScroll.value) scheduleChatScrollToBottom();
     else showScrollToBottom.value = true;

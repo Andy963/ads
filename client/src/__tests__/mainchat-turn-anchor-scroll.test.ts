@@ -135,6 +135,50 @@ describe("MainChat top-anchored reading viewport", () => {
     wrapper.unmount();
   });
 
+  it("does not anchor while an initial transcript is hydrated", async () => {
+    const state: ScrollState = { top: 0, height: 2000 };
+    const rowOffsets: Record<string, number> = {};
+    const { wrapper, host } = mountChat([]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+
+    const messages = Array.from({ length: 40 }, (_, index) =>
+      msg(`history-${index}`, index % 2 === 0 ? "user" : "assistant", `history ${index}`),
+    );
+    await wrapper.setProps({ messages });
+    await settleUi(wrapper);
+
+    expect(wrapper.get(".messageList").attributes("data-loaded-messages")).toBe("30");
+    wrapper.unmount();
+  });
+
+  it("does not anchor when a cached transcript is replaced by the full history", async () => {
+    const state: ScrollState = { top: 0, height: 2000 };
+    const rowOffsets: Record<string, number> = {};
+    const { wrapper, host } = mountChat([]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+
+    const cachedMessages = [
+      msg("cached-user", "user", "cached prompt"),
+      msg("cached-assistant", "assistant", "cached reply"),
+    ];
+    await wrapper.setProps({ messages: cachedMessages });
+    await settleUi(wrapper);
+
+    const messages = [
+      ...cachedMessages,
+      ...Array.from({ length: 38 }, (_, index) =>
+        msg(`history-${index}`, index % 2 === 0 ? "user" : "assistant", `history ${index}`),
+      ),
+    ];
+    await wrapper.setProps({ messages });
+    await settleUi(wrapper);
+
+    expect(wrapper.get(".messageList").attributes("data-loaded-messages")).toBe("30");
+    wrapper.unmount();
+  });
+
   it("keeps the first-turn anchor when the transcript still fits on one screen", async () => {
     const state: ScrollState = { top: 0, height: 300 };
     const rowOffsets: Record<string, number> = {};
