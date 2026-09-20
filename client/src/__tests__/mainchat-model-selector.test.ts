@@ -126,10 +126,10 @@ describe("MainChat model selector", () => {
     wrapper.unmount();
   });
 
-  it("filters invalid reasoning efforts out of the selected model config", () => {
+  it("reads Codex reasoning efforts from the selected model config", () => {
     const model = makeModel("gpt-5.6-sol", "GPT-5.6", "openai");
     model.configJson = {
-      reasoningEfforts: ["medium", "high", "xhigh", "max", "ultra"],
+      reasoningEfforts: ["medium", "high", "xhigh", "max", "ultra", "bogus"],
     };
     const wrapper = mount(MainChatModelSelectors, {
       props: {
@@ -143,10 +143,13 @@ describe("MainChat model selector", () => {
     });
 
     const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
-    expect((effortSelect.element as HTMLSelectElement).value).toBe("high");
+    expect((effortSelect.element as HTMLSelectElement).value).toBe("ultra");
     expect(effortSelect.findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual([
       "medium",
       "high",
+      "xhigh",
+      "max",
+      "ultra",
     ]);
     wrapper.unmount();
   });
@@ -168,11 +171,13 @@ describe("MainChat model selector", () => {
     });
 
     const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
-    expect((effortSelect.element as HTMLSelectElement).value).toBe("high");
+    expect((effortSelect.element as HTMLSelectElement).value).toBe("max");
     expect(effortSelect.findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual([
       "low",
       "medium",
       "high",
+      "xhigh",
+      "max",
     ]);
     wrapper.unmount();
   });

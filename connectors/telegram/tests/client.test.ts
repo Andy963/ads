@@ -182,8 +182,8 @@ describe("AdsCoreClient", () => {
       sessionId: "telegram",
       chatSessionId: "chat-42",
     });
-    const state = await client.setModel("gemini-3.8-flash-high", "low");
-    assert.deepEqual(state, { model: "gemini-3.8-flash-high", reasoningEffort: "low" });
+    const state = await client.setModel("gemini-3.8-flash-high", "xhigh");
+    assert.deepEqual(state, { model: "gemini-3.8-flash-high", reasoningEffort: "xhigh" });
     assert.deepEqual(client.getModelState(), state);
     client.close();
     await new Promise<void>((resolve) => wss.close(() => resolve()));

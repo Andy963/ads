@@ -67,9 +67,11 @@ describe("preferencesStore", () => {
   it("normalizes invalid persisted reasoning efforts to high on read", () => {
     writeModelPreference("p1", "main", "", { modelId: "gpt-4.1", effort: "max" });
     writeModelPreference("p1", "advisor", "codex", { modelId: "gpt-5.5", effort: "ultra" });
+    writeModelPreference("p1", "worker", "codex", { modelId: "gpt-5.5", effort: "bogus" });
 
-    expect(normalizeReasoningEffort(readReasoningEffortPreference("p1", "main"))).toBe("high");
-    expect(normalizeReasoningEffort(readReasoningEffortPreference("p1", "advisor", "codex"))).toBe("high");
+    expect(normalizeReasoningEffort(readReasoningEffortPreference("p1", "main"))).toBe("max");
+    expect(normalizeReasoningEffort(readReasoningEffortPreference("p1", "advisor", "codex"))).toBe("ultra");
+    expect(normalizeReasoningEffort(readReasoningEffortPreference("p1", "worker", "codex"))).toBe("high");
   });
 
   it("migrates legacy scattered keys into the unified record and deletes them", () => {

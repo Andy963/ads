@@ -128,14 +128,14 @@ describe("ThreadStorage", () => {
     storage.setRecord(3, {
       cwd: "/tmp/project",
       model: "gpt-4o",
-      modelReasoningEffort: "medium",
+      modelReasoningEffort: "xhigh",
       activeAgentId: "codex",
       agentThreads: {},
     });
 
     let record = storage.getRecord(3);
     assert.equal(record?.model, "gpt-4o");
-    assert.equal(record?.modelReasoningEffort, "medium");
+    assert.equal(record?.modelReasoningEffort, "xhigh");
     assert.equal(record?.activeAgentId, "codex");
     assert.equal(record?.threadId, undefined);
     assert.deepEqual(record?.agentThreads, {});
@@ -144,7 +144,7 @@ describe("ThreadStorage", () => {
     record = storage.getRecord(3);
     assert.equal(record?.threadId, "thread-3");
     assert.equal(record?.model, "gpt-4o");
-    assert.equal(record?.modelReasoningEffort, "medium");
+    assert.equal(record?.modelReasoningEffort, "xhigh");
     assert.equal(record?.activeAgentId, "codex");
   });
 });
