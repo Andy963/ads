@@ -137,11 +137,18 @@ export async function verifyLocalFirstTranscript({ page, context, fixture, frame
   // origin HTTP request instead; this still requires an actual cached-shell
   // reload, but is explicitly an origin-outage test, not iOS offline proof.
   report.offlineMode = engine === "webkit" ? "origin-unreachable; offline-toggle reload fails on this Linux WebKit host" : "browser-context-offline";
+  const offlineAuthResponse = engine === "webkit"
+    ? page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/api/auth/status" && response.status() === 503;
+    })
+    : null;
   try {
     if (engine === "webkit") fixture.setOriginOffline(true);
     else await context.setOffline(true);
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector(".chat .msg");
+    await offlineAuthResponse;
     await settle();
     assert.equal(await page.locator(".app").getAttribute("data-cache-read-only"), "true");
     assert.equal(await page.locator("textarea.composer-input:visible").isDisabled(), true);
@@ -149,9 +156,14 @@ export async function verifyLocalFirstTranscript({ page, context, fixture, frame
     await page.evaluate(() => { window.__offlineRow = document.querySelector(".chat .msg"); });
     report.offlineReadable = true;
   } finally {
+    const onlineAuthResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.pathname === "/api/auth/me" && response.status() === 200;
+    });
     fixture.setOriginOffline(false);
     await context.setOffline(false);
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await onlineAuthResponse;
   }
   await page.waitForSelector("textarea:not(:disabled):visible");
   await settle();
