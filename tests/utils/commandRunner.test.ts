@@ -94,4 +94,28 @@ describe("utils/commandRunner", () => {
     assert.equal(res.truncatedStdout, true);
     assert.equal(res.stdout.length, 10);
   });
+
+  it("runs shell pipelines directly on the host", async () => {
+    const res = await runCommand({
+      cmd: "printf 'hello\\nworld\\n' | head -n 1",
+      shell: true,
+      cwd: process.cwd(),
+      timeoutMs: 10_000,
+    });
+
+    assert.equal(res.exitCode, 0);
+    assert.equal(res.stdout, "hello");
+  });
+
+  it("inherits the host environment and exit codes for shell commands", async () => {
+    const res = await runCommand({
+      cmd: "echo \"$HOME\" && exit 3",
+      shell: true,
+      cwd: process.cwd(),
+      timeoutMs: 10_000,
+    });
+
+    assert.equal(res.exitCode, 3);
+    assert.equal(res.stdout, process.env.HOME);
+  });
 });

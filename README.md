@@ -27,7 +27,7 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编�
 ### 1. 环境依赖
 - **Node.js**: `>= 24.0.0`
 - **npm**: 确保具备 C++ 编译环境以支持 `better-sqlite3` 原生模块构建。
-- **Agent runtime**: 默认后端需本机已安装并配置 `codex` App-Server CLI；若使用 `ADS_AGENT_RUNTIME=native` 原生运行时，则无需 `codex` CLI（需要 Linux `bubblewrap` 提供项目级命令沙箱）。
+- **Agent runtime**: 默认后端需本机已安装并配置 `codex` App-Server CLI；若使用 `ADS_AGENT_RUNTIME=native` 原生运行时，则无需 `codex` CLI（命令直接在宿主机上执行，与 Web 工作区的 `danger-full-access` 语义一致，请仅在单租户自托管环境启用）。
 
 ### 2. 安装与构建
 ```bash
