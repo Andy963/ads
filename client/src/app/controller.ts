@@ -97,7 +97,7 @@ export function createAppContext() {
       return existing;
     }
     const created = createProjectRuntime({ maxLiveActivitySteps });
-    created.modelReasoningEffort.value = "xhigh";
+    created.modelReasoningEffort.value = "high";
     runtimeByProjectId.set(id, created);
     attachTranscript(id, created);
     return created;

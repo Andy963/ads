@@ -89,7 +89,7 @@ describe("state/database", () => {
     assert.strictEqual(info.needsMigration, false);
   });
 
-  it("adds Ultra only to existing Codex model configs during migration", () => {
+  it("sanitizes legacy seeded reasoning efforts to high after migrations", () => {
     const seedDb = getStateDatabase();
     const rows = seedDb
       .prepare(
@@ -125,8 +125,74 @@ describe("state/database", () => {
     assert.deepStrictEqual(
       configs.map((row) => ({ modelId: row.model_id, reasoningEfforts: (JSON.parse(row.config_json) as { reasoningEfforts: string[] }).reasoningEfforts })),
       [
-        { modelId: "claude-opus-4.8", reasoningEfforts: ["high", "xhigh", "max"] },
-        { modelId: "gpt-5.5", reasoningEfforts: ["high", "xhigh", "max", "ultra"] },
+        { modelId: "claude-opus-4.8", reasoningEfforts: ["high"] },
+        { modelId: "gpt-5.5", reasoningEfforts: ["high"] },
+      ],
+    );
+  });
+
+  it("sanitizes invalid reasoning efforts in model configs during migration", () => {
+    const seedDb = getStateDatabase();
+    const insert = seedDb.prepare(`
+      INSERT INTO model_configs
+        (id, model_id, display_name, provider, is_enabled, is_default, config_json, updated_at)
+      VALUES (?, ?, ?, ?, 1, 0, ?, ?)
+    `);
+    const now = Date.now();
+    insert.run(
+      "model-test-invalid",
+      "test-invalid",
+      "Invalid",
+      "test",
+      JSON.stringify({ reasoningEfforts: ["high", "xhigh", "max", "ultra"], defaultReasoningEffort: "xhigh", reasoningEffort: "max" }),
+      now,
+    );
+    insert.run("model-test-empty", "test-empty", "Empty", "test", JSON.stringify({ reasoningEfforts: [] }), now);
+    insert.run(
+      "model-test-unconfigured",
+      "test-unconfigured",
+      "Unconfigured",
+      "test",
+      JSON.stringify({ allowedAgents: ["codex"] }),
+      now,
+    );
+    insert.run(
+      "model-test-valid",
+      "test-valid",
+      "Valid",
+      "test",
+      JSON.stringify({ reasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium" }),
+      now,
+    );
+    seedDb.exec("UPDATE schema_version SET version = 14 WHERE id = 1");
+
+    resetStateDatabaseForTests();
+
+    const db = getStateDatabase();
+    const rows = db
+      .prepare(
+        `SELECT model_id, config_json
+         FROM model_configs
+         WHERE model_id LIKE 'test-%'
+         ORDER BY model_id`,
+      )
+      .all() as Array<{ model_id: string; config_json: string }>;
+
+    assert.deepStrictEqual(
+      rows.map((row) => {
+        const config = JSON.parse(row.config_json) as { reasoningEfforts: string[]; defaultReasoningEffort?: string; reasoningEffort?: string };
+        return {
+          modelId: row.model_id,
+          reasoningEfforts: config.reasoningEfforts,
+          defaultReasoningEffort: config.defaultReasoningEffort,
+          reasoningEffort: config.reasoningEffort,
+        };
+      }),
+      [
+        { modelId: "test-empty", reasoningEfforts: ["high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
+        { modelId: "test-invalid", reasoningEfforts: ["high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
+        { modelId: "test-unconfigured", reasoningEfforts: ["high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
+        { modelId: "test-valid", reasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium", reasoningEffort: undefined },
       ],
     );
   });

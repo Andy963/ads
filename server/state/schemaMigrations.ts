@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Database as DatabaseType } from "better-sqlite3";
 
 import { ensureLanePromptTables } from "./lanePromptStore.js";
+import { sanitizeModelConfigJson } from "./modelConfigTypes.js";
 
 export interface StateSchemaMigration {
   version: number;
@@ -406,6 +407,34 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
     description: "Versioned Advisor and Worker lane system prompts",
     up: (db) => {
       ensureLanePromptTables(db);
+    },
+  },
+  {
+    version: 15,
+    description: "Sanitize model config reasoning efforts to standard low/medium/high levels",
+    up: (db) => {
+      const rows = db
+        .prepare("SELECT id, config_json FROM model_configs WHERE config_json IS NOT NULL")
+        .all() as Array<{ id?: unknown; config_json?: unknown }>;
+      const update = db.prepare("UPDATE model_configs SET config_json = ?, updated_at = ? WHERE id = ?");
+      const now = Date.now();
+
+      for (const row of rows) {
+        if (typeof row.id !== "string" || typeof row.config_json !== "string") continue;
+        let config: Record<string, unknown>;
+        try {
+          const parsed: unknown = JSON.parse(row.config_json);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+          config = parsed as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+
+        const sanitized = sanitizeModelConfigJson(config, { defaultUnconfigured: true });
+        if (sanitized && JSON.stringify(sanitized) !== row.config_json) {
+          update.run(JSON.stringify(sanitized), now, row.id);
+        }
+      }
     },
   },
 ];

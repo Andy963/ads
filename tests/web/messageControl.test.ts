@@ -190,7 +190,7 @@ describe("web/ws/messageControl", () => {
       provider: "test",
       isEnabled: true,
       isDefault: false,
-      configJson: { reasoningEfforts: ["high", "xhigh"] },
+      configJson: { reasoningEfforts: ["high", "medium"] },
     });
     let model: string | undefined;
     let effort: string | undefined;
@@ -199,7 +199,7 @@ describe("web/ws/messageControl", () => {
       parsed: {
         type: "model_override",
         client_message_id: "control-1",
-        payload: { model: "telegram-test-model", model_reasoning_effort: "xhigh" },
+        payload: { model: "telegram-test-model", model_reasoning_effort: "medium" },
       },
       chatSessionId: "chat-42",
       userId: 42,
@@ -219,14 +219,14 @@ describe("web/ws/messageControl", () => {
 
     assert.equal(result.handled, true);
     assert.equal(model, "telegram-test-model");
-    assert.equal(effort, "xhigh");
+    assert.equal(effort, "medium");
     assert.deepEqual(sent[0], {
       type: "result",
       ok: true,
       kind: "model_override",
-      output: "Model switched to telegram-test-model (xhigh)",
+      output: "Model switched to telegram-test-model (medium)",
       model: "telegram-test-model",
-      model_reasoning_effort: "xhigh",
+      model_reasoning_effort: "medium",
       client_message_id: "control-1",
     });
   });

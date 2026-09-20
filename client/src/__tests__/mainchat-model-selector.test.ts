@@ -109,7 +109,7 @@ describe("MainChat model selector", () => {
     wrapper.unmount();
   });
 
-  it("offers the extended Codex reasoning efforts when a model has no override", () => {
+  it("defaults unconfigured models to a single high reasoning effort option", () => {
     const wrapper = mount(MainChatModelSelectors, {
       props: {
         ...selectorBaseProps,
@@ -120,17 +120,13 @@ describe("MainChat model selector", () => {
       },
     });
 
-    expect(wrapper.find('[data-testid="chat-reasoning-effort"]').findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual([
-      "medium",
-      "high",
-      "xhigh",
-      "max",
-      "ultra",
-    ]);
+    const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
+    expect(effortSelect.findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual(["high"]);
+    expect((effortSelect.element as HTMLSelectElement).value).toBe("high");
     wrapper.unmount();
   });
 
-  it("reads Codex reasoning efforts from the selected model config", () => {
+  it("filters invalid reasoning efforts out of the selected model config", () => {
     const model = makeModel("gpt-5.6-sol", "GPT-5.6", "openai");
     model.configJson = {
       reasoningEfforts: ["medium", "high", "xhigh", "max", "ultra"],
@@ -147,13 +143,10 @@ describe("MainChat model selector", () => {
     });
 
     const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
-    expect((effortSelect.element as HTMLSelectElement).value).toBe("ultra");
+    expect((effortSelect.element as HTMLSelectElement).value).toBe("high");
     expect(effortSelect.findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual([
       "medium",
       "high",
-      "xhigh",
-      "max",
-      "ultra",
     ]);
     wrapper.unmount();
   });
@@ -175,13 +168,11 @@ describe("MainChat model selector", () => {
     });
 
     const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
-    expect((effortSelect.element as HTMLSelectElement).value).toBe("max");
+    expect((effortSelect.element as HTMLSelectElement).value).toBe("high");
     expect(effortSelect.findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual([
       "low",
       "medium",
       "high",
-      "xhigh",
-      "max",
     ]);
     wrapper.unmount();
   });
@@ -199,7 +190,7 @@ describe("MainChat model selector", () => {
             execution: {
               agentId: "codex",
               model: "gpt-4.1",
-              modelReasoningEffort: "xhigh",
+              modelReasoningEffort: "high",
               effectiveAgentId: "claude",
               effectiveModel: "claude-sonnet",
             },
@@ -368,7 +359,7 @@ describe("MainChat model selector", () => {
         activeAgentId: "codex",
         models: [model],
         modelId: "removed-model",
-        modelReasoningEffort: "xhigh",
+        modelReasoningEffort: "medium",
       },
     });
 
@@ -407,26 +398,28 @@ describe("MainChat model selector", () => {
     expect((modelSelect.element as HTMLSelectElement).disabled).toBe(true);
     expect((effortSelect.element as HTMLSelectElement).disabled).toBe(true);
     await modelSelect.setValue("gpt-4o");
-    await effortSelect.setValue("ultra");
+    await effortSelect.setValue("low");
     expect(wrapper.emitted("setModel")).toBeUndefined();
     expect(wrapper.emitted("setReasoningEffort")).toBeUndefined();
     wrapper.unmount();
   });
 
   it("updates the selected native values when active-lane props change", async () => {
+    const gpt4o = makeModel("gpt-4o", "GPT-4o", "openai");
+    gpt4o.configJson = { reasoningEfforts: ["medium", "high"] };
     const wrapper = mount(MainChatModelSelectors, {
       props: {
         ...selectorBaseProps,
         agents: [{ id: "codex", name: "Codex", ready: true }],
         activeAgentId: "codex",
-        models: [makeModel("gpt-4.1", "GPT-4.1", "openai"), makeModel("gpt-4o", "GPT-4o", "openai")],
+        models: [makeModel("gpt-4.1", "GPT-4.1", "openai"), gpt4o],
         modelId: "gpt-4.1",
         modelReasoningEffort: "high",
       },
     });
-    await wrapper.setProps({ modelId: "gpt-4o", modelReasoningEffort: "ultra" });
+    await wrapper.setProps({ modelId: "gpt-4o", modelReasoningEffort: "medium" });
     expect((wrapper.get('[data-testid="chat-model-select"]').element as HTMLSelectElement).value).toBe("gpt-4o");
-    expect((wrapper.get('[data-testid="chat-reasoning-effort"]').element as HTMLSelectElement).value).toBe("ultra");
+    expect((wrapper.get('[data-testid="chat-reasoning-effort"]').element as HTMLSelectElement).value).toBe("medium");
     expect(wrapper.emitted("setModel")).toBeUndefined();
     expect(wrapper.emitted("setReasoningEffort")).toBeUndefined();
     wrapper.unmount();

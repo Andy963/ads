@@ -13,14 +13,18 @@ import {
 import { PROMPT_ABORTED_MESSAGE } from "../../server/web/server/ws/promptErrorHandling.js";
 
 describe("context resume — history injection", () => {
-  it("accepts extended Codex reasoning efforts", () => {
+  it("accepts standard reasoning efforts and drops invalid ones", () => {
+    assert.deepEqual(parseModelReasoningEffortFromPayload({ model_reasoning_effort: "high" }), {
+      present: true,
+      effort: "high",
+    });
     assert.deepEqual(parseModelReasoningEffortFromPayload({ model_reasoning_effort: "max" }), {
       present: true,
-      effort: "max",
+      effort: undefined,
     });
     assert.deepEqual(parseModelReasoningEffortFromPayload({ model_reasoning_effort: "ultra" }), {
       present: true,
-      effort: "ultra",
+      effort: undefined,
     });
     assert.deepEqual(parseModelReasoningEffortFromPayload({ model_reasoning_effort: "off" }), {
       present: true,

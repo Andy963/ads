@@ -3,6 +3,7 @@ import type { WebSocket } from "ws";
 import type { SessionManager } from "../../../sessions/sessionManager.js";
 import { getStateDatabase } from "../../../state/database.js";
 import { createGlobalModelConfigStore } from "../../../state/globalModelConfigStore.js";
+import { normalizeConfiguredReasoningEffort } from "../../../state/modelConfigTypes.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import type {
   WsLaneValidityCheck,
@@ -18,7 +19,7 @@ import type { WsMessage } from "./schema.js";
 
 type ClearHistoryScope = "lane" | "shared";
 
-const STANDARD_REASONING_EFFORTS = new Set(["off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+const STANDARD_REASONING_EFFORTS = new Set(["off", "none", "minimal", "low", "medium", "high"]);
 
 function readModelOverridePayload(payload: unknown): { model: string; effort?: string } | { error: string } {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -46,7 +47,9 @@ function readModelOverridePayload(payload: unknown): { model: string; effort?: s
 function readConfiguredReasoningEfforts(configJson: unknown): string[] {
   if (!configJson || typeof configJson !== "object" || Array.isArray(configJson)) return [];
   const values = (configJson as Record<string, unknown>).reasoningEfforts;
-  return Array.isArray(values) ? values.map((value) => String(value).trim().toLowerCase()).filter(Boolean) : [];
+  return Array.isArray(values)
+    ? [...new Set(values.map((value) => normalizeConfiguredReasoningEffort(value)).filter((value): value is string => Boolean(value)))]
+    : [];
 }
 
 function resolveClearHistoryScope(payload: unknown, chatSessionId: string): ClearHistoryScope {

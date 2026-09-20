@@ -59,6 +59,44 @@ describe("native model resolver", () => {
     assert.doesNotMatch(modelRow.config_json, /profile-secret/);
   });
 
+  it("omits invalid reasoning effort values from native request options", () => {
+    const db = getStateDatabase(dbPath);
+    const modelStore = createGlobalModelConfigStore(db);
+    const credentials = createUpstreamCredentialStore(db, { pepper: "test-only-pepper" });
+    credentials.save("42", {
+      baseUrl: "https://provider.test/v1",
+      provider: "custom",
+      apiKey: "profile-secret",
+    }, "custom-profile");
+    modelStore.upsertModelConfig({
+      id: "model-invalid-reasoning",
+      modelId: "custom-model-invalid-reasoning",
+      displayName: "Custom",
+      provider: "custom",
+      isEnabled: true,
+      isDefault: false,
+      configJson: {
+        credentialProfile: "custom-profile",
+        reasoningEfforts: ["high"],
+        reasoningEffort: "max",
+      },
+    });
+
+    const resolver = createNativeModelResolver({
+      owner: "42",
+      stateDbPath: dbPath,
+      env: { ADS_WEB_SESSION_PEPPER: "test-only-pepper" },
+    });
+    assert.equal(resolver.resolve("custom-model-invalid-reasoning").options, undefined);
+    assert.equal(
+      resolver.resolve("custom-model-invalid-reasoning", {
+        credentialProfile: "custom-profile",
+        reasoningEffort: "ultra",
+      }).options,
+      undefined,
+    );
+  });
+
   it("rejects a model endpoint that does not match its credential profile", () => {
     const db = getStateDatabase(dbPath);
     const modelStore = createGlobalModelConfigStore(db);

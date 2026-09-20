@@ -1,6 +1,6 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
-import type { ModelConfig } from "./modelConfigTypes.js";
+import { sanitizeModelConfigJson, type ModelConfig } from "./modelConfigTypes.js";
 import { modelConfigScopesOverlap } from "./modelConfigScope.js";
 
 function parseJson(value: unknown): Record<string, unknown> | null {
@@ -101,6 +101,7 @@ export function createGlobalModelConfigStore(db: DatabaseType) {
     const displayName = String(config.displayName ?? "").trim() || modelId;
     const provider = String(config.provider ?? "").trim();
     if (!provider) throw new Error("model config provider is required");
+    const configJson = sanitizeModelConfigJson(config.configJson);
 
     const tx = db.transaction(() => {
       if (config.isDefault) {
@@ -122,7 +123,7 @@ export function createGlobalModelConfigStore(db: DatabaseType) {
         provider,
         config.isEnabled ? 1 : 0,
         config.isDefault ? 1 : 0,
-        config.configJson ? JSON.stringify(config.configJson) : null,
+        configJson ? JSON.stringify(configJson) : null,
         now,
       );
     });

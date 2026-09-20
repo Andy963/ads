@@ -1,7 +1,7 @@
 import { InlineKeyboard } from "grammy";
 import type { ModelOption, ModelState } from "./client/adsClient.js";
 
-export const REASONING_EFFORTS = ["off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+export const REASONING_EFFORTS = ["off", "none", "minimal", "low", "medium", "high"] as const;
 
 export type ParsedModelCommand = { modelId?: string; reasoningEffort?: string };
 
@@ -17,8 +17,11 @@ export function parseModelCommand(raw: string): ParsedModelCommand {
 
 export function allowedReasoningEfforts(model: ModelOption): string[] {
   const configured = model.configJson?.reasoningEfforts;
-  if (!Array.isArray(configured) || configured.length === 0) return [...REASONING_EFFORTS];
-  return configured.map((value) => String(value).trim().toLowerCase()).filter((value) => REASONING_EFFORTS.includes(value as typeof REASONING_EFFORTS[number]));
+  if (!Array.isArray(configured) || configured.length === 0) return ["high"];
+  const allowed = configured
+    .map((value) => String(value).trim().toLowerCase())
+    .filter((value) => REASONING_EFFORTS.includes(value as typeof REASONING_EFFORTS[number]));
+  return allowed.length > 0 ? [...new Set(allowed)] : ["high"];
 }
 
 export function findModel(models: ModelOption[], modelId: string): ModelOption | undefined {
