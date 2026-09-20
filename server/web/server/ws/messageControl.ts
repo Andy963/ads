@@ -18,7 +18,7 @@ import type { WsMessage } from "./schema.js";
 
 type ClearHistoryScope = "lane" | "shared";
 
-const STANDARD_REASONING_EFFORTS = new Set(["off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+const STANDARD_REASONING_EFFORTS = new Set(["off", "none", "minimal", "low", "medium", "high"]);
 
 function readModelOverridePayload(payload: unknown): { model: string; effort?: string } | { error: string } {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {

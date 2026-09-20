@@ -20,6 +20,7 @@ import {
   writeMobileTabPreference,
   writeProjectPreferences,
 } from "./preferencesStore";
+import { normalizeReasoningEffort } from "./chatPreferences";
 
 function storedRaw(projectId: string): string | null {
   return localStorage.getItem(buildProjectPreferencesStorageKey(projectId));
@@ -61,6 +62,14 @@ describe("preferencesStore", () => {
     expect(readReasoningEffortPreference("p1", "advisor", "codex")).toBe("low");
     expect(readModelIdPreference("p1", "advisor", "codex")).toBe("gpt-5.5");
     expect(readModelIdPreference("p1", "advisor", "claude")).toBe("claude-3-7-sonnet");
+  });
+
+  it("normalizes invalid persisted reasoning efforts to high on read", () => {
+    writeModelPreference("p1", "main", "", { modelId: "gpt-4.1", effort: "max" });
+    writeModelPreference("p1", "advisor", "codex", { modelId: "gpt-5.5", effort: "ultra" });
+
+    expect(normalizeReasoningEffort(readReasoningEffortPreference("p1", "main"))).toBe("high");
+    expect(normalizeReasoningEffort(readReasoningEffortPreference("p1", "advisor", "codex"))).toBe("high");
   });
 
   it("migrates legacy scattered keys into the unified record and deletes them", () => {

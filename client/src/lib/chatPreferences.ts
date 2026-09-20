@@ -6,10 +6,7 @@ export function normalizeReasoningEffort(value: unknown): string {
     normalized === "minimal" ||
     normalized === "low" ||
     normalized === "medium" ||
-    normalized === "high" ||
-    normalized === "xhigh" ||
-    normalized === "max" ||
-    normalized === "ultra"
+    normalized === "high"
   ) {
     return normalized;
   }

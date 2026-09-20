@@ -408,4 +408,53 @@ export const stateSchemaMigrations: StateSchemaMigration[] = [
       ensureLanePromptTables(db);
     },
   },
+  {
+    version: 15,
+    description: "Sanitize model config reasoning efforts to standard low/medium/high levels",
+    up: (db) => {
+      const rows = db
+        .prepare("SELECT id, config_json FROM model_configs WHERE config_json IS NOT NULL")
+        .all() as Array<{ id?: unknown; config_json?: unknown }>;
+      const update = db.prepare("UPDATE model_configs SET config_json = ?, updated_at = ? WHERE id = ?");
+      const now = Date.now();
+      const invalidEfforts = new Set(["xhigh", "max", "ultra"]);
+
+      for (const row of rows) {
+        if (typeof row.id !== "string" || typeof row.config_json !== "string") continue;
+        let config: Record<string, unknown>;
+        try {
+          const parsed: unknown = JSON.parse(row.config_json);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+          config = parsed as Record<string, unknown>;
+        } catch {
+          continue;
+        }
+
+        const rawEfforts = Array.isArray(config.reasoningEfforts)
+          ? config.reasoningEfforts.map((effort) => String(effort).trim().toLowerCase()).filter(Boolean)
+          : [];
+        const efforts = [...new Set(rawEfforts.filter((effort) => !invalidEfforts.has(effort)))];
+        const defaultEffort = typeof config.defaultReasoningEffort === "string"
+          ? config.defaultReasoningEffort.trim().toLowerCase()
+          : "";
+
+        let changed = false;
+        if (efforts.length === 0) {
+          config.reasoningEfforts = ["high"];
+          config.defaultReasoningEffort = "high";
+          changed = true;
+        } else {
+          if (JSON.stringify(efforts) !== JSON.stringify(rawEfforts)) {
+            config.reasoningEfforts = efforts;
+            changed = true;
+          }
+          if (invalidEfforts.has(defaultEffort)) {
+            config.defaultReasoningEffort = "high";
+            changed = true;
+          }
+        }
+        if (changed) update.run(JSON.stringify(config), now, row.id);
+      }
+    },
+  },
 ];

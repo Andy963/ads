@@ -151,7 +151,7 @@ describe("reasoning effort WS payload", () => {
     }
   });
 
-  it("defaults worker model_reasoning_effort to xhigh", async () => {
+  it("defaults worker model_reasoning_effort to high", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await settleUi(wrapper);
@@ -161,7 +161,7 @@ describe("reasoning effort WS payload", () => {
     await settleUi(wrapper);
 
     expect(lastSendPromptPayload).toBeTruthy();
-    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "xhigh", model: "auto" });
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "high", model: "auto" });
   });
 
   it("includes the active agent id on prompt payloads", async () => {
@@ -322,14 +322,14 @@ describe("reasoning effort WS payload", () => {
     await settleUi(wrapper);
     await ensureWsConnected(wrapper);
 
-    wrapper.vm.setMainModelReasoningEffort?.("xhigh");
+    wrapper.vm.setMainModelReasoningEffort?.("low");
     await settleUi(wrapper);
 
     wrapper.vm.sendMainPrompt?.("hello");
     await settleUi(wrapper);
 
     expect(lastSendPromptPayload).toBeTruthy();
-    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "xhigh", model: "auto" });
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "low", model: "auto" });
   });
 
   it("restores persisted model id and includes it in payload", async () => {
