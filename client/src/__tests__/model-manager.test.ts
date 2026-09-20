@@ -366,15 +366,85 @@ describe("ModelManager", () => {
     });
     expect(wrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(false);
 
-    // Delete button is only visible when the model row is selected.
-    expect(wrapper.find('[data-testid="model-manager-delete-claude-sonnet"]').exists()).toBe(false);
-    await wrapper.find('[data-testid="model-manager-row-claude-sonnet"]').trigger("click");
+    // Delete button is directly visible on non-default rows without selecting them first.
+    expect(wrapper.find('[data-testid="model-manager-delete-claude-sonnet"]').exists()).toBe(true);
     await wrapper.find('[data-testid="model-manager-delete-claude-sonnet"]').trigger("click");
     expect(api.delete).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("确定删除？");
     await wrapper.find('[data-testid="model-manager-delete-confirm-claude-sonnet"]').trigger("click");
     await settle(wrapper);
 
     expect(api.delete).toHaveBeenCalledWith("/api/model-configs/claude-sonnet");
+
+    wrapper.unmount();
+  });
+
+  it("deletes a non-default model from the edit dialog behind a confirmation", async () => {
+    const api = {
+      get: vi.fn().mockResolvedValue([makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude")]),
+      post: vi.fn(),
+      patch: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn().mockResolvedValue({ success: true }),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    await wrapper.find('[data-testid="model-manager-edit-claude-sonnet"]').trigger("click");
+    const dialog = wrapper.find('[data-testid="model-manager-dialog"]');
+    expect(dialog.exists()).toBe(true);
+
+    // The edit dialog exposes a delete action for non-default models.
+    const deleteButton = dialog.find('[data-testid="model-manager-dialog-delete"]');
+    expect(deleteButton.exists()).toBe(true);
+    expect(deleteButton.text()).toContain("删除模型");
+
+    // Deleting requires confirmation before the API call is dispatched.
+    await deleteButton.trigger("click");
+    expect(api.delete).not.toHaveBeenCalled();
+    expect(dialog.find('[data-testid="model-manager-dialog-delete-confirm"]').exists()).toBe(true);
+    expect(dialog.text()).toContain("确定删除？");
+
+    // Cancelling the confirmation keeps the dialog open without deleting.
+    await dialog.find('[data-testid="model-manager-dialog-delete-cancel"]').trigger("click");
+    expect(api.delete).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="model-manager-dialog-delete"]').exists()).toBe(true);
+
+    await wrapper.find('[data-testid="model-manager-dialog-delete"]').trigger("click");
+    await wrapper.find('[data-testid="model-manager-dialog-delete-confirm"]').trigger("click");
+    await settle(wrapper);
+
+    expect(api.delete).toHaveBeenCalledWith("/api/model-configs/claude-sonnet");
+    expect(wrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it("offers no delete entrance while creating a model", async () => {
+    const api = {
+      get: vi.fn().mockResolvedValue([makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude")]),
+      post: vi.fn(),
+      patch: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    await wrapper.find('[data-testid="model-manager-add"]').trigger("click");
+    const dialog = wrapper.find('[data-testid="model-manager-dialog"]');
+    expect(dialog.exists()).toBe(true);
+    expect(dialog.text()).toContain("新增模型");
+    expect(dialog.find('[data-testid="model-manager-dialog-delete"]').exists()).toBe(false);
 
     wrapper.unmount();
   });
@@ -437,11 +507,13 @@ describe("ModelManager", () => {
     await wrapper.find('[data-testid="model-manager-edit-gpt-5.2"]').trigger("click");
     expect(wrapper.find('[data-testid="model-manager-default"]').attributes("disabled")).toBeDefined();
     expect(wrapper.find('[data-testid="model-manager-enabled"]').attributes("disabled")).toBeDefined();
+    // Default models get no delete entrance in the edit dialog either.
+    expect(wrapper.find('[data-testid="model-manager-dialog-delete"]').exists()).toBe(false);
     await wrapper.find('.btnSecondary').trigger("click");
 
-    // Deleting is already blocked, so the default can only ever be moved to another model (when selected).
-    await wrapper.find('[data-testid="model-manager-row-gpt-5.2"]').trigger("click");
+    // Deleting is already blocked on the row, so the default can only ever be moved to another model.
     expect(wrapper.find('[data-testid="model-manager-delete-gpt-5.2"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.find('[data-testid="model-manager-delete-confirm-gpt-5.2"]').exists()).toBe(false);
 
     wrapper.unmount();
   });

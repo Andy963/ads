@@ -60,6 +60,7 @@ const editingId = ref<string | null>(null);
 const dialogOpen = ref(false);
 const pendingDeleteId = ref<string | null>(null);
 const selectedModelId = ref<string | null>(null);
+const dialogDeleteConfirming = ref(false);
 const activeTab = ref<SettingsTab>(props.initialTab);
 const lanePromptSnapshots = ref<LanePromptSnapshot[]>([]);
 const selectedLane = ref<LaneName>("advisor");
@@ -137,6 +138,9 @@ const sortedModels = computed(() => {
 const enabledCount = computed(() => modelConfigs.value.filter((m) => m.isEnabled).length);
 const busy = computed(() => saving.value || loading.value || busyRowId.value !== null || syncLoading.value || syncImporting.value);
 const isEditing = computed(() => Boolean(editingId.value));
+const currentModel = computed(() =>
+  editingId.value ? modelConfigs.value.find((model) => model.id === editingId.value) ?? null : null,
+);
 const managerTitle = computed(() => (props.agent ? "模型" : "系统设置"));
 const managerSubtitle = computed(() =>
   props.agent ? "统一 Codex 引擎；保存后输入框下拉会立即刷新。" : "管理角色指令与模型配置。",
@@ -480,6 +484,7 @@ function closeDialog(): void {
   assignForm(emptyForm());
   error.value = null;
   selectedModelId.value = null;
+  dialogDeleteConfirming.value = false;
 }
 
 function startCreate(): void {
@@ -487,6 +492,7 @@ function startCreate(): void {
   dialogOpen.value = true;
   pendingDeleteId.value = null;
   selectedModelId.value = null;
+  dialogDeleteConfirming.value = false;
   assignForm(emptyForm());
   error.value = null;
   statusMessage.value = null;
@@ -497,6 +503,7 @@ function editModel(model: ModelConfig): void {
   selectedModelId.value = model.id;
   dialogOpen.value = true;
   pendingDeleteId.value = null;
+  dialogDeleteConfirming.value = false;
   assignForm({
     id: model.id,
     modelId: model.modelId || model.id,
@@ -515,6 +522,7 @@ function duplicateModel(model: ModelConfig): void {
   selectedModelId.value = model.id;
   dialogOpen.value = true;
   pendingDeleteId.value = null;
+  dialogDeleteConfirming.value = false;
   const sourceLabel = model.displayName || model.modelId || model.id;
   assignForm({
     id: "",
@@ -625,6 +633,21 @@ function cancelDelete(): void {
   pendingDeleteId.value = null;
 }
 
+function requestDialogDelete(): void {
+  dialogDeleteConfirming.value = true;
+}
+
+function cancelDialogDelete(): void {
+  dialogDeleteConfirming.value = false;
+}
+
+async function confirmDialogDelete(): Promise<void> {
+  const model = currentModel.value;
+  if (!model || model.isDefault) return;
+  dialogDeleteConfirming.value = false;
+  await deleteModel(model);
+}
+
 async function deleteModel(model: ModelConfig): Promise<void> {
   if (model.isDefault || saving.value) return;
   saving.value = true;
@@ -635,6 +658,7 @@ async function deleteModel(model: ModelConfig): Promise<void> {
     await loadModelConfigs();
     pendingDeleteId.value = null;
     selectedModelId.value = null;
+    dialogDeleteConfirming.value = false;
     statusMessage.value = "模型已删除";
     emit("changed");
   } catch (err) {
@@ -866,7 +890,6 @@ defineExpose({
                   </button>
 
                   <button
-                    v-if="selectedModelId === model.id"
                     type="button"
                     class="rowAction icon danger"
                     :title="model.isDefault ? '默认模型不能删除' : '删除'"
@@ -1217,6 +1240,39 @@ defineExpose({
         </div>
 
         <footer class="dialogActions">
+          <template v-if="isEditing && currentModel && !currentModel.isDefault">
+            <template v-if="dialogDeleteConfirming">
+              <span class="confirmText">确定删除？</span>
+              <button
+                type="button"
+                class="btnDanger"
+                :disabled="saving"
+                data-testid="model-manager-dialog-delete-confirm"
+                @click="confirmDialogDelete"
+              >
+                确认删除
+              </button>
+              <button
+                type="button"
+                class="btnSecondary"
+                :disabled="saving"
+                data-testid="model-manager-dialog-delete-cancel"
+                @click="cancelDialogDelete"
+              >
+                取消
+              </button>
+            </template>
+            <button
+              v-else
+              type="button"
+              class="btnDanger"
+              :disabled="saving"
+              data-testid="model-manager-dialog-delete"
+              @click="requestDialogDelete"
+            >
+              删除模型
+            </button>
+          </template>
           <button type="button" class="btnSecondary" :disabled="saving" @click="closeDialog">取消</button>
           <button type="submit" class="btnPrimary" :disabled="!canSubmit" data-testid="model-manager-save">
             {{ saving ? "保存中" : "保存模型" }}
@@ -2245,7 +2301,8 @@ defineExpose({
 }
 
 .btnSecondary,
-.btnPrimary {
+.btnPrimary,
+.btnDanger {
   height: 34px;
   padding: 0 16px;
   border: 1px solid var(--border);
@@ -2275,8 +2332,19 @@ defineExpose({
   background: var(--accent-2);
 }
 
+.btnDanger {
+  border-color: transparent;
+  background: var(--danger-2);
+  color: #fff;
+}
+
+.btnDanger:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
 .btnPrimary:disabled,
-.btnSecondary:disabled {
+.btnSecondary:disabled,
+.btnDanger:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
