@@ -207,6 +207,55 @@ function markNativeCollaborationAsSideEffect(
   });
 }
 
+const REASONING_SENTENCE_DELIMITERS = new Set([".", "。", "!", "?", "！", "？", ";", "；", "\n", "\r"]);
+const REASONING_LIVE_STEP_MAX_CHARS = 240;
+/** Emit a truncated snapshot when one unterminated sentence grows past this size. */
+const REASONING_LIVE_STEP_TAIL_CAP = 360;
+
+interface ReasoningLiveStep {
+  text: string;
+  nextCursor: number;
+}
+
+/**
+ * Thinking-only providers (e.g. Gemini via CPA) stream raw reasoning text
+ * without authored summary parts. Extract the next completed sentence as a
+ * human-readable live-step snapshot so the turn no longer sits on a blank
+ * `thinking` placeholder until the final answer arrives.
+ */
+function nextReasoningLiveStep(buffer: string, cursor: number): ReasoningLiveStep | null {
+  let current = cursor;
+  while (current < buffer.length) {
+    let end = -1;
+    for (let i = current; i < buffer.length; i += 1) {
+      if (REASONING_SENTENCE_DELIMITERS.has(buffer[i]!)) {
+        end = i;
+        break;
+      }
+    }
+    let sentence: string;
+    let nextCursor: number;
+    if (end >= 0) {
+      sentence = buffer.slice(current, end + 1);
+      nextCursor = end + 1;
+    } else if (buffer.length - current > REASONING_LIVE_STEP_TAIL_CAP) {
+      sentence = buffer.slice(current, current + REASONING_LIVE_STEP_MAX_CHARS);
+      nextCursor = current + REASONING_LIVE_STEP_MAX_CHARS;
+    } else {
+      return null;
+    }
+    const normalized = sentence.replace(/\s+/g, " ").trim();
+    if (normalized.length >= 2) {
+      const text = normalized.length > REASONING_LIVE_STEP_MAX_CHARS
+        ? `${normalized.slice(0, REASONING_LIVE_STEP_MAX_CHARS - 1)}…`
+        : normalized;
+      return { text, nextCursor };
+    }
+    current = nextCursor;
+  }
+  return null;
+}
+
 interface TurnState {
   responseText: string;
   agentMessageBuffers: Map<string, string>;
@@ -610,6 +659,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
       failureMessage: null,
     };
     const reasoningSummaryBuffers = new Map<string, string>();
+    const reasoningSummaryItemIds = new Set<string>();
+    const reasoningTextBuffers = new Map<string, string>();
+    const reasoningTextCursors = new Map<string, number>();
     let safetyBlockTriggered = false;
     const cleanupFns: Array<() => void> = [];
     const emit = (event: ThreadEvent) => {
@@ -679,6 +731,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
         const delta = typeof payload.delta === "string" ? payload.delta : "";
         const summaryIndex = Number(payload.summaryIndex);
         if (!itemId || !delta || !Number.isInteger(summaryIndex) || summaryIndex < 0) return;
+        reasoningSummaryItemIds.add(itemId);
 
         // Codex sends deltas for each summary part independently. Keep the
         // provider text cumulative so the client can replace one live-step
@@ -700,6 +753,49 @@ export class CodexAppServerAdapter implements AgentAdapter {
               text,
               summary: true,
               summaryIndex,
+            },
+          },
+        });
+      }),
+    );
+    cleanupFns.push(
+      client.onNotification("item/reasoning/textDelta", (params) => {
+        if (!belongsToThisTurn(params)) return;
+        if (!params || typeof params !== "object") return;
+        const payload = params as Record<string, unknown>;
+        const itemId = typeof payload.itemId === "string" ? payload.itemId.trim() : "";
+        const delta = typeof payload.delta === "string" ? payload.delta : "";
+        if (!itemId || !delta) return;
+
+        // Summary deltas are the canonical live-step source for providers
+        // that author them. Raw reasoning text is only a fallback for
+        // thinking models (e.g. Gemini via CPA) so their turns surface
+        // incremental step snapshots instead of a blank thinking stall.
+        if (reasoningSummaryItemIds.has(itemId)) return;
+        const buffer = `${reasoningTextBuffers.get(itemId) ?? ""}${delta}`;
+        reasoningTextBuffers.set(itemId, buffer);
+        // The live-step card renders only the newest snapshot, so when one
+        // delta completes several sentences, forward the last of them.
+        let step = nextReasoningLiveStep(buffer, reasoningTextCursors.get(itemId) ?? 0);
+        let latest: ReasoningLiveStep | null = null;
+        while (step) {
+          latest = step;
+          step = nextReasoningLiveStep(buffer, step.nextCursor);
+        }
+        if (!latest) return;
+        reasoningTextCursors.set(itemId, latest.nextCursor);
+        this.emitEvent({
+          phase: "analysis",
+          title: "Provider live step",
+          delta: latest.text,
+          liveStep: true,
+          timestamp: Date.now(),
+          raw: {
+            type: "item.updated",
+            item: {
+              type: "reasoning",
+              id: itemId,
+              text: latest.text,
             },
           },
         });
