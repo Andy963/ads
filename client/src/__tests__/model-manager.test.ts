@@ -3,6 +3,7 @@ import { mount } from "@vue/test-utils";
 
 import type { LanePromptSnapshot, ModelConfig } from "../api/types";
 import ModelManager from "../components/ModelManager.vue";
+import { readSfc } from "./readSfc";
 
 function makeModel(
   id: string,
@@ -372,12 +373,16 @@ describe("ModelManager", () => {
 
     const row = wrapper.find('[data-testid="model-manager-row-mobile-model"]');
     const shell = wrapper.find(".modelRowSwipe");
+    const swipeDelete = wrapper.find('[data-testid="model-manager-swipe-delete-mobile-model"]');
+
+    expect(swipeDelete.classes()).not.toContain("actionVisible");
 
     await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
     await row.trigger("touchmove", { touches: [touchPoint(242, 220)] });
     await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(242, 220)] });
     await settle(wrapper);
     expect(shell.classes()).not.toContain("revealed");
+    expect(swipeDelete.classes()).not.toContain("actionVisible");
 
     await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
     await row.trigger("touchmove", { touches: [touchPoint(120, 122)] });
@@ -386,6 +391,7 @@ describe("ModelManager", () => {
 
     expect(shell.classes()).toContain("revealed");
     expect(row.attributes("style")).toContain("translateX(-84px)");
+    expect(swipeDelete.classes()).toContain("actionVisible");
     expect(wrapper.find('[data-testid="model-manager-swipe-delete-mobile-model"]').attributes("tabindex")).toBe("0");
 
     await row.trigger("touchstart", { touches: [touchPoint(120, 120)] });
@@ -395,6 +401,7 @@ describe("ModelManager", () => {
 
     expect(shell.classes()).not.toContain("revealed");
     expect(row.attributes("style")).toContain("translateX(0px)");
+    expect(swipeDelete.classes()).not.toContain("actionVisible");
 
     await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
     await row.trigger("touchmove", { touches: [touchPoint(120, 122)] });
@@ -410,6 +417,111 @@ describe("ModelManager", () => {
     expect(api.delete).toHaveBeenCalledWith("/api/model-configs/mobile-model");
 
     wrapper.unmount();
+  });
+
+  it("keeps the swipe delete hidden until the row is dragged past half the action width", async () => {
+    const model = makeModel("swipe-threshold", "Swipe Threshold", "openai");
+    const api = {
+      get: vi.fn().mockResolvedValue([model]),
+      post: vi.fn(),
+      patch: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    const row = wrapper.find('[data-testid="model-manager-row-swipe-threshold"]');
+    const shell = wrapper.find(".modelRowSwipe");
+    const swipeDelete = wrapper.find('[data-testid="model-manager-swipe-delete-swipe-threshold"]');
+
+    // A shallow drag (-30px, under the 42px halfway mark) never surfaces the action.
+    await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
+    await row.trigger("touchmove", { touches: [touchPoint(210, 122)] });
+    await settle(wrapper);
+    expect(row.attributes("style")).toContain("translateX(-30px)");
+    expect(swipeDelete.classes()).not.toContain("actionVisible");
+    await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(210, 122)] });
+    await settle(wrapper);
+    expect(shell.classes()).not.toContain("revealed");
+    expect(row.attributes("style")).toContain("translateX(0px)");
+    expect(swipeDelete.classes()).not.toContain("actionVisible");
+
+    // Past halfway (-60px) the action fades in while dragging and stays once revealed.
+    await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
+    await row.trigger("touchmove", { touches: [touchPoint(180, 122)] });
+    await settle(wrapper);
+    expect(row.attributes("style")).toContain("translateX(-60px)");
+    expect(swipeDelete.classes()).toContain("actionVisible");
+    await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(180, 122)] });
+    await settle(wrapper);
+    expect(shell.classes()).toContain("revealed");
+    expect(swipeDelete.classes()).toContain("actionVisible");
+
+    wrapper.unmount();
+  });
+
+  it("keeps row cards opaque and gates the swipe delete behind the visibility class", async () => {
+    const css = await readSfc("../components/ModelManager.vue", import.meta.url);
+
+    const swipeDelete = css.match(/\.modelSwipeDelete\s*\{[^}]*\}/)?.[0];
+    expect(swipeDelete).toMatch(/opacity:\s*0\s*;/);
+    expect(swipeDelete).toMatch(/visibility:\s*hidden\s*;/);
+    expect(swipeDelete).toMatch(/pointer-events:\s*none\s*;/);
+
+    const swipeDeleteVisible = css.match(/\.modelSwipeDelete\.actionVisible\s*\{[^}]*\}/)?.[0];
+    expect(swipeDeleteVisible).toMatch(/opacity:\s*1\s*;/);
+    expect(swipeDeleteVisible).toMatch(/visibility:\s*visible\s*;/);
+    expect(swipeDeleteVisible).toMatch(/pointer-events:\s*auto\s*;/);
+
+    // Row backgrounds layer the translucent tint over an opaque surface so the
+    // hidden delete button never shows through hover/selected states.
+    const hover = css.match(/\.modelRow:hover\s*\{[^}]*\}/)?.[0];
+    expect(hover).toBeTruthy();
+    expect(hover).not.toMatch(/background:\s*rgba\(/);
+    expect(hover).toContain("var(--surface)");
+
+    const selected = css.match(/\.modelRow\.selected\s*\{[^}]*\}/)?.[0];
+    expect(selected).toBeTruthy();
+    expect(selected).not.toMatch(/background:\s*rgba\(/);
+    expect(selected).toContain("var(--surface)");
+    expect(selected).toMatch(/box-shadow:\s*inset 3px 0 0 var\(--accent\)\s*;/);
+
+    const selectedHover = css.match(/\.modelRow\.selected:hover\s*\{[^}]*\}/)?.[0];
+    expect(selectedHover).toBeTruthy();
+    expect(selectedHover).not.toMatch(/background:\s*rgba\(/);
+    expect(selectedHover).toContain("var(--surface)");
+
+    // Busy rows dim their contents, never the card itself.
+    expect(css).not.toMatch(/\.modelRow\.busy\s*\{[^}]*opacity/);
+  });
+
+  it("hides the inline delete icon and enlarges row actions on mobile viewports", async () => {
+    const css = await readSfc("../components/ModelManager.vue", import.meta.url);
+
+    // Text labels only render inside the mobile breakpoint; desktop keeps 30px icons.
+    expect(css).toMatch(/\.rowActionLabel\s*\{\s*display:\s*none\s*;/);
+
+    const mobileStart = css.indexOf("@media (max-width: 900px)");
+    expect(mobileStart).toBeGreaterThan(-1);
+    const mobileCss = css.slice(mobileStart);
+
+    expect(mobileCss).toMatch(/\.modelRowActions\s+\.rowAction\.icon\.danger\s*\{[^}]*display:\s*none\s*;/);
+    expect(mobileCss).toMatch(/\.modelRowActions\s+\.rowAction\s*\{[^}]*min-height:\s*40px\s*;/);
+    expect(mobileCss).toMatch(/\.modelRowActions\s+\.rowAction\s*\{[^}]*flex:\s*1 1 0\s*;/);
+    expect(mobileCss).toMatch(/\.modelRowActions\s*\{[^}]*width:\s*100%\s*;/);
+    expect(mobileCss).toMatch(/\.rowActionLabel\s*\{\s*display:\s*inline\s*;/);
+    // The switch touch target grows to match the enlarged action buttons.
+    expect(mobileCss).toMatch(/\.rowSwitch\s*\{[^}]*min-height:\s*40px\s*;/);
+
+    // Desktop keeps the compact icon buttons and keeps the delete icon visible.
+    expect(css).toMatch(/\.rowAction\.icon\s*\{[^}]*width:\s*30px\s*;/);
+    // The switch stays flush with the action buttons' right edge.
+    expect(css).toMatch(/\.rowSwitch\s*\{[^}]*margin-right:\s*-3px\s*;/);
   });
 
   it("edits in a dialog and deletes behind a confirmation", async () => {
