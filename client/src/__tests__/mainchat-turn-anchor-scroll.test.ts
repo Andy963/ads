@@ -79,7 +79,7 @@ describe("MainChat top-anchored reading viewport", () => {
     document.body.innerHTML = "";
   });
 
-  it("anchors the start of a newly submitted turn to the viewport top instead of pinning the tail", async () => {
+  it("anchors the start of a newly submitted turn when the user and streaming placeholder arrive together", async () => {
     const state: ScrollState = { top: 0, height: 1000 };
     const rowOffsets: Record<string, number> = {};
     const { wrapper, host } = mountChat([
@@ -93,9 +93,15 @@ describe("MainChat top-anchored reading viewport", () => {
     // The user submits a new prompt: the user message lands at content
     // offset 1000 and the transcript grows past the bottom edge.
     rowOffsets["u-2"] = 1000;
+    rowOffsets["a-3"] = 1040;
     state.height = 1700;
     await wrapper.setProps({
-      messages: [msg("a-1", "assistant", "earlier"), msg("a-2", "assistant", "previous answer"), msg("u-2", "user", "new question")],
+      messages: [
+        msg("a-1", "assistant", "earlier"),
+        msg("a-2", "assistant", "previous answer"),
+        msg("u-2", "user", "new question"),
+        msg("a-3", "assistant", "", true),
+      ],
     });
     await settleUi(wrapper);
 
@@ -106,7 +112,6 @@ describe("MainChat top-anchored reading viewport", () => {
 
     // The assistant reply streams in below the anchor: the viewport must not
     // move, so line 1 of the reply stays on screen.
-    rowOffsets["a-3"] = 1040;
     state.height = 2600;
     await wrapper.setProps({
       messages: [
@@ -176,6 +181,76 @@ describe("MainChat top-anchored reading viewport", () => {
     await settleUi(wrapper);
 
     expect(wrapper.get(".messageList").attributes("data-loaded-messages")).toBe("30");
+    wrapper.unmount();
+  });
+
+  it("ignores subpixel scroll drift while maintaining the turn anchor", async () => {
+    const state: ScrollState = { top: 0, height: 1000 };
+    const rowOffsets: Record<string, number> = {};
+    const { wrapper, host } = mountChat([msg("a-1", "assistant", "earlier")]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+
+    rowOffsets["u-2"] = 1000;
+    rowOffsets["a-2"] = 1040;
+    state.height = 1700;
+    await wrapper.setProps({
+      messages: [
+        msg("a-1", "assistant", "earlier"),
+        msg("u-2", "user", "question"),
+        msg("a-2", "assistant", "", true),
+      ],
+    });
+    await settleUi(wrapper);
+    expect(state.top).toBe(1000 - 8);
+
+    state.top += 1.5;
+    state.height = 2600;
+    await wrapper.setProps({
+      messages: [
+        msg("a-1", "assistant", "earlier"),
+        msg("u-2", "user", "question"),
+        msg("a-2", "assistant", "answer", true),
+      ],
+    });
+    await settleUi(wrapper);
+    expect(state.top).toBe(1000 - 8);
+
+    wrapper.unmount();
+  });
+
+  it("does not clear the turn anchor on touchstart before a scroll gesture", async () => {
+    const state: ScrollState = { top: 0, height: 1000 };
+    const rowOffsets: Record<string, number> = {};
+    const { wrapper, host } = mountChat([msg("a-1", "assistant", "earlier")]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+
+    rowOffsets["u-2"] = 1000;
+    rowOffsets["a-2"] = 1040;
+    state.height = 1700;
+    await wrapper.setProps({
+      messages: [
+        msg("a-1", "assistant", "earlier"),
+        msg("u-2", "user", "question"),
+        msg("a-2", "assistant", "", true),
+      ],
+    });
+    await settleUi(wrapper);
+    expect(state.top).toBe(1000 - 8);
+
+    host.dispatchEvent(new Event("touchstart", { bubbles: true }));
+    state.height = 2600;
+    await wrapper.setProps({
+      messages: [
+        msg("a-1", "assistant", "earlier"),
+        msg("u-2", "user", "question"),
+        msg("a-2", "assistant", "answer", true),
+      ],
+    });
+    await settleUi(wrapper);
+    expect(state.top).toBe(1000 - 8);
+
     wrapper.unmount();
   });
 
