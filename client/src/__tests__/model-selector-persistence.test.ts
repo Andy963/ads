@@ -346,6 +346,69 @@ describe("Model selector persistence", () => {
   );
 
   it(
+    "keeps the advisor agent model selection across welcome and result server echoes",
+    async () => {
+      const App = (await import("../App.vue")).default;
+      const wrapper = shallowMount(App, {
+        global: { stubs: { LoginGate: false } },
+      });
+      try {
+        await settleUi(wrapper);
+        await ensureWsConnected(wrapper);
+
+        // Open the advisor lane so its socket connects.
+        await wrapper.get('[data-testid="lane-tab-advisor"]').trigger("click");
+        await settleUi(wrapper);
+        expect(_lastAdvisorWs).toBeTruthy();
+        _lastAdvisorWs!.onOpen?.();
+        await settleUi(wrapper);
+
+        _lastAdvisorWs!.onMessage?.({
+          type: "agents",
+          activeAgentId: "codex",
+          agents: [{ id: "codex", name: "Codex", ready: true }],
+        });
+        await settleUi(wrapper);
+
+        wrapper.vm.setAdvisorModelId?.("gpt-4o");
+        await settleUi(wrapper);
+        expect(readStoredModelId("default", "advisor", "codex")).toBe("gpt-4o");
+
+        // The handshake echo carries the server-side default; it must not
+        // overwrite the explicit selection in the selector or in storage.
+        _lastAdvisorWs!.onMessage?.({
+          type: "welcome",
+          threadId: null,
+          chatSessionId: "advisor",
+          inFlight: false,
+          activeAgentId: "codex",
+          effectiveModel: "gpt-4.1",
+          effectiveModelReasoningEffort: "high",
+        });
+        await settleUi(wrapper);
+        expect(wrapper.vm.activeAdvisorRuntime.modelId.value).toBe("gpt-4o");
+        expect(readStoredModelId("default", "advisor", "codex")).toBe("gpt-4o");
+
+        // Same for the per-turn result echo.
+        _lastAdvisorWs!.onMessage?.({
+          type: "result",
+          ok: true,
+          output: "Advisor done",
+          activeAgentId: "codex",
+          effectiveModel: "gpt-4.1",
+          effectiveModelReasoningEffort: "high",
+        });
+        await settleUi(wrapper);
+        expect(wrapper.vm.activeAdvisorRuntime.modelId.value).toBe("gpt-4o");
+        expect(readStoredModelId("default", "advisor", "codex")).toBe("gpt-4o");
+      } finally {
+        wrapper.unmount();
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "preserves an unknown stored model instead of replacing it with a fallback",
     async () => {
       localStorage.setItem("ads.modelId.default.main", "not-a-real-model");

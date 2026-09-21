@@ -64,6 +64,21 @@ describe("preferencesStore", () => {
     expect(readModelIdPreference("p1", "advisor", "claude")).toBe("claude-3-7-sonnet");
   });
 
+  it("writes a model selection under the [lane][agentId] key without touching the lane default", () => {
+    writeModelPreference("p1", "advisor", "codex", { modelId: "gpt-5.5" });
+
+    const record = JSON.parse(storedRaw("p1")!) as {
+      models: Record<string, Record<string, { modelId?: string }>>;
+    };
+    expect(record.models.advisor?.codex?.modelId).toBe("gpt-5.5");
+    expect(record.models.advisor?.default).toBeUndefined();
+
+    // Reads scoped to the same lane+agent find it; other scopes stay empty.
+    expect(readModelIdPreference("p1", "advisor", "codex")).toBe("gpt-5.5");
+    expect(readModelIdPreference("p1", "advisor")).toBeNull();
+    expect(readModelIdPreference("p1", "advisor", "claude")).toBeNull();
+  });
+
   it("normalizes invalid persisted reasoning efforts to high on read", () => {
     writeModelPreference("p1", "main", "", { modelId: "gpt-4.1", effort: "max" });
     writeModelPreference("p1", "advisor", "codex", { modelId: "gpt-5.5", effort: "ultra" });
