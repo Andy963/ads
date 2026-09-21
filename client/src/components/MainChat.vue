@@ -87,7 +87,7 @@ const LIVE_STEP_STICKY_THRESHOLD_PX = 16;
 const LIVE_ACTIVITY_MESSAGE_ID = "live-activity";
 const CHAT_STICKY_THRESHOLD_PX = 80;
 const TURN_ANCHOR_TOP_OFFSET_PX = 8;
-const TURN_ANCHOR_SCROLL_TOLERANCE_PX = 2;
+const TOUCH_SCROLL_INTENT_THRESHOLD_PX = 2;
 
 const liveStepPinnedToBottom = ref(true);
 let liveStepScrollEl: HTMLElement | null = null;
@@ -100,13 +100,13 @@ let chatResizeObserver: ResizeObserver | null = null;
 let chatScrollQueued = false;
 let bottomSettleFrame: number | null = null;
 let settlingBottom = false;
+let chatTouchStart: { x: number; y: number } | null = null;
 
 // Top-anchored reading viewport: while a turn streams, the current assistant
 // message is held near the viewport top instead of pinning the tail to the
 // bottom. Any explicit follow request (scroll-to-bottom click) or user scroll
 // takeover clears the anchor and resumes the previous bottom-following behavior.
 let turnAnchorEl: HTMLElement | null = null;
-let turnAnchorScrollTop: number | null = null;
 let turnAnchorPending = false;
 let turnAnchorRequested = false;
 let turnAnchorSeq = 0;
@@ -187,7 +187,6 @@ function clearTurnAnchor(): void {
     turnAnchorOverflowAnchorPreviousValue = "";
   }
   turnAnchorEl = null;
-  turnAnchorScrollTop = null;
 }
 
 function disableNativeScrollAnchoring(host: HTMLElement): void {
@@ -205,7 +204,6 @@ function alignTurnAnchorToViewportTop(): void {
   const delta =
     anchor.getBoundingClientRect().top - host.getBoundingClientRect().top - TURN_ANCHOR_TOP_OFFSET_PX;
   if (Math.abs(delta) >= 1) host.scrollTop += delta;
-  turnAnchorScrollTop = host.scrollTop;
   scheduleViewportSave();
 }
 
@@ -217,18 +215,9 @@ function maintainTurnAnchor(): void {
     clearTurnAnchor();
     return;
   }
-  if (
-    turnAnchorScrollTop !== null &&
-    Math.abs(host.scrollTop - turnAnchorScrollTop) > TURN_ANCHOR_SCROLL_TOLERANCE_PX
-  ) {
-    // The viewport moved without an explicit follow request (user scroll
-    // takeover or native scroll anchoring). Hand control back instead of
-    // fighting the new position.
-    clearTurnAnchor();
-    return;
-  }
-  // Growth below the anchor leaves it in place; this only corrects drift
-  // caused by layout changes above it (e.g. images finishing loading).
+  // User input explicitly releases the anchor. All other movement is treated
+  // as layout drift and corrected so burst streaming and Markdown reflow do
+  // not accidentally hand control back to bottom-following.
   alignTurnAnchorToViewportTop();
 }
 
@@ -254,14 +243,46 @@ function pauseChatAutoScroll(): void {
   showScrollToBottom.value = true;
 }
 
-function onChatScrollIntent(event: Event): void {
-  if (event instanceof KeyboardEvent && !["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) return;
+function onChatScrollIntent(): void {
   initialViewportActive = false;
   followEpoch += 1;
   clearTurnAnchor();
   turnAnchorPending = false;
   turnAnchorRequested = false;
   if (settlingBottom) pauseChatAutoScroll();
+}
+
+function onChatWheel(event: WheelEvent): void {
+  if (event.deltaX === 0 && event.deltaY === 0 && event.deltaZ === 0) return;
+  onChatScrollIntent();
+}
+
+function onChatKeydown(event: KeyboardEvent): void {
+  if (!["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) return;
+  onChatScrollIntent();
+}
+
+function readTouchPoint(event: TouchEvent): { x: number; y: number } | null {
+  const touch = event.touches?.[0] ?? event.changedTouches?.[0];
+  return touch ? { x: touch.clientX, y: touch.clientY } : null;
+}
+
+function onChatTouchStart(event: TouchEvent): void {
+  chatTouchStart = readTouchPoint(event);
+}
+
+function onChatTouchMove(event: TouchEvent): void {
+  const start = chatTouchStart;
+  const current = readTouchPoint(event);
+  if (!start || !current) return;
+  const displacement = Math.hypot(current.x - start.x, current.y - start.y);
+  if (displacement <= TOUCH_SCROLL_INTENT_THRESHOLD_PX) return;
+  chatTouchStart = null;
+  onChatScrollIntent();
+}
+
+function clearChatTouchStart(): void {
+  chatTouchStart = null;
 }
 
 async function refreshAfterVisibility(): Promise<void> {
@@ -449,15 +470,16 @@ function restoreInitialViewport(): void {
 
 function beginTurnAnchor(messageId: string): void {
   turnAnchorPending = true;
-  turnAnchorRequested = false;
   const seq = ++turnAnchorSeq;
   const epoch = followEpoch;
+  const hostAtRequest = listRef.value;
+  if (hostAtRequest) disableNativeScrollAnchoring(hostAtRequest);
   void (async () => {
     try {
       // Allow Vue + MarkdownContent to commit the new row before measuring it.
       await nextTick();
       await nextTick();
-      if (epoch !== followEpoch) return;
+      if (epoch !== followEpoch || turnAnchorSeq !== seq) return;
       const host = listRef.value;
       if (!host) return;
       const row = host.querySelector<HTMLElement>(`.msg[data-id="${escapeSelectorValue(messageId)}"]`);
@@ -466,12 +488,18 @@ function beginTurnAnchor(messageId: string): void {
       settlingBottom = false;
       disableNativeScrollAnchoring(host);
       turnAnchorEl = row;
-      turnAnchorScrollTop = null;
       autoScroll.value = false;
       showScrollToBottom.value = true;
+      turnAnchorRequested = false;
       alignTurnAnchorToViewportTop();
     } finally {
-      if (turnAnchorSeq === seq) turnAnchorPending = false;
+      if (turnAnchorSeq === seq) {
+        turnAnchorPending = false;
+        if (!turnAnchorEl) {
+          turnAnchorRequested = false;
+          clearTurnAnchor();
+        }
+      }
     }
   })();
 }
@@ -485,6 +513,7 @@ function isStreamingAssistantText(message: ChatMessage | undefined): boolean {
   return Boolean(
     message &&
     message.id !== LIVE_STEP_MESSAGE_ID &&
+    message.id !== LIVE_ACTIVITY_MESSAGE_ID &&
     message.role === "assistant" &&
     message.kind === "text" &&
     message.streaming === true,
@@ -512,6 +541,18 @@ const streamingTurnAnchorId = computed(() => {
   }
   return "";
 });
+
+function requestTurnAnchor(): void {
+  // A follow-up prompt replaces the previous reading anchor. Releasing and
+  // immediately reacquiring the same host also makes the native anchoring
+  // transition explicit for WebKit.
+  if (turnAnchorEl) clearTurnAnchor();
+  turnAnchorSeq += 1;
+  turnAnchorPending = false;
+  turnAnchorRequested = true;
+  const host = listRef.value;
+  if (host) disableNativeScrollAnchoring(host);
+}
 
 onMounted(() => {
   const host = listRef.value;
@@ -542,14 +583,18 @@ onMounted(() => {
 
 watch([lastUserMessageId, streamingTurnAnchorId, () => props.messages.length], ([id, anchorId, currentMessageCount], previous) => {
   const [previousId, previousAnchorId] = previous;
-  const hasActiveStreamingTail = Boolean(anchorId);
-  const isInitialTranscriptHydration = !hasActiveStreamingTail && currentMessageCount >= observedMessageCount + 2;
+  const tail = props.messages.at(-1);
+  const hasActiveStreamingTail = Boolean(anchorId) || Boolean(tail?.streaming);
+  const messageDelta = currentMessageCount - observedMessageCount;
+  const isInitialTranscriptHydration = !hasActiveStreamingTail && messageDelta > 2;
   observedMessageCount = currentMessageCount;
   if (isInitialTranscriptHydration) {
     turnAnchorRequested = false;
     return;
   }
-  if (id && id !== previousId && (autoScroll.value || turnAnchorEl)) turnAnchorRequested = true;
+  const isNewUserTurn = Boolean(id && id !== previousId);
+  const isTurnStart = isNewUserTurn && (messageDelta <= 1 || hasActiveStreamingTail);
+  if (isTurnStart && (autoScroll.value || turnAnchorEl)) requestTurnAnchor();
   if (turnAnchorRequested && anchorId && anchorId !== previousAnchorId) beginTurnAnchor(anchorId);
 });
 
@@ -665,9 +710,12 @@ onBeforeUnmount(() => {
         ref="listRef"
         class="chat"
         @scroll="handleScroll"
-        @wheel.passive="onChatScrollIntent"
-        @touchmove.passive="onChatScrollIntent"
-        @keydown="onChatScrollIntent"
+        @wheel.passive="onChatWheel"
+        @touchstart.passive="onChatTouchStart"
+        @touchmove.passive="onChatTouchMove"
+        @touchend.passive="clearChatTouchStart"
+        @touchcancel.passive="clearChatTouchStart"
+        @keydown="onChatKeydown"
       >
         <MainChatMessageList
           :messages="messages"
