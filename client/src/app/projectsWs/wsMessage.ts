@@ -13,7 +13,11 @@ import {
   normalizeModelId,
   normalizeReasoningEffort,
 } from "../../lib/chatPreferences";
-import { writeModelPreference } from "../../lib/preferencesStore";
+import {
+  readModelIdPreference,
+  readReasoningEffortPreference,
+  writeModelPreference,
+} from "../../lib/preferencesStore";
 import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
 import { normalizeTurnSemanticOrder } from "../../lib/chat_sync";
 import { isUserAbortFailure, upsertTurnFailureCard } from "../../lib/turnFailure";
@@ -792,17 +796,30 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
   };
 
   const applyEffectiveState = (payload: Record<string, unknown>): void => {
-    const effectiveModel = String(payload.effectiveModel ?? "").trim();
-    if (effectiveModel) {
-      rt.modelId.value = normalizeModelId(effectiveModel);
-    }
-    const effectiveReasoningEffort = String(payload.effectiveModelReasoningEffort ?? "").trim();
-    if (effectiveReasoningEffort) {
-      rt.modelReasoningEffort.value = normalizeReasoningEffort(effectiveReasoningEffort);
-    }
     const activeAgentId = String(payload.activeAgentId ?? "").trim();
     if (activeAgentId) {
       rt.activeAgentId.value = activeAgentId;
+    }
+    // The payload's effective model/effort is the server's configured default
+    // for this lane+agent. A selection already stored locally is the user's
+    // explicit choice: handshake (welcome) and turn echo (result) frames must
+    // not overwrite it, otherwise a reconnect silently reverts the selector.
+    const sessionId = String(rt.projectSessionId ?? "").trim();
+    const chatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
+    const preferenceAgentId = String(rt.activeAgentId.value ?? "").trim();
+    const storedModelId = sessionId
+      ? readModelIdPreference(sessionId, chatSessionId, preferenceAgentId)
+      : null;
+    const storedReasoningEffort = sessionId
+      ? readReasoningEffortPreference(sessionId, chatSessionId, preferenceAgentId)
+      : null;
+    const effectiveModel = String(payload.effectiveModel ?? "").trim();
+    if (effectiveModel) {
+      rt.modelId.value = normalizeModelId(storedModelId ?? effectiveModel);
+    }
+    const effectiveReasoningEffort = String(payload.effectiveModelReasoningEffort ?? "").trim();
+    if (effectiveReasoningEffort) {
+      rt.modelReasoningEffort.value = normalizeReasoningEffort(storedReasoningEffort ?? effectiveReasoningEffort);
     }
     const notice = String(payload.notice ?? "").trim();
     if (notice) {

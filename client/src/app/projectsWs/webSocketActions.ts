@@ -84,7 +84,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   const restoreReasoningEffort = (rt: ProjectRuntime): void => {
     const sessionId = String(rt.projectSessionId ?? "").trim();
     if (!sessionId) return;
-    const stored = readReasoningEffortPreference(sessionId, rt.chatSessionId);
+    const stored = readReasoningEffortPreference(sessionId, rt.chatSessionId, rt.activeAgentId.value);
     if (stored !== null) {
       rt.modelReasoningEffort.value = normalizeReasoningEffort(stored);
     }
@@ -93,7 +93,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   const restoreModelId = (rt: ProjectRuntime): void => {
     const sessionId = String(rt.projectSessionId ?? "").trim();
     if (!sessionId) return;
-    const stored = readModelIdPreference(sessionId, rt.chatSessionId);
+    const stored = readModelIdPreference(sessionId, rt.chatSessionId, rt.activeAgentId.value);
     if (stored !== null) {
       rt.modelId.value = normalizeModelId(stored);
     }
