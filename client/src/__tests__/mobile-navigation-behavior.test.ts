@@ -344,4 +344,114 @@ describe("mobile navigation behavior", () => {
 
     wrapper.unmount();
   }, 40_000);
+
+  describe("horizontal lane swipe (Issue #292)", () => {
+    async function mountMobileChat() {
+      const App = (await import("../App.vue")).default;
+      const wrapper = shallowMount(App, {
+        global: {
+          stubs: {
+            LoginGate: false,
+            ModelManager: ModelManagerStub,
+            DraggableModal: true,
+          },
+        },
+      });
+      await settleUi(wrapper);
+      return wrapper;
+    }
+
+    it("switches from Advisor to Worker on a leftward swipe", async () => {
+      const wrapper = await mountMobileChat();
+      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+
+      const panels = wrapper.get(".lanePanels");
+      await panels.trigger("touchstart", { touches: [{ clientX: 220, clientY: 320 }] });
+      await panels.trigger("touchmove", { touches: [{ clientX: 150, clientY: 322 }] });
+      await panels.trigger("touchend", { touches: [] });
+      await settleUi(wrapper);
+
+      expect(wrapper.find('[data-testid="lane-tab-worker"]').classes()).toContain("active");
+      expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(false);
+      expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
+      expect(readStoredMobileTab("default")).toBe("worker");
+      wrapper.unmount();
+    });
+
+    it("switches from Worker back to Advisor on a rightward swipe", async () => {
+      const wrapper = await mountMobileChat();
+      await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="lane-tab-worker"]').classes()).toContain("active");
+
+      const panels = wrapper.get(".lanePanels");
+      await panels.trigger("touchstart", { touches: [{ clientX: 180, clientY: 300 }] });
+      await panels.trigger("touchmove", { touches: [{ clientX: 250, clientY: 298 }] });
+      await panels.trigger("touchend", { touches: [] });
+      await settleUi(wrapper);
+
+      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+      expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(false);
+      expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
+      wrapper.unmount();
+    });
+
+    it("keeps the left-edge gesture on the drawer and never switches lanes", async () => {
+      const wrapper = await mountMobileChat();
+      const panels = wrapper.get(".lanePanels");
+      await panels.trigger("touchstart", { touches: [{ clientX: 12, clientY: 320 }] });
+      await panels.trigger("touchmove", { touches: [{ clientX: 90, clientY: 320 }] });
+      await settleUi(wrapper);
+
+      expect(wrapper.find(".mobileDrawer").exists()).toBe(true);
+      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+      expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
+      await panels.trigger("touchend", { touches: [] });
+      wrapper.unmount();
+    });
+
+    it("ignores vertical scrolling and near-vertical drags", async () => {
+      const wrapper = await mountMobileChat();
+      const panels = wrapper.get(".lanePanels");
+
+      await panels.trigger("touchstart", { touches: [{ clientX: 200, clientY: 200 }] });
+      await panels.trigger("touchmove", { touches: [{ clientX: 206, clientY: 320 }] });
+      await panels.trigger("touchend", { touches: [] });
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+      expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
+
+      // |dx| above the threshold but failing the horizontal ratio gate.
+      await panels.trigger("touchstart", { touches: [{ clientX: 200, clientY: 200 }] });
+      await panels.trigger("touchmove", { touches: [{ clientX: 250, clientY: 260 }] });
+      await panels.trigger("touchend", { touches: [] });
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+      expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
+      wrapper.unmount();
+    });
+
+    it("ignores swipes starting inside horizontally scrollable or editable children", async () => {
+      const wrapper = await mountMobileChat();
+      const panelsEl = wrapper.get(".lanePanels").element;
+      const pre = document.createElement("pre");
+      panelsEl.appendChild(pre);
+
+      const start = new Event("touchstart", { bubbles: true, cancelable: true });
+      Object.assign(start, { touches: [{ clientX: 240, clientY: 300 }] });
+      pre.dispatchEvent(start);
+      const move = new Event("touchmove", { bubbles: true, cancelable: true });
+      Object.assign(move, { touches: [{ clientX: 140, clientY: 300 }] });
+      pre.dispatchEvent(move);
+      await settleUi(wrapper);
+
+      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+      expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
+      expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
+      pre.remove();
+      wrapper.unmount();
+    });
+  });
 });
