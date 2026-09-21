@@ -28,6 +28,10 @@ async function settle(wrapper: { vm: { $nextTick: () => Promise<void> } }): Prom
   await wrapper.vm.$nextTick();
 }
 
+function touchPoint(clientX: number, clientY: number): { clientX: number; clientY: number } {
+  return { clientX, clientY };
+}
+
 describe("ModelManager", () => {
   it("prefills server metadata across remounts without persisting or returning an API key", async () => {
     localStorage.clear();
@@ -327,6 +331,87 @@ describe("ModelManager", () => {
     wrapper.unmount();
   });
 
+  it("does not duplicate a model id when no distinct display name is configured", async () => {
+    const modelId = "gpt-image-2.5-sunburst-long-model-name";
+    const api = {
+      get: vi.fn().mockResolvedValue([makeModel(modelId, modelId, "openai")]),
+      post: vi.fn(),
+      patch: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    const row = wrapper.find(`[data-testid="model-manager-row-${modelId}"]`);
+    expect(row.find(".modelRowText").text()).toBe(modelId);
+    expect(row.find(".modelRowId").exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it("reveals the row delete action on a horizontal swipe and snaps back on a right swipe", async () => {
+    const model = makeModel("mobile-model", "Mobile Model", "openai");
+    const api = {
+      get: vi.fn().mockResolvedValue([model]),
+      post: vi.fn(),
+      patch: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn().mockResolvedValue({ success: true }),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    const row = wrapper.find('[data-testid="model-manager-row-mobile-model"]');
+    const shell = wrapper.find(".modelRowSwipe");
+
+    await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
+    await row.trigger("touchmove", { touches: [touchPoint(242, 220)] });
+    await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(242, 220)] });
+    await settle(wrapper);
+    expect(shell.classes()).not.toContain("revealed");
+
+    await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
+    await row.trigger("touchmove", { touches: [touchPoint(120, 122)] });
+    await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(120, 122)] });
+    await settle(wrapper);
+
+    expect(shell.classes()).toContain("revealed");
+    expect(row.attributes("style")).toContain("translateX(-84px)");
+    expect(wrapper.find('[data-testid="model-manager-swipe-delete-mobile-model"]').attributes("tabindex")).toBe("0");
+
+    await row.trigger("touchstart", { touches: [touchPoint(120, 120)] });
+    await row.trigger("touchmove", { touches: [touchPoint(240, 122)] });
+    await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(240, 122)] });
+    await settle(wrapper);
+
+    expect(shell.classes()).not.toContain("revealed");
+    expect(row.attributes("style")).toContain("translateX(0px)");
+
+    await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
+    await row.trigger("touchmove", { touches: [touchPoint(120, 122)] });
+    await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(120, 122)] });
+    await settle(wrapper);
+    await wrapper.find('[data-testid="model-manager-swipe-delete-mobile-model"]').trigger("click");
+
+    expect(api.delete).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-testid="model-manager-delete-confirm-mobile-model"]').exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("确定删除？");
+    await wrapper.find('[data-testid="model-manager-delete-confirm-mobile-model"]').trigger("click");
+    await settle(wrapper);
+    expect(api.delete).toHaveBeenCalledWith("/api/model-configs/mobile-model");
+
+    wrapper.unmount();
+  });
+
   it("edits in a dialog and deletes behind a confirmation", async () => {
     const api = {
       get: vi.fn().mockResolvedValue([makeModel("claude-sonnet", "Claude Sonnet", "anthropic", "claude")]),
@@ -370,7 +455,8 @@ describe("ModelManager", () => {
     expect(wrapper.find('[data-testid="model-manager-delete-claude-sonnet"]').exists()).toBe(true);
     await wrapper.find('[data-testid="model-manager-delete-claude-sonnet"]').trigger("click");
     expect(api.delete).not.toHaveBeenCalled();
-    expect(wrapper.text()).toContain("确定删除？");
+    expect(wrapper.find('[data-testid="model-manager-delete-confirm-claude-sonnet"]').text()).toBe("确认删除");
+    expect(wrapper.text()).not.toContain("确定删除？");
     await wrapper.find('[data-testid="model-manager-delete-confirm-claude-sonnet"]').trigger("click");
     await settle(wrapper);
 
@@ -407,7 +493,8 @@ describe("ModelManager", () => {
     await deleteButton.trigger("click");
     expect(api.delete).not.toHaveBeenCalled();
     expect(dialog.find('[data-testid="model-manager-dialog-delete-confirm"]').exists()).toBe(true);
-    expect(dialog.text()).toContain("确定删除？");
+    expect(dialog.find('[data-testid="model-manager-dialog-delete-confirm"]').text()).toBe("确认删除");
+    expect(dialog.text()).not.toContain("确定删除？");
 
     // Cancelling the confirmation keeps the dialog open without deleting.
     await dialog.find('[data-testid="model-manager-dialog-delete-cancel"]').trigger("click");
