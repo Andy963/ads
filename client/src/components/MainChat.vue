@@ -87,6 +87,7 @@ const LIVE_STEP_STICKY_THRESHOLD_PX = 16;
 const LIVE_ACTIVITY_MESSAGE_ID = "live-activity";
 const CHAT_STICKY_THRESHOLD_PX = 80;
 const TURN_ANCHOR_TOP_OFFSET_PX = 8;
+const TURN_ANCHOR_SCROLL_TOLERANCE_PX = 2;
 
 const liveStepPinnedToBottom = ref(true);
 let liveStepScrollEl: HTMLElement | null = null;
@@ -193,7 +194,10 @@ function maintainTurnAnchor(): void {
     clearTurnAnchor();
     return;
   }
-  if (turnAnchorScrollTop !== null && host.scrollTop !== turnAnchorScrollTop) {
+  if (
+    turnAnchorScrollTop !== null &&
+    Math.abs(host.scrollTop - turnAnchorScrollTop) > TURN_ANCHOR_SCROLL_TOLERANCE_PX
+  ) {
     // The viewport moved without an explicit follow request (user scroll
     // takeover or native scroll anchoring). Hand control back instead of
     // fighting the new position.
@@ -482,7 +486,9 @@ const lastUserMessageId = computed(() => {
 watch(lastUserMessageId, (id, previousId) => {
   if (!id || id === previousId) return;
   const currentMessageCount = props.messages.length;
-  const isInitialTranscriptHydration = currentMessageCount >= observedMessageCount + 2;
+  const tail = props.messages.at(-1);
+  const hasActiveStreamingTail = tail?.role === "assistant" && tail.streaming === true;
+  const isInitialTranscriptHydration = !hasActiveStreamingTail && currentMessageCount >= observedMessageCount + 2;
   observedMessageCount = currentMessageCount;
   if (isInitialTranscriptHydration) return;
   beginTurnAnchor(id);
@@ -596,7 +602,7 @@ onBeforeUnmount(() => {
         class="chat"
         @scroll="handleScroll"
         @wheel.passive="onChatScrollIntent"
-        @touchstart.passive="onChatScrollIntent"
+        @touchmove.passive="onChatScrollIntent"
         @keydown="onChatScrollIntent"
       >
         <MainChatMessageList
