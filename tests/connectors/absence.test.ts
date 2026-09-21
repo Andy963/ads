@@ -31,8 +31,23 @@ describe("Core standalone operability without Telegram connector", () => {
       await pipeline.executeTurnStart(ctx);
       await pipeline.executeAfterOutput(ctx, "hello world output with PR https://github.com/Andy963/ads/pull/1");
 
-      // Should not throw or fail
-      assert.ok(true);
+      // The core pipeline produces real guardrail decisions without any
+      // connector: dangerous commands are blocked at the item boundary and
+      // benign ones pass through.
+      const blocked = await pipeline.executeItemStart(ctx, {
+        type: "command_execution",
+        id: "cmd-blocked",
+        command: "rm -f state.db",
+      });
+      assert.equal(blocked.blockExecution, true);
+      assert.match(blocked.reason ?? "", /Command blocked by security rule/);
+
+      const allowed = await pipeline.executeItemStart(ctx, {
+        type: "command_execution",
+        id: "cmd-allowed",
+        command: "echo 'hello world'",
+      });
+      assert.equal(allowed.blockExecution, false);
     } finally {
       if (savedToken) process.env.TELEGRAM_BOT_TOKEN = savedToken;
       if (savedChat) process.env.TELEGRAM_ALLOWED_USER_ID = savedChat;

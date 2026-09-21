@@ -395,9 +395,14 @@ describe("MainChat top-anchored reading viewport", () => {
     await settleUi(wrapper);
     expect(state.top).toBe(0);
 
+    // Dispatching the first turn appends the user message and the streaming
+    // assistant placeholder in the same batch, mirroring flushQueuedPrompts.
     rowOffsets["u-1"] = 0;
+    rowOffsets["a-1"] = 40;
     state.height = 400;
-    await wrapper.setProps({ messages: [msg("u-1", "user", "first question")] });
+    await wrapper.setProps({
+      messages: [msg("u-1", "user", "first question"), msg("a-1", "assistant", "", true)],
+    });
     await settleUi(wrapper);
     expect(state.top).toBe(0);
 

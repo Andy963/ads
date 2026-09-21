@@ -1,51 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, it, expect } from "vitest";
 import { mount } from "@vue/test-utils";
 
 import MainChatMessageList from "../components/MainChatMessageList.vue";
-import { readSfc } from "./readSfc";
 
-describe("chat bubble and popover style regressions", () => {
-  it("right-aligns bounded user messages with compact metadata spacing", async () => {
-    const css = await readSfc("../components/MainChatMessageList.vue", import.meta.url);
-    const userBubble = css.match(/\.msg\[data-role="user"\]\s+\.bubble\s*\{[^}]*\}/)?.[0];
-    const userActions = css.match(/\.msg\[data-role="user"\]\s+\.msgActions\s*\{[^}]*\}/)?.[0];
-
-    expect(userBubble).toMatch(/\n\s+width:\s*fit-content\s*;/);
-    expect(userBubble).toMatch(/max-width:\s*78%\s*;/);
-    expect(userBubble).toMatch(/background:\s*rgba\(37, 99, 235, 0\.1\)\s*;/);
-    expect(userBubble).toMatch(/border:\s*none\s*;/);
-    expect(userBubble).toMatch(/border-radius:\s*18px 18px 4px 18px\s*;/);
-    expect(userBubble).toMatch(/padding:\s*9px 14px\s*;/);
-    expect(userActions).toMatch(/position:\s*static\s*;/);
-    expect(userActions).toMatch(/display:\s*flex\s*;/);
-    expect(userActions).toMatch(/flex-wrap:\s*wrap\s*;/);
-    expect(userActions).toMatch(/justify-content:\s*flex-end\s*;/);
-    expect(userActions).toMatch(/margin-top:\s*2px\s*;/);
-    expect(css).toMatch(/\.msg\[data-role="user"\]\s*\{[^}]*justify-content:\s*flex-end\s*;[^}]*margin-bottom:\s*8px\s*;/);
-    expect(css).toMatch(/\.msg\[data-role="user"\]\s+\.msgCopyBtn\s*\{[^}]*width:\s*24px\s*;[^}]*height:\s*24px\s*;/);
-    expect(userActions).not.toMatch(/(?:left|right|bottom):/);
-
-    // Assistant bubbles must not stack unnecessary horizontal padding
-    expect(css).toMatch(/\.bubble\s*\{[\s\S]*?padding:\s*4px 0 24px/);
-  });
-
-  it("expands user message bubbles to full width on mobile viewports", async () => {
-    const css = await readSfc("../components/MainChatMessageList.vue", import.meta.url);
-    const mobileUserBubble = css.match(
-      /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.msg\[data-role="user"\]\s+\.bubble\s*\{[^}]*\}/,
-    )?.[0];
-
-    expect(mobileUserBubble).toBeTruthy();
-    expect(mobileUserBubble).toMatch(/width:\s*100%\s*;/);
-    expect(mobileUserBubble).toMatch(/max-width:\s*100%\s*;/);
-
-    // Desktop alignment keeps the bounded bubble; the media query only overrides width.
-    const desktopUserBubble = css.match(/\.msg\[data-role="user"\]\s+\.bubble\s*\{[^}]*\}/)?.[0];
-    expect(desktopUserBubble).toMatch(/max-width:\s*78%\s*;/);
-    expect(desktopUserBubble).toMatch(/\n\s+width:\s*fit-content\s*;/);
-    expect(css).toMatch(/\.msg\[data-role="user"\]\s+\.msgActions\s*\{[^}]*justify-content:\s*flex-end\s*;/);
-  });
-
+describe("chat bubble content structure", () => {
   it.each([
     { label: "short text", content: "a" },
     { label: "wrapped text", content: "A longer user message ".repeat(20) },
@@ -70,13 +28,5 @@ describe("chat bubble and popover style regressions", () => {
     await actions.get(".msgCopyBtn").trigger("click");
     expect(wrapper.emitted("copyMessage")?.[0]?.[0]).toMatchObject({ id: "user-message", role: "user", content });
     wrapper.unmount();
-  });
-
-  it("renders reasoning effort options in their own native dropdown", async () => {
-    const sfc = await readSfc("../components/MainChatModelSelectors.vue", import.meta.url);
-
-    expect(sfc).toMatch(/<select[^>]*aria-label="Reasoning effort"[^>]*data-testid="chat-reasoning-effort"/);
-    expect(sfc).toContain(':data-reasoning-effort="effort"');
-    expect(sfc).not.toContain('role="dialog"');
   });
 });

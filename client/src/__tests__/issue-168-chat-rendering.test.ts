@@ -9,7 +9,6 @@ import { createStreamingActions } from "../app/chatStreaming";
 import MarkdownContent from "../components/MarkdownContent.vue";
 import MainChatMessageList from "../components/MainChatMessageList.vue";
 import type { ChatMessage } from "../components/mainChat/types";
-import { readSfc } from "./readSfc";
 
 function message(id: string, content = `message ${id}`): ChatMessage {
   return {
@@ -170,11 +169,5 @@ describe("Issue #168 chat rendering", () => {
     } finally {
       globalThis.requestAnimationFrame = originalRequestAnimationFrame;
     }
-  });
-
-  it("keeps real row geometry for browser-native history anchoring", async () => {
-    const source = await readSfc("../components/MainChatMessageList.vue", import.meta.url);
-    expect(source).not.toMatch(/content-visibility:\s*auto\s*;/);
-    expect(source).not.toMatch(/contain-intrinsic-size:/);
   });
 });

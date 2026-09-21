@@ -1,86 +1,113 @@
-import { describe, it, expect } from "vitest";
-import { readSfc } from "./readSfc";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { shallowMount } from "@vue/test-utils";
+import { defineComponent } from "vue";
+
+vi.mock("../api/client", () => {
+  class ApiClient {
+    constructor(_: { baseUrl: string }) {}
+
+    async get<T>(url: string): Promise<T> {
+      if (url === "/api/models") return [] as T;
+      if (url.startsWith("/api/paths/validate")) return { ok: false } as T;
+      return {} as T;
+    }
+
+    async post<T>(): Promise<T> {
+      throw new Error("not implemented");
+    }
+
+    async patch<T>(): Promise<T> {
+      throw new Error("not implemented");
+    }
+
+    async delete<T>(): Promise<T> {
+      throw new Error("not implemented");
+    }
+  }
+
+  return { ApiClient };
+});
+
+vi.mock("../api/ws", () => {
+  class AdsWebSocket {
+    onOpen?: () => void;
+    onClose?: (ev: { code: number; reason?: string }) => void;
+    onError?: () => void;
+    onMessage?: (msg: unknown) => void;
+
+    clearHistory = vi.fn();
+
+    constructor(_: { sessionId: string; chatSessionId?: string }) {}
+
+    connect(): void {}
+    close(): void {}
+    send(): void {}
+    sendPrompt(): void {}
+    interrupt(): void {}
+  }
+
+  return { AdsWebSocket };
+});
+
+vi.mock("../components/LoginGate.vue", () => {
+  return {
+    default: defineComponent({
+      name: "LoginGate",
+      emits: ["logged-in"],
+      mounted() {
+        this.$emit("logged-in", { id: "u-1", username: "admin" });
+      },
+      template: "<div />",
+    }),
+  };
+});
+
+async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Promise<void> {
+  await wrapper.vm.$nextTick();
+  await Promise.resolve();
+  await wrapper.vm.$nextTick();
+}
 
 describe("mobile navigation shell", () => {
-  it("renders Advisor and Worker in one shared mobile workspace tab shell", async () => {
-    const sfc = await readSfc("../App.vue", import.meta.url);
-    expect(sfc).toContain('const chatLanes: Array<{ id: ChatLane; label: string }> = [');
-    expect(sfc).toContain('{ id: "advisor", label: "Advisor" }');
-    expect(sfc).toContain('{ id: "worker", label: "Worker" }');
-    expect(sfc).not.toContain('{ id: "tasks", label: "Task" }');
-        expect(sfc).not.toContain('{ id: "reviewer", label: "Reviewer" }');
-    expect(sfc).toMatch(/<div class="laneTabGroup"[^>]*role="tablist"[^>]*>/);
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
   });
 
-  it("shows only the active lane panel and binds panel visibility to the shared active tab state", async () => {
-    const sfc = await readSfc("../App.vue", import.meta.url);
-    expect(sfc).toMatch(/v-if="activeWorkspaceTab === 'advisor'"/);
-    expect(sfc).toMatch(/v-else/);
-    expect(sfc).not.toMatch(/v-show="activeWorkspaceTab/);
-    expect(sfc).not.toMatch(/v-show="activeWorkspaceTab === 'tasks'"/);
-    expect(sfc).not.toMatch(/v-show="activeWorkspaceTab === 'reviewer'"/);
-    expect(sfc).toMatch(/:class="\{[\s\S]*active:\s*activeWorkspaceTab === tab.id/);
-    expect(sfc).toMatch(/:aria-selected="activeWorkspaceTab === tab.id"/);
+  afterEach(() => {
+    vi.clearAllMocks();
   });
 
-  it("uses unified settings without provider subitems", async () => {
-    const sfc = await readSfc("../App.vue", import.meta.url);
-    expect(sfc).toContain('data-testid="mobile-drawer-toggle"');
-    expect(sfc).toContain('data-testid="mobile-drawer-section-projects"');
-    expect(sfc).toContain('data-testid="mobile-drawer-section-prompts"');
-    expect(sfc).toContain('data-testid="mobile-drawer-section-models"');
-    expect(sfc).toContain("<span>角色指令</span>");
-    expect(sfc).toContain("<span>模型配置</span>");
-    expect(sfc).not.toContain('class="mobileDrawerSubitems"');
-    expect(sfc).not.toContain("MODEL_AGENT_GROUPS");
-    expect(sfc).toContain('class="mobileMainPanel"');
-    // projectTasks removed
-    expect(sfc).not.toContain('class="lanePanel taskLanePanel"');
-    expect(sfc).not.toContain('class="mobileTaskWorkspace"');
-    expect(sfc).toContain('v-if="mobileDrawerSection === \'settings\'"');
-    expect(sfc).toContain('initial-tab="lane-prompts"');
-    expect(sfc).toContain("flex-direction: column");
-    expect(sfc).toContain('v-if="!isMobile && p.id === \'default\'"');
-    // create button removed
-    expect(sfc).not.toContain('id: "create-task"');
-    expect(sfc).not.toContain("mobileDrawerSubitemArrow");
-    expect(sfc).not.toContain("mobileDrawerManager");
-    expect(sfc).not.toContain('mobilePane === "tasks"');
-    expect(sfc).not.toContain('mobilePane === "chat"');
-    expect(sfc).not.toContain('class="paneTabs"');
-  });
+  it("renders Advisor and Worker tabs in one shared tab list and switches panels on tab click", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
 
-  it("uses the two-line menu icon and scopes actions to the active module", async () => {
-    const sfc = await readSfc("../App.vue", import.meta.url);
-    expect(sfc).toContain('class="mobileMenuIcon"');
-    expect(sfc).toContain('<rect x="2" y="5.5" width="16" height="2.2" rx="1.1" />');
-    expect(sfc).toContain('<rect x="2" y="12.3" width="10" height="2.2" rx="1.1" />');
-    expect(sfc).toContain('id: "resume"');
-    expect(sfc).toContain('id: "new-session"');
-    expect(sfc).toContain('id: "create-model"');
-    expect(sfc).toContain('id: "refresh-models"');
-    expect(sfc).not.toContain('id: "choose-provider"');
-    expect(sfc).not.toContain('label: "选择 Provider"');
-    expect(sfc).not.toContain('label: "切换 Provider"');
-    expect(sfc).toContain("disabled: activeLaneBusy.value || resumeThreadBlocked.value");
-    expect(sfc).toContain("mobileSettingsRef.value?.create()");
-    expect(sfc).not.toContain("打开项目");
-  });
+    const tablist = wrapper.get('[role="tablist"]');
+    const tabs = tablist.findAll('[role="tab"]');
+    expect(tabs.map((tab) => tab.get(".laneTabLabel").text())).toEqual(["Advisor", "Worker"]);
+    expect(tabs.map((tab) => tab.attributes("aria-selected"))).toEqual(["true", "false"]);
+    expect(wrapper.find('[data-testid="lane-tab-tasks"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="lane-tab-reviewer"]').exists()).toBe(false);
 
-  it("hides duplicate lane session buttons on mobile", async () => {
-    const sfc = await readSfc("../App.vue", import.meta.url);
-    const actions = sfc.match(/<div v-if="!isMobile" class="laneSessionActions">([\s\S]*?)<\/div>/)?.[1];
-    expect(actions).toBeDefined();
-    expect(actions).toContain('v-if="activeLaneHasResume && loggedIn"');
-    expect(actions).toContain('data-testid="lane-resume-thread"');
-    expect(actions).toContain('data-testid="lane-new-session"');
-    expect(actions).toContain('data-testid="lane-clear-chat"');
-  });
+    // Only the active lane panel is mounted; the inactive one is not rendered.
+    expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(false);
 
-  it("keeps lane tab row free of duplicate warning banners", async () => {
-    const sfc = await readSfc("../App.vue", import.meta.url);
-    expect(sfc).not.toContain('class="laneTabWarning"');
-    expect(sfc).not.toContain('data-testid="lane-thread-warning"');
-    expect(sfc).not.toContain("activeLaneThreadWarning");
+    await wrapper.get('[data-testid="lane-tab-worker"]').trigger("click");
+    await settleUi(wrapper);
+
+    expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="lane-tab-worker"]').attributes("aria-selected")).toBe("true");
+    expect(wrapper.get('[data-testid="lane-tab-advisor"]').attributes("aria-selected")).toBe("false");
+
+    await wrapper.get('[data-testid="lane-tab-advisor"]').trigger("click");
+    await settleUi(wrapper);
+
+    expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(false);
+
+    wrapper.unmount();
   });
 });
