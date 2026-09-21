@@ -553,6 +553,48 @@ function onDrawerSwipeTouchEnd(): void {
   drawerCloseSwipe = null;
 }
 
+const LANE_SWIPE_TRIGGER_PX = 40;
+const LANE_SWIPE_RATIO = 1.4;
+// Touches starting inside horizontally scrollable or editable children keep
+// their native behavior instead of switching lanes.
+const LANE_SWIPE_IGNORE_SELECTOR = "pre, code, table, input, textarea, select, button, a, [contenteditable]";
+
+let laneSwipe: DrawerSwipe | null = null;
+
+const lanePanelTransitionName = computed(() =>
+  activeWorkspaceTab.value === "worker" ? "lane-slide-forward" : "lane-slide-back",
+);
+
+function onLaneSwipeTouchStart(ev: TouchEvent): void {
+  laneSwipe = null;
+  if (!isMobile.value || mobileDrawerOpen.value) return;
+  if (ev.target instanceof Element && ev.target.closest(LANE_SWIPE_IGNORE_SELECTOR)) return;
+  const touch = readSwipeTouch(ev);
+  // The left edge stays reserved for the drawer edge swipe.
+  if (!touch || touch.x <= DRAWER_SWIPE_EDGE_PX) return;
+  laneSwipe = { startX: touch.x, startY: touch.y, triggered: false };
+}
+
+function onLaneSwipeTouchMove(ev: TouchEvent): void {
+  const swipe = laneSwipe;
+  if (!swipe || swipe.triggered) return;
+  const touch = readSwipeTouch(ev);
+  if (!touch) return;
+  const dx = touch.x - swipe.startX;
+  const dy = touch.y - swipe.startY;
+  if (Math.abs(dx) <= LANE_SWIPE_TRIGGER_PX || Math.abs(dx) <= Math.abs(dy) * LANE_SWIPE_RATIO) return;
+  swipe.triggered = true;
+  if (dx < 0 && activeWorkspaceTab.value === "advisor") {
+    selectWorkspaceTab("worker");
+  } else if (dx > 0 && activeWorkspaceTab.value === "worker") {
+    selectWorkspaceTab("advisor");
+  }
+}
+
+function onLaneSwipeTouchEnd(): void {
+  laneSwipe = null;
+}
+
 function onDrawerKeydown(ev: KeyboardEvent): void {
   if (ev.key !== "Tab") return;
   const drawer = mobileDrawerRef.value;
@@ -1079,83 +1121,93 @@ const advisorConnectionStatus = computed(() => {
           </div>
         </div>
 
-        <div class="lanePanels">
-          <section
-            :id="'lane-panel-advisor'"
-            v-if="activeWorkspaceTab === 'advisor'"
-            class="lanePanel"
-            role="tabpanel"
-            aria-labelledby="lane-tab-advisor"
-            data-testid="lane-panel-advisor"
-            :data-message-count="advisorMessages.length"
-            :data-panel-key="`${advisorPanelKey}:${errorRecoveryGeneration}`"
-          >
-            <MainChatView
-              ref="advisorChatRef"
-              :key="`${advisorPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
-              class="chatHost chatHost--advisor"
-              :messages="advisorMessages"
-              :viewport="activeAdvisorRuntime.transcriptViewport?.value"
-              :draft="advisorComposerDraft"
-              :latest-prompt-key="advisorChatKey"
-              :queued-prompts="advisorQueuedPrompts"
-              :pending-images="advisorPendingImages"
-              :connected="advisorConnected"
-              :busy="advisorBusy"
-              :input-locked="!loggedIn || advisorInputLocked"
-              :workspace-root="resolveActiveWorkspaceRoot()"
-              :connection-status-kind="advisorConnectionStatus?.kind ?? null"
-              :connection-status-message="advisorConnectionStatus?.message ?? null"
-              :thread-warning="advisorThreadWarning"
-              @send="sendAdvisorPrompt"
-              @update:draft="advisorComposerDraft = $event"
-              @update:viewport="activeAdvisorRuntime.transcriptViewport && (activeAdvisorRuntime.transcriptViewport.value = $event)"
-              @interrupt="interruptAdvisor"
-              @addImages="addAdvisorPendingImages"
-              @clearImages="clearAdvisorPendingImages"
-              @removeQueued="removeAdvisorQueuedPrompt"
-            />
-          </section>
+        <div
+          class="lanePanels"
+          @touchstart.passive="onLaneSwipeTouchStart"
+          @touchmove.passive="onLaneSwipeTouchMove"
+          @touchend="onLaneSwipeTouchEnd"
+          @touchcancel="onLaneSwipeTouchEnd"
+        >
+          <Transition :name="lanePanelTransitionName" mode="out-in">
+            <section
+              :id="'lane-panel-advisor'"
+              v-if="activeWorkspaceTab === 'advisor'"
+              key="advisor"
+              class="lanePanel"
+              role="tabpanel"
+              aria-labelledby="lane-tab-advisor"
+              data-testid="lane-panel-advisor"
+              :data-message-count="advisorMessages.length"
+              :data-panel-key="`${advisorPanelKey}:${errorRecoveryGeneration}`"
+            >
+              <MainChatView
+                ref="advisorChatRef"
+                :key="`${advisorPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
+                class="chatHost chatHost--advisor"
+                :messages="advisorMessages"
+                :viewport="activeAdvisorRuntime.transcriptViewport?.value"
+                :draft="advisorComposerDraft"
+                :latest-prompt-key="advisorChatKey"
+                :queued-prompts="advisorQueuedPrompts"
+                :pending-images="advisorPendingImages"
+                :connected="advisorConnected"
+                :busy="advisorBusy"
+                :input-locked="!loggedIn || advisorInputLocked"
+                :workspace-root="resolveActiveWorkspaceRoot()"
+                :connection-status-kind="advisorConnectionStatus?.kind ?? null"
+                :connection-status-message="advisorConnectionStatus?.message ?? null"
+                :thread-warning="advisorThreadWarning"
+                @send="sendAdvisorPrompt"
+                @update:draft="advisorComposerDraft = $event"
+                @update:viewport="activeAdvisorRuntime.transcriptViewport && (activeAdvisorRuntime.transcriptViewport.value = $event)"
+                @interrupt="interruptAdvisor"
+                @addImages="addAdvisorPendingImages"
+                @clearImages="clearAdvisorPendingImages"
+                @removeQueued="removeAdvisorQueuedPrompt"
+              />
+            </section>
 
-          <section
-            :id="'lane-panel-worker'"
-            v-else
-            class="lanePanel"
-            role="tabpanel"
-            aria-labelledby="lane-tab-worker"
-            data-testid="lane-panel-worker"
-            :data-message-count="messages.length"
-            :data-panel-key="`${workerPanelKey}:${errorRecoveryGeneration}`"
-          >
-            <MainChatView
-              ref="workerChatRef"
-              :key="`${workerPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
-              class="chatHost"
-              :messages="messages"
-              :viewport="activeRuntime.transcriptViewport?.value"
-              :draft="workerComposerDraft"
-              :latest-prompt-key="workerLatestPromptKey"
-              :queued-prompts="workerQueuedPrompts"
-              :pending-images="pendingImages"
-              :connected="connected"
-              :busy="agentBusy"
-              :input-locked="!loggedIn || workerInputLocked"
-              :workspace-root="resolveActiveWorkspaceRoot()"
-              :running-task-count="runningTaskCount"
-              :connection-status-kind="workerConnectionStatus?.kind ?? null"
-              :connection-status-message="workerConnectionStatus?.message ?? null"
-              :thread-warning="workerThreadWarning"
-              @send="sendMainPrompt"
-              @retry-message="loggedIn && retryPrompt($event)"
-              @update:draft="workerComposerDraft = $event"
-              @update:viewport="activeRuntime.transcriptViewport && (activeRuntime.transcriptViewport.value = $event)"
-              @interrupt="interruptActive"
-              @clear="clearActiveChat"
-              @addImages="addPendingImages"
-              @clearImages="clearPendingImages"
-              @removeQueued="removeQueuedPrompt"
-            />
-          </section>
+            <section
+              :id="'lane-panel-worker'"
+              v-else
+              key="worker"
+              class="lanePanel"
+              role="tabpanel"
+              aria-labelledby="lane-tab-worker"
+              data-testid="lane-panel-worker"
+              :data-message-count="messages.length"
+              :data-panel-key="`${workerPanelKey}:${errorRecoveryGeneration}`"
+            >
+              <MainChatView
+                ref="workerChatRef"
+                :key="`${workerPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
+                class="chatHost"
+                :messages="messages"
+                :viewport="activeRuntime.transcriptViewport?.value"
+                :draft="workerComposerDraft"
+                :latest-prompt-key="workerLatestPromptKey"
+                :queued-prompts="workerQueuedPrompts"
+                :pending-images="pendingImages"
+                :connected="connected"
+                :busy="agentBusy"
+                :input-locked="!loggedIn || workerInputLocked"
+                :workspace-root="resolveActiveWorkspaceRoot()"
+                :running-task-count="runningTaskCount"
+                :connection-status-kind="workerConnectionStatus?.kind ?? null"
+                :connection-status-message="workerConnectionStatus?.message ?? null"
+                :thread-warning="workerThreadWarning"
+                @send="sendMainPrompt"
+                @retry-message="loggedIn && retryPrompt($event)"
+                @update:draft="workerComposerDraft = $event"
+                @update:viewport="activeRuntime.transcriptViewport && (activeRuntime.transcriptViewport.value = $event)"
+                @interrupt="interruptActive"
+                @clear="clearActiveChat"
+                @addImages="addPendingImages"
+                @clearImages="clearPendingImages"
+                @removeQueued="removeQueuedPrompt"
+              />
+            </section>
+          </Transition>
         </div>
       </section>
     </main>
