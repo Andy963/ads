@@ -16,7 +16,6 @@ import { createAppController } from "./app/controller";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
 import { useProjectSidebar } from "./composables/app/useProjectSidebar";
 import { createTapActivation } from "./lib/tapActivation";
-import { diagAlert } from "./lib/diagAlert";
 import { crumb } from "./lib/diagBreadcrumbs";
 import { errorRecoveryGeneration } from "./lib/errorRecovery";
 import {
@@ -361,43 +360,10 @@ function selectWorkspaceTab(tab: ChatLane): void {
   if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
     document.activeElement.blur();
   }
-  const before = {
-    lane: activeWorkspaceTab.value,
-    workerCount: messages.length,
-    advisorCount: advisorMessages.length,
-  };
   setActiveChatLane(tab);
   crumb(`lane:${activeWorkspaceTab.value}->${tab}`);
   if (isMobile.value) writeMobileWorkspaceTab(activeProjectId.value, tab);
   closeMobileContextMenu();
-  // Temporary diagnostic: verify the lane switch actually landed in the DOM.
-  window.setTimeout(() => {
-    try {
-      // A later lane/project selection supersedes this diagnostic timer.
-      if (activeWorkspaceTab.value !== tab) return;
-      const appEl = document.querySelector(".app");
-      if (!appEl) return;
-      const expectedKey = `${tab === "advisor" ? advisorPanelKey.value : workerPanelKey.value}:${errorRecoveryGeneration.value}`;
-      const activeLane = appEl?.getAttribute("data-active-lane");
-      const panel = document.getElementById(`lane-panel-${tab}`);
-      const panelKey = panel?.getAttribute("data-panel-key");
-      const visibleCount = panel?.getAttribute("data-message-count");
-      const hidden = Boolean(panel) && panel?.style.display === "none";
-      if (activeLane !== tab || !panel || hidden || panelKey !== expectedKey) {
-        diagAlert("lane切换未生效", {
-          clicked: tab,
-          activeLane,
-          panelKey,
-          expectedKey,
-          visibleCount,
-          hidden,
-          before,
-        });
-      }
-    } catch {
-      // diagnostics must never break switching
-    }
-  }, 400);
 }
 
 const laneActivation = createTapActivation(selectWorkspaceTab, { preserveFocus: true, name: "lane-tab" });
