@@ -101,17 +101,19 @@ let chatScrollQueued = false;
 let bottomSettleFrame: number | null = null;
 let settlingBottom = false;
 
-// Top-anchored reading viewport: while a turn streams, the newest user
-// message (the turn start) is held near the viewport top instead of pinning
-// the tail to the bottom. Any explicit follow request (scroll-to-bottom
-// click) or user scroll takeover clears the anchor and resumes the previous
-// bottom-following behavior.
+// Top-anchored reading viewport: while a turn streams, the current assistant
+// message is held near the viewport top instead of pinning the tail to the
+// bottom. Any explicit follow request (scroll-to-bottom click) or user scroll
+// takeover clears the anchor and resumes the previous bottom-following behavior.
 let turnAnchorEl: HTMLElement | null = null;
 let turnAnchorScrollTop: number | null = null;
 let turnAnchorPending = false;
+let turnAnchorRequested = false;
 let turnAnchorSeq = 0;
 let followEpoch = 0;
 let observedMessageCount = props.messages.length;
+let turnAnchorOverflowAnchorHost: HTMLElement | null = null;
+let turnAnchorOverflowAnchorPreviousValue = "";
 
 function scheduleFrame(cb: () => void): number {
   if (typeof requestAnimationFrame === "function") return requestAnimationFrame(cb);
@@ -171,8 +173,25 @@ function settleBottomLayout(): void {
 }
 
 function clearTurnAnchor(): void {
+  if (turnAnchorOverflowAnchorHost) {
+    if (turnAnchorOverflowAnchorPreviousValue) {
+      turnAnchorOverflowAnchorHost.style.setProperty("overflow-anchor", turnAnchorOverflowAnchorPreviousValue);
+    } else {
+      turnAnchorOverflowAnchorHost.style.removeProperty("overflow-anchor");
+    }
+    turnAnchorOverflowAnchorHost = null;
+    turnAnchorOverflowAnchorPreviousValue = "";
+  }
   turnAnchorEl = null;
   turnAnchorScrollTop = null;
+}
+
+function disableNativeScrollAnchoring(host: HTMLElement): void {
+  if (turnAnchorOverflowAnchorHost === host) return;
+  clearTurnAnchor();
+  turnAnchorOverflowAnchorHost = host;
+  turnAnchorOverflowAnchorPreviousValue = host.style.getPropertyValue("overflow-anchor");
+  host.style.setProperty("overflow-anchor", "none");
 }
 
 function alignTurnAnchorToViewportTop(): void {
@@ -213,6 +232,7 @@ function scrollChatToBottom(explicit = false): void {
   followEpoch += 1;
   clearTurnAnchor();
   turnAnchorPending = false;
+  turnAnchorRequested = false;
   cancelBottomSettlement();
   settlingBottom = explicit;
   autoScroll.value = true;
@@ -224,6 +244,7 @@ function pauseChatAutoScroll(): void {
   followEpoch += 1;
   clearTurnAnchor();
   turnAnchorPending = false;
+  turnAnchorRequested = false;
   cancelBottomSettlement();
   autoScroll.value = false;
   showScrollToBottom.value = true;
@@ -235,6 +256,7 @@ function onChatScrollIntent(event: Event): void {
   followEpoch += 1;
   clearTurnAnchor();
   turnAnchorPending = false;
+  turnAnchorRequested = false;
   if (settlingBottom) pauseChatAutoScroll();
 }
 
@@ -250,6 +272,7 @@ defineExpose({ refreshAfterVisibility });
 const bottomActivation = createTapActivation<boolean>(() => scrollChatToBottom(true), { name: "scroll-to-bottom" });
 
 function scheduleChatScrollToBottom(): void {
+  if (turnAnchorPending || turnAnchorRequested) return;
   if (!turnAnchorEl && !autoScroll.value) return;
   if (chatScrollQueued) return;
   chatScrollQueued = true;
@@ -258,6 +281,7 @@ function scheduleChatScrollToBottom(): void {
       // Allow Vue + MarkdownContent to commit DOM updates before measuring scrollHeight.
       await nextTick();
       await nextTick();
+      if (turnAnchorPending || turnAnchorRequested) return;
       if (turnAnchorEl) {
         maintainTurnAnchor();
         return;
@@ -388,7 +412,7 @@ function handleScroll() {
     return;
   }
   if (turnAnchorEl) {
-    // Reading-viewport mode: keep the turn start visible and let the user
+    // Reading-viewport mode: keep the assistant response visible and let the user
     // finish reading before they choose to jump back to the bottom.
     autoScroll.value = false;
     showScrollToBottom.value = true;
@@ -419,6 +443,72 @@ function restoreInitialViewport(): void {
   showScrollToBottom.value = true;
 }
 
+function beginTurnAnchor(messageId: string): void {
+  turnAnchorPending = true;
+  turnAnchorRequested = false;
+  const seq = ++turnAnchorSeq;
+  const epoch = followEpoch;
+  void (async () => {
+    try {
+      // Allow Vue + MarkdownContent to commit the new row before measuring it.
+      await nextTick();
+      await nextTick();
+      if (epoch !== followEpoch) return;
+      const host = listRef.value;
+      if (!host) return;
+      const row = host.querySelector<HTMLElement>(`.msg[data-id="${escapeSelectorValue(messageId)}"]`);
+      if (!row) return;
+      cancelBottomSettlement();
+      settlingBottom = false;
+      disableNativeScrollAnchoring(host);
+      turnAnchorEl = row;
+      turnAnchorScrollTop = null;
+      autoScroll.value = false;
+      showScrollToBottom.value = true;
+      alignTurnAnchorToViewportTop();
+    } finally {
+      if (turnAnchorSeq === seq) turnAnchorPending = false;
+    }
+  })();
+}
+
+function escapeSelectorValue(value: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") return CSS.escape(value);
+  return value.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+}
+
+function isStreamingAssistantText(message: ChatMessage | undefined): boolean {
+  return Boolean(
+    message &&
+    message.id !== LIVE_STEP_MESSAGE_ID &&
+    message.role === "assistant" &&
+    message.kind === "text" &&
+    message.streaming === true,
+  );
+}
+
+const lastUserMessageId = computed(() => {
+  for (let index = props.messages.length - 1; index >= 0; index -= 1) {
+    if (props.messages[index]?.role === "user") return props.messages[index].id;
+  }
+  return "";
+});
+
+const streamingTurnAnchorId = computed(() => {
+  let lastUserIndex = -1;
+  for (let index = props.messages.length - 1; index >= 0; index -= 1) {
+    if (props.messages[index]?.role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  for (let index = props.messages.length - 1; index > lastUserIndex; index -= 1) {
+    const message = props.messages[index];
+    if (isStreamingAssistantText(message)) return message.id;
+  }
+  return "";
+});
+
 onMounted(() => {
   const host = listRef.value;
   if (host && restorableViewport) {
@@ -426,6 +516,8 @@ onMounted(() => {
     // first visible frame does not briefly jump to the default scroll position.
     restoreInitialViewport();
     if (!initialViewportRestored) void nextTick().then(restoreInitialViewport);
+  } else if (streamingTurnAnchorId.value) {
+    beginTurnAnchor(streamingTurnAnchorId.value);
   } else {
     scrollChatToBottom();
   }
@@ -444,61 +536,23 @@ onMounted(() => {
   }
 });
 
-function beginTurnAnchor(messageId: string): void {
-  turnAnchorPending = true;
-  const seq = ++turnAnchorSeq;
-  const epoch = followEpoch;
-  void (async () => {
-    try {
-      // Allow Vue + MarkdownContent to commit the new row before measuring it.
-      await nextTick();
-      await nextTick();
-      if (epoch !== followEpoch) return;
-      const host = listRef.value;
-      if (!host) return;
-      const row = host.querySelector<HTMLElement>(`.msg[data-id="${escapeSelectorValue(messageId)}"]`);
-      if (!row) return;
-      cancelBottomSettlement();
-      settlingBottom = false;
-      turnAnchorEl = row;
-      turnAnchorScrollTop = null;
-      autoScroll.value = false;
-      showScrollToBottom.value = true;
-      alignTurnAnchorToViewportTop();
-    } finally {
-      if (turnAnchorSeq === seq) turnAnchorPending = false;
-    }
-  })();
-}
-
-function escapeSelectorValue(value: string): string {
-  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") return CSS.escape(value);
-  return value.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
-}
-
-const lastUserMessageId = computed(() => {
-  for (let index = props.messages.length - 1; index >= 0; index -= 1) {
-    if (props.messages[index]?.role === "user") return props.messages[index].id;
-  }
-  return "";
-});
-
-watch(lastUserMessageId, (id, previousId) => {
-  if (!id || id === previousId) return;
-  const currentMessageCount = props.messages.length;
-  const tail = props.messages.at(-1);
-  const hasActiveStreamingTail = tail?.role === "assistant" && tail.streaming === true;
+watch([lastUserMessageId, streamingTurnAnchorId, () => props.messages.length], ([id, anchorId, currentMessageCount], previous) => {
+  const [previousId, previousAnchorId] = previous;
+  const hasActiveStreamingTail = Boolean(anchorId);
   const isInitialTranscriptHydration = !hasActiveStreamingTail && currentMessageCount >= observedMessageCount + 2;
   observedMessageCount = currentMessageCount;
-  if (isInitialTranscriptHydration) return;
-  beginTurnAnchor(id);
+  if (isInitialTranscriptHydration) {
+    turnAnchorRequested = false;
+    return;
+  }
+  if (id && id !== previousId) turnAnchorRequested = true;
+  if (turnAnchorRequested && anchorId && anchorId !== previousAnchorId) beginTurnAnchor(anchorId);
 });
 
 watch(
   () => props.messages.length,
   () => {
-    observedMessageCount = props.messages.length;
-    if (turnAnchorEl || turnAnchorPending) return;
+    if (turnAnchorEl || turnAnchorPending || turnAnchorRequested) return;
     if (autoScroll.value) scheduleChatScrollToBottom();
     else showScrollToBottom.value = true;
   },
@@ -523,7 +577,7 @@ watch(
       initialViewportActive = false;
       // A freshly submitted turn anchors to the viewport top instead of
       // jumping to the bottom; other tail advances keep the old behavior.
-      if (!turnAnchorEl && !turnAnchorPending) scrollChatToBottom();
+      if (!turnAnchorEl && !turnAnchorPending && !turnAnchorRequested) scrollChatToBottom();
       return;
     }
     scheduleChatScrollToBottom();
@@ -566,6 +620,12 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  saveViewport();
+  followEpoch += 1;
+  turnAnchorSeq += 1;
+  turnAnchorPending = false;
+  turnAnchorRequested = false;
+  clearTurnAnchor();
   cancelBottomSettlement();
   window.removeEventListener("pagehide", saveViewport);
   document.removeEventListener("visibilitychange", saveBeforeBackground);

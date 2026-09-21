@@ -79,7 +79,7 @@ describe("MainChat top-anchored reading viewport", () => {
     document.body.innerHTML = "";
   });
 
-  it("anchors the start of a newly submitted turn when the user and streaming placeholder arrive together", async () => {
+  it("anchors the start of the streaming assistant response when the turn arrives together", async () => {
     const state: ScrollState = { top: 0, height: 1000 };
     const rowOffsets: Record<string, number> = {};
     const { wrapper, host } = mountChat([
@@ -105,9 +105,9 @@ describe("MainChat top-anchored reading viewport", () => {
     });
     await settleUi(wrapper);
 
-    // Bottom-following would be 1700 - 600 = 1100; the turn start is held
-    // 8px below the viewport top instead.
-    expect(state.top).toBe(1000 - 8);
+    // Bottom-following would be 1700 - 600 = 1100; the assistant response
+    // start is held 8px below the viewport top instead.
+    expect(state.top).toBe(1040 - 8);
     expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
 
     // The assistant reply streams in below the anchor: the viewport must not
@@ -122,7 +122,7 @@ describe("MainChat top-anchored reading viewport", () => {
       ],
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(1000 - 8);
+    expect(state.top).toBe(1040 - 8);
 
     // Streaming continues growing the reply far beyond one screen.
     state.height = 4200;
@@ -135,9 +135,73 @@ describe("MainChat top-anchored reading viewport", () => {
       ],
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(1000 - 8);
+    expect(state.top).toBe(1040 - 8);
 
     wrapper.unmount();
+  });
+
+  it("waits for the assistant row when the user and streaming placeholder arrive separately", async () => {
+    const state: ScrollState = { top: 0, height: 1000 };
+    const rowOffsets: Record<string, number> = {};
+    const { wrapper, host } = mountChat([
+      msg("a-1", "assistant", "earlier"),
+      msg("a-2", "assistant", "previous answer"),
+    ]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+    expect(state.top).toBe(400);
+
+    rowOffsets["u-2"] = 1000;
+    state.height = 1700;
+    await wrapper.setProps({
+      messages: [
+        msg("a-1", "assistant", "earlier"),
+        msg("a-2", "assistant", "previous answer"),
+        msg("u-2", "user", "new question"),
+      ],
+    });
+    await settleUi(wrapper);
+    expect(state.top).toBe(400);
+
+    rowOffsets["a-3"] = 1040;
+    state.height = 2600;
+    await wrapper.setProps({
+      messages: [
+        msg("a-1", "assistant", "earlier"),
+        msg("a-2", "assistant", "previous answer"),
+        msg("u-2", "user", "new question"),
+        msg("a-3", "assistant", "", true),
+      ],
+    });
+    await settleUi(wrapper);
+    expect(state.top).toBe(1040 - 8);
+
+    wrapper.unmount();
+  });
+
+  it("anchors an existing streaming assistant after the chat is remounted", async () => {
+    const state: ScrollState = { top: 0, height: 2600 };
+    const rowOffsets: Record<string, number> = { "a-2": 1040 };
+    const messages = [
+      msg("a-1", "assistant", "earlier"),
+      msg("u-2", "user", "question"),
+      msg("a-2", "assistant", "streaming answer", true),
+    ];
+
+    const first = mountChat(messages);
+    installLayoutMocks(first.host, state, rowOffsets);
+    await settleUi(first.wrapper);
+    expect(state.top).toBe(1040 - 8);
+    first.wrapper.unmount();
+    vi.restoreAllMocks();
+
+    state.top = 0;
+    const remounted = mountChat(messages);
+    installLayoutMocks(remounted.host, state, rowOffsets);
+    await settleUi(remounted.wrapper);
+    expect(state.top).toBe(1040 - 8);
+
+    remounted.wrapper.unmount();
   });
 
   it("does not anchor while an initial transcript is hydrated", async () => {
@@ -202,7 +266,7 @@ describe("MainChat top-anchored reading viewport", () => {
       ],
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(1000 - 8);
+    expect(state.top).toBe(1040 - 8);
 
     state.top += 1.5;
     state.height = 2600;
@@ -214,7 +278,7 @@ describe("MainChat top-anchored reading viewport", () => {
       ],
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(1000 - 8);
+    expect(state.top).toBe(1040 - 8);
 
     wrapper.unmount();
   });
@@ -237,7 +301,7 @@ describe("MainChat top-anchored reading viewport", () => {
       ],
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(1000 - 8);
+    expect(state.top).toBe(1040 - 8);
 
     host.dispatchEvent(new Event("touchstart", { bubbles: true }));
     state.height = 2600;
@@ -249,7 +313,7 @@ describe("MainChat top-anchored reading viewport", () => {
       ],
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(1000 - 8);
+    expect(state.top).toBe(1040 - 8);
 
     wrapper.unmount();
   });
@@ -274,7 +338,7 @@ describe("MainChat top-anchored reading viewport", () => {
     state.height = 2400;
     await wrapper.setProps({ messages: [msg("u-1", "user", "first question"), msg("a-1", "assistant", "long answer", true)] });
     await settleUi(wrapper);
-    expect(state.top).toBe(0);
+    expect(state.top).toBe(60 - 8);
     expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
 
     wrapper.unmount();
@@ -288,18 +352,20 @@ describe("MainChat top-anchored reading viewport", () => {
     await settleUi(wrapper);
 
     rowOffsets["u-2"] = 1000;
-    state.height = 1700;
-    await wrapper.setProps({ messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question")] });
-    await settleUi(wrapper);
-    expect(state.top).toBe(1000 - 8);
-
     rowOffsets["a-2"] = 1040;
+    state.height = 1700;
+    await wrapper.setProps({
+      messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question"), msg("a-2", "assistant", "", true)],
+    });
+    await settleUi(wrapper);
+    expect(state.top).toBe(1040 - 8);
+
     state.height = 2600;
     await wrapper.setProps({
       messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question"), msg("a-2", "assistant", "answer", true)],
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(1000 - 8);
+    expect(state.top).toBe(1040 - 8);
 
     // The user scrolls down toward the bottom of the transcript.
     host.dispatchEvent(new WheelEvent("wheel", { deltaY: 400 }));
@@ -331,17 +397,19 @@ describe("MainChat top-anchored reading viewport", () => {
     await settleUi(wrapper);
 
     rowOffsets["u-2"] = 1000;
+    rowOffsets["a-2"] = 1040;
     state.height = 1700;
-    await wrapper.setProps({ messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question")] });
+    await wrapper.setProps({
+      messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question"), msg("a-2", "assistant", "", true)],
+    });
     await settleUi(wrapper);
 
-    rowOffsets["a-2"] = 1040;
     state.height = 2600;
     await wrapper.setProps({
       messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question"), msg("a-2", "assistant", "answer", true)],
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(1000 - 8);
+    expect(state.top).toBe(1040 - 8);
 
     // The user scrolls up to re-read an earlier passage.
     host.dispatchEvent(new WheelEvent("wheel", { deltaY: -400 }));
@@ -373,17 +441,19 @@ describe("MainChat top-anchored reading viewport", () => {
     await settleUi(wrapper);
 
     rowOffsets["u-2"] = 1000;
+    rowOffsets["a-2"] = 1040;
     state.height = 1700;
-    await wrapper.setProps({ messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question")] });
+    await wrapper.setProps({
+      messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question"), msg("a-2", "assistant", "", true)],
+    });
     await settleUi(wrapper);
 
-    rowOffsets["a-2"] = 1040;
     state.height = 2600;
     await wrapper.setProps({
       messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question"), msg("a-2", "assistant", "answer", true)],
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(1000 - 8);
+    expect(state.top).toBe(1040 - 8);
     expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
 
     await wrapper.get(".scrollToBottom").trigger("click");
@@ -414,22 +484,25 @@ describe("MainChat top-anchored reading viewport", () => {
     await settleUi(wrapper);
 
     rowOffsets["u-2"] = 1000;
-    state.height = 1700;
-    await wrapper.setProps({ messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "first question")] });
-    await settleUi(wrapper);
-    expect(state.top).toBe(1000 - 8);
-
     rowOffsets["a-2"] = 1040;
+    state.height = 1700;
+    await wrapper.setProps({
+      messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "first question"), msg("a-2", "assistant", "", true)],
+    });
+    await settleUi(wrapper);
+    expect(state.top).toBe(1040 - 8);
+
     state.height = 2600;
     await wrapper.setProps({
       messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "first question"), msg("a-2", "assistant", "answer", true)],
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(1000 - 8);
+    expect(state.top).toBe(1040 - 8);
 
     // A follow-up prompt arrives before the first reply finished reading:
-    // the reading viewport moves to the new turn start.
+    // the reading viewport moves to the new assistant response.
     rowOffsets["u-3"] = 2400;
+    rowOffsets["a-3"] = 2440;
     state.height = 3600;
     await wrapper.setProps({
       messages: [
@@ -437,10 +510,11 @@ describe("MainChat top-anchored reading viewport", () => {
         msg("u-2", "user", "first question"),
         msg("a-2", "assistant", "answer", true),
         msg("u-3", "user", "second question"),
+        msg("a-3", "assistant", "", true),
       ],
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(2400 - 8);
+    expect(state.top).toBe(2440 - 8);
 
     wrapper.unmount();
   });
