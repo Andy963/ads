@@ -33,6 +33,39 @@ function touchPoint(clientX: number, clientY: number): { clientX: number; client
   return { clientX, clientY };
 }
 
+function stubMatchMedia(matches: boolean): () => void {
+  const original = window.matchMedia;
+  window.matchMedia = ((query: string) => ({
+    matches,
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })) as unknown as typeof window.matchMedia;
+  return () => {
+    if (original) window.matchMedia = original;
+    else delete (window as { matchMedia?: typeof window.matchMedia }).matchMedia;
+  };
+}
+
+async function longPressRow(
+  wrapper: { vm: { $nextTick: () => Promise<void> } } & { find: (selector: string) => { trigger: (name: string, payload?: unknown) => Promise<void> } },
+  modelId: string,
+): Promise<void> {
+  vi.useFakeTimers();
+  try {
+    const row = wrapper.find(`[data-testid="model-manager-row-${modelId}"]`);
+    await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
+    vi.advanceTimersByTime(600);
+    await settle(wrapper);
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 describe("ModelManager", () => {
   it("prefills server metadata across remounts without persisting or returning an API key", async () => {
     localStorage.clear();
@@ -355,7 +388,7 @@ describe("ModelManager", () => {
     wrapper.unmount();
   });
 
-  it("reveals the row delete action on a horizontal swipe and snaps back on a right swipe", async () => {
+  it("reveals the row swipe actions on a horizontal swipe and snaps back on a right swipe", async () => {
     const model = makeModel("mobile-model", "Mobile Model", "openai");
     const api = {
       get: vi.fn().mockResolvedValue([model]),
@@ -373,43 +406,46 @@ describe("ModelManager", () => {
 
     const row = wrapper.find('[data-testid="model-manager-row-mobile-model"]');
     const shell = wrapper.find(".modelRowSwipe");
-    const swipeDelete = wrapper.find('[data-testid="model-manager-swipe-delete-mobile-model"]');
+    const swipeActions = wrapper.find(".modelSwipeActions");
 
-    expect(swipeDelete.classes()).not.toContain("actionVisible");
+    expect(swipeActions.classes()).not.toContain("actionVisible");
 
     await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
     await row.trigger("touchmove", { touches: [touchPoint(242, 220)] });
     await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(242, 220)] });
     await settle(wrapper);
     expect(shell.classes()).not.toContain("revealed");
-    expect(swipeDelete.classes()).not.toContain("actionVisible");
+    expect(swipeActions.classes()).not.toContain("actionVisible");
 
-    await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
-    await row.trigger("touchmove", { touches: [touchPoint(120, 122)] });
-    await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(120, 122)] });
+    await row.trigger("touchstart", { touches: [touchPoint(300, 120)] });
+    await row.trigger("touchmove", { touches: [touchPoint(100, 122)] });
+    await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(100, 122)] });
     await settle(wrapper);
 
     expect(shell.classes()).toContain("revealed");
-    expect(row.attributes("style")).toContain("translateX(-84px)");
-    expect(swipeDelete.classes()).toContain("actionVisible");
+    expect(row.attributes("style")).toContain("translateX(-204px)");
+    expect(swipeActions.classes()).toContain("actionVisible");
+    expect(wrapper.find('[data-testid="model-manager-swipe-edit-mobile-model"]').attributes("tabindex")).toBe("0");
+    expect(wrapper.find('[data-testid="model-manager-swipe-copy-mobile-model"]').attributes("tabindex")).toBe("0");
     expect(wrapper.find('[data-testid="model-manager-swipe-delete-mobile-model"]').attributes("tabindex")).toBe("0");
 
-    await row.trigger("touchstart", { touches: [touchPoint(120, 120)] });
-    await row.trigger("touchmove", { touches: [touchPoint(240, 122)] });
-    await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(240, 122)] });
+    await row.trigger("touchstart", { touches: [touchPoint(100, 120)] });
+    await row.trigger("touchmove", { touches: [touchPoint(300, 122)] });
+    await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(300, 122)] });
     await settle(wrapper);
 
     expect(shell.classes()).not.toContain("revealed");
     expect(row.attributes("style")).toContain("translateX(0px)");
-    expect(swipeDelete.classes()).not.toContain("actionVisible");
+    expect(swipeActions.classes()).not.toContain("actionVisible");
 
-    await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
-    await row.trigger("touchmove", { touches: [touchPoint(120, 122)] });
-    await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(120, 122)] });
+    await row.trigger("touchstart", { touches: [touchPoint(300, 120)] });
+    await row.trigger("touchmove", { touches: [touchPoint(100, 122)] });
+    await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(100, 122)] });
     await settle(wrapper);
     await wrapper.find('[data-testid="model-manager-swipe-delete-mobile-model"]').trigger("click");
 
     expect(api.delete).not.toHaveBeenCalled();
+    expect(shell.classes()).not.toContain("revealed");
     expect(wrapper.find('[data-testid="model-manager-delete-confirm-mobile-model"]').exists()).toBe(true);
     expect(wrapper.text()).not.toContain("确定删除？");
     await wrapper.find('[data-testid="model-manager-delete-confirm-mobile-model"]').trigger("click");
@@ -419,7 +455,58 @@ describe("ModelManager", () => {
     wrapper.unmount();
   });
 
-  it("keeps the swipe delete hidden until the row is dragged past half the action width", async () => {
+  it("runs edit and copy from the swipe actions", async () => {
+    const model = makeModel("swipe-actions", "Swipe Actions", "openai");
+    const api = {
+      get: vi.fn().mockResolvedValue([model]),
+      post: vi.fn().mockResolvedValue({}),
+      patch: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    const row = wrapper.find('[data-testid="model-manager-row-swipe-actions"]');
+    const reveal = async () => {
+      await row.trigger("touchstart", { touches: [touchPoint(300, 120)] });
+      await row.trigger("touchmove", { touches: [touchPoint(100, 122)] });
+      await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(100, 122)] });
+      await settle(wrapper);
+    };
+
+    // Edit opens the prefilled dialog and closes the swipe.
+    await reveal();
+    await wrapper.find('[data-testid="model-manager-swipe-edit-swipe-actions"]').trigger("click");
+    await settle(wrapper);
+    expect(wrapper.find(".modelRowSwipe").classes()).not.toContain("revealed");
+    expect(wrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(true);
+    expect((wrapper.find('[data-testid="model-manager-model-id"]').element as HTMLInputElement).value).toBe("swipe-actions");
+    await wrapper.find(".btnSecondary").trigger("click");
+    await settle(wrapper);
+
+    // Copy opens the create dialog prefilled from the row and posts a new model.
+    await reveal();
+    await wrapper.find('[data-testid="model-manager-swipe-copy-swipe-actions"]').trigger("click");
+    await settle(wrapper);
+    expect(wrapper.find(".modelRowSwipe").classes()).not.toContain("revealed");
+    expect(wrapper.find('[data-testid="model-manager-dialog"]').text()).toContain("新增模型");
+    expect((wrapper.find('[data-testid="model-manager-model-id"]').element as HTMLInputElement).value).toBe("swipe-actions-copy");
+    await wrapper.find('[data-testid="model-manager-save"]').trigger("submit");
+    await settle(wrapper);
+    expect(api.post).toHaveBeenCalledWith(
+      "/api/model-configs",
+      expect.objectContaining({ modelId: "swipe-actions-copy", isDefault: false }),
+    );
+
+    wrapper.unmount();
+  });
+
+  it("keeps the swipe actions hidden until the row is dragged past half the actions width", async () => {
     const model = makeModel("swipe-threshold", "Swipe Threshold", "openai");
     const api = {
       get: vi.fn().mockResolvedValue([model]),
@@ -437,49 +524,205 @@ describe("ModelManager", () => {
 
     const row = wrapper.find('[data-testid="model-manager-row-swipe-threshold"]');
     const shell = wrapper.find(".modelRowSwipe");
-    const swipeDelete = wrapper.find('[data-testid="model-manager-swipe-delete-swipe-threshold"]');
+    const swipeActions = wrapper.find(".modelSwipeActions");
 
-    // A shallow drag (-30px, under the 42px halfway mark) never surfaces the action.
-    await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
-    await row.trigger("touchmove", { touches: [touchPoint(210, 122)] });
+    // A shallow drag (-60px, under the 102px halfway mark) never surfaces the actions.
+    await row.trigger("touchstart", { touches: [touchPoint(300, 120)] });
+    await row.trigger("touchmove", { touches: [touchPoint(240, 122)] });
     await settle(wrapper);
-    expect(row.attributes("style")).toContain("translateX(-30px)");
-    expect(swipeDelete.classes()).not.toContain("actionVisible");
-    await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(210, 122)] });
+    expect(row.attributes("style")).toContain("translateX(-60px)");
+    expect(swipeActions.classes()).not.toContain("actionVisible");
+    await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(240, 122)] });
     await settle(wrapper);
     expect(shell.classes()).not.toContain("revealed");
     expect(row.attributes("style")).toContain("translateX(0px)");
-    expect(swipeDelete.classes()).not.toContain("actionVisible");
+    expect(swipeActions.classes()).not.toContain("actionVisible");
 
-    // Past halfway (-60px) the action fades in while dragging and stays once revealed.
-    await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
+    // Past halfway (-120px) the actions fade in while dragging and stay once revealed.
+    await row.trigger("touchstart", { touches: [touchPoint(300, 120)] });
     await row.trigger("touchmove", { touches: [touchPoint(180, 122)] });
     await settle(wrapper);
-    expect(row.attributes("style")).toContain("translateX(-60px)");
-    expect(swipeDelete.classes()).toContain("actionVisible");
+    expect(row.attributes("style")).toContain("translateX(-120px)");
+    expect(swipeActions.classes()).toContain("actionVisible");
     await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(180, 122)] });
     await settle(wrapper);
     expect(shell.classes()).toContain("revealed");
-    expect(swipeDelete.classes()).toContain("actionVisible");
+    expect(row.attributes("style")).toContain("translateX(-204px)");
+    expect(swipeActions.classes()).toContain("actionVisible");
 
     wrapper.unmount();
   });
 
-  it("keeps row cards opaque and gates the swipe delete behind the visibility class", async () => {
+  it("opens a long-press action sheet whose items run the row actions", async () => {
+    const model = makeModel("sheet-model", "Sheet Model", "openai");
+    const api = {
+      get: vi.fn().mockResolvedValue([model]),
+      post: vi.fn(),
+      patch: vi.fn().mockResolvedValue({ ...model, isDefault: true }),
+      put: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    const sheet = () => document.querySelector('[data-testid="model-action-sheet"]');
+    const sheetItem = (testid: string) => document.querySelector(`[data-testid="${testid}"]`) as HTMLElement | null;
+    const row = wrapper.find('[data-testid="model-manager-row-sheet-model"]');
+
+    // A quick tap-short touch never opens the sheet; a 500ms hold does.
+    vi.useFakeTimers();
+    try {
+      await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
+      vi.advanceTimersByTime(300);
+      await settle(wrapper);
+      expect(sheet()).toBeNull();
+      await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(240, 120)] });
+      await row.trigger("touchstart", { touches: [touchPoint(240, 120)] });
+      vi.advanceTimersByTime(600);
+      await settle(wrapper);
+      expect(sheet()).not.toBeNull();
+
+      // The synthetic click after the long-press must be swallowed.
+      await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(240, 120)] });
+      await row.trigger("click");
+      expect(wrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(false);
+      expect(row.classes()).not.toContain("selected");
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // 编辑 opens the prefilled dialog and closes the sheet.
+    sheetItem("model-action-sheet-edit")?.click();
+    await settle(wrapper);
+    expect(sheet()).toBeNull();
+    expect((wrapper.find('[data-testid="model-manager-model-id"]').element as HTMLInputElement).value).toBe("sheet-model");
+    await wrapper.find(".btnSecondary").trigger("click");
+    await settle(wrapper);
+
+    // 设为默认 patches the row and closes the sheet.
+    await longPressRow(wrapper, "sheet-model");
+    sheetItem("model-action-sheet-default")?.click();
+    await settle(wrapper);
+    await settle(wrapper);
+    expect(sheet()).toBeNull();
+    expect(api.patch).toHaveBeenCalledWith("/api/model-configs/sheet-model", { isDefault: true });
+
+    // 删除 keeps the inline confirmation flow.
+    await longPressRow(wrapper, "sheet-model");
+    sheetItem("model-action-sheet-delete")?.click();
+    await settle(wrapper);
+    expect(sheet()).toBeNull();
+    expect(api.delete).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-testid="model-manager-delete-confirm-sheet-model"]').exists()).toBe(true);
+
+    // 取消 simply dismisses the sheet.
+    await longPressRow(wrapper, "sheet-model");
+    sheetItem("model-action-sheet-cancel")?.click();
+    await settle(wrapper);
+    expect(sheet()).toBeNull();
+
+    wrapper.unmount();
+    expect(document.querySelector('[data-testid="model-action-sheet"]')).toBeNull();
+  });
+
+  it("disables default-model actions in the swipe group and action sheet", async () => {
+    const defaultModel = { ...makeModel("gpt-5.2", "GPT 5.2", "openai", "codex"), isDefault: true };
+    const api = {
+      get: vi.fn().mockResolvedValue([defaultModel]),
+      post: vi.fn(),
+      patch: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api: api as any },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    const row = wrapper.find('[data-testid="model-manager-row-gpt-5.2"]');
+    await row.trigger("touchstart", { touches: [touchPoint(300, 120)] });
+    await row.trigger("touchmove", { touches: [touchPoint(100, 122)] });
+    await row.trigger("touchend", { touches: [], changedTouches: [touchPoint(100, 122)] });
+    await settle(wrapper);
+
+    expect(wrapper.find(".modelRowSwipe").classes()).toContain("revealed");
+    expect(wrapper.find('[data-testid="model-manager-swipe-delete-gpt-5.2"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.find('[data-testid="model-manager-swipe-edit-gpt-5.2"]').attributes("disabled")).toBeUndefined();
+    expect(wrapper.find('[data-testid="model-manager-swipe-copy-gpt-5.2"]').attributes("disabled")).toBeUndefined();
+
+    await longPressRow(wrapper, "gpt-5.2");
+    const sheetDefault = document.querySelector('[data-testid="model-action-sheet-default"]') as HTMLButtonElement;
+    const sheetDelete = document.querySelector('[data-testid="model-action-sheet-delete"]') as HTMLButtonElement;
+    const sheetEdit = document.querySelector('[data-testid="model-action-sheet-edit"]') as HTMLButtonElement;
+    expect(sheetDefault.disabled).toBe(true);
+    expect(sheetDelete.disabled).toBe(true);
+    expect(sheetEdit.disabled).toBe(false);
+    (document.querySelector('[data-testid="model-action-sheet-cancel"]') as HTMLElement).click();
+    await settle(wrapper);
+
+    wrapper.unmount();
+  });
+
+  it("opens the edit dialog on a mobile row tap and keeps row selection on desktop", async () => {
+    const model = makeModel("tap-model", "Tap Model", "openai");
+    const api = {
+      get: vi.fn().mockResolvedValue([model]),
+      post: vi.fn(),
+      patch: vi.fn(),
+      put: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    const restoreMobile = stubMatchMedia(true);
+    const mobileWrapper = mount(ModelManager, {
+      props: { api: api as any },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(mobileWrapper);
+    await mobileWrapper.find('[data-testid="model-manager-row-tap-model"]').trigger("click");
+    expect(mobileWrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(true);
+    expect((mobileWrapper.find('[data-testid="model-manager-model-id"]').element as HTMLInputElement).value).toBe("tap-model");
+    mobileWrapper.unmount();
+    restoreMobile();
+
+    const restoreDesktop = stubMatchMedia(false);
+    const desktopWrapper = mount(ModelManager, {
+      props: { api: api as any },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(desktopWrapper);
+    const desktopRow = desktopWrapper.find('[data-testid="model-manager-row-tap-model"]');
+    await desktopRow.trigger("click");
+    expect(desktopWrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(false);
+    expect(desktopRow.classes()).toContain("selected");
+    desktopWrapper.unmount();
+    restoreDesktop();
+  });
+
+  it("keeps row cards opaque and gates the swipe actions behind the visibility class", async () => {
     const css = await readSfc("../components/ModelManager.vue", import.meta.url);
 
-    const swipeDelete = css.match(/\.modelSwipeDelete\s*\{[^}]*\}/)?.[0];
-    expect(swipeDelete).toMatch(/opacity:\s*0\s*;/);
-    expect(swipeDelete).toMatch(/visibility:\s*hidden\s*;/);
-    expect(swipeDelete).toMatch(/pointer-events:\s*none\s*;/);
+    const swipeActions = css.match(/\.modelSwipeActions\s*\{[^}]*\}/)?.[0];
+    expect(swipeActions).toMatch(/width:\s*204px\s*;/);
+    expect(swipeActions).toMatch(/opacity:\s*0\s*;/);
+    expect(swipeActions).toMatch(/visibility:\s*hidden\s*;/);
+    expect(swipeActions).toMatch(/pointer-events:\s*none\s*;/);
 
-    const swipeDeleteVisible = css.match(/\.modelSwipeDelete\.actionVisible\s*\{[^}]*\}/)?.[0];
-    expect(swipeDeleteVisible).toMatch(/opacity:\s*1\s*;/);
-    expect(swipeDeleteVisible).toMatch(/visibility:\s*visible\s*;/);
-    expect(swipeDeleteVisible).toMatch(/pointer-events:\s*auto\s*;/);
+    const swipeActionsVisible = css.match(/\.modelSwipeActions\.actionVisible\s*\{[^}]*\}/)?.[0];
+    expect(swipeActionsVisible).toMatch(/opacity:\s*1\s*;/);
+    expect(swipeActionsVisible).toMatch(/visibility:\s*visible\s*;/);
+    expect(swipeActionsVisible).toMatch(/pointer-events:\s*auto\s*;/);
+
+    expect(css).toMatch(/\.modelSwipeAction\.delete\s*\{[^}]*background:\s*var\(--danger-2\)\s*;/);
 
     // Row backgrounds layer the translucent tint over an opaque surface so the
-    // hidden delete button never shows through hover/selected states.
+    // hidden swipe actions never show through hover/selected states.
     const hover = css.match(/\.modelRow:hover\s*\{[^}]*\}/)?.[0];
     expect(hover).toBeTruthy();
     expect(hover).not.toMatch(/background:\s*rgba\(/);
@@ -500,27 +743,25 @@ describe("ModelManager", () => {
     expect(css).not.toMatch(/\.modelRow\.busy\s*\{[^}]*opacity/);
   });
 
-  it("hides the inline delete icon and enlarges row actions on mobile viewports", async () => {
+  it("keeps mobile rows free of persistent inline action buttons", async () => {
     const css = await readSfc("../components/ModelManager.vue", import.meta.url);
 
-    // Text labels only render inside the mobile breakpoint; desktop keeps 30px icons.
-    expect(css).toMatch(/\.rowActionLabel\s*\{\s*display:\s*none\s*;/);
+    // The v2 persistent big-button cluster (and its text labels) is gone.
+    expect(css).not.toContain("rowActionLabel");
 
     const mobileStart = css.indexOf("@media (max-width: 900px)");
     expect(mobileStart).toBeGreaterThan(-1);
     const mobileCss = css.slice(mobileStart);
 
-    expect(mobileCss).toMatch(/\.modelRowActions\s+\.rowAction\.icon\.danger\s*\{[^}]*display:\s*none\s*;/);
-    expect(mobileCss).toMatch(/\.modelRowActions\s+\.rowAction\s*\{[^}]*min-height:\s*40px\s*;/);
-    expect(mobileCss).toMatch(/\.modelRowActions\s+\.rowAction\s*\{[^}]*flex:\s*1 1 0\s*;/);
-    expect(mobileCss).toMatch(/\.modelRowActions\s*\{[^}]*width:\s*100%\s*;/);
-    expect(mobileCss).toMatch(/\.rowActionLabel\s*\{\s*display:\s*inline\s*;/);
-    // The switch touch target grows to match the enlarged action buttons.
+    expect(mobileCss).toMatch(/\.modelRowActions\s*\{\s*display:\s*none\s*;/);
+    expect(mobileCss).not.toMatch(/\.modelRowActions\s+\.rowAction\s*\{/);
+    // Only the delete confirmation bar may appear inline on mobile.
+    expect(mobileCss).toMatch(/\.modelRowActions\.pending\s*\{[^}]*display:\s*flex\s*;/);
+    expect(mobileCss).toMatch(/\.modelRowActions\.pending\s+\.rowAction\s*\{[^}]*min-height:\s*40px\s*;/);
     expect(mobileCss).toMatch(/\.rowSwitch\s*\{[^}]*min-height:\s*40px\s*;/);
 
-    // Desktop keeps the compact icon buttons and keeps the delete icon visible.
+    // Desktop keeps the compact icon buttons and the flush switch alignment.
     expect(css).toMatch(/\.rowAction\.icon\s*\{[^}]*width:\s*30px\s*;/);
-    // The switch stays flush with the action buttons' right edge.
     expect(css).toMatch(/\.rowSwitch\s*\{[^}]*margin-right:\s*-3px\s*;/);
   });
 
