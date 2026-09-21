@@ -433,6 +433,36 @@ describe("MainChat top-anchored reading viewport", () => {
     wrapper.unmount();
   });
 
+  it("does not pull a new reply into view while the user is reading history", async () => {
+    const state: ScrollState = { top: 0, height: 1000 };
+    const rowOffsets: Record<string, number> = {};
+    const { wrapper, host } = mountChat([msg("a-1", "assistant", "earlier")]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+    expect(state.top).toBe(400);
+
+    host.dispatchEvent(new WheelEvent("wheel", { deltaY: -400 }));
+    state.top = 120;
+    host.dispatchEvent(new Event("scroll"));
+
+    rowOffsets["u-2"] = 1000;
+    rowOffsets["a-2"] = 1040;
+    state.height = 2600;
+    await wrapper.setProps({
+      messages: [
+        msg("a-1", "assistant", "earlier"),
+        msg("u-2", "user", "question"),
+        msg("a-2", "assistant", "streaming answer", true),
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(state.top).toBe(120);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+
+    wrapper.unmount();
+  });
+
   it("restores bottom-following when the floating scroll-to-bottom button is clicked", async () => {
     const state: ScrollState = { top: 0, height: 1000 };
     const rowOffsets: Record<string, number> = {};

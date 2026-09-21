@@ -25,6 +25,7 @@ export async function verifyLocalFirstTranscript({ page, context, fixture, frame
   page.on("response", onResponse);
 
   await chat.evaluate((root) => {
+    root.dispatchEvent(new Event("wheel"));
     root.scrollTop = Math.max(300, (root.scrollHeight - root.clientHeight) / 2);
     root.dispatchEvent(new Event("scroll"));
   });

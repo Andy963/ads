@@ -19,6 +19,15 @@ export async function verifyMonotonicHistory({ page, send, waitForReply, chooseL
   const persistedTotal = initialTotal + 70;
   assert.equal(Number(await list.getAttribute("data-total-messages")), persistedTotal);
 
+  // Establish the newest-page invariant after streaming has finished and before
+  // pagehide persists the viewport.
+  await chat.evaluate((root) => {
+    root.dispatchEvent(new Event("wheel"));
+    root.scrollTop = root.scrollHeight;
+    root.dispatchEvent(new Event("scroll"));
+  });
+  await settle();
+
   await page.reload();
   await page.waitForSelector("textarea:not(:disabled):visible");
   await chooseLane("advisor");
@@ -52,6 +61,7 @@ export async function verifyMonotonicHistory({ page, send, waitForReply, chooseL
         nativeScroll.set.call(root, top);
         root.dispatchEvent(new Event("scroll"));
       },
+      resetWrites: () => writes.splice(0),
       rememberRows,
       snapshot: () => ({
         retained: [...rows].every(([id, row]) => root.contains(row) && row.dataset.id === id),
@@ -88,6 +98,7 @@ export async function verifyMonotonicHistory({ page, send, waitForReply, chooseL
     await waitForReply("Advisor reply: browser-advisor-scroll-away");
     await settle();
     assert.equal(await loadedCount(), 32, "Tail appends must retain the initial window while away from the bottom");
+    await chat.evaluate((root) => root.__historyProbe.resetWrites());
     await verifyRows("tail append before expansion");
     await chat.evaluate((root) => root.__historyProbe.rememberRows());
 

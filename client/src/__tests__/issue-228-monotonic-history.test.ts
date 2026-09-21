@@ -110,6 +110,10 @@ describe("Issue #228 monotonic history window", () => {
       disconnect = disconnect;
     }
     vi.stubGlobal("IntersectionObserver", Observer);
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 0;
+    });
 
     const host = document.createElement("div");
     host.className = "chat";

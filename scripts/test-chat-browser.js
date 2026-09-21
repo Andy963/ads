@@ -120,6 +120,13 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     };
     const chooseLane = async (lane) => {
       await activate(`[data-testid="lane-tab-${lane}"]`);
+      await page.locator(`[data-testid="lane-panel-${lane}"]`).waitFor({ state: "visible" });
+      await page.waitForFunction((expectedLane) => {
+        const panel = document.querySelector(`[data-testid="lane-panel-${expectedLane}"]`);
+        if (!panel) return false;
+        const style = getComputedStyle(panel);
+        return style.opacity === "1" && (style.transform === "none" || style.transform.startsWith("matrix(1, 0, 0, 1,"));
+      }, lane);
       assert.equal(await page.locator(`[data-testid="lane-tab-${lane}"]`).getAttribute("aria-selected"), "true");
       assert.equal(await page.locator(".lanePanel:visible").count(), 1);
     };

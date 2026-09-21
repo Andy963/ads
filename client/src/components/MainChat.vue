@@ -177,7 +177,11 @@ function clearTurnAnchor(): void {
     if (turnAnchorOverflowAnchorPreviousValue) {
       turnAnchorOverflowAnchorHost.style.setProperty("overflow-anchor", turnAnchorOverflowAnchorPreviousValue);
     } else {
-      turnAnchorOverflowAnchorHost.style.removeProperty("overflow-anchor");
+      // WebKit keeps native scroll anchoring disabled after an inline `none`
+      // declaration is removed, even when the computed stylesheet value is
+      // `auto`. Re-declare the default explicitly when releasing the turn
+      // anchor so history prepends can anchor the reading viewport again.
+      turnAnchorOverflowAnchorHost.style.setProperty("overflow-anchor", "auto");
     }
     turnAnchorOverflowAnchorHost = null;
     turnAnchorOverflowAnchorPreviousValue = "";
@@ -545,7 +549,7 @@ watch([lastUserMessageId, streamingTurnAnchorId, () => props.messages.length], (
     turnAnchorRequested = false;
     return;
   }
-  if (id && id !== previousId) turnAnchorRequested = true;
+  if (id && id !== previousId && (autoScroll.value || turnAnchorEl)) turnAnchorRequested = true;
   if (turnAnchorRequested && anchorId && anchorId !== previousAnchorId) beginTurnAnchor(anchorId);
 });
 

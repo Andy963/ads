@@ -8,8 +8,18 @@ export async function verifyPostSendInteractions({ page, fixture, mobile }) {
     else await page.locator(selector).click();
     await settle();
   };
+  const waitForLanePanel = async (lane) => {
+    await page.locator(`[data-testid="lane-panel-${lane}"]`).waitFor({ state: "visible" });
+    await page.waitForFunction((expectedLane) => {
+      const panel = document.querySelector(`[data-testid="lane-panel-${expectedLane}"]`);
+      if (!panel) return false;
+      const style = getComputedStyle(panel);
+      return style.opacity === "1" && (style.transform === "none" || style.transform.startsWith("matrix(1, 0, 0, 1,"));
+    }, lane);
+  };
   const chooseLane = async (lane) => {
     await activate(`[data-testid="lane-tab-${lane}"]`);
+    await waitForLanePanel(lane);
     assert.equal(await page.locator(`[data-testid="lane-tab-${lane}"]`).getAttribute("aria-selected"), "true");
     assert.equal(await page.locator(".lanePanel:visible").count(), 1);
   };

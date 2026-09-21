@@ -275,6 +275,12 @@ async function loadEarlierMessages(): Promise<void> {
   if (loadingEarlierMessages.value || !hasEarlierMessages.value) return;
   loadingEarlierMessages.value = true;
   emit("beforeHistoryPrepend");
+  // MainChat releases its streaming turn anchor here. Give WebKit one frame
+  // to re-enable native scroll anchoring before inserting older rows.
+  await new Promise<void>((resolve) => {
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => resolve());
+    else resolve();
+  });
   loadedStart.value = Math.max(0, loadedStart.value - EARLIER_MESSAGE_PAGE_SIZE);
   try {
     await nextTick();
