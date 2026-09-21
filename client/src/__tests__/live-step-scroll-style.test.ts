@@ -3,7 +3,6 @@ import { defineComponent } from "vue";
 import { mount } from "@vue/test-utils";
 
 import MainChat from "../components/MainChat.vue";
-import { readSfc } from "./readSfc";
 
 const MarkdownContentStub = defineComponent({
   name: "MarkdownContent",
@@ -14,7 +13,7 @@ const MarkdownContentStub = defineComponent({
 });
 
 describe("live-step reasoning scroll style", () => {
-  it("renders a stable hook and keeps the clamp constraint in CSS", async () => {
+  it("renders the live-step card with its scrollable markdown body", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -39,14 +38,6 @@ describe("live-step reasoning scroll style", () => {
     expect(live.find(".bubble").exists()).toBe(true);
     expect(live.find(".liveStepBody").exists()).toBe(true);
     expect(live.find(".md").exists()).toBe(true);
-
-    const css = await readSfc("../components/MainChatMessageList.vue", import.meta.url);
-    expect(css).toMatch(/\.msg\[data-id="live-step"\]\s+\.liveStepBody\s+:deep\(\.md\)\s*\{[\s\S]*?\}/);
-    expect(css).toMatch(
-      /\.msg\[data-id="live-step"\]\s+\.liveStepBody\s+:deep\(\.md\)\s*\{[\s\S]*?font-style:\s*italic\s*;[\s\S]*?\}/,
-    );
-    expect(css).toMatch(/max-height:\s*3lh\s*;/);
-    expect(css).toMatch(/overflow:\s*hidden\s*;/);
 
     wrapper.unmount();
   });

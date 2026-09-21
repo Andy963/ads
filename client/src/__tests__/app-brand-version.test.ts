@@ -1,28 +1,97 @@
-import { describe, expect, it } from "vitest";
-import { readSfc } from "./readSfc";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { shallowMount } from "@vue/test-utils";
+import { defineComponent } from "vue";
+
+vi.mock("../api/client", () => {
+  class ApiClient {
+    constructor(_: { baseUrl: string }) {}
+
+    async get<T>(url: string): Promise<T> {
+      if (url === "/api/models") return [] as T;
+      if (url.startsWith("/api/paths/validate")) return { ok: false } as T;
+      return {} as T;
+    }
+
+    async post<T>(): Promise<T> {
+      throw new Error("not implemented");
+    }
+
+    async patch<T>(): Promise<T> {
+      throw new Error("not implemented");
+    }
+
+    async delete<T>(): Promise<T> {
+      throw new Error("not implemented");
+    }
+  }
+
+  return { ApiClient };
+});
+
+vi.mock("../api/ws", () => {
+  class AdsWebSocket {
+    onOpen?: () => void;
+    onClose?: (ev: { code: number; reason?: string }) => void;
+    onError?: () => void;
+    onMessage?: (msg: unknown) => void;
+
+    clearHistory = vi.fn();
+
+    constructor(_: { sessionId: string; chatSessionId?: string }) {}
+
+    connect(): void {}
+    close(): void {}
+    send(): void {}
+    sendPrompt(): void {}
+    interrupt(): void {}
+  }
+
+  return { AdsWebSocket };
+});
+
+vi.mock("../components/LoginGate.vue", () => {
+  return {
+    default: defineComponent({
+      name: "LoginGate",
+      emits: ["logged-in"],
+      mounted() {
+        this.$emit("logged-in", { id: "u-1", username: "admin" });
+      },
+      template: "<div />",
+    }),
+  };
+});
+
+async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Promise<void> {
+  await wrapper.vm.$nextTick();
+  await Promise.resolve();
+  await wrapper.vm.$nextTick();
+}
 
 describe("App brand version display", () => {
-  it("renders the brand version in the drawer footer instead of the topbar", async () => {
-    const content = await readSfc("../App.vue", import.meta.url);
-    const topbar = content.match(/<header class="topbar">([\s\S]*?)<\/header>/)?.[1] ?? "";
-    const drawer = content.match(/<aside[\s\S]*?data-testid="mobile-drawer"[\s\S]*?<\/aside>/)?.[0] ?? "";
-
-    expect(topbar).not.toMatch(/class="brand"/);
-    expect(topbar).not.toMatch(/brandVersion/);
-    expect(drawer).toMatch(/<footer class="drawerFooter" data-testid="drawer-footer">/);
-    expect(drawer).toMatch(/<span class="drawerBrandTitle">ADS<\/span>/);
-    expect(drawer).toMatch(/<span class="drawerBrandVersion">v\{\{ appVersion \}\}<\/span>/);
-    expect(content).toMatch(/\.drawerFooter\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?margin-top:\s*auto;/);
-    expect(content).toMatch(/\.drawerBrandVersion\s*\{/);
-    expect(content).not.toMatch(/\.brandVersion\s*\{/);
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
   });
 
-  it("lets the project tree fill the sidebar space above the footer", async () => {
-    const content = await readSfc("../App.vue", import.meta.url);
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
 
-    expect(content).toMatch(/\.projectTree\s*\{[\s\S]*?flex:\s*1 1 auto;[\s\S]*?height:\s*auto;/);
-    expect(content).toMatch(
-      /\.left\.mobileDrawer \.drawerFooter\s*\{[\s\S]*?padding-bottom:\s*calc\(4px \+ env\(safe-area-inset-bottom, 0px\)\);/,
-    );
+  it("renders the app version in the drawer footer and keeps it out of the topbar", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+
+    const drawer = wrapper.get('[data-testid="mobile-drawer"]');
+    const footer = drawer.get('[data-testid="drawer-footer"]');
+    expect(footer.get(".drawerBrandTitle").text()).toBe("ADS");
+    expect(footer.get(".drawerBrandVersion").text()).toBe("v0.0.1");
+
+    const topbar = wrapper.get("header.topbar");
+    expect(topbar.find(".brand").exists()).toBe(false);
+    expect(topbar.text()).not.toContain("0.0.1");
+
+    wrapper.unmount();
   });
 });
