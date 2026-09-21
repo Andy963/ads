@@ -4,8 +4,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import MainChat from "../components/MainChat.vue";
 import type { ChatMessage } from "../components/mainChat/types";
 
-function msg(id: string, role: "user" | "assistant", content: string, streaming = false): ChatMessage {
+function msg(id: string, role: "user" | "assistant" | "system", content: string, streaming = false): ChatMessage {
   return { id, role, kind: "text", content, ts: 1, streaming };
+}
+
+function executeMsg(id: string, command: string, streaming = true): ChatMessage {
+  return { id, role: "system", kind: "execute", content: "", command, ts: 1, streaming };
 }
 
 function rect(top: number, height = 40): DOMRect {
@@ -48,6 +52,15 @@ function installLayoutMocks(host: HTMLElement, state: ScrollState, rowOffsets: R
     if (id && id in rowOffsets) return rect(rowOffsets[id] - state.top);
     return originalRect.call(this);
   });
+}
+
+function touchEvent(type: string, x: number, y: number): Event {
+  const event = new Event(type, { bubbles: true });
+  Object.defineProperties(event, {
+    touches: { configurable: true, value: type === "touchend" ? [] : [{ clientX: x, clientY: y }] },
+    changedTouches: { configurable: true, value: [{ clientX: x, clientY: y }] },
+  });
+  return event;
 }
 
 function mountChat(messages: ChatMessage[]) {
@@ -179,6 +192,47 @@ describe("MainChat top-anchored reading viewport", () => {
     wrapper.unmount();
   });
 
+  it("locks native anchoring while execute blocks precede the assistant response", async () => {
+    const state: ScrollState = { top: 0, height: 1000 };
+    const rowOffsets: Record<string, number> = {};
+    const { wrapper, host } = mountChat([msg("a-1", "assistant", "earlier")]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+    expect(state.top).toBe(400);
+
+    rowOffsets["u-2"] = 1000;
+    rowOffsets["exec-1"] = 1040;
+    state.height = 1800;
+    await wrapper.setProps({
+      messages: [
+        msg("a-1", "assistant", "earlier"),
+        msg("u-2", "user", "question"),
+        executeMsg("exec-1", "rg --files", true),
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(host.style.getPropertyValue("overflow-anchor")).toBe("none");
+    expect(state.top).toBe(400);
+
+    rowOffsets["a-2"] = 1080;
+    state.height = 2600;
+    await wrapper.setProps({
+      messages: [
+        msg("a-1", "assistant", "earlier"),
+        msg("u-2", "user", "question"),
+        executeMsg("exec-1", "rg --files", false),
+        msg("a-2", "assistant", "burst response", true),
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(state.top).toBe(1080 - 8);
+    expect(host.style.getPropertyValue("overflow-anchor")).toBe("none");
+
+    wrapper.unmount();
+  });
+
   it("anchors an existing streaming assistant after the chat is remounted", async () => {
     const state: ScrollState = { top: 0, height: 2600 };
     const rowOffsets: Record<string, number> = { "a-2": 1040 };
@@ -248,7 +302,7 @@ describe("MainChat top-anchored reading viewport", () => {
     wrapper.unmount();
   });
 
-  it("ignores subpixel scroll drift while maintaining the turn anchor", async () => {
+  it("survives layout drift while maintaining the turn anchor", async () => {
     const state: ScrollState = { top: 0, height: 1000 };
     const rowOffsets: Record<string, number> = {};
     const { wrapper, host } = mountChat([msg("a-1", "assistant", "earlier")]);
@@ -268,7 +322,8 @@ describe("MainChat top-anchored reading viewport", () => {
     await settleUi(wrapper);
     expect(state.top).toBe(1040 - 8);
 
-    state.top += 1.5;
+    state.top += 18;
+    rowOffsets["a-2"] += 24;
     state.height = 2600;
     await wrapper.setProps({
       messages: [
@@ -278,7 +333,7 @@ describe("MainChat top-anchored reading viewport", () => {
       ],
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(1040 - 8);
+    expect(state.top).toBe(1040 + 24 - 8);
 
     wrapper.unmount();
   });
@@ -303,7 +358,8 @@ describe("MainChat top-anchored reading viewport", () => {
     await settleUi(wrapper);
     expect(state.top).toBe(1040 - 8);
 
-    host.dispatchEvent(new Event("touchstart", { bubbles: true }));
+    host.dispatchEvent(touchEvent("touchstart", 100, 200));
+    host.dispatchEvent(touchEvent("touchmove", 101, 201));
     state.height = 2600;
     await wrapper.setProps({
       messages: [
@@ -314,6 +370,19 @@ describe("MainChat top-anchored reading viewport", () => {
     });
     await settleUi(wrapper);
     expect(state.top).toBe(1040 - 8);
+
+    host.dispatchEvent(touchEvent("touchmove", 100, 210));
+    state.top = 120;
+    state.height = 3000;
+    await wrapper.setProps({
+      messages: [
+        msg("a-1", "assistant", "earlier"),
+        msg("u-2", "user", "question"),
+        msg("a-2", "assistant", "answer\nmore", true),
+      ],
+    });
+    await settleUi(wrapper);
+    expect(state.top).toBe(120);
 
     wrapper.unmount();
   });
