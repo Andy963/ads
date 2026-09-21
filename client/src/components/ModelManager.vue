@@ -154,6 +154,10 @@ function modelSwipeOffset(modelId: string): number {
   return modelSwipeOpenId.value === modelId ? -MODEL_ROW_SWIPE_WIDTH_PX : 0;
 }
 
+function isModelSwipeActionVisible(modelId: string): boolean {
+  return modelSwipeOffset(modelId) <= -MODEL_ROW_SWIPE_WIDTH_PX / 2;
+}
+
 function closeModelSwipe(): void {
   modelSwipeOpenId.value = null;
   activeModelSwipeId.value = null;
@@ -944,6 +948,7 @@ defineExpose({
             <button
               type="button"
               class="modelSwipeDelete"
+              :class="{ actionVisible: isModelSwipeActionVisible(model.id) }"
               :disabled="busy || model.isDefault"
               :tabindex="modelSwipeOpenId === model.id ? 0 : -1"
               :data-testid="`model-manager-swipe-delete-${model.id}`"
@@ -1021,6 +1026,7 @@ defineExpose({
                     @click="setDefaultModel(model)"
                   >
                     <el-icon :size="15" aria-hidden="true"><StarFilled /></el-icon>
+                    <span class="rowActionLabel">默认</span>
                   </button>
 
                   <button
@@ -1032,6 +1038,7 @@ defineExpose({
                     @click="editModel(model)"
                   >
                     <el-icon :size="15" aria-hidden="true"><EditPen /></el-icon>
+                    <span class="rowActionLabel">编辑</span>
                   </button>
 
                   <button
@@ -1043,6 +1050,7 @@ defineExpose({
                     @click="duplicateModel(model)"
                   >
                     <el-icon :size="15" aria-hidden="true"><CopyDocument /></el-icon>
+                    <span class="rowActionLabel">复制</span>
                   </button>
 
                   <button
@@ -1891,10 +1899,23 @@ defineExpose({
   font-size: 12px;
   font-weight: 800;
   cursor: pointer;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.1s ease, visibility 0.1s ease;
+}
+
+.modelSwipeDelete.actionVisible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .modelSwipeDelete:disabled {
   cursor: not-allowed;
+}
+
+.modelSwipeDelete.actionVisible:disabled {
   opacity: 0.45;
 }
 
@@ -1915,25 +1936,28 @@ defineExpose({
   transition: none;
 }
 
+/* Row backgrounds must stay opaque in every state so the swipe delete button
+   underneath never bleeds through before the row is actually swiped. */
 .modelRow:hover {
-  background: rgba(37, 99, 235, 0.03);
+  background: linear-gradient(rgba(37, 99, 235, 0.03), rgba(37, 99, 235, 0.03)), var(--surface);
 }
 
 .modelRow.selected {
-  background: rgba(37, 99, 235, 0.08);
+  background: linear-gradient(rgba(37, 99, 235, 0.08), rgba(37, 99, 235, 0.08)), var(--surface);
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .modelRow.selected:hover {
-  background: rgba(37, 99, 235, 0.12);
+  background: linear-gradient(rgba(37, 99, 235, 0.12), rgba(37, 99, 235, 0.12)), var(--surface);
 }
 
 .modelRow.off .modelRowText {
   color: var(--muted);
 }
 
-.modelRow.busy {
-  opacity: 0.6;
+.modelRow.busy .modelRowTop,
+.modelRow.busy .modelRowBottom {
+  opacity: 0.55;
 }
 
 .modelRowTop,
@@ -2001,7 +2025,9 @@ defineExpose({
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
+  min-height: 30px;
   padding: 3px;
+  margin-right: -3px;
   border: none;
   border-radius: 999px;
   background: transparent;
@@ -2040,6 +2066,10 @@ defineExpose({
 
 .rowSwitch.on .rowSwitchThumb {
   transform: translateX(17px);
+}
+
+.rowActionLabel {
+  display: none;
 }
 
 .rowAction {
@@ -2552,6 +2582,60 @@ defineExpose({
 
   .modelToggleGrid {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------- model rows: mobile (matches App.css mobile breakpoint) ---------- */
+@media (max-width: 900px) {
+  .rowSwitch {
+    min-height: 40px;
+  }
+
+  .modelRowBottom {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .modelRowId {
+    align-self: flex-start;
+    max-width: 100%;
+  }
+
+  .modelRowActions {
+    width: 100%;
+    margin-left: 0;
+    gap: 8px;
+  }
+
+  .modelRowActions .rowAction {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 40px;
+    padding: 0 8px;
+  }
+
+  .modelRowActions .rowAction.icon {
+    width: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: #475569;
+  }
+
+  .modelRowActions .rowAction.icon.star.active {
+    border-color: transparent;
+    background: rgba(245, 158, 11, 0.12);
+    color: #d97706;
+  }
+
+  /* Swipe delete replaces the tiny inline delete icon on touch layouts. */
+  .modelRowActions .rowAction.icon.danger {
+    display: none;
+  }
+
+  .rowActionLabel {
+    display: inline;
   }
 }
 </style>
