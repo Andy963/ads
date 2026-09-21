@@ -84,11 +84,14 @@ const upstreamModels = ref<string[]>([]);
 const selectedUpstreamModels = ref<string[]>([]);
 const upstreamModelsLoaded = ref(false);
 
-const MODEL_ROW_SWIPE_WIDTH_PX = 84;
+const MODEL_ROW_ACTIONS_WIDTH_PX = 204;
 const MODEL_ROW_SWIPE_THRESHOLD_PX = 8;
+const MODEL_ROW_LONG_PRESS_MS = 500;
 const modelSwipeOpenId = ref<string | null>(null);
 const activeModelSwipeId = ref<string | null>(null);
 const activeModelSwipeOffset = ref(0);
+const actionSheetModelId = ref<string | null>(null);
+const isMobileLayout = ref(false);
 let modelTouchStartX = 0;
 let modelTouchStartY = 0;
 let modelTouchStartOffset = 0;
@@ -96,6 +99,9 @@ let modelTouchAxis: "horizontal" | "vertical" | null = null;
 let modelTouchMoved = false;
 let suppressNextModelRowClick = false;
 let swipeClickResetTimer: number | null = null;
+let modelLongPressTimer: number | null = null;
+let modelLongPressFired = false;
+let mobileLayoutMedia: MediaQueryList | null = null;
 
 const emptyForm = (): ModelForm => ({
   id: "",
@@ -151,11 +157,11 @@ function hasDistinctModelDisplayName(model: ModelConfig): boolean {
 
 function modelSwipeOffset(modelId: string): number {
   if (activeModelSwipeId.value === modelId) return activeModelSwipeOffset.value;
-  return modelSwipeOpenId.value === modelId ? -MODEL_ROW_SWIPE_WIDTH_PX : 0;
+  return modelSwipeOpenId.value === modelId ? -MODEL_ROW_ACTIONS_WIDTH_PX : 0;
 }
 
 function isModelSwipeActionVisible(modelId: string): boolean {
-  return modelSwipeOffset(modelId) <= -MODEL_ROW_SWIPE_WIDTH_PX / 2;
+  return modelSwipeOffset(modelId) <= -MODEL_ROW_ACTIONS_WIDTH_PX / 2;
 }
 
 function closeModelSwipe(): void {
@@ -169,46 +175,24 @@ function readTouchPoint(event: TouchEvent): { x: number; y: number } | null {
   return touch ? { x: touch.clientX, y: touch.clientY } : null;
 }
 
-function handleModelTouchStart(model: ModelConfig, event: TouchEvent): void {
-  if (model.isDefault || busy.value || event.touches.length !== 1) return;
-  if (modelSwipeOpenId.value !== null && modelSwipeOpenId.value !== model.id) {
-    modelSwipeOpenId.value = null;
+function cancelModelLongPress(): void {
+  if (modelLongPressTimer !== null) {
+    window.clearTimeout(modelLongPressTimer);
+    modelLongPressTimer = null;
   }
-  const point = readTouchPoint(event);
-  if (!point) return;
-  modelTouchStartX = point.x;
-  modelTouchStartY = point.y;
-  modelTouchStartOffset = modelSwipeOpenId.value === model.id ? -MODEL_ROW_SWIPE_WIDTH_PX : 0;
-  modelTouchAxis = null;
-  modelTouchMoved = false;
-  activeModelSwipeId.value = model.id;
-  activeModelSwipeOffset.value = modelTouchStartOffset;
 }
 
-function handleModelTouchMove(modelId: string, event: TouchEvent): void {
-  if (activeModelSwipeId.value !== modelId) return;
-  const point = readTouchPoint(event);
-  if (!point) return;
-  const deltaX = point.x - modelTouchStartX;
-  const deltaY = point.y - modelTouchStartY;
-  const absoluteX = Math.abs(deltaX);
-  const absoluteY = Math.abs(deltaY);
-  if (modelTouchAxis === null) {
-    if (Math.max(absoluteX, absoluteY) < MODEL_ROW_SWIPE_THRESHOLD_PX) return;
-    if (absoluteY > absoluteX) {
-      modelTouchAxis = "vertical";
-      activeModelSwipeId.value = null;
-      return;
-    }
-    modelTouchAxis = "horizontal";
-  }
-  if (modelTouchAxis !== "horizontal") return;
-  modelTouchMoved = true;
-  event.preventDefault();
-  activeModelSwipeOffset.value = Math.max(
-    -MODEL_ROW_SWIPE_WIDTH_PX,
-    Math.min(0, modelTouchStartOffset + deltaX),
-  );
+const actionSheetModel = computed(
+  () => modelConfigs.value.find((model) => model.id === actionSheetModelId.value) ?? null,
+);
+
+function openModelActionSheet(model: ModelConfig): void {
+  modelSwipeOpenId.value = null;
+  actionSheetModelId.value = model.id;
+}
+
+function closeModelActionSheet(): void {
+  actionSheetModelId.value = null;
 }
 
 function suppressRowClickAfterSwipe(): void {
@@ -220,13 +204,76 @@ function suppressRowClickAfterSwipe(): void {
   }, 0);
 }
 
-function finishModelTouch(modelId: string, event: TouchEvent, cancelled = false): void {
+function handleModelLongPress(model: ModelConfig): void {
+  modelLongPressTimer = null;
+  modelLongPressFired = true;
+  modelTouchAxis = null;
+  modelTouchMoved = false;
+  activeModelSwipeOffset.value = 0;
+  openModelActionSheet(model);
+}
+
+function handleModelTouchStart(model: ModelConfig, event: TouchEvent): void {
+  if (busy.value || event.touches.length !== 1) return;
+  if (modelSwipeOpenId.value !== null && modelSwipeOpenId.value !== model.id) {
+    modelSwipeOpenId.value = null;
+  }
+  const point = readTouchPoint(event);
+  if (!point) return;
+  modelTouchStartX = point.x;
+  modelTouchStartY = point.y;
+  modelTouchStartOffset = modelSwipeOpenId.value === model.id ? -MODEL_ROW_ACTIONS_WIDTH_PX : 0;
+  modelTouchAxis = null;
+  modelTouchMoved = false;
+  modelLongPressFired = false;
+  activeModelSwipeId.value = model.id;
+  activeModelSwipeOffset.value = modelTouchStartOffset;
+  cancelModelLongPress();
+  modelLongPressTimer = window.setTimeout(() => handleModelLongPress(model), MODEL_ROW_LONG_PRESS_MS);
+}
+
+function handleModelTouchMove(modelId: string, event: TouchEvent): void {
   if (activeModelSwipeId.value !== modelId) return;
+  if (modelLongPressFired) return;
+  const point = readTouchPoint(event);
+  if (!point) return;
+  const deltaX = point.x - modelTouchStartX;
+  const deltaY = point.y - modelTouchStartY;
+  const absoluteX = Math.abs(deltaX);
+  const absoluteY = Math.abs(deltaY);
+  if (modelTouchAxis === null) {
+    if (Math.max(absoluteX, absoluteY) < MODEL_ROW_SWIPE_THRESHOLD_PX) return;
+    cancelModelLongPress();
+    if (absoluteY > absoluteX) {
+      modelTouchAxis = "vertical";
+      activeModelSwipeId.value = null;
+      return;
+    }
+    modelTouchAxis = "horizontal";
+  }
+  if (modelTouchAxis !== "horizontal") return;
+  modelTouchMoved = true;
+  event.preventDefault();
+  activeModelSwipeOffset.value = Math.max(
+    -MODEL_ROW_ACTIONS_WIDTH_PX,
+    Math.min(0, modelTouchStartOffset + deltaX),
+  );
+}
+
+function finishModelTouch(modelId: string, event: TouchEvent, cancelled = false): void {
+  cancelModelLongPress();
+  if (activeModelSwipeId.value !== modelId) return;
+  const wasLongPress = modelLongPressFired;
+  modelLongPressFired = false;
   const wasHorizontalSwipe = modelTouchAxis === "horizontal" && modelTouchMoved;
   if (wasHorizontalSwipe) {
-    modelSwipeOpenId.value = !cancelled && activeModelSwipeOffset.value <= -MODEL_ROW_SWIPE_WIDTH_PX / 2
+    modelSwipeOpenId.value = !cancelled && activeModelSwipeOffset.value <= -MODEL_ROW_ACTIONS_WIDTH_PX / 2
       ? modelId
       : null;
+    suppressRowClickAfterSwipe();
+    event.preventDefault();
+  }
+  if (wasLongPress) {
     suppressRowClickAfterSwipe();
     event.preventDefault();
   }
@@ -241,7 +288,53 @@ function handleModelRowClick(model: ModelConfig): void {
     suppressNextModelRowClick = false;
     return;
   }
+  if (modelSwipeOpenId.value !== null) {
+    closeModelSwipe();
+    return;
+  }
+  if (isMobileLayout.value) {
+    editModel(model);
+    return;
+  }
   selectModel(model);
+}
+
+function handleModelRowContextMenu(event: MouseEvent): void {
+  if (isMobileLayout.value) event.preventDefault();
+}
+
+function handleSwipeEdit(model: ModelConfig): void {
+  closeModelSwipe();
+  editModel(model);
+}
+
+function handleSwipeCopy(model: ModelConfig): void {
+  closeModelSwipe();
+  duplicateModel(model);
+}
+
+function handleActionSheetSetDefault(): void {
+  const model = actionSheetModel.value;
+  closeModelActionSheet();
+  if (model) setDefaultModel(model);
+}
+
+function handleActionSheetEdit(): void {
+  const model = actionSheetModel.value;
+  closeModelActionSheet();
+  if (model) editModel(model);
+}
+
+function handleActionSheetCopy(): void {
+  const model = actionSheetModel.value;
+  closeModelActionSheet();
+  if (model) duplicateModel(model);
+}
+
+function handleActionSheetDelete(): void {
+  const model = actionSheetModel.value;
+  closeModelActionSheet();
+  if (model) requestDelete(model);
 }
 
 function handleModelManagerClick(event: MouseEvent): void {
@@ -408,10 +501,17 @@ function closeSyncDialog(force = false): void {
   syncApiKey.value = "";
 }
 
+function handleMobileLayoutChange(event: MediaQueryListEvent): void {
+  isMobileLayout.value = event.matches;
+}
+
 onBeforeUnmount(() => {
   syncConfigGeneration += 1;
   syncApiKey.value = "";
   if (swipeClickResetTimer !== null) window.clearTimeout(swipeClickResetTimer);
+  cancelModelLongPress();
+  mobileLayoutMedia?.removeEventListener("change", handleMobileLayoutChange);
+  mobileLayoutMedia = null;
 });
 
 function toggleUpstreamModel(modelId: string, selected: boolean): void {
@@ -800,6 +900,9 @@ async function deleteModel(model: ModelConfig): Promise<void> {
 }
 
 onMounted(() => {
+  mobileLayoutMedia = typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 900px)") : null;
+  isMobileLayout.value = mobileLayoutMedia?.matches ?? window.innerWidth <= 900;
+  mobileLayoutMedia?.addEventListener("change", handleMobileLayoutChange);
   void Promise.all([loadModelConfigs(), loadLanePrompts()]);
 });
 
@@ -945,18 +1048,47 @@ defineExpose({
             class="modelRowSwipe"
             :class="{ revealed: modelSwipeOpenId === model.id }"
           >
-            <button
-              type="button"
-              class="modelSwipeDelete"
+            <div
+              class="modelSwipeActions"
               :class="{ actionVisible: isModelSwipeActionVisible(model.id) }"
-              :disabled="busy || model.isDefault"
-              :tabindex="modelSwipeOpenId === model.id ? 0 : -1"
-              :data-testid="`model-manager-swipe-delete-${model.id}`"
-              aria-label="删除模型"
-              @click.stop="requestDelete(model)"
             >
-              删除
-            </button>
+              <button
+                type="button"
+                class="modelSwipeAction edit"
+                :disabled="busy"
+                :tabindex="modelSwipeOpenId === model.id ? 0 : -1"
+                :data-testid="`model-manager-swipe-edit-${model.id}`"
+                aria-label="编辑模型"
+                @click.stop="handleSwipeEdit(model)"
+              >
+                <el-icon :size="17" aria-hidden="true"><EditPen /></el-icon>
+                <span>编辑</span>
+              </button>
+              <button
+                type="button"
+                class="modelSwipeAction copy"
+                :disabled="busy"
+                :tabindex="modelSwipeOpenId === model.id ? 0 : -1"
+                :data-testid="`model-manager-swipe-copy-${model.id}`"
+                aria-label="复制模型"
+                @click.stop="handleSwipeCopy(model)"
+              >
+                <el-icon :size="17" aria-hidden="true"><CopyDocument /></el-icon>
+                <span>复制</span>
+              </button>
+              <button
+                type="button"
+                class="modelSwipeAction delete"
+                :disabled="busy || model.isDefault"
+                :tabindex="modelSwipeOpenId === model.id ? 0 : -1"
+                :data-testid="`model-manager-swipe-delete-${model.id}`"
+                aria-label="删除模型"
+                @click.stop="requestDelete(model)"
+              >
+                <el-icon :size="17" aria-hidden="true"><Close /></el-icon>
+                <span>删除</span>
+              </button>
+            </div>
             <article
               class="modelRow"
               :class="{
@@ -968,6 +1100,7 @@ defineExpose({
               :style="{ transform: `translateX(${modelSwipeOffset(model.id)}px)` }"
               :data-testid="`model-manager-row-${model.id}`"
               @click="handleModelRowClick(model)"
+              @contextmenu="handleModelRowContextMenu"
               @touchstart="handleModelTouchStart(model, $event)"
               @touchmove="handleModelTouchMove(model.id, $event)"
               @touchend="finishModelTouch(model.id, $event)"
@@ -1002,7 +1135,11 @@ defineExpose({
 
             <div class="modelRowBottom">
               <code v-if="hasDistinctModelDisplayName(model)" class="modelRowId">{{ modelIdLabel(model) }}</code>
-              <div class="modelRowActions" @click.stop>
+              <div
+                class="modelRowActions"
+                :class="{ pending: pendingDeleteId === model.id }"
+                @click.stop
+              >
                 <template v-if="pendingDeleteId === model.id">
                   <button
                     type="button"
@@ -1026,7 +1163,6 @@ defineExpose({
                     @click="setDefaultModel(model)"
                   >
                     <el-icon :size="15" aria-hidden="true"><StarFilled /></el-icon>
-                    <span class="rowActionLabel">默认</span>
                   </button>
 
                   <button
@@ -1038,7 +1174,6 @@ defineExpose({
                     @click="editModel(model)"
                   >
                     <el-icon :size="15" aria-hidden="true"><EditPen /></el-icon>
-                    <span class="rowActionLabel">编辑</span>
                   </button>
 
                   <button
@@ -1050,7 +1185,6 @@ defineExpose({
                     @click="duplicateModel(model)"
                   >
                     <el-icon :size="15" aria-hidden="true"><CopyDocument /></el-icon>
-                    <span class="rowActionLabel">复制</span>
                   </button>
 
                   <button
@@ -1444,6 +1578,70 @@ defineExpose({
         </footer>
       </form>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="actionSheetModel"
+        class="modelActionSheetMask"
+        data-testid="model-action-sheet"
+        @click="closeModelActionSheet"
+      >
+        <div
+          class="modelActionSheet"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="`模型操作：${modelLabel(actionSheetModel) || actionSheetModel.id}`"
+          @click.stop
+        >
+          <div class="modelActionSheetGroup">
+            <button
+              type="button"
+              class="modelActionSheetItem"
+              :disabled="busy || actionSheetModel.isDefault"
+              data-testid="model-action-sheet-default"
+              @click="handleActionSheetSetDefault"
+            >
+              设为默认
+            </button>
+            <button
+              type="button"
+              class="modelActionSheetItem"
+              :disabled="busy"
+              data-testid="model-action-sheet-edit"
+              @click="handleActionSheetEdit"
+            >
+              编辑
+            </button>
+            <button
+              type="button"
+              class="modelActionSheetItem"
+              :disabled="busy"
+              data-testid="model-action-sheet-copy"
+              @click="handleActionSheetCopy"
+            >
+              复制
+            </button>
+            <button
+              type="button"
+              class="modelActionSheetItem danger"
+              :disabled="busy || actionSheetModel.isDefault"
+              data-testid="model-action-sheet-delete"
+              @click="handleActionSheetDelete"
+            >
+              删除
+            </button>
+          </div>
+          <button
+            type="button"
+            class="modelActionSheetItem cancel"
+            data-testid="model-action-sheet-cancel"
+            @click="closeModelActionSheet"
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    </Teleport>
   </section>
 </template>
 
@@ -1888,35 +2086,55 @@ defineExpose({
   border-top: none;
 }
 
-.modelSwipeDelete {
+.modelSwipeActions {
   position: absolute;
   inset: 0 0 0 auto;
   z-index: 0;
-  width: 84px;
-  border: none;
-  background: var(--danger-2);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 800;
-  cursor: pointer;
+  display: flex;
+  width: 204px;
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
   transition: opacity 0.1s ease, visibility 0.1s ease;
 }
 
-.modelSwipeDelete.actionVisible {
+.modelSwipeActions.actionVisible {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
 }
 
-.modelSwipeDelete:disabled {
-  cursor: not-allowed;
+.modelSwipeAction {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: none;
+  border-radius: 0;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
 }
 
-.modelSwipeDelete.actionVisible:disabled {
+.modelSwipeAction.edit {
+  background: #64748b;
+}
+
+.modelSwipeAction.copy {
+  background: #475569;
+}
+
+.modelSwipeAction.delete {
+  background: var(--danger-2);
+}
+
+.modelSwipeAction:disabled {
   opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .modelRow {
@@ -2066,10 +2284,6 @@ defineExpose({
 
 .rowSwitch.on .rowSwitchThumb {
   transform: translateX(17px);
-}
-
-.rowActionLabel {
-  display: none;
 }
 
 .rowAction {
@@ -2591,51 +2805,84 @@ defineExpose({
     min-height: 40px;
   }
 
-  .modelRowBottom {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-  }
-
-  .modelRowId {
-    align-self: flex-start;
-    max-width: 100%;
-  }
-
+  /* Mobile rows expose actions only via swipe / long-press / edit dialog, so
+     the inline action cluster stays hidden except for the delete confirm bar. */
   .modelRowActions {
+    display: none;
+  }
+
+  .modelRowActions.pending {
+    display: flex;
     width: 100%;
     margin-left: 0;
     gap: 8px;
   }
 
-  .modelRowActions .rowAction {
+  .modelRowActions.pending .rowAction {
     flex: 1 1 0;
     min-width: 0;
     min-height: 40px;
-    padding: 0 8px;
   }
+}
 
-  .modelRowActions .rowAction.icon {
-    width: auto;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface);
-    color: #475569;
-  }
+/* ---------- long-press action sheet ---------- */
+.modelActionSheetMask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.34);
+}
 
-  .modelRowActions .rowAction.icon.star.active {
-    border-color: transparent;
-    background: rgba(245, 158, 11, 0.12);
-    color: #d97706;
-  }
+.modelActionSheet {
+  width: 100%;
+  max-width: 480px;
+  margin: 0 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 
-  /* Swipe delete replaces the tiny inline delete icon on touch layouts. */
-  .modelRowActions .rowAction.icon.danger {
-    display: none;
-  }
+.modelActionSheetGroup {
+  display: flex;
+  flex-direction: column;
+  border-radius: 13px;
+  background: var(--surface);
+  overflow: hidden;
+}
 
-  .rowActionLabel {
-    display: inline;
-  }
+.modelActionSheetItem {
+  width: 100%;
+  min-height: 48px;
+  border: none;
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.modelActionSheetGroup .modelActionSheetItem + .modelActionSheetItem {
+  border-top: 1px solid var(--border);
+}
+
+.modelActionSheetItem.danger {
+  color: var(--danger-2);
+}
+
+.modelActionSheetItem.cancel {
+  border-radius: 13px;
+  font-weight: 700;
+}
+
+.modelActionSheetItem:active:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.modelActionSheetItem:disabled {
+  color: var(--muted-2);
+  cursor: not-allowed;
 }
 </style>
