@@ -84,6 +84,19 @@ const upstreamModels = ref<string[]>([]);
 const selectedUpstreamModels = ref<string[]>([]);
 const upstreamModelsLoaded = ref(false);
 
+const MODEL_ROW_SWIPE_WIDTH_PX = 84;
+const MODEL_ROW_SWIPE_THRESHOLD_PX = 8;
+const modelSwipeOpenId = ref<string | null>(null);
+const activeModelSwipeId = ref<string | null>(null);
+const activeModelSwipeOffset = ref(0);
+let modelTouchStartX = 0;
+let modelTouchStartY = 0;
+let modelTouchStartOffset = 0;
+let modelTouchAxis: "horizontal" | "vertical" | null = null;
+let modelTouchMoved = false;
+let suppressNextModelRowClick = false;
+let swipeClickResetTimer: number | null = null;
+
 const emptyForm = (): ModelForm => ({
   id: "",
   modelId: "",
@@ -125,6 +138,113 @@ function parseConfigJson(raw: string): Record<string, unknown> | null {
 
 function modelLabel(model: ModelConfig): string {
   return String(model.displayName ?? "").trim() || String(model.modelId ?? model.id ?? "").trim();
+}
+
+function modelIdLabel(model: ModelConfig): string {
+  return String(model.modelId || model.id).trim();
+}
+
+function hasDistinctModelDisplayName(model: ModelConfig): boolean {
+  const displayName = String(model.displayName ?? "").trim();
+  return Boolean(displayName) && displayName !== modelIdLabel(model);
+}
+
+function modelSwipeOffset(modelId: string): number {
+  if (activeModelSwipeId.value === modelId) return activeModelSwipeOffset.value;
+  return modelSwipeOpenId.value === modelId ? -MODEL_ROW_SWIPE_WIDTH_PX : 0;
+}
+
+function closeModelSwipe(): void {
+  modelSwipeOpenId.value = null;
+  activeModelSwipeId.value = null;
+  activeModelSwipeOffset.value = 0;
+}
+
+function readTouchPoint(event: TouchEvent): { x: number; y: number } | null {
+  const touch = event.touches[0] ?? event.changedTouches[0];
+  return touch ? { x: touch.clientX, y: touch.clientY } : null;
+}
+
+function handleModelTouchStart(model: ModelConfig, event: TouchEvent): void {
+  if (model.isDefault || busy.value || event.touches.length !== 1) return;
+  if (modelSwipeOpenId.value !== null && modelSwipeOpenId.value !== model.id) {
+    modelSwipeOpenId.value = null;
+  }
+  const point = readTouchPoint(event);
+  if (!point) return;
+  modelTouchStartX = point.x;
+  modelTouchStartY = point.y;
+  modelTouchStartOffset = modelSwipeOpenId.value === model.id ? -MODEL_ROW_SWIPE_WIDTH_PX : 0;
+  modelTouchAxis = null;
+  modelTouchMoved = false;
+  activeModelSwipeId.value = model.id;
+  activeModelSwipeOffset.value = modelTouchStartOffset;
+}
+
+function handleModelTouchMove(modelId: string, event: TouchEvent): void {
+  if (activeModelSwipeId.value !== modelId) return;
+  const point = readTouchPoint(event);
+  if (!point) return;
+  const deltaX = point.x - modelTouchStartX;
+  const deltaY = point.y - modelTouchStartY;
+  const absoluteX = Math.abs(deltaX);
+  const absoluteY = Math.abs(deltaY);
+  if (modelTouchAxis === null) {
+    if (Math.max(absoluteX, absoluteY) < MODEL_ROW_SWIPE_THRESHOLD_PX) return;
+    if (absoluteY > absoluteX) {
+      modelTouchAxis = "vertical";
+      activeModelSwipeId.value = null;
+      return;
+    }
+    modelTouchAxis = "horizontal";
+  }
+  if (modelTouchAxis !== "horizontal") return;
+  modelTouchMoved = true;
+  event.preventDefault();
+  activeModelSwipeOffset.value = Math.max(
+    -MODEL_ROW_SWIPE_WIDTH_PX,
+    Math.min(0, modelTouchStartOffset + deltaX),
+  );
+}
+
+function suppressRowClickAfterSwipe(): void {
+  suppressNextModelRowClick = true;
+  if (swipeClickResetTimer !== null) window.clearTimeout(swipeClickResetTimer);
+  swipeClickResetTimer = window.setTimeout(() => {
+    suppressNextModelRowClick = false;
+    swipeClickResetTimer = null;
+  }, 0);
+}
+
+function finishModelTouch(modelId: string, event: TouchEvent, cancelled = false): void {
+  if (activeModelSwipeId.value !== modelId) return;
+  const wasHorizontalSwipe = modelTouchAxis === "horizontal" && modelTouchMoved;
+  if (wasHorizontalSwipe) {
+    modelSwipeOpenId.value = !cancelled && activeModelSwipeOffset.value <= -MODEL_ROW_SWIPE_WIDTH_PX / 2
+      ? modelId
+      : null;
+    suppressRowClickAfterSwipe();
+    event.preventDefault();
+  }
+  activeModelSwipeId.value = null;
+  activeModelSwipeOffset.value = 0;
+  modelTouchAxis = null;
+  modelTouchMoved = false;
+}
+
+function handleModelRowClick(model: ModelConfig): void {
+  if (suppressNextModelRowClick) {
+    suppressNextModelRowClick = false;
+    return;
+  }
+  selectModel(model);
+}
+
+function handleModelManagerClick(event: MouseEvent): void {
+  const target = event.target;
+  if (!(target instanceof Element) || !target.closest(".modelRowSwipe")) {
+    closeModelSwipe();
+  }
 }
 
 const sortedModels = computed(() => {
@@ -226,6 +346,7 @@ async function loadModelConfigs(): Promise<void> {
   error.value = null;
   pendingDeleteId.value = null;
   selectedModelId.value = null;
+  closeModelSwipe();
   try {
     modelConfigs.value = await props.api.get<ModelConfig[]>("/api/model-configs");
   } catch (err) {
@@ -286,6 +407,7 @@ function closeSyncDialog(force = false): void {
 onBeforeUnmount(() => {
   syncConfigGeneration += 1;
   syncApiKey.value = "";
+  if (swipeClickResetTimer !== null) window.clearTimeout(swipeClickResetTimer);
 });
 
 function toggleUpstreamModel(modelId: string, selected: boolean): void {
@@ -618,11 +740,16 @@ function toggleEnabled(model: ModelConfig): void {
 }
 
 function selectModel(model: ModelConfig): void {
+  if (modelSwipeOpenId.value !== null) {
+    closeModelSwipe();
+    return;
+  }
   selectedModelId.value = selectedModelId.value === model.id ? null : model.id;
 }
 
 function requestDelete(model: ModelConfig): void {
   if (model.isDefault || busy.value) return;
+  closeModelSwipe();
   pendingDeleteId.value = model.id;
   selectedModelId.value = model.id;
   statusMessage.value = null;
@@ -679,7 +806,12 @@ defineExpose({
 </script>
 
 <template>
-  <section class="modelManager" data-testid="settings-panel" data-component="model-manager">
+  <section
+    class="modelManager"
+    data-testid="settings-panel"
+    data-component="model-manager"
+    @click="handleModelManagerClick"
+  >
     <header v-if="showHeader" class="modelHeader" data-drag-handle>
       <div class="modelHeaderTitle">
         <div class="modelTitle">{{ managerTitle }}</div>
@@ -803,14 +935,39 @@ defineExpose({
           还没有模型，点击右上角新增模型。
         </p>
 
-          <article
+          <div
             v-for="model in sortedModels"
             :key="model.id"
-            class="modelRow"
-            :class="{ selected: selectedModelId === model.id, off: !model.isEnabled, busy: busyRowId === model.id }"
-            :data-testid="`model-manager-row-${model.id}`"
-            @click="selectModel(model)"
+            class="modelRowSwipe"
+            :class="{ revealed: modelSwipeOpenId === model.id }"
           >
+            <button
+              type="button"
+              class="modelSwipeDelete"
+              :disabled="busy || model.isDefault"
+              :tabindex="modelSwipeOpenId === model.id ? 0 : -1"
+              :data-testid="`model-manager-swipe-delete-${model.id}`"
+              aria-label="删除模型"
+              @click.stop="requestDelete(model)"
+            >
+              删除
+            </button>
+            <article
+              class="modelRow"
+              :class="{
+                selected: selectedModelId === model.id,
+                off: !model.isEnabled,
+                busy: busyRowId === model.id,
+                swiping: activeModelSwipeId === model.id,
+              }"
+              :style="{ transform: `translateX(${modelSwipeOffset(model.id)}px)` }"
+              :data-testid="`model-manager-row-${model.id}`"
+              @click="handleModelRowClick(model)"
+              @touchstart="handleModelTouchStart(model, $event)"
+              @touchmove="handleModelTouchMove(model.id, $event)"
+              @touchend="finishModelTouch(model.id, $event)"
+              @touchcancel="finishModelTouch(model.id, $event, true)"
+            >
             <div class="modelRowTop">
               <div class="modelRowHeader">
                 <span class="modelRowText">{{ modelLabel(model) || model.id }}</span>
@@ -839,10 +996,9 @@ defineExpose({
             </div>
 
             <div class="modelRowBottom">
-              <code class="modelRowId">{{ model.modelId || model.id }}</code>
+              <code v-if="hasDistinctModelDisplayName(model)" class="modelRowId">{{ modelIdLabel(model) }}</code>
               <div class="modelRowActions" @click.stop>
                 <template v-if="pendingDeleteId === model.id">
-                  <span class="confirmText">确定删除？</span>
                   <button
                     type="button"
                     class="rowAction danger solid"
@@ -902,7 +1058,8 @@ defineExpose({
                 </template>
               </div>
             </div>
-          </article>
+            </article>
+          </div>
         </div>
 
       <p class="listFoot">未设置默认模型时优先使用列表中的第一个已启用模型。</p>
@@ -1242,7 +1399,6 @@ defineExpose({
         <footer class="dialogActions">
           <template v-if="isEditing && currentModel && !currentModel.isDefault">
             <template v-if="dialogDeleteConfirming">
-              <span class="confirmText">确定删除？</span>
               <button
                 type="button"
                 class="btnDanger"
@@ -1712,18 +1868,51 @@ defineExpose({
 }
 
 /* ---------- model rows ---------- */
+.modelRowSwipe {
+  position: relative;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  touch-action: pan-y;
+}
+
+.modelRowSwipe:first-child {
+  border-top: none;
+}
+
+.modelSwipeDelete {
+  position: absolute;
+  inset: 0 0 0 auto;
+  z-index: 0;
+  width: 84px;
+  border: none;
+  background: var(--danger-2);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.modelSwipeDelete:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .modelRow {
   display: flex;
   flex-direction: column;
   gap: 7px;
   padding: 11px 14px;
-  border-top: 1px solid var(--border);
+  position: relative;
+  z-index: 1;
+  background: var(--surface);
   cursor: pointer;
-  transition: background 0.14s ease, opacity 0.14s ease;
+  touch-action: pan-y;
+  transition: background 0.14s ease, opacity 0.14s ease, transform 0.18s ease;
 }
 
-.modelRow:first-child {
-  border-top: none;
+.modelRow.swiping {
+  transition: none;
 }
 
 .modelRow:hover {
@@ -1786,14 +1975,18 @@ defineExpose({
 }
 
 .modelRowId {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
   padding: 2px 6px;
   border-radius: 6px;
   background: rgba(15, 23, 42, 0.05);
   color: #475569;
   font-family: var(--font-mono);
   font-size: 11.5px;
-  word-break: break-all;
   line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .modelRowActions {
@@ -1801,13 +1994,7 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 2px;
-}
-
-.confirmText {
-  color: var(--danger-2);
-  font-size: 11.5px;
-  font-weight: 700;
-  margin-right: 4px;
+  margin-left: auto;
 }
 
 .rowSwitch {
