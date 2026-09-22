@@ -583,6 +583,21 @@ describe("mobile navigation behavior", () => {
       wrapper.unmount();
     });
 
+    it("snaps open at exactly 35% of the drawer width", async () => {
+      const wrapper = await mountMobileChat();
+      const app = wrapper.get(".app").element;
+      const dragDistance = DRAWER_WIDTH * 0.35;
+
+      dispatchTouch(app, "touchstart", { clientX: 10, clientY: 300 }, 1000);
+      dispatchTouch(app, "touchmove", { clientX: 10 + dragDistance, clientY: 300 }, 1400);
+      dispatchTouch(app, "touchend", null, 1500);
+      await waitForSnap();
+      await settleUi(wrapper);
+
+      expect(wrapper.get('[data-testid="mobile-drawer-toggle"]').attributes("aria-expanded")).toBe("true");
+      wrapper.unmount();
+    });
+
     it("snaps open on a fast flick even below the distance threshold", async () => {
       const wrapper = await mountMobileChat();
       const app = wrapper.get(".app").element;
@@ -636,12 +651,12 @@ describe("mobile navigation behavior", () => {
       const drawerEl = wrapper.get('[data-testid="mobile-drawer"]').element;
 
       dispatchTouch(drawerEl, "touchstart", { clientX: 300, clientY: 400 }, 2000);
-      dispatchTouch(drawerEl, "touchmove", { clientX: 180, clientY: 400 }, 2400);
+      dispatchTouch(drawerEl, "touchmove", { clientX: 200, clientY: 400 }, 2400);
       await settleUi(wrapper);
-      expect(drawerTranslateX(wrapper)).toBeCloseTo(-120, 1);
-      expect(backdropOpacity(wrapper)).toBeCloseTo(1 - 120 / DRAWER_WIDTH, 3);
+      expect(drawerTranslateX(wrapper)).toBeCloseTo(-100, 1);
+      expect(backdropOpacity(wrapper)).toBeCloseTo(1 - 100 / DRAWER_WIDTH, 3);
 
-      // 63.4% still open; trailing velocity -120px/400ms = -0.3px/ms is no flick.
+      // 30.5% closed; trailing velocity -100px/400ms = -0.25px/ms is no flick.
       dispatchTouch(drawerEl, "touchend", null, 2500);
       await waitForSnap();
       await settleUi(wrapper);
@@ -663,6 +678,24 @@ describe("mobile navigation behavior", () => {
       dispatchTouch(drawerEl, "touchend", null, 3900);
       await waitForSnap();
       await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(false);
+      expect(wrapper.get('[data-testid="mobile-drawer-toggle"]').attributes("aria-expanded")).toBe("false");
+      wrapper.unmount();
+    });
+
+    it("snaps shut after a 40% close drag", async () => {
+      const wrapper = await mountMobileChat();
+      await wrapper.get('[data-testid="mobile-drawer-toggle"]').trigger("click");
+      await settleUi(wrapper);
+      const drawerEl = wrapper.get('[data-testid="mobile-drawer"]').element;
+      const dragDistance = DRAWER_WIDTH * 0.4;
+
+      dispatchTouch(drawerEl, "touchstart", { clientX: 300, clientY: 400 }, 3000);
+      dispatchTouch(drawerEl, "touchmove", { clientX: 300 - dragDistance, clientY: 400 }, 3400);
+      dispatchTouch(drawerEl, "touchend", null, 3500);
+      await waitForSnap();
+      await settleUi(wrapper);
+
       expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(false);
       expect(wrapper.get('[data-testid="mobile-drawer-toggle"]').attributes("aria-expanded")).toBe("false");
       wrapper.unmount();

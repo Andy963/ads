@@ -620,10 +620,10 @@ function trackDrawerGesture(ev: TouchEvent, direction: 1 | -1): void {
   drawerDragProgress.value = clampDrawerProgress(progress);
 }
 
-function resolveDrawerSnapTarget(progress: number, velocity: number): boolean {
+function resolveDrawerSnapTarget(mode: "open" | "close", progress: number, velocity: number): boolean {
   if (velocity >= DRAWER_FLICK_VELOCITY_PX_PER_MS) return true;
   if (velocity <= -DRAWER_FLICK_VELOCITY_PX_PER_MS) return false;
-  return progress > DRAWER_SNAP_RATIO;
+  return mode === "open" ? progress >= DRAWER_SNAP_RATIO : progress > 1 - DRAWER_SNAP_RATIO;
 }
 
 function finishDrawerGesture(ev: TouchEvent, cancelled: boolean): void {
@@ -640,7 +640,7 @@ function finishDrawerGesture(ev: TouchEvent, cancelled: boolean): void {
   const trailDt = gesture.lastTime - gesture.prevTime;
   const stale = ev.timeStamp - gesture.lastTime > DRAWER_FLICK_STALE_MS;
   const velocity = stale || trailDt <= 0 ? 0 : (gesture.lastX - gesture.prevX) / trailDt;
-  settleDrawerGesture(resolveDrawerSnapTarget(progress, velocity));
+  settleDrawerGesture(resolveDrawerSnapTarget(gesture.mode, progress, velocity));
 }
 
 function onDrawerEdgeTouchStart(ev: TouchEvent): void {
