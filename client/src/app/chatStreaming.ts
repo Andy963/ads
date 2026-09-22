@@ -11,6 +11,73 @@ import type { ChatItem, ProjectRuntime } from "./controller";
 
 const LIVE_ACTIVITY_TTL_MS = 3000;
 
+// Tool execution blocks and patches demarcate turn phases: assistant text
+// before them belongs to intermediate execution narration, and the streaming
+// text block after them is the turn's final answer (see
+// findActiveStreamingAssistantIndex, which applies the same boundary rule).
+const ANSWER_PHASE_BOUNDARY_KINDS = new Set(["execute", "command", "patch"]);
+
+type AnswerDetectionMessage = {
+  id: string;
+  role: string;
+  kind?: string;
+  content?: unknown;
+  streaming?: boolean;
+};
+
+/**
+ * Locate the turn's final answer block: the last streaming assistant text
+ * message after the last user message. The empty assistant placeholder pushed
+ * when the prompt is sent is excluded — phase 2 begins when the first real
+ * delta lands, not when the placeholder appears — and transient live cards
+ * (live-step/live-activity) never count as the answer.
+ */
+export function findStreamingAnswerId(
+  items: readonly AnswerDetectionMessage[],
+  isLiveMessageId: (id: string) => boolean,
+): string {
+  let lastUserIndex = -1;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index]?.role === "user") {
+      lastUserIndex = index;
+      break;
+    }
+  }
+  for (let index = items.length - 1; index > lastUserIndex; index -= 1) {
+    const message = items[index]!;
+    if (isLiveMessageId(message.id)) continue;
+    if (
+      message.role === "assistant" &&
+      message.kind === "text" &&
+      message.streaming === true &&
+      String(message.content ?? "").trim()
+    ) {
+      return message.id;
+    }
+  }
+  return "";
+}
+
+/**
+ * Whether a fresh execution block exists below the given message. When one
+ * appears after the reading-locked answer, the locked text was intermediate
+ * narration rather than the final answer and the viewport must return to
+ * tail-following so the resumed execution stays visible.
+ */
+export function hasExecutionBlockAfter(
+  items: readonly AnswerDetectionMessage[],
+  messageId: string,
+): boolean {
+  const id = String(messageId ?? "");
+  if (!id) return false;
+  const anchorIndex = items.findIndex((message) => message.id === id);
+  if (anchorIndex < 0) return false;
+  for (let index = anchorIndex + 1; index < items.length; index += 1) {
+    if (ANSWER_PHASE_BOUNDARY_KINDS.has(String(items[index]?.kind ?? ""))) return true;
+  }
+  return false;
+}
+
 function stripStreamingOverlap(current: string, incoming: string): string {
   if (!current || !incoming) return incoming;
   if (incoming === current) return "";

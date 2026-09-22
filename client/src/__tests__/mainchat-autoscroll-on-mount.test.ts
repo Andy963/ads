@@ -50,7 +50,7 @@ describe("MainChat auto-scroll on mount", () => {
     wrapper.unmount();
   });
 
-  it("keeps scrolling to bottom while the last message grows (streaming updates)", async () => {
+  it("locks the streaming answer top once instead of pinning the bottom while it grows", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [msg("u-1", "user", "hello"), msg("a-1", "assistant", "start")],
@@ -83,7 +83,18 @@ describe("MainChat auto-scroll on mount", () => {
       messages: [msg("u-1", "user", "hello"), { ...msg("a-1", "assistant", "start"), streaming: true, content: "start\nmore" }],
     });
     await settleUi(wrapper);
-    expect(chat.scrollTop).toBe(520);
+    // Two-phase reading viewport: the first content delta aligns the answer top
+    // once (12px offset; jsdom rects are all zero, so 400 - 12) instead of
+    // continuously pinning the bottom edge.
+    expect(chat.scrollTop).toBe(388);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+
+    height = 900;
+    await wrapper.setProps({
+      messages: [msg("u-1", "user", "hello"), { ...msg("a-1", "assistant", "start"), streaming: true, content: "start\nmore\nburst" }],
+    });
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(388);
 
     wrapper.unmount();
   });
