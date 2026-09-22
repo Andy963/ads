@@ -676,20 +676,22 @@ function onDrawerGestureTouchCancel(ev: TouchEvent): void {
   finishDrawerGesture(ev, true);
 }
 
-const LANE_SWIPE_RATIO = 1.4;
+const LANE_SWIPE_RATIO = 1.1;
 // Horizontal travel that takes the axis lock and starts 1:1 tracking.
-const LANE_DRAG_LOCK_PX = 10;
+const LANE_DRAG_LOCK_PX = 8;
 // Releasing past this share of the viewport width switches to the other lane.
 const LANE_SNAP_RATIO = 0.3;
-// Release velocity (px/ms, i.e. ~500px/s) that switches regardless of distance.
-const LANE_FLICK_VELOCITY_PX_PER_MS = 0.5;
+// Release velocity (px/ms, i.e. ~400px/s) that switches regardless of distance.
+const LANE_FLICK_VELOCITY_PX_PER_MS = 0.4;
 // A finger held still before release must not read as a flick.
 const LANE_FLICK_STALE_MS = 100;
-// Slightly longer than the 0.28s snap transition.
-const LANE_SNAP_SETTLE_MS = 340;
+// Slightly longer than the 0.36s snap transition.
+const LANE_SNAP_SETTLE_MS = 380;
 // Touches starting inside horizontally scrollable or editable children keep
 // their native behavior instead of switching lanes.
 const LANE_SWIPE_IGNORE_SELECTOR = "pre, code, table, input, textarea, select, button, a, [contenteditable]";
+
+type TouchSample = { x: number; time: number };
 
 type LaneGesture = {
   startX: number;
@@ -698,8 +700,7 @@ type LaneGesture = {
   startLane: ChatLane;
   width: number;
   tracking: boolean;
-  prevX: number;
-  prevTime: number;
+  samples: TouchSample[];
   lastX: number;
   lastTime: number;
 };
@@ -717,7 +718,22 @@ const laneSnapSettling = ref(false);
 const laneTrackStyle = computed<Record<string, string> | undefined>(() => {
   const offset = laneTrackOffset.value;
   if (offset === null || !isMobile.value) return undefined;
-  return { transform: `translate3d(${offset}px, 0, 0)` };
+  return {
+    transform: `translate3d(${offset}px, 0, 0)`,
+    transition: laneSnapSettling.value ? "transform 0.36s cubic-bezier(0.25, 1, 0.5, 1)" : "none",
+  };
+});
+
+const laneTabGroupStyle = computed<Record<string, string> | undefined>(() => {
+  if (!isMobile.value || laneTrackOffset.value === null) return undefined;
+  const width = laneGesture?.width || lanePanelWidthPx() || 1;
+  const progress = Math.min(1, Math.max(0, -laneTrackOffset.value / width));
+  return {
+    "--lane-pill-progress": String(progress),
+    "--lane-pill-transition": laneSnapSettling.value
+      ? "transform 0.36s cubic-bezier(0.25, 1, 0.5, 1)"
+      : "none",
+  };
 });
 
 function lanePanelWidthPx(): number {
@@ -726,8 +742,16 @@ function lanePanelWidthPx(): number {
   return window.innerWidth;
 }
 
-function clampLaneOffset(value: number, width: number): number {
-  return Math.min(0, Math.max(-width, value));
+function clampLaneOffsetWithResistance(offset: number, width: number): number {
+  if (offset > 0) {
+    // Rubber-band resistance past left edge (Advisor)
+    return offset * 0.35;
+  }
+  if (offset < -width) {
+    // Rubber-band resistance past right edge (Worker)
+    return -width + (offset + width) * 0.35;
+  }
+  return offset;
 }
 
 function cancelLaneGesture(): void {
@@ -744,13 +768,13 @@ function cancelLaneGesture(): void {
 function settleLaneGesture(target: ChatLane, width: number): void {
   laneSnapSettling.value = true;
   laneTrackOffset.value = target === "worker" ? -width : 0;
-  if (target !== activeWorkspaceTab.value) selectWorkspaceTab(target);
   laneSettleTimer = setTimeout(() => {
     laneSettleTimer = null;
     laneSnapSettling.value = false;
     // The stylesheet position matches the settle target, so dropping the
     // inline transform cannot move the track.
     laneTrackOffset.value = null;
+    if (target !== activeWorkspaceTab.value) selectWorkspaceTab(target);
   }, LANE_SNAP_SETTLE_MS);
 }
 
@@ -770,8 +794,7 @@ function onLaneSwipeTouchStart(ev: TouchEvent): void {
     startLane: activeWorkspaceTab.value,
     width: 0,
     tracking: false,
-    prevX: touch.x,
-    prevTime: ev.timeStamp,
+    samples: [{ x: touch.x, time: ev.timeStamp }],
     lastX: touch.x,
     lastTime: ev.timeStamp,
   };
@@ -785,26 +808,27 @@ function onLaneSwipeTouchMove(ev: TouchEvent): void {
   const dx = touch.x - gesture.startX;
   const dy = touch.y - gesture.startY;
   if (!gesture.tracking) {
-    // Vertical scrolling always wins over the lane gesture.
-    if (Math.abs(dy) > LANE_DRAG_LOCK_PX && Math.abs(dy) > Math.abs(dx) * LANE_SWIPE_RATIO) {
-      laneGesture = null;
+    const absX = Math.abs(dx);
+    const absY = Math.abs(dy);
+    if (absX >= LANE_DRAG_LOCK_PX || absY >= LANE_DRAG_LOCK_PX) {
+      if (absX >= absY * LANE_SWIPE_RATIO) {
+        gesture.tracking = true;
+        gesture.width = lanePanelWidthPx();
+        laneDragTracking.value = true;
+      } else {
+        laneGesture = null;
+        return;
+      }
+    } else {
       return;
     }
-    // Advisor is the leftmost panel, worker the rightmost; a drag can only
-    // pull toward the other lane.
-    const towardOtherLane = gesture.startLane === "advisor" ? dx < 0 : dx > 0;
-    if (!towardOtherLane) return;
-    if (!(Math.abs(dx) > LANE_DRAG_LOCK_PX && Math.abs(dx) > Math.abs(dy) * LANE_SWIPE_RATIO)) return;
-    gesture.tracking = true;
-    gesture.width = lanePanelWidthPx();
-    laneDragTracking.value = true;
   }
-  gesture.prevX = gesture.lastX;
-  gesture.prevTime = gesture.lastTime;
   gesture.lastX = touch.x;
   gesture.lastTime = ev.timeStamp;
+  gesture.samples.push({ x: touch.x, time: ev.timeStamp });
+  if (gesture.samples.length > 5) gesture.samples.shift();
   const base = gesture.startLane === "worker" ? -gesture.width : 0;
-  laneTrackOffset.value = clampLaneOffset(base + dx, gesture.width);
+  laneTrackOffset.value = clampLaneOffsetWithResistance(base + dx, gesture.width);
 }
 
 function finishLaneGesture(ev: TouchEvent, cancelled: boolean): void {
@@ -819,17 +843,32 @@ function finishLaneGesture(ev: TouchEvent, cancelled: boolean): void {
     return;
   }
   const base = gesture.startLane === "worker" ? -width : 0;
-  const position = clampLaneOffset(base + (gesture.lastX - gesture.startX), width);
-  // Progress toward the other lane as a share of the panel width.
-  const moved = gesture.startLane === "advisor" ? -position / width : (position + width) / width;
-  const trailDt = gesture.lastTime - gesture.prevTime;
+  const position = clampLaneOffsetWithResistance(base + (gesture.lastX - gesture.startX), width);
+  // Calculate flick velocity over a rolling window (up to ~80ms) to avoid single-frame noise
+  let velocity = 0;
   const stale = ev.timeStamp - gesture.lastTime > LANE_FLICK_STALE_MS;
-  const velocity = stale || trailDt <= 0 ? 0 : (gesture.lastX - gesture.prevX) / trailDt;
-  const otherLane: ChatLane = gesture.startLane === "advisor" ? "worker" : "advisor";
+  if (!stale && gesture.samples.length >= 2) {
+    const newest = gesture.samples[gesture.samples.length - 1]!;
+    const earliest = gesture.samples[0]!;
+    const dt = newest.time - earliest.time;
+    if (dt > 0) {
+      velocity = (newest.x - earliest.x) / dt;
+    }
+  }
   let target: ChatLane;
-  if (velocity <= -LANE_FLICK_VELOCITY_PX_PER_MS) target = "worker";
-  else if (velocity >= LANE_FLICK_VELOCITY_PX_PER_MS) target = "advisor";
-  else target = moved > LANE_SNAP_RATIO ? otherLane : gesture.startLane;
+  if (velocity <= -LANE_FLICK_VELOCITY_PX_PER_MS) {
+    target = "worker";
+  } else if (velocity >= LANE_FLICK_VELOCITY_PX_PER_MS) {
+    target = "advisor";
+  } else if (position > 0) {
+    target = "advisor";
+  } else if (position < -width) {
+    target = "worker";
+  } else {
+    const moved = gesture.startLane === "advisor" ? -position / width : (position + width) / width;
+    const otherLane: ChatLane = gesture.startLane === "advisor" ? "worker" : "advisor";
+    target = moved > LANE_SNAP_RATIO ? otherLane : gesture.startLane;
+  }
   settleLaneGesture(target, width);
 }
 
@@ -1317,7 +1356,7 @@ const advisorConnectionStatus = computed(() => {
 
       <section v-if="!isMobile || mobileDrawerSection === 'projects'" class="chatShell">
         <div class="laneTabs">
-          <div class="laneTabGroup" role="tablist" aria-label="切换工作区">
+          <div class="laneTabGroup" :style="laneTabGroupStyle" role="tablist" aria-label="切换工作区">
             <template v-for="tab in workspaceTabs" :key="tab.id">
               <button
                 :id="`lane-tab-${tab.id}`"

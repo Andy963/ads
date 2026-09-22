@@ -13,6 +13,7 @@
   display: flex;
   position: relative;
   min-height: 0;
+  touch-action: pan-y;
 }
 
 .chat {
@@ -29,6 +30,7 @@
   position: relative;
   scrollbar-width: thin;
   scrollbar-color: rgba(148, 163, 184, 0.55) transparent;
+  touch-action: pan-y;
 }
 
 .chat::-webkit-scrollbar {

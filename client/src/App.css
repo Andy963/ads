@@ -590,6 +590,7 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  touch-action: pan-y;
 }
 
 .chatShell {
@@ -1060,6 +1061,9 @@
   }
   /* Mobile lane carousel: both panels stay mounted side by side, each one
      viewport wide; the track slides between them with no unmount gap. */
+  .lanePanels {
+    touch-action: pan-y;
+  }
   .lanePanelsTrack {
     display: flex;
     flex-direction: row;
@@ -1067,8 +1071,9 @@
     min-height: 0;
     width: 200%;
     transform: translate3d(0, 0, 0);
-    transition: transform 0.28s cubic-bezier(0.3, 0.8, 0.4, 1);
+    transition: transform 0.36s cubic-bezier(0.25, 1, 0.5, 1);
     will-change: transform;
+    touch-action: pan-y;
   }
   .lanePanelsTrack--worker {
     transform: translate3d(-50%, 0, 0);
@@ -1230,12 +1235,12 @@
     border-radius: 8px;
     background: white;
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
-    transform: translateX(0);
-    transition: transform 0.28s cubic-bezier(0.3, 0.8, 0.4, 1);
+    transform: translateX(calc(var(--lane-pill-progress, 0) * 100%));
+    transition: var(--lane-pill-transition, transform 0.36s cubic-bezier(0.25, 1, 0.5, 1));
     pointer-events: none;
   }
   .laneTabGroup:has([data-testid="lane-tab-worker"].active)::before {
-    transform: translateX(100%);
+    transform: translateX(calc(var(--lane-pill-progress, 1) * 100%));
   }
   .laneTab {
     position: relative;
