@@ -1068,4 +1068,54 @@ describe("ModelManager", () => {
 
     wrapper.unmount();
   });
+
+  it("preserves lane prompt edits in memory when switching lanes", async () => {
+    const api = {
+      get: vi.fn().mockImplementation(async (url: string) => {
+        if (url === "/api/lane-prompts") {
+          return [
+            {
+              lane: "advisor",
+              current: { lane: "advisor", version: 1, prompt: "Advisor original prompt" },
+              versions: [{ lane: "advisor", version: 1, prompt: "Advisor original prompt" }],
+            },
+            {
+              lane: "worker",
+              current: { lane: "worker", version: 1, prompt: "Worker original prompt" },
+              versions: [{ lane: "worker", version: 1, prompt: "Worker original prompt" }],
+            },
+          ];
+        }
+        if (url === "/api/model-configs") return [];
+        return [];
+      }),
+      post: vi.fn().mockResolvedValue({}),
+      put: vi.fn().mockResolvedValue({}),
+      patch: vi.fn().mockResolvedValue({}),
+      delete: vi.fn().mockResolvedValue({}),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: {
+        api,
+        initialTab: "lane-prompts",
+      },
+    });
+    await settle(wrapper);
+
+    const textarea = wrapper.find('[data-testid="lane-prompt-editor"]');
+    await textarea.setValue("Modified Advisor draft text");
+
+    // Switch to worker
+    await wrapper.find('[data-testid="lane-prompt-lane-worker"]').trigger("click");
+    await settle(wrapper);
+    expect((wrapper.find('[data-testid="lane-prompt-editor"]').element as HTMLTextAreaElement).value).toBe("Worker original prompt");
+
+    // Switch back to advisor
+    await wrapper.find('[data-testid="lane-prompt-lane-advisor"]').trigger("click");
+    await settle(wrapper);
+    expect((wrapper.find('[data-testid="lane-prompt-editor"]').element as HTMLTextAreaElement).value).toBe("Modified Advisor draft text");
+
+    wrapper.unmount();
+  });
 });

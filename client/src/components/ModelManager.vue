@@ -68,6 +68,36 @@ const lanePromptLoading = ref(false);
 const lanePromptSaving = ref(false);
 const lanePromptError = ref<string | null>(null);
 const lanePromptStatus = ref<string | null>(null);
+const lanePromptDrafts = reactive<Record<LaneName, string | null>>({
+  advisor: null,
+  worker: null,
+});
+let laneSwipeStartX = 0;
+let laneSwipeStartY = 0;
+let laneSwipeTracking = false;
+
+function onLaneSwipeTouchStart(ev: TouchEvent): void {
+  if (ev.touches.length !== 1) return;
+  const touch = ev.touches[0];
+  laneSwipeStartX = touch.clientX;
+  laneSwipeStartY = touch.clientY;
+  laneSwipeTracking = true;
+}
+
+function onLaneSwipeTouchEnd(ev: TouchEvent): void {
+  if (!laneSwipeTracking || ev.changedTouches.length !== 1) return;
+  laneSwipeTracking = false;
+  const touch = ev.changedTouches[0];
+  const dx = touch.clientX - laneSwipeStartX;
+  const dy = touch.clientY - laneSwipeStartY;
+  if (Math.abs(dx) > 35 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+    if (dx < 0 && selectedLane.value === "advisor") {
+      selectLane("worker");
+    } else if (dx > 0 && selectedLane.value === "worker") {
+      selectLane("advisor");
+    }
+  }
+}
 const syncDialogOpen = ref(false);
 const syncLoading = ref(false);
 const syncImporting = ref(false);
@@ -621,6 +651,8 @@ async function loadLanePrompts(): Promise<void> {
     lanePromptSnapshots.value = await props.api.get<LanePromptSnapshot[]>("/api/lane-prompts");
     selectedVersion.value = null;
     lanePromptText.value = selectedLaneSnapshot.value?.current.prompt ?? "";
+    lanePromptDrafts.advisor = null;
+    lanePromptDrafts.worker = null;
   } catch (err) {
     lanePromptError.value = err instanceof Error ? err.message : String(err);
   } finally {
@@ -629,9 +661,15 @@ async function loadLanePrompts(): Promise<void> {
 }
 
 function selectLane(lane: LaneName): void {
+  if (selectedLane.value === lane) return;
+  lanePromptDrafts[selectedLane.value] = lanePromptText.value;
   selectedLane.value = lane;
   selectedVersion.value = null;
-  lanePromptText.value = lanePromptSnapshots.value.find((snapshot) => snapshot.lane === lane)?.current.prompt ?? "";
+  if (lanePromptDrafts[lane] !== null) {
+    lanePromptText.value = lanePromptDrafts[lane]!;
+  } else {
+    lanePromptText.value = lanePromptSnapshots.value.find((snapshot) => snapshot.lane === lane)?.current.prompt ?? "";
+  }
   lanePromptError.value = null;
   lanePromptStatus.value = null;
 }
@@ -652,6 +690,7 @@ async function persistLanePrompt(prompt: string, successMessage: string): Promis
     selectedVersion.value = null;
     lanePromptText.value = snapshot.current.prompt;
     lanePromptStatus.value = successMessage;
+    lanePromptDrafts[selectedLane.value] = null;
   } catch (err) {
     lanePromptError.value = err instanceof Error ? err.message : String(err);
   } finally {
@@ -684,6 +723,7 @@ async function resetLanePrompt(): Promise<void> {
     selectedVersion.value = null;
     lanePromptText.value = snapshot.current.prompt;
     lanePromptStatus.value = "已恢复为默认指令。";
+    lanePromptDrafts[selectedLane.value] = null;
   } catch (err) {
     lanePromptError.value = err instanceof Error ? err.message : String(err);
   } finally {
@@ -1151,7 +1191,13 @@ defineExpose({
       aria-labelledby="settings-tab-lane-prompts"
       data-testid="lane-prompt-panel"
     >
-      <div class="lanePromptLaneSelector" role="tablist" aria-label="Agent lanes">
+      <div
+        class="lanePromptLaneSelector"
+        role="tablist"
+        aria-label="Agent lanes"
+        @touchstart.passive="onLaneSwipeTouchStart"
+        @touchend="onLaneSwipeTouchEnd"
+      >
         <button
           type="button"
           class="lanePromptLane"
@@ -1178,7 +1224,12 @@ defineExpose({
       <div v-if="lanePromptStatus" class="modelBanner success" data-testid="lane-prompt-status">{{ lanePromptStatus }}</div>
       <div v-if="lanePromptLoading" class="lanePromptLoading">正在加载角色指令…</div>
       <template v-else>
-        <div class="lanePromptEditorHeader" :class="{ 'lanePromptEditorHeader--compact': !showTabs }">
+        <div
+          class="lanePromptEditorHeader"
+          :class="{ 'lanePromptEditorHeader--compact': !showTabs }"
+          @touchstart.passive="onLaneSwipeTouchStart"
+          @touchend="onLaneSwipeTouchEnd"
+        >
           <div v-if="showTabs">
             <div class="lanePromptEditorTitle">角色指令</div>
             <div class="lanePromptEditorSubtitle">配置 Advisor 与 Worker 的系统边界和工作方式。</div>
@@ -1235,7 +1286,11 @@ defineExpose({
           <span>当前生效：v{{ selectedLaneSnapshot.current.version }}</span>
           <span v-if="isViewingHistoricalVersion">正在查看：v{{ selectedLaneVersion?.version }}</span>
         </div>
-        <div class="lanePromptActions">
+        <div
+          class="lanePromptActions"
+          @touchstart.passive="onLaneSwipeTouchStart"
+          @touchend="onLaneSwipeTouchEnd"
+        >
           <button type="button" class="btnSecondary" :disabled="lanePromptSaving || !lanePromptDirty" data-testid="lane-prompt-reset" @click="resetLanePrompt">
             恢复默认
           </button>
@@ -2035,8 +2090,8 @@ defineExpose({
 .modelRow {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 11px 14px;
+  gap: 3px;
+  padding: 8px 12px;
   position: relative;
   z-index: 1;
   background: var(--surface);
@@ -2078,7 +2133,7 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -2086,15 +2141,15 @@ defineExpose({
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
 .modelRowText {
   color: var(--text);
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 700;
-  line-height: 1.35;
+  line-height: 1.3;
   word-break: break-word;
 }
 
@@ -2121,7 +2176,7 @@ defineExpose({
   color: var(--muted, #64748b);
   font-family: var(--font-mono);
   font-size: 11px;
-  line-height: 1.35;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2142,7 +2197,7 @@ defineExpose({
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  min-height: 30px;
+  min-height: 28px;
   padding: 3px;
   margin-right: -3px;
   border: none;
@@ -2714,6 +2769,10 @@ defineExpose({
 
   .rowSwitch {
     min-height: 40px;
+  }
+
+  .modelRow {
+    padding: 6px 12px;
   }
 
   /* Mobile rows expose actions only via swipe / long-press / edit dialog, so

@@ -174,6 +174,20 @@ const selectedModel = computed(() => {
   return compatibleModelOptions.value.find((model) => modelKey(model) === modelId) ?? null;
 });
 
+function isReasoningSupportedModel(modelId: string, configJson?: Record<string, unknown> | null): boolean {
+  if (configJson && typeof configJson === "object" && !Array.isArray(configJson)) {
+    if (typeof configJson.supportsReasoningEffort === "boolean") return configJson.supportsReasoningEffort;
+    if (typeof configJson.reasoningEffortSupported === "boolean") return configJson.reasoningEffortSupported;
+    if (Array.isArray(configJson.reasoningEfforts) && configJson.reasoningEfforts.length > 0) return true;
+  }
+  return /(?:^|[/_:-])(?:o[134](?:$|[._:-])|gpt-5(?:$|[._:-])|deepseek-(?:reasoner|r1)(?:$|[._:-])|qwq(?:$|[._:-])|qwen[^/]*thinking(?:$|[._:-]))/i.test(modelId);
+}
+
+const isReasoningModel = computed(() => {
+  if (!selectedModel.value) return false;
+  return isReasoningSupportedModel(effectiveModelId.value, selectedModel.value.configJson);
+});
+
 const reasoningEffortOptions = computed(() => {
   if (!selectedModel.value) return [];
   const config = selectedModel.value.configJson;
@@ -217,11 +231,19 @@ const canChange = computed(() => props.connected && !props.busy && !props.inputL
 const capsuleLabel = computed(() => {
   if (!compatibleModelOptions.value.length) return "No models";
   const name = selectedModelLabel.value;
-  if (!reasoningEffortOptions.value.length || (reasoningEffortOptions.value.length === 1 && (reasoningEffortOptions.value[0] === "none" || reasoningEffortOptions.value[0] === "off"))) {
+  if (!isReasoningModel.value || !reasoningEffortOptions.value.length || (reasoningEffortOptions.value.length === 1 && (reasoningEffortOptions.value[0] === "none" || reasoningEffortOptions.value[0] === "off"))) {
     return name;
   }
   const effort = REASONING_EFFORT_SHORT_LABELS[reasoningEffortValue.value] || REASONING_EFFORT_LABELS[reasoningEffortValue.value] || reasoningEffortValue.value;
   return `${name} · ${effort}`;
+});
+
+const effortHintText = computed(() => {
+  const supported = displayEfforts.value.filter((e) => e.supported).map((e) => e.label);
+  if (supported.length <= 1) {
+    return `当前模型固定为 ${supported[0] || "默认"} 档位`;
+  }
+  return `左右滑动或点击切换（支持：${supported.join(" · ")}）`;
 });
 
 const displayEfforts = computed(() => {
@@ -246,6 +268,60 @@ function togglePicker(): void {
 
 function closePicker(): void {
   pickerOpen.value = false;
+}
+
+const sliderTrackRef = ref<HTMLElement | null>(null);
+let isDraggingSlider = false;
+
+function getNearestEffortFromX(clientX: number): string | null {
+  const track = sliderTrackRef.value;
+  if (!track) return null;
+  const rect = track.getBoundingClientRect();
+  const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
+  const ratio = x / rect.width;
+  const items = displayEfforts.value;
+  if (!items.length) return null;
+  const index = Math.min(items.length - 1, Math.max(0, Math.floor(ratio * items.length)));
+  const target = items[index];
+  return target?.supported ? target.id : null;
+}
+
+function onSliderPointerDown(ev: PointerEvent): void {
+  if (!canChange.value) return;
+  try {
+    (ev.currentTarget as HTMLElement)?.setPointerCapture?.(ev.pointerId);
+  } catch {}
+  isDraggingSlider = true;
+  const effort = getNearestEffortFromX(ev.clientX);
+  if (effort && effort !== reasoningEffortValue.value) {
+    selectReasoningEffort(effort);
+    triggerHaptic();
+  }
+}
+
+function onSliderPointerMove(ev: PointerEvent): void {
+  if (!isDraggingSlider || !canChange.value) return;
+  const effort = getNearestEffortFromX(ev.clientX);
+  if (effort && effort !== reasoningEffortValue.value) {
+    selectReasoningEffort(effort);
+    triggerHaptic();
+  }
+}
+
+function onSliderPointerUp(ev: PointerEvent): void {
+  if (!isDraggingSlider) return;
+  isDraggingSlider = false;
+  try {
+    (ev.currentTarget as HTMLElement)?.releasePointerCapture?.(ev.pointerId);
+  } catch {}
+}
+
+function triggerHaptic(): void {
+  try {
+    if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+      navigator.vibrate(10);
+    }
+  } catch {}
 }
 
 function handlePickModel(modelId: string): void {
@@ -377,21 +453,38 @@ function selectReasoningEffort(effort: string): void {
             </div>
           </div>
 
-          <div v-if="reasoningEffortOptions.length" class="modelPickerSection">
-            <div class="modelPickerSectionTitle">⚡ 推理思考强度 (Reasoning Effort)</div>
-            <div class="effortSegmentedBar">
+          <div v-if="isReasoningModel" class="modelPickerSection">
+            <div class="modelPickerSectionHeader">
+              <div class="modelPickerSectionTitle">⚡ 推理思考强度 (Reasoning Effort)</div>
+              <span class="modelPickerSectionHint">{{ effortHintText }}</span>
+            </div>
+            <div
+              ref="sliderTrackRef"
+              class="effortSegmentedSlider"
+              data-testid="effort-segmented-slider"
+              @pointerdown="onSliderPointerDown"
+              @pointermove="onSliderPointerMove"
+              @pointerup="onSliderPointerUp"
+              @pointercancel="onSliderPointerUp"
+            >
               <button
                 v-for="effort in displayEfforts"
                 :key="effort.id"
                 type="button"
                 class="effortPill"
-                :class="{ active: effort.active }"
+                :class="{ active: effort.active, disabled: !effort.supported }"
                 :disabled="!effort.supported"
                 :data-testid="`effort-pill-${effort.id}`"
                 @click="handlePickEffort(effort.id)"
               >
                 {{ effort.label }}
               </button>
+            </div>
+          </div>
+          <div v-else class="modelPickerSection nonReasoningSection">
+            <div class="nonReasoningNotice">
+              <span class="nonReasoningIcon">ℹ️</span>
+              <span>当前模型（{{ selectedModelLabel }}）为标准对话模型，不支持调节推理思考强度。</span>
             </div>
           </div>
         </div>
@@ -616,13 +709,32 @@ function selectReasoningEffort(effort: string): void {
   color: var(--accent);
 }
 
-.effortSegmentedBar {
+.modelPickerSectionHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.modelPickerSectionHint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.effortSegmentedSlider {
   display: flex;
   gap: 4px;
   background: var(--surface-2, rgba(15, 23, 42, 0.05));
   padding: 3px;
   border-radius: 10px;
   border: 1px solid var(--border);
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+}
+
+.effortSegmentedSlider:active {
+  cursor: grabbing;
 }
 
 .effortPill {
@@ -636,10 +748,11 @@ function selectReasoningEffort(effort: string): void {
   min-height: 38px;
   border-radius: 7px;
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
   display: flex;
   align-items: center;
   justify-content: center;
+  user-select: none;
 }
 
 .effortPill.active {
@@ -649,8 +762,22 @@ function selectReasoningEffort(effort: string): void {
   font-weight: 700;
 }
 
+.effortPill.disabled,
 .effortPill:disabled {
-  opacity: 0.35;
+  opacity: 0.3;
   cursor: not-allowed;
+}
+
+.nonReasoningNotice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--surface-2, rgba(15, 23, 42, 0.04));
+  border: 1px dashed var(--border);
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
 }
 </style>

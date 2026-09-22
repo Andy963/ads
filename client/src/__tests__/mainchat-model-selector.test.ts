@@ -465,4 +465,67 @@ describe("MainChat model selector", () => {
 
     wrapper.unmount();
   });
+
+  it("supports pointer dragging across the effort segmented slider", async () => {
+    const model = makeModel("gpt-5.5", "GPT-5.5", "openai");
+    model.configJson = { reasoningEfforts: ["low", "medium", "high", "max"] };
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [model],
+        modelId: "gpt-5.5",
+        modelReasoningEffort: "high",
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
+    const slider = document.body.querySelector('[data-testid="effort-segmented-slider"]') as HTMLElement;
+    expect(slider).not.toBeNull();
+
+    slider.getBoundingClientRect = () => ({
+      left: 0,
+      top: 0,
+      right: 500,
+      bottom: 40,
+      width: 500,
+      height: 40,
+      x: 0,
+      y: 0,
+      toJSON: () => {},
+    });
+
+    slider.dispatchEvent(new PointerEvent("pointerdown", { clientX: 50, pointerId: 1 }));
+    expect(wrapper.emitted("setReasoningEffort")?.at(-1)?.[0]).toBe("low");
+
+    slider.dispatchEvent(new PointerEvent("pointermove", { clientX: 150, pointerId: 1 }));
+    expect(wrapper.emitted("setReasoningEffort")?.at(-1)?.[0]).toBe("medium");
+
+    slider.dispatchEvent(new PointerEvent("pointerup", { clientX: 150, pointerId: 1 }));
+    wrapper.unmount();
+  });
+
+  it("displays a clear non-reasoning notice for standard models", async () => {
+    const gpt4o = makeModel("gpt-4o", "GPT-4o", "openai");
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [gpt4o],
+        modelId: "gpt-4o",
+      },
+      attachTo: document.body,
+    });
+
+    expect(wrapper.find('[data-testid="chat-capsule-text"]').text()).toBe("GPT-4o");
+    await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
+    const notice = document.body.querySelector(".nonReasoningNotice");
+    expect(notice).not.toBeNull();
+    expect(notice?.textContent).toContain("标准对话模型");
+    expect(document.body.querySelector('[data-testid="effort-segmented-slider"]')).toBeNull();
+    wrapper.unmount();
+  });
 });
