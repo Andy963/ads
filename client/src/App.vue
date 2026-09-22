@@ -332,12 +332,14 @@ function closeMobileContextMenu(): void {
 }
 
 function closeMobileDrawer(): void {
+  cancelDrawerGesture();
   mobileDrawerOpen.value = false;
   mobileContextMenuOpen.value = false;
 }
 
 function openMobileDrawer(section?: MobileDrawerSection): void {
   if (!isMobile.value) return;
+  cancelDrawerGesture();
   if (section) {
     mobileDrawerSection.value = section;
   }
@@ -457,66 +459,223 @@ const mobileDrawerToggleRef = ref<HTMLButtonElement | null>(null);
 const mobileDrawerRef = ref<HTMLElement | null>(null);
 
 const DRAWER_SWIPE_EDGE_PX = 28;
-const DRAWER_SWIPE_TRIGGER_PX = 32;
 const DRAWER_SWIPE_RATIO = 1.4;
+// Horizontal travel that takes the axis lock and starts 1:1 tracking.
+const DRAWER_DRAG_LOCK_PX = 10;
+// Releasing past this share of the drawer width snaps to the far end.
+const DRAWER_SNAP_RATIO = 0.35;
+// Release velocity (px/ms, i.e. ~500px/s) that snaps regardless of distance.
+const DRAWER_FLICK_VELOCITY_PX_PER_MS = 0.5;
+// A finger held still before release must not read as a flick.
+const DRAWER_FLICK_STALE_MS = 100;
+// Slightly longer than the 0.28s snap transition.
+const DRAWER_SNAP_SETTLE_MS = 340;
+// Lets the leave transition commit before gesture styles are dropped.
+const DRAWER_SETTLE_CLEANUP_MS = 60;
 
 type DrawerSwipe = { startX: number; startY: number; triggered: boolean };
-let drawerEdgeSwipe: DrawerSwipe | null = null;
-let drawerCloseSwipe: DrawerSwipe | null = null;
+
+type DrawerGesture = {
+  mode: "open" | "close";
+  startX: number;
+  startY: number;
+  startTime: number;
+  width: number;
+  tracking: boolean;
+  prevX: number;
+  prevTime: number;
+  lastX: number;
+  lastTime: number;
+};
+
+let drawerGesture: DrawerGesture | null = null;
+let drawerSettleTimer: ReturnType<typeof setTimeout> | null = null;
+let drawerCleanupTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Progress of an in-flight drawer gesture: 0 is fully closed, 1 fully open.
+// Non-null keeps the drawer and backdrop rendered under direct style control.
+const drawerDragProgress = ref<number | null>(null);
+const drawerGestureWidth = ref(0);
+const drawerSnapSettling = ref(false);
+
+const drawerGestureStyle = computed<Record<string, string> | undefined>(() => {
+  const progress = drawerDragProgress.value;
+  if (progress === null || !isMobile.value) return undefined;
+  const offset = (progress - 1) * drawerGestureWidth.value;
+  return {
+    transform: `translateX(${offset}px)`,
+    transition: drawerSnapSettling.value ? "transform 0.28s cubic-bezier(0.3, 0.8, 0.4, 1)" : "none",
+  };
+});
+
+const drawerBackdropGestureStyle = computed<Record<string, string> | undefined>(() => {
+  const progress = drawerDragProgress.value;
+  if (progress === null || !isMobile.value) return undefined;
+  return {
+    opacity: String(progress),
+    transition: drawerSnapSettling.value ? "opacity 0.28s ease" : "none",
+    ...(progress <= 0 ? { pointerEvents: "none" } : {}),
+  };
+});
+
+function drawerWidthPx(): number {
+  const measured = mobileDrawerRef.value?.getBoundingClientRect().width ?? 0;
+  if (measured > 0) return measured;
+  // .left.mobileDrawer is width: min(360px, 84vw) capped by calc(100vw - 24px).
+  const viewportWidth = window.innerWidth;
+  return Math.min(360, viewportWidth * 0.84, Math.max(viewportWidth - 24, 1));
+}
+
+function clampDrawerProgress(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
+function resetDrawerGestureStyles(): void {
+  drawerDragProgress.value = null;
+  drawerSnapSettling.value = false;
+  drawerGestureWidth.value = 0;
+}
+
+function cancelDrawerGesture(): void {
+  drawerGesture = null;
+  if (drawerSettleTimer !== null) {
+    clearTimeout(drawerSettleTimer);
+    drawerSettleTimer = null;
+  }
+  if (drawerCleanupTimer !== null) {
+    clearTimeout(drawerCleanupTimer);
+    drawerCleanupTimer = null;
+  }
+  resetDrawerGestureStyles();
+}
+
+function settleDrawerGesture(targetOpen: boolean): void {
+  drawerSnapSettling.value = true;
+  drawerDragProgress.value = targetOpen ? 1 : 0;
+  drawerSettleTimer = setTimeout(() => {
+    drawerSettleTimer = null;
+    drawerSnapSettling.value = false;
+    if (targetOpen) {
+      // The open end state matches the stylesheet default, so dropping the
+      // inline transform here cannot move the drawer.
+      mobileDrawerOpen.value = true;
+      resetDrawerGestureStyles();
+      return;
+    }
+    mobileDrawerOpen.value = false;
+    // Keep the off-screen inline transform until the leave transition has
+    // committed; clearing it in the same frame would flash the drawer open.
+    drawerCleanupTimer = setTimeout(() => {
+      drawerCleanupTimer = null;
+      resetDrawerGestureStyles();
+    }, DRAWER_SETTLE_CLEANUP_MS);
+  }, DRAWER_SNAP_SETTLE_MS);
+}
 
 function readSwipeTouch(ev: TouchEvent): { x: number; y: number } | null {
   if (ev.touches.length !== 1) return null;
   return { x: ev.touches[0].clientX, y: ev.touches[0].clientY };
 }
 
-function isHorizontalSwipe(dx: number, dy: number): boolean {
-  return Math.abs(dx) > DRAWER_SWIPE_TRIGGER_PX && Math.abs(dx) > Math.abs(dy) * DRAWER_SWIPE_RATIO;
+function startDrawerGesture(ev: TouchEvent, mode: "open" | "close"): void {
+  const touch = readSwipeTouch(ev);
+  if (!touch) return;
+  drawerGesture = {
+    mode,
+    startX: touch.x,
+    startY: touch.y,
+    startTime: ev.timeStamp,
+    width: 0,
+    tracking: false,
+    prevX: touch.x,
+    prevTime: ev.timeStamp,
+    lastX: touch.x,
+    lastTime: ev.timeStamp,
+  };
+}
+
+function trackDrawerGesture(ev: TouchEvent, direction: 1 | -1): void {
+  const gesture = drawerGesture;
+  if (!gesture) return;
+  const touch = readSwipeTouch(ev);
+  if (!touch) return;
+  const dx = touch.x - gesture.startX;
+  const dy = touch.y - gesture.startY;
+  if (!gesture.tracking) {
+    // Vertical scrolling always wins over the drawer gesture.
+    if (Math.abs(dy) > DRAWER_DRAG_LOCK_PX && Math.abs(dy) > Math.abs(dx) * DRAWER_SWIPE_RATIO) {
+      drawerGesture = null;
+      return;
+    }
+    if (!(dx * direction > DRAWER_DRAG_LOCK_PX && Math.abs(dx) > Math.abs(dy) * DRAWER_SWIPE_RATIO)) return;
+    gesture.tracking = true;
+    gesture.width = drawerWidthPx();
+    drawerGestureWidth.value = gesture.width;
+  }
+  gesture.prevX = gesture.lastX;
+  gesture.prevTime = gesture.lastTime;
+  gesture.lastX = touch.x;
+  gesture.lastTime = ev.timeStamp;
+  const progress = gesture.mode === "open" ? dx / gesture.width : 1 + dx / gesture.width;
+  drawerDragProgress.value = clampDrawerProgress(progress);
+}
+
+function resolveDrawerSnapTarget(mode: "open" | "close", progress: number, velocity: number): boolean {
+  if (velocity >= DRAWER_FLICK_VELOCITY_PX_PER_MS) return true;
+  if (velocity <= -DRAWER_FLICK_VELOCITY_PX_PER_MS) return false;
+  return mode === "open" ? progress >= DRAWER_SNAP_RATIO : progress > 1 - DRAWER_SNAP_RATIO;
+}
+
+function finishDrawerGesture(ev: TouchEvent, cancelled: boolean): void {
+  const gesture = drawerGesture;
+  drawerGesture = null;
+  if (!gesture || !gesture.tracking) return;
+  if (cancelled) {
+    // touchcancel always springs back to the state the drag started from.
+    settleDrawerGesture(gesture.mode === "close");
+    return;
+  }
+  const dx = gesture.lastX - gesture.startX;
+  const progress = clampDrawerProgress(gesture.mode === "open" ? dx / gesture.width : 1 + dx / gesture.width);
+  const trailDt = gesture.lastTime - gesture.prevTime;
+  const stale = ev.timeStamp - gesture.lastTime > DRAWER_FLICK_STALE_MS;
+  const velocity = stale || trailDt <= 0 ? 0 : (gesture.lastX - gesture.prevX) / trailDt;
+  settleDrawerGesture(resolveDrawerSnapTarget(gesture.mode, progress, velocity));
 }
 
 function onDrawerEdgeTouchStart(ev: TouchEvent): void {
-  drawerEdgeSwipe = null;
+  if (drawerGesture || drawerSnapSettling.value) return;
   if (!isMobile.value || mobileDrawerOpen.value) return;
   // SVG descendants are Elements too; button taps must not start a competing
   // edge swipe or be interpreted as navigation drags by the parent container.
   if (ev.target instanceof Element && ev.target.closest(".topbar, button, a, input, textarea, select, [role='button']")) return;
   const touch = readSwipeTouch(ev);
   if (!touch || touch.x > DRAWER_SWIPE_EDGE_PX) return;
-  drawerEdgeSwipe = { startX: touch.x, startY: touch.y, triggered: false };
+  startDrawerGesture(ev, "open");
 }
 
 function onDrawerEdgeTouchMove(ev: TouchEvent): void {
-  const swipe = drawerEdgeSwipe;
-  if (!swipe || swipe.triggered) return;
-  const touch = readSwipeTouch(ev);
-  if (!touch) return;
-  if (touch.x - swipe.startX > 0 && isHorizontalSwipe(touch.x - swipe.startX, touch.y - swipe.startY)) {
-    swipe.triggered = true;
-    openMobileDrawer();
-  }
+  if (drawerGesture?.mode !== "open") return;
+  trackDrawerGesture(ev, 1);
 }
 
 function onDrawerSwipeTouchStart(ev: TouchEvent): void {
+  if (drawerGesture || drawerSnapSettling.value) return;
   if (!isMobile.value) return;
-  const touch = readSwipeTouch(ev);
-  if (!touch) return;
-  drawerCloseSwipe = { startX: touch.x, startY: touch.y, triggered: false };
+  startDrawerGesture(ev, "close");
 }
 
 function onDrawerSwipeTouchMove(ev: TouchEvent): void {
-  const swipe = drawerCloseSwipe;
-  if (!swipe || swipe.triggered) return;
-  const touch = readSwipeTouch(ev);
-  if (!touch) return;
-  const dx = touch.x - swipe.startX;
-  if (dx < 0 && isHorizontalSwipe(dx, touch.y - swipe.startY)) {
-    swipe.triggered = true;
-    closeMobileDrawer();
-  }
+  if (drawerGesture?.mode !== "close") return;
+  trackDrawerGesture(ev, -1);
 }
 
-function onDrawerSwipeTouchEnd(): void {
-  drawerEdgeSwipe = null;
-  drawerCloseSwipe = null;
+function onDrawerGestureTouchEnd(ev: TouchEvent): void {
+  finishDrawerGesture(ev, false);
+}
+
+function onDrawerGestureTouchCancel(ev: TouchEvent): void {
+  finishDrawerGesture(ev, true);
 }
 
 const LANE_SWIPE_TRIGGER_PX = 40;
@@ -534,6 +693,8 @@ const lanePanelTransitionName = computed(() =>
 function onLaneSwipeTouchStart(ev: TouchEvent): void {
   laneSwipe = null;
   if (!isMobile.value || mobileDrawerOpen.value) return;
+  // An in-flight drawer drag owns the touch sequence.
+  if (drawerDragProgress.value !== null) return;
   if (ev.target instanceof Element && ev.target.closest(LANE_SWIPE_IGNORE_SELECTOR)) return;
   const touch = readSwipeTouch(ev);
   // The left edge stays reserved for the drawer edge swipe.
@@ -674,6 +835,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onMobileKeydown);
   window.removeEventListener("pagehide", stashComposerDrafts);
+  cancelDrawerGesture();
   document.body.style.overflow = "";
 });
 
@@ -773,8 +935,8 @@ const advisorConnectionStatus = computed(() => {
     @click="closeMobileContextMenu"
     @touchstart.passive="onDrawerEdgeTouchStart"
     @touchmove.passive="onDrawerEdgeTouchMove"
-    @touchend="onDrawerSwipeTouchEnd"
-    @touchcancel="onDrawerSwipeTouchEnd"
+    @touchend="onDrawerGestureTouchEnd"
+    @touchcancel="onDrawerGestureTouchCancel"
   >
     <header class="topbar">
       <button
@@ -886,23 +1048,23 @@ const advisorConnectionStatus = computed(() => {
     <main class="layout">
       <Transition name="mobile-fade">
         <div
-          v-if="isMobile && mobileDrawerOpen"
+          v-if="isMobile && (mobileDrawerOpen || drawerDragProgress !== null)"
           class="mobileDrawerBackdrop"
+          :style="drawerBackdropGestureStyle"
           data-testid="mobile-drawer-backdrop"
           @click="closeMobileDrawer"
         />
       </Transition>
       <Transition name="mobile-drawer">
         <aside
-          v-if="!isMobile || mobileDrawerOpen"
+          v-if="!isMobile || mobileDrawerOpen || drawerDragProgress !== null"
           ref="mobileDrawerRef"
           class="left"
           :class="{ mobileDrawer: isMobile }"
+          :style="drawerGestureStyle"
           data-testid="mobile-drawer"
           @touchstart.passive="onDrawerSwipeTouchStart"
           @touchmove.passive="onDrawerSwipeTouchMove"
-          @touchend="onDrawerSwipeTouchEnd"
-          @touchcancel="onDrawerSwipeTouchEnd"
           @keydown="onDrawerKeydown"
         >
         <nav v-if="isMobile" class="mobileDrawerNav" aria-label="导航模块">
