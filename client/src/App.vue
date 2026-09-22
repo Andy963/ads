@@ -1334,22 +1334,20 @@ const advisorConnectionStatus = computed(() => {
                 @pointerup="laneActivation.onPointerUp"
                 @click="laneActivation.onClick($event, tab.id)"
               >
-                <span
-                  class="laneTabStatusDot"
-                  :class="isLaneConnected(tab.id, { advisor: advisorConnected, worker: connected })
+              <span
+                class="laneTabStatusDot"
+                :class="[
+                  isLaneConnected(tab.id, { advisor: advisorConnected, worker: connected })
                     ? 'laneTabStatusDot--connected'
-                    : 'laneTabStatusDot--disconnected'"
-                  :data-testid="`lane-tab-status-${tab.id}`"
-                  aria-hidden="true"
-                />
-                <span class="laneTabLabel">{{ tab.label }}</span>
-                <span
-                  v-if="tab.id === 'advisor' ? advisorBusy : agentBusy"
-                  class="laneTabBusySpinner"
-                  :class="tab.id === 'advisor' ? 'laneTabBusySpinner--advisor' : 'laneTabBusySpinner--worker'"
-                  :data-testid="`lane-tab-busy-${tab.id}`"
-                  aria-hidden="true"
-                />
+                    : 'laneTabStatusDot--disconnected',
+                  (tab.id === 'advisor' ? advisorBusy : agentBusy)
+                    ? (tab.id === 'advisor' ? 'laneTabStatusDot--busy-advisor' : 'laneTabStatusDot--busy-worker')
+                    : '',
+                ]"
+               :data-testid="`lane-tab-status-${tab.id}`"
+                aria-hidden="true"
+              />
+              <span class="laneTabLabel">{{ tab.label }}</span>
               </button>
             </template>
           </div>
