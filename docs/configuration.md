@@ -116,3 +116,15 @@ Telegram variables belong to the standalone `connectors/telegram` package and ar
 | `TELEGRAM_PROXY_URL` | 未设置 | 网络代理地址（如 `http://127.0.0.1:7890`） |
 | `TELEGRAM_SILENT_NOTIFICATIONS` | `true` | 是否静默推送任务完成通知 |
 | `TELEGRAM_NOTIFICATION_CHAT_ID` | 未设置 | 接收异步任务终态通知的 Chat ID |
+
+---
+
+## 8. 本地部署 (deploy:local)
+
+以下变量由 `npm run deploy:local`（`scripts/deploy-local.js`）读取，不影响运行时服务。
+
+| 变量名 | 默认值 | 说明 |
+|---|---|---|
+| `ADS_FORCE_RESTART` | 未设置 | 设为 `1` 时强制完整构建 + systemd 重启流程，跳过 client-only 零停机路径（等效于 `--force-restart` CLI 标志） |
+
+部署脚本按 git diff 的变更范围选择部署路径：仅 `client/**`、`docs/**`、`*.md` 变更时只重建前端并原子切换 `current` 软链（不重启后端服务，零停机）；涉及 `server/**`、`connectors/**`、`package.json` 等其他文件，或无法确定 diff 基线（首次部署、无 release 元数据）时，保守回退为完整重启流程。详见 README「本地部署」一节。

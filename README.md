@@ -66,6 +66,19 @@ npm run web:init-admin -- --username admin --password-stdin
   node connectors/telegram/bin/ads-telegram.js start
   ```
 
+### 5. 本地部署（systemd --user，可选）
+```bash
+npm run deploy:local                          # 变更感知部署
+npm run deploy:local -- --force-restart       # 强制完整构建 + 重启服务
+ADS_FORCE_RESTART=1 npm run deploy:local      # 等效的环境变量方式
+```
+
+部署脚本是**变更感知**的：它读取当前 release 中记录的 commit（release 目录下的 `.ads-release.json`），与本地工作区做 git diff（含未提交与未跟踪文件），按变更范围选择部署路径：
+
+- **仅 `client/**`、`docs/**`、`*.md` 变更**：只重新构建前端（`npm run build:web`），组装新 release 并原子切换 `current` 软链。后端服务**不停止、不重启**，WebSocket 不断线，浏览器刷新即生效（零停机）。Web 服务按请求动态从磁盘读取 `dist/client`，因此新静态资源即时可见。
+- **涉及 `server/**`、`connectors/**`、`package.json`、`tsconfig*.json` 等任何其他文件**：完整构建 + 完整 systemd stop/restart 流程。
+- **无法确定 diff 基线**（首次部署、历史 release 无元数据、git 不可用）或服务当前未运行时：保守回退为完整重启流程。
+
 ---
 
 ## 模块文档索引
@@ -91,6 +104,7 @@ npm run web:init-admin -- --username admin --password-stdin
 | `npm run test` | 运行服务端完整单元测试（Node test runner） |
 | `npm run test:web` | 运行前端 Vitest 组件与状态测试 |
 | `npm run lint` | 运行 ESLint 代码规范检查 |
+| `npm run deploy:local` | 变更感知的本地 systemd 部署；仅前端/文档变更时零停机更新（支持 `--force-restart`） |
 | `npm run skills:migrate` | 运行技能迁移 CLI，将遗留技能非破坏性迁移至 Codex 标准目录 |
 | `npm run web:reset-admin` | 重置或创建新的 Web 管理员账号 |
 

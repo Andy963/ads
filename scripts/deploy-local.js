@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { classifyChangedFiles } from "./lib/deploy-scope.js";
+
 const scriptPath = fileURLToPath(import.meta.url);
 const sourceRoot = path.resolve(path.dirname(scriptPath), "..");
 const telegramConnectorRoot = path.join(sourceRoot, "connectors", "telegram");
@@ -34,6 +36,10 @@ const releaseName = `${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}
 const stagingDir = path.join(releasesDir, `.staging-${releaseName}`);
 const releaseDir = path.join(releasesDir, releaseName);
 const detachedDeployFlag = "ADS_DEPLOY_DETACHED";
+const forceRestartEnvFlag = "ADS_FORCE_RESTART";
+const releaseMetadataFileName = ".ads-release.json";
+const cliArgs = process.argv.slice(2);
+const forceRestart = cliArgs.includes("--force-restart") || process.env[forceRestartEnvFlag] === "1";
 
 function formatCommand(command, args) {
   return [command, ...args].map((part) => JSON.stringify(part)).join(" ");
@@ -68,17 +74,24 @@ function isRunningInsideService(serviceName) {
 
 function delegateDeployment() {
   const unitName = `ads-deploy-${releaseName}`;
+  const setenvArgs = [
+    `--setenv=${detachedDeployFlag}=1`,
+    `--setenv=HOME=${home}`,
+    `--setenv=PATH=${toolEnv.PATH}`,
+  ];
+  if (process.env[forceRestartEnvFlag]) {
+    setenvArgs.push(`--setenv=${forceRestartEnvFlag}=${process.env[forceRestartEnvFlag]}`);
+  }
   run("systemd-run", [
     "--user",
     `--unit=${unitName}`,
     "--collect",
     "--property=Type=exec",
     `--working-directory=${sourceRoot}`,
-    `--setenv=${detachedDeployFlag}=1`,
-    `--setenv=HOME=${home}`,
-    `--setenv=PATH=${toolEnv.PATH}`,
+    ...setenvArgs,
     nodeBin,
     scriptPath,
+    ...cliArgs,
   ]);
   console.log(`Deployment delegated to ${unitName}.service`);
   console.log(`Follow progress: journalctl --user -fu ${unitName}.service`);
@@ -159,6 +172,88 @@ function readCurrentTarget() {
     if (error?.code === "ENOENT") return null;
     throw error;
   }
+}
+
+function tryRunCapture(command, args, options = {}) {
+  try {
+    return run(command, args, { ...options, capture: true });
+  } catch {
+    return null;
+  }
+}
+
+function readSourceCommit() {
+  return tryRunCapture("git", ["rev-parse", "HEAD"], { cwd: sourceRoot });
+}
+
+function readDeployedCommit(releasePath) {
+  if (!releasePath) return null;
+  try {
+    const metadata = JSON.parse(fs.readFileSync(path.join(releasePath, releaseMetadataFileName), "utf8"));
+    return typeof metadata?.commit === "string" && metadata.commit.length > 0 ? metadata.commit : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeReleaseMetadata(targetDir) {
+  const metadata = {
+    commit: readSourceCommit(),
+    deployedAt: new Date().toISOString(),
+  };
+  writeAtomic(path.join(targetDir, releaseMetadataFileName), `${JSON.stringify(metadata, null, 2)}\n`, 0o644);
+}
+
+// Returns the deduplicated list of files that differ between the deployed
+// commit and the current working tree (tracked modifications plus untracked,
+// non-ignored files), or null when the diff baseline cannot be established.
+function listChangedFilesSince(baseCommit) {
+  const commitExists = tryRunCapture("git", ["cat-file", "-e", `${baseCommit}^{commit}`], { cwd: sourceRoot });
+  if (commitExists === null) return null;
+  const tracked = tryRunCapture("git", ["diff", "--no-renames", "--name-only", baseCommit], { cwd: sourceRoot });
+  const untracked = tryRunCapture("git", ["ls-files", "--others", "--exclude-standard"], { cwd: sourceRoot });
+  if (tracked === null || untracked === null) return null;
+  const files = new Set();
+  for (const line of [...tracked.split("\n"), ...untracked.split("\n")]) {
+    const trimmed = line.trim();
+    if (trimmed) files.add(trimmed);
+  }
+  return [...files];
+}
+
+function buildOutputsReadyForClientOnly() {
+  if (!fs.existsSync(path.join(sourceRoot, "dist", "server", "cli.js"))) return false;
+  if (fs.existsSync(telegramConnectorRoot) && !fs.existsSync(path.join(telegramConnectorRoot, "dist"))) return false;
+  return true;
+}
+
+// Any uncertainty resolves to "full" so a missed backend change can never ship
+// as a zero-downtime static update.
+function decideDeployMode({ previousCurrent, webServiceActive }) {
+  if (forceRestart) {
+    return { mode: "full", reason: `restart forced via --force-restart or ${forceRestartEnvFlag}=1` };
+  }
+  const deployedCommit = readDeployedCommit(previousCurrent);
+  if (!deployedCommit) {
+    return { mode: "full", reason: "no deployed release metadata (first deploy or legacy release)" };
+  }
+  if (!webServiceActive) {
+    return { mode: "full", reason: `${webServiceName} is not active; a full deploy is required to bring services up` };
+  }
+  if (!buildOutputsReadyForClientOnly()) {
+    return { mode: "full", reason: "build outputs are incomplete; a full build is required" };
+  }
+  const changedFiles = listChangedFilesSince(deployedCommit);
+  if (changedFiles === null) {
+    return { mode: "full", reason: `could not diff against deployed commit ${deployedCommit}` };
+  }
+  if (classifyChangedFiles(changedFiles) === "client-only") {
+    return {
+      mode: "client-only",
+      reason: `only client/docs changes since ${deployedCommit.slice(0, 12)} (${changedFiles.length} file(s))`,
+    };
+  }
+  return { mode: "full", reason: `backend-affecting changes since ${deployedCommit.slice(0, 12)}` };
 }
 
 function buildServiceUnit(options) {
@@ -265,6 +360,7 @@ function assembleRelease() {
     },
   });
 
+  writeReleaseMetadata(stagingDir);
   fs.renameSync(stagingDir, releaseDir);
 }
 
@@ -304,86 +400,115 @@ const services = serviceDefinitions.map((service) => ({
 let switched = false;
 let servicesStopped = false;
 
+const webServiceState = services.find((service) => service.name === webServiceName);
+const deployDecision = decideDeployMode({
+  previousCurrent,
+  webServiceActive: webServiceState ? webServiceState.wasActive : false,
+});
+console.log(`[Deploy] Mode: ${deployDecision.mode} (${deployDecision.reason})`);
+
 try {
-  run(npmBin, ["run", "build"], { cwd: sourceRoot, env: toolEnv });
-  if (fs.existsSync(telegramConnectorRoot)) {
-    run(npmBin, ["run", "build"], { cwd: telegramConnectorRoot, env: toolEnv });
-  }
-  assembleRelease();
+  if (deployDecision.mode === "client-only") {
+    run(npmBin, ["run", "build:web"], { cwd: sourceRoot, env: toolEnv });
+    assembleRelease();
 
-  for (const service of services) {
-    if (service.wasActive) {
-      run("systemctl", ["--user", "stop", service.name]);
+    prepareState();
+    switchCurrent(releaseDir);
+    switched = true;
+
+    console.log("[Deploy] Client-only changes detected. Static assets updated with zero downtime (backend restart skipped).");
+    console.log(`ADS deployed to ${releaseDir}`);
+    console.log(`Current runtime: ${currentLink}`);
+  } else {
+    run(npmBin, ["run", "build"], { cwd: sourceRoot, env: toolEnv });
+    if (fs.existsSync(telegramConnectorRoot)) {
+      run(npmBin, ["run", "build"], { cwd: telegramConnectorRoot, env: toolEnv });
     }
-  }
-  servicesStopped = true;
+    assembleRelease();
 
-  prepareState();
-  for (const service of services) {
-    writeAtomic(service.filePath, service.unit, 0o644);
-  }
-  switchCurrent(releaseDir);
-  switched = true;
-
-  run("systemctl", ["--user", "daemon-reload"]);
-  for (const service of services) {
-    try {
-      run("systemctl", ["--user", "enable", service.name]);
-      run("systemctl", ["--user", "restart", service.name]);
-    } catch (error) {
-      if (!service.optional) throw error;
-      console.error(`Optional service ${service.name} could not be started: ${error instanceof Error ? error.message : String(error)}`);
+    for (const service of services) {
+      if (service.wasActive) {
+        run("systemctl", ["--user", "stop", service.name]);
+      }
     }
-  }
-  for (const service of services) {
-    try {
-      assertServiceStable(service.name);
-    } catch (error) {
-      if (!service.optional) throw error;
-      console.error(`Optional service ${service.name} is not stable: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
+    servicesStopped = true;
 
-  console.log(`ADS deployed to ${releaseDir}`);
-  console.log(`Current runtime: ${currentLink}`);
+    prepareState();
+    for (const service of services) {
+      writeAtomic(service.filePath, service.unit, 0o644);
+    }
+    switchCurrent(releaseDir);
+    switched = true;
+
+    run("systemctl", ["--user", "daemon-reload"]);
+    for (const service of services) {
+      try {
+        run("systemctl", ["--user", "enable", service.name]);
+        run("systemctl", ["--user", "restart", service.name]);
+      } catch (error) {
+        if (!service.optional) throw error;
+        console.error(`Optional service ${service.name} could not be started: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    for (const service of services) {
+      try {
+        assertServiceStable(service.name);
+      } catch (error) {
+        if (!service.optional) throw error;
+        console.error(`Optional service ${service.name} is not stable: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    console.log(`ADS deployed to ${releaseDir}`);
+    console.log(`Current runtime: ${currentLink}`);
+  }
 } catch (error) {
   console.error(`Deployment failed: ${error instanceof Error ? error.message : String(error)}`);
 
-  if (servicesStopped || switched) {
-    for (const service of services) {
-      spawnSync("systemctl", ["--user", "stop", service.name], { stdio: "ignore" });
+  if (deployDecision.mode === "client-only") {
+    // Services were never stopped or reconfigured; restoring the symlink is
+    // the only rollback needed.
+    if (switched) {
+      if (previousCurrent) switchCurrent(previousCurrent);
+      else removeCurrentLink();
     }
-  }
-
-  if (switched) {
-    if (previousCurrent) switchCurrent(previousCurrent);
-    else removeCurrentLink();
-  }
-
-  for (const service of services) {
-    if (service.previousUnit === null) {
-      fs.rmSync(service.filePath, { force: true });
-    } else {
-      writeAtomic(service.filePath, service.previousUnit, 0o644);
+  } else {
+    if (servicesStopped || switched) {
+      for (const service of services) {
+        spawnSync("systemctl", ["--user", "stop", service.name], { stdio: "ignore" });
+      }
     }
-  }
 
-  try {
-    run("systemctl", ["--user", "daemon-reload"]);
+    if (switched) {
+      if (previousCurrent) switchCurrent(previousCurrent);
+      else removeCurrentLink();
+    }
+
     for (const service of services) {
-      if (service.previousUnit !== null) {
-        if (service.wasEnabled) {
-          run("systemctl", ["--user", "enable", service.name]);
-        } else {
-          run("systemctl", ["--user", "disable", service.name]);
+      if (service.previousUnit === null) {
+        fs.rmSync(service.filePath, { force: true });
+      } else {
+        writeAtomic(service.filePath, service.previousUnit, 0o644);
+      }
+    }
+
+    try {
+      run("systemctl", ["--user", "daemon-reload"]);
+      for (const service of services) {
+        if (service.previousUnit !== null) {
+          if (service.wasEnabled) {
+            run("systemctl", ["--user", "enable", service.name]);
+          } else {
+            run("systemctl", ["--user", "disable", service.name]);
+          }
+        }
+        if (service.previousUnit !== null && service.wasActive) {
+          run("systemctl", ["--user", "restart", service.name]);
         }
       }
-      if (service.previousUnit !== null && service.wasActive) {
-        run("systemctl", ["--user", "restart", service.name]);
-      }
+    } catch (rollbackError) {
+      console.error(`Rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
     }
-  } catch (rollbackError) {
-    console.error(`Rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
   }
 
   process.exitCode = 1;
