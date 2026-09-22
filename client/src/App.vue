@@ -996,6 +996,8 @@ onBeforeUnmount(() => {
   window.removeEventListener("pagehide", stashComposerDrafts);
   cancelDrawerGesture();
   cancelLaneGesture();
+  cancelProjectLongPress();
+  if (projectSwipeClickResetTimer !== null) clearTimeout(projectSwipeClickResetTimer);
   document.body.style.overflow = "";
 });
 
@@ -1003,17 +1005,13 @@ const {
   draggingProjectId,
   dropTargetProjectId,
   dropTargetPosition,
-  projectRemoveConfirmOpen,
-  pendingRemoveProject,
   projectRowKey,
   onProjectRowClick,
   onProjectRowPointerDown,
   onProjectRowPointerUp,
   onProjectRowPointerCancel,
   canRemoveProject,
-  requestRemoveProject,
-  cancelRemoveProject,
-  confirmRemoveProject,
+  removeProject: handleRemoveProject,
   onProjectDragStart,
   onProjectDragEnd,
   onProjectDragOver,
@@ -1027,6 +1025,201 @@ const {
   reorderProjects,
   removeProject,
 });
+
+type ProjectLike = {
+  id: string;
+  name?: string;
+  branch?: string;
+  path?: string;
+};
+
+const PROJECT_ROW_ACTIONS_WIDTH_PX = 76;
+const PROJECT_ROW_SWIPE_THRESHOLD_PX = 8;
+const PROJECT_ROW_LONG_PRESS_MS = 500;
+
+const projectSwipeOpenId = ref<string | null>(null);
+const activeProjectSwipeId = ref<string | null>(null);
+const activeProjectSwipeOffset = ref(0);
+const actionSheetProjectId = ref<string | null>(null);
+
+let projectTouchStartX = 0;
+let projectTouchStartY = 0;
+let projectTouchStartOffset = 0;
+let projectTouchAxis: "horizontal" | "vertical" | null = null;
+let projectTouchMoved = false;
+let suppressNextProjectRowClick = false;
+let projectSwipeClickResetTimer: ReturnType<typeof setTimeout> | null = null;
+let projectLongPressTimer: ReturnType<typeof setTimeout> | null = null;
+let projectLongPressFired = false;
+
+const actionSheetProject = computed(() => {
+  const id = actionSheetProjectId.value;
+  if (!id) return null;
+  return projects.value.find((p) => p.id === id) ?? null;
+});
+
+function openProjectActionSheet(p: ProjectLike): void {
+  projectSwipeOpenId.value = null;
+  activeProjectSwipeId.value = null;
+  actionSheetProjectId.value = p.id;
+}
+
+function closeProjectActionSheet(): void {
+  actionSheetProjectId.value = null;
+}
+
+function cancelProjectLongPress(): void {
+  if (projectLongPressTimer !== null) {
+    clearTimeout(projectLongPressTimer);
+    projectLongPressTimer = null;
+  }
+}
+
+function projectSwipeOffset(projectId: string): number {
+  if (activeProjectSwipeId.value === projectId) {
+    return activeProjectSwipeOffset.value;
+  }
+  if (projectSwipeOpenId.value === projectId) {
+    return -PROJECT_ROW_ACTIONS_WIDTH_PX;
+  }
+  return 0;
+}
+
+function isProjectSwipeActionVisible(projectId: string): boolean {
+  return projectSwipeOffset(projectId) <= -PROJECT_ROW_ACTIONS_WIDTH_PX / 2;
+}
+
+function closeProjectSwipe(): void {
+  projectSwipeOpenId.value = null;
+  activeProjectSwipeId.value = null;
+  activeProjectSwipeOffset.value = 0;
+}
+
+function suppressRowClickAfterProjectSwipe(): void {
+  suppressNextProjectRowClick = true;
+  if (projectSwipeClickResetTimer !== null) clearTimeout(projectSwipeClickResetTimer);
+  projectSwipeClickResetTimer = setTimeout(() => {
+    suppressNextProjectRowClick = false;
+    projectSwipeClickResetTimer = null;
+  }, 0);
+}
+
+function handleProjectLongPress(p: ProjectLike): void {
+  projectLongPressTimer = null;
+  projectLongPressFired = true;
+  projectTouchAxis = null;
+  projectTouchMoved = false;
+  activeProjectSwipeOffset.value = 0;
+  openProjectActionSheet(p);
+}
+
+function handleProjectTouchStart(p: ProjectLike, event: TouchEvent): void {
+  if (event.touches.length !== 1) return;
+  if (projectSwipeOpenId.value !== null && projectSwipeOpenId.value !== p.id) {
+    projectSwipeOpenId.value = null;
+  }
+  const touch = event.touches[0];
+  if (!touch) return;
+  projectTouchStartX = touch.clientX;
+  projectTouchStartY = touch.clientY;
+  projectTouchStartOffset = projectSwipeOpenId.value === p.id ? -PROJECT_ROW_ACTIONS_WIDTH_PX : 0;
+  projectTouchAxis = null;
+  projectTouchMoved = false;
+  projectLongPressFired = false;
+  cancelProjectLongPress();
+  projectLongPressTimer = setTimeout(() => {
+    handleProjectLongPress(p);
+  }, PROJECT_ROW_LONG_PRESS_MS);
+}
+
+function handleProjectTouchMove(projectId: string, event: TouchEvent): void {
+  if (projectLongPressFired || event.touches.length !== 1) return;
+  const touch = event.touches[0];
+  if (!touch) return;
+  const dx = touch.clientX - projectTouchStartX;
+  const dy = touch.clientY - projectTouchStartY;
+  if (Math.hypot(dx, dy) > PROJECT_ROW_SWIPE_THRESHOLD_PX) {
+    cancelProjectLongPress();
+  }
+  if (projectTouchAxis === null) {
+    const absX = Math.abs(dx);
+    const absY = Math.abs(dy);
+    if (absX >= PROJECT_ROW_SWIPE_THRESHOLD_PX || absY >= PROJECT_ROW_SWIPE_THRESHOLD_PX) {
+      if (absX >= absY && projectId !== "default") {
+        projectTouchAxis = "horizontal";
+        activeProjectSwipeId.value = projectId;
+      } else {
+        projectTouchAxis = "vertical";
+        activeProjectSwipeId.value = null;
+        activeProjectSwipeOffset.value = 0;
+      }
+    }
+  }
+  if (projectTouchAxis !== "horizontal") return;
+  projectTouchMoved = true;
+  event.preventDefault();
+  const rawOffset = projectTouchStartOffset + dx;
+  activeProjectSwipeOffset.value = Math.max(-PROJECT_ROW_ACTIONS_WIDTH_PX, Math.min(0, rawOffset));
+}
+
+function finishProjectTouch(projectId: string, event: TouchEvent, cancelled = false): void {
+  cancelProjectLongPress();
+  if (projectLongPressFired) {
+    projectLongPressFired = false;
+    return;
+  }
+  if (projectTouchAxis === "horizontal") {
+    suppressRowClickAfterProjectSwipe();
+    if (!cancelled && activeProjectSwipeOffset.value < -PROJECT_ROW_ACTIONS_WIDTH_PX / 2) {
+      projectSwipeOpenId.value = projectId;
+    } else {
+      projectSwipeOpenId.value = null;
+    }
+  }
+  activeProjectSwipeId.value = null;
+  activeProjectSwipeOffset.value = 0;
+  projectTouchAxis = null;
+  projectTouchMoved = false;
+}
+
+function handleProjectRowContextMenu(p: ProjectLike, event: MouseEvent): void {
+  if (isMobile.value) {
+    event.preventDefault();
+    openProjectActionSheet(p);
+  }
+}
+
+function handleProjectRowClick(p: ProjectLike): void {
+  if (suppressNextProjectRowClick) return;
+  if (projectSwipeOpenId.value !== null) {
+    closeProjectSwipe();
+    return;
+  }
+  onProjectRowClick(p.id);
+}
+
+async function handleSwipeRemove(p: ProjectLike): Promise<void> {
+  closeProjectSwipe();
+  if (canRemoveProject(p.id)) {
+    await handleRemoveProject(p.id);
+  }
+}
+
+function handleActionSheetSwitch(): void {
+  const p = actionSheetProject.value;
+  closeProjectActionSheet();
+  if (p) {
+    requestProjectSwitchFromMobile(p.id);
+  }
+}
+
+async function handleActionSheetRemove(): Promise<void> {
+  const p = actionSheetProject.value;
+  closeProjectActionSheet();
+  if (p && canRemoveProject(p.id)) {
+    await handleRemoveProject(p.id);
+  }
+}
 function openSettings(): void {
   if (!loggedIn.value) return;
   if (isMobile.value) {
@@ -1273,7 +1466,35 @@ const advisorConnectionStatus = computed(() => {
             </div>
           </div>
 
-          <div v-for="p in projects" :key="projectRowKey(p)" class="projectNode" :class="{ active: p.id === activeProjectId }">
+          <div
+            v-for="p in projects"
+            :key="projectRowKey(p)"
+            class="projectNode"
+            :class="{
+              active: p.id === activeProjectId,
+              swiping: activeProjectSwipeId === p.id,
+            }"
+          >
+            <div
+              v-if="loggedIn && p.id !== 'default'"
+              class="projectSwipeActions"
+              :class="{ actionVisible: isProjectSwipeActionVisible(p.id) }"
+            >
+              <button
+                type="button"
+                class="projectSwipeAction delete"
+                :disabled="!canRemoveProject(p.id)"
+                :tabindex="projectSwipeOpenId === p.id ? 0 : -1"
+                :data-testid="`project-swipe-remove-${p.id}`"
+                aria-label="从列表移除"
+                @click.stop.prevent="handleSwipeRemove(p)"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+                <span>移除</span>
+              </button>
+            </div>
             <button
               type="button"
               class="projectRow"
@@ -1282,13 +1503,19 @@ const advisorConnectionStatus = computed(() => {
                 dropBefore: dropTargetProjectId === p.id && dropTargetPosition === 'before',
                 dropAfter: dropTargetProjectId === p.id && dropTargetPosition === 'after',
               }"
+              :style="{ transform: `translateX(${projectSwipeOffset(p.id)}px)` }"
               :title="p.name"
               @pointerdown="(ev) => loggedIn && onProjectRowPointerDown(ev, p.id)"
               @pointerup="(ev) => onProjectRowPointerUp(ev, p.id)"
               @pointercancel="onProjectRowPointerCancel"
-              @click="onProjectRowClick(p.id)"
+              @click="handleProjectRowClick(p)"
               @dragover="(ev) => onProjectDragOver(ev, p.id)"
               @drop="(ev) => loggedIn && onProjectDrop(ev, p.id)"
+              @contextmenu="handleProjectRowContextMenu(p, $event)"
+              @touchstart.passive="handleProjectTouchStart(p, $event)"
+              @touchmove="handleProjectTouchMove(p.id, $event)"
+              @touchend="finishProjectTouch(p.id, $event)"
+              @touchcancel="finishProjectTouch(p.id, $event, true)"
             >
               <span
                 class="projectStatus"
@@ -1301,19 +1528,6 @@ const advisorConnectionStatus = computed(() => {
                 <span class="projectBranch">{{ formatProjectBranch(p.branch) }}</span>
               </span>
               <span class="projectRowActions">
-                <span
-                  v-if="loggedIn && p.id !== 'default' && p.id === activeProjectId"
-                  class="projectRemove"
-                  :class="{ disabled: !canRemoveProject(p.id) }"
-                  title="Remove project"
-                  aria-label="Remove project"
-                  data-testid="project-remove"
-                  @click.stop.prevent="requestRemoveProject(p.id)"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </span>
                 <span v-if="!isMobile && p.id === 'default'" class="projectDragSpacer" aria-hidden="true" />
                 <span
                   v-else-if="!isMobile && loggedIn"
@@ -1613,25 +1827,57 @@ const advisorConnectionStatus = computed(() => {
         </div>
       </div>
     </div>
-
-    <div v-if="projectRemoveConfirmOpen" class="modalOverlay" role="dialog" aria-modal="true" @click.self="cancelRemoveProject">
-      <div class="modalCard">
-        <div class="modalTitle">Remove project?</div>
-        <div class="modalDesc">
-          This removes the project from the Web UI list only. It does not delete any files or workspace data.
-        </div>
-        <div v-if="pendingRemoveProject" class="modalPreview">
-          <div class="modalPreviewTitle">{{ pendingRemoveProject.name || pendingRemoveProject.id }}</div>
-          <div v-if="pendingRemoveProject.path && pendingRemoveProject.path.trim()" class="modalPreviewPrompt">
-            {{ pendingRemoveProject.path }}
+    <Teleport to="body">
+      <div
+        v-if="actionSheetProject"
+        class="projectActionSheetMask"
+        data-testid="project-action-sheet"
+        @click="closeProjectActionSheet"
+      >
+        <div
+          class="projectActionSheet"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="`项目操作：${actionSheetProject.name || actionSheetProject.id}`"
+          @click.stop
+        >
+          <div class="projectActionSheetGroup">
+            <div class="projectActionSheetHeader">
+              <span class="projectActionSheetTitle">{{ actionSheetProject.name || actionSheetProject.id }}</span>
+              <span class="projectActionSheetSubtitle">{{ formatProjectBranch(actionSheetProject.branch) }}</span>
+            </div>
+            <button
+              v-if="actionSheetProject.id !== activeProjectId"
+              type="button"
+              class="projectActionSheetItem"
+              data-testid="project-action-sheet-switch"
+              @click="handleActionSheetSwitch"
+            >
+              切换到此项目
+            </button>
+            <button
+              v-if="actionSheetProject.id !== 'default'"
+              type="button"
+              class="projectActionSheetItem danger"
+              :disabled="!canRemoveProject(actionSheetProject.id)"
+              data-testid="project-action-sheet-remove"
+              @click="handleActionSheetRemove"
+            >
+              <span class="actionSheetItemLabel">从列表移除</span>
+              <small class="actionSheetItemHint">仅从界面列表移除，不删除本地文件</small>
+            </button>
           </div>
-        </div>
-        <div class="modalActions">
-          <button type="button" class="btnSecondary" @click="cancelRemoveProject">Cancel</button>
-          <button type="button" class="btnDanger" @click="confirmRemoveProject">Remove</button>
+          <button
+            type="button"
+            class="projectActionSheetItem cancel"
+            data-testid="project-action-sheet-cancel"
+            @click="closeProjectActionSheet"
+          >
+            取消
+          </button>
         </div>
       </div>
-    </div>
+    </Teleport>
   </div>
 </template>
 
