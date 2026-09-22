@@ -231,10 +231,8 @@ describe("mobile navigation behavior", () => {
     await settleUi(wrapper);
     expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-initial-tab")).toBe("models");
 
-    await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
-    expect(wrapper.find('[data-testid="mobile-context-action-choose-provider"]').exists()).toBe(false);
-    expect(wrapper.find('[data-testid="mobile-context-action-create-model"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="mobile-context-action-refresh-models"]').exists()).toBe(true);
+    // Settings views expose no duplicate contextual actions, so the menu button stays hidden.
+    expect(wrapper.find('[data-testid="mobile-context-menu-toggle"]').exists()).toBe(false);
 
     wrapper.unmount();
   }, 40_000);

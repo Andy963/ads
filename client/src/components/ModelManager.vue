@@ -909,16 +909,6 @@ defineExpose({
           <el-icon :size="13" aria-hidden="true"><Plus /></el-icon>
           <span>新增模型</span>
         </button>
-        <button
-          v-if="activeTab === 'models'"
-          class="modelIconBtn"
-          type="button"
-          title="刷新模型配置"
-          :disabled="busy"
-          @click="loadModelConfigs"
-        >
-          <el-icon :size="16" aria-hidden="true"><Refresh /></el-icon>
-        </button>
         <button class="modelIconBtn" type="button" title="关闭" @click="emit('close')">
           <el-icon :size="16" aria-hidden="true"><Close /></el-icon>
         </button>
@@ -1095,7 +1085,7 @@ defineExpose({
             </div>
 
             <div class="modelRowBottom">
-              <code v-if="hasDistinctModelDisplayName(model)" class="modelRowId">{{ modelIdLabel(model) }}</code>
+              <span v-if="hasDistinctModelDisplayName(model)" class="modelRowId modelRowSubtitle">{{ modelIdLabel(model) }}</span>
               <div
                 class="modelRowActions"
                 @click.stop
@@ -1240,6 +1230,11 @@ defineExpose({
           />
           <span class="modelHelp">保存后生成新版本，从下一轮对话开始生效。</span>
         </label>
+        <div v-if="selectedLaneSnapshot" class="lanePromptHistory" data-testid="lane-prompt-history">
+          <span>{{ lanePromptText.length }} 个字符</span>
+          <span>当前生效：v{{ selectedLaneSnapshot.current.version }}</span>
+          <span v-if="isViewingHistoricalVersion">正在查看：v{{ selectedLaneVersion?.version }}</span>
+        </div>
         <div class="lanePromptActions">
           <button type="button" class="btnSecondary" :disabled="lanePromptSaving || !lanePromptDirty" data-testid="lane-prompt-reset" @click="resetLanePrompt">
             恢复默认
@@ -1247,11 +1242,6 @@ defineExpose({
           <button type="button" class="btnPrimary" :disabled="lanePromptSaving || !lanePromptText.trim() || !lanePromptDirty" data-testid="lane-prompt-save" @click="saveLanePrompt">
             {{ lanePromptSaving ? "保存中…" : "保存指令" }}
           </button>
-        </div>
-        <div v-if="selectedLaneSnapshot" class="lanePromptHistory" data-testid="lane-prompt-history">
-          <span>{{ lanePromptText.length }} 个字符</span>
-          <span>当前生效：v{{ selectedLaneSnapshot.current.version }}</span>
-          <span v-if="isViewingHistoricalVersion">正在查看：v{{ selectedLaneVersion?.version }}</span>
         </div>
       </template>
     </div>
@@ -1422,7 +1412,6 @@ defineExpose({
               spellcheck="false"
               data-testid="model-manager-model-id"
             />
-            <span class="modelHelp">必须与 Codex multi-provider 配置实际接受的 model 参数完全一致。</span>
           </label>
 
           <label class="modelField">
@@ -1434,7 +1423,6 @@ defineExpose({
               autocomplete="off"
               data-testid="model-manager-display-name"
             />
-            <span class="modelHelp">只影响下拉列表里的显示文字。</span>
           </label>
 
           <div class="modelToggleGrid">
@@ -1447,8 +1435,6 @@ defineExpose({
               />
               <span>
                 <strong>启用模型</strong>
-                <small v-if="editingCurrentDefault">默认模型不能停用。</small>
-                <small v-else>停用后不会出现在输入框下拉列表。</small>
               </span>
             </label>
             <label class="modelToggle" :class="{ locked: editingCurrentDefault }">
@@ -1460,8 +1446,6 @@ defineExpose({
               />
               <span>
                 <strong>设为默认</strong>
-                <small v-if="editingCurrentDefault">已是默认模型；要更换请在别的模型上设为默认。</small>
-                <small v-else>默认模型；未选择模型时优先使用它。</small>
               </span>
             </label>
           </div>
@@ -1472,7 +1456,7 @@ defineExpose({
               v-model="form.configJsonText"
               class="modelTextarea"
               :class="{ invalid: configJsonError !== null }"
-              rows="6"
+              rows="4"
               spellcheck="false"
               data-testid="model-manager-config-json"
             />
@@ -2131,15 +2115,19 @@ defineExpose({
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  padding: 2px 6px;
-  border-radius: 6px;
-  background: rgba(15, 23, 42, 0.05);
-  color: #475569;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted, #64748b);
   font-family: var(--font-mono);
-  font-size: 11.5px;
-  line-height: 1.3;
+  font-size: 11px;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.modelRowBottom:empty {
+  display: none;
 }
 
 .modelRowActions {
@@ -2565,17 +2553,17 @@ defineExpose({
 }
 
 .modelToggleGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: flex;
   gap: 10px;
 }
 
 .modelToggle {
+  flex: 1 1 0;
   min-width: 0;
   display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  padding: 11px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 11px;
   background: var(--surface-2);
@@ -2681,14 +2669,49 @@ defineExpose({
   .cliCount {
     display: none;
   }
-
-  .modelToggleGrid {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 /* ---------- model rows: mobile (matches App.css mobile breakpoint) ---------- */
 @media (max-width: 900px) {
+  .lanePromptLaneSelector {
+    width: 100%;
+    display: flex;
+  }
+
+  .lanePromptLane {
+    flex: 1 1 0;
+    text-align: center;
+    min-height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 600;
+    transition: background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
+  }
+
+  .lanePromptActions {
+    position: sticky;
+    bottom: -18px;
+    margin: 14px -16px -18px;
+    padding: 10px 16px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    box-shadow: 0 -4px 12px rgba(15, 23, 42, 0.05);
+    z-index: 10;
+  }
+
+  .lanePromptActions .btnSecondary,
+  .lanePromptActions .btnPrimary {
+    flex: 1 1 0;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
   .rowSwitch {
     min-height: 40px;
   }

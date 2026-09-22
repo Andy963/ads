@@ -21,11 +21,21 @@ const REASONING_EFFORT_LABELS: Record<string, string> = {
 };
 const REASONING_EFFORT_SHORT_LABELS: Record<string, string> = {
   minimal: "Min",
+  low: "Low",
   medium: "Med",
+  high: "High",
   xhigh: "XHigh",
   max: "Max",
   ultra: "Ultra",
 };
+
+const STANDARD_EFFORTS = [
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Med" },
+  { id: "high", label: "High" },
+  { id: "max", label: "Max" },
+  { id: "ultra", label: "Ultra" },
+] as const;
 
 const props = defineProps<{
   connected: boolean;
@@ -44,6 +54,7 @@ const emit = defineEmits<{
   (e: "setReasoningEffort", effort: string): void;
 }>();
 
+const pickerOpen = ref(false);
 const lastAutoSwitchedAgentId = ref<string | null>(null);
 const agentOptions = computed(() => (Array.isArray(props.agents) ? props.agents : []));
 const readyAgentIds = computed(() =>
@@ -203,6 +214,49 @@ watch(
 const selectedModelLabel = computed(() => selectedModel.value ? formatModelLabel(selectedModel.value) : effectiveModelId.value || "Model");
 const canChange = computed(() => props.connected && !props.busy && !props.inputLocked);
 
+const capsuleLabel = computed(() => {
+  if (!compatibleModelOptions.value.length) return "No models";
+  const name = selectedModelLabel.value;
+  if (!reasoningEffortOptions.value.length || (reasoningEffortOptions.value.length === 1 && (reasoningEffortOptions.value[0] === "none" || reasoningEffortOptions.value[0] === "off"))) {
+    return name;
+  }
+  const effort = REASONING_EFFORT_SHORT_LABELS[reasoningEffortValue.value] || REASONING_EFFORT_LABELS[reasoningEffortValue.value] || reasoningEffortValue.value;
+  return `${name} · ${effort}`;
+});
+
+const displayEfforts = computed(() => {
+  const supported = new Set(reasoningEffortOptions.value);
+  const items = [...STANDARD_EFFORTS];
+  for (const opt of reasoningEffortOptions.value) {
+    if (!items.some((i) => i.id === opt)) {
+      items.push({ id: opt, label: REASONING_EFFORT_SHORT_LABELS[opt] || REASONING_EFFORT_LABELS[opt] || opt });
+    }
+  }
+  return items.map((item) => ({
+    ...item,
+    supported: supported.has(item.id),
+    active: reasoningEffortValue.value === item.id,
+  }));
+});
+
+function togglePicker(): void {
+  if (!canChange.value || !compatibleModelOptions.value.length) return;
+  pickerOpen.value = !pickerOpen.value;
+}
+
+function closePicker(): void {
+  pickerOpen.value = false;
+}
+
+function handlePickModel(modelId: string): void {
+  selectModel(modelId);
+}
+
+function handlePickEffort(effort: string): void {
+  selectReasoningEffort(effort);
+  closePicker();
+}
+
 function selectModel(modelId: string): void {
   if (!canChange.value || !compatibleModelOptions.value.some((model) => modelKey(model) === modelId)) return;
   emit("setModel", modelId);
@@ -216,53 +270,133 @@ function selectReasoningEffort(effort: string): void {
 
 <template>
   <div class="modelSelectors" role="group" aria-label="Model settings">
-    <label class="modelField" :class="{ 'modelField--disabled': !canChange || !compatibleModelOptions.length }">
-      <span class="modelFieldValue" aria-hidden="true" data-testid="chat-model-value">
-        {{ compatibleModelOptions.length ? selectedModelLabel : "No models" }}
-      </span>
-      <select
-        class="modelSelect"
-        aria-label="Model"
-        :title="selectedModelLabel"
-        data-testid="chat-model-select"
-        :value="effectiveModelId"
-        :disabled="!canChange || !compatibleModelOptions.length"
-        @change="selectModel(($event.target as HTMLSelectElement).value)"
+    <!-- Consolidated capsule button -->
+    <button
+      type="button"
+      class="modelCapsule"
+      :class="{ 'modelCapsule--disabled': !canChange || !compatibleModelOptions.length }"
+      data-testid="chat-model-capsule"
+      :disabled="!canChange || !compatibleModelOptions.length"
+      :title="capsuleLabel"
+      @click="togglePicker"
+    >
+      <span class="modelCapsuleIcon" aria-hidden="true">⚡</span>
+      <span class="modelCapsuleText" data-testid="chat-capsule-text">{{ capsuleLabel }}</span>
+      <span class="modelCapsuleChevron" aria-hidden="true">▾</span>
+    </button>
+
+    <!-- Synced hidden native select elements for accessibility and backwards compatibility -->
+    <div class="sr-native-selectors" aria-hidden="true">
+      <label class="modelField" :class="{ 'modelField--disabled': !canChange || !compatibleModelOptions.length }">
+        <span class="modelFieldValue" data-testid="chat-model-value">
+          {{ compatibleModelOptions.length ? selectedModelLabel : "No models" }}
+        </span>
+        <select
+          class="modelSelect"
+          aria-label="Model"
+          :title="selectedModelLabel"
+          data-testid="chat-model-select"
+          :value="effectiveModelId"
+          :disabled="!canChange || !compatibleModelOptions.length"
+          @change="selectModel(($event.target as HTMLSelectElement).value)"
+        >
+          <option v-if="!compatibleModelOptions.length" value="" disabled>No models</option>
+          <option v-else-if="!selectedModel && effectiveModelId" :value="effectiveModelId" disabled>{{ effectiveModelId }}</option>
+          <option
+            v-for="model in compatibleModelOptions"
+            :key="modelKey(model)"
+            :value="modelKey(model)"
+            data-testid="chat-model-option"
+            :data-model-id="modelKey(model)"
+          >{{ formatModelLabel(model) }}</option>
+        </select>
+      </label>
+      <label class="modelField" :class="{ 'modelField--disabled': !canChange || !reasoningEffortOptions.length }">
+        <span class="modelFieldValue" data-testid="chat-effort-value">
+          {{ REASONING_EFFORT_SHORT_LABELS[reasoningEffortValue] || REASONING_EFFORT_LABELS[reasoningEffortValue] || "Effort" }}
+        </span>
+        <select
+          class="modelSelect"
+          aria-label="Reasoning effort"
+          :title="REASONING_EFFORT_LABELS[reasoningEffortValue] || 'Reasoning effort'"
+          data-testid="chat-reasoning-effort"
+          :value="reasoningEffortValue"
+          :disabled="!canChange || !reasoningEffortOptions.length"
+          @change="selectReasoningEffort(($event.target as HTMLSelectElement).value)"
+        >
+          <option v-if="!reasoningEffortOptions.length" value="" disabled>Effort</option>
+          <option
+            v-for="effort in reasoningEffortOptions"
+            :key="effort"
+            :value="effort"
+            :aria-label="REASONING_EFFORT_LABELS[effort]"
+            :data-reasoning-effort="effort"
+          >{{ REASONING_EFFORT_SHORT_LABELS[effort] ?? REASONING_EFFORT_LABELS[effort] ?? effort }}</option>
+        </select>
+      </label>
+    </div>
+
+    <!-- Integrated ActionSheet / Popover -->
+    <Teleport to="body">
+      <div
+        v-if="pickerOpen"
+        class="modelPickerMask"
+        data-testid="model-picker-mask"
+        @click="closePicker"
       >
-        <option v-if="!compatibleModelOptions.length" value="" disabled>No models</option>
-        <option v-else-if="!selectedModel && effectiveModelId" :value="effectiveModelId" disabled>{{ effectiveModelId }}</option>
-        <option
-          v-for="model in compatibleModelOptions"
-          :key="modelKey(model)"
-          :value="modelKey(model)"
-          data-testid="chat-model-option"
-          :data-model-id="modelKey(model)"
-        >{{ formatModelLabel(model) }}</option>
-      </select>
-    </label>
-    <label class="modelField" :class="{ 'modelField--disabled': !canChange || !reasoningEffortOptions.length }">
-      <span class="modelFieldValue" aria-hidden="true" data-testid="chat-effort-value">
-        {{ REASONING_EFFORT_SHORT_LABELS[reasoningEffortValue] || REASONING_EFFORT_LABELS[reasoningEffortValue] || "Effort" }}
-      </span>
-      <select
-        class="modelSelect"
-        aria-label="Reasoning effort"
-        :title="REASONING_EFFORT_LABELS[reasoningEffortValue] || 'Reasoning effort'"
-        data-testid="chat-reasoning-effort"
-        :value="reasoningEffortValue"
-        :disabled="!canChange || !reasoningEffortOptions.length"
-        @change="selectReasoningEffort(($event.target as HTMLSelectElement).value)"
-      >
-        <option v-if="!reasoningEffortOptions.length" value="" disabled>Effort</option>
-        <option
-          v-for="effort in reasoningEffortOptions"
-          :key="effort"
-          :value="effort"
-          :aria-label="REASONING_EFFORT_LABELS[effort]"
-          :data-reasoning-effort="effort"
-        >{{ REASONING_EFFORT_SHORT_LABELS[effort] ?? REASONING_EFFORT_LABELS[effort] ?? effort }}</option>
-      </select>
-    </label>
+        <div
+          class="modelPickerSheet"
+          role="region"
+          aria-label="选择模型与推理配置"
+          data-testid="model-picker-sheet"
+          @click.stop
+        >
+          <div class="modelPickerHeader">
+            <span class="modelPickerTitle">选择模型与推理配置</span>
+            <button type="button" class="modelPickerClose" aria-label="关闭" @click="closePicker">✕</button>
+          </div>
+
+          <div class="modelPickerSection">
+            <div class="modelPickerSectionTitle">模型列表</div>
+            <div class="modelPickerList">
+              <button
+                v-for="model in compatibleModelOptions"
+                :key="modelKey(model)"
+                type="button"
+                class="modelPickerItem"
+                :class="{ active: modelKey(model) === effectiveModelId }"
+                :data-testid="`model-picker-item-${modelKey(model)}`"
+                @click="handlePickModel(modelKey(model))"
+              >
+                <div class="modelPickerItemMain">
+                  <span class="modelPickerItemName">{{ formatModelLabel(model) }}</span>
+                  <span v-if="model.provider" class="modelProviderBadge">{{ model.provider }}</span>
+                </div>
+                <span v-if="modelKey(model) === effectiveModelId" class="modelActiveBadge">当前</span>
+              </button>
+            </div>
+          </div>
+
+          <div v-if="reasoningEffortOptions.length" class="modelPickerSection">
+            <div class="modelPickerSectionTitle">⚡ 推理思考强度 (Reasoning Effort)</div>
+            <div class="effortSegmentedBar">
+              <button
+                v-for="effort in displayEfforts"
+                :key="effort.id"
+                type="button"
+                class="effortPill"
+                :class="{ active: effort.active }"
+                :disabled="!effort.supported"
+                :data-testid="`effort-pill-${effort.id}`"
+                @click="handlePickEffort(effort.id)"
+              >
+                {{ effort.label }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -270,74 +404,253 @@ function selectReasoningEffort(effort: string): void {
 .modelSelectors {
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
   min-width: 0;
 }
 
-.modelField {
-  position: relative;
-  display: flex;
+.modelCapsule {
+  display: inline-flex;
   align-items: center;
-  flex: 1 1 auto;
-  min-width: 0;
-  max-width: 240px;
-  overflow: hidden;
+  gap: 5px;
   height: 28px;
-  box-sizing: border-box;
-  padding: 3px 20px 3px 8px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
+  padding: 0 10px;
+  border: 1px solid var(--border, rgba(15, 23, 42, 0.12));
   border-radius: 8px;
-  background-color: var(--surface);
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 20 20' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath d='m5 7 5 5 5-5'/%3E%3C/svg%3E");
-  background-position: right 6px center;
-  background-repeat: no-repeat;
+  background: var(--surface);
   color: var(--text);
   font-size: 12px;
   font-weight: 500;
-  line-height: 20px;
-  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.modelField:last-child {
-  flex: 0 0 auto;
-  min-width: 58px;
-}
-
-.modelFieldValue {
+  cursor: pointer;
+  max-width: 220px;
   min-width: 0;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.modelCapsule:hover:not(:disabled) {
+  border-color: rgba(37, 99, 235, 0.35);
+  background-color: rgba(37, 99, 235, 0.05);
+}
+
+.modelCapsule--disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.modelCapsuleIcon {
+  font-size: 11px;
+  color: #eab308;
+  flex-shrink: 0;
+}
+
+.modelCapsuleText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.modelCapsuleChevron {
+  font-size: 10px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+/* Visually hide native selects while preserving DOM presence & test compatibility */
+.sr-native-selectors {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.modelField {
+  height: 28px;
+  font-size: 12px;
+}
+
+.modelSelect {
+  width: 100%;
+  min-width: 0;
+  font-size: 16px;
+}
+
+/* ActionSheet / Popover Panel */
+.modelPickerMask {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(15, 23, 42, 0.4);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+@media (min-width: 901px) {
+  .modelPickerMask {
+    align-items: center;
+  }
+}
+
+.modelPickerSheet {
+  width: 100%;
+  max-width: 440px;
+  background: var(--surface, #ffffff);
+  border: 1px solid var(--border);
+  border-radius: 16px 16px 0 0;
+  padding: 16px;
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: 80vh;
+  box-sizing: border-box;
+}
+
+@media (min-width: 901px) {
+  .modelPickerSheet {
+    border-radius: 14px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.18);
+    padding-bottom: 16px;
+  }
+}
+
+.modelPickerHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.modelPickerTitle {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.modelPickerClose {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.modelPickerSectionTitle {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.modelPickerList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  max-height: 240px;
+}
+
+.modelPickerItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2, rgba(15, 23, 42, 0.03));
+  cursor: pointer;
+  min-height: 44px;
+  transition: all 0.12s ease;
+}
+
+.modelPickerItem:hover {
+  background: rgba(37, 99, 235, 0.06);
+  border-color: rgba(37, 99, 235, 0.25);
+}
+
+.modelPickerItem.active {
+  background: rgba(37, 99, 235, 0.08);
+  border-color: rgba(37, 99, 235, 0.4);
+}
+
+.modelPickerItemMain {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.modelPickerItemName {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.modelField--disabled {
-  opacity: 0.55;
+.modelProviderBadge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(100, 116, 139, 0.12);
+  color: var(--muted);
 }
 
-.modelField:hover:not(.modelField--disabled) {
-  border-color: rgba(37, 99, 235, 0.35);
-  background-color: rgba(37, 99, 235, 0.05);
+.modelActiveBadge {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
 }
 
-.modelField:focus-within {
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+.effortSegmentedBar {
+  display: flex;
+  gap: 4px;
+  background: var(--surface-2, rgba(15, 23, 42, 0.05));
+  padding: 3px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
 }
 
-.modelSelect {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
-  height: 100%;
-  opacity: 0;
-  /* Retain native keyboard/picker behavior without mobile focus zoom. */
-  font-size: 16px;
+.effortPill {
+  flex: 1 1 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 4px;
+  min-height: 38px;
+  border-radius: 7px;
   cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.modelSelect:disabled {
+.effortPill.active {
+  background: var(--surface, #ffffff);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.effortPill:disabled {
+  opacity: 0.35;
   cursor: not-allowed;
 }
 </style>

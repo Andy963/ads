@@ -429,4 +429,40 @@ describe("MainChat model selector", () => {
     expect(wrapper.emitted("setReasoningEffort")).toBeUndefined();
     wrapper.unmount();
   });
+
+  it("renders unified capsule and opens picker sheet on click", async () => {
+    const model = makeModel("gpt-5.5", "GPT-5.5", "openai");
+    model.configJson = { reasoningEfforts: ["low", "medium", "high", "max"] };
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [model, makeModel("gemini-flash", "Gemini Flash", "google")],
+        modelId: "gpt-5.5",
+        modelReasoningEffort: "max",
+      },
+      attachTo: document.body,
+    });
+
+    const capsule = wrapper.find('[data-testid="chat-model-capsule"]');
+    expect(capsule.exists()).toBe(true);
+    expect(wrapper.find('[data-testid="chat-capsule-text"]').text()).toBe("GPT-5.5 · Max");
+
+    expect(document.body.querySelector('[data-testid="model-picker-sheet"]')).toBeNull();
+    await capsule.trigger("click");
+    expect(document.body.querySelector('[data-testid="model-picker-sheet"]')).not.toBeNull();
+
+    const geminiItem = document.body.querySelector('[data-testid="model-picker-item-gemini-flash"]') as HTMLButtonElement | null;
+    expect(geminiItem).not.toBeNull();
+    geminiItem?.click();
+    expect(wrapper.emitted("setModel")?.at(-1)?.[0]).toBe("gemini-flash");
+
+    const lowPill = document.body.querySelector('[data-testid="effort-pill-low"]') as HTMLButtonElement | null;
+    expect(lowPill).not.toBeNull();
+    lowPill?.click();
+    expect(wrapper.emitted("setReasoningEffort")?.at(-1)?.[0]).toBe("low");
+
+    wrapper.unmount();
+  });
 });

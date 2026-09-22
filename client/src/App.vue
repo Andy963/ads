@@ -307,11 +307,7 @@ const mobileContextMenuTitle = computed(() => {
 
 const mobileContextActions = computed<MobileContextAction[]>(() => {
   if (mobileDrawerSection.value === "settings") {
-    if (mobileSettingsTab.value !== "models") return [];
-    return [
-      { id: "create-model", label: "新增模型" },
-      { id: "refresh-models", label: "刷新模型列表" },
-    ];
+    return [];
   }
   return [
     {
@@ -331,8 +327,19 @@ function closeMobileContextMenu(): void {
   mobileContextMenuOpen.value = false;
 }
 
+const projectSwipeOpenId = ref<string | null>(null);
+const activeProjectSwipeId = ref<string | null>(null);
+const activeProjectSwipeOffset = ref(0);
+
+function closeProjectSwipe(): void {
+  projectSwipeOpenId.value = null;
+  activeProjectSwipeId.value = null;
+  activeProjectSwipeOffset.value = 0;
+}
+
 function closeMobileDrawer(): void {
   cancelDrawerGesture();
+  closeProjectSwipe();
   mobileDrawerOpen.value = false;
   mobileContextMenuOpen.value = false;
 }
@@ -660,6 +667,10 @@ function onDrawerEdgeTouchMove(ev: TouchEvent): void {
 function onDrawerSwipeTouchStart(ev: TouchEvent): void {
   if (drawerGesture || drawerSnapSettling.value) return;
   if (!isMobile.value) return;
+  if (projectSwipeOpenId.value !== null) {
+    projectSwipeOpenId.value = null;
+  }
+  if (ev.target instanceof Element && ev.target.closest(".projectNode, .projectSwipeActions")) return;
   startDrawerGesture(ev, "close");
 }
 
@@ -1037,9 +1048,6 @@ const PROJECT_ROW_ACTIONS_WIDTH_PX = 76;
 const PROJECT_ROW_SWIPE_THRESHOLD_PX = 8;
 const PROJECT_ROW_LONG_PRESS_MS = 500;
 
-const projectSwipeOpenId = ref<string | null>(null);
-const activeProjectSwipeId = ref<string | null>(null);
-const activeProjectSwipeOffset = ref(0);
 const actionSheetProjectId = ref<string | null>(null);
 
 let projectTouchStartX = 0;
@@ -1087,12 +1095,6 @@ function projectSwipeOffset(projectId: string): number {
 
 function isProjectSwipeActionVisible(projectId: string): boolean {
   return projectSwipeOffset(projectId) <= -PROJECT_ROW_ACTIONS_WIDTH_PX / 2;
-}
-
-function closeProjectSwipe(): void {
-  projectSwipeOpenId.value = null;
-  activeProjectSwipeId.value = null;
-  activeProjectSwipeOffset.value = 0;
 }
 
 function suppressRowClickAfterProjectSwipe(): void {
