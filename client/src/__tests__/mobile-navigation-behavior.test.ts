@@ -454,4 +454,236 @@ describe("mobile navigation behavior", () => {
       wrapper.unmount();
     });
   });
+
+  describe("interactive drawer gesture (Issue #308)", () => {
+    async function mountMobileChat() {
+      const App = (await import("../App.vue")).default;
+      const wrapper = shallowMount(App, {
+        global: {
+          stubs: {
+            LoginGate: false,
+            ModelManager: ModelManagerStub,
+            DraggableModal: true,
+          },
+        },
+      });
+      await settleUi(wrapper);
+      return wrapper;
+    }
+
+    type Wrapper = Awaited<ReturnType<typeof mountMobileChat>>;
+
+    function dispatchTouch(
+      el: Element,
+      type: "touchstart" | "touchmove" | "touchend" | "touchcancel",
+      point: { clientX: number; clientY: number } | null,
+      timeStamp: number,
+    ): void {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.assign(event, { touches: point ? [point] : [] });
+      Object.defineProperty(event, "timeStamp", { value: timeStamp });
+      el.dispatchEvent(event);
+    }
+
+    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+    // .left.mobileDrawer resolves to min(360px, 84vw, 100vw - 24px) = 327.6px at 390px.
+    const DRAWER_WIDTH = 327.6;
+
+    function drawerTranslateX(wrapper: Wrapper): number | null {
+      const drawer = wrapper.find('[data-testid="mobile-drawer"]');
+      if (!drawer.exists()) return null;
+      const transform = (drawer.element as HTMLElement).style.transform;
+      const match = /translateX\((-?[\d.]+)px\)/.exec(transform);
+      return match?.[1] !== undefined ? Number(match[1]) : null;
+    }
+
+    function backdropOpacity(wrapper: Wrapper): number | null {
+      const backdrop = wrapper.find('[data-testid="mobile-drawer-backdrop"]');
+      if (!backdrop.exists()) return null;
+      const opacity = (backdrop.element as HTMLElement).style.opacity;
+      return opacity === "" ? null : Number(opacity);
+    }
+
+    async function waitForSnap(): Promise<void> {
+      // 340ms settle timer + 60ms cleanup timer, with margin.
+      await sleep(480);
+    }
+
+    it("tracks the finger 1:1 with the transition disabled", async () => {
+      const wrapper = await mountMobileChat();
+      const app = wrapper.get(".app").element;
+
+      dispatchTouch(app, "touchstart", { clientX: 10, clientY: 300 }, 1000);
+      dispatchTouch(app, "touchmove", { clientX: 110, clientY: 300 }, 1020);
+      await settleUi(wrapper);
+
+      const drawer = wrapper.get('[data-testid="mobile-drawer"]');
+      expect(drawerTranslateX(wrapper)).toBeCloseTo(100 - DRAWER_WIDTH, 1);
+      expect((drawer.element as HTMLElement).style.transition).toBe("none");
+      expect(backdropOpacity(wrapper)).toBeCloseTo(100 / DRAWER_WIDTH, 3);
+
+      dispatchTouch(app, "touchmove", { clientX: 60, clientY: 300 }, 1040);
+      await settleUi(wrapper);
+      expect(drawerTranslateX(wrapper)).toBeCloseTo(50 - DRAWER_WIDTH, 1);
+      expect(backdropOpacity(wrapper)).toBeCloseTo(50 / DRAWER_WIDTH, 3);
+
+      // touchcancel springs back to the pre-drag (closed) state.
+      dispatchTouch(app, "touchcancel", null, 1050);
+      await waitForSnap();
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="mobile-drawer-backdrop"]').exists()).toBe(false);
+      wrapper.unmount();
+    });
+
+    it("springs back closed when released below the distance threshold", async () => {
+      const wrapper = await mountMobileChat();
+      const app = wrapper.get(".app").element;
+
+      dispatchTouch(app, "touchstart", { clientX: 10, clientY: 300 }, 1000);
+      dispatchTouch(app, "touchmove", { clientX: 100, clientY: 300 }, 1400);
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(true);
+
+      // 90px = 27.5% of the drawer; release velocity 90/400 = 0.225px/ms is no flick.
+      dispatchTouch(app, "touchend", null, 1500);
+      // The drawer stays mounted while the snap-back animation runs.
+      expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(true);
+      await waitForSnap();
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="mobile-drawer-backdrop"]').exists()).toBe(false);
+      expect(wrapper.get('[data-testid="mobile-drawer-toggle"]').attributes("aria-expanded")).toBe("false");
+      wrapper.unmount();
+    });
+
+    it("snaps open past 35% of the drawer width and cleans up inline styles", async () => {
+      const wrapper = await mountMobileChat();
+      const app = wrapper.get(".app").element;
+
+      dispatchTouch(app, "touchstart", { clientX: 10, clientY: 300 }, 1000);
+      dispatchTouch(app, "touchmove", { clientX: 180, clientY: 300 }, 1400);
+      // 170px = 51.9%; release velocity 170/400 = 0.425px/ms is no flick.
+      dispatchTouch(app, "touchend", null, 1500);
+      await waitForSnap();
+      await settleUi(wrapper);
+
+      const drawer = wrapper.get('[data-testid="mobile-drawer"]');
+      expect(drawer.exists()).toBe(true);
+      expect((drawer.element as HTMLElement).style.transform).toBe("");
+      expect((drawer.element as HTMLElement).style.transition).toBe("");
+      expect(wrapper.get('[data-testid="mobile-drawer-toggle"]').attributes("aria-expanded")).toBe("true");
+      const backdrop = wrapper.get('[data-testid="mobile-drawer-backdrop"]');
+      expect((backdrop.element as HTMLElement).style.opacity).toBe("");
+
+      await wrapper.get('[data-testid="mobile-drawer-toggle"]').trigger("click");
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(false);
+      wrapper.unmount();
+    });
+
+    it("snaps open on a fast flick even below the distance threshold", async () => {
+      const wrapper = await mountMobileChat();
+      const app = wrapper.get(".app").element;
+
+      dispatchTouch(app, "touchstart", { clientX: 10, clientY: 300 }, 1000);
+      dispatchTouch(app, "touchmove", { clientX: 50, clientY: 300 }, 1040);
+      // 40px = 12.2% but 40px/40ms = 1px/ms is a flick.
+      dispatchTouch(app, "touchend", null, 1050);
+      await waitForSnap();
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(true);
+      wrapper.unmount();
+    });
+
+    it("snaps closed on a reverse flick even past the distance threshold", async () => {
+      const wrapper = await mountMobileChat();
+      const app = wrapper.get(".app").element;
+
+      dispatchTouch(app, "touchstart", { clientX: 10, clientY: 300 }, 1000);
+      dispatchTouch(app, "touchmove", { clientX: 180, clientY: 300 }, 1400);
+      dispatchTouch(app, "touchmove", { clientX: 170, clientY: 300 }, 1410);
+      // 52.4% open but the trailing velocity is -10px/10ms = -1px/ms.
+      dispatchTouch(app, "touchend", null, 1420);
+      await waitForSnap();
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(false);
+      wrapper.unmount();
+    });
+
+    it("yields to vertical scrolling and never starts tracking", async () => {
+      const wrapper = await mountMobileChat();
+      const app = wrapper.get(".app").element;
+
+      dispatchTouch(app, "touchstart", { clientX: 10, clientY: 200 }, 1000);
+      dispatchTouch(app, "touchmove", { clientX: 16, clientY: 260 }, 1020);
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(false);
+
+      // The cancelled session must not pick the gesture up again later.
+      dispatchTouch(app, "touchmove", { clientX: 120, clientY: 262 }, 1040);
+      dispatchTouch(app, "touchend", null, 1050);
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(false);
+      wrapper.unmount();
+    });
+
+    it("tracks a close drag on the drawer and springs back open", async () => {
+      const wrapper = await mountMobileChat();
+      await wrapper.get('[data-testid="mobile-drawer-toggle"]').trigger("click");
+      await settleUi(wrapper);
+      const drawerEl = wrapper.get('[data-testid="mobile-drawer"]').element;
+
+      dispatchTouch(drawerEl, "touchstart", { clientX: 300, clientY: 400 }, 2000);
+      dispatchTouch(drawerEl, "touchmove", { clientX: 180, clientY: 400 }, 2400);
+      await settleUi(wrapper);
+      expect(drawerTranslateX(wrapper)).toBeCloseTo(-120, 1);
+      expect(backdropOpacity(wrapper)).toBeCloseTo(1 - 120 / DRAWER_WIDTH, 3);
+
+      // 63.4% still open; trailing velocity -120px/400ms = -0.3px/ms is no flick.
+      dispatchTouch(drawerEl, "touchend", null, 2500);
+      await waitForSnap();
+      await settleUi(wrapper);
+      const drawer = wrapper.get('[data-testid="mobile-drawer"]');
+      expect(drawer.exists()).toBe(true);
+      expect((drawer.element as HTMLElement).style.transform).toBe("");
+      wrapper.unmount();
+    });
+
+    it("snaps shut on a slow close drag past the threshold", async () => {
+      const wrapper = await mountMobileChat();
+      await wrapper.get('[data-testid="mobile-drawer-toggle"]').trigger("click");
+      await settleUi(wrapper);
+      const drawerEl = wrapper.get('[data-testid="mobile-drawer"]').element;
+
+      dispatchTouch(drawerEl, "touchstart", { clientX: 300, clientY: 400 }, 3000);
+      dispatchTouch(drawerEl, "touchmove", { clientX: 80, clientY: 400 }, 3800);
+      // 32.8% still open; trailing velocity -220px/800ms = -0.275px/ms is no flick.
+      dispatchTouch(drawerEl, "touchend", null, 3900);
+      await waitForSnap();
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(false);
+      expect(wrapper.get('[data-testid="mobile-drawer-toggle"]').attributes("aria-expanded")).toBe("false");
+      wrapper.unmount();
+    });
+
+    it("keeps the menu button path on the CSS transition without inline styles", async () => {
+      const wrapper = await mountMobileChat();
+      await wrapper.get('[data-testid="mobile-drawer-toggle"]').trigger("click");
+      await settleUi(wrapper);
+
+      const drawer = wrapper.get('[data-testid="mobile-drawer"]');
+      expect(drawer.exists()).toBe(true);
+      expect((drawer.element as HTMLElement).style.transform).toBe("");
+      expect((drawer.element as HTMLElement).style.transition).toBe("");
+      const backdrop = wrapper.get('[data-testid="mobile-drawer-backdrop"]');
+      expect((backdrop.element as HTMLElement).style.opacity).toBe("");
+
+      await wrapper.get('[data-testid="mobile-drawer-toggle"]').trigger("click");
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(false);
+      wrapper.unmount();
+    });
+  });
 });
