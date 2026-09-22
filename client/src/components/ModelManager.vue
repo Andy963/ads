@@ -1312,9 +1312,6 @@ defineExpose({
         <header class="dialogHeader">
           <div class="dialogHeading">
             <div class="dialogTitle">从上游同步模型</div>
-            <div class="dialogSubtitle">
-              <span class="dialogHint">凭据仅用于本次探测，不会写入模型配置。</span>
-            </div>
           </div>
           <button
             class="modelIconBtn"
@@ -1327,25 +1324,38 @@ defineExpose({
           </button>
         </header>
 
-        <div class="dialogBody">
+        <div class="dialogBody syncDialogBody">
           <div v-if="syncError" class="modelBanner error dialogError" data-testid="model-manager-sync-error">
             {{ syncError }}
           </div>
 
-          <label class="modelField">
-            <span class="modelLabel">Base URL</span>
-            <input
-              v-model="syncBaseUrl"
-              class="modelInput"
-              placeholder="留空使用服务器配置"
-              autocomplete="off"
-              autocapitalize="off"
-              spellcheck="false"
-              data-testid="model-manager-sync-base-url"
-              :disabled="syncLoading || syncImporting || syncConfigLoading"
-            />
-            <span class="modelHelp">例如 https://api.openai.com/v1；留空时使用服务器已有配置。</span>
-          </label>
+          <div class="syncConfigGrid">
+            <label class="modelField">
+              <span class="modelLabel">Base URL</span>
+              <input
+                v-model="syncBaseUrl"
+                class="modelInput"
+                placeholder="留空使用服务器已有配置"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                data-testid="model-manager-sync-base-url"
+                :disabled="syncLoading || syncImporting || syncConfigLoading"
+              />
+            </label>
+
+            <label class="modelField">
+              <span class="modelLabel">Provider</span>
+              <input
+                v-model="syncProvider"
+                class="modelInput"
+                placeholder="openai"
+                autocomplete="off"
+                data-testid="model-manager-sync-provider"
+                :disabled="syncLoading || syncImporting || syncConfigLoading"
+              />
+            </label>
+          </div>
 
           <label class="modelField">
             <span class="modelLabel">API Key</span>
@@ -1362,19 +1372,6 @@ defineExpose({
             />
           </label>
 
-          <label class="modelField">
-            <span class="modelLabel">Provider</span>
-            <input
-              v-model="syncProvider"
-              class="modelInput"
-              placeholder="openai"
-              autocomplete="off"
-              data-testid="model-manager-sync-provider"
-              :disabled="syncLoading || syncImporting || syncConfigLoading"
-            />
-            <span class="modelHelp">导入模型使用的 provider 标签，默认是 openai。</span>
-          </label>
-
           <div class="syncDiscoverActions">
             <button
               type="submit"
@@ -1384,14 +1381,14 @@ defineExpose({
             >
               {{ syncLoading ? "探测中…" : "探测模型" }}
             </button>
-            <span v-if="upstreamModelsLoaded" class="modelHelp">
+            <span v-if="upstreamModelsLoaded" class="syncDiscoverStats">
               发现 {{ upstreamModels.length }} 个模型，{{ newUpstreamModels.length }} 个可导入。
             </span>
           </div>
 
           <div v-if="upstreamModelsLoaded" class="syncResults" data-testid="model-manager-sync-results">
             <div class="syncResultsHeader">
-              <strong>模型列表</strong>
+              <strong>模型列表（{{ newUpstreamModels.length }} 个可导入）</strong>
               <button
                 type="button"
                 class="btnSecondary syncSelectAll"
@@ -2351,6 +2348,25 @@ defineExpose({
 
 .syncDialogCard {
   width: min(640px, 100%);
+  max-height: min(720px, calc(100vh - 36px));
+}
+
+.syncDialogBody {
+  gap: 10px;
+  padding: 12px 16px;
+}
+
+.syncConfigGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+@media (max-width: 600px) {
+  .syncConfigGrid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
 }
 
 .dialogHeader {
@@ -2412,12 +2428,24 @@ defineExpose({
   gap: 10px;
 }
 
+.syncDiscoverActions {
+  justify-content: flex-start;
+  gap: 12px;
+}
+
+.syncDiscoverStats {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
 .syncResults {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   min-height: 0;
-  padding: 10px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface-2);
@@ -2429,25 +2457,26 @@ defineExpose({
 }
 
 .syncResultsHeader .syncSelectAll {
-  height: 28px;
-  padding: 0 10px;
+  height: 26px;
+  padding: 0 8px;
   font-size: 11px;
 }
 
 .syncEmpty {
-  margin: 4px 0;
+  margin: 8px 0;
   color: var(--muted-2);
   font-size: 11.5px;
   text-align: center;
 }
 
 .syncModelList {
-  max-height: 240px;
-  min-height: 0;
+  max-height: 380px;
+  min-height: 140px;
+  flex: 1 1 auto;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 3px;
 }
 
 .lanePromptPanel,
@@ -2495,8 +2524,8 @@ defineExpose({
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 7px 8px;
-  border-radius: 7px;
+  padding: 5px 8px;
+  border-radius: 6px;
   background: var(--surface);
   cursor: pointer;
 }
