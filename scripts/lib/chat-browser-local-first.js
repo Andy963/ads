@@ -10,7 +10,7 @@ async function until(predicate, label) {
 
 export async function verifyLocalFirstTranscript({ page, context, fixture, frames, send, waitForReply, chooseLane, settle, report, engine }) {
   await chooseLane("advisor");
-  const chat = page.locator(".chat:visible");
+  const chat = page.locator('.lanePanel:not([aria-hidden]) .chat');
   const syncResponses = [];
   report.syncResponses = syncResponses;
   const onResponse = async (response) => {
@@ -105,7 +105,7 @@ export async function verifyLocalFirstTranscript({ page, context, fixture, frame
   const authGate = fixture.holdAuthentication();
   await page.addInitScript(({ anchorId }) => {
     const observer = new MutationObserver(() => {
-      const root = document.querySelector(".chat");
+      const root = document.querySelector('.lanePanel:not([aria-hidden]) .chat');
       const row = [...(root?.querySelectorAll(".msg") ?? [])].find((entry) => entry.dataset.id === anchorId);
       if (!root || !row) return;
       window.__cachedFirstFrame = {
@@ -125,7 +125,7 @@ export async function verifyLocalFirstTranscript({ page, context, fixture, frame
     assert.equal(report.firstFrame.readOnly, "true");
     assert.equal(report.firstFrame.loaded, saved.loaded);
     assert.ok(Math.abs(report.firstFrame.offset - saved.offset) <= 2, `Cold cache anchor moved by ${report.firstFrame.offset - saved.offset}px`);
-    assert.equal(await page.locator("textarea.composer-input:visible").isDisabled(), true);
+    assert.equal(await page.locator('.lanePanel:not([aria-hidden]) textarea.composer-input').isDisabled(), true);
   } finally {
     authGate.release();
   }
@@ -152,9 +152,9 @@ export async function verifyLocalFirstTranscript({ page, context, fixture, frame
     await offlineAuthResponse;
     await settle();
     assert.equal(await page.locator(".app").getAttribute("data-cache-read-only"), "true");
-    assert.equal(await page.locator("textarea.composer-input:visible").isDisabled(), true);
-    assert.ok((await page.locator(".chat").innerText()).includes("Advisor reply: browser-advisor-offline-delta"));
-    await page.evaluate(() => { window.__offlineRow = document.querySelector(".chat .msg"); });
+    assert.equal(await page.locator('.lanePanel:not([aria-hidden]) textarea.composer-input').isDisabled(), true);
+    assert.ok((await page.locator('.lanePanel:not([aria-hidden]) .chat').innerText()).includes("Advisor reply: browser-advisor-offline-delta"));
+    await page.evaluate(() => { window.__offlineRow = document.querySelector('.lanePanel:not([aria-hidden]) .chat .msg'); });
     report.offlineReadable = true;
   } finally {
     const onlineAuthResponse = page.waitForResponse((response) => {
@@ -168,7 +168,7 @@ export async function verifyLocalFirstTranscript({ page, context, fixture, frame
   }
   await page.waitForSelector("textarea:not(:disabled):visible");
   await settle();
-  assert.equal(await page.evaluate(() => document.querySelector(".chat .msg") === window.__offlineRow), true);
+  assert.equal(await page.evaluate(() => document.querySelector('.lanePanel:not([aria-hidden]) .chat .msg') === window.__offlineRow), true);
   report.offline = false;
   page.off("response", onResponse);
 }

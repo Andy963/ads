@@ -112,10 +112,15 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     });
     page.setDefaultTimeout(15000);
     const settle = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    const input = () => page.locator("textarea.composer-input:visible");
-    const activate = async (selector) => {
-      if (mobile) await page.locator(selector).tap();
-      else await page.locator(selector).click();
+    // Both lane panels stay mounted; the active panel is the one without aria-hidden.
+    const activePanel = () => page.locator('.lanePanel:not([aria-hidden])');
+    const input = () => activePanel().locator("textarea.composer-input");
+    const sendButton = () => activePanel().locator(".sendIcon");
+    const visibleChat = () => activePanel().locator(".chat");
+    const activate = async (target) => {
+      const locator = typeof target === "string" ? page.locator(target) : target;
+      if (mobile) await locator.tap();
+      else await locator.click();
       await settle();
     };
     const chooseLane = async (lane) => {
@@ -123,12 +128,17 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       await page.locator(`[data-testid="lane-panel-${lane}"]`).waitFor({ state: "visible" });
       await page.waitForFunction((expectedLane) => {
         const panel = document.querySelector(`[data-testid="lane-panel-${expectedLane}"]`);
-        if (!panel) return false;
-        const style = getComputedStyle(panel);
-        return style.opacity === "1" && (style.transform === "none" || style.transform.startsWith("matrix(1, 0, 0, 1,"));
+        if (!panel || panel.hasAttribute("aria-hidden")) return false;
+        const track = document.querySelector(".lanePanelsTrack");
+        if (track && getComputedStyle(track).display !== "contents") {
+          const tx = new DOMMatrixReadOnly(getComputedStyle(track).transform).m41;
+          const expected = expectedLane === "worker" ? -track.clientWidth / 2 : 0;
+          if (Math.abs(tx - expected) > 2) return false;
+        }
+        return true;
       }, lane);
       assert.equal(await page.locator(`[data-testid="lane-tab-${lane}"]`).getAttribute("aria-selected"), "true");
-      assert.equal(await page.locator(".lanePanel:visible").count(), 1);
+      assert.equal(await activePanel().count(), 1);
     };
     const chooseProject = async (projectName, projectId) => {
       if (mobile) await activate('[data-testid="mobile-drawer-toggle"]');
@@ -140,10 +150,10 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       await page.waitForFunction((expected) => document.querySelector(".app")?.getAttribute("data-project-id") === expected, projectId);
       assert.equal(await page.locator(".app").getAttribute("data-project-id"), projectId);
     };
-    const waitForReply = (text) => page.waitForFunction((expected) => [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null)?.textContent.includes(expected), text);
+    const waitForReply = (text) => page.waitForFunction((expected) => document.querySelector('.lanePanel:not([aria-hidden]) .chat')?.textContent.includes(expected), text);
     const send = async (text) => {
       await input().fill(text);
-      await activate(".sendIcon:visible");
+      await activate(sendButton());
       assert.equal(await input().inputValue(), "", "Accepted prompts must immediately clear the physical textarea");
     };
     await page.goto(`${fixture.origin}/legacy.html`);
@@ -211,16 +221,16 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     await input().fill("Advisor draft");
     await chooseLane("worker");
     assert.equal(await input().inputValue(), "", "Worker must not inherit the Advisor draft");
-    assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Advisor reply"));
+    assert.ok(!(await visibleChat().innerText()).includes("Advisor reply"));
     await send("browser-worker-first");
     await chooseLane("advisor");
     assert.equal(await input().inputValue(), "Advisor draft");
-    assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Worker reply"));
+    assert.ok(!(await visibleChat().innerText()).includes("Worker reply"));
     await chooseLane("worker");
     await waitForReply("Worker reply: browser-worker-first");
     for (const lane of ["advisor", "worker", "advisor", "worker"]) await chooseLane(lane);
-    assert.ok((await page.locator(".chat:visible").innerText()).includes("Worker reply"));
-    assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Advisor reply"));
+    assert.ok((await visibleChat().innerText()).includes("Worker reply"));
+    assert.ok(!(await visibleChat().innerText()).includes("Advisor reply"));
     result.checks.push("Real WebSocket prompt delivery, lane isolation, rapid switching, and draft restoration");
 
     await page.reload({ waitUntil: "domcontentloaded" });
@@ -229,7 +239,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     await waitForReply("Advisor reply: browser-advisor-first");
     await chooseLane("worker");
     await waitForReply("Worker reply: browser-worker-first");
-    assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Advisor reply"));
+    assert.ok(!(await visibleChat().innerText()).includes("Advisor reply"));
     assert.ok(frames.some((frame) => frame.type === "welcome" && frame.historyMode === "resume"), "Reload must validate the cached baseline through the real server");
     result.checks.push("Cached transcript resume and lane isolation after page reload");
 
@@ -256,18 +266,18 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     await chooseLane("worker");
     const projectBSnapshot = await page.evaluate(() => ({
       app: document.querySelector(".app")?.outerHTML.slice(0, 1200) ?? "",
-      chat: [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null)?.textContent ?? "",
+      chat: document.querySelector('.lanePanel:not([aria-hidden]) .chat')?.textContent ?? "",
       diagnostics: window.__ADS_RUNTIME_DIAGNOSTICS__ ?? [],
     }));
     result.projectBSnapshot = projectBSnapshot;
     assert.ok(!projectBSnapshot.chat.includes("Worker reply: browser-worker-first"));
     await send("browser-worker-project-b");
     await waitForReply("Worker reply: browser-worker-project-b");
-    assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Worker reply: browser-worker-first"));
+    assert.ok(!(await visibleChat().innerText()).includes("Worker reply: browser-worker-first"));
     await chooseProject("Project A", fixture.projects[0].id);
     await chooseLane("worker");
     await waitForReply("Worker reply: browser-worker-first");
-    assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Worker reply: browser-worker-project-b"));
+    assert.ok(!(await visibleChat().innerText()).includes("Worker reply: browser-worker-project-b"));
     result.checks.push("Project switching replaces the visible runtime and restores project-local history");
 
     if (mobile) {
@@ -279,9 +289,9 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
         element.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true, inputType: "insertCompositionText" }));
       });
       await settle();
-      assert.equal(await page.locator(".sendIcon:visible").isEnabled(), true, "Composition text must enable sending before compositionend");
+      assert.equal(await sendButton().isEnabled(), true, "Composition text must enable sending before compositionend");
       const sentCount = fixture.received.length;
-      await activate(".sendIcon:visible");
+      await activate(sendButton());
       await input().dispatchEvent("compositionend");
       assert.equal(await input().inputValue(), "");
       await waitForReply("Advisor reply: browser-advisor-composition");
@@ -368,7 +378,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       inputLength: document.querySelector("textarea")?.value.length,
       selectedLane: document.querySelector('[role="tab"][aria-selected="true"]')?.id,
       app: document.querySelector(".app")?.outerHTML.slice(0, 1600),
-      chat: [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null)?.textContent,
+      chat: document.querySelector('.lanePanel:not([aria-hidden]) .chat')?.textContent,
       diagnostics: window.__ADS_RUNTIME_DIAGNOSTICS__ ?? [],
     })).catch(() => null);
     if (page) await page.screenshot({ path: path.join(artifacts, `${engine}-failure.png`) }).catch(() => {});

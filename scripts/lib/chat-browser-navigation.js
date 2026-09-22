@@ -17,12 +17,12 @@ export async function verifyChatNavigation({ page, mobile, settle }) {
     }
   }
 
-  const chat = page.locator(".chat:visible");
+  const chat = page.locator('.lanePanel:not([aria-hidden]) .chat');
   await chat.evaluate((host) => {
     host.scrollTop = (host.scrollHeight - host.clientHeight) / 2;
     host.dispatchEvent(new Event("scroll"));
   });
-  const button = page.locator(".scrollToBottom:visible");
+  const button = page.locator('.lanePanel:not([aria-hidden]) .scrollToBottom');
   await button.waitFor();
   const hitArea = await button.evaluate((element) => {
     const box = element.getBoundingClientRect();
@@ -34,7 +34,7 @@ export async function verifyChatNavigation({ page, mobile, settle }) {
   if (mobile) await button.tap();
   else await button.click();
   await page.waitForFunction(() => {
-    const host = [...document.querySelectorAll(".chat")].find((element) => element.offsetParent !== null);
+    const host = document.querySelector('.lanePanel:not([aria-hidden]) .chat');
     return host && host.scrollHeight - host.scrollTop - host.clientHeight <= 2;
   });
   // Let the bounded layout-correction frames finish before the next test

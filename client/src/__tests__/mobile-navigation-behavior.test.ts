@@ -188,8 +188,11 @@ describe("mobile navigation behavior", () => {
 
     await wrapper.find('[data-testid="lane-tab-advisor"]').trigger("click");
     await settleUi(wrapper);
+    // Both lane panels stay mounted; only the inactive one is marked hidden.
     expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-panel-advisor"]').classes()).not.toContain("lanePanel--inactive");
+    expect(wrapper.find('[data-testid="lane-panel-worker"]').classes()).toContain("lanePanel--inactive");
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-new-session"]').exists()).toBe(true);
@@ -345,7 +348,7 @@ describe("mobile navigation behavior", () => {
     wrapper.unmount();
   }, 40_000);
 
-  describe("horizontal lane swipe (Issue #292)", () => {
+  describe("horizontal lane swipe (Issue #292, carousel in #309)", () => {
     async function mountMobileChat() {
       const App = (await import("../App.vue")).default;
       const wrapper = shallowMount(App, {
@@ -361,40 +364,157 @@ describe("mobile navigation behavior", () => {
       return wrapper;
     }
 
-    it("switches from Advisor to Worker on a leftward swipe", async () => {
+    function dispatchTouch(
+      el: Element,
+      type: "touchstart" | "touchmove" | "touchend" | "touchcancel",
+      point: { clientX: number; clientY: number } | null,
+      timeStamp: number,
+    ): void {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.assign(event, { touches: point ? [point] : [] });
+      Object.defineProperty(event, "timeStamp", { value: timeStamp });
+      el.dispatchEvent(event);
+    }
+
+    const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+    async function waitForSnap(): Promise<void> {
+      // 340ms lane settle timer, with margin.
+      await sleep(480);
+    }
+
+    it("tracks the panels 1:1 during a swipe and snaps to Worker on release", async () => {
       const wrapper = await mountMobileChat();
       expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
 
-      const panels = wrapper.get(".lanePanels");
-      await panels.trigger("touchstart", { touches: [{ clientX: 220, clientY: 320 }] });
-      await panels.trigger("touchmove", { touches: [{ clientX: 150, clientY: 322 }] });
-      await panels.trigger("touchend", { touches: [] });
+      const panels = wrapper.get(".lanePanels").element;
+      dispatchTouch(panels, "touchstart", { clientX: 220, clientY: 320 }, 1000);
+      dispatchTouch(panels, "touchmove", { clientX: 150, clientY: 320 }, 1020);
+      await settleUi(wrapper);
+
+      const track = wrapper.get(".lanePanelsTrack");
+      expect((track.element as HTMLElement).style.transform).toBe("translate3d(-70px, 0, 0)");
+      expect(track.classes()).toContain("lanePanelsTrack--dragging");
+      // Both panels stay mounted mid-drag, so no blank gap shows between them.
+      expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(true);
+
+      dispatchTouch(panels, "touchmove", { clientX: 60, clientY: 320 }, 1040);
+      await settleUi(wrapper);
+      expect((track.element as HTMLElement).style.transform).toBe("translate3d(-160px, 0, 0)");
+
+      dispatchTouch(panels, "touchend", null, 1050);
+      await waitForSnap();
       await settleUi(wrapper);
 
       expect(wrapper.find('[data-testid="lane-tab-worker"]').classes()).toContain("active");
-      expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(true);
-      expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(false);
+      expect(wrapper.get(".lanePanelsTrack").classes()).toContain("lanePanelsTrack--worker");
+      expect(wrapper.get(".lanePanelsTrack").classes()).not.toContain("lanePanelsTrack--dragging");
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
+      const advisorPanel = wrapper.get('[data-testid="lane-panel-advisor"]');
+      expect(advisorPanel.classes()).toContain("lanePanel--inactive");
+      expect(advisorPanel.attributes("aria-hidden")).toBe("true");
+      expect(advisorPanel.attributes("inert")).toBeDefined();
+      const workerPanel = wrapper.get('[data-testid="lane-panel-worker"]');
+      expect(workerPanel.classes()).not.toContain("lanePanel--inactive");
+      expect(workerPanel.attributes("aria-hidden")).toBeUndefined();
+      expect(workerPanel.attributes("inert")).toBeUndefined();
       expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
       expect(readStoredMobileTab("default")).toBe("worker");
       wrapper.unmount();
     });
 
-    it("switches from Worker back to Advisor on a rightward swipe", async () => {
+    it("springs back to the current lane below the distance threshold", async () => {
+      const wrapper = await mountMobileChat();
+      const panels = wrapper.get(".lanePanels").element;
+
+      dispatchTouch(panels, "touchstart", { clientX: 220, clientY: 320 }, 1000);
+      dispatchTouch(panels, "touchmove", { clientX: 120, clientY: 320 }, 1500);
+      await settleUi(wrapper);
+      // 100px = 25.6% of the 390px viewport; release velocity is no flick.
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("translate3d(-100px, 0, 0)");
+
+      dispatchTouch(panels, "touchend", null, 1600);
+      await waitForSnap();
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+      expect(wrapper.get(".lanePanelsTrack").classes()).not.toContain("lanePanelsTrack--worker");
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
+      expect(readStoredMobileTab("default")).toBeNull();
+      wrapper.unmount();
+    });
+
+    it("switches lanes on a fast flick below the distance threshold", async () => {
+      const wrapper = await mountMobileChat();
+      const panels = wrapper.get(".lanePanels").element;
+
+      dispatchTouch(panels, "touchstart", { clientX: 220, clientY: 320 }, 1000);
+      dispatchTouch(panels, "touchmove", { clientX: 160, clientY: 320 }, 1040);
+      // 60px = 15.4% but -60px/40ms = -1.5px/ms is a flick.
+      dispatchTouch(panels, "touchend", null, 1050);
+      await waitForSnap();
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="lane-tab-worker"]').classes()).toContain("active");
+      expect(wrapper.get(".lanePanelsTrack").classes()).toContain("lanePanelsTrack--worker");
+      wrapper.unmount();
+    });
+
+    it("cancelling the touch springs back to the current lane", async () => {
+      const wrapper = await mountMobileChat();
+      const panels = wrapper.get(".lanePanels").element;
+
+      dispatchTouch(panels, "touchstart", { clientX: 220, clientY: 320 }, 1000);
+      dispatchTouch(panels, "touchmove", { clientX: 60, clientY: 320 }, 1040);
+      await settleUi(wrapper);
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("translate3d(-160px, 0, 0)");
+
+      dispatchTouch(panels, "touchcancel", null, 1050);
+      await waitForSnap();
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
+      wrapper.unmount();
+    });
+
+    it("switches from Worker back to Advisor on a rightward drag", async () => {
       const wrapper = await mountMobileChat();
       await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
       await settleUi(wrapper);
       expect(wrapper.find('[data-testid="lane-tab-worker"]').classes()).toContain("active");
+      expect(wrapper.get(".lanePanelsTrack").classes()).toContain("lanePanelsTrack--worker");
 
-      const panels = wrapper.get(".lanePanels");
-      await panels.trigger("touchstart", { touches: [{ clientX: 180, clientY: 300 }] });
-      await panels.trigger("touchmove", { touches: [{ clientX: 250, clientY: 298 }] });
-      await panels.trigger("touchend", { touches: [] });
+      const panels = wrapper.get(".lanePanels").element;
+      dispatchTouch(panels, "touchstart", { clientX: 180, clientY: 300 }, 1000);
+      dispatchTouch(panels, "touchmove", { clientX: 340, clientY: 300 }, 1400);
       await settleUi(wrapper);
+      // Base position is -390px (worker); +160px of drag leaves -230px.
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("translate3d(-230px, 0, 0)");
 
+      dispatchTouch(panels, "touchend", null, 1500);
+      await waitForSnap();
+      await settleUi(wrapper);
       expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
-      expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
-      expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(false);
+      expect(wrapper.get(".lanePanelsTrack").classes()).not.toContain("lanePanelsTrack--worker");
       expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
+      wrapper.unmount();
+    });
+
+    it("keeps both lane panels mounted with identical DOM elements across switches", async () => {
+      const wrapper = await mountMobileChat();
+      const advisorEl = wrapper.get('[data-testid="lane-panel-advisor"]').element;
+      const workerEl = wrapper.get('[data-testid="lane-panel-worker"]').element;
+
+      await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
+      await settleUi(wrapper);
+      expect(wrapper.get('[data-testid="lane-panel-advisor"]').element).toBe(advisorEl);
+      expect(wrapper.get('[data-testid="lane-panel-worker"]').element).toBe(workerEl);
+      expect(wrapper.get('[data-testid="lane-panel-advisor"]').attributes("aria-hidden")).toBe("true");
+
+      await wrapper.find('[data-testid="lane-tab-advisor"]').trigger("click");
+      await settleUi(wrapper);
+      expect(wrapper.get('[data-testid="lane-panel-advisor"]').element).toBe(advisorEl);
+      expect(wrapper.get('[data-testid="lane-panel-worker"]').element).toBe(workerEl);
+      expect(wrapper.get('[data-testid="lane-panel-worker"]').attributes("aria-hidden")).toBe("true");
       wrapper.unmount();
     });
 
@@ -408,6 +528,7 @@ describe("mobile navigation behavior", () => {
       expect(wrapper.find(".mobileDrawer").exists()).toBe(true);
       expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
       expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
       await panels.trigger("touchend", { touches: [] });
       wrapper.unmount();
     });
@@ -423,13 +544,14 @@ describe("mobile navigation behavior", () => {
       expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
       expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
 
-      // |dx| above the threshold but failing the horizontal ratio gate.
+      // |dx| above the lock threshold but failing the horizontal ratio gate.
       await panels.trigger("touchstart", { touches: [{ clientX: 200, clientY: 200 }] });
       await panels.trigger("touchmove", { touches: [{ clientX: 250, clientY: 260 }] });
       await panels.trigger("touchend", { touches: [] });
       await settleUi(wrapper);
       expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
       expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
       wrapper.unmount();
     });
 
@@ -450,6 +572,7 @@ describe("mobile navigation behavior", () => {
       expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
       expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
       expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
       pre.remove();
       wrapper.unmount();
     });

@@ -176,7 +176,7 @@ describe("Issue #198 lane conversation switching", () => {
     workerRuntime.messages.value = [message("worker-1", "Worker response")];
     await settleUi(wrapper);
 
-    expect(wrapper.findAll(".main-chat-stub")).toHaveLength(1);
+    expect(wrapper.findAll(".main-chat-stub")).toHaveLength(2);
     expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-advisor"]'))).toBe(true);
     expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-worker"]'))).toBe(false);
     expect(wrapper.find('[data-testid="lane-panel-advisor"]').text()).toContain("Advisor response");
@@ -184,7 +184,7 @@ describe("Issue #198 lane conversation switching", () => {
     await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
     await settleUi(wrapper);
 
-    expect(wrapper.findAll(".main-chat-stub")).toHaveLength(1);
+    expect(wrapper.findAll(".main-chat-stub")).toHaveLength(2);
     expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-worker"]'))).toBe(true);
     expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-advisor"]'))).toBe(false);
     expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).toContain("Worker response");
@@ -193,7 +193,7 @@ describe("Issue #198 lane conversation switching", () => {
     await wrapper.find('[data-testid="lane-tab-advisor"]').trigger("click");
     await settleUi(wrapper);
 
-    expect(wrapper.findAll(".main-chat-stub")).toHaveLength(1);
+    expect(wrapper.findAll(".main-chat-stub")).toHaveLength(2);
     expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-advisor"]'))).toBe(true);
     expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-worker"]'))).toBe(false);
     expect(wrapper.find('[data-testid="lane-panel-advisor"]').text()).toContain("Advisor response");
