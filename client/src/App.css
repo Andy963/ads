@@ -700,26 +700,31 @@
   background: #94a3b8;
 }
 
-.laneTabBusySpinner {
-  display: inline-block;
-  box-sizing: border-box;
-  width: 12px;
-  height: 12px;
-  flex: 0 0 12px;
-  border: 2px solid rgba(148, 163, 184, 0.32);
-  border-top-color: currentColor;
-  border-radius: 50%;
-  transform-origin: center;
-  animation: spin 0.8s linear infinite;
-  will-change: transform;
+.laneTabStatusDot--busy-advisor {
+  background: #a855f7;
+  --lane-pulse-color: 168, 85, 247;
+  animation: laneDotPulse 1.6s ease-in-out infinite;
+  will-change: transform, box-shadow;
 }
 
-.laneTabBusySpinner--advisor {
-  color: #a855f7;
+.laneTabStatusDot--busy-worker {
+  background: #10b981;
+  --lane-pulse-color: 16, 185, 129;
+  animation: laneDotPulse 1.6s ease-in-out infinite;
+  will-change: transform, box-shadow;
 }
 
-.laneTabBusySpinner--worker {
-  color: #10b981;
+@keyframes laneDotPulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 2px rgba(var(--lane-pulse-color), 0.2);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.2);
+    box-shadow: 0 0 0 5px rgba(var(--lane-pulse-color), 0.4);
+    opacity: 1;
+  }
 }
 
 .laneTab.active {
