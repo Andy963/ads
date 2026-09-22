@@ -58,9 +58,7 @@ const error = ref<string | null>(null);
 const statusMessage = ref<string | null>(null);
 const editingId = ref<string | null>(null);
 const dialogOpen = ref(false);
-const pendingDeleteId = ref<string | null>(null);
 const selectedModelId = ref<string | null>(null);
-const dialogDeleteConfirming = ref(false);
 const activeTab = ref<SettingsTab>(props.initialTab);
 const lanePromptSnapshots = ref<LanePromptSnapshot[]>([]);
 const selectedLane = ref<LaneName>("advisor");
@@ -313,6 +311,11 @@ function handleSwipeCopy(model: ModelConfig): void {
   duplicateModel(model);
 }
 
+function handleSwipeDelete(model: ModelConfig): void {
+  closeModelSwipe();
+  void deleteModel(model);
+}
+
 function handleActionSheetSetDefault(): void {
   const model = actionSheetModel.value;
   closeModelActionSheet();
@@ -334,7 +337,7 @@ function handleActionSheetCopy(): void {
 function handleActionSheetDelete(): void {
   const model = actionSheetModel.value;
   closeModelActionSheet();
-  if (model) requestDelete(model);
+  if (model) void deleteModel(model);
 }
 
 function handleModelManagerClick(event: MouseEvent): void {
@@ -355,9 +358,6 @@ const sortedModels = computed(() => {
 const enabledCount = computed(() => modelConfigs.value.filter((m) => m.isEnabled).length);
 const busy = computed(() => saving.value || loading.value || busyRowId.value !== null || syncLoading.value || syncImporting.value);
 const isEditing = computed(() => Boolean(editingId.value));
-const currentModel = computed(() =>
-  editingId.value ? modelConfigs.value.find((model) => model.id === editingId.value) ?? null : null,
-);
 const managerTitle = computed(() => (props.agent ? "模型" : "系统设置"));
 const managerSubtitle = computed(() =>
   props.agent ? "统一 Codex 引擎；保存后输入框下拉会立即刷新。" : "管理角色指令与模型配置。",
@@ -441,7 +441,6 @@ function versionLabel(version: LanePromptSnapshot["current"]): string {
 async function loadModelConfigs(): Promise<void> {
   loading.value = true;
   error.value = null;
-  pendingDeleteId.value = null;
   selectedModelId.value = null;
   closeModelSwipe();
   try {
@@ -710,15 +709,12 @@ function closeDialog(): void {
   assignForm(emptyForm());
   error.value = null;
   selectedModelId.value = null;
-  dialogDeleteConfirming.value = false;
 }
 
 function startCreate(): void {
   editingId.value = null;
   dialogOpen.value = true;
-  pendingDeleteId.value = null;
   selectedModelId.value = null;
-  dialogDeleteConfirming.value = false;
   assignForm(emptyForm());
   error.value = null;
   statusMessage.value = null;
@@ -728,8 +724,6 @@ function editModel(model: ModelConfig): void {
   editingId.value = model.id;
   selectedModelId.value = model.id;
   dialogOpen.value = true;
-  pendingDeleteId.value = null;
-  dialogDeleteConfirming.value = false;
   assignForm({
     id: model.id,
     modelId: model.modelId || model.id,
@@ -747,8 +741,6 @@ function duplicateModel(model: ModelConfig): void {
   editingId.value = null;
   selectedModelId.value = model.id;
   dialogOpen.value = true;
-  pendingDeleteId.value = null;
-  dialogDeleteConfirming.value = false;
   const sourceLabel = model.displayName || model.modelId || model.id;
   assignForm({
     id: "",
@@ -851,45 +843,14 @@ function selectModel(model: ModelConfig): void {
   selectedModelId.value = selectedModelId.value === model.id ? null : model.id;
 }
 
-function requestDelete(model: ModelConfig): void {
-  if (model.isDefault || busy.value) return;
-  closeModelSwipe();
-  pendingDeleteId.value = model.id;
-  selectedModelId.value = model.id;
-  statusMessage.value = null;
-  error.value = null;
-}
-
-function cancelDelete(): void {
-  pendingDeleteId.value = null;
-}
-
-function requestDialogDelete(): void {
-  dialogDeleteConfirming.value = true;
-}
-
-function cancelDialogDelete(): void {
-  dialogDeleteConfirming.value = false;
-}
-
-async function confirmDialogDelete(): Promise<void> {
-  const model = currentModel.value;
-  if (!model || model.isDefault) return;
-  dialogDeleteConfirming.value = false;
-  await deleteModel(model);
-}
-
 async function deleteModel(model: ModelConfig): Promise<void> {
   if (model.isDefault || saving.value) return;
   saving.value = true;
   error.value = null;
   try {
     await props.api.delete<{ success: boolean }>(`/api/model-configs/${encodeURIComponent(model.id)}`);
-    if (editingId.value === model.id) closeDialog();
     await loadModelConfigs();
-    pendingDeleteId.value = null;
     selectedModelId.value = null;
-    dialogDeleteConfirming.value = false;
     statusMessage.value = "模型已删除";
     emit("changed");
   } catch (err) {
@@ -1083,7 +1044,7 @@ defineExpose({
                 :tabindex="modelSwipeOpenId === model.id ? 0 : -1"
                 :data-testid="`model-manager-swipe-delete-${model.id}`"
                 aria-label="删除模型"
-                @click.stop="requestDelete(model)"
+                @click.stop="handleSwipeDelete(model)"
               >
                 <el-icon :size="17" aria-hidden="true"><Close /></el-icon>
                 <span>删除</span>
@@ -1137,67 +1098,52 @@ defineExpose({
               <code v-if="hasDistinctModelDisplayName(model)" class="modelRowId">{{ modelIdLabel(model) }}</code>
               <div
                 class="modelRowActions"
-                :class="{ pending: pendingDeleteId === model.id }"
                 @click.stop
               >
-                <template v-if="pendingDeleteId === model.id">
-                  <button
-                    type="button"
-                    class="rowAction danger solid"
-                    :disabled="busy"
-                    :data-testid="`model-manager-delete-confirm-${model.id}`"
-                    @click="deleteModel(model)"
-                  >
-                    确认删除
-                  </button>
-                  <button type="button" class="rowAction" :disabled="busy" @click="cancelDelete">取消</button>
-                </template>
-                <template v-else>
-                  <button
-                    type="button"
-                    class="rowAction icon star"
-                    :class="{ active: model.isDefault }"
-                    :title="model.isDefault ? '当前默认模型' : '设为默认模型'"
-                    :disabled="busy || model.isDefault"
-                    :data-testid="`model-manager-default-${model.id}`"
-                    @click="setDefaultModel(model)"
-                  >
-                    <el-icon :size="15" aria-hidden="true"><StarFilled /></el-icon>
-                  </button>
+                <button
+                  type="button"
+                  class="rowAction icon star"
+                  :class="{ active: model.isDefault }"
+                  :title="model.isDefault ? '当前默认模型' : '设为默认模型'"
+                  :disabled="busy || model.isDefault"
+                  :data-testid="`model-manager-default-${model.id}`"
+                  @click="setDefaultModel(model)"
+                >
+                  <el-icon :size="15" aria-hidden="true"><StarFilled /></el-icon>
+                </button>
 
-                  <button
-                    type="button"
-                    class="rowAction icon"
-                    title="编辑"
-                    :disabled="busy"
-                    :data-testid="`model-manager-edit-${model.id}`"
-                    @click="editModel(model)"
-                  >
-                    <el-icon :size="15" aria-hidden="true"><EditPen /></el-icon>
-                  </button>
+                <button
+                  type="button"
+                  class="rowAction icon"
+                  title="编辑"
+                  :disabled="busy"
+                  :data-testid="`model-manager-edit-${model.id}`"
+                  @click="editModel(model)"
+                >
+                  <el-icon :size="15" aria-hidden="true"><EditPen /></el-icon>
+                </button>
 
-                  <button
-                    type="button"
-                    class="rowAction icon"
-                    title="复制"
-                    :disabled="busy"
-                    :data-testid="`model-manager-copy-${model.id}`"
-                    @click="duplicateModel(model)"
-                  >
-                    <el-icon :size="15" aria-hidden="true"><CopyDocument /></el-icon>
-                  </button>
+                <button
+                  type="button"
+                  class="rowAction icon"
+                  title="复制"
+                  :disabled="busy"
+                  :data-testid="`model-manager-copy-${model.id}`"
+                  @click="duplicateModel(model)"
+                >
+                  <el-icon :size="15" aria-hidden="true"><CopyDocument /></el-icon>
+                </button>
 
-                  <button
-                    type="button"
-                    class="rowAction icon danger"
-                    :title="model.isDefault ? '默认模型不能删除' : '删除'"
-                    :disabled="busy || model.isDefault"
-                    :data-testid="`model-manager-delete-${model.id}`"
-                    @click="requestDelete(model)"
-                  >
-                    <el-icon :size="15" aria-hidden="true"><Close /></el-icon>
-                  </button>
-                </template>
+                <button
+                  type="button"
+                  class="rowAction icon danger"
+                  :title="model.isDefault ? '默认模型不能删除' : '删除'"
+                  :disabled="busy || model.isDefault"
+                  :data-testid="`model-manager-delete-${model.id}`"
+                  @click="deleteModel(model)"
+                >
+                  <el-icon :size="15" aria-hidden="true"><Close /></el-icon>
+                </button>
               </div>
             </div>
             </article>
@@ -1458,9 +1404,6 @@ defineExpose({
               <span class="dialogHint">保存后立即出现在输入框下拉里</span>
             </div>
           </div>
-          <button class="modelIconBtn" type="button" title="关闭" @click="closeDialog">
-            <el-icon :size="16" aria-hidden="true"><Close /></el-icon>
-          </button>
         </header>
 
         <div class="dialogBody">
@@ -1539,38 +1482,6 @@ defineExpose({
         </div>
 
         <footer class="dialogActions">
-          <template v-if="isEditing && currentModel && !currentModel.isDefault">
-            <template v-if="dialogDeleteConfirming">
-              <button
-                type="button"
-                class="btnDanger"
-                :disabled="saving"
-                data-testid="model-manager-dialog-delete-confirm"
-                @click="confirmDialogDelete"
-              >
-                确认删除
-              </button>
-              <button
-                type="button"
-                class="btnSecondary"
-                :disabled="saving"
-                data-testid="model-manager-dialog-delete-cancel"
-                @click="cancelDialogDelete"
-              >
-                取消
-              </button>
-            </template>
-            <button
-              v-else
-              type="button"
-              class="btnDanger"
-              :disabled="saving"
-              data-testid="model-manager-dialog-delete"
-              @click="requestDialogDelete"
-            >
-              删除模型
-            </button>
-          </template>
           <button type="button" class="btnSecondary" :disabled="saving" @click="closeDialog">取消</button>
           <button type="submit" class="btnPrimary" :disabled="!canSubmit" data-testid="model-manager-save">
             {{ saving ? "保存中" : "保存模型" }}
@@ -2359,17 +2270,6 @@ defineExpose({
   color: var(--danger-2);
 }
 
-.rowAction.danger.solid {
-  border-color: var(--danger-2);
-  background: var(--danger-2);
-  color: #fff;
-}
-
-.rowAction.danger.solid:hover:not(:disabled) {
-  background: #b91c1c;
-  color: #fff;
-}
-
 .rowAction:disabled {
   opacity: 0.4;
   cursor: not-allowed;
@@ -2732,8 +2632,7 @@ defineExpose({
 }
 
 .btnSecondary,
-.btnPrimary,
-.btnDanger {
+.btnPrimary {
   height: 34px;
   padding: 0 16px;
   border: 1px solid var(--border);
@@ -2763,19 +2662,8 @@ defineExpose({
   background: var(--accent-2);
 }
 
-.btnDanger {
-  border-color: transparent;
-  background: var(--danger-2);
-  color: #fff;
-}
-
-.btnDanger:hover:not(:disabled) {
-  background: #b91c1c;
-}
-
 .btnPrimary:disabled,
-.btnSecondary:disabled,
-.btnDanger:disabled {
+.btnSecondary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -2806,22 +2694,16 @@ defineExpose({
   }
 
   /* Mobile rows expose actions only via swipe / long-press / edit dialog, so
-     the inline action cluster stays hidden except for the delete confirm bar. */
+     the inline action cluster stays hidden. */
   .modelRowActions {
     display: none;
   }
 
-  .modelRowActions.pending {
-    display: flex;
-    width: 100%;
-    margin-left: 0;
-    gap: 8px;
-  }
-
-  .modelRowActions.pending .rowAction {
-    flex: 1 1 0;
-    min-width: 0;
-    min-height: 40px;
+  /* Dialog footers become full-width, equal-sized thumb targets on mobile. */
+  .dialogActions .btnSecondary,
+  .dialogActions .btnPrimary {
+    flex: 1;
+    min-height: 44px;
   }
 }
 
