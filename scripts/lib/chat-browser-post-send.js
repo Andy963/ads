@@ -1,27 +1,38 @@
 import assert from "node:assert/strict";
 
 export async function verifyPostSendInteractions({ page, fixture, mobile }) {
-  const input = () => page.locator("textarea.composer-input:visible");
+  // Both lane panels stay mounted; the active panel is the one without aria-hidden.
+  const activePanel = () => page.locator('.lanePanel:not([aria-hidden])');
+  const input = () => activePanel().locator("textarea.composer-input");
+  const sendButton = () => activePanel().locator(".sendIcon");
+  const stopButton = () => activePanel().locator(".stopIcon");
+  const visibleChat = () => activePanel().locator(".chat");
   const settle = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  const activate = async (selector) => {
-    if (mobile) await page.locator(selector).tap();
-    else await page.locator(selector).click();
+  const activate = async (target) => {
+    const locator = typeof target === "string" ? page.locator(target) : target;
+    if (mobile) await locator.tap();
+    else await locator.click();
     await settle();
   };
   const waitForLanePanel = async (lane) => {
     await page.locator(`[data-testid="lane-panel-${lane}"]`).waitFor({ state: "visible" });
     await page.waitForFunction((expectedLane) => {
       const panel = document.querySelector(`[data-testid="lane-panel-${expectedLane}"]`);
-      if (!panel) return false;
-      const style = getComputedStyle(panel);
-      return style.opacity === "1" && (style.transform === "none" || style.transform.startsWith("matrix(1, 0, 0, 1,"));
+      if (!panel || panel.hasAttribute("aria-hidden")) return false;
+      const track = document.querySelector(".lanePanelsTrack");
+      if (track && getComputedStyle(track).display !== "contents") {
+        const tx = new DOMMatrixReadOnly(getComputedStyle(track).transform).m41;
+        const expected = expectedLane === "worker" ? -track.clientWidth / 2 : 0;
+        if (Math.abs(tx - expected) > 2) return false;
+      }
+      return true;
     }, lane);
   };
   const chooseLane = async (lane) => {
     await activate(`[data-testid="lane-tab-${lane}"]`);
     await waitForLanePanel(lane);
     assert.equal(await page.locator(`[data-testid="lane-tab-${lane}"]`).getAttribute("aria-selected"), "true");
-    assert.equal(await page.locator(".lanePanel:visible").count(), 1);
+    assert.equal(await activePanel().count(), 1);
   };
   const setKeyboardViewport = async (height, offsetTop = 0) => {
     if (!mobile) return;
@@ -55,15 +66,15 @@ export async function verifyPostSendInteractions({ page, fixture, mobile }) {
 
   await chooseLane("advisor");
   await input().fill("");
-  await activate("textarea.composer-input:visible");
+  await activate(input());
   await setKeyboardViewport(430);
   const originalEditor = await input().elementHandle();
   const firstPrompt = "browser-advisor-post-send-first";
   const releaseFirstReply = fixture.holdReply(firstPrompt);
   await input().pressSequentially(firstPrompt);
-  await activate(".sendIcon:visible");
+  await activate(sendButton());
   const firstSend = await verifyCleared(originalEditor);
-  await page.locator(".stopIcon:visible").waitFor();
+  await stopButton().waitFor();
 
   const lines = ["browser-advisor-post-send-second"];
   const rowsAfterSending = [];
@@ -82,21 +93,21 @@ export async function verifyPostSendInteractions({ page, fixture, mobile }) {
   }
   assert.equal(await input().evaluate((element, original) => element === original, originalEditor), true);
   releaseFirstReply();
-  await page.waitForFunction((marker) => [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null)?.textContent.includes(`Advisor reply: ${marker}`), firstPrompt);
-  await page.locator(".sendIcon:visible").waitFor();
+  await page.waitForFunction((marker) => document.querySelector('.lanePanel:not([aria-hidden]) .chat')?.textContent.includes(`Advisor reply: ${marker}`), firstPrompt);
+  await sendButton().waitFor();
 
   const secondPrompt = lines[0];
   const releaseSecondReply = fixture.holdReply(secondPrompt);
-  await activate(".sendIcon:visible");
+  await activate(sendButton());
   const secondSend = await verifyCleared(originalEditor);
-  await page.locator(".stopIcon:visible").waitFor();
+  await stopButton().waitFor();
   let activePrompt = secondPrompt;
   let releaseActiveReply = releaseSecondReply;
   let composedSend;
   if (mobile) {
     releaseSecondReply();
-    await page.waitForFunction((marker) => [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null)?.textContent.includes(`Advisor reply: ${marker}`), secondPrompt);
-    await page.locator(".sendIcon:visible").waitFor();
+    await page.waitForFunction((marker) => document.querySelector('.lanePanel:not([aria-hidden]) .chat')?.textContent.includes(`Advisor reply: ${marker}`), secondPrompt);
+    await sendButton().waitFor();
     activePrompt = "browser-advisor-post-send-composition";
     releaseActiveReply = fixture.holdReply(activePrompt);
     await input().evaluate((element, marker) => {
@@ -106,11 +117,11 @@ export async function verifyPostSendInteractions({ page, fixture, mobile }) {
       element.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true, inputType: "insertCompositionText" }));
     }, activePrompt);
     await settle();
-    assert.equal(await page.locator(".sendIcon:visible").isEnabled(), true,
+    assert.equal(await sendButton().isEnabled(), true,
       "Composition after previous sends must enable the send control before compositionend");
-    await activate(".sendIcon:visible");
+    await activate(sendButton());
     composedSend = await verifyCleared(originalEditor);
-    await page.locator(".stopIcon:visible").waitFor();
+    await stopButton().waitFor();
   }
   await input().pressSequentially("Advisor draft after two sends");
   if (mobile) {
@@ -120,18 +131,18 @@ export async function verifyPostSendInteractions({ page, fixture, mobile }) {
   await setKeyboardViewport(300, 72);
   await chooseLane("worker");
   assert.equal(await input().inputValue(), "");
-  assert.ok(!(await page.locator(".chat:visible").innerText()).includes(firstPrompt));
-  assert.ok(!(await page.locator(".chat:visible").innerText()).includes(secondPrompt));
+  assert.ok(!(await visibleChat().innerText()).includes(firstPrompt));
+  assert.ok(!(await visibleChat().innerText()).includes(secondPrompt));
   await input().pressSequentially("Worker draft after two sends");
   await setKeyboardViewport(430, 24);
   await chooseLane("advisor");
   assert.equal(await input().inputValue(), "Advisor draft after two sends");
-  assert.ok((await page.locator(".chat:visible").innerText()).includes(secondPrompt));
+  assert.ok((await visibleChat().innerText()).includes(secondPrompt));
   await chooseLane("worker");
   assert.equal(await input().inputValue(), "Worker draft after two sends");
   releaseActiveReply();
   await chooseLane("advisor");
-  await page.waitForFunction((marker) => [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null)?.textContent.includes(`Advisor reply: ${marker}`), activePrompt);
+  await page.waitForFunction((marker) => document.querySelector('.lanePanel:not([aria-hidden]) .chat')?.textContent.includes(`Advisor reply: ${marker}`), activePrompt);
   assert.equal(await input().inputValue(), "Advisor draft after two sends");
   assert.equal(fixture.received.filter(({ marker }) => marker === firstPrompt).length, 1);
   assert.equal(fixture.received.filter(({ marker }) => marker === secondPrompt).length, 1);

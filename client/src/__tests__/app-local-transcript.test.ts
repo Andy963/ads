@@ -60,8 +60,9 @@ describe("cached app bootstrap and authentication", () => {
     state.get.mockReturnValue(new Promise(() => {}));
     try {
       const wrapper = mountApp();
-      expect(wrapper.find(".chat").text()).toContain("Cached main answer");
-      expect(wrapper.find(".chat").text()).not.toContain("Cached advisor answer");
+      // Both lane panels stay mounted; the restored worker lane shows its own cache.
+      expect(wrapper.find('[data-testid="lane-panel-worker"] .chat').text()).toContain("Cached main answer");
+      expect(wrapper.find('[data-testid="lane-panel-advisor"] .chat').text()).toContain("Cached advisor answer");
     } finally {
       Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
     }

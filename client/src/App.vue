@@ -473,8 +473,6 @@ const DRAWER_SNAP_SETTLE_MS = 340;
 // Lets the leave transition commit before gesture styles are dropped.
 const DRAWER_SETTLE_CLEANUP_MS = 60;
 
-type DrawerSwipe = { startX: number; startY: number; triggered: boolean };
-
 type DrawerGesture = {
   mode: "open" | "close";
   startX: number;
@@ -678,48 +676,169 @@ function onDrawerGestureTouchCancel(ev: TouchEvent): void {
   finishDrawerGesture(ev, true);
 }
 
-const LANE_SWIPE_TRIGGER_PX = 40;
 const LANE_SWIPE_RATIO = 1.4;
+// Horizontal travel that takes the axis lock and starts 1:1 tracking.
+const LANE_DRAG_LOCK_PX = 10;
+// Releasing past this share of the viewport width switches to the other lane.
+const LANE_SNAP_RATIO = 0.3;
+// Release velocity (px/ms, i.e. ~500px/s) that switches regardless of distance.
+const LANE_FLICK_VELOCITY_PX_PER_MS = 0.5;
+// A finger held still before release must not read as a flick.
+const LANE_FLICK_STALE_MS = 100;
+// Slightly longer than the 0.28s snap transition.
+const LANE_SNAP_SETTLE_MS = 340;
 // Touches starting inside horizontally scrollable or editable children keep
 // their native behavior instead of switching lanes.
 const LANE_SWIPE_IGNORE_SELECTOR = "pre, code, table, input, textarea, select, button, a, [contenteditable]";
 
-let laneSwipe: DrawerSwipe | null = null;
+type LaneGesture = {
+  startX: number;
+  startY: number;
+  startTime: number;
+  startLane: ChatLane;
+  width: number;
+  tracking: boolean;
+  prevX: number;
+  prevTime: number;
+  lastX: number;
+  lastTime: number;
+};
 
-const lanePanelTransitionName = computed(() =>
-  activeWorkspaceTab.value === "worker" ? "lane-slide-forward" : "lane-slide-back",
-);
+let laneGesture: LaneGesture | null = null;
+let laneSettleTimer: ReturnType<typeof setTimeout> | null = null;
+
+const lanePanelsRef = ref<HTMLElement | null>(null);
+// Track translation in px while a gesture owns the panels; null falls back to
+// the stylesheet position driven by the active lane.
+const laneTrackOffset = ref<number | null>(null);
+const laneDragTracking = ref(false);
+const laneSnapSettling = ref(false);
+
+const laneTrackStyle = computed<Record<string, string> | undefined>(() => {
+  const offset = laneTrackOffset.value;
+  if (offset === null || !isMobile.value) return undefined;
+  return { transform: `translate3d(${offset}px, 0, 0)` };
+});
+
+function lanePanelWidthPx(): number {
+  const measured = lanePanelsRef.value?.clientWidth ?? 0;
+  if (measured > 0) return measured;
+  return window.innerWidth;
+}
+
+function clampLaneOffset(value: number, width: number): number {
+  return Math.min(0, Math.max(-width, value));
+}
+
+function cancelLaneGesture(): void {
+  laneGesture = null;
+  laneDragTracking.value = false;
+  laneSnapSettling.value = false;
+  laneTrackOffset.value = null;
+  if (laneSettleTimer !== null) {
+    clearTimeout(laneSettleTimer);
+    laneSettleTimer = null;
+  }
+}
+
+function settleLaneGesture(target: ChatLane, width: number): void {
+  laneSnapSettling.value = true;
+  laneTrackOffset.value = target === "worker" ? -width : 0;
+  if (target !== activeWorkspaceTab.value) selectWorkspaceTab(target);
+  laneSettleTimer = setTimeout(() => {
+    laneSettleTimer = null;
+    laneSnapSettling.value = false;
+    // The stylesheet position matches the settle target, so dropping the
+    // inline transform cannot move the track.
+    laneTrackOffset.value = null;
+  }, LANE_SNAP_SETTLE_MS);
+}
 
 function onLaneSwipeTouchStart(ev: TouchEvent): void {
-  laneSwipe = null;
+  if (laneGesture || laneSnapSettling.value) return;
   if (!isMobile.value || mobileDrawerOpen.value) return;
-  // An in-flight drawer drag owns the touch sequence.
-  if (drawerDragProgress.value !== null) return;
+  // An in-flight drawer gesture owns the touch sequence.
+  if (drawerDragProgress.value !== null || drawerSnapSettling.value) return;
   if (ev.target instanceof Element && ev.target.closest(LANE_SWIPE_IGNORE_SELECTOR)) return;
   const touch = readSwipeTouch(ev);
   // The left edge stays reserved for the drawer edge swipe.
   if (!touch || touch.x <= DRAWER_SWIPE_EDGE_PX) return;
-  laneSwipe = { startX: touch.x, startY: touch.y, triggered: false };
+  laneGesture = {
+    startX: touch.x,
+    startY: touch.y,
+    startTime: ev.timeStamp,
+    startLane: activeWorkspaceTab.value,
+    width: 0,
+    tracking: false,
+    prevX: touch.x,
+    prevTime: ev.timeStamp,
+    lastX: touch.x,
+    lastTime: ev.timeStamp,
+  };
 }
 
 function onLaneSwipeTouchMove(ev: TouchEvent): void {
-  const swipe = laneSwipe;
-  if (!swipe || swipe.triggered) return;
+  const gesture = laneGesture;
+  if (!gesture) return;
   const touch = readSwipeTouch(ev);
   if (!touch) return;
-  const dx = touch.x - swipe.startX;
-  const dy = touch.y - swipe.startY;
-  if (Math.abs(dx) <= LANE_SWIPE_TRIGGER_PX || Math.abs(dx) <= Math.abs(dy) * LANE_SWIPE_RATIO) return;
-  swipe.triggered = true;
-  if (dx < 0 && activeWorkspaceTab.value === "advisor") {
-    selectWorkspaceTab("worker");
-  } else if (dx > 0 && activeWorkspaceTab.value === "worker") {
-    selectWorkspaceTab("advisor");
+  const dx = touch.x - gesture.startX;
+  const dy = touch.y - gesture.startY;
+  if (!gesture.tracking) {
+    // Vertical scrolling always wins over the lane gesture.
+    if (Math.abs(dy) > LANE_DRAG_LOCK_PX && Math.abs(dy) > Math.abs(dx) * LANE_SWIPE_RATIO) {
+      laneGesture = null;
+      return;
+    }
+    // Advisor is the leftmost panel, worker the rightmost; a drag can only
+    // pull toward the other lane.
+    const towardOtherLane = gesture.startLane === "advisor" ? dx < 0 : dx > 0;
+    if (!towardOtherLane) return;
+    if (!(Math.abs(dx) > LANE_DRAG_LOCK_PX && Math.abs(dx) > Math.abs(dy) * LANE_SWIPE_RATIO)) return;
+    gesture.tracking = true;
+    gesture.width = lanePanelWidthPx();
+    laneDragTracking.value = true;
   }
+  gesture.prevX = gesture.lastX;
+  gesture.prevTime = gesture.lastTime;
+  gesture.lastX = touch.x;
+  gesture.lastTime = ev.timeStamp;
+  const base = gesture.startLane === "worker" ? -gesture.width : 0;
+  laneTrackOffset.value = clampLaneOffset(base + dx, gesture.width);
 }
 
-function onLaneSwipeTouchEnd(): void {
-  laneSwipe = null;
+function finishLaneGesture(ev: TouchEvent, cancelled: boolean): void {
+  const gesture = laneGesture;
+  laneGesture = null;
+  laneDragTracking.value = false;
+  if (!gesture || !gesture.tracking) return;
+  const width = gesture.width;
+  if (cancelled) {
+    // touchcancel always springs back to the lane the drag started from.
+    settleLaneGesture(gesture.startLane, width);
+    return;
+  }
+  const base = gesture.startLane === "worker" ? -width : 0;
+  const position = clampLaneOffset(base + (gesture.lastX - gesture.startX), width);
+  // Progress toward the other lane as a share of the panel width.
+  const moved = gesture.startLane === "advisor" ? -position / width : (position + width) / width;
+  const trailDt = gesture.lastTime - gesture.prevTime;
+  const stale = ev.timeStamp - gesture.lastTime > LANE_FLICK_STALE_MS;
+  const velocity = stale || trailDt <= 0 ? 0 : (gesture.lastX - gesture.prevX) / trailDt;
+  const otherLane: ChatLane = gesture.startLane === "advisor" ? "worker" : "advisor";
+  let target: ChatLane;
+  if (velocity <= -LANE_FLICK_VELOCITY_PX_PER_MS) target = "worker";
+  else if (velocity >= LANE_FLICK_VELOCITY_PX_PER_MS) target = "advisor";
+  else target = moved > LANE_SNAP_RATIO ? otherLane : gesture.startLane;
+  settleLaneGesture(target, width);
+}
+
+function onLaneSwipeTouchEnd(ev: TouchEvent): void {
+  finishLaneGesture(ev, false);
+}
+
+function onLaneSwipeTouchCancel(ev: TouchEvent): void {
+  finishLaneGesture(ev, true);
 }
 
 function onDrawerKeydown(ev: KeyboardEvent): void {
@@ -764,6 +883,7 @@ watch(isMobile, (mobile) => {
     return;
   }
   closeMobileDrawer();
+  cancelLaneGesture();
 }, { immediate: true });
 
 watch(activeProjectId, (projectId, previousProjectId) => {
@@ -836,6 +956,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", onMobileKeydown);
   window.removeEventListener("pagehide", stashComposerDrafts);
   cancelDrawerGesture();
+  cancelLaneGesture();
   document.body.style.overflow = "";
 });
 
@@ -1250,20 +1371,27 @@ const advisorConnectionStatus = computed(() => {
         </div>
 
         <div
+          ref="lanePanelsRef"
           class="lanePanels"
           @touchstart.passive="onLaneSwipeTouchStart"
           @touchmove.passive="onLaneSwipeTouchMove"
           @touchend="onLaneSwipeTouchEnd"
-          @touchcancel="onLaneSwipeTouchEnd"
+          @touchcancel="onLaneSwipeTouchCancel"
         >
-          <Transition :name="lanePanelTransitionName" mode="out-in">
+          <div
+            class="lanePanelsTrack"
+            :class="{ 'lanePanelsTrack--worker': activeWorkspaceTab === 'worker', 'lanePanelsTrack--dragging': laneDragTracking }"
+            :style="laneTrackStyle"
+          >
             <section
-              :id="'lane-panel-advisor'"
-              v-if="activeWorkspaceTab === 'advisor'"
-              key="advisor"
+              id="lane-panel-advisor"
               class="lanePanel"
+              :class="{ 'lanePanel--inactive': activeWorkspaceTab !== 'advisor' }"
+              :style="!isMobile && activeWorkspaceTab !== 'advisor' ? { display: 'none' } : undefined"
               role="tabpanel"
               aria-labelledby="lane-tab-advisor"
+              :aria-hidden="activeWorkspaceTab === 'advisor' ? undefined : 'true'"
+              :inert="activeWorkspaceTab !== 'advisor' ? true : undefined"
               data-testid="lane-panel-advisor"
               :data-message-count="advisorMessages.length"
               :data-panel-key="`${advisorPanelKey}:${errorRecoveryGeneration}`"
@@ -1296,12 +1424,14 @@ const advisorConnectionStatus = computed(() => {
             </section>
 
             <section
-              :id="'lane-panel-worker'"
-              v-else
-              key="worker"
+              id="lane-panel-worker"
               class="lanePanel"
+              :class="{ 'lanePanel--inactive': activeWorkspaceTab !== 'worker' }"
+              :style="!isMobile && activeWorkspaceTab !== 'worker' ? { display: 'none' } : undefined"
               role="tabpanel"
               aria-labelledby="lane-tab-worker"
+              :aria-hidden="activeWorkspaceTab === 'worker' ? undefined : 'true'"
+              :inert="activeWorkspaceTab !== 'worker' ? true : undefined"
               data-testid="lane-panel-worker"
               :data-message-count="messages.length"
               :data-panel-key="`${workerPanelKey}:${errorRecoveryGeneration}`"
@@ -1335,7 +1465,7 @@ const advisorConnectionStatus = computed(() => {
                 @removeQueued="removeQueuedPrompt"
               />
             </section>
-          </Transition>
+          </div>
         </div>
       </section>
     </main>

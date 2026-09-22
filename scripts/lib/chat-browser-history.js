@@ -4,7 +4,7 @@ export async function verifyMonotonicHistory({ page, send, waitForReply, chooseL
   const snapshots = [];
   report.snapshots = snapshots;
   await chooseLane("advisor");
-  const chat = page.locator(".chat:visible");
+  const chat = page.locator('.lanePanel:not([aria-hidden]) .chat');
   const list = chat.locator(".messageList");
   const loadedCount = async () => Number(await list.getAttribute("data-loaded-messages"));
   const initialTotal = Number(await list.getAttribute("data-total-messages"));
@@ -124,7 +124,7 @@ export async function verifyMonotonicHistory({ page, send, waitForReply, chooseL
       });
       snapshots.push({ stage: "before prepend", loaded: previousCount, ...await chat.evaluate((root) => root.__historyProbe.beforePrepend) });
       await page.waitForFunction((expectedCount) => {
-        const root = [...document.querySelectorAll(".chat")].find((element) => element.offsetParent !== null);
+        const root = document.querySelector('.lanePanel:not([aria-hidden]) .chat');
         return Number(root?.querySelector(".messageList")?.getAttribute("data-loaded-messages")) >= expectedCount;
       }, expected);
       await settle();

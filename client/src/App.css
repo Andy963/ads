@@ -746,6 +746,13 @@
   flex: 1 1 auto;
 }
 
+/* Desktop keeps its single-pane swap: the track wrapper is transparent to the
+   flex column layout, and the inactive panel is hidden inline from the
+   template (display: none) so both lanes stay mounted. */
+.lanePanelsTrack {
+  display: contents;
+}
+
 .error {
   border: 1px solid rgba(239, 68, 68, 0.3);
   background: rgba(239, 68, 68, 0.08);
@@ -1046,21 +1053,27 @@
   .mobile-fade-leave-active {
     transition: opacity 0.28s ease;
   }
-  .lane-slide-forward-enter-from,
-  .lane-slide-back-leave-to {
-    opacity: 0;
-    transform: translateX(28px);
+  /* Mobile lane carousel: both panels stay mounted side by side, each one
+     viewport wide; the track slides between them with no unmount gap. */
+  .lanePanelsTrack {
+    display: flex;
+    flex-direction: row;
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 200%;
+    transform: translate3d(0, 0, 0);
+    transition: transform 0.28s cubic-bezier(0.3, 0.8, 0.4, 1);
+    will-change: transform;
   }
-  .lane-slide-forward-leave-to,
-  .lane-slide-back-enter-from {
-    opacity: 0;
-    transform: translateX(-28px);
+  .lanePanelsTrack--worker {
+    transform: translate3d(-50%, 0, 0);
   }
-  .lane-slide-forward-enter-active,
-  .lane-slide-forward-leave-active,
-  .lane-slide-back-enter-active,
-  .lane-slide-back-leave-active {
-    transition: transform 0.22s ease, opacity 0.22s ease;
+  .lanePanelsTrack--dragging {
+    transition: none;
+  }
+  .lanePanelsTrack > .lanePanel {
+    flex: 0 0 50%;
+    width: 50%;
   }
   .projectRemove {
     position: relative;
@@ -1192,8 +1205,41 @@
   }
 
   .laneTabGroup {
+    position: relative;
+    display: inline-grid;
+    grid-template-columns: 1fr 1fr;
     padding: 2px;
-    gap: 2px;
+    gap: 0;
+  }
+
+  /* Sliding activation pill, in sync with the panel carousel easing. The
+     per-tab background highlight is removed so only the pill carries it. */
+  .laneTabGroup::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    bottom: 2px;
+    left: 2px;
+    z-index: 0;
+    width: calc(50% - 2px);
+    border-radius: 8px;
+    background: white;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
+    transform: translateX(0);
+    transition: transform 0.28s cubic-bezier(0.3, 0.8, 0.4, 1);
+    pointer-events: none;
+  }
+  .laneTabGroup:has([data-testid="lane-tab-worker"].active)::before {
+    transform: translateX(100%);
+  }
+  .laneTab {
+    position: relative;
+    z-index: 1;
+    justify-content: center;
+  }
+  .laneTab:not(:focus-visible) {
+    background: transparent;
+    box-shadow: none;
   }
   .laneTab {
     flex: 0 0 auto;
