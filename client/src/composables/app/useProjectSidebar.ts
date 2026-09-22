@@ -17,14 +17,6 @@ export function useProjectSidebar(params: {
   const draggingProjectId = ref<string | null>(null);
   const dropTargetProjectId = ref<string | null>(null);
   const dropTargetPosition = ref<"before" | "after">("before");
-  const projectRemoveConfirmOpen = ref(false);
-  const pendingRemoveProjectId = ref<string | null>(null);
-
-  const pendingRemoveProject = computed(() => {
-    const projectId = String(pendingRemoveProjectId.value ?? "").trim();
-    if (!projectId) return null;
-    return params.projects.value.find((project) => project.id === projectId) ?? null;
-  });
 
   let suppressProjectRowClick = false;
 
@@ -121,22 +113,8 @@ export function useProjectSidebar(params: {
     );
   }
 
-  function requestRemoveProject(id: string): void {
+  async function removeProject(id: string): Promise<void> {
     const projectId = String(id ?? "").trim();
-    if (!canRemoveProject(projectId)) return;
-    pendingRemoveProjectId.value = projectId;
-    projectRemoveConfirmOpen.value = true;
-  }
-
-  function cancelRemoveProject(): void {
-    projectRemoveConfirmOpen.value = false;
-    pendingRemoveProjectId.value = null;
-  }
-
-  async function confirmRemoveProject(): Promise<void> {
-    const projectId = String(pendingRemoveProjectId.value ?? "").trim();
-    projectRemoveConfirmOpen.value = false;
-    pendingRemoveProjectId.value = null;
     if (!projectId) return;
     if (!canRemoveProject(projectId)) return;
     await params.removeProject(projectId);
@@ -217,9 +195,6 @@ export function useProjectSidebar(params: {
     draggingProjectId,
     dropTargetProjectId,
     dropTargetPosition,
-    projectRemoveConfirmOpen,
-    pendingRemoveProjectId,
-    pendingRemoveProject,
     canDragProject,
     projectRowKey,
     onProjectRowClick,
@@ -227,9 +202,7 @@ export function useProjectSidebar(params: {
     onProjectRowPointerUp,
     onProjectRowPointerCancel,
     canRemoveProject,
-    requestRemoveProject,
-    cancelRemoveProject,
-    confirmRemoveProject,
+    removeProject,
     onProjectDragStart,
     onProjectDragEnd,
     onProjectDragOver,

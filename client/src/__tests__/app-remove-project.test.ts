@@ -180,7 +180,7 @@ describe("App.removeProject", () => {
     wrapper.unmount();
   });
 
-  it("renders the remove icon only for the active project", async () => {
+  it("renders swipe remove action for all non-default projects", async () => {
     projectsFromApi = [
       { id: "p1", workspaceRoot: "/w/p1", name: "P1", chatSessionId: "main", createdAt: 1, updatedAt: 1 },
       { id: "p2", workspaceRoot: "/w/p2", name: "P2", chatSessionId: "main", createdAt: 2, updatedAt: 2 },
@@ -192,17 +192,10 @@ describe("App.removeProject", () => {
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await waitForProjectIds(wrapper as any, ["default", "p1", "p2", "p3"]);
 
-    const rowsWithRemoveIcon = () =>
-      wrapper
-        .findAll("button.projectRow")
-        .filter((row) => row.find(".projectRemove").exists())
-        .map((row) => row.find(".projectName").text());
-
-    expect(rowsWithRemoveIcon()).toEqual(["P2"]);
-
-    (wrapper.vm as any).activeProjectId = "p3";
-    await settleUi(wrapper);
-    expect(rowsWithRemoveIcon()).toEqual(["P3"]);
+    expect(wrapper.find('[data-testid="project-swipe-remove-default"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="project-swipe-remove-p1"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="project-swipe-remove-p2"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="project-swipe-remove-p3"]').exists()).toBe(true);
 
     wrapper.unmount();
   });
@@ -275,12 +268,41 @@ describe("App.removeProject", () => {
     advisorRuntime.busy.value = true;
     await settleUi(wrapper);
 
-    const removeButton = wrapper.find('[data-testid="project-remove"]');
-    expect(removeButton.classes()).toContain("disabled");
+    const removeButton = wrapper.find('[data-testid="project-swipe-remove-p2"]');
+    expect((removeButton.element as HTMLButtonElement).disabled).toBe(true);
     await removeButton.trigger("click");
-    expect((wrapper.vm as any).projectRemoveConfirmOpen).toBe(false);
     expect(deleteCalls).toEqual([]);
 
+    wrapper.unmount();
+  });
+
+  it("supports long-press action sheet to remove project", async () => {
+    projectsFromApi = [
+      { id: "p1", workspaceRoot: "/w/p1", name: "P1", chatSessionId: "main", createdAt: 1, updatedAt: 1 },
+      { id: "p2", workspaceRoot: "/w/p2", name: "P2", chatSessionId: "main", createdAt: 2, updatedAt: 2 },
+    ];
+    activeProjectIdFromApi = "p1";
+
+    deleteImpl = async (url: string) => {
+      expect(url).toBe("/api/projects/p2");
+      projectsFromApi = projectsFromApi.filter((p) => p.id !== "p2");
+      return { success: true, activeProjectId: "p1" };
+    };
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false, Teleport: true } } });
+    await waitForProjectIds(wrapper as any, ["default", "p1", "p2"]);
+
+    (wrapper.vm as any).openProjectActionSheet({ id: "p2", name: "P2" });
+    await settleUi(wrapper);
+
+    expect(wrapper.find('[data-testid="project-action-sheet"]').exists()).toBe(true);
+    const removeBtn = wrapper.find('[data-testid="project-action-sheet-remove"]');
+    expect(removeBtn.exists()).toBe(true);
+    await removeBtn.trigger("click");
+    await settleUi(wrapper);
+
+    expect(deleteCalls).toEqual(["/api/projects/p2"]);
     wrapper.unmount();
   });
 });
