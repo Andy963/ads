@@ -177,6 +177,49 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
           received.push({ lane, marker });
           await (heldReplies.get(marker)?.ready ?? new Promise((resolve) => setTimeout(resolve, 200)));
 
+          if (lane === "Worker" && marker === "browser-worker-burst") {
+            const ts = Date.now();
+            const answerId = `fixture-answer-${marker}`;
+            const commandId = `fixture-command-${marker}`;
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+            // Completed interim notes accumulate as permanent rows (consecutive
+            // command blocks collapse into one visible row per turn, so they
+            // alone cannot overflow the viewport). Ten two-line notes push the
+            // transcript well past one screen.
+            for (let note = 1; note <= 10; note += 1) {
+              const noteId = `fixture-note-${marker}-${note}`;
+              const text = `interim note ${note} while the worker inspects the fixture\nnote ${note} second line keeps the row tall`;
+              emit({ phase: "responding", title: "Fixture note", detail: "Worker note", delta: text, timestamp: ts + note * 10, raw: { type: "item.started", item: { type: "agent_message", id: noteId } } });
+              await sleep(70);
+              emit({ phase: "responding", title: "Fixture note", detail: "Worker note complete", timestamp: ts + note * 10 + 1, raw: { type: "item.completed", item: { type: "agent_message", id: noteId } } });
+              await sleep(30);
+            }
+            // Phase 1 window: a running command follows the notes. The viewport
+            // must follow the tail here (the last note's reading lock releases
+            // once execution resumes below it).
+            emit({ phase: "command", title: "Run burst command", detail: "fixture burst command", timestamp: ts + 150, raw: { type: "item.started", item: { type: "command_execution", id: commandId, command: "fixture burst command", status: "in_progress" } } });
+            await sleep(2000);
+            emit({ phase: "command", title: "Run burst command", detail: "fixture burst command", timestamp: ts + 151, raw: { type: "item.completed", item: { type: "command_execution", id: commandId, command: "fixture burst command", status: "completed", exit_code: 0, aggregated_output: "burst command ok\n" } } });
+            await sleep(150);
+            // Phase 2: the final answer starts with a single anchor line (too
+            // short to align yet), grows to 35 lines (enough scroll range for
+            // the one-shot alignment), then bursts to 50 lines (growth after
+            // the lock must not move the viewport). Responding deltas are
+            // cumulative per item id; the server slices the increment.
+            const answerHead = `burst answer anchor line for ${marker}`;
+            const answerLines = (count) => Array.from({ length: count }, (_, index) => `burst tail line ${index + 1}`).join("\n");
+            const answerMid = `${answerHead}\n\n${answerLines(35)}`;
+            const answerFull = `${answerHead}\n\n${answerLines(50)}`;
+            emit({ phase: "responding", title: "Fixture answer", detail: "Worker response", delta: answerHead, timestamp: ts + 200, raw: { type: "item.started", item: { type: "agent_message", id: answerId } } });
+            await sleep(2000);
+            emit({ phase: "responding", title: "Fixture answer", detail: "Worker response", delta: answerMid, timestamp: ts + 201, raw: { type: "item.updated", item: { type: "agent_message", id: answerId } } });
+            await sleep(2000);
+            emit({ phase: "responding", title: "Fixture answer", detail: "Worker response", delta: answerFull, timestamp: ts + 202, raw: { type: "item.updated", item: { type: "agent_message", id: answerId } } });
+            await sleep(2000);
+            emit({ phase: "responding", title: "Fixture answer", detail: "Worker response complete", timestamp: ts + 203, raw: { type: "item.completed", item: { type: "agent_message", id: answerId } } });
+            return { response: answerFull, usage: null, agentId: "codex" };
+          }
+
           if (lane === "Worker" && marker.startsWith("browser-worker-")) {
             const ts = Date.now();
             const commandId = `fixture-command-${marker}`;

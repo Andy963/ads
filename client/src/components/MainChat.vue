@@ -8,6 +8,7 @@ import { useCopyMessage } from "./mainChat/useCopyMessage";
 import { analyzeMarkdownOutline } from "../lib/markdown";
 import { createTapActivation } from "../lib/tapActivation";
 import type { TranscriptViewport } from "../app/transcriptCache";
+import { findStreamingAnswerId, hasExecutionBlockAfter } from "../app/chatStreaming";
 
 const props = defineProps<{
   messages: ChatMessage[];
@@ -86,8 +87,8 @@ const LIVE_STEP_MESSAGE_ID = "live-step";
 const LIVE_STEP_STICKY_THRESHOLD_PX = 16;
 const LIVE_ACTIVITY_MESSAGE_ID = "live-activity";
 const CHAT_STICKY_THRESHOLD_PX = 80;
-const TURN_ANCHOR_TOP_OFFSET_PX = 8;
-const TOUCH_SCROLL_INTENT_THRESHOLD_PX = 2;
+const READING_LOCK_TOP_OFFSET_PX = 12;
+const TOUCH_SCROLL_INTENT_THRESHOLD_PX = 10;
 
 const liveStepPinnedToBottom = ref(true);
 let liveStepScrollEl: HTMLElement | null = null;
@@ -102,18 +103,26 @@ let bottomSettleFrame: number | null = null;
 let settlingBottom = false;
 let chatTouchStart: { x: number; y: number } | null = null;
 
-// Top-anchored reading viewport: while a turn streams, the current assistant
-// message is held near the viewport top instead of pinning the tail to the
-// bottom. Any explicit follow request (scroll-to-bottom click) or user scroll
-// takeover clears the anchor and resumes the previous bottom-following behavior.
-let turnAnchorEl: HTMLElement | null = null;
-let turnAnchorPending = false;
-let turnAnchorRequested = false;
-let turnAnchorSeq = 0;
+// Two-phase reading viewport. Phase 1 (intermediate execution): the viewport
+// follows the streaming tail so commands and live steps stay visible. Phase 2
+// (final answer): the first content delta of the answer block arms the reading
+// lock. While the answer is still shorter than the viewport there is no scroll
+// range to align it into, so tail-following continues; once the answer can
+// reach the viewport top, one smooth alignment pins it there
+// (READING_LOCK_TOP_OFFSET_PX), native scroll anchoring is disabled, and
+// bottom-following pauses; the answer then grows downward without per-frame
+// scrollTop corrections. Phase 3: only physical input (wheel with a non-zero
+// delta, a touch drag past the threshold, scroll keys, or the scroll-to-bottom
+// button) releases the reading lock — layout reflow from burst streaming must
+// not hand control back.
+let readingLockEl: HTMLElement | null = null;
+let readingLockAligning = false;
+let readingLockSeq = 0;
+let readingLockPendingId = "";
 let followEpoch = 0;
 let observedMessageCount = props.messages.length;
-let turnAnchorOverflowAnchorHost: HTMLElement | null = null;
-let turnAnchorOverflowAnchorPreviousValue = "";
+let readingLockOverflowAnchorHost: HTMLElement | null = null;
+let readingLockOverflowAnchorPreviousValue = "";
 
 function scheduleFrame(cb: () => void): number {
   if (typeof requestAnimationFrame === "function") return requestAnimationFrame(cb);
@@ -172,60 +181,106 @@ function settleBottomLayout(): void {
   bottomSettleFrame = scheduleFrame(settle);
 }
 
-function clearTurnAnchor(): void {
-  if (turnAnchorOverflowAnchorHost) {
-    if (turnAnchorOverflowAnchorPreviousValue) {
-      turnAnchorOverflowAnchorHost.style.setProperty("overflow-anchor", turnAnchorOverflowAnchorPreviousValue);
+function releaseReadingLock(): void {
+  readingLockPendingId = "";
+  if (readingLockOverflowAnchorHost) {
+    if (readingLockOverflowAnchorPreviousValue) {
+      readingLockOverflowAnchorHost.style.setProperty("overflow-anchor", readingLockOverflowAnchorPreviousValue);
     } else {
       // WebKit keeps native scroll anchoring disabled after an inline `none`
       // declaration is removed, even when the computed stylesheet value is
-      // `auto`. Re-declare the default explicitly when releasing the turn
-      // anchor so history prepends can anchor the reading viewport again.
-      turnAnchorOverflowAnchorHost.style.setProperty("overflow-anchor", "auto");
+      // `auto`. Re-declare the default explicitly when releasing the reading
+      // lock so history prepends can anchor the reading viewport again.
+      readingLockOverflowAnchorHost.style.setProperty("overflow-anchor", "auto");
     }
-    turnAnchorOverflowAnchorHost = null;
-    turnAnchorOverflowAnchorPreviousValue = "";
+    readingLockOverflowAnchorHost = null;
+    readingLockOverflowAnchorPreviousValue = "";
   }
-  turnAnchorEl = null;
+  readingLockEl = null;
 }
 
 function disableNativeScrollAnchoring(host: HTMLElement): void {
-  if (turnAnchorOverflowAnchorHost === host) return;
-  clearTurnAnchor();
-  turnAnchorOverflowAnchorHost = host;
-  turnAnchorOverflowAnchorPreviousValue = host.style.getPropertyValue("overflow-anchor");
+  if (readingLockOverflowAnchorHost === host) return;
+  if (readingLockOverflowAnchorHost) releaseReadingLock();
+  readingLockOverflowAnchorHost = host;
+  readingLockOverflowAnchorPreviousValue = host.style.getPropertyValue("overflow-anchor");
   host.style.setProperty("overflow-anchor", "none");
 }
 
-function alignTurnAnchorToViewportTop(): void {
+function scrollHostTowards(host: HTMLElement, top: number, smooth: boolean): void {
+  const target = Math.max(0, top);
+  if (Math.abs(host.scrollTop - target) < 1) return;
+  // jsdom does not implement Element.scrollTo; tests exercise the instant path.
+  if (smooth && typeof host.scrollTo === "function") {
+    host.scrollTo({ top: target, behavior: "smooth" });
+    return;
+  }
+  host.scrollTop = target;
+}
+
+// The one and only alignment of the reading lock: scroll so the answer row's
+// top sits READING_LOCK_TOP_OFFSET_PX below the viewport top. After this runs
+// the content grows downward on its own; no per-frame correction follows.
+function alignAnswerToViewportTop(row: HTMLElement, smooth: boolean): void {
   const host = listRef.value;
-  const anchor = turnAnchorEl;
-  if (!host || !anchor || !anchor.isConnected) return;
+  if (!host || !row.isConnected) return;
   const delta =
-    anchor.getBoundingClientRect().top - host.getBoundingClientRect().top - TURN_ANCHOR_TOP_OFFSET_PX;
-  if (Math.abs(delta) >= 1) host.scrollTop += delta;
+    row.getBoundingClientRect().top - host.getBoundingClientRect().top - READING_LOCK_TOP_OFFSET_PX;
+  if (Math.abs(delta) < 1) return;
+  scrollHostTowards(host, host.scrollTop + delta, smooth);
   scheduleViewportSave();
 }
 
-function maintainTurnAnchor(): void {
+// Attempt the one-shot alignment. Returns false while the answer is shorter
+// than the viewport: there is not enough scroll range below it to bring its
+// top to the viewport top, so tail-following continues and the caller retries
+// as the answer grows.
+function tryLockAnswerRow(row: HTMLElement, smooth: boolean): boolean {
   const host = listRef.value;
-  const anchor = turnAnchorEl;
-  if (!host || !anchor) return;
-  if (!anchor.isConnected) {
-    clearTurnAnchor();
-    return;
-  }
-  // User input explicitly releases the anchor. All other movement is treated
-  // as layout drift and corrected so burst streaming and Markdown reflow do
-  // not accidentally hand control back to bottom-following.
-  alignTurnAnchorToViewportTop();
+  if (!host) return false;
+  const rowTop = row.getBoundingClientRect().top - host.getBoundingClientRect().top + host.scrollTop;
+  const target = Math.max(0, rowTop - READING_LOCK_TOP_OFFSET_PX);
+  if (target > Math.max(0, host.scrollHeight - host.clientHeight)) return false;
+  cancelBottomSettlement();
+  settlingBottom = false;
+  disableNativeScrollAnchoring(host);
+  readingLockEl = row;
+  readingLockPendingId = "";
+  autoScroll.value = false;
+  showScrollToBottom.value = true;
+  alignAnswerToViewportTop(row, smooth);
+  return true;
+}
+
+function engageReadingLock(messageId: string, options?: { smooth?: boolean }): void {
+  readingLockAligning = true;
+  const seq = ++readingLockSeq;
+  const epoch = followEpoch;
+  void (async () => {
+    try {
+      // Allow Vue + MarkdownContent to commit the new row before measuring it.
+      await nextTick();
+      await nextTick();
+      if (epoch !== followEpoch || readingLockSeq !== seq) return;
+      const host = listRef.value;
+      if (!host) return;
+      const row = host.querySelector<HTMLElement>(`.msg[data-id="${escapeSelectorValue(messageId)}"]`);
+      if (!row) return;
+      if (!tryLockAnswerRow(row, options?.smooth !== false)) {
+        readingLockPendingId = messageId;
+        if (autoScroll.value) host.scrollTop = host.scrollHeight;
+      }
+    } finally {
+      if (readingLockSeq === seq) readingLockAligning = false;
+    }
+  })();
 }
 
 function scrollChatToBottom(explicit = false): void {
   followEpoch += 1;
-  clearTurnAnchor();
-  turnAnchorPending = false;
-  turnAnchorRequested = false;
+  readingLockSeq += 1;
+  releaseReadingLock();
+  readingLockAligning = false;
   cancelBottomSettlement();
   settlingBottom = explicit;
   autoScroll.value = true;
@@ -235,9 +290,9 @@ function scrollChatToBottom(explicit = false): void {
 
 function pauseChatAutoScroll(): void {
   followEpoch += 1;
-  clearTurnAnchor();
-  turnAnchorPending = false;
-  turnAnchorRequested = false;
+  readingLockSeq += 1;
+  releaseReadingLock();
+  readingLockAligning = false;
   cancelBottomSettlement();
   autoScroll.value = false;
   showScrollToBottom.value = true;
@@ -246,9 +301,9 @@ function pauseChatAutoScroll(): void {
 function onChatScrollIntent(): void {
   initialViewportActive = false;
   followEpoch += 1;
-  clearTurnAnchor();
-  turnAnchorPending = false;
-  turnAnchorRequested = false;
+  readingLockSeq += 1;
+  releaseReadingLock();
+  readingLockAligning = false;
   if (settlingBottom) pauseChatAutoScroll();
 }
 
@@ -297,8 +352,8 @@ defineExpose({ refreshAfterVisibility });
 const bottomActivation = createTapActivation<boolean>(() => scrollChatToBottom(true), { name: "scroll-to-bottom" });
 
 function scheduleChatScrollToBottom(): void {
-  if (turnAnchorPending || turnAnchorRequested) return;
-  if (!turnAnchorEl && !autoScroll.value) return;
+  if (readingLockAligning) return;
+  if (!readingLockEl && !autoScroll.value) return;
   if (chatScrollQueued) return;
   chatScrollQueued = true;
   void (async () => {
@@ -306,14 +361,21 @@ function scheduleChatScrollToBottom(): void {
       // Allow Vue + MarkdownContent to commit DOM updates before measuring scrollHeight.
       await nextTick();
       await nextTick();
-      if (turnAnchorPending || turnAnchorRequested) return;
-      if (turnAnchorEl) {
-        maintainTurnAnchor();
-        return;
-      }
-      if (!autoScroll.value) return;
+      if (readingLockAligning) return;
+      // While the reading lock holds, the answer grows downward on its own;
+      // never re-pin the bottom or correct the scroll position per frame.
+      if (readingLockEl) return;
       const host = listRef.value;
       if (!host) return;
+      if (readingLockPendingId && autoScroll.value) {
+        // The answer has grown: retry the deferred one-shot alignment.
+        const row = host.querySelector<HTMLElement>(`.msg[data-id="${escapeSelectorValue(readingLockPendingId)}"]`);
+        if (row && tryLockAnswerRow(row, true)) {
+          scheduleViewportSave();
+          return;
+        }
+      }
+      if (!autoScroll.value) return;
       host.scrollTop = host.scrollHeight;
       showScrollToBottom.value = false;
       settleBottomLayout();
@@ -436,9 +498,11 @@ function handleScroll() {
     scheduleViewportSave();
     return;
   }
-  if (turnAnchorEl) {
-    // Reading-viewport mode: keep the assistant response visible and let the user
-    // finish reading before they choose to jump back to the bottom.
+  if (readingLockEl) {
+    // Reading-lock mode: the one-shot alignment owns the scroll position.
+    // Scroll events here come from that alignment or from native layout, not
+    // from physical input (wheel/touch/key release the lock earlier), so keep
+    // the lock and leave the viewport untouched.
     autoScroll.value = false;
     showScrollToBottom.value = true;
     scheduleViewportSave();
@@ -468,56 +532,13 @@ function restoreInitialViewport(): void {
   showScrollToBottom.value = true;
 }
 
-function beginTurnAnchor(messageId: string): void {
-  turnAnchorPending = true;
-  const seq = ++turnAnchorSeq;
-  const epoch = followEpoch;
-  const hostAtRequest = listRef.value;
-  if (hostAtRequest) disableNativeScrollAnchoring(hostAtRequest);
-  void (async () => {
-    try {
-      // Allow Vue + MarkdownContent to commit the new row before measuring it.
-      await nextTick();
-      await nextTick();
-      if (epoch !== followEpoch || turnAnchorSeq !== seq) return;
-      const host = listRef.value;
-      if (!host) return;
-      const row = host.querySelector<HTMLElement>(`.msg[data-id="${escapeSelectorValue(messageId)}"]`);
-      if (!row) return;
-      cancelBottomSettlement();
-      settlingBottom = false;
-      disableNativeScrollAnchoring(host);
-      turnAnchorEl = row;
-      autoScroll.value = false;
-      showScrollToBottom.value = true;
-      turnAnchorRequested = false;
-      alignTurnAnchorToViewportTop();
-    } finally {
-      if (turnAnchorSeq === seq) {
-        turnAnchorPending = false;
-        if (!turnAnchorEl) {
-          turnAnchorRequested = false;
-          clearTurnAnchor();
-        }
-      }
-    }
-  })();
-}
-
 function escapeSelectorValue(value: string): string {
   if (typeof CSS !== "undefined" && typeof CSS.escape === "function") return CSS.escape(value);
   return value.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
 }
 
-function isStreamingAssistantText(message: ChatMessage | undefined): boolean {
-  return Boolean(
-    message &&
-    message.id !== LIVE_STEP_MESSAGE_ID &&
-    message.id !== LIVE_ACTIVITY_MESSAGE_ID &&
-    message.role === "assistant" &&
-    message.kind === "text" &&
-    message.streaming === true,
-  );
+function isLiveCardMessageId(id: string): boolean {
+  return id === LIVE_STEP_MESSAGE_ID || id === LIVE_ACTIVITY_MESSAGE_ID;
 }
 
 const lastUserMessageId = computed(() => {
@@ -527,32 +548,10 @@ const lastUserMessageId = computed(() => {
   return "";
 });
 
-const streamingTurnAnchorId = computed(() => {
-  let lastUserIndex = -1;
-  for (let index = props.messages.length - 1; index >= 0; index -= 1) {
-    if (props.messages[index]?.role === "user") {
-      lastUserIndex = index;
-      break;
-    }
-  }
-  for (let index = props.messages.length - 1; index > lastUserIndex; index -= 1) {
-    const message = props.messages[index];
-    if (isStreamingAssistantText(message)) return message.id;
-  }
-  return "";
-});
-
-function requestTurnAnchor(): void {
-  // A follow-up prompt replaces the previous reading anchor. Releasing and
-  // immediately reacquiring the same host also makes the native anchoring
-  // transition explicit for WebKit.
-  if (turnAnchorEl) clearTurnAnchor();
-  turnAnchorSeq += 1;
-  turnAnchorPending = false;
-  turnAnchorRequested = true;
-  const host = listRef.value;
-  if (host) disableNativeScrollAnchoring(host);
-}
+// The turn's final answer block, detected from the message stream. Phase 2 of
+// the reading viewport starts when this appears (the answer's first content
+// delta has landed), not when the empty send-time placeholder is pushed.
+const streamingAnswerId = computed(() => findStreamingAnswerId(props.messages, isLiveCardMessageId));
 
 onMounted(() => {
   const host = listRef.value;
@@ -561,8 +560,9 @@ onMounted(() => {
     // first visible frame does not briefly jump to the default scroll position.
     restoreInitialViewport();
     if (!initialViewportRestored) void nextTick().then(restoreInitialViewport);
-  } else if (streamingTurnAnchorId.value) {
-    beginTurnAnchor(streamingTurnAnchorId.value);
+  } else if (streamingAnswerId.value) {
+    // Remounting into an in-flight answer locks instantly, without animation.
+    engageReadingLock(streamingAnswerId.value, { smooth: false });
   } else {
     scrollChatToBottom();
   }
@@ -581,27 +581,64 @@ onMounted(() => {
   }
 });
 
-watch([lastUserMessageId, streamingTurnAnchorId, () => props.messages.length], ([id, anchorId, currentMessageCount], previous) => {
-  const [previousId, previousAnchorId] = previous;
+watch([lastUserMessageId, streamingAnswerId, () => props.messages.length], ([id, answerId, currentMessageCount], previous) => {
+  const [previousId, previousAnswerId] = previous;
   const tail = props.messages.at(-1);
-  const hasActiveStreamingTail = Boolean(anchorId) || Boolean(tail?.streaming);
+  const hasActiveStreamingTail = Boolean(answerId) || Boolean(tail?.streaming);
   const messageDelta = currentMessageCount - observedMessageCount;
   const isInitialTranscriptHydration = !hasActiveStreamingTail && messageDelta > 2;
   observedMessageCount = currentMessageCount;
   if (isInitialTranscriptHydration) {
-    turnAnchorRequested = false;
     return;
   }
+  // The locked row can disappear when the transcript is reset or replaced.
+  // Check the message list itself (not just DOM connectivity) because this
+  // watcher runs pre-flush, before the removed row leaves the document.
+  const anchoredMessageId = readingLockEl?.dataset.id ?? readingLockPendingId;
+  if (anchoredMessageId && ((readingLockEl && !readingLockEl.isConnected) || !props.messages.some((m) => m.id === anchoredMessageId))) {
+    releaseReadingLock();
+    autoScroll.value = true;
+    scheduleChatScrollToBottom();
+  }
   const isNewUserTurn = Boolean(id && id !== previousId);
-  const isTurnStart = isNewUserTurn && (messageDelta <= 1 || hasActiveStreamingTail);
-  if (isTurnStart && (autoScroll.value || turnAnchorEl)) requestTurnAnchor();
-  if (turnAnchorRequested && anchorId && anchorId !== previousAnchorId) beginTurnAnchor(anchorId);
+  if (isNewUserTurn && (readingLockEl || readingLockAligning || readingLockPendingId)) {
+    // A follow-up prompt supersedes the current reading position: follow the
+    // new turn's intermediate execution until its answer starts.
+    releaseReadingLock();
+    readingLockAligning = false;
+    readingLockSeq += 1;
+    autoScroll.value = true;
+    showScrollToBottom.value = false;
+    scheduleChatScrollToBottom();
+  }
+  // A fresh execution block below the locked answer means the locked text was
+  // intermediate narration rather than the final answer: hand the viewport
+  // back to tail-following so the resumed execution stays visible.
+  const observedAnswerId = readingLockEl?.dataset.id ?? readingLockPendingId;
+  if (observedAnswerId && hasExecutionBlockAfter(props.messages, observedAnswerId)) {
+    releaseReadingLock();
+    autoScroll.value = true;
+    showScrollToBottom.value = false;
+    scheduleChatScrollToBottom();
+  }
+  if (answerId && answerId !== previousAnswerId && !readingLockAligning) {
+    if (readingLockEl) {
+      // The streaming answer was re-created (e.g. a snapshot rewrite moved it
+      // to a fresh message): move the reading position to the replacement.
+      if (readingLockEl.dataset.id !== answerId) {
+        releaseReadingLock();
+        engageReadingLock(answerId, { smooth: true });
+      }
+    } else if (autoScroll.value) {
+      engageReadingLock(answerId, { smooth: true });
+    }
+  }
 });
 
 watch(
   () => props.messages.length,
   () => {
-    if (turnAnchorEl || turnAnchorPending || turnAnchorRequested) return;
+    if (readingLockEl || readingLockAligning) return;
     if (autoScroll.value) scheduleChatScrollToBottom();
     else showScrollToBottom.value = true;
   },
@@ -624,9 +661,9 @@ watch(
       streaming !== initialTailStreaming;
     if (initialViewportActive && tailAdvanced) {
       initialViewportActive = false;
-      // A freshly submitted turn anchors to the viewport top instead of
-      // jumping to the bottom; other tail advances keep the old behavior.
-      if (!turnAnchorEl && !turnAnchorPending && !turnAnchorRequested) scrollChatToBottom();
+      // A freshly submitted turn leaves the restored viewport once new content
+      // starts streaming; other tail advances keep the old behavior.
+      if (!readingLockEl && !readingLockAligning) scrollChatToBottom();
       return;
     }
     scheduleChatScrollToBottom();
@@ -671,10 +708,9 @@ watch(
 onBeforeUnmount(() => {
   saveViewport();
   followEpoch += 1;
-  turnAnchorSeq += 1;
-  turnAnchorPending = false;
-  turnAnchorRequested = false;
-  clearTurnAnchor();
+  readingLockSeq += 1;
+  readingLockAligning = false;
+  releaseReadingLock();
   cancelBottomSettlement();
   window.removeEventListener("pagehide", saveViewport);
   document.removeEventListener("visibilitychange", saveBeforeBackground);

@@ -223,6 +223,83 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     assert.ok(!(await page.locator(".chat:visible").innerText()).includes("Advisor reply"));
     result.checks.push("Real WebSocket prompt delivery, lane isolation, rapid switching, and draft restoration");
 
+    // Two-phase reading viewport: while interim notes and a command stream in,
+    // the viewport follows the tail; once the final answer can fill the
+    // viewport, one alignment pins the answer top (12px offset) and locks;
+    // burst growth must not move the reading position; the floating button
+    // hands bottom-following back.
+    await send("browser-worker-burst");
+    const visibleChatMetrics = () => page.evaluate(() => {
+      const chat = [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null);
+      if (!chat) return null;
+      const answerRow = [...chat.querySelectorAll(".msg[data-id]")]
+        .find((el) => el.textContent.includes("burst answer anchor line"));
+      return {
+        scrollTop: chat.scrollTop,
+        bottomGap: chat.scrollHeight - chat.clientHeight - chat.scrollTop,
+        overflowAnchor: chat.style.overflowAnchor,
+        answerTopDelta: answerRow ? answerRow.getBoundingClientRect().top - chat.getBoundingClientRect().top : null,
+        fabVisible: Boolean(chat.parentElement?.querySelector(".scrollToBottom")),
+      };
+    });
+    const visibleChatState = (extra) => page.waitForFunction((check) => {
+      const chat = [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null);
+      if (!chat) return false;
+      const state = {
+        tall: chat.scrollHeight > chat.clientHeight + 150,
+        midCommands: chat.textContent.includes("fixture burst command"),
+        answerText: chat.textContent.includes("burst answer anchor line"),
+        tailText: chat.textContent.includes("burst tail line 50"),
+        bottomGap: chat.scrollHeight - chat.clientHeight - chat.scrollTop,
+      };
+      if (check === "command-tail") return state.tall && state.midCommands && !state.answerText && state.bottomGap <= 8;
+      if (check === "burst-grown") return state.tailText;
+      if (check === "released-bottom") return state.tailText && state.bottomGap <= 8;
+      return false;
+    }, extra);
+    await visibleChatState("command-tail");
+    const executionPhase = await visibleChatMetrics();
+    assert.ok(executionPhase, "The visible chat must be measurable during the command phase");
+    assert.ok(executionPhase.bottomGap <= 8, `Command output must stay pinned to the tail, got bottom gap ${executionPhase.bottomGap}`);
+    assert.notEqual(executionPhase.overflowAnchor, "none", "Native scroll anchoring must stay untouched during tail-following");
+    assert.equal(executionPhase.fabVisible, false, "No floating button while following the tail");
+    await page.waitForFunction(() => {
+      const chat = [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null);
+      if (!chat) return false;
+      const answerRow = [...chat.querySelectorAll(".msg[data-id]")]
+        .find((el) => el.textContent.includes("burst answer anchor line"));
+      if (!answerRow) return false;
+      const delta = answerRow.getBoundingClientRect().top - chat.getBoundingClientRect().top;
+      if (Math.abs(delta - 12) > 24) {
+        window.__readingAnchorLastTop = -1;
+        return false;
+      }
+      // Resolve only once the smooth alignment has settled: two consecutive
+      // polls at the same scroll position.
+      const top = chat.scrollTop;
+      if (window.__readingAnchorLastTop === top) return true;
+      window.__readingAnchorLastTop = top;
+      return false;
+    });
+    const anchored = await visibleChatMetrics();
+    assert.ok(anchored && anchored.answerTopDelta !== null, "The answer row must exist once its first delta lands");
+    assert.ok(Math.abs(anchored.answerTopDelta - 12) <= 24, `The answer top must sit ~12px below the viewport top, got ${anchored.answerTopDelta}`);
+    assert.equal(anchored.overflowAnchor, "none", "The reading lock must disable native scroll anchoring");
+    assert.equal(anchored.fabVisible, true, "The floating button must appear once bottom-following pauses");
+    await page.screenshot({ path: path.join("/tmp", `reading-viewport-anchor-${engine}.png`) });
+    await visibleChatState("burst-grown");
+    await settle();
+    const afterBurst = await visibleChatMetrics();
+    assert.ok(afterBurst, "The visible chat must be measurable after the burst");
+    assert.ok(Math.abs(afterBurst.scrollTop - anchored.scrollTop) <= 2, `Burst growth must not move the reading position (${anchored.scrollTop} -> ${afterBurst.scrollTop})`);
+    await page.screenshot({ path: path.join("/tmp", `reading-viewport-burst-${engine}.png`) });
+    await activate(".scrollToBottom:visible");
+    await visibleChatState("released-bottom");
+    const released = await visibleChatMetrics();
+    assert.equal(released?.overflowAnchor, "auto", "Releasing the lock must restore native scroll anchoring");
+    await waitForReply("burst tail line 50");
+    result.checks.push("Two-phase reading viewport: tail-followed commands, one-shot answer anchor, stable burst growth, and button release");
+
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector("textarea:not(:disabled):visible");
     await chooseLane("advisor");
