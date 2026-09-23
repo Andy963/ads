@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 
 import MarkdownContent from "./MarkdownContent.vue";
 import ChatFilePreviewModal from "./ChatFilePreviewModal.vue";
+import MainChatPendingImageViewer from "./MainChatPendingImageViewer.vue";
 import ThinkingDots from "./mainChat/ThinkingDots.vue";
 import type { ChatMessage, RenderMessage } from "./mainChat/types";
 import type { ChatItem } from "../app/controllerTypes";
@@ -12,6 +13,27 @@ import type { MarkdownFilePreviewLink } from "../lib/markdown";
 import { TURN_FAILURE_CARD_PREFIX, turnFailureCardId } from "../lib/turnFailure";
 
 const LIVE_STEP_MESSAGE_ID = "live-step";
+const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)]+)\)/g;
+
+function userMessageText(content: string): string {
+  if (!content) return "";
+  return content.replace(MARKDOWN_IMAGE_RE, "").trim();
+}
+
+function userMessageAttachments(content: string): Array<{ alt: string; url: string }> {
+  if (!content) return [];
+  const attachments: Array<{ alt: string; url: string }> = [];
+  const re = new RegExp(MARKDOWN_IMAGE_RE.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(content)) !== null) {
+    const alt = match[1] || "";
+    const url = match[2] || "";
+    if (url) {
+      attachments.push({ alt, url });
+    }
+  }
+  return attachments;
+}
 
 const props = defineProps<{
   messages: ChatMessage[];
@@ -38,6 +60,17 @@ const emit = defineEmits<{
 const openCommandTrees = ref<Set<string>>(new Set());
 const expandedPatchKeys = ref<Set<string>>(new Set());
 const filePreviewTarget = ref<MarkdownFilePreviewLink | null>(null);
+const messageImageViewerOpen = ref(false);
+const messageImageViewerPreviews = ref<Array<{ key: string; src: string; href: string }>>([]);
+
+function openMessageImageViewer(attachments: Array<{ alt: string; url: string }>, startIndex = 0): void {
+  messageImageViewerPreviews.value = attachments.map((a, i) => ({
+    key: `msg-img-${i}-${a.url}`,
+    src: a.url,
+    href: a.url,
+  }));
+  messageImageViewerOpen.value = true;
+}
 const messageListEl = ref<HTMLElement | null>(null);
 
 const INITIAL_MESSAGE_WINDOW = 30;
@@ -578,7 +611,36 @@ function closeFilePreview(): void {
           </div>
         </div>
           <div v-else>
-            <MarkdownContent :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
+            <template v-if="m.role === 'user'">
+              <MarkdownContent
+                v-if="userMessageText(m.content)"
+                :content="userMessageText(m.content)"
+                :enable-file-preview="Boolean(workspaceRoot)"
+                @open-file-preview="openFilePreview"
+              />
+              <div
+                v-if="userMessageAttachments(m.content).length"
+                class="msgAttachmentGrid"
+                :class="{ 'msgAttachmentGrid--single': userMessageAttachments(m.content).length === 1 }"
+                data-testid="msg-attachment-grid"
+              >
+                <button
+                  v-for="(att, attIdx) in userMessageAttachments(m.content)"
+                  :key="attIdx"
+                  type="button"
+                  class="msgAttachmentThumb"
+                  :title="att.alt || `附件图片 ${attIdx + 1}`"
+                  :aria-label="att.alt || `附件图片 ${attIdx + 1}`"
+                  :data-testid="`msg-attachment-thumb-${attIdx}`"
+                  @click="openMessageImageViewer(userMessageAttachments(m.content), attIdx)"
+                >
+                  <img :src="att.url" :alt="att.alt || ''" class="msgAttachmentImg" />
+                </button>
+              </div>
+            </template>
+            <template v-else>
+              <MarkdownContent :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
+            </template>
             <div v-if="m.patch && buildPatchRows(m).length > 0" class="patchCard foldedPatch">
               <div v-for="(row, rowIdx) in buildPatchRows(m)" :key="row.key" class="patchCardRow">
                 <div class="patchCardHeader">
@@ -666,6 +728,11 @@ function closeFilePreview(): void {
       </div>
     </template>
     <ChatFilePreviewModal :workspace-root="workspaceRoot" :target="filePreviewTarget" @close="closeFilePreview" />
+    <MainChatPendingImageViewer
+      v-if="messageImageViewerOpen"
+      :previews="messageImageViewerPreviews"
+      @close="messageImageViewerOpen = false"
+    />
   </div>
 </template>
 
@@ -1124,6 +1191,56 @@ function closeFilePreview(): void {
 
 .msg[data-role="user"] .bubble :deep(.md > :last-child) {
   margin-bottom: 0;
+}
+
+.msgAttachmentGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 80px);
+  gap: 6px;
+  margin-top: 6px;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.msgAttachmentGrid--single {
+  grid-template-columns: minmax(0, 160px);
+}
+
+.msgAttachmentThumb {
+  width: 80px;
+  height: 80px;
+  border-radius: 8px;
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  overflow: hidden;
+  padding: 0;
+  background: rgba(15, 23, 42, 0.04);
+  cursor: pointer;
+  display: block;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.msgAttachmentGrid--single .msgAttachmentThumb {
+  width: 160px;
+  height: 160px;
+  max-width: 100%;
+  max-height: 160px;
+}
+
+.msgAttachmentThumb:hover {
+  transform: scale(1.02);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.msgAttachmentThumb:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+}
+
+.msgAttachmentImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .thoughtCard {

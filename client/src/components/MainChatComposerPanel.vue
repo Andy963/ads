@@ -43,6 +43,7 @@ const emit = defineEmits<{
   (e: "interrupt"): void;
   (e: "addImages", images: IncomingImage[]): void;
   (e: "clearImages"): void;
+  (e: "removeImage", index: number): void;
   (e: "removeQueued", id: string): void;
 }>();
 
@@ -120,6 +121,13 @@ function openPendingImageViewer(index = 0): void {
 
 function closePendingImageViewer(): void {
   pendingImageViewerOpen.value = false;
+}
+
+function removeAttachment(index: number): void {
+  emit("removeImage", index);
+  if (props.pendingImages.length <= 1) {
+    emit("clearImages");
+  }
 }
 
 watch(
@@ -408,28 +416,38 @@ onBeforeUnmount(() => {
 
     <div v-if="pendingImages.length" class="attachmentsBar" aria-label="已粘贴图片">
       <div class="attachmentsStrip" aria-label="图片附件缩略图">
-        <button
+        <div
           v-for="(img, idx) in pendingImagePreviews"
           :key="img.key"
-          class="attachmentsThumb"
-          type="button"
-          :title="`预览图片 ${idx + 1}`"
-          :aria-label="`预览图片 ${idx + 1}`"
-          @click="openPendingImageViewer(idx)"
+          class="attachmentsThumbItem"
+          :data-testid="`attachment-item-${idx}`"
         >
-          <img v-if="img.src" class="attachmentsThumbImg" :src="img.src" alt="" />
-          <span v-else class="attachmentsThumbFallback">图片</span>
-        </button>
+          <button
+            class="attachmentsThumb"
+            type="button"
+            :title="`预览图片 ${idx + 1}`"
+            :aria-label="`预览图片 ${idx + 1}`"
+            @click="openPendingImageViewer(idx)"
+          >
+            <img v-if="img.src" class="attachmentsThumbImg" :src="img.src" alt="" />
+            <span v-else class="attachmentsThumbFallback">图片</span>
+          </button>
+          <button
+            class="attachmentsRemoveBadge"
+            type="button"
+            :title="`删除图片 ${idx + 1}`"
+            :aria-label="`删除图片 ${idx + 1}`"
+            :data-testid="`attachment-remove-${idx}`"
+            :disabled="inputLocked"
+            @click.stop="removeAttachment(idx)"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
       </div>
-      <button class="attachmentsClear" type="button" title="清空图片" :disabled="inputLocked" @click="emit('clearImages')">
-        <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-          <path
-            fill-rule="evenodd"
-            d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
-            clip-rule="evenodd"
-          />
-        </svg>
-      </button>
     </div>
 
     <div class="inputWrap">
@@ -1195,31 +1213,44 @@ onBeforeUnmount(() => {
   box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 4px;
-  min-height: 28px;
-  margin-bottom: 2px;
+  min-height: 56px;
+  margin-bottom: 4px;
+  padding: 4px 6px 2px;
 }
 
 .attachmentsStrip {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
   overflow-x: auto;
-  max-width: min(56vw, 420px);
-  padding: 2px 0;
+  max-width: 100%;
+  padding: 6px 4px;
+}
+
+.attachmentsThumbItem {
+  position: relative;
+  flex: 0 0 auto;
+  width: 48px;
+  height: 48px;
 }
 
 .attachmentsThumb {
-  width: 36px;
-  height: 24px;
-  border-radius: 6px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(15, 23, 42, 0.04);
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  border: 1px solid var(--border, rgba(226, 232, 240, 0.9));
+  background: var(--surface-2, rgba(15, 23, 42, 0.04));
   overflow: hidden;
   box-sizing: border-box;
   padding: 0;
-  flex: 0 0 auto;
+  display: block;
   cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.15s ease;
+}
+
+.attachmentsThumb:hover {
+  transform: scale(1.02);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
 }
 
 .attachmentsThumb:focus-visible {
@@ -1239,37 +1270,37 @@ onBeforeUnmount(() => {
   height: 100%;
   display: grid;
   place-items: center;
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 700;
   color: #64748b;
 }
 
-.attachmentsClear {
-  width: 26px;
-  height: 26px;
-  border-radius: 999px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: rgba(15, 23, 42, 0.04);
-  color: #64748b;
+.attachmentsRemoveBadge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1.5px solid var(--surface, #ffffff);
+  background: #475569;
+  color: #ffffff;
   display: grid;
   place-items: center;
   cursor: pointer;
+  padding: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  z-index: 2;
+  transition: background-color 0.15s ease, transform 0.1s ease;
 }
 
-.attachmentsClear svg {
-  width: 14px;
-  height: 14px;
-  display: block;
+.attachmentsRemoveBadge:hover {
+  background: #ef4444;
+  transform: scale(1.1);
 }
 
-.attachmentsClear:hover {
-  color: #0f172a;
-  background: rgba(15, 23, 42, 0.06);
-}
-
-.attachmentsClear:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+.attachmentsRemoveBadge:active {
+  transform: scale(0.95);
 }
 
 .composer-input {

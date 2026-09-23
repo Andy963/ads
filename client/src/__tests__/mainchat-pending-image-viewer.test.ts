@@ -85,7 +85,7 @@ describe("MainChat pending image viewer", () => {
       attachTo: document.body,
     });
 
-    await wrapper.find(".attachmentsClear").trigger("click");
+    await wrapper.find(".attachmentsRemoveBadge").trigger("click");
     expect(wrapper.emitted("clearImages")).toBeTruthy();
     expect(wrapper.find(".attachmentsViewer").exists()).toBe(false);
 

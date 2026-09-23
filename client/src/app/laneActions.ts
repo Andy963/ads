@@ -438,12 +438,25 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      pendingImages.value = [];
    };
 
+   const removePendingImage = (index: number): void => {
+     if (index >= 0 && index < pendingImages.value.length) {
+       pendingImages.value.splice(index, 1);
+     }
+   };
+
    const addAdvisorPendingImages = (images: IncomingImage[]): void => {
      activeAdvisorRuntime.value.pendingImages.value.push(...images);
    };
 
    const clearAdvisorPendingImages = (): void => {
      activeAdvisorRuntime.value.pendingImages.value = [];
+   };
+
+   const removeAdvisorPendingImage = (index: number): void => {
+     const list = activeAdvisorRuntime.value.pendingImages.value;
+     if (index >= 0 && index < list.length) {
+       list.splice(index, 1);
+     }
    };
 
    const removeAdvisorQueuedPrompt = (promptId: string): void => {
@@ -471,8 +484,10 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
     resumeAdvisorThread,
     addPendingImages,
     clearPendingImages,
+    removePendingImage,
     addAdvisorPendingImages,
     clearAdvisorPendingImages,
+    removeAdvisorPendingImage,
     removeAdvisorQueuedPrompt,
     setMainModelReasoningEffort,
     setAdvisorModelReasoningEffort,

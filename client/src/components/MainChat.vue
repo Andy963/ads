@@ -38,6 +38,7 @@ const emit = defineEmits<{
   (e: "clear"): void;
   (e: "addImages", images: IncomingImage[]): void;
   (e: "clearImages"): void;
+  (e: "removeImage", index: number): void;
   (e: "removeQueued", id: string): void;
 }>();
 
@@ -803,6 +804,7 @@ onBeforeUnmount(() => {
       @interrupt="emit('interrupt')"
       @add-images="emit('addImages', $event)"
       @clear-images="emit('clearImages')"
+      @remove-image="emit('removeImage', $event)"
       @remove-queued="emit('removeQueued', $event)"
     />
   </div>

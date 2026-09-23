@@ -88,8 +88,10 @@ const {
   interruptAdvisor,
   addPendingImages,
   clearPendingImages,
+  removePendingImage,
   addAdvisorPendingImages,
   clearAdvisorPendingImages,
+  removeAdvisorPendingImage,
   removeQueuedPrompt,
   removeAdvisorQueuedPrompt,
   apiNotice,
@@ -1672,6 +1674,7 @@ const advisorConnectionStatus = computed(() => {
                 @interrupt="interruptAdvisor"
                 @addImages="addAdvisorPendingImages"
                 @clearImages="clearAdvisorPendingImages"
+                @removeImage="removeAdvisorPendingImage"
                 @removeQueued="removeAdvisorQueuedPrompt"
               />
             </section>
@@ -1715,6 +1718,7 @@ const advisorConnectionStatus = computed(() => {
                 @clear="clearActiveChat"
                 @addImages="addPendingImages"
                 @clearImages="clearPendingImages"
+                @removeImage="removePendingImage"
                 @removeQueued="removeQueuedPrompt"
               />
             </section>

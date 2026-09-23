@@ -26,7 +26,8 @@ describe("compact attachment UI", () => {
     const thumb = wrapper.find(".attachmentsThumb");
     expect(thumb.exists()).toBe(true);
 
-    await wrapper.find(".attachmentsClear").trigger("click");
+    await wrapper.find(".attachmentsRemoveBadge").trigger("click");
+    expect(wrapper.emitted("removeImage")?.[0]?.[0]).toBe(0);
     expect(wrapper.emitted("clearImages")).toBeTruthy();
 
     wrapper.unmount();
