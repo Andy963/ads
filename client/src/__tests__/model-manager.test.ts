@@ -1186,6 +1186,8 @@ describe("ModelManager", () => {
     // Verify model and effort controls
     expect(wrapper.find('[data-testid="role-model-select"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="role-effort-select"]').exists()).toBe(true);
+    expect(wrapper.find('.roleControlsBar').text()).toContain("模型");
+    expect(wrapper.find('.roleControlsBar').text()).toContain("思考");
 
     // Switch to Reviewer
     await wrapper.find('[data-testid="lane-prompt-lane-reviewer"]').trigger("click");

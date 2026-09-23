@@ -1320,15 +1320,15 @@ defineExpose({
 
       <div class="roleControlsBar">
         <label class="roleControlField">
-          <span class="roleControlLabel">绑定模型</span>
+          <span class="roleControlLabel">模型</span>
           <select v-model="selectedRoleModelId" class="roleControlSelect" data-testid="role-model-select">
             <option v-for="m in enabledModelConfigs" :key="m.id" :value="m.modelId">
               {{ m.displayName || m.modelId }} ({{ m.provider }})
             </option>
           </select>
         </label>
-        <label class="roleControlField">
-          <span class="roleControlLabel">思考强度</span>
+        <label class="roleControlField roleControlField--effort">
+          <span class="roleControlLabel">思考</span>
           <select v-model="selectedRoleEffort" class="roleControlSelect" data-testid="role-effort-select">
             <option value="low">Low</option>
             <option value="medium">Medium</option>
@@ -1860,46 +1860,67 @@ defineExpose({
 
 .roleControlsBar {
   display: flex;
-  gap: 12px;
-  margin: 12px 0 16px;
-  padding: 10px 12px;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 10px;
+  padding: 5px 8px;
   background: rgba(15, 23, 42, 0.03);
   border: 1px solid rgba(15, 23, 42, 0.06);
   border-radius: 8px;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .roleControlField {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   font-size: 13px;
   font-weight: 500;
   color: var(--text);
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.roleControlField--effort {
+  flex: 0 0 auto;
 }
 
 .roleControlLabel {
+  flex: 0 0 auto;
   white-space: nowrap;
   color: var(--muted);
   font-size: 12px;
 }
 
 .roleControlSelect {
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
-  padding: 5px 8px;
+  max-width: 100%;
+  padding: 4px 6px;
   border: 1px solid rgba(15, 23, 42, 0.12);
   border-radius: 6px;
   background: #ffffff;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text);
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.roleControlField--effort .roleControlSelect {
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 72px;
 }
 
 .lanePromptPanel {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 14px 16px 18px;
+  overflow-x: hidden;
+  padding: 10px 14px 16px;
+  box-sizing: border-box;
 }
 
 .lanePromptEditorHeader {
@@ -1987,17 +2008,18 @@ defineExpose({
 .lanePromptLaneSelector {
   display: flex;
   gap: 4px;
-  margin-bottom: 14px;
-  padding: 3px;
+  margin-bottom: 8px;
+  padding: 2px;
   width: fit-content;
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 8px;
   background: var(--surface-2, rgba(15, 23, 42, 0.04));
 }
 
 .lanePromptLane {
-  padding: 7px 14px;
-  border-radius: 7px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 12px;
 }
 
 .lanePromptLane.active {
@@ -2043,9 +2065,18 @@ defineExpose({
 }
 
 @media (max-width: 640px) {
+  .lanePromptPanel {
+    padding: 8px 12px 14px;
+  }
+
+  .lanePromptEditorSubtitle {
+    display: none;
+  }
+
   .lanePromptEditorHeader {
     flex-direction: column;
-    gap: 10px;
+    margin-bottom: 8px;
+    gap: 8px;
   }
 
   .lanePromptEditorHeader--compact {
@@ -2054,11 +2085,24 @@ defineExpose({
 
   .lanePromptLaneSelector {
     width: 100%;
+    margin-bottom: 6px;
   }
 
   .lanePromptLane {
     flex: 1 1 0;
     text-align: center;
+    padding: 5px 6px;
+    font-size: 12px;
+  }
+
+  .roleControlsBar {
+    margin: 4px 0 8px;
+    padding: 4px 6px;
+    gap: 6px;
+  }
+
+  .roleControlSelect {
+    font-size: 12px;
   }
 
   .lanePromptVersionField {

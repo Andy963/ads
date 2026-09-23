@@ -75,11 +75,18 @@ export function checkThreePointGate(
     const remoteHead = remoteRes.stdout?.trim();
 
     if (localHead && remoteHead && localHead !== remoteHead) {
-      return {
-        allowed: false,
-        gateBlocked: "sync",
-        reason: `Local '${targetBranch}' (HEAD: ${localHead.slice(0, 7)}) is not synchronized with remote origin/${targetBranch} (${remoteHead.slice(0, 7)})`,
-      };
+      const baseRes = spawnSync("git", ["merge-base", localHead, remoteHead], {
+        cwd: repoPath,
+        encoding: "utf8",
+      });
+      const mergeBase = baseRes.stdout?.trim();
+      if (mergeBase !== remoteHead) {
+        return {
+          allowed: false,
+          gateBlocked: "sync",
+          reason: `Local '${targetBranch}' (HEAD: ${localHead.slice(0, 7)}) is not synchronized with remote origin/${targetBranch} (${remoteHead.slice(0, 7)})`,
+        };
+      }
     }
   }
 
