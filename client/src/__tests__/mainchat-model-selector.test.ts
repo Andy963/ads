@@ -528,4 +528,65 @@ describe("MainChat model selector", () => {
     expect(document.body.querySelector('[data-testid="effort-segmented-slider"]')).toBeNull();
     wrapper.unmount();
   });
+
+  it("renders only supported tiers in reasoning effort slider and single-line title", async () => {
+    document.body.innerHTML = "";
+    const luna = makeModel("gpt-5.6-luna", "GPT-5.6 Luna", "openai");
+    luna.configJson = { reasoningEfforts: ["high", "xhigh", "max"] };
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [luna],
+        modelId: "gpt-5.6-luna",
+        modelReasoningEffort: "max",
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
+
+    const titles = Array.from(document.body.querySelectorAll(".modelPickerSectionTitle")).map((el) => el.textContent?.trim());
+    expect(titles).toContain("推理强度");
+    expect(document.body.querySelector(".modelPickerSectionHint")).toBeNull();
+
+    // Only high, xhigh, max pills exist
+    expect(document.body.querySelector('[data-testid="effort-pill-high"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-testid="effort-pill-xhigh"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-testid="effort-pill-max"]')).not.toBeNull();
+
+    // Low and med should NOT exist
+    expect(document.body.querySelector('[data-testid="effort-pill-low"]')).toBeNull();
+    expect(document.body.querySelector('[data-testid="effort-pill-medium"]')).toBeNull();
+    expect(document.body.querySelector('[data-testid="effort-pill-ultra"]')).toBeNull();
+
+    const pills = document.body.querySelectorAll(".effortPill");
+    expect(pills).toHaveLength(3);
+
+    wrapper.unmount();
+    document.body.innerHTML = "";
+  });
+
+  it("defaults unconfigured reasoning model to a single high pill", async () => {
+    document.body.innerHTML = "";
+    const gpt5 = makeModel("gpt-5.6", "GPT-5.6", "openai");
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [gpt5],
+        modelId: "gpt-5.6",
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
+    const pills = document.body.querySelectorAll(".effortPill");
+    expect(pills).toHaveLength(1);
+    expect(document.body.querySelector('[data-testid="effort-pill-high"]')).not.toBeNull();
+    wrapper.unmount();
+    document.body.innerHTML = "";
+  });
 });

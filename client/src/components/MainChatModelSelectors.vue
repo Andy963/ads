@@ -29,14 +29,6 @@ const REASONING_EFFORT_SHORT_LABELS: Record<string, string> = {
   ultra: "Ultra",
 };
 
-const STANDARD_EFFORTS = [
-  { id: "low", label: "Low" },
-  { id: "medium", label: "Med" },
-  { id: "high", label: "High" },
-  { id: "max", label: "Max" },
-  { id: "ultra", label: "Ultra" },
-] as const;
-
 const props = defineProps<{
   connected: boolean;
   busy: boolean;
@@ -238,26 +230,11 @@ const capsuleLabel = computed(() => {
   return `${name} · ${effort}`;
 });
 
-const effortHintText = computed(() => {
-  const supported = displayEfforts.value.filter((e) => e.supported).map((e) => e.label);
-  if (supported.length <= 1) {
-    return `当前模型固定为 ${supported[0] || "默认"} 档位`;
-  }
-  return `左右滑动或点击切换（支持：${supported.join(" · ")}）`;
-});
-
 const displayEfforts = computed(() => {
-  const supported = new Set(reasoningEffortOptions.value);
-  const items = [...STANDARD_EFFORTS];
-  for (const opt of reasoningEffortOptions.value) {
-    if (!items.some((i) => i.id === opt)) {
-      items.push({ id: opt, label: REASONING_EFFORT_SHORT_LABELS[opt] || REASONING_EFFORT_LABELS[opt] || opt });
-    }
-  }
-  return items.map((item) => ({
-    ...item,
-    supported: supported.has(item.id),
-    active: reasoningEffortValue.value === item.id,
+  return reasoningEffortOptions.value.map((opt) => ({
+    id: opt,
+    label: REASONING_EFFORT_SHORT_LABELS[opt] || REASONING_EFFORT_LABELS[opt] || opt,
+    active: reasoningEffortValue.value === opt,
   }));
 });
 
@@ -283,7 +260,7 @@ function getNearestEffortFromX(clientX: number): string | null {
   if (!items.length) return null;
   const index = Math.min(items.length - 1, Math.max(0, Math.floor(ratio * items.length)));
   const target = items[index];
-  return target?.supported ? target.id : null;
+  return target?.id ?? null;
 }
 
 function onSliderPointerDown(ev: PointerEvent): void {
@@ -455,8 +432,7 @@ function selectReasoningEffort(effort: string): void {
 
           <div v-if="isReasoningModel" class="modelPickerSection">
             <div class="modelPickerSectionHeader">
-              <div class="modelPickerSectionTitle">⚡ 推理思考强度 (Reasoning Effort)</div>
-              <span class="modelPickerSectionHint">{{ effortHintText }}</span>
+              <div class="modelPickerSectionTitle">推理强度</div>
             </div>
             <div
               ref="sliderTrackRef"
@@ -472,8 +448,7 @@ function selectReasoningEffort(effort: string): void {
                 :key="effort.id"
                 type="button"
                 class="effortPill"
-                :class="{ active: effort.active, disabled: !effort.supported }"
-                :disabled="!effort.supported"
+                :class="{ active: effort.active }"
                 :data-testid="`effort-pill-${effort.id}`"
                 @click="handlePickEffort(effort.id)"
               >
@@ -716,11 +691,6 @@ function selectReasoningEffort(effort: string): void {
   margin-bottom: 8px;
 }
 
-.modelPickerSectionHint {
-  font-size: 11px;
-  color: var(--muted);
-}
-
 .effortSegmentedSlider {
   display: flex;
   gap: 4px;
@@ -760,12 +730,6 @@ function selectReasoningEffort(effort: string): void {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
   color: var(--accent);
   font-weight: 700;
-}
-
-.effortPill.disabled,
-.effortPill:disabled {
-  opacity: 0.3;
-  cursor: not-allowed;
 }
 
 .nonReasoningNotice {
