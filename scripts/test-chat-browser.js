@@ -238,9 +238,9 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     // viewport, one alignment pins the answer top (12px offset) and locks;
     // burst growth must not move the reading position; the floating button
     // hands bottom-following back.
-    await send("browser-worker-burst");
-    const visibleChatMetrics = () => page.evaluate(() => {
-      const chat = [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null);
+   await send("browser-worker-burst");
+   const visibleChatMetrics = () => page.evaluate(() => {
+      const chat = document.querySelector(".lanePanel:not([aria-hidden]) .chat");
       if (!chat) return null;
       const answerRow = [...chat.querySelectorAll(".msg[data-id]")]
         .find((el) => el.textContent.includes("burst answer anchor line"));
@@ -252,8 +252,8 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
         fabVisible: Boolean(chat.parentElement?.querySelector(".scrollToBottom")),
       };
     });
-    const visibleChatState = (extra) => page.waitForFunction((check) => {
-      const chat = [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null);
+   const visibleChatState = (extra) => page.waitForFunction((check) => {
+      const chat = document.querySelector(".lanePanel:not([aria-hidden]) .chat");
       if (!chat) return false;
       const state = {
         tall: chat.scrollHeight > chat.clientHeight + 150,
@@ -272,9 +272,9 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     assert.ok(executionPhase, "The visible chat must be measurable during the command phase");
     assert.ok(executionPhase.bottomGap <= 8, `Command output must stay pinned to the tail, got bottom gap ${executionPhase.bottomGap}`);
     assert.notEqual(executionPhase.overflowAnchor, "none", "Native scroll anchoring must stay untouched during tail-following");
-    assert.equal(executionPhase.fabVisible, false, "No floating button while following the tail");
-    await page.waitForFunction(() => {
-      const chat = [...document.querySelectorAll(".chat")].find((el) => el.offsetParent !== null);
+   assert.equal(executionPhase.fabVisible, false, "No floating button while following the tail");
+   await page.waitForFunction(() => {
+      const chat = document.querySelector(".lanePanel:not([aria-hidden]) .chat");
       if (!chat) return false;
       const answerRow = [...chat.querySelectorAll(".msg[data-id]")]
         .find((el) => el.textContent.includes("burst answer anchor line"));

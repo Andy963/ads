@@ -1,4 +1,4 @@
-import { computed, ref, type Ref } from "vue";
+import { ref, type Ref } from "vue";
 
 type ProjectLike = {
   id: string;

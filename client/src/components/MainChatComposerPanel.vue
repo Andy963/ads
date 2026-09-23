@@ -187,6 +187,35 @@ const {
 });
 
 const sendActivation = createTapActivation(send, { preserveFocus: true });
+
+function onSendPointerDown(ev: PointerEvent): void {
+  if (!recording.value) {
+    sendActivation.onPointerDown(ev, undefined);
+  }
+}
+function onSendPointerMove(ev: PointerEvent): void {
+  if (!recording.value) {
+    sendActivation.onPointerMove(ev);
+  }
+}
+function onSendPointerCancel(ev: PointerEvent): void {
+  if (!recording.value) {
+    sendActivation.onPointerCancel(ev);
+  }
+}
+function onSendPointerUp(ev: PointerEvent): void {
+  if (!recording.value) {
+    sendActivation.onPointerUp(ev);
+  }
+}
+function onSendClick(ev: MouseEvent): void {
+  if (recording.value) {
+    stopAndSend();
+  } else {
+    sendActivation.onClick(ev, undefined);
+  }
+}
+
 const composerRoot = ref<HTMLElement | null>(null);
 const actionMenuId = useId();
 const hasTextSelection = ref(false);
@@ -601,11 +630,11 @@ onBeforeUnmount(() => {
             type="button"
             :title="recording ? '停止并直接发送' : '发送'"
             data-testid="composer-send-btn"
-            @pointerdown="!recording && sendActivation.onPointerDown($event, undefined)"
-            @pointermove="!recording && sendActivation.onPointerMove"
-            @pointercancel="!recording && sendActivation.onPointerCancel"
-            @pointerup="!recording && sendActivation.onPointerUp"
-            @click="recording ? stopAndSend() : sendActivation.onClick($event, undefined)"
+            @pointerdown="onSendPointerDown"
+            @pointermove="onSendPointerMove"
+            @pointercancel="onSendPointerCancel"
+            @pointerup="onSendPointerUp"
+            @click="onSendClick"
           >
             <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path

@@ -540,7 +540,9 @@ export function useMainChatComposer(params: {
     transcribing.value = false;
     try {
       recorder?.stop();
-    } catch {}
+    } catch {
+      // ignore error during stop
+    }
     cleanupRecorder();
     recorderChunks = [];
     setVoiceStatus("idle", "");
