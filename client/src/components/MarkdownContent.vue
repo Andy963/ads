@@ -1,17 +1,17 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount } from "vue";
-import { renderMarkdownToHtml, type MarkdownFilePreviewLink } from "../lib/markdown";
+import { renderMarkdownToHtml } from "../lib/markdown";
 import { copyTextToClipboard } from "../lib/clipboard";
 
-const props = defineProps<{
-  content: string;
-  tone?: "default" | "inverted";
-  enableFilePreview?: boolean;
-}>();
-
-const emit = defineEmits<{
-  (e: "openFilePreview", payload: MarkdownFilePreviewLink): void;
-}>();
+const props = withDefaults(
+  defineProps<{
+    content: string;
+    tone?: "default" | "inverted";
+  }>(),
+  {
+    tone: "default",
+  },
+);
 
 let lastCodeCopyButton: HTMLButtonElement | null = null;
 let lastCodeCopyTimer: ReturnType<typeof setTimeout> | null = null;
@@ -72,27 +72,17 @@ async function onClick(ev: MouseEvent): Promise<void> {
   const anchor = target.closest("a") as HTMLAnchorElement | null;
   if (!anchor) return;
 
-  if (anchor.getAttribute("data-md-link-kind") === "file-preview") {
-    if (!props.enableFilePreview) return;
-
-    const rawPath = String(anchor.getAttribute("data-md-file-path") ?? "").trim();
-    if (!rawPath) return;
-    const rawLine = String(anchor.getAttribute("data-md-file-line") ?? "").trim();
-    const line = /^\d+$/.test(rawLine) ? Number.parseInt(rawLine, 10) : null;
-    ev.preventDefault();
-    emit("openFilePreview", { path: rawPath, line: Number.isFinite(line ?? NaN) ? line : null });
-    return;
-  }
-
-  if (anchor.getAttribute("target") === "_blank") {
+  const href = String(anchor.getAttribute("href") ?? "").trim();
+  if (/^https?:\/\//i.test(href)) {
     // Defense-in-depth: never let an external markdown link hijack the SPA host
     // window (standalone PWA windows have no navigation chrome to go back).
     if (ev.defaultPrevented) return;
     if (ev.button !== 0 || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
-    const href = String(anchor.getAttribute("href") ?? "").trim();
-    if (!/^https?:\/\//i.test(href)) return;
     ev.preventDefault();
     window.open(href, "_blank", "noopener,noreferrer");
+  } else if (!href.startsWith("#")) {
+    // Local file links, relative links, or unknown protocols must not unload the SPA window
+    ev.preventDefault();
   }
 }
 

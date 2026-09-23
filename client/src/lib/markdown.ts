@@ -1,8 +1,4 @@
 export { hljs, normalizeLang } from "./markdown/highlight";
-export {
-  parseMarkdownFilePreviewHref,
-  type MarkdownFilePreviewLink,
-} from "./markdown/filePreview";
 export { renderMarkdownToHtml } from "./markdown/renderer";
 export {
   analyzeMarkdownOutline,

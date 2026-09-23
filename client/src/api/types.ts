@@ -46,17 +46,6 @@ export interface LanePromptSnapshot {
   updatedAt: number;
 }
 
-export type FilePreviewResponse = {
-  path: string;
-  content: string;
-  totalLines: number;
-  startLine: number;
-  endLine: number;
-  truncated: boolean;
-  language: string | null;
-  line: number | null;
-};
-
 export type SyncEvent = {
   seq: number;
   type: string;
