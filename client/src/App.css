@@ -418,7 +418,8 @@
 }
 
 .projectNode.active .projectBranch {
-  color: rgba(37, 99, 235, 0.8);
+  color: #2563eb;
+  font-weight: 500;
 }
 .projectRow:hover {
   box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
@@ -475,8 +476,8 @@
   cursor: grabbing;
 }
 .projectNode.active .projectDragHandle {
-  background: rgba(255, 255, 255, 0.18);
-  color: rgba(255, 255, 255, 0.9);
+  background: rgba(37, 99, 235, 0.12);
+  color: var(--accent);
 }
 .projectStatus {
   --project-status-center: #ffffff;
@@ -498,7 +499,7 @@
   background: transparent;
 }
 .projectNode.active .projectStatus::after {
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--accent);
 }
 .projectStatus.spinning {
   border-color: #10b981;
@@ -509,8 +510,8 @@
   background: transparent;
 }
 .projectNode.active .projectStatus {
-  --project-status-center: #2f80ff;
-  border-color: rgba(255, 255, 255, 0.8);
+  --project-status-center: #2563eb;
+  border-color: var(--accent);
 }
 .projectNode.active .projectStatus.spinning {
   border-color: #10b981;
@@ -592,9 +593,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.projectNode.active .projectBranch {
-  color: rgba(255, 255, 255, 0.75);
 }
 .projectTasks {
   position: relative;
