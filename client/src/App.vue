@@ -141,8 +141,8 @@ const mobileContextMenuOpen = ref(false);
 const mobileSettingsRef = ref<MobileManagerHandle | null>(null);
 
 const chatLanes: Array<{ id: ChatLane; label: string }> = [
-  { id: "advisor", label: "Advisor" },
-  { id: "worker", label: "Worker" },
+  { id: "advisor", label: "Acopilot" },
+  { id: "worker", label: "Actions" },
 ];
 const workspaceTabs = computed<Array<{ id: ChatLane; label: string }>>(() => chatLanes);
 
