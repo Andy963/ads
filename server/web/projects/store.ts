@@ -225,6 +225,11 @@ export function deleteWebProject(db: DatabaseType, userId: string, projectId: st
   if (!uid || !pid) {
     return false;
   }
+  try {
+    db.prepare(`DELETE FROM action_jobs WHERE project_id = ?`).run(pid);
+  } catch {
+    // action_jobs table may not exist in legacy database contexts
+  }
   const result = db.prepare(`DELETE FROM web_projects WHERE user_id = ? AND project_id = ?`).run(uid, pid) as { changes?: number };
   return Boolean(result && result.changes === 1);
 }

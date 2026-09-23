@@ -21,7 +21,9 @@ describe("mobileWorkspacePreferences", () => {
   it("normalizes invalid values to Advisor", () => {
     expect(normalizeMobileWorkspaceTab("tasks")).toBe("advisor");
     expect(normalizeMobileWorkspaceTab("advisor")).toBe("advisor");
+    expect(normalizeMobileWorkspaceTab("acopilot")).toBe("advisor");
     expect(normalizeMobileWorkspaceTab("worker")).toBe("worker");
+    expect(normalizeMobileWorkspaceTab("actions")).toBe("worker");
     expect(normalizeMobileWorkspaceTab("invalid")).toBe("advisor");
     expect(normalizeMobileWorkspaceTab(null)).toBe("advisor");
   });
@@ -35,7 +37,7 @@ describe("mobileWorkspacePreferences", () => {
   it("lazily migrates the legacy scattered key into the unified project record", () => {
     localStorage.setItem("ads.mobileWorkspaceTab.p1", "worker");
     expect(readMobileWorkspaceTab("p1")).toBe("worker");
-    expect(readStoredMobileTab("p1")).toBe("worker");
+    expect(readStoredMobileTab("p1")).toBe("actions");
     expect(localStorage.getItem("ads.mobileWorkspaceTab.p1")).toBeNull();
   });
 
@@ -46,8 +48,8 @@ describe("mobileWorkspacePreferences", () => {
     expect(readMobileWorkspaceTab("p1")).toBe("worker");
     expect(readMobileWorkspaceTab("p2")).toBe("advisor");
     expect(readMobileWorkspaceTab("p3")).toBe("advisor");
-    expect(readStoredMobileTab("p1")).toBe("worker");
-    expect(readStoredMobileTab("p2")).toBe("advisor");
+    expect(readStoredMobileTab("p1")).toBe("actions");
+    expect(readStoredMobileTab("p2")).toBe("acopilot");
   });
 
   it("does not create a shared key for an empty project id", () => {

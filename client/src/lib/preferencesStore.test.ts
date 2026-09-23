@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   APP_STATE_STORAGE_KEY,
   buildProjectPreferencesStorageKey,
+  eagerMigratePreferencesToV2,
   readAppNavigationState,
   readLaneGenerationPreference,
   readLatestPromptPreference,
@@ -54,8 +55,8 @@ describe("preferencesStore", () => {
     const keys = Object.keys(localStorage).filter((key) => key.startsWith("ads.prefs."));
     expect(keys).toEqual(["ads.prefs.p1"]);
     const record = JSON.parse(storedRaw("p1")!) as { version: number; models: Record<string, unknown> };
-    expect(record.version).toBe(1);
-    expect(Object.keys(record.models).sort()).toEqual(["advisor", "main"]);
+    expect(record.version).toBe(2);
+    expect(Object.keys(record.models).sort()).toEqual(["acopilot", "main"]);
 
     // Updating one agent must not disturb the others.
     writeModelPreference("p1", "advisor", "codex", { effort: "low" });
@@ -70,11 +71,12 @@ describe("preferencesStore", () => {
     const record = JSON.parse(storedRaw("p1")!) as {
       models: Record<string, Record<string, { modelId?: string }>>;
     };
-    expect(record.models.advisor?.codex?.modelId).toBe("gpt-5.5");
-    expect(record.models.advisor?.default).toBeUndefined();
+    expect(record.models.acopilot?.codex?.modelId).toBe("gpt-5.5");
+    expect(record.models.acopilot?.default).toBeUndefined();
 
     // Reads scoped to the same lane+agent find it; other scopes stay empty.
     expect(readModelIdPreference("p1", "advisor", "codex")).toBe("gpt-5.5");
+    expect(readModelIdPreference("p1", "acopilot", "codex")).toBe("gpt-5.5");
     expect(readModelIdPreference("p1", "advisor")).toBeNull();
     expect(readModelIdPreference("p1", "advisor", "claude")).toBeNull();
   });
@@ -102,7 +104,7 @@ describe("preferencesStore", () => {
     expect(readModelIdPreference("s1", "advisor", "codex")).toBe("gpt-5.5");
     expect(readReasoningEffortPreference("s1", "advisor", "codex")).toBe("high");
     expect(readModelIdPreference("s1", "main")).toBe("gpt-4o");
-    expect(readMobileTabPreference("s1")).toBe("worker");
+    expect(readMobileTabPreference("s1")).toBe("actions");
     expect(readLatestPromptPreference("s1", "advisor")).toBe("previous prompt");
     expect(readLaneGenerationPreference("s1", "main")).toBe(3);
 
@@ -128,7 +130,7 @@ describe("preferencesStore", () => {
     expect(readModelIdPreference("s1", "advisor")).toBe("gpt-new");
     const prefs = readProjectPreferences("s1");
     expect(prefs.models?.planner).toBeUndefined();
-    expect(prefs.models?.advisor?.default?.modelId).toBe("gpt-new");
+    expect(prefs.models?.acopilot?.default?.modelId).toBe("gpt-new");
     expect(localStorage.getItem("ads.modelId.s1.planner")).toBeNull();
   });
 
@@ -160,7 +162,7 @@ describe("preferencesStore", () => {
 
   it("reads and writes the mobile tab", () => {
     writeMobileTabPreference("p1", "worker");
-    expect(readMobileTabPreference("p1")).toBe("worker");
+    expect(readMobileTabPreference("p1")).toBe("actions");
     expect(readMobileTabPreference("p2")).toBeNull();
   });
 
@@ -200,7 +202,7 @@ describe("preferencesStore", () => {
     renameProjectPreferences("default", "sess-x");
 
     expect(readModelIdPreference("sess-x", "main")).toBe("gpt-5");
-    expect(readMobileTabPreference("sess-x")).toBe("worker");
+    expect(readMobileTabPreference("sess-x")).toBe("actions");
     expect(storedRaw("default")).toBeNull();
     expect(localStorage.getItem("ads.modelId.default.main")).toBeNull();
   });
@@ -219,7 +221,7 @@ describe("preferencesStore", () => {
     expect(p1.models).toBeTruthy();
     const p2 = JSON.parse(storedRaw("p2")!) as { latestPrompts?: unknown; mobileTab?: string };
     expect(p2.latestPrompts).toBeUndefined();
-    expect(p2.mobileTab).toBe("worker");
+    expect(p2.mobileTab).toBe("actions");
     expect(localStorage.getItem("ADS_WEB_LATEST_PROMPT:p3:advisor")).toBeNull();
   });
 
@@ -277,8 +279,79 @@ describe("preferencesStore", () => {
   it("writeProjectPreferences stores a versioned record", () => {
     writeProjectPreferences("p1", { version: 1, updatedAt: 5, mobileTab: "worker" });
     const record = JSON.parse(storedRaw("p1")!) as { version: number; mobileTab: string; updatedAt: number };
-    expect(record.version).toBe(1);
+    expect(record.version).toBe(2);
     expect(record.mobileTab).toBe("worker");
     expect(record.updatedAt).toBeGreaterThan(0);
+  });
+
+  it("eagerly migrates v1 records to v2 in-place and removes zombie keys", () => {
+    // Seed v1 preferences with advisor and worker keys
+    localStorage.setItem(
+      "ads.prefs.p1",
+      JSON.stringify({
+        version: 1,
+        updatedAt: 100,
+        mobileTab: "advisor",
+        models: {
+          advisor: { codex: { modelId: "gpt-5.5" } },
+          worker: { default: { modelId: "gpt-5.5" } },
+        },
+        latestPrompts: {
+          advisor: "old advisor prompt",
+          worker: "old worker prompt",
+        },
+        laneGenerations: {
+          advisor: 2,
+          worker: 3,
+        },
+      }),
+    );
+
+    // Seed ads.app_state with legacy tab
+    localStorage.setItem(
+      APP_STATE_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        updatedAt: 100,
+        lastRealProjectTab: "worker",
+      }),
+    );
+
+    // Seed zombie keys
+    localStorage.setItem("ads.modelId.p1.advisor", "zombie-model");
+    localStorage.setItem("ADS_WEB_LATEST_PROMPT:p1:advisor", "zombie-prompt");
+
+    // Run eager migration
+    const modified = eagerMigratePreferencesToV2();
+    expect(modified).toBe(true);
+
+    // Verify v2 project preferences record
+    const migratedPrefs = JSON.parse(localStorage.getItem("ads.prefs.p1")!) as {
+      version: number;
+      mobileTab: string;
+      models: Record<string, unknown>;
+      latestPrompts: Record<string, string>;
+      laneGenerations: Record<string, number>;
+    };
+    expect(migratedPrefs.version).toBe(2);
+    expect(migratedPrefs.mobileTab).toBe("acopilot");
+    expect(migratedPrefs.models.advisor).toBeUndefined();
+    expect(migratedPrefs.models.worker).toBeUndefined();
+    expect(migratedPrefs.models.acopilot).toBeDefined();
+    expect(migratedPrefs.models.actions).toBeDefined();
+    expect(migratedPrefs.latestPrompts.acopilot).toBe("old advisor prompt");
+    expect(migratedPrefs.latestPrompts.actions).toBe("old worker prompt");
+    expect(migratedPrefs.laneGenerations.acopilot).toBe(2);
+    expect(migratedPrefs.laneGenerations.actions).toBe(3);
+
+    // Verify app state rewrite
+    const migratedAppState = JSON.parse(localStorage.getItem(APP_STATE_STORAGE_KEY)!) as {
+      lastRealProjectTab: string;
+    };
+    expect(migratedAppState.lastRealProjectTab).toBe("actions");
+
+    // Verify zombie keys are purged
+    expect(localStorage.getItem("ads.modelId.p1.advisor")).toBeNull();
+    expect(localStorage.getItem("ADS_WEB_LATEST_PROMPT:p1:advisor")).toBeNull();
   });
 });

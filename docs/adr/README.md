@@ -28,4 +28,5 @@
 - 0011 - [ADR 0011: Restore Cached Transcripts Before Auth and Resume by Cursor](0011-local-first-transcript-sync.md)
 - 0012 - [ADR 0012: Encrypt User-Scoped Upstream Discovery Credentials](0012-encrypt-upstream-discovery-credentials.md)
 - 0013 - [ADR 0013: Introduce the Opt-In Native Agent Runtime](0013-native-agent-runtime-phase-1.md)
+- 0014 - [ADR 0014: Evolve Dual Lanes into Acopilot and Actions with In-Process Job Bus](0014-acopilot-and-actions-architecture.md)
 <!-- ADS:ADR_INDEX_END -->
