@@ -15,7 +15,21 @@ type ModelForm = {
   configJsonText: string;
 };
 
-type SettingsTab = "lane-prompts" | "models";
+type SettingsTab = "roles" | "models" | "lane-prompts";
+
+type RoleName = "acopilot" | "developer" | "reviewer";
+
+type RoleProfile = {
+  id: string;
+  role: RoleName;
+  name: string;
+  model_id: string;
+  reasoning_effort: "low" | "medium" | "high";
+  system_prompt: string;
+  is_enabled: number;
+  is_default: number;
+  version: number;
+};
 
 type UpstreamDiscoveryResponse = {
   ok: boolean;
@@ -60,18 +74,64 @@ const editingId = ref<string | null>(null);
 const dialogOpen = ref(false);
 const selectedModelId = ref<string | null>(null);
 const activeTab = ref<SettingsTab>(props.initialTab);
+const selectedRole = ref<RoleName>("acopilot");
+const roleProfiles = ref<RoleProfile[]>([]);
 const lanePromptSnapshots = ref<LanePromptSnapshot[]>([]);
-const selectedLane = ref<LaneName>("advisor");
+const selectedLane = ref<LaneName | "reviewer">("advisor");
 const selectedVersion = ref<number | null>(null);
 const lanePromptText = ref("");
 const lanePromptLoading = ref(false);
 const lanePromptSaving = ref(false);
 const lanePromptError = ref<string | null>(null);
 const lanePromptStatus = ref<string | null>(null);
-const lanePromptDrafts = reactive<Record<LaneName, string | null>>({
+const lanePromptDrafts = reactive<Record<string, string | null>>({
   advisor: null,
   worker: null,
+  acopilot: null,
+  developer: null,
+  reviewer: null,
 });
+
+const enabledModelConfigs = computed(() => modelConfigs.value.filter((m) => m.isEnabled));
+
+const currentRoleProfile = computed(() => roleProfiles.value.find((p) => p.role === selectedRole.value));
+
+const selectedRoleModelId = computed({
+  get() {
+    return currentRoleProfile.value?.model_id || enabledModelConfigs.value[0]?.modelId || "gpt-5.5";
+  },
+  set(val: string) {
+    const profile = currentRoleProfile.value;
+    if (profile) profile.model_id = val;
+  },
+});
+
+const selectedRoleEffort = computed({
+  get() {
+    return currentRoleProfile.value?.reasoning_effort || "high";
+  },
+  set(val: "low" | "medium" | "high") {
+    const profile = currentRoleProfile.value;
+    if (profile) profile.reasoning_effort = val;
+  },
+});
+
+function selectRole(role: RoleName): void {
+  selectedRole.value = role;
+  if (role === "acopilot") {
+    selectLane("advisor");
+  } else if (role === "developer") {
+    selectLane("worker");
+  } else {
+    lanePromptDrafts[selectedLane.value] = lanePromptText.value;
+    selectedLane.value = "reviewer" as any;
+    selectedVersion.value = null;
+    const profile = roleProfiles.value.find((p) => p.role === "reviewer");
+    lanePromptText.value = lanePromptDrafts.reviewer ?? profile?.system_prompt ?? "You are the Detached Reviewer for ADS.";
+    lanePromptError.value = null;
+    lanePromptStatus.value = null;
+  }
+}
 let laneSwipeStartX = 0;
 let laneSwipeStartY = 0;
 let laneSwipeTracking = false;
@@ -648,11 +708,21 @@ async function loadLanePrompts(): Promise<void> {
   lanePromptLoading.value = true;
   lanePromptError.value = null;
   try {
-    lanePromptSnapshots.value = await props.api.get<LanePromptSnapshot[]>("/api/lane-prompts");
+    const [snapshots, profiles] = await Promise.all([
+      props.api.get<LanePromptSnapshot[]>("/api/lane-prompts").catch(() => []),
+      props.api.get<RoleProfile[]>("/api/role-profiles").catch(() => []),
+    ]);
+    lanePromptSnapshots.value = snapshots;
+    if (profiles && profiles.length > 0) {
+      roleProfiles.value = profiles;
+    }
     selectedVersion.value = null;
     lanePromptText.value = selectedLaneSnapshot.value?.current.prompt ?? "";
     lanePromptDrafts.advisor = null;
     lanePromptDrafts.worker = null;
+    lanePromptDrafts.acopilot = null;
+    lanePromptDrafts.developer = null;
+    lanePromptDrafts.reviewer = null;
   } catch (err) {
     lanePromptError.value = err instanceof Error ? err.message : String(err);
   } finally {
@@ -680,17 +750,35 @@ async function persistLanePrompt(prompt: string, successMessage: string): Promis
   lanePromptError.value = null;
   lanePromptStatus.value = null;
   try {
-    const snapshot = await props.api.put<LanePromptSnapshot>(
-      `/api/lane-prompts/${encodeURIComponent(selectedLane.value)}`,
-      { prompt },
-    );
-    lanePromptSnapshots.value = lanePromptSnapshots.value.map((item) =>
-      item.lane === snapshot.lane ? snapshot : item,
-    );
-    selectedVersion.value = null;
-    lanePromptText.value = snapshot.current.prompt;
+    const profile = currentRoleProfile.value;
+    if (profile) {
+      profile.system_prompt = prompt;
+      await props.api
+        .put(`/api/role-profiles/${encodeURIComponent(profile.id)}`, {
+          model_id: profile.model_id,
+          reasoning_effort: profile.reasoning_effort,
+          system_prompt: prompt,
+        })
+        .catch(() => {});
+    }
+
+    if (selectedLane.value === "advisor" || selectedLane.value === "worker") {
+      const snapshot = await props.api.put<LanePromptSnapshot>(
+        `/api/lane-prompts/${encodeURIComponent(selectedLane.value)}`,
+        { prompt },
+      );
+      lanePromptSnapshots.value = lanePromptSnapshots.value.map((item) =>
+        item.lane === snapshot.lane ? snapshot : item,
+      );
+      selectedVersion.value = null;
+      lanePromptText.value = snapshot.current.prompt;
+    } else {
+      selectedVersion.value = null;
+      lanePromptText.value = prompt;
+    }
     lanePromptStatus.value = successMessage;
     lanePromptDrafts[selectedLane.value] = null;
+    lanePromptDrafts[selectedRole.value] = null;
   } catch (err) {
     lanePromptError.value = err instanceof Error ? err.message : String(err);
   } finally {
@@ -961,13 +1049,13 @@ defineExpose({
         role="tab"
         id="settings-tab-lane-prompts"
         class="settingsTab"
-        :class="{ active: activeTab === 'lane-prompts' }"
-        :aria-selected="activeTab === 'lane-prompts'"
+        :class="{ active: activeTab === 'lane-prompts' || activeTab === 'roles' }"
+        :aria-selected="activeTab === 'lane-prompts' || activeTab === 'roles'"
         aria-controls="settings-panel-lane-prompts"
         data-testid="settings-tab-prompts"
-        @click="activeTab = 'lane-prompts'"
+        @click="activeTab = 'roles'"
       >
-        角色指令
+        角色配置
       </button>
       <button
         type="button"
@@ -1194,30 +1282,59 @@ defineExpose({
       <div
         class="lanePromptLaneSelector"
         role="tablist"
-        aria-label="Agent lanes"
+        aria-label="Agent roles"
         @touchstart.passive="onLaneSwipeTouchStart"
         @touchend="onLaneSwipeTouchEnd"
       >
         <button
           type="button"
           class="lanePromptLane"
-          :class="{ active: selectedLane === 'advisor' }"
-          :aria-selected="selectedLane === 'advisor'"
+          :class="{ active: selectedRole === 'acopilot' }"
+          :aria-selected="selectedRole === 'acopilot'"
           data-testid="lane-prompt-lane-advisor"
-          @click="selectLane('advisor')"
+          @click="selectRole('acopilot')"
         >
-          Advisor
+          🧠 Acopilot
         </button>
         <button
           type="button"
           class="lanePromptLane"
-          :class="{ active: selectedLane === 'worker' }"
-          :aria-selected="selectedLane === 'worker'"
+          :class="{ active: selectedRole === 'developer' }"
+          :aria-selected="selectedRole === 'developer'"
           data-testid="lane-prompt-lane-worker"
-          @click="selectLane('worker')"
+          @click="selectRole('developer')"
         >
-          Worker
+          ⚙️ Developer
         </button>
+        <button
+          type="button"
+          class="lanePromptLane"
+          :class="{ active: selectedRole === 'reviewer' }"
+          :aria-selected="selectedRole === 'reviewer'"
+          data-testid="lane-prompt-lane-reviewer"
+          @click="selectRole('reviewer')"
+        >
+          🛡️ Reviewer
+        </button>
+      </div>
+
+      <div class="roleControlsBar">
+        <label class="roleControlField">
+          <span class="roleControlLabel">绑定模型</span>
+          <select v-model="selectedRoleModelId" class="roleControlSelect" data-testid="role-model-select">
+            <option v-for="m in enabledModelConfigs" :key="m.id" :value="m.modelId">
+              {{ m.displayName || m.modelId }} ({{ m.provider }})
+            </option>
+          </select>
+        </label>
+        <label class="roleControlField">
+          <span class="roleControlLabel">思考强度</span>
+          <select v-model="selectedRoleEffort" class="roleControlSelect" data-testid="role-effort-select">
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
       </div>
 
       <div v-if="lanePromptError" class="modelBanner error" data-testid="lane-prompt-error">{{ lanePromptError }}</div>
@@ -1739,6 +1856,43 @@ defineExpose({
 
 .lanePromptLane.active {
   color: var(--accent);
+}
+
+.roleControlsBar {
+  display: flex;
+  gap: 12px;
+  margin: 12px 0 16px;
+  padding: 10px 12px;
+  background: rgba(15, 23, 42, 0.03);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 8px;
+}
+
+.roleControlField {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  flex: 1;
+}
+
+.roleControlLabel {
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.roleControlSelect {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 6px;
+  background: #ffffff;
+  font-size: 13px;
+  color: var(--text);
 }
 
 .lanePromptPanel {
