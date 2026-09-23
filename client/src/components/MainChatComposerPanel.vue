@@ -155,6 +155,8 @@ const {
   voiceStatusKind,
   voiceStatusMessage,
   toggleRecording,
+  cancelRecording,
+  stopAndSend,
   triggerFileInput,
   onFileInputChange,
 } = useMainChatComposer({
@@ -440,9 +442,32 @@ onBeforeUnmount(() => {
         :disabled="inputLocked"
         @change="onFileInputChange"
       />
-      <div ref="composerRowEl" class="composerMainRow" :class="{ 'composerMainRow--expanded': composerExpanded }">
+      <div
+        ref="composerRowEl"
+        class="composerMainRow"
+        :class="{
+          'composerMainRow--expanded': composerExpanded,
+          'composerMainRow--recording': recording || transcribing,
+        }"
+      >
         <div ref="leftActionsEl" class="composerMainRowLeft">
           <button
+            v-if="recording || transcribing"
+            type="button"
+            class="voiceCancelBtn"
+            title="取消录音"
+            aria-label="取消录音"
+            data-testid="voice-cancel-btn"
+            :disabled="transcribing"
+            @click="cancelRecording"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+          <button
+            v-else
             ref="actionMenuTrigger"
             class="attachIcon composerActionToggle"
             type="button"
@@ -465,7 +490,24 @@ onBeforeUnmount(() => {
             </svg>
           </button>
         </div>
+        <div v-if="recording || transcribing" class="voiceWaveformContainer" aria-hidden="true">
+          <template v-if="recording">
+            <div class="voiceDotTrail">
+              <span v-for="i in 14" :key="`dot-${i}`" class="voiceDot" />
+            </div>
+            <div class="voiceEqualizerBars">
+              <span v-for="i in 18" :key="`eq-${i}`" class="eqBar" :style="{ animationDelay: `${(i % 5) * 0.12}s` }" />
+            </div>
+          </template>
+          <template v-else-if="transcribing">
+            <div class="voiceTranscribingState">
+              <span class="voiceSpinner" />
+              <span class="voiceTranscribingText">正在转录语音…</span>
+            </div>
+          </template>
+        </div>
         <textarea
+          v-show="!recording && !transcribing"
           ref="inputEl"
           :disabled="inputLocked"
           rows="1"
@@ -486,22 +528,38 @@ onBeforeUnmount(() => {
           @blur="clearTextSelectionState"
         />
         <div ref="rightActionsEl" class="composerMainRowRight">
-          <div v-if="recording" class="voiceIndicator recording" aria-hidden="true">
+          <div v-if="recording" class="voiceIndicator recording" aria-hidden="true" style="display: none;">
             <div class="voiceBars">
               <span class="bar" />
               <span class="bar" />
               <span class="bar" />
             </div>
           </div>
-          <div v-else-if="transcribing" class="voiceIndicator transcribing" aria-hidden="true">
+          <div v-else-if="transcribing" class="voiceIndicator transcribing" aria-hidden="true" style="display: none;">
             <span class="voiceSpinner" />
           </div>
           <button
+            v-if="recording || transcribing"
+            class="micIcon voiceStopBtn"
+            :class="{ recording, transcribing }"
+            :disabled="transcribing"
+            type="button"
+            title="停止录音并输入"
+            data-testid="voice-stop-btn"
+            @click="toggleRecording"
+          >
+            <svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <rect x="4" y="4" width="12" height="12" rx="2" />
+            </svg>
+          </button>
+          <button
+            v-else
             class="micIcon"
             :class="{ recording, transcribing }"
             :disabled="canInterrupt || transcribing || (inputLocked && !recording)"
             type="button"
-            :title="recording ? '停止录音' : '语音输入（追加到输入框）'"
+            title="语音输入（追加到输入框）"
+            data-testid="composer-mic-btn"
             @click="toggleRecording"
           >
             <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
@@ -520,14 +578,16 @@ onBeforeUnmount(() => {
           <button
             v-else
             class="sendIcon"
-            :disabled="inputLocked || (!hasContent && pendingImages.length === 0) || recording || transcribing"
+            :class="{ 'sendIcon--activeVoice': recording }"
+            :disabled="!recording && (inputLocked || (!hasContent && pendingImages.length === 0) || transcribing)"
             type="button"
-            title="发送"
-            @pointerdown="sendActivation.onPointerDown($event, undefined)"
-            @pointermove="sendActivation.onPointerMove"
-            @pointercancel="sendActivation.onPointerCancel"
-            @pointerup="sendActivation.onPointerUp"
-            @click="sendActivation.onClick($event, undefined)"
+            :title="recording ? '停止并直接发送' : '发送'"
+            data-testid="composer-send-btn"
+            @pointerdown="!recording && sendActivation.onPointerDown($event, undefined)"
+            @pointermove="!recording && sendActivation.onPointerMove"
+            @pointercancel="!recording && sendActivation.onPointerCancel"
+            @pointerup="!recording && sendActivation.onPointerUp"
+            @click="recording ? stopAndSend() : sendActivation.onClick($event, undefined)"
           >
             <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
               <path
@@ -785,6 +845,152 @@ onBeforeUnmount(() => {
     "input input input"
     "left . right";
   row-gap: 2px;
+}
+
+.composerMainRow--recording {
+  background: var(--surface-2, #f1f5f9);
+  border-radius: 999px;
+  align-items: center;
+  min-height: 48px;
+  padding: 4px 8px;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: background-color 0.2s ease, border-radius 0.2s ease;
+}
+
+.voiceCancelBtn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: var(--surface-3, rgba(148, 163, 184, 0.25));
+  color: var(--text, #0f172a);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+.voiceCancelBtn:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.38);
+}
+
+.voiceCancelBtn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.voiceCancelBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.voiceWaveformContainer {
+  grid-area: input;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  height: 36px;
+  overflow: hidden;
+  padding: 0 6px;
+  user-select: none;
+}
+
+.voiceDotTrail {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0.55;
+  overflow: hidden;
+}
+
+.voiceDot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #94a3b8;
+  flex-shrink: 0;
+}
+
+.voiceEqualizerBars {
+  display: flex;
+  align-items: center;
+  gap: 2.5px;
+  height: 28px;
+  padding-right: 4px;
+}
+
+.eqBar {
+  width: 3px;
+  min-height: 4px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--text, #334155);
+  animation: eqWave 0.65s ease-in-out infinite alternate;
+}
+
+@keyframes eqWave {
+  0% {
+    height: 5px;
+    opacity: 0.45;
+  }
+  50% {
+    height: 24px;
+    opacity: 0.95;
+  }
+  100% {
+    height: 12px;
+    opacity: 0.65;
+  }
+}
+
+.voiceTranscribingState {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #2563eb;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.voiceTranscribingText {
+  animation: voicePulse 1.5s ease-in-out infinite;
+}
+
+@keyframes voicePulse {
+  0%, 100% { opacity: 0.65; }
+  50% { opacity: 1; }
+}
+
+.micIcon.voiceStopBtn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: var(--surface-3, rgba(148, 163, 184, 0.28));
+  color: var(--text, #0f172a);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+.micIcon.voiceStopBtn:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.42);
+}
+
+.micIcon.voiceStopBtn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.sendIcon--activeVoice {
+  background: #007aff !important;
+  opacity: 1 !important;
+  cursor: pointer !important;
+  box-shadow: 0 1px 4px rgba(0, 122, 255, 0.35);
+}
+
+.sendIcon--activeVoice:active {
+  transform: scale(0.95);
 }
 
 .composerMainRowLeft,

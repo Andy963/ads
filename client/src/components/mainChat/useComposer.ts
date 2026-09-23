@@ -323,6 +323,8 @@ export function useMainChatComposer(params: {
   const transcribing = ref(false);
   const voiceStatusKind = ref<VoiceStatusKind>("idle");
   const voiceStatusMessage = ref("");
+  let isCancelledRecording = false;
+  let sendAfterTranscribe = false;
   let voiceToastTimer: ReturnType<typeof setTimeout> | null = null;
 
   let recorder: MediaRecorder | null = null;
@@ -433,10 +435,17 @@ export function useMainChatComposer(params: {
       const text = String(payload?.text ?? "").trim();
       if (!text) {
         setVoiceStatus("error", "未识别到文本", 3500);
+        sendAfterTranscribe = false;
         return;
       }
       await insertIntoComposer(text);
-      setVoiceStatus("ok", "已追加语音文本", 1200);
+      if (sendAfterTranscribe) {
+        sendAfterTranscribe = false;
+        await nextTick();
+        send();
+      } else {
+        setVoiceStatus("ok", "已追加语音文本", 1200);
+      }
     } catch (error) {
       const raw = error instanceof Error ? error.message : String(error);
       const lowered = raw.trim().toLowerCase();
@@ -461,6 +470,8 @@ export function useMainChatComposer(params: {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       cleanupRecorder();
+      isCancelledRecording = false;
+      sendAfterTranscribe = false;
       recorderStream = stream;
       recorderChunks = [];
       recorderMime = pickRecorderMime();
@@ -477,6 +488,11 @@ export function useMainChatComposer(params: {
         setVoiceStatus("error", "录音失败", 3500);
       };
       recorder.onstop = () => {
+        if (isCancelledRecording) {
+          isCancelledRecording = false;
+          cleanupRecorder();
+          return;
+        }
         const type = recorderMime || recorder?.mimeType || recorderChunks[0]?.type || "audio/webm";
         const blob = new Blob(recorderChunks, { type });
         cleanupRecorder();
@@ -514,6 +530,28 @@ export function useMainChatComposer(params: {
       return;
     }
     await startRecording();
+  };
+
+  const cancelRecording = (): void => {
+    if (!recording.value && !transcribing.value) return;
+    isCancelledRecording = true;
+    sendAfterTranscribe = false;
+    recording.value = false;
+    transcribing.value = false;
+    try {
+      recorder?.stop();
+    } catch {}
+    cleanupRecorder();
+    recorderChunks = [];
+    setVoiceStatus("idle", "");
+  };
+
+  const stopAndSend = (): void => {
+    if (!recording.value && !transcribing.value) return;
+    sendAfterTranscribe = true;
+    if (recording.value) {
+      stopRecording();
+    }
   };
 
   const send = (): void => {
@@ -762,6 +800,8 @@ export function useMainChatComposer(params: {
     voiceStatusKind,
     voiceStatusMessage,
     toggleRecording,
+    cancelRecording,
+    stopAndSend,
     triggerFileInput,
     onFileInputChange,
   };

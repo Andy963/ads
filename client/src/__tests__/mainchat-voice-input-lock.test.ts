@@ -140,4 +140,44 @@ describe("MainChat composer voice input locking", () => {
     expect(draftUpdates.some((args) => String(args[0] ?? "").includes("Stopped recording text"))).toBe(true);
     wrapper.unmount();
   });
+
+  it("renders ChatGPT-style voice dictation bar during recording and supports cancel", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ text: "" }) });
+    globalThis.fetch = fetchMock;
+    const wrapper = mount(MainChatComposerPanel, {
+      props: {
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+        inputLocked: false,
+      },
+      global: { stubs: { MainChatPendingImageViewer: true } },
+    });
+
+    expect(wrapper.find('[data-testid="voice-cancel-btn"]').exists()).toBe(false);
+    expect(wrapper.find(".composerMainRow--recording").exists()).toBe(false);
+
+    // Start recording
+    await wrapper.find("button.micIcon").trigger("click");
+    await nextTick();
+
+    expect(wrapper.find(".composerMainRow--recording").exists()).toBe(true);
+    expect(wrapper.find('[data-testid="voice-cancel-btn"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="voice-stop-btn"]').exists()).toBe(true);
+    expect(wrapper.find(".voiceDotTrail").exists()).toBe(true);
+    expect(wrapper.find(".voiceEqualizerBars").exists()).toBe(true);
+    expect(wrapper.find(".sendIcon--activeVoice").exists()).toBe(true);
+
+    // Click cancel button
+    await wrapper.find('[data-testid="voice-cancel-btn"]').trigger("click");
+    await settle();
+
+    expect(wrapper.find(".composerMainRow--recording").exists()).toBe(false);
+    expect(wrapper.find('[data-testid="voice-cancel-btn"]').exists()).toBe(false);
+    // Audio should not have been transcribed
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    wrapper.unmount();
+  });
 });
