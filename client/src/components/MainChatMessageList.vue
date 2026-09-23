@@ -2,14 +2,12 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import MarkdownContent from "./MarkdownContent.vue";
-import ChatFilePreviewModal from "./ChatFilePreviewModal.vue";
 import MainChatPendingImageViewer from "./MainChatPendingImageViewer.vue";
 import ThinkingDots from "./mainChat/ThinkingDots.vue";
 import type { ChatMessage, RenderMessage } from "./mainChat/types";
 import type { ChatItem } from "../app/controllerTypes";
 import { PATCH_DIFF_FALLBACK_KEY, splitUnifiedDiffByPath } from "../lib/patchDiff";
 import { normalizeTurnSemanticOrder } from "../lib/chat_sync";
-import type { MarkdownFilePreviewLink } from "../lib/markdown";
 import { TURN_FAILURE_CARD_PREFIX, turnFailureCardId } from "../lib/turnFailure";
 
 const LIVE_STEP_MESSAGE_ID = "live-step";
@@ -59,7 +57,6 @@ const emit = defineEmits<{
 
 const openCommandTrees = ref<Set<string>>(new Set());
 const expandedPatchKeys = ref<Set<string>>(new Set());
-const filePreviewTarget = ref<MarkdownFilePreviewLink | null>(null);
 const messageImageViewerOpen = ref(false);
 const messageImageViewerPreviews = ref<Array<{ key: string; src: string; href: string }>>([]);
 
@@ -485,16 +482,6 @@ function retryUserTurn(message: RenderMessage, index: number): void {
   const failure = getTurnFailureForUser(message, index);
   if (failure) emit("retryMessage", failure);
 }
-
-function openFilePreview(payload: MarkdownFilePreviewLink): void {
-  if (!String(props.workspaceRoot ?? "").trim()) return;
-  filePreviewTarget.value = payload;
-}
-
-function closeFilePreview(): void {
-  filePreviewTarget.value = null;
-}
-
 </script>
 
 <template>
@@ -595,7 +582,7 @@ function closeFilePreview(): void {
             :data-trivial-outline="String(liveStepCollapsedTrivialOutline)"
             :class="{ 'liveStepBody--clamped': liveStepHasOverflow && !liveStepExpanded && liveStepCanToggleExpanded }"
           >
-            <MarkdownContent :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
+            <MarkdownContent :content="m.content" />
             <div v-if="!liveStepExpanded && liveStepOutlineItems.length > 0" class="liveStepOutline" aria-hidden="true">
               <div v-for="(title, idx) in liveStepOutlineItems" :key="idx" class="liveStepOutlineItem" :title="title">
                 <span class="liveStepOutlineBullet" aria-hidden="true">•</span>
@@ -615,8 +602,6 @@ function closeFilePreview(): void {
               <MarkdownContent
                 v-if="userMessageText(m.content)"
                 :content="userMessageText(m.content)"
-                :enable-file-preview="Boolean(workspaceRoot)"
-                @open-file-preview="openFilePreview"
               />
               <div
                 v-if="userMessageAttachments(m.content).length"
@@ -639,7 +624,7 @@ function closeFilePreview(): void {
               </div>
             </template>
             <template v-else>
-              <MarkdownContent :content="m.content" :enable-file-preview="Boolean(workspaceRoot)" @open-file-preview="openFilePreview" />
+              <MarkdownContent :content="m.content" />
             </template>
             <div v-if="m.patch && buildPatchRows(m).length > 0" class="patchCard foldedPatch">
               <div v-for="(row, rowIdx) in buildPatchRows(m)" :key="row.key" class="patchCardRow">
@@ -727,7 +712,6 @@ function closeFilePreview(): void {
         </div>
       </div>
     </template>
-    <ChatFilePreviewModal :workspace-root="workspaceRoot" :target="filePreviewTarget" @close="closeFilePreview" />
     <MainChatPendingImageViewer
       v-if="messageImageViewerOpen"
       :previews="messageImageViewerPreviews"
