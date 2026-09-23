@@ -20,13 +20,6 @@ describe("markdown external links", () => {
       expect(html).toContain('rel="noreferrer noopener"');
     });
 
-    it("keeps file preview links free of forced _blank", () => {
-      const html = renderMarkdownToHtml("[chunker](/opt/codebase/whisper/app/memory/chunker.py#L46)");
-      expect(html).toContain('data-md-link-kind="file-preview"');
-      expect(html).toContain('data-md-file-path="/opt/codebase/whisper/app/memory/chunker.py"');
-      expect(html).not.toContain('target="_blank"');
-    });
-
     it("does not add _blank to in-page hash anchors", () => {
       const html = renderMarkdownToHtml("[section](#some-section)");
       expect(html).toContain('href="#some-section"');
@@ -71,22 +64,21 @@ describe("markdown external links", () => {
       expect(openSpy).not.toHaveBeenCalled();
     });
 
-    it("still intercepts file preview links without opening a new window", async () => {
+    it("prevents navigation for relative or local file links to protect SPA window", async () => {
       const openSpy = vi.fn().mockReturnValue(null);
       window.open = openSpy as typeof window.open;
 
       const wrapper = mount(MarkdownContent, {
         props: {
           content: "[chunker](/tmp/ws/app/memory/chunker.py#L46)",
-          enableFilePreview: true,
         },
       });
 
-      await wrapper.find("a").trigger("click");
+      const event = new MouseEvent("click", { cancelable: true, bubbles: true });
+      wrapper.find("a").element.dispatchEvent(event);
 
       expect(openSpy).not.toHaveBeenCalled();
-      expect(wrapper.emitted("openFilePreview")).toHaveLength(1);
-      expect(wrapper.emitted("openFilePreview")?.[0]).toEqual([{ path: "/tmp/ws/app/memory/chunker.py", line: 46 }]);
+      expect(event.defaultPrevented).toBe(true);
     });
   });
 });

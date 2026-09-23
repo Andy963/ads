@@ -1,6 +1,5 @@
 import MarkdownIt from "markdown-it";
 
-import { applyFilePreviewAttrs, parseMarkdownFilePreviewHref } from "./filePreview";
 import { hljs, normalizeLang } from "./highlight";
 import { extractPatchFilePaths, formatCollapsedFileList, isPatchLike } from "./patch";
 
@@ -71,33 +70,12 @@ const defaultLinkOpenRenderer =
 md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
   const token = tokens[idx];
   const href = String(token.attrGet("href") ?? "");
-  const preview = parseMarkdownFilePreviewHref(href);
-  if (preview) {
-    applyFilePreviewAttrs(token, preview);
-  } else if (!href.trim().startsWith("#")) {
+  if (!href.trim().startsWith("#")) {
     // External links must not unload the SPA host window; open them in a new tab.
     token.attrSet("target", "_blank");
     token.attrSet("rel", "noreferrer noopener");
   }
   return defaultLinkOpenRenderer(tokens, idx, options, env, self);
-};
-
-const defaultCodeInlineRenderer =
-  md.renderer.rules.code_inline ??
-  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
-
-md.renderer.rules.code_inline = (tokens, idx, options, env, self) => {
-  const token = tokens[idx];
-  const content = String(token.content ?? "");
-  const preview = parseMarkdownFilePreviewHref(content);
-  if (!preview || !content.includes("/")) {
-    return defaultCodeInlineRenderer(tokens, idx, options, env, self);
-  }
-
-  const rawHref = escapeAttr(content);
-  const escapedContent = escapeHtml(content);
-  const lineAttr = preview.line != null ? ` data-md-file-line="${escapeAttr(String(preview.line))}"` : "";
-  return `<a href="${rawHref}" data-md-link-kind="file-preview" data-md-file-path="${escapeAttr(preview.path)}"${lineAttr}><code>${escapedContent}</code></a>`;
 };
 
 md.inline.ruler.before("text", "diffstat", (state, silent) => {
