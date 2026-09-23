@@ -426,9 +426,10 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="queuedPrompts.length" class="queue" aria-label="排队消息">
-      <div v-for="q in queuedPrompts" :key="q.id" class="queue-item">
+      <div v-for="(q, idx) in queuedPrompts" :key="q.id" class="queue-item">
+        <span class="queue-badge" :title="`第 ${idx + 1} 条排队消息`">#{{ idx + 1 }}</span>
         <div class="queue-text">
-          {{ q.text || `[图片 x${q.imagesCount}]` }}
+          <span>{{ q.text || `[图片 x${q.imagesCount}]` }}</span>
           <span v-if="q.text && q.imagesCount" class="queue-sub"> · 图片 x{{ q.imagesCount }}</span>
         </div>
         <button class="queue-del" type="button" title="移除" @click="emit('removeQueued', q.id)">
@@ -796,9 +797,10 @@ onBeforeUnmount(() => {
 
 .queue {
   width: 100%;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 6px;
-  max-height: 140px;
+  max-height: 220px;
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
@@ -807,46 +809,83 @@ onBeforeUnmount(() => {
 
 .queue-item {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: 12px;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 14px;
   border: 1px solid rgba(15, 23, 42, 0.08);
-  background: #ffffff;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.03);
+  backdrop-filter: blur(8px);
+}
+
+.queue-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.1);
+  color: #2563eb;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--font-mono, monospace);
+  line-height: 1.4;
+  flex-shrink: 0;
+  margin-top: 1px;
 }
 
 .queue-text {
   min-width: 0;
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
+  font-size: 12.5px;
+  line-height: 1.45;
   color: #0f172a;
-  font-weight: 600;
+  font-weight: 500;
+  max-height: calc(1.45em * 3);
+  overflow-y: auto;
+  overflow-x: hidden;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.5) transparent;
+}
+
+.queue-text::-webkit-scrollbar {
+  width: 4px;
+}
+
+.queue-text::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.5);
+  border-radius: 999px;
 }
 
 .queue-sub {
   color: #64748b;
   font-weight: 600;
+  font-size: 11.5px;
 }
 
 .queue-del {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
   border: none;
   background: transparent;
-  color: #64748b;
+  color: #94a3b8;
   cursor: pointer;
   display: grid;
   place-items: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+  transition: color 0.12s ease, background 0.12s ease;
 }
 
 .queue-del:hover {
-  color: #0f172a;
-  background: rgba(15, 23, 42, 0.06);
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.08);
 }
 
 .inputWrap {
