@@ -208,6 +208,63 @@ describe("NativeAgentAdapter", () => {
     }
   });
 
+  it("dispatches action jobs through native tool executor and emits live step", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-dispatch-"));
+    try {
+      let requestNumber = 0;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-api-key",
+            provider: "test",
+          }),
+        },
+        fetchImpl: async () => {
+          requestNumber += 1;
+          if (requestNumber === 1) {
+            return sse([
+              JSON.stringify({
+                choices: [{
+                  delta: {
+                    tool_calls: [{
+                      index: 0,
+                      id: "dispatch-1",
+                      function: {
+                        name: "dispatch_action_job",
+                        arguments: JSON.stringify({ issue_id: 277, title: "Refactor dual lanes" }),
+                      },
+                    }],
+                  },
+                }],
+              }),
+              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+            ]);
+          }
+          return sse([
+            JSON.stringify({ choices: [{ delta: { content: "Job dispatched successfully." }, finish_reason: "stop" }] }),
+          ]);
+        },
+      });
+
+      const liveSteps: string[] = [];
+      adapter.onEvent((event) => {
+        if (event.liveStep === true) liveSteps.push(String(event.delta ?? ""));
+      });
+
+      const result = await adapter.send("Please dispatch issue 277 to Actions");
+
+      assert.equal(result.response, "Job dispatched successfully.");
+      assert.ok(liveSteps.some((step) => step.includes('Dispatching task "Refactor dual lanes" to Actions...')));
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("keeps streamed text snapshots isolated across tool-call rounds", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-snapshots-"));
     try {

@@ -167,6 +167,10 @@ function describeNativeToolCall(call: NativeChatToolCall): string | null {
       const command = [cmd, ...argv].join(" ").trim();
       return command ? `Running ${truncateLiveStepText(command)}...` : "Running command...";
     }
+    case "dispatch_action_job": {
+      const title = typeof args.title === "string" ? args.title.trim() : "";
+      return title ? `Dispatching task "${truncateLiveStepText(title)}" to Actions...` : "Dispatching task to Actions...";
+    }
     default:
       return null;
   }
