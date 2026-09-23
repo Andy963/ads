@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { z } from "zod";
 
 import { getStateDatabase } from "../../../../state/database.js";
@@ -15,6 +16,10 @@ const dispatchSchema = z.object({
   reviewerProfileIds: z.array(z.string()).optional(),
 });
 
+export interface ActionRouteDeps {
+  resolveWorkspaceRoot?: (url: URL) => string;
+}
+
 let busInstance: LaneDispatchBus | null = null;
 
 function getBus(): LaneDispatchBus {
@@ -24,7 +29,7 @@ function getBus(): LaneDispatchBus {
   return busInstance;
 }
 
-export async function handleActionRoutes(ctx: ApiRouteContext): Promise<boolean> {
+export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRouteDeps = {}): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
   const bus = getBus();
 
@@ -43,12 +48,18 @@ export async function handleActionRoutes(ctx: ApiRouteContext): Promise<boolean>
       return true;
     }
 
+    const repoPath = parsed.data.repoPath || parsed.data.projectId || (deps.resolveWorkspaceRoot ? deps.resolveWorkspaceRoot(url) : null);
+    if (!repoPath || !fs.existsSync(repoPath) || !fs.statSync(repoPath).isDirectory()) {
+      sendJson(res, 400, { error: `Invalid or non-existent repository path: ${repoPath}` });
+      return true;
+    }
+
     const result = bus.dispatchJob({
       projectId: parsed.data.projectId,
       issueId: parsed.data.issueId,
       issueTitle: parsed.data.issueTitle,
       jobKind: parsed.data.jobKind,
-      repoPath: parsed.data.repoPath,
+      repoPath,
       developerProfileId: parsed.data.developerProfileId,
       reviewerProfileIds: parsed.data.reviewerProfileIds,
     });
@@ -67,13 +78,18 @@ export async function handleActionRoutes(ctx: ApiRouteContext): Promise<boolean>
   const mergeMatch = /^\/api\/actions\/jobs\/([^/]+)\/merge$/.exec(pathname);
   if (mergeMatch && req.method === "POST") {
     const jobId = decodeURIComponent(mergeMatch[1] ?? "");
-    let body: { repoPath?: string } = {};
-    try {
-      body = (await readJsonBody(req)) as { repoPath?: string };
-    } catch {
-      // optional
+    const job = bus.getJob(jobId);
+    if (!job) {
+      sendJson(res, 404, { error: `Job not found: ${jobId}` });
+      return true;
     }
-    const repoPath = body.repoPath || process.cwd();
+
+    const repoPath = job.project_id;
+    if (!repoPath || !fs.existsSync(repoPath) || !fs.statSync(repoPath).isDirectory()) {
+      sendJson(res, 400, { error: `Job project directory does not exist: ${repoPath}` });
+      return true;
+    }
+
     const result = bus.executeDeterministicMerge(jobId, repoPath);
     sendJson(res, result.success ? 200 : 500, result);
     return true;
@@ -82,11 +98,15 @@ export async function handleActionRoutes(ctx: ApiRouteContext): Promise<boolean>
   const cancelMatch = /^\/api\/actions\/jobs\/([^/]+)\/cancel$/.exec(pathname);
   if (cancelMatch && req.method === "POST") {
     const jobId = decodeURIComponent(cancelMatch[1] ?? "");
-    bus.cancelJob(jobId);
+    const job = bus.getJob(jobId);
+    if (!job) {
+      sendJson(res, 404, { error: `Job not found: ${jobId}` });
+      return true;
+    }
+    bus.cancelJob(jobId, job.project_id);
     sendJson(res, 200, { ok: true, jobId, status: "cancelled" });
     return true;
   }
 
   return false;
 }
-

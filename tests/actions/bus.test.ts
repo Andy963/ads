@@ -116,7 +116,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(res.dequeuedJobId, job.jobId);
 
     const activeJob = bus.getJob(job.jobId);
-    assert.strictEqual(activeJob?.status, "running");
+    assert.ok(activeJob?.status === "running" || activeJob?.status === "waiting_merge");
 
     const currentBranch = spawnSync("git", ["branch", "--show-current"], { cwd: repoDir, encoding: "utf8" }).stdout.trim();
     assert.strictEqual(currentBranch, "codex/issue-202");
@@ -142,6 +142,45 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(res.status, "waiting_merge");
     const updated = bus.getJob(job.jobId);
     assert.strictEqual(updated?.status, "waiting_merge");
+    assert.strictEqual(updated?.pr_number, null);
+    assert.ok(updated?.current_step?.includes("Local repository ready"));
+  });
+
+  it("merges local branch via fast-forward fallback when no PR number exists", async () => {
+    const db = getStateDatabase();
+    const bus = new LaneDispatchBus(db);
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 505,
+      issueTitle: "Offline task",
+    });
+
+    // Dequeue job and checkout branch
+    await bus.evaluateQueue(repoDir, repoDir);
+    assert.strictEqual(spawnSync("git", ["branch", "--show-current"], { cwd: repoDir, encoding: "utf8" }).stdout.trim(), "codex/issue-505");
+
+    // Make a commit on the feature branch
+    fs.writeFileSync(path.join(repoDir, "feature.txt"), "offline work");
+    spawnSync("git", ["add", "feature.txt"], { cwd: repoDir });
+    spawnSync("git", ["commit", "-m", "feature 505"], { cwd: repoDir });
+
+    // Pass review
+    bus.handleReviewResult({
+      jobId: job.jobId,
+      repoPath: repoDir,
+      verdict: "PASS",
+      reviewSummary: "All good",
+    });
+
+    // Execute merge
+    const mergeRes = bus.executeDeterministicMerge(job.jobId, repoDir);
+    assert.strictEqual(mergeRes.success, true);
+
+    // Verify dev now has the commit and feature branch is cleaned up
+    const currentBranch = spawnSync("git", ["branch", "--show-current"], { cwd: repoDir, encoding: "utf8" }).stdout.trim();
+    assert.strictEqual(currentBranch, "dev");
+    assert.ok(fs.existsSync(path.join(repoDir, "feature.txt")));
   });
 
   it("handles reviewer REJECT with rework bounds (max 2)", () => {
@@ -194,9 +233,32 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       issueTitle: "To Cancel",
     });
 
-    bus.cancelJob(job.jobId);
+    bus.cancelJob(job.jobId, repoDir);
     const updated = bus.getJob(job.jobId);
     assert.strictEqual(updated?.status, "cancelled");
+    assert.strictEqual(spawnSync("git", ["branch", "--show-current"], { cwd: repoDir, encoding: "utf8" }).stdout.trim(), "dev");
+  });
+
+  it("runs full automated job cycle through verification and review", async () => {
+    const db = getStateDatabase();
+    const bus = new LaneDispatchBus(db);
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 606,
+      issueTitle: "Automated cycle",
+    });
+
+    // Start job
+    await bus.evaluateQueue(repoDir, repoDir);
+
+    // Run cycle
+    await bus.runJobCycle(job.jobId, repoDir, {
+      testCommand: "git status",
+    });
+
+    const finishedJob = bus.getJob(job.jobId);
+    assert.strictEqual(finishedJob?.status, "waiting_merge");
+    assert.ok(finishedJob?.review_verdicts_json.includes("PASS"));
   });
 });
-

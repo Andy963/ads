@@ -34,4 +34,13 @@ describe("skills/builtinTools", () => {
     assert.match(results[0] ?? "", /ok/);
     assert.match(readMemory(workspace), /Stored fact/);
   });
+
+  it("executes dispatch_action_job directives", async () => {
+    const results = await executeToolDirectives({
+      text: '<<<tool.dispatch_action_job issue_id="277" title="Implement Actions Loop">>>\n>>>',
+      workspaceRoot: workspace,
+    });
+    assert.match(results[0] ?? "", /tool\.dispatch_action_job: ok/);
+    assert.match(results[0] ?? "", /job_id: job-/);
+  });
 });

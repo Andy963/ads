@@ -76,6 +76,23 @@ export function mergeAndCleanupPipeline(options: {
         error: `gh pr merge failed: ${mergeRes.stderr?.trim() || "Unknown error"}`,
       };
     }
+  } else {
+    // Spec §5.2: Offline / local project path without PR - fast-forward merge local feature branch to dev
+    const checkoutDev = spawnSync("git", ["checkout", base], { cwd: options.cwd, encoding: "utf8" });
+    if (checkoutDev.status !== 0) {
+      return {
+        success: false,
+        error: `git checkout ${base} failed before local merge: ${checkoutDev.stderr?.trim() || "Unknown error"}`,
+      };
+    }
+
+    const mergeFf = spawnSync("git", ["merge", "--ff-only", options.branch], { cwd: options.cwd, encoding: "utf8" });
+    if (mergeFf.status !== 0) {
+      return {
+        success: false,
+        error: `Local fast-forward merge of '${options.branch}' into '${base}' failed: ${mergeFf.stderr?.trim() || "Non-fast-forward"}. Branch preserved.`,
+      };
+    }
   }
 
   // 2. Close corresponding GitHub Issue
@@ -123,4 +140,3 @@ export function mergeAndCleanupPipeline(options: {
 
   return { success: true };
 }
-

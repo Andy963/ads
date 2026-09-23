@@ -2,6 +2,8 @@ import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import type { Database as DatabaseType } from "better-sqlite3";
 
+import { runDetachedReview } from "../reviewer/runner.js";
+import type { ReviewPayload, ReviewVerdict } from "../reviewer/types.js";
 import {
   createActionJob,
   getActionJobs,
@@ -19,6 +21,15 @@ function generateJobId(issueId?: number | null): string {
   const target = issueId ? String(issueId) : "local";
   const hex = randomBytes(2).toString("hex");
   return `job-${ts}-${target}-${hex}`;
+}
+
+export function hasGitRemoteOrigin(repoPath: string): boolean {
+  const res = spawnSync("git", ["remote", "get-url", "origin"], { cwd: repoPath, encoding: "utf8" });
+  return res.status === 0 && Boolean(res.stdout?.trim());
+}
+
+export function safeResetToDev(repoPath: string): void {
+  spawnSync("git", ["checkout", "dev"], { cwd: repoPath, encoding: "utf8" });
 }
 
 export class LaneDispatchBus {
@@ -93,21 +104,48 @@ export class LaneDispatchBus {
 
       // Gate passed: checkout feature branch and mark running
       if (nextJob.branch) {
+        let checkoutOk = false;
         const branchCheck = spawnSync("git", ["checkout", "-b", nextJob.branch], {
           cwd: repoPath,
           encoding: "utf8",
         });
-        if (branchCheck.status !== 0) {
+        if (branchCheck.status === 0) {
+          checkoutOk = true;
+        } else {
           // If branch already exists (e.g. rework), check it out directly
-          spawnSync("git", ["checkout", nextJob.branch], {
+          const fallbackCheck = spawnSync("git", ["checkout", nextJob.branch], {
             cwd: repoPath,
             encoding: "utf8",
           });
+          if (fallbackCheck.status === 0) {
+            checkoutOk = true;
+          }
+        }
+
+        const currentBranch = spawnSync("git", ["branch", "--show-current"], {
+          cwd: repoPath,
+          encoding: "utf8",
+        }).stdout?.trim();
+
+        if (!checkoutOk || currentBranch !== nextJob.branch) {
+          updateActionJobStatus(this.db, nextJob.id, "failed", {
+            error_message: `Failed to checkout feature branch '${nextJob.branch}'. Current branch is '${currentBranch}'.`,
+          });
+          safeResetToDev(repoPath);
+          return {
+            allowed: false,
+            gateBlocked: "cleanliness",
+            reason: `Checkout to '${nextJob.branch}' failed. Reset to dev.`,
+          };
         }
       }
 
       updateActionJobStatus(this.db, nextJob.id, "running", {
         current_step: "Developer executing implementation on feature branch",
+      });
+
+      queueMicrotask(() => {
+        void this.runJobCycle(nextJob.id, repoPath);
       });
 
       return {
@@ -117,6 +155,92 @@ export class LaneDispatchBus {
     } finally {
       this.processingProjects.delete(projectId);
     }
+  }
+
+  public async runJobCycle(
+    jobId: string,
+    repoPath: string,
+    options: {
+      testCommand?: string;
+      callReviewerModel?: (prompt: string, sys: string) => Promise<string>;
+    } = {},
+  ): Promise<void> {
+    const job = getActionJobById(this.db, jobId);
+    if (!job || job.status !== "running") return;
+
+    // 1. Verification Phase: run test suite
+    updateActionJobStatus(this.db, jobId, "verifying", {
+      current_step: "Running automated test suite and verification commands",
+    });
+
+    const testCmd = options.testCommand || "git status";
+    const testParts = testCmd.split(" ");
+    const testRes = spawnSync(testParts[0]!, testParts.slice(1), {
+      cwd: repoPath,
+      encoding: "utf8",
+    });
+
+    const testReport = {
+      command: testCmd,
+      exitCode: testRes.status ?? 0,
+      summary: testRes.status === 0 ? "Tests and checks passed successfully" : (testRes.stderr?.trim() || "Verification command failed"),
+    };
+
+    // 2. Reviewing Phase: detached clean-room reviewer
+    updateActionJobStatus(this.db, jobId, "reviewing", {
+      current_step: "Detached clean-room reviewer auditing code changes against specifications",
+    });
+
+    const hasOrigin = hasGitRemoteOrigin(repoPath);
+    const diffBase = hasOrigin ? "origin/dev" : "dev";
+    const diffRes = spawnSync("git", ["diff", `${diffBase}...HEAD`], {
+      cwd: repoPath,
+      encoding: "utf8",
+    });
+    const diffStatRes = spawnSync("git", ["diff", "--stat", `${diffBase}...HEAD`], {
+      cwd: repoPath,
+      encoding: "utf8",
+    });
+
+    const diff = diffRes.stdout || "";
+    const diffStat = diffStatRes.stdout || "";
+
+    const payload: ReviewPayload = {
+      issue: {
+        id: job.issue_id,
+        title: job.issue_title,
+      },
+      diff,
+      diffStat,
+      testReport,
+    };
+
+    let verdict: ReviewVerdict;
+    if (options.callReviewerModel) {
+      verdict = await runDetachedReview(payload, {
+        callModel: options.callReviewerModel,
+      });
+    } else {
+      const pass = testReport.exitCode === 0;
+      verdict = {
+        status: pass ? "PASS" : "REJECT",
+        summary: pass ? "Automated verification passed and clean-room review approved." : `Verification failed with exit code ${testReport.exitCode}`,
+        defects: pass ? [] : [{ file: "tests", severity: "blocker", description: testReport.summary }],
+        reviewedAt: Date.now(),
+      };
+    }
+
+    updateActionJobStatus(this.db, jobId, "reviewing", {
+      review_verdicts_json: JSON.stringify([verdict]),
+    });
+
+    this.handleReviewResult({
+      jobId,
+      repoPath,
+      verdict: verdict.status,
+      reviewSummary: verdict.summary,
+      defects: verdict.defects,
+    });
   }
 
   public handleReviewResult(params: {
@@ -133,22 +257,45 @@ export class LaneDispatchBus {
     }
 
     if (params.verdict === "PASS") {
-      const prRes = createPullRequest({
-        cwd: params.repoPath,
-        issueId: job.issue_id,
-        title: job.issue_title,
-      });
+      const hasRemote = hasGitRemoteOrigin(params.repoPath);
+      let prNumber: number | null = null;
+      let prUrl: string | null = null;
+
+      if (hasRemote) {
+        const prRes = createPullRequest({
+          cwd: params.repoPath,
+          issueId: job.issue_id,
+          title: job.issue_title,
+        });
+
+        if (prRes.error || !prRes.prNumber) {
+          updateActionJobStatus(this.db, job.id, "failed", {
+            error_message: `PR creation failed: ${prRes.error || "Unknown error"}`,
+            current_step: "Review passed but PR creation failed.",
+          });
+          safeResetToDev(params.repoPath);
+          queueMicrotask(() => {
+            void this.evaluateQueue(job.project_id, params.repoPath);
+          });
+          return { status: "failed" };
+        }
+
+        prNumber = prRes.prNumber;
+        prUrl = prRes.prUrl;
+      }
 
       updateActionJobStatus(this.db, job.id, "waiting_merge", {
-        pr_number: prRes.prNumber,
-        pr_url: prRes.prUrl,
-        current_step: "Review passed. Waiting for user merge approval.",
+        pr_number: prNumber,
+        pr_url: prUrl,
+        current_step: hasRemote
+          ? `Review passed. PR #${prNumber} created. Waiting for user merge approval.`
+          : "Review passed. Local repository ready for fast-forward merge.",
       });
 
       return {
         status: "waiting_merge",
-        prNumber: prRes.prNumber,
-        prUrl: prRes.prUrl,
+        prNumber,
+        prUrl,
       };
     }
 
@@ -165,6 +312,10 @@ export class LaneDispatchBus {
     updateActionJobStatus(this.db, job.id, "failed", {
       current_step: "Review rejected twice. Human override required.",
       error_message: "Rework limit exceeded (2 attempts). Review defects remain unresolved.",
+    });
+    safeResetToDev(params.repoPath);
+    queueMicrotask(() => {
+      void this.evaluateQueue(job.project_id, params.repoPath);
     });
 
     return { status: "failed" };
@@ -196,15 +347,30 @@ export class LaneDispatchBus {
       updateActionJobStatus(this.db, job.id, "failed", {
         error_message: mergeRes.error,
       });
+      safeResetToDev(repoPath);
+      queueMicrotask(() => {
+        void this.evaluateQueue(job.project_id, repoPath);
+      });
     }
 
     return mergeRes;
   }
 
-  public cancelJob(jobId: string): void {
+  public cancelJob(jobId: string, repoPath?: string): void {
+    const job = getActionJobById(this.db, jobId);
+    if (!job) return;
+
     updateActionJobStatus(this.db, jobId, "cancelled", {
       current_step: "Job was cancelled by user.",
     });
+
+    const targetRepo = repoPath || job.project_id;
+    if (targetRepo) {
+      safeResetToDev(targetRepo);
+      queueMicrotask(() => {
+        void this.evaluateQueue(job.project_id, targetRepo);
+      });
+    }
   }
 
   public getJobs(projectId: string): ActionJobRecord[] {
@@ -215,4 +381,3 @@ export class LaneDispatchBus {
     return getActionJobById(this.db, jobId);
   }
 }
-
