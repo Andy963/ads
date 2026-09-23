@@ -1313,15 +1313,6 @@ defineExpose({
           <div class="dialogHeading">
             <div class="dialogTitle">从上游同步模型</div>
           </div>
-          <button
-            class="modelIconBtn"
-            type="button"
-            title="关闭"
-            :disabled="syncLoading || syncImporting"
-            @click="closeSyncDialog"
-          >
-            <el-icon :size="16" aria-hidden="true"><Close /></el-icon>
-          </button>
         </header>
 
         <div class="dialogBody syncDialogBody">
@@ -2358,15 +2349,8 @@ defineExpose({
 
 .syncConfigGrid {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-  gap: 10px;
-}
-
-@media (max-width: 600px) {
-  .syncConfigGrid {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
-  }
+  grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr);
+  gap: 8px;
 }
 
 .dialogHeader {
