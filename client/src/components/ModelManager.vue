@@ -2318,11 +2318,14 @@ defineExpose({
   position: absolute;
   inset: 0;
   z-index: 20;
-  display: grid;
-  place-items: center;
-  padding: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
   background: rgba(15, 23, 42, 0.34);
   backdrop-filter: blur(2px);
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .dialogCard {
@@ -2335,11 +2338,12 @@ defineExpose({
   border-radius: 14px;
   background: var(--surface);
   box-shadow: 0 18px 44px rgba(15, 23, 42, 0.22);
+  margin: auto;
 }
 
 .syncDialogCard {
   width: min(640px, 100%);
-  max-height: min(720px, calc(100vh - 36px));
+  max-height: 100%;
 }
 
 .syncDialogBody {
@@ -2454,13 +2458,15 @@ defineExpose({
 }
 
 .syncModelList {
-  max-height: 380px;
-  min-height: 140px;
+  max-height: 260px;
+  min-height: 80px;
   flex: 1 1 auto;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 3px;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .lanePromptPanel,
@@ -2778,6 +2784,19 @@ defineExpose({
     justify-content: center;
     font-size: 14px;
     font-weight: 600;
+  }
+
+  .dialogMask {
+    padding: 6px;
+  }
+
+  .syncDialogCard {
+    width: 100%;
+    max-height: 100%;
+  }
+
+  .syncModelList {
+    max-height: 220px;
   }
 
   .rowSwitch {
