@@ -8,9 +8,11 @@ import { discoverSkills, type SkillMetadata } from "../skills/loader.js";
 import { loadSkillRegistry } from "../skills/registryMetadata.js";
 import { runCommand, type CommandRunResult } from "../utils/commandRunner.js";
 import { parseCsv } from "../utils/text.js";
+import { correctDictationText } from "./correction.js";
+import type { completeNativeChat } from "../runtime/openAiCompatibleClient.js";
 
 export type AudioTranscriptionResult =
-  | { ok: true; text: string; provider: string }
+  | { ok: true; text: string; rawText?: string; provider: string; corrected?: boolean }
   | { ok: false; error: string; errors: string[]; timedOut: boolean };
 
 const DEFAULT_TRANSCRIPTION_PROMPT = "以下是普通话的句子，包含标点符号。";
@@ -182,6 +184,8 @@ export async function transcribeAudioBuffer(args: {
   logger?: { info?: (msg: string) => void; warn?: (msg: string) => void };
   workspaceRoot?: string;
   signal?: AbortSignal;
+  correctText?: (rawText: string) => Promise<string>;
+  completeImpl?: typeof completeNativeChat;
   exec?: (req: {
     cmd: string;
     args: string[];
@@ -226,10 +230,39 @@ export async function transcribeAudioBuffer(args: {
           exec: args.exec,
         });
         if (res.ok) {
+          const rawText = res.text;
+          let finalText = rawText;
+          let corrected = false;
+          if (args.correctText) {
+            try {
+              finalText = await args.correctText(rawText);
+              corrected = finalText !== rawText;
+            } catch {
+              finalText = rawText;
+            }
+          } else if (env.ADS_AUDIO_CORRECTION_ENABLED !== "false" && env.ADS_AUDIO_CORRECTION_ENABLED !== "0") {
+            try {
+              finalText = await correctDictationText({
+                rawText,
+                env,
+                logger: args.logger,
+                signal: args.signal,
+                completeImpl: args.completeImpl,
+              });
+              corrected = finalText !== rawText;
+            } catch {
+              finalText = rawText;
+            }
+          }
           args.logger?.info?.(
-            `[Audio] transcription ok provider=skill:${skillName} duration_ms=${Date.now() - startedAt} bytes=${audio.length} content_type=${contentType}`,
+            `[Audio] transcription ok provider=skill:${skillName} duration_ms=${Date.now() - startedAt} bytes=${audio.length} content_type=${contentType} corrected=${corrected}`,
           );
-          return { ok: true, text: res.text, provider: `skill:${skillName}` };
+          return {
+            ok: true,
+            text: finalText,
+            provider: `skill:${skillName}`,
+            ...(corrected ? { rawText, corrected: true } : {}),
+          };
         }
         errors.push(res.error);
         sawTimeout = sawTimeout || res.timedOut;
