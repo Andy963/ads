@@ -7,12 +7,14 @@ import App from "./App.vue";
 import "./global.css";
 
 import { installViewportCssVars } from "./lib/viewport";
+import { eagerMigratePreferencesToV2 } from "./lib/preferencesStore";
 import { diagAlert } from "./lib/diagAlert";
 import { crumb, crumbSnapshot } from "./lib/diagBreadcrumbs";
 import { notifyRuntimeRenderError } from "./lib/errorRecovery";
 import { dumpCrashTrees } from "./lib/diagVNodeTree";
 
 installViewportCssVars();
+eagerMigratePreferencesToV2();
 
 type RuntimeDiagnosticRecord = {
   source: "vue" | "window-error" | "unhandled-rejection";

@@ -10,8 +10,9 @@ function normalizeProjectId(projectId: unknown): string {
 }
 
 export function normalizeMobileWorkspaceTab(value: unknown): MobileWorkspaceTab {
-  // Legacy stored value from before the Advisor rename.
-  if (value === "planner") return "advisor";
+  // Map legacy and evolved tabs gracefully to current UI view tabs
+  if (value === "planner" || value === "advisor" || value === "acopilot") return "advisor";
+  if (value === "worker" || value === "actions") return "worker";
   if (value === "advisor" || value === "worker") return value;
   return DEFAULT_MOBILE_WORKSPACE_TAB;
 }
@@ -28,7 +29,9 @@ export function readMobileWorkspaceTab(projectId: string): MobileWorkspaceTab {
 export function writeMobileWorkspaceTab(projectId: string, tab: MobileWorkspaceTab): void {
   if (!normalizeProjectId(projectId)) return;
   try {
-    writeMobileTabPreference(projectId, normalizeMobileWorkspaceTab(tab));
+    const normalized = normalizeMobileWorkspaceTab(tab);
+    const canonical = normalized === "advisor" ? "acopilot" : "actions";
+    writeMobileTabPreference(projectId, canonical);
   } catch {
     // Preferences are best-effort and must not block navigation.
   }

@@ -1118,4 +1118,82 @@ describe("ModelManager", () => {
 
     wrapper.unmount();
   });
+
+  it("supports three-role segmented selection across Acopilot, Developer, and Reviewer with role controls", async () => {
+    const roleProfiles = [
+      {
+        id: "profile-acopilot",
+        role: "acopilot",
+        name: "Acopilot Default",
+        model_id: "gpt-5.5",
+        reasoning_effort: "high",
+        system_prompt: "Acopilot Prompt",
+        is_enabled: 1,
+        is_default: 1,
+        version: 1,
+      },
+      {
+        id: "profile-developer",
+        role: "developer",
+        name: "Developer Default",
+        model_id: "gpt-5.5",
+        reasoning_effort: "high",
+        system_prompt: "Developer Prompt",
+        is_enabled: 1,
+        is_default: 1,
+        version: 1,
+      },
+      {
+        id: "profile-reviewer",
+        role: "reviewer",
+        name: "Reviewer Default",
+        model_id: "gpt-5.5",
+        reasoning_effort: "high",
+        system_prompt: "Reviewer Untrusted Diff Prompt",
+        is_enabled: 1,
+        is_default: 1,
+        version: 1,
+      },
+    ];
+
+    const api = {
+      get: vi.fn().mockImplementation((url: string) => {
+        if (url === "/api/role-profiles") return Promise.resolve(roleProfiles);
+        if (url === "/api/models") return Promise.resolve([makeModel("m1", "GPT 5.5", "openai", "codex", "gpt-5.5")]);
+        if (url === "/api/lane-prompts") return Promise.resolve([]);
+        return Promise.resolve([]);
+      }),
+      post: vi.fn().mockResolvedValue({}),
+      put: vi.fn().mockResolvedValue({}),
+      patch: vi.fn().mockResolvedValue({}),
+      delete: vi.fn().mockResolvedValue({}),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: {
+        api,
+        initialTab: "roles",
+      },
+    });
+    await settle(wrapper);
+
+    // Verify 3 role buttons exist
+    expect(wrapper.find('[data-testid="lane-prompt-lane-advisor"]').text()).toContain("Acopilot");
+    expect(wrapper.find('[data-testid="lane-prompt-lane-worker"]').text()).toContain("Developer");
+    expect(wrapper.find('[data-testid="lane-prompt-lane-reviewer"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-prompt-lane-reviewer"]').text()).toContain("Reviewer");
+
+    // Verify model and effort controls
+    expect(wrapper.find('[data-testid="role-model-select"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="role-effort-select"]').exists()).toBe(true);
+    expect(wrapper.find('.roleControlsBar').text()).toContain("模型");
+    expect(wrapper.find('.roleControlsBar').text()).toContain("思考");
+
+    // Switch to Reviewer
+    await wrapper.find('[data-testid="lane-prompt-lane-reviewer"]').trigger("click");
+    await settle(wrapper);
+    expect((wrapper.find('[data-testid="lane-prompt-editor"]').element as HTMLTextAreaElement).value).toBe("Reviewer Untrusted Diff Prompt");
+
+    wrapper.unmount();
+  });
 });

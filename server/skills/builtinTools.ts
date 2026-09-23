@@ -1,5 +1,7 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
+import { getStateDatabase } from "../state/database.js";
+import { LaneDispatchBus } from "../actions/bus.js";
 import { getWorkspacesDatabase, resolveWorkspaceId } from "../storage/database.js";
 import { updateMemory } from "../memory/memory.js";
 import { createLogger } from "../utils/logger.js";
@@ -56,6 +58,23 @@ export async function executeToolDirectives(args: {
         const limit = parseLimit(directive.attrs.limit);
         const matches = searchSessionMessages({ workspaceRoot: args.workspaceRoot, query, limit, db: args.db });
         results.push(formatSessionSearchResult(matches));
+        continue;
+      }
+      if (directive.name === "dispatch_action_job") {
+        const issueIdRaw = directive.attrs.issue_id || directive.attrs.issue;
+        const issueId = issueIdRaw ? Number(issueIdRaw) : null;
+        const issueTitle = directive.attrs.title || directive.attrs.issue_title || directive.body || (issueId ? `Issue #${issueId}` : "Task");
+        const jobKind = directive.attrs.kind === "local_prompt" ? "local_prompt" : "github_issue";
+        const stateDb = args.db ?? getStateDatabase();
+        const bus = new LaneDispatchBus(stateDb);
+        const res = bus.dispatchJob({
+          projectId: args.workspaceRoot,
+          issueId: Number.isFinite(issueId) ? issueId : null,
+          issueTitle,
+          jobKind,
+          repoPath: args.workspaceRoot,
+        });
+        results.push(`tool.dispatch_action_job: ok (job_id: ${res.jobId}, status: ${res.status})`);
         continue;
       }
       logger.warn(`Rejected unknown tool directive: ${directive.name}`);

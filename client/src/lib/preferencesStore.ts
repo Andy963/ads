@@ -14,7 +14,7 @@ import { normalizeLaneId } from "./laneIds.js";
 
 export const PROJECT_PREFERENCES_STORAGE_PREFIX = "ads.prefs.";
 export const APP_STATE_STORAGE_KEY = "ads.app_state";
-export const PROJECT_PREFERENCES_VERSION = 1;
+export const PROJECT_PREFERENCES_VERSION = 2;
 export const APP_STATE_VERSION = 1;
 
 /** Agent key used for lane-wide model entries that are not scoped to a specific agent. */
@@ -139,14 +139,21 @@ function normalizePreferences(value: unknown): ProjectPreferences | null {
     version: PROJECT_PREFERENCES_VERSION,
     updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : Date.now(),
   };
-  const mobileTab = typeof value.mobileTab === "string" ? value.mobileTab.trim() : "";
-  if (mobileTab) prefs.mobileTab = mobileTab;
+  const rawMobileTab = typeof value.mobileTab === "string" ? value.mobileTab.trim() : "";
+  if (rawMobileTab === "advisor" || rawMobileTab === "planner" || rawMobileTab === "acopilot") {
+    prefs.mobileTab = "acopilot";
+  } else if (rawMobileTab === "worker" || rawMobileTab === "actions") {
+    prefs.mobileTab = "actions";
+  } else if (rawMobileTab) {
+    prefs.mobileTab = rawMobileTab;
+  }
+
   if (isRecord(value.models)) {
     const models: Record<string, Record<string, AgentModelPreference>> = {};
     for (const [rawLane, rawAgents] of Object.entries(value.models)) {
       const lane = normalizeLaneId(rawLane);
       if (!lane || !isRecord(rawAgents)) continue;
-      const agents: Record<string, AgentModelPreference> = {};
+      const agents: Record<string, AgentModelPreference> = { ...(models[lane] ?? {}) };
       for (const [rawAgent, rawPref] of Object.entries(rawAgents)) {
         const agent = normalizeKeySegment(rawAgent, "");
         const pref = normalizeAgentPreference(rawPref);
@@ -200,9 +207,15 @@ function normalizeAppNavigationState(value: unknown): AppNavigationState | null 
   return state;
 }
 
+function lanePriority(lane: string): number {
+  if (lane === "acopilot" || lane === "actions") return 3;
+  if (lane === "advisor" || lane === "worker") return 2;
+  return 1;
+}
+
 /**
  * Insert a legacy value keyed by its normalized lane. The canonical lane id
- * ("advisor") wins over the legacy "planner" variant when both are present.
+ * ("acopilot") wins over legacy "advisor" and "planner" variants when present.
  */
 function insertLegacyValue<T>(
   target: Map<string, { laneRaw: string; value: T }>,
@@ -211,7 +224,7 @@ function insertLegacyValue<T>(
   value: T,
 ): void {
   const existing = target.get(laneKey);
-  if (existing && (existing.laneRaw === laneRaw || laneRaw === "planner")) return;
+  if (existing && lanePriority(existing.laneRaw) >= lanePriority(laneRaw)) return;
   target.set(laneKey, { laneRaw, value });
 }
 
@@ -289,7 +302,16 @@ function migrateLegacyProjectPreferences(storage: Storage, projectId: string): P
     }
     if (key === `${LEGACY_MOBILE_TAB_KEY_PREFIX}${projectId}`) {
       const value = readRawValue(storage, key);
-      if (value !== null) prefs.mobileTab = value.trim() || undefined;
+      if (value !== null) {
+        const raw = value.trim();
+        if (raw === "advisor" || raw === "planner" || raw === "acopilot") {
+          prefs.mobileTab = "acopilot";
+        } else if (raw === "worker" || raw === "actions") {
+          prefs.mobileTab = "actions";
+        } else if (raw) {
+          prefs.mobileTab = raw;
+        }
+      }
       consumedKeys.push(key);
     }
   }
@@ -343,8 +365,19 @@ export function readProjectPreferences(projectId: string): ProjectPreferences {
   const storage = getStorage();
   if (!pid || !storage) return newProjectPreferences();
   const key = buildProjectPreferencesStorageKey(pid);
-  const parsed = normalizePreferences(safeJsonParse(readRawValue(storage, key)));
-  if (parsed) return parsed;
+  const raw = readRawValue(storage, key);
+  const parsedRaw = safeJsonParse(raw);
+  const parsed = normalizePreferences(parsedRaw);
+  if (parsed) {
+    if (isRecord(parsedRaw) && (parsedRaw.version !== PROJECT_PREFERENCES_VERSION || raw !== JSON.stringify(parsed))) {
+      try {
+        writePreferencesRecord(storage, key, parsed);
+      } catch {
+        // best-effort persistence of in-place migration
+      }
+    }
+    return parsed;
+  }
   return migrateLegacyProjectPreferences(storage, pid);
 }
 
@@ -485,13 +518,86 @@ export function readMobileTabPreference(projectId: string): string | null {
 export function writeMobileTabPreference(projectId: string, tab: string): void {
   const value = String(tab ?? "").trim();
   if (!value) return;
+  let canonical = value;
+  if (value === "advisor" || value === "planner") canonical = "acopilot";
+  else if (value === "worker") canonical = "actions";
   updateProjectPreferences(projectId, (prefs) => {
-    if (prefs.mobileTab === value) return false;
-    prefs.mobileTab = value;
+    if (prefs.mobileTab === canonical) return false;
+    prefs.mobileTab = canonical;
     return true;
   });
 }
 
+/**
+ * Eagerly migrate all localStorage preference records in place from v1 to v2:
+ * - Physically rewrite mobileTab to "acopilot" / "actions"
+ * - Rename nested lane keys in models, latestPrompts, laneGenerations
+ * - Rewrite ads.app_state.lastRealProjectTab to "acopilot" / "actions"
+ * - Purge stale legacy keys so zero zombie keys remain.
+ */
+export function eagerMigratePreferencesToV2(storage = getStorage()): boolean {
+  if (!storage) return false;
+  let modified = false;
+  try {
+    const keys = Object.keys(storage);
+    for (const key of keys) {
+      if (key.startsWith(PROJECT_PREFERENCES_STORAGE_PREFIX)) {
+        const raw = readRawValue(storage, key);
+        const parsed = safeJsonParse(raw);
+        if (isRecord(parsed)) {
+          const needsVersionUpgrade = parsed.version !== PROJECT_PREFERENCES_VERSION;
+          const hasLegacyMobileTab =
+            parsed.mobileTab === "advisor" || parsed.mobileTab === "worker" || parsed.mobileTab === "planner";
+          const hasLegacyModels =
+            isRecord(parsed.models) &&
+            ("advisor" in parsed.models || "worker" in parsed.models || "planner" in parsed.models);
+          const hasLegacyPrompts =
+            isRecord(parsed.latestPrompts) &&
+            ("advisor" in parsed.latestPrompts || "worker" in parsed.latestPrompts || "planner" in parsed.latestPrompts);
+          const hasLegacyGens =
+            isRecord(parsed.laneGenerations) &&
+            ("advisor" in parsed.laneGenerations || "worker" in parsed.laneGenerations || "planner" in parsed.laneGenerations);
+
+          if (needsVersionUpgrade || hasLegacyMobileTab || hasLegacyModels || hasLegacyPrompts || hasLegacyGens) {
+            const normalized = normalizePreferences(parsed);
+            if (normalized) {
+              writePreferencesRecord(storage, key, normalized);
+              modified = true;
+            }
+          }
+        }
+      } else if (key === APP_STATE_STORAGE_KEY) {
+        const raw = readRawValue(storage, key);
+        const parsed = safeJsonParse(raw);
+        if (isRecord(parsed) && typeof parsed.lastRealProjectTab === "string") {
+          const tab = parsed.lastRealProjectTab.trim();
+          let newTab = tab;
+          if (tab === "advisor" || tab === "planner") newTab = "acopilot";
+          else if (tab === "worker") newTab = "actions";
+          if (newTab !== tab) {
+            parsed.lastRealProjectTab = newTab;
+            parsed.updatedAt = Date.now();
+            storage.setItem(key, JSON.stringify(parsed));
+            modified = true;
+          }
+        }
+      } else if (
+        key.startsWith(LEGACY_MODEL_KEY_PREFIX) ||
+        key.startsWith(LEGACY_EFFORT_KEY_PREFIX) ||
+        key.startsWith(LEGACY_MOBILE_TAB_KEY_PREFIX) ||
+        key.startsWith(LEGACY_LATEST_PROMPT_KEY_PREFIX) ||
+        key.startsWith(LEGACY_LANE_GENERATION_KEY_PREFIX) ||
+        (LEGACY_APP_STATE_KEYS as readonly string[]).includes(key)
+      ) {
+        storage.removeItem(key);
+        modified = true;
+      }
+    }
+  } catch {
+    // Preferences migration is best-effort and must not block execution.
+  }
+  return modified;
+}
 function isLegacyProjectPreferenceKey(key: string, projectId: string): boolean {
   for (const prefix of [LEGACY_MODEL_KEY_PREFIX, LEGACY_EFFORT_KEY_PREFIX, LEGACY_LANE_GENERATION_KEY_PREFIX]) {
     if (key.startsWith(prefix)) {

@@ -176,7 +176,7 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find('[data-testid="mobile-drawer-toggle"]').exists()).toBe(true);
     expect(wrapper.find(".chatShell").exists()).toBe(true);
     expect(wrapper.find(".mobileMainPanel").exists()).toBe(false);
-    expect(wrapper.findAll(".laneTab").map((tab) => tab.text())).toEqual(["Advisor", "Worker"]);
+    expect(wrapper.findAll(".laneTab").map((tab) => tab.text())).toEqual(["Acopilot", "Actions"]);
     expect(wrapper.find('[data-testid="lane-tab-status-advisor"]').classes()).toContain("laneTabStatusDot--connected");
     expect(wrapper.find('[data-testid="lane-tab-status-worker"]').classes()).toContain("laneTabStatusDot--connected");
     expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
@@ -199,7 +199,7 @@ describe("mobile navigation behavior", () => {
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
     await settleUi(wrapper);
-    expect(readStoredMobileTab("default")).toBe("worker");
+    expect(readStoredMobileTab("default")).toBe("actions");
     expect(localStorage.getItem("ads.mobileWorkspaceTab.default")).toBeNull();
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
@@ -418,7 +418,7 @@ describe("mobile navigation behavior", () => {
       expect(workerPanel.attributes("aria-hidden")).toBeUndefined();
       expect(workerPanel.attributes("inert")).toBeUndefined();
       expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
-      expect(readStoredMobileTab("default")).toBe("worker");
+      expect(readStoredMobileTab("default")).toBe("actions");
       wrapper.unmount();
     });
 

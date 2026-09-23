@@ -141,8 +141,8 @@ const mobileContextMenuOpen = ref(false);
 const mobileSettingsRef = ref<MobileManagerHandle | null>(null);
 
 const chatLanes: Array<{ id: ChatLane; label: string }> = [
-  { id: "advisor", label: "Advisor" },
-  { id: "worker", label: "Worker" },
+  { id: "advisor", label: "Acopilot" },
+  { id: "worker", label: "Actions" },
 ];
 const workspaceTabs = computed<Array<{ id: ChatLane; label: string }>>(() => chatLanes);
 
@@ -404,6 +404,61 @@ function selectMobileDrawerSettings(tab: "lane-prompts" | "models"): void {
   if (!loggedIn.value) return;
   mobileSettingsTab.value = tab;
   selectMobileDrawerSection("settings");
+}
+
+type ActionJobItem = {
+  id: string;
+  project_id: string;
+  issue_id: number | null;
+  issue_title: string;
+  status: "queued" | "running" | "verifying" | "reviewing" | "waiting_merge" | "completed" | "failed" | "cancelled";
+  current_step: string | null;
+  pr_number: number | null;
+  pr_url: string | null;
+  error_message: string | null;
+};
+
+const actionJobs = ref<ActionJobItem[]>([]);
+
+const activeActionJob = computed(() => {
+  return (
+    actionJobs.value.find((j) =>
+      ["running", "verifying", "reviewing", "waiting_merge", "queued"].includes(j.status),
+    ) || null
+  );
+});
+
+async function loadActionJobs(): Promise<void> {
+  const pid = activeProjectId.value.trim();
+  if (!pid) return;
+  try {
+    const list = await apiClient.get<ActionJobItem[]>(`/api/actions/jobs?projectId=${encodeURIComponent(pid)}`);
+    if (Array.isArray(list)) {
+      actionJobs.value = list;
+    }
+  } catch {
+    // best-effort
+  }
+}
+
+async function triggerMergeActionJob(jobId: string): Promise<void> {
+  if (!jobId) return;
+  try {
+    await apiClient.post(`/api/actions/jobs/${encodeURIComponent(jobId)}/merge`, {});
+    await loadActionJobs();
+  } catch {
+    // best-effort
+  }
+}
+
+async function cancelActionJob(jobId: string): Promise<void> {
+  if (!jobId) return;
+  try {
+    await apiClient.post(`/api/actions/jobs/${encodeURIComponent(jobId)}/cancel`, {});
+    await loadActionJobs();
+  } catch {
+    // best-effort
+  }
 }
 
 function toggleMobileContextMenu(): void {
@@ -1002,6 +1057,11 @@ onMounted(() => {
   window.addEventListener("keydown", onMobileKeydown);
   window.addEventListener("pagehide", stashComposerDrafts);
   restoreStashedComposerDrafts();
+  void loadActionJobs();
+});
+
+watch(activeProjectId, () => {
+  void loadActionJobs();
 });
 
 onBeforeUnmount(() => {
@@ -1651,6 +1711,10 @@ const advisorConnectionStatus = computed(() => {
               :data-message-count="advisorMessages.length"
               :data-panel-key="`${advisorPanelKey}:${errorRecoveryGeneration}`"
             >
+              <div v-if="activeActionJob && activeActionJob.status === 'waiting_merge'" class="acopilotWaitingMergeBanner" data-testid="acopilot-waiting-merge-banner">
+                <span>⚡ Actions 有已完成任务等待合并：{{ activeActionJob.issue_title }}</span>
+                <button type="button" class="btnJumpActions" @click="selectWorkspaceTab('worker')">前往 Actions 审查合并</button>
+              </div>
               <MainChatView
                 ref="advisorChatRef"
                 :key="`${advisorPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
@@ -1692,6 +1756,39 @@ const advisorConnectionStatus = computed(() => {
               :data-message-count="messages.length"
               :data-panel-key="`${workerPanelKey}:${errorRecoveryGeneration}`"
             >
+              <div v-if="activeActionJob" class="actionsJobBanner" data-testid="actions-job-banner">
+                <div class="actionsJobInfo">
+                  <span class="actionsJobBadge" :class="`actionsJobBadge--${activeActionJob.status}`">
+                    {{ activeActionJob.status.toUpperCase() }}
+                  </span>
+                  <span class="actionsJobTitle">
+                    {{ activeActionJob.issue_id ? `#${activeActionJob.issue_id}: ` : '' }}{{ activeActionJob.issue_title }}
+                  </span>
+                  <span v-if="activeActionJob.current_step" class="actionsJobStep">
+                    {{ activeActionJob.current_step }}
+                  </span>
+                </div>
+                <div class="actionsJobActions">
+                  <button
+                    v-if="activeActionJob.status === 'waiting_merge'"
+                    type="button"
+                    class="btnActionMerge"
+                    data-testid="btn-action-merge"
+                    @click="triggerMergeActionJob(activeActionJob.id)"
+                  >
+                    {{ activeActionJob.pr_number ? `Merge PR #${activeActionJob.pr_number}` : 'Local Merge (dev)' }}
+                  </button>
+                  <button
+                    v-if="['queued', 'running', 'verifying', 'reviewing', 'waiting_merge'].includes(activeActionJob.status)"
+                    type="button"
+                    class="btnActionCancel"
+                    data-testid="btn-action-cancel"
+                    @click="cancelActionJob(activeActionJob.id)"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
               <MainChatView
                 ref="workerChatRef"
                 :key="`${workerPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"

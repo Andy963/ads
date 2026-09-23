@@ -11,7 +11,12 @@ function readStoredModelId(projectId: string, lane: string, agentId?: string): s
   const raw = localStorage.getItem(`ads.prefs.${projectId}`);
   if (!raw) return null;
   const prefs = JSON.parse(raw) as { models?: Record<string, Record<string, { modelId?: string }>> };
-  return prefs.models?.[lane]?.[agentId?.trim() || "default"]?.modelId ?? null;
+  const targetLane = lane === "advisor" || lane === "planner" ? "acopilot" : lane === "worker" ? "actions" : lane;
+  return (
+    prefs.models?.[targetLane]?.[agentId?.trim() || "default"]?.modelId ??
+    prefs.models?.[lane]?.[agentId?.trim() || "default"]?.modelId ??
+    null
+  );
 }
 
 /** The outbox lives in localStorage so a reload in any tab still finds the prompt. */

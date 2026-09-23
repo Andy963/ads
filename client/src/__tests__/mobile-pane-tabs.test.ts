@@ -85,7 +85,7 @@ describe("mobile navigation shell", () => {
 
     const tablist = wrapper.get('[role="tablist"]');
     const tabs = tablist.findAll('[role="tab"]');
-    expect(tabs.map((tab) => tab.get(".laneTabLabel").text())).toEqual(["Advisor", "Worker"]);
+    expect(tabs.map((tab) => tab.get(".laneTabLabel").text())).toEqual(["Acopilot", "Actions"]);
     expect(tabs.map((tab) => tab.attributes("aria-selected"))).toEqual(["true", "false"]);
     expect(wrapper.find('[data-testid="lane-tab-tasks"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="lane-tab-reviewer"]').exists()).toBe(false);

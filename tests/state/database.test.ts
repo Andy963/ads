@@ -313,4 +313,46 @@ describe("state/database", () => {
     const result = db.pragma("foreign_keys") as Array<{ foreign_keys: number }>;
     assert.strictEqual(result[0].foreign_keys, 1, "Foreign keys should be enabled");
   });
+
+  it("should create action_jobs, role_profiles, and role_settings_history tables with seed profiles", () => {
+    const db = getStateDatabase();
+
+    const actionJobCols = (db.prepare("PRAGMA table_info(action_jobs)").all() as Array<{ name: string }>).map((c) => c.name);
+    assert.ok(actionJobCols.includes("id"));
+    assert.ok(actionJobCols.includes("project_id"));
+    assert.ok(actionJobCols.includes("job_kind"));
+    assert.ok(actionJobCols.includes("issue_id"));
+    assert.ok(actionJobCols.includes("issue_title"));
+    assert.ok(actionJobCols.includes("status"));
+    assert.ok(actionJobCols.includes("reviewer_profile_ids_json"));
+
+    const roleProfileCols = (db.prepare("PRAGMA table_info(role_profiles)").all() as Array<{ name: string }>).map((c) => c.name);
+    assert.ok(roleProfileCols.includes("id"));
+    assert.ok(roleProfileCols.includes("role"));
+    assert.ok(roleProfileCols.includes("name"));
+    assert.ok(roleProfileCols.includes("model_id"));
+    assert.ok(roleProfileCols.includes("reasoning_effort"));
+    assert.ok(roleProfileCols.includes("system_prompt"));
+    assert.ok(roleProfileCols.includes("is_default"));
+
+    const historyCols = (db.prepare("PRAGMA table_info(role_settings_history)").all() as Array<{ name: string }>).map((c) => c.name);
+    assert.ok(historyCols.includes("role"));
+    assert.ok(historyCols.includes("version"));
+    assert.ok(historyCols.includes("model_id"));
+
+    const profiles = db.prepare("SELECT role, name, is_default FROM role_profiles ORDER BY role ASC").all() as Array<{
+      role: string;
+      name: string;
+      is_default: number;
+    }>;
+    assert.strictEqual(profiles.length, 3);
+    assert.deepStrictEqual(
+      profiles.map((p) => ({ role: p.role, is_default: p.is_default })),
+      [
+        { role: "acopilot", is_default: 1 },
+        { role: "developer", is_default: 1 },
+        { role: "reviewer", is_default: 1 },
+      ],
+    );
+  });
 });

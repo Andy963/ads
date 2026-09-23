@@ -14,6 +14,8 @@ import { handleProjectRoutes } from "./routes/projects.js";
 import { handleModelRoutes } from "./routes/models.js";
 import { handleAttachmentRoutes } from "./routes/attachments.js";
 import { handleLanePromptRoutes } from "./routes/lanePrompts.js";
+import { handleRoleProfileRoutes } from "./routes/roleProfiles.js";
+import { handleActionRoutes } from "./routes/actions.js";
 import { handleScheduleRoutes } from "./routes/schedules.js";
 import { handleSyncRoutes } from "./routes/sync.js";
 import { handleRunRoutes } from "./routes/runs.js";
@@ -79,6 +81,8 @@ export function createApiRequestHandler(deps: {
     if (await handlePathRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handleProjectRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handleLanePromptRoutes(routeCtx, { lanePromptStore: deps.lanePromptStore })) return true;
+    if (await handleRoleProfileRoutes(routeCtx)) return true;
+    if (await handleActionRoutes(routeCtx, { resolveWorkspaceRoot: deps.resolveWorkspaceRoot })) return true;
     if (
       await handleSyncRoutes(routeCtx, {
         syncEventStore: deps.syncEventStore,

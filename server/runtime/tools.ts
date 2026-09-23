@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { getStateDatabase } from "../state/database.js";
+import { LaneDispatchBus } from "../actions/bus.js";
 import type { MiddlewarePipeline, TurnContext } from "../middleware/index.js";
 import { findSecurityViolation } from "../middleware/builtin/globalRulesMiddleware.js";
 import { getExecAllowlistFromEnv, hasShellSyntax, runCommand, tokenizeCommandLine } from "../utils/commandRunner.js";
@@ -83,6 +85,23 @@ export const NATIVE_TOOL_DEFINITIONS: NativeToolDefinition[] = [
           patch: { type: "string", maxLength: MAX_PATCH_BYTES },
         },
         required: ["patch"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "dispatch_action_job",
+      description: "Dispatch an approved GitHub Issue or task prompt to the background Actions execution queue.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          issue_id: { type: "integer", description: "GitHub Issue number if available." },
+          title: { type: "string", description: "Task or Issue title." },
+          kind: { type: "string", enum: ["github_issue", "local_prompt"], description: "Kind of task." },
+        },
+        required: ["title"],
       },
     },
   },
@@ -350,9 +369,34 @@ export class NativeToolExecutor {
         return await this.search(args);
       case "apply_patch":
         return this.applyPatch(args);
+      case "dispatch_action_job":
+        return this.dispatchActionJob(args);
       default:
         throw new Error(`Unknown native tool: ${call.function.name}`);
     }
+  }
+
+  private dispatchActionJob(args: JsonRecord): NativeToolExecutionResult {
+    const title = stringArgument(args, "title");
+    const issueId = args.issue_id !== undefined ? Number(args.issue_id) : null;
+    const kind = args.kind === "local_prompt" ? "local_prompt" : "github_issue";
+    const stateDb = getStateDatabase();
+    const bus = new LaneDispatchBus(stateDb);
+    const res = bus.dispatchJob({
+      projectId: this.workspaceRoot,
+      issueId: Number.isFinite(issueId) ? issueId : null,
+      issueTitle: title,
+      jobKind: kind,
+      repoPath: this.workspaceRoot,
+    });
+    return {
+      output: JSON.stringify({
+        ok: res.ok,
+        job_id: res.jobId,
+        status: res.status,
+        message: `Dispatched task to Actions queue with status '${res.status}'`,
+      }),
+    };
   }
 
   private resolvePath(value: string, allowMissing = false): string {
