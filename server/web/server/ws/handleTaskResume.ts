@@ -1,5 +1,6 @@
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import type { SessionManager } from "../../../sessions/sessionManager.js";
+import { isNativeExecutionId } from "../../../runtime/sessionIdentity.js";
 import type { HistoryEntry } from "../../../utils/historyStore.js";
 import { truncateForLog } from "../../utils.js";
 import type {
@@ -164,6 +165,14 @@ export async function handleTaskResumeMessage(
     const canResumeProviderThread = supportsNativeResume(activeAgentId) && runtimeBackend === "codex-app-server";
     const savedState = deps.sessions.sessionManager.getSavedState?.(deps.context.userId);
     const request = parseTaskResumeRequest(deps.request.parsed.payload);
+    if (isNativeExecutionId(request.threadId)) {
+      const message = "Native execution IDs cannot be resumed as provider threads";
+      deps.observability.logger.warn(
+        `[Web][task_resume] rejected Native execution alias user=${deps.context.userId} history=${deps.context.historyKey} runtime=${runtimeBackend}`,
+      );
+      sendError(message);
+      return;
+    }
     if (request.threadId && runtimeBackend === "native") {
       const message = "Provider thread resume is not supported by the native runtime backend";
       deps.observability.logger.warn(
@@ -174,7 +183,7 @@ export async function handleTaskResumeMessage(
     }
     const selection = selectTaskResumeThread({
       request,
-      currentThreadId: orchestrator.getThreadId(),
+      currentThreadId: runtimeBackend === "codex-app-server" ? orchestrator.getThreadId() : null,
       savedThreadId: deps.sessions.sessionManager.getSavedThreadId(deps.context.userId, activeAgentId),
       savedResumeThreadId: deps.sessions.sessionManager.getSavedResumeThreadId(deps.context.userId),
       savedResumeCwd: savedState?.cwd,
@@ -237,7 +246,9 @@ export async function handleTaskResumeMessage(
           `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=thread_resumed source=${selection.source ?? "unknown"} thread=${threadIdToResume}`,
         );
         sendHistorySnapshot({
-          threadId: orchestrator.getThreadId() ?? threadIdToResume,
+          threadId: runtimeBackend === "codex-app-server"
+            ? orchestrator.getThreadId() ?? threadIdToResume
+            : null,
           contextMode: "thread_resumed",
         });
         return;
@@ -326,7 +337,7 @@ export async function handleTaskResumeMessage(
         .join("\n");
       await orchestrator.send(prompt, { streaming: false });
       if (!isLaneCurrent()) return;
-      const threadId = orchestrator.getThreadId();
+      const threadId = runtimeBackend === "codex-app-server" ? orchestrator.getThreadId() : null;
       if (threadId) {
         const activeAgentId = orchestrator.getActiveAgentId();
         deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, activeAgentId);
@@ -369,7 +380,7 @@ export async function handleTaskResumeMessage(
       statusText,
     });
     sendHistorySnapshot({
-      threadId: orchestrator.getThreadId(),
+      threadId: runtimeBackend === "codex-app-server" ? orchestrator.getThreadId() : null,
       contextMode: "history_injection",
     });
   });

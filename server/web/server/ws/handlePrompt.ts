@@ -96,6 +96,8 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     const turnCwd = deps.context.currentCwd;
     const shouldLinkProviderSession = (): boolean =>
       deps.sessions.sessionManager.getRuntimeBackend?.() !== "native";
+    const getProviderThreadId = (): string | null =>
+      shouldLinkProviderSession() ? orchestrator.getThreadId() : null;
 
     const promptRun = beginWsPromptRun({
       historyKey: deps.context.historyKey,
@@ -210,6 +212,9 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         });
       },
       onThreadStarted: (threadId) => {
+        if (!shouldLinkProviderSession()) {
+          return;
+        }
         const activeAgentId = orchestrator.getActiveAgentId();
         deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, activeAgentId);
         if (shouldLinkProviderSession() && typeof deps.history.historyStore.linkAgentSession === "function") {
@@ -228,8 +233,9 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       const savedThreadId = deps.sessions.sessionManager.getSavedThreadId(deps.context.userId, activeAgentId);
       // Prefer the in-memory thread id as the "expected" value for this request. Using the persisted
       // value directly can produce false positives if another connection/process updated storage.
-      const expectedThreadId =
-        preferInMemoryThreadId({ inMemoryThreadId: orchestrator.getThreadId(), savedThreadId }) ?? undefined;
+      const expectedThreadId = shouldLinkProviderSession()
+        ? preferInMemoryThreadId({ inMemoryThreadId: orchestrator.getThreadId(), savedThreadId }) ?? undefined
+        : undefined;
       promptRun.ensureActive();
       if (expectedThreadId && shouldLinkProviderSession() && typeof deps.history.historyStore.linkAgentSession === "function") {
         deps.history.historyStore.linkAgentSession(deps.context.historyKey, {
@@ -296,7 +302,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         workspaceRoot: workspaceRootForAdr,
       });
       promptRun.ensureActive();
-      const threadId = orchestrator.getThreadId();
+      const threadId = getProviderThreadId();
       const threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
       let outputForChat = outputToSend;
 

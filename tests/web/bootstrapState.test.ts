@@ -128,6 +128,42 @@ describe("web/ws/bootstrapState", () => {
     assert.equal(makeState("thread_resumed").threadId, "thread-saved");
   });
 
+  it("never exposes Native execution ids as provider thread ids", () => {
+    const state = buildWsBootstrapState({
+      sessionManager: {
+        getRuntimeBackend: () => "native",
+        getSavedThreadId: () => "native-saved-execution",
+        getContextRestoreMode: () => "thread_resumed",
+        getEffectiveState: () => ({
+          model: "test-model",
+          modelReasoningEffort: "high",
+          activeAgentId: "codex",
+        }),
+      } as any,
+      orchestrator: {
+        getActiveAgentId: () => "codex",
+        getThreadId: () => "native-live-execution",
+        listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
+      } as any,
+      userId: 7,
+      agentAvailability: {
+        mergeStatus: (_agentId: string, status: unknown) => status,
+      } as any,
+    });
+
+    assert.equal(state.threadId, null);
+    assert.equal(buildWelcomePayload({
+      sessionId: "session-1",
+      chatSessionId: "main",
+      workspace: {},
+      inFlight: false,
+      bootstrapHistory: false,
+      completedClientMessageIds: [],
+      state,
+    }).threadId, null);
+    assert.equal(buildAgentsPayload({ activeAgentId: "codex", state }).threadId, null);
+  });
+
   it("can suppress saved thread fallback when continuity is not safely bound", () => {
     const state = buildWsBootstrapState({
       sessionManager: {

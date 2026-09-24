@@ -129,4 +129,44 @@ describe("web/ws/commandAgentSwitch", () => {
       historyStore.clear("history-agent-ok");
     }
   });
+
+  it("does not expose a Native execution id in the agents payload", () => {
+    const sessionSent: unknown[] = [];
+    const historyStore = new HistoryStore({ namespace: "test-command-agent-switch-native", maxEntriesPerSession: 10 });
+    const nextOrchestrator = {
+      getActiveAgentId: () => "codex",
+      listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
+      getThreadId: () => "native-execution-id",
+    } as any;
+
+    try {
+      handleSetAgentCommand({
+        payload: { agentId: "codex" },
+        userId: 8,
+        historyKey: "history-agent-native",
+        currentCwd: "/tmp/project",
+        orchestrator: {} as any,
+        sessionManager: {
+          getRuntimeBackend: () => "native",
+          switchAgent: () => ({ success: true, message: "ok" }),
+          getOrCreate: () => nextOrchestrator,
+          getSavedThreadId: () => undefined,
+        } as any,
+        historyStore,
+        agentAvailability: {
+          mergeStatus: (_agentId: string, status: unknown) => status,
+        } as any,
+        sendToSession: (payload) => sessionSent.push(payload),
+      });
+
+      assert.deepEqual(sessionSent, [{
+        type: "agents",
+        activeAgentId: "codex",
+        agents: [{ id: "codex", name: "Codex", ready: true, error: undefined }],
+        threadId: null,
+      }]);
+    } finally {
+      historyStore.clear("history-agent-native");
+    }
+  });
 });

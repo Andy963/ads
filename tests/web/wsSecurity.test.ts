@@ -11,6 +11,7 @@ import { resetStateDatabaseForTests } from "../../server/state/database.js";
 import { AsyncLock } from "../../server/utils/asyncLock.js";
 import { HistoryStore } from "../../server/utils/historyStore.js";
 import { SessionManager } from "../../server/sessions/sessionManager.js";
+import { RuntimeBackendMismatchError } from "../../server/sessions/sessionState.js";
 import { DirectoryManager } from "../../server/sessions/directoryManager.js";
 import { NoopAgentAvailability } from "../../server/agents/health/agentAvailability.js";
 import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
@@ -70,14 +71,27 @@ describe("web/server/ws security hardening", () => {
     }
   });
 
-  async function start(t: { skip: (msg?: string) => void }, config: ConfigStub, auth: AuthStub): Promise<number | null> {
+  async function start(
+    t: { skip: (msg?: string) => void },
+    config: ConfigStub,
+    auth: AuthStub,
+    options: {
+      workerSessionManager?: SessionManager;
+      advisorSessionManager?: SessionManager;
+      onState?: (state: { clients: Set<WebSocket>; clientMetaByWs: Map<WebSocket, unknown> }) => void;
+    } = {},
+  ): Promise<number | null> {
     const server = http.createServer();
     servers.push(server);
-    const workerSessionManager = new SessionManager(0, 0, "workspace-write", "test-model");
-    const advisorSessionManager = new SessionManager(0, 0, "read-only", "test-model");
+    const workerSessionManager = options.workerSessionManager
+      ?? new SessionManager(0, 0, "workspace-write", "test-model");
+    const advisorSessionManager = options.advisorSessionManager
+      ?? new SessionManager(0, 0, "read-only", "test-model");
     const workerHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-worker" });
     const advisorHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-advisor" });
     const lock = new AsyncLock();
+    const clients = new Set<WebSocket>();
+    const clientMetaByWs = new Map<WebSocket, unknown>();
 
     const wss = attachWebSocketServer({
       server,
@@ -104,8 +118,8 @@ describe("web/server/ws security hardening", () => {
         sessionCacheRegistry: { registerBinding: () => {}, clearForUser: () => {} },
         interruptControllers: new Map<string, AbortController>(),
         promptRunEpochs: new Map<string, number>(),
-        clientMetaByWs: new Map(),
-        clients: new Set(),
+        clientMetaByWs,
+        clients,
         cwdStore: new Map(),
         cwdStorePath: process.env.ADS_STATE_DB_PATH as string,
         persistCwdStore: () => {},
@@ -129,6 +143,7 @@ describe("web/server/ws security hardening", () => {
       scheduler: {},
     });
     wssList.push(wss);
+    options.onState?.({ clients, clientMetaByWs });
 
     try {
       await new Promise<void>((resolve, reject) => {
@@ -176,6 +191,46 @@ describe("web/server/ws security hardening", () => {
       new Promise<number>((_resolve, reject) => setTimeout(() => reject(new Error("close timeout")), 1500)),
     ]);
     assert.equal(code, 1009, "expected close code 1009 (message too big)");
+  });
+
+  it("reports a runtime backend mismatch without registering partial client state", async (t) => {
+    const sessionManager = new SessionManager(0, 0, "workspace-write", "test-model");
+    sessionManager.getOrCreate = () => {
+      throw new RuntimeBackendMismatchError("native", "codex-app-server");
+    };
+    let clients: Set<WebSocket> | undefined;
+    let clientMetaByWs: Map<WebSocket, unknown> | undefined;
+    const port = await start(t, {}, {}, {
+      workerSessionManager: sessionManager,
+      onState: (state) => {
+        clients = state.clients;
+        clientMetaByWs = state.clientMetaByWs;
+      },
+    });
+    if (port === null) return;
+
+    const client = connect(port);
+    const messagePromise = new Promise<Record<string, unknown>>((resolve) => {
+      client.once("message", (data) => {
+        resolve(JSON.parse(String(data)) as Record<string, unknown>);
+      });
+    });
+    const closePromise = new Promise<number>((resolve) => {
+      client.once("close", (code) => resolve(code));
+    });
+
+    const [message, code] = await Promise.race([
+      Promise.all([messagePromise, closePromise]),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("mismatch close timeout")), 2000)),
+    ]);
+
+    assert.equal(code, 4400);
+    assert.equal(message.type, "error");
+    assert.equal(message.code, "runtime_backend_mismatch");
+    assert.equal(message.savedBackend, "native");
+    assert.equal(message.currentBackend, "codex-app-server");
+    assert.equal(clients?.size, 0);
+    assert.equal(clientMetaByWs?.size, 0);
   });
 
   it("terminates a connection whose session is no longer valid", async (t) => {

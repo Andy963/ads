@@ -1,5 +1,6 @@
 import type { HistoryStore } from "../../utils/historyStore.js";
 import type { AgentRuntimeBackend } from "../../runtime/config.js";
+import { isNativeExecutionId } from "../../runtime/sessionIdentity.js";
 import { areSessionCwdsCompatible } from "../../sessions/sessionState.js";
 
 import { listCodexSessions } from "./codexSessionSource.js";
@@ -9,10 +10,6 @@ import { decodeSessionListCursor, encodeSessionListCursor, normalizeSessionListL
 
 /** ADS-linked sessions are the most reliable candidates, so they are read generously. */
 const LINK_SCAN_LIMIT = 200;
-
-function isNativeExecutionId(sessionId: string): boolean {
-  return sessionId.startsWith("native-");
-}
 
 function titleFromHistory(
   historyStore: HistoryStore | undefined,

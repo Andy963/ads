@@ -83,6 +83,59 @@ describe("web/ws/handleTaskResume", () => {
     assert.deepEqual(historyEntries, [{ role: "user", text: "current question", ts: 1 }]);
   });
 
+  it("rejects a Native execution alias for the Codex runtime backend", async () => {
+    const sent: unknown[] = [];
+    const historyEntries = [{ role: "user", text: "current question", ts: 1 }];
+    const result = await handleTaskResumeMessage({
+      request: {
+        parsed: {
+          type: "task_resume",
+          payload: { threadId: "native-execution-id" },
+        } as any,
+      },
+      transport: {
+        ws: {} as any,
+        safeJsonSend: (_ws: unknown, payload: unknown) => sent.push(payload),
+      },
+      observability: {
+        logger: {
+          info: () => {},
+          debug: () => {},
+          warn: () => {},
+        },
+      },
+      context: {
+        userId: 10,
+        historyKey: "history-codex-native-alias",
+        currentCwd: "/mnt/d/code/ADS/ads",
+      },
+      sessions: {
+        sessionManager: {
+          getRuntimeBackend: () => "codex-app-server",
+        } as any,
+        orchestrator: {
+          getActiveAgentId: () => "codex",
+          getThreadId: () => "codex-provider-thread",
+        } as any,
+        getWorkspaceLock: () => ({
+          runExclusive: async <T>(fn: () => Promise<T> | T): Promise<T> => await fn(),
+        }) as any,
+      },
+      history: {
+        historyStore: {
+          get: () => historyEntries,
+        } as any,
+      },
+    });
+
+    assert.equal(result.handled, true);
+    assert.deepEqual(sent, [{
+      type: "error",
+      message: "Native execution IDs cannot be resumed as provider threads",
+    }]);
+    assert.deepEqual(historyEntries, [{ role: "user", text: "current question", ts: 1 }]);
+  });
+
   it("does not consult the retired task context while resuming", async () => {
     const sent: unknown[] = [];
     const sessionSent: unknown[] = [];
