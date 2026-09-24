@@ -88,6 +88,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: "/home/andy/repos/ads",
       issueId: 277,
       issueTitle: "Acopilot & Actions refactor",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify the queued job"],
     });
     const elapsed = Date.now() - start;
 
@@ -111,7 +113,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       issueId: 378,
       issueTitle: "Incomplete Issue",
       jobKind: "github_issue",
-    }), /complete issueDescription and acceptanceCriteria/);
+    }), /complete issueDescription; GitHub Issue jobs also require non-empty acceptanceCriteria/);
   });
 
   it("does not reuse an active Reviewer runtime identity", () => {
@@ -166,6 +168,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 278,
       issueTitle: "Active task",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify the active job"],
       repoPath: repoDir,
     });
     updateActionJobStatus(db, activeJob.jobId, "running");
@@ -176,6 +180,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 279,
       issueTitle: "Future task",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify the future job"],
       repoPath: repoDir,
     });
 
@@ -195,6 +201,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 280,
       issueTitle: "Queued refresh",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify the queued refresh"],
       repoPath: repoDir,
     });
 
@@ -217,6 +225,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 281,
       issueTitle: "Failed task",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify the failure path"],
       repoPath: repoDir,
     });
     updateActionJobStatus(db, failedJob.jobId, "failed");
@@ -226,6 +236,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 282,
       issueTitle: "Queued after failure",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify queue progression"],
       repoPath: repoDir,
     });
 
@@ -245,6 +257,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 101,
       issueTitle: "Task 1",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify task one"],
     });
     updateActionJobStatus(db, job1.jobId, "running");
 
@@ -281,6 +295,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 202,
       issueTitle: "Task 202",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify task 202"],
     });
 
     const res = await bus.evaluateQueue(repoDir, repoDir);
@@ -304,6 +320,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 303,
       issueTitle: "Task 303",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify task 303"],
     });
 
     const res = bus.handleReviewResult({
@@ -328,6 +346,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 505,
       issueTitle: "Offline task",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify offline behavior"],
     });
 
     // Dequeue job and checkout branch
@@ -363,6 +383,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 404,
       issueTitle: "Task 404",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify task 404"],
     });
 
     // Attempt 1 -> running (rework)
@@ -420,11 +442,15 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 405,
       issueTitle: "Recoverable developer failure",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify bounded rework"],
     });
     const queuedJob = bus.dispatchJob({
       projectId: repoDir,
       issueId: 406,
       issueTitle: "Must remain queued",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify queue state"],
     });
 
     await bus.evaluateQueue(repoDir, repoDir);
@@ -461,6 +487,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 407,
       issueTitle: "Verification recovery",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify verification recovery"],
     });
     await bus.evaluateQueue(repoDir, repoDir);
 
@@ -497,6 +525,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 408,
       issueTitle: "PR creation recovery",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify PR recovery"],
     });
     spawnSync("git", ["checkout", "-b", job.branch!], { cwd: repoDir });
 
@@ -541,6 +571,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 409,
       issueTitle: "Merge recovery",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify merge recovery"],
     });
     spawnSync("git", ["checkout", "-b", job.branch!], { cwd: repoDir });
     updateActionJobStatus(db, job.jobId, "waiting_merge", { pr_number: null });
@@ -562,6 +594,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     const job = bus.dispatchJob({
       projectId: repoDir,
       issueTitle: "To Cancel",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify cancellation"],
     });
 
     bus.cancelJob(job.jobId, repoDir);
@@ -589,6 +623,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 606,
       issueTitle: "Automated cycle",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify the automated cycle"],
     });
 
     // Start job
@@ -629,6 +665,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 707,
       issueTitle: "Test dev runner",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify developer execution"],
     });
     assert.ok(job.jobId);
 
@@ -671,6 +709,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 808,
       issueTitle: "Test rework runner",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify rework execution"],
     });
 
     await bus.evaluateQueue(repoDir, repoDir);
@@ -756,6 +796,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 909,
       issueTitle: "Test session manager streaming",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify streaming"],
     });
 
     await bus.evaluateQueue(repoDir, repoDir);
@@ -927,6 +969,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 3661,
       issueTitle: "Cancel reviewer",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify cancellation cleanup"],
     });
 
     await bus.evaluateQueue(repoDir, repoDir);
@@ -966,6 +1010,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 3662,
       issueTitle: "Timeout reviewer",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify timeout cleanup"],
     });
 
     await bus.evaluateQueue(repoDir, repoDir);
@@ -1001,6 +1047,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 351,
       issueTitle: "Reviewer failure recovery",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify reviewer recovery"],
     });
 
     await bus.evaluateQueue(repoDir, repoDir);
@@ -1025,6 +1073,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 3511,
       issueTitle: "Malformed reviewer output",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify malformed verdict handling"],
     });
     await malformedBus.evaluateQueue(repoDir, repoDir);
     await waitFor(() => malformedBus.getJob(malformedJob.jobId)?.status === "blocked");
@@ -1052,6 +1102,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 353,
       issueTitle: "Confirmation-only Developer turn",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify no-diff handling"],
     });
 
     await bus.evaluateQueue(repoDir, repoDir);
@@ -1099,6 +1151,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 994,
       issueTitle: "Test custom chatSessionId",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify custom lane routing"],
     });
     await bus.evaluateQueue(repoDir, repoDir);
 
@@ -1147,6 +1201,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       repoPath: repoDir,
       issueId: 995,
       issueTitle: "Authenticated lane routing",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify authenticated routing"],
       authUserId: userId,
     });
     updateActionJobStatus(db, dispatched.jobId, "running");
@@ -1186,6 +1242,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: "project-hash",
       issueId: 991,
       issueTitle: "Manual queue start test",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify manual queue start"],
     });
 
     const activeBefore = bus.getJob(job.jobId);
@@ -1239,6 +1297,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 992,
       issueTitle: "Resolve project workspace before queue start",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify project resolution"],
     });
 
     const reqPayload = Buffer.from(JSON.stringify({ projectId: "project-hash" }), "utf8");
@@ -1300,6 +1360,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: "project-hash",
       issueId: 993,
       issueTitle: "Reject unauthorized queue access",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify authorization"],
     });
 
     const fakeReq: any = {

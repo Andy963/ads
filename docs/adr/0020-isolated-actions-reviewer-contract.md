@@ -25,10 +25,10 @@ and provider context on success, failure, cancellation, and timeout.
 2. `action_jobs` stores an immutable Issue snapshot at dispatch time. The snapshot
    contains the title, complete description, acceptance criteria, and any explicitly
    selected ADRs. Local prompt jobs use their complete prompt as the equivalent
-   description. Production dispatch entry points require the description and criteria
-   fields before queueing; explicit GitHub Issue dispatches fail fast when either is
-   absent. Rework reviews read this snapshot instead of reconstructing it from mutable
-   Issue state.
+   description. Production dispatch entry points require a nonblank description and
+   criteria fields before queueing; GitHub Issue dispatches additionally require at
+   least one nonblank acceptance criterion. Rework reviews read this snapshot instead
+   of reconstructing it from mutable Issue state.
 3. Review payloads include the exact base/head refs, commit range, and verification
    command output. ADRs remain optional and are passed only when explicitly selected.
 4. Diff filtering remains bounded for context safety, but an incomplete filtered diff

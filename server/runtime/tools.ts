@@ -380,12 +380,18 @@ export class NativeToolExecutor {
   private dispatchActionJob(args: JsonRecord): NativeToolExecutionResult {
     const title = stringArgument(args, "title");
     const description = stringArgument(args, "description");
+    const kind = args.kind === "local_prompt" ? "local_prompt" : "github_issue";
     if (!Array.isArray(args.acceptance_criteria)) {
       throw new Error("dispatch_action_job requires acceptance_criteria");
     }
-    const acceptanceCriteria = args.acceptance_criteria.filter((value): value is string => typeof value === "string");
+    const acceptanceCriteria = args.acceptance_criteria
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (!description.trim() || (kind === "github_issue" && acceptanceCriteria.length === 0)) {
+      throw new Error("dispatch_action_job requires a complete description and acceptance criteria");
+    }
     const issueId = args.issue_id !== undefined ? Number(args.issue_id) : null;
-    const kind = args.kind === "local_prompt" ? "local_prompt" : "github_issue";
     const bus = getBus();
     const res = bus.dispatchJob({
       projectId: this.workspaceRoot,

@@ -15,7 +15,7 @@ const dispatchSchema = z.object({
   issueId: z.number().nullable().optional(),
   issueTitle: z.string(),
   issueDescription: z.string().min(1),
-  acceptanceCriteria: z.array(z.string()),
+  acceptanceCriteria: z.array(z.string().trim().min(1)),
   adrs: z.array(z.object({
     id: z.string(),
     title: z.string(),
@@ -25,6 +25,15 @@ const dispatchSchema = z.object({
   repoPath: z.string().optional(),
   developerProfileId: z.string().nullable().optional(),
   reviewerProfileIds: z.array(z.string()).optional(),
+}).superRefine((data, ctx) => {
+  const jobKind = data.jobKind ?? (data.issueId ? "github_issue" : "local_prompt");
+  if (jobKind === "github_issue" && data.acceptanceCriteria.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["acceptanceCriteria"],
+      message: "GitHub Issue jobs require at least one acceptance criterion",
+    });
+  }
 });
 
 export interface ActionRouteDeps {

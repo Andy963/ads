@@ -388,10 +388,13 @@ export class LaneDispatchBus {
   }): { ok: boolean; jobId: string; status: ActionJobStatus } {
     const jobKind = params.jobKind ?? (params.issueId ? "github_issue" : "local_prompt");
     if (
-      params.jobKind === "github_issue"
-      && (!params.issueDescription?.trim() || params.acceptanceCriteria === undefined)
+      (jobKind === "github_issue"
+        && (!params.issueDescription?.trim()
+          || !params.acceptanceCriteria?.length
+          || params.acceptanceCriteria.some((criterion) => !criterion.trim())))
+      || (jobKind === "local_prompt" && !params.issueDescription?.trim())
     ) {
-      throw new Error("GitHub Issue jobs require a complete issueDescription and acceptanceCriteria snapshot");
+      throw new Error("Action jobs require a complete issueDescription; GitHub Issue jobs also require non-empty acceptanceCriteria");
     }
     const id = generateJobId(params.issueId);
     const branch = params.issueId ? `codex/issue-${params.issueId}` : `codex/${id}`;
