@@ -158,6 +158,57 @@ describe("Actions lane queue visibility and manual start button", () => {
     wrapper.unmount();
   });
 
+  it("refreshes the queue when a queued job event arrives after a failed job", async () => {
+    getSpy.mockResolvedValueOnce([
+      {
+        id: "job-failed",
+        project_id: "/home/andy/repos/ads",
+        issue_id: 344,
+        issue_title: "Failed task",
+        status: "failed",
+        created_at: 1000,
+        updated_at: 1000,
+      },
+    ]);
+    localStorage.setItem("ads.app_state", JSON.stringify({
+      version: 1,
+      updatedAt: Date.now(),
+      projects: [{ id: "p-1", sessionId: "p-1", path: "/home/andy/repos/ads", name: "ads", chatSessionId: "main", initialized: true }],
+      activeProject: "p-1",
+    }));
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    expect(wrapper.find('[data-testid="actions-queue-count-badge"]').exists()).toBe(false);
+
+    getSpy.mockResolvedValue([
+      {
+        id: "job-new",
+        project_id: "/home/andy/repos/ads",
+        issue_id: 345,
+        issue_title: "New queued task",
+        status: "queued",
+        created_at: 2000,
+        updated_at: 2000,
+      },
+    ]);
+    const onJobUpdate = (window as any).__ADS_ON_ACTION_JOB_UPDATED__;
+    expect(typeof onJobUpdate).toBe("function");
+    onJobUpdate({ type: "action_job_updated", jobId: "job-new", issueId: 345, status: "queued" });
+    await settleUi(wrapper);
+
+    expect(wrapper.find('[data-testid="actions-job-banner"]').text()).toContain("New queued task");
+    expect(wrapper.find('[data-testid="actions-queue-count-badge"]').text()).toContain("队列中 1 个任务");
+
+    onJobUpdate({ type: "action_job_updated", jobId: "job-new", issueId: 345, status: "queued" });
+    await settleUi(wrapper);
+    expect(wrapper.findAll('[data-testid="actions-queue-row"]')).toHaveLength(1);
+    expect(wrapper.find('[data-testid="actions-queue-count-badge"]').text()).toContain("队列中 1 个任务");
+
+    wrapper.unmount();
+  });
+
   it("does not expose a manual merge action while automatic merge is running", async () => {
     getSpy.mockResolvedValue([
       {

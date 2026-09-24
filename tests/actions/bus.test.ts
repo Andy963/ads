@@ -145,6 +145,38 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.ok(events.some((event) =>
       event.type === "action_job_updated"
       && event.jobId === job.jobId
+      && event.issueId === 280
+      && event.status === "queued",
+    ));
+  });
+
+  it("broadcasts a newly queued job after the previous job failed", () => {
+    const db = getStateDatabase();
+    const events: Array<Record<string, unknown>> = [];
+    const bus = new LaneDispatchBus(db, {
+      broadcastToActionsLane: (payload) => events.push(payload as Record<string, unknown>),
+    });
+
+    const failedJob = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 281,
+      issueTitle: "Failed task",
+      repoPath: repoDir,
+    });
+    updateActionJobStatus(db, failedJob.jobId, "failed");
+    events.length = 0;
+
+    const queuedJob = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 282,
+      issueTitle: "Queued after failure",
+      repoPath: repoDir,
+    });
+
+    assert.ok(events.some((event) =>
+      event.type === "action_job_updated"
+      && event.jobId === queuedJob.jobId
+      && event.issueId === 282
       && event.status === "queued",
     ));
   });
