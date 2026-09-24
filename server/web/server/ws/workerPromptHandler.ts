@@ -2,6 +2,7 @@ import type { ThreadEvent } from "../../../agents/protocol/types.js";
 
 import { isTransientUpstreamModelError } from "../../../agents/adapters/transientModelRetry.js";
 import type { AgentEvent } from "../../../codex/events.js";
+import { isNativeExecutionId, redactNativeExecutionIds } from "../../../runtime/sessionIdentity.js";
 import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { buildWorkspacePatch } from "../../gitPatch.js";
 import { getRuleEnforcementGate, type RuleEnforcementGate } from "../../../middleware/security/enforcementGate.js";
@@ -148,8 +149,14 @@ export function attachWorkerPromptHandler(args: {
 
   const unsubscribe = args.orchestrator.onEvent((event: AgentEvent) => {
     if (!isActive()) return;
-    args.logger.debug(`[Event] phase=${event.phase} title=${event.title} detail=${event.detail?.slice(0, 50)}`);
     const raw = event.raw as ThreadEvent;
+    if (raw.type === "thread.started" && isNativeExecutionId(raw.thread_id)) {
+      args.logger.debug("[Event] ignored Native runtime thread identity");
+      return;
+    }
+    args.logger.debug(
+      `[Event] phase=${event.phase} title=${redactNativeExecutionIds(event.title) ?? ""} detail=${redactNativeExecutionIds(event.detail?.slice(0, 50)) ?? ""}`,
+    );
     const rawItem = (raw as { item?: { type?: unknown; id?: unknown } }).item;
     const rawItemType = rawItem && typeof rawItem === "object"
       ? String((rawItem as { type?: unknown }).type ?? "").trim()
@@ -182,14 +189,16 @@ export function attachWorkerPromptHandler(args: {
     }
     args.sessionLogger?.logEvent(event);
     if (event.sessionFallback) {
+      const previousSessionId = redactNativeExecutionIds(event.sessionFallback.previousSessionId) ?? "";
+      const detail = redactNativeExecutionIds(event.detail ?? event.title) ?? "";
       args.onSessionFallback?.({
-        previousSessionId: event.sessionFallback.previousSessionId,
-        detail: event.detail ?? event.title,
+        previousSessionId,
+        detail,
       });
       args.sendToChat({
         type: "session_fallback",
-        previousSessionId: event.sessionFallback.previousSessionId,
-        message: event.detail ?? event.title,
+        previousSessionId,
+        message: detail,
         ts: Date.now(),
       });
       return;
@@ -197,7 +206,7 @@ export function attachWorkerPromptHandler(args: {
     if (event.retry?.source === "external") {
       args.sendToChat({
         type: "error",
-        message: event.detail ?? event.title,
+        message: redactNativeExecutionIds(event.detail ?? event.title) ?? "",
         transient: true,
         retryable: true,
         retryCount: event.retry.retryCount,
@@ -257,7 +266,7 @@ export function attachWorkerPromptHandler(args: {
       const commandPayload = extractCommandPayload(event);
       args.logger.info(
         `[Command Event] ${JSON.stringify({
-          detail: event.detail ?? event.title,
+          detail: redactNativeExecutionIds(event.detail ?? event.title) ?? "",
           command: commandPayload
             ? { id: commandPayload.id, command: commandPayload.command, status: commandPayload.status, exit_code: commandPayload.exit_code }
             : null,
@@ -311,7 +320,7 @@ export function attachWorkerPromptHandler(args: {
       return;
     }
     if (event.phase === "error") {
-      const message = event.detail ?? event.title;
+      const message = redactNativeExecutionIds(event.detail ?? event.title) ?? "";
       if (isTransientRetryEvent(event)) {
         return;
       }

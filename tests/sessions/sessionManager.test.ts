@@ -190,7 +190,7 @@ describe("SessionManager", () => {
       createSession: sessions.factory as never,
     });
 
-    const session = manager.getOrCreate(987654, "/tmp/reviewer", false) as unknown as FakeSession;
+    const session = manager.getOrCreate(987654, "/tmp/reviewer", false, { lifecycle: "ephemeral" }) as unknown as FakeSession;
     session.threadId = "reviewer-thread";
     manager.setUserModel(987654, "reviewer-model");
     manager.releaseEphemeralSession(987654);
@@ -198,6 +198,275 @@ describe("SessionManager", () => {
     assert.equal(manager.hasSession(987654), false);
     assert.equal(session.resetCalls, 1);
     assert.equal(manager.getSavedThreadId(987654), undefined);
+  });
+
+  it("does not delete durable thread state when an ephemeral Reviewer user id collides", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-ephemeral-collision-"));
+    const storage = new ThreadStorage({
+      namespace: "ephemeral-collision",
+      stateDbPath: path.join(directory, "state.db"),
+      storagePath: path.join(directory, "threads.json"),
+      saltPath: path.join(directory, "salt"),
+    });
+    storage.setRecord(987654, {
+      threadId: "durable-codex-thread",
+      cwd: directory,
+      agentThreads: { codex: "durable-codex-thread" },
+      activeAgentId: "codex",
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
+    });
+    const sessions = createFakeSessionFactory();
+    const scopedManager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      storage,
+      undefined,
+      { createSession: sessions.factory as never },
+    );
+
+    try {
+      scopedManager.getOrCreate(987654, directory, false, { lifecycle: "ephemeral" });
+      scopedManager.releaseEphemeralSession(987654);
+
+      assert.equal(storage.getRecord(987654)?.threadId, "durable-codex-thread");
+      assert.deepEqual(storage.getRecord(987654)?.agentThreads, { codex: "durable-codex-thread" });
+    } finally {
+      scopedManager.destroy();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to overwrite a durable Codex thread with a Native execution id", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-codex-native-save-"));
+    const storage = new ThreadStorage({
+      namespace: "codex-native-save",
+      stateDbPath: path.join(directory, "state.db"),
+      storagePath: path.join(directory, "threads.json"),
+      saltPath: path.join(directory, "salt"),
+    });
+    storage.setRecord(6, {
+      threadId: "durable-codex-thread",
+      cwd: directory,
+      agentThreads: { codex: "durable-codex-thread" },
+      activeAgentId: "codex",
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
+    });
+    const sessions = createFakeSessionFactory();
+    const scopedManager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      storage,
+      undefined,
+      { createSession: sessions.factory as never },
+    );
+
+    try {
+      scopedManager.getOrCreate(6, directory, false);
+      scopedManager.saveThreadId(6, "native-execution-id");
+
+      assert.equal(storage.getRecord(6)?.threadId, "durable-codex-thread");
+      assert.deepEqual(storage.getRecord(6)?.agentThreads, { codex: "durable-codex-thread" });
+    } finally {
+      scopedManager.destroy();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("records the runtime backend without persisting Native execution ids", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-state-"));
+    const storage = new ThreadStorage({
+      namespace: "native-runtime",
+      stateDbPath: path.join(directory, "state.db"),
+      storagePath: path.join(directory, "threads.json"),
+      saltPath: path.join(directory, "salt"),
+    });
+    const sessions = createFakeSessionFactory();
+    const nativeManager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      storage,
+      { ADS_AGENT_RUNTIME: "native", ADS_WEB_SESSION_PEPPER: "test-only-pepper" },
+      { createSession: sessions.factory as never },
+    );
+
+    try {
+      const session = nativeManager.getOrCreate(1, directory) as unknown as FakeSession;
+      session.threadId = "native-execution-id";
+      nativeManager.saveThreadId(1, session.threadId);
+
+      const record = storage.getRecord(1);
+      assert.equal(record?.runtimeBackend, "native");
+      assert.equal(record?.lifecycle, "durable");
+      assert.equal(record?.threadId, undefined);
+      assert.deepEqual(record?.agentThreads, {});
+    } finally {
+      nativeManager.destroy();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not persist ephemeral session state", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-ephemeral-state-"));
+    const storage = new ThreadStorage({
+      namespace: "ephemeral-runtime",
+      stateDbPath: path.join(directory, "state.db"),
+      storagePath: path.join(directory, "threads.json"),
+      saltPath: path.join(directory, "salt"),
+    });
+    const sessions = createFakeSessionFactory();
+    const ephemeralManager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      storage,
+      undefined,
+      { createSession: sessions.factory as never },
+    );
+
+    try {
+      const session = ephemeralManager.getOrCreate(2, directory, false, { lifecycle: "ephemeral" }) as unknown as FakeSession;
+      session.threadId = "ephemeral-thread";
+      ephemeralManager.saveThreadId(2, session.threadId);
+      ephemeralManager.setUserModel(2, "ephemeral-model");
+      assert.equal(storage.getRecord(2), undefined);
+    } finally {
+      ephemeralManager.destroy();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects backend mismatches even when durable resume is disabled", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-runtime-mismatch-"));
+    const storage = new ThreadStorage({
+      namespace: "runtime-mismatch",
+      stateDbPath: path.join(directory, "state.db"),
+      storagePath: path.join(directory, "threads.json"),
+      saltPath: path.join(directory, "salt"),
+    });
+    storage.setRecord(3, {
+      threadId: "native-thread",
+      cwd: directory,
+      agentThreads: { codex: "native-thread" },
+      runtimeBackend: "native",
+      lifecycle: "durable",
+    });
+    const sessions = createFakeSessionFactory();
+    const codexManager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      storage,
+      undefined,
+      { createSession: sessions.factory as never },
+    );
+
+    try {
+      assert.throws(
+        () => codexManager.getOrCreate(3, directory, false),
+        /Cross-runtime resume is not supported/,
+      );
+      assert.equal(storage.getRecord(3)?.runtimeBackend, "native");
+      assert.equal(storage.getRecord(3)?.threadId, "native-thread");
+    } finally {
+      codexManager.destroy();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("clears ambiguous legacy thread bindings before recording backend metadata", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-legacy-runtime-"));
+    const storage = new ThreadStorage({
+      namespace: "legacy-runtime",
+      stateDbPath: path.join(directory, "state.db"),
+      storagePath: path.join(directory, "threads.json"),
+      saltPath: path.join(directory, "salt"),
+    });
+    storage.setRecord(4, {
+      threadId: "native-execution-id",
+      cwd: directory,
+      agentThreads: { codex: "native-execution-id" },
+    });
+    const sessions = createFakeSessionFactory();
+    const firstManager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      storage,
+      undefined,
+      { createSession: sessions.factory as never },
+    );
+
+    try {
+      firstManager.getOrCreate(4, directory, true);
+      firstManager.destroy();
+
+      const adopted = storage.getRecord(4);
+      assert.equal(adopted?.runtimeBackend, "codex-app-server");
+      assert.equal(adopted?.threadId, undefined);
+      assert.deepEqual(adopted?.agentThreads, {});
+
+      const secondManager = new SessionManager(
+        0,
+        0,
+        "workspace-write",
+        undefined,
+        storage,
+        undefined,
+        { createSession: sessions.factory as never },
+      );
+      try {
+        const restored = secondManager.getOrCreate(4, directory, true) as unknown as FakeSession;
+        assert.equal(restored.threadId, null);
+      } finally {
+        secondManager.destroy();
+      }
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not preserve Native execution ids across reset", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-reset-"));
+    const storage = new ThreadStorage({
+      namespace: "native-reset",
+      stateDbPath: path.join(directory, "state.db"),
+      storagePath: path.join(directory, "threads.json"),
+      saltPath: path.join(directory, "salt"),
+    });
+    const sessions = createFakeSessionFactory();
+    const nativeManager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      storage,
+      { ADS_AGENT_RUNTIME: "native", ADS_WEB_SESSION_PEPPER: "test-only-pepper" },
+      { createSession: sessions.factory as never },
+    );
+
+    try {
+      const session = nativeManager.getOrCreate(5, directory) as unknown as FakeSession;
+      session.threadId = "native-execution-id";
+      nativeManager.reset(5, { preserveThreadForResume: true });
+
+      assert.equal(nativeManager.getSavedResumeThreadId(5), undefined);
+      assert.equal(storage.getRecord(5)?.threadId, undefined);
+      assert.deepEqual(storage.getRecord(5)?.agentThreads ?? {}, {});
+    } finally {
+      nativeManager.destroy();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("tracks session statistics", () => {
@@ -267,6 +536,8 @@ describe("SessionManager", () => {
       threadId: "thread-80",
       cwd: workspaceRoot,
       agentThreads: { codex: "thread-80" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       activeAgentId: "codex",
     });
 
@@ -306,6 +577,8 @@ describe("SessionManager", () => {
       threadId: "thread-81",
       cwd: "/tmp/project-a",
       agentThreads: { codex: "thread-81" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       activeAgentId: "codex",
     });
 
@@ -338,6 +611,8 @@ describe("SessionManager", () => {
       threadId: "codex-thread",
       cwd: "/tmp/project",
       agentThreads: { codex: "codex-thread" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       model: "gpt-5.6-sol",
       modelReasoningEffort: "xhigh",
       activeAgentId: "codex",
@@ -390,6 +665,8 @@ describe("SessionManager", () => {
       threadId: "thread-78",
       cwd: "/tmp/project-a",
       agentThreads: { codex: "thread-78" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       activeAgentId: "codex",
     });
 
@@ -421,6 +698,8 @@ describe("SessionManager", () => {
       threadId: "codex-thread",
       cwd: "/tmp/project",
       agentThreads: { codex: "codex-thread" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       activeAgentId: "codex",
     });
     const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
@@ -458,6 +737,8 @@ describe("SessionManager", () => {
       threadId: "codex-thread",
       cwd: "/tmp/project",
       agentThreads: { codex: "codex-thread" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       activeAgentId: "codex",
     });
 
@@ -484,6 +765,8 @@ describe("SessionManager", () => {
       threadId: "thread-1",
       cwd: "/tmp/project",
       agentThreads: { codex: "thread-1" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       model: "gpt-4.1",
       activeAgentId: "codex",
     });
@@ -516,6 +799,8 @@ describe("SessionManager", () => {
       threadId: "stale-thread",
       cwd: "/tmp/project-a",
       agentThreads: { codex: "stale-thread" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       activeAgentId: "codex",
     });
 

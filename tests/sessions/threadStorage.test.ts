@@ -130,6 +130,8 @@ describe("ThreadStorage", () => {
       model: "gpt-4o",
       modelReasoningEffort: "xhigh",
       activeAgentId: "codex",
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       agentThreads: {},
     });
 
@@ -137,6 +139,8 @@ describe("ThreadStorage", () => {
     assert.equal(record?.model, "gpt-4o");
     assert.equal(record?.modelReasoningEffort, "xhigh");
     assert.equal(record?.activeAgentId, "codex");
+    assert.equal(record?.runtimeBackend, "codex-app-server");
+    assert.equal(record?.lifecycle, "durable");
     assert.equal(record?.threadId, undefined);
     assert.deepEqual(record?.agentThreads, {});
 
@@ -146,5 +150,7 @@ describe("ThreadStorage", () => {
     assert.equal(record?.model, "gpt-4o");
     assert.equal(record?.modelReasoningEffort, "xhigh");
     assert.equal(record?.activeAgentId, "codex");
+    assert.equal(record?.runtimeBackend, "codex-app-server");
+    assert.equal(record?.lifecycle, "durable");
   });
 });

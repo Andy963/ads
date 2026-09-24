@@ -1,6 +1,7 @@
 import { listAgentSessions } from "../../../agents/sessions/catalog.js";
 import type { AgentIdentifier } from "../../../agents/types.js";
 import { normalizeSessionListLimit } from "../../../agents/sessions/types.js";
+import type { AgentRuntimeBackend } from "../../../runtime/config.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import { truncateForLog } from "../../utils.js";
 
@@ -42,6 +43,7 @@ export async function handleSessionListMessage(args: {
   currentCwd: string;
   activeAgentId: AgentIdentifier;
   currentSessionId?: string | null;
+  runtimeBackend?: AgentRuntimeBackend;
   sendJson: (payload: unknown) => void;
   logger: { info: (message: string) => void; warn: (message: string) => void };
 }): Promise<void> {
@@ -50,7 +52,11 @@ export async function handleSessionListMessage(args: {
 
   try {
     const result = await listAgentSessions(
-      { historyStore: args.historyStore, currentSessionId: args.currentSessionId },
+      {
+        historyStore: args.historyStore,
+        currentSessionId: args.currentSessionId,
+        runtimeBackend: args.runtimeBackend,
+      },
       {
         agentId,
         cwd: args.currentCwd,

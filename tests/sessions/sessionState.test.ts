@@ -6,12 +6,14 @@ import path from "node:path";
 
 import { resetStateDatabaseForTests } from "../../server/state/database.js";
 import { ThreadStorage } from "../../server/sessions/threadStorage.js";
+import { RUNTIME_CAPABILITY_MATRIX } from "../../server/runtime/config.js";
 import {
   buildPreservedResetState,
   buildSyncedSessionState,
   clearSavedResumeThreadId,
   getSavedResumeThreadId,
   resolveResumeState,
+  RuntimeBackendMismatchError,
 } from "../../server/sessions/sessionState.js";
 
 describe("telegram/sessionState helpers", () => {
@@ -40,6 +42,8 @@ describe("telegram/sessionState helpers", () => {
       agentThreads: { resume: "resume-thread", codex: "current-thread" },
       model: "gpt-4.1",
       activeAgentId: "codex",
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
     });
 
     assert.equal(getSavedResumeThreadId(storage, 1), "resume-thread");
@@ -128,6 +132,8 @@ describe("telegram/sessionState helpers", () => {
       agentThreads: {},
       model: "gpt-4o",
       activeAgentId: "codex",
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
     });
 
     const resume = resolveResumeState({
@@ -149,6 +155,8 @@ describe("telegram/sessionState helpers", () => {
       cwd: "/tmp/project",
       agentThreads: { codex: "codex-thread" },
       activeAgentId: "claude",
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
     });
 
     const resume = resolveResumeState({
@@ -171,6 +179,8 @@ describe("telegram/sessionState helpers", () => {
       cwd: "/tmp/project",
       agentThreads: { claude: "claude-thread" },
       activeAgentId: "claude",
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
     });
 
     const resume = resolveResumeState({
@@ -193,6 +203,8 @@ describe("telegram/sessionState helpers", () => {
       cwd: "/tmp/project",
       agentThreads: { codex: "thread-11" },
       activeAgentId: "codex",
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
     });
 
     const resume = resolveResumeState({
@@ -214,6 +226,8 @@ describe("telegram/sessionState helpers", () => {
       cwd: "/tmp/project",
       agentThreads: { codex: "native-turn-17" },
       activeAgentId: "codex",
+      runtimeBackend: "native",
+      lifecycle: "durable",
     });
 
     const resume = resolveResumeState({
@@ -222,11 +236,40 @@ describe("telegram/sessionState helpers", () => {
       storage,
       logger: { info: () => {} },
       currentCwd: "/tmp/project",
+      runtimeBackend: "native",
     });
 
     assert.equal(resume.restoreMode, "history_injection");
     assert.equal(resume.resumeThreadId, undefined);
     assert.equal(resume.shouldInjectHistory, true);
+  });
+
+  it("uses history injection when a Codex record contains a Native execution alias", () => {
+    storage.setRecord(19, {
+      threadId: "native-turn-19",
+      cwd: "/tmp/project",
+      agentThreads: { codex: "native-turn-19" },
+      activeAgentId: "codex",
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
+    });
+
+    const logs: string[] = [];
+    const resume = resolveResumeState({
+      userId: 19,
+      resumeThread: true,
+      storage,
+      logger: { info: (message) => logs.push(message) },
+      currentCwd: "/tmp/project",
+      runtimeBackend: "codex-app-server",
+    });
+
+    assert.deepEqual(resume, {
+      activeAgentId: "codex",
+      shouldInjectHistory: true,
+      restoreMode: "history_injection",
+    });
+    assert.doesNotMatch(logs.join("\n"), /native-turn-19/);
   });
 
   it("keeps auto-resume when reconnect normalizes to a compatible project cwd", () => {
@@ -235,6 +278,8 @@ describe("telegram/sessionState helpers", () => {
       cwd: "/tmp/project/src",
       agentThreads: { codex: "thread-13" },
       activeAgentId: "codex",
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
     });
 
     const resume = resolveResumeState({
@@ -271,5 +316,38 @@ describe("telegram/sessionState helpers", () => {
     assert.equal(resume.restoreMode, "fresh");
     assert.equal(resume.resumeThreadId, undefined);
     assert.equal(resume.shouldInjectHistory, false);
+  });
+
+  it("rejects a persisted backend mismatch explicitly", () => {
+    storage.setRecord(18, {
+      threadId: "native-execution",
+      cwd: "/tmp/project",
+      agentThreads: { codex: "native-execution" },
+      activeAgentId: "codex",
+      runtimeBackend: "native",
+      lifecycle: "durable",
+    });
+
+    assert.throws(
+      () => resolveResumeState({
+        userId: 18,
+        resumeThread: true,
+        storage,
+        logger: { info: () => {} },
+        currentCwd: "/tmp/project",
+        runtimeBackend: "codex-app-server",
+      }),
+      (error: unknown) => {
+        assert(error instanceof RuntimeBackendMismatchError);
+        assert.match(error.message, /Cross-runtime resume is not supported/);
+        return true;
+      },
+    );
+  });
+
+  it("defines backend capabilities without cross-runtime resume", () => {
+    assert.equal(RUNTIME_CAPABILITY_MATRIX["codex-app-server"]["provider-thread-resume"], "supported");
+    assert.equal(RUNTIME_CAPABILITY_MATRIX.native["provider-thread-resume"], "intentionally-different");
+    assert.equal(RUNTIME_CAPABILITY_MATRIX.native["cross-runtime-resume"], "unsupported");
   });
 });

@@ -152,6 +152,9 @@ export class NativeAgentAdapter implements AgentAdapter {
   constructor(options: NativeAgentAdapterOptions) {
     this.credentialOwner = String(options.credentialOwner ?? "").trim();
     if (!this.credentialOwner) throw new Error("NativeAgentAdapter requires a credential owner");
+    if (options.resumeThreadId?.trim()) {
+      throw new Error("NativeAgentAdapter does not accept provider thread resume ids");
+    }
     this.workspaceRoot = options.workspaceRoot;
     this.env = { ...process.env, ...(options.env ?? {}) };
     this.resolver = options.modelResolver ?? createNativeModelResolver({

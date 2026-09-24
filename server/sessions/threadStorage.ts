@@ -8,6 +8,7 @@ import { getStateDatabase } from '../state/database.js';
 import { prepareMigrationMarkerStatements } from '../state/migrations.js';
 import { resolveAdsStateDir } from '../workspace/adsPaths.js';
 import { createLogger } from '../utils/logger.js';
+import type { AgentRuntimeBackend, SessionLifecycle } from '../runtime/config.js';
 
 interface ThreadStorageOptions {
   namespace?: string;
@@ -35,6 +36,8 @@ interface ThreadState {
   model?: string;
   modelReasoningEffort?: string;
   activeAgentId?: string;
+  runtimeBackend?: AgentRuntimeBackend;
+  lifecycle?: SessionLifecycle;
 }
 
 const logger = createLogger('ThreadStorage');
@@ -211,6 +214,14 @@ export class ThreadStorage {
     return agentThreads;
   }
 
+  private normalizeRuntimeBackend(value: unknown): AgentRuntimeBackend | undefined {
+    return value === "codex-app-server" || value === "native" ? value : undefined;
+  }
+
+  private normalizeLifecycle(value: unknown): SessionLifecycle | undefined {
+    return value === "durable" || value === "ephemeral" ? value : undefined;
+  }
+
   private parseThreadStateValue(raw: string): Omit<ThreadState, "cwd" | "updatedAt"> {
     const trimmed = raw.trim();
     if (!trimmed) {
@@ -226,6 +237,8 @@ export class ThreadStorage {
             Object.prototype.hasOwnProperty.call(parsed, "model") ||
             Object.prototype.hasOwnProperty.call(parsed, "modelReasoningEffort") ||
             Object.prototype.hasOwnProperty.call(parsed, "activeAgentId") ||
+            Object.prototype.hasOwnProperty.call(parsed, "runtimeBackend") ||
+            Object.prototype.hasOwnProperty.call(parsed, "lifecycle") ||
             Object.prototype.hasOwnProperty.call(parsed, "version");
           if (hasStructuredState) {
             const agentThreads = this.normalizeAgentThreads(parsed.agentThreads);
@@ -245,7 +258,15 @@ export class ThreadStorage {
               typeof parsed.activeAgentId === "string" && parsed.activeAgentId.trim()
                 ? parsed.activeAgentId.trim()
                 : undefined;
-            return { threadId, agentThreads, model, modelReasoningEffort, activeAgentId };
+            return {
+              threadId,
+              agentThreads,
+              model,
+              modelReasoningEffort,
+              activeAgentId,
+              runtimeBackend: this.normalizeRuntimeBackend(parsed.runtimeBackend),
+              lifecycle: this.normalizeLifecycle(parsed.lifecycle),
+            };
           }
 
           const agentThreads: Record<string, string> = {};
@@ -283,7 +304,9 @@ export class ThreadStorage {
         : undefined;
     const activeAgentId =
       typeof state.activeAgentId === "string" && state.activeAgentId.trim() ? state.activeAgentId.trim() : undefined;
-    const hasMetadata = Boolean(model || modelReasoningEffort || activeAgentId);
+    const runtimeBackend = this.normalizeRuntimeBackend(state.runtimeBackend);
+    const lifecycle = this.normalizeLifecycle(state.lifecycle);
+    const hasMetadata = Boolean(model || modelReasoningEffort || activeAgentId || runtimeBackend || lifecycle);
     if (keys.length === 0 && !hasMetadata) {
       return null;
     }
@@ -300,6 +323,8 @@ export class ThreadStorage {
       model,
       modelReasoningEffort,
       activeAgentId,
+      runtimeBackend,
+      lifecycle,
     });
   }
 
@@ -330,6 +355,8 @@ export class ThreadStorage {
       model: existing?.model,
       modelReasoningEffort: existing?.modelReasoningEffort,
       activeAgentId: existing?.activeAgentId,
+      runtimeBackend: existing?.runtimeBackend,
+      lifecycle: existing?.lifecycle,
     });
   }
 
@@ -355,6 +382,8 @@ export class ThreadStorage {
       model: existing.model,
       modelReasoningEffort: existing.modelReasoningEffort,
       activeAgentId: existing.activeAgentId,
+      runtimeBackend: existing.runtimeBackend,
+      lifecycle: existing.lifecycle,
     });
   }
 

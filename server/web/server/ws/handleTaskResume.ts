@@ -1,5 +1,6 @@
 import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import type { SessionManager } from "../../../sessions/sessionManager.js";
+import { isNativeExecutionId } from "../../../runtime/sessionIdentity.js";
 import type { HistoryEntry } from "../../../utils/historyStore.js";
 import { truncateForLog } from "../../utils.js";
 import type {
@@ -136,14 +137,16 @@ export async function handleTaskResumeMessage(
       deps.history.historyStore.get(deps.context.historyKey),
     );
 
-    const sendError = (message: string) => {
+    const sendPayload = (payload: Record<string, unknown>) => {
       if (!isLaneCurrent()) return;
-      const payload = { type: "error", message };
       if (deps.transport.broadcastJson) {
         deps.transport.broadcastJson(payload);
         return;
       }
       deps.transport.safeJsonSend(deps.transport.ws, payload);
+    };
+    const sendError = (message: string) => {
+      sendPayload({ type: "error", message });
     };
 
     const sendHistorySnapshot = (metadata?: {
@@ -160,28 +163,70 @@ export async function handleTaskResumeMessage(
       });
     };
     const activeAgentId = orchestrator.getActiveAgentId();
+    const runtimeBackend = deps.sessions.sessionManager.getRuntimeBackend?.() ?? "codex-app-server";
+    const canResumeProviderThread = supportsNativeResume(activeAgentId) && runtimeBackend === "codex-app-server";
     const savedState = deps.sessions.sessionManager.getSavedState?.(deps.context.userId);
+    if (savedState?.runtimeBackend && savedState.runtimeBackend !== runtimeBackend) {
+      const message =
+        `Persisted session runtime backend "${savedState.runtimeBackend}" does not match the active runtime backend "${runtimeBackend}". ` +
+        "Cross-runtime resume is not supported.";
+      deps.observability.logger.warn(
+        `[Web][task_resume] runtime backend mismatch user=${deps.context.userId} history=${deps.context.historyKey} saved=${savedState.runtimeBackend} current=${runtimeBackend}`,
+      );
+      sendPayload({
+        type: "error",
+        code: "runtime_backend_mismatch",
+        message,
+        savedBackend: savedState.runtimeBackend,
+        currentBackend: runtimeBackend,
+      });
+      return;
+    }
     const request = parseTaskResumeRequest(deps.request.parsed.payload);
+    if (isNativeExecutionId(request.threadId)) {
+      const message = "Native execution IDs cannot be resumed as provider threads";
+      deps.observability.logger.warn(
+        `[Web][task_resume] rejected Native execution alias user=${deps.context.userId} history=${deps.context.historyKey} runtime=${runtimeBackend}`,
+      );
+      sendError(message);
+      return;
+    }
+    if (request.threadId && runtimeBackend === "native") {
+      const message = "Provider thread resume is not supported by the native runtime backend";
+      deps.observability.logger.warn(
+        `[Web][task_resume] rejected explicit provider thread user=${deps.context.userId} history=${deps.context.historyKey} runtime=${runtimeBackend}`,
+      );
+      sendError(message);
+      return;
+    }
     const selection = selectTaskResumeThread({
       request,
-      currentThreadId: orchestrator.getThreadId(),
+      currentThreadId: runtimeBackend === "codex-app-server" ? orchestrator.getThreadId() : null,
       savedThreadId: deps.sessions.sessionManager.getSavedThreadId(deps.context.userId, activeAgentId),
       savedResumeThreadId: deps.sessions.sessionManager.getSavedResumeThreadId(deps.context.userId),
       savedResumeCwd: savedState?.cwd,
       currentCwd: deps.context.currentCwd,
-      canResumeThread: supportsNativeResume(activeAgentId),
+      canResumeThread: canResumeProviderThread,
     });
     const threadIdToResume = selection.threadId;
     let clearSavedResumeThreadAfterFallback = false;
     let nativeResumeFailure: string | undefined;
+    if (isNativeExecutionId(threadIdToResume)) {
+      const message = "Native execution IDs cannot be resumed as provider threads";
+      deps.observability.logger.warn(
+        `[Web][task_resume] rejected Native execution alias user=${deps.context.userId} history=${deps.context.historyKey} runtime=${runtimeBackend} source=${selection.source}`,
+      );
+      sendError(message);
+      return;
+    }
     deps.observability.logger.info(
       `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} agent=${activeAgentId} selectedThread=${threadIdToResume ?? "none"} selectionSource=${selection.source ?? "none"}`,
     );
 
     if (threadIdToResume) {
       try {
-        if (!supportsNativeResume(activeAgentId)) {
-          throw new Error(`native session resume is not supported for agent=${activeAgentId}`);
+        if (!canResumeProviderThread) {
+          throw new Error(`provider session resume is not supported for agent=${activeAgentId}`);
         }
 
         await assertSessionResumable({
@@ -227,7 +272,9 @@ export async function handleTaskResumeMessage(
           `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} restore=thread_resumed source=${selection.source ?? "unknown"} thread=${threadIdToResume}`,
         );
         sendHistorySnapshot({
-          threadId: orchestrator.getThreadId() ?? threadIdToResume,
+          threadId: runtimeBackend === "codex-app-server"
+            ? orchestrator.getThreadId() ?? threadIdToResume
+            : null,
           contextMode: "thread_resumed",
         });
         return;
@@ -316,11 +363,14 @@ export async function handleTaskResumeMessage(
         .join("\n");
       await orchestrator.send(prompt, { streaming: false });
       if (!isLaneCurrent()) return;
-      const threadId = orchestrator.getThreadId();
+      const threadId = runtimeBackend === "codex-app-server" ? orchestrator.getThreadId() : null;
       if (threadId) {
         const activeAgentId = orchestrator.getActiveAgentId();
         deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, activeAgentId);
-        if (typeof deps.history.historyStore.linkAgentSession === "function") {
+        if (
+          canResumeProviderThread &&
+          typeof deps.history.historyStore.linkAgentSession === "function"
+        ) {
           deps.history.historyStore.linkAgentSession(deps.context.historyKey, {
             agentId: activeAgentId,
             providerSessionId: threadId,
@@ -356,7 +406,7 @@ export async function handleTaskResumeMessage(
       statusText,
     });
     sendHistorySnapshot({
-      threadId: orchestrator.getThreadId(),
+      threadId: runtimeBackend === "codex-app-server" ? orchestrator.getThreadId() : null,
       contextMode: "history_injection",
     });
   });

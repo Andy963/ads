@@ -22,7 +22,8 @@ import { SystemPromptManager, resolveReinjectionConfig } from '../systemPrompt/m
 import { detectWorkspaceFrom } from '../workspace/detector.js';
 import { deriveProjectSessionId } from '../web/server/projectSessionId.js';
 import type { LaneName } from '../state/lanePromptDefaults.js';
-import { resolveAgentRuntime } from '../runtime/config.js';
+import { resolveAgentRuntime, type AgentRuntimeBackend, type SessionLifecycle } from '../runtime/config.js';
+import { isNativeExecutionId } from '../runtime/sessionIdentity.js';
 
 function isConversationLoggingEnabled(): boolean {
   const raw = process.env.ADS_CONVERSATION_LOG;
@@ -95,6 +96,7 @@ export class SessionManager {
   private userReasoningEfforts = new Map<number, string>();
   private threadStorage?: ThreadStorage;
   private codexEnv?: NodeJS.ProcessEnv;
+  private readonly runtimeBackend: AgentRuntimeBackend;
   private readonly logger = createLogger("SessionManager");
 
   constructor(
@@ -110,6 +112,7 @@ export class SessionManager {
     this.defaultModel = defaultModel;
     this.threadStorage = threadStorage;
     this.codexEnv = codexEnv;
+    this.runtimeBackend = resolveAgentRuntime(codexEnv ?? process.env);
     if (this.sessionTimeoutMs > 0 && this.cleanupIntervalMs > 0) {
       this.cleanupInterval = setInterval(() => {
         this.cleanup();
@@ -129,11 +132,17 @@ export class SessionManager {
     userId: number,
     cwd?: string,
     resumeThread: boolean = true,
-    options?: { projectId?: string; authUserId?: string },
+    options?: { projectId?: string; authUserId?: string; lifecycle?: SessionLifecycle },
   ): HybridOrchestrator {
+    const lifecycle = options?.lifecycle ?? "durable";
     const existing = this.runtime.touch(userId);
     
     if (existing) {
+      if (existing.lifecycle !== lifecycle) {
+        throw new Error(
+          `Session lifecycle mismatch for user ${userId}: active=${existing.lifecycle}, requested=${lifecycle}`,
+        );
+      }
       if (cwd) {
         const clearThreads = this.shouldClearThreadsForCwdChange(userId, cwd);
         if (this.runtime.updateWorkingDirectory(userId, cwd, { preserveSession: !clearThreads })) {
@@ -147,28 +156,22 @@ export class SessionManager {
       return existing.session;
     }
 
-    const savedState = this.getSavedState(userId);
+    const savedState = lifecycle === "ephemeral" ? undefined : this.getSavedState(userId);
     const userModel = this.userModels.get(userId) || savedState?.model || this.defaultModel;
     const userModelReasoningEffort = this.userReasoningEfforts.get(userId) || savedState?.modelReasoningEffort;
     const effectiveCwd = cwd || savedState?.cwd || process.cwd();
     const workspaceRoot = detectWorkspaceFrom(effectiveCwd);
-    const nativeRuntime = resolveAgentRuntime(this.codexEnv ?? process.env) === "native";
+    const nativeRuntime = this.runtimeBackend === "native";
 
     let activeAgentId: AgentIdentifier | undefined = savedState?.activeAgentId;
-    let resumeState = resolveResumeState({
+    const resumeState = resolveResumeState({
       userId,
       resumeThread,
-      storage: this.threadStorage,
+      storage: lifecycle === "durable" ? this.threadStorage : undefined,
       logger: this.logger,
       currentCwd: effectiveCwd,
+      runtimeBackend: this.runtimeBackend,
     });
-    if (nativeRuntime && resumeState.resumeThreadId) {
-      resumeState = {
-        activeAgentId: resumeState.activeAgentId,
-        shouldInjectHistory: true,
-        restoreMode: "history_injection",
-      };
-    }
     activeAgentId = resumeState.activeAgentId ?? activeAgentId;
     if (resumeState.shouldInjectHistory) {
       this.runtime.markHistoryInjection(userId);
@@ -183,7 +186,7 @@ export class SessionManager {
       userId,
       authUserId: options?.authUserId,
       cwd: effectiveCwd,
-      resumeThread: Boolean(resumeThread),
+      resumeThread: lifecycle === "durable" && Boolean(resumeThread) && !nativeRuntime,
       resumeThreadId: nativeRuntime ? undefined : resumeState.resumeThreadId,
       userModel,
       userModelReasoningEffort,
@@ -195,24 +198,29 @@ export class SessionManager {
       userId,
       authUserId: options?.authUserId,
       effectiveCwd,
-      resumeThreadId: resumeState.resumeThreadId,
+      resumeThreadId: nativeRuntime ? undefined : resumeState.resumeThreadId,
       userModel,
       userModelReasoningEffort,
       activeAgentId,
       workspaceRoot,
       projectId: options?.projectId,
+      lifecycle,
     });
 
-    this.runtime.trackSession(userId, session, effectiveCwd);
+    this.runtime.trackSession(userId, session, effectiveCwd, {
+      runtimeBackend: this.runtimeBackend,
+      lifecycle,
+    });
+    this.syncStoredState(userId);
 
     return session;
   }
 
-  /** Dispose an ephemeral runtime session and any provider thread persisted for it. */
+  /** Dispose only the in-memory state owned by an ephemeral runtime session. */
   releaseEphemeralSession(userId: number): void {
     this.userModels.delete(userId);
     this.userReasoningEfforts.delete(userId);
-    this.disposeSession(userId, "drop", { clearSavedThread: true });
+    this.disposeSession(userId, "drop");
   }
 
   hasSession(userId: number): boolean {
@@ -252,7 +260,11 @@ export class SessionManager {
 
   saveThreadId(userId: number, threadId: string, agentId?: string): void {
     const storage = this.threadStorage;
-    if (!storage) {
+    if (!storage || this.runtimeBackend === "native" || this.runtime.getRecord(userId)?.lifecycle === "ephemeral") {
+      return;
+    }
+    if (isNativeExecutionId(threadId)) {
+      this.logger.warn("Refused to persist a Native execution ID as a Codex provider thread");
       return;
     }
     storage.setThreadId(userId, threadId, agentId ?? "codex");
@@ -260,6 +272,9 @@ export class SessionManager {
   }
 
   getSavedThreadId(userId: number, agentId?: string): string | undefined {
+    if (this.runtimeBackend === "native") {
+      return undefined;
+    }
     return this.threadStorage?.getThreadId(userId, agentId ?? "codex");
   }
 
@@ -273,6 +288,9 @@ export class SessionManager {
   }
 
   getSavedResumeThreadId(userId: number): string | undefined {
+    if (this.runtimeBackend === "native") {
+      return undefined;
+    }
     return getSavedResumeThreadId(this.threadStorage, userId);
   }
 
@@ -284,7 +302,9 @@ export class SessionManager {
     return this.runtime.ensureLogger(
       userId,
       isConversationLoggingEnabled(),
-      (cwd, targetUserId, threadId) => new ConversationLogger(cwd, targetUserId, threadId),
+      (cwd, targetUserId, threadId) => new ConversationLogger(cwd, targetUserId, threadId, {
+        persistThreadId: this.runtimeBackend === "codex-app-server",
+      }),
     );
   }
 
@@ -373,6 +393,8 @@ export class SessionManager {
     model?: string;
     modelReasoningEffort?: string;
     activeAgentId: AgentIdentifier;
+    runtimeBackend: AgentRuntimeBackend;
+    lifecycle: SessionLifecycle;
   } {
     const record = this.runtime.getRecord(userId);
     const saved = this.getSavedState(userId);
@@ -387,6 +409,8 @@ export class SessionManager {
         this.userReasoningEfforts.get(userId) ||
         saved?.modelReasoningEffort,
       activeAgentId,
+      runtimeBackend: record?.runtimeBackend ?? this.runtimeBackend,
+      lifecycle: record?.lifecycle ?? "durable",
     };
   }
 
@@ -402,10 +426,14 @@ export class SessionManager {
     return this.codexEnv;
   }
 
+  getRuntimeBackend(): AgentRuntimeBackend {
+    return this.runtimeBackend;
+  }
+
   reset(userId: number, options?: { preserveThreadForResume?: boolean }): void {
     const record = this.runtime.getRecord(userId);
     const storage = this.threadStorage;
-    const preserve = Boolean(options?.preserveThreadForResume);
+    const preserve = Boolean(options?.preserveThreadForResume) && this.runtimeBackend === "codex-app-server";
     if (storage) {
       if (preserve) {
         const savedState = storage.getRecord(userId);
@@ -521,6 +549,7 @@ export class SessionManager {
     activeAgentId?: AgentIdentifier;
     workspaceRoot: string;
     projectId?: string;
+    lifecycle: SessionLifecycle;
   }): HybridOrchestrator {
     const adapters = this.createAdapters(args);
 
@@ -553,10 +582,11 @@ export class SessionManager {
     userModelReasoningEffort?: string;
     workspaceRoot: string;
     projectId?: string;
+    lifecycle: SessionLifecycle;
   }): AgentAdapter[] {
     const projectId = String(args.projectId ?? "").trim() || deriveProjectSessionId(args.workspaceRoot);
 
-    if (resolveAgentRuntime(this.codexEnv ?? process.env) === "native") {
+    if (this.runtimeBackend === "native") {
       return [
         new NativeAgentAdapter({
           credentialOwner: String(args.authUserId ?? args.userId),
@@ -589,6 +619,9 @@ export class SessionManager {
       return;
     }
     const sessionRecord = this.runtime.getRecord(userId);
+    if (!sessionRecord || sessionRecord.lifecycle === "ephemeral") {
+      return;
+    }
     const session = sessionRecord?.session;
     storage.setRecord(
       userId,
@@ -600,6 +633,8 @@ export class SessionManager {
               model: session?.getModel?.(),
               modelReasoningEffort: session?.getModelReasoningEffort?.(),
               activeAgentId: session?.getActiveAgentId?.() as AgentIdentifier | undefined,
+              runtimeBackend: sessionRecord.runtimeBackend,
+              lifecycle: sessionRecord.lifecycle,
             }
           : undefined,
         userModel: this.userModels.get(userId),
@@ -607,6 +642,8 @@ export class SessionManager {
         defaultModel: this.defaultModel,
         cwd: options?.cwd,
         clearThreads: options?.clearThreads,
+        runtimeBackend: sessionRecord.runtimeBackend,
+        lifecycle: sessionRecord.lifecycle,
       }),
     );
   }

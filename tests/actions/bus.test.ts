@@ -937,6 +937,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
   it("uses a fresh runtime identity per Reviewer job and releases each session", async () => {
     const db = getStateDatabase();
     const userIds: number[] = [];
+    const lifecycles: Array<string | undefined> = [];
+    const resumeFlags: boolean[] = [];
     const released: number[] = [];
     const createOrchestrator = () => ({
       onEvent: () => () => {},
@@ -945,8 +947,10 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     });
     const bus = new LaneDispatchBus(db, {
       sessionManager: {
-        getOrCreate: (userId: number) => {
+        getOrCreate: (userId: number, _cwd: string, resumeThread: boolean, options?: { lifecycle?: string }) => {
           userIds.push(userId);
+          resumeFlags.push(resumeThread);
+          lifecycles.push(options?.lifecycle);
           return createOrchestrator();
         },
         releaseEphemeralSession: (userId: number) => released.push(userId),
@@ -962,6 +966,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
     assert.strictEqual(userIds.length, 2);
     assert.notStrictEqual(userIds[0], userIds[1]);
+    assert.deepStrictEqual(resumeFlags, [false, false]);
+    assert.deepStrictEqual(lifecycles, ["ephemeral", "ephemeral"]);
     assert.deepStrictEqual(released, userIds);
   });
 

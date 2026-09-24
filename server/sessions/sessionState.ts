@@ -2,6 +2,8 @@ import path from "node:path";
 
 import type { Logger } from "../utils/logger.js";
 import type { AgentIdentifier } from "../agents/types.js";
+import type { AgentRuntimeBackend, SessionLifecycle } from "../runtime/config.js";
+import { isNativeExecutionId, redactNativeExecutionIds } from "../runtime/sessionIdentity.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 
 import type { ThreadStorage } from "./threadStorage.js";
@@ -13,6 +15,8 @@ export type SavedSessionState = {
   model?: string;
   modelReasoningEffort?: string;
   activeAgentId?: AgentIdentifier;
+  runtimeBackend?: AgentRuntimeBackend;
+  lifecycle?: SessionLifecycle;
 };
 
 export type ContextRestoreMode = "fresh" | "thread_resumed" | "history_injection";
@@ -29,7 +33,24 @@ export type ActiveSessionState = {
   model?: string;
   modelReasoningEffort?: string;
   activeAgentId?: AgentIdentifier;
+  runtimeBackend?: AgentRuntimeBackend;
+  lifecycle?: SessionLifecycle;
 };
+
+export class RuntimeBackendMismatchError extends Error {
+  readonly savedBackend: AgentRuntimeBackend;
+  readonly currentBackend: AgentRuntimeBackend;
+
+  constructor(savedBackend: AgentRuntimeBackend, currentBackend: AgentRuntimeBackend) {
+    super(
+      `Persisted session runtime backend "${savedBackend}" does not match the active runtime backend "${currentBackend}". ` +
+        "Cross-runtime resume is not supported.",
+    );
+    this.name = "RuntimeBackendMismatchError";
+    this.savedBackend = savedBackend;
+    this.currentBackend = currentBackend;
+  }
+}
 
 export function getSavedSessionState(storage: ThreadStorage | undefined, userId: number): SavedSessionState | undefined {
   const record = storage?.getRecord(userId);
@@ -43,6 +64,8 @@ export function getSavedSessionState(storage: ThreadStorage | undefined, userId:
     model: record.model,
     modelReasoningEffort: record.modelReasoningEffort,
     activeAgentId: record.activeAgentId === "codex" ? "codex" : undefined,
+    runtimeBackend: record.runtimeBackend,
+    lifecycle: record.lifecycle,
   };
 }
 
@@ -107,24 +130,41 @@ export function resolveResumeState(args: {
   storage?: ThreadStorage;
   logger: Pick<Logger, "info">;
   currentCwd?: string;
+  runtimeBackend?: AgentRuntimeBackend;
 }): ResumeState {
+  const record = args.storage?.getRecord(args.userId);
+  const currentBackend = args.runtimeBackend ?? "codex-app-server";
+  if (record?.runtimeBackend && record.runtimeBackend !== currentBackend) {
+    throw new RuntimeBackendMismatchError(record.runtimeBackend, currentBackend);
+  }
+
   if (!args.resumeThread) {
     args.logger.info(`[Continuity] user=${args.userId} restore=fresh reason=resume_not_requested`);
     return { shouldInjectHistory: false, restoreMode: "fresh" };
   }
 
-  const record = args.storage?.getRecord(args.userId);
   // Legacy records may still say that Claude was active. Claude session ids
   // are not valid Codex thread ids, so only the canonical Codex binding is
-  // eligible for native resume after the engine consolidation.
+  // eligible for provider resume after the engine consolidation.
   const savedActiveAgentId = record?.activeAgentId === "codex" ? "codex" : undefined;
   const candidateThreadId = record?.agentThreads?.codex ?? record?.threadId;
   const savedCwd = normalizeCwd(record?.cwd);
   const currentCwd = normalizeCwd(args.currentCwd);
 
+  if (isNativeExecutionId(candidateThreadId)) {
+    args.logger.info(
+      `[Continuity] user=${args.userId} restore=history_injection reason=native_execution_alias agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId)}`,
+    );
+    return {
+      activeAgentId: savedActiveAgentId,
+      shouldInjectHistory: true,
+      restoreMode: "history_injection",
+    };
+  }
+
   if (candidateThreadId && savedCwd && currentCwd && !areSessionCwdsCompatible(savedCwd, currentCwd)) {
     args.logger.info(
-      `[Continuity] user=${args.userId} restore=fresh reason=cwd_mismatch agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId} savedCwd=${savedCwd} currentCwd=${currentCwd}`,
+      `[Continuity] user=${args.userId} restore=fresh reason=cwd_mismatch agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId)} savedCwd=${savedCwd} currentCwd=${currentCwd}`,
     );
     return {
       activeAgentId: savedActiveAgentId,
@@ -133,9 +173,20 @@ export function resolveResumeState(args: {
     };
   }
 
-  if (candidateThreadId?.startsWith("native-")) {
+  if (currentBackend === "native") {
     args.logger.info(
-      `[Continuity] user=${args.userId} restore=history_injection reason=native_runtime_thread agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,
+      `[Continuity] user=${args.userId} restore=history_injection reason=native_runtime_not_resumable agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId) ?? "none"}`,
+    );
+    return {
+      activeAgentId: savedActiveAgentId,
+      shouldInjectHistory: true,
+      restoreMode: "history_injection",
+    };
+  }
+
+  if (record && !record.runtimeBackend && candidateThreadId) {
+    args.logger.info(
+      `[Continuity] user=${args.userId} restore=history_injection reason=legacy_runtime_identity_unknown agent=${savedActiveAgentId ?? "unknown"}`,
     );
     return {
       activeAgentId: savedActiveAgentId,
@@ -146,7 +197,7 @@ export function resolveResumeState(args: {
 
   if (candidateThreadId) {
     args.logger.info(
-      `[Continuity] user=${args.userId} restore=thread_resumed agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,
+      `[Continuity] user=${args.userId} restore=thread_resumed agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId)}`,
     );
     // The provider reloads its own transcript for this thread, so injecting the
     // ADS history on top would make the model read the same turns twice: once as
@@ -204,7 +255,9 @@ export function clearSavedResumeThreadId(storage: ThreadStorage | undefined, use
     Object.keys(normalized).length === 0 &&
     !record.model &&
     !record.modelReasoningEffort &&
-    !record.activeAgentId
+    !record.activeAgentId &&
+    !record.runtimeBackend &&
+    !record.lifecycle
   ) {
     storage.removeThread(userId);
     return;
@@ -216,6 +269,8 @@ export function clearSavedResumeThreadId(storage: ThreadStorage | undefined, use
     model: record.model,
     modelReasoningEffort: record.modelReasoningEffort,
     activeAgentId: record.activeAgentId,
+    runtimeBackend: record.runtimeBackend,
+    lifecycle: record.lifecycle,
   });
 }
 
@@ -227,11 +282,20 @@ export function buildSyncedSessionState(args: {
   defaultModel?: string;
   cwd?: string;
   clearThreads?: boolean;
+  runtimeBackend?: AgentRuntimeBackend;
+  lifecycle?: SessionLifecycle;
 }): SavedSessionState {
+  const nativeRuntime = args.runtimeBackend === "native";
+  const ambiguousLegacyThread = Boolean(
+    args.runtimeBackend &&
+    !args.storedState?.runtimeBackend &&
+    (args.storedState?.threadId || Object.keys(args.storedState?.agentThreads ?? {}).length > 0),
+  );
+  const clearThreads = Boolean(args.clearThreads || nativeRuntime || ambiguousLegacyThread);
   return {
-    threadId: args.clearThreads ? undefined : args.storedState?.threadId,
+    threadId: clearThreads ? undefined : args.storedState?.threadId,
     cwd: args.cwd ?? args.sessionState?.cwd ?? args.storedState?.cwd,
-    agentThreads: args.clearThreads ? {} : { ...(args.storedState?.agentThreads ?? {}) },
+    agentThreads: clearThreads ? {} : { ...(args.storedState?.agentThreads ?? {}) },
     model:
       args.sessionState?.model ||
       args.userModel ||
@@ -242,6 +306,12 @@ export function buildSyncedSessionState(args: {
       args.userModelReasoningEffort ||
       args.storedState?.modelReasoningEffort,
     activeAgentId: "codex",
+    ...(args.runtimeBackend ?? args.storedState?.runtimeBackend
+      ? { runtimeBackend: args.runtimeBackend ?? args.storedState?.runtimeBackend }
+      : {}),
+    ...(args.lifecycle ?? args.storedState?.lifecycle
+      ? { lifecycle: args.lifecycle ?? args.storedState?.lifecycle }
+      : {}),
   };
 }
 
@@ -259,6 +329,8 @@ export function buildPreservedResetState(args: {
       threadId: undefined,
       cwd,
       agentThreads: { resume: threadId },
+      ...(args.savedState?.runtimeBackend ? { runtimeBackend: args.savedState.runtimeBackend } : {}),
+      ...(args.savedState?.lifecycle ? { lifecycle: args.savedState.lifecycle } : {}),
     };
   }
   if (args.savedState?.model || args.savedState?.modelReasoningEffort || args.savedState?.activeAgentId) {
@@ -267,6 +339,8 @@ export function buildPreservedResetState(args: {
       threadId: undefined,
       cwd,
       agentThreads: {},
+      ...(args.savedState?.runtimeBackend ? { runtimeBackend: args.savedState.runtimeBackend } : {}),
+      ...(args.savedState?.lifecycle ? { lifecycle: args.savedState.lifecycle } : {}),
     };
   }
   return null;

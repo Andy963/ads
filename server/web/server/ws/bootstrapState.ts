@@ -30,11 +30,14 @@ export function buildWsBootstrapState(args: {
     args.allowSavedThreadFallback === false || contextMode !== "thread_resumed"
       ? undefined
       : sessionManager.getSavedThreadId(userId, activeAgentId);
+  const providerThreadId = sessionManager.getRuntimeBackend?.() !== "native"
+    ? preferInMemoryThreadId({
+        inMemoryThreadId: orchestrator.getThreadId(),
+        savedThreadId,
+      })
+    : null;
   return {
-    threadId: preferInMemoryThreadId({
-      inMemoryThreadId: orchestrator.getThreadId(),
-      savedThreadId,
-    }),
+    threadId: providerThreadId,
     ...(typeof args.laneGeneration === "number" ? { laneGeneration: args.laneGeneration } : {}),
     contextMode,
     effectiveState: sessionManager.getEffectiveState(userId),

@@ -224,7 +224,10 @@ export async function handleWsControlMessage(args: {
       historyStore: args.historyStore as unknown as HistoryStore,
       currentCwd: args.currentCwd,
       activeAgentId: args.orchestrator.getActiveAgentId(),
-      currentSessionId: args.orchestrator.getThreadId(),
+      currentSessionId: args.sessionManager.getRuntimeBackend?.() !== "native"
+        ? args.orchestrator.getThreadId()
+        : null,
+      runtimeBackend: args.sessionManager.getRuntimeBackend(),
       sendJson: args.sendJson,
       logger: args.logger,
     });

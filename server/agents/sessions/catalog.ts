@@ -1,4 +1,6 @@
 import type { HistoryStore } from "../../utils/historyStore.js";
+import type { AgentRuntimeBackend } from "../../runtime/config.js";
+import { isNativeExecutionId } from "../../runtime/sessionIdentity.js";
 import { areSessionCwdsCompatible } from "../../sessions/sessionState.js";
 
 import { listCodexSessions } from "./codexSessionSource.js";
@@ -43,10 +45,17 @@ export function listLinkedSessions(args: {
   agentId: string;
   cwd: string;
   includeAllCwds?: boolean;
+  runtimeBackend?: AgentRuntimeBackend;
 }): { items: AgentSessionRef[]; forksCollapsed: number } {
+  if ((args.runtimeBackend ?? "codex-app-server") === "native") {
+    return { items: [], forksCollapsed: 0 };
+  }
   const links = args.historyStore?.listAgentSessionLinks({ agentId: args.agentId, limit: LINK_SCAN_LIMIT }) ?? [];
   const newestByLane = new Map<string, { link: (typeof links)[number]; forkCount: number }>();
   for (const link of links) {
+    if (args.agentId === "codex" && isNativeExecutionId(link.providerSessionId)) {
+      continue;
+    }
     if (!args.includeAllCwds && !areSessionCwdsCompatible(link.cwd, args.cwd)) {
       continue;
     }
@@ -174,6 +183,8 @@ export interface AgentSessionCatalogDeps {
   historyStore?: HistoryStore;
   /** Session id the active orchestrator is already attached to, if any. */
   currentSessionId?: string | null;
+  /** Runtime backend that owns provider session ids in this process. */
+  runtimeBackend?: AgentRuntimeBackend;
 }
 
 /**
@@ -204,11 +215,12 @@ export async function listAgentSessions(
         agentId: query.agentId,
         cwd: query.cwd,
         includeAllCwds: query.includeAllCwds,
+        runtimeBackend: deps.runtimeBackend,
       });
 
   let providerItems: AgentSessionRef[] = [];
   let providerCursor: string | undefined;
-  if (query.agentId === "codex") {
+  if (query.agentId === "codex" && (deps.runtimeBackend ?? "codex-app-server") === "codex-app-server") {
     const result = await listCodexSessions({
       cwd: query.cwd,
       limit,

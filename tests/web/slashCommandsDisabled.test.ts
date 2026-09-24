@@ -11,6 +11,7 @@ type HistoryEntry = { role: string; text: string; ts: number; kind?: string };
 
 class MemoryHistoryStore {
   private readonly store = new Map<string, HistoryEntry[]>();
+  readonly links: Array<{ sessionId: string; agentId: string; providerSessionId: string }> = [];
 
   get(sessionId: string): HistoryEntry[] {
     return this.store.get(sessionId) ?? [];
@@ -25,6 +26,13 @@ class MemoryHistoryStore {
 
   clear(sessionId: string): void {
     this.store.delete(sessionId);
+  }
+
+  linkAgentSession(
+    sessionId: string,
+    entry: { agentId: string; providerSessionId: string },
+  ): void {
+    this.links.push({ sessionId, ...entry });
   }
 }
 
@@ -283,6 +291,31 @@ async function runPromptThrough(payload: string): Promise<{
 }
 
 describe("web slash commands", () => {
+  it("does not expose Native execution ids as resumable provider sessions", async () => {
+    const chatMessages: unknown[] = [];
+    const clientMessages: unknown[] = [];
+    const historyStore = new MemoryHistoryStore();
+    const orchestrator = new FakeOrchestrator();
+
+    await withTempWorkspace("ads-web-native-session-", async (workspaceRoot) => {
+      await handlePromptMessage(
+        createPromptDeps({
+          payload: "hello from native runtime",
+          workspaceRoot,
+          chatMessages,
+          clientMessages,
+          historyStore,
+          orchestrator,
+          sessionManager: {
+            getRuntimeBackend: () => "native",
+          },
+        }),
+      );
+    });
+
+    assert.deepEqual(historyStore.links, []);
+  });
+
   it("treats /search as normal prompt text", async () => {
     const { chatMessages, clientMessages, orchestrator } = await runPromptThrough("/search hello world");
     assert.match(inputToText(orchestrator.lastInvokeInput), /\/search hello world/);

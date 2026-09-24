@@ -4,6 +4,7 @@ import { WebSocketServer } from "ws";
 import type { RawData, WebSocket } from "ws";
 
 import { getStateDatabase } from "../../../state/database.js";
+import { RuntimeBackendMismatchError } from "../../../sessions/sessionState.js";
 import { ensureWebAuthTables } from "../../auth/schema.js";
 import { ensureWebProjectTables } from "../../projects/schema.js";
 import { getWebProjectWorkspaceRoot } from "../../projects/store.js";
@@ -396,7 +397,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       ws.close(4409, `max clients reached (${config.maxClients})`);
       return;
     }
-    state.clients.add(ws);
     const aliveWs = ws as AliveWebSocket;
     aliveWs.isAlive = true;
     aliveWs.missedPongs = 0;
@@ -415,8 +415,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       clientMeta,
     } = initialIdentity;
     clientMeta = { ...clientMeta, logicalHistoryKey };
-    state.clientMetaByWs.set(ws, clientMeta);
-    registerSeenChatSessionId(authUserId, sessionId, chatSessionId);
     ws.on("error", (error) => {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(
@@ -431,7 +429,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         cwdKeys: [String(userId)],
       });
     };
-    registerSessionCacheBinding();
     const preferredProjectCwd = (() => {
       try {
         const db = getStateDatabase();
@@ -455,15 +452,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       warn: (message) => logger.warn(message),
     });
 
-    try {
-      const meta = state.clientMetaByWs.get(ws);
-      if (meta) {
-        meta.workspaceRoot = normalizeWorkspaceRootForMeta(currentCwd);
-      }
-    } catch {
-      // ignore
-    }
-
     // Always ask to reattach. When a runtime session is already in memory
     // `getOrCreate` returns it before this flag is read; when it is not, this is
     // exactly the case a saved provider session exists for. The previous
@@ -471,8 +459,37 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     // read-only `getOrCreate` (an agents broadcast, a model override) put a
     // fresh session in memory first, after which this branch never resumed
     // again and the saved thread id was stranded for the rest of the process.
-    let orchestrator = sessionManager.getOrCreate(userId, currentCwd, true, { authUserId });
+    let orchestrator: WsOrchestrator;
+    try {
+      orchestrator = sessionManager.getOrCreate(userId, currentCwd, true, { authUserId });
+    } catch (error) {
+      if (!(error instanceof RuntimeBackendMismatchError)) {
+        throw error;
+      }
+      logger.warn(
+        `[WebSocket] runtime backend mismatch conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} saved=${error.savedBackend} current=${error.currentBackend}`,
+      );
+      safeJsonSend(ws, {
+        type: "error",
+        code: "runtime_backend_mismatch",
+        message: error.message,
+        savedBackend: error.savedBackend,
+        currentBackend: error.currentBackend,
+      });
+      ws.close(4400, "runtime backend mismatch");
+      return;
+    }
     const contextMode = sessionManager.getContextRestoreMode(userId);
+
+    state.clients.add(ws);
+    state.clientMetaByWs.set(ws, clientMeta);
+    registerSeenChatSessionId(authUserId, sessionId, chatSessionId);
+    registerSessionCacheBinding();
+    try {
+      clientMeta.workspaceRoot = normalizeWorkspaceRootForMeta(currentCwd);
+    } catch {
+      // ignore
+    }
 
     logger.info(
       `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${state.clients.size} restore=${contextMode}${contextMode === "history_injection" ? " (pending history injection)" : ""}${contextMode === "thread_resumed" ? " (thread resumed)" : ""}`,

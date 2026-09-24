@@ -337,6 +337,104 @@ describe("web/server/ws/workerPromptHandler", () => {
     assert.deepEqual(sent, []);
   });
 
+  it("drops Native thread identity before callbacks, session logging, or websocket delivery", () => {
+    const sent: unknown[] = [];
+    const sessionEvents: unknown[] = [];
+    const debugLogs: string[] = [];
+    const startedThreads: string[] = [];
+    let eventHandler: ((event: any) => void) | null = null;
+    attachWorkerPromptHandler({
+      orchestrator: {
+        onEvent: (handler) => {
+          eventHandler = handler;
+          return () => {
+            eventHandler = null;
+          };
+        },
+      },
+      turnCwd: "/tmp/project",
+      sendToChat: (payload) => sent.push(payload),
+      logger: { info: () => {}, debug: (message) => debugLogs.push(message) },
+      sessionLogger: { logEvent: (event) => sessionEvents.push(event) },
+      onThreadStarted: (threadId) => startedThreads.push(threadId),
+    });
+
+    assert.ok(eventHandler);
+    eventHandler({
+      phase: "boot",
+      title: "Started native-execution-123",
+      detail: "thread#native-execution-123",
+      timestamp: 1,
+      raw: { type: "thread.started", thread_id: "native-execution-123" },
+    });
+
+    assert.deepEqual(sent, []);
+    assert.deepEqual(sessionEvents, []);
+    assert.deepEqual(startedThreads, []);
+    assert.doesNotMatch(debugLogs.join("\n"), /native-execution-123/);
+  });
+
+  it("redacts Native identities from logs, fallback callbacks, and user-visible errors", () => {
+    const sent: unknown[] = [];
+    const infoLogs: string[] = [];
+    const fallbacks: Array<{ previousSessionId: string; detail: string }> = [];
+    let eventHandler: ((event: any) => void) | null = null;
+    attachWorkerPromptHandler({
+      orchestrator: {
+        onEvent: (handler) => {
+          eventHandler = handler;
+          return () => {
+            eventHandler = null;
+          };
+        },
+      },
+      turnCwd: "/tmp/project",
+      sendToChat: (payload) => sent.push(payload),
+      logger: { info: (message) => infoLogs.push(message), debug: () => {} },
+      sessionLogger: null,
+      onSessionFallback: (info) => fallbacks.push(info),
+    });
+
+    assert.ok(eventHandler);
+    eventHandler({
+      phase: "boot",
+      title: "Codex thread",
+      timestamp: 1,
+      detail: "fallback from native-execution-123",
+      raw: { type: "thread.started", thread_id: "codex-thread" },
+      sessionFallback: {
+        reason: "missing_provider_session",
+        previousSessionId: "native-execution-123",
+      },
+    });
+    eventHandler({
+      phase: "command",
+      title: "native-execution-456",
+      detail: "command native-execution-789",
+      timestamp: 2,
+      raw: {
+        type: "item.started",
+        item: {
+          type: "command_execution",
+          id: "cmd-1",
+          command: "npm test",
+          status: "inProgress",
+        },
+      },
+    });
+    eventHandler({
+      phase: "error",
+      title: "native-execution-999",
+      detail: "failed native-execution-999",
+      timestamp: 3,
+      raw: { type: "error", message: "failed native-execution-999" },
+    });
+
+    const serialized = JSON.stringify({ sent, fallbacks, infoLogs });
+    assert.doesNotMatch(serialized, /native-execution-(123|456|789|999)/);
+    assert.match(serialized, /native-execution-id-redacted/);
+  });
+
   it("suppresses retryable upstream error events until the outer retry decision", () => {
     const { emit, sent } = createHarness();
 

@@ -68,10 +68,12 @@ export function handleSetAgentCommand(args: {
     type: "agents",
     activeAgentId,
     agents,
-    threadId: preferInMemoryThreadId({
-      inMemoryThreadId: orchestrator.getThreadId(),
-      savedThreadId: args.sessionManager.getSavedThreadId(args.userId, activeAgentId),
-    }),
+    threadId: args.sessionManager.getRuntimeBackend?.() !== "native"
+      ? preferInMemoryThreadId({
+          inMemoryThreadId: orchestrator.getThreadId(),
+          savedThreadId: args.sessionManager.getSavedThreadId(args.userId, activeAgentId),
+        })
+      : null,
   });
 
   return orchestrator;
