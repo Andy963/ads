@@ -31,7 +31,7 @@ import { DirectoryManager } from "../../sessions/directoryManager.js";
 import {
   createWebLaneResources,
 } from "./start/webLaneResources.js";
-import { preferInMemoryThreadId } from "./ws/threadIds.js";
+import { resolveAgentsSnapshotThreadId } from "./ws/threadIds.js";
 import { createSessionCacheRegistry } from "./ws/sessionCacheRegistry.js";
 import { LaneDispatchBus } from "../../actions/bus.js";
 import { setBusInstance } from "./api/routes/actions.js";
@@ -322,9 +322,10 @@ export async function startWebServer(): Promise<void> {
             error: merged.error,
 	          };
 	        }),
-	        threadId: preferInMemoryThreadId({
-	          inMemoryThreadId: orchestrator.getThreadId(),
-	          savedThreadId: manager.getSavedThreadId(meta.sessionUserId, activeAgentId),
+	        threadId: resolveAgentsSnapshotThreadId({
+	          runtimeBackend: manager.getRuntimeBackend(),
+	          getInMemoryThreadId: () => orchestrator.getThreadId(),
+	          getSavedThreadId: () => manager.getSavedThreadId(meta.sessionUserId, activeAgentId),
 	        }),
 	      });
 	    }

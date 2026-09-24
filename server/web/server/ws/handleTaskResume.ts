@@ -137,14 +137,16 @@ export async function handleTaskResumeMessage(
       deps.history.historyStore.get(deps.context.historyKey),
     );
 
-    const sendError = (message: string) => {
+    const sendPayload = (payload: Record<string, unknown>) => {
       if (!isLaneCurrent()) return;
-      const payload = { type: "error", message };
       if (deps.transport.broadcastJson) {
         deps.transport.broadcastJson(payload);
         return;
       }
       deps.transport.safeJsonSend(deps.transport.ws, payload);
+    };
+    const sendError = (message: string) => {
+      sendPayload({ type: "error", message });
     };
 
     const sendHistorySnapshot = (metadata?: {
@@ -164,6 +166,22 @@ export async function handleTaskResumeMessage(
     const runtimeBackend = deps.sessions.sessionManager.getRuntimeBackend?.() ?? "codex-app-server";
     const canResumeProviderThread = supportsNativeResume(activeAgentId) && runtimeBackend === "codex-app-server";
     const savedState = deps.sessions.sessionManager.getSavedState?.(deps.context.userId);
+    if (savedState?.runtimeBackend && savedState.runtimeBackend !== runtimeBackend) {
+      const message =
+        `Persisted session runtime backend "${savedState.runtimeBackend}" does not match the active runtime backend "${runtimeBackend}". ` +
+        "Cross-runtime resume is not supported.";
+      deps.observability.logger.warn(
+        `[Web][task_resume] runtime backend mismatch user=${deps.context.userId} history=${deps.context.historyKey} saved=${savedState.runtimeBackend} current=${runtimeBackend}`,
+      );
+      sendPayload({
+        type: "error",
+        code: "runtime_backend_mismatch",
+        message,
+        savedBackend: savedState.runtimeBackend,
+        currentBackend: runtimeBackend,
+      });
+      return;
+    }
     const request = parseTaskResumeRequest(deps.request.parsed.payload);
     if (isNativeExecutionId(request.threadId)) {
       const message = "Native execution IDs cannot be resumed as provider threads";

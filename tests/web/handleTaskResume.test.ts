@@ -214,6 +214,81 @@ describe("web/ws/handleTaskResume", () => {
     }
   });
 
+  it("reports a persisted runtime backend mismatch before resume selection or fallback", async () => {
+    const sent: unknown[] = [];
+    const historyEntries = [{ role: "user", text: "current question", ts: 1 }];
+    let getOrCreateCalls = 0;
+    const result = await handleTaskResumeMessage({
+      request: {
+        parsed: {
+          type: "task_resume",
+          payload: { mode: "auto" },
+        } as any,
+      },
+      transport: {
+        ws: {} as any,
+        safeJsonSend: (_ws: unknown, payload: unknown) => sent.push(payload),
+      },
+      observability: {
+        logger: {
+          info: () => {},
+          debug: () => {},
+          warn: () => {},
+        },
+      },
+      context: {
+        userId: 21,
+        historyKey: "history-runtime-mismatch",
+        currentCwd: "/mnt/d/code/ADS/ads",
+      },
+      sessions: {
+        sessionManager: {
+          getRuntimeBackend: () => "codex-app-server",
+          getSavedState: () => ({
+            cwd: "/mnt/d/code/ADS/ads",
+            runtimeBackend: "native",
+            lifecycle: "durable",
+          }),
+          getSavedThreadId: () => {
+            throw new Error("thread selection must not run after a backend mismatch");
+          },
+          getSavedResumeThreadId: () => {
+            throw new Error("resume selection must not run after a backend mismatch");
+          },
+          getOrCreate: () => {
+            getOrCreateCalls += 1;
+            throw new Error("fallback must not run after a backend mismatch");
+          },
+        } as any,
+        orchestrator: {
+          getActiveAgentId: () => "codex",
+          getThreadId: () => null,
+        } as any,
+        getWorkspaceLock: () => ({
+          runExclusive: async <T>(fn: () => Promise<T> | T): Promise<T> => await fn(),
+        }) as any,
+      },
+      history: {
+        historyStore: {
+          get: () => historyEntries,
+        } as any,
+      },
+    });
+
+    assert.equal(result.handled, true);
+    assert.equal(getOrCreateCalls, 0);
+    assert.deepEqual(sent, [{
+      type: "error",
+      code: "runtime_backend_mismatch",
+      message:
+        'Persisted session runtime backend "native" does not match the active runtime backend "codex-app-server". ' +
+        "Cross-runtime resume is not supported.",
+      savedBackend: "native",
+      currentBackend: "codex-app-server",
+    }]);
+    assert.deepEqual(historyEntries, [{ role: "user", text: "current question", ts: 1 }]);
+  });
+
   it("does not consult the retired task context while resuming", async () => {
     const sent: unknown[] = [];
     const sessionSent: unknown[] = [];
