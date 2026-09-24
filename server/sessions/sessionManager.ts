@@ -46,14 +46,16 @@ function isConversationLoggingEnabled(): boolean {
 
 function buildNativeTranscriptId(input: {
   owner: string;
+  sessionKey: string;
   projectId: string;
   lane: LaneName | 'default';
   lifecycle: SessionLifecycle;
 }): string {
   return createHash('sha256')
     .update(JSON.stringify({
-      version: 1,
+      version: 2,
       owner: input.owner,
+      sessionKey: input.sessionKey,
       projectId: input.projectId,
       lane: input.lane,
       lifecycle: input.lifecycle,
@@ -188,6 +190,7 @@ export class SessionManager {
     const nativeTranscriptId = nativeRuntime && lifecycle === "durable"
       ? buildNativeTranscriptId({
           owner,
+          sessionKey: String(userId),
           projectId,
           lane: this.options.lane ?? "default",
           lifecycle,
@@ -639,7 +642,13 @@ export class SessionManager {
           resumeThreadId: args.resumeThreadId,
           env: this.codexEnv,
           transcriptId: args.lifecycle === "durable"
-            ? buildNativeTranscriptId({ owner, projectId, lane: this.options.lane ?? "default", lifecycle: args.lifecycle })
+            ? buildNativeTranscriptId({
+                owner,
+                sessionKey: String(args.userId),
+                projectId,
+                lane: this.options.lane ?? "default",
+                lifecycle: args.lifecycle,
+              })
             : undefined,
           transcriptMode: args.lifecycle !== "durable"
             ? "disabled"

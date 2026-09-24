@@ -147,4 +147,44 @@ describe("NativeTranscriptStore", () => {
     assert.doesNotMatch(raw, /alice:password/);
     assert.match(raw, /\[redacted\]/);
   });
+
+  it("persists large tool-call arguments and results without corrupting restoration", () => {
+    const { store } = createStore();
+    const transcriptId = "transcript-large-tool-chain";
+    const largeArguments = JSON.stringify({ path: "large.txt", content: "x".repeat(70 * 1024) });
+    const largeResult = "y".repeat(80 * 1024);
+    const messages = [
+      { role: "user" as const, content: "apply a large patch" },
+      {
+        role: "assistant" as const,
+        content: null,
+        tool_calls: [{
+          id: "large-call",
+          type: "function" as const,
+          function: { name: "apply_patch", arguments: largeArguments },
+        }],
+      },
+      { role: "tool" as const, content: largeResult, tool_call_id: "large-call" },
+    ];
+    store.beginTurn({
+      transcriptId,
+      turnId: "large-turn",
+      messages,
+      entries: messages.map((message) => ({ kind: "message" as const, message })),
+      provider: { provider: "test", model: "test-model" },
+    });
+    store.updateTurn({
+      transcriptId,
+      turnId: "large-turn",
+      status: "completed",
+      messages,
+      entries: messages.map((message) => ({ kind: "message" as const, message })),
+      usage: null,
+    });
+
+    const restored = store.loadCompletedMessages(transcriptId);
+    assert.equal(restored.length, 3);
+    assert.equal(restored[1]?.tool_calls?.[0]?.function.arguments, largeArguments);
+    assert.equal(restored[2]?.content, largeResult);
+  });
 });

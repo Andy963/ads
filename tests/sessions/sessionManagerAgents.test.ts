@@ -14,6 +14,23 @@ import { createGlobalModelConfigStore } from "../../server/state/globalModelConf
 import { createUpstreamCredentialStore } from "../../server/state/upstreamCredentialStore.js";
 import { NativeTranscriptStore } from "../../server/state/nativeTranscriptStore.js";
 
+function buildNativeTranscriptId(input: {
+  owner: string;
+  sessionKey: string;
+  projectId: string;
+}): string {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      version: 2,
+      owner: input.owner,
+      sessionKey: input.sessionKey,
+      projectId: input.projectId,
+      lane: "worker",
+      lifecycle: "durable",
+    }))
+    .digest("hex");
+}
+
 describe("SessionManager agent allowlists", () => {
   const originalEnv = process.env;
 
@@ -148,42 +165,42 @@ describe("SessionManager agent allowlists", () => {
     }
   });
 
-  it("restores a durable Native transcript without history injection", () => {
+  it("isolates durable Native transcripts by logical session", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-session-transcript-"));
     const dbPath = path.join(directory, "state.db");
     const owner = "auth-user-transcript";
     const projectId = "project-transcript";
-    const transcriptId = createHash("sha256")
-      .update(JSON.stringify({
-        version: 1,
-        owner,
-        projectId,
-        lane: "worker",
-        lifecycle: "durable",
-      }))
-      .digest("hex");
     const store = new NativeTranscriptStore(getStateDatabase(dbPath));
-    store.beginTurn({
-      transcriptId,
-      turnId: "completed-turn",
-      messages: [{ role: "user", content: "remember this" }],
-      entries: [{ kind: "message", message: { role: "user", content: "remember this" } }],
-      provider: { provider: "test", model: "test-model" },
-    });
-    store.updateTurn({
-      transcriptId,
-      turnId: "completed-turn",
-      status: "completed",
-      messages: [
-        { role: "user", content: "remember this" },
-        { role: "assistant", content: "remembered" },
-      ],
-      entries: [
-        { kind: "message", message: { role: "user", content: "remember this" } },
-        { kind: "message", message: { role: "assistant", content: "remembered" } },
-      ],
-      usage: null,
-    });
+    const firstUserId = 123458;
+    const secondUserId = 123459;
+    const firstTranscriptId = buildNativeTranscriptId({ owner, sessionKey: String(firstUserId), projectId });
+    const secondTranscriptId = buildNativeTranscriptId({ owner, sessionKey: String(secondUserId), projectId });
+    for (const [transcriptId, turnId, memory] of [
+      [firstTranscriptId, "first-turn", "first memory"],
+      [secondTranscriptId, "second-turn", "second memory"],
+    ] as const) {
+      store.beginTurn({
+        transcriptId,
+        turnId,
+        messages: [{ role: "user", content: memory }],
+        entries: [{ kind: "message", message: { role: "user", content: memory } }],
+        provider: { provider: "test", model: "test-model" },
+      });
+      store.updateTurn({
+        transcriptId,
+        turnId,
+        status: "completed",
+        messages: [
+          { role: "user", content: memory },
+          { role: "assistant", content: `remembered ${memory}` },
+        ],
+        entries: [
+          { kind: "message", message: { role: "user", content: memory } },
+          { kind: "message", message: { role: "assistant", content: `remembered ${memory}` } },
+        ],
+        usage: null,
+      });
+    }
 
     const manager = new SessionManager(
       0,
@@ -195,14 +212,35 @@ describe("SessionManager agent allowlists", () => {
       { stateDbPath: dbPath, lane: "worker" },
     );
     try {
-      const session = manager.getOrCreate(123458, directory, true, {
+      const firstSession = manager.getOrCreate(firstUserId, directory, true, {
         authUserId: owner,
         projectId,
         lifecycle: "durable",
       });
-      assert(session.getAdapter("codex") instanceof NativeAgentAdapter);
-      assert.equal(manager.getContextRestoreMode(123458), "thread_resumed");
-      assert.equal(manager.needsHistoryInjection(123458), false);
+      const secondSession = manager.getOrCreate(secondUserId, directory, true, {
+        authUserId: owner,
+        projectId,
+        lifecycle: "durable",
+      });
+      assert(firstSession.getAdapter("codex") instanceof NativeAgentAdapter);
+      assert(secondSession.getAdapter("codex") instanceof NativeAgentAdapter);
+      assert.equal(manager.getContextRestoreMode(firstUserId), "thread_resumed");
+      assert.equal(manager.getContextRestoreMode(secondUserId), "thread_resumed");
+      assert.equal(manager.needsHistoryInjection(firstUserId), false);
+      assert.equal(manager.needsHistoryInjection(secondUserId), false);
+
+      manager.reset(firstUserId);
+      assert.deepEqual(store.loadCompletedMessages(firstTranscriptId), []);
+      assert.equal(store.loadCompletedMessages(secondTranscriptId).at(-1)?.content, "remembered second memory");
+
+      manager.dropSession(secondUserId);
+      manager.getOrCreate(secondUserId, directory, true, {
+        authUserId: owner,
+        projectId,
+        lifecycle: "durable",
+      });
+      assert.equal(manager.getContextRestoreMode(secondUserId), "thread_resumed");
+      assert.equal(manager.needsHistoryInjection(secondUserId), false);
     } finally {
       manager.destroy();
       closeAllStateDatabases();

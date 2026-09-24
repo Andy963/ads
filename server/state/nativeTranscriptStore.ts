@@ -67,7 +67,7 @@ type StoredTurnRow = {
 };
 
 const INTERRUPTED_ERROR = "Native turn was interrupted before completion.";
-const MAX_TRANSCRIPT_TEXT_LENGTH = 64 * 1024;
+const MAX_TRANSCRIPT_ERROR_LENGTH = 64 * 1024;
 
 function collectExplicitRedactions(options: NativeTranscriptStoreOptions): string[] {
   return [...new Set(
@@ -97,7 +97,7 @@ function redactSensitiveText(value: string, redactions: string[]): string {
       /((?:api[_-]?key|authorization|auth[_-]?token|access[_-]?token|refresh[_-]?token|secret|password|cookie)\s*["']?\s*[:=]\s*["']?)([^\s"',;}]+)/gi,
       "$1[redacted]",
     );
-  return result.slice(0, MAX_TRANSCRIPT_TEXT_LENGTH);
+  return result;
 }
 
 function sanitizeTranscriptValue(value: unknown, redactions: string[], depth = 0): unknown {
@@ -198,7 +198,9 @@ export class NativeTranscriptStore {
       this.stringify(input.messages),
       this.stringify(input.entries),
       input.usage ? this.stringify(input.usage) : null,
-      input.errorMessage ? redactSensitiveText(input.errorMessage, this.redactions) : null,
+      input.errorMessage
+        ? redactSensitiveText(input.errorMessage, this.redactions).slice(0, MAX_TRANSCRIPT_ERROR_LENGTH)
+        : null,
       Date.now(),
       input.transcriptId,
       input.turnId,
