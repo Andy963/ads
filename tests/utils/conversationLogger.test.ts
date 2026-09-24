@@ -44,4 +44,33 @@ describe("ConversationLogger", () => {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
   });
+
+  it("redacts Native execution ids embedded in event details", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-event-log-"));
+    const logger = new ConversationLogger(workspace, 1, undefined, {
+      persistThreadId: false,
+    });
+
+    try {
+      logger.logEvent({
+        phase: "connection",
+        title: "thread#native-8f3c2d1a-1111-2222-3333-444455556666",
+        detail: "Started thread#native-8f3c2d1a-1111-2222-3333-444455556666",
+        raw: { type: "thread.started" },
+        timestamp: Date.now(),
+      } as any);
+      logger.close();
+
+      const content = await waitForFileContent(
+        logger.path,
+        (value) => value.includes("EVENT"),
+      );
+      assert.equal(content.includes("native-8f3c2d1a"), false);
+      assert.match(content, /native-execution-id-redacted/);
+      assert.equal(content.includes("thread.started"), true);
+    } finally {
+      logger.close();
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 });

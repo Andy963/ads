@@ -4,6 +4,7 @@ import path from "node:path";
 import { detectWorkspace } from "../workspace/detector.js";
 import { migrateLegacyWorkspaceAdsIfNeeded, resolveWorkspaceStatePath } from "../workspace/adsPaths.js";
 import type { AgentEvent } from "../codex/events.js";
+import { redactNativeExecutionIds } from "../runtime/sessionIdentity.js";
 import { createLogger } from "./logger.js";
 
 const logger = createLogger("ConversationLogger");
@@ -96,8 +97,8 @@ export class ConversationLogger {
   logEvent(event: AgentEvent): void {
     const summary = {
       phase: event.phase,
-      title: event.title,
-      detail: event.detail,
+      title: redactNativeExecutionIds(event.title),
+      detail: redactNativeExecutionIds(event.detail),
       rawType: event.raw?.type,
       eventTimestamp: new Date(event.timestamp).toISOString(),
     };
