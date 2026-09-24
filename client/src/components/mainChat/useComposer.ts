@@ -2,7 +2,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 
 import type { IncomingImage } from "./types";
 import { autosizeTextarea, createTextareaWrapMeasurer } from "../../lib/textarea_autosize";
-import { diagAlert } from "../../lib/diagAlert";
 import {
   computeVoiceWaveformFrame,
   createIdleVoiceWaveformLevels,
@@ -167,17 +166,6 @@ export function useMainChatComposer(params: {
     const toolsHeight = Math.max(leftActionsEl.value?.offsetHeight ?? 0, rightActionsEl.value?.offsetHeight ?? 0);
     const chromeHeight = composer.offsetHeight - row.offsetHeight + padding + toolsHeight + (Number.parseFloat(style.rowGap) || 0);
     const cap = Math.max(0, availableHeight - chromeHeight);
-    // Temporary diagnostic: five rows need ~130px. If the budget drops below
-    // that while the user is composing, the input gets crushed to ~2 rows.
-    if (cap > 0 && cap < 130) {
-      diagAlert("输入框高度上限被压缩(<5行)", {
-        capBucket: `约${Math.round(cap / 24) * 24}px(${Math.round((cap - 10) / 24)}行)`,
-        detailHeight: Math.round(bounds.height),
-        toolsHeight: Math.round(toolsHeight),
-        chromeHeight: Math.round(chromeHeight),
-        expanded: composerExpanded.value,
-      });
-    }
     return cap;
   };
 
