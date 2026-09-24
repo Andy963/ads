@@ -37,7 +37,6 @@ const NATIVE_ADAPTER_ID = "codex";
 const DEFAULT_TURN_TIMEOUT_MS = 0;
 const MAX_TURN_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TOOL_ROUNDS = 0;
-const MAX_CONVERSATION_MESSAGES = 200;
 const TOOL_ROUND_LIMIT_MESSAGE =
   "Native runtime reached the configured tool-round limit. The completed tool results are available above; continue with the next prompt if you want to proceed.";
 
@@ -254,7 +253,9 @@ export class NativeAgentAdapter implements AgentAdapter {
     if (options?.clearPersistedState && this.transcriptId && this.transcriptStore) {
       this.transcriptStore.clear(this.transcriptId);
     }
-    this.activeTranscriptTurns.clear();
+    if (options?.clearPersistedState) {
+      this.activeTranscriptTurns.clear();
+    }
     this.conversation = [];
     this.threadId = `native-${randomUUID()}`;
     this.threadStartedEmitted = false;
@@ -324,9 +325,6 @@ export class NativeAgentAdapter implements AgentAdapter {
 
   private appendConversation(messages: NativeChatMessage[]): void {
     this.conversation.push(...messages);
-    if (this.conversation.length > MAX_CONVERSATION_MESSAGES) {
-      this.conversation = this.conversation.slice(-MAX_CONVERSATION_MESSAGES);
-    }
   }
 
   private checkpointTurn(input: {

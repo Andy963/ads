@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { NativeAgentAdapter } from "../../server/agents/adapters/nativeAgentAdapter.js";
 import type { NativeModelResolver } from "../../server/runtime/modelResolver.js";
+import type { NativeChatMessage } from "../../server/runtime/openAiCompatibleClient.js";
 import {
   getStateDatabase,
   resetStateDatabaseForTests,
@@ -704,6 +705,153 @@ describe("NativeAgentAdapter", () => {
       assert.equal(restoredRequest?.messages?.[0]?.content?.includes("secret-api-key"), false);
       assert.equal(restoredRequest?.messages?.[0]?.content?.includes("environment-secret"), false);
       assert.notEqual(restoredAdapter.getThreadId(), executionId);
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("restores every completed message without splitting a trailing tool chain", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-full-restore-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-full-state-"));
+    const dbPath = path.join(stateDir, "state.db");
+    const transcriptId = "native-transcript-full-restore";
+    const store = new NativeTranscriptStore(getStateDatabase(dbPath));
+    const restoredMessages: NativeChatMessage[] = [];
+    for (let index = 0; index < 100; index += 1) {
+      restoredMessages.push({ role: "user", content: `user-${index}` });
+      restoredMessages.push({ role: "assistant", content: `assistant-${index}` });
+    }
+    restoredMessages.push(
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "tail-call", type: "function", function: { name: "exec_command", arguments: "{}" } }],
+      },
+      { role: "tool", content: "tail-result", tool_call_id: "tail-call" },
+    );
+    store.beginTurn({
+      transcriptId,
+      turnId: "long-turn",
+      messages: restoredMessages,
+      entries: restoredMessages.map((message) => ({ kind: "message" as const, message })),
+      provider: { provider: "test", model: "test-model" },
+    });
+    store.updateTurn({
+      transcriptId,
+      turnId: "long-turn",
+      status: "completed",
+      messages: restoredMessages,
+      entries: restoredMessages.map((message) => ({ kind: "message" as const, message })),
+      usage: null,
+    });
+
+    try {
+      let requestMessages: Array<{ role: string; content?: string | null; tool_call_id?: string }> = [];
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-api-key",
+            provider: "test",
+          }),
+        },
+        transcriptId,
+        transcriptStore: store,
+        fetchImpl: async (_input, init) => {
+          const body = JSON.parse(String(init?.body ?? "{}")) as {
+            messages?: Array<{ role: string; content?: string | null; tool_call_id?: string }>;
+          };
+          requestMessages = body.messages ?? [];
+          return sse([JSON.stringify({ choices: [{ delta: { content: "continued" }, finish_reason: "stop" }] })]);
+        },
+      });
+
+      await adapter.send("next");
+      assert.equal(requestMessages.length, 203);
+      assert.deepEqual(requestMessages[0], { role: "user", content: "user-0" });
+      assert.equal(requestMessages[200]?.role, "assistant");
+      assert.deepEqual(requestMessages[201], { role: "tool", content: "tail-result", tool_call_id: "tail-call" });
+      assert.deepEqual(requestMessages[202], { role: "user", content: "next" });
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves active checkpoint identity across a non-destructive runtime disposal", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-active-reset-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-active-state-"));
+    const dbPath = path.join(stateDir, "state.db");
+    const transcriptId = "native-transcript-active-reset";
+
+    class ResetDuringCheckpointStore extends NativeTranscriptStore {
+      onRunningCheckpoint: (() => void) | undefined;
+      private triggered = false;
+
+      override updateTurn(input: Parameters<NativeTranscriptStore["updateTurn"]>[0]): void {
+        super.updateTurn(input);
+        if (input.status === "running" && !this.triggered) {
+          this.triggered = true;
+          this.onRunningCheckpoint?.();
+        }
+      }
+    }
+
+    const store = new ResetDuringCheckpointStore(getStateDatabase(dbPath));
+    try {
+      let requestNumber = 0;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-api-key",
+            provider: "test",
+          }),
+        },
+        transcriptId,
+        transcriptStore: store,
+        fetchImpl: async () => {
+          requestNumber += 1;
+          if (requestNumber === 1) {
+            return sse([
+              JSON.stringify({
+                choices: [{
+                  delta: {
+                    tool_calls: [{
+                      index: 0,
+                      id: "exec-1",
+                      function: {
+                        name: "exec_command",
+                        arguments: JSON.stringify({ cmd: "echo", args: ["safe"] }),
+                      },
+                    }],
+                  },
+                }],
+              }),
+              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+            ]);
+          }
+          return sse([JSON.stringify({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] })]);
+        },
+      });
+      store.onRunningCheckpoint = () => adapter.reset();
+
+      const result = await adapter.send("run a tool");
+      assert.equal(result.response, "done");
+      const turns = store.listTurns(transcriptId);
+      assert.equal(turns.length, 1);
+      assert.equal(turns[0]?.status, "completed");
     } finally {
       resetStateDatabaseForTests();
       fs.rmSync(workspace, { recursive: true, force: true });
