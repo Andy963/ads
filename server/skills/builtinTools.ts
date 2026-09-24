@@ -69,6 +69,7 @@ export async function executeToolDirectives(args: {
           projectId: args.workspaceRoot,
           issueId: Number.isFinite(issueId) ? issueId : null,
           issueTitle,
+          issueDescription: directive.body || issueTitle,
           jobKind,
           repoPath: args.workspaceRoot,
         });

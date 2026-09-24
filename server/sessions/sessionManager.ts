@@ -208,6 +208,13 @@ export class SessionManager {
     return session;
   }
 
+  /** Dispose an ephemeral runtime session and any provider thread persisted for it. */
+  releaseEphemeralSession(userId: number): void {
+    this.userModels.delete(userId);
+    this.userReasoningEfforts.delete(userId);
+    this.disposeSession(userId, "drop", { clearSavedThread: true });
+  }
+
   hasSession(userId: number): boolean {
     return this.runtime.hasSession(userId);
   }

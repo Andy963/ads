@@ -103,6 +103,40 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(stored.branch, "codex/issue-277");
   });
 
+  it("passes the immutable Issue snapshot and verification provenance to Reviewer", async () => {
+    const db = getStateDatabase();
+    let reviewPrompt = "";
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => {
+        commitImplementation("snapshot");
+        return { exitCode: 0 };
+      },
+      reviewerRunner: async (prompt) => {
+        reviewPrompt = prompt;
+        return JSON.stringify({ status: "PASS", summary: "Snapshot review passed.", defects: [] });
+      },
+      testCommand: "git log -1 --pretty=%s",
+    });
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 366,
+      issueTitle: "Reviewer contract",
+      issueDescription: "Full immutable Issue description",
+      acceptanceCriteria: ["Reviewer starts fresh", "Truncated diff cannot pass"],
+      adrs: [{ id: "ADR 0020", title: "Reviewer context", decision: "Use an ephemeral session" }],
+    });
+
+    await bus.evaluateQueue(repoDir, repoDir);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "completed");
+
+    assert.match(reviewPrompt, /Full immutable Issue description/);
+    assert.match(reviewPrompt, /Reviewer starts fresh/);
+    assert.match(reviewPrompt, /ADR 0020/);
+    assert.match(reviewPrompt, /Exact Diff Range/);
+    assert.match(reviewPrompt, /dev\.\.\.HEAD/);
+    assert.match(reviewPrompt, /git log -1 --pretty=%s/);
+  });
+
   it("does not evaluate the queue or attach gate errors during dispatch", async () => {
     const db = getStateDatabase();
     const bus = new LaneDispatchBus(db);
@@ -809,6 +843,113 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       /Reviewer execution failed: reviewer transport failed/,
     );
     assert.strictEqual(activeListeners, 0);
+  });
+
+  it("uses a fresh runtime identity per Reviewer job and releases each session", async () => {
+    const db = getStateDatabase();
+    const userIds: number[] = [];
+    const released: number[] = [];
+    const createOrchestrator = () => ({
+      onEvent: () => () => {},
+      setDeveloperInstructions() {},
+      send: async () => ({ response: JSON.stringify({ status: "PASS", summary: "isolated", defects: [] }) }),
+    });
+    const bus = new LaneDispatchBus(db, {
+      sessionManager: {
+        getOrCreate: (userId: number) => {
+          userIds.push(userId);
+          return createOrchestrator();
+        },
+        releaseEphemeralSession: (userId: number) => released.push(userId),
+      } as any,
+    });
+    const payload = {
+      issue: { id: 366, title: "Isolation" },
+      diff: "diff --git a/a.ts b/a.ts\n+ change",
+    };
+
+    await bus.executeReviewer(payload, repoDir, undefined, "history", "project", "job-366-a");
+    await bus.executeReviewer(payload, repoDir, undefined, "history", "project", "job-366-b");
+
+    assert.strictEqual(userIds.length, 2);
+    assert.notStrictEqual(userIds[0], userIds[1]);
+    assert.deepStrictEqual(released, userIds);
+  });
+
+  it("releases the Reviewer session when a job is cancelled during review", async () => {
+    const db = getStateDatabase();
+    let released = 0;
+    let sendStarted = false;
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => {
+        commitImplementation("cancel-review");
+        return { exitCode: 0 };
+      },
+      sessionManager: {
+        getOrCreate: () => ({
+          onEvent: () => () => {},
+          setDeveloperInstructions() {},
+          send: async (_input: unknown, options?: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
+            sendStarted = true;
+            options?.signal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+          }),
+        }),
+        releaseEphemeralSession: () => {
+          released += 1;
+        },
+      } as any,
+      reviewerTimeoutMs: 1000,
+      testCommand: "git status",
+    });
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 3661,
+      issueTitle: "Cancel reviewer",
+    });
+
+    await bus.evaluateQueue(repoDir, repoDir);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "reviewing");
+    await waitFor(() => sendStarted);
+    bus.cancelJob(job.jobId, repoDir);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "cancelled");
+    await waitFor(() => released === 1);
+
+    assert.strictEqual(released, 1);
+  });
+
+  it("releases the Reviewer session after a Reviewer timeout", async () => {
+    const db = getStateDatabase();
+    let released = 0;
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => {
+        commitImplementation("timeout-review");
+        return { exitCode: 0 };
+      },
+      sessionManager: {
+        getOrCreate: () => ({
+          onEvent: () => () => {},
+          setDeveloperInstructions() {},
+          send: async (_input: unknown, options?: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener("abort", () => reject(new Error("timed out")), { once: true });
+          }),
+        }),
+        releaseEphemeralSession: () => {
+          released += 1;
+        },
+      } as any,
+      reviewerTimeoutMs: 20,
+      testCommand: "git status",
+    });
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 3662,
+      issueTitle: "Timeout reviewer",
+    });
+
+    await bus.evaluateQueue(repoDir, repoDir);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "blocked", 3000);
+
+    assert.strictEqual(released, 3);
   });
 
   it("routes Reviewer transport failures into bounded rework", async () => {

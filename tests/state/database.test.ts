@@ -323,6 +323,7 @@ describe("state/database", () => {
     assert.ok(actionJobCols.includes("job_kind"));
     assert.ok(actionJobCols.includes("issue_id"));
     assert.ok(actionJobCols.includes("issue_title"));
+    assert.ok(actionJobCols.includes("issue_snapshot_json"));
     assert.ok(actionJobCols.includes("status"));
     assert.ok(actionJobCols.includes("reviewer_profile_ids_json"));
     assert.ok(actionJobCols.includes("rework_count"));

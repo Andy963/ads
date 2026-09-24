@@ -7,7 +7,13 @@ import type { AgentEvent } from "../codex/events.js";
 import type { SessionManager } from "../sessions/sessionManager.js";
 import { buildWsConnectionIdentity } from "../web/server/ws/connectionIdentity.js";
 import type { AsyncLock } from "../utils/asyncLock.js";
-import { buildReviewPrompt, DEFAULT_REVIEWER_SYSTEM_PROMPT, runDetachedReview } from "../reviewer/runner.js";
+import {
+  buildReviewPrompt,
+  createIncompleteDiffVerdict,
+  DEFAULT_REVIEWER_SYSTEM_PROMPT,
+  runDetachedReview,
+} from "../reviewer/runner.js";
+import { filterDiff } from "../reviewer/diffFilter.js";
 import { parseReviewVerdict } from "../reviewer/verdictParser.js";
 import type { ReviewPayload, ReviewVerdict } from "../reviewer/types.js";
 import { getDefaultRoleProfile, getRoleProfileById } from "../state/roleProfileStore.js";
@@ -17,6 +23,7 @@ import {
   getActionJobById,
   updateActionJobStatus,
   type ActionJobRecord,
+  type ActionJobIssueSnapshot,
   type ActionJobStatus,
   type ActionJobKind,
 } from "../state/actionJobStore.js";
@@ -155,6 +162,57 @@ export type DeveloperRunner = (
 
 export type ReviewerRunner = (prompt: string, systemPrompt: string) => Promise<string>;
 
+const DEFAULT_REVIEWER_TIMEOUT_MS = 10 * 60 * 1000;
+
+export function createReviewerUserId(): number {
+  // Keep the runtime key numeric for SessionManager while ensuring every review job is isolated.
+  return randomBytes(5).readUIntBE(0, 5) || 1;
+}
+
+export function parseActionJobIssueSnapshot(job: ActionJobRecord): ActionJobIssueSnapshot {
+  try {
+    const parsed = JSON.parse(job.issue_snapshot_json) as Partial<ActionJobIssueSnapshot>;
+    return {
+      title: String(parsed.title ?? job.issue_title),
+      description: String(parsed.description ?? job.issue_title),
+      acceptanceCriteria: Array.isArray(parsed.acceptanceCriteria)
+        ? parsed.acceptanceCriteria.filter((value): value is string => typeof value === "string")
+        : [],
+      adrs: Array.isArray(parsed.adrs)
+        ? parsed.adrs.filter((adr): adr is { id: string; title: string; decision: string } => (
+            Boolean(adr)
+            && typeof adr.id === "string"
+            && typeof adr.title === "string"
+            && typeof adr.decision === "string"
+          ))
+        : [],
+    };
+  } catch {
+    return {
+      title: job.issue_title,
+      description: job.issue_title,
+      acceptanceCriteria: [],
+      adrs: [],
+    };
+  }
+}
+
+async function raceReviewerAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error("Reviewer execution aborted");
+  }
+  let onAbort: (() => void) | null = null;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error("Reviewer execution aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
+
 export interface LaneDispatchBusOptions {
   sessionManager?: SessionManager;
   historyStore?: {
@@ -167,6 +225,7 @@ export interface LaneDispatchBusOptions {
   developerRunner?: DeveloperRunner;
   reviewerRunner?: ReviewerRunner;
   testCommand?: string;
+  reviewerTimeoutMs?: number;
   hasRemoteOrigin?: (repoPath: string) => boolean;
   pullRequestCreator?: (options: {
     cwd: string;
@@ -308,6 +367,9 @@ export class LaneDispatchBus {
     projectId: string;
     issueId?: number | null;
     issueTitle: string;
+    issueDescription?: string;
+    acceptanceCriteria?: string[];
+    adrs?: Array<{ id: string; title: string; decision: string }>;
     jobKind?: ActionJobKind;
     developerProfileId?: string | null;
     reviewerProfileIds?: string[];
@@ -322,6 +384,12 @@ export class LaneDispatchBus {
       repoPath: params.repoPath,
       authUserId: params.authUserId,
     });
+    const issueSnapshot: ActionJobIssueSnapshot = {
+      title: params.issueTitle,
+      description: params.issueDescription ?? params.issueTitle,
+      acceptanceCriteria: [...(params.acceptanceCriteria ?? [])],
+      adrs: (params.adrs ?? []).map((adr) => ({ ...adr })),
+    };
 
     const job = createActionJob(this.db, {
       id,
@@ -329,6 +397,7 @@ export class LaneDispatchBus {
       job_kind: params.jobKind ?? (params.issueId ? "github_issue" : "local_prompt"),
       issue_id: params.issueId,
       issue_title: params.issueTitle,
+      issue_snapshot: issueSnapshot,
       status: "queued",
       branch,
       developer_profile_id: params.developerProfileId,
@@ -667,7 +736,12 @@ export class LaneDispatchBus {
     historyKey?: string,
     projectId?: string,
     jobId?: string,
+    signal?: AbortSignal,
   ): Promise<ReviewVerdict> {
+    const { truncated } = filterDiff(payload.diff, 800, payload.diffStat);
+    if (truncated) {
+      return createIncompleteDiffVerdict(reviewerProfileId);
+    }
     if (this.options.reviewerRunner) {
       const prompt = buildReviewPrompt(payload);
       const rawVerdict = await this.options.reviewerRunner(prompt, DEFAULT_REVIEWER_SYSTEM_PROMPT);
@@ -682,17 +756,17 @@ export class LaneDispatchBus {
 
     if (this.options.sessionManager) {
       let unsubscribe: (() => void) | null = null;
+      let reviewerUserId: number | null = null;
       try {
-        const userId = 9999; // Detached reviewer ephemeral identity
+        const userId = createReviewerUserId();
+        reviewerUserId = userId;
         const reviewerJob = jobId ? getActionJobById(this.db, jobId) : null;
-        const reviewerIdentity = reviewerJob
-          ? this.laneIdentityForJob(reviewerJob, repoPath)
-          : buildWsConnectionIdentity({
-              authUserId: `actions:${jobId ?? "reviewer"}`,
-              sessionId: projectId ?? "reviewer",
-              chatSessionId: "main",
-              connectionId: randomBytes(3).toString("hex"),
-            });
+        const reviewerIdentity = buildWsConnectionIdentity({
+          authUserId: `actions-reviewer:${jobId ?? "reviewer"}:${userId}`,
+          sessionId: `${projectId ?? "reviewer"}:${userId}`,
+          chatSessionId: "main",
+          connectionId: randomBytes(3).toString("hex"),
+        });
         const authUserId = reviewerIdentity.authUserId;
         const orchestrator = this.options.sessionManager.getOrCreate(userId, repoPath, false, {
           authUserId,
@@ -715,12 +789,18 @@ export class LaneDispatchBus {
           }
         });
 
-        const res = await orchestrator.send(reviewPrompt);
+        const res = await orchestrator.send(reviewPrompt, {
+          streaming: false,
+          signal,
+        });
         return parseReviewVerdict(res.response, reviewerProfile?.id);
       } catch (error) {
         throw new Error(`Reviewer execution failed: ${error instanceof Error ? error.message : String(error)}`);
       } finally {
         unsubscribe?.();
+        if (reviewerUserId !== null) {
+          this.options.sessionManager.releaseEphemeralSession?.(reviewerUserId);
+        }
       }
     }
 
@@ -755,13 +835,19 @@ export class LaneDispatchBus {
       cwd: repoPath,
       encoding: "utf8",
     });
+    const verificationOutput = [testRes.stdout, testRes.stderr]
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean)
+      .join("\n")
+      .slice(-20_000);
 
     const testReport = {
       command: testCmd,
-      exitCode: testRes.status ?? 0,
+      exitCode: testRes.status ?? 1,
       summary: testRes.status === 0
-        ? "Tests and checks passed successfully"
-        : (testRes.stderr?.trim() || testRes.stdout?.trim() || "Verification command failed"),
+        ? (verificationOutput || "Tests and checks passed successfully")
+        : (verificationOutput || "Verification command failed"),
+      output: verificationOutput,
     };
 
     if (this.options.broadcastToActionsLane) {
@@ -811,11 +897,24 @@ export class LaneDispatchBus {
 
     const diff = diffRes.stdout || "";
     const diffStat = diffStatRes.stdout || "";
+    const baseCommit = spawnSync("git", ["rev-parse", diffBase], { cwd: repoPath, encoding: "utf8" }).stdout?.trim();
+    const headCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" }).stdout?.trim();
+    const issueSnapshot = parseActionJobIssueSnapshot(job);
 
     const payload: ReviewPayload = {
       issue: {
         id: job.issue_id,
-        title: job.issue_title,
+        title: issueSnapshot.title,
+        description: issueSnapshot.description,
+        acceptanceCriteria: issueSnapshot.acceptanceCriteria,
+      },
+      adrs: issueSnapshot.adrs,
+      diffRange: {
+        baseRef: diffBase,
+        headRef: "HEAD",
+        baseCommit: baseCommit || undefined,
+        headCommit: headCommit || undefined,
+        range: `${diffBase}...HEAD`,
       },
       diff,
       diffStat,
@@ -826,29 +925,51 @@ export class LaneDispatchBus {
       ?? getDefaultRoleProfile(this.db, "reviewer");
 
     let verdict: ReviewVerdict;
+    const reviewerAbort = new AbortController();
+    this.activeAbortControllers.set(jobId, reviewerAbort);
+    const reviewerTimeoutMs = Math.max(1, this.options.reviewerTimeoutMs ?? DEFAULT_REVIEWER_TIMEOUT_MS);
+    const reviewerTimer = setTimeout(() => {
+      reviewerAbort.abort(new Error(`Reviewer execution timed out after ${reviewerTimeoutMs}ms`));
+    }, reviewerTimeoutMs);
     try {
       if (options.callReviewerModel) {
-        verdict = await runDetachedReview(payload, {
-          callModel: options.callReviewerModel,
-          reviewerProfileId: typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id,
-        });
+        verdict = await raceReviewerAbort(
+          runDetachedReview(payload, {
+            callModel: options.callReviewerModel,
+            reviewerProfileId: typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id,
+          }),
+          reviewerAbort.signal,
+        );
       } else {
-        verdict = await this.executeReviewer(
-          payload,
-          repoPath,
-          typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id,
-          historyKey,
-          projectId,
-          job.id,
+        verdict = await raceReviewerAbort(
+          this.executeReviewer(
+            payload,
+            repoPath,
+            typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id,
+            historyKey,
+            projectId,
+            job.id,
+            reviewerAbort.signal,
+          ),
+          reviewerAbort.signal,
         );
       }
     } catch (error) {
+      const currentJob = getActionJobById(this.db, jobId);
+      if (reviewerAbort.signal.aborted && currentJob?.status === "cancelled") {
+        return;
+      }
       this.scheduleRework(jobId, repoPath, {
         stage: "Reviewer execution",
         feedback: error instanceof Error ? error.message : String(error),
         reworkCount: options.reworkCount,
       });
       return;
+    } finally {
+      clearTimeout(reviewerTimer);
+      if (this.activeAbortControllers.get(jobId) === reviewerAbort) {
+        this.activeAbortControllers.delete(jobId);
+      }
     }
 
     this.updateJobStatus(jobId, "reviewing", {

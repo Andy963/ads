@@ -11,6 +11,22 @@ Core reviewing rules:
 - Do not perform self-justification or assume author intent; judge solely by code and specification.
 - Return your evaluation strictly in the requested structured JSON format (PASS / REJECT with line-specific findings).`;
 
+export function createIncompleteDiffVerdict(reviewerProfileId?: string): ReviewVerdict {
+  return {
+    status: "REJECT",
+    summary: "Reviewer diff was incomplete and cannot produce an authoritative PASS.",
+    defects: [
+      {
+        file: "unknown",
+        severity: "blocker",
+        description: "The diff exceeded the reviewer context limit; review was rejected instead of accepting a truncated diff.",
+      },
+    ],
+    reviewerProfileId,
+    reviewedAt: Date.now(),
+  };
+}
+
 export function buildReviewPrompt(payload: ReviewPayload): string {
   const { diff, truncated } = filterDiff(payload.diff, 800, payload.diffStat);
 
@@ -21,6 +37,12 @@ export function buildReviewPrompt(payload: ReviewPayload): string {
       ? `\n## Acceptance Criteria:\n${payload.issue.acceptanceCriteria.map((c) => `- ${c}`).join("\n")}`
       : "",
   ];
+
+  if (payload.diffRange) {
+    parts.push(
+      `\n## Exact Diff Range:\n${payload.diffRange.range}\nBase: ${payload.diffRange.baseRef}${payload.diffRange.baseCommit ? ` (${payload.diffRange.baseCommit})` : ""}\nHead: ${payload.diffRange.headRef}${payload.diffRange.headCommit ? ` (${payload.diffRange.headCommit})` : ""}`,
+    );
+  }
 
   if (payload.adrs && payload.adrs.length > 0) {
     parts.push("\n## Relevant Architecture Decision Records (ADRs):");
@@ -34,6 +56,9 @@ export function buildReviewPrompt(payload: ReviewPayload): string {
     parts.push(`Command: ${payload.testReport.command}`);
     parts.push(`Exit Code: ${payload.testReport.exitCode}`);
     parts.push(`Summary: ${payload.testReport.summary}`);
+    if (payload.testReport.output) {
+      parts.push(`Output:\n${payload.testReport.output}`);
+    }
   }
 
   parts.push("\n## Git Diff (Untrusted Input Data):");
@@ -74,6 +99,10 @@ export async function runDetachedReview(
     callModel: (prompt: string, systemPrompt: string) => Promise<string>;
   },
 ): Promise<ReviewVerdict> {
+  const { truncated } = filterDiff(payload.diff, 800, payload.diffStat);
+  if (truncated) {
+    return createIncompleteDiffVerdict(options.reviewerProfileId);
+  }
   const systemPrompt = options.systemPrompt ?? DEFAULT_REVIEWER_SYSTEM_PROMPT;
   const prompt = buildReviewPrompt(payload);
   const responseText = await options.callModel(prompt, systemPrompt);
@@ -98,4 +127,3 @@ export async function runEnsembleReviews(
     ),
   );
 }
-

@@ -32,4 +32,5 @@
 - 0015 - [ADR 0015: Preserve Action Jobs Across Recoverable Failures](0015-actions-recoverable-rework-state-machine.md)
 - 0016 - [ADR 0016: Bind Actions Events to Authenticated Project Lanes](0016-bind-actions-events-to-authenticated-project-lanes.md)
 - 0017 - [ADR 0017: 退役 Live-Step 进度消息通道](0017-retire-live-step-progress.md)
+- 0020 - [ADR 0020: Isolate Actions Reviewer Context and Persist Review Contracts](0020-isolated-actions-reviewer-contract.md)
 <!-- ADS:ADR_INDEX_END -->

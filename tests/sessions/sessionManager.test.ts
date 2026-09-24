@@ -183,6 +183,23 @@ describe("SessionManager", () => {
     assert.deepEqual(disposals, [{ userId: 123456, reason: "drop" }]);
   });
 
+  it("releases ephemeral Reviewer sessions without retaining runtime state", () => {
+    const sessions = createFakeSessionFactory();
+    manager.destroy();
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, undefined, undefined, {
+      createSession: sessions.factory as never,
+    });
+
+    const session = manager.getOrCreate(987654, "/tmp/reviewer", false) as unknown as FakeSession;
+    session.threadId = "reviewer-thread";
+    manager.setUserModel(987654, "reviewer-model");
+    manager.releaseEphemeralSession(987654);
+
+    assert.equal(manager.hasSession(987654), false);
+    assert.equal(session.resetCalls, 1);
+    assert.equal(manager.getSavedThreadId(987654), undefined);
+  });
+
   it("tracks session statistics", () => {
     manager.getOrCreate(123456);
     manager.getOrCreate(789012);
