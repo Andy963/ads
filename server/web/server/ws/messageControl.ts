@@ -225,6 +225,7 @@ export async function handleWsControlMessage(args: {
       currentCwd: args.currentCwd,
       activeAgentId: args.orchestrator.getActiveAgentId(),
       currentSessionId: args.orchestrator.getThreadId(),
+      runtimeBackend: args.sessionManager.getRuntimeBackend(),
       sendJson: args.sendJson,
       logger: args.logger,
     });

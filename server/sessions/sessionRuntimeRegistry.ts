@@ -116,13 +116,17 @@ export class SessionRuntimeRegistry<
       return undefined;
     }
 
+    const providerThreadId = record.runtimeBackend === "native"
+      ? null
+      : record.session.getThreadId();
     if (record.logger && !record.logger.isClosed) {
-      record.logger.attachThreadId?.(record.session.getThreadId());
+      if (providerThreadId) {
+        record.logger.attachThreadId?.(providerThreadId);
+      }
       return record.logger;
     }
 
-    const threadId = record.session.getThreadId() ?? undefined;
-    record.logger = createLogger(record.cwd, userId, threadId);
+    record.logger = createLogger(record.cwd, userId, providerThreadId ?? undefined);
     return record.logger;
   }
 

@@ -297,7 +297,9 @@ export class SessionManager {
     return this.runtime.ensureLogger(
       userId,
       isConversationLoggingEnabled(),
-      (cwd, targetUserId, threadId) => new ConversationLogger(cwd, targetUserId, threadId),
+      (cwd, targetUserId, threadId) => new ConversationLogger(cwd, targetUserId, threadId, {
+        persistThreadId: this.runtimeBackend === "codex-app-server",
+      }),
     );
   }
 

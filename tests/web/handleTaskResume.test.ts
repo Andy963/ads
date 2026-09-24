@@ -28,6 +28,61 @@ describe("web/ws/handleTaskResume", () => {
     process.env.ADS_CODEX_BIN = originalCodexBin;
   });
 
+  it("rejects an explicit provider thread for the native runtime backend", async () => {
+    const sent: unknown[] = [];
+    const historyEntries = [{ role: "user", text: "current question", ts: 1 }];
+    const orchestrator = {
+      getActiveAgentId: () => "codex",
+      getThreadId: () => "native-current-execution",
+    };
+
+    const result = await handleTaskResumeMessage({
+      request: {
+        parsed: {
+          type: "task_resume",
+          payload: { threadId: "codex-provider-thread" },
+        } as any,
+      },
+      transport: {
+        ws: {} as any,
+        safeJsonSend: (_ws: unknown, payload: unknown) => sent.push(payload),
+      },
+      observability: {
+        logger: {
+          info: () => {},
+          debug: () => {},
+          warn: () => {},
+        },
+      },
+      context: {
+        userId: 9,
+        historyKey: "history-native-explicit-resume",
+        currentCwd: "/mnt/d/code/ADS/ads",
+      },
+      sessions: {
+        sessionManager: {
+          getRuntimeBackend: () => "native",
+        } as any,
+        orchestrator: orchestrator as any,
+        getWorkspaceLock: () => ({
+          runExclusive: async <T>(fn: () => Promise<T> | T): Promise<T> => await fn(),
+        }) as any,
+      },
+      history: {
+        historyStore: {
+          get: () => historyEntries,
+        } as any,
+      },
+    });
+
+    assert.equal(result.handled, true);
+    assert.deepEqual(sent, [{
+      type: "error",
+      message: "Provider thread resume is not supported by the native runtime backend",
+    }]);
+    assert.deepEqual(historyEntries, [{ role: "user", text: "current question", ts: 1 }]);
+  });
+
   it("does not consult the retired task context while resuming", async () => {
     const sent: unknown[] = [];
     const sessionSent: unknown[] = [];

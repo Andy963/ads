@@ -164,6 +164,14 @@ export async function handleTaskResumeMessage(
     const canResumeProviderThread = supportsNativeResume(activeAgentId) && runtimeBackend === "codex-app-server";
     const savedState = deps.sessions.sessionManager.getSavedState?.(deps.context.userId);
     const request = parseTaskResumeRequest(deps.request.parsed.payload);
+    if (request.threadId && runtimeBackend === "native") {
+      const message = "Provider thread resume is not supported by the native runtime backend";
+      deps.observability.logger.warn(
+        `[Web][task_resume] rejected explicit provider thread user=${deps.context.userId} history=${deps.context.historyKey} runtime=${runtimeBackend}`,
+      );
+      sendError(message);
+      return;
+    }
     const selection = selectTaskResumeThread({
       request,
       currentThreadId: orchestrator.getThreadId(),

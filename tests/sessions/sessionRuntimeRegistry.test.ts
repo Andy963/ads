@@ -86,6 +86,30 @@ describe("telegram/sessionRuntimeRegistry", () => {
     assert.deepEqual(logger.attachedThreadIds, ["thread-2"]);
   });
 
+  it("never exposes Native execution ids to conversation loggers", () => {
+    const registry = new SessionRuntimeRegistry<FakeSession, FakeLogger>();
+    const session = createFakeSession("/tmp/a", "native-execution-1");
+    const logger = createFakeLogger();
+    let createdThreadId: string | undefined;
+
+    registry.trackSession(1, session, "/tmp/a", {
+      runtimeBackend: "native",
+      lifecycle: "durable",
+    });
+    registry.ensureLogger(1, true, (_cwd, _userId, threadId) => {
+      createdThreadId = threadId;
+      return logger;
+    });
+
+    session.threadId = "native-execution-2";
+    registry.ensureLogger(1, true, () => {
+      throw new Error("should reuse existing logger");
+    });
+
+    assert.equal(createdThreadId, undefined);
+    assert.deepEqual(logger.attachedThreadIds, []);
+  });
+
   it("tracks and migrates history injection continuity state", () => {
     const registry = new SessionRuntimeRegistry<FakeSession, FakeLogger>();
 

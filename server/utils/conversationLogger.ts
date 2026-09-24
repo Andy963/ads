@@ -17,17 +17,24 @@ export class ConversationLogger {
   private readonly filePath: string;
   private readonly stream: fs.WriteStream;
   private recordedThreadId: string | null;
+  private readonly persistThreadId: boolean;
   private closed = false;
 
-  constructor(workspacePath?: string, _userId?: number, threadId?: string) {
+  constructor(
+    workspacePath?: string,
+    _userId?: number,
+    threadId?: string,
+    options: { persistThreadId?: boolean } = {},
+  ) {
     this.workspace = workspacePath ? path.resolve(workspacePath) : detectWorkspace();
+    this.persistThreadId = options.persistThreadId ?? true;
     migrateLegacyWorkspaceAdsIfNeeded(this.workspace);
     const logDir = resolveWorkspaceStatePath(this.workspace, "logs");
     fs.mkdirSync(logDir, { recursive: true });
 
     // 使用 threadId 或时间戳作为日志文件名，不包含用户ID
     let fileName: string;
-    if (threadId) {
+    if (this.persistThreadId && threadId) {
       fileName = `telegram-thread-${threadId}.log`;
     } else {
       const timestamp = sanitizeTimestamp(new Date());
@@ -36,7 +43,7 @@ export class ConversationLogger {
 
     this.filePath = path.join(logDir, fileName);
     const fileExists = fs.existsSync(this.filePath);
-    this.recordedThreadId = threadId ?? null;
+    this.recordedThreadId = this.persistThreadId ? threadId ?? null : null;
 
     this.stream = fs.createWriteStream(this.filePath, { flags: "a", mode: 0o600 });
     try {
@@ -53,7 +60,7 @@ export class ConversationLogger {
     // 只有新文件才写标题
     if (!fileExists) {
       this.stream.write(`# ADS Session ${new Date().toISOString()}\n`);
-      if (threadId) {
+      if (this.persistThreadId && threadId) {
         // 不在日志文件中记录用户ID，只记录线程ID
         this.stream.write(`# Thread ID: ${threadId}\n`);
       }
@@ -114,7 +121,7 @@ export class ConversationLogger {
    * 允许在后续补充写入 threadId，避免漏记。
    */
   attachThreadId(threadId?: string | null): void {
-    if (!threadId || this.recordedThreadId === threadId) {
+    if (!this.persistThreadId || !threadId || this.recordedThreadId === threadId) {
       return;
     }
     this.stream.write(`# Thread ID: ${threadId}\n`);

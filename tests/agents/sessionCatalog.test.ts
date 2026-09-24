@@ -115,6 +115,63 @@ describe("agents/sessions/types", () => {
 });
 
 describe("agents/sessions/catalog", () => {
+  it("rejects legacy Native execution ids from the Codex session catalog", async () => {
+    const historyStore = stubHistoryStore({
+      links: [
+        {
+          historyKey: "web:native",
+          agentId: "codex",
+          providerSessionId: "native-legacy-execution",
+          cwd: "/repo",
+          firstSeenAt: 2_000,
+          lastSeenAt: 2_000,
+        },
+        {
+          historyKey: "web:codex",
+          agentId: "codex",
+          providerSessionId: "codex-provider-thread",
+          cwd: "/repo",
+          firstSeenAt: 1_000,
+          lastSeenAt: 1_000,
+        },
+      ],
+    });
+
+    const linked = listLinkedSessions({
+      historyStore,
+      agentId: "codex",
+      cwd: "/repo",
+    });
+    assert.deepEqual(linked.items.map((item) => item.sessionId), ["codex-provider-thread"]);
+
+    const catalog = await listAgentSessions(
+      { historyStore, runtimeBackend: "codex-app-server" },
+      { agentId: "codex", cwd: "/repo", limit: 20, includeNoise: true },
+    );
+    assert.deepEqual(catalog.items.map((item) => item.sessionId), ["codex-provider-thread"]);
+  });
+
+  it("does not expose provider sessions when the active runtime is Native", async () => {
+    const historyStore = stubHistoryStore({
+      links: [
+        {
+          historyKey: "web:codex",
+          agentId: "codex",
+          providerSessionId: "codex-provider-thread",
+          cwd: "/repo",
+          firstSeenAt: 1_000,
+          lastSeenAt: 1_000,
+        },
+      ],
+    });
+
+    const result = await listAgentSessions(
+      { historyStore, runtimeBackend: "native" },
+      { agentId: "codex", cwd: "/repo", limit: 20, includeNoise: true },
+    );
+    assert.deepEqual(result.items, []);
+  });
+
   it("prefers ADS history text over the raw provider transcript for previews", () => {
     const historyStore = stubHistoryStore({
       links: [
