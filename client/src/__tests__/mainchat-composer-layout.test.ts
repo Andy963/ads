@@ -364,4 +364,10 @@ describe("MainChat compact composer layout", () => {
     expect(composer).toMatch(/\.composer-input\s*\{[^}]*width:\s*100%\s*;/);
     expect(composer).toMatch(/\.composerMainRow--expanded\s*\{[^}]*grid-template-areas:\s*"input input input"\s*"left \. right"\s*;/);
   });
+
+  it("does not invoke invasive diagAlert popup on constrained composer height (Issue #339)", async () => {
+    const useComposerSource = await readSfc("../components/mainChat/useComposer.ts", import.meta.url);
+    expect(useComposerSource).not.toMatch(/diagAlert\(/);
+    expect(useComposerSource).not.toMatch(/import.*diagAlert.*from/);
+  });
 });
