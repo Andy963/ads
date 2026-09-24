@@ -1,10 +1,14 @@
-import fs from "node:fs";
+import path from "node:path";
 import { z } from "zod";
+import type { Database as DatabaseType } from "better-sqlite3";
 
 import { getStateDatabase } from "../../../../state/database.js";
 import { LaneDispatchBus } from "../../../../actions/bus.js";
+import { ensureWebAuthTables } from "../../../auth/schema.js";
+import { ensureWebProjectTables } from "../../../projects/schema.js";
 import type { ApiRouteContext } from "../types.js";
 import { readJsonBody, sendJson } from "../../http.js";
+import { validateWorkspacePath } from "./workspacePath.js";
 
 const dispatchSchema = z.object({
   projectId: z.string(),
@@ -18,7 +22,18 @@ const dispatchSchema = z.object({
 
 export interface ActionRouteDeps {
   resolveWorkspaceRoot?: (url: URL) => string;
+  allowedDirs?: string[];
 }
+
+type ActionMutationBody = {
+  projectId?: unknown;
+  repoPath?: unknown;
+};
+
+export type ResolvedProjectContext = {
+  projectId: string;
+  repoPath: string;
+};
 
 let busInstance: LaneDispatchBus | null = null;
 
@@ -33,9 +48,96 @@ export function getBus(): LaneDispatchBus {
   return busInstance;
 }
 
+function resolveOwnedProject(
+  db: DatabaseType,
+  userId: string,
+  candidateValue: string | null | undefined,
+  allowedDirs: string[],
+): ResolvedProjectContext | null {
+  const candidate = String(candidateValue ?? "").trim();
+  const owner = String(userId ?? "").trim();
+  if (!candidate || !owner || allowedDirs.length === 0) return null;
+
+  try {
+    const byId = db
+      .prepare(
+        "SELECT project_id, workspace_root FROM web_projects WHERE user_id = ? AND project_id = ? LIMIT 1",
+      )
+      .get(owner, candidate) as { project_id?: unknown; workspace_root?: unknown } | undefined;
+
+    const validateRoot = (row: { project_id?: unknown; workspace_root?: unknown }): ResolvedProjectContext | null => {
+      const projectId = String(row.project_id ?? "").trim();
+      const workspaceRoot = String(row.workspace_root ?? "").trim();
+      if (!projectId || !workspaceRoot) return null;
+      const validated = validateWorkspacePath({
+        candidatePath: workspaceRoot,
+        allowedDirs,
+        allowWorkspaceRootFallback: false,
+      });
+      if (!validated.ok) return null;
+      return { projectId, repoPath: validated.workspaceRoot };
+    };
+
+    if (byId) return validateRoot(byId);
+
+    const validatedCandidate = validateWorkspacePath({
+      candidatePath: candidate,
+      allowedDirs,
+      allowWorkspaceRootFallback: false,
+    });
+    if (!validatedCandidate.ok) return null;
+
+    const byPath = db
+      .prepare(
+        "SELECT project_id, workspace_root FROM web_projects WHERE user_id = ? AND workspace_root = ? LIMIT 1",
+      )
+      .get(owner, validatedCandidate.workspaceRoot) as { project_id?: unknown; workspace_root?: unknown } | undefined;
+    return byPath ? validateRoot(byPath) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function resolveProjectContext(
+  db: DatabaseType,
+  userId: string,
+  rawProjectId?: string | null,
+  rawRepoPath?: string | null,
+  fallbackUrl?: URL,
+  resolveWorkspaceRoot?: (url: URL) => string,
+  allowedDirs: string[] = [],
+): ResolvedProjectContext | null {
+  const projectIdInput = String(rawProjectId ?? "").trim();
+  const repoPathInput = String(rawRepoPath ?? "").trim();
+  const byProjectId = resolveOwnedProject(db, userId, rawProjectId, allowedDirs);
+  const byRepoPath = resolveOwnedProject(db, userId, rawRepoPath, allowedDirs);
+  if ((projectIdInput && !byProjectId) || (repoPathInput && !byRepoPath)) return null;
+  if (byProjectId && byRepoPath) {
+    if (byProjectId.projectId !== byRepoPath.projectId || path.resolve(byProjectId.repoPath) !== path.resolve(byRepoPath.repoPath)) {
+      return null;
+    }
+    return byProjectId;
+  }
+  if (byProjectId) return byProjectId;
+  if (byRepoPath) return byRepoPath;
+
+  if (!projectIdInput && !repoPathInput && fallbackUrl && resolveWorkspaceRoot) {
+    try {
+      return resolveOwnedProject(db, userId, resolveWorkspaceRoot(fallbackUrl), allowedDirs);
+    } catch {
+      // ignore invalid workspace query parameters
+    }
+  }
+  return null;
+}
+
 export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRouteDeps = {}): Promise<boolean> {
-  const { req, res, pathname, url } = ctx;
+  const { req, res, pathname, url, auth } = ctx;
   const bus = getBus();
+  const stateDb = getStateDatabase();
+  ensureWebAuthTables(stateDb);
+  ensureWebProjectTables(stateDb);
+  const allowedDirs = deps.allowedDirs ?? [];
 
   if (pathname === "/api/actions/dispatch" && req.method === "POST") {
     let body: unknown;
@@ -52,18 +154,26 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
       return true;
     }
 
-    const repoPath = parsed.data.repoPath || parsed.data.projectId || (deps.resolveWorkspaceRoot ? deps.resolveWorkspaceRoot(url) : null);
-    if (!repoPath || !fs.existsSync(repoPath) || !fs.statSync(repoPath).isDirectory()) {
-      sendJson(res, 400, { error: `Invalid or non-existent repository path: ${repoPath}` });
+    const resolved = resolveProjectContext(
+      stateDb,
+      auth.userId,
+      parsed.data.projectId,
+      parsed.data.repoPath,
+      url,
+      deps.resolveWorkspaceRoot,
+      allowedDirs,
+    );
+    if (!resolved) {
+      sendJson(res, 400, { error: `Invalid or unauthorized repository for project '${parsed.data.projectId}'` });
       return true;
     }
 
     const result = bus.dispatchJob({
-      projectId: parsed.data.projectId,
+      projectId: resolved.projectId,
       issueId: parsed.data.issueId,
       issueTitle: parsed.data.issueTitle,
       jobKind: parsed.data.jobKind,
-      repoPath,
+      repoPath: resolved.repoPath,
       developerProfileId: parsed.data.developerProfileId,
       reviewerProfileIds: parsed.data.reviewerProfileIds,
     });
@@ -73,26 +183,39 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
   }
 
   if (pathname === "/api/actions/queue/start" && req.method === "POST") {
-    let body: any = {};
+    let body: ActionMutationBody = {};
     try {
-      body = await readJsonBody(req);
+      const parsed = await readJsonBody(req);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        body = parsed as ActionMutationBody;
+      }
     } catch {
       // body can be empty
     }
 
-    const projectId = String(body?.projectId ?? url.searchParams.get("projectId") ?? "").trim();
+    const requestedProjectId = typeof body.projectId === "string" ? body.projectId : null;
+    const projectId = String(requestedProjectId ?? url.searchParams.get("projectId") ?? "").trim();
     if (!projectId) {
       sendJson(res, 400, { error: "Missing projectId parameter" });
       return true;
     }
 
-    const repoPath = String(body?.repoPath ?? projectId).trim() || (deps.resolveWorkspaceRoot ? deps.resolveWorkspaceRoot(url) : null);
-    if (!repoPath || !fs.existsSync(repoPath) || !fs.statSync(repoPath).isDirectory()) {
-      sendJson(res, 400, { error: `Invalid or non-existent repository path: ${repoPath}` });
+    const requestedRepoPath = typeof body.repoPath === "string" ? body.repoPath : null;
+    const resolved = resolveProjectContext(
+      stateDb,
+      auth.userId,
+      projectId,
+      requestedRepoPath,
+      url,
+      deps.resolveWorkspaceRoot,
+      allowedDirs,
+    );
+    if (!resolved) {
+      sendJson(res, 400, { error: `Invalid or unauthorized repository for project '${projectId}'` });
       return true;
     }
 
-    const result = await bus.evaluateQueue(projectId, repoPath);
+    const result = await bus.evaluateQueue(resolved.projectId, resolved.repoPath);
     sendJson(res, 200, {
       ok: result.allowed,
       ...result,
@@ -102,13 +225,28 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
 
   if (pathname === "/api/actions/jobs" && req.method === "GET") {
     const projectId = url.searchParams.get("projectId") || "";
-    const jobs = bus.getJobs(projectId);
+    const resolved = resolveProjectContext(stateDb, auth.userId, projectId, null, url, deps.resolveWorkspaceRoot, allowedDirs);
+    if (!resolved) {
+      sendJson(res, 400, { error: `Invalid or unauthorized project '${projectId}'` });
+      return true;
+    }
+    const jobs = bus.getJobs(resolved.projectId, resolved.repoPath);
     sendJson(res, 200, jobs);
     return true;
   }
 
   const mergeMatch = /^\/api\/actions\/jobs\/([^/]+)\/merge$/.exec(pathname);
   if (mergeMatch && req.method === "POST") {
+    let body: ActionMutationBody = {};
+    try {
+      const parsed = await readJsonBody(req);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        body = parsed as ActionMutationBody;
+      }
+    } catch {
+      // ignore
+    }
+
     const jobId = decodeURIComponent(mergeMatch[1] ?? "");
     const job = bus.getJob(jobId);
     if (!job) {
@@ -116,26 +254,71 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
       return true;
     }
 
-    const repoPath = job.project_id;
-    if (!repoPath || !fs.existsSync(repoPath) || !fs.statSync(repoPath).isDirectory()) {
-      sendJson(res, 400, { error: `Job project directory does not exist: ${repoPath}` });
+    const requestedRepoPath = typeof body.repoPath === "string" ? body.repoPath : null;
+    const resolved = resolveProjectContext(
+      stateDb,
+      auth.userId,
+      typeof body.projectId === "string" ? body.projectId : job.project_id,
+      requestedRepoPath,
+      url,
+      deps.resolveWorkspaceRoot,
+      allowedDirs,
+    );
+    if (!resolved) {
+      sendJson(res, 400, { error: `Invalid or unauthorized repository for job '${jobId}'` });
+      return true;
+    }
+    bus.getJobs(resolved.projectId, resolved.repoPath);
+    const ownedJob = bus.getJob(jobId);
+    if (!ownedJob || ownedJob.project_id !== resolved.projectId) {
+      sendJson(res, 404, { error: `Job not found: ${jobId}` });
       return true;
     }
 
-    const result = bus.executeDeterministicMerge(jobId, repoPath);
+    const result = bus.executeDeterministicMerge(jobId, resolved.repoPath);
     sendJson(res, result.success ? 200 : 500, result);
     return true;
   }
 
   const cancelMatch = /^\/api\/actions\/jobs\/([^/]+)\/cancel$/.exec(pathname);
   if (cancelMatch && req.method === "POST") {
+    let body: ActionMutationBody = {};
+    try {
+      const parsed = await readJsonBody(req);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        body = parsed as ActionMutationBody;
+      }
+    } catch {
+      // ignore
+    }
+
     const jobId = decodeURIComponent(cancelMatch[1] ?? "");
     const job = bus.getJob(jobId);
     if (!job) {
       sendJson(res, 404, { error: `Job not found: ${jobId}` });
       return true;
     }
-    bus.cancelJob(jobId, job.project_id);
+    const requestedRepoPath = typeof body.repoPath === "string" ? body.repoPath : null;
+    const resolved = resolveProjectContext(
+      stateDb,
+      auth.userId,
+      typeof body.projectId === "string" ? body.projectId : job.project_id,
+      requestedRepoPath,
+      url,
+      deps.resolveWorkspaceRoot,
+      allowedDirs,
+    );
+    if (!resolved) {
+      sendJson(res, 400, { error: `Invalid or unauthorized repository for job '${jobId}'` });
+      return true;
+    }
+    bus.getJobs(resolved.projectId, resolved.repoPath);
+    const ownedJob = bus.getJob(jobId);
+    if (!ownedJob || ownedJob.project_id !== resolved.projectId) {
+      sendJson(res, 404, { error: `Job not found: ${jobId}` });
+      return true;
+    }
+    bus.cancelJob(jobId, resolved.repoPath);
     sendJson(res, 200, { ok: true, jobId, status: "cancelled" });
     return true;
   }
