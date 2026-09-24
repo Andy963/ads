@@ -424,5 +424,21 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     // Verify history recording
     assert.ok(historyEntries.some((h) => h.entry.role === "user"));
     assert.ok(historyEntries.some((h) => h.entry.role === "assistant"));
+
+    // Wait for full cycle (verification + reviewer) to complete
+    for (let i = 0; i < 50; i++) {
+      const current = bus.getJob(job.jobId);
+      if (current?.status === "waiting_merge") break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    // Verify verification and reviewer events streamed to Actions lane
+    assert.ok(streamedEvents.some((e) => e.payload.type === "step" && e.payload.title?.includes("Verification")));
+    assert.ok(streamedEvents.some((e) => e.payload.type === "command" && e.payload.command === "git status"));
+    assert.ok(streamedEvents.some((e) => e.payload.type === "step" && e.payload.title?.includes("Reviewer")));
+    assert.ok(streamedEvents.some((e) => e.payload.type === "message" && e.payload.text?.includes("Code Review")));
+
+    // Verify history recording for review verdict
+    assert.ok(historyEntries.some((h) => h.entry.kind === "review_verdict"));
   });
 });

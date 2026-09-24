@@ -385,6 +385,8 @@ export class LaneDispatchBus {
     payload: ReviewPayload,
     repoPath: string,
     reviewerProfileId?: string,
+    historyKey?: string,
+    projectId?: string,
   ): Promise<ReviewVerdict> {
     if (this.options.reviewerRunner) {
       const prompt = buildReviewPrompt(payload);
@@ -422,7 +424,23 @@ export class LaneDispatchBus {
           orchestrator.setDeveloperInstructions(systemPrompt);
         }
 
+        // Attach event listener for real-time Reviewer streaming to Actions lane
+        const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
+          if (this.options.broadcastToActionsLane) {
+            this.options.broadcastToActionsLane({
+              type: event.liveStep ? "step" : event.phase === "command" ? "command" : "delta",
+              title: event.title ? `[Reviewer] ${event.title}` : "[Reviewer]",
+              delta: event.delta,
+              detail: event.detail,
+              timestamp: event.timestamp,
+              phase: event.phase,
+              raw: event.raw,
+            }, historyKey, projectId);
+          }
+        });
+
         const res = await orchestrator.send(reviewPrompt);
+        unsubscribe();
         return parseReviewVerdict(res.response, reviewerProfile?.id);
       } catch {
         // Fallback below
@@ -451,12 +469,33 @@ export class LaneDispatchBus {
     const job = getActionJobById(this.db, jobId);
     if (!job || job.status !== "running") return;
 
+    const projectId = job.project_id;
+    const identity = buildWsConnectionIdentity({
+      authUserId: "admin",
+      sessionId: projectId,
+      chatSessionId: "worker",
+      connectionId: randomBytes(3).toString("hex"),
+    });
+    const historyKey = identity.historyKey;
+
     // 1. Verification Phase: run test suite
     updateActionJobStatus(this.db, jobId, "verifying", {
       current_step: "Running automated test suite and verification commands",
     });
 
     const testCmd = options.testCommand || this.options.testCommand || "git status";
+
+    if (this.options.broadcastToActionsLane) {
+      this.options.broadcastToActionsLane({
+        type: "step",
+        title: "Running Verification Suite",
+        delta: `Executing verification command: ${testCmd}...`,
+        liveStep: true,
+        jobId: job.id,
+        ts: Date.now(),
+      }, historyKey, projectId);
+    }
+
     const testParts = testCmd.split(" ");
     const testRes = spawnSync(testParts[0]!, testParts.slice(1), {
       cwd: repoPath,
@@ -469,10 +508,42 @@ export class LaneDispatchBus {
       summary: testRes.status === 0 ? "Tests and checks passed successfully" : (testRes.stderr?.trim() || "Verification command failed"),
     };
 
+    if (this.options.broadcastToActionsLane) {
+      this.options.broadcastToActionsLane({
+        type: "command",
+        command: testCmd,
+        output: testReport.summary,
+        exitCode: testReport.exitCode,
+        status: testReport.exitCode === 0 ? "completed" : "failed",
+        jobId: job.id,
+        ts: Date.now(),
+      }, historyKey, projectId);
+    }
+
+    if (this.options.historyStore) {
+      this.options.historyStore.add(historyKey, {
+        role: "status",
+        text: `[Verification] ${testCmd} (exit ${testReport.exitCode}): ${testReport.summary}`,
+        ts: Date.now(),
+        kind: "verification",
+      });
+    }
+
     // 2. Reviewing Phase: detached clean-room reviewer
     updateActionJobStatus(this.db, jobId, "reviewing", {
       current_step: "Detached clean-room reviewer auditing code changes against specifications",
     });
+
+    if (this.options.broadcastToActionsLane) {
+      this.options.broadcastToActionsLane({
+        type: "step",
+        title: "Detached Clean-Room Reviewer",
+        delta: "Auditing git diff against requirements, ADRs, and verification reports...",
+        liveStep: true,
+        jobId: job.id,
+        ts: Date.now(),
+      }, historyKey, projectId);
+    }
 
     const hasOrigin = hasGitRemoteOrigin(repoPath);
     const diffBase = hasOrigin ? "origin/dev" : "dev";
@@ -508,12 +579,45 @@ export class LaneDispatchBus {
         reviewerProfileId: typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id,
       });
     } else {
-      verdict = await this.executeReviewer(payload, repoPath, typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id);
+      verdict = await this.executeReviewer(
+        payload,
+        repoPath,
+        typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id,
+        historyKey,
+        projectId,
+      );
     }
 
     updateActionJobStatus(this.db, jobId, "reviewing", {
       review_verdicts_json: JSON.stringify([verdict]),
     });
+
+    // Format Review Verdict card and broadcast to Actions lane
+    const defectsList = verdict.defects && verdict.defects.length > 0
+      ? "\n\n**Defects Identified:**\n" + verdict.defects.map((d) => `- [${d.severity.toUpperCase()}] \`${d.file}${d.line ? `:${d.line}` : ""}\`: ${d.description}`).join("\n")
+      : "\n\n*No blocking defects identified.*";
+
+    const reviewCardText = `### Code Review: ${verdict.status === "PASS" ? "✅ Approved (PASS)" : "❌ Rejected (REJECT)"}\n\n${verdict.summary}${defectsList}`;
+
+    if (this.options.broadcastToActionsLane) {
+      this.options.broadcastToActionsLane({
+        type: "message",
+        role: "assistant",
+        text: reviewCardText,
+        jobId: job.id,
+        ts: Date.now(),
+        status: verdict.status,
+      }, historyKey, projectId);
+    }
+
+    if (this.options.historyStore) {
+      this.options.historyStore.add(historyKey, {
+        role: "assistant",
+        text: reviewCardText,
+        ts: Date.now(),
+        kind: "review_verdict",
+      });
+    }
 
     this.handleReviewResult({
       jobId,
@@ -573,6 +677,38 @@ export class LaneDispatchBus {
           ? `Review passed. PR #${prNumber} created. Waiting for user merge approval.`
           : "Review passed. Local repository ready for fast-forward merge.",
       });
+
+      const projectId = job.project_id;
+      const identity = buildWsConnectionIdentity({
+        authUserId: "admin",
+        sessionId: projectId,
+        chatSessionId: "worker",
+        connectionId: randomBytes(3).toString("hex"),
+      });
+      const historyKey = identity.historyKey;
+
+      if (this.options.broadcastToActionsLane) {
+        this.options.broadcastToActionsLane({
+          type: "message",
+          role: "status",
+          text: hasRemote
+            ? `Review approved. PR #${prNumber} created (${prUrl}). Waiting for user merge approval.`
+            : "Review approved. Local repository ready for fast-forward merge.",
+          jobId: job.id,
+          ts: Date.now(),
+        }, historyKey, projectId);
+      }
+
+      if (this.options.historyStore) {
+        this.options.historyStore.add(historyKey, {
+          role: "status",
+          text: hasRemote
+            ? `[PR Created] PR #${prNumber}: ${prUrl}. Waiting for merge approval.`
+            : "[Local Ready] Review approved. Ready for merge.",
+          ts: Date.now(),
+          kind: "pr_delivery",
+        });
+      }
 
       return {
         status: "waiting_merge",
