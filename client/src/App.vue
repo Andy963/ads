@@ -428,11 +428,15 @@ const activeActionJob = computed(() => {
   );
 });
 
+const queuedActionJobsCount = computed(() => {
+  return actionJobs.value.filter((j) => j.status === "queued").length;
+});
+
 async function loadActionJobs(): Promise<void> {
   const pid = activeProjectId.value.trim();
   if (!pid) return;
   try {
-    const list = await apiClient.get<ActionJobItem[]>(`/api/actions/jobs?projectId=${encodeURIComponent(pid)}`);
+    const list = await api.get<ActionJobItem[]>(`/api/actions/jobs?projectId=${encodeURIComponent(pid)}`);
     if (Array.isArray(list)) {
       actionJobs.value = list;
     }
@@ -441,10 +445,21 @@ async function loadActionJobs(): Promise<void> {
   }
 }
 
+async function triggerStartActionQueue(): Promise<void> {
+  const pid = activeProjectId.value.trim();
+  if (!pid) return;
+  try {
+    await api.post("/api/actions/queue/start", { projectId: pid });
+    await loadActionJobs();
+  } catch {
+    // best-effort
+  }
+}
+
 async function triggerMergeActionJob(jobId: string): Promise<void> {
   if (!jobId) return;
   try {
-    await apiClient.post(`/api/actions/jobs/${encodeURIComponent(jobId)}/merge`, {});
+    await api.post(`/api/actions/jobs/${encodeURIComponent(jobId)}/merge`, {});
     await loadActionJobs();
   } catch {
     // best-effort
@@ -454,7 +469,7 @@ async function triggerMergeActionJob(jobId: string): Promise<void> {
 async function cancelActionJob(jobId: string): Promise<void> {
   if (!jobId) return;
   try {
-    await apiClient.post(`/api/actions/jobs/${encodeURIComponent(jobId)}/cancel`, {});
+    await api.post(`/api/actions/jobs/${encodeURIComponent(jobId)}/cancel`, {});
     await loadActionJobs();
   } catch {
     // best-effort
@@ -1761,6 +1776,9 @@ const advisorConnectionStatus = computed(() => {
                   <span class="actionsJobBadge" :class="`actionsJobBadge--${activeActionJob.status}`">
                     {{ activeActionJob.status.toUpperCase() }}
                   </span>
+                  <span v-if="queuedActionJobsCount > 0" class="actionsJobQueueCountBadge" data-testid="actions-queue-count-badge">
+                    队列中 {{ queuedActionJobsCount }} 个任务
+                  </span>
                   <span class="actionsJobTitle">
                     {{ activeActionJob.issue_id ? `#${activeActionJob.issue_id}: ` : '' }}{{ activeActionJob.issue_title }}
                   </span>
@@ -1769,6 +1787,15 @@ const advisorConnectionStatus = computed(() => {
                   </span>
                 </div>
                 <div class="actionsJobActions">
+                  <button
+                    v-if="activeActionJob.status === 'queued'"
+                    type="button"
+                    class="btnActionStart"
+                    data-testid="btn-action-start"
+                    @click="triggerStartActionQueue"
+                  >
+                    ▶ 启动执行
+                  </button>
                   <button
                     v-if="activeActionJob.status === 'waiting_merge'"
                     type="button"

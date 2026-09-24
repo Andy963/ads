@@ -72,6 +72,34 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
     return true;
   }
 
+  if (pathname === "/api/actions/queue/start" && req.method === "POST") {
+    let body: any = {};
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      // body can be empty
+    }
+
+    const projectId = String(body?.projectId ?? url.searchParams.get("projectId") ?? "").trim();
+    if (!projectId) {
+      sendJson(res, 400, { error: "Missing projectId parameter" });
+      return true;
+    }
+
+    const repoPath = String(body?.repoPath ?? projectId).trim() || (deps.resolveWorkspaceRoot ? deps.resolveWorkspaceRoot(url) : null);
+    if (!repoPath || !fs.existsSync(repoPath) || !fs.statSync(repoPath).isDirectory()) {
+      sendJson(res, 400, { error: `Invalid or non-existent repository path: ${repoPath}` });
+      return true;
+    }
+
+    const result = await bus.evaluateQueue(projectId, repoPath);
+    sendJson(res, 200, {
+      ok: result.allowed,
+      ...result,
+    });
+    return true;
+  }
+
   if (pathname === "/api/actions/jobs" && req.method === "GET") {
     const projectId = url.searchParams.get("projectId") || "";
     const jobs = bus.getJobs(projectId);
