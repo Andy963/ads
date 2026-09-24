@@ -696,6 +696,69 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.ok(!historyEntries.some((h) => h.key.includes("::worker")));
   });
 
+  it("routes a non-admin user's job events only to that user's project lane", async () => {
+    const db = getStateDatabase();
+    ensureWebAuthTables(db);
+    ensureWebProjectTables(db);
+    const now = Date.now();
+    const userId = "user-uuid-352";
+    const otherUserId = "other-user-uuid-352";
+    const customChatSessionId = "user-project-lane-352";
+    const insertUser = db.prepare(
+      "INSERT OR IGNORE INTO web_users (id, username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    );
+    insertUser.run(userId, `${userId}@test`, "hash", now, now);
+    insertUser.run(otherUserId, `${otherUserId}@test`, "hash", now, now);
+    const insertProject = db.prepare(
+      "INSERT INTO web_projects (user_id, project_id, workspace_root, display_name, chat_session_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    insertProject.run(userId, repoDir, repoDir, "User Project", customChatSessionId, 0, now, now);
+    insertProject.run(otherUserId, repoDir, repoDir, "Other User Project", "other-user-lane-352", 1, now, now);
+
+    const historyEntries: Array<{ key: string; entry: { kind?: string } }> = [];
+    const broadcasts: Array<{ payload: Record<string, unknown>; targetHistoryKey?: string }> = [];
+    const bus = new LaneDispatchBus(db, {
+      historyStore: {
+        add: (key, entry) => historyEntries.push({ key, entry }),
+      },
+      broadcastToActionsLane: (payload, targetHistoryKey) => broadcasts.push({
+        payload: payload as Record<string, unknown>,
+        targetHistoryKey,
+      }),
+    });
+
+    const dispatched = bus.dispatchJob({
+      projectId: repoDir,
+      repoPath: repoDir,
+      issueId: 995,
+      issueTitle: "Authenticated lane routing",
+      authUserId: userId,
+    });
+    updateActionJobStatus(db, dispatched.jobId, "running");
+    await bus.runJobCycle(dispatched.jobId, repoDir, {
+      testCommand: "git status",
+      callReviewerModel: async () => JSON.stringify({
+        status: "PASS",
+        summary: "The authenticated project lane is isolated.",
+        defects: [],
+      }),
+    });
+
+    const stored = bus.getJob(dispatched.jobId);
+    assert.strictEqual(stored?.auth_user_id, userId);
+    assert.strictEqual(stored?.chat_session_id, customChatSessionId);
+    assert.ok(historyEntries.length > 0);
+    assert.ok(historyEntries.every(({ key }) => key.startsWith(`${userId}::`) && key.endsWith(`::${customChatSessionId}`)));
+    assert.ok(broadcasts.length > 0);
+    assert.ok(broadcasts.every(({ targetHistoryKey }) =>
+      typeof targetHistoryKey === "string" &&
+      targetHistoryKey.startsWith(`${userId}::`) &&
+      targetHistoryKey.endsWith(`::${customChatSessionId}`),
+    ));
+    assert.strictEqual(bus.getJobs(repoDir, repoDir, userId).length, 1);
+    assert.strictEqual(bus.getJobs(repoDir, repoDir, otherUserId).length, 0);
+  });
+
   it("manually starts queued job via POST /api/actions/queue/start", async () => {
     const db = getStateDatabase();
     addWebProjectMapping(db, "project-hash");
