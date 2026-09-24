@@ -256,8 +256,8 @@ export async function startWebServer(): Promise<void> {
 
   const broadcastToActionsLane = (payload: unknown, targetHistoryKey?: string, projectId?: string): void => {
     for (const [ws, meta] of wsHub.clientMetaByWs.entries()) {
-      if (meta.chatSessionId === "worker") {
-        if (targetHistoryKey && meta.historyKey !== targetHistoryKey) continue;
+      if (meta.chatSessionId !== "advisor") {
+        if (targetHistoryKey && meta.historyKey !== targetHistoryKey && !meta.historyKey.startsWith(targetHistoryKey)) continue;
         if (projectId && meta.sessionId !== projectId) continue;
         wsHub.safeSendJson(ws, payload);
       }

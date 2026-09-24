@@ -1384,6 +1384,98 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
+    if (type === "message") {
+      const rec = msg as Record<string, unknown>;
+      const role = String(rec.role ?? "").trim();
+      const text = firstWireText(rec.text, rec.content).trim();
+      const eventTsRaw = Number(rec.ts);
+      const eventTs = Number.isFinite(eventTsRaw) && eventTsRaw > 0 ? Math.floor(eventTsRaw) : Date.now();
+      if (role === "user") {
+        markTurnActive(rec);
+        const clientMessageId = String(rec.clientMessageId ?? rec.client_message_id ?? rec.jobId ?? "").trim();
+        const existing = rt.messages.value;
+        const lastUser = [...existing].reverse().find((m) => m.role === "user");
+        const alreadyHas = clientMessageId
+          ? existing.some((m) => m.id === clientMessageId)
+          : Boolean(lastUser && lastUser.content === text && lastUser.ts === eventTs);
+        if (!alreadyHas && text) {
+          pushMessageBeforeLive({
+            id: clientMessageId || randomId("u"),
+            role: "user",
+            kind: "text",
+            content: text,
+            ts: eventTs,
+          }, rt);
+        }
+      } else if (role === "assistant" || role === "ai") {
+        if (text) {
+          sealActiveStreamingAssistant?.(rt);
+          const existing = rt.messages.value;
+          const alreadyHas = existing.some((m) => m.role === "assistant" && m.content === text);
+          if (!alreadyHas) {
+            pushMessageBeforeLive({
+              id: String(rec.id ?? randomId("a")),
+              role: "assistant",
+              kind: "text",
+              content: text,
+              ts: eventTs,
+            }, rt);
+          }
+        }
+      } else if (role === "status") {
+        if (text) {
+          rt.laneStatus.value = { kind: "info", message: text };
+        }
+      }
+      return;
+    }
+
+    if (type === "step") {
+      const rec = msg as Record<string, unknown>;
+      markTurnActive(rec);
+      rt.busy.value = true;
+      rt.turnInFlight = true;
+      clearRecoveredBackendStatus();
+      const delta = normalizeWireText(rec.delta || rec.title);
+      if (delta && !shouldIgnoreStepDelta(delta)) {
+        upsertStepLiveDelta(delta, rt);
+      }
+      return;
+    }
+
+    if (type === "command") {
+      const rec = msg as Record<string, unknown>;
+      const cmd = normalizeWireCommand(rec.command).trim();
+      if (cmd) {
+        const status = String(rec.status ?? "completed").trim().toLowerCase();
+        const terminal = status === "completed" || status === "failed" || status === "declined" || status === "cancelled";
+        const key = commandKeyForWsEvent(cmd, null);
+        if (key) {
+          ingestCommand(cmd, rt, null);
+          upsertExecuteBlock(key, cmd, normalizeWireText(rec.output), rt, {
+            snapshot: true,
+            terminal,
+            eventId: String(rec.eventId ?? `action-cmd:${Date.now()}`).trim(),
+            ts: Number(rec.ts) || Date.now(),
+          } satisfies ExecuteBlockUpdate);
+        }
+      }
+      return;
+    }
+
+    if (type === "assistant_done") {
+      sealActiveStreamingAssistant?.(rt);
+      return;
+    }
+
+    if (type === "action_job_updated") {
+      const globalWindow = typeof window !== "undefined" ? (window as unknown as { __ADS_ON_ACTION_JOB_UPDATED__?: (payload: unknown) => void }) : null;
+      if (typeof globalWindow?.__ADS_ON_ACTION_JOB_UPDATED__ === "function") {
+        globalWindow.__ADS_ON_ACTION_JOB_UPDATED__(msg);
+      }
+      return;
+    }
+
     if (type === "user") {
       markTurnActive(msg as Record<string, unknown>);
       const clientMessageId = String(msg.clientMessageId ?? msg.client_message_id ?? "").trim();

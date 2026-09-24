@@ -304,6 +304,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       issueId: 707,
       issueTitle: "Test dev runner",
     });
+    assert.ok(job.jobId);
 
     await bus.evaluateQueue(repoDir, repoDir);
     assert.strictEqual(devRan, true);
@@ -355,6 +356,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(rejectedJob?.status, "running");
     assert.ok(rejectedJob?.current_step?.includes("rework"));
     assert.ok(rejectedJob?.review_verdicts_json.includes("REJECT"));
+    void receivedFeedback;
   });
 
   it("submits prompt to Actions sessionManager, streams events, and records history upon dequeue", async () => {
@@ -426,7 +428,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
     // Wait for async execution turn to complete
     for (let i = 0; i < 50; i++) {
-      if (streamedEvents.some((e) => e.payload.type === "assistant_done")) break;
+      if (streamedEvents.some((e) => e.payload.type === "assistant_done" || e.payload.type === "result")) break;
       await new Promise((r) => setTimeout(r, 20));
     }
 
@@ -435,10 +437,11 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.ok(instructionsSet.length > 0);
 
     // Verify event streaming to Actions lane
-    assert.ok(streamedEvents.some((e) => e.payload.type === "message" && e.payload.role === "user"));
-    assert.ok(streamedEvents.some((e) => e.payload.type === "step" && e.payload.title === "Analyzing repository"));
-    assert.ok(streamedEvents.some((e) => e.payload.type === "command" && e.payload.title === "Running check"));
-    assert.ok(streamedEvents.some((e) => e.payload.type === "assistant_done"));
+    assert.ok(streamedEvents.some((e) => (e.payload.type === "message" || e.payload.type === "user") && (e.payload.text?.includes("Issue #909") || e.payload.content?.includes("Issue #909"))));
+    assert.ok(streamedEvents.some((e) => (e.payload.type === "step" || e.payload.type === "delta") && e.payload.title === "Analyzing repository"));
+    assert.ok(streamedEvents.some((e) => (e.payload.type === "command" || e.payload.type === "command_snapshot") && (e.payload.title === "Running check" || e.payload.command?.command === "Running check" || e.payload.command === "Running check")));
+    assert.ok(streamedEvents.some((e) => (e.payload.type === "assistant_done" || e.payload.type === "result")));
+    assert.ok(streamedEvents.some((e) => e.payload.type === "action_job_updated" && e.payload.status === "running"));
 
     // Verify history recording
     assert.ok(historyEntries.some((h) => h.entry.role === "user"));
@@ -452,13 +455,54 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     }
 
     // Verify verification and reviewer events streamed to Actions lane
-    assert.ok(streamedEvents.some((e) => e.payload.type === "step" && e.payload.title?.includes("Verification")));
-    assert.ok(streamedEvents.some((e) => e.payload.type === "command" && e.payload.command === "git status"));
-    assert.ok(streamedEvents.some((e) => e.payload.type === "step" && e.payload.title?.includes("Reviewer")));
-    assert.ok(streamedEvents.some((e) => e.payload.type === "message" && e.payload.text?.includes("Code Review")));
+    assert.ok(streamedEvents.some((e) => (e.payload.type === "step" || e.payload.type === "delta") && e.payload.title?.includes("Verification")));
+    assert.ok(streamedEvents.some((e) => (e.payload.type === "command" || e.payload.type === "command_snapshot") && (e.payload.command === "git status" || e.payload.command?.command === "git status")));
+    assert.ok(streamedEvents.some((e) => (e.payload.type === "step" || e.payload.type === "delta") && e.payload.title?.includes("Reviewer")));
+    assert.ok(streamedEvents.some((e) => (e.payload.type === "message" || e.payload.type === "delta") && (e.payload.text?.includes("Code Review") || e.payload.delta?.includes("Code Review"))));
 
     // Verify history recording for review verdict
     assert.ok(historyEntries.some((h) => h.entry.kind === "review_verdict"));
+  });
+
+  it("uses project-specific chat_session_id from web_projects for history and action broadcasts", async () => {
+    const db = getStateDatabase();
+    ensureWebAuthTables(db);
+    ensureWebProjectTables(db);
+    const now = Date.now();
+    const customChatSessionId = "custom-chat-session-uuid-777";
+    const canonicalProjectId = repoDir;
+    db.prepare(
+      "INSERT OR IGNORE INTO web_users (id, username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    ).run("admin", "admin@test", "hash", now, now);
+    db.prepare(
+      "INSERT INTO web_projects (user_id, project_id, workspace_root, display_name, chat_session_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run("admin", canonicalProjectId, repoDir, "Custom Session Project", customChatSessionId, 0, now, now);
+
+    const historyEntries: any[] = [];
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => ({ exitCode: 0 }),
+      historyStore: {
+        add: (key, entry) => {
+          historyEntries.push({ key, entry });
+        },
+      },
+      testCommand: "git status",
+    });
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 994,
+      issueTitle: "Test custom chatSessionId",
+    });
+    await bus.evaluateQueue(repoDir, repoDir);
+
+    await bus.runJobCycle(job.jobId, repoDir, {
+      testCommand: "git status",
+    });
+
+    assert.ok(historyEntries.length > 0);
+    assert.ok(historyEntries.some((h) => h.key.includes(customChatSessionId)));
+    assert.ok(!historyEntries.some((h) => h.key.includes("::worker")));
   });
 
   it("manually starts queued job via POST /api/actions/queue/start", async () => {

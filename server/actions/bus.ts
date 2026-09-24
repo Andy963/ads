@@ -29,6 +29,19 @@ function resolveCanonicalProjectId(projectId: string, repoPath?: string): string
   return workspaceRoot ? deriveProjectSessionId(workspaceRoot) : String(projectId ?? "").trim();
 }
 
+function resolveProjectChatSessionId(db: DatabaseType, projectId: string, repoPath?: string): string {
+  try {
+    const canonicalId = resolveCanonicalProjectId(projectId, repoPath);
+    const row = db.prepare(
+      "SELECT chat_session_id FROM web_projects WHERE project_id = ? OR project_id = ? OR workspace_root = ? LIMIT 1",
+    ).get(canonicalId, projectId, repoPath ?? "") as { chat_session_id?: string } | undefined;
+    if (row?.chat_session_id) return row.chat_session_id;
+  } catch {
+    // ignore
+  }
+  return "main";
+}
+
 function migrateLegacyProjectJobs(db: DatabaseType, projectId: string, aliases: string[]): void {
   for (const alias of new Set(aliases.map((value) => String(value ?? "").trim()).filter(Boolean))) {
     if (alias === projectId) continue;
@@ -82,6 +95,26 @@ export class LaneDispatchBus {
     private db: DatabaseType,
     private options: LaneDispatchBusOptions = {},
   ) {}
+
+  private updateJobStatus(
+    jobId: string,
+    status: ActionJobStatus,
+    updates?: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "pr_number" | "pr_url" | "error_message" | "branch">>,
+  ): ActionJobRecord | null {
+    updateActionJobStatus(this.db, jobId, status, updates);
+    const updated = getActionJobById(this.db, jobId);
+    if (updated && this.options.broadcastToActionsLane) {
+      this.options.broadcastToActionsLane({
+        type: "action_job_updated",
+        jobId: updated.id,
+        status: updated.status,
+        currentStep: updated.current_step,
+        projectId: updated.project_id,
+        ts: Date.now(),
+      }, undefined, updated.project_id);
+    }
+    return updated;
+  }
 
   public dispatchJob(params: {
     projectId: string;
@@ -145,7 +178,7 @@ export class LaneDispatchBus {
 
       if (!gateResult.allowed) {
         if (gateResult.gateBlocked === "cleanliness") {
-          updateActionJobStatus(this.db, nextJob.id, "queued", {
+          this.updateJobStatus(nextJob.id, "queued", {
             error_message: gateResult.reason,
           });
         }
@@ -178,7 +211,7 @@ export class LaneDispatchBus {
         }).stdout?.trim();
 
         if (!checkoutOk || currentBranch !== nextJob.branch) {
-          updateActionJobStatus(this.db, nextJob.id, "failed", {
+          this.updateJobStatus(nextJob.id, "failed", {
             error_message: `Failed to checkout feature branch '${nextJob.branch}'. Current branch is '${currentBranch}'.`,
           });
           safeResetToDev(repoPath);
@@ -190,7 +223,7 @@ export class LaneDispatchBus {
         }
       }
 
-      updateActionJobStatus(this.db, nextJob.id, "running", {
+      this.updateJobStatus(nextJob.id, "running", {
         current_step: "Developer executing implementation on feature branch",
       });
 
@@ -219,7 +252,7 @@ export class LaneDispatchBus {
     if (this.options.developerRunner) {
       const runnerRes = await this.options.developerRunner(job, repoPath, options.reworkFeedback);
       if (runnerRes.exitCode !== 0) {
-        updateActionJobStatus(this.db, jobId, "failed", {
+        this.updateJobStatus(jobId, "failed", {
           error_message: runnerRes.error || `Developer runner exited with code ${runnerRes.exitCode}`,
         });
         safeResetToDev(repoPath);
@@ -253,7 +286,7 @@ export class LaneDispatchBus {
       const userId = 1;
       const authUserId = "admin";
       const projectId = job.project_id;
-      const chatSessionId = "worker";
+      const chatSessionId = resolveProjectChatSessionId(this.db, projectId, repoPath);
       const connectionId = randomBytes(3).toString("hex");
 
       const identity = buildWsConnectionIdentity({
@@ -318,7 +351,7 @@ export class LaneDispatchBus {
           }
 
           if (event.liveStep && event.title) {
-            updateActionJobStatus(this.db, jobId, "running", {
+            this.updateJobStatus(jobId, "running", {
               current_step: event.title,
             });
           }
@@ -369,7 +402,7 @@ export class LaneDispatchBus {
         }
 
         const isAborted = abortCtrl.signal.aborted;
-        updateActionJobStatus(this.db, jobId, isAborted ? "cancelled" : "failed", {
+        this.updateJobStatus(jobId, isAborted ? "cancelled" : "failed", {
           error_message: `Actions session execution ${isAborted ? "aborted" : "failed"}: ${err instanceof Error ? err.message : String(err)}`,
         });
         safeResetToDev(repoPath);
@@ -381,7 +414,7 @@ export class LaneDispatchBus {
     }
 
     // In automated test harness without runner override or sessionManager, avoid unneeded execution
-    if (process.env.ADS_TEST_STATE_ROOT) {
+    if (process.env.ADS_TEST_STATE_ROOT || (!this.options.sessionManager && !this.options.developerRunner)) {
       queueMicrotask(() => {
         void this.runJobCycle(jobId, repoPath, { reworkCount: options.reworkCount });
       });
@@ -389,7 +422,7 @@ export class LaneDispatchBus {
     }
 
     // Fallback if no runner or session manager is provided
-    updateActionJobStatus(this.db, jobId, "failed", {
+    this.updateJobStatus(jobId, "failed", {
       error_message: "No Actions session manager configured for task execution",
     });
     safeResetToDev(repoPath);
@@ -487,16 +520,17 @@ export class LaneDispatchBus {
     if (!job || job.status !== "running") return;
 
     const projectId = job.project_id;
+    const chatSessionId = resolveProjectChatSessionId(this.db, projectId, repoPath);
     const identity = buildWsConnectionIdentity({
       authUserId: "admin",
       sessionId: projectId,
-      chatSessionId: "worker",
+      chatSessionId,
       connectionId: randomBytes(3).toString("hex"),
     });
     const historyKey = identity.historyKey;
 
     // 1. Verification Phase: run test suite
-    updateActionJobStatus(this.db, jobId, "verifying", {
+    this.updateJobStatus(jobId, "verifying", {
       current_step: "Running automated test suite and verification commands",
     });
 
@@ -547,7 +581,7 @@ export class LaneDispatchBus {
     }
 
     // 2. Reviewing Phase: detached clean-room reviewer
-    updateActionJobStatus(this.db, jobId, "reviewing", {
+    this.updateJobStatus(jobId, "reviewing", {
       current_step: "Detached clean-room reviewer auditing code changes against specifications",
     });
 
@@ -605,7 +639,7 @@ export class LaneDispatchBus {
       );
     }
 
-    updateActionJobStatus(this.db, jobId, "reviewing", {
+    this.updateJobStatus(jobId, "reviewing", {
       review_verdicts_json: JSON.stringify([verdict]),
     });
 
@@ -672,7 +706,7 @@ export class LaneDispatchBus {
         });
 
         if (prRes.error || !prRes.prNumber) {
-          updateActionJobStatus(this.db, job.id, "failed", {
+          this.updateJobStatus(job.id, "failed", {
             error_message: `PR creation failed: ${prRes.error || "Unknown error"}`,
             current_step: "Review passed but PR creation failed.",
           });
@@ -687,7 +721,7 @@ export class LaneDispatchBus {
         prUrl = prRes.prUrl;
       }
 
-      updateActionJobStatus(this.db, job.id, "waiting_merge", {
+      this.updateJobStatus(job.id, "waiting_merge", {
         pr_number: prNumber,
         pr_url: prUrl,
         current_step: hasRemote
@@ -696,10 +730,11 @@ export class LaneDispatchBus {
       });
 
       const projectId = job.project_id;
+      const chatSessionId = resolveProjectChatSessionId(this.db, projectId, params.repoPath);
       const identity = buildWsConnectionIdentity({
         authUserId: "admin",
         sessionId: projectId,
-        chatSessionId: "worker",
+        chatSessionId,
         connectionId: randomBytes(3).toString("hex"),
       });
       const historyKey = identity.historyKey;
@@ -738,10 +773,13 @@ export class LaneDispatchBus {
     const currentReworks = params.reworkCount ?? 0;
     if (currentReworks < 2) {
       const defectSummary = Array.isArray(params.defects) && params.defects.length > 0
-        ? params.defects.map((d: any) => `- ${d.file || "unknown"}:${d.line || "?"} [${d.severity || "defect"}]: ${d.description || ""}`).join("\n")
+        ? params.defects.map((d: unknown) => {
+            const defect = d && typeof d === "object" ? (d as Record<string, unknown>) : null;
+            return `- ${String(defect?.file ?? "unknown")}:${String(defect?.line ?? "?")} [${String(defect?.severity ?? "defect")}]: ${String(defect?.description ?? "")}`;
+          }).join("\n")
         : params.reviewSummary;
 
-      updateActionJobStatus(this.db, job.id, "running", {
+      this.updateJobStatus(job.id, "running", {
         current_step: `Review rejected. Routing defect feedback to Developer for rework (attempt ${currentReworks + 1}/2)`,
       });
 
@@ -755,7 +793,7 @@ export class LaneDispatchBus {
     }
 
     // Limit exceeded: transition to review_rejected / failed
-    updateActionJobStatus(this.db, job.id, "failed", {
+    this.updateJobStatus(job.id, "failed", {
       current_step: "Review rejected twice. Human override required.",
       error_message: "Rework limit exceeded (2 attempts). Review defects remain unresolved.",
     });
@@ -781,7 +819,7 @@ export class LaneDispatchBus {
     });
 
     if (mergeRes.success) {
-      updateActionJobStatus(this.db, job.id, "completed", {
+      this.updateJobStatus(job.id, "completed", {
         current_step: "PR squash merged, Issue closed, dev synchronized, and branch cleaned up.",
       });
 
@@ -790,7 +828,7 @@ export class LaneDispatchBus {
         void this.evaluateQueue(job.project_id, repoPath);
       });
     } else {
-      updateActionJobStatus(this.db, job.id, "failed", {
+      this.updateJobStatus(job.id, "failed", {
         error_message: mergeRes.error,
       });
       safeResetToDev(repoPath);
@@ -812,7 +850,7 @@ export class LaneDispatchBus {
     const job = getActionJobById(this.db, jobId);
     if (!job) return;
 
-    updateActionJobStatus(this.db, jobId, "cancelled", {
+    this.updateJobStatus(jobId, "cancelled", {
       current_step: "Job was cancelled by user.",
     });
 

@@ -150,4 +150,83 @@ describe("Actions lane queue visibility and manual start button", () => {
 
     wrapper.unmount();
   });
+
+  it("prioritizes active running job over newer queued job in activeActionJob banner (Issue #345)", async () => {
+    const mockJobs = [
+      {
+        id: "job-2",
+        project_id: "/home/andy/repos/ads",
+        issue_id: 342,
+        issue_title: "Newer Queued Task",
+        status: "queued",
+        created_at: 2000,
+        updated_at: 2000,
+      },
+      {
+        id: "job-1",
+        project_id: "/home/andy/repos/ads",
+        issue_id: 341,
+        issue_title: "Older Running Task",
+        status: "running",
+        current_step: "Developer executing implementation on feature branch",
+        created_at: 1000,
+        updated_at: 1000,
+      },
+    ];
+
+    getSpy.mockResolvedValue(mockJobs);
+    localStorage.setItem("ads.app_state", JSON.stringify({
+      version: 1,
+      updatedAt: Date.now(),
+      projects: [{ id: "p-1", sessionId: "p-1", path: "/home/andy/repos/ads", name: "ads", chatSessionId: "main", initialized: true }],
+      activeProject: "p-1",
+    }));
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+
+    const banner = wrapper.find('[data-testid="actions-job-banner"]');
+    expect(banner.exists()).toBe(true);
+    // The running task title should be displayed, not the queued task
+    expect(banner.text()).toContain("Older Running Task");
+
+    wrapper.unmount();
+  });
+
+  it("shows blocking notice and blocks start API when another job is active (Issue #345)", async () => {
+    const mockJobs = [
+      {
+        id: "job-1",
+        project_id: "/home/andy/repos/ads",
+        issue_id: 341,
+        issue_title: "Active Running Job",
+        status: "running",
+        created_at: 1000,
+        updated_at: 1000,
+      },
+    ];
+
+    getSpy.mockResolvedValue(mockJobs);
+    localStorage.setItem("ads.app_state", JSON.stringify({
+      version: 1,
+      updatedAt: Date.now(),
+      projects: [{ id: "p-1", sessionId: "p-1", path: "/home/andy/repos/ads", name: "ads", chatSessionId: "main", initialized: true }],
+      activeProject: "p-1",
+    }));
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+
+    // Call triggerStartActionQueue on the component instance
+    await (wrapper.vm as any).triggerStartActionQueue();
+    await settleUi(wrapper);
+
+    // Start API must NOT be called when a running job exists
+    expect(postSpy).not.toHaveBeenCalled();
+    expect((wrapper.vm as any).apiNotice).toContain("已有活跃任务正在执行中");
+
+    wrapper.unmount();
+  });
 });
