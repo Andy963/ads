@@ -22,6 +22,19 @@ import {
 } from "../state/actionJobStore.js";
 import { checkThreePointGate, type GateCheckResult } from "./threePointGate.js";
 import { createPullRequest, mergeAndCleanupPipeline } from "./pipeline.js";
+import { deriveProjectSessionId } from "../web/server/projectSessionId.js";
+
+function resolveCanonicalProjectId(projectId: string, repoPath?: string): string {
+  const workspaceRoot = String(repoPath ?? "").trim();
+  return workspaceRoot ? deriveProjectSessionId(workspaceRoot) : String(projectId ?? "").trim();
+}
+
+function migrateLegacyProjectJobs(db: DatabaseType, projectId: string, aliases: string[]): void {
+  for (const alias of new Set(aliases.map((value) => String(value ?? "").trim()).filter(Boolean))) {
+    if (alias === projectId) continue;
+    db.prepare("UPDATE action_jobs SET project_id = ? WHERE project_id = ?").run(projectId, alias);
+  }
+}
 
 function generateJobId(issueId?: number | null): string {
   const ts = Date.now();
@@ -81,10 +94,11 @@ export class LaneDispatchBus {
   }): { ok: boolean; jobId: string; status: ActionJobStatus } {
     const id = generateJobId(params.issueId);
     const branch = params.issueId ? `codex/issue-${params.issueId}` : `codex/${id}`;
+    const projectId = resolveCanonicalProjectId(params.projectId, params.repoPath);
 
     const job = createActionJob(this.db, {
       id,
-      project_id: params.projectId,
+      project_id: projectId,
       job_kind: params.jobKind ?? (params.issueId ? "github_issue" : "local_prompt"),
       issue_id: params.issueId,
       issue_title: params.issueTitle,
@@ -97,7 +111,7 @@ export class LaneDispatchBus {
     if (params.repoPath) {
       // Non-blocking trigger of queue evaluation
       queueMicrotask(() => {
-        void this.evaluateQueue(params.projectId, params.repoPath!);
+        void this.evaluateQueue(projectId, params.repoPath!);
       });
     }
 
@@ -109,22 +123,25 @@ export class LaneDispatchBus {
   }
 
   public async evaluateQueue(projectId: string, repoPath: string): Promise<GateCheckResult & { dequeuedJobId?: string }> {
-    if (this.processingProjects.has(projectId)) {
+    const canonicalProjectId = resolveCanonicalProjectId(projectId, repoPath);
+    migrateLegacyProjectJobs(this.db, canonicalProjectId, [projectId, repoPath]);
+
+    if (this.processingProjects.has(canonicalProjectId)) {
       return { allowed: false, reason: "Queue is already being evaluated" };
     }
 
-    this.processingProjects.add(projectId);
+    this.processingProjects.add(canonicalProjectId);
     try {
       const queuedJobs = this.db.prepare(
         "SELECT * FROM action_jobs WHERE project_id = ? AND status = 'queued' ORDER BY created_at ASC",
-      ).all(projectId) as ActionJobRecord[];
+      ).all(canonicalProjectId) as ActionJobRecord[];
 
       if (queuedJobs.length === 0) {
         return { allowed: true };
       }
 
       const nextJob = queuedJobs[0]!;
-      const gateResult = checkThreePointGate(this.db, repoPath, projectId);
+      const gateResult = checkThreePointGate(this.db, repoPath, canonicalProjectId);
 
       if (!gateResult.allowed) {
         if (gateResult.gateBlocked === "cleanliness") {
@@ -187,7 +204,7 @@ export class LaneDispatchBus {
         dequeuedJobId: nextJob.id,
       };
     } finally {
-      this.processingProjects.delete(projectId);
+      this.processingProjects.delete(canonicalProjectId);
     }
   }
 
@@ -808,8 +825,10 @@ export class LaneDispatchBus {
     }
   }
 
-  public getJobs(projectId: string): ActionJobRecord[] {
-    return getActionJobs(this.db, projectId);
+  public getJobs(projectId: string, repoPath?: string): ActionJobRecord[] {
+    const canonicalProjectId = resolveCanonicalProjectId(projectId, repoPath);
+    migrateLegacyProjectJobs(this.db, canonicalProjectId, [projectId, repoPath ?? ""]);
+    return getActionJobs(this.db, canonicalProjectId);
   }
 
   public getJob(jobId: string): ActionJobRecord | null {

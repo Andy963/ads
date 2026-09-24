@@ -418,6 +418,12 @@ type ActionJobItem = {
   error_message: string | null;
 };
 
+type QueueStartResponse = {
+  allowed?: boolean;
+  reason?: string;
+  dequeuedJobId?: string;
+};
+
 const actionJobs = ref<ActionJobItem[]>([]);
 
 const activeActionJob = computed(() => {
@@ -432,6 +438,15 @@ const queuedActionJobsCount = computed(() => {
   return actionJobs.value.filter((j) => j.status === "queued").length;
 });
 
+function showActionNotice(message: string): void {
+  const text = String(message ?? "").trim();
+  if (!text) return;
+  apiNotice.value = text;
+  window.setTimeout(() => {
+    if (apiNotice.value === text) apiNotice.value = null;
+  }, 3000);
+}
+
 async function loadActionJobs(): Promise<void> {
   const pid = activeProjectId.value.trim();
   if (!pid) return;
@@ -445,34 +460,54 @@ async function loadActionJobs(): Promise<void> {
   }
 }
 
+const isStartingQueue = ref(false);
+
 async function triggerStartActionQueue(): Promise<void> {
   const pid = activeProjectId.value.trim();
-  if (!pid) return;
+  if (!pid || isStartingQueue.value) return;
+  isStartingQueue.value = true;
+  const repoPath = resolveActiveWorkspaceRoot() || activeProject.value?.path || "";
   try {
-    await api.post("/api/actions/queue/start", { projectId: pid });
+    const res = await api.post<QueueStartResponse>("/api/actions/queue/start", { projectId: pid, repoPath });
+    if (res.allowed === false) {
+      showActionNotice(`启动执行被阻止：${res.reason || "三点门禁未通过"}`);
+    } else if (res.dequeuedJobId) {
+      showActionNotice("已启动执行，详细进度将在 Actions 面板中显示。");
+    } else {
+      showActionNotice("当前没有可启动的排队任务。");
+    }
     await loadActionJobs();
-  } catch {
-    // best-effort
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    showActionNotice(`启动执行失败：${message}`);
+  } finally {
+    isStartingQueue.value = false;
   }
 }
 
 async function triggerMergeActionJob(jobId: string): Promise<void> {
   if (!jobId) return;
+  const pid = activeProjectId.value.trim();
+  const repoPath = resolveActiveWorkspaceRoot() || activeProject.value?.path || "";
   try {
-    await api.post(`/api/actions/jobs/${encodeURIComponent(jobId)}/merge`, {});
+    await api.post(`/api/actions/jobs/${encodeURIComponent(jobId)}/merge`, { projectId: pid, repoPath });
     await loadActionJobs();
-  } catch {
-    // best-effort
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    showActionNotice(`合并任务失败：${message}`);
   }
 }
 
 async function cancelActionJob(jobId: string): Promise<void> {
   if (!jobId) return;
+  const pid = activeProjectId.value.trim();
+  const repoPath = resolveActiveWorkspaceRoot() || activeProject.value?.path || "";
   try {
-    await api.post(`/api/actions/jobs/${encodeURIComponent(jobId)}/cancel`, {});
+    await api.post(`/api/actions/jobs/${encodeURIComponent(jobId)}/cancel`, { projectId: pid, repoPath });
     await loadActionJobs();
-  } catch {
-    // best-effort
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    showActionNotice(`取消任务失败：${message}`);
   }
 }
 
@@ -1791,10 +1826,11 @@ const advisorConnectionStatus = computed(() => {
                     v-if="activeActionJob.status === 'queued'"
                     type="button"
                     class="btnActionStart"
+                    :disabled="isStartingQueue"
                     data-testid="btn-action-start"
                     @click="triggerStartActionQueue"
                   >
-                    ▶ 启动执行
+                    {{ isStartingQueue ? '启动中...' : '▶ 启动执行' }}
                   </button>
                   <button
                     v-if="activeActionJob.status === 'waiting_merge'"

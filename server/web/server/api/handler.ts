@@ -82,7 +82,7 @@ export function createApiRequestHandler(deps: {
     if (await handleProjectRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handleLanePromptRoutes(routeCtx, { lanePromptStore: deps.lanePromptStore })) return true;
     if (await handleRoleProfileRoutes(routeCtx)) return true;
-    if (await handleActionRoutes(routeCtx, { resolveWorkspaceRoot: deps.resolveWorkspaceRoot })) return true;
+    if (await handleActionRoutes(routeCtx, { resolveWorkspaceRoot: deps.resolveWorkspaceRoot, allowedDirs: deps.allowedDirs })) return true;
     if (
       await handleSyncRoutes(routeCtx, {
         syncEventStore: deps.syncEventStore,
