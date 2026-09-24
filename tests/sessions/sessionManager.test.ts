@@ -200,6 +200,72 @@ describe("SessionManager", () => {
     assert.equal(manager.getSavedThreadId(987654), undefined);
   });
 
+  it("records the runtime backend without persisting Native execution ids", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-state-"));
+    const storage = new ThreadStorage({
+      namespace: "native-runtime",
+      stateDbPath: path.join(directory, "state.db"),
+      storagePath: path.join(directory, "threads.json"),
+      saltPath: path.join(directory, "salt"),
+    });
+    const sessions = createFakeSessionFactory();
+    const nativeManager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      storage,
+      { ADS_AGENT_RUNTIME: "native", ADS_WEB_SESSION_PEPPER: "test-only-pepper" },
+      { createSession: sessions.factory as never },
+    );
+
+    try {
+      const session = nativeManager.getOrCreate(1, directory) as unknown as FakeSession;
+      session.threadId = "native-execution-id";
+      nativeManager.saveThreadId(1, session.threadId);
+
+      const record = storage.getRecord(1);
+      assert.equal(record?.runtimeBackend, "native");
+      assert.equal(record?.lifecycle, "durable");
+      assert.equal(record?.threadId, undefined);
+      assert.deepEqual(record?.agentThreads, {});
+    } finally {
+      nativeManager.destroy();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not persist ephemeral session state", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-ephemeral-state-"));
+    const storage = new ThreadStorage({
+      namespace: "ephemeral-runtime",
+      stateDbPath: path.join(directory, "state.db"),
+      storagePath: path.join(directory, "threads.json"),
+      saltPath: path.join(directory, "salt"),
+    });
+    const sessions = createFakeSessionFactory();
+    const ephemeralManager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      storage,
+      undefined,
+      { createSession: sessions.factory as never },
+    );
+
+    try {
+      const session = ephemeralManager.getOrCreate(2, directory, false, { lifecycle: "ephemeral" }) as unknown as FakeSession;
+      session.threadId = "ephemeral-thread";
+      ephemeralManager.saveThreadId(2, session.threadId);
+      ephemeralManager.setUserModel(2, "ephemeral-model");
+      assert.equal(storage.getRecord(2), undefined);
+    } finally {
+      ephemeralManager.destroy();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("tracks session statistics", () => {
     manager.getOrCreate(123456);
     manager.getOrCreate(789012);
@@ -267,6 +333,8 @@ describe("SessionManager", () => {
       threadId: "thread-80",
       cwd: workspaceRoot,
       agentThreads: { codex: "thread-80" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       activeAgentId: "codex",
     });
 
@@ -306,6 +374,8 @@ describe("SessionManager", () => {
       threadId: "thread-81",
       cwd: "/tmp/project-a",
       agentThreads: { codex: "thread-81" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       activeAgentId: "codex",
     });
 
@@ -338,6 +408,8 @@ describe("SessionManager", () => {
       threadId: "codex-thread",
       cwd: "/tmp/project",
       agentThreads: { codex: "codex-thread" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       model: "gpt-5.6-sol",
       modelReasoningEffort: "xhigh",
       activeAgentId: "codex",
@@ -390,6 +462,8 @@ describe("SessionManager", () => {
       threadId: "thread-78",
       cwd: "/tmp/project-a",
       agentThreads: { codex: "thread-78" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       activeAgentId: "codex",
     });
 
@@ -421,6 +495,8 @@ describe("SessionManager", () => {
       threadId: "codex-thread",
       cwd: "/tmp/project",
       agentThreads: { codex: "codex-thread" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       activeAgentId: "codex",
     });
     const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
@@ -458,6 +534,8 @@ describe("SessionManager", () => {
       threadId: "codex-thread",
       cwd: "/tmp/project",
       agentThreads: { codex: "codex-thread" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       activeAgentId: "codex",
     });
 
@@ -484,6 +562,8 @@ describe("SessionManager", () => {
       threadId: "thread-1",
       cwd: "/tmp/project",
       agentThreads: { codex: "thread-1" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       model: "gpt-4.1",
       activeAgentId: "codex",
     });
@@ -516,6 +596,8 @@ describe("SessionManager", () => {
       threadId: "stale-thread",
       cwd: "/tmp/project-a",
       agentThreads: { codex: "stale-thread" },
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
       activeAgentId: "codex",
     });
 

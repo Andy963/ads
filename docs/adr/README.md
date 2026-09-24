@@ -33,4 +33,5 @@
 - 0016 - [ADR 0016: Bind Actions Events to Authenticated Project Lanes](0016-bind-actions-events-to-authenticated-project-lanes.md)
 - 0017 - [ADR 0017: 退役 Live-Step 进度消息通道](0017-retire-live-step-progress.md)
 - 0020 - [ADR 0020: Isolate Actions Reviewer Context and Persist Review Contracts](0020-isolated-actions-reviewer-contract.md)
+- 0021 - [ADR 0021: Enforce Exclusive Runtime Backend and Session Lifecycle](0021-exclusive-runtime-backend-lifecycle.md)
 <!-- ADS:ADR_INDEX_END -->

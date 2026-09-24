@@ -812,6 +812,7 @@ export class LaneDispatchBus {
         const orchestrator = this.options.sessionManager.getOrCreate(userId, repoPath, false, {
           authUserId,
           projectId: reviewerJob?.project_id ?? projectId ?? "reviewer-isolated",
+          lifecycle: "ephemeral",
         });
 
         if (typeof orchestrator.setDeveloperInstructions === "function") {

@@ -1,4 +1,5 @@
 import type { ContextRestoreMode } from "./sessionState.js";
+import type { AgentRuntimeBackend, SessionLifecycle } from "../runtime/config.js";
 
 export interface RuntimeSession {
   setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void;
@@ -20,6 +21,8 @@ export interface SessionRuntimeRecord<
   lastActivity: number;
   cwd: string;
   logger?: TLogger;
+  runtimeBackend: AgentRuntimeBackend;
+  lifecycle: SessionLifecycle;
 }
 
 export class SessionRuntimeRegistry<
@@ -54,11 +57,17 @@ export class SessionRuntimeRegistry<
     return this.sessions.values();
   }
 
-  trackSession(userId: number, session: TSession, cwd: string): void {
+  trackSession(
+    userId: number,
+    session: TSession,
+    cwd: string,
+    metadata: { runtimeBackend: AgentRuntimeBackend; lifecycle: SessionLifecycle },
+  ): void {
     this.sessions.set(userId, {
       session,
       lastActivity: Date.now(),
       cwd,
+      ...metadata,
     });
   }
 
