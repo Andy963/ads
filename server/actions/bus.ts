@@ -31,6 +31,14 @@ import { deriveProjectSessionId } from "../web/server/projectSessionId.js";
 import { resolveActionsLaneIdentity } from "./laneIdentity.js";
 
 const MAX_REWORK_ATTEMPTS = 2;
+const AUTOMATED_ACTION_EXECUTION_MODE = "automated_action" as const;
+const AUTOMATED_ACTION_INSTRUCTIONS = [
+  `Execution mode: ${AUTOMATED_ACTION_EXECUTION_MODE}.`,
+  "AUTOMATED ACTION MODE: This queued job is already authorized by the user.",
+  "Begin implementation immediately on the assigned feature branch.",
+  "Do not ask for another goal confirmation and do not wait for interactive approval.",
+  "Implement the requested changes, run verification, and commit the implementation before responding.",
+].join("\n");
 
 function resolveCanonicalProjectId(projectId: string, repoPath?: string): string {
   const workspaceRoot = String(repoPath ?? "").trim();
@@ -52,11 +60,15 @@ function generateJobId(issueId?: number | null): string {
 }
 
 function buildActionAgentEventPayload(event: AgentEvent, jobId: string, reviewer = false): Record<string, unknown> {
+  if (reviewer && event.phase === "responding") {
+    return {};
+  }
+
   const title = reviewer
     ? (event.title ? `[Reviewer] ${event.title}` : "[Reviewer]")
     : event.title;
   if (event.phase !== "command") {
-    return {
+    const payload: Record<string, unknown> = {
       type: event.liveStep ? "step" : "delta",
       title,
       delta: event.delta,
@@ -64,8 +76,9 @@ function buildActionAgentEventPayload(event: AgentEvent, jobId: string, reviewer
       timestamp: event.timestamp,
       jobId,
       phase: event.phase,
-      raw: event.raw,
     };
+    if (!reviewer) payload.raw = event.raw;
+    return payload;
   }
 
   const rawItem = event.raw && typeof event.raw === "object" && "item" in event.raw
@@ -90,7 +103,7 @@ function buildActionAgentEventPayload(event: AgentEvent, jobId: string, reviewer
   const itemId = String(rawItem?.id ?? "").trim();
   const identity = `${jobId}:${itemId || command}`;
 
-  return {
+  const payload: Record<string, unknown> = {
     type: "command",
     title,
     command,
@@ -103,8 +116,22 @@ function buildActionAgentEventPayload(event: AgentEvent, jobId: string, reviewer
     jobId,
     timestamp: event.timestamp,
     phase: event.phase,
-    raw: event.raw,
   };
+  if (!reviewer) payload.raw = event.raw;
+  return payload;
+}
+
+function resolveImplementationDiffBase(repoPath: string): "origin/dev" | "dev" {
+  return hasGitRemoteOrigin(repoPath) ? "origin/dev" : "dev";
+}
+
+function hasCommittedImplementationDiff(repoPath: string): boolean {
+  const base = resolveImplementationDiffBase(repoPath);
+  const result = spawnSync("git", ["diff", "--name-only", `${base}...HEAD`], {
+    cwd: repoPath,
+    encoding: "utf8",
+  });
+  return result.status === 0 && Boolean(result.stdout?.trim());
 }
 
 export function hasGitRemoteOrigin(repoPath: string): boolean {
@@ -120,6 +147,7 @@ export type DeveloperRunner = (
   job: ActionJobRecord,
   repoPath: string,
   reworkFeedback?: string,
+  executionMode?: typeof AUTOMATED_ACTION_EXECUTION_MODE,
 ) => Promise<{ exitCode: number; error?: string }>;
 
 export type ReviewerRunner = (prompt: string, systemPrompt: string) => Promise<string>;
@@ -419,11 +447,24 @@ export class LaneDispatchBus {
     const reworkCount = Math.max(0, Math.floor(options.reworkCount ?? job.rework_count ?? 0));
 
     if (this.options.developerRunner) {
-      const runnerRes = await this.options.developerRunner(job, repoPath, options.reworkFeedback);
+      const runnerRes = await this.options.developerRunner(
+        job,
+        repoPath,
+        options.reworkFeedback,
+        AUTOMATED_ACTION_EXECUTION_MODE,
+      );
       if (runnerRes.exitCode !== 0) {
         this.scheduleRework(jobId, repoPath, {
           stage: "Developer execution",
           feedback: runnerRes.error || `Developer runner exited with code ${runnerRes.exitCode}`,
+          reworkCount,
+        });
+        return;
+      }
+      if (!hasCommittedImplementationDiff(repoPath)) {
+        this.scheduleRework(jobId, repoPath, {
+          stage: "Developer implementation",
+          feedback: "Developer produced no implementation diff",
           reworkCount,
         });
         return;
@@ -443,9 +484,13 @@ export class LaneDispatchBus {
       ? `Implement GitHub Issue #${job.issue_id}: ${job.issue_title}.\nRead the issue, implement the requested code changes on branch '${job.branch}', run verification tests, and commit.`
       : `${job.issue_title}.\nImplement the requested changes on branch '${job.branch}', run verification tests, and commit.`;
 
-    const finalTaskPrompt = options.reworkFeedback
-      ? `${taskPrompt}\n\nCRITICAL - REWORK INSTRUCTIONS:\n${options.reworkFeedback}\nAddress the failure, re-run tests, and commit the fixes on the same feature branch.`
-      : taskPrompt;
+    const finalTaskPrompt = [
+      taskPrompt,
+      AUTOMATED_ACTION_INSTRUCTIONS,
+      options.reworkFeedback
+        ? `CRITICAL - REWORK INSTRUCTIONS:\n${options.reworkFeedback}\nAddress the failure, re-run tests, and commit the fixes on the same feature branch.`
+        : "",
+    ].filter(Boolean).join("\n\n");
 
     if (this.options.sessionManager) {
       const sessionManager = this.options.sessionManager;
@@ -520,6 +565,19 @@ export class LaneDispatchBus {
         unsubscribe?.();
         unsubscribe = null;
 
+        if (!hasCommittedImplementationDiff(repoPath)) {
+          this.activeAbortControllers.delete(jobId);
+          if (this.options.interruptControllers) {
+            this.options.interruptControllers.delete(historyKey);
+          }
+          this.scheduleRework(jobId, repoPath, {
+            stage: "Developer implementation",
+            feedback: "Developer produced no implementation diff",
+            reworkCount,
+          });
+          return;
+        }
+
         // Record assistant response in history
         if (this.options.historyStore) {
           this.options.historyStore.add(historyKey, {
@@ -574,7 +632,20 @@ export class LaneDispatchBus {
     }
 
     // In automated test harness without runner override or sessionManager, avoid unneeded execution
-    if (process.env.ADS_TEST_STATE_ROOT || (!this.options.sessionManager && !this.options.developerRunner)) {
+    if (process.env.ADS_TEST_STATE_ROOT && !this.options.sessionManager && !this.options.developerRunner) {
+      return;
+    }
+
+    if (!this.options.sessionManager && !this.options.developerRunner) {
+      this.scheduleRework(jobId, repoPath, {
+        stage: "Developer execution",
+        feedback: "No Actions session manager configured for task execution",
+        reworkCount,
+      });
+      return;
+    }
+
+    if (process.env.ADS_TEST_STATE_ROOT) {
       queueMicrotask(() => {
         void this.runJobCycle(jobId, repoPath, { reworkCount });
       });
@@ -603,17 +674,6 @@ export class LaneDispatchBus {
       return parseReviewVerdict(rawVerdict, reviewerProfileId);
     }
 
-    if (process.env.ADS_TEST_STATE_ROOT) {
-      const pass = payload.testReport?.exitCode === 0;
-      return {
-        status: pass ? "PASS" : "REJECT",
-        summary: pass ? "Automated verification passed and clean-room review approved." : `Verification failed with exit code ${payload.testReport?.exitCode}`,
-        defects: pass ? [] : [{ file: "tests", severity: "blocker", description: payload.testReport?.summary || "Tests failed" }],
-        reviewerProfileId,
-        reviewedAt: Date.now(),
-      };
-    }
-
     // Retrieve reviewer profile from database
     const reviewerProfile = (reviewerProfileId ? getRoleProfileById(this.db, reviewerProfileId) : null)
       ?? getDefaultRoleProfile(this.db, "reviewer");
@@ -621,6 +681,7 @@ export class LaneDispatchBus {
     const reviewPrompt = buildReviewPrompt(payload);
 
     if (this.options.sessionManager) {
+      let unsubscribe: (() => void) | null = null;
       try {
         const userId = 9999; // Detached reviewer ephemeral identity
         const reviewerJob = jobId ? getActionJobById(this.db, jobId) : null;
@@ -643,10 +704,11 @@ export class LaneDispatchBus {
         }
 
         // Attach event listener for real-time Reviewer streaming to Actions lane
-        const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
-          if (this.options.broadcastToActionsLane) {
+        unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
+          const payload = buildActionAgentEventPayload(event, jobId ?? "reviewer", true);
+          if (Object.keys(payload).length > 0 && this.options.broadcastToActionsLane) {
             this.options.broadcastToActionsLane(
-              buildActionAgentEventPayload(event, jobId ?? "reviewer", true),
+              payload,
               historyKey,
               projectId,
             );
@@ -654,21 +716,15 @@ export class LaneDispatchBus {
         });
 
         const res = await orchestrator.send(reviewPrompt);
-        unsubscribe();
         return parseReviewVerdict(res.response, reviewerProfile?.id);
-      } catch {
-        // Fallback below
+      } catch (error) {
+        throw new Error(`Reviewer execution failed: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        unsubscribe?.();
       }
     }
 
-    const pass = payload.testReport?.exitCode === 0;
-    return {
-      status: pass ? "PASS" : "REJECT",
-      summary: pass ? "Automated verification passed and clean-room review approved." : `Verification failed with exit code ${payload.testReport?.exitCode}`,
-      defects: pass ? [] : [{ file: "tests", severity: "blocker", description: payload.testReport?.summary || "Tests failed" }],
-      reviewerProfileId,
-      reviewedAt: Date.now(),
-    };
+    throw new Error("Reviewer execution is unavailable: no detached Reviewer session is configured");
   }
 
   public async runJobCycle(
@@ -765,8 +821,7 @@ export class LaneDispatchBus {
       }, historyKey, projectId);
     }
 
-    const hasOrigin = hasGitRemoteOrigin(repoPath);
-    const diffBase = hasOrigin ? "origin/dev" : "dev";
+    const diffBase = resolveImplementationDiffBase(repoPath);
     const diffRes = spawnSync("git", ["diff", `${diffBase}...HEAD`], {
       cwd: repoPath,
       encoding: "utf8",

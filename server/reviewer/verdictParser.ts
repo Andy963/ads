@@ -33,15 +33,15 @@ export function parseReviewVerdict(rawText: string, reviewerProfileId?: string):
       reviewerProfileId,
       reviewedAt: Date.now(),
     };
-  } catch (error) {
+  } catch {
     return {
       status: "REJECT",
-      summary: `Failed to parse structured review verdict: ${error instanceof Error ? error.message : String(error)}`,
+      summary: "Failed to parse structured review verdict.",
       defects: [
         {
           file: "unknown",
           severity: "blocker",
-          description: `Raw reviewer output could not be parsed as valid JSON: ${rawText.slice(0, 300)}`,
+          description: "Reviewer output did not match the required structured verdict JSON.",
         },
       ],
       reviewerProfileId,
@@ -49,4 +49,3 @@ export function parseReviewVerdict(rawText: string, reviewerProfileId?: string):
     };
   }
 }
-
