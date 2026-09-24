@@ -5,6 +5,13 @@ export interface ReviewPayload {
     description?: string;
     acceptanceCriteria?: string[];
   };
+  diffRange?: {
+    baseRef: string;
+    headRef: string;
+    baseCommit?: string;
+    headCommit?: string;
+    range: string;
+  };
   adrs?: Array<{
     id: string;
     title: string;
@@ -12,10 +19,12 @@ export interface ReviewPayload {
   }>;
   diff: string;
   diffStat?: string;
+  diffCaptureError?: string;
   testReport?: {
     command: string;
     exitCode: number;
     summary: string;
+    output?: string;
   };
 }
 
@@ -33,4 +42,3 @@ export interface ReviewVerdict {
   reviewerProfileId?: string;
   reviewedAt: number;
 }
-

@@ -98,9 +98,11 @@ export const NATIVE_TOOL_DEFINITIONS: NativeToolDefinition[] = [
         properties: {
           issue_id: { type: "integer", description: "GitHub Issue number if available." },
           title: { type: "string", description: "Task or Issue title." },
+          description: { type: "string", description: "Complete Issue description or local task prompt." },
+          acceptance_criteria: { type: "array", items: { type: "string" }, description: "Immutable acceptance criteria snapshot." },
           kind: { type: "string", enum: ["github_issue", "local_prompt"], description: "Kind of task." },
         },
-        required: ["title"],
+        required: ["title", "description", "acceptance_criteria"],
       },
     },
   },
@@ -377,13 +379,26 @@ export class NativeToolExecutor {
 
   private dispatchActionJob(args: JsonRecord): NativeToolExecutionResult {
     const title = stringArgument(args, "title");
-    const issueId = args.issue_id !== undefined ? Number(args.issue_id) : null;
+    const description = stringArgument(args, "description");
     const kind = args.kind === "local_prompt" ? "local_prompt" : "github_issue";
+    if (!Array.isArray(args.acceptance_criteria)) {
+      throw new Error("dispatch_action_job requires acceptance_criteria");
+    }
+    const acceptanceCriteria = args.acceptance_criteria
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (!description.trim() || (kind === "github_issue" && acceptanceCriteria.length === 0)) {
+      throw new Error("dispatch_action_job requires a complete description and acceptance criteria");
+    }
+    const issueId = args.issue_id !== undefined ? Number(args.issue_id) : null;
     const bus = getBus();
     const res = bus.dispatchJob({
       projectId: this.workspaceRoot,
       issueId: Number.isFinite(issueId) ? issueId : null,
       issueTitle: title,
+      issueDescription: description,
+      acceptanceCriteria,
       jobKind: kind,
       repoPath: this.workspaceRoot,
     });

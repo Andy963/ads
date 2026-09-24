@@ -14,10 +14,26 @@ const dispatchSchema = z.object({
   projectId: z.string(),
   issueId: z.number().nullable().optional(),
   issueTitle: z.string(),
+  issueDescription: z.string().min(1),
+  acceptanceCriteria: z.array(z.string().trim().min(1)),
+  adrs: z.array(z.object({
+    id: z.string(),
+    title: z.string(),
+    decision: z.string(),
+  })).optional(),
   jobKind: z.enum(["github_issue", "local_prompt"]).optional(),
   repoPath: z.string().optional(),
   developerProfileId: z.string().nullable().optional(),
   reviewerProfileIds: z.array(z.string()).optional(),
+}).superRefine((data, ctx) => {
+  const jobKind = data.jobKind ?? (data.issueId ? "github_issue" : "local_prompt");
+  if (jobKind === "github_issue" && data.acceptanceCriteria.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["acceptanceCriteria"],
+      message: "GitHub Issue jobs require at least one acceptance criterion",
+    });
+  }
 });
 
 export interface ActionRouteDeps {
@@ -177,7 +193,10 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
       projectId: resolved.projectId,
       issueId: parsed.data.issueId,
       issueTitle: parsed.data.issueTitle,
-      jobKind: parsed.data.jobKind,
+      issueDescription: parsed.data.issueDescription,
+      acceptanceCriteria: parsed.data.acceptanceCriteria,
+      adrs: parsed.data.adrs,
+      jobKind: parsed.data.jobKind ?? (parsed.data.issueId ? "github_issue" : "local_prompt"),
       repoPath: resolved.repoPath,
       developerProfileId: parsed.data.developerProfileId,
       reviewerProfileIds: parsed.data.reviewerProfileIds,

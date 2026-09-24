@@ -6,7 +6,7 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
-import { LaneDispatchBus } from "../../server/actions/bus.js";
+import { createReviewerUserId, LaneDispatchBus, validateGitEvidence } from "../../server/actions/bus.js";
 import { handleActionRoutes, setBusInstance } from "../../server/web/server/api/routes/actions.js";
 import { checkThreePointGate } from "../../server/actions/threePointGate.js";
 import { updateActionJobStatus } from "../../server/state/actionJobStore.js";
@@ -88,6 +88,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: "/home/andy/repos/ads",
       issueId: 277,
       issueTitle: "Acopilot & Actions refactor",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify the queued job"],
     });
     const elapsed = Date.now() - start;
 
@@ -103,6 +105,87 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(stored.branch, "codex/issue-277");
   });
 
+  it("rejects GitHub Issue dispatches without a complete immutable contract", () => {
+    const bus = new LaneDispatchBus(getStateDatabase());
+
+    assert.throws(() => bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 378,
+      issueTitle: "Incomplete Issue",
+      jobKind: "github_issue",
+    }), /complete issueDescription; GitHub Issue jobs also require non-empty acceptanceCriteria/);
+  });
+
+  it("does not reuse an active Reviewer runtime identity", () => {
+    const activeIds = new Set([7, 9]);
+    const candidates = [7, 9, 11];
+    const reviewerUserId = createReviewerUserId(
+      { hasSession: (userId) => activeIds.has(userId) },
+      () => candidates.shift() ?? 13,
+    );
+
+    assert.strictEqual(reviewerUserId, 11);
+  });
+
+  it("rejects empty or invalid Git evidence", () => {
+    assert.match(
+      validateGitEvidence({ diff: "", diffStat: "", baseCommit: "invalid", headCommit: "" }) ?? "",
+      /git diff returned empty output/,
+    );
+    assert.match(
+      validateGitEvidence({
+        diff: "diff --git a/a.ts b/a.ts",
+        diffStat: "1 file changed",
+        baseCommit: "a".repeat(41),
+        headCommit: "b".repeat(40),
+      }) ?? "",
+      /invalid commit/,
+    );
+    assert.match(
+      validateGitEvidence({
+        diff: "diff --git a/a.ts b/a.ts",
+        diffStat: "1 file changed",
+        baseCommit: "a".repeat(40),
+        headCommit: "b".repeat(40),
+      }) ?? "",
+      /^$/,
+    );
+  });
+
+  it("passes the immutable Issue snapshot and verification provenance to Reviewer", async () => {
+    const db = getStateDatabase();
+    let reviewPrompt = "";
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => {
+        commitImplementation("snapshot");
+        return { exitCode: 0 };
+      },
+      reviewerRunner: async (prompt) => {
+        reviewPrompt = prompt;
+        return JSON.stringify({ status: "PASS", summary: "Snapshot review passed.", defects: [] });
+      },
+      testCommand: "git log -1 --pretty=%s",
+    });
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 366,
+      issueTitle: "Reviewer contract",
+      issueDescription: "Full immutable Issue description",
+      acceptanceCriteria: ["Reviewer starts fresh", "Truncated diff cannot pass"],
+      adrs: [{ id: "ADR 0020", title: "Reviewer context", decision: "Use an ephemeral session" }],
+    });
+
+    await bus.evaluateQueue(repoDir, repoDir);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "completed");
+
+    assert.match(reviewPrompt, /Full immutable Issue description/);
+    assert.match(reviewPrompt, /Reviewer starts fresh/);
+    assert.match(reviewPrompt, /ADR 0020/);
+    assert.match(reviewPrompt, /Exact Diff Range/);
+    assert.match(reviewPrompt, /dev\.\.\.HEAD/);
+    assert.match(reviewPrompt, /git log -1 --pretty=%s/);
+  });
+
   it("does not evaluate the queue or attach gate errors during dispatch", async () => {
     const db = getStateDatabase();
     const bus = new LaneDispatchBus(db);
@@ -110,6 +193,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 278,
       issueTitle: "Active task",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify the active job"],
       repoPath: repoDir,
     });
     updateActionJobStatus(db, activeJob.jobId, "running");
@@ -120,6 +205,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 279,
       issueTitle: "Future task",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify the future job"],
       repoPath: repoDir,
     });
 
@@ -139,6 +226,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 280,
       issueTitle: "Queued refresh",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify the queued refresh"],
       repoPath: repoDir,
     });
 
@@ -161,6 +250,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 281,
       issueTitle: "Failed task",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify the failure path"],
       repoPath: repoDir,
     });
     updateActionJobStatus(db, failedJob.jobId, "failed");
@@ -170,6 +261,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 282,
       issueTitle: "Queued after failure",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify queue progression"],
       repoPath: repoDir,
     });
 
@@ -189,6 +282,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 101,
       issueTitle: "Task 1",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify task one"],
     });
     updateActionJobStatus(db, job1.jobId, "running");
 
@@ -225,6 +320,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 202,
       issueTitle: "Task 202",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify task 202"],
     });
 
     const res = await bus.evaluateQueue(repoDir, repoDir);
@@ -248,6 +345,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 303,
       issueTitle: "Task 303",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify task 303"],
     });
 
     const res = bus.handleReviewResult({
@@ -272,6 +371,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 505,
       issueTitle: "Offline task",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify offline behavior"],
     });
 
     // Dequeue job and checkout branch
@@ -307,6 +408,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 404,
       issueTitle: "Task 404",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify task 404"],
     });
 
     // Attempt 1 -> running (rework)
@@ -364,11 +467,15 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 405,
       issueTitle: "Recoverable developer failure",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify bounded rework"],
     });
     const queuedJob = bus.dispatchJob({
       projectId: repoDir,
       issueId: 406,
       issueTitle: "Must remain queued",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify queue state"],
     });
 
     await bus.evaluateQueue(repoDir, repoDir);
@@ -405,6 +512,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 407,
       issueTitle: "Verification recovery",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify verification recovery"],
     });
     await bus.evaluateQueue(repoDir, repoDir);
 
@@ -441,6 +550,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 408,
       issueTitle: "PR creation recovery",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify PR recovery"],
     });
     spawnSync("git", ["checkout", "-b", job.branch!], { cwd: repoDir });
 
@@ -485,6 +596,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 409,
       issueTitle: "Merge recovery",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify merge recovery"],
     });
     spawnSync("git", ["checkout", "-b", job.branch!], { cwd: repoDir });
     updateActionJobStatus(db, job.jobId, "waiting_merge", { pr_number: null });
@@ -506,6 +619,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     const job = bus.dispatchJob({
       projectId: repoDir,
       issueTitle: "To Cancel",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify cancellation"],
     });
 
     bus.cancelJob(job.jobId, repoDir);
@@ -533,6 +648,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 606,
       issueTitle: "Automated cycle",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify the automated cycle"],
     });
 
     // Start job
@@ -573,6 +690,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 707,
       issueTitle: "Test dev runner",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify developer execution"],
     });
     assert.ok(job.jobId);
 
@@ -615,6 +734,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 808,
       issueTitle: "Test rework runner",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify rework execution"],
     });
 
     await bus.evaluateQueue(repoDir, repoDir);
@@ -700,6 +821,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 909,
       issueTitle: "Test session manager streaming",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify streaming"],
     });
 
     await bus.evaluateQueue(repoDir, repoDir);
@@ -811,6 +934,117 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(activeListeners, 0);
   });
 
+  it("uses a fresh runtime identity per Reviewer job and releases each session", async () => {
+    const db = getStateDatabase();
+    const userIds: number[] = [];
+    const released: number[] = [];
+    const createOrchestrator = () => ({
+      onEvent: () => () => {},
+      setDeveloperInstructions() {},
+      send: async () => ({ response: JSON.stringify({ status: "PASS", summary: "isolated", defects: [] }) }),
+    });
+    const bus = new LaneDispatchBus(db, {
+      sessionManager: {
+        getOrCreate: (userId: number) => {
+          userIds.push(userId);
+          return createOrchestrator();
+        },
+        releaseEphemeralSession: (userId: number) => released.push(userId),
+      } as any,
+    });
+    const payload = {
+      issue: { id: 366, title: "Isolation" },
+      diff: "diff --git a/a.ts b/a.ts\n+ change",
+    };
+
+    await bus.executeReviewer(payload, repoDir, undefined, "history", "project", "job-366-a");
+    await bus.executeReviewer(payload, repoDir, undefined, "history", "project", "job-366-b");
+
+    assert.strictEqual(userIds.length, 2);
+    assert.notStrictEqual(userIds[0], userIds[1]);
+    assert.deepStrictEqual(released, userIds);
+  });
+
+  it("releases the Reviewer session when a job is cancelled during review", async () => {
+    const db = getStateDatabase();
+    let released = 0;
+    let sendStarted = false;
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => {
+        commitImplementation("cancel-review");
+        return { exitCode: 0 };
+      },
+      sessionManager: {
+        getOrCreate: () => ({
+          onEvent: () => () => {},
+          setDeveloperInstructions() {},
+          send: async (_input: unknown, options?: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
+            sendStarted = true;
+            options?.signal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+          }),
+        }),
+        releaseEphemeralSession: () => {
+          released += 1;
+        },
+      } as any,
+      reviewerTimeoutMs: 1000,
+      testCommand: "git status",
+    });
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 3661,
+      issueTitle: "Cancel reviewer",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify cancellation cleanup"],
+    });
+
+    await bus.evaluateQueue(repoDir, repoDir);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "reviewing");
+    await waitFor(() => sendStarted);
+    bus.cancelJob(job.jobId, repoDir);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "cancelled");
+    await waitFor(() => released === 1);
+
+    assert.strictEqual(released, 1);
+  });
+
+  it("releases the Reviewer session after a Reviewer timeout", async () => {
+    const db = getStateDatabase();
+    let released = 0;
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => {
+        commitImplementation("timeout-review");
+        return { exitCode: 0 };
+      },
+      sessionManager: {
+        getOrCreate: () => ({
+          onEvent: () => () => {},
+          setDeveloperInstructions() {},
+          send: async (_input: unknown, options?: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener("abort", () => reject(new Error("timed out")), { once: true });
+          }),
+        }),
+        releaseEphemeralSession: () => {
+          released += 1;
+        },
+      } as any,
+      reviewerTimeoutMs: 20,
+      testCommand: "git status",
+    });
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 3662,
+      issueTitle: "Timeout reviewer",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify timeout cleanup"],
+    });
+
+    await bus.evaluateQueue(repoDir, repoDir);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "blocked", 3000);
+
+    assert.strictEqual(released, 3);
+  });
+
   it("routes Reviewer transport failures into bounded rework", async () => {
     const db = getStateDatabase();
     let developerCalls = 0;
@@ -838,6 +1072,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 351,
       issueTitle: "Reviewer failure recovery",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify reviewer recovery"],
     });
 
     await bus.evaluateQueue(repoDir, repoDir);
@@ -862,6 +1098,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 3511,
       issueTitle: "Malformed reviewer output",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify malformed verdict handling"],
     });
     await malformedBus.evaluateQueue(repoDir, repoDir);
     await waitFor(() => malformedBus.getJob(malformedJob.jobId)?.status === "blocked");
@@ -889,6 +1127,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 353,
       issueTitle: "Confirmation-only Developer turn",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify no-diff handling"],
     });
 
     await bus.evaluateQueue(repoDir, repoDir);
@@ -936,6 +1176,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 994,
       issueTitle: "Test custom chatSessionId",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify custom lane routing"],
     });
     await bus.evaluateQueue(repoDir, repoDir);
 
@@ -984,6 +1226,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       repoPath: repoDir,
       issueId: 995,
       issueTitle: "Authenticated lane routing",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify authenticated routing"],
       authUserId: userId,
     });
     updateActionJobStatus(db, dispatched.jobId, "running");
@@ -1023,6 +1267,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: "project-hash",
       issueId: 991,
       issueTitle: "Manual queue start test",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify manual queue start"],
     });
 
     const activeBefore = bus.getJob(job.jobId);
@@ -1076,6 +1322,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: repoDir,
       issueId: 992,
       issueTitle: "Resolve project workspace before queue start",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify project resolution"],
     });
 
     const reqPayload = Buffer.from(JSON.stringify({ projectId: "project-hash" }), "utf8");
@@ -1137,6 +1385,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       projectId: "project-hash",
       issueId: 993,
       issueTitle: "Reject unauthorized queue access",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify authorization"],
     });
 
     const fakeReq: any = {

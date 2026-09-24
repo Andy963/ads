@@ -13,12 +13,20 @@ export type ActionJobStatus =
 
 export type ActionJobKind = "github_issue" | "local_prompt";
 
+export interface ActionJobIssueSnapshot {
+  title: string;
+  description: string;
+  acceptanceCriteria: string[];
+  adrs: Array<{ id: string; title: string; decision: string }>;
+}
+
 export interface ActionJobRecord {
   id: string;
   project_id: string;
   job_kind: ActionJobKind;
   issue_id: number | null;
   issue_title: string;
+  issue_snapshot_json: string;
   status: ActionJobStatus;
   branch: string | null;
   developer_profile_id: string | null;
@@ -67,6 +75,7 @@ export function createActionJob(
     job_kind?: ActionJobKind;
     issue_id?: number | null;
     issue_title: string;
+    issue_snapshot?: ActionJobIssueSnapshot;
     status?: ActionJobStatus;
     branch?: string | null;
     developer_profile_id?: string | null;
@@ -82,20 +91,28 @@ export function createActionJob(
   const branch = job.branch ?? null;
   const devProfileId = job.developer_profile_id ?? null;
   const reviewerProfilesJson = job.reviewer_profile_ids_json ?? "[]";
+  const issueSnapshot: ActionJobIssueSnapshot = job.issue_snapshot ?? {
+    title: job.issue_title,
+    description: job.issue_title,
+    acceptanceCriteria: [],
+    adrs: [],
+  };
+  const issueSnapshotJson = JSON.stringify(issueSnapshot);
 
   db.prepare(`
     INSERT INTO action_jobs
-      (id, project_id, job_kind, issue_id, issue_title, status, branch,
+      (id, project_id, job_kind, issue_id, issue_title, issue_snapshot_json, status, branch,
        developer_profile_id, reviewer_profile_ids_json, current_step, steps_json,
        review_verdicts_json, pr_number, pr_url, error_message, rework_count,
        auth_user_id, chat_session_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', NULL, NULL, NULL, 0, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', NULL, NULL, NULL, 0, ?, ?, ?, ?)
   `).run(
     job.id,
     job.project_id,
     kind,
     issueId,
     job.issue_title,
+    issueSnapshotJson,
     status,
     branch,
     devProfileId,
@@ -112,6 +129,7 @@ export function createActionJob(
     job_kind: kind,
     issue_id: issueId,
     issue_title: job.issue_title,
+    issue_snapshot_json: issueSnapshotJson,
     status,
     branch,
     developer_profile_id: devProfileId,

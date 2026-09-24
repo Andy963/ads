@@ -45,6 +45,12 @@ describe("state/actionJobStore", () => {
       project_id: "/home/andy/repos/ads",
       issue_id: 277,
       issue_title: "Acopilot & Actions refactor",
+      issue_snapshot: {
+        title: "Acopilot & Actions refactor",
+        description: "Complete immutable contract",
+        acceptanceCriteria: ["Reviewer is isolated"],
+        adrs: [{ id: "ADR 0020", title: "Reviewer context", decision: "Use a fresh session" }],
+      },
       status: "queued",
       branch: "codex/issue-277",
     });
@@ -56,6 +62,12 @@ describe("state/actionJobStore", () => {
     const retrieved = getActionJobById(db, "job-100-277-abcd");
     assert.ok(retrieved);
     assert.strictEqual(retrieved.issue_id, 277);
+    assert.deepStrictEqual(JSON.parse(retrieved.issue_snapshot_json), {
+      title: "Acopilot & Actions refactor",
+      description: "Complete immutable contract",
+      acceptanceCriteria: ["Reviewer is isolated"],
+      adrs: [{ id: "ADR 0020", title: "Reviewer context", decision: "Use a fresh session" }],
+    });
 
     updateActionJobStatus(db, "job-100-277-abcd", "running", {
       current_step: "Implementing schema migrations",

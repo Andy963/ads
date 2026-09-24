@@ -191,6 +191,8 @@ describe("NativeToolExecutor", () => {
     const res = await executor.execute(call("dispatch_action_job", {
       issue_id: 123,
       title: "Native task",
+      description: "Complete native task description",
+      acceptance_criteria: ["Queue the task"],
     }));
     const parsed = JSON.parse(res.output) as { ok: boolean; job_id: string; status: string };
     assert.equal(parsed.ok, true);

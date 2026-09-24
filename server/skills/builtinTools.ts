@@ -62,13 +62,26 @@ export async function executeToolDirectives(args: {
       if (directive.name === "dispatch_action_job") {
         const issueIdRaw = directive.attrs.issue_id || directive.attrs.issue;
         const issueId = issueIdRaw ? Number(issueIdRaw) : null;
-        const issueTitle = directive.attrs.title || directive.attrs.issue_title || directive.body || (issueId ? `Issue #${issueId}` : "Task");
+        const issueTitle = directive.attrs.title || directive.attrs.issue_title || (issueId ? `Issue #${issueId}` : "Task");
         const jobKind = directive.attrs.kind === "local_prompt" ? "local_prompt" : "github_issue";
+        const issueDescription = directive.body.trim();
+        if (!Object.hasOwn(directive.attrs, "acceptance_criteria")) {
+          throw new Error("dispatch_action_job requires an explicit acceptance_criteria field");
+        }
+        const acceptanceCriteria = (directive.attrs.acceptance_criteria ?? "")
+          .split("|")
+          .map((criterion) => criterion.trim())
+          .filter(Boolean);
+        if (!issueDescription || (jobKind === "github_issue" && acceptanceCriteria.length === 0)) {
+          throw new Error("dispatch_action_job requires a complete description and acceptance criteria");
+        }
         const bus = getBus();
         const res = bus.dispatchJob({
           projectId: args.workspaceRoot,
           issueId: Number.isFinite(issueId) ? issueId : null,
           issueTitle,
+          issueDescription,
+          acceptanceCriteria,
           jobKind,
           repoPath: args.workspaceRoot,
         });

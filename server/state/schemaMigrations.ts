@@ -662,4 +662,13 @@ Core reviewing rules:
       `);
     },
   },
+  {
+    version: 20,
+    description: "Persist immutable Actions issue review snapshots",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE action_jobs ADD COLUMN issue_snapshot_json TEXT NOT NULL DEFAULT '{}';
+      `);
+    },
+  },
 ];
