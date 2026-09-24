@@ -117,4 +117,34 @@ describe("NativeTranscriptStore", () => {
     assert.equal(turns[0]?.status, "interrupted");
     assert.match(turns[0]?.errorMessage ?? "", /interrupted/);
   });
+
+  it("redacts common credential formats before persistence", () => {
+    const { dbPath, store } = createStore();
+    const transcriptId = "transcript-common-credentials";
+    const credentials = [
+      ["gh", "p", "_abcdefghijklmnopqrstuvwxyz1234567890"].join(""),
+      ["AKIA", "IOSFODNN7", "EXAMPLE"].join(""),
+      ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "signature"].join("."),
+      "https://alice:password@example.test/path",
+    ];
+
+    store.beginTurn({
+      transcriptId,
+      turnId: "turn-credentials",
+      messages: [{ role: "user", content: credentials.join("\n") }],
+      entries: [{ kind: "message", message: { role: "user", content: credentials.join("\n") } }],
+      provider: { provider: "test", model: "test-model" },
+    });
+
+    const raw = JSON.stringify(
+      getStateDatabase(dbPath)
+        .prepare("SELECT messages_json, entries_json FROM native_transcript_turns")
+        .all(),
+    );
+    for (const credential of credentials.slice(0, 3)) {
+      assert.equal(raw.includes(credential), false);
+    }
+    assert.doesNotMatch(raw, /alice:password/);
+    assert.match(raw, /\[redacted\]/);
+  });
 });

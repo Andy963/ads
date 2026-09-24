@@ -404,9 +404,9 @@ export class HybridOrchestrator {
     return this.activeEntry.adapter.onEvent(handler);
   }
 
-  reset(): void {
+  reset(options?: { clearPersistedState?: boolean }): void {
     for (const { adapter } of this.adapters.values()) {
-      adapter.reset();
+      adapter.reset(options);
     }
   }
 

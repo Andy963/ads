@@ -85,6 +85,14 @@ function redactSensitiveText(value: string, redactions: string[]): string {
   result = result
     .replace(/\bBearer\s+[^\s"',;]+/gi, "Bearer [redacted]")
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]")
+    .replace(/\b(?:gh[pousr]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255})\b/g, "[redacted]")
+    .replace(/\b(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA|ASCA)[A-Z0-9]{16}\b/g, "[redacted]")
+    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted]")
+    .replace(
+      /(-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----)[\s\S]*?(-----END (?:[A-Z0-9]+ )?PRIVATE KEY-----|$)/g,
+      "$1[redacted]$2",
+    )
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1[redacted]@")
     .replace(
       /((?:api[_-]?key|authorization|auth[_-]?token|access[_-]?token|refresh[_-]?token|secret|password|cookie)\s*["']?\s*[:=]\s*["']?)([^\s"',;}]+)/gi,
       "$1[redacted]",

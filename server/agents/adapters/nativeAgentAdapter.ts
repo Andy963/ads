@@ -250,8 +250,8 @@ export class NativeAgentAdapter implements AgentAdapter {
     return () => this.listeners.delete(handler);
   }
 
-  reset(): void {
-    if (this.transcriptId && this.transcriptStore) {
+  reset(options?: { clearPersistedState?: boolean }): void {
+    if (options?.clearPersistedState && this.transcriptId && this.transcriptStore) {
       this.transcriptStore.clear(this.transcriptId);
     }
     this.activeTranscriptTurns.clear();
@@ -263,7 +263,7 @@ export class NativeAgentAdapter implements AgentAdapter {
   setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void {
     if (this.workingDirectory === workingDirectory) return;
     this.workingDirectory = workingDirectory;
-    if (!options?.preserveSession) this.reset();
+    if (!options?.preserveSession) this.reset({ clearPersistedState: true });
   }
 
   setModel(model?: string): void {
@@ -410,18 +410,18 @@ export class NativeAgentAdapter implements AgentAdapter {
       ...(requestOptions.reasoningEffort ? { reasoningEffort: requestOptions.reasoningEffort } : {}),
     };
 
-    this.checkpointTurn({
-      turnId,
-      status: "running",
-      messages: turnMessages,
-      entries: turnEntries,
-      usage: null,
-      provider: providerMetadata,
-    });
     let responseText = "";
     let usage: Usage | null = null;
 
     try {
+      this.checkpointTurn({
+        turnId,
+        status: "running",
+        messages: turnMessages,
+        entries: turnEntries,
+        usage: null,
+        provider: providerMetadata,
+      });
       for (let round = 0; this.maxToolRounds === 0 || round < this.maxToolRounds; round += 1) {
         const itemId = `${turnId}-message-${round}`;
         let roundText = "";
@@ -541,6 +541,7 @@ export class NativeAgentAdapter implements AgentAdapter {
         : isAbortError(normalized)
           ? "interrupted"
           : "failed";
+      let persistenceError: unknown;
       try {
         this.checkpointTurn({
           turnId,
@@ -551,13 +552,19 @@ export class NativeAgentAdapter implements AgentAdapter {
           provider: providerMetadata,
           errorMessage: normalized.message,
         });
-      } catch (persistenceError) {
+      } catch (error) {
+        persistenceError = error;
+      }
+      const safeMessage = [model.apiKey, ...this.secretValues]
+        .filter((value) => value.length >= 4)
+        .reduce((message, secret) => message.replaceAll(secret, "[redacted]"), formatToolError(normalized, model.apiKey));
+      this.emitRaw({ type: "turn.failed", error: { message: safeMessage } });
+      if (persistenceError) {
         throw new AggregateError(
           [normalized, persistenceError],
           "Native turn failed and its transcript could not be persisted",
         );
       }
-      this.emitRaw({ type: "turn.failed", error: { message: formatToolError(normalized, model.apiKey) } });
       throw normalized;
     } finally {
       combined.cleanup();

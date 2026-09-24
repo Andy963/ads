@@ -289,7 +289,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     return () => this.listeners.delete(handler);
   }
 
-  reset(): void {
+  reset(_options?: { clearPersistedState?: boolean }): void {
     this.threadId = null;
     this.latestContextUsage = null;
     this.detachGoalSubscriptions();

@@ -4,7 +4,7 @@ import type { AgentRuntimeBackend, SessionLifecycle } from "../runtime/config.js
 export interface RuntimeSession {
   setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void;
   getThreadId(): string | null;
-  reset(): void;
+  reset(options?: { clearPersistedState?: boolean }): void;
 }
 
 export interface RuntimeLogger {

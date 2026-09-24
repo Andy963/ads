@@ -49,7 +49,7 @@ export interface AgentAdapter {
   status(): AgentStatus;
   send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult>;
   onEvent(handler: (event: AgentEvent) => void): () => void;
-  reset(): void;
+  reset(options?: { clearPersistedState?: boolean }): void;
   setWorkingDirectory?(workingDirectory?: string, options?: { preserveSession?: boolean }): void;
   setModel?(model?: string): void;
   /** Whether changing the model preserves the provider-native thread. */

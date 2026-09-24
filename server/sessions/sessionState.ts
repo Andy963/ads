@@ -152,6 +152,17 @@ export function resolveResumeState(args: {
   const savedCwd = normalizeCwd(record?.cwd);
   const currentCwd = normalizeCwd(args.currentCwd);
 
+  if (currentBackend === "native" && args.nativeTranscriptAvailable) {
+    args.logger.info(
+      `[Continuity] user=${args.userId} restore=thread_resumed reason=native_transcript_restored agent=${savedActiveAgentId ?? "unknown"}`,
+    );
+    return {
+      activeAgentId: savedActiveAgentId,
+      shouldInjectHistory: false,
+      restoreMode: "thread_resumed",
+    };
+  }
+
   if (isNativeExecutionId(candidateThreadId)) {
     args.logger.info(
       `[Continuity] user=${args.userId} restore=history_injection reason=native_execution_alias agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId)}`,
@@ -175,16 +186,6 @@ export function resolveResumeState(args: {
   }
 
   if (currentBackend === "native") {
-    if (args.nativeTranscriptAvailable) {
-      args.logger.info(
-        `[Continuity] user=${args.userId} restore=thread_resumed reason=native_transcript_restored agent=${savedActiveAgentId ?? "unknown"}`,
-      );
-      return {
-        activeAgentId: savedActiveAgentId,
-        shouldInjectHistory: false,
-        restoreMode: "thread_resumed",
-      };
-    }
     args.logger.info(
       `[Continuity] user=${args.userId} restore=history_injection reason=native_runtime_not_resumable agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId) ?? "none"}`,
     );

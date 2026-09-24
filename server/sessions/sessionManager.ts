@@ -491,7 +491,7 @@ export class SessionManager {
       }
     }
     if (record) {
-      record.session.reset();
+      record.session.reset({ clearPersistedState: true });
       record.lastActivity = Date.now();
       this.runtime.closeLogger(userId);
       this.logger.info('Session reset');

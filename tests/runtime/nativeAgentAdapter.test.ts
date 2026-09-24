@@ -674,6 +674,8 @@ describe("NativeAgentAdapter", () => {
       assert.doesNotMatch(raw, /environment-secret/);
       assert.doesNotMatch(raw, new RegExp(executionId ?? "native-execution-id"));
 
+      firstAdapter.reset();
+
       let restoredRequest: { messages?: Array<{ role: string; content: string | null }> } | undefined;
       const restoredAdapter = new NativeAgentAdapter({
         credentialOwner: "test-owner",
@@ -702,6 +704,112 @@ describe("NativeAgentAdapter", () => {
       assert.equal(restoredRequest?.messages?.[0]?.content?.includes("secret-api-key"), false);
       assert.equal(restoredRequest?.messages?.[0]?.content?.includes("environment-secret"), false);
       assert.notEqual(restoredAdapter.getThreadId(), executionId);
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("clears durable Native context only for an explicit destructive reset", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-clear-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-clear-state-"));
+    const dbPath = path.join(stateDir, "state.db");
+    const transcriptId = "native-transcript-clear";
+    const store = new NativeTranscriptStore(getStateDatabase(dbPath));
+    const resolver: NativeModelResolver = {
+      resolve: () => ({
+        model: "test-model",
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-api-key",
+        provider: "test",
+      }),
+    };
+
+    try {
+      const firstAdapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: resolver,
+        transcriptId,
+        transcriptStore: store,
+        fetchImpl: async () => sse([
+          JSON.stringify({ choices: [{ delta: { content: "remembered" }, finish_reason: "stop" }] }),
+        ]),
+      });
+      await firstAdapter.send("remember this");
+      firstAdapter.reset({ clearPersistedState: true });
+
+      let restoredMessages: Array<{ role: string }> = [];
+      const restoredAdapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: resolver,
+        transcriptId,
+        transcriptStore: store,
+        fetchImpl: async (_input, init) => {
+          const body = JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ role: string }> };
+          restoredMessages = body.messages ?? [];
+          return sse([JSON.stringify({ choices: [{ delta: { content: "fresh" }, finish_reason: "stop" }] })]);
+        },
+      });
+      await restoredAdapter.send("new context");
+      assert.deepEqual(restoredMessages.map((message) => message.role), ["user"]);
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("emits a sanitized turn failure when the initial checkpoint fails", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-checkpoint-failure-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-checkpoint-state-"));
+    const dbPath = path.join(stateDir, "state.db");
+
+    class FailingTranscriptStore extends NativeTranscriptStore {
+      override beginTurn(): void {
+        throw new Error("secret-api-key environment-secret checkpoint unavailable");
+      }
+    }
+
+    const store = new FailingTranscriptStore(getStateDatabase(dbPath));
+    const resolver: NativeModelResolver = {
+      resolve: () => ({
+        model: "test-model",
+        baseUrl: "https://provider.test/v1",
+        apiKey: "secret-api-key",
+        provider: "test",
+      }),
+    };
+
+    try {
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: resolver,
+        transcriptId: "native-transcript-checkpoint-failure",
+        transcriptStore: store,
+        env: { NATIVE_TEST_SECRET: "environment-secret" },
+        turnTimeoutMs: 5,
+        fetchImpl: async () => {
+          throw new Error("fetch should not run after checkpoint failure");
+        },
+      });
+      const events: Array<{ type: string; message?: string }> = [];
+      adapter.onEvent((event) => {
+        const raw = event.raw as { type?: string; error?: { message?: string } };
+        events.push({ type: String(raw.type ?? ""), message: raw.error?.message });
+      });
+
+      await assert.rejects(adapter.send("hello"), /AggregateError/);
+      const failure = events.find((event) => event.type === "turn.failed");
+      assert.ok(failure?.message);
+      assert.doesNotMatch(failure.message, /secret-api-key|environment-secret/);
+      assert.match(failure.message, /\[redacted\]/);
     } finally {
       resetStateDatabaseForTests();
       fs.rmSync(workspace, { recursive: true, force: true });
