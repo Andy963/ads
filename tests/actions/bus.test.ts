@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
 import { LaneDispatchBus } from "../../server/actions/bus.js";
+import { handleActionRoutes, setBusInstance } from "../../server/web/server/api/routes/actions.js";
 import { checkThreePointGate } from "../../server/actions/threePointGate.js";
 import { updateActionJobStatus } from "../../server/state/actionJobStore.js";
 
@@ -440,5 +441,56 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
     // Verify history recording for review verdict
     assert.ok(historyEntries.some((h) => h.entry.kind === "review_verdict"));
+  });
+
+  it("manually starts queued job via POST /api/actions/queue/start", async () => {
+    const db = getStateDatabase();
+    const bus = new LaneDispatchBus(db, {
+      testCommand: "git status",
+    });
+    setBusInstance(bus);
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 991,
+      issueTitle: "Manual queue start test",
+    });
+
+    const activeBefore = bus.getJob(job.jobId);
+    assert.strictEqual(activeBefore?.status, "queued");
+
+    const reqPayload = Buffer.from(JSON.stringify({ projectId: repoDir, repoPath: repoDir }), "utf8");
+    const fakeReq: any = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      async *[Symbol.asyncIterator]() {
+        yield reqPayload;
+      },
+    };
+
+    let responseBody = "";
+    let statusCode = 200;
+    const fakeRes: any = {
+      writeHead(code: number) { statusCode = code; },
+      setHeader() {},
+      end(data: string) { responseBody = data; },
+    };
+
+    const handled = await handleActionRoutes({
+      req: fakeReq,
+      res: fakeRes,
+      pathname: "/api/actions/queue/start",
+      url: new URL("http://localhost/api/actions/queue/start"),
+    });
+
+    assert.strictEqual(handled, true);
+    assert.strictEqual(statusCode, 200);
+
+    const parsed = JSON.parse(responseBody);
+    assert.strictEqual(parsed.ok, true);
+    assert.strictEqual(parsed.dequeuedJobId, job.jobId);
+
+    const currentBranch = spawnSync("git", ["branch", "--show-current"], { cwd: repoDir, encoding: "utf8" }).stdout.trim();
+    assert.strictEqual(currentBranch, "codex/issue-991");
   });
 });
