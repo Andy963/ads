@@ -45,6 +45,10 @@ export function getDefaultRoleProfile(db: DatabaseType, role: RoleType): RolePro
   return (db.prepare(`SELECT * FROM role_profiles WHERE role = ? LIMIT 1`).get(role) as RoleProfileRecord | undefined) ?? null;
 }
 
+export function getRoleProfileById(db: DatabaseType, id: string): RoleProfileRecord | null {
+  return (db.prepare(`SELECT * FROM role_profiles WHERE id = ?`).get(id) as RoleProfileRecord | undefined) ?? null;
+}
+
 export function saveRoleProfile(
   db: DatabaseType,
   profile: {
@@ -121,4 +125,3 @@ export function getRoleSettingsHistory(db: DatabaseType, role: RoleType): RoleSe
     .prepare(`SELECT * FROM role_settings_history WHERE role = ? ORDER BY version DESC, id DESC`)
     .all(role) as RoleSettingsHistoryRecord[];
 }
-

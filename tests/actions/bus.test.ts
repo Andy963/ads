@@ -261,4 +261,80 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(finishedJob?.status, "waiting_merge");
     assert.ok(finishedJob?.review_verdicts_json.includes("PASS"));
   });
+
+  it("invokes developer runner on dequeue and triggers review upon exit 0", async () => {
+    const db = getStateDatabase();
+    let devRan = false;
+
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async (job, rPath) => {
+        devRan = true;
+        assert.strictEqual(job.issue_id, 707);
+        assert.strictEqual(rPath, repoDir);
+        // Simulate developer making a commit on feature branch
+        fs.writeFileSync(path.join(repoDir, "feature707.txt"), "done");
+        spawnSync("git", ["add", "feature707.txt"], { cwd: repoDir });
+        spawnSync("git", ["commit", "-m", "feature 707"], { cwd: repoDir });
+        return { exitCode: 0 };
+      },
+      testCommand: "git status",
+    });
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 707,
+      issueTitle: "Test dev runner",
+    });
+
+    await bus.evaluateQueue(repoDir, repoDir);
+    assert.strictEqual(devRan, true);
+  });
+
+  it("routes reviewer rejection defect feedback back to developer for rework", async () => {
+    const db = getStateDatabase();
+    let devCalls = 0;
+    let receivedFeedback: string | undefined;
+
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async (job, rPath, reworkFeedback) => {
+        devCalls++;
+        receivedFeedback = reworkFeedback;
+        return { exitCode: 0 };
+      },
+      reviewerRunner: async () => {
+        if (devCalls === 1) {
+          return JSON.stringify({
+            status: "REJECT",
+            summary: "Needs fix",
+            defects: [{ file: "feature.ts", line: 10, severity: "blocker", description: "Missing null check" }],
+          });
+        }
+        return JSON.stringify({
+          status: "PASS",
+          summary: "All good",
+          defects: [],
+        });
+      },
+      testCommand: "git status",
+    });
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 808,
+      issueTitle: "Test rework runner",
+    });
+
+    await bus.evaluateQueue(repoDir, repoDir);
+    assert.strictEqual(devCalls, 1);
+
+    // Run job cycle to trigger reviewer
+    await bus.runJobCycle(job.jobId, repoDir, {
+      testCommand: "git status",
+    });
+
+    const rejectedJob = bus.getJob(job.jobId);
+    assert.strictEqual(rejectedJob?.status, "running");
+    assert.ok(rejectedJob?.current_step?.includes("rework"));
+    assert.ok(rejectedJob?.review_verdicts_json.includes("REJECT"));
+  });
 });

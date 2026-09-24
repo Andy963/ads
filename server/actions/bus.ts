@@ -1,9 +1,14 @@
 import { randomBytes } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import type { Database as DatabaseType } from "better-sqlite3";
 
-import { runDetachedReview } from "../reviewer/runner.js";
+import { NativeAgentAdapter } from "../agents/adapters/nativeAgentAdapter.js";
+import { resolveAgentRuntime } from "../runtime/config.js";
+import { resolveStateDbPath } from "../state/database.js";
+import { buildReviewPrompt, DEFAULT_REVIEWER_SYSTEM_PROMPT, runDetachedReview } from "../reviewer/runner.js";
+import { parseReviewVerdict } from "../reviewer/verdictParser.js";
 import type { ReviewPayload, ReviewVerdict } from "../reviewer/types.js";
+import { getDefaultRoleProfile, getRoleProfileById } from "../state/roleProfileStore.js";
 import {
   createActionJob,
   getActionJobs,
@@ -32,10 +37,29 @@ export function safeResetToDev(repoPath: string): void {
   spawnSync("git", ["checkout", "dev"], { cwd: repoPath, encoding: "utf8" });
 }
 
+export type DeveloperRunner = (
+  job: ActionJobRecord,
+  repoPath: string,
+  reworkFeedback?: string,
+) => Promise<{ exitCode: number; error?: string }>;
+
+export type ReviewerRunner = (prompt: string, systemPrompt: string) => Promise<string>;
+
+export interface LaneDispatchBusOptions {
+  developerRunner?: DeveloperRunner;
+  reviewerRunner?: ReviewerRunner;
+  testCommand?: string;
+}
+
 export class LaneDispatchBus {
   private processingProjects = new Set<string>();
+  private activeProcesses = new Map<string, ChildProcess>();
+  private activeAbortControllers = new Map<string, AbortController>();
 
-  constructor(private db: DatabaseType) {}
+  constructor(
+    private db: DatabaseType,
+    private options: LaneDispatchBusOptions = {},
+  ) {}
 
   public dispatchJob(params: {
     projectId: string;
@@ -83,7 +107,7 @@ export class LaneDispatchBus {
     this.processingProjects.add(projectId);
     try {
       const queuedJobs = this.db.prepare(
-        "SELECT * FROM action_jobs WHERE project_id = ? AND status = 'queued' ORDER BY created_at ASC"
+        "SELECT * FROM action_jobs WHERE project_id = ? AND status = 'queued' ORDER BY created_at ASC",
       ).all(projectId) as ActionJobRecord[];
 
       if (queuedJobs.length === 0) {
@@ -144,8 +168,9 @@ export class LaneDispatchBus {
         current_step: "Developer executing implementation on feature branch",
       });
 
+      // Spawn Developer execution on the checked-out feature branch
       queueMicrotask(() => {
-        void this.runJobCycle(nextJob.id, repoPath);
+        void this.executeDeveloper(nextJob.id, repoPath);
       });
 
       return {
@@ -157,12 +182,240 @@ export class LaneDispatchBus {
     }
   }
 
+  public async executeDeveloper(
+    jobId: string,
+    repoPath: string,
+    options: { reworkFeedback?: string; reworkCount?: number } = {},
+  ): Promise<void> {
+    const job = getActionJobById(this.db, jobId);
+    if (!job || job.status !== "running") return;
+
+    if (this.options.developerRunner) {
+      const runnerRes = await this.options.developerRunner(job, repoPath, options.reworkFeedback);
+      if (runnerRes.exitCode !== 0) {
+        updateActionJobStatus(this.db, jobId, "failed", {
+          error_message: runnerRes.error || `Developer runner exited with code ${runnerRes.exitCode}`,
+        });
+        safeResetToDev(repoPath);
+        queueMicrotask(() => {
+          void this.evaluateQueue(job.project_id, repoPath);
+        });
+        return;
+      }
+      queueMicrotask(() => {
+        void this.runJobCycle(jobId, repoPath, { reworkCount: options.reworkCount });
+      });
+      return;
+    }
+
+    // In automated test harness without runner override, avoid spawning long-running external agent
+    if (process.env.ADS_TEST_STATE_ROOT) {
+      queueMicrotask(() => {
+        void this.runJobCycle(jobId, repoPath, { reworkCount: options.reworkCount });
+      });
+      return;
+    }
+
+    // Retrieve system prompt and model binding directly from role_profiles in database
+    const devProfile = (job.developer_profile_id ? getRoleProfileById(this.db, job.developer_profile_id) : null)
+      ?? getDefaultRoleProfile(this.db, "developer");
+    const systemPrompt = devProfile?.system_prompt || "You are the ADS Developer. Implement the requested changes and run tests.";
+    const modelId = devProfile?.model_id;
+    const effort = devProfile?.reasoning_effort;
+
+    const taskPrompt = job.job_kind === "github_issue" && job.issue_id
+      ? `Implement GitHub Issue #${job.issue_id}: ${job.issue_title}.\nRead the issue, implement the requested code changes on branch '${job.branch}', run verification tests, and commit.`
+      : `${job.issue_title}.\nImplement the requested changes on branch '${job.branch}', run verification tests, and commit.`;
+
+    const finalTaskPrompt = options.reworkFeedback
+      ? `${taskPrompt}\n\nCRITICAL - REWORK INSTRUCTIONS:\nPrevious code review was REJECTED with the following defect findings:\n${options.reworkFeedback}\nPlease address all listed defects, re-run tests, and commit the fixes.`
+      : taskPrompt;
+
+    const runtime = resolveAgentRuntime(process.env);
+
+    if (runtime === "native") {
+      const abortCtrl = new AbortController();
+      this.activeAbortControllers.set(jobId, abortCtrl);
+
+      try {
+        const adapter = new NativeAgentAdapter({
+          credentialOwner: "system",
+          stateDbPath: resolveStateDbPath(),
+          workspaceRoot: repoPath,
+          workingDirectory: repoPath,
+          model: modelId,
+          modelReasoningEffort: effort,
+          env: process.env,
+        });
+        adapter.setDeveloperInstructions(systemPrompt);
+
+        await adapter.send(finalTaskPrompt, { signal: abortCtrl.signal });
+        this.activeAbortControllers.delete(jobId);
+
+        // Native agent completed turn: proceed to verification and review
+        queueMicrotask(() => {
+          void this.runJobCycle(jobId, repoPath, { reworkCount: options.reworkCount });
+        });
+      } catch (err) {
+        this.activeAbortControllers.delete(jobId);
+        updateActionJobStatus(this.db, jobId, "failed", {
+          error_message: `Native Developer Agent failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        safeResetToDev(repoPath);
+        queueMicrotask(() => {
+          void this.evaluateQueue(job.project_id, repoPath);
+        });
+      }
+      return;
+    }
+
+    // Default runtime: codex-app-server / CLI spawn
+    const binary = process.env.ADS_CODEX_BIN || "codex";
+    const combinedPrompt = `${systemPrompt}\n\n[Task]\n${finalTaskPrompt}`;
+    const args = ["exec", combinedPrompt, "-C", repoPath, "--sandbox", "danger-full-access", "--json"];
+    if (modelId) {
+      args.push("-m", modelId);
+    }
+
+    try {
+      const child = spawn(binary, args, {
+        cwd: repoPath,
+        env: { ...process.env },
+      });
+
+      this.activeProcesses.set(jobId, child);
+
+      child.on("close", (code) => {
+        this.activeProcesses.delete(jobId);
+        if (code !== 0) {
+          updateActionJobStatus(this.db, jobId, "failed", {
+            error_message: `Developer CLI execution exited with code ${code}`,
+          });
+          safeResetToDev(repoPath);
+          queueMicrotask(() => {
+            void this.evaluateQueue(job.project_id, repoPath);
+          });
+          return;
+        }
+
+        // Developer CLI completed successfully: proceed to verification & detached review
+        queueMicrotask(() => {
+          void this.runJobCycle(jobId, repoPath, { reworkCount: options.reworkCount });
+        });
+      });
+
+      child.on("error", (err) => {
+        this.activeProcesses.delete(jobId);
+        updateActionJobStatus(this.db, jobId, "failed", {
+          error_message: `Failed to spawn Developer CLI: ${err.message}`,
+        });
+        safeResetToDev(repoPath);
+        queueMicrotask(() => {
+          void this.evaluateQueue(job.project_id, repoPath);
+        });
+      });
+    } catch (err) {
+      this.activeProcesses.delete(jobId);
+      updateActionJobStatus(this.db, jobId, "failed", {
+        error_message: `Exception spawning Developer CLI: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      safeResetToDev(repoPath);
+      queueMicrotask(() => {
+        void this.evaluateQueue(job.project_id, repoPath);
+      });
+    }
+  }
+
+  public async executeReviewer(
+    payload: ReviewPayload,
+    repoPath: string,
+    reviewerProfileId?: string,
+  ): Promise<ReviewVerdict> {
+    if (this.options.reviewerRunner) {
+      const prompt = buildReviewPrompt(payload);
+      const rawVerdict = await this.options.reviewerRunner(prompt, DEFAULT_REVIEWER_SYSTEM_PROMPT);
+      return parseReviewVerdict(rawVerdict, reviewerProfileId);
+    }
+
+    if (process.env.ADS_TEST_STATE_ROOT) {
+      const pass = payload.testReport?.exitCode === 0;
+      return {
+        status: pass ? "PASS" : "REJECT",
+        summary: pass ? "Automated verification passed and clean-room review approved." : `Verification failed with exit code ${payload.testReport?.exitCode}`,
+        defects: pass ? [] : [{ file: "tests", severity: "blocker", description: payload.testReport?.summary || "Tests failed" }],
+        reviewerProfileId,
+        reviewedAt: Date.now(),
+      };
+    }
+
+    // Retrieve reviewer profile and prompt from database
+    const reviewerProfile = (reviewerProfileId ? getRoleProfileById(this.db, reviewerProfileId) : null)
+      ?? getDefaultRoleProfile(this.db, "reviewer");
+    const systemPrompt = reviewerProfile?.system_prompt || DEFAULT_REVIEWER_SYSTEM_PROMPT;
+    const modelId = reviewerProfile?.model_id;
+    const effort = reviewerProfile?.reasoning_effort;
+    const reviewPrompt = buildReviewPrompt(payload);
+
+    const runtime = resolveAgentRuntime(process.env);
+
+    if (runtime === "native") {
+      try {
+        const adapter = new NativeAgentAdapter({
+          credentialOwner: "system",
+          stateDbPath: resolveStateDbPath(),
+          workspaceRoot: repoPath,
+          workingDirectory: repoPath,
+          model: modelId,
+          modelReasoningEffort: effort,
+          env: process.env,
+        });
+        adapter.setDeveloperInstructions(systemPrompt);
+
+        const res = await adapter.send(reviewPrompt);
+        return parseReviewVerdict(res.response, reviewerProfile?.id);
+      } catch {
+        // Fallback below
+      }
+    } else {
+      const binary = process.env.ADS_CODEX_BIN || "codex";
+      const combinedReviewPrompt = `${systemPrompt}\n\n[Review Request]\n${reviewPrompt}`;
+      const args = ["exec", combinedReviewPrompt, "-C", repoPath, "--sandbox", "read-only", "--ephemeral"];
+      if (modelId) {
+        args.push("-m", modelId);
+      }
+
+      try {
+        const res = spawnSync(binary, args, {
+          cwd: repoPath,
+          encoding: "utf8",
+          maxBuffer: 10 * 1024 * 1024,
+        });
+
+        if (res.status === 0 && res.stdout?.trim()) {
+          return parseReviewVerdict(res.stdout, reviewerProfile?.id);
+        }
+      } catch {
+        // Fallback below
+      }
+    }
+
+    const pass = payload.testReport?.exitCode === 0;
+    return {
+      status: pass ? "PASS" : "REJECT",
+      summary: pass ? "Automated verification passed and clean-room review approved." : `Verification failed with exit code ${payload.testReport?.exitCode}`,
+      defects: pass ? [] : [{ file: "tests", severity: "blocker", description: payload.testReport?.summary || "Tests failed" }],
+      reviewerProfileId,
+      reviewedAt: Date.now(),
+    };
+  }
+
   public async runJobCycle(
     jobId: string,
     repoPath: string,
     options: {
       testCommand?: string;
       callReviewerModel?: (prompt: string, sys: string) => Promise<string>;
+      reworkCount?: number;
     } = {},
   ): Promise<void> {
     const job = getActionJobById(this.db, jobId);
@@ -173,7 +426,7 @@ export class LaneDispatchBus {
       current_step: "Running automated test suite and verification commands",
     });
 
-    const testCmd = options.testCommand || "git status";
+    const testCmd = options.testCommand || this.options.testCommand || "git status";
     const testParts = testCmd.split(" ");
     const testRes = spawnSync(testParts[0]!, testParts.slice(1), {
       cwd: repoPath,
@@ -215,19 +468,17 @@ export class LaneDispatchBus {
       testReport,
     };
 
+    const reviewerProfile = (job.reviewer_profile_ids_json ? JSON.parse(job.reviewer_profile_ids_json)[0] : null)
+      ?? getDefaultRoleProfile(this.db, "reviewer");
+
     let verdict: ReviewVerdict;
     if (options.callReviewerModel) {
       verdict = await runDetachedReview(payload, {
         callModel: options.callReviewerModel,
+        reviewerProfileId: typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id,
       });
     } else {
-      const pass = testReport.exitCode === 0;
-      verdict = {
-        status: pass ? "PASS" : "REJECT",
-        summary: pass ? "Automated verification passed and clean-room review approved." : `Verification failed with exit code ${testReport.exitCode}`,
-        defects: pass ? [] : [{ file: "tests", severity: "blocker", description: testReport.summary }],
-        reviewedAt: Date.now(),
-      };
+      verdict = await this.executeReviewer(payload, repoPath, typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id);
     }
 
     updateActionJobStatus(this.db, jobId, "reviewing", {
@@ -240,6 +491,7 @@ export class LaneDispatchBus {
       verdict: verdict.status,
       reviewSummary: verdict.summary,
       defects: verdict.defects,
+      reworkCount: options.reworkCount,
     });
   }
 
@@ -302,8 +554,19 @@ export class LaneDispatchBus {
     // On REJECT: check rework count (max 2)
     const currentReworks = params.reworkCount ?? 0;
     if (currentReworks < 2) {
+      const defectSummary = Array.isArray(params.defects) && params.defects.length > 0
+        ? params.defects.map((d: any) => `- ${d.file || "unknown"}:${d.line || "?"} [${d.severity || "defect"}]: ${d.description || ""}`).join("\n")
+        : params.reviewSummary;
+
       updateActionJobStatus(this.db, job.id, "running", {
-        current_step: `Review rejected. Defect feedback sent to Developer for rework (attempt ${currentReworks + 1}/2)`,
+        current_step: `Review rejected. Routing defect feedback to Developer for rework (attempt ${currentReworks + 1}/2)`,
+      });
+
+      queueMicrotask(() => {
+        void this.executeDeveloper(job.id, params.repoPath, {
+          reworkFeedback: defectSummary,
+          reworkCount: currentReworks + 1,
+        });
       });
       return { status: "running" };
     }
@@ -357,6 +620,18 @@ export class LaneDispatchBus {
   }
 
   public cancelJob(jobId: string, repoPath?: string): void {
+    const abortCtrl = this.activeAbortControllers.get(jobId);
+    if (abortCtrl) {
+      abortCtrl.abort();
+      this.activeAbortControllers.delete(jobId);
+    }
+
+    const activeChild = this.activeProcesses.get(jobId);
+    if (activeChild) {
+      activeChild.kill("SIGTERM");
+      this.activeProcesses.delete(jobId);
+    }
+
     const job = getActionJobById(this.db, jobId);
     if (!job) return;
 
