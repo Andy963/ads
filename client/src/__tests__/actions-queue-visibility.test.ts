@@ -151,6 +151,40 @@ describe("Actions lane queue visibility and manual start button", () => {
     wrapper.unmount();
   });
 
+  it("does not expose a manual merge action while automatic merge is running", async () => {
+    getSpy.mockResolvedValue([
+      {
+        id: "job-merging",
+        project_id: "/home/andy/repos/ads",
+        issue_id: 343,
+        issue_title: "Automatic merge delivery",
+        status: "waiting_merge",
+        pr_number: 356,
+        pr_url: "https://github.com/Andy963/ads/pull/356",
+        current_step: "Review passed. PR #356 created. Starting automatic merge and cleanup.",
+        created_at: 1000,
+        updated_at: 2000,
+      },
+    ]);
+    localStorage.setItem("ads.app_state", JSON.stringify({
+      version: 1,
+      updatedAt: Date.now(),
+      projects: [{ id: "p-1", sessionId: "p-1", path: "/home/andy/repos/ads", name: "ads", chatSessionId: "main", initialized: true }],
+      activeProject: "p-1",
+    }));
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+
+    expect(wrapper.find('[data-testid="actions-job-banner"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="btn-action-merge"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="acopilot-waiting-merge-banner"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="btn-action-cancel"]').exists()).toBe(true);
+
+    wrapper.unmount();
+  });
+
   it("prioritizes active running job over newer queued job in activeActionJob banner (Issue #345)", async () => {
     const mockJobs = [
       {

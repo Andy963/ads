@@ -519,19 +519,6 @@ async function triggerStartActionQueue(): Promise<void> {
   }
 }
 
-async function triggerMergeActionJob(jobId: string): Promise<void> {
-  if (!jobId) return;
-  const pid = activeProjectId.value.trim();
-  const repoPath = resolveActiveWorkspaceRoot() || activeProject.value?.path || "";
-  try {
-    await api.post(`/api/actions/jobs/${encodeURIComponent(jobId)}/merge`, { projectId: pid, repoPath });
-    await loadActionJobs();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    showActionNotice(`合并任务失败：${message}`);
-  }
-}
-
 async function cancelActionJob(jobId: string): Promise<void> {
   if (!jobId) return;
   const pid = activeProjectId.value.trim();
@@ -1805,10 +1792,6 @@ const advisorConnectionStatus = computed(() => {
               :data-message-count="advisorMessages.length"
               :data-panel-key="`${advisorPanelKey}:${errorRecoveryGeneration}`"
             >
-              <div v-if="activeActionJob && activeActionJob.status === 'waiting_merge'" class="acopilotWaitingMergeBanner" data-testid="acopilot-waiting-merge-banner">
-                <span>⚡ Actions 有已完成任务等待合并：{{ activeActionJob.issue_title }}</span>
-                <button type="button" class="btnJumpActions" @click="selectWorkspaceTab('worker')">前往 Actions 审查合并</button>
-              </div>
               <MainChatView
                 ref="advisorChatRef"
                 :key="`${advisorPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
@@ -1881,15 +1864,6 @@ const advisorConnectionStatus = computed(() => {
                     @click="triggerStartActionQueue"
                   >
                     {{ isStartingQueue ? '启动中...' : '▶ 启动执行' }}
-                  </button>
-                  <button
-                    v-if="activeActionJob.status === 'waiting_merge'"
-                    type="button"
-                    class="btnActionMerge"
-                    data-testid="btn-action-merge"
-                    @click="triggerMergeActionJob(activeActionJob.id)"
-                  >
-                    {{ activeActionJob.pr_number ? `Merge PR #${activeActionJob.pr_number}` : 'Local Merge (dev)' }}
                   </button>
                   <button
                     v-if="['queued', 'running', 'verifying', 'reviewing', 'waiting_merge', 'blocked'].includes(activeActionJob.status)"
