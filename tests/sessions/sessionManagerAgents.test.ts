@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -10,6 +12,7 @@ import { NativeAgentAdapter } from "../../server/agents/adapters/nativeAgentAdap
 import { closeAllStateDatabases, getStateDatabase } from "../../server/state/database.js";
 import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
 import { createUpstreamCredentialStore } from "../../server/state/upstreamCredentialStore.js";
+import { NativeTranscriptStore } from "../../server/state/nativeTranscriptStore.js";
 
 describe("SessionManager agent allowlists", () => {
   const originalEnv = process.env;
@@ -138,6 +141,68 @@ describe("SessionManager agent allowlists", () => {
       session.setModelConfig({ credentialProfile: "custom-profile" });
 
       assert.equal(session.status().ready, true);
+    } finally {
+      manager.destroy();
+      closeAllStateDatabases();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("restores a durable Native transcript without history injection", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-session-transcript-"));
+    const dbPath = path.join(directory, "state.db");
+    const owner = "auth-user-transcript";
+    const projectId = "project-transcript";
+    const transcriptId = createHash("sha256")
+      .update(JSON.stringify({
+        version: 1,
+        owner,
+        projectId,
+        lane: "worker",
+        lifecycle: "durable",
+      }))
+      .digest("hex");
+    const store = new NativeTranscriptStore(getStateDatabase(dbPath));
+    store.beginTurn({
+      transcriptId,
+      turnId: "completed-turn",
+      messages: [{ role: "user", content: "remember this" }],
+      entries: [{ kind: "message", message: { role: "user", content: "remember this" } }],
+      provider: { provider: "test", model: "test-model" },
+    });
+    store.updateTurn({
+      transcriptId,
+      turnId: "completed-turn",
+      status: "completed",
+      messages: [
+        { role: "user", content: "remember this" },
+        { role: "assistant", content: "remembered" },
+      ],
+      entries: [
+        { kind: "message", message: { role: "user", content: "remember this" } },
+        { kind: "message", message: { role: "assistant", content: "remembered" } },
+      ],
+      usage: null,
+    });
+
+    const manager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      undefined,
+      { ADS_AGENT_RUNTIME: "native", ADS_WEB_SESSION_PEPPER: "test-only-pepper" },
+      { stateDbPath: dbPath, lane: "worker" },
+    );
+    try {
+      const session = manager.getOrCreate(123458, directory, true, {
+        authUserId: owner,
+        projectId,
+        lifecycle: "durable",
+      });
+      assert(session.getAdapter("codex") instanceof NativeAgentAdapter);
+      assert.equal(manager.getContextRestoreMode(123458), "thread_resumed");
+      assert.equal(manager.needsHistoryInjection(123458), false);
     } finally {
       manager.destroy();
       closeAllStateDatabases();

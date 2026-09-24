@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { SandboxMode } from '../config.js';
 import { createLogger } from '../utils/logger.js';
 import { CodexAppServerAdapter } from '../agents/adapters/codexAppServerAdapter.js';
@@ -24,6 +26,8 @@ import { deriveProjectSessionId } from '../web/server/projectSessionId.js';
 import type { LaneName } from '../state/lanePromptDefaults.js';
 import { resolveAgentRuntime, type AgentRuntimeBackend, type SessionLifecycle } from '../runtime/config.js';
 import { isNativeExecutionId } from '../runtime/sessionIdentity.js';
+import { getStateDatabase } from '../state/database.js';
+import { NativeTranscriptStore } from '../state/nativeTranscriptStore.js';
 
 function isConversationLoggingEnabled(): boolean {
   const raw = process.env.ADS_CONVERSATION_LOG;
@@ -38,6 +42,23 @@ function isConversationLoggingEnabled(): boolean {
     return false;
   }
   return false;
+}
+
+function buildNativeTranscriptId(input: {
+  owner: string;
+  projectId: string;
+  lane: LaneName | 'default';
+  lifecycle: SessionLifecycle;
+}): string {
+  return createHash('sha256')
+    .update(JSON.stringify({
+      version: 1,
+      owner: input.owner,
+      projectId: input.projectId,
+      lane: input.lane,
+      lifecycle: input.lifecycle,
+    }))
+    .digest('hex');
 }
 
 export type SessionDisposeReason = "idle_timeout" | "drop";
@@ -162,6 +183,21 @@ export class SessionManager {
     const effectiveCwd = cwd || savedState?.cwd || process.cwd();
     const workspaceRoot = detectWorkspaceFrom(effectiveCwd);
     const nativeRuntime = this.runtimeBackend === "native";
+    const owner = String(options?.authUserId ?? userId);
+    const projectId = String(options?.projectId ?? "").trim() || deriveProjectSessionId(workspaceRoot);
+    const nativeTranscriptId = nativeRuntime && lifecycle === "durable"
+      ? buildNativeTranscriptId({
+          owner,
+          projectId,
+          lane: this.options.lane ?? "default",
+          lifecycle,
+        })
+      : undefined;
+    const restoreNativeTranscript = lifecycle === "durable" && Boolean(resumeThread);
+    const nativeTranscriptAvailable = restoreNativeTranscript && nativeTranscriptId
+      ? new NativeTranscriptStore(getStateDatabase(this.options.stateDbPath))
+          .loadCompletedMessages(nativeTranscriptId).length > 0
+      : false;
 
     let activeAgentId: AgentIdentifier | undefined = savedState?.activeAgentId;
     const resumeState = resolveResumeState({
@@ -171,6 +207,7 @@ export class SessionManager {
       logger: this.logger,
       currentCwd: effectiveCwd,
       runtimeBackend: this.runtimeBackend,
+      nativeTranscriptAvailable,
     });
     activeAgentId = resumeState.activeAgentId ?? activeAgentId;
     if (resumeState.shouldInjectHistory) {
@@ -205,6 +242,7 @@ export class SessionManager {
       workspaceRoot,
       projectId: options?.projectId,
       lifecycle,
+      restoreNativeTranscript,
     });
 
     this.runtime.trackSession(userId, session, effectiveCwd, {
@@ -550,6 +588,7 @@ export class SessionManager {
     workspaceRoot: string;
     projectId?: string;
     lifecycle: SessionLifecycle;
+    restoreNativeTranscript: boolean;
   }): HybridOrchestrator {
     const adapters = this.createAdapters(args);
 
@@ -583,13 +622,15 @@ export class SessionManager {
     workspaceRoot: string;
     projectId?: string;
     lifecycle: SessionLifecycle;
+    restoreNativeTranscript: boolean;
   }): AgentAdapter[] {
     const projectId = String(args.projectId ?? "").trim() || deriveProjectSessionId(args.workspaceRoot);
 
     if (this.runtimeBackend === "native") {
+      const owner = String(args.authUserId ?? args.userId);
       return [
         new NativeAgentAdapter({
-          credentialOwner: String(args.authUserId ?? args.userId),
+          credentialOwner: owner,
           stateDbPath: this.options.stateDbPath,
           workspaceRoot: args.workspaceRoot,
           workingDirectory: args.effectiveCwd,
@@ -597,6 +638,14 @@ export class SessionManager {
           modelReasoningEffort: args.userModelReasoningEffort,
           resumeThreadId: args.resumeThreadId,
           env: this.codexEnv,
+          transcriptId: args.lifecycle === "durable"
+            ? buildNativeTranscriptId({ owner, projectId, lane: this.options.lane ?? "default", lifecycle: args.lifecycle })
+            : undefined,
+          transcriptMode: args.lifecycle !== "durable"
+            ? "disabled"
+            : args.restoreNativeTranscript
+              ? "restore"
+              : "replace",
         }),
       ];
     }

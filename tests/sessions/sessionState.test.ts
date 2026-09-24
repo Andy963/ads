@@ -244,6 +244,30 @@ describe("telegram/sessionState helpers", () => {
     assert.equal(resume.shouldInjectHistory, true);
   });
 
+  it("restores a Native transcript without injecting ADS history", () => {
+    storage.setRecord(18, {
+      cwd: "/tmp/project",
+      agentThreads: {},
+      activeAgentId: "codex",
+      runtimeBackend: "native",
+      lifecycle: "durable",
+    });
+
+    const resume = resolveResumeState({
+      userId: 18,
+      resumeThread: true,
+      storage,
+      logger: { info: () => {} },
+      currentCwd: "/tmp/project",
+      runtimeBackend: "native",
+      nativeTranscriptAvailable: true,
+    });
+
+    assert.equal(resume.restoreMode, "thread_resumed");
+    assert.equal(resume.resumeThreadId, undefined);
+    assert.equal(resume.shouldInjectHistory, false);
+  });
+
   it("uses history injection when a Codex record contains a Native execution alias", () => {
     storage.setRecord(19, {
       threadId: "native-turn-19",

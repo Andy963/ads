@@ -6,6 +6,11 @@ import path from "node:path";
 
 import { NativeAgentAdapter } from "../../server/agents/adapters/nativeAgentAdapter.js";
 import type { NativeModelResolver } from "../../server/runtime/modelResolver.js";
+import {
+  getStateDatabase,
+  resetStateDatabaseForTests,
+} from "../../server/state/database.js";
+import { NativeTranscriptStore } from "../../server/state/nativeTranscriptStore.js";
 import { ActivityTracker } from "../../server/utils/activityTracker.js";
 
 function sse(events: string[]): Response {
@@ -608,5 +613,183 @@ describe("NativeAgentAdapter", () => {
       assert.doesNotMatch(error.message, /secret-api-key/);
       return true;
     });
+  });
+
+  it("restores completed Native transcripts without persisting execution ids or secrets", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-restore-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-state-"));
+    const dbPath = path.join(stateDir, "state.db");
+    const transcriptId = "native-transcript-restore";
+    const store = new NativeTranscriptStore(getStateDatabase(dbPath));
+    const resolver: NativeModelResolver = {
+      resolve: () => ({
+        model: "test-model",
+        baseUrl: "https://provider.test/v1",
+        apiKey: "secret-api-key",
+        provider: "test",
+      }),
+    };
+
+    try {
+      let firstRequest = 0;
+      const firstAdapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: resolver,
+        transcriptId,
+        transcriptStore: store,
+        env: { NATIVE_TEST_SECRET: "environment-secret" },
+        fetchImpl: async () => {
+          firstRequest += 1;
+          if (firstRequest === 1) {
+            return sse([
+              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "exec-1", function: { name: "exec_command", arguments: JSON.stringify({ cmd: "echo", args: ["safe"] }) } }] } }] }),
+              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+            ]);
+          }
+          return sse([
+            JSON.stringify({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] }),
+          ]);
+        },
+      });
+
+      await firstAdapter.send("secret-api-key environment-secret");
+      const executionId = firstAdapter.getThreadId();
+      assert.ok(executionId);
+      const turns = store.listTurns(transcriptId);
+      assert.equal(turns[0]?.status, "completed");
+      assert.deepEqual(turns[0]?.entries.map((entry) => entry.kind), [
+        "message",
+        "message",
+        "command",
+        "message",
+        "message",
+      ]);
+      const rawRows = getStateDatabase(dbPath)
+        .prepare("SELECT * FROM native_transcript_turns")
+        .all();
+      const raw = JSON.stringify(rawRows);
+      assert.doesNotMatch(raw, /secret-api-key/);
+      assert.doesNotMatch(raw, /environment-secret/);
+      assert.doesNotMatch(raw, new RegExp(executionId ?? "native-execution-id"));
+
+      let restoredRequest: { messages?: Array<{ role: string; content: string | null }> } | undefined;
+      const restoredAdapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: resolver,
+        transcriptId,
+        transcriptStore: store,
+        env: { NATIVE_TEST_SECRET: "environment-secret" },
+        fetchImpl: async (_input, init) => {
+          restoredRequest = JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ role: string; content: string | null }> };
+          return sse([
+            JSON.stringify({ choices: [{ delta: { content: "continued" }, finish_reason: "stop" }] }),
+          ]);
+        },
+      });
+
+      await restoredAdapter.send("next");
+      assert.deepEqual(restoredRequest?.messages?.map((message) => message.role), [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "user",
+      ]);
+      assert.equal(restoredRequest?.messages?.[0]?.content?.includes("secret-api-key"), false);
+      assert.equal(restoredRequest?.messages?.[0]?.content?.includes("environment-secret"), false);
+      assert.notEqual(restoredAdapter.getThreadId(), executionId);
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not restore failed or cancelled turns as successful context", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-failure-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-failure-state-"));
+    const dbPath = path.join(stateDir, "state.db");
+    const store = new NativeTranscriptStore(getStateDatabase(dbPath));
+    const transcriptId = "native-transcript-failure";
+    const resolver: NativeModelResolver = {
+      resolve: () => ({
+        model: "test-model",
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-api-key",
+        provider: "test",
+      }),
+    };
+
+    try {
+      let requestNumber = 0;
+      const failedAdapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: resolver,
+        transcriptId,
+        transcriptStore: store,
+        fetchImpl: async () => {
+          requestNumber += 1;
+          if (requestNumber === 1) {
+            return sse([
+              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "exec-1", function: { name: "exec_command", arguments: JSON.stringify({ cmd: "echo", args: ["safe"] }) } }] } }] }),
+              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+            ]);
+          }
+          throw new Error("provider failed");
+        },
+      });
+
+      await assert.rejects(failedAdapter.send("failed turn"));
+      assert.equal(store.listTurns(transcriptId)[0]?.status, "failed");
+
+      const controller = new AbortController();
+      const cancelledAdapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: resolver,
+        transcriptId: `${transcriptId}-cancelled`,
+        transcriptStore: store,
+        fetchImpl: async () => {
+          setTimeout(() => controller.abort(), 50);
+          return sse([
+            JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "exec-2", function: { name: "exec_command", arguments: JSON.stringify({ cmd: process.execPath, args: ["-e", "setTimeout(() => {}, 10000)"], timeout_ms: 120_000 }) } }] } }] }),
+            JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+          ]);
+        },
+      });
+      await assert.rejects(
+        cancelledAdapter.send("cancelled turn", { signal: controller.signal }),
+        (error: unknown) => error instanceof Error && error.name === "AbortError",
+      );
+      assert.equal(store.listTurns(`${transcriptId}-cancelled`)[0]?.status, "cancelled");
+
+      let restoredMessages: Array<{ role: string }> = [];
+      const restoredAdapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: resolver,
+        transcriptId,
+        transcriptStore: store,
+        fetchImpl: async (_input, init) => {
+          const body = JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ role: string }> };
+          restoredMessages = body.messages ?? [];
+          return sse([JSON.stringify({ choices: [{ delta: { content: "recovered" }, finish_reason: "stop" }] })]);
+        },
+      });
+      await restoredAdapter.send("recover");
+      assert.deepEqual(restoredMessages.map((message) => message.role), ["user"]);
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 });

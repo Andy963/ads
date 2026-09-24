@@ -34,4 +34,5 @@
 - 0017 - [ADR 0017: 退役 Live-Step 进度消息通道](0017-retire-live-step-progress.md)
 - 0020 - [ADR 0020: Isolate Actions Reviewer Context and Persist Review Contracts](0020-isolated-actions-reviewer-contract.md)
 - 0021 - [ADR 0021: Enforce Exclusive Runtime Backend and Session Lifecycle](0021-exclusive-runtime-backend-lifecycle.md)
+- 0022 - [ADR 0022: 持久化 Native Runtime Transcript](0022-persist-native-runtime-transcripts.md)
 <!-- ADS:ADR_INDEX_END -->

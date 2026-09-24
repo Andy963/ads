@@ -671,4 +671,29 @@ Core reviewing rules:
       `);
     },
   },
+  {
+    version: 21,
+    description: "Persist durable Native runtime transcripts",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS native_transcript_turns (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          transcript_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed', 'cancelled', 'interrupted')),
+          messages_json TEXT NOT NULL DEFAULT '[]',
+          entries_json TEXT NOT NULL DEFAULT '[]',
+          usage_json TEXT,
+          provider_json TEXT,
+          error_message TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE(transcript_id, turn_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_native_transcript_turns_order
+          ON native_transcript_turns(transcript_id, id);
+      `);
+    },
+  },
 ];

@@ -131,6 +131,7 @@ export function resolveResumeState(args: {
   logger: Pick<Logger, "info">;
   currentCwd?: string;
   runtimeBackend?: AgentRuntimeBackend;
+  nativeTranscriptAvailable?: boolean;
 }): ResumeState {
   const record = args.storage?.getRecord(args.userId);
   const currentBackend = args.runtimeBackend ?? "codex-app-server";
@@ -174,6 +175,16 @@ export function resolveResumeState(args: {
   }
 
   if (currentBackend === "native") {
+    if (args.nativeTranscriptAvailable) {
+      args.logger.info(
+        `[Continuity] user=${args.userId} restore=thread_resumed reason=native_transcript_restored agent=${savedActiveAgentId ?? "unknown"}`,
+      );
+      return {
+        activeAgentId: savedActiveAgentId,
+        shouldInjectHistory: false,
+        restoreMode: "thread_resumed",
+      };
+    }
     args.logger.info(
       `[Continuity] user=${args.userId} restore=history_injection reason=native_runtime_not_resumable agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId) ?? "none"}`,
     );

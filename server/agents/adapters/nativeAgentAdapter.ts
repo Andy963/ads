@@ -20,6 +20,12 @@ import {
   type NativeCompletionResult,
 } from "../../runtime/openAiCompatibleClient.js";
 import { createNativeModelResolver, type NativeModelResolver } from "../../runtime/modelResolver.js";
+import { getStateDatabase } from "../../state/database.js";
+import {
+  NativeTranscriptStore,
+  type NativeTranscriptEntry,
+  type NativeTranscriptProviderMetadata,
+} from "../../state/nativeTranscriptStore.js";
 import {
   NATIVE_TOOL_DEFINITIONS,
   NativeToolExecutor,
@@ -57,6 +63,18 @@ export interface NativeAgentAdapterOptions {
   fetchImpl?: typeof fetch;
   turnTimeoutMs?: number;
   maxToolRounds?: number;
+  transcriptId?: string;
+  transcriptStore?: NativeTranscriptStore;
+  transcriptMode?: "restore" | "replace" | "disabled";
+}
+
+const SECRET_ENV_NAME = /(?:API[_-]?KEY|AUTH|COOKIE|CREDENTIAL|PASSWORD|SECRET|TOKEN)/i;
+
+function collectSecretValues(env: NodeJS.ProcessEnv): string[] {
+  return Object.entries(env)
+    .filter(([key, value]) => SECRET_ENV_NAME.test(key) && typeof value === "string")
+    .map(([, value]) => String(value).trim())
+    .filter((value) => value.length >= 4);
 }
 
 function textFromInput(input: Input): string {
@@ -140,6 +158,7 @@ export class NativeAgentAdapter implements AgentAdapter {
   private readonly listeners = new Set<(event: AgentEvent) => void>();
   private readonly maxToolRounds: number;
   private readonly turnTimeoutMs: number;
+  private readonly secretValues: string[];
   private conversation: NativeChatMessage[] = [];
   private workingDirectory?: string;
   private model?: string;
@@ -148,6 +167,9 @@ export class NativeAgentAdapter implements AgentAdapter {
   private developerInstructions?: string;
   private threadId: string;
   private threadStartedEmitted = false;
+  private readonly transcriptId?: string;
+  private readonly transcriptStore?: NativeTranscriptStore;
+  private readonly activeTranscriptTurns = new Set<string>();
 
   constructor(options: NativeAgentAdapterOptions) {
     this.credentialOwner = String(options.credentialOwner ?? "").trim();
@@ -157,6 +179,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     }
     this.workspaceRoot = options.workspaceRoot;
     this.env = { ...process.env, ...(options.env ?? {}) };
+    this.secretValues = collectSecretValues(this.env);
     this.resolver = options.modelResolver ?? createNativeModelResolver({
       owner: this.credentialOwner,
       stateDbPath: options.stateDbPath,
@@ -180,6 +203,24 @@ export class NativeAgentAdapter implements AgentAdapter {
         ?? this.env.ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS,
       DEFAULT_MAX_TOOL_ROUNDS,
     );
+    this.transcriptId = String(options.transcriptId ?? "").trim() || undefined;
+    const transcriptMode = options.transcriptMode ?? "restore";
+    if (options.transcriptStore && !this.transcriptId) {
+      throw new Error("NativeAgentAdapter transcriptStore requires transcriptId");
+    }
+    this.transcriptStore = this.transcriptId && transcriptMode !== "disabled"
+      ? options.transcriptStore ?? new NativeTranscriptStore(getStateDatabase(options.stateDbPath), {
+          redactions: this.secretValues,
+        })
+      : undefined;
+    if (this.transcriptId && this.transcriptStore) {
+      this.transcriptStore.addRedactions(this.secretValues);
+      if (transcriptMode === "replace") {
+        this.transcriptStore.clear(this.transcriptId);
+      } else {
+        this.appendConversation(this.transcriptStore.loadCompletedMessages(this.transcriptId));
+      }
+    }
     this.metadata = {
       ...DEFAULT_METADATA,
       ...options.metadata,
@@ -210,6 +251,10 @@ export class NativeAgentAdapter implements AgentAdapter {
   }
 
   reset(): void {
+    if (this.transcriptId && this.transcriptStore) {
+      this.transcriptStore.clear(this.transcriptId);
+    }
+    this.activeTranscriptTurns.clear();
     this.conversation = [];
     this.threadId = `native-${randomUUID()}`;
     this.threadStartedEmitted = false;
@@ -284,9 +329,45 @@ export class NativeAgentAdapter implements AgentAdapter {
     }
   }
 
+  private checkpointTurn(input: {
+    turnId: string;
+    status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
+    messages: NativeChatMessage[];
+    entries: NativeTranscriptEntry[];
+    usage: Usage | null;
+    provider: NativeTranscriptProviderMetadata;
+    errorMessage?: string | null;
+  }): void {
+    if (!this.transcriptId || !this.transcriptStore) return;
+    if (input.status === "running" && !this.activeTranscriptTurns.has(input.turnId)) {
+      this.transcriptStore.beginTurn({
+        transcriptId: this.transcriptId,
+        turnId: input.turnId,
+        messages: input.messages,
+        entries: input.entries,
+        provider: input.provider,
+      });
+      this.activeTranscriptTurns.add(input.turnId);
+      return;
+    }
+    this.transcriptStore.updateTurn({
+      transcriptId: this.transcriptId,
+      turnId: input.turnId,
+      status: input.status,
+      messages: input.messages,
+      entries: input.entries,
+      usage: input.usage,
+      errorMessage: input.errorMessage,
+    });
+    if (input.status !== "running") {
+      this.activeTranscriptTurns.delete(input.turnId);
+    }
+  }
+
   private async runTurn(input: Input, options: AgentSendOptions): Promise<AgentRunResult> {
     const userText = textFromInput(input);
     const model = this.resolver.resolve(this.model, this.modelConfig);
+    this.transcriptStore?.addRedactions([model.apiKey]);
     const requestOptions = {
       ...model.options,
       supportsReasoningEffort: model.supportsReasoningEffort === true,
@@ -310,7 +391,7 @@ export class NativeAgentAdapter implements AgentAdapter {
             workspaceRoot: options.middlewareContext.workspaceRoot ?? this.workspaceRoot,
           }
         : undefined,
-      redactions: [model.apiKey],
+      redactions: [model.apiKey, ...this.secretValues],
       signal: combined.signal,
     });
 
@@ -322,6 +403,21 @@ export class NativeAgentAdapter implements AgentAdapter {
 
     let currentMessages = this.buildMessages(userText);
     const turnMessages: NativeChatMessage[] = [userMessage];
+    const turnEntries: NativeTranscriptEntry[] = [{ kind: "message", message: userMessage }];
+    const providerMetadata: NativeTranscriptProviderMetadata = {
+      provider: model.provider,
+      model: model.model,
+      ...(requestOptions.reasoningEffort ? { reasoningEffort: requestOptions.reasoningEffort } : {}),
+    };
+
+    this.checkpointTurn({
+      turnId,
+      status: "running",
+      messages: turnMessages,
+      entries: turnEntries,
+      usage: null,
+      provider: providerMetadata,
+    });
     let responseText = "";
     let usage: Usage | null = null;
 
@@ -352,7 +448,17 @@ export class NativeAgentAdapter implements AgentAdapter {
         };
         if (completion.toolCalls.length === 0) {
           this.emitRaw({ type: "item.completed", item: { type: "agent_message", id: itemId, text: completion.text } });
-          this.appendConversation([...turnMessages, assistantMessage]);
+          turnMessages.push(assistantMessage);
+          turnEntries.push({ kind: "message", message: assistantMessage });
+          this.checkpointTurn({
+            turnId,
+            status: "completed",
+            messages: turnMessages,
+            entries: turnEntries,
+            usage,
+            provider: providerMetadata,
+          });
+          this.appendConversation(turnMessages);
           this.emitRaw({ type: "turn.completed", usage: usage ?? undefined });
           return { response: responseText.trim(), usage, agentId: this.id };
         }
@@ -360,10 +466,46 @@ export class NativeAgentAdapter implements AgentAdapter {
         this.emitRaw({ type: "item.completed", item: { type: "agent_message", id: itemId, text: completion.text } });
         currentMessages = [...currentMessages, assistantMessage];
         turnMessages.push(assistantMessage);
+        turnEntries.push({ kind: "message", message: assistantMessage });
+        this.checkpointTurn({
+          turnId,
+          status: "running",
+          messages: turnMessages,
+          entries: turnEntries,
+          usage,
+          provider: providerMetadata,
+        });
         for (const call of completion.toolCalls) {
           const result = await this.executeTool(call, toolExecutor, model.apiKey);
-          currentMessages.push({ role: "tool", content: result.output, tool_call_id: call.id });
-          turnMessages.push({ role: "tool", content: result.output, tool_call_id: call.id });
+          const toolMessage: NativeChatMessage = { role: "tool", content: result.output, tool_call_id: call.id };
+          currentMessages.push(toolMessage);
+          turnMessages.push(toolMessage);
+          if (result.command) {
+            turnEntries.push({
+              kind: "command",
+              toolCallId: call.id,
+              command: result.command.command,
+              status: result.command.status === "failed" ? "failed" : "completed",
+              ...(typeof result.command.exit_code === "number" ? { exitCode: result.command.exit_code } : {}),
+              ...(result.command.aggregated_output ? { output: result.command.aggregated_output } : {}),
+            });
+          }
+          if (result.changedFiles && result.changedFiles.length > 0) {
+            turnEntries.push({
+              kind: "file_change",
+              toolCallId: call.id,
+              changes: result.changedFiles.map((change) => ({ ...change })),
+            });
+          }
+          turnEntries.push({ kind: "message", message: toolMessage });
+          this.checkpointTurn({
+            turnId,
+            status: "running",
+            messages: turnMessages,
+            entries: turnEntries,
+            usage,
+            provider: providerMetadata,
+          });
         }
 
         if (this.maxToolRounds > 0 && round + 1 >= this.maxToolRounds) {
@@ -374,6 +516,14 @@ export class NativeAgentAdapter implements AgentAdapter {
           this.emitRaw({
             type: "item.completed",
             item: { type: "agent_message", id: limitItemId, text: TOOL_ROUND_LIMIT_MESSAGE },
+          });
+          this.checkpointTurn({
+            turnId,
+            status: "completed",
+            messages: turnMessages,
+            entries: turnEntries,
+            usage,
+            provider: providerMetadata,
           });
           this.appendConversation([...turnMessages]);
           this.emitRaw({ type: "turn.completed", usage: usage ?? undefined });
@@ -386,6 +536,27 @@ export class NativeAgentAdapter implements AgentAdapter {
         : error instanceof Error
           ? error
           : new Error(String(error));
+      const status = options.signal?.aborted
+        ? "cancelled"
+        : isAbortError(normalized)
+          ? "interrupted"
+          : "failed";
+      try {
+        this.checkpointTurn({
+          turnId,
+          status,
+          messages: turnMessages,
+          entries: turnEntries,
+          usage,
+          provider: providerMetadata,
+          errorMessage: normalized.message,
+        });
+      } catch (persistenceError) {
+        throw new AggregateError(
+          [normalized, persistenceError],
+          "Native turn failed and its transcript could not be persisted",
+        );
+      }
       this.emitRaw({ type: "turn.failed", error: { message: formatToolError(normalized, model.apiKey) } });
       throw normalized;
     } finally {
