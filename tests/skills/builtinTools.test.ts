@@ -49,6 +49,14 @@ describe("skills/builtinTools", () => {
       text: '<<<tool.dispatch_action_job issue_id="277" title="Incomplete Issue">>>\n>>>',
       workspaceRoot: workspace,
     });
-    assert.match(results[0] ?? "", /failed: dispatch_action_job requires a complete description and acceptance criteria/);
+    assert.match(results[0] ?? "", /failed: dispatch_action_job requires an explicit acceptance_criteria field/);
+  });
+
+  it("rejects local prompt directives without explicit acceptance criteria", async () => {
+    const results = await executeToolDirectives({
+      text: '<<<tool.dispatch_action_job kind="local_prompt" title="Local task">>>\nComplete local prompt\n>>>',
+      workspaceRoot: workspace,
+    });
+    assert.match(results[0] ?? "", /failed: dispatch_action_job requires an explicit acceptance_criteria field/);
   });
 });

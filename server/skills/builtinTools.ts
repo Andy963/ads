@@ -65,6 +65,9 @@ export async function executeToolDirectives(args: {
         const issueTitle = directive.attrs.title || directive.attrs.issue_title || (issueId ? `Issue #${issueId}` : "Task");
         const jobKind = directive.attrs.kind === "local_prompt" ? "local_prompt" : "github_issue";
         const issueDescription = directive.body.trim();
+        if (!Object.hasOwn(directive.attrs, "acceptance_criteria")) {
+          throw new Error("dispatch_action_job requires an explicit acceptance_criteria field");
+        }
         const acceptanceCriteria = (directive.attrs.acceptance_criteria ?? "")
           .split("|")
           .map((criterion) => criterion.trim())

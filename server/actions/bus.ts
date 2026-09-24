@@ -179,6 +179,24 @@ export function createReviewerUserId(
   return userId;
 }
 
+export function validateGitEvidence(input: {
+  diff: string;
+  diffStat: string;
+  baseCommit?: string;
+  headCommit?: string;
+}): string | undefined {
+  const errors: string[] = [];
+  if (!input.diff.trim()) errors.push("git diff returned empty output");
+  if (!input.diffStat.trim()) errors.push("git diff --stat returned empty output");
+  if (!/^[0-9a-f]{40,64}$/i.test(input.baseCommit ?? "")) {
+    errors.push(`git rev-parse base returned an invalid commit: ${input.baseCommit ?? "<empty>"}`);
+  }
+  if (!/^[0-9a-f]{40,64}$/i.test(input.headCommit ?? "")) {
+    errors.push(`git rev-parse HEAD returned an invalid commit: ${input.headCommit ?? "<empty>"}`);
+  }
+  return errors.length > 0 ? errors.join("; ") : undefined;
+}
+
 export function parseActionJobIssueSnapshot(job: ActionJobRecord): ActionJobIssueSnapshot {
   try {
     const parsed = JSON.parse(job.issue_snapshot_json) as Partial<ActionJobIssueSnapshot>;
@@ -931,6 +949,7 @@ export class LaneDispatchBus {
     const diffStat = diffStatRes.stdout || "";
     const baseCommit = baseCommitResult.stdout?.trim();
     const headCommit = headCommitResult.stdout?.trim();
+    const evidenceError = validateGitEvidence({ diff, diffStat, baseCommit, headCommit });
     const issueSnapshot = parseActionJobIssueSnapshot(job);
 
     const payload: ReviewPayload = {
@@ -950,7 +969,7 @@ export class LaneDispatchBus {
       },
       diff,
       diffStat,
-      diffCaptureError: captureErrors.length > 0 ? captureErrors.join("; ") : undefined,
+      diffCaptureError: [...captureErrors, evidenceError].filter((error): error is string => Boolean(error)).join("; ") || undefined,
       testReport,
     };
 

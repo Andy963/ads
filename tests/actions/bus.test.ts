@@ -6,7 +6,7 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
-import { createReviewerUserId, LaneDispatchBus } from "../../server/actions/bus.js";
+import { createReviewerUserId, LaneDispatchBus, validateGitEvidence } from "../../server/actions/bus.js";
 import { handleActionRoutes, setBusInstance } from "../../server/web/server/api/routes/actions.js";
 import { checkThreePointGate } from "../../server/actions/threePointGate.js";
 import { updateActionJobStatus } from "../../server/state/actionJobStore.js";
@@ -125,6 +125,22 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     );
 
     assert.strictEqual(reviewerUserId, 11);
+  });
+
+  it("rejects empty or invalid Git evidence", () => {
+    assert.match(
+      validateGitEvidence({ diff: "", diffStat: "", baseCommit: "invalid", headCommit: "" }) ?? "",
+      /git diff returned empty output/,
+    );
+    assert.match(
+      validateGitEvidence({
+        diff: "diff --git a/a.ts b/a.ts",
+        diffStat: "1 file changed",
+        baseCommit: "a".repeat(40),
+        headCommit: "b".repeat(40),
+      }) ?? "",
+      /^$/,
+    );
   });
 
   it("passes the immutable Issue snapshot and verification provenance to Reviewer", async () => {
