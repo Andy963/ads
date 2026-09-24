@@ -136,6 +136,15 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       validateGitEvidence({
         diff: "diff --git a/a.ts b/a.ts",
         diffStat: "1 file changed",
+        baseCommit: "a".repeat(41),
+        headCommit: "b".repeat(40),
+      }) ?? "",
+      /invalid commit/,
+    );
+    assert.match(
+      validateGitEvidence({
+        diff: "diff --git a/a.ts b/a.ts",
+        diffStat: "1 file changed",
         baseCommit: "a".repeat(40),
         headCommit: "b".repeat(40),
       }) ?? "",

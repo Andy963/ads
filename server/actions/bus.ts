@@ -188,10 +188,10 @@ export function validateGitEvidence(input: {
   const errors: string[] = [];
   if (!input.diff.trim()) errors.push("git diff returned empty output");
   if (!input.diffStat.trim()) errors.push("git diff --stat returned empty output");
-  if (!/^[0-9a-f]{40,64}$/i.test(input.baseCommit ?? "")) {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(input.baseCommit ?? "")) {
     errors.push(`git rev-parse base returned an invalid commit: ${input.baseCommit ?? "<empty>"}`);
   }
-  if (!/^[0-9a-f]{40,64}$/i.test(input.headCommit ?? "")) {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(input.headCommit ?? "")) {
     errors.push(`git rev-parse HEAD returned an invalid commit: ${input.headCommit ?? "<empty>"}`);
   }
   return errors.length > 0 ? errors.join("; ") : undefined;
