@@ -190,7 +190,7 @@ describe("SessionManager", () => {
       createSession: sessions.factory as never,
     });
 
-    const session = manager.getOrCreate(987654, "/tmp/reviewer", false) as unknown as FakeSession;
+    const session = manager.getOrCreate(987654, "/tmp/reviewer", false, { lifecycle: "ephemeral" }) as unknown as FakeSession;
     session.threadId = "reviewer-thread";
     manager.setUserModel(987654, "reviewer-model");
     manager.releaseEphemeralSession(987654);
@@ -198,6 +198,84 @@ describe("SessionManager", () => {
     assert.equal(manager.hasSession(987654), false);
     assert.equal(session.resetCalls, 1);
     assert.equal(manager.getSavedThreadId(987654), undefined);
+  });
+
+  it("does not delete durable thread state when an ephemeral Reviewer user id collides", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-ephemeral-collision-"));
+    const storage = new ThreadStorage({
+      namespace: "ephemeral-collision",
+      stateDbPath: path.join(directory, "state.db"),
+      storagePath: path.join(directory, "threads.json"),
+      saltPath: path.join(directory, "salt"),
+    });
+    storage.setRecord(987654, {
+      threadId: "durable-codex-thread",
+      cwd: directory,
+      agentThreads: { codex: "durable-codex-thread" },
+      activeAgentId: "codex",
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
+    });
+    const sessions = createFakeSessionFactory();
+    const scopedManager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      storage,
+      undefined,
+      { createSession: sessions.factory as never },
+    );
+
+    try {
+      scopedManager.getOrCreate(987654, directory, false, { lifecycle: "ephemeral" });
+      scopedManager.releaseEphemeralSession(987654);
+
+      assert.equal(storage.getRecord(987654)?.threadId, "durable-codex-thread");
+      assert.deepEqual(storage.getRecord(987654)?.agentThreads, { codex: "durable-codex-thread" });
+    } finally {
+      scopedManager.destroy();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to overwrite a durable Codex thread with a Native execution id", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-codex-native-save-"));
+    const storage = new ThreadStorage({
+      namespace: "codex-native-save",
+      stateDbPath: path.join(directory, "state.db"),
+      storagePath: path.join(directory, "threads.json"),
+      saltPath: path.join(directory, "salt"),
+    });
+    storage.setRecord(6, {
+      threadId: "durable-codex-thread",
+      cwd: directory,
+      agentThreads: { codex: "durable-codex-thread" },
+      activeAgentId: "codex",
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
+    });
+    const sessions = createFakeSessionFactory();
+    const scopedManager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      storage,
+      undefined,
+      { createSession: sessions.factory as never },
+    );
+
+    try {
+      scopedManager.getOrCreate(6, directory, false);
+      scopedManager.saveThreadId(6, "native-execution-id");
+
+      assert.equal(storage.getRecord(6)?.threadId, "durable-codex-thread");
+      assert.deepEqual(storage.getRecord(6)?.agentThreads, { codex: "durable-codex-thread" });
+    } finally {
+      scopedManager.destroy();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("records the runtime backend without persisting Native execution ids", () => {

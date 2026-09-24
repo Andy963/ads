@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Logger } from "../utils/logger.js";
 import type { AgentIdentifier } from "../agents/types.js";
 import type { AgentRuntimeBackend, SessionLifecycle } from "../runtime/config.js";
+import { isNativeExecutionId, redactNativeExecutionIds } from "../runtime/sessionIdentity.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 
 import type { ThreadStorage } from "./threadStorage.js";
@@ -150,9 +151,20 @@ export function resolveResumeState(args: {
   const savedCwd = normalizeCwd(record?.cwd);
   const currentCwd = normalizeCwd(args.currentCwd);
 
+  if (isNativeExecutionId(candidateThreadId)) {
+    args.logger.info(
+      `[Continuity] user=${args.userId} restore=history_injection reason=native_execution_alias agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId)}`,
+    );
+    return {
+      activeAgentId: savedActiveAgentId,
+      shouldInjectHistory: true,
+      restoreMode: "history_injection",
+    };
+  }
+
   if (candidateThreadId && savedCwd && currentCwd && !areSessionCwdsCompatible(savedCwd, currentCwd)) {
     args.logger.info(
-      `[Continuity] user=${args.userId} restore=fresh reason=cwd_mismatch agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId} savedCwd=${savedCwd} currentCwd=${currentCwd}`,
+      `[Continuity] user=${args.userId} restore=fresh reason=cwd_mismatch agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId)} savedCwd=${savedCwd} currentCwd=${currentCwd}`,
     );
     return {
       activeAgentId: savedActiveAgentId,
@@ -163,7 +175,7 @@ export function resolveResumeState(args: {
 
   if (currentBackend === "native") {
     args.logger.info(
-      `[Continuity] user=${args.userId} restore=history_injection reason=native_runtime_not_resumable agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId ?? "none"}`,
+      `[Continuity] user=${args.userId} restore=history_injection reason=native_runtime_not_resumable agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId) ?? "none"}`,
     );
     return {
       activeAgentId: savedActiveAgentId,
@@ -185,7 +197,7 @@ export function resolveResumeState(args: {
 
   if (candidateThreadId) {
     args.logger.info(
-      `[Continuity] user=${args.userId} restore=thread_resumed agent=${savedActiveAgentId ?? "unknown"} thread=${candidateThreadId}`,
+      `[Continuity] user=${args.userId} restore=thread_resumed agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId)}`,
     );
     // The provider reloads its own transcript for this thread, so injecting the
     // ADS history on top would make the model read the same turns twice: once as

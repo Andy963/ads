@@ -193,6 +193,14 @@ export async function handleTaskResumeMessage(
     const threadIdToResume = selection.threadId;
     let clearSavedResumeThreadAfterFallback = false;
     let nativeResumeFailure: string | undefined;
+    if (isNativeExecutionId(threadIdToResume)) {
+      const message = "Native execution IDs cannot be resumed as provider threads";
+      deps.observability.logger.warn(
+        `[Web][task_resume] rejected Native execution alias user=${deps.context.userId} history=${deps.context.historyKey} runtime=${runtimeBackend} source=${selection.source}`,
+      );
+      sendError(message);
+      return;
+    }
     deps.observability.logger.info(
       `[Web][task_resume] user=${deps.context.userId} history=${deps.context.historyKey} agent=${activeAgentId} selectedThread=${threadIdToResume ?? "none"} selectionSource=${selection.source ?? "none"}`,
     );

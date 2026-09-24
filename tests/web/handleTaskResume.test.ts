@@ -136,6 +136,84 @@ describe("web/ws/handleTaskResume", () => {
     assert.deepEqual(historyEntries, [{ role: "user", text: "current question", ts: 1 }]);
   });
 
+  it("rejects a Native execution alias selected from current or saved resume candidates", async () => {
+    const candidates = [
+      {
+        currentThreadId: "native-current-execution",
+        savedThreadId: "codex-saved-thread",
+        savedResumeThreadId: "codex-saved-resume",
+      },
+      {
+        currentThreadId: null,
+        savedThreadId: "native-saved-execution",
+        savedResumeThreadId: "codex-saved-resume",
+      },
+      {
+        currentThreadId: null,
+        savedThreadId: undefined,
+        savedResumeThreadId: "native-saved-resume",
+      },
+    ];
+
+    for (const candidate of candidates) {
+      const sent: unknown[] = [];
+      const historyEntries = [{ role: "user", text: "current question", ts: 1 }];
+      const result = await handleTaskResumeMessage({
+        request: {
+          parsed: {
+            type: "task_resume",
+            payload: { mode: "auto" },
+          } as any,
+        },
+        transport: {
+          ws: {} as any,
+          safeJsonSend: (_ws: unknown, payload: unknown) => sent.push(payload),
+        },
+        observability: {
+          logger: {
+            info: () => {},
+            debug: () => {},
+            warn: () => {},
+          },
+        },
+        context: {
+          userId: 20,
+          historyKey: "history-codex-native-candidate",
+          currentCwd: "/mnt/d/code/ADS/ads",
+        },
+        sessions: {
+          sessionManager: {
+            getRuntimeBackend: () => "codex-app-server",
+            getSavedThreadId: () => candidate.savedThreadId,
+            getSavedResumeThreadId: () => candidate.savedResumeThreadId,
+          } as any,
+          orchestrator: {
+            getActiveAgentId: () => "codex",
+            getThreadId: () => candidate.currentThreadId,
+            status: () => {
+              throw new Error("Native aliases must be rejected before provider probing");
+            },
+          } as any,
+          getWorkspaceLock: () => ({
+            runExclusive: async <T>(fn: () => Promise<T> | T): Promise<T> => await fn(),
+          }) as any,
+        },
+        history: {
+          historyStore: {
+            get: () => historyEntries,
+          } as any,
+        },
+      });
+
+      assert.equal(result.handled, true);
+      assert.deepEqual(sent, [{
+        type: "error",
+        message: "Native execution IDs cannot be resumed as provider threads",
+      }]);
+      assert.deepEqual(historyEntries, [{ role: "user", text: "current question", ts: 1 }]);
+    }
+  });
+
   it("does not consult the retired task context while resuming", async () => {
     const sent: unknown[] = [];
     const sessionSent: unknown[] = [];

@@ -23,6 +23,7 @@ import { detectWorkspaceFrom } from '../workspace/detector.js';
 import { deriveProjectSessionId } from '../web/server/projectSessionId.js';
 import type { LaneName } from '../state/lanePromptDefaults.js';
 import { resolveAgentRuntime, type AgentRuntimeBackend, type SessionLifecycle } from '../runtime/config.js';
+import { isNativeExecutionId } from '../runtime/sessionIdentity.js';
 
 function isConversationLoggingEnabled(): boolean {
   const raw = process.env.ADS_CONVERSATION_LOG;
@@ -215,11 +216,11 @@ export class SessionManager {
     return session;
   }
 
-  /** Dispose an ephemeral runtime session and any provider thread persisted for it. */
+  /** Dispose only the in-memory state owned by an ephemeral runtime session. */
   releaseEphemeralSession(userId: number): void {
     this.userModels.delete(userId);
     this.userReasoningEfforts.delete(userId);
-    this.disposeSession(userId, "drop", { clearSavedThread: true });
+    this.disposeSession(userId, "drop");
   }
 
   hasSession(userId: number): boolean {
@@ -260,6 +261,10 @@ export class SessionManager {
   saveThreadId(userId: number, threadId: string, agentId?: string): void {
     const storage = this.threadStorage;
     if (!storage || this.runtimeBackend === "native" || this.runtime.getRecord(userId)?.lifecycle === "ephemeral") {
+      return;
+    }
+    if (isNativeExecutionId(threadId)) {
+      this.logger.warn("Refused to persist a Native execution ID as a Codex provider thread");
       return;
     }
     storage.setThreadId(userId, threadId, agentId ?? "codex");
