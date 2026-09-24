@@ -411,11 +411,12 @@ type ActionJobItem = {
   project_id: string;
   issue_id: number | null;
   issue_title: string;
-  status: "queued" | "running" | "verifying" | "reviewing" | "waiting_merge" | "completed" | "failed" | "cancelled";
+  status: "queued" | "running" | "verifying" | "reviewing" | "waiting_merge" | "completed" | "failed" | "blocked" | "cancelled";
   current_step: string | null;
   pr_number: number | null;
   pr_url: string | null;
   error_message: string | null;
+  rework_count: number;
 };
 
 type QueueStartResponse = {
@@ -429,7 +430,7 @@ const actionJobs = ref<ActionJobItem[]>([]);
 const activeActionJob = computed(() => {
   return (
     actionJobs.value.find((j) =>
-      ["running", "verifying", "reviewing", "waiting_merge"].includes(j.status),
+      ["running", "verifying", "reviewing", "waiting_merge", "blocked"].includes(j.status),
     ) ||
     actionJobs.value.find((j) => j.status === "queued") ||
     null
@@ -489,10 +490,13 @@ async function triggerStartActionQueue(): Promise<void> {
   const pid = activeProjectId.value.trim();
   if (!pid || isStartingQueue.value) return;
   const activeRunningJob = actionJobs.value.find((j) =>
-    ["running", "verifying", "reviewing", "waiting_merge"].includes(j.status),
+    ["running", "verifying", "reviewing", "waiting_merge", "blocked"].includes(j.status),
   );
   if (activeRunningJob) {
-    showActionNotice(`启动执行被阻止：已有活跃任务正在执行中 (${activeRunningJob.issue_title || activeRunningJob.id})`);
+    const reason = activeRunningJob.status === "blocked"
+      ? activeRunningJob.error_message || "任务需要人工处理"
+      : "已有活跃任务正在执行中";
+    showActionNotice(`启动执行被阻止：${reason} (${activeRunningJob.issue_title || activeRunningJob.id})`);
     return;
   }
   isStartingQueue.value = true;
@@ -1860,6 +1864,12 @@ const advisorConnectionStatus = computed(() => {
                   <span v-if="activeActionJob.current_step" class="actionsJobStep">
                     {{ activeActionJob.current_step }}
                   </span>
+                  <span v-if="activeActionJob.rework_count > 0" class="actionsJobStep">
+                    Rework {{ activeActionJob.rework_count }}/2
+                  </span>
+                  <span v-if="activeActionJob.error_message" class="actionsJobError">
+                    {{ activeActionJob.error_message }}
+                  </span>
                 </div>
                 <div class="actionsJobActions">
                   <button
@@ -1882,7 +1892,7 @@ const advisorConnectionStatus = computed(() => {
                     {{ activeActionJob.pr_number ? `Merge PR #${activeActionJob.pr_number}` : 'Local Merge (dev)' }}
                   </button>
                   <button
-                    v-if="['queued', 'running', 'verifying', 'reviewing', 'waiting_merge'].includes(activeActionJob.status)"
+                    v-if="['queued', 'running', 'verifying', 'reviewing', 'waiting_merge', 'blocked'].includes(activeActionJob.status)"
                     type="button"
                     class="btnActionCancel"
                     data-testid="btn-action-cancel"

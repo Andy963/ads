@@ -60,6 +60,15 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     }
   });
 
+  async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) return;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.fail("Timed out waiting for condition");
+  }
+
   it("dispatches a job non-blockingly with formatted id and queued status", () => {
     const db = getStateDatabase();
     const bus = new LaneDispatchBus(db);
@@ -82,6 +91,52 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.ok(stored);
     assert.strictEqual(stored.status, "queued");
     assert.strictEqual(stored.branch, "codex/issue-277");
+  });
+
+  it("does not evaluate the queue or attach gate errors during dispatch", async () => {
+    const db = getStateDatabase();
+    const bus = new LaneDispatchBus(db);
+    const activeJob = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 278,
+      issueTitle: "Active task",
+      repoPath: repoDir,
+    });
+    updateActionJobStatus(db, activeJob.jobId, "running");
+
+    spawnSync("git", ["checkout", "-b", "feature-dispatch-boundary"], { cwd: repoDir });
+    fs.writeFileSync(path.join(repoDir, "README.md"), "# Dirty dispatch workspace\n");
+    const queuedJob = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 279,
+      issueTitle: "Future task",
+      repoPath: repoDir,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.strictEqual(bus.getJob(queuedJob.jobId)?.status, "queued");
+    assert.strictEqual(bus.getJob(queuedJob.jobId)?.error_message, null);
+  });
+
+  it("broadcasts a queued status refresh when a job is created", () => {
+    const db = getStateDatabase();
+    const events: Array<Record<string, unknown>> = [];
+    const bus = new LaneDispatchBus(db, {
+      broadcastToActionsLane: (payload) => events.push(payload as Record<string, unknown>),
+    });
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 280,
+      issueTitle: "Queued refresh",
+      repoPath: repoDir,
+    });
+
+    assert.ok(events.some((event) =>
+      event.type === "action_job_updated"
+      && event.jobId === job.jobId
+      && event.status === "queued",
+    ));
   });
 
   it("evaluates Three-Point Gate: blocks when previous job is non-terminal", () => {
@@ -232,7 +287,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     });
     assert.strictEqual(r2.status, "running");
 
-    // Attempt 3 -> failed (limit exceeded)
+    // Attempt 3 -> blocked (limit exceeded)
     const r3 = bus.handleReviewResult({
       jobId: job.jobId,
       repoPath: repoDir,
@@ -240,7 +295,137 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       reviewSummary: "Defect 3",
       reworkCount: 2,
     });
-    assert.strictEqual(r3.status, "failed");
+    assert.strictEqual(r3.status, "blocked");
+    assert.strictEqual(bus.getJob(job.jobId)?.rework_count, 2);
+  });
+
+  it("routes developer failure to bounded rework without advancing the queue", async () => {
+    const db = getStateDatabase();
+    let developerCalls = 0;
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => {
+        developerCalls += 1;
+        return developerCalls === 1
+          ? { exitCode: 1, error: "simulated developer failure" }
+          : { exitCode: 0 };
+      },
+      testCommand: "git status",
+    });
+    const failedJob = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 405,
+      issueTitle: "Recoverable developer failure",
+    });
+    const queuedJob = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 406,
+      issueTitle: "Must remain queued",
+    });
+
+    await bus.evaluateQueue(repoDir, repoDir);
+    await waitFor(() => developerCalls === 1);
+    assert.strictEqual(bus.getJob(failedJob.jobId)?.status, "running");
+    assert.strictEqual(bus.getJob(failedJob.jobId)?.rework_count, 1);
+    assert.strictEqual(bus.getJob(failedJob.jobId)?.branch, "codex/issue-405");
+
+    const blocked = await bus.evaluateQueue(repoDir, repoDir);
+    assert.strictEqual(blocked.allowed, false);
+    assert.strictEqual(blocked.gateBlocked, "terminal");
+    assert.strictEqual(bus.getJob(queuedJob.jobId)?.status, "queued");
+
+    await waitFor(() => bus.getJob(failedJob.jobId)?.status === "waiting_merge");
+    assert.strictEqual(developerCalls, 2);
+    assert.strictEqual(bus.getJob(queuedJob.jobId)?.status, "queued");
+  });
+
+  it("routes verification failure to rework without invoking reviewer", async () => {
+    const db = getStateDatabase();
+    let reviewerCalls = 0;
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => ({ exitCode: 0 }),
+      reviewerRunner: async () => {
+        reviewerCalls += 1;
+        return JSON.stringify({ status: "PASS", summary: "Should not run", defects: [] });
+      },
+      testCommand: "node -e process.exit(1)",
+    });
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 407,
+      issueTitle: "Verification recovery",
+    });
+    await bus.evaluateQueue(repoDir, repoDir);
+
+    await waitFor(() => bus.getJob(job.jobId)?.status === "blocked");
+    assert.strictEqual(bus.getJob(job.jobId)?.rework_count, 2);
+    assert.strictEqual(reviewerCalls, 0);
+    assert.match(bus.getJob(job.jobId)?.error_message ?? "", /Verification/);
+  });
+
+  it("recovers from PR creation failure on the same job and branch", async () => {
+    const db = getStateDatabase();
+    let prCalls = 0;
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => ({ exitCode: 0 }),
+      testCommand: "git status",
+      hasRemoteOrigin: () => true,
+      pullRequestCreator: () => {
+        prCalls += 1;
+        return prCalls === 1
+          ? { prNumber: null, prUrl: null, error: "simulated PR failure" }
+          : { prNumber: 345, prUrl: "https://example.test/pull/345" };
+      },
+    });
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 408,
+      issueTitle: "PR creation recovery",
+    });
+
+    const firstResult = bus.handleReviewResult({
+      jobId: job.jobId,
+      repoPath: repoDir,
+      verdict: "PASS",
+      reviewSummary: "Ready",
+    });
+    assert.strictEqual(firstResult.status, "running");
+    await waitFor(() => bus.getJob(job.jobId)?.status === "waiting_merge");
+
+    const recovered = bus.getJob(job.jobId);
+    assert.strictEqual(prCalls, 2);
+    assert.strictEqual(recovered?.rework_count, 1);
+    assert.strictEqual(recovered?.branch, "codex/issue-408");
+    assert.strictEqual(recovered?.pr_number, 345);
+  });
+
+  it("recovers from merge failure and only then advances the queue", async () => {
+    const db = getStateDatabase();
+    let mergeCalls = 0;
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => ({ exitCode: 0 }),
+      testCommand: "git status",
+      mergePipeline: () => {
+        mergeCalls += 1;
+        return mergeCalls === 1
+          ? { success: false, error: "simulated merge failure" }
+          : { success: true };
+      },
+    });
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 409,
+      issueTitle: "Merge recovery",
+    });
+    updateActionJobStatus(db, job.jobId, "waiting_merge", { pr_number: null });
+
+    const firstMerge = bus.executeDeterministicMerge(job.jobId, repoDir);
+    assert.strictEqual(firstMerge.success, false);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "waiting_merge" && bus.getJob(job.jobId)?.rework_count === 1);
+
+    const secondMerge = bus.executeDeterministicMerge(job.jobId, repoDir);
+    assert.strictEqual(secondMerge.success, true);
+    assert.strictEqual(bus.getJob(job.jobId)?.status, "completed");
+    assert.strictEqual(mergeCalls, 2);
   });
 
   it("cancels a job when requested", () => {
@@ -439,7 +624,13 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     // Verify event streaming to Actions lane
     assert.ok(streamedEvents.some((e) => (e.payload.type === "message" || e.payload.type === "user") && (e.payload.text?.includes("Issue #909") || e.payload.content?.includes("Issue #909"))));
     assert.ok(streamedEvents.some((e) => (e.payload.type === "step" || e.payload.type === "delta") && e.payload.title === "Analyzing repository"));
-    assert.ok(streamedEvents.some((e) => (e.payload.type === "command" || e.payload.type === "command_snapshot") && (e.payload.title === "Running check" || e.payload.command?.command === "Running check" || e.payload.command === "Running check")));
+    assert.ok(streamedEvents.some((e) =>
+      e.payload.type === "command"
+      && e.payload.command === "Running check"
+      && e.payload.output === "git status"
+      && e.payload.status === "running"
+      && e.payload.jobId === job.jobId,
+    ));
     assert.ok(streamedEvents.some((e) => (e.payload.type === "assistant_done" || e.payload.type === "result")));
     assert.ok(streamedEvents.some((e) => e.payload.type === "action_job_updated" && e.payload.status === "running"));
 

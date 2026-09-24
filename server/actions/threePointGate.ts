@@ -16,7 +16,7 @@ export function checkThreePointGate(
 ): GateCheckResult {
   // 1. Terminal State Gate
   const activeJobs = db.prepare(
-    "SELECT * FROM action_jobs WHERE project_id = ? AND status IN ('running', 'verifying', 'reviewing', 'waiting_merge') LIMIT 1"
+    "SELECT * FROM action_jobs WHERE project_id = ? AND status IN ('running', 'verifying', 'reviewing', 'waiting_merge', 'blocked') LIMIT 1"
   ).get(projectId) as ActionJobRecord | undefined;
 
   if (activeJobs) {

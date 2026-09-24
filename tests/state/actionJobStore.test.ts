@@ -51,6 +51,7 @@ describe("state/actionJobStore", () => {
 
     assert.strictEqual(job.id, "job-100-277-abcd");
     assert.strictEqual(job.status, "queued");
+    assert.strictEqual(job.rework_count, 0);
 
     const retrieved = getActionJobById(db, "job-100-277-abcd");
     assert.ok(retrieved);
@@ -58,12 +59,14 @@ describe("state/actionJobStore", () => {
 
     updateActionJobStatus(db, "job-100-277-abcd", "running", {
       current_step: "Implementing schema migrations",
+      rework_count: 1,
     });
 
     const updated = getActionJobById(db, "job-100-277-abcd");
     assert.ok(updated);
     assert.strictEqual(updated.status, "running");
     assert.strictEqual(updated.current_step, "Implementing schema migrations");
+    assert.strictEqual(updated.rework_count, 1);
 
     const list = getActionJobs(db, "/home/andy/repos/ads");
     assert.strictEqual(list.length, 1);

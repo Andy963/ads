@@ -49,8 +49,8 @@ describe("cached app bootstrap and authentication", () => {
     expect(wrapper.find(".chat").text()).toContain("Cached advisor answer");
     expect(wrapper.find(".app").attributes("data-cache-read-only")).toBe("true");
     expect(wrapper.find("textarea.composer-input").attributes("disabled")).toBeDefined();
-    expect(state.get).toHaveBeenCalledTimes(1);
-    expect(state.get).toHaveBeenCalledWith("/api/auth/status");
+    const authStatusCalls = state.get.mock.calls.filter(([path]) => path === "/api/auth/status");
+    expect(authStatusCalls).toHaveLength(1);
   });
 
   it("restores the selected mobile lane before its first render", () => {

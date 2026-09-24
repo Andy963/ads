@@ -1443,19 +1443,25 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
-    if (type === "command") {
+    if (
+      type === "command"
+      && typeof (msg as Record<string, unknown>).jobId === "string"
+      && (msg as Record<string, unknown>).jobId.trim().length > 0
+    ) {
       const rec = msg as Record<string, unknown>;
       const cmd = normalizeWireCommand(rec.command).trim();
       if (cmd) {
-        const status = String(rec.status ?? "completed").trim().toLowerCase();
+        const identity = String(rec.identity ?? rec.id ?? rec.jobId ?? "").trim() || null;
+        const status = String(rec.status ?? "running").trim().toLowerCase();
         const terminal = status === "completed" || status === "failed" || status === "declined" || status === "cancelled";
-        const key = commandKeyForWsEvent(cmd, null);
+        const key = commandKeyForWsEvent(cmd, identity);
         if (key) {
           ingestCommand(cmd, rt, null);
-          upsertExecuteBlock(key, cmd, normalizeWireText(rec.output), rt, {
+          const output = normalizeWireText(rec.outputDelta ?? rec.output);
+          upsertExecuteBlock(key, cmd, output, rt, {
             snapshot: true,
             terminal,
-            eventId: String(rec.eventId ?? `action-cmd:${Date.now()}`).trim(),
+            eventId: String(rec.eventId ?? rec.id ?? `action-cmd:${identity ?? cmd}`).trim(),
             ts: Number(rec.ts) || Date.now(),
           } satisfies ExecuteBlockUpdate);
         }
@@ -1464,7 +1470,29 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "assistant_done") {
+      const rec = msg as Record<string, unknown>;
+      const text = firstWireText(rec.text, rec.output, rec.content).trim();
+      const jobId = String(rec.jobId ?? "").trim();
+      const stableId = jobId ? `${jobId}:assistant_done` : "";
+      const hadStreamingText = Boolean(text) && rt.messages.value.some((message) =>
+        message.role === "assistant" && message.streaming && message.content === text,
+      );
       sealActiveStreamingAssistant?.(rt);
+      if (text && !hadStreamingText) {
+        const existing = rt.messages.value;
+        const alreadyHas = stableId
+          ? existing.some((message) => message.id === stableId)
+          : existing.some((message) => message.role === "assistant" && message.content === text);
+        if (!alreadyHas) {
+          pushMessageBeforeLive({
+            id: stableId || randomId("action-assistant"),
+            role: "assistant",
+            kind: "text",
+            content: text,
+            ts: Number(rec.ts) || Date.now(),
+          }, rt);
+        }
+      }
       return;
     }
 

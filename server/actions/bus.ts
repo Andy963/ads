@@ -21,8 +21,15 @@ import {
   type ActionJobKind,
 } from "../state/actionJobStore.js";
 import { checkThreePointGate, type GateCheckResult } from "./threePointGate.js";
-import { createPullRequest, mergeAndCleanupPipeline } from "./pipeline.js";
+import {
+  createPullRequest,
+  mergeAndCleanupPipeline,
+  type CreatePrResult,
+  type MergeResult,
+} from "./pipeline.js";
 import { deriveProjectSessionId } from "../web/server/projectSessionId.js";
+
+const MAX_REWORK_ATTEMPTS = 2;
 
 function resolveCanonicalProjectId(projectId: string, repoPath?: string): string {
   const workspaceRoot = String(repoPath ?? "").trim();
@@ -56,6 +63,62 @@ function generateJobId(issueId?: number | null): string {
   return `job-${ts}-${target}-${hex}`;
 }
 
+function buildActionAgentEventPayload(event: AgentEvent, jobId: string, reviewer = false): Record<string, unknown> {
+  const title = reviewer
+    ? (event.title ? `[Reviewer] ${event.title}` : "[Reviewer]")
+    : event.title;
+  if (event.phase !== "command") {
+    return {
+      type: event.liveStep ? "step" : "delta",
+      title,
+      delta: event.delta,
+      detail: event.detail,
+      timestamp: event.timestamp,
+      jobId,
+      phase: event.phase,
+      raw: event.raw,
+    };
+  }
+
+  const rawItem = event.raw && typeof event.raw === "object" && "item" in event.raw
+    ? (event.raw as { item?: Record<string, unknown> }).item
+    : undefined;
+  const command = String(rawItem?.command ?? event.detail ?? event.title ?? "").trim();
+  const output = String(
+    rawItem?.aggregated_output
+      ?? rawItem?.output
+      ?? rawItem?.stdout
+      ?? rawItem?.stderr
+      ?? event.delta
+      ?? event.detail
+      ?? "",
+  );
+  const rawStatus = String(rawItem?.status ?? "").trim().toLowerCase();
+  const status = rawStatus === "failed" || rawStatus === "completed"
+    ? rawStatus
+    : (event.raw && typeof event.raw === "object" && "type" in event.raw && event.raw.type === "item.completed")
+      ? "completed"
+      : "running";
+  const itemId = String(rawItem?.id ?? "").trim();
+  const identity = `${jobId}:${itemId || command}`;
+
+  return {
+    type: "command",
+    title,
+    command,
+    output,
+    outputDelta: output,
+    status,
+    exitCode: typeof rawItem?.exit_code === "number" ? rawItem.exit_code : undefined,
+    identity,
+    id: itemId || identity,
+    jobId,
+    timestamp: event.timestamp,
+    phase: event.phase,
+    raw: event.raw,
+  };
+}
+
 export function hasGitRemoteOrigin(repoPath: string): boolean {
   const res = spawnSync("git", ["remote", "get-url", "origin"], { cwd: repoPath, encoding: "utf8" });
   return res.status === 0 && Boolean(res.stdout?.trim());
@@ -85,6 +148,21 @@ export interface LaneDispatchBusOptions {
   developerRunner?: DeveloperRunner;
   reviewerRunner?: ReviewerRunner;
   testCommand?: string;
+  hasRemoteOrigin?: (repoPath: string) => boolean;
+  pullRequestCreator?: (options: {
+    cwd: string;
+    issueId?: number | null;
+    title: string;
+    body?: string;
+    labels?: string[];
+  }) => CreatePrResult;
+  mergePipeline?: (options: {
+    cwd: string;
+    prNumber?: number | null;
+    issueId?: number | null;
+    branch: string;
+    baseBranch?: string;
+  }) => MergeResult;
 }
 
 export class LaneDispatchBus {
@@ -96,22 +174,100 @@ export class LaneDispatchBus {
     private options: LaneDispatchBusOptions = {},
   ) {}
 
+  private historyKeyForProject(projectId: string, repoPath?: string): string {
+    const chatSessionId = resolveProjectChatSessionId(this.db, projectId, repoPath);
+    return buildWsConnectionIdentity({
+      authUserId: "admin",
+      sessionId: projectId,
+      chatSessionId,
+      connectionId: "actions",
+    }).historyKey;
+  }
+
+  private recordActionMessage(
+    job: ActionJobRecord,
+    repoPath: string,
+    text: string,
+    kind: string,
+    role: "status" | "assistant" = "status",
+  ): void {
+    const historyKey = this.historyKeyForProject(job.project_id, repoPath);
+    this.options.historyStore?.add(historyKey, {
+      role,
+      text,
+      ts: Date.now(),
+      kind,
+    });
+    this.options.broadcastToActionsLane?.({
+      type: "message",
+      role,
+      text,
+      jobId: job.id,
+      ts: Date.now(),
+    }, historyKey, job.project_id);
+  }
+
+  private scheduleRework(
+    jobId: string,
+    repoPath: string,
+    input: { stage: string; feedback: string; reworkCount?: number },
+  ): { status: ActionJobStatus; reworkCount: number } {
+    const job = getActionJobById(this.db, jobId);
+    if (!job) return { status: "failed", reworkCount: 0 };
+
+    const currentCount = Math.max(0, Math.floor(input.reworkCount ?? job.rework_count ?? 0));
+    const failure = `${input.stage} failed: ${input.feedback}`;
+    if (currentCount >= MAX_REWORK_ATTEMPTS) {
+      const message = `Human attention required after ${MAX_REWORK_ATTEMPTS} rework attempts. ${failure}`;
+      this.updateJobStatus(job.id, "blocked", {
+        rework_count: currentCount,
+        current_step: `Human attention required after ${MAX_REWORK_ATTEMPTS} rework attempts.`,
+        error_message: message,
+      });
+      this.recordActionMessage(job, repoPath, message, "action_blocked");
+      return { status: "blocked", reworkCount: currentCount };
+    }
+
+    const nextCount = currentCount + 1;
+    const feedback = [
+      `The previous attempt failed during ${input.stage}.`,
+      `Failure context: ${input.feedback}`,
+      "Fix the root cause, preserve the current feature branch, and rerun verification.",
+    ].join("\n");
+    const statusMessage = `Actions rework ${nextCount}/${MAX_REWORK_ATTEMPTS} started after ${input.stage} failure.`;
+    this.updateJobStatus(job.id, "running", {
+      rework_count: nextCount,
+      current_step: statusMessage,
+      error_message: failure,
+    });
+    this.recordActionMessage(job, repoPath, statusMessage, "action_rework");
+    queueMicrotask(() => {
+      void this.executeDeveloper(job.id, repoPath, {
+        reworkFeedback: feedback,
+        reworkCount: nextCount,
+      });
+    });
+    return { status: "running", reworkCount: nextCount };
+  }
+
   private updateJobStatus(
     jobId: string,
     status: ActionJobStatus,
-    updates?: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "pr_number" | "pr_url" | "error_message" | "branch">>,
+    updates?: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "rework_count">>,
   ): ActionJobRecord | null {
     updateActionJobStatus(this.db, jobId, status, updates);
     const updated = getActionJobById(this.db, jobId);
     if (updated && this.options.broadcastToActionsLane) {
+      const historyKey = this.historyKeyForProject(updated.project_id);
       this.options.broadcastToActionsLane({
         type: "action_job_updated",
         jobId: updated.id,
         status: updated.status,
         currentStep: updated.current_step,
+        reworkCount: updated.rework_count,
         projectId: updated.project_id,
         ts: Date.now(),
-      }, undefined, updated.project_id);
+      }, historyKey, updated.project_id);
     }
     return updated;
   }
@@ -141,12 +297,10 @@ export class LaneDispatchBus {
       reviewer_profile_ids_json: JSON.stringify(params.reviewerProfileIds ?? []),
     });
 
-    if (params.repoPath) {
-      // Non-blocking trigger of queue evaluation
-      queueMicrotask(() => {
-        void this.evaluateQueue(projectId, params.repoPath!);
-      });
-    }
+    this.updateJobStatus(job.id, "queued", {
+      current_step: "Queued in Actions queue",
+      error_message: null,
+    });
 
     return {
       ok: true,
@@ -248,21 +402,20 @@ export class LaneDispatchBus {
   ): Promise<void> {
     const job = getActionJobById(this.db, jobId);
     if (!job || job.status !== "running") return;
+    const reworkCount = Math.max(0, Math.floor(options.reworkCount ?? job.rework_count ?? 0));
 
     if (this.options.developerRunner) {
       const runnerRes = await this.options.developerRunner(job, repoPath, options.reworkFeedback);
       if (runnerRes.exitCode !== 0) {
-        this.updateJobStatus(jobId, "failed", {
-          error_message: runnerRes.error || `Developer runner exited with code ${runnerRes.exitCode}`,
-        });
-        safeResetToDev(repoPath);
-        queueMicrotask(() => {
-          void this.evaluateQueue(job.project_id, repoPath);
+        this.scheduleRework(jobId, repoPath, {
+          stage: "Developer execution",
+          feedback: runnerRes.error || `Developer runner exited with code ${runnerRes.exitCode}`,
+          reworkCount,
         });
         return;
       }
       queueMicrotask(() => {
-        void this.runJobCycle(jobId, repoPath, { reworkCount: options.reworkCount });
+        void this.runJobCycle(jobId, repoPath, { reworkCount });
       });
       return;
     }
@@ -277,7 +430,7 @@ export class LaneDispatchBus {
       : `${job.issue_title}.\nImplement the requested changes on branch '${job.branch}', run verification tests, and commit.`;
 
     const finalTaskPrompt = options.reworkFeedback
-      ? `${taskPrompt}\n\nCRITICAL - REWORK INSTRUCTIONS:\nPrevious code review was REJECTED with the following defect findings:\n${options.reworkFeedback}\nPlease address all listed defects, re-run tests, and commit the fixes.`
+      ? `${taskPrompt}\n\nCRITICAL - REWORK INSTRUCTIONS:\n${options.reworkFeedback}\nAddress the failure, re-run tests, and commit the fixes on the same feature branch.`
       : taskPrompt;
 
     if (this.options.sessionManager) {
@@ -324,6 +477,7 @@ export class LaneDispatchBus {
         }, historyKey, projectId);
       }
 
+      let unsubscribe: (() => void) | null = null;
       try {
         const orchestrator = sessionManager.getOrCreate(userId, repoPath, true, {
           authUserId,
@@ -336,18 +490,13 @@ export class LaneDispatchBus {
         }
 
         // Attach event listener for real-time WebSocket streaming
-        const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
+        unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
           if (this.options.broadcastToActionsLane) {
-            this.options.broadcastToActionsLane({
-              type: event.liveStep ? "step" : event.phase === "command" ? "command" : "delta",
-              title: event.title,
-              delta: event.delta,
-              detail: event.detail,
-              timestamp: event.timestamp,
-              jobId: job.id,
-              phase: event.phase,
-              raw: event.raw,
-            }, historyKey, projectId);
+            this.options.broadcastToActionsLane(
+              buildActionAgentEventPayload(event, job.id),
+              historyKey,
+              projectId,
+            );
           }
 
           if (event.liveStep && event.title) {
@@ -365,7 +514,8 @@ export class LaneDispatchBus {
           historySessionId: historyKey,
         });
 
-        unsubscribe();
+        unsubscribe?.();
+        unsubscribe = null;
 
         // Record assistant response in history
         if (this.options.historyStore) {
@@ -393,22 +543,29 @@ export class LaneDispatchBus {
 
         // Proceed to verification & detached review
         queueMicrotask(() => {
-          void this.runJobCycle(jobId, repoPath, { reworkCount: options.reworkCount });
+          void this.runJobCycle(jobId, repoPath, { reworkCount });
         });
       } catch (err) {
+        unsubscribe?.();
         this.activeAbortControllers.delete(jobId);
         if (this.options.interruptControllers) {
           this.options.interruptControllers.delete(historyKey);
         }
 
-        const isAborted = abortCtrl.signal.aborted;
-        this.updateJobStatus(jobId, isAborted ? "cancelled" : "failed", {
-          error_message: `Actions session execution ${isAborted ? "aborted" : "failed"}: ${err instanceof Error ? err.message : String(err)}`,
-        });
-        safeResetToDev(repoPath);
-        queueMicrotask(() => {
-          void this.evaluateQueue(job.project_id, repoPath);
-        });
+        if (abortCtrl.signal.aborted) {
+          this.updateJobStatus(jobId, "cancelled", {
+            error_message: `Actions session execution aborted: ${err instanceof Error ? err.message : String(err)}`,
+          });
+          queueMicrotask(() => {
+            void this.evaluateQueue(job.project_id, repoPath);
+          });
+        } else {
+          this.scheduleRework(jobId, repoPath, {
+            stage: "Developer execution",
+            feedback: err instanceof Error ? err.message : String(err),
+            reworkCount,
+          });
+        }
       }
       return;
     }
@@ -416,18 +573,16 @@ export class LaneDispatchBus {
     // In automated test harness without runner override or sessionManager, avoid unneeded execution
     if (process.env.ADS_TEST_STATE_ROOT || (!this.options.sessionManager && !this.options.developerRunner)) {
       queueMicrotask(() => {
-        void this.runJobCycle(jobId, repoPath, { reworkCount: options.reworkCount });
+        void this.runJobCycle(jobId, repoPath, { reworkCount });
       });
       return;
     }
 
     // Fallback if no runner or session manager is provided
-    this.updateJobStatus(jobId, "failed", {
-      error_message: "No Actions session manager configured for task execution",
-    });
-    safeResetToDev(repoPath);
-    queueMicrotask(() => {
-      void this.evaluateQueue(job.project_id, repoPath);
+    this.scheduleRework(jobId, repoPath, {
+      stage: "Developer execution",
+      feedback: "No Actions session manager configured for task execution",
+      reworkCount,
     });
   }
 
@@ -437,6 +592,7 @@ export class LaneDispatchBus {
     reviewerProfileId?: string,
     historyKey?: string,
     projectId?: string,
+    jobId?: string,
   ): Promise<ReviewVerdict> {
     if (this.options.reviewerRunner) {
       const prompt = buildReviewPrompt(payload);
@@ -477,15 +633,11 @@ export class LaneDispatchBus {
         // Attach event listener for real-time Reviewer streaming to Actions lane
         const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
           if (this.options.broadcastToActionsLane) {
-            this.options.broadcastToActionsLane({
-              type: event.liveStep ? "step" : event.phase === "command" ? "command" : "delta",
-              title: event.title ? `[Reviewer] ${event.title}` : "[Reviewer]",
-              delta: event.delta,
-              detail: event.detail,
-              timestamp: event.timestamp,
-              phase: event.phase,
-              raw: event.raw,
-            }, historyKey, projectId);
+            this.options.broadcastToActionsLane(
+              buildActionAgentEventPayload(event, jobId ?? "reviewer", true),
+              historyKey,
+              projectId,
+            );
           }
         });
 
@@ -556,7 +708,9 @@ export class LaneDispatchBus {
     const testReport = {
       command: testCmd,
       exitCode: testRes.status ?? 0,
-      summary: testRes.status === 0 ? "Tests and checks passed successfully" : (testRes.stderr?.trim() || "Verification command failed"),
+      summary: testRes.status === 0
+        ? "Tests and checks passed successfully"
+        : (testRes.stderr?.trim() || testRes.stdout?.trim() || "Verification command failed"),
     };
 
     if (this.options.broadcastToActionsLane) {
@@ -578,6 +732,15 @@ export class LaneDispatchBus {
         ts: Date.now(),
         kind: "verification",
       });
+    }
+
+    if (testReport.exitCode !== 0) {
+      this.scheduleRework(jobId, repoPath, {
+        stage: "Verification",
+        feedback: `${testCmd} exited with code ${testReport.exitCode}: ${testReport.summary}`,
+        reworkCount: options.reworkCount,
+      });
+      return;
     }
 
     // 2. Reviewing Phase: detached clean-room reviewer
@@ -624,19 +787,29 @@ export class LaneDispatchBus {
       ?? getDefaultRoleProfile(this.db, "reviewer");
 
     let verdict: ReviewVerdict;
-    if (options.callReviewerModel) {
-      verdict = await runDetachedReview(payload, {
-        callModel: options.callReviewerModel,
-        reviewerProfileId: typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id,
+    try {
+      if (options.callReviewerModel) {
+        verdict = await runDetachedReview(payload, {
+          callModel: options.callReviewerModel,
+          reviewerProfileId: typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id,
+        });
+      } else {
+        verdict = await this.executeReviewer(
+          payload,
+          repoPath,
+          typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id,
+          historyKey,
+          projectId,
+          job.id,
+        );
+      }
+    } catch (error) {
+      this.scheduleRework(jobId, repoPath, {
+        stage: "Reviewer execution",
+        feedback: error instanceof Error ? error.message : String(error),
+        reworkCount: options.reworkCount,
       });
-    } else {
-      verdict = await this.executeReviewer(
-        payload,
-        repoPath,
-        typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id,
-        historyKey,
-        projectId,
-      );
+      return;
     }
 
     this.updateJobStatus(jobId, "reviewing", {
@@ -694,27 +867,24 @@ export class LaneDispatchBus {
     }
 
     if (params.verdict === "PASS") {
-      const hasRemote = hasGitRemoteOrigin(params.repoPath);
+      const hasRemote = this.options.hasRemoteOrigin?.(params.repoPath) ?? hasGitRemoteOrigin(params.repoPath);
       let prNumber: number | null = null;
       let prUrl: string | null = null;
 
       if (hasRemote) {
-        const prRes = createPullRequest({
+        const prRes = (this.options.pullRequestCreator ?? createPullRequest)({
           cwd: params.repoPath,
           issueId: job.issue_id,
           title: job.issue_title,
         });
 
         if (prRes.error || !prRes.prNumber) {
-          this.updateJobStatus(job.id, "failed", {
-            error_message: `PR creation failed: ${prRes.error || "Unknown error"}`,
-            current_step: "Review passed but PR creation failed.",
+          const rework = this.scheduleRework(job.id, params.repoPath, {
+            stage: "PR creation",
+            feedback: prRes.error || "Unknown error",
+            reworkCount: params.reworkCount ?? job.rework_count,
           });
-          safeResetToDev(params.repoPath);
-          queueMicrotask(() => {
-            void this.evaluateQueue(job.project_id, params.repoPath);
-          });
-          return { status: "failed" };
+          return { status: rework.status };
         }
 
         prNumber = prRes.prNumber;
@@ -769,40 +939,18 @@ export class LaneDispatchBus {
       };
     }
 
-    // On REJECT: check rework count (max 2)
-    const currentReworks = params.reworkCount ?? 0;
-    if (currentReworks < 2) {
-      const defectSummary = Array.isArray(params.defects) && params.defects.length > 0
-        ? params.defects.map((d: unknown) => {
-            const defect = d && typeof d === "object" ? (d as Record<string, unknown>) : null;
-            return `- ${String(defect?.file ?? "unknown")}:${String(defect?.line ?? "?")} [${String(defect?.severity ?? "defect")}]: ${String(defect?.description ?? "")}`;
-          }).join("\n")
-        : params.reviewSummary;
-
-      this.updateJobStatus(job.id, "running", {
-        current_step: `Review rejected. Routing defect feedback to Developer for rework (attempt ${currentReworks + 1}/2)`,
-      });
-
-      queueMicrotask(() => {
-        void this.executeDeveloper(job.id, params.repoPath, {
-          reworkFeedback: defectSummary,
-          reworkCount: currentReworks + 1,
-        });
-      });
-      return { status: "running" };
-    }
-
-    // Limit exceeded: transition to review_rejected / failed
-    this.updateJobStatus(job.id, "failed", {
-      current_step: "Review rejected twice. Human override required.",
-      error_message: "Rework limit exceeded (2 attempts). Review defects remain unresolved.",
+    const defectSummary = Array.isArray(params.defects) && params.defects.length > 0
+      ? params.defects.map((defect: unknown) => {
+          const item = defect && typeof defect === "object" ? (defect as Record<string, unknown>) : null;
+          return `- ${String(item?.file ?? "unknown")}:${String(item?.line ?? "?")} [${String(item?.severity ?? "defect")}]: ${String(item?.description ?? "")}`;
+        }).join("\n")
+      : params.reviewSummary;
+    const rework = this.scheduleRework(job.id, params.repoPath, {
+      stage: "Reviewer rejection",
+      feedback: defectSummary || "Reviewer rejected the change without defect details.",
+      reworkCount: params.reworkCount ?? job.rework_count,
     });
-    safeResetToDev(params.repoPath);
-    queueMicrotask(() => {
-      void this.evaluateQueue(job.project_id, params.repoPath);
-    });
-
-    return { status: "failed" };
+    return { status: rework.status };
   }
 
   public executeDeterministicMerge(jobId: string, repoPath: string): { success: boolean; error?: string } {
@@ -811,7 +959,7 @@ export class LaneDispatchBus {
       return { success: false, error: `Job not found: ${jobId}` };
     }
 
-    const mergeRes = mergeAndCleanupPipeline({
+    const mergeRes = (this.options.mergePipeline ?? mergeAndCleanupPipeline)({
       cwd: repoPath,
       prNumber: job.pr_number,
       issueId: job.issue_id,
@@ -821,6 +969,7 @@ export class LaneDispatchBus {
     if (mergeRes.success) {
       this.updateJobStatus(job.id, "completed", {
         current_step: "PR squash merged, Issue closed, dev synchronized, and branch cleaned up.",
+        error_message: null,
       });
 
       // After task completes, trigger next queued task evaluation
@@ -828,12 +977,10 @@ export class LaneDispatchBus {
         void this.evaluateQueue(job.project_id, repoPath);
       });
     } else {
-      this.updateJobStatus(job.id, "failed", {
-        error_message: mergeRes.error,
-      });
-      safeResetToDev(repoPath);
-      queueMicrotask(() => {
-        void this.evaluateQueue(job.project_id, repoPath);
+      this.scheduleRework(job.id, repoPath, {
+        stage: "Merge and delivery",
+        feedback: mergeRes.error || "Unknown merge failure",
+        reworkCount: job.rework_count,
       });
     }
 
