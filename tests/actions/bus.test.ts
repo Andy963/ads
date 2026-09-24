@@ -16,6 +16,25 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
   let repoDir: string;
   const originalEnv = { ...process.env };
 
+  function addWebProjectMapping(
+    db: ReturnType<typeof getStateDatabase>,
+    projectId: string,
+    userId = "user-1",
+  ): void {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS web_projects (
+        user_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        workspace_root TEXT NOT NULL
+      )
+    `);
+    db.prepare("INSERT INTO web_projects (user_id, project_id, workspace_root) VALUES (?, ?, ?)").run(
+      userId,
+      projectId,
+      repoDir,
+    );
+  }
+
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-bus-test-"));
     process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
@@ -445,13 +464,14 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
   it("manually starts queued job via POST /api/actions/queue/start", async () => {
     const db = getStateDatabase();
+    addWebProjectMapping(db, "project-hash");
     const bus = new LaneDispatchBus(db, {
       testCommand: "git status",
     });
     setBusInstance(bus);
 
     const job = bus.dispatchJob({
-      projectId: repoDir,
+      projectId: "project-hash",
       issueId: 991,
       issueTitle: "Manual queue start test",
     });
@@ -459,7 +479,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     const activeBefore = bus.getJob(job.jobId);
     assert.strictEqual(activeBefore?.status, "queued");
 
-    const reqPayload = Buffer.from(JSON.stringify({ projectId: repoDir, repoPath: repoDir }), "utf8");
+    const reqPayload = Buffer.from(JSON.stringify({ projectId: "project-hash", repoPath: repoDir }), "utf8");
     const fakeReq: any = {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -481,6 +501,9 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       res: fakeRes,
       pathname: "/api/actions/queue/start",
       url: new URL("http://localhost/api/actions/queue/start"),
+      auth: { userId: "user-1", username: "tester" },
+    }, {
+      allowedDirs: [repoDir],
     });
 
     assert.strictEqual(handled, true);
@@ -496,18 +519,12 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
   it("resolves a project id to its workspace before manually starting the queue", async () => {
     const db = getStateDatabase();
-    db.exec(`
-      CREATE TABLE web_projects (
-        project_id TEXT NOT NULL,
-        workspace_root TEXT NOT NULL
-      )
-    `);
-    db.prepare("INSERT INTO web_projects (project_id, workspace_root) VALUES (?, ?)").run("project-hash", repoDir);
+    addWebProjectMapping(db, "project-hash");
 
     const bus = new LaneDispatchBus(db, { testCommand: "git status" });
     setBusInstance(bus);
     const job = bus.dispatchJob({
-      projectId: "project-hash",
+      projectId: repoDir,
       issueId: 992,
       issueTitle: "Resolve project workspace before queue start",
     });
@@ -529,11 +546,29 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       end(data: string) { responseBody = data; },
     };
 
+    fakeReq.method = "GET";
+    const listed = await handleActionRoutes({
+      req: fakeReq,
+      res: fakeRes,
+      pathname: "/api/actions/jobs",
+      url: new URL("http://localhost/api/actions/jobs?projectId=project-hash"),
+      auth: { userId: "user-1", username: "tester" },
+    }, {
+      allowedDirs: [repoDir],
+    });
+
+    assert.strictEqual(listed, true);
+    assert.ok((JSON.parse(responseBody) as Array<{ id: string }>).some((item) => item.id === job.jobId));
+
+    fakeReq.method = "POST";
     const handled = await handleActionRoutes({
       req: fakeReq,
       res: fakeRes,
       pathname: "/api/actions/queue/start",
       url: new URL("http://localhost/api/actions/queue/start"),
+      auth: { userId: "user-1", username: "tester" },
+    }, {
+      allowedDirs: [repoDir],
     });
 
     assert.strictEqual(handled, true);
@@ -542,5 +577,45 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
     const currentBranch = spawnSync("git", ["branch", "--show-current"], { cwd: repoDir, encoding: "utf8" }).stdout.trim();
     assert.strictEqual(currentBranch, "codex/issue-992");
+  });
+
+  it("rejects queue access when the project belongs to another user", async () => {
+    const db = getStateDatabase();
+    addWebProjectMapping(db, "project-hash", "user-2");
+    const bus = new LaneDispatchBus(db);
+    setBusInstance(bus);
+    bus.dispatchJob({
+      projectId: "project-hash",
+      issueId: 993,
+      issueTitle: "Reject unauthorized queue access",
+    });
+
+    const fakeReq: any = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      async *[Symbol.asyncIterator]() {
+        yield Buffer.from(JSON.stringify({ projectId: "project-hash" }), "utf8");
+      },
+    };
+    let statusCode = 200;
+    const fakeRes: any = {
+      writeHead(code: number) { statusCode = code; },
+      setHeader() {},
+      end() {},
+    };
+
+    const handled = await handleActionRoutes({
+      req: fakeReq,
+      res: fakeRes,
+      pathname: "/api/actions/queue/start",
+      url: new URL("http://localhost/api/actions/queue/start"),
+      auth: { userId: "user-1", username: "tester" },
+    }, {
+      allowedDirs: [repoDir],
+    });
+
+    assert.strictEqual(handled, true);
+    assert.strictEqual(statusCode, 400);
+    assert.strictEqual(spawnSync("git", ["branch", "--show-current"], { cwd: repoDir, encoding: "utf8" }).stdout.trim(), "dev");
   });
 });
