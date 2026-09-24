@@ -337,4 +337,108 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.ok(rejectedJob?.current_step?.includes("rework"));
     assert.ok(rejectedJob?.review_verdicts_json.includes("REJECT"));
   });
+
+  it("submits prompt to Actions sessionManager, streams events, and records history upon dequeue", async () => {
+    const db = getStateDatabase();
+    const streamedEvents: any[] = [];
+    const historyEntries: any[] = [];
+    const interruptControllers = new Map<string, AbortController>();
+
+    let instructionsSet = "";
+    let turnPrompt = "";
+
+    const mockOrchestrator = {
+      getActiveAgentId: () => "codex",
+      getThreadId: () => "thread-test-123",
+      onEvent: (handler: (ev: any) => void) => {
+        handler({
+          phase: "analysis",
+          title: "Analyzing repository",
+          delta: "Analyzing files...",
+          liveStep: true,
+          timestamp: Date.now(),
+        });
+        handler({
+          phase: "command",
+          title: "Running check",
+          delta: "git status",
+          timestamp: Date.now(),
+        });
+        return () => {};
+      },
+      setDeveloperInstructions: (inst: string) => {
+        instructionsSet = inst;
+      },
+      invokeAgent: async (_agentId: string, input: any) => {
+        turnPrompt = typeof input === "string" ? input : input[0]?.text || "";
+        return { response: "Implemented changes successfully", usage: { input_tokens: 10, output_tokens: 20 } };
+      },
+      send: async (input: any) => {
+        turnPrompt = typeof input === "string" ? input : input[0]?.text || "";
+        return { response: "Implemented changes successfully", usage: { input_tokens: 10, output_tokens: 20 } };
+      },
+    };
+
+    const mockSessionManager = {
+      getOrCreate: () => mockOrchestrator,
+    };
+
+    const bus = new LaneDispatchBus(db, {
+      sessionManager: mockSessionManager as any,
+      historyStore: {
+        add: (key, entry) => {
+          historyEntries.push({ key, entry });
+        },
+      },
+      broadcastToActionsLane: (payload, targetKey, pid) => {
+        streamedEvents.push({ payload, targetKey, pid });
+      },
+      interruptControllers,
+      testCommand: "git status",
+    });
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 909,
+      issueTitle: "Test session manager streaming",
+    });
+
+    await bus.evaluateQueue(repoDir, repoDir);
+
+    // Wait for async execution turn to complete
+    for (let i = 0; i < 50; i++) {
+      if (streamedEvents.some((e) => e.payload.type === "assistant_done")) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    // Verify session turn executed
+    assert.ok(turnPrompt.includes("Issue #909"));
+    assert.ok(instructionsSet.length > 0);
+
+    // Verify event streaming to Actions lane
+    assert.ok(streamedEvents.some((e) => e.payload.type === "message" && e.payload.role === "user"));
+    assert.ok(streamedEvents.some((e) => e.payload.type === "step" && e.payload.title === "Analyzing repository"));
+    assert.ok(streamedEvents.some((e) => e.payload.type === "command" && e.payload.title === "Running check"));
+    assert.ok(streamedEvents.some((e) => e.payload.type === "assistant_done"));
+
+    // Verify history recording
+    assert.ok(historyEntries.some((h) => h.entry.role === "user"));
+    assert.ok(historyEntries.some((h) => h.entry.role === "assistant"));
+
+    // Wait for full cycle (verification + reviewer) to complete
+    for (let i = 0; i < 50; i++) {
+      const current = bus.getJob(job.jobId);
+      if (current?.status === "waiting_merge") break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    // Verify verification and reviewer events streamed to Actions lane
+    assert.ok(streamedEvents.some((e) => e.payload.type === "step" && e.payload.title?.includes("Verification")));
+    assert.ok(streamedEvents.some((e) => e.payload.type === "command" && e.payload.command === "git status"));
+    assert.ok(streamedEvents.some((e) => e.payload.type === "step" && e.payload.title?.includes("Reviewer")));
+    assert.ok(streamedEvents.some((e) => e.payload.type === "message" && e.payload.text?.includes("Code Review")));
+
+    // Verify history recording for review verdict
+    assert.ok(historyEntries.some((h) => h.entry.kind === "review_verdict"));
+  });
 });

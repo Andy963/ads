@@ -22,7 +22,11 @@ export interface ActionRouteDeps {
 
 let busInstance: LaneDispatchBus | null = null;
 
-function getBus(): LaneDispatchBus {
+export function setBusInstance(bus: LaneDispatchBus): void {
+  busInstance = bus;
+}
+
+export function getBus(): LaneDispatchBus {
   if (!busInstance) {
     busInstance = new LaneDispatchBus(getStateDatabase());
   }

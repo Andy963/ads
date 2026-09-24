@@ -1,8 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-import { getStateDatabase } from "../state/database.js";
-import { LaneDispatchBus } from "../actions/bus.js";
+import { getBus } from "../web/server/api/routes/actions.js";
 import type { MiddlewarePipeline, TurnContext } from "../middleware/index.js";
 import { findSecurityViolation } from "../middleware/builtin/globalRulesMiddleware.js";
 import { getExecAllowlistFromEnv, hasShellSyntax, runCommand, tokenizeCommandLine } from "../utils/commandRunner.js";
@@ -380,8 +379,7 @@ export class NativeToolExecutor {
     const title = stringArgument(args, "title");
     const issueId = args.issue_id !== undefined ? Number(args.issue_id) : null;
     const kind = args.kind === "local_prompt" ? "local_prompt" : "github_issue";
-    const stateDb = getStateDatabase();
-    const bus = new LaneDispatchBus(stateDb);
+    const bus = getBus();
     const res = bus.dispatchJob({
       projectId: this.workspaceRoot,
       issueId: Number.isFinite(issueId) ? issueId : null,

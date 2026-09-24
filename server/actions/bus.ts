@@ -1,10 +1,12 @@
 import { randomBytes } from "node:crypto";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import type { Database as DatabaseType } from "better-sqlite3";
 
-import { NativeAgentAdapter } from "../agents/adapters/nativeAgentAdapter.js";
-import { resolveAgentRuntime } from "../runtime/config.js";
-import { resolveStateDbPath } from "../state/database.js";
+import { runAgentTurn } from "../agents/turn.js";
+import type { AgentEvent } from "../codex/events.js";
+import type { SessionManager } from "../sessions/sessionManager.js";
+import { buildWsConnectionIdentity } from "../web/server/ws/connectionIdentity.js";
+import type { AsyncLock } from "../utils/asyncLock.js";
 import { buildReviewPrompt, DEFAULT_REVIEWER_SYSTEM_PROMPT, runDetachedReview } from "../reviewer/runner.js";
 import { parseReviewVerdict } from "../reviewer/verdictParser.js";
 import type { ReviewPayload, ReviewVerdict } from "../reviewer/types.js";
@@ -46,6 +48,14 @@ export type DeveloperRunner = (
 export type ReviewerRunner = (prompt: string, systemPrompt: string) => Promise<string>;
 
 export interface LaneDispatchBusOptions {
+  sessionManager?: SessionManager;
+  historyStore?: {
+    add: (key: string, entry: { role: string; text: string; ts: number; kind?: string }) => void;
+    get?: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }>;
+  };
+  getWorkspaceLock?: (workspaceRoot: string) => AsyncLock;
+  broadcastToActionsLane?: (payload: unknown, targetHistoryKey?: string, projectId?: string) => void;
+  interruptControllers?: Map<string, AbortController>;
   developerRunner?: DeveloperRunner;
   reviewerRunner?: ReviewerRunner;
   testCommand?: string;
@@ -53,7 +63,6 @@ export interface LaneDispatchBusOptions {
 
 export class LaneDispatchBus {
   private processingProjects = new Set<string>();
-  private activeProcesses = new Map<string, ChildProcess>();
   private activeAbortControllers = new Map<string, AbortController>();
 
   constructor(
@@ -168,7 +177,7 @@ export class LaneDispatchBus {
         current_step: "Developer executing implementation on feature branch",
       });
 
-      // Spawn Developer execution on the checked-out feature branch
+      // Submit task directly into Actions lane session
       queueMicrotask(() => {
         void this.executeDeveloper(nextJob.id, repoPath);
       });
@@ -208,20 +217,10 @@ export class LaneDispatchBus {
       return;
     }
 
-    // In automated test harness without runner override, avoid spawning long-running external agent
-    if (process.env.ADS_TEST_STATE_ROOT) {
-      queueMicrotask(() => {
-        void this.runJobCycle(jobId, repoPath, { reworkCount: options.reworkCount });
-      });
-      return;
-    }
-
-    // Retrieve system prompt and model binding directly from role_profiles in database
+    // Retrieve system prompt directly from role_profiles in database
     const devProfile = (job.developer_profile_id ? getRoleProfileById(this.db, job.developer_profile_id) : null)
       ?? getDefaultRoleProfile(this.db, "developer");
     const systemPrompt = devProfile?.system_prompt || "You are the ADS Developer. Implement the requested changes and run tests.";
-    const modelId = devProfile?.model_id;
-    const effort = devProfile?.reasoning_effort;
 
     const taskPrompt = job.job_kind === "github_issue" && job.issue_id
       ? `Implement GitHub Issue #${job.issue_id}: ${job.issue_title}.\nRead the issue, implement the requested code changes on branch '${job.branch}', run verification tests, and commit.`
@@ -231,35 +230,130 @@ export class LaneDispatchBus {
       ? `${taskPrompt}\n\nCRITICAL - REWORK INSTRUCTIONS:\nPrevious code review was REJECTED with the following defect findings:\n${options.reworkFeedback}\nPlease address all listed defects, re-run tests, and commit the fixes.`
       : taskPrompt;
 
-    const runtime = resolveAgentRuntime(process.env);
+    if (this.options.sessionManager) {
+      const sessionManager = this.options.sessionManager;
+      const workspaceRoot = repoPath;
+      const userId = 1;
+      const authUserId = "admin";
+      const projectId = job.project_id;
+      const chatSessionId = "worker";
+      const connectionId = randomBytes(3).toString("hex");
 
-    if (runtime === "native") {
+      const identity = buildWsConnectionIdentity({
+        authUserId,
+        sessionId: projectId,
+        chatSessionId,
+        connectionId,
+      });
+
+      const historyKey = identity.historyKey;
       const abortCtrl = new AbortController();
       this.activeAbortControllers.set(jobId, abortCtrl);
+      if (this.options.interruptControllers) {
+        this.options.interruptControllers.set(historyKey, abortCtrl);
+      }
+
+      // Record user prompt in history
+      if (this.options.historyStore) {
+        this.options.historyStore.add(historyKey, {
+          role: "user",
+          text: finalTaskPrompt,
+          ts: Date.now(),
+          kind: "action_dispatch",
+        });
+      }
+
+      // Notify connected Actions lane WebSocket clients
+      if (this.options.broadcastToActionsLane) {
+        this.options.broadcastToActionsLane({
+          type: "message",
+          role: "user",
+          text: finalTaskPrompt,
+          ts: Date.now(),
+          jobId: job.id,
+        }, historyKey, projectId);
+      }
 
       try {
-        const adapter = new NativeAgentAdapter({
-          credentialOwner: "system",
-          stateDbPath: resolveStateDbPath(),
-          workspaceRoot: repoPath,
-          workingDirectory: repoPath,
-          model: modelId,
-          modelReasoningEffort: effort,
-          env: process.env,
+        const orchestrator = sessionManager.getOrCreate(userId, repoPath, true, {
+          authUserId,
+          projectId,
         });
-        adapter.setDeveloperInstructions(systemPrompt);
 
-        await adapter.send(finalTaskPrompt, { signal: abortCtrl.signal });
+        // Inject developer instructions from database profile
+        if (typeof orchestrator.setDeveloperInstructions === "function") {
+          orchestrator.setDeveloperInstructions(systemPrompt);
+        }
+
+        // Attach event listener for real-time WebSocket streaming
+        const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
+          if (this.options.broadcastToActionsLane) {
+            this.options.broadcastToActionsLane({
+              type: event.liveStep ? "step" : event.phase === "command" ? "command" : "delta",
+              title: event.title,
+              delta: event.delta,
+              detail: event.detail,
+              timestamp: event.timestamp,
+              jobId: job.id,
+              phase: event.phase,
+              raw: event.raw,
+            }, historyKey, projectId);
+          }
+
+          if (event.liveStep && event.title) {
+            updateActionJobStatus(this.db, jobId, "running", {
+              current_step: event.title,
+            });
+          }
+        });
+
+        const turnResult = await runAgentTurn(orchestrator, finalTaskPrompt, {
+          streaming: true,
+          signal: abortCtrl.signal,
+          cwd: repoPath,
+          workspaceRoot,
+          historySessionId: historyKey,
+        });
+
+        unsubscribe();
+
+        // Record assistant response in history
+        if (this.options.historyStore) {
+          this.options.historyStore.add(historyKey, {
+            role: "assistant",
+            text: turnResult.response,
+            ts: Date.now(),
+          });
+        }
+
+        // Broadcast turn completion
+        if (this.options.broadcastToActionsLane) {
+          this.options.broadcastToActionsLane({
+            type: "assistant_done",
+            text: turnResult.response,
+            jobId: job.id,
+            ts: Date.now(),
+          }, historyKey, projectId);
+        }
+
         this.activeAbortControllers.delete(jobId);
+        if (this.options.interruptControllers) {
+          this.options.interruptControllers.delete(historyKey);
+        }
 
-        // Native agent completed turn: proceed to verification and review
+        // Proceed to verification & detached review
         queueMicrotask(() => {
           void this.runJobCycle(jobId, repoPath, { reworkCount: options.reworkCount });
         });
       } catch (err) {
         this.activeAbortControllers.delete(jobId);
-        updateActionJobStatus(this.db, jobId, "failed", {
-          error_message: `Native Developer Agent failed: ${err instanceof Error ? err.message : String(err)}`,
+        if (this.options.interruptControllers) {
+          this.options.interruptControllers.delete(historyKey);
+        }
+
+        const isAborted = abortCtrl.signal.aborted;
+        updateActionJobStatus(this.db, jobId, isAborted ? "cancelled" : "failed", {
+          error_message: `Actions session execution ${isAborted ? "aborted" : "failed"}: ${err instanceof Error ? err.message : String(err)}`,
         });
         safeResetToDev(repoPath);
         queueMicrotask(() => {
@@ -269,67 +363,30 @@ export class LaneDispatchBus {
       return;
     }
 
-    // Default runtime: codex-app-server / CLI spawn
-    const binary = process.env.ADS_CODEX_BIN || "codex";
-    const combinedPrompt = `${systemPrompt}\n\n[Task]\n${finalTaskPrompt}`;
-    const args = ["exec", combinedPrompt, "-C", repoPath, "--sandbox", "danger-full-access", "--json"];
-    if (modelId) {
-      args.push("-m", modelId);
-    }
-
-    try {
-      const child = spawn(binary, args, {
-        cwd: repoPath,
-        env: { ...process.env },
-      });
-
-      this.activeProcesses.set(jobId, child);
-
-      child.on("close", (code) => {
-        this.activeProcesses.delete(jobId);
-        if (code !== 0) {
-          updateActionJobStatus(this.db, jobId, "failed", {
-            error_message: `Developer CLI execution exited with code ${code}`,
-          });
-          safeResetToDev(repoPath);
-          queueMicrotask(() => {
-            void this.evaluateQueue(job.project_id, repoPath);
-          });
-          return;
-        }
-
-        // Developer CLI completed successfully: proceed to verification & detached review
-        queueMicrotask(() => {
-          void this.runJobCycle(jobId, repoPath, { reworkCount: options.reworkCount });
-        });
-      });
-
-      child.on("error", (err) => {
-        this.activeProcesses.delete(jobId);
-        updateActionJobStatus(this.db, jobId, "failed", {
-          error_message: `Failed to spawn Developer CLI: ${err.message}`,
-        });
-        safeResetToDev(repoPath);
-        queueMicrotask(() => {
-          void this.evaluateQueue(job.project_id, repoPath);
-        });
-      });
-    } catch (err) {
-      this.activeProcesses.delete(jobId);
-      updateActionJobStatus(this.db, jobId, "failed", {
-        error_message: `Exception spawning Developer CLI: ${err instanceof Error ? err.message : String(err)}`,
-      });
-      safeResetToDev(repoPath);
+    // In automated test harness without runner override or sessionManager, avoid unneeded execution
+    if (process.env.ADS_TEST_STATE_ROOT) {
       queueMicrotask(() => {
-        void this.evaluateQueue(job.project_id, repoPath);
+        void this.runJobCycle(jobId, repoPath, { reworkCount: options.reworkCount });
       });
+      return;
     }
+
+    // Fallback if no runner or session manager is provided
+    updateActionJobStatus(this.db, jobId, "failed", {
+      error_message: "No Actions session manager configured for task execution",
+    });
+    safeResetToDev(repoPath);
+    queueMicrotask(() => {
+      void this.evaluateQueue(job.project_id, repoPath);
+    });
   }
 
   public async executeReviewer(
     payload: ReviewPayload,
     repoPath: string,
     reviewerProfileId?: string,
+    historyKey?: string,
+    projectId?: string,
   ): Promise<ReviewVerdict> {
     if (this.options.reviewerRunner) {
       const prompt = buildReviewPrompt(payload);
@@ -348,52 +405,43 @@ export class LaneDispatchBus {
       };
     }
 
-    // Retrieve reviewer profile and prompt from database
+    // Retrieve reviewer profile from database
     const reviewerProfile = (reviewerProfileId ? getRoleProfileById(this.db, reviewerProfileId) : null)
       ?? getDefaultRoleProfile(this.db, "reviewer");
     const systemPrompt = reviewerProfile?.system_prompt || DEFAULT_REVIEWER_SYSTEM_PROMPT;
-    const modelId = reviewerProfile?.model_id;
-    const effort = reviewerProfile?.reasoning_effort;
     const reviewPrompt = buildReviewPrompt(payload);
 
-    const runtime = resolveAgentRuntime(process.env);
-
-    if (runtime === "native") {
+    if (this.options.sessionManager) {
       try {
-        const adapter = new NativeAgentAdapter({
-          credentialOwner: "system",
-          stateDbPath: resolveStateDbPath(),
-          workspaceRoot: repoPath,
-          workingDirectory: repoPath,
-          model: modelId,
-          modelReasoningEffort: effort,
-          env: process.env,
-        });
-        adapter.setDeveloperInstructions(systemPrompt);
-
-        const res = await adapter.send(reviewPrompt);
-        return parseReviewVerdict(res.response, reviewerProfile?.id);
-      } catch {
-        // Fallback below
-      }
-    } else {
-      const binary = process.env.ADS_CODEX_BIN || "codex";
-      const combinedReviewPrompt = `${systemPrompt}\n\n[Review Request]\n${reviewPrompt}`;
-      const args = ["exec", combinedReviewPrompt, "-C", repoPath, "--sandbox", "read-only", "--ephemeral"];
-      if (modelId) {
-        args.push("-m", modelId);
-      }
-
-      try {
-        const res = spawnSync(binary, args, {
-          cwd: repoPath,
-          encoding: "utf8",
-          maxBuffer: 10 * 1024 * 1024,
+        const userId = 9999; // Detached reviewer ephemeral identity
+        const authUserId = "admin";
+        const orchestrator = this.options.sessionManager.getOrCreate(userId, repoPath, false, {
+          authUserId,
+          projectId: "reviewer-isolated",
         });
 
-        if (res.status === 0 && res.stdout?.trim()) {
-          return parseReviewVerdict(res.stdout, reviewerProfile?.id);
+        if (typeof orchestrator.setDeveloperInstructions === "function") {
+          orchestrator.setDeveloperInstructions(systemPrompt);
         }
+
+        // Attach event listener for real-time Reviewer streaming to Actions lane
+        const unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
+          if (this.options.broadcastToActionsLane) {
+            this.options.broadcastToActionsLane({
+              type: event.liveStep ? "step" : event.phase === "command" ? "command" : "delta",
+              title: event.title ? `[Reviewer] ${event.title}` : "[Reviewer]",
+              delta: event.delta,
+              detail: event.detail,
+              timestamp: event.timestamp,
+              phase: event.phase,
+              raw: event.raw,
+            }, historyKey, projectId);
+          }
+        });
+
+        const res = await orchestrator.send(reviewPrompt);
+        unsubscribe();
+        return parseReviewVerdict(res.response, reviewerProfile?.id);
       } catch {
         // Fallback below
       }
@@ -421,12 +469,33 @@ export class LaneDispatchBus {
     const job = getActionJobById(this.db, jobId);
     if (!job || job.status !== "running") return;
 
+    const projectId = job.project_id;
+    const identity = buildWsConnectionIdentity({
+      authUserId: "admin",
+      sessionId: projectId,
+      chatSessionId: "worker",
+      connectionId: randomBytes(3).toString("hex"),
+    });
+    const historyKey = identity.historyKey;
+
     // 1. Verification Phase: run test suite
     updateActionJobStatus(this.db, jobId, "verifying", {
       current_step: "Running automated test suite and verification commands",
     });
 
     const testCmd = options.testCommand || this.options.testCommand || "git status";
+
+    if (this.options.broadcastToActionsLane) {
+      this.options.broadcastToActionsLane({
+        type: "step",
+        title: "Running Verification Suite",
+        delta: `Executing verification command: ${testCmd}...`,
+        liveStep: true,
+        jobId: job.id,
+        ts: Date.now(),
+      }, historyKey, projectId);
+    }
+
     const testParts = testCmd.split(" ");
     const testRes = spawnSync(testParts[0]!, testParts.slice(1), {
       cwd: repoPath,
@@ -439,10 +508,42 @@ export class LaneDispatchBus {
       summary: testRes.status === 0 ? "Tests and checks passed successfully" : (testRes.stderr?.trim() || "Verification command failed"),
     };
 
+    if (this.options.broadcastToActionsLane) {
+      this.options.broadcastToActionsLane({
+        type: "command",
+        command: testCmd,
+        output: testReport.summary,
+        exitCode: testReport.exitCode,
+        status: testReport.exitCode === 0 ? "completed" : "failed",
+        jobId: job.id,
+        ts: Date.now(),
+      }, historyKey, projectId);
+    }
+
+    if (this.options.historyStore) {
+      this.options.historyStore.add(historyKey, {
+        role: "status",
+        text: `[Verification] ${testCmd} (exit ${testReport.exitCode}): ${testReport.summary}`,
+        ts: Date.now(),
+        kind: "verification",
+      });
+    }
+
     // 2. Reviewing Phase: detached clean-room reviewer
     updateActionJobStatus(this.db, jobId, "reviewing", {
       current_step: "Detached clean-room reviewer auditing code changes against specifications",
     });
+
+    if (this.options.broadcastToActionsLane) {
+      this.options.broadcastToActionsLane({
+        type: "step",
+        title: "Detached Clean-Room Reviewer",
+        delta: "Auditing git diff against requirements, ADRs, and verification reports...",
+        liveStep: true,
+        jobId: job.id,
+        ts: Date.now(),
+      }, historyKey, projectId);
+    }
 
     const hasOrigin = hasGitRemoteOrigin(repoPath);
     const diffBase = hasOrigin ? "origin/dev" : "dev";
@@ -478,12 +579,45 @@ export class LaneDispatchBus {
         reviewerProfileId: typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id,
       });
     } else {
-      verdict = await this.executeReviewer(payload, repoPath, typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id);
+      verdict = await this.executeReviewer(
+        payload,
+        repoPath,
+        typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id,
+        historyKey,
+        projectId,
+      );
     }
 
     updateActionJobStatus(this.db, jobId, "reviewing", {
       review_verdicts_json: JSON.stringify([verdict]),
     });
+
+    // Format Review Verdict card and broadcast to Actions lane
+    const defectsList = verdict.defects && verdict.defects.length > 0
+      ? "\n\n**Defects Identified:**\n" + verdict.defects.map((d) => `- [${d.severity.toUpperCase()}] \`${d.file}${d.line ? `:${d.line}` : ""}\`: ${d.description}`).join("\n")
+      : "\n\n*No blocking defects identified.*";
+
+    const reviewCardText = `### Code Review: ${verdict.status === "PASS" ? "✅ Approved (PASS)" : "❌ Rejected (REJECT)"}\n\n${verdict.summary}${defectsList}`;
+
+    if (this.options.broadcastToActionsLane) {
+      this.options.broadcastToActionsLane({
+        type: "message",
+        role: "assistant",
+        text: reviewCardText,
+        jobId: job.id,
+        ts: Date.now(),
+        status: verdict.status,
+      }, historyKey, projectId);
+    }
+
+    if (this.options.historyStore) {
+      this.options.historyStore.add(historyKey, {
+        role: "assistant",
+        text: reviewCardText,
+        ts: Date.now(),
+        kind: "review_verdict",
+      });
+    }
 
     this.handleReviewResult({
       jobId,
@@ -543,6 +677,38 @@ export class LaneDispatchBus {
           ? `Review passed. PR #${prNumber} created. Waiting for user merge approval.`
           : "Review passed. Local repository ready for fast-forward merge.",
       });
+
+      const projectId = job.project_id;
+      const identity = buildWsConnectionIdentity({
+        authUserId: "admin",
+        sessionId: projectId,
+        chatSessionId: "worker",
+        connectionId: randomBytes(3).toString("hex"),
+      });
+      const historyKey = identity.historyKey;
+
+      if (this.options.broadcastToActionsLane) {
+        this.options.broadcastToActionsLane({
+          type: "message",
+          role: "status",
+          text: hasRemote
+            ? `Review approved. PR #${prNumber} created (${prUrl}). Waiting for user merge approval.`
+            : "Review approved. Local repository ready for fast-forward merge.",
+          jobId: job.id,
+          ts: Date.now(),
+        }, historyKey, projectId);
+      }
+
+      if (this.options.historyStore) {
+        this.options.historyStore.add(historyKey, {
+          role: "status",
+          text: hasRemote
+            ? `[PR Created] PR #${prNumber}: ${prUrl}. Waiting for merge approval.`
+            : "[Local Ready] Review approved. Ready for merge.",
+          ts: Date.now(),
+          kind: "pr_delivery",
+        });
+      }
 
       return {
         status: "waiting_merge",
@@ -624,12 +790,6 @@ export class LaneDispatchBus {
     if (abortCtrl) {
       abortCtrl.abort();
       this.activeAbortControllers.delete(jobId);
-    }
-
-    const activeChild = this.activeProcesses.get(jobId);
-    if (activeChild) {
-      activeChild.kill("SIGTERM");
-      this.activeProcesses.delete(jobId);
     }
 
     const job = getActionJobById(this.db, jobId);
