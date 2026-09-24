@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { z } from "zod";
+import type { Database as DatabaseType } from "better-sqlite3";
 
 import { getStateDatabase } from "../../../../state/database.js";
 import { LaneDispatchBus } from "../../../../actions/bus.js";
@@ -20,6 +21,11 @@ export interface ActionRouteDeps {
   resolveWorkspaceRoot?: (url: URL) => string;
 }
 
+type ActionMutationBody = {
+  projectId?: unknown;
+  repoPath?: unknown;
+};
+
 let busInstance: LaneDispatchBus | null = null;
 
 export function setBusInstance(bus: LaneDispatchBus): void {
@@ -33,9 +39,53 @@ export function getBus(): LaneDispatchBus {
   return busInstance;
 }
 
+export function resolveRepoPath(
+  db: DatabaseType,
+  rawPathOrProjectId?: string | null,
+  fallbackUrl?: URL,
+  resolveWorkspaceRoot?: (url: URL) => string,
+): string | null {
+  const candidate = String(rawPathOrProjectId ?? "").trim();
+  if (candidate && fs.existsSync(candidate)) {
+    try {
+      if (fs.statSync(candidate).isDirectory()) return candidate;
+    } catch {
+      // ignore
+    }
+  }
+
+  if (candidate) {
+    try {
+      const row = db.prepare("SELECT workspace_root FROM web_projects WHERE project_id = ? LIMIT 1").get(candidate) as
+        | { workspace_root?: string }
+        | undefined;
+      const root = row?.workspace_root?.trim();
+      if (root && fs.existsSync(root) && fs.statSync(root).isDirectory()) {
+        return root;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (fallbackUrl && resolveWorkspaceRoot) {
+    try {
+      const root = resolveWorkspaceRoot(fallbackUrl)?.trim();
+      if (root && fs.existsSync(root) && fs.statSync(root).isDirectory()) {
+        return root;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return null;
+}
+
 export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRouteDeps = {}): Promise<boolean> {
   const { req, res, pathname, url } = ctx;
   const bus = getBus();
+  const stateDb = getStateDatabase();
 
   if (pathname === "/api/actions/dispatch" && req.method === "POST") {
     let body: unknown;
@@ -52,9 +102,9 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
       return true;
     }
 
-    const repoPath = parsed.data.repoPath || parsed.data.projectId || (deps.resolveWorkspaceRoot ? deps.resolveWorkspaceRoot(url) : null);
-    if (!repoPath || !fs.existsSync(repoPath) || !fs.statSync(repoPath).isDirectory()) {
-      sendJson(res, 400, { error: `Invalid or non-existent repository path: ${repoPath}` });
+    const repoPath = resolveRepoPath(stateDb, parsed.data.repoPath || parsed.data.projectId, url, deps.resolveWorkspaceRoot);
+    if (!repoPath) {
+      sendJson(res, 400, { error: `Invalid or non-existent repository path: ${parsed.data.repoPath || parsed.data.projectId}` });
       return true;
     }
 
@@ -73,22 +123,27 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
   }
 
   if (pathname === "/api/actions/queue/start" && req.method === "POST") {
-    let body: any = {};
+    let body: ActionMutationBody = {};
     try {
-      body = await readJsonBody(req);
+      const parsed = await readJsonBody(req);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        body = parsed as ActionMutationBody;
+      }
     } catch {
       // body can be empty
     }
 
-    const projectId = String(body?.projectId ?? url.searchParams.get("projectId") ?? "").trim();
+    const requestedProjectId = typeof body.projectId === "string" ? body.projectId : null;
+    const projectId = String(requestedProjectId ?? url.searchParams.get("projectId") ?? "").trim();
     if (!projectId) {
       sendJson(res, 400, { error: "Missing projectId parameter" });
       return true;
     }
 
-    const repoPath = String(body?.repoPath ?? projectId).trim() || (deps.resolveWorkspaceRoot ? deps.resolveWorkspaceRoot(url) : null);
-    if (!repoPath || !fs.existsSync(repoPath) || !fs.statSync(repoPath).isDirectory()) {
-      sendJson(res, 400, { error: `Invalid or non-existent repository path: ${repoPath}` });
+    const requestedRepoPath = typeof body.repoPath === "string" ? body.repoPath : null;
+    const repoPath = resolveRepoPath(stateDb, requestedRepoPath || projectId, url, deps.resolveWorkspaceRoot);
+    if (!repoPath) {
+      sendJson(res, 400, { error: `Invalid or non-existent repository path for project '${projectId}'` });
       return true;
     }
 
@@ -109,6 +164,16 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
 
   const mergeMatch = /^\/api\/actions\/jobs\/([^/]+)\/merge$/.exec(pathname);
   if (mergeMatch && req.method === "POST") {
+    let body: ActionMutationBody = {};
+    try {
+      const parsed = await readJsonBody(req);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        body = parsed as ActionMutationBody;
+      }
+    } catch {
+      // ignore
+    }
+
     const jobId = decodeURIComponent(mergeMatch[1] ?? "");
     const job = bus.getJob(jobId);
     if (!job) {
@@ -116,9 +181,10 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
       return true;
     }
 
-    const repoPath = job.project_id;
-    if (!repoPath || !fs.existsSync(repoPath) || !fs.statSync(repoPath).isDirectory()) {
-      sendJson(res, 400, { error: `Job project directory does not exist: ${repoPath}` });
+    const requestedRepoPath = typeof body.repoPath === "string" ? body.repoPath : null;
+    const repoPath = resolveRepoPath(stateDb, requestedRepoPath || job.project_id, url, deps.resolveWorkspaceRoot);
+    if (!repoPath) {
+      sendJson(res, 400, { error: `Job project directory does not exist for project '${job.project_id}'` });
       return true;
     }
 
@@ -129,13 +195,29 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
 
   const cancelMatch = /^\/api\/actions\/jobs\/([^/]+)\/cancel$/.exec(pathname);
   if (cancelMatch && req.method === "POST") {
+    let body: ActionMutationBody = {};
+    try {
+      const parsed = await readJsonBody(req);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        body = parsed as ActionMutationBody;
+      }
+    } catch {
+      // ignore
+    }
+
     const jobId = decodeURIComponent(cancelMatch[1] ?? "");
     const job = bus.getJob(jobId);
     if (!job) {
       sendJson(res, 404, { error: `Job not found: ${jobId}` });
       return true;
     }
-    bus.cancelJob(jobId, job.project_id);
+    const requestedRepoPath = typeof body.repoPath === "string" ? body.repoPath : null;
+    const repoPath = resolveRepoPath(stateDb, requestedRepoPath || job.project_id, url, deps.resolveWorkspaceRoot);
+    if (!repoPath) {
+      sendJson(res, 400, { error: `Job project directory does not exist for project '${job.project_id}'` });
+      return true;
+    }
+    bus.cancelJob(jobId, repoPath);
     sendJson(res, 200, { ok: true, jobId, status: "cancelled" });
     return true;
   }

@@ -13,7 +13,10 @@ vi.mock("../api/client", () => {
       if (url === "/api/models") return [] as T;
       if (url.startsWith("/api/paths/validate")) return { ok: false } as T;
       if (url === "/api/projects") {
-        return [{ id: "p-1", name: "ads", path: "/home/andy/repos/ads", currentBranch: "dev" }] as T;
+        return {
+          projects: [{ id: "p-1", name: "ads", workspaceRoot: "/home/andy/repos/ads", chatSessionId: "main" }],
+          activeProjectId: "p-1",
+        } as T;
       }
       if (url.startsWith("/api/actions/jobs")) {
         return getSpy(url) as T;
@@ -113,6 +116,12 @@ describe("Actions lane queue visibility and manual start button", () => {
 
     getSpy.mockResolvedValue(mockJobs);
     postSpy.mockResolvedValue({ ok: true });
+    localStorage.setItem("ads.app_state", JSON.stringify({
+      version: 1,
+      updatedAt: Date.now(),
+      projects: [{ id: "p-1", sessionId: "p-1", path: "/home/andy/repos/ads", name: "ads", chatSessionId: "main", initialized: true }],
+      activeProject: "p-1",
+    }));
 
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
@@ -136,6 +145,7 @@ describe("Actions lane queue visibility and manual start button", () => {
 
     expect(postSpy).toHaveBeenCalledWith("/api/actions/queue/start", expect.objectContaining({
       projectId: expect.any(String),
+      repoPath: "/home/andy/repos/ads",
     }));
 
     wrapper.unmount();

@@ -493,4 +493,54 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     const currentBranch = spawnSync("git", ["branch", "--show-current"], { cwd: repoDir, encoding: "utf8" }).stdout.trim();
     assert.strictEqual(currentBranch, "codex/issue-991");
   });
+
+  it("resolves a project id to its workspace before manually starting the queue", async () => {
+    const db = getStateDatabase();
+    db.exec(`
+      CREATE TABLE web_projects (
+        project_id TEXT NOT NULL,
+        workspace_root TEXT NOT NULL
+      )
+    `);
+    db.prepare("INSERT INTO web_projects (project_id, workspace_root) VALUES (?, ?)").run("project-hash", repoDir);
+
+    const bus = new LaneDispatchBus(db, { testCommand: "git status" });
+    setBusInstance(bus);
+    const job = bus.dispatchJob({
+      projectId: "project-hash",
+      issueId: 992,
+      issueTitle: "Resolve project workspace before queue start",
+    });
+
+    const reqPayload = Buffer.from(JSON.stringify({ projectId: "project-hash" }), "utf8");
+    const fakeReq: any = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      async *[Symbol.asyncIterator]() {
+        yield reqPayload;
+      },
+    };
+
+    let responseBody = "";
+    let statusCode = 200;
+    const fakeRes: any = {
+      writeHead(code: number) { statusCode = code; },
+      setHeader() {},
+      end(data: string) { responseBody = data; },
+    };
+
+    const handled = await handleActionRoutes({
+      req: fakeReq,
+      res: fakeRes,
+      pathname: "/api/actions/queue/start",
+      url: new URL("http://localhost/api/actions/queue/start"),
+    });
+
+    assert.strictEqual(handled, true);
+    assert.strictEqual(statusCode, 200);
+    assert.strictEqual(JSON.parse(responseBody).dequeuedJobId, job.jobId);
+
+    const currentBranch = spawnSync("git", ["branch", "--show-current"], { cwd: repoDir, encoding: "utf8" }).stdout.trim();
+    assert.strictEqual(currentBranch, "codex/issue-992");
+  });
 });
