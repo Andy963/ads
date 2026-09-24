@@ -20,6 +20,14 @@ export type LaneDeps = {
   connectAdvisorWs: (projectId?: string) => Promise<void>;
 };
 
+type RuntimeWebSocket = {
+  send?: (
+    type: string,
+    payload?: unknown,
+    options?: { clientMessageId?: string },
+  ) => boolean;
+};
+
 function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void {
    if (rt.noticeTimer === null) return;
    try {
@@ -50,6 +58,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
     threadReset,
     enqueueMainPrompt,
     enqueuePrompt,
+    randomUuid,
    } = ctx;
 
    const setNotice = (message: string, projectId: string = activeProjectId.value): void => {
@@ -163,11 +172,32 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      writeModelPreference(sessionId, rt.chatSessionId, rt.activeAgentId.value, { modelId });
    };
 
+  const sendModelOverride = (rt: ProjectRuntime): void => {
+    const model = normalizeModelId(rt.modelId.value);
+    if (model === "auto") return;
+
+    const socket = rt.ws as RuntimeWebSocket | null;
+    if (!socket?.send) return;
+
+    const effort = normalizeReasoningEffort(rt.modelReasoningEffort.value);
+    const accepted = socket.send(
+      "model_override",
+      { model, model_reasoning_effort: effort },
+      { clientMessageId: randomUuid() },
+    );
+    if (accepted === false) {
+      rt.laneStatus.value = { kind: "error", message: "Model switch failed: the current chat connection is unavailable." };
+      return;
+    }
+    rt.laneStatus.value = { kind: "progress", message: `Switching model: ${model}…` };
+  };
+
    const setMainModelReasoningEffort = (effort: string): void => {
      apiError.value = null;
      const rt = activeRuntime.value;
      rt.modelReasoningEffort.value = normalizeReasoningEffort(effort);
      persistReasoningEffort(rt);
+     sendModelOverride(rt);
    };
 
    const setMainModelId = (modelId: string): void => {
@@ -175,6 +205,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      const rt = activeRuntime.value;
      rt.modelId.value = normalizeModelId(modelId);
      persistModelId(rt);
+     sendModelOverride(rt);
    };
 
    const setAdvisorModelReasoningEffort = (effort: string): void => {
@@ -182,6 +213,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      const rt = activeAdvisorRuntime.value;
      rt.modelReasoningEffort.value = normalizeReasoningEffort(effort);
      persistReasoningEffort(rt);
+     sendModelOverride(rt);
    };
 
    const setAdvisorModelId = (modelId: string): void => {
@@ -189,6 +221,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      const rt = activeAdvisorRuntime.value;
      rt.modelId.value = normalizeModelId(modelId);
      persistModelId(rt);
+     sendModelOverride(rt);
    };
 
    const alignRuntimeModelForAgent = (rt: ProjectRuntime, agentId: string): void => {

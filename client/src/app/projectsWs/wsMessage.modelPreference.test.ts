@@ -116,6 +116,45 @@ describe("wsMessage applyEffectiveState model preference guard", () => {
     expect(readReasoningEffortPreference("default", "advisor", "codex")).toBe("medium");
   });
 
+  it("handles a model override result without terminating the active chat turn", () => {
+    const { rt, handler } = setup();
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+
+    handler({
+      type: "result",
+      ok: true,
+      kind: "model_override",
+      output: "Model switched to gpt-4o (low)",
+      model: "gpt-4o",
+      model_reasoning_effort: "low",
+    });
+
+    expect(rt.modelId.value).toBe("gpt-4o");
+    expect(rt.modelReasoningEffort.value).toBe("low");
+    expect(rt.busy.value).toBe(true);
+    expect(rt.turnInFlight).toBe(true);
+    expect(rt.laneStatus.value).toEqual({ kind: "info", message: "Model switched to: gpt-4o (low)" });
+  });
+
+  it("surfaces a model override failure without changing the selected model", () => {
+    const { rt, handler } = setup();
+    rt.modelId.value = "gpt-4.1";
+
+    handler({
+      type: "result",
+      ok: false,
+      kind: "model_override",
+      output: "Unknown or disabled model: missing-model",
+    });
+
+    expect(rt.modelId.value).toBe("gpt-4.1");
+    expect(rt.laneStatus.value).toEqual({
+      kind: "error",
+      message: "Unknown or disabled model: missing-model",
+    });
+  });
+
   it("welcome scopes the stored preference lookup to the payload's active agent", () => {
     const { rt, handler } = setup();
     rt.activeAgentId.value = "codex";

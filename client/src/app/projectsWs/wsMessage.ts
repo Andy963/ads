@@ -1608,6 +1608,30 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "result") {
+      const resultKind = String(msg.kind ?? "").trim();
+      if (resultKind === "model_override") {
+        const output = normalizeWireText(msg.output).trim();
+        if (msg.ok === true) {
+          const effectivePayload = {
+            ...(msg as Record<string, unknown>),
+            effectiveModel: msg.effectiveModel ?? msg.model,
+            effectiveModelReasoningEffort:
+              msg.effectiveModelReasoningEffort ?? msg.model_reasoning_effort,
+          };
+          applyEffectiveState(effectivePayload);
+          const model = normalizeModelId(effectivePayload.effectiveModel);
+          const effort = normalizeReasoningEffort(effectivePayload.effectiveModelReasoningEffort);
+          rt.laneStatus.value = {
+            kind: "info",
+            message: model !== "auto"
+              ? `Model switched to: ${model}${effort ? ` (${effort})` : ""}`
+              : output || "Model switched.",
+          };
+        } else {
+          rt.laneStatus.value = { kind: "error", message: output || "Model switch failed." };
+        }
+        return;
+      }
       markTurnTerminal(msg as Record<string, unknown>);
       annotatePendingUserMessageExecution(msg as Record<string, unknown>);
       recoveredBackendActivitySeen = false;
@@ -1623,7 +1647,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.pendingAckClientMessageId = null;
       clearPendingPrompt(rt);
       const output = normalizeWireText(msg.output);
-      const resultKind = String(msg.kind ?? "").trim();
       if (msg.ok === true && resultKind === "clear_history") {
         rt.ignoreNextHistory = false;
         rt.ignoreNextHistoryGeneration = undefined;

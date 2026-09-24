@@ -1196,4 +1196,82 @@ describe("ModelManager", () => {
 
     wrapper.unmount();
   });
+
+  it("marks role model changes dirty, persists them, and surfaces save failures", async () => {
+    const prompt = "Acopilot Prompt";
+    const roleProfile = {
+      id: "profile-acopilot",
+      role: "acopilot",
+      name: "Acopilot Default",
+      model_id: "gpt-5.5",
+      reasoning_effort: "high",
+      system_prompt: prompt,
+      is_enabled: 1,
+      is_default: 1,
+      version: 1,
+    };
+    const snapshot: LanePromptSnapshot = {
+      lane: "advisor",
+      current: { lane: "advisor", version: 1, prompt, isBase: true, createdAt: 1 },
+      base: { lane: "advisor", version: 1, prompt, isBase: true, createdAt: 1 },
+      versions: [{ lane: "advisor", version: 1, prompt, isBase: true, createdAt: 1 }],
+      updatedAt: 1,
+    };
+    const models = [
+      makeModel("m1", "GPT 5.5", "openai", "codex", "gpt-5.5"),
+      makeModel("m2", "GPT 5.6", "openai", "codex", "gpt-5.6"),
+    ];
+    let failRoleSave = false;
+    const api = {
+      get: vi.fn().mockImplementation((url: string) => {
+        if (url === "/api/model-configs") return Promise.resolve(models);
+        if (url === "/api/role-profiles") return Promise.resolve([roleProfile]);
+        if (url === "/api/lane-prompts") return Promise.resolve([snapshot]);
+        return Promise.resolve([]);
+      }),
+      post: vi.fn().mockResolvedValue({}),
+      put: vi.fn().mockImplementation((url: string, body: Record<string, unknown>) => {
+        if (url.startsWith("/api/role-profiles/") && failRoleSave) {
+          return Promise.reject(new Error("role profile save failed"));
+        }
+        if (url.startsWith("/api/role-profiles/")) {
+          return Promise.resolve({ ...roleProfile, ...body });
+        }
+        return Promise.resolve(snapshot);
+      }),
+      patch: vi.fn().mockResolvedValue({}),
+      delete: vi.fn().mockResolvedValue({}),
+    };
+
+    const wrapper = mount(ModelManager, {
+      props: { api, initialTab: "lane-prompts" },
+      global: { stubs: { "el-icon": true } },
+    });
+    await settle(wrapper);
+
+    const saveButton = wrapper.get('[data-testid="lane-prompt-save"]');
+    expect(saveButton.attributes("disabled")).toBeDefined();
+
+    await wrapper.get('[data-testid="role-model-select"]').setValue("gpt-5.6");
+    await settle(wrapper);
+    expect(saveButton.attributes("disabled")).toBeUndefined();
+
+    await saveButton.trigger("click");
+    await settle(wrapper);
+    expect(api.put).toHaveBeenCalledWith("/api/role-profiles/profile-acopilot", {
+      model_id: "gpt-5.6",
+      reasoning_effort: "high",
+      system_prompt: prompt,
+    });
+    expect(api.put).not.toHaveBeenCalledWith("/api/lane-prompts/advisor", { prompt });
+    expect(saveButton.attributes("disabled")).toBeDefined();
+
+    failRoleSave = true;
+    await wrapper.get('[data-testid="role-model-select"]').setValue("gpt-5.5");
+    await wrapper.get('[data-testid="lane-prompt-save"]').trigger("click");
+    await settle(wrapper);
+    expect(wrapper.get('[data-testid="lane-prompt-error"]').text()).toContain("role profile save failed");
+
+    wrapper.unmount();
+  });
 });
