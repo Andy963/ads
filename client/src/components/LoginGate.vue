@@ -51,7 +51,9 @@ async function refresh(): Promise<void> {
     return;
   }
   refreshing = true;
-  loading.value = true;
+  if (initialized.value === null) {
+    loading.value = true;
+  }
   error.value = null;
   try {
     const status = await api.get<AuthStatus>("/api/auth/status");
@@ -212,10 +214,11 @@ onBeforeUnmount(() => {
   min-height: 100vh;
   min-height: 100dvh;
   display: flex;
-  justify-content: center;
-  align-items: center;
+  flex-direction: column;
+  box-sizing: border-box;
   padding: calc(24px + env(safe-area-inset-top, 0px)) 24px calc(24px + env(safe-area-inset-bottom, 0px));
   overflow-y: auto;
+  overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
   color-scheme: light;
   background:
@@ -224,6 +227,7 @@ onBeforeUnmount(() => {
   color: var(--text);
 }
 .card {
+  margin: auto;
   width: min(400px, 100%);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -231,6 +235,7 @@ onBeforeUnmount(() => {
   background: var(--surface);
   box-shadow: var(--shadow-md);
   text-align: center;
+  box-sizing: border-box;
 }
 .logo {
   width: 56px;
@@ -449,15 +454,33 @@ code {
   }
 }
 
-@media (max-width: 640px), (max-height: 480px) {
+@media (max-width: 640px), (max-height: 540px) {
   .gate {
-    padding: calc(16px + env(safe-area-inset-top, 0px)) 16px calc(16px + env(safe-area-inset-bottom, 0px));
-  }
-  .gate.keyboard-open {
-    align-items: flex-start;
+    padding: calc(12px + env(safe-area-inset-top, 0px)) 12px calc(12px + env(safe-area-inset-bottom, 0px));
   }
   .card {
-    padding: 24px 20px;
+    padding: 20px 16px;
+  }
+  .logo {
+    width: 40px;
+    height: 40px;
+    margin: 0 auto 10px;
+    border-radius: 10px;
+  }
+  .logo-icon {
+    width: 20px;
+    height: 20px;
+  }
+  .title {
+    font-size: 20px;
+    margin-bottom: 4px;
+  }
+  .desc {
+    margin-bottom: 12px;
+    font-size: 13px;
+  }
+  .form {
+    gap: 10px;
   }
 }
 </style>

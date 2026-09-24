@@ -85,5 +85,24 @@ describe("LoginGate keyboard-open class", () => {
       wrapper.unmount();
     }
   });
+
+  it("does not unmount inputs or show skeleton on background visibility refresh when already initialized", async () => {
+    const wrapper = mount(LoginGate, { attachTo: document.body });
+    try {
+      await waitForLoginInputs(wrapper);
+      expect(wrapper.findAll("input").length).toBe(2);
+      expect(wrapper.find(".skeleton").exists()).toBe(false);
+
+      // Trigger visibility change event in background
+      document.dispatchEvent(new Event("visibilitychange"));
+      await wrapper.vm.$nextTick();
+
+      // Inputs should remain firmly mounted with no skeleton flicker
+      expect(wrapper.findAll("input").length).toBe(2);
+      expect(wrapper.find(".skeleton").exists()).toBe(false);
+    } finally {
+      wrapper.unmount();
+    }
+  });
 });
 
