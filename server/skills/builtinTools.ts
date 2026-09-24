@@ -70,6 +70,7 @@ export async function executeToolDirectives(args: {
           issueId: Number.isFinite(issueId) ? issueId : null,
           issueTitle,
           issueDescription: directive.body || issueTitle,
+          acceptanceCriteria: [],
           jobKind,
           repoPath: args.workspaceRoot,
         });

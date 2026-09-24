@@ -19,6 +19,7 @@ export interface ReviewPayload {
   }>;
   diff: string;
   diffStat?: string;
+  diffCaptureError?: string;
   testReport?: {
     command: string;
     exitCode: number;

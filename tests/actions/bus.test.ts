@@ -6,7 +6,7 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
-import { LaneDispatchBus } from "../../server/actions/bus.js";
+import { createReviewerUserId, LaneDispatchBus } from "../../server/actions/bus.js";
 import { handleActionRoutes, setBusInstance } from "../../server/web/server/api/routes/actions.js";
 import { checkThreePointGate } from "../../server/actions/threePointGate.js";
 import { updateActionJobStatus } from "../../server/state/actionJobStore.js";
@@ -101,6 +101,28 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.ok(stored);
     assert.strictEqual(stored.status, "queued");
     assert.strictEqual(stored.branch, "codex/issue-277");
+  });
+
+  it("rejects GitHub Issue dispatches without a complete immutable contract", () => {
+    const bus = new LaneDispatchBus(getStateDatabase());
+
+    assert.throws(() => bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 378,
+      issueTitle: "Incomplete Issue",
+      jobKind: "github_issue",
+    }), /complete issueDescription and acceptanceCriteria/);
+  });
+
+  it("does not reuse an active Reviewer runtime identity", () => {
+    const activeIds = new Set([7, 9]);
+    const candidates = [7, 9, 11];
+    const reviewerUserId = createReviewerUserId(
+      { hasSession: (userId) => activeIds.has(userId) },
+      () => candidates.shift() ?? 13,
+    );
+
+    assert.strictEqual(reviewerUserId, 11);
   });
 
   it("passes the immutable Issue snapshot and verification provenance to Reviewer", async () => {

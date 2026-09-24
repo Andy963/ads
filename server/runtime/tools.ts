@@ -102,7 +102,7 @@ export const NATIVE_TOOL_DEFINITIONS: NativeToolDefinition[] = [
           acceptance_criteria: { type: "array", items: { type: "string" }, description: "Immutable acceptance criteria snapshot." },
           kind: { type: "string", enum: ["github_issue", "local_prompt"], description: "Kind of task." },
         },
-        required: ["title"],
+        required: ["title", "description", "acceptance_criteria"],
       },
     },
   },
@@ -379,10 +379,11 @@ export class NativeToolExecutor {
 
   private dispatchActionJob(args: JsonRecord): NativeToolExecutionResult {
     const title = stringArgument(args, "title");
-    const description = stringArgument(args, "description", false) || title;
-    const acceptanceCriteria = Array.isArray(args.acceptance_criteria)
-      ? args.acceptance_criteria.filter((value): value is string => typeof value === "string")
-      : [];
+    const description = stringArgument(args, "description");
+    if (!Array.isArray(args.acceptance_criteria)) {
+      throw new Error("dispatch_action_job requires acceptance_criteria");
+    }
+    const acceptanceCriteria = args.acceptance_criteria.filter((value): value is string => typeof value === "string");
     const issueId = args.issue_id !== undefined ? Number(args.issue_id) : null;
     const kind = args.kind === "local_prompt" ? "local_prompt" : "github_issue";
     const bus = getBus();

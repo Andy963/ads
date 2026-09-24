@@ -9,6 +9,7 @@ import { buildWsConnectionIdentity } from "../web/server/ws/connectionIdentity.j
 import type { AsyncLock } from "../utils/asyncLock.js";
 import {
   buildReviewPrompt,
+  createDiffCaptureFailureVerdict,
   createIncompleteDiffVerdict,
   DEFAULT_REVIEWER_SYSTEM_PROMPT,
   runDetachedReview,
@@ -164,9 +165,18 @@ export type ReviewerRunner = (prompt: string, systemPrompt: string) => Promise<s
 
 const DEFAULT_REVIEWER_TIMEOUT_MS = 10 * 60 * 1000;
 
-export function createReviewerUserId(): number {
-  // Keep the runtime key numeric for SessionManager while ensuring every review job is isolated.
-  return randomBytes(5).readUIntBE(0, 5) || 1;
+export function createReviewerUserId(
+  sessionManager?: Pick<SessionManager, "hasSession">,
+  nextId: () => number = () => randomBytes(5).readUIntBE(0, 5),
+): number {
+  let userId = nextId();
+  const hasActiveSession = typeof sessionManager?.hasSession === "function"
+    ? (candidate: number) => sessionManager.hasSession(candidate)
+    : () => false;
+  while (userId === 0 || hasActiveSession(userId)) {
+    userId = nextId();
+  }
+  return userId;
 }
 
 export function parseActionJobIssueSnapshot(job: ActionJobRecord): ActionJobIssueSnapshot {
@@ -376,6 +386,13 @@ export class LaneDispatchBus {
     repoPath?: string;
     authUserId?: string;
   }): { ok: boolean; jobId: string; status: ActionJobStatus } {
+    const jobKind = params.jobKind ?? (params.issueId ? "github_issue" : "local_prompt");
+    if (
+      params.jobKind === "github_issue"
+      && (!params.issueDescription?.trim() || params.acceptanceCriteria === undefined)
+    ) {
+      throw new Error("GitHub Issue jobs require a complete issueDescription and acceptanceCriteria snapshot");
+    }
     const id = generateJobId(params.issueId);
     const branch = params.issueId ? `codex/issue-${params.issueId}` : `codex/${id}`;
     const projectId = resolveCanonicalProjectId(params.projectId, params.repoPath);
@@ -394,7 +411,7 @@ export class LaneDispatchBus {
     const job = createActionJob(this.db, {
       id,
       project_id: projectId,
-      job_kind: params.jobKind ?? (params.issueId ? "github_issue" : "local_prompt"),
+      job_kind: jobKind,
       issue_id: params.issueId,
       issue_title: params.issueTitle,
       issue_snapshot: issueSnapshot,
@@ -738,6 +755,9 @@ export class LaneDispatchBus {
     jobId?: string,
     signal?: AbortSignal,
   ): Promise<ReviewVerdict> {
+    if (payload.diffCaptureError) {
+      return createDiffCaptureFailureVerdict(payload.diffCaptureError, reviewerProfileId);
+    }
     const { truncated } = filterDiff(payload.diff, 800, payload.diffStat);
     if (truncated) {
       return createIncompleteDiffVerdict(reviewerProfileId);
@@ -758,7 +778,7 @@ export class LaneDispatchBus {
       let unsubscribe: (() => void) | null = null;
       let reviewerUserId: number | null = null;
       try {
-        const userId = createReviewerUserId();
+        const userId = createReviewerUserId(this.options.sessionManager);
         reviewerUserId = userId;
         const reviewerJob = jobId ? getActionJobById(this.db, jobId) : null;
         const reviewerIdentity = buildWsConnectionIdentity({
@@ -895,10 +915,19 @@ export class LaneDispatchBus {
       encoding: "utf8",
     });
 
+    const baseCommitResult = spawnSync("git", ["rev-parse", diffBase], { cwd: repoPath, encoding: "utf8" });
+    const headCommitResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" });
+    const captureErrors: string[] = [];
+    if (diffRes.status !== 0) captureErrors.push(`git diff exited with status ${String(diffRes.status)}`);
+    if (diffStatRes.status !== 0) captureErrors.push(`git diff --stat exited with status ${String(diffStatRes.status)}`);
+    if (baseCommitResult.status !== 0) {
+      captureErrors.push(`git rev-parse ${diffBase} exited with status ${String(baseCommitResult.status)}`);
+    }
+    if (headCommitResult.status !== 0) captureErrors.push(`git rev-parse HEAD exited with status ${String(headCommitResult.status)}`);
     const diff = diffRes.stdout || "";
     const diffStat = diffStatRes.stdout || "";
-    const baseCommit = spawnSync("git", ["rev-parse", diffBase], { cwd: repoPath, encoding: "utf8" }).stdout?.trim();
-    const headCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" }).stdout?.trim();
+    const baseCommit = baseCommitResult.stdout?.trim();
+    const headCommit = headCommitResult.stdout?.trim();
     const issueSnapshot = parseActionJobIssueSnapshot(job);
 
     const payload: ReviewPayload = {
@@ -918,6 +947,7 @@ export class LaneDispatchBus {
       },
       diff,
       diffStat,
+      diffCaptureError: captureErrors.length > 0 ? captureErrors.join("; ") : undefined,
       testReport,
     };
 

@@ -171,6 +171,24 @@ describe("reviewer subsystem", () => {
     assert.strictEqual(called, false);
   });
 
+  it("rejects failed diff evidence capture without calling the model", async () => {
+    let called = false;
+    const verdict = await runDetachedReview({
+      issue: { title: "Evidence failure" },
+      diff: "",
+      diffCaptureError: "git diff exited with status 128",
+    }, {
+      callModel: async () => {
+        called = true;
+        return JSON.stringify({ status: "PASS", summary: "unsafe", defects: [] });
+      },
+    });
+
+    assert.strictEqual(verdict.status, "REJECT");
+    assert.match(verdict.defects[0]?.description ?? "", /git diff exited with status 128/);
+    assert.strictEqual(called, false);
+  });
+
   it("runs ensemble review in parallel across multiple reviewers", async () => {
     const payload: ReviewPayload = {
       issue: { title: "Ensemble test" },

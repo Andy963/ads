@@ -27,6 +27,25 @@ export function createIncompleteDiffVerdict(reviewerProfileId?: string): ReviewV
   };
 }
 
+export function createDiffCaptureFailureVerdict(
+  error: string,
+  reviewerProfileId?: string,
+): ReviewVerdict {
+  return {
+    status: "REJECT",
+    summary: "Reviewer evidence capture failed and cannot produce an authoritative PASS.",
+    defects: [
+      {
+        file: "unknown",
+        severity: "blocker",
+        description: `Git evidence could not be captured: ${error}`,
+      },
+    ],
+    reviewerProfileId,
+    reviewedAt: Date.now(),
+  };
+}
+
 export function buildReviewPrompt(payload: ReviewPayload): string {
   const { diff, truncated } = filterDiff(payload.diff, 800, payload.diffStat);
 
@@ -99,6 +118,9 @@ export async function runDetachedReview(
     callModel: (prompt: string, systemPrompt: string) => Promise<string>;
   },
 ): Promise<ReviewVerdict> {
+  if (payload.diffCaptureError) {
+    return createDiffCaptureFailureVerdict(payload.diffCaptureError, options.reviewerProfileId);
+  }
   const { truncated } = filterDiff(payload.diff, 800, payload.diffStat);
   if (truncated) {
     return createIncompleteDiffVerdict(options.reviewerProfileId);
