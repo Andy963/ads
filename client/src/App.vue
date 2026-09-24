@@ -417,6 +417,8 @@ type ActionJobItem = {
   pr_url: string | null;
   error_message: string | null;
   rework_count: number;
+  created_at?: number;
+  updated_at?: number;
 };
 
 type QueueStartResponse = {
@@ -427,14 +429,31 @@ type QueueStartResponse = {
 
 const actionJobs = ref<ActionJobItem[]>([]);
 
+const actionQueueStatusOrder: Record<ActionJobItem["status"], number> = {
+  queued: 50,
+  running: 10,
+  verifying: 20,
+  reviewing: 30,
+  waiting_merge: 40,
+  completed: 60,
+  failed: 70,
+  blocked: 45,
+  cancelled: 80,
+};
+
+const actionQueueJobs = computed(() => {
+  return actionJobs.value
+    .filter((job) => ["running", "verifying", "reviewing", "waiting_merge", "blocked", "queued"].includes(job.status))
+    .slice()
+    .sort((left, right) => {
+      const statusDelta = actionQueueStatusOrder[left.status] - actionQueueStatusOrder[right.status];
+      if (statusDelta !== 0) return statusDelta;
+      return (left.created_at ?? 0) - (right.created_at ?? 0);
+    });
+});
+
 const activeActionJob = computed(() => {
-  return (
-    actionJobs.value.find((j) =>
-      ["running", "verifying", "reviewing", "waiting_merge", "blocked"].includes(j.status),
-    ) ||
-    actionJobs.value.find((j) => j.status === "queued") ||
-    null
-  );
+  return actionQueueJobs.value.find((job) => job.status !== "queued") ?? actionQueueJobs.value[0] ?? null;
 });
 
 const queuedActionJobsCount = computed(() => {
@@ -1833,26 +1852,28 @@ const advisorConnectionStatus = computed(() => {
               :data-message-count="messages.length"
               :data-panel-key="`${workerPanelKey}:${errorRecoveryGeneration}`"
             >
-              <div v-if="activeActionJob" class="actionsJobBanner" data-testid="actions-job-banner">
-                <div class="actionsJobInfo">
-                  <span class="actionsJobBadge" :class="`actionsJobBadge--${activeActionJob.status}`">
-                    {{ activeActionJob.status.toUpperCase() }}
-                  </span>
+              <div v-if="actionQueueJobs.length" class="actionsJobBanner actionsQueue" data-testid="actions-job-banner">
+                <div class="actionsQueueHeader">
+                  <span class="actionsQueueTitle">Actions 队列</span>
                   <span v-if="queuedActionJobsCount > 0" class="actionsJobQueueCountBadge" data-testid="actions-queue-count-badge">
                     队列中 {{ queuedActionJobsCount }} 个任务
                   </span>
-                  <span class="actionsJobTitle">
-                    {{ activeActionJob.issue_id ? `#${activeActionJob.issue_id}: ` : '' }}{{ activeActionJob.issue_title }}
-                  </span>
-                  <span v-if="activeActionJob.current_step" class="actionsJobStep">
-                    {{ activeActionJob.current_step }}
-                  </span>
-                  <span v-if="activeActionJob.rework_count > 0" class="actionsJobStep">
-                    Rework {{ activeActionJob.rework_count }}/2
-                  </span>
-                  <span v-if="activeActionJob.error_message" class="actionsJobError">
-                    {{ activeActionJob.error_message }}
-                  </span>
+                </div>
+                <div class="actionsQueueRows">
+                  <div
+                    v-for="job in actionQueueJobs"
+                    :key="job.id"
+                    class="actionsQueueRow"
+                    :class="{ 'actionsQueueRow--active': job.id === activeActionJob?.id }"
+                    data-testid="actions-queue-row"
+                  >
+                    <span class="actionsJobBadge" :class="`actionsJobBadge--${job.status}`">
+                      {{ job.status.toUpperCase() }}
+                    </span>
+                    <span class="actionsJobTitle">
+                      {{ job.issue_id ? `#${job.issue_id}: ` : '' }}{{ job.issue_title }}
+                    </span>
+                  </div>
                 </div>
                 <div class="actionsJobActions">
                   <button
