@@ -16,6 +16,7 @@ import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
 describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
   let tmpDir: string;
   let repoDir: string;
+  let implementationCounter: number;
   const originalEnv = { ...process.env };
 
   function addWebProjectMapping(
@@ -36,6 +37,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-bus-test-"));
+    implementationCounter = 0;
     process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
     resetStateDatabaseForTests();
 
@@ -67,6 +69,14 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     assert.fail("Timed out waiting for condition");
+  }
+
+  function commitImplementation(label = "implementation"): void {
+    implementationCounter += 1;
+    const fileName = `${label}-${implementationCounter}.txt`;
+    fs.writeFileSync(path.join(repoDir, fileName), `implementation ${implementationCounter}\n`);
+    spawnSync("git", ["add", fileName], { cwd: repoDir });
+    spawnSync("git", ["commit", "-m", `implement ${label}`], { cwd: repoDir });
   }
 
   it("dispatches a job non-blockingly with formatted id and queued status", () => {
@@ -305,10 +315,17 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     const bus = new LaneDispatchBus(db, {
       developerRunner: async () => {
         developerCalls += 1;
-        return developerCalls === 1
-          ? { exitCode: 1, error: "simulated developer failure" }
-          : { exitCode: 0 };
+        if (developerCalls === 1) {
+          return { exitCode: 1, error: "simulated developer failure" };
+        }
+        commitImplementation("developer-recovery");
+        return { exitCode: 0 };
       },
+      reviewerRunner: async () => JSON.stringify({
+        status: "PASS",
+        summary: "Recovered implementation passed review.",
+        defects: [],
+      }),
       testCommand: "git status",
     });
     const failedJob = bus.dispatchJob({
@@ -342,7 +359,10 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     const db = getStateDatabase();
     let reviewerCalls = 0;
     const bus = new LaneDispatchBus(db, {
-      developerRunner: async () => ({ exitCode: 0 }),
+      developerRunner: async () => {
+        commitImplementation("verification-failure");
+        return { exitCode: 0 };
+      },
       reviewerRunner: async () => {
         reviewerCalls += 1;
         return JSON.stringify({ status: "PASS", summary: "Should not run", defects: [] });
@@ -366,7 +386,15 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     const db = getStateDatabase();
     let prCalls = 0;
     const bus = new LaneDispatchBus(db, {
-      developerRunner: async () => ({ exitCode: 0 }),
+      developerRunner: async () => {
+        commitImplementation("pr-recovery");
+        return { exitCode: 0 };
+      },
+      reviewerRunner: async () => JSON.stringify({
+        status: "PASS",
+        summary: "PR recovery passed review.",
+        defects: [],
+      }),
       testCommand: "git status",
       hasRemoteOrigin: () => true,
       pullRequestCreator: () => {
@@ -381,6 +409,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       issueId: 408,
       issueTitle: "PR creation recovery",
     });
+    spawnSync("git", ["checkout", "-b", job.branch!], { cwd: repoDir });
 
     const firstResult = bus.handleReviewResult({
       jobId: job.jobId,
@@ -402,7 +431,15 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     const db = getStateDatabase();
     let mergeCalls = 0;
     const bus = new LaneDispatchBus(db, {
-      developerRunner: async () => ({ exitCode: 0 }),
+      developerRunner: async () => {
+        commitImplementation("merge-recovery");
+        return { exitCode: 0 };
+      },
+      reviewerRunner: async () => JSON.stringify({
+        status: "PASS",
+        summary: "Merge recovery passed review.",
+        defects: [],
+      }),
       testCommand: "git status",
       mergePipeline: () => {
         mergeCalls += 1;
@@ -416,6 +453,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       issueId: 409,
       issueTitle: "Merge recovery",
     });
+    spawnSync("git", ["checkout", "-b", job.branch!], { cwd: repoDir });
     updateActionJobStatus(db, job.jobId, "waiting_merge", { pr_number: null });
 
     const firstMerge = bus.executeDeterministicMerge(job.jobId, repoDir);
@@ -445,7 +483,18 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
   it("runs full automated job cycle through verification and review", async () => {
     const db = getStateDatabase();
-    const bus = new LaneDispatchBus(db);
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => {
+        commitImplementation("automated-cycle");
+        return { exitCode: 0 };
+      },
+      reviewerRunner: async () => JSON.stringify({
+        status: "PASS",
+        summary: "Automated cycle passed review.",
+        defects: [],
+      }),
+      testCommand: "git status",
+    });
 
     const job = bus.dispatchJob({
       projectId: repoDir,
@@ -456,10 +505,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     // Start job
     await bus.evaluateQueue(repoDir, repoDir);
 
-    // Run cycle
-    await bus.runJobCycle(job.jobId, repoDir, {
-      testCommand: "git status",
-    });
+    await waitFor(() => bus.getJob(job.jobId)?.status === "waiting_merge");
 
     const finishedJob = bus.getJob(job.jobId);
     assert.strictEqual(finishedJob?.status, "waiting_merge");
@@ -471,16 +517,22 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     let devRan = false;
 
     const bus = new LaneDispatchBus(db, {
-      developerRunner: async (job, rPath) => {
+      developerRunner: async (job, rPath, _reworkFeedback, executionMode) => {
         devRan = true;
         assert.strictEqual(job.issue_id, 707);
         assert.strictEqual(rPath, repoDir);
+        assert.strictEqual(executionMode, "automated_action");
         // Simulate developer making a commit on feature branch
         fs.writeFileSync(path.join(repoDir, "feature707.txt"), "done");
         spawnSync("git", ["add", "feature707.txt"], { cwd: repoDir });
         spawnSync("git", ["commit", "-m", "feature 707"], { cwd: repoDir });
         return { exitCode: 0 };
       },
+      reviewerRunner: async () => JSON.stringify({
+        status: "PASS",
+        summary: "Developer runner output passed review.",
+        defects: [],
+      }),
       testCommand: "git status",
     });
 
@@ -493,6 +545,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
     await bus.evaluateQueue(repoDir, repoDir);
     assert.strictEqual(devRan, true);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "waiting_merge");
   });
 
   it("routes reviewer rejection defect feedback back to developer for rework", async () => {
@@ -501,9 +554,11 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     let receivedFeedback: string | undefined;
 
     const bus = new LaneDispatchBus(db, {
-      developerRunner: async (job, rPath, reworkFeedback) => {
+      developerRunner: async (job, rPath, reworkFeedback, executionMode) => {
         devCalls++;
         receivedFeedback = reworkFeedback;
+        assert.strictEqual(executionMode, "automated_action");
+        commitImplementation(`reviewer-rework-${devCalls}`);
         return { exitCode: 0 };
       },
       reviewerRunner: async () => {
@@ -577,11 +632,15 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       },
       invokeAgent: async (_agentId: string, input: any) => {
         turnPrompt = typeof input === "string" ? input : input[0]?.text || "";
+        commitImplementation("session-manager");
         return { response: "Implemented changes successfully", usage: { input_tokens: 10, output_tokens: 20 } };
       },
       send: async (input: any) => {
-        turnPrompt = typeof input === "string" ? input : input[0]?.text || "";
-        return { response: "Implemented changes successfully", usage: { input_tokens: 10, output_tokens: 20 } };
+        assert.ok(typeof input === "string" || Array.isArray(input));
+        return {
+          response: JSON.stringify({ status: "PASS", summary: "Session review passed.", defects: [] }),
+          usage: { input_tokens: 10, output_tokens: 20 },
+        };
       },
     };
 
@@ -619,6 +678,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
     // Verify session turn executed
     assert.ok(turnPrompt.includes("Issue #909"));
+    assert.match(turnPrompt, /already authorized/i);
+    assert.match(turnPrompt, /Do not ask for another goal confirmation/i);
     assert.ok(instructionsSet.length > 0);
 
     // Verify event streaming to Actions lane
@@ -655,6 +716,159 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.ok(historyEntries.some((h) => h.entry.kind === "review_verdict"));
   });
 
+  it("keeps detached Reviewer protocol output internal and removes listeners", async () => {
+    const db = getStateDatabase();
+    const response = JSON.stringify({ status: "PASS", summary: "Approved", defects: [] });
+    const broadcasts: Array<Record<string, unknown>> = [];
+    let activeListeners = 0;
+    let eventHandler: ((event: Record<string, unknown>) => void) | null = null;
+
+    const createOrchestrator = (fail = false) => ({
+      setDeveloperInstructions() {},
+      onEvent(handler: (event: Record<string, unknown>) => void) {
+        activeListeners += 1;
+        eventHandler = handler;
+        return () => {
+          activeListeners -= 1;
+          eventHandler = null;
+        };
+      },
+      send: async () => {
+        eventHandler?.({
+          phase: "responding",
+          title: "Generating response",
+          delta: response,
+          timestamp: Date.now(),
+          raw: { type: "item.updated", item: { type: "agent_message", text: response } },
+        });
+        eventHandler?.({
+          phase: "tool",
+          title: "Reading diff",
+          liveStep: true,
+          timestamp: Date.now(),
+          raw: { type: "item.completed", item: { type: "command_execution", command: "git diff" } },
+        });
+        if (fail) throw new Error("reviewer transport failed");
+        return { response };
+      },
+    });
+
+    const payload = {
+      issue: { id: 350, title: "Reviewer protocol" },
+      diff: "diff --git a/a.ts b/a.ts",
+      testReport: { command: "npm test", exitCode: 0, summary: "passed" },
+    };
+    const passingBus = new LaneDispatchBus(db, {
+      sessionManager: { getOrCreate: () => createOrchestrator(false) } as any,
+      broadcastToActionsLane: (event) => broadcasts.push(event as Record<string, unknown>),
+    });
+    const verdict = await passingBus.executeReviewer(payload, repoDir, undefined, "history", "project", "job-350");
+
+    assert.strictEqual(verdict.status, "PASS");
+    assert.strictEqual(activeListeners, 0);
+    assert.strictEqual(broadcasts.length, 1);
+    assert.strictEqual(broadcasts[0]?.title, "[Reviewer] Reading diff");
+    assert.strictEqual("raw" in (broadcasts[0] ?? {}), false);
+    assert.doesNotMatch(JSON.stringify(broadcasts), /"status":"PASS"/);
+
+    const failingBus = new LaneDispatchBus(db, {
+      sessionManager: { getOrCreate: () => createOrchestrator(true) } as any,
+    });
+    await assert.rejects(
+      failingBus.executeReviewer(payload, repoDir, undefined, "history", "project", "job-350-failure"),
+      /Reviewer execution failed: reviewer transport failed/,
+    );
+    assert.strictEqual(activeListeners, 0);
+  });
+
+  it("routes Reviewer transport failures into bounded rework", async () => {
+    const db = getStateDatabase();
+    let developerCalls = 0;
+    let reviewerCalls = 0;
+    const reviewerOrchestrator = {
+      setDeveloperInstructions() {},
+      onEvent() {
+        return () => {};
+      },
+      send: async () => {
+        reviewerCalls += 1;
+        throw new Error("detached reviewer unavailable");
+      },
+    };
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => {
+        developerCalls += 1;
+        commitImplementation(`reviewer-failure-${developerCalls}`);
+        return { exitCode: 0 };
+      },
+      sessionManager: { getOrCreate: () => reviewerOrchestrator } as any,
+      testCommand: "git status",
+    });
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 351,
+      issueTitle: "Reviewer failure recovery",
+    });
+
+    await bus.evaluateQueue(repoDir, repoDir);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "blocked");
+    assert.strictEqual(bus.getJob(job.jobId)?.rework_count, 2);
+    assert.strictEqual(developerCalls, 3);
+    assert.strictEqual(reviewerCalls, 3);
+    assert.match(bus.getJob(job.jobId)?.error_message ?? "", /Reviewer execution failed/);
+  });
+
+  it("routes malformed Reviewer verdicts into bounded rework", async () => {
+    const db = getStateDatabase();
+    const malformedBus = new LaneDispatchBus(db, {
+      developerRunner: async () => {
+        commitImplementation("malformed-reviewer");
+        return { exitCode: 0 };
+      },
+      reviewerRunner: async () => "not-json",
+      testCommand: "git status",
+    });
+    const malformedJob = malformedBus.dispatchJob({
+      projectId: repoDir,
+      issueId: 3511,
+      issueTitle: "Malformed reviewer output",
+    });
+    await malformedBus.evaluateQueue(repoDir, repoDir);
+    await waitFor(() => malformedBus.getJob(malformedJob.jobId)?.status === "blocked");
+    assert.match(malformedBus.getJob(malformedJob.jobId)?.review_verdicts_json ?? "", /Failed to parse structured review verdict/);
+    assert.doesNotMatch(malformedBus.getJob(malformedJob.jobId)?.review_verdicts_json ?? "", /not-json/);
+  });
+
+  it("blocks confirmation-only Developer turns that produce no committed diff", async () => {
+    const db = getStateDatabase();
+    let developerCalls = 0;
+    let reviewerCalls = 0;
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async (_job, _repoPath, _feedback, executionMode) => {
+        developerCalls += 1;
+        assert.strictEqual(executionMode, "automated_action");
+        return { exitCode: 0 };
+      },
+      reviewerRunner: async () => {
+        reviewerCalls += 1;
+        return JSON.stringify({ status: "PASS", summary: "Should not run", defects: [] });
+      },
+      testCommand: "git status",
+    });
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 353,
+      issueTitle: "Confirmation-only Developer turn",
+    });
+
+    await bus.evaluateQueue(repoDir, repoDir);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "blocked");
+    assert.strictEqual(developerCalls, 3);
+    assert.strictEqual(reviewerCalls, 0);
+    assert.strictEqual(bus.getJob(job.jobId)?.rework_count, 2);
+    assert.match(bus.getJob(job.jobId)?.error_message ?? "", /Developer produced no implementation diff/);
+  });
+
   it("uses project-specific chat_session_id from web_projects for history and action broadcasts", async () => {
     const db = getStateDatabase();
     ensureWebAuthTables(db);
@@ -671,7 +885,15 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
     const historyEntries: any[] = [];
     const bus = new LaneDispatchBus(db, {
-      developerRunner: async () => ({ exitCode: 0 }),
+      developerRunner: async () => {
+        commitImplementation("custom-lane");
+        return { exitCode: 0 };
+      },
+      reviewerRunner: async () => JSON.stringify({
+        status: "PASS",
+        summary: "Custom lane passed review.",
+        defects: [],
+      }),
       historyStore: {
         add: (key, entry) => {
           historyEntries.push({ key, entry });

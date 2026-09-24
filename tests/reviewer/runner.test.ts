@@ -109,11 +109,12 @@ describe("reviewer subsystem", () => {
   });
 
   it("falls back to safe REJECT verdict on malformed model output", () => {
-    const raw = "I am an AI and I think this code is good. LGTM!";
+    const raw = '{"status":"PASS","secret_internal_protocol":true}';
     const verdict = parseReviewVerdict(raw);
     assert.strictEqual(verdict.status, "REJECT");
     assert.ok(verdict.summary.includes("Failed to parse"));
     assert.strictEqual(verdict.defects[0]?.severity, "blocker");
+    assert.doesNotMatch(JSON.stringify(verdict), /secret_internal_protocol/);
   });
 
   it("runs detached review with mock model caller", async () => {
