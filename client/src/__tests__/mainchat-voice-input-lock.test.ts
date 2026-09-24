@@ -5,6 +5,8 @@ import { nextTick } from "vue";
 import MainChatComposerPanel from "../components/MainChatComposerPanel.vue";
 
 class FakeMediaRecorder {
+  static latest: FakeMediaRecorder | null = null;
+
   static isTypeSupported(): boolean {
     return true;
   }
@@ -16,6 +18,7 @@ class FakeMediaRecorder {
 
   constructor(_stream: MediaStream, options?: { mimeType?: string }) {
     this.mimeType = options?.mimeType || this.mimeType;
+    FakeMediaRecorder.latest = this;
   }
 
   start(): void {
@@ -36,6 +39,68 @@ async function settle(): Promise<void> {
   await nextTick();
 }
 
+function installReactiveAudioMocks() {
+  const frameCallbacks = new Map<number, FrameRequestCallback>();
+  let nextFrameId = 1;
+  const requestAnimationFrame = vi.fn((callback: FrameRequestCallback) => {
+    const frameId = nextFrameId++;
+    frameCallbacks.set(frameId, callback);
+    return frameId;
+  });
+  const cancelAnimationFrame = vi.fn((frameId: number) => {
+    frameCallbacks.delete(frameId);
+  });
+  const analyser = {
+    fftSize: 256,
+    smoothingTimeConstant: 0,
+    getByteTimeDomainData: vi.fn((samples: Uint8Array) => samples.fill(220)),
+    disconnect: vi.fn(),
+  };
+  const source = {
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+  };
+  const close = vi.fn(() => Promise.resolve());
+
+  class FakeAudioContext {
+    createAnalyser(): typeof analyser {
+      return analyser;
+    }
+
+    createMediaStreamSource(): typeof source {
+      return source;
+    }
+
+    resume(): Promise<void> {
+      return Promise.resolve();
+    }
+
+    close(): Promise<void> {
+      return close();
+    }
+  }
+
+  vi.stubGlobal("AudioContext", FakeAudioContext);
+  vi.stubGlobal("requestAnimationFrame", requestAnimationFrame);
+  vi.stubGlobal("cancelAnimationFrame", cancelAnimationFrame);
+
+  const runNextFrame = (): void => {
+    const entry = frameCallbacks.entries().next().value as [number, FrameRequestCallback] | undefined;
+    if (!entry) return;
+    frameCallbacks.delete(entry[0]);
+    entry[1](0);
+  };
+
+  return {
+    analyser,
+    source,
+    close,
+    requestAnimationFrame,
+    cancelAnimationFrame,
+    runNextFrame,
+  };
+}
+
 describe("MainChat composer voice input locking", () => {
   const originalMediaRecorder = globalThis.MediaRecorder;
   const originalMediaDevices = navigator.mediaDevices;
@@ -54,6 +119,8 @@ describe("MainChat composer voice input locking", () => {
   });
 
   afterEach(() => {
+    FakeMediaRecorder.latest = null;
+    vi.unstubAllGlobals();
     globalThis.fetch = originalFetch;
     (globalThis as { MediaRecorder?: typeof MediaRecorder }).MediaRecorder = originalMediaRecorder;
     Object.defineProperty(navigator, "mediaDevices", {
@@ -142,6 +209,7 @@ describe("MainChat composer voice input locking", () => {
   });
 
   it("renders ChatGPT-style voice dictation bar during recording and supports cancel", async () => {
+    vi.stubGlobal("AudioContext", undefined);
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ text: "" }) });
     globalThis.fetch = fetchMock;
     const wrapper = mount(MainChatComposerPanel, {
@@ -167,6 +235,8 @@ describe("MainChat composer voice input locking", () => {
     expect(wrapper.find('[data-testid="voice-stop-btn"]').exists()).toBe(true);
     expect(wrapper.find(".voiceDotTrail").exists()).toBe(true);
     expect(wrapper.find(".voiceEqualizerBars").exists()).toBe(true);
+    expect(wrapper.find(".voiceEqualizerBars--reactive").exists()).toBe(false);
+    expect(wrapper.find(".eqBar").attributes("style")).toContain("animation-delay");
     expect(wrapper.find(".sendIcon--activeVoice").exists()).toBe(true);
 
     // Click cancel button
@@ -178,6 +248,172 @@ describe("MainChat composer voice input locking", () => {
     // Audio should not have been transcribed
     expect(fetchMock).not.toHaveBeenCalled();
 
+    wrapper.unmount();
+  });
+
+  it("drives bounded waveform levels from analyser amplitude and releases audio on cancel", async () => {
+    const audio = installReactiveAudioMocks();
+    const trackStop = vi.fn();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({
+          getTracks: () => [{ stop: trackStop }],
+        }),
+      },
+    });
+
+    const wrapper = mount(MainChatComposerPanel, {
+      props: {
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+        inputLocked: false,
+      },
+      global: { stubs: { MainChatPendingImageViewer: true } },
+    });
+
+    await wrapper.find("button.micIcon").trigger("click");
+    await settle();
+
+    expect(wrapper.find(".voiceEqualizerBars--reactive").exists()).toBe(true);
+    expect(audio.requestAnimationFrame).toHaveBeenCalledTimes(1);
+    expect(audio.source.connect).toHaveBeenCalledWith(audio.analyser);
+
+    audio.runNextFrame();
+    await nextTick();
+    const loudStyle = wrapper.find(".eqBar").attributes("style") ?? "";
+    const loudScale = Number(loudStyle.match(/scaleY\(([\d.]+)\)/)?.[1] ?? 0);
+    expect(loudScale).toBeGreaterThan(0.12);
+
+    audio.analyser.getByteTimeDomainData.mockImplementation((samples: Uint8Array) => samples.fill(128));
+    for (let index = 0; index < 12; index += 1) {
+      audio.runNextFrame();
+    }
+    await nextTick();
+    const quietStyle = wrapper.find(".eqBar").attributes("style") ?? "";
+    const quietScale = Number(quietStyle.match(/scaleY\(([\d.]+)\)/)?.[1] ?? 1);
+    expect(quietScale).toBeLessThan(loudScale);
+    expect(quietScale).toBeGreaterThanOrEqual(0.12);
+
+    await wrapper.find('[data-testid="voice-cancel-btn"]').trigger("click");
+    await settle();
+
+    expect(audio.cancelAnimationFrame).toHaveBeenCalled();
+    expect(audio.source.disconnect).toHaveBeenCalledTimes(1);
+    expect(audio.analyser.disconnect).toHaveBeenCalledTimes(1);
+    expect(audio.close).toHaveBeenCalledTimes(1);
+    expect(trackStop).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it("releases analyser and media resources when unmounted during recording", async () => {
+    const audio = installReactiveAudioMocks();
+    const trackStop = vi.fn();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({
+          getTracks: () => [{ stop: trackStop }],
+        }),
+      },
+    });
+    const wrapper = mount(MainChatComposerPanel, {
+      props: {
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+        inputLocked: false,
+      },
+      global: { stubs: { MainChatPendingImageViewer: true } },
+    });
+
+    await wrapper.find("button.micIcon").trigger("click");
+    await settle();
+    wrapper.unmount();
+    await settle();
+
+    expect(audio.cancelAnimationFrame).toHaveBeenCalled();
+    expect(audio.source.disconnect).toHaveBeenCalledTimes(1);
+    expect(audio.analyser.disconnect).toHaveBeenCalledTimes(1);
+    expect(audio.close).toHaveBeenCalledTimes(1);
+    expect(trackStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases analyser and media resources when recording stops", async () => {
+    const audio = installReactiveAudioMocks();
+    const trackStop = vi.fn();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({
+          getTracks: () => [{ stop: trackStop }],
+        }),
+      },
+    });
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ text: "" }),
+    }) as typeof fetch;
+    const wrapper = mount(MainChatComposerPanel, {
+      props: {
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+        inputLocked: false,
+      },
+      global: { stubs: { MainChatPendingImageViewer: true } },
+    });
+
+    await wrapper.find("button.micIcon").trigger("click");
+    await settle();
+    await wrapper.find('[data-testid="voice-stop-btn"]').trigger("click");
+    await settle();
+
+    expect(audio.cancelAnimationFrame).toHaveBeenCalled();
+    expect(audio.source.disconnect).toHaveBeenCalledTimes(1);
+    expect(audio.analyser.disconnect).toHaveBeenCalledTimes(1);
+    expect(audio.close).toHaveBeenCalledTimes(1);
+    expect(trackStop).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+  });
+
+  it("releases analyser and media resources after a recorder error", async () => {
+    const audio = installReactiveAudioMocks();
+    const trackStop = vi.fn();
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({
+          getTracks: () => [{ stop: trackStop }],
+        }),
+      },
+    });
+    const wrapper = mount(MainChatComposerPanel, {
+      props: {
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+        inputLocked: false,
+      },
+      global: { stubs: { MainChatPendingImageViewer: true } },
+    });
+
+    await wrapper.find("button.micIcon").trigger("click");
+    await settle();
+    FakeMediaRecorder.latest?.onerror?.();
+    await settle();
+
+    expect(wrapper.find(".composerMainRow--recording").exists()).toBe(false);
+    expect(audio.cancelAnimationFrame).toHaveBeenCalled();
+    expect(audio.source.disconnect).toHaveBeenCalledTimes(1);
+    expect(audio.analyser.disconnect).toHaveBeenCalledTimes(1);
+    expect(audio.close).toHaveBeenCalledTimes(1);
+    expect(trackStop).toHaveBeenCalledTimes(1);
     wrapper.unmount();
   });
 });

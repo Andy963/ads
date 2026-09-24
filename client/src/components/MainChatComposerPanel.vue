@@ -162,6 +162,8 @@ const {
   transcribing,
   voiceStatusKind,
   voiceStatusMessage,
+  voiceWaveformLevels,
+  voiceWaveformReactive,
   toggleRecording,
   cancelRecording,
   stopAndSend,
@@ -543,8 +545,22 @@ onBeforeUnmount(() => {
             <div class="voiceDotTrail">
               <span v-for="i in 14" :key="`dot-${i}`" class="voiceDot" />
             </div>
-            <div class="voiceEqualizerBars">
-              <span v-for="i in 18" :key="`eq-${i}`" class="eqBar" :style="{ animationDelay: `${(i % 5) * 0.12}s` }" />
+            <div
+              class="voiceEqualizerBars"
+              :class="{ 'voiceEqualizerBars--reactive': voiceWaveformReactive }"
+            >
+              <span
+                v-for="i in 18"
+                :key="`eq-${i}`"
+                class="eqBar"
+                :style="voiceWaveformReactive
+                  ? {
+                      animation: 'none',
+                      opacity: String(0.45 + (voiceWaveformLevels[i - 1] ?? 0.12) * 0.5),
+                      transform: `scaleY(${voiceWaveformLevels[i - 1] ?? 0.12})`,
+                    }
+                  : { animationDelay: `${(i % 5) * 0.12}s` }"
+              />
             </div>
           </template>
           <template v-else-if="transcribing">
@@ -1012,6 +1028,12 @@ onBeforeUnmount(() => {
   border-radius: 999px;
   background: var(--text, #334155);
   animation: eqWave 0.65s ease-in-out infinite alternate;
+}
+
+.voiceEqualizerBars--reactive .eqBar {
+  animation: none;
+  transform-origin: center;
+  will-change: transform, opacity;
 }
 
 @keyframes eqWave {
