@@ -604,4 +604,52 @@ Core reviewing rules:
       }
     },
   },
+  {
+    version: 18,
+    description: "Actions durable rework state and human-attention outcome",
+    up: (db) => {
+      db.exec(`
+        DROP INDEX IF EXISTS idx_action_jobs_lookup;
+        ALTER TABLE action_jobs RENAME TO action_jobs_legacy;
+
+        CREATE TABLE action_jobs (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          job_kind TEXT NOT NULL DEFAULT 'github_issue' CHECK(job_kind IN ('github_issue', 'local_prompt')),
+          issue_id INTEGER,
+          issue_title TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN (
+            'queued', 'running', 'verifying', 'reviewing', 'waiting_merge', 'completed', 'failed', 'blocked', 'cancelled'
+          )),
+          branch TEXT,
+          developer_profile_id TEXT,
+          reviewer_profile_ids_json TEXT NOT NULL DEFAULT '[]',
+          current_step TEXT,
+          steps_json TEXT NOT NULL DEFAULT '[]',
+          review_verdicts_json TEXT NOT NULL DEFAULT '[]',
+          pr_number INTEGER,
+          pr_url TEXT,
+          error_message TEXT,
+          rework_count INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        INSERT INTO action_jobs (
+          id, project_id, job_kind, issue_id, issue_title, status, branch,
+          developer_profile_id, reviewer_profile_ids_json, current_step, steps_json,
+          review_verdicts_json, pr_number, pr_url, error_message, rework_count, created_at, updated_at
+        )
+        SELECT
+          id, project_id, job_kind, issue_id, issue_title, status, branch,
+          developer_profile_id, reviewer_profile_ids_json, current_step, steps_json,
+          review_verdicts_json, pr_number, pr_url, error_message, 0, created_at, updated_at
+        FROM action_jobs_legacy;
+
+        DROP TABLE action_jobs_legacy;
+        CREATE INDEX idx_action_jobs_lookup
+          ON action_jobs(project_id, status, created_at);
+      `);
+    },
+  },
 ];

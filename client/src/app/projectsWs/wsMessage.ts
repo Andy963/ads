@@ -1384,6 +1384,126 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
+    if (type === "message") {
+      const rec = msg as Record<string, unknown>;
+      const role = String(rec.role ?? "").trim();
+      const text = firstWireText(rec.text, rec.content).trim();
+      const eventTsRaw = Number(rec.ts);
+      const eventTs = Number.isFinite(eventTsRaw) && eventTsRaw > 0 ? Math.floor(eventTsRaw) : Date.now();
+      if (role === "user") {
+        markTurnActive(rec);
+        const clientMessageId = String(rec.clientMessageId ?? rec.client_message_id ?? rec.jobId ?? "").trim();
+        const existing = rt.messages.value;
+        const lastUser = [...existing].reverse().find((m) => m.role === "user");
+        const alreadyHas = clientMessageId
+          ? existing.some((m) => m.id === clientMessageId)
+          : Boolean(lastUser && lastUser.content === text && lastUser.ts === eventTs);
+        if (!alreadyHas && text) {
+          pushMessageBeforeLive({
+            id: clientMessageId || randomId("u"),
+            role: "user",
+            kind: "text",
+            content: text,
+            ts: eventTs,
+          }, rt);
+        }
+      } else if (role === "assistant" || role === "ai") {
+        if (text) {
+          sealActiveStreamingAssistant?.(rt);
+          const existing = rt.messages.value;
+          const alreadyHas = existing.some((m) => m.role === "assistant" && m.content === text);
+          if (!alreadyHas) {
+            pushMessageBeforeLive({
+              id: String(rec.id ?? randomId("a")),
+              role: "assistant",
+              kind: "text",
+              content: text,
+              ts: eventTs,
+            }, rt);
+          }
+        }
+      } else if (role === "status") {
+        if (text) {
+          rt.laneStatus.value = { kind: "info", message: text };
+        }
+      }
+      return;
+    }
+
+    if (type === "step") {
+      const rec = msg as Record<string, unknown>;
+      markTurnActive(rec);
+      rt.busy.value = true;
+      rt.turnInFlight = true;
+      clearRecoveredBackendStatus();
+      const delta = normalizeWireText(rec.delta || rec.title);
+      if (delta && !shouldIgnoreStepDelta(delta)) {
+        upsertStepLiveDelta(delta, rt);
+      }
+      return;
+    }
+
+    if (
+      type === "command"
+      && typeof (msg as Record<string, unknown>).jobId === "string"
+      && (msg as Record<string, unknown>).jobId.trim().length > 0
+    ) {
+      const rec = msg as Record<string, unknown>;
+      const cmd = normalizeWireCommand(rec.command).trim();
+      if (cmd) {
+        const identity = String(rec.identity ?? rec.id ?? rec.jobId ?? "").trim() || null;
+        const status = String(rec.status ?? "running").trim().toLowerCase();
+        const terminal = status === "completed" || status === "failed" || status === "declined" || status === "cancelled";
+        const key = commandKeyForWsEvent(cmd, identity);
+        if (key) {
+          ingestCommand(cmd, rt, null);
+          const output = normalizeWireText(rec.outputDelta ?? rec.output);
+          upsertExecuteBlock(key, cmd, output, rt, {
+            snapshot: true,
+            terminal,
+            eventId: String(rec.eventId ?? rec.id ?? `action-cmd:${identity ?? cmd}`).trim(),
+            ts: Number(rec.ts) || Date.now(),
+          } satisfies ExecuteBlockUpdate);
+        }
+      }
+      return;
+    }
+
+    if (type === "assistant_done") {
+      const rec = msg as Record<string, unknown>;
+      const text = firstWireText(rec.text, rec.output, rec.content).trim();
+      const jobId = String(rec.jobId ?? "").trim();
+      const stableId = jobId ? `${jobId}:assistant_done` : "";
+      const hadStreamingText = Boolean(text) && rt.messages.value.some((message) =>
+        message.role === "assistant" && message.streaming && message.content === text,
+      );
+      sealActiveStreamingAssistant?.(rt);
+      if (text && !hadStreamingText) {
+        const existing = rt.messages.value;
+        const alreadyHas = stableId
+          ? existing.some((message) => message.id === stableId)
+          : existing.some((message) => message.role === "assistant" && message.content === text);
+        if (!alreadyHas) {
+          pushMessageBeforeLive({
+            id: stableId || randomId("action-assistant"),
+            role: "assistant",
+            kind: "text",
+            content: text,
+            ts: Number(rec.ts) || Date.now(),
+          }, rt);
+        }
+      }
+      return;
+    }
+
+    if (type === "action_job_updated") {
+      const globalWindow = typeof window !== "undefined" ? (window as unknown as { __ADS_ON_ACTION_JOB_UPDATED__?: (payload: unknown) => void }) : null;
+      if (typeof globalWindow?.__ADS_ON_ACTION_JOB_UPDATED__ === "function") {
+        globalWindow.__ADS_ON_ACTION_JOB_UPDATED__(msg);
+      }
+      return;
+    }
+
     if (type === "user") {
       markTurnActive(msg as Record<string, unknown>);
       const clientMessageId = String(msg.clientMessageId ?? msg.client_message_id ?? "").trim();

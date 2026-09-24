@@ -8,6 +8,7 @@ export type ActionJobStatus =
   | "waiting_merge"
   | "completed"
   | "failed"
+  | "blocked"
   | "cancelled";
 
 export type ActionJobKind = "github_issue" | "local_prompt";
@@ -28,6 +29,7 @@ export interface ActionJobRecord {
   pr_number: number | null;
   pr_url: string | null;
   error_message: string | null;
+  rework_count: number;
   created_at: number;
   updated_at: number;
 }
@@ -73,8 +75,8 @@ export function createActionJob(
     INSERT INTO action_jobs
       (id, project_id, job_kind, issue_id, issue_title, status, branch,
        developer_profile_id, reviewer_profile_ids_json, current_step, steps_json,
-       review_verdicts_json, pr_number, pr_url, error_message, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', NULL, NULL, NULL, ?, ?)
+       review_verdicts_json, pr_number, pr_url, error_message, rework_count, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', NULL, NULL, NULL, 0, ?, ?)
   `).run(
     job.id,
     job.project_id,
@@ -105,6 +107,7 @@ export function createActionJob(
     pr_number: null,
     pr_url: null,
     error_message: null,
+    rework_count: 0,
     created_at: now,
     updated_at: now,
   };
@@ -114,7 +117,7 @@ export function updateActionJobStatus(
   db: DatabaseType,
   id: string,
   status: ActionJobStatus,
-  updates: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "pr_number" | "pr_url" | "error_message" | "branch">> = {},
+  updates: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "rework_count">> = {},
   now = Date.now(),
 ): void {
   const fields = ["status = ?", "updated_at = ?"];
@@ -148,6 +151,10 @@ export function updateActionJobStatus(
     fields.push("branch = ?");
     values.push(updates.branch ?? null);
   }
+  if ("rework_count" in updates) {
+    fields.push("rework_count = ?");
+    values.push(Math.max(0, Math.floor(updates.rework_count ?? 0)));
+  }
 
   values.push(id);
   db.prepare(`UPDATE action_jobs SET ${fields.join(", ")} WHERE id = ?`).run(...values);
@@ -157,4 +164,3 @@ export function deleteActionJobsByProject(db: DatabaseType, projectId: string): 
   const result = db.prepare(`DELETE FROM action_jobs WHERE project_id = ?`).run(projectId) as { changes?: number };
   return result?.changes ?? 0;
 }
-

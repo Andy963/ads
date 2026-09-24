@@ -325,6 +325,7 @@ describe("state/database", () => {
     assert.ok(actionJobCols.includes("issue_title"));
     assert.ok(actionJobCols.includes("status"));
     assert.ok(actionJobCols.includes("reviewer_profile_ids_json"));
+    assert.ok(actionJobCols.includes("rework_count"));
 
     const roleProfileCols = (db.prepare("PRAGMA table_info(role_profiles)").all() as Array<{ name: string }>).map((c) => c.name);
     assert.ok(roleProfileCols.includes("id"));

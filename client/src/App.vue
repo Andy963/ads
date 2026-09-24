@@ -411,11 +411,12 @@ type ActionJobItem = {
   project_id: string;
   issue_id: number | null;
   issue_title: string;
-  status: "queued" | "running" | "verifying" | "reviewing" | "waiting_merge" | "completed" | "failed" | "cancelled";
+  status: "queued" | "running" | "verifying" | "reviewing" | "waiting_merge" | "completed" | "failed" | "blocked" | "cancelled";
   current_step: string | null;
   pr_number: number | null;
   pr_url: string | null;
   error_message: string | null;
+  rework_count: number;
 };
 
 type QueueStartResponse = {
@@ -429,8 +430,10 @@ const actionJobs = ref<ActionJobItem[]>([]);
 const activeActionJob = computed(() => {
   return (
     actionJobs.value.find((j) =>
-      ["running", "verifying", "reviewing", "waiting_merge", "queued"].includes(j.status),
-    ) || null
+      ["running", "verifying", "reviewing", "waiting_merge", "blocked"].includes(j.status),
+    ) ||
+    actionJobs.value.find((j) => j.status === "queued") ||
+    null
   );
 });
 
@@ -447,6 +450,26 @@ function showActionNotice(message: string): void {
   }, 3000);
 }
 
+let actionJobsPollTimer: number | null = null;
+
+function ensureActionJobsPolling(): void {
+  if (actionJobsPollTimer != null) return;
+  const hasActiveJob = actionJobs.value.some((j) =>
+    ["running", "verifying", "reviewing", "waiting_merge", "queued"].includes(j.status),
+  );
+  if (!hasActiveJob) return;
+  actionJobsPollTimer = window.setInterval(async () => {
+    await loadActionJobs();
+    const stillActive = actionJobs.value.some((j) =>
+      ["running", "verifying", "reviewing", "waiting_merge", "queued"].includes(j.status),
+    );
+    if (!stillActive && actionJobsPollTimer != null) {
+      clearInterval(actionJobsPollTimer);
+      actionJobsPollTimer = null;
+    }
+  }, 2000);
+}
+
 async function loadActionJobs(): Promise<void> {
   const pid = activeProjectId.value.trim();
   if (!pid) return;
@@ -454,6 +477,7 @@ async function loadActionJobs(): Promise<void> {
     const list = await api.get<ActionJobItem[]>(`/api/actions/jobs?projectId=${encodeURIComponent(pid)}`);
     if (Array.isArray(list)) {
       actionJobs.value = list;
+      ensureActionJobsPolling();
     }
   } catch {
     // best-effort
@@ -465,6 +489,16 @@ const isStartingQueue = ref(false);
 async function triggerStartActionQueue(): Promise<void> {
   const pid = activeProjectId.value.trim();
   if (!pid || isStartingQueue.value) return;
+  const activeRunningJob = actionJobs.value.find((j) =>
+    ["running", "verifying", "reviewing", "waiting_merge", "blocked"].includes(j.status),
+  );
+  if (activeRunningJob) {
+    const reason = activeRunningJob.status === "blocked"
+      ? activeRunningJob.error_message || "任务需要人工处理"
+      : "已有活跃任务正在执行中";
+    showActionNotice(`启动执行被阻止：${reason} (${activeRunningJob.issue_title || activeRunningJob.id})`);
+    return;
+  }
   isStartingQueue.value = true;
   const repoPath = resolveActiveWorkspaceRoot() || activeProject.value?.path || "";
   try {
@@ -1107,6 +1141,9 @@ onMounted(() => {
   window.addEventListener("keydown", onMobileKeydown);
   window.addEventListener("pagehide", stashComposerDrafts);
   restoreStashedComposerDrafts();
+  (window as any).__ADS_ON_ACTION_JOB_UPDATED__ = () => {
+    void loadActionJobs();
+  };
   void loadActionJobs();
 });
 
@@ -1117,6 +1154,13 @@ watch(activeProjectId, () => {
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onMobileKeydown);
   window.removeEventListener("pagehide", stashComposerDrafts);
+  if (actionJobsPollTimer != null) {
+    clearInterval(actionJobsPollTimer);
+    actionJobsPollTimer = null;
+  }
+  if ((window as any).__ADS_ON_ACTION_JOB_UPDATED__) {
+    delete (window as any).__ADS_ON_ACTION_JOB_UPDATED__;
+  }
   cancelDrawerGesture();
   cancelLaneGesture();
   cancelProjectLongPress();
@@ -1820,6 +1864,12 @@ const advisorConnectionStatus = computed(() => {
                   <span v-if="activeActionJob.current_step" class="actionsJobStep">
                     {{ activeActionJob.current_step }}
                   </span>
+                  <span v-if="activeActionJob.rework_count > 0" class="actionsJobStep">
+                    Rework {{ activeActionJob.rework_count }}/2
+                  </span>
+                  <span v-if="activeActionJob.error_message" class="actionsJobError">
+                    {{ activeActionJob.error_message }}
+                  </span>
                 </div>
                 <div class="actionsJobActions">
                   <button
@@ -1842,7 +1892,7 @@ const advisorConnectionStatus = computed(() => {
                     {{ activeActionJob.pr_number ? `Merge PR #${activeActionJob.pr_number}` : 'Local Merge (dev)' }}
                   </button>
                   <button
-                    v-if="['queued', 'running', 'verifying', 'reviewing', 'waiting_merge'].includes(activeActionJob.status)"
+                    v-if="['queued', 'running', 'verifying', 'reviewing', 'waiting_merge', 'blocked'].includes(activeActionJob.status)"
                     type="button"
                     class="btnActionCancel"
                     data-testid="btn-action-cancel"

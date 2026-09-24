@@ -1447,6 +1447,16 @@
   background: #ef4444;
 }
 
+.actionsJobBadge--blocked {
+  background: #d97706;
+}
+
+.actionsJobError {
+  color: #fca5a5;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .actionsJobTitle {
   font-weight: 600;
   color: var(--text);

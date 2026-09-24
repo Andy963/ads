@@ -255,12 +255,15 @@ export async function startWebServer(): Promise<void> {
   const wsHub = createWebSocketHub();
 
   const broadcastToActionsLane = (payload: unknown, targetHistoryKey?: string, projectId?: string): void => {
+    if (!targetHistoryKey) return;
     for (const [ws, meta] of wsHub.clientMetaByWs.entries()) {
-      if (meta.chatSessionId === "worker") {
-        if (targetHistoryKey && meta.historyKey !== targetHistoryKey) continue;
-        if (projectId && meta.sessionId !== projectId) continue;
-        wsHub.safeSendJson(ws, payload);
-      }
+      const matchesHistoryKey =
+        meta.logicalHistoryKey === targetHistoryKey ||
+        meta.historyKey === targetHistoryKey ||
+        meta.historyKey.startsWith(`${targetHistoryKey}:generation:`);
+      if (!matchesHistoryKey) continue;
+      if (projectId && meta.sessionId !== projectId) continue;
+      wsHub.safeSendJson(ws, payload);
     }
   };
 

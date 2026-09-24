@@ -29,4 +29,5 @@
 - 0012 - [ADR 0012: Encrypt User-Scoped Upstream Discovery Credentials](0012-encrypt-upstream-discovery-credentials.md)
 - 0013 - [ADR 0013: Introduce the Opt-In Native Agent Runtime](0013-native-agent-runtime-phase-1.md)
 - 0014 - [ADR 0014: Evolve Dual Lanes into Acopilot and Actions with In-Process Job Bus](0014-acopilot-and-actions-architecture.md)
+- 0015 - [ADR 0015: Preserve Action Jobs Across Recoverable Failures](0015-actions-recoverable-rework-state-machine.md)
 <!-- ADS:ADR_INDEX_END -->
