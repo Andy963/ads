@@ -71,14 +71,7 @@ describe("NativeAgentAdapter", () => {
       assert.equal(requests.length, 2);
       assert.equal(requests[1]?.messages.at(-1)?.role, "tool");
       assert.ok(events.some((event) => event.key.startsWith("boot:")));
-      assert.ok(
-        events.some(
-          (event) =>
-            event.key === "analysis:Native live step" &&
-            event.liveStep === true &&
-            event.delta === "Inspecting hello.txt...",
-        ),
-      );
+      assert.equal(events.some((event) => event.liveStep === true), false);
       assert.ok(events.some((event) => event.key.startsWith("responding:")));
       assert.ok(events.some((event) => event.key.startsWith("completed:")));
       // Internal tool mechanics stay silent: no raw tool_call items reach consumers.
@@ -89,7 +82,7 @@ describe("NativeAgentAdapter", () => {
     }
   });
 
-  it("synthesizes human-readable live steps for every internal tool", async () => {
+  it("emits no live steps while preserving structured tool artifacts", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-live-steps-"));
     try {
       fs.writeFileSync(path.join(workspace, "hello.txt"), "hello from the workspace\n", "utf8");
@@ -148,12 +141,7 @@ describe("NativeAgentAdapter", () => {
       const result = await adapter.send("Inspect, search, patch, and run");
 
       assert.equal(result.response, "All done.");
-      assert.deepEqual(liveSteps, [
-        "Inspecting hello.txt...",
-        'Searching for "hello"...',
-        "Applying file changes...",
-        "Running echo hi...",
-      ]);
+      assert.deepEqual(liveSteps, []);
       // Command execution blocks and patch cards still render via their own items.
       assert.equal(rawItemTypes.filter((type) => type === "command_execution").length, 2);
       assert.ok(rawItemTypes.includes("file_change"));
@@ -208,7 +196,7 @@ describe("NativeAgentAdapter", () => {
     }
   });
 
-  it("dispatches action jobs through native tool executor and emits live step", async () => {
+  it("dispatches action jobs without emitting a live step", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-dispatch-"));
     try {
       let requestNumber = 0;
@@ -259,7 +247,7 @@ describe("NativeAgentAdapter", () => {
       const result = await adapter.send("Please dispatch issue 277 to Actions");
 
       assert.equal(result.response, "Job dispatched successfully.");
-      assert.ok(liveSteps.some((step) => step.includes('Dispatching task "Refactor dual lanes" to Actions...')));
+      assert.deepEqual(liveSteps, []);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }

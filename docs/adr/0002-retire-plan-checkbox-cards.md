@@ -3,6 +3,10 @@
 ## Status
 Accepted
 
+## Amendment
+
+ADR 0017 取代本 ADR 中关于 live-step 可见进度块的决策。流式阶段边界、Execute 顺序和 reconnect snapshot 规则继续有效，但新 turn 不再创建 live-step 卡片。
+
 ## Context
 In previous ADS releases, a dedicated checkbox Plan Card (`planCard` with `☑`, `◐`, `☐` markers) was maintained in the Web Console. This mechanism was introduced primarily to satisfy the legacy artificial prompt constraint requiring multi-step tasks to output a checkable plan checklist.
 

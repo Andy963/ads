@@ -47,7 +47,7 @@ export interface AgentEvent {
   detail?: string;
   detailVisible?: boolean;
   delta?: string;
-  /** True only for provider-authored reasoning summary text exposed as live-step. */
+  /** Legacy compatibility marker. New producers must not emit live-step events. */
   liveStep?: true;
   timestamp: number;
   raw: ThreadEvent;

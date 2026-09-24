@@ -39,11 +39,9 @@ function setup(): { rt: ProjectRuntime; handler: (msg: unknown) => void } {
     ingestCommandActivity: chat.ingestCommandActivity,
     ingestExploredActivity: chat.ingestExploredActivity,
     pushMessageBeforeLive: chat.pushMessageBeforeLive,
-    shouldIgnoreStepDelta: chat.shouldIgnoreStepDelta,
     threadReset: chat.threadReset,
     upsertExecuteBlock: chat.upsertExecuteBlock,
     upsertLiveActivity: chat.upsertLiveActivity,
-    upsertStepLiveDelta: chat.upsertStepLiveDelta,
     upsertStreamingDelta: chat.upsertStreamingDelta,
     replaceStreamingText: chat.replaceStreamingText,
   });

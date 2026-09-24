@@ -55,11 +55,9 @@ function createHandler(rt: any) {
     ingestCommandActivity: vi.fn(),
     ingestExploredActivity: vi.fn(),
     pushMessageBeforeLive: vi.fn(),
-    shouldIgnoreStepDelta: () => false,
     threadReset: vi.fn(),
     upsertExecuteBlock: vi.fn(),
     upsertLiveActivity: vi.fn(),
-    upsertStepLiveDelta: vi.fn(),
     upsertStreamingDelta: vi.fn(),
   });
 }

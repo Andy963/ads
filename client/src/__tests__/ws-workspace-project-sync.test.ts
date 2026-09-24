@@ -75,11 +75,9 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     ingestCommandActivity: vi.fn(),
     ingestExploredActivity: vi.fn(),
     pushMessageBeforeLive,
-    shouldIgnoreStepDelta: () => false,
     threadReset,
     upsertExecuteBlock: vi.fn(),
     upsertLiveActivity: vi.fn(),
-    upsertStepLiveDelta: vi.fn(),
     upsertStreamingDelta: vi.fn(),
   });
 

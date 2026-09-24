@@ -572,16 +572,13 @@ export function createChatActions(ctx: AppContext) {
   });
 
   const {
-    shouldIgnoreStepDelta,
     upsertStreamingDelta,
     replaceStreamingText,
     upsertThoughtDelta,
-    upsertStepLiveDelta,
     upsertLiveActivity,
     clearStepLive,
     sealActiveStreamingAssistant,
   } = createStreamingActions({
-    liveStepId: LIVE_STEP_ID,
     liveActivityId: LIVE_ACTIVITY_ID,
     runtimeOrActive,
     setMessages,
@@ -848,7 +845,6 @@ export function createChatActions(ctx: AppContext) {
     dropEmptyAssistantPlaceholder,
     hasEmptyAssistantPlaceholder,
     hasAssistantAfterLastUser,
-    shouldIgnoreStepDelta,
     ingestCommand,
     ingestCommandActivity,
     ingestExploredActivity,
@@ -863,7 +859,6 @@ export function createChatActions(ctx: AppContext) {
     upsertStreamingDelta,
     replaceStreamingText,
     upsertThoughtDelta,
-    upsertStepLiveDelta,
     upsertLiveActivity,
     clearStepLive,
     sealActiveStreamingAssistant,

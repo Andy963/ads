@@ -105,12 +105,10 @@ export function attachWorkerPromptHandler(args: {
 }): {
   unsubscribe: () => void;
   handleExploredEntry: (entry: ExploredEntry) => void;
-  getStepTraceText: () => string;
 } {
   const lastRespondingTextByItemId = new Map<string, string>();
   let activeRespondingItemId: string | null = null;
   const completedRespondingItemIds = new Set<string>();
-  let latestStepTraceText = "";
   const announcedCommandKeys = new Set<string>();
   const terminalCommandKeys = new Set<string>();
   let latestCommandKey: string | null = null;
@@ -164,20 +162,12 @@ export function attachWorkerPromptHandler(args: {
       lastRespondingTextByItemId.clear();
       activeRespondingItemId = null;
       completedRespondingItemIds.clear();
-      latestStepTraceText = "";
       announcedCommandKeys.clear();
       terminalCommandKeys.clear();
       latestCommandKey = null;
     }
     if (raw.type === "thread.started" && raw.thread_id) {
       args.onThreadStarted?.(raw.thread_id);
-    }
-    if (event.liveStep === true) {
-      const liveStepText = typeof event.delta === "string" ? event.delta : "";
-      if (!liveStepText.trim()) return;
-      latestStepTraceText = liveStepText;
-      args.sendToChat({ type: "delta", delta: liveStepText, source: "step", ts: eventTimestamp });
-      return;
     }
     // Reasoning, provider plans, and todo lists are internal model protocol
     // details. They must not enter the ADS websocket or session log.
@@ -342,6 +332,5 @@ export function attachWorkerPromptHandler(args: {
   return {
     unsubscribe,
     handleExploredEntry,
-    getStepTraceText: () => latestStepTraceText,
   };
 }

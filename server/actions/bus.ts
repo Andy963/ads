@@ -60,16 +60,19 @@ function generateJobId(issueId?: number | null): string {
 }
 
 function buildActionAgentEventPayload(event: AgentEvent, jobId: string, reviewer = false): Record<string, unknown> {
-  if (reviewer && event.phase === "responding") {
+  if (
+    (reviewer && event.phase === "responding")
+    || (event.phase !== "command" && event.phase !== "responding")
+  ) {
     return {};
   }
 
   const title = reviewer
     ? (event.title ? `[Reviewer] ${event.title}` : "[Reviewer]")
     : event.title;
-  if (event.phase !== "command") {
+  if (event.phase === "responding") {
     const payload: Record<string, unknown> = {
-      type: event.liveStep ? "step" : "delta",
+      type: "delta",
       title,
       delta: event.delta,
       detail: event.detail,
@@ -541,17 +544,13 @@ export class LaneDispatchBus {
         // Attach event listener for real-time WebSocket streaming
         unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
           if (this.options.broadcastToActionsLane) {
+            const payload = buildActionAgentEventPayload(event, job.id);
+            if (Object.keys(payload).length === 0) return;
             this.options.broadcastToActionsLane(
-              buildActionAgentEventPayload(event, job.id),
+              payload,
               historyKey,
               projectId,
             );
-          }
-
-          if (event.liveStep && event.title) {
-            this.updateJobStatus(jobId, "running", {
-              current_step: event.title,
-            });
           }
         });
 
@@ -751,17 +750,6 @@ export class LaneDispatchBus {
 
     const testCmd = options.testCommand || this.options.testCommand || "git status";
 
-    if (this.options.broadcastToActionsLane) {
-      this.options.broadcastToActionsLane({
-        type: "step",
-        title: "Running Verification Suite",
-        delta: `Executing verification command: ${testCmd}...`,
-        liveStep: true,
-        jobId: job.id,
-        ts: Date.now(),
-      }, historyKey, projectId);
-    }
-
     const testParts = testCmd.split(" ");
     const testRes = spawnSync(testParts[0]!, testParts.slice(1), {
       cwd: repoPath,
@@ -810,17 +798,6 @@ export class LaneDispatchBus {
     this.updateJobStatus(jobId, "reviewing", {
       current_step: "Detached clean-room reviewer auditing code changes against specifications",
     });
-
-    if (this.options.broadcastToActionsLane) {
-      this.options.broadcastToActionsLane({
-        type: "step",
-        title: "Detached Clean-Room Reviewer",
-        delta: "Auditing git diff against requirements, ADRs, and verification reports...",
-        liveStep: true,
-        jobId: job.id,
-        ts: Date.now(),
-      }, historyKey, projectId);
-    }
 
     const diffBase = resolveImplementationDiffBase(repoPath);
     const diffRes = spawnSync("git", ["diff", `${diffBase}...HEAD`], {

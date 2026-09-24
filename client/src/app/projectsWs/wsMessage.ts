@@ -208,11 +208,9 @@ export type WsMessageHandlerArgs = {
   ingestCommandActivity: ChatActions["ingestCommandActivity"];
   ingestExploredActivity: ChatActions["ingestExploredActivity"];
   pushMessageBeforeLive: ChatActions["pushMessageBeforeLive"];
-  shouldIgnoreStepDelta: ChatActions["shouldIgnoreStepDelta"];
   threadReset: ChatActions["threadReset"];
   upsertExecuteBlock: ChatActions["upsertExecuteBlock"];
   upsertLiveActivity: ChatActions["upsertLiveActivity"];
-  upsertStepLiveDelta: ChatActions["upsertStepLiveDelta"];
   upsertStreamingDelta: ChatActions["upsertStreamingDelta"];
   replaceStreamingText: ChatActions["replaceStreamingText"];
 };
@@ -239,11 +237,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     ingestCommandActivity,
     ingestExploredActivity,
     pushMessageBeforeLive,
-    shouldIgnoreStepDelta,
     threadReset,
     upsertExecuteBlock,
     upsertLiveActivity,
-    upsertStepLiveDelta,
     upsertStreamingDelta,
     replaceStreamingText,
   } = args;
@@ -1430,19 +1426,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
-    if (type === "step") {
-      const rec = msg as Record<string, unknown>;
-      markTurnActive(rec);
-      rt.busy.value = true;
-      rt.turnInFlight = true;
-      clearRecoveredBackendStatus();
-      const delta = normalizeWireText(rec.delta || rec.title);
-      if (delta && !shouldIgnoreStepDelta(delta)) {
-        upsertStepLiveDelta(delta, rt);
-      }
-      return;
-    }
-
     if (
       type === "command"
       && typeof (msg as Record<string, unknown>).jobId === "string"
@@ -1560,12 +1543,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.turnInFlight = true;
       clearRecoveredBackendStatus();
       const source = String(msg.source ?? "").trim();
-      if (source === "thought" || source === "reasoning") {
+      if (source === "thought" || source === "reasoning" || source === "step") {
         return;
-      } else if (source === "step") {
-        const delta = normalizeWireText(msg.delta);
-        if (shouldIgnoreStepDelta(delta)) return;
-        upsertStepLiveDelta(delta, rt);
       } else {
         consumeAssistantDelta(msg as Record<string, unknown>);
       }

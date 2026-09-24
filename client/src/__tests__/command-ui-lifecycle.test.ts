@@ -333,7 +333,7 @@ describe("command UI lifecycle", () => {
     wrapper.unmount();
   });
 
-  it("renders provider-authored live-step text and drops the placeholder once progress arrives", async () => {
+  it("ignores legacy live-step frames without creating a card", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await settleUi(wrapper);
@@ -349,10 +349,8 @@ describe("command UI lifecycle", () => {
     await settleUi(wrapper);
 
     const afterProgress = (wrapper.vm as any).messages as Array<any>;
-    expect(afterProgress.some((m) => m.role === "assistant" && m.streaming && String(m.content).trim() === "")).toBe(false);
-    expect(afterProgress.map((m) => String(m.content ?? "")).join("\n")).toContain(
-      "I will inspect the workspace before running a command.",
-    );
+    expect(afterProgress.some((m) => m.id === "live-step")).toBe(false);
+    expect(afterProgress.some((m) => m.role === "assistant" && m.streaming && String(m.content).trim() === "")).toBe(true);
 
     wrapper.unmount();
   });

@@ -1,5 +1,6 @@
 import type { ChatItem } from "./controller";
 
+/** Legacy persisted-card identifier retained for read compatibility. */
 export const LIVE_STEP_ID = "live-step";
 export const LIVE_ACTIVITY_ID = "live-activity";
 export const LIVE_MESSAGE_IDS = [LIVE_STEP_ID, LIVE_ACTIVITY_ID] as const;
@@ -27,4 +28,3 @@ export function findLastLiveIndex(items: ChatItem[]): number {
   }
   return idx;
 }
-
