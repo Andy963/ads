@@ -1402,10 +1402,6 @@
 }
 
 .actionsJobBanner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
   padding: 8px 16px;
   background: rgba(37, 99, 235, 0.06);
   border-bottom: 1px solid rgba(37, 99, 235, 0.15);
@@ -1413,14 +1409,47 @@
   flex-shrink: 0;
 }
 
-.actionsJobInfo {
+.actionsQueue {
+  max-height: 180px;
+  overflow: hidden;
+}
+
+.actionsQueueHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.actionsQueueTitle {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.actionsQueueRows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 112px;
+  overflow-y: auto;
+}
+
+.actionsQueueRow {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.actionsQueueRow--active {
+  border-color: rgba(37, 99, 235, 0.3);
+  background: rgba(37, 99, 235, 0.08);
 }
 
 .actionsJobBadge {
@@ -1462,11 +1491,6 @@
   color: var(--text);
 }
 
-.actionsJobStep {
-  color: var(--muted);
-  font-size: 11.5px;
-}
-
 .actionsJobQueueCountBadge {
   font-size: 10px;
   font-weight: 700;
@@ -1481,7 +1505,9 @@
 .actionsJobActions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  margin-top: 6px;
   flex-shrink: 0;
 }
 

@@ -100,6 +100,7 @@ describe("Actions lane queue visibility and manual start button", () => {
         issue_id: 341,
         issue_title: "Implement manual start button",
         status: "queued",
+        current_step: "Developer should not render this in the queue",
         created_at: Date.now(),
         updated_at: Date.now(),
       },
@@ -109,6 +110,7 @@ describe("Actions lane queue visibility and manual start button", () => {
         issue_id: 342,
         issue_title: "Second queued task",
         status: "queued",
+        error_message: "queued details stay in history",
         created_at: Date.now() + 100,
         updated_at: Date.now() + 100,
       },
@@ -130,6 +132,11 @@ describe("Actions lane queue visibility and manual start button", () => {
     // Verify banner and badges exist
     const banner = wrapper.find('[data-testid="actions-job-banner"]');
     expect(banner.exists()).toBe(true);
+    expect(banner.findAll('[data-testid="actions-queue-row"]')).toHaveLength(2);
+    expect(banner.text()).toContain("Implement manual start button");
+    expect(banner.text()).toContain("Second queued task");
+    expect(banner.text()).not.toContain("Developer should not render this in the queue");
+    expect(banner.text()).not.toContain("queued details stay in history");
 
     const queueBadge = wrapper.find('[data-testid="actions-queue-count-badge"]');
     expect(queueBadge.exists()).toBe(true);
@@ -222,8 +229,13 @@ describe("Actions lane queue visibility and manual start button", () => {
 
     const banner = wrapper.find('[data-testid="actions-job-banner"]');
     expect(banner.exists()).toBe(true);
-    // The running task title should be displayed, not the queued task
-    expect(banner.text()).toContain("Older Running Task");
+    const rows = banner.findAll('[data-testid="actions-queue-row"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].text()).toContain("RUNNING");
+    expect(rows[0].text()).toContain("Older Running Task");
+    expect(rows[1].text()).toContain("QUEUED");
+    expect(rows[1].text()).toContain("Newer Queued Task");
+    expect(banner.text()).not.toContain("Developer executing implementation on feature branch");
 
     wrapper.unmount();
   });
@@ -300,9 +312,14 @@ describe("Actions lane queue visibility and manual start button", () => {
     await settleUi(wrapper);
 
     const banner = wrapper.find('[data-testid="actions-job-banner"]');
-    expect(banner.text()).toContain("Recover Actions reliability");
-    expect(banner.text()).toContain("Rework 2/2");
-    expect(banner.text()).toContain("PR creation failed twice");
+    const rows = banner.findAll('[data-testid="actions-queue-row"]');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].text()).toContain("BLOCKED");
+    expect(rows[0].text()).toContain("Recover Actions reliability");
+    expect(rows[1].text()).toContain("QUEUED");
+    expect(rows[1].text()).toContain("Queued behind blocked job");
+    expect(banner.text()).not.toContain("Human attention required after 2 rework attempts.");
+    expect(banner.text()).not.toContain("PR creation failed twice");
 
     await (wrapper.vm as any).triggerStartActionQueue();
     await settleUi(wrapper);
