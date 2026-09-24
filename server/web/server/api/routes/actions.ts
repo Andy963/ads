@@ -4,6 +4,8 @@ import type { Database as DatabaseType } from "better-sqlite3";
 
 import { getStateDatabase } from "../../../../state/database.js";
 import { LaneDispatchBus } from "../../../../actions/bus.js";
+import { ensureWebAuthTables } from "../../../auth/schema.js";
+import { ensureWebProjectTables } from "../../../projects/schema.js";
 import type { ApiRouteContext } from "../types.js";
 import { readJsonBody, sendJson } from "../../http.js";
 import { validateWorkspacePath } from "./workspacePath.js";
@@ -133,6 +135,8 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
   const { req, res, pathname, url, auth } = ctx;
   const bus = getBus();
   const stateDb = getStateDatabase();
+  ensureWebAuthTables(stateDb);
+  ensureWebProjectTables(stateDb);
   const allowedDirs = deps.allowedDirs ?? [];
 
   if (pathname === "/api/actions/dispatch" && req.method === "POST") {

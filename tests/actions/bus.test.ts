@@ -10,6 +10,8 @@ import { LaneDispatchBus } from "../../server/actions/bus.js";
 import { handleActionRoutes, setBusInstance } from "../../server/web/server/api/routes/actions.js";
 import { checkThreePointGate } from "../../server/actions/threePointGate.js";
 import { updateActionJobStatus } from "../../server/state/actionJobStore.js";
+import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
+import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
 
 describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
   let tmpDir: string;
@@ -21,18 +23,15 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     projectId: string,
     userId = "user-1",
   ): void {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS web_projects (
-        user_id TEXT NOT NULL,
-        project_id TEXT NOT NULL,
-        workspace_root TEXT NOT NULL
-      )
-    `);
-    db.prepare("INSERT INTO web_projects (user_id, project_id, workspace_root) VALUES (?, ?, ?)").run(
-      userId,
-      projectId,
-      repoDir,
-    );
+    ensureWebAuthTables(db);
+    ensureWebProjectTables(db);
+    const now = Date.now();
+    db.prepare(
+      "INSERT OR IGNORE INTO web_users (id, username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+    ).run(userId, `${userId}@test`, "test-password-hash", now, now);
+    db.prepare(
+      "INSERT INTO web_projects (user_id, project_id, workspace_root, display_name, chat_session_id, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(userId, projectId, repoDir, "Test Project", "main", 0, now, now);
   }
 
   beforeEach(() => {
@@ -617,5 +616,38 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(handled, true);
     assert.strictEqual(statusCode, 400);
     assert.strictEqual(spawnSync("git", ["branch", "--show-current"], { cwd: repoDir, encoding: "utf8" }).stdout.trim(), "dev");
+  });
+
+  it("initializes web project tables before resolving action routes", async () => {
+    const db = getStateDatabase();
+    setBusInstance(new LaneDispatchBus(db));
+    assert.strictEqual(
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'web_projects'").get(),
+      undefined,
+    );
+
+    const fakeReq: any = { method: "GET", headers: {} };
+    let statusCode = 200;
+    const fakeRes: any = {
+      writeHead(code: number) { statusCode = code; },
+      setHeader() {},
+      end() {},
+    };
+
+    const handled = await handleActionRoutes({
+      req: fakeReq,
+      res: fakeRes,
+      pathname: "/api/actions/jobs",
+      url: new URL("http://localhost/api/actions/jobs?projectId=missing-project"),
+      auth: { userId: "user-1", username: "tester" },
+    }, {
+      allowedDirs: [repoDir],
+    });
+
+    assert.strictEqual(handled, true);
+    assert.strictEqual(statusCode, 400);
+    assert.ok(
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'web_projects'").get(),
+    );
   });
 });
