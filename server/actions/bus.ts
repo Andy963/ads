@@ -28,25 +28,13 @@ import {
   type MergeResult,
 } from "./pipeline.js";
 import { deriveProjectSessionId } from "../web/server/projectSessionId.js";
+import { resolveActionsLaneIdentity } from "./laneIdentity.js";
 
 const MAX_REWORK_ATTEMPTS = 2;
 
 function resolveCanonicalProjectId(projectId: string, repoPath?: string): string {
   const workspaceRoot = String(repoPath ?? "").trim();
   return workspaceRoot ? deriveProjectSessionId(workspaceRoot) : String(projectId ?? "").trim();
-}
-
-function resolveProjectChatSessionId(db: DatabaseType, projectId: string, repoPath?: string): string {
-  try {
-    const canonicalId = resolveCanonicalProjectId(projectId, repoPath);
-    const row = db.prepare(
-      "SELECT chat_session_id FROM web_projects WHERE project_id = ? OR project_id = ? OR workspace_root = ? LIMIT 1",
-    ).get(canonicalId, projectId, repoPath ?? "") as { chat_session_id?: string } | undefined;
-    if (row?.chat_session_id) return row.chat_session_id;
-  } catch {
-    // ignore
-  }
-  return "main";
 }
 
 function migrateLegacyProjectJobs(db: DatabaseType, projectId: string, aliases: string[]): void {
@@ -174,14 +162,26 @@ export class LaneDispatchBus {
     private options: LaneDispatchBusOptions = {},
   ) {}
 
-  private historyKeyForProject(projectId: string, repoPath?: string): string {
-    const chatSessionId = resolveProjectChatSessionId(this.db, projectId, repoPath);
-    return buildWsConnectionIdentity({
-      authUserId: "admin",
-      sessionId: projectId,
-      chatSessionId,
+  private laneIdentityForJob(job: ActionJobRecord, repoPath?: string) {
+    if (job.auth_user_id && job.chat_session_id) {
+      return buildWsConnectionIdentity({
+        authUserId: job.auth_user_id,
+        sessionId: job.project_id,
+        chatSessionId: job.chat_session_id,
+        connectionId: "actions",
+      });
+    }
+
+    return resolveActionsLaneIdentity(this.db, {
+      projectId: job.project_id,
+      repoPath,
+      authUserId: job.auth_user_id,
+    }) ?? buildWsConnectionIdentity({
+      authUserId: `actions:${job.id}`,
+      sessionId: job.project_id,
+      chatSessionId: job.chat_session_id || "main",
       connectionId: "actions",
-    }).historyKey;
+    });
   }
 
   private recordActionMessage(
@@ -191,7 +191,7 @@ export class LaneDispatchBus {
     kind: string,
     role: "status" | "assistant" = "status",
   ): void {
-    const historyKey = this.historyKeyForProject(job.project_id, repoPath);
+    const historyKey = this.laneIdentityForJob(job, repoPath).historyKey;
     this.options.historyStore?.add(historyKey, {
       role,
       text,
@@ -258,7 +258,7 @@ export class LaneDispatchBus {
     updateActionJobStatus(this.db, jobId, status, updates);
     const updated = getActionJobById(this.db, jobId);
     if (updated && this.options.broadcastToActionsLane) {
-      const historyKey = this.historyKeyForProject(updated.project_id);
+      const historyKey = this.laneIdentityForJob(updated).historyKey;
       this.options.broadcastToActionsLane({
         type: "action_job_updated",
         jobId: updated.id,
@@ -280,10 +280,16 @@ export class LaneDispatchBus {
     developerProfileId?: string | null;
     reviewerProfileIds?: string[];
     repoPath?: string;
+    authUserId?: string;
   }): { ok: boolean; jobId: string; status: ActionJobStatus } {
     const id = generateJobId(params.issueId);
     const branch = params.issueId ? `codex/issue-${params.issueId}` : `codex/${id}`;
     const projectId = resolveCanonicalProjectId(params.projectId, params.repoPath);
+    const laneIdentity = resolveActionsLaneIdentity(this.db, {
+      projectId,
+      repoPath: params.repoPath,
+      authUserId: params.authUserId,
+    });
 
     const job = createActionJob(this.db, {
       id,
@@ -295,6 +301,8 @@ export class LaneDispatchBus {
       branch,
       developer_profile_id: params.developerProfileId,
       reviewer_profile_ids_json: JSON.stringify(params.reviewerProfileIds ?? []),
+      auth_user_id: laneIdentity?.authUserId ?? null,
+      chat_session_id: laneIdentity?.chatSessionId ?? null,
     });
 
     this.updateJobStatus(job.id, "queued", {
@@ -309,19 +317,25 @@ export class LaneDispatchBus {
     };
   }
 
-  public async evaluateQueue(projectId: string, repoPath: string): Promise<GateCheckResult & { dequeuedJobId?: string }> {
+  public async evaluateQueue(projectId: string, repoPath: string, authUserId?: string): Promise<GateCheckResult & { dequeuedJobId?: string }> {
     const canonicalProjectId = resolveCanonicalProjectId(projectId, repoPath);
     migrateLegacyProjectJobs(this.db, canonicalProjectId, [projectId, repoPath]);
+    const queueKey = `${canonicalProjectId}:${String(authUserId ?? "").trim() || "*"}`;
 
-    if (this.processingProjects.has(canonicalProjectId)) {
+    if (this.processingProjects.has(queueKey)) {
       return { allowed: false, reason: "Queue is already being evaluated" };
     }
 
-    this.processingProjects.add(canonicalProjectId);
+    this.processingProjects.add(queueKey);
     try {
-      const queuedJobs = this.db.prepare(
-        "SELECT * FROM action_jobs WHERE project_id = ? AND status = 'queued' ORDER BY created_at ASC",
-      ).all(canonicalProjectId) as ActionJobRecord[];
+      const owner = String(authUserId ?? "").trim();
+      const queuedJobs = owner
+        ? this.db.prepare(
+            "SELECT * FROM action_jobs WHERE project_id = ? AND auth_user_id = ? AND status = 'queued' ORDER BY created_at ASC",
+          ).all(canonicalProjectId, owner) as ActionJobRecord[]
+        : this.db.prepare(
+            "SELECT * FROM action_jobs WHERE project_id = ? AND status = 'queued' ORDER BY created_at ASC",
+          ).all(canonicalProjectId) as ActionJobRecord[];
 
       if (queuedJobs.length === 0) {
         return { allowed: true };
@@ -391,7 +405,7 @@ export class LaneDispatchBus {
         dequeuedJobId: nextJob.id,
       };
     } finally {
-      this.processingProjects.delete(canonicalProjectId);
+      this.processingProjects.delete(queueKey);
     }
   }
 
@@ -436,20 +450,9 @@ export class LaneDispatchBus {
     if (this.options.sessionManager) {
       const sessionManager = this.options.sessionManager;
       const workspaceRoot = repoPath;
-      const userId = 1;
-      const authUserId = "admin";
       const projectId = job.project_id;
-      const chatSessionId = resolveProjectChatSessionId(this.db, projectId, repoPath);
-      const connectionId = randomBytes(3).toString("hex");
-
-      const identity = buildWsConnectionIdentity({
-        authUserId,
-        sessionId: projectId,
-        chatSessionId,
-        connectionId,
-      });
-
-      const historyKey = identity.historyKey;
+      const identity = this.laneIdentityForJob(job, repoPath);
+      const { authUserId, userId, historyKey } = identity;
       const abortCtrl = new AbortController();
       this.activeAbortControllers.set(jobId, abortCtrl);
       if (this.options.interruptControllers) {
@@ -557,7 +560,7 @@ export class LaneDispatchBus {
             error_message: `Actions session execution aborted: ${err instanceof Error ? err.message : String(err)}`,
           });
           queueMicrotask(() => {
-            void this.evaluateQueue(job.project_id, repoPath);
+            void this.evaluateQueue(job.project_id, repoPath, job.auth_user_id ?? undefined);
           });
         } else {
           this.scheduleRework(jobId, repoPath, {
@@ -620,10 +623,19 @@ export class LaneDispatchBus {
     if (this.options.sessionManager) {
       try {
         const userId = 9999; // Detached reviewer ephemeral identity
-        const authUserId = "admin";
+        const reviewerJob = jobId ? getActionJobById(this.db, jobId) : null;
+        const reviewerIdentity = reviewerJob
+          ? this.laneIdentityForJob(reviewerJob, repoPath)
+          : buildWsConnectionIdentity({
+              authUserId: `actions:${jobId ?? "reviewer"}`,
+              sessionId: projectId ?? "reviewer",
+              chatSessionId: "main",
+              connectionId: randomBytes(3).toString("hex"),
+            });
+        const authUserId = reviewerIdentity.authUserId;
         const orchestrator = this.options.sessionManager.getOrCreate(userId, repoPath, false, {
           authUserId,
-          projectId: "reviewer-isolated",
+          projectId: reviewerJob?.project_id ?? projectId ?? "reviewer-isolated",
         });
 
         if (typeof orchestrator.setDeveloperInstructions === "function") {
@@ -672,13 +684,7 @@ export class LaneDispatchBus {
     if (!job || job.status !== "running") return;
 
     const projectId = job.project_id;
-    const chatSessionId = resolveProjectChatSessionId(this.db, projectId, repoPath);
-    const identity = buildWsConnectionIdentity({
-      authUserId: "admin",
-      sessionId: projectId,
-      chatSessionId,
-      connectionId: randomBytes(3).toString("hex"),
-    });
+    const identity = this.laneIdentityForJob(job, repoPath);
     const historyKey = identity.historyKey;
 
     // 1. Verification Phase: run test suite
@@ -900,13 +906,7 @@ export class LaneDispatchBus {
       });
 
       const projectId = job.project_id;
-      const chatSessionId = resolveProjectChatSessionId(this.db, projectId, params.repoPath);
-      const identity = buildWsConnectionIdentity({
-        authUserId: "admin",
-        sessionId: projectId,
-        chatSessionId,
-        connectionId: randomBytes(3).toString("hex"),
-      });
+      const identity = this.laneIdentityForJob(job, params.repoPath);
       const historyKey = identity.historyKey;
 
       if (this.options.broadcastToActionsLane) {
@@ -974,7 +974,7 @@ export class LaneDispatchBus {
 
       // After task completes, trigger next queued task evaluation
       queueMicrotask(() => {
-        void this.evaluateQueue(job.project_id, repoPath);
+        void this.evaluateQueue(job.project_id, repoPath, job.auth_user_id ?? undefined);
       });
     } else {
       this.scheduleRework(job.id, repoPath, {
@@ -1005,15 +1005,15 @@ export class LaneDispatchBus {
     if (targetRepo) {
       safeResetToDev(targetRepo);
       queueMicrotask(() => {
-        void this.evaluateQueue(job.project_id, targetRepo);
+        void this.evaluateQueue(job.project_id, targetRepo, job.auth_user_id ?? undefined);
       });
     }
   }
 
-  public getJobs(projectId: string, repoPath?: string): ActionJobRecord[] {
+  public getJobs(projectId: string, repoPath?: string, authUserId?: string): ActionJobRecord[] {
     const canonicalProjectId = resolveCanonicalProjectId(projectId, repoPath);
     migrateLegacyProjectJobs(this.db, canonicalProjectId, [projectId, repoPath ?? ""]);
-    return getActionJobs(this.db, canonicalProjectId);
+    return getActionJobs(this.db, canonicalProjectId, undefined, authUserId);
   }
 
   public getJob(jobId: string): ActionJobRecord | null {

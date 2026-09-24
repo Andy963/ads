@@ -30,19 +30,29 @@ export interface ActionJobRecord {
   pr_url: string | null;
   error_message: string | null;
   rework_count: number;
+  auth_user_id: string | null;
+  chat_session_id: string | null;
   created_at: number;
   updated_at: number;
 }
 
-export function getActionJobs(db: DatabaseType, projectId: string, status?: ActionJobStatus): ActionJobRecord[] {
+export function getActionJobs(
+  db: DatabaseType,
+  projectId: string,
+  status?: ActionJobStatus,
+  authUserId?: string,
+): ActionJobRecord[] {
+  const owner = String(authUserId ?? "").trim();
+  const ownerClause = owner ? " AND auth_user_id = ?" : "";
+  const ownerParams = owner ? [owner] : [];
   if (status) {
     return db
-      .prepare(`SELECT * FROM action_jobs WHERE project_id = ? AND status = ? ORDER BY created_at ASC`)
-      .all(projectId, status) as ActionJobRecord[];
+      .prepare(`SELECT * FROM action_jobs WHERE project_id = ? AND status = ?${ownerClause} ORDER BY created_at ASC`)
+      .all(projectId, status, ...ownerParams) as ActionJobRecord[];
   }
   return db
-    .prepare(`SELECT * FROM action_jobs WHERE project_id = ? ORDER BY created_at DESC`)
-    .all(projectId) as ActionJobRecord[];
+    .prepare(`SELECT * FROM action_jobs WHERE project_id = ?${ownerClause} ORDER BY created_at DESC`)
+    .all(projectId, ...ownerParams) as ActionJobRecord[];
 }
 
 export function getActionJobById(db: DatabaseType, id: string): ActionJobRecord | null {
@@ -61,6 +71,8 @@ export function createActionJob(
     branch?: string | null;
     developer_profile_id?: string | null;
     reviewer_profile_ids_json?: string;
+    auth_user_id?: string | null;
+    chat_session_id?: string | null;
   },
   now = Date.now(),
 ): ActionJobRecord {
@@ -75,8 +87,9 @@ export function createActionJob(
     INSERT INTO action_jobs
       (id, project_id, job_kind, issue_id, issue_title, status, branch,
        developer_profile_id, reviewer_profile_ids_json, current_step, steps_json,
-       review_verdicts_json, pr_number, pr_url, error_message, rework_count, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', NULL, NULL, NULL, 0, ?, ?)
+       review_verdicts_json, pr_number, pr_url, error_message, rework_count,
+       auth_user_id, chat_session_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', NULL, NULL, NULL, 0, ?, ?, ?, ?)
   `).run(
     job.id,
     job.project_id,
@@ -87,6 +100,8 @@ export function createActionJob(
     branch,
     devProfileId,
     reviewerProfilesJson,
+    job.auth_user_id ?? null,
+    job.chat_session_id ?? null,
     now,
     now,
   );
@@ -108,6 +123,8 @@ export function createActionJob(
     pr_url: null,
     error_message: null,
     rework_count: 0,
+    auth_user_id: job.auth_user_id ?? null,
+    chat_session_id: job.chat_session_id ?? null,
     created_at: now,
     updated_at: now,
   };

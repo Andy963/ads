@@ -652,4 +652,14 @@ Core reviewing rules:
       `);
     },
   },
+  {
+    version: 19,
+    description: "Persist the authenticated Actions lane identity for each job",
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE action_jobs ADD COLUMN auth_user_id TEXT;
+        ALTER TABLE action_jobs ADD COLUMN chat_session_id TEXT;
+      `);
+    },
+  },
 ];

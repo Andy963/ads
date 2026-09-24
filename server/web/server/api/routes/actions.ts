@@ -35,6 +35,11 @@ export type ResolvedProjectContext = {
   repoPath: string;
 };
 
+function toActionJobResponse(job: Record<string, unknown>): Record<string, unknown> {
+  const { auth_user_id: _authUserId, chat_session_id: _chatSessionId, ...publicJob } = job;
+  return publicJob;
+}
+
 let busInstance: LaneDispatchBus | null = null;
 
 export function setBusInstance(bus: LaneDispatchBus): void {
@@ -176,6 +181,7 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
       repoPath: resolved.repoPath,
       developerProfileId: parsed.data.developerProfileId,
       reviewerProfileIds: parsed.data.reviewerProfileIds,
+      authUserId: auth.userId,
     });
 
     sendJson(res, 200, result);
@@ -215,7 +221,7 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
       return true;
     }
 
-    const result = await bus.evaluateQueue(resolved.projectId, resolved.repoPath);
+    const result = await bus.evaluateQueue(resolved.projectId, resolved.repoPath, auth.userId);
     sendJson(res, 200, {
       ok: result.allowed,
       ...result,
@@ -230,8 +236,8 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
       sendJson(res, 400, { error: `Invalid or unauthorized project '${projectId}'` });
       return true;
     }
-    const jobs = bus.getJobs(resolved.projectId, resolved.repoPath);
-    sendJson(res, 200, jobs);
+    const jobs = bus.getJobs(resolved.projectId, resolved.repoPath, auth.userId);
+    sendJson(res, 200, jobs.map((job) => toActionJobResponse(job as unknown as Record<string, unknown>)));
     return true;
   }
 
@@ -268,9 +274,9 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
       sendJson(res, 400, { error: `Invalid or unauthorized repository for job '${jobId}'` });
       return true;
     }
-    bus.getJobs(resolved.projectId, resolved.repoPath);
-    const ownedJob = bus.getJob(jobId);
-    if (!ownedJob || ownedJob.project_id !== resolved.projectId) {
+    const ownedJob = bus.getJobs(resolved.projectId, resolved.repoPath, auth.userId)
+      .find((candidate) => candidate.id === jobId);
+    if (!ownedJob) {
       sendJson(res, 404, { error: `Job not found: ${jobId}` });
       return true;
     }
@@ -312,9 +318,9 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
       sendJson(res, 400, { error: `Invalid or unauthorized repository for job '${jobId}'` });
       return true;
     }
-    bus.getJobs(resolved.projectId, resolved.repoPath);
-    const ownedJob = bus.getJob(jobId);
-    if (!ownedJob || ownedJob.project_id !== resolved.projectId) {
+    const ownedJob = bus.getJobs(resolved.projectId, resolved.repoPath, auth.userId)
+      .find((candidate) => candidate.id === jobId);
+    if (!ownedJob) {
       sendJson(res, 404, { error: `Job not found: ${jobId}` });
       return true;
     }
