@@ -2,6 +2,7 @@ import { mount } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import MainChat from "../components/MainChat.vue";
+import MainChatComposerPanel from "../components/MainChatComposerPanel.vue";
 import type { ChatMessage } from "../components/mainChat/types";
 
 const LOCK_OFFSET = 12;
@@ -28,7 +29,7 @@ function rect(top: number, height = 40): DOMRect {
   } as DOMRect;
 }
 
-type ScrollState = { top: number; height: number };
+type ScrollState = { top: number; height: number; clientHeight?: number };
 
 /**
  * jsdom performs no layout, so rect measurements are patched to emulate a
@@ -36,20 +37,21 @@ type ScrollState = { top: number; height: number };
  * host reports the viewport. Row tops move inversely with scrollTop.
  */
 function installLayoutMocks(host: HTMLElement, state: ScrollState, rowOffsets: Record<string, number>) {
+  const defaultClientHeight = state.clientHeight ?? 600;
   Object.defineProperties(host, {
-    clientHeight: { configurable: true, get: () => 600 },
+    clientHeight: { configurable: true, get: () => state.clientHeight ?? 600 },
     scrollHeight: { configurable: true, get: () => state.height },
     scrollTop: {
       configurable: true,
       get: () => state.top,
       set: (value: number) => {
-        state.top = Math.max(0, Math.min(value, Math.max(0, state.height - 600)));
+        state.top = Math.max(0, Math.min(value, Math.max(0, state.height - (state.clientHeight ?? 600))));
       },
     },
   });
   const originalRect = Element.prototype.getBoundingClientRect;
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
-    if (this === host) return rect(0, 600);
+    if (this === host) return rect(0, state.clientHeight ?? defaultClientHeight);
     const id = this.getAttribute?.("data-id");
     if (id && id in rowOffsets) return rect(rowOffsets[id] - state.top);
     return originalRect.call(this);
@@ -91,7 +93,69 @@ async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Pr
 describe("MainChat two-phase reading viewport", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     document.body.innerHTML = "";
+  });
+
+  it("keeps a newly sent user row above the mobile keyboard composer", async () => {
+    const visualViewport = Object.assign(new EventTarget(), {
+      height: 600,
+      offsetTop: 0,
+      width: 390,
+      offsetLeft: 0,
+    });
+    vi.stubGlobal("visualViewport", visualViewport);
+    const state: ScrollState = { top: 0, height: 1000, clientHeight: 600 };
+    const rowOffsets: Record<string, number> = { "a-1": 0 };
+    const { wrapper, host } = mountChat([msg("a-1", "assistant", "earlier")]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+    expect(state.top).toBe(400);
+
+    state.clientHeight = 300;
+    visualViewport.height = 300;
+    const composer = wrapper.get(".composer").element as HTMLElement;
+    vi.spyOn(composer, "getBoundingClientRect").mockReturnValue(rect(300, 80));
+
+    // The keyboard shrinks and pans the visual viewport. The resulting chat
+    // scroll event is layout-induced and must not disable tail-following.
+    state.top = 0;
+    visualViewport.dispatchEvent(new Event("resize"));
+    visualViewport.dispatchEvent(new Event("scroll"));
+    await wrapper.get(".chat").trigger("scroll");
+    await settleUi(wrapper);
+    await vi.waitFor(() => expect(state.top).toBe(700));
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+
+    // A real wheel gesture still hands control back to the user.
+    await wrapper.get(".chat").trigger("wheel", { deltaX: 0, deltaY: -240, deltaZ: 0 });
+    state.top = 0;
+    await wrapper.get(".chat").trigger("scroll");
+    await settleUi(wrapper);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+
+    rowOffsets["u-2"] = 1000;
+    state.height = 1200;
+    wrapper.getComponent(MainChatComposerPanel).vm.$emit("send", "question");
+    await wrapper.setProps({
+      messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question")],
+    });
+    await settleUi(wrapper);
+    await vi.waitFor(() => expect(state.top).toBe(900));
+
+    const currentHost = wrapper.get(".chat").element as HTMLElement;
+    const currentComposer = wrapper.get(".composer").element as HTMLElement;
+    const userRow = wrapper.get('.msg[data-id="u-2"]').element;
+    Object.defineProperty(currentHost, "getBoundingClientRect", { configurable: true, value: () => rect(0, 300) });
+    Object.defineProperty(userRow, "getBoundingClientRect", { configurable: true, value: () => rect(rowOffsets["u-2"] - state.top) });
+    Object.defineProperty(currentComposer, "getBoundingClientRect", { configurable: true, value: () => rect(300, 80) });
+    const userRect = userRow.getBoundingClientRect();
+    const hostRect = currentHost.getBoundingClientRect();
+    const composerRect = currentComposer.getBoundingClientRect();
+    expect(userRect.top).toBeGreaterThanOrEqual(hostRect.top);
+    expect(userRect.bottom).toBeLessThanOrEqual(composerRect.top);
+
+    wrapper.unmount();
   });
 
   it("locks the answer top once the first content delta lands and never corrects again", async () => {

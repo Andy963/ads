@@ -103,6 +103,10 @@ let chatScrollQueued = false;
 let bottomSettleFrame: number | null = null;
 let settlingBottom = false;
 let chatTouchStart: { x: number; y: number } | null = null;
+let chatPhysicalScrollIntent = false;
+let chatVisualViewport: VisualViewport | null = null;
+let chatViewportLayoutTransition = false;
+let chatViewportLayoutTransitionFrame: number | null = null;
 
 // Two-phase reading viewport. Phase 1 (intermediate execution): the viewport
 // follows the streaming tail so commands and live steps stay visible. Phase 2
@@ -300,6 +304,12 @@ function pauseChatAutoScroll(): void {
 }
 
 function onChatScrollIntent(): void {
+  chatPhysicalScrollIntent = true;
+  chatViewportLayoutTransition = false;
+  if (chatViewportLayoutTransitionFrame !== null) {
+    cancelFrame(chatViewportLayoutTransitionFrame);
+    chatViewportLayoutTransitionFrame = null;
+  }
   initialViewportActive = false;
   followEpoch += 1;
   readingLockSeq += 1;
@@ -385,6 +395,28 @@ function scheduleChatScrollToBottom(): void {
       chatScrollQueued = false;
     }
   })();
+}
+
+function onVisualViewportChange(): void {
+  markChatViewportLayoutTransition();
+  if (!autoScroll.value || readingLockEl || readingLockAligning) return;
+  scheduleChatScrollToBottom();
+}
+
+function markChatViewportLayoutTransition(): void {
+  chatViewportLayoutTransition = true;
+  if (chatViewportLayoutTransitionFrame !== null) cancelFrame(chatViewportLayoutTransitionFrame);
+  chatViewportLayoutTransitionFrame = scheduleFrame(() => {
+    chatViewportLayoutTransitionFrame = scheduleFrame(() => {
+      chatViewportLayoutTransitionFrame = null;
+      chatViewportLayoutTransition = false;
+    });
+  });
+}
+
+function handleSend(content: string): void {
+  scrollChatToBottom();
+  emit("send", content);
 }
 
 function ensureLiveStepScrollEl(): HTMLElement | null {
@@ -493,6 +525,8 @@ const { copiedMessageId, onCopyMessage, formatMessageTs } = useCopyMessage();
 
 function handleScroll() {
   if (!listRef.value) return;
+  const physicalScrollIntent = chatPhysicalScrollIntent;
+  chatPhysicalScrollIntent = false;
   // Layout-induced scroll events during an explicit jump are not a request
   // to stop following. Actual wheel/touch/key input cancels the bounded loop.
   if (settlingBottom) {
@@ -506,6 +540,10 @@ function handleScroll() {
     // the lock and leave the viewport untouched.
     autoScroll.value = false;
     showScrollToBottom.value = true;
+    scheduleViewportSave();
+    return;
+  }
+  if (!physicalScrollIntent && chatViewportLayoutTransition) {
     scheduleViewportSave();
     return;
   }
@@ -556,6 +594,9 @@ const streamingAnswerId = computed(() => findStreamingAnswerId(props.messages, i
 
 onMounted(() => {
   const host = listRef.value;
+  chatVisualViewport = window.visualViewport ?? null;
+  chatVisualViewport?.addEventListener("resize", onVisualViewportChange, { passive: true });
+  chatVisualViewport?.addEventListener("scroll", onVisualViewportChange, { passive: true });
   if (host && restorableViewport) {
     // Restore synchronously when the cached pane is already laid out so the
     // first visible frame does not briefly jump to the default scroll position.
@@ -571,6 +612,7 @@ onMounted(() => {
   document.addEventListener("visibilitychange", saveBeforeBackground);
   if (host && typeof ResizeObserver !== "undefined") {
     chatResizeObserver = new ResizeObserver(() => {
+      markChatViewportLayoutTransition();
       restoreInitialViewport();
       // If the chat pane is initially hidden (e.g. mobile tab), scrollHeight can be 0.
       // Once the pane becomes visible, ensure we still land at the bottom.
@@ -708,6 +750,12 @@ watch(
 
 onBeforeUnmount(() => {
   saveViewport();
+  chatVisualViewport?.removeEventListener("resize", onVisualViewportChange);
+  chatVisualViewport?.removeEventListener("scroll", onVisualViewportChange);
+  chatVisualViewport = null;
+  if (chatViewportLayoutTransitionFrame !== null) cancelFrame(chatViewportLayoutTransitionFrame);
+  chatViewportLayoutTransitionFrame = null;
+  chatViewportLayoutTransition = false;
   followEpoch += 1;
   readingLockSeq += 1;
   readingLockAligning = false;
@@ -800,7 +848,7 @@ onBeforeUnmount(() => {
       :connection-status-kind="connectionStatusKind"
       :connection-status-message="connectionStatusMessage"
       @update:draft="emit('update:draft', $event)"
-      @send="emit('send', $event)"
+      @send="handleSend"
       @interrupt="emit('interrupt')"
       @add-images="emit('addImages', $event)"
       @clear-images="emit('clearImages')"
