@@ -111,7 +111,7 @@ describe("chat semantic card ordering (Issue #67)", () => {
     expect(items.find((m) => m.kind === "execute")?.command).toBe("git diff");
   });
 
-  it("keeps a process card above commands when the command arrives first", () => {
+  it("ignores legacy process cards while preserving the command block", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const rt = ctx.activeRuntime.value;
@@ -133,10 +133,8 @@ describe("chat semantic card ordering (Issue #67)", () => {
     });
     handler({ type: "delta", source: "step", delta: "[tool] Inspecting the test output" });
 
-    const ids = rt.messages.value.map((item) => item.id);
-    expect(ids.indexOf("live-step")).toBeGreaterThan(ids.indexOf("u-1"));
-    expect(ids.indexOf("live-step")).toBeLessThan(ids.indexOf("exec:cmd-1:npm test"));
-    expect(rt.messages.value.filter((item) => item.id === "live-step")).toHaveLength(1);
+    expect(rt.messages.value.some((item) => item.id === "live-step")).toBe(false);
+    expect(rt.messages.value.find((item) => item.kind === "execute")?.command).toBe("npm test");
   });
 
   it("keeps the process anchor stable and ignores late updates from retired commands", () => {
@@ -162,12 +160,9 @@ describe("chat semantic card ordering (Issue #67)", () => {
     handler({ type: "command", command: { id: "cmd-1", command: "npm test", outputDelta: "tail\n" } });
 
     const messages = rt.messages.value;
-    const ids = messages.map((item) => item.id);
-    const liveIndex = ids.indexOf("live-step");
     const firstExecuteIndex = messages.findIndex((item) => item.kind === "execute");
-    expect(messages.filter((item) => item.id === "live-step")).toHaveLength(1);
-    expect(messages.find((item) => item.id === "live-step")?.content).toBe("[editing] Updating checks");
-    expect(liveIndex).toBeLessThan(firstExecuteIndex);
+    expect(messages.some((item) => item.id === "live-step")).toBe(false);
+    expect(firstExecuteIndex).toBeGreaterThan(-1);
     expect(messages.filter((item) => item.kind === "execute").map((item) => item.command)).toEqual(["git diff"]);
     expect(messages.find((item) => item.command === "git diff")?.content).toContain("second");
     expect(messages.find((item) => item.command === "npm test")).toBeUndefined();

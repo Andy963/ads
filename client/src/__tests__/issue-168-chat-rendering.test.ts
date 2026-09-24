@@ -143,7 +143,6 @@ describe("Issue #168 chat rendering", () => {
         liveActivityTtlTimer: null,
       } as unknown as ProjectRuntime;
       const streaming = createStreamingActions({
-        liveStepId: "live-step",
         liveActivityId: "live-activity",
         runtimeOrActive: () => runtime,
         setMessages: (items) => {

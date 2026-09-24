@@ -245,7 +245,7 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
-  it("forwards provider reasoning summaries as live-step snapshots and drops plans", async () => {
+  it("drops provider reasoning summaries and plans without creating live steps", async () => {
     const fake = buildFakeServer({
       autoReplies: {
         "thread/start": () => ({ thread: { id: "thread-v2-events" } }),
@@ -298,16 +298,15 @@ describe("CodexAppServerAdapter", () => {
     await sendPromise;
 
     assert.equal(events.some((event) => event.phase === "plan" || event.title.toLowerCase().includes("plan")), false);
-    assert.deepEqual(
-      events.filter((event) => event.liveStep).map((event) => event.delta),
-      ["Comparing ", "Comparing the existing adapters", "Running the verification command"],
-    );
+    assert.equal(events.some((event) => event.liveStep), false);
+    assert.equal(events.some((event) => (event.delta ?? "").includes("Comparing")), false);
+    assert.equal(events.some((event) => (event.delta ?? "").includes("verification command")), false);
     assert(events.some((event) => event.phase === "context" && event.title === "Context ready"));
 
     await registry.stopAll();
   });
 
-  it("suppresses reasoning summaries for Gemini while preserving the GPT summary path", async () => {
+  it("suppresses reasoning summaries for every provider", async () => {
     const fake = buildFakeServer({
       autoReplies: {
         "thread/start": () => ({ thread: { id: "thread-gemini-summary" } }),

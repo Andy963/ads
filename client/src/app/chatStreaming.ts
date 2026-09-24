@@ -85,14 +85,6 @@ function stripStreamingOverlap(current: string, incoming: string): string {
   return incoming;
 }
 
-function trimLiveStepSnapshot(text: string, maxLines: number, maxChars = 2500): string {
-  const normalized = String(text ?? "");
-  const recent = normalized.length > maxChars ? normalized.slice(normalized.length - maxChars) : normalized;
-  const lines = recent.split("\n");
-  if (lines.length <= maxLines) return recent;
-  return lines.slice(lines.length - maxLines).join("\n");
-}
-
 function getRenderedAssistantText(items: ChatItem[], isLiveMessageId: (id: string) => boolean): string {
   let lastUserIndex = -1;
   for (let index = items.length - 1; index >= 0; index -= 1) {
@@ -123,7 +115,6 @@ function getUnrenderedSnapshotText(
 }
 
 export function createStreamingActions(params: {
-  liveStepId: string;
   liveActivityId: string;
   runtimeOrActive: (rt?: ProjectRuntime) => ProjectRuntime;
   setMessages: (items: ChatItem[], rt?: ProjectRuntime) => void;
@@ -133,7 +124,7 @@ export function createStreamingActions(params: {
   isLiveMessageId: (id: string) => boolean;
   randomId: (prefix: string) => string;
 }) {
-  const { liveStepId, liveActivityId, runtimeOrActive, setMessages, dropEmptyAssistantPlaceholder, isLiveMessageId, randomId } =
+  const { liveActivityId, runtimeOrActive, setMessages, dropEmptyAssistantPlaceholder, isLiveMessageId, randomId } =
     params;
 
   const pendingFrameStates = new Set<ProjectRuntime>();
@@ -220,13 +211,6 @@ export function createStreamingActions(params: {
     const next = existing.filter((m) => m.id !== liveActivityId);
     if (next.length === existing.length) return;
     setMessages(next, state);
-  };
-
-  const shouldIgnoreStepDelta = (delta: string): boolean => {
-    // Source `step` is provider-authored explanation text. The backend is the
-    // boundary that decides which provider event is a live-step; the client
-    // only rejects an empty frame and must preserve the text verbatim.
-    return !String(delta ?? "").trim();
   };
 
   const upsertStreamingDelta = (
@@ -383,32 +367,6 @@ export function createStreamingActions(params: {
     setMessages([...existing.slice(0, insertAt), nextItem, ...existing.slice(insertAt)], state);
   };
 
-  const upsertStepLiveDelta = (delta: string, rt?: ProjectRuntime): void => {
-    const state = runtimeOrActive(rt);
-    const chunk = String(delta ?? "");
-    if (!chunk || shouldIgnoreStepDelta(chunk)) return;
-    dropEmptyAssistantPlaceholder(state);
-    const existing = state.messages.value.slice();
-    const idx = existing.findIndex((m) => m.id === liveStepId);
-    // Step events are status snapshots. The wire field remains `delta` for
-    // protocol compatibility, but the live card must show only the newest
-    // substantive snapshot instead of an append-only transcript.
-    const nextText = trimLiveStepSnapshot(chunk, 14);
-    const nextItem: ChatItem = {
-      id: liveStepId,
-      role: "assistant",
-      kind: "text",
-      content: nextText,
-      streaming: true,
-      ts: (idx >= 0 ? existing[idx]!.ts : null) ?? Date.now(),
-    };
-    const withoutStep = idx >= 0 ? [...existing.slice(0, idx), ...existing.slice(idx + 1)] : existing;
-    const insertAt = findProcessInsertIndex(withoutStep);
-
-    const next = [...withoutStep.slice(0, insertAt), nextItem, ...withoutStep.slice(insertAt)];
-    setMessages(next, state);
-  };
-
   const upsertLiveActivity = (rt?: ProjectRuntime): void => {
     const state = runtimeOrActive(rt);
     dropEmptyAssistantPlaceholder(state);
@@ -435,8 +393,7 @@ export function createStreamingActions(params: {
     };
     const withoutActivity = idx >= 0 ? [...existing.slice(0, idx), ...existing.slice(idx + 1)] : existing;
 
-    const stepIdx = withoutActivity.findIndex((m) => m.id === liveStepId);
-    const insertAt = stepIdx >= 0 ? stepIdx : findProcessInsertIndex(withoutActivity);
+    const insertAt = findProcessInsertIndex(withoutActivity);
 
     const next = [...withoutActivity.slice(0, insertAt), nextItem, ...withoutActivity.slice(insertAt)];
     setMessages(next, state);
@@ -452,21 +409,19 @@ export function createStreamingActions(params: {
     clearLiveActivityTimer(state);
     clearLiveActivityWindow(state.liveActivity);
     const existing = state.messages.value.slice();
-    // Thought and plan cards are no longer part of the visible or persisted
-    // turn contract. Drop legacy cards as the turn is sealed as well.
+    // Keep persisted legacy live-step messages readable. Only transient
+    // activity and retired reasoning cards are cleared when a turn seals.
     const next = existing.filter(
-      (m) => !isLiveMessageId(m.id) && m.kind !== "thought" && m.kind !== "plan",
+      (m) => m.id !== liveActivityId && m.kind !== "thought" && m.kind !== "plan",
     );
     if (next.length === existing.length && next.every((m, idx) => m === existing[idx])) return;
     setMessages(next, state);
   };
 
   return {
-    shouldIgnoreStepDelta,
     upsertStreamingDelta,
     replaceStreamingText,
     upsertThoughtDelta,
-    upsertStepLiveDelta,
     upsertLiveActivity,
     clearStepLive,
     sealActiveStreamingAssistant,

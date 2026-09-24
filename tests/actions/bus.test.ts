@@ -718,7 +718,6 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
     // Verify event streaming to Actions lane
     assert.ok(streamedEvents.some((e) => (e.payload.type === "message" || e.payload.type === "user") && (e.payload.text?.includes("Issue #909") || e.payload.content?.includes("Issue #909"))));
-    assert.ok(streamedEvents.some((e) => (e.payload.type === "step" || e.payload.type === "delta") && e.payload.title === "Analyzing repository"));
     assert.ok(streamedEvents.some((e) =>
       e.payload.type === "command"
       && e.payload.command === "Running check"
@@ -741,10 +740,9 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     }
 
     // Verify verification and reviewer events streamed to Actions lane
-    assert.ok(streamedEvents.some((e) => (e.payload.type === "step" || e.payload.type === "delta") && e.payload.title?.includes("Verification")));
     assert.ok(streamedEvents.some((e) => (e.payload.type === "command" || e.payload.type === "command_snapshot") && (e.payload.command === "git status" || e.payload.command?.command === "git status")));
-    assert.ok(streamedEvents.some((e) => (e.payload.type === "step" || e.payload.type === "delta") && e.payload.title?.includes("Reviewer")));
     assert.ok(streamedEvents.some((e) => (e.payload.type === "message" || e.payload.type === "delta") && (e.payload.text?.includes("Code Review") || e.payload.delta?.includes("Code Review"))));
+    assert.equal(streamedEvents.some((e) => e.payload.type === "step"), false);
 
     // Verify history recording for review verdict
     assert.ok(historyEntries.some((h) => h.entry.kind === "review_verdict"));
@@ -800,9 +798,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
     assert.strictEqual(verdict.status, "PASS");
     assert.strictEqual(activeListeners, 0);
-    assert.strictEqual(broadcasts.length, 1);
-    assert.strictEqual(broadcasts[0]?.title, "[Reviewer] Reading diff");
-    assert.strictEqual("raw" in (broadcasts[0] ?? {}), false);
+    assert.strictEqual(broadcasts.length, 0);
     assert.doesNotMatch(JSON.stringify(broadcasts), /"status":"PASS"/);
 
     const failingBus = new LaneDispatchBus(db, {

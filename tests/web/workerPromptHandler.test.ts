@@ -161,8 +161,8 @@ describe("web/server/ws/workerPromptHandler", () => {
     assert.doesNotMatch(JSON.stringify(sent), /outputDelta|aggregated_output|line 1|line 2/);
   });
 
-  it("forwards only provider-authored live-step snapshots without mixing them into command history", () => {
-    const { emit, handler, history, sent } = createHarness();
+  it("drops legacy live-step events while preserving structured command events", () => {
+    const { emit, history, sent } = createHarness();
 
     emit({
       phase: "tool",
@@ -182,17 +182,13 @@ describe("web/server/ws/workerPromptHandler", () => {
     });
     emit(liveStepEvent("Now I will update the failing check."));
 
-    assert.equal(handler.getStepTraceText(), "Now I will update the failing check.");
     const stepDeltas = sent
       .filter((payload) => {
         const item = payload as { type?: unknown; source?: unknown };
         return item.type === "delta" && item.source === "step";
       })
       .map((payload) => (payload as { delta?: unknown }).delta);
-    assert.deepEqual(stepDeltas, [
-      "I will inspect the workspace first.",
-      "Now I will update the failing check.",
-    ]);
+    assert.deepEqual(stepDeltas, []);
     assert.equal(sent.filter((payload) => (payload as { type?: unknown }).type === "command").length, 1);
     assert.deepEqual(history, []);
   });
@@ -264,7 +260,6 @@ describe("web/server/ws/workerPromptHandler", () => {
       })
       .map((payload) => (payload as { delta?: unknown }).delta);
     assert.deepEqual(stepDeltas, []);
-    assert.equal(handler.getStepTraceText(), "");
     assert.equal("getThoughtText" in handler, false);
   });
 

@@ -32,11 +32,9 @@ function setup(): { rt: ProjectRuntime; handler: (message: unknown) => void } {
     ingestCommandActivity: chat.ingestCommandActivity,
     ingestExploredActivity: chat.ingestExploredActivity,
     pushMessageBeforeLive: chat.pushMessageBeforeLive,
-    shouldIgnoreStepDelta: chat.shouldIgnoreStepDelta,
     threadReset: chat.threadReset,
     upsertExecuteBlock: chat.upsertExecuteBlock,
     upsertLiveActivity: chat.upsertLiveActivity,
-    upsertStepLiveDelta: chat.upsertStepLiveDelta,
     upsertStreamingDelta: chat.upsertStreamingDelta,
     replaceStreamingText: chat.replaceStreamingText,
   });
@@ -49,14 +47,13 @@ describe("Actions WebSocket event contract", () => {
     vi.clearAllMocks();
   });
 
-  it("renders step, command, final response, and job status events", () => {
+  it("ignores legacy step events while rendering command, final response, and job status", () => {
     const { rt, handler } = setup();
     const onJobUpdate = vi.fn();
     (window as unknown as { __ADS_ON_ACTION_JOB_UPDATED__?: unknown }).__ADS_ON_ACTION_JOB_UPDATED__ = onJobUpdate;
 
     handler({ type: "step", title: "Developer live step", delta: "Inspecting files", jobId: "job-345" });
-    expect(rt.busy.value).toBe(true);
-    expect(rt.turnInFlight).toBe(true);
+    expect(rt.messages.value.some((message) => message.id === "live-step")).toBe(false);
 
     handler({ type: "command", command: "npm test", output: "failed", status: "failed", jobId: "job-345" });
     expect(rt.turnCommands).toContain("npm test");

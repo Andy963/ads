@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { attachWorkerPromptHandler } from "../../server/web/server/ws/workerPromptHandler.js";
 
 describe("Issue #129: Backend visible execution contract", () => {
-  it("drops hidden reasoning but forwards provider summary text as live-step", () => {
+  it("drops hidden reasoning and legacy provider summaries", () => {
     const sent: unknown[] = [];
     let eventHandler: ((event: any) => void) | null = null;
 
@@ -79,11 +79,7 @@ describe("Issue #129: Backend visible execution contract", () => {
       },
     });
 
-    assert.equal(sent.length, 1);
-    assert.equal((sent[0] as any).type, "delta");
-    assert.equal((sent[0] as any).delta, "I will inspect the relevant files before running a command.");
-    assert.equal((sent[0] as any).source, "step");
-    assert.equal(typeof (sent[0] as any).ts, "number");
+    assert.equal(sent.length, 0);
     assert.equal("getThoughtText" in handler, false);
   });
 

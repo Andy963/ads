@@ -15,7 +15,7 @@ const MarkdownContentStub = defineComponent({
 });
 
 describe("visible step cleanup", () => {
-  it("removes the transient live step without creating a thought card", () => {
+  it("preserves a legacy live step without creating a thought card", () => {
     const messages = ref<ChatItem[]>([
       { id: "u-1", role: "user", kind: "text", content: "hello" },
       { id: "live-step", role: "assistant", kind: "text", content: "Diagnosing repository layout and planning next action...", streaming: true },
@@ -29,7 +29,6 @@ describe("visible step cleanup", () => {
     } as unknown as ProjectRuntime;
 
     const streaming = createStreamingActions({
-      liveStepId: "live-step",
       liveActivityId: "live-activity",
       runtimeOrActive: () => fakeRt,
       setMessages: (items) => {
@@ -43,7 +42,7 @@ describe("visible step cleanup", () => {
 
     streaming.clearStepLive(fakeRt);
 
-    expect(messages.value.find((m) => m.id === "live-step")).toBeUndefined();
+    expect(messages.value.find((m) => m.id === "live-step")?.content).toBe("Diagnosing repository layout and planning next action...");
     expect(messages.value.filter((m) => m.kind === "thought")).toHaveLength(0);
     expect(messages.value.find((m) => m.id === "a-1")?.content).toBe("Here is the result");
   });

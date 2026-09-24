@@ -283,18 +283,9 @@ export function createExecuteActions(params: {
       ts: prevTs ?? eventTs,
     };
 
-    // Eliminate redundant live-step announcer card if it only announced the command
-    // A command replacement may have removed the previous block above. Build
-    // the next message list from the current runtime snapshot so that removed
-    // blocks are not reintroduced while inserting the replacement.
-    const cleanedExisting = state.messages.value.slice().filter((m) => {
-      if (m.id !== "live-step") return true;
-      const content = String(m.content ?? "").toLowerCase().trim();
-      return (
-        !content.startsWith("[command]") &&
-        !content.includes(normalizedCommand.toLowerCase())
-      );
-    });
+    // Build replacements from the current runtime snapshot so removed blocks
+    // are not reintroduced while inserting the replacement.
+    const cleanedExisting = state.messages.value.slice();
     const existingIdx = cleanedExisting.findIndex((m) => m.id === itemId);
     if (existingIdx >= 0) {
       cleanedExisting[existingIdx] = nextItem;
