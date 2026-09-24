@@ -206,9 +206,11 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(currentBranch, "codex/issue-202");
   });
 
-  it("handles reviewer PASS and transitions to waiting_merge", () => {
+  it("handles reviewer PASS and completes the automatic merge", () => {
     const db = getStateDatabase();
-    const bus = new LaneDispatchBus(db);
+    const bus = new LaneDispatchBus(db, {
+      mergePipeline: () => ({ success: true }),
+    });
 
     const job = bus.dispatchJob({
       projectId: repoDir,
@@ -223,11 +225,11 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       reviewSummary: "LGTM",
     });
 
-    assert.strictEqual(res.status, "waiting_merge");
+    assert.strictEqual(res.status, "completed");
     const updated = bus.getJob(job.jobId);
-    assert.strictEqual(updated?.status, "waiting_merge");
+    assert.strictEqual(updated?.status, "completed");
     assert.strictEqual(updated?.pr_number, null);
-    assert.ok(updated?.current_step?.includes("Local repository ready"));
+    assert.ok(updated?.current_step?.includes("PR squash merged"));
   });
 
   it("merges local branch via fast-forward fallback when no PR number exists", async () => {
@@ -257,9 +259,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       reviewSummary: "All good",
     });
 
-    // Execute merge
-    const mergeRes = bus.executeDeterministicMerge(job.jobId, repoDir);
-    assert.strictEqual(mergeRes.success, true);
+    assert.strictEqual(bus.getJob(job.jobId)?.status, "completed");
 
     // Verify dev now has the commit and feature branch is cleaned up
     const currentBranch = spawnSync("git", ["branch", "--show-current"], { cwd: repoDir, encoding: "utf8" }).stdout.trim();
@@ -309,7 +309,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(bus.getJob(job.jobId)?.rework_count, 2);
   });
 
-  it("routes developer failure to bounded rework without advancing the queue", async () => {
+  it("routes developer failure to bounded rework and advances after automatic merge", async () => {
     const db = getStateDatabase();
     let developerCalls = 0;
     const bus = new LaneDispatchBus(db, {
@@ -350,9 +350,9 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(blocked.gateBlocked, "terminal");
     assert.strictEqual(bus.getJob(queuedJob.jobId)?.status, "queued");
 
-    await waitFor(() => bus.getJob(failedJob.jobId)?.status === "waiting_merge");
-    assert.strictEqual(developerCalls, 2);
-    assert.strictEqual(bus.getJob(queuedJob.jobId)?.status, "queued");
+    await waitFor(() => bus.getJob(failedJob.jobId)?.status === "completed");
+    assert.strictEqual(developerCalls, 3);
+    assert.strictEqual(bus.getJob(queuedJob.jobId)?.status, "completed");
   });
 
   it("routes verification failure to rework without invoking reviewer", async () => {
@@ -403,6 +403,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
           ? { prNumber: null, prUrl: null, error: "simulated PR failure" }
           : { prNumber: 345, prUrl: "https://example.test/pull/345" };
       },
+      mergePipeline: () => ({ success: true }),
     });
     const job = bus.dispatchJob({
       projectId: repoDir,
@@ -418,7 +419,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       reviewSummary: "Ready",
     });
     assert.strictEqual(firstResult.status, "running");
-    await waitFor(() => bus.getJob(job.jobId)?.status === "waiting_merge");
+    await waitFor(() => bus.getJob(job.jobId)?.status === "completed");
 
     const recovered = bus.getJob(job.jobId);
     assert.strictEqual(prCalls, 2);
@@ -458,7 +459,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
     const firstMerge = bus.executeDeterministicMerge(job.jobId, repoDir);
     assert.strictEqual(firstMerge.success, false);
-    await waitFor(() => bus.getJob(job.jobId)?.status === "waiting_merge" && bus.getJob(job.jobId)?.rework_count === 1);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "running" && bus.getJob(job.jobId)?.rework_count === 1);
 
     const secondMerge = bus.executeDeterministicMerge(job.jobId, repoDir);
     assert.strictEqual(secondMerge.success, true);
@@ -505,10 +506,10 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     // Start job
     await bus.evaluateQueue(repoDir, repoDir);
 
-    await waitFor(() => bus.getJob(job.jobId)?.status === "waiting_merge");
+    await waitFor(() => bus.getJob(job.jobId)?.status === "completed");
 
     const finishedJob = bus.getJob(job.jobId);
-    assert.strictEqual(finishedJob?.status, "waiting_merge");
+    assert.strictEqual(finishedJob?.status, "completed");
     assert.ok(finishedJob?.review_verdicts_json.includes("PASS"));
   });
 
@@ -545,7 +546,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
     await bus.evaluateQueue(repoDir, repoDir);
     assert.strictEqual(devRan, true);
-    await waitFor(() => bus.getJob(job.jobId)?.status === "waiting_merge");
+    await waitFor(() => bus.getJob(job.jobId)?.status === "completed");
   });
 
   it("routes reviewer rejection defect feedback back to developer for rework", async () => {
@@ -596,6 +597,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(rejectedJob?.status, "running");
     assert.ok(rejectedJob?.current_step?.includes("rework"));
     assert.ok(rejectedJob?.review_verdicts_json.includes("REJECT"));
+    await waitFor(() => devCalls === 2 && bus.getJob(job.jobId)?.status === "completed");
     void receivedFeedback;
   });
 
@@ -702,7 +704,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     // Wait for full cycle (verification + reviewer) to complete
     for (let i = 0; i < 50; i++) {
       const current = bus.getJob(job.jobId);
-      if (current?.status === "waiting_merge") break;
+      if (current?.status === "completed") break;
       await new Promise((r) => setTimeout(r, 20));
     }
 

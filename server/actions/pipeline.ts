@@ -11,6 +11,12 @@ export interface MergeResult {
   error?: string;
 }
 
+interface PullRequestMergeState {
+  state?: string;
+  mergedAt?: string | null;
+  mergeCommit?: { oid?: string | null } | null;
+}
+
 export function createPullRequest(options: {
   cwd: string;
   issueId?: number | null;
@@ -63,10 +69,15 @@ export function mergeAndCleanupPipeline(options: {
   baseBranch?: string;
 }): MergeResult {
   const base = options.baseBranch ?? "dev";
+  const hasRemote = spawnSync("git", ["remote", "get-url", "origin"], {
+    cwd: options.cwd,
+    encoding: "utf8",
+  }).status === 0;
+  let mergeCommit: string | null = null;
 
   // 1. Merge PR if prNumber is provided
   if (options.prNumber) {
-    const mergeRes = spawnSync("gh", ["pr", "merge", String(options.prNumber), "--squash", "--delete-branch=false"], {
+    const mergeRes = spawnSync("gh", ["pr", "merge", String(options.prNumber), "--squash", "--delete-branch=false", "--yes"], {
       cwd: options.cwd,
       encoding: "utf8",
     });
@@ -74,6 +85,35 @@ export function mergeAndCleanupPipeline(options: {
       return {
         success: false,
         error: `gh pr merge failed: ${mergeRes.stderr?.trim() || "Unknown error"}`,
+      };
+    }
+
+    const stateRes = spawnSync("gh", ["pr", "view", String(options.prNumber), "--json", "state,mergedAt,mergeCommit"], {
+      cwd: options.cwd,
+      encoding: "utf8",
+    });
+    if (stateRes.status !== 0) {
+      return {
+        success: false,
+        error: `gh pr state verification failed: ${stateRes.stderr?.trim() || "Unknown error"}`,
+      };
+    }
+
+    let state: PullRequestMergeState;
+    try {
+      state = JSON.parse(stateRes.stdout || "{}") as PullRequestMergeState;
+    } catch (error) {
+      return {
+        success: false,
+        error: `gh pr state verification returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+
+    mergeCommit = state.mergeCommit?.oid ?? null;
+    if (state.state !== "MERGED" || !state.mergedAt || !mergeCommit) {
+      return {
+        success: false,
+        error: `Pull request #${options.prNumber} did not reach MERGED state`,
       };
     }
   } else {
@@ -93,14 +133,31 @@ export function mergeAndCleanupPipeline(options: {
         error: `Local fast-forward merge of '${options.branch}' into '${base}' failed: ${mergeFf.stderr?.trim() || "Non-fast-forward"}. Branch preserved.`,
       };
     }
-  }
 
-  // 2. Close corresponding GitHub Issue
-  if (options.issueId) {
-    spawnSync("gh", ["issue", "close", String(options.issueId)], {
+    const ancestorRes = spawnSync("git", ["merge-base", "--is-ancestor", options.branch, "HEAD"], {
       cwd: options.cwd,
       encoding: "utf8",
     });
+    if (ancestorRes.status !== 0) {
+      return {
+        success: false,
+        error: `Local merge verification failed: '${options.branch}' is not an ancestor of '${base}'.`,
+      };
+    }
+  }
+
+  // 2. Close corresponding GitHub Issue
+  if (hasRemote && options.issueId) {
+    const issueCloseRes = spawnSync("gh", ["issue", "close", String(options.issueId)], {
+      cwd: options.cwd,
+      encoding: "utf8",
+    });
+    if (issueCloseRes.status !== 0) {
+      return {
+        success: false,
+        error: `gh issue close failed: ${issueCloseRes.stderr?.trim() || "Unknown error"}`,
+      };
+    }
   }
 
   // 3. Checkout base branch
@@ -120,22 +177,64 @@ export function mergeAndCleanupPipeline(options: {
     cwd: options.cwd,
     encoding: "utf8",
   });
-  if (pullRes.status !== 0) {
-    // If pulling fails (e.g. offline / no remote), log error but continue cleanup
+  if (hasRemote && pullRes.status !== 0) {
+    return {
+      success: false,
+      error: `git pull --ff-only origin ${base} failed: ${pullRes.stderr?.trim() || "Unknown error"}`,
+    };
+  }
+
+  if (mergeCommit) {
+    const containsMergeRes = spawnSync("git", ["merge-base", "--is-ancestor", mergeCommit, "HEAD"], {
+      cwd: options.cwd,
+      encoding: "utf8",
+    });
+    if (containsMergeRes.status !== 0) {
+      return {
+        success: false,
+        error: `Merge commit ${mergeCommit} is not present on '${base}' after synchronization.`,
+      };
+    }
   }
 
   // 5. Delete local feature branch
   if (options.branch && options.branch !== base) {
-    spawnSync("git", ["branch", "-D", options.branch], {
+    const branchExists = spawnSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${options.branch}`], {
       cwd: options.cwd,
       encoding: "utf8",
     });
+    if (branchExists.status === 0) {
+      const deleteLocalRes = spawnSync("git", ["branch", "-D", options.branch], {
+        cwd: options.cwd,
+        encoding: "utf8",
+      });
+      if (deleteLocalRes.status !== 0) {
+        return {
+          success: false,
+          error: `git branch -D ${options.branch} failed: ${deleteLocalRes.stderr?.trim() || "Unknown error"}`,
+        };
+      }
+    }
 
     // 6. Delete remote feature branch
-    spawnSync("git", ["push", "origin", "--delete", options.branch], {
-      cwd: options.cwd,
-      encoding: "utf8",
-    });
+    if (hasRemote) {
+      const remoteBranch = spawnSync("git", ["ls-remote", "--exit-code", "--heads", "origin", options.branch], {
+        cwd: options.cwd,
+        encoding: "utf8",
+      });
+      if (remoteBranch.status === 0) {
+        const deleteRemoteRes = spawnSync("git", ["push", "origin", "--delete", options.branch], {
+          cwd: options.cwd,
+          encoding: "utf8",
+        });
+        if (deleteRemoteRes.status !== 0) {
+          return {
+            success: false,
+            error: `git push origin --delete ${options.branch} failed: ${deleteRemoteRes.stderr?.trim() || "Unknown error"}`,
+          };
+        }
+      }
+    }
   }
 
   return { success: true };

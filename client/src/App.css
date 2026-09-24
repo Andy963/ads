@@ -1531,26 +1531,3 @@
   color: var(--text);
   border-color: var(--text);
 }
-
-.acopilotWaitingMergeBanner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 16px;
-  background: rgba(16, 185, 129, 0.08);
-  border-bottom: 1px solid rgba(16, 185, 129, 0.2);
-  font-size: 12.5px;
-  color: var(--text);
-  flex-shrink: 0;
-}
-
-.btnJumpActions {
-  padding: 3px 8px;
-  border-radius: 4px;
-  background: #10b981;
-  color: #fff;
-  border: none;
-  font-size: 11.5px;
-  font-weight: 600;
-  cursor: pointer;
-}

@@ -956,8 +956,8 @@ export class LaneDispatchBus {
         pr_number: prNumber,
         pr_url: prUrl,
         current_step: hasRemote
-          ? `Review passed. PR #${prNumber} created. Waiting for user merge approval.`
-          : "Review passed. Local repository ready for fast-forward merge.",
+          ? `Review passed. PR #${prNumber} created. Starting automatic merge and cleanup.`
+          : "Review passed. Starting automatic local merge and cleanup.",
       });
 
       const projectId = job.project_id;
@@ -969,8 +969,8 @@ export class LaneDispatchBus {
           type: "message",
           role: "status",
           text: hasRemote
-            ? `Review approved. PR #${prNumber} created (${prUrl}). Waiting for user merge approval.`
-            : "Review approved. Local repository ready for fast-forward merge.",
+            ? `Review approved. PR #${prNumber} created (${prUrl}). Starting automatic merge and cleanup.`
+            : "Review approved. Starting automatic local merge and cleanup.",
           jobId: job.id,
           ts: Date.now(),
         }, historyKey, projectId);
@@ -980,15 +980,18 @@ export class LaneDispatchBus {
         this.options.historyStore.add(historyKey, {
           role: "status",
           text: hasRemote
-            ? `[PR Created] PR #${prNumber}: ${prUrl}. Waiting for merge approval.`
-            : "[Local Ready] Review approved. Ready for merge.",
+            ? `[PR Created] PR #${prNumber}: ${prUrl}. Starting automatic merge and cleanup.`
+            : "[Local Merge] Review approved. Starting automatic merge and cleanup.",
           ts: Date.now(),
           kind: "pr_delivery",
         });
       }
 
+      const mergeResult = this.executeDeterministicMerge(job.id, params.repoPath);
+      const completedJob = getActionJobById(this.db, job.id);
+
       return {
-        status: "waiting_merge",
+        status: completedJob?.status ?? (mergeResult.success ? "completed" : "running"),
         prNumber,
         prUrl,
       };
