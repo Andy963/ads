@@ -1,7 +1,6 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
-import { getStateDatabase } from "../state/database.js";
-import { LaneDispatchBus } from "../actions/bus.js";
+import { getBus } from "../web/server/api/routes/actions.js";
 import { getWorkspacesDatabase, resolveWorkspaceId } from "../storage/database.js";
 import { updateMemory } from "../memory/memory.js";
 import { createLogger } from "../utils/logger.js";
@@ -65,8 +64,7 @@ export async function executeToolDirectives(args: {
         const issueId = issueIdRaw ? Number(issueIdRaw) : null;
         const issueTitle = directive.attrs.title || directive.attrs.issue_title || directive.body || (issueId ? `Issue #${issueId}` : "Task");
         const jobKind = directive.attrs.kind === "local_prompt" ? "local_prompt" : "github_issue";
-        const stateDb = args.db ?? getStateDatabase();
-        const bus = new LaneDispatchBus(stateDb);
+        const bus = getBus();
         const res = bus.dispatchJob({
           projectId: args.workspaceRoot,
           issueId: Number.isFinite(issueId) ? issueId : null,

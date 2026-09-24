@@ -33,6 +33,8 @@ import {
 } from "./start/webLaneResources.js";
 import { preferInMemoryThreadId } from "./ws/threadIds.js";
 import { createSessionCacheRegistry } from "./ws/sessionCacheRegistry.js";
+import { LaneDispatchBus } from "../../actions/bus.js";
+import { setBusInstance } from "./api/routes/actions.js";
 
 const logger = createLogger("WebSocket");
 
@@ -251,6 +253,26 @@ export async function startWebServer(): Promise<void> {
   const syncEventStore = new SyncEventStore({ stateDbPath });
   const laneGenerationStore = new WebLaneGenerationStore({ stateDbPath });
   const wsHub = createWebSocketHub();
+
+  const broadcastToActionsLane = (payload: unknown, targetHistoryKey?: string, projectId?: string): void => {
+    for (const [ws, meta] of wsHub.clientMetaByWs.entries()) {
+      if (meta.chatSessionId === "worker") {
+        if (targetHistoryKey && meta.historyKey !== targetHistoryKey) continue;
+        if (projectId && meta.sessionId !== projectId) continue;
+        wsHub.safeSendJson(ws, payload);
+      }
+    }
+  };
+
+  const actionBus = new LaneDispatchBus(getStateDatabase(stateDbPath), {
+    sessionManager,
+    historyStore: laneResources.worker.historyStore,
+    getWorkspaceLock,
+    broadcastToActionsLane,
+    interruptControllers,
+  });
+  setBusInstance(actionBus);
+
   const workspaceContext = createWorkspaceContextResolver({ workspaceRoot, allowedDirs });
 
   const scheduleCompiler = new AgentScheduleCompiler();

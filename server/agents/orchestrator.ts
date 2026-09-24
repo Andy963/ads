@@ -474,6 +474,12 @@ export class HybridOrchestrator {
     return this.modelReasoningEffort;
   }
 
+  setDeveloperInstructions(instructions: string): void {
+    for (const { adapter } of this.adapters.values()) {
+      adapter.setDeveloperInstructions?.(instructions);
+    }
+  }
+
   getThreadId(): string | null {
     return this.activeEntry.adapter.getThreadId?.() ?? null;
   }
