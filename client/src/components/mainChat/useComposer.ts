@@ -3,6 +3,12 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import type { IncomingImage } from "./types";
 import { autosizeTextarea, createTextareaWrapMeasurer } from "../../lib/textarea_autosize";
 import { diagAlert } from "../../lib/diagAlert";
+import {
+  computeVoiceWaveformFrame,
+  createIdleVoiceWaveformLevels,
+  VOICE_WAVEFORM_BAR_COUNT,
+  VOICE_WAVEFORM_IDLE_LEVEL,
+} from "../../lib/voiceWaveform";
 
 type VoiceStatusKind = "idle" | "recording" | "transcribing" | "error" | "ok";
 type TranscriptionResponse = { ok?: boolean; text?: string; error?: string; message?: string };
@@ -323,6 +329,8 @@ export function useMainChatComposer(params: {
   const transcribing = ref(false);
   const voiceStatusKind = ref<VoiceStatusKind>("idle");
   const voiceStatusMessage = ref("");
+  const voiceWaveformLevels = ref(createIdleVoiceWaveformLevels());
+  const voiceWaveformReactive = ref(false);
   let isCancelledRecording = false;
   let sendAfterTranscribe = false;
   let voiceToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -331,6 +339,88 @@ export function useMainChatComposer(params: {
   let recorderStream: MediaStream | null = null;
   let recorderMime = "";
   let recorderChunks: Blob[] = [];
+  let voiceAudioContext: AudioContext | null = null;
+  let voiceAnalyser: AnalyserNode | null = null;
+  let voiceSource: MediaStreamAudioSourceNode | null = null;
+  let voiceAnalysisFrame: number | null = null;
+  let smoothedVoiceAmplitude = VOICE_WAVEFORM_IDLE_LEVEL;
+
+  const stopVoiceAnalysis = (): void => {
+    if (voiceAnalysisFrame !== null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+      try {
+        window.cancelAnimationFrame(voiceAnalysisFrame);
+      } catch {
+        // ignore
+      }
+    }
+    voiceAnalysisFrame = null;
+    voiceWaveformReactive.value = false;
+    voiceWaveformLevels.value = createIdleVoiceWaveformLevels();
+    smoothedVoiceAmplitude = VOICE_WAVEFORM_IDLE_LEVEL;
+
+    try {
+      voiceSource?.disconnect();
+    } catch {
+      // ignore
+    }
+    try {
+      voiceAnalyser?.disconnect();
+    } catch {
+      // ignore
+    }
+    voiceSource = null;
+    voiceAnalyser = null;
+
+    const context = voiceAudioContext;
+    voiceAudioContext = null;
+    if (context) {
+      try {
+        void context.close().catch(() => undefined);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  const startVoiceAnalysis = (stream: MediaStream): void => {
+    stopVoiceAnalysis();
+    if (typeof window === "undefined" || typeof window.AudioContext !== "function" || typeof window.requestAnimationFrame !== "function") {
+      return;
+    }
+
+    try {
+      const context = new window.AudioContext();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.65;
+      const source = context.createMediaStreamSource(stream);
+      source.connect(analyser);
+
+      voiceAudioContext = context;
+      voiceAnalyser = analyser;
+      voiceSource = source;
+      voiceWaveformReactive.value = true;
+      const samples = new Uint8Array(analyser.fftSize);
+
+      const sampleFrame = (): void => {
+        if (voiceAudioContext !== context || voiceAnalyser !== analyser) return;
+        analyser.getByteTimeDomainData(samples);
+        const frame = computeVoiceWaveformFrame(
+          samples,
+          smoothedVoiceAmplitude,
+          VOICE_WAVEFORM_BAR_COUNT,
+        );
+        smoothedVoiceAmplitude = frame.amplitude;
+        voiceWaveformLevels.value = frame.levels;
+        voiceAnalysisFrame = window.requestAnimationFrame(sampleFrame);
+      };
+
+      void context.resume().catch(() => undefined);
+      voiceAnalysisFrame = window.requestAnimationFrame(sampleFrame);
+    } catch {
+      stopVoiceAnalysis();
+    }
+  };
 
   const clearVoiceToast = (): void => {
     if (voiceToastTimer) {
@@ -360,6 +450,7 @@ export function useMainChatComposer(params: {
   };
 
   const cleanupRecorder = (): void => {
+    stopVoiceAnalysis();
     if (recorderStream) {
       for (const track of recorderStream.getTracks()) {
         try {
@@ -501,6 +592,7 @@ export function useMainChatComposer(params: {
 
       recorder.start();
       recording.value = true;
+      startVoiceAnalysis(stream);
       setVoiceStatus("idle", "");
     } catch (error) {
       recording.value = false;
@@ -515,6 +607,7 @@ export function useMainChatComposer(params: {
     recording.value = false;
     transcribing.value = true;
     setVoiceStatus("idle", "");
+    stopVoiceAnalysis();
     try {
       recorder?.stop();
     } catch {
@@ -538,6 +631,7 @@ export function useMainChatComposer(params: {
     sendAfterTranscribe = false;
     recording.value = false;
     transcribing.value = false;
+    stopVoiceAnalysis();
     try {
       recorder?.stop();
     } catch {
@@ -774,6 +868,10 @@ export function useMainChatComposer(params: {
 
   onBeforeUnmount(() => {
     clearVoiceToast();
+    isCancelledRecording = true;
+    sendAfterTranscribe = false;
+    recording.value = false;
+    transcribing.value = false;
     try {
       recorder?.stop();
     } catch {
@@ -801,6 +899,8 @@ export function useMainChatComposer(params: {
     transcribing,
     voiceStatusKind,
     voiceStatusMessage,
+    voiceWaveformLevels,
+    voiceWaveformReactive,
     toggleRecording,
     cancelRecording,
     stopAndSend,
