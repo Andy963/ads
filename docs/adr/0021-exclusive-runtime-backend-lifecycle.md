@@ -19,8 +19,8 @@ ADS 对外暴露 `codex` 作为逻辑 agent 标识，同时在 Codex app-server 
 2. 一个 session 生命周期内只能绑定一个 backend。持久化 backend 与当前进程
    backend 不一致时直接抛出明确错误；ADS 不在 runtime 之间迁移或注入历史。
 3. 逻辑 agent id 保持为 `codex`。Native execution id 只存在于进程内，不能写入
-   durable thread storage，也不能传给 app-server adapter；Native adapter 会拒绝
-   provider thread resume id。
+   durable thread storage 或 history session link，也不能传给 app-server
+   adapter；Native adapter 会拒绝 provider thread resume id。
 4. session 使用明确的 `durable` 或 `ephemeral` lifecycle。durable session 可以
    保存 Codex provider thread 状态；ephemeral session（包括 detached Actions
    Reviewer）不写入 session state，并在使用后释放。

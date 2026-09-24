@@ -94,6 +94,8 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     const inputToSend: Input = promptInput.input;
     const cleanupAfter = cleanupAttachments;
     const turnCwd = deps.context.currentCwd;
+    const shouldLinkProviderSession = (): boolean =>
+      deps.sessions.sessionManager.getRuntimeBackend?.() !== "native";
 
     const promptRun = beginWsPromptRun({
       historyKey: deps.context.historyKey,
@@ -210,7 +212,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       onThreadStarted: (threadId) => {
         const activeAgentId = orchestrator.getActiveAgentId();
         deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, activeAgentId);
-        if (typeof deps.history.historyStore.linkAgentSession === "function") {
+        if (shouldLinkProviderSession() && typeof deps.history.historyStore.linkAgentSession === "function") {
           deps.history.historyStore.linkAgentSession(deps.context.historyKey, {
             agentId: activeAgentId,
             providerSessionId: threadId,
@@ -229,7 +231,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       const expectedThreadId =
         preferInMemoryThreadId({ inMemoryThreadId: orchestrator.getThreadId(), savedThreadId }) ?? undefined;
       promptRun.ensureActive();
-      if (expectedThreadId && typeof deps.history.historyStore.linkAgentSession === "function") {
+      if (expectedThreadId && shouldLinkProviderSession() && typeof deps.history.historyStore.linkAgentSession === "function") {
         deps.history.historyStore.linkAgentSession(deps.context.historyKey, {
           agentId: activeAgentId,
           providerSessionId: expectedThreadId,
@@ -315,7 +317,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         promptRun.ensureActive();
         const activeAgentId = orchestrator.getActiveAgentId();
         deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, activeAgentId);
-        if (typeof deps.history.historyStore.linkAgentSession === "function") {
+        if (shouldLinkProviderSession() && typeof deps.history.historyStore.linkAgentSession === "function") {
           deps.history.historyStore.linkAgentSession(deps.context.historyKey, {
             agentId: activeAgentId,
             providerSessionId: threadId,

@@ -266,6 +266,131 @@ describe("SessionManager", () => {
     }
   });
 
+  it("rejects backend mismatches even when durable resume is disabled", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-runtime-mismatch-"));
+    const storage = new ThreadStorage({
+      namespace: "runtime-mismatch",
+      stateDbPath: path.join(directory, "state.db"),
+      storagePath: path.join(directory, "threads.json"),
+      saltPath: path.join(directory, "salt"),
+    });
+    storage.setRecord(3, {
+      threadId: "native-thread",
+      cwd: directory,
+      agentThreads: { codex: "native-thread" },
+      runtimeBackend: "native",
+      lifecycle: "durable",
+    });
+    const sessions = createFakeSessionFactory();
+    const codexManager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      storage,
+      undefined,
+      { createSession: sessions.factory as never },
+    );
+
+    try {
+      assert.throws(
+        () => codexManager.getOrCreate(3, directory, false),
+        /Cross-runtime resume is not supported/,
+      );
+      assert.equal(storage.getRecord(3)?.runtimeBackend, "native");
+      assert.equal(storage.getRecord(3)?.threadId, "native-thread");
+    } finally {
+      codexManager.destroy();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("clears ambiguous legacy thread bindings before recording backend metadata", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-legacy-runtime-"));
+    const storage = new ThreadStorage({
+      namespace: "legacy-runtime",
+      stateDbPath: path.join(directory, "state.db"),
+      storagePath: path.join(directory, "threads.json"),
+      saltPath: path.join(directory, "salt"),
+    });
+    storage.setRecord(4, {
+      threadId: "native-execution-id",
+      cwd: directory,
+      agentThreads: { codex: "native-execution-id" },
+    });
+    const sessions = createFakeSessionFactory();
+    const firstManager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      storage,
+      undefined,
+      { createSession: sessions.factory as never },
+    );
+
+    try {
+      firstManager.getOrCreate(4, directory, true);
+      firstManager.destroy();
+
+      const adopted = storage.getRecord(4);
+      assert.equal(adopted?.runtimeBackend, "codex-app-server");
+      assert.equal(adopted?.threadId, undefined);
+      assert.deepEqual(adopted?.agentThreads, {});
+
+      const secondManager = new SessionManager(
+        0,
+        0,
+        "workspace-write",
+        undefined,
+        storage,
+        undefined,
+        { createSession: sessions.factory as never },
+      );
+      try {
+        const restored = secondManager.getOrCreate(4, directory, true) as unknown as FakeSession;
+        assert.equal(restored.threadId, null);
+      } finally {
+        secondManager.destroy();
+      }
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not preserve Native execution ids across reset", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-reset-"));
+    const storage = new ThreadStorage({
+      namespace: "native-reset",
+      stateDbPath: path.join(directory, "state.db"),
+      storagePath: path.join(directory, "threads.json"),
+      saltPath: path.join(directory, "salt"),
+    });
+    const sessions = createFakeSessionFactory();
+    const nativeManager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      storage,
+      { ADS_AGENT_RUNTIME: "native", ADS_WEB_SESSION_PEPPER: "test-only-pepper" },
+      { createSession: sessions.factory as never },
+    );
+
+    try {
+      const session = nativeManager.getOrCreate(5, directory) as unknown as FakeSession;
+      session.threadId = "native-execution-id";
+      nativeManager.reset(5, { preserveThreadForResume: true });
+
+      assert.equal(nativeManager.getSavedResumeThreadId(5), undefined);
+      assert.equal(storage.getRecord(5)?.threadId, undefined);
+      assert.deepEqual(storage.getRecord(5)?.agentThreads ?? {}, {});
+    } finally {
+      nativeManager.destroy();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("tracks session statistics", () => {
     manager.getOrCreate(123456);
     manager.getOrCreate(789012);

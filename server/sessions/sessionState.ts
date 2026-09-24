@@ -131,16 +131,17 @@ export function resolveResumeState(args: {
   currentCwd?: string;
   runtimeBackend?: AgentRuntimeBackend;
 }): ResumeState {
-  if (!args.resumeThread) {
-    args.logger.info(`[Continuity] user=${args.userId} restore=fresh reason=resume_not_requested`);
-    return { shouldInjectHistory: false, restoreMode: "fresh" };
-  }
-
   const record = args.storage?.getRecord(args.userId);
   const currentBackend = args.runtimeBackend ?? "codex-app-server";
   if (record?.runtimeBackend && record.runtimeBackend !== currentBackend) {
     throw new RuntimeBackendMismatchError(record.runtimeBackend, currentBackend);
   }
+
+  if (!args.resumeThread) {
+    args.logger.info(`[Continuity] user=${args.userId} restore=fresh reason=resume_not_requested`);
+    return { shouldInjectHistory: false, restoreMode: "fresh" };
+  }
+
   // Legacy records may still say that Claude was active. Claude session ids
   // are not valid Codex thread ids, so only the canonical Codex binding is
   // eligible for provider resume after the engine consolidation.
@@ -273,10 +274,16 @@ export function buildSyncedSessionState(args: {
   lifecycle?: SessionLifecycle;
 }): SavedSessionState {
   const nativeRuntime = args.runtimeBackend === "native";
+  const ambiguousLegacyThread = Boolean(
+    args.runtimeBackend &&
+    !args.storedState?.runtimeBackend &&
+    (args.storedState?.threadId || Object.keys(args.storedState?.agentThreads ?? {}).length > 0),
+  );
+  const clearThreads = Boolean(args.clearThreads || nativeRuntime || ambiguousLegacyThread);
   return {
-    threadId: args.clearThreads || nativeRuntime ? undefined : args.storedState?.threadId,
+    threadId: clearThreads ? undefined : args.storedState?.threadId,
     cwd: args.cwd ?? args.sessionState?.cwd ?? args.storedState?.cwd,
-    agentThreads: args.clearThreads || nativeRuntime ? {} : { ...(args.storedState?.agentThreads ?? {}) },
+    agentThreads: clearThreads ? {} : { ...(args.storedState?.agentThreads ?? {}) },
     model:
       args.sessionState?.model ||
       args.userModel ||

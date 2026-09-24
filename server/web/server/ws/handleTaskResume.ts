@@ -160,6 +160,8 @@ export async function handleTaskResumeMessage(
       });
     };
     const activeAgentId = orchestrator.getActiveAgentId();
+    const runtimeBackend = deps.sessions.sessionManager.getRuntimeBackend?.() ?? "codex-app-server";
+    const canResumeProviderThread = supportsNativeResume(activeAgentId) && runtimeBackend === "codex-app-server";
     const savedState = deps.sessions.sessionManager.getSavedState?.(deps.context.userId);
     const request = parseTaskResumeRequest(deps.request.parsed.payload);
     const selection = selectTaskResumeThread({
@@ -169,7 +171,7 @@ export async function handleTaskResumeMessage(
       savedResumeThreadId: deps.sessions.sessionManager.getSavedResumeThreadId(deps.context.userId),
       savedResumeCwd: savedState?.cwd,
       currentCwd: deps.context.currentCwd,
-      canResumeThread: supportsNativeResume(activeAgentId),
+      canResumeThread: canResumeProviderThread,
     });
     const threadIdToResume = selection.threadId;
     let clearSavedResumeThreadAfterFallback = false;
@@ -180,8 +182,8 @@ export async function handleTaskResumeMessage(
 
     if (threadIdToResume) {
       try {
-        if (!supportsNativeResume(activeAgentId)) {
-          throw new Error(`native session resume is not supported for agent=${activeAgentId}`);
+        if (!canResumeProviderThread) {
+          throw new Error(`provider session resume is not supported for agent=${activeAgentId}`);
         }
 
         await assertSessionResumable({
@@ -320,7 +322,10 @@ export async function handleTaskResumeMessage(
       if (threadId) {
         const activeAgentId = orchestrator.getActiveAgentId();
         deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, activeAgentId);
-        if (typeof deps.history.historyStore.linkAgentSession === "function") {
+        if (
+          canResumeProviderThread &&
+          typeof deps.history.historyStore.linkAgentSession === "function"
+        ) {
           deps.history.historyStore.linkAgentSession(deps.context.historyKey, {
             agentId: activeAgentId,
             providerSessionId: threadId,

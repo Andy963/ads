@@ -166,7 +166,7 @@ export class SessionManager {
     const resumeState = resolveResumeState({
       userId,
       resumeThread,
-      storage: this.threadStorage,
+      storage: lifecycle === "durable" ? this.threadStorage : undefined,
       logger: this.logger,
       currentCwd: effectiveCwd,
       runtimeBackend: this.runtimeBackend,
@@ -283,6 +283,9 @@ export class SessionManager {
   }
 
   getSavedResumeThreadId(userId: number): string | undefined {
+    if (this.runtimeBackend === "native") {
+      return undefined;
+    }
     return getSavedResumeThreadId(this.threadStorage, userId);
   }
 
@@ -416,10 +419,14 @@ export class SessionManager {
     return this.codexEnv;
   }
 
+  getRuntimeBackend(): AgentRuntimeBackend {
+    return this.runtimeBackend;
+  }
+
   reset(userId: number, options?: { preserveThreadForResume?: boolean }): void {
     const record = this.runtime.getRecord(userId);
     const storage = this.threadStorage;
-    const preserve = Boolean(options?.preserveThreadForResume);
+    const preserve = Boolean(options?.preserveThreadForResume) && this.runtimeBackend === "codex-app-server";
     if (storage) {
       if (preserve) {
         const savedState = storage.getRecord(userId);
