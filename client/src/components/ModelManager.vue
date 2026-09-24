@@ -31,6 +31,8 @@ type RoleProfile = {
   version: number;
 };
 
+type RoleProfileBaseline = Pick<RoleProfile, "model_id" | "reasoning_effort" | "system_prompt">;
+
 type UpstreamDiscoveryResponse = {
   ok: boolean;
   models: string[];
@@ -76,6 +78,11 @@ const selectedModelId = ref<string | null>(null);
 const activeTab = ref<SettingsTab>(props.initialTab);
 const selectedRole = ref<RoleName>("acopilot");
 const roleProfiles = ref<RoleProfile[]>([]);
+const roleProfileBaselines = reactive<Record<RoleName, RoleProfileBaseline | null>>({
+  acopilot: null,
+  developer: null,
+  reviewer: null,
+});
 const lanePromptSnapshots = ref<LanePromptSnapshot[]>([]);
 const selectedLane = ref<LaneName | "reviewer">("advisor");
 const selectedVersion = ref<number | null>(null);
@@ -115,6 +122,14 @@ const selectedRoleEffort = computed({
     if (profile) profile.reasoning_effort = val;
   },
 });
+
+function roleProfileBaseline(profile: RoleProfile): RoleProfileBaseline {
+  return {
+    model_id: profile.model_id,
+    reasoning_effort: profile.reasoning_effort,
+    system_prompt: profile.system_prompt,
+  };
+}
 
 function selectRole(role: RoleName): void {
   selectedRole.value = role;
@@ -500,13 +515,28 @@ const selectedLaneVersion = computed(() => {
   return snapshot.versions.find((version) => version.version === selectedVersion.value) ?? snapshot.current;
 });
 
+const selectedPromptBaseline = computed(
+  () => selectedLaneVersion.value?.prompt ?? currentRoleProfile.value?.system_prompt ?? "",
+);
+
+const activeLanePromptBaseline = computed(
+  () => selectedLaneSnapshot.value?.current.prompt ?? currentRoleProfile.value?.system_prompt ?? "",
+);
+
+const roleProfileDirty = computed(() => {
+  const profile = currentRoleProfile.value;
+  const baseline = roleProfileBaselines[selectedRole.value];
+  if (!profile || !baseline) return false;
+  return profile.model_id !== baseline.model_id || profile.reasoning_effort !== baseline.reasoning_effort;
+});
+
 const isViewingHistoricalVersion = computed(() => {
   const snapshot = selectedLaneSnapshot.value;
   const version = selectedLaneVersion.value;
   return Boolean(snapshot && version && version.version !== snapshot.current.version);
 });
 
-const lanePromptDirty = computed(() => lanePromptText.value !== (selectedLaneVersion.value?.prompt ?? ""));
+const lanePromptDirty = computed(() => lanePromptText.value !== selectedPromptBaseline.value || roleProfileDirty.value);
 
 function formatVersionTimestamp(createdAt: number): string {
   if (!Number.isFinite(createdAt) || createdAt <= 0) return "未知时间";
@@ -716,8 +746,12 @@ async function loadLanePrompts(): Promise<void> {
     if (profiles && profiles.length > 0) {
       roleProfiles.value = profiles;
     }
+    for (const role of ["acopilot", "developer", "reviewer"] as const) {
+      const profile = profiles.find((item) => item.role === role);
+      roleProfileBaselines[role] = profile ? roleProfileBaseline(profile) : null;
+    }
     selectedVersion.value = null;
-    lanePromptText.value = selectedLaneSnapshot.value?.current.prompt ?? "";
+    lanePromptText.value = selectedLaneSnapshot.value?.current.prompt ?? currentRoleProfile.value?.system_prompt ?? "";
     lanePromptDrafts.advisor = null;
     lanePromptDrafts.worker = null;
     lanePromptDrafts.acopilot = null;
@@ -738,31 +772,48 @@ function selectLane(lane: LaneName): void {
   if (lanePromptDrafts[lane] !== null) {
     lanePromptText.value = lanePromptDrafts[lane]!;
   } else {
-    lanePromptText.value = lanePromptSnapshots.value.find((snapshot) => snapshot.lane === lane)?.current.prompt ?? "";
+    lanePromptText.value =
+      lanePromptSnapshots.value.find((snapshot) => snapshot.lane === lane)?.current.prompt ??
+      (lane === "advisor"
+        ? roleProfiles.value.find((profile) => profile.role === "acopilot")?.system_prompt
+        : roleProfiles.value.find((profile) => profile.role === "developer")?.system_prompt) ??
+      "";
   }
   lanePromptError.value = null;
   lanePromptStatus.value = null;
 }
 
-async function persistLanePrompt(prompt: string, successMessage: string): Promise<void> {
-  if (lanePromptSaving.value || !prompt.trim()) return;
+async function persistLanePrompt(
+  prompt: string,
+  successMessage: string,
+  options: { forceLanePrompt?: boolean } = {},
+): Promise<void> {
+  if (lanePromptSaving.value || (!prompt.trim() && !currentRoleProfile.value)) return;
   lanePromptSaving.value = true;
   lanePromptError.value = null;
   lanePromptStatus.value = null;
   try {
     const profile = currentRoleProfile.value;
     if (profile) {
-      profile.system_prompt = prompt;
-      await props.api
-        .put(`/api/role-profiles/${encodeURIComponent(profile.id)}`, {
+      const savedProfile = await props.api.put<RoleProfile>(
+        `/api/role-profiles/${encodeURIComponent(profile.id)}`,
+        {
           model_id: profile.model_id,
           reasoning_effort: profile.reasoning_effort,
           system_prompt: prompt,
-        })
-        .catch(() => {});
+        },
+      );
+      if (savedProfile && typeof savedProfile === "object" && !Array.isArray(savedProfile)) {
+        Object.assign(profile, savedProfile);
+      }
+      profile.system_prompt = prompt;
+      roleProfileBaselines[profile.role] = roleProfileBaseline(profile);
     }
 
-    if (selectedLane.value === "advisor" || selectedLane.value === "worker") {
+    const shouldPersistLanePrompt =
+      (selectedLane.value === "advisor" || selectedLane.value === "worker") &&
+      (options.forceLanePrompt === true || prompt !== activeLanePromptBaseline.value);
+    if (shouldPersistLanePrompt) {
       const snapshot = await props.api.put<LanePromptSnapshot>(
         `/api/lane-prompts/${encodeURIComponent(selectedLane.value)}`,
         { prompt },
@@ -793,7 +844,7 @@ async function saveLanePrompt(): Promise<void> {
 async function restoreLanePrompt(): Promise<void> {
   const version = selectedLaneVersion.value;
   if (!isViewingHistoricalVersion.value || !version) return;
-  await persistLanePrompt(version.prompt, `已恢复 v${version.version}，并创建新的活动版本。`);
+  await persistLanePrompt(version.prompt, `已恢复 v${version.version}，并创建新的活动版本。`, { forceLanePrompt: true });
 }
 
 async function resetLanePrompt(): Promise<void> {
