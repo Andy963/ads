@@ -290,6 +290,7 @@ export class LaneDispatchBus {
       this.options.broadcastToActionsLane({
         type: "action_job_updated",
         jobId: updated.id,
+        issueId: updated.issue_id,
         status: updated.status,
         currentStep: updated.current_step,
         reworkCount: updated.rework_count,
