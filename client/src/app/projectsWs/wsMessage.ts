@@ -999,7 +999,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
                     serverQueueTracked: true,
                     restoredFromStorage: false,
                     replayIncomplete: false,
-                    queueLaneGeneration: Number(msg.lane_generation ?? prompt.queueLaneGeneration) || undefined,
+                    // The ack frame carries no generation: the row was just
+                    // accepted into the lane this socket is on. The authoritative
+                    // value arrives with the prompt_queue event.
+                    queueLaneGeneration: Number(rt.laneGeneration ?? prompt.queueLaneGeneration) || undefined,
                   }
                 : prompt,
             );
@@ -1011,7 +1014,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
               deliveryStatus: rawStatus === "running" || rawStatus === "failed" ? rawStatus : "queued",
               queueError: rawStatus === "failed" ? String(msg.error ?? "") || undefined : undefined,
               serverQueueTracked: true,
-              queueLaneGeneration: Number(msg.lane_generation) || undefined,
+              queueLaneGeneration: Number(rt.laneGeneration) || undefined,
             },
           ];
         }

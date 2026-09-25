@@ -74,6 +74,8 @@ describe("web/server/ws/preflight-persistence", () => {
   let lock: AsyncLock;
   let unblockCommands: (() => void) | null;
   let failAgentRequests: boolean;
+  /** Held by tests that need a prompt to occupy the lane while another waits. */
+  let holdAgentRequests: Promise<void> | null;
   const originalEnv = { ...process.env };
 
   beforeEach(async (t) => {
@@ -100,12 +102,14 @@ describe("web/server/ws/preflight-persistence", () => {
       }
     >();
     failAgentRequests = false;
+    holdAgentRequests = null;
     const createSession = ({ cwd }: { cwd: string }): HybridOrchestrator => new HybridOrchestrator({
       initialWorkingDirectory: cwd,
       adapters: [{
         id: "codex",
         metadata: { id: "codex", name: "Preflight fixture", capabilities: ["text"] },
         send: async () => {
+          if (holdAgentRequests) await holdAgentRequests;
           if (failAgentRequests) throw new Error("fixture agent failure");
           return { response: "Fixture reply", usage: null, agentId: "codex" };
         },
@@ -408,6 +412,74 @@ describe("web/server/ws/preflight-persistence", () => {
       assert.equal(lifecycle[0]?.payload.entry.status, "completed");
       assert.ok(Number(lifecycle[0]?.seq) > 0);
     } finally {
+      client.terminate();
+    }
+  });
+
+  it("reports an obsolete-generation failure with the row's own generation", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
+    const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+
+    // Collect every frame for the whole test. Adding and removing listeners
+    // around the reset races with the very events under assertion.
+    const frames: WsJson[] = [];
+    const collect = (raw: RawData): void => {
+      try {
+        frames.push(JSON.parse(raw.toString("utf8")) as WsJson);
+      } catch {
+        // ignore non-JSON frames
+      }
+    };
+    const waitForFrame = async (predicate: (msg: WsJson) => boolean, timeoutMs = 5000): Promise<WsJson> => {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const hit = frames.find(predicate);
+        if (hit) return hit;
+        assert.ok(Date.now() < deadline, "timed out waiting for a ws frame");
+        await delay(5);
+      }
+    };
+
+    try {
+      await waitForWsOpen(client);
+      client.on("message", collect);
+
+      // Park the first prompt inside the agent so the lane stays busy and the
+      // second one is left queued. Moving the generation on while a row is still
+      // queued is the real shape of stranded work: the row is written under
+      // generation 1 but only fails once generation 2 is live.
+      let releaseAgent!: () => void;
+      holdAgentRequests = new Promise<void>((resolve) => { releaseAgent = resolve; });
+      client.send(JSON.stringify({ type: "prompt", payload: "occupy the lane", client_message_id: "occupier-1" }));
+      client.send(JSON.stringify({ type: "prompt", payload: "stranded work", client_message_id: "stranded-1" }));
+
+      const runningDeadline = Date.now() + 3000;
+      while (promptQueueStore.getByClientMessageId("occupier-1")?.status !== "running") {
+        assert.ok(Date.now() < runningDeadline, "first prompt should occupy the lane");
+        await delay(5);
+      }
+      assert.equal(promptQueueStore.getByClientMessageId("stranded-1")?.status, "queued");
+
+      client.send(JSON.stringify({ type: "clear_history" }));
+      const reset = await waitForFrame((msg) => msg.type === "session_reset");
+      assert.equal(reset.laneGeneration, 2);
+
+      holdAgentRequests = null;
+      releaseAgent();
+      const event = await waitForFrame(
+        (msg) => msg.type === "prompt_queue" && (msg.entry as Record<string, unknown>)?.clientMessageId === "stranded-1"
+          && (msg.entry as Record<string, unknown>)?.status === "failed",
+      );
+
+      // The event is routed to whichever sockets own the lane now, but the row it
+      // reports must keep its own generation. A client decides whether it may
+      // reuse the client id from exactly this field, and a rewritten value would
+      // produce a retry the server rejects as a different prompt scope.
+      assert.equal((event.entry as Record<string, unknown>).laneGeneration, 1);
+    } finally {
+      holdAgentRequests = null;
+      client.off("message", collect);
       client.terminate();
     }
   });

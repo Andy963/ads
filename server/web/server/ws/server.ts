@@ -464,14 +464,16 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
             laneGeneration: currentGeneration,
           }).filter((candidate) => candidate.status !== "completed") ?? [entry];
           const current = snapshot.find((candidate) => candidate.clientMessageId === entry.clientMessageId) ?? entry;
-          const viewEntry = {
-            ...current,
-            historyKey: currentHistoryKey,
-            laneGeneration: currentGeneration,
-          };
-          emitPromptQueuePayload(viewEntry, {
+          // Routing and identity are separate concerns. The event is delivered to
+          // whichever sockets own the lane *now*, so the routing key carries the
+          // current generation. The reported row, however, must stay verbatim: its
+          // clientMessageId is bound to the generation it was written under, and a
+          // client deciding whether it may reuse that id reads exactly this field.
+          // Reporting the rewritten view instead would make an obsolete row look
+          // current and produce a retry the server rejects on prompt scope.
+          emitPromptQueuePayload({ ...current, historyKey: currentHistoryKey, laneGeneration: currentGeneration }, {
             type: "prompt_queue",
-            entry: publicPromptQueueEntry(viewEntry),
+            entry: publicPromptQueueEntry(current),
             entries: snapshot.map(publicPromptQueueEntry),
           });
         },

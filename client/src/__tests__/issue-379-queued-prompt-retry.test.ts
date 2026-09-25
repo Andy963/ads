@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createAppContext } from "../app/controller";
 import { createChatActions } from "../app/chat";
 import { createWsMessageHandler } from "../app/projectsWs/wsMessage";
+import { createOutboxStore, OUTBOX_CHANNEL_NAME } from "../app/outbox";
 import type { ProjectRuntime, QueuedPrompt } from "../app/controller";
 
 type SentFrame = { payload: Record<string, unknown>; clientMessageId: string };
@@ -113,6 +114,63 @@ describe("issue-379 failed queued prompt recovery", () => {
 
     expect(sentFrames.map((frame) => frame.clientMessageId)).toEqual(["cmid-original"]);
     expect(rt.queuedPrompts.value.map((entry) => entry.id)).toEqual(["q-other"]);
+  });
+
+  it("retires the stranded row when a cross-generation retry re-keys it", async () => {
+    const { chat, rt, sentFrames, handler } = mountChatHarness({ laneGeneration: 2 });
+    rt.queuedPrompts.value = [failedServerCard({ queueLaneGeneration: 1 })];
+
+    chat.retryQueuedPrompt("q-failed", rt);
+    await settle();
+
+    // The original row still exists on the server and stays in the logical-lane
+    // snapshot, so leaving it visible would invite a second, duplicate retry.
+    expect(Array.from(rt.dismissedPromptIds ?? [])).toEqual(["cmid-original"]);
+
+    handler({
+      type: "prompt_queue_snapshot",
+      entries: [{
+        clientMessageId: "cmid-original",
+        status: "failed",
+        position: 0,
+        attempts: 1,
+        createdAt: 1000,
+        updatedAt: 1000,
+        lastError: "Prompt execution was interrupted before completion.",
+        laneGeneration: 1,
+      }],
+    } as never);
+    await settle();
+
+    expect(rt.queuedPrompts.value.map((entry) => entry.clientMessageId)).not.toContain("cmid-original");
+    expect(sentFrames).toHaveLength(1);
+  });
+
+  it("keeps a single card when a sibling broadcast repeats a tracked id", async () => {
+    const { chat, rt } = mountChatHarness();
+
+    chat.enqueuePrompt("bind this tab", [], rt);
+    await settle();
+
+    rt.queuedPrompts.value = [
+      ...rt.queuedPrompts.value,
+      failedServerCard({ id: "server-cmid-1", clientMessageId: "cmid-server", deliveryStatus: "queued" }),
+    ];
+    expect(rt.queuedPrompts.value.filter((entry) => entry.clientMessageId === "cmid-server")).toHaveLength(1);
+
+    // A second store on the same channel stands in for a sibling tab. A delayed
+    // broadcast can still name an id this tab already tracks, and merging blindly
+    // would render two cards for one prompt.
+    const sibling = createOutboxStore({ channelName: OUTBOX_CHANNEL_NAME });
+    sibling.write("ads.outbox.session-1.main", {
+      pending: null,
+      sent: [{ clientMessageId: "cmid-server", text: "stranded", createdAt: 1000 }],
+      queued: [],
+      dismissed: [],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(rt.queuedPrompts.value.filter((entry) => entry.clientMessageId === "cmid-server")).toHaveLength(1);
   });
 
   it("ignores retry for entries that are not in a failed state", async () => {

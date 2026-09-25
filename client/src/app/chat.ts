@@ -231,7 +231,14 @@ export function createChatActions(ctx: AppContext) {
         ...(prompt.sentAwaitingAck ? { replayIncomplete: true, restoredFromStorage: true } : {}),
       } satisfies QueuedPrompt);
     });
-    const next = [...shared, ...localOnly];
+    // A delayed broadcast can still mention an id this tab already tracks (or the
+    // same id twice). Merging blindly would render two cards for one prompt, with
+    // duplicate keys and two competing retry/remove targets.
+    const merged = new Map<string, ProjectRuntime["queuedPrompts"]["value"][number]>();
+    for (const prompt of [...shared, ...localOnly]) {
+      if (!merged.has(prompt.clientMessageId)) merged.set(prompt.clientMessageId, prompt);
+    }
+    const next = Array.from(merged.values());
     const unchanged =
       next.length === rt.queuedPrompts.value.length &&
       next.every((prompt, index) => prompt.clientMessageId === rt.queuedPrompts.value[index]?.clientMessageId);
@@ -687,8 +694,14 @@ export function createChatActions(ctx: AppContext) {
     const laneGeneration = Number(state.laneGeneration ?? 0);
     const generationMoved = rowGeneration > 0 && laneGeneration > 0 && rowGeneration !== laneGeneration;
     const clientMessageId = generationMoved ? randomUuid() : prompt.clientMessageId;
-    const dismissed = state.dismissedPromptIds;
-    if (dismissed) dismissed.delete(prompt.clientMessageId);
+    // Re-keying orphans the original durable row, and an obsolete-generation row
+    // stays in the logical-lane snapshot. Retire it explicitly, otherwise the next
+    // snapshot resurrects the failed card next to the retry and invites a second
+    // duplicate retry.
+    const dismissed = state.dismissedPromptIds ?? new Set<string>();
+    state.dismissedPromptIds = dismissed;
+    if (generationMoved) dismissed.add(prompt.clientMessageId);
+    else dismissed.delete(prompt.clientMessageId);
     state.queuedPrompts.value = state.queuedPrompts.value.map((entry) =>
       entry.id === target
         ? {
