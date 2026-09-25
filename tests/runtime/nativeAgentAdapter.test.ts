@@ -1182,4 +1182,64 @@ describe("NativeAgentAdapter", () => {
       fs.rmSync(stateDir, { recursive: true, force: true });
     }
   });
+
+  it("projects compacted Native context without changing the durable transcript", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-context-projection-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-context-projection-state-"));
+    const dbPath = path.join(stateDir, "state.db");
+    const transcriptId = "native-transcript-context-projection";
+    const store = new NativeTranscriptStore(getStateDatabase(dbPath));
+    const requests: NativeChatMessage[][] = [];
+    const contextEvents: Array<{ text?: string }> = [];
+
+    try {
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-api-key",
+            provider: "test",
+            contextWindow: 300,
+          }),
+        },
+        transcriptId,
+        transcriptStore: store,
+        fetchImpl: async (_input, init) => {
+          const body = JSON.parse(String(init?.body ?? "{}")) as { messages?: NativeChatMessage[] };
+          requests.push(body.messages ?? []);
+          return sse([
+            JSON.stringify({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }),
+          ]);
+        },
+      });
+      adapter.onEvent((event) => {
+        const item = (event.raw as { item?: { type?: string; text?: string } }).item;
+        if (item?.type === "context") contextEvents.push({ text: item.text });
+      });
+
+      await adapter.send("a".repeat(300));
+      await adapter.send("b".repeat(300));
+      await adapter.send("c".repeat(300));
+
+      assert.equal(requests.length, 3);
+      assert.equal(requests[2]?.at(-1)?.role, "user");
+      assert.equal(requests[2]?.at(-1)?.content, "c".repeat(300));
+      assert.equal(requests[2]?.some((message) => message.content === "a".repeat(300)), false);
+      assert.equal(contextEvents.length > 0, true);
+      assert.match(String(contextEvents.at(-1)?.text), /compacted older turns/i);
+
+      const restored = store.loadCompletedMessages(transcriptId, "restored");
+      assert.equal(restored.some((message) => message.content === "a".repeat(300)), true);
+      assert.equal(restored.some((message) => message.content === "b".repeat(300)), true);
+      assert.equal(restored.some((message) => message.content === "c".repeat(300)), true);
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
 });
