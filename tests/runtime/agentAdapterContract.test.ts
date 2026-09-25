@@ -311,6 +311,7 @@ describe("shared AgentAdapter contract", () => {
 
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-contract-failure-"));
     try {
+      const secret = "secret-api-key";
       const native = new NativeAgentAdapter({
         credentialOwner: "contract-owner",
         workspaceRoot: workspace,
@@ -322,7 +323,7 @@ describe("shared AgentAdapter contract", () => {
             provider: "test",
           }),
         },
-        fetchImpl: async () => new Response("provider failed", { status: 400 }),
+        fetchImpl: async () => new Response(`${secret} provider failed`, { status: 401 }),
       });
       const nativeEvents: Array<{ phase: string; detail?: string; rawType?: string }> = [];
       native.onEvent((event) => {
@@ -334,6 +335,8 @@ describe("shared AgentAdapter contract", () => {
         event.phase === "error"
         && event.rawType === "turn.failed"
         && /provider|upstream|400/i.test(event.detail ?? "")
+        && !event.detail?.includes(secret)
+        && /\[redacted\]/i.test(event.detail ?? "")
       )));
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
