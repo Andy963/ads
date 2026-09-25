@@ -42,6 +42,7 @@ export interface NativeCompletionRequest {
     maxTokens?: number;
     reasoningEffort?: string;
     supportsReasoningEffort?: boolean;
+    parallelToolCalls?: boolean;
   };
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
@@ -102,6 +103,7 @@ function buildRequestBody(request: NativeCompletionRequest): JsonRecord {
   if (options?.supportsReasoningEffort === true && options.reasoningEffort) {
     body.reasoning_effort = options.reasoningEffort;
   }
+  if (options?.parallelToolCalls !== undefined) body.parallel_tool_calls = options.parallelToolCalls;
   if (request.outputSchema !== undefined && request.outputSchema !== null) {
     const schema = asRecord(request.outputSchema);
     body.response_format = schema && (schema.type === "json_schema" || schema.type === "json_object")

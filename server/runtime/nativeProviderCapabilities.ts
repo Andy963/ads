@@ -69,6 +69,7 @@ export function resolveNativeProviderCapabilities(
   result.reasoningEffort = status(record.reasoningEffort)
     ?? booleanStatus(record.supportsReasoningEffort)
     ?? booleanStatus(record.reasoningEffortSupported)
+    ?? (Array.isArray(record.reasoningEfforts) && record.reasoningEfforts.length > 0 ? "supported" : undefined)
     ?? result.reasoningEffort;
   result.imageInput = status(record.imageInput)
     ?? booleanStatus(record.supportsImageInput)

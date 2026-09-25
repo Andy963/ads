@@ -57,30 +57,6 @@ function readFiniteNumber(
   return value;
 }
 
-function readBoolean(config: Record<string, unknown> | null | undefined, key: string): boolean | undefined {
-  const value = config?.[key];
-  return typeof value === "boolean" ? value : undefined;
-}
-
-function hasConfiguredReasoningEfforts(config: Record<string, unknown> | null | undefined): boolean | undefined {
-  const raw = config?.reasoningEfforts;
-  if (!Array.isArray(raw)) return undefined;
-  return raw.some((entry) => String(entry ?? "").trim().length > 0);
-}
-
-function inferReasoningEffortSupport(
-  config: Record<string, unknown> | null | undefined,
-  model: string,
-): boolean {
-  const explicit = readBoolean(config, "supportsReasoningEffort") ?? readBoolean(config, "reasoningEffortSupported");
-  if (explicit !== undefined) return explicit;
-
-  const configured = hasConfiguredReasoningEfforts(config);
-  if (configured !== undefined) return configured;
-
-  return /(?:^|[/_:-])(?:o[134](?:$|[._:-])|gpt-5(?:$|[._:-])|deepseek-(?:reasoner|r1)(?:$|[._:-])|qwq(?:$|[._:-])|qwen[^/]*thinking(?:$|[._:-]))/i.test(model);
-}
-
 function requestOptions(config: Record<string, unknown> | null | undefined): NativeModelRequestOptions | undefined {
   const temperature = readFiniteNumber(config, "temperature", { min: 0, max: 2 });
   const topP = readFiniteNumber(config, "topP", { min: 0, max: 1 });
@@ -173,10 +149,17 @@ function resolveSavedModelConfig(
   const capabilities = resolveNativeProviderCapabilities(config);
   const hasExplicitCapabilities = config && (
     "capabilities" in config
+    || "streaming" in config
+    || "nonStreaming" in config
+    || "toolCalls" in config
+    || "parallelToolCalls" in config
+    || "usage" in config
+    || "contextMetadata" in config
     || "supportsStructuredOutput" in config
     || "structuredOutput" in config
     || "supportsReasoningEffort" in config
     || "reasoningEffortSupported" in config
+    || "reasoningEfforts" in config
     || "supportsImageInput" in config
     || "imageInput" in config
     || "providerOptions" in config
@@ -190,9 +173,7 @@ function resolveSavedModelConfig(
     options: requestOptions(config),
     ...(resolvedContextWindow ? { contextWindow: resolvedContextWindow } : {}),
     ...(hasExplicitCapabilities ? { capabilities } : {}),
-    ...(inferReasoningEffortSupport(config, String(saved.modelId ?? model).trim() || model)
-      ? { supportsReasoningEffort: true }
-      : {}),
+    ...(capabilities.reasoningEffort === "supported" ? { supportsReasoningEffort: true } : {}),
   };
 }
 
@@ -216,10 +197,13 @@ export function createNativeModelResolver(options: ResolverOptions): NativeModel
         baseUrl: normalizeUpstreamBaseUrl(fallback.baseUrl),
         apiKey: fallback.apiKey,
         provider: "openai",
+        capabilities: fallback.modelReasoningEffort
+          ? { reasoningEffort: "supported" as const }
+          : undefined,
         options: {
           reasoningEffort: fallback.modelReasoningEffort,
         },
-        ...(inferReasoningEffortSupport(null, modelId) ? { supportsReasoningEffort: true } : {}),
+        ...(fallback.modelReasoningEffort ? { supportsReasoningEffort: true } : {}),
       };
     },
   };

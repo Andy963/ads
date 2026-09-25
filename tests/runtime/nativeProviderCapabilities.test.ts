@@ -153,6 +153,66 @@ describe("native provider capabilities", () => {
     }
   });
 
+  it("rejects tool execution when tool calls are not supported", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-capabilities-tools-"));
+    try {
+      let fetchCalls = 0;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-key",
+            provider: "test",
+            capabilities: { toolCalls: "unsupported" },
+          }),
+        },
+        fetchImpl: async () => {
+          fetchCalls += 1;
+          return new Response("{}", { headers: { "content-type": "application/json" } });
+        },
+      });
+
+      await assert.rejects(adapter.send("hello"), /toolCalls/);
+      assert.equal(fetchCalls, 0);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("requests single-tool behavior when parallel calls are unsupported", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-capabilities-parallel-"));
+    try {
+      let body: Record<string, unknown> | undefined;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-key",
+            provider: "test",
+            capabilities: { parallelToolCalls: "unsupported" },
+          }),
+        },
+        fetchImpl: async (_input, init) => {
+          body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+          return new Response(JSON.stringify({ choices: [{ message: { content: "done" } }] }), {
+            headers: { "content-type": "application/json" },
+          });
+        },
+      });
+
+      await adapter.send("hello", { streaming: false });
+      assert.equal(body?.parallel_tool_calls, false);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("does not emit partial snapshots when the adapter disables streaming", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-capabilities-nonstream-"));
     try {

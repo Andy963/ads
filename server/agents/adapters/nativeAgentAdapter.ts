@@ -433,7 +433,10 @@ export class NativeAgentAdapter implements AgentAdapter {
     if (streaming && capabilities.streaming !== "supported") {
       throw new NativeCapabilityError("streaming");
     }
-    if (options.outputSchema !== undefined && capabilities.structuredOutput !== "supported") {
+    if (capabilities.toolCalls !== "supported") {
+      throw new NativeCapabilityError("toolCalls");
+    }
+    if (options.outputSchema !== undefined && options.outputSchema !== null && capabilities.structuredOutput !== "supported") {
       throw new NativeCapabilityError("structuredOutput", "configure the provider capability before requesting structured output");
     }
     const configuredReasoningEffort = model.options?.reasoningEffort;
@@ -451,6 +454,7 @@ export class NativeAgentAdapter implements AgentAdapter {
       reasoningEffort: capabilities.reasoningEffort === "supported"
         ? this.modelReasoningEffort ?? model.options?.reasoningEffort
         : undefined,
+      parallelToolCalls: capabilities.parallelToolCalls === "unsupported" ? false : undefined,
     };
     const combined = createCombinedSignal(options.signal, this.turnTimeoutMs);
     const resetGeneration = this.resetGeneration;
@@ -544,6 +548,12 @@ export class NativeAgentAdapter implements AgentAdapter {
           streaming,
           outputSchema: options.outputSchema,
         });
+        if (capabilities.parallelToolCalls !== "supported" && completion.toolCalls.length > 1) {
+          throw new NativeCapabilityError(
+            "parallelToolCalls",
+            `provider returned ${completion.toolCalls.length} calls`,
+          );
+        }
         usage = addUsage(usage, completion.usage);
         responseText += completion.text;
         const assistantMessage: NativeChatMessage = {
