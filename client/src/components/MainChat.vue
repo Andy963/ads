@@ -24,6 +24,7 @@ const props = defineProps<{
   apiToken?: string;
   runningTaskCount?: number;
   workspaceRoot?: string | null;
+  viewportScopeKey?: string;
   threadWarning?: string | null;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
   connectionStatusMessage?: string | null;
@@ -31,6 +32,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "update:draft", value: string): void;
+  (e: "update:viewportScope", value: string | undefined): void;
   (e: "update:viewport", value: TranscriptViewport): void;
   (e: "send", content: string): void;
   (e: "retryMessage", message: ChatMessage): void;
@@ -65,14 +67,16 @@ function saveViewport(): void {
   const rows = [...host.querySelectorAll<HTMLElement>(".messageList > .msg")];
   const top = host.getBoundingClientRect().top;
   const anchor = rows.find((row) => row.getBoundingClientRect().bottom > top);
-  emit("update:viewport", {
+  const viewport = {
     following: autoScroll.value,
     firstLoadedId: rows[0]?.dataset.id ?? "",
     anchorId: anchor?.dataset.id ?? "",
     anchorOffset: anchor ? anchor.getBoundingClientRect().top - top : 0,
     scrollTop: Math.max(0, host.scrollTop),
     tailMessageId: props.messages.at(-1)?.id ?? "",
-  });
+  } satisfies TranscriptViewport;
+  emit("update:viewportScope", props.viewportScopeKey);
+  emit("update:viewport", viewport);
 }
 
 function scheduleViewportSave(): void {

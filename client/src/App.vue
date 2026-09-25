@@ -24,6 +24,7 @@ import {
   type MobileWorkspaceTab,
 } from "./lib/mobileWorkspacePreferences";
 import { purgeLatestPromptPreferences } from "./lib/preferencesStore";
+import type { TranscriptViewport } from "./app/transcriptCache";
 import {
   ArrowRight,
   CirclePlus,
@@ -206,6 +207,29 @@ const {
   resumeTaskThread,
   listResumableSessions,
 });
+
+const advisorViewportScopeKey = computed(() => `${advisorPanelKey.value}:${errorRecoveryGeneration.value}`);
+const workerViewportScopeKey = computed(() => `${workerPanelKey.value}:${errorRecoveryGeneration.value}`);
+const advisorViewportScope = ref<string | undefined>();
+const workerViewportScope = ref<string | undefined>();
+
+function handleAdvisorViewportScope(scope: string | undefined): void {
+  advisorViewportScope.value = scope;
+}
+
+function handleWorkerViewportScope(scope: string | undefined): void {
+  workerViewportScope.value = scope;
+}
+
+function handleAdvisorViewport(viewport: TranscriptViewport): void {
+  if (advisorViewportScope.value !== advisorViewportScopeKey.value) return;
+  if (activeAdvisorRuntime.value.transcriptViewport) activeAdvisorRuntime.value.transcriptViewport.value = viewport;
+}
+
+function handleWorkerViewport(viewport: TranscriptViewport): void {
+  if (workerViewportScope.value !== workerViewportScopeKey.value) return;
+  if (activeRuntime.value.transcriptViewport) activeRuntime.value.transcriptViewport.value = viewport;
+}
 
 const activeWorkspaceTab = computed<ChatLane>(() => activeChatLane.value);
 
@@ -1817,6 +1841,7 @@ const advisorConnectionStatus = computed(() => {
                 class="chatHost chatHost--advisor"
                 :messages="advisorMessages"
                 :viewport="activeAdvisorRuntime.transcriptViewport?.value"
+                :viewport-scope-key="advisorViewportScopeKey"
                 :draft="advisorComposerDraft"
                 :latest-prompt-key="advisorChatKey"
                 :queued-prompts="advisorQueuedPrompts"
@@ -1830,7 +1855,8 @@ const advisorConnectionStatus = computed(() => {
                 :thread-warning="advisorThreadWarning"
                 @send="sendAdvisorPrompt"
                 @update:draft="advisorComposerDraft = $event"
-                @update:viewport="activeAdvisorRuntime.transcriptViewport && (activeAdvisorRuntime.transcriptViewport.value = $event)"
+                @update:viewport-scope="handleAdvisorViewportScope"
+                @update:viewport="handleAdvisorViewport"
                 @interrupt="interruptAdvisor"
                 @addImages="addAdvisorPendingImages"
                 @clearImages="clearAdvisorPendingImages"
@@ -1903,6 +1929,7 @@ const advisorConnectionStatus = computed(() => {
                 class="chatHost"
                 :messages="messages"
                 :viewport="activeRuntime.transcriptViewport?.value"
+                :viewport-scope-key="workerViewportScopeKey"
                 :draft="workerComposerDraft"
                 :latest-prompt-key="workerLatestPromptKey"
                 :queued-prompts="workerQueuedPrompts"
@@ -1918,7 +1945,8 @@ const advisorConnectionStatus = computed(() => {
                 @send="sendMainPrompt"
                 @retry-message="loggedIn && retryPrompt($event)"
                 @update:draft="workerComposerDraft = $event"
-                @update:viewport="activeRuntime.transcriptViewport && (activeRuntime.transcriptViewport.value = $event)"
+                @update:viewport-scope="handleWorkerViewportScope"
+                @update:viewport="handleWorkerViewport"
                 @interrupt="interruptActive"
                 @clear="clearActiveChat"
                 @addImages="addPendingImages"
