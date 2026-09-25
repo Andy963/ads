@@ -12,7 +12,13 @@ import { getWorkspaceState } from "../../utils.js";
 import type { AttachWebSocketServerDeps, WsOrchestrator } from "./deps.js";
 import { dispatchWsMessage, type IncomingWsMessage } from "./messageDispatch.js";
 import { handleImmediateWsMessage, parseIncomingWsEnvelope } from "./messageIntake.js";
-import { normalizeLaneChatSessionId, resolveWebSocketChatSessionId, resolveWebSocketSessionId } from "./session.js";
+import {
+  ADVISOR_CHAT_SESSION_ID,
+  isAcopilotChatSessionId,
+  normalizeLaneChatSessionId,
+  resolveWebSocketChatSessionId,
+  resolveWebSocketSessionId,
+} from "./session.js";
 import { createSafeJsonSend, summarizeWsPayloadForLog } from "./utils.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
 import { sendInitialBootstrapMessages } from "./bootstrapDelivery.js";
@@ -141,7 +147,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       : `${String(authUserId ?? "").trim()}\u0000${String(sessionId ?? "").trim()}\u0000lane\u0000${String(chatSessionId ?? "").trim()}`;
 
   const resolveResetBarrierScope = (chatSessionId: string, payload: unknown): ResetBarrierScope => {
-    if (String(chatSessionId ?? "").trim() === "advisor") {
+    if (isAcopilotChatSessionId(chatSessionId)) {
       return "lane";
     }
     if (payload && typeof payload === "object" && !Array.isArray(payload)) {
@@ -519,7 +525,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       existing.add(normalizedChatSessionId);
       return;
     }
-    seenChatSessionIdsBySharedSession.set(registryKey, new Set(["main", "advisor", normalizedChatSessionId]));
+    seenChatSessionIdsBySharedSession.set(registryKey, new Set(["main", ADVISOR_CHAT_SESSION_ID, normalizedChatSessionId]));
   };
 
   wss.on("error", (error) => {
@@ -914,7 +920,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
         if (meta.authUserId !== authUserId || meta.sessionId !== sessionId) {
           continue;
         }
-        if (resetScope === "shared" && meta.chatSessionId === "advisor") {
+        if (resetScope === "shared" && isAcopilotChatSessionId(meta.chatSessionId)) {
           continue;
         }
         if (resetScope !== "shared" && sourceChatSessionId && meta.chatSessionId !== sourceChatSessionId) {
@@ -927,7 +933,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       const registryKey = getSharedSessionRegistryKey(authUserId, sessionId);
       const tracked = new Set<string>(["main"]);
       for (const seenChatSessionId of seenChatSessionIdsBySharedSession.get(registryKey) ?? []) {
-        if (seenChatSessionId !== "advisor") {
+        if (!isAcopilotChatSessionId(seenChatSessionId)) {
           tracked.add(seenChatSessionId);
         }
       }
@@ -936,7 +942,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
           continue;
         }
         const candidateChatSessionId = String(meta.chatSessionId ?? "").trim();
-        if (candidateChatSessionId && candidateChatSessionId !== "advisor") {
+        if (candidateChatSessionId && !isAcopilotChatSessionId(candidateChatSessionId)) {
           tracked.add(candidateChatSessionId);
         }
       }

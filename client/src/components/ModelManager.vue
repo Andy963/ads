@@ -1403,7 +1403,7 @@ defineExpose({
         >
           <div v-if="showTabs">
             <div class="lanePromptEditorTitle">角色指令</div>
-            <div class="lanePromptEditorSubtitle">配置 Advisor 与 Worker 的系统边界和工作方式。</div>
+            <div class="lanePromptEditorSubtitle">配置 Acopilot 与 Actions 的系统边界和工作方式。</div>
           </div>
           <label class="lanePromptVersionField">
             <span class="modelLabel">版本</span>

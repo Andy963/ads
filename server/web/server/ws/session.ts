@@ -48,13 +48,44 @@ export function resolveWebSocketSessionId(args: { protocols: string[]; workspace
   return crypto.randomBytes(4).toString("hex");
 }
 
+/**
+ * Stable internal chat session id for the Acopilot lane.
+ *
+ * This value is embedded in persisted keys -- `buildWsConnectionIdentity`
+ * derives `historyKey` as `<authUserId>::<sessionId>::<chatSessionId>` and the
+ * sync cursor key from the same pair -- and the client re-keys its localStorage
+ * model/effort preferences by the chat session id echoed back in server frames.
+ * It therefore must NOT change: doing so would orphan every existing lane
+ * history, thread state and preference entry. It is a persisted key, not a
+ * canonical value.
+ */
 export const ADVISOR_CHAT_SESSION_ID = "advisor";
 /** Pre-rename lane id. Accepted from legacy clients and mapped to the advisor id. */
 export const LEGACY_ADVISOR_CHAT_SESSION_ID = "planner";
+/**
+ * Canonical lane id (ADR 0027). Accepted from clients and mapped to the
+ * advisor id so routing and persisted keys stay stable.
+ */
+export const CANONICAL_ACOPILOT_CHAT_SESSION_ID = "acopilot";
 
+/**
+ * Single boundary that resolves any accepted Acopilot-lane spelling to the
+ * stable advisor chat session id. Both the canonical `acopilot` and the legacy
+ * `advisor` / `planner` spellings land on ADVISOR_CHAT_SESSION_ID; every other
+ * value (including the Actions lane's own project session ids and "main")
+ * passes through untouched so it keeps routing to Actions.
+ */
 export function normalizeLaneChatSessionId(value: string | null | undefined): string {
   const normalized = String(value ?? "").trim();
-  return normalized === LEGACY_ADVISOR_CHAT_SESSION_ID ? ADVISOR_CHAT_SESSION_ID : normalized;
+  if (normalized === LEGACY_ADVISOR_CHAT_SESSION_ID || normalized === CANONICAL_ACOPILOT_CHAT_SESSION_ID) {
+    return ADVISOR_CHAT_SESSION_ID;
+  }
+  return normalized;
+}
+
+/** True when the chat session id addresses the Acopilot lane, in any accepted spelling. */
+export function isAcopilotChatSessionId(value: string | null | undefined): boolean {
+  return normalizeLaneChatSessionId(value) === ADVISOR_CHAT_SESSION_ID;
 }
 
 export function resolveWebSocketChatSessionId(args: { protocols: string[] }): string {

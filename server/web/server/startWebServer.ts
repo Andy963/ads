@@ -7,6 +7,7 @@ import { listenServer } from "./listenServer.js";
 import { createApiRequestHandler } from "./api/handler.js";
 import { authenticateRequest as authenticateWebRequest } from "./auth.js";
 import { attachWebSocketServer } from "./ws/server.js";
+import { isAcopilotChatSessionId } from "./ws/session.js";
 
 import { resolveAdsStateDir } from "../../workspace/adsPaths.js";
 import { detectWorkspace } from "../../workspace/detector.js";
@@ -313,7 +314,7 @@ export async function startWebServer(): Promise<void> {
   const broadcastAgentsSnapshot = (): void => {
     for (const [ws, meta] of wsHub.clientMetaByWs.entries()) {
       const manager =
-        meta.chatSessionId === "advisor"
+        isAcopilotChatSessionId(meta.chatSessionId)
           ? advisorSessionManager
           : sessionManager;
       const currentCwdForUser = manager.getUserCwd(meta.sessionUserId);

@@ -18,7 +18,7 @@ ADS (Agent Dispatch & Orchestration System) 采用分层解耦的架构设计，
 │                     服务端服务层 / ADS Core                    │
 │  - HTTP API & Auth Router (Cookie Session / Rate Limiter)     │
 │  - WebSocket Hub & Sync Sequencer (Durable Event Log)         │
-│  - Advisor / Worker Prompt Orchestration                      │
+│  - Acopilot / Actions Prompt Orchestration                   │
 │  - Built-in Safety Guardrails & Enforcement Gate               │
 │  - Scheduler Runtime (Cron Engine & Spec Compiler)            │
 └──────────────┬────────────────────────────────┬───────────────┘
@@ -83,4 +83,4 @@ Web 与独立 Channel Connector 通过 Core WebSocket 协议使用各自隔离�
 
 ### 2.4 定时任务与编译引擎 (Scheduler Engine)
 - 内置 Cron 调度引擎，支持自然语言定时指令编译。
-- Advisor / Worker 输出符合规格的 `ads-schedule` 代码块后，由编译器校验并存入调度器，定时驱动无头 Agent 直接执行冻结的 Prompt，并将结果写入 `schedule_runs`。
+- Acopilot / Actions 输出符合规格的 `ads-schedule` 代码块后，由编译器校验并存入调度器，定时驱动无头 Agent 直接执行冻结的 Prompt，并将结果写入 `schedule_runs`。
