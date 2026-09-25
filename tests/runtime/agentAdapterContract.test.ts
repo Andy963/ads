@@ -267,6 +267,12 @@ describe("shared AgentAdapter contract", () => {
           request += 1;
           if (request === 1) {
             return sseEventsResponse([
+              { choices: [{ delta: { tool_calls: [{ index: 0, id: "native-command", type: "function", function: { name: "exec_command", arguments: JSON.stringify({ cmd: process.execPath, args: ["-e", "process.stdout.write('command-ok')"] }) } }] } }] },
+              { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+            ]);
+          }
+          if (request === 2) {
+            return sseEventsResponse([
               { choices: [{ delta: { tool_calls: [{ index: 0, id: "native-patch", type: "function", function: { name: "apply_patch", arguments: JSON.stringify({ patch: "*** Begin Patch\n*** Add File: contract.txt\n+ok\n*** End Patch" }) } }] } }] },
               { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
             ]);
@@ -280,6 +286,7 @@ describe("shared AgentAdapter contract", () => {
         nativeEvents.push({ phase: event.phase, rawType: item?.type });
       });
       await native.send("change files");
+      assert.ok(nativeEvents.some((event) => event.phase === "command" && event.rawType === "command_execution"));
       assert.ok(nativeEvents.some((event) => event.rawType === "file_change"));
       assert.equal(fs.readFileSync(path.join(workspace, "contract.txt"), "utf8"), "ok\n");
     } finally {
@@ -288,6 +295,20 @@ describe("shared AgentAdapter contract", () => {
   });
 
   it("surfaces terminal failures for both backends", async () => {
+    const server = createCodexTestServer();
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => server.client });
+    const codex = new CodexAppServerAdapter({ projectId: "contract-codex-failure", registry });
+    const codexEvents: string[] = [];
+    codex.onEvent((event) => codexEvents.push(`${event.phase}:${event.detail ?? ""}`));
+    const codexPending = codex.send("fail");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    server.notify("thread/started", { thread: { id: "contract-thread" } });
+    server.notify("turn/started", { threadId: "contract-thread", turn: { id: "failed-turn" } });
+    server.notify("error", { message: "contract failure" });
+    await assert.rejects(codexPending, /contract failure/);
+    assert.ok(codexEvents.some((event) => event.startsWith("error:")));
+    await registry.stopAll();
+
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-contract-failure-"));
     try {
       const native = new NativeAgentAdapter({

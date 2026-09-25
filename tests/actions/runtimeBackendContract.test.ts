@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
+import { spawnSync } from "node:child_process";
 
 import { CodexAppServerAdapter } from "../../server/agents/adapters/codexAppServerAdapter.js";
 import { NativeAgentAdapter } from "../../server/agents/adapters/nativeAgentAdapter.js";
@@ -12,9 +13,18 @@ import { LaneDispatchBus } from "../../server/actions/bus.js";
 import { CodexAppServerClient } from "../../server/codex/appServer/rpcClient.js";
 import { CodexAppServerDaemonRegistry } from "../../server/codex/appServer/daemonRegistry.js";
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
+import { updateActionJobStatus } from "../../server/state/actionJobStore.js";
 import { SessionManager } from "../../server/sessions/sessionManager.js";
 
-function createCodexServer(): {
+function createCodexServer(options: {
+  threadId?: string;
+  onTurnStart?: () => void;
+  autoCompleteTurn?: {
+    threadId: string;
+    turnId: string;
+    response: string;
+  };
+} = {}): {
   client: CodexAppServerClient;
   notify: (method: string, params: Record<string, unknown>) => void;
 } {
@@ -33,7 +43,25 @@ function createCodexServer(): {
       end = buffer.indexOf("\n");
       if (!line.trim()) continue;
       const message = JSON.parse(line) as { id?: number; method?: string };
-      const result = message.method === "thread/start" ? { thread: { id: "review-thread" } } : {};
+      if (message.method === "turn/start") {
+        options.onTurnStart?.();
+        if (options.autoCompleteTurn) {
+          const { threadId, turnId, response } = options.autoCompleteTurn;
+          stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method: "thread/started", params: { thread: { id: threadId } } })}\n`);
+          stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method: "turn/started", params: { threadId, turn: { id: turnId } } })}\n`);
+          stdout.write(`${JSON.stringify({
+            jsonrpc: "2.0",
+            method: "item/completed",
+            params: {
+              item: { type: "agentMessage", id: "developer-message", text: response },
+              threadId,
+              turnId,
+            },
+          })}\n`);
+          stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method: "turn/completed", params: { threadId, turn: { id: turnId } } })}\n`);
+        }
+      }
+      const result = message.method === "thread/start" ? { thread: { id: options.threadId ?? "review-thread" } } : {};
       stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, result })}\n`);
     }
   });
@@ -41,6 +69,37 @@ function createCodexServer(): {
     client,
     notify: (method, params) => stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`),
   };
+}
+
+function nativeSseResponse(events: unknown[]): Response {
+  const body = `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`;
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
+function initializeRepository(repoPath: string): void {
+  spawnSync("git", ["init", "-b", "dev"], { cwd: repoPath });
+  spawnSync("git", ["config", "user.email", "test@ads.test"], { cwd: repoPath });
+  spawnSync("git", ["config", "user.name", "AdsTest"], { cwd: repoPath });
+  fs.writeFileSync(path.join(repoPath, "README.md"), "# Runtime backend contract\n");
+  spawnSync("git", ["add", "README.md"], { cwd: repoPath });
+  spawnSync("git", ["commit", "-m", "initial commit"], { cwd: repoPath });
+  spawnSync("git", ["checkout", "-b", "codex/issue-374"], { cwd: repoPath });
+  fs.writeFileSync(path.join(repoPath, "implementation.txt"), "implemented by runtime\n");
+  spawnSync("git", ["add", "implementation.txt"], { cwd: repoPath });
+}
+
+async function waitForJobStatus(
+  bus: LaneDispatchBus,
+  jobId: string,
+  status: string,
+  timeoutMs = 3000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (bus.getJob(jobId)?.status === status) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`Timed out waiting for job ${jobId} to reach ${status}`);
 }
 
 function reviewPayload() {
@@ -142,6 +201,133 @@ describe("Actions runtime backend contracts", () => {
     const verdict = await pending;
     assert.equal(verdict.status, "PASS");
     assert.equal(createdSessions, 1);
+    await registry.stopAll();
+  });
+
+  it("executes an Actions Developer turn with the Native backend", async () => {
+    initializeRepository(workspace);
+    let requestCount = 0;
+    const adapter = new NativeAgentAdapter({
+      credentialOwner: "developer-owner",
+      workspaceRoot: workspace,
+      workingDirectory: workspace,
+      modelResolver: {
+        resolve: () => ({
+          model: "test-model",
+          baseUrl: "https://provider.test/v1",
+          apiKey: "test-key",
+          provider: "test",
+        }),
+      },
+      fetchImpl: async () => {
+        requestCount += 1;
+        if (requestCount === 1) {
+          return nativeSseResponse([
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: "developer-commit", type: "function", function: { name: "exec_command", arguments: JSON.stringify({ cmd: "git", args: ["commit", "-m", "implementation"] }) } }] } }] },
+            { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+          ]);
+        }
+        return nativeSseResponse([
+          { choices: [{ delta: { content: "Native developer completed" }, finish_reason: "stop" }] },
+        ]);
+      },
+    });
+    const sessionManager = new SessionManager(0, 0, "workspace-write", "test-model", undefined, {
+      ...process.env,
+      ADS_AGENT_RUNTIME: "native",
+    }, {
+      createSession: ({ cwd, userModel }) => new HybridOrchestrator({
+        adapters: [adapter],
+        initialWorkingDirectory: cwd,
+        initialModel: userModel,
+      }),
+    });
+    const db = getStateDatabase();
+    const bus = new LaneDispatchBus(db, {
+      sessionManager,
+      reviewerRunner: async () => JSON.stringify({ status: "PASS", summary: "Native developer passed", defects: [] }),
+      testCommand: "true",
+      hasRemoteOrigin: () => false,
+      mergePipeline: () => ({ success: true }),
+    });
+    const job = bus.dispatchJob({
+      projectId: workspace,
+      issueId: 374,
+      issueTitle: "Native developer execution",
+      issueDescription: "Execute a real developer turn.",
+      acceptanceCriteria: ["Commit through the Native runtime"],
+      repoPath: workspace,
+    });
+    updateActionJobStatus(db, job.jobId, "running");
+
+    await bus.executeDeveloper(job.jobId, workspace);
+    await waitForJobStatus(bus, job.jobId, "completed");
+
+    assert.match(
+      spawnSync("git", ["log", "-1", "--pretty=%s"], { cwd: workspace, encoding: "utf8" }).stdout,
+      /implementation/,
+    );
+  });
+
+  it("executes an Actions Developer turn with the Codex app-server backend", async () => {
+    initializeRepository(workspace);
+    let committed = false;
+    const server = createCodexServer({
+      threadId: "developer-thread",
+      onTurnStart: () => {
+        if (!committed) {
+          committed = true;
+          spawnSync("git", ["commit", "-m", "implementation"], { cwd: workspace });
+        }
+      },
+      autoCompleteTurn: {
+        threadId: "developer-thread",
+        turnId: "developer-turn",
+        response: "Codex developer completed",
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => server.client });
+    const adapter = new CodexAppServerAdapter({
+      projectId: "developer-codex",
+      workingDirectory: workspace,
+      registry,
+    });
+    const sessionManager = new SessionManager(0, 0, "workspace-write", "test-model", undefined, {
+      ...process.env,
+      ADS_AGENT_RUNTIME: "codex-app-server",
+    }, {
+      createSession: ({ cwd, userModel }) => new HybridOrchestrator({
+        adapters: [adapter],
+        initialWorkingDirectory: cwd,
+        initialModel: userModel,
+      }),
+    });
+    const db = getStateDatabase();
+    const bus = new LaneDispatchBus(db, {
+      sessionManager,
+      reviewerRunner: async () => JSON.stringify({ status: "PASS", summary: "Codex developer passed", defects: [] }),
+      testCommand: "true",
+      hasRemoteOrigin: () => false,
+      mergePipeline: () => ({ success: true }),
+    });
+    const job = bus.dispatchJob({
+      projectId: workspace,
+      issueId: 374,
+      issueTitle: "Codex developer execution",
+      issueDescription: "Execute a real developer turn.",
+      acceptanceCriteria: ["Commit through the Codex app-server runtime"],
+      repoPath: workspace,
+    });
+    updateActionJobStatus(db, job.jobId, "running");
+
+    await bus.executeDeveloper(job.jobId, workspace);
+    await waitForJobStatus(bus, job.jobId, "completed");
+
+    assert.equal(committed, true);
+    assert.match(
+      spawnSync("git", ["log", "-1", "--pretty=%s"], { cwd: workspace, encoding: "utf8" }).stdout,
+      /implementation/,
+    );
     await registry.stopAll();
   });
 });
