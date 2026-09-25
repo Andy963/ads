@@ -121,7 +121,7 @@ describe("NativeTranscriptStore", () => {
   it("does not allow an old writer to complete an interrupted turn", () => {
     const { store } = createStore();
     const transcriptId = "transcript-writer-fence";
-    store.claimTranscript(transcriptId, "new-writer");
+    store.claimTranscript(transcriptId, "old-writer");
     assert.throws(
       () => store.beginTurn({
         transcriptId,
@@ -129,7 +129,7 @@ describe("NativeTranscriptStore", () => {
         messages: [{ role: "user", content: "stale" }],
         entries: [{ kind: "message", message: { role: "user", content: "stale" } }],
         provider: { provider: "test", model: "test-model" },
-        writerId: "old-writer",
+        writerId: "stale-writer",
       }),
       /superseded/,
     );
@@ -139,10 +139,10 @@ describe("NativeTranscriptStore", () => {
       messages: [{ role: "user", content: "run" }],
       entries: [{ kind: "message", message: { role: "user", content: "run" } }],
       provider: { provider: "test", model: "test-model" },
-      writerId: "new-writer",
+      writerId: "old-writer",
     });
 
-    store.listTurns(transcriptId);
+    store.claimTranscript(transcriptId, "new-writer");
     assert.throws(
       () => store.updateTurn({
         transcriptId,
@@ -151,11 +151,11 @@ describe("NativeTranscriptStore", () => {
         messages: [{ role: "user", content: "run" }],
         entries: [{ kind: "message", message: { role: "user", content: "run" } }],
         usage: null,
-        writerId: "new-writer",
+        writerId: "old-writer",
       }),
       /turn not found|superseded/,
     );
-    assert.equal(store.listTurns(transcriptId)[0]?.status, "interrupted");
+    assert.equal(store.listTurns(transcriptId, "new-writer")[0]?.status, "interrupted");
   });
 
   it("fences every running-turn mutation after ownership changes", () => {
@@ -214,6 +214,33 @@ describe("NativeTranscriptStore", () => {
         .all(),
     );
     assert.doesNotMatch(raw, /abc/);
+    assert.match(raw, /\[redacted\]/);
+  });
+
+  it("redacts a bare short credential without replacing it inside unrelated text", () => {
+    const { dbPath, store } = createStore(["q", "/"]);
+    const transcriptId = "transcript-bare-short-credential";
+    store.beginTurn({
+      transcriptId,
+      turnId: "bare-short-credential-turn",
+      messages: [{ role: "user", content: "q" }],
+      entries: [{ kind: "message", message: { role: "user", content: "q" } }],
+      provider: { provider: "test", model: "test-model" },
+    });
+    store.beginTurn({
+      transcriptId,
+      turnId: "unrelated-short-text-turn",
+      messages: [{ role: "user", content: "q /tmp/q" }],
+      entries: [{ kind: "message", message: { role: "user", content: "q /tmp/q" } }],
+      provider: { provider: "test", model: "test-model" },
+    });
+
+    const raw = JSON.stringify(
+      getStateDatabase(dbPath)
+        .prepare("SELECT messages_json, entries_json FROM native_transcript_turns")
+        .all(),
+    );
+    assert.match(raw, /q \/tmp\/q/);
     assert.match(raw, /\[redacted\]/);
   });
 

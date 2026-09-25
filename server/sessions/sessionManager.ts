@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type { SandboxMode } from '../config.js';
 import { createLogger } from '../utils/logger.js';
@@ -207,8 +207,12 @@ export class SessionManager {
     const nativeTranscriptAvailable = restoreNativeTranscript
       && (!savedState?.cwd || areSessionCwdsCompatible(savedState.cwd, effectiveCwd))
       && nativeTranscriptId
-      ? new NativeTranscriptStore(getStateDatabase(this.options.stateDbPath))
-          .loadCompletedMessages(nativeTranscriptId).length > 0
+      ? (() => {
+          const store = new NativeTranscriptStore(getStateDatabase(this.options.stateDbPath));
+          const writerId = `availability-${randomUUID()}`;
+          store.claimTranscript(nativeTranscriptId, writerId);
+          return store.loadCompletedMessages(nativeTranscriptId, writerId).length > 0;
+        })()
       : false;
 
     let activeAgentId: AgentIdentifier | undefined = savedState?.activeAgentId;
@@ -521,7 +525,8 @@ export class SessionManager {
     const savedState = storage?.getRecord(userId);
     const nativeTranscriptId = record?.nativeTranscriptId ?? savedState?.nativeTranscriptId;
     if (this.runtimeBackend === "native" && nativeTranscriptId) {
-      new NativeTranscriptStore(getStateDatabase(this.options.stateDbPath)).clear(nativeTranscriptId);
+      new NativeTranscriptStore(getStateDatabase(this.options.stateDbPath))
+        .claimTranscriptAndClear(nativeTranscriptId, `reset-${randomUUID()}`);
     }
     const preserve = Boolean(options?.preserveThreadForResume) && this.runtimeBackend === "codex-app-server";
     if (storage) {

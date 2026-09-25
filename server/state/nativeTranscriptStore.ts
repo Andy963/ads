@@ -131,6 +131,12 @@ function redactSensitiveText(value: string, redactions: string[], depth = 0): st
   for (const secret of redactions.filter((value) => value.length >= 4)) {
     result = result.replaceAll(secret, "[redacted]");
   }
+  for (const secret of redactions.filter((value) => value.length > 0 && value.length < 4)) {
+    const trimmed = result.trim();
+    if (trimmed === secret || trimmed === JSON.stringify(secret)) {
+      return "[redacted]";
+    }
+  }
   result = result
     .replace(/\bBearer\s+[^\s"',;]+/gi, "Bearer [redacted]")
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]")
@@ -211,11 +217,14 @@ export class NativeTranscriptStore {
   }
 
   claimTranscript(transcriptId: string, writerId: string): void {
-    this.db.prepare(`
-      INSERT INTO native_transcript_leases (transcript_id, writer_id, updated_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(transcript_id) DO UPDATE SET writer_id = excluded.writer_id, updated_at = excluded.updated_at
-    `).run(transcriptId, writerId, Date.now());
+    this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO native_transcript_leases (transcript_id, writer_id, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(transcript_id) DO UPDATE SET writer_id = excluded.writer_id, updated_at = excluded.updated_at
+      `).run(transcriptId, writerId, Date.now());
+      this.markRunningTurnsInterrupted(transcriptId, writerId);
+    })();
   }
 
   claimTranscriptAndClear(transcriptId: string, writerId: string): void {
@@ -356,12 +365,27 @@ export class NativeTranscriptStore {
   }
 
   private markRunningTurnsInterrupted(transcriptId: string, writerId?: string): void {
+    if (writerId === undefined) {
+      this.db.prepare(`
+        UPDATE native_transcript_turns
+        SET status = 'interrupted', error_message = ?, updated_at = ?
+        WHERE transcript_id = ? AND status = 'running'
+          AND NOT EXISTS (
+            SELECT 1 FROM native_transcript_leases WHERE transcript_id = ?
+          )
+      `).run(INTERRUPTED_ERROR, Date.now(), transcriptId, transcriptId);
+      return;
+    }
     this.db.prepare(`
       UPDATE native_transcript_turns
       SET status = 'interrupted', error_message = ?, updated_at = ?
       WHERE transcript_id = ? AND status = 'running'
-        AND (? IS NULL OR writer_id != ?)
-    `).run(INTERRUPTED_ERROR, Date.now(), transcriptId, writerId ?? null, writerId ?? null);
+        AND writer_id != ?
+        AND EXISTS (
+          SELECT 1 FROM native_transcript_leases
+          WHERE transcript_id = ? AND writer_id = ?
+        )
+    `).run(INTERRUPTED_ERROR, Date.now(), transcriptId, writerId, transcriptId, writerId);
   }
 
   private stringify(value: unknown): string {
