@@ -271,7 +271,7 @@ function parseNonStreamingResult(body: unknown): NativeCompletionResult {
         const fn = asRecord(record?.function);
         const id = readText(record?.id);
         const name = readText(fn?.name);
-        if (record?.type !== "function" || !id || !name) {
+        if (record?.type !== "function" || !id.trim() || id !== id.trim() || !name.trim() || name !== name.trim()) {
           throw new NativeProviderError("Native upstream returned an invalid non-streaming tool call", { kind: "malformed" });
         }
         const args = readText(fn?.arguments);
@@ -285,6 +285,13 @@ function parseNonStreamingResult(body: unknown): NativeCompletionResult {
         };
       })
     : [];
+  const toolCallIds = new Set<string>();
+  for (const call of toolCalls) {
+    if (toolCallIds.has(call.id)) {
+      throw new NativeProviderError("Native upstream returned duplicate non-streaming tool-call ids", { kind: "malformed" });
+    }
+    toolCallIds.add(call.id);
+  }
   if ((finishReason === "tool_calls") !== (toolCalls.length > 0)) {
     throw new NativeProviderError("Native upstream returned an incomplete non-streaming tool call response", {
       kind: "malformed",

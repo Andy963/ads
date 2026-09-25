@@ -302,7 +302,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     this.conversation = [];
     this.threadId = `native-${randomUUID()}`;
     this.threadStartedEmitted = false;
-    this.pendingRetryCheckpoint = undefined;
+    if (options?.clearPersistedState) this.pendingRetryCheckpoint = undefined;
   }
 
   retargetTranscript(transcriptId: string): void {
@@ -314,6 +314,7 @@ export class NativeAgentAdapter implements AgentAdapter {
       this.reset({ clearPersistedState: true });
       return;
     }
+    this.finalizePendingRetry("interrupted", new Error("Native transcript was retargeted during an active turn"));
     this.transcriptStore?.claimTranscriptAndClear(nextTranscriptId, this.transcriptWriterId);
     this.resetGeneration += 1;
     this.transcriptId = nextTranscriptId;
