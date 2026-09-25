@@ -195,6 +195,14 @@ export class NativeAgentAdapter implements AgentAdapter {
   private transcriptId?: string;
   private readonly transcriptStore?: NativeTranscriptStore;
   private readonly activeTranscriptTurns = new Set<string>();
+  private activeTurnCheckpoint?: {
+    turnId: string;
+    resetGeneration: number;
+    messages: NativeChatMessage[];
+    entries: NativeTranscriptEntry[];
+    usage: Usage | null;
+    provider: NativeTranscriptProviderMetadata;
+  };
   private resetGeneration = 0;
   private readonly transcriptWriterId = randomUUID();
   private nativeTranscriptRestored = false;
@@ -303,6 +311,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     this.threadId = `native-${randomUUID()}`;
     this.threadStartedEmitted = false;
     if (options?.clearPersistedState) this.pendingRetryCheckpoint = undefined;
+    if (options?.clearPersistedState) this.activeTurnCheckpoint = undefined;
   }
 
   retargetTranscript(transcriptId: string): void {
@@ -314,7 +323,12 @@ export class NativeAgentAdapter implements AgentAdapter {
       this.reset({ clearPersistedState: true });
       return;
     }
-    this.finalizePendingRetry("interrupted", new Error("Native transcript was retargeted during an active turn"));
+    const resetError = new Error("Native transcript was retargeted during an active turn");
+    if (this.pendingRetryCheckpoint) {
+      this.finalizePendingRetry("interrupted", resetError);
+    } else {
+      this.finalizeActiveTurn("interrupted", resetError);
+    }
     this.transcriptStore?.claimTranscriptAndClear(nextTranscriptId, this.transcriptWriterId);
     this.resetGeneration += 1;
     this.transcriptId = nextTranscriptId;
@@ -409,6 +423,24 @@ export class NativeAgentAdapter implements AgentAdapter {
       status,
       errorMessage: normalized.message,
     });
+    this.activeTurnCheckpoint = undefined;
+    const safeMessage = redactNativeTranscriptText(normalized.message, this.secretValues);
+    this.emitRaw({ type: "turn.failed", error: { message: safeMessage } });
+  }
+
+  private finalizeActiveTurn(
+    status: "cancelled" | "interrupted",
+    error: unknown,
+  ): void {
+    const active = this.activeTurnCheckpoint;
+    if (!active) return;
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    this.checkpointTurn({
+      ...active,
+      status,
+      errorMessage: normalized.message,
+    });
+    this.activeTurnCheckpoint = undefined;
     const safeMessage = redactNativeTranscriptText(normalized.message, this.secretValues);
     this.emitRaw({ type: "turn.failed", error: { message: safeMessage } });
   }
@@ -460,6 +492,16 @@ export class NativeAgentAdapter implements AgentAdapter {
     errorMessage?: string | null;
   }): void {
     this.assertResetGeneration(input.resetGeneration);
+    if (input.status === "running") {
+      this.activeTurnCheckpoint = {
+        turnId: input.turnId,
+        resetGeneration: input.resetGeneration,
+        messages: [...input.messages],
+        entries: [...input.entries],
+        usage: input.usage,
+        provider: input.provider,
+      };
+    }
     if (!this.transcriptId || !this.transcriptStore) return;
     if (input.status === "running" && !this.activeTranscriptTurns.has(input.turnId)) {
       this.transcriptStore.beginTurn({
@@ -485,6 +527,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     });
     if (input.status !== "running") {
       this.activeTranscriptTurns.delete(input.turnId);
+      if (this.activeTurnCheckpoint?.turnId === input.turnId) this.activeTurnCheckpoint = undefined;
     }
   }
 

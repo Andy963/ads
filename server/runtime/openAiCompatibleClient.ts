@@ -190,17 +190,17 @@ function mergeToolCall(
     if (record.type !== "function") {
       throw new NativeProviderError("Native upstream returned a tool call without a valid type", { kind: "malformed" });
     }
-    if (typeof record.id !== "string" || !record.id.trim()) {
+    if (typeof record.id !== "string" || !record.id.trim() || record.id !== record.id.trim()) {
       throw new NativeProviderError("Native upstream returned a tool call without a valid id", { kind: "malformed" });
     }
-    if (!functionRecord || typeof functionRecord.name !== "string" || !functionRecord.name.trim()) {
+    if (!functionRecord || typeof functionRecord.name !== "string" || !functionRecord.name.trim() || functionRecord.name !== functionRecord.name.trim()) {
       throw new NativeProviderError("Native upstream returned a tool call without a valid function name", { kind: "malformed" });
     }
   }
   if (record.type !== undefined && record.type !== "function") {
     throw new NativeProviderError("Native upstream returned an unsupported tool-call type", { kind: "malformed" });
   }
-  if (record.id !== undefined && (typeof record.id !== "string" || !record.id.trim())) {
+  if (record.id !== undefined && (typeof record.id !== "string" || !record.id.trim() || record.id !== record.id.trim())) {
     throw new NativeProviderError("Native upstream returned an invalid tool-call id", { kind: "malformed" });
   }
   if (existing && typeof record.id === "string" && existing.id !== record.id) {
@@ -216,7 +216,7 @@ function mergeToolCall(
   };
   if (!existing && typeof record.id === "string") call.id = record.id;
   if (functionRecord) {
-    if (functionRecord.name !== undefined && (typeof functionRecord.name !== "string" || !functionRecord.name.trim())) {
+    if (functionRecord.name !== undefined && (typeof functionRecord.name !== "string" || !functionRecord.name.trim() || functionRecord.name !== functionRecord.name.trim())) {
       throw new NativeProviderError("Native upstream returned an invalid tool-call function name", { kind: "malformed" });
     }
     if (functionRecord.arguments !== undefined && typeof functionRecord.arguments !== "string") {
@@ -251,6 +251,11 @@ function parseNonStreamingResult(body: unknown): NativeCompletionResult {
   }
   if (!SUPPORTED_FINISH_REASONS.has(finishReason)) {
     throw new NativeProviderError("Native upstream returned an unsupported finish_reason", {
+      kind: "malformed",
+    });
+  }
+  if (message?.content !== undefined && message?.content !== null && typeof message.content !== "string") {
+    throw new NativeProviderError("Native upstream returned invalid non-streaming message content", {
       kind: "malformed",
     });
   }
@@ -407,11 +412,17 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
         finishReason = nextFinishReason;
       }
       const delta = asRecord(choice?.delta);
+      if (choice?.delta !== undefined && !delta) {
+        throw new NativeProviderError("Native upstream returned a malformed SSE delta", { kind: "malformed" });
+      }
       if (delta?.function_call !== undefined) {
         throw new NativeProviderError("Native upstream returned an unsupported legacy function_call", { kind: "malformed" });
       }
       if (delta?.tool_calls !== undefined && !Array.isArray(delta.tool_calls)) {
         throw new NativeProviderError("Native upstream returned malformed SSE tool calls", { kind: "malformed" });
+      }
+      if (delta?.content !== undefined && delta.content !== null && typeof delta.content !== "string") {
+        throw new NativeProviderError("Native upstream returned malformed SSE content", { kind: "malformed" });
       }
       const content = readText(delta?.content);
       const chunks = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];

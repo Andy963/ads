@@ -275,6 +275,41 @@ describe("Native provider retry and recovery", () => {
     }
   });
 
+  it("finalizes an active provider turn before retargeting its transcript", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-active-retarget-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-active-retarget-db-"));
+    const store = new NativeTranscriptStore(getStateDatabase(path.join(stateDir, "state.db")));
+    try {
+      let releaseResponse!: (response: Response) => void;
+      let markStarted!: () => void;
+      const responseReady = new Promise<Response>((resolve) => { releaseResponse = resolve; });
+      const requestStarted = new Promise<void>((resolve) => { markStarted = resolve; });
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelResolver: resolver(),
+        transcriptId: "active-retarget-old",
+        transcriptStore: store,
+        fetchImpl: async () => {
+          markStarted();
+          return responseReady;
+        },
+      });
+
+      const pending = adapter.send("retarget active provider turn");
+      await requestStarted;
+      adapter.retargetTranscript("active-retarget-new");
+      releaseResponse(sse([JSON.stringify({ choices: [{ delta: { content: "late" }, finish_reason: "stop" }] })]));
+
+      await assert.rejects(pending, /superseded by a destructive session reset/);
+      assert.equal(store.listTurns("active-retarget-old")[0]?.status, "interrupted");
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not restore a turn cancelled during retry backoff", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-state-"));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-db-"));
@@ -430,6 +465,48 @@ describe("Native provider retry and recovery", () => {
         fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { content: "done" }, finish_reason: "stop" }] }), {
           headers: { "content-type": "application/json" },
         }),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        streaming: false,
+        fetchImpl: async () => new Response(JSON.stringify({
+          choices: [{ message: { content: 42 }, finish_reason: "stop" }],
+        }), { headers: { "content-type": "application/json" } }),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        fetchImpl: async () => new Response(
+          "data: {\"choices\":[{\"delta\":\"invalid\"}]}\n\ndata: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        fetchImpl: async () => new Response(
+          "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"id\":\" call-1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
       }),
       (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
     );
