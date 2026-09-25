@@ -29,8 +29,13 @@ export const LEGACY_ADVISOR_LANE_ID = "planner";
  */
 export function normalizeLaneId(value: unknown): string {
   const normalized = String(value ?? "").trim();
-  const canonical = LEGACY_LANE_ALIASES[normalized as keyof typeof LEGACY_LANE_ALIASES];
-  return canonical ?? normalized;
+  // Object.hasOwn, not a bare index: without it an input such as "toString"
+  // would resolve to an inherited function and the declared `string` return
+  // type would be a lie. Unknown input still passes through unchanged.
+  if (Object.hasOwn(LEGACY_LANE_ALIASES, normalized)) {
+    return LEGACY_LANE_ALIASES[normalized as keyof typeof LEGACY_LANE_ALIASES];
+  }
+  return normalized;
 }
 
 /** Primary id first, then the legacy variants when applicable. */
@@ -39,6 +44,7 @@ export function laneIdVariants(value: unknown): string[] {
   if (!normalized) return [];
   const isCanonicalLane = normalized === ACOPILOT_LANE_ID || normalized === ACTIONS_LANE_ID;
   if (!isCanonicalLane) return [normalized];
+  // Object.keys only yields own properties, so this filter is already safe.
   const aliases = Object.keys(LEGACY_LANE_ALIASES)
     .filter((alias) => LEGACY_LANE_ALIASES[alias as keyof typeof LEGACY_LANE_ALIASES] === normalized);
   return [normalized as CanonicalLaneId, ...aliases];

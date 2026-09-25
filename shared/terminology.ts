@@ -84,6 +84,20 @@ const STORED_ROLE_PROFILE_SET: ReadonlySet<string> = new Set(STORED_ROLE_PROFILE
 
 const asKey = (value: unknown): string => String(value ?? "").trim();
 
+/**
+ * Read a key from an alias table, ignoring inherited properties.
+ *
+ * The tables are plain object literals, so a bare index would resolve
+ * `toString`, `constructor`, `__proto__` and friends to functions and objects
+ * inherited from Object.prototype instead of reporting a miss. That would let
+ * `normalizeLaneId("toString")` return a function while claiming to return a
+ * lane id, breaking the fail-closed contract. Every alias lookup must go
+ * through this helper.
+ */
+function lookupOwn(table: object, key: string): unknown {
+  return Object.hasOwn(table, key) ? (table as Record<string, unknown>)[key] : undefined;
+}
+
 export function isCanonicalLaneId(value: unknown): value is CanonicalLaneId {
   return CANONICAL_LANE_SET.has(asKey(value));
 }
@@ -107,7 +121,7 @@ export function isStoredRoleProfileValue(value: unknown): value is StoredRolePro
 export function normalizeLaneId(value: unknown): CanonicalLaneId | null {
   const key = asKey(value);
   if (CANONICAL_LANE_SET.has(key)) return key as CanonicalLaneId;
-  return (LEGACY_LANE_ALIASES as Record<string, CanonicalLaneId>)[key] ?? null;
+  return (lookupOwn(LEGACY_LANE_ALIASES, key) as CanonicalLaneId | undefined) ?? null;
 }
 
 /** Resolve any accepted Actions-role input. Fails closed on unknown input. */
@@ -120,7 +134,7 @@ export function normalizeActionsRole(value: unknown): ActionsRole | null {
 export function normalizeStoredRoleProfileValue(value: unknown): StoredRoleProfileValue | null {
   const key = asKey(value);
   if (STORED_ROLE_PROFILE_SET.has(key)) return key as StoredRoleProfileValue;
-  return (LEGACY_ROLE_PROFILE_ALIASES as Record<string, StoredRoleProfileValue>)[key] ?? null;
+  return (lookupOwn(LEGACY_ROLE_PROFILE_ALIASES, key) as StoredRoleProfileValue | undefined) ?? null;
 }
 
 /**

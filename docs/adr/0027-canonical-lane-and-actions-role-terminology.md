@@ -54,9 +54,14 @@ Actions roles
 
 ### 单一事实来源
 
-术语的唯一事实来源是 `shared/terminology.ts`。该模块不依赖 Node 或 DOM API，由 server
-与 web client 共同消费。为使其可被两侧导入，根 `tsconfig.json` 的 `include` 增加
-`shared`；client 侧沿用既有的 `.js` 后缀导入风格。
+术语的唯一事实来源是 `shared/terminology.ts`。该模块不依赖 Node 或 DOM API，因此 server
+与 web client 都能消费它。本分片只有 web client 接入（`client/src/lib/laneIds.ts`）；
+server 侧的接入属于后续分片，届时会消除残留的重复定义。
+
+根 `tsconfig.json` 的 `include` 增加 `shared`，作用是让根 typecheck 与 server 构建
+（`tsconfig.build.json` 继承同一份 `include`）覆盖该模块。client 侧并不依赖这一项：
+仓库没有独立的 client tsconfig，client 仅由 esbuild / vite 转译，依赖 import 图与
+workspace root 解析 `shared/`。client 侧沿用既有的 `.js` 后缀导入风格。
 
 `client/src/lib/laneIds.ts` 改为复用 canonical 常量，消除重复定义，但**保留**其原有的
 宽松语义：未识别的取值仍然原样返回。`normalizeLaneId` 的调用方（`preferencesStore` 等）
@@ -99,6 +104,11 @@ Actions roles
 `normalizeStoredRoleProfileValue`）对未知输入返回 `null`，而不是原样透传。lane 与角色的
 槽位必须拒绝未知输入，不能把值静默路由到不存在的 lane。需要回显未知取值的调用方必须
 显式处理。
+
+"未知" 必须包含继承自 `Object.prototype` 的属性名。别名表是普通对象字面量，直接用
+`table[key]` 会把 `toString`、`constructor`、`__proto__` 解析成继承来的函数或对象，
+使声明为 `CanonicalLaneId | null` 的函数实际返回函数，fail-closed 契约随之失效。
+所有别名查表必须走 own-property 判定（`Object.hasOwn`）或以原型为 null 的映射。
 
 ### 禁止事项
 

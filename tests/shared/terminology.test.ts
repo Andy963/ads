@@ -81,6 +81,27 @@ describe("shared/terminology compatibility matrix", () => {
     }
   });
 
+  it("fails closed on inherited Object.prototype keys, not just odd strings", () => {
+    // A bare index into the alias tables would resolve these to inherited
+    // functions and objects, letting a non-lane value pass as a lane id.
+    const inherited = [
+      "toString",
+      "constructor",
+      "__proto__",
+      "valueOf",
+      "hasOwnProperty",
+      "isPrototypeOf",
+      "propertyIsEnumerable",
+      "toLocaleString",
+    ];
+    for (const key of inherited) {
+      assert.equal(normalizeLaneId(key), null, `${key} must not resolve to a lane`);
+      assert.equal(normalizeStoredRoleProfileValue(key), null, `${key} must not resolve to a role`);
+      assert.equal(isCanonicalLaneId(key), false);
+      assert.equal(isStoredRoleProfileValue(key), false);
+    }
+  });
+
   it("resolves stored role profiles through their own alias table", () => {
     // A stored `worker` profile is the implementation role, not the actions lane.
     // This is the one legacy word whose meaning depends on context.
