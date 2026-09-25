@@ -1,6 +1,9 @@
 import { computed, onBeforeUnmount, ref, watch, type Ref } from "vue";
 
-import type { CanonicalLaneId } from "../../../shared/terminology.js";
+// This file sits one level deeper than client/src/api, so the shared module
+// needs four parent hops to reach the repo root. A type-only import is erased
+// at build time, so a wrong depth here would not fail build or vitest.
+import type { CanonicalLaneId } from "../../../../shared/terminology.js";
 
 export type ChatLane = CanonicalLaneId;
 
