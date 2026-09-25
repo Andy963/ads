@@ -522,13 +522,13 @@
 .projectNode.active .projectStatus.spinning::after {
   background: transparent;
 }
-.projectStatus.spinning--advisor,
-.projectNode.active .projectStatus.spinning--advisor {
+.projectStatus.spinning--acopilot,
+.projectNode.active .projectStatus.spinning--acopilot {
   border-color: #a855f7;
   border-top-color: transparent;
 }
-.projectStatus.spinning--worker,
-.projectNode.active .projectStatus.spinning--worker {
+.projectStatus.spinning--actions,
+.projectNode.active .projectStatus.spinning--actions {
   border-color: #10b981;
   border-top-color: transparent;
 }
@@ -745,14 +745,14 @@
   background: #94a3b8;
 }
 
-.laneTabStatusDot--busy-advisor {
+.laneTabStatusDot--busy-acopilot {
   background: #a855f7;
   --lane-pulse-color: 168, 85, 247;
   animation: laneDotPulse 1.6s ease-in-out infinite;
   will-change: transform, box-shadow;
 }
 
-.laneTabStatusDot--busy-worker {
+.laneTabStatusDot--busy-actions {
   background: #10b981;
   --lane-pulse-color: 16, 185, 129;
   animation: laneDotPulse 1.6s ease-in-out infinite;

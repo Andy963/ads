@@ -329,10 +329,10 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
   it("isolates advisor lane from shared worker session_reset", async () => {
     const { wrapper, controller, rt } = await mountReconnectHarness();
-    const advisorRt = controller.getAdvisorRuntime("default");
+    const acopilotRt = controller.getAcopilotRuntime("default");
 
     rt.messages.value = [{ id: "w1", role: "user", kind: "text", content: "worker msg" }];
-    advisorRt.messages.value = [{ id: "p1", role: "user", kind: "text", content: "advisor msg" }];
+    acopilotRt.messages.value = [{ id: "p1", role: "user", kind: "text", content: "advisor msg" }];
 
     lastWs!.onMessage?.({
       type: "session_reset",
@@ -344,7 +344,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     await settleUi(wrapper);
 
     expect(rt.messages.value).toEqual([]);
-    expect(advisorRt.messages.value.map((m) => m.content)).toEqual(["advisor msg"]);
+    expect(acopilotRt.messages.value.map((m) => m.content)).toEqual(["advisor msg"]);
     wrapper.unmount();
   });
 
@@ -1906,26 +1906,26 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
   it("clears pending replay state for advisor reset flows", async () => {
     const { wrapper, controller } = await mountReconnectHarness();
-    const advisorRt = controller.getAdvisorRuntime("default");
+    const acopilotRt = controller.getAcopilotRuntime("default");
 
-    seedPendingReplayState(advisorRt, "advisor", "advisor-ack");
-    advisorRt.ignoreNextHistory = true;
-    advisorRt.ignoreNextHistoryGeneration = 1;
-    controller.clearAdvisorChat();
+    seedPendingReplayState(acopilotRt, "advisor", "advisor-ack");
+    acopilotRt.ignoreNextHistory = true;
+    acopilotRt.ignoreNextHistoryGeneration = 1;
+    controller.clearAcopilotChat();
     await settleUi(wrapper);
 
-    expect(advisorRt.pendingAckClientMessageId).toBeNull();
-    expect(advisorRt.queuedPrompts.value).toEqual([]);
-    expect(advisorRt.ignoreNextHistory).toBe(false);
-    expect(advisorRt.ignoreNextHistoryGeneration).toBeUndefined();
+    expect(acopilotRt.pendingAckClientMessageId).toBeNull();
+    expect(acopilotRt.queuedPrompts.value).toEqual([]);
+    expect(acopilotRt.ignoreNextHistory).toBe(false);
+    expect(acopilotRt.ignoreNextHistoryGeneration).toBeUndefined();
 
-    advisorRt.ignoreNextHistory = true;
-    advisorRt.ignoreNextHistoryGeneration = 2;
-    controller.startNewAdvisorSession();
+    acopilotRt.ignoreNextHistory = true;
+    acopilotRt.ignoreNextHistoryGeneration = 2;
+    controller.startNewAcopilotSession();
     await settleUi(wrapper);
 
-    expect(advisorRt.ignoreNextHistory).toBe(false);
-    expect(advisorRt.ignoreNextHistoryGeneration).toBeUndefined();
+    expect(acopilotRt.ignoreNextHistory).toBe(false);
+    expect(acopilotRt.ignoreNextHistoryGeneration).toBeUndefined();
     expect(localStorage.getItem("ads.outbox.default.advisor")).toBeNull();
     wrapper.unmount();
   });
@@ -2170,7 +2170,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
   it("preserves worker and advisor lane isolation during reconnect and catch-up replay", async () => {
     const { wrapper, controller, rt } = await mountReconnectHarness();
-    const advisorRt = controller.getAdvisorRuntime("default");
+    const acopilotRt = controller.getAcopilotRuntime("default");
 
     rt.messages.value = [
       { id: "w-u", role: "user", kind: "text", content: "Worker prompt" },
@@ -2185,12 +2185,12 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     rt.busy.value = true;
     rt.turnInFlight = true;
 
-    advisorRt.messages.value = [
+    acopilotRt.messages.value = [
       { id: "p-u", role: "user", kind: "text", content: "Advisor goal" },
       { id: "p-a", role: "assistant", kind: "text", content: "Advisor plan step 1", streaming: true },
     ];
-    advisorRt.busy.value = true;
-    advisorRt.turnInFlight = true;
+    acopilotRt.busy.value = true;
+    acopilotRt.turnInFlight = true;
 
     lastWs!.onOpen?.();
     lastWs!.onMessage?.({
@@ -2212,16 +2212,16 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.busy.value).toBe(false);
     expect(rt.turnInFlight).toBe(false);
 
-    expect(advisorRt.messages.value.map((m) => m.content)).toEqual(["Advisor goal", "Advisor plan step 1"]);
-    expect(advisorRt.busy.value).toBe(true);
-    expect(advisorRt.turnInFlight).toBe(true);
+    expect(acopilotRt.messages.value.map((m) => m.content)).toEqual(["Advisor goal", "Advisor plan step 1"]);
+    expect(acopilotRt.busy.value).toBe(true);
+    expect(acopilotRt.turnInFlight).toBe(true);
 
     wrapper.unmount();
   });
 
   it("preserves worker and advisor lane isolation during reconnect and catch-up delta_snapshot replay", async () => {
     const { wrapper, controller, rt } = await mountReconnectHarness();
-    const advisorRt = controller.getAdvisorRuntime("default");
+    const acopilotRt = controller.getAcopilotRuntime("default");
 
     rt.messages.value = [
       { id: "w-u", role: "user", kind: "text", content: "Worker prompt" },
@@ -2236,12 +2236,12 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     rt.busy.value = true;
     rt.turnInFlight = true;
 
-    advisorRt.messages.value = [
+    acopilotRt.messages.value = [
       { id: "p-u", role: "user", kind: "text", content: "Advisor goal" },
       { id: "p-a", role: "assistant", kind: "text", content: "Advisor plan step 1", streaming: true },
     ];
-    advisorRt.busy.value = true;
-    advisorRt.turnInFlight = true;
+    acopilotRt.busy.value = true;
+    acopilotRt.turnInFlight = true;
 
     lastWs!.onOpen?.();
     lastWs!.onMessage?.({
@@ -2270,9 +2270,9 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.busy.value).toBe(false);
     expect(rt.turnInFlight).toBe(false);
 
-    expect(advisorRt.messages.value.map((m) => m.content)).toEqual(["Advisor goal", "Advisor plan step 1"]);
-    expect(advisorRt.busy.value).toBe(true);
-    expect(advisorRt.turnInFlight).toBe(true);
+    expect(acopilotRt.messages.value.map((m) => m.content)).toEqual(["Advisor goal", "Advisor plan step 1"]);
+    expect(acopilotRt.busy.value).toBe(true);
+    expect(acopilotRt.turnInFlight).toBe(true);
 
     wrapper.unmount();
   });

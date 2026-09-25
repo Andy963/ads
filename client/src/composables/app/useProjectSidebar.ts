@@ -8,7 +8,7 @@ type ProjectLike = {
 export function useProjectSidebar(params: {
   projects: Ref<ProjectLike[]>;
   getRuntime: (projectId: string) => unknown;
-  getAdvisorRuntime: (projectId: string) => unknown;
+  getAcopilotRuntime: (projectId: string) => unknown;
   runtimeProjectInProgress: (runtime: unknown) => boolean;
   requestProjectSwitch: (projectId: string) => void;
   reorderProjects: (ids: string[]) => Promise<void>;
@@ -109,7 +109,7 @@ export function useProjectSidebar(params: {
     if (!projectId || projectId === "default") return false;
     return (
       !params.runtimeProjectInProgress(params.getRuntime(projectId)) &&
-      !params.runtimeProjectInProgress(params.getAdvisorRuntime(projectId))
+      !params.runtimeProjectInProgress(params.getAcopilotRuntime(projectId))
     );
   }
 

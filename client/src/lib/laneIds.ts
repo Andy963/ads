@@ -13,9 +13,12 @@ import {
 
 export { ACOPILOT_LANE_ID, ACTIONS_LANE_ID };
 
-/** Legacy spellings kept for compatibility with persisted state and older clients. */
-export const ADVISOR_LANE_ID = "advisor";
-export const WORKER_LANE_ID = "worker";
+/**
+ * Legacy spelling kept only because it is a persisted storage key.
+ *
+ * The legacy lane ids themselves are no longer exported: chat session ids
+ * travel over the wire as legacy values, which `laneWire` owns.
+ */
 export const LEGACY_ADVISOR_LANE_ID = "planner";
 
 /**

@@ -243,7 +243,7 @@ describe("session boundary divider and status feedback", () => {
     expect(rt.laneStatus.value).toBeNull();
   });
 
-  it("handles /clear slash command in sendMainPrompt and sendAdvisorPrompt by executing full clear", () => {
+  it("handles /clear slash command in sendMainPrompt and sendAcopilotPrompt by executing full clear", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
@@ -251,30 +251,30 @@ describe("session boundary divider and status feedback", () => {
     });
     const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       connectWs: vi.fn(async () => {}),
-      connectAdvisorWs: vi.fn(async () => {}),
+      connectAcopilotWs: vi.fn(async () => {}),
     });
 
     ctx.loggedIn.value = true;
     projects.initializeProjects();
 
-    const workerRt = ctx.activeRuntime.value;
-    const advisorRt = ctx.activeAdvisorRuntime.value;
-    workerRt.ws = { clearHistory: vi.fn() } as any;
-    advisorRt.ws = { clearHistory: vi.fn() } as any;
+    const actionsRt = ctx.activeRuntime.value;
+    const acopilotRt = ctx.activeAcopilotRuntime.value;
+    actionsRt.ws = { clearHistory: vi.fn() } as any;
+    acopilotRt.ws = { clearHistory: vi.fn() } as any;
 
-    workerRt.messages.value = [
+    actionsRt.messages.value = [
       { id: "m1", role: "user", kind: "text", content: "something" },
     ];
-    advisorRt.messages.value = [
+    acopilotRt.messages.value = [
       { id: "p1", role: "user", kind: "text", content: "advisor something" },
     ];
 
     tasks.sendMainPrompt("/clear");
-    expect(workerRt.messages.value).toHaveLength(0);
-    expect(workerRt.ws?.clearHistory).toHaveBeenCalled();
+    expect(actionsRt.messages.value).toHaveLength(0);
+    expect(actionsRt.ws?.clearHistory).toHaveBeenCalled();
 
-    tasks.sendAdvisorPrompt("  /CLEAR  ");
-    expect(advisorRt.messages.value).toHaveLength(0);
-    expect(advisorRt.ws?.clearHistory).toHaveBeenCalled();
+    tasks.sendAcopilotPrompt("  /CLEAR  ");
+    expect(acopilotRt.messages.value).toHaveLength(0);
+    expect(acopilotRt.ws?.clearHistory).toHaveBeenCalled();
   });
 });

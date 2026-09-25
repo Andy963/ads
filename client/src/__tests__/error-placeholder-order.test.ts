@@ -134,7 +134,7 @@ describe("error placeholder cleanup", () => {
     const failureCards = afterError.filter((m) => m.role === "system" && m.kind === "error");
     expect(failureCards).toHaveLength(1);
     expect(failureCards[0].content).toBe("boom");
-    expect((wrapper.vm as any).workerConnectionStatus).toEqual({ kind: "error", message: "boom" });
+    expect((wrapper.vm as any).actionsConnectionStatus).toEqual({ kind: "error", message: "boom" });
 
     (wrapper.vm as any).sendMainPrompt("second");
     await settleUi(wrapper);
@@ -167,7 +167,7 @@ describe("error placeholder cleanup", () => {
     const duringRetry = (wrapper.vm as any).messages as Array<any>;
     const retryNotices = duringRetry.filter((m) => m.kind === "error" && m.transient === true);
     expect(retryNotices).toHaveLength(0);
-    expect((wrapper.vm as any).workerConnectionStatus).toEqual({
+    expect((wrapper.vm as any).actionsConnectionStatus).toEqual({
       kind: "progress",
       message: `${message}（第 2 次重试）`,
     });
@@ -179,7 +179,7 @@ describe("error placeholder cleanup", () => {
     const afterResult = (wrapper.vm as any).messages as Array<any>;
     expect(afterResult.some((m) => m.kind === "error" && m.transient === true)).toBe(false);
     expect(afterResult.some((m) => m.role === "assistant" && String(m.content ?? "").includes("done"))).toBe(true);
-    expect((wrapper.vm as any).workerConnectionStatus).toBeNull();
+    expect((wrapper.vm as any).actionsConnectionStatus).toBeNull();
 
     wrapper.unmount();
   });
@@ -202,7 +202,7 @@ describe("error placeholder cleanup", () => {
     await settleUi(wrapper);
 
     expect((wrapper.vm as any).queuedPrompts).toHaveLength(0);
-    expect((wrapper.vm as any).workerConnectionStatus).toEqual({ kind: "error", message: "first failed" });
+    expect((wrapper.vm as any).actionsConnectionStatus).toEqual({ kind: "error", message: "first failed" });
     expect(lastWs!.sendPrompt).toHaveBeenCalledTimes(2);
 
     lastWs!.onMessage?.({ type: "user", clientMessageId: secondClientMessageId, text: "second" });
@@ -211,7 +211,7 @@ describe("error placeholder cleanup", () => {
     lastWs!.onMessage?.({ type: "result", ok: true, output: "second done" });
     await settleUi(wrapper);
 
-    expect((wrapper.vm as any).workerConnectionStatus).toBeNull();
+    expect((wrapper.vm as any).actionsConnectionStatus).toBeNull();
     wrapper.unmount();
   });
 });

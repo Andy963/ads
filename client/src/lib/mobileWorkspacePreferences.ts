@@ -1,8 +1,16 @@
+import { normalizeLaneId, type CanonicalLaneId } from "../../../shared/terminology.js";
 import { readMobileTabPreference, writeMobileTabPreference } from "./preferencesStore.js";
 
-export type MobileWorkspaceTab = "advisor" | "worker";
+/**
+ * The lane shown by default on a narrow viewport.
+ *
+ * Stored values predate the terminology migration and can still be `planner`,
+ * `advisor` or `worker`, so reads resolve them through the shared contract
+ * rather than accepting the new spellings only. Writes are always canonical.
+ */
+export type MobileWorkspaceTab = CanonicalLaneId;
 
-const DEFAULT_MOBILE_WORKSPACE_TAB: MobileWorkspaceTab = "advisor";
+const DEFAULT_MOBILE_WORKSPACE_TAB: MobileWorkspaceTab = "acopilot";
 
 function normalizeProjectId(projectId: unknown): string {
   const normalized = typeof projectId === "string" ? projectId.trim() : String(projectId ?? "").trim();
@@ -10,11 +18,7 @@ function normalizeProjectId(projectId: unknown): string {
 }
 
 export function normalizeMobileWorkspaceTab(value: unknown): MobileWorkspaceTab {
-  // Map legacy and evolved tabs gracefully to current UI view tabs
-  if (value === "planner" || value === "advisor" || value === "acopilot") return "advisor";
-  if (value === "worker" || value === "actions") return "worker";
-  if (value === "advisor" || value === "worker") return value;
-  return DEFAULT_MOBILE_WORKSPACE_TAB;
+  return normalizeLaneId(value) ?? DEFAULT_MOBILE_WORKSPACE_TAB;
 }
 
 export function readMobileWorkspaceTab(projectId: string): MobileWorkspaceTab {
@@ -29,9 +33,7 @@ export function readMobileWorkspaceTab(projectId: string): MobileWorkspaceTab {
 export function writeMobileWorkspaceTab(projectId: string, tab: MobileWorkspaceTab): void {
   if (!normalizeProjectId(projectId)) return;
   try {
-    const normalized = normalizeMobileWorkspaceTab(tab);
-    const canonical = normalized === "advisor" ? "acopilot" : "actions";
-    writeMobileTabPreference(projectId, canonical);
+    writeMobileTabPreference(projectId, normalizeMobileWorkspaceTab(tab));
   } catch {
     // Preferences are best-effort and must not block navigation.
   }

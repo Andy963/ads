@@ -16,7 +16,8 @@ import {
   type OutboxSnapshot,
   type PersistedPrompt,
 } from "./outbox";
-import { ADVISOR_LANE_ID, LEGACY_ADVISOR_LANE_ID } from "../lib/laneIds";
+import { LEGACY_ADVISOR_LANE_ID } from "../lib/laneIds";
+import { WIRE_ACOPILOT_SESSION_ID } from "../lib/laneWire";
 
 type UploadedImageAttachment = {
   id: string;
@@ -145,7 +146,7 @@ export function createChatActions(ctx: AppContext) {
     const key = outboxKeyFor(rt);
     if (!key) return { pending: null, sent: [], queued: [] };
     const snapshot = outbox.read(key);
-    if (!isEmptyOutboxSnapshot(snapshot) || rt.chatSessionId !== ADVISOR_LANE_ID) {
+    if (!isEmptyOutboxSnapshot(snapshot) || rt.chatSessionId !== WIRE_ACOPILOT_SESSION_ID) {
       return snapshot;
     }
     const sessionId = String(rt.projectSessionId ?? "").trim();
@@ -507,7 +508,7 @@ export function createChatActions(ctx: AppContext) {
       : {};
     const requestedScope = String(payloadRecord.scope ?? "").trim().toLowerCase();
     const chatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
-    if (requestedScope === "shared" && chatSessionId !== "advisor") {
+    if (requestedScope === "shared" && chatSessionId !== WIRE_ACOPILOT_SESSION_ID) {
       return { ...payloadRecord, scope: "shared" };
     }
     return {

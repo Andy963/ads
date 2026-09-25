@@ -11,9 +11,9 @@ function setup() {
   const chat = createChatActions(ctx as AppContext);
   const actions = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
     connectWs: vi.fn(async () => {}),
-    connectAdvisorWs: vi.fn(async () => {}),
+    connectAcopilotWs: vi.fn(async () => {}),
   });
-  const runtime = ctx.activeAdvisorRuntime.value;
+  const runtime = ctx.activeAcopilotRuntime.value;
   runtime.projectSessionId = "default";
   runtime.chatSessionId = "advisor";
   runtime.activeAgentId.value = "codex";
@@ -38,7 +38,7 @@ describe("lane model overrides", () => {
   it("sends the selected advisor model to the active WebSocket immediately", () => {
     const { actions, runtime, send } = setup();
 
-    actions.setAdvisorModelId("gpt-4o");
+    actions.setAcopilotModelId("gpt-4o");
 
     expect(send).toHaveBeenCalledWith(
       "model_override",
@@ -53,7 +53,7 @@ describe("lane model overrides", () => {
     const { actions, runtime, send } = setup();
     runtime.modelId.value = "gpt-4o";
 
-    actions.setAdvisorModelReasoningEffort("low");
+    actions.setAcopilotModelReasoningEffort("low");
 
     expect(send).toHaveBeenCalledWith(
       "model_override",

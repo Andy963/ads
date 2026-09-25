@@ -251,7 +251,7 @@ describe("Issue #207 visible chat context switching", () => {
     emitHistory(oldAdvisorSocket!, "Project A history");
     await settleUi(wrapper);
 
-    expect(wrapper.find('[data-testid="lane-panel-advisor"]').text()).toContain("Project A history");
+    expect(wrapper.find('[data-testid="lane-panel-acopilot"]').text()).toContain("Project A history");
 
     const projectB = wrapper.findAll("button.projectRow").find((row) => row.text().includes("B"));
     expect(projectB).toBeTruthy();
@@ -260,7 +260,7 @@ describe("Issue #207 visible chat context switching", () => {
 
     expect((wrapper.vm as any).activeProjectId).toBe("sess-b");
     expect(oldWorkerSocket!.closed).toBe(true);
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).not.toContain("Project A history");
+    expect(wrapper.find('[data-testid="lane-panel-actions"]').text()).not.toContain("Project A history");
 
     oldWorkerSocket!.onMessage?.({
       type: "history",
@@ -268,7 +268,7 @@ describe("Issue #207 visible chat context switching", () => {
     });
     await settleUi(wrapper);
 
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).not.toContain("Late Project A history");
+    expect(wrapper.find('[data-testid="lane-panel-actions"]').text()).not.toContain("Late Project A history");
 
     const projectBIdentity = {
       ok: true,
@@ -288,8 +288,8 @@ describe("Issue #207 visible chat context switching", () => {
     await settleUi(wrapper);
 
     expect((wrapper.vm as any).activeRuntime.messages.value.map((message: ChatMessage) => message.content)).toContain("Project B history");
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).toContain("Project B history");
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).not.toContain("Project A history");
+    expect(wrapper.find('[data-testid="lane-panel-actions"]').text()).toContain("Project B history");
+    expect(wrapper.find('[data-testid="lane-panel-actions"]').text()).not.toContain("Project A history");
     wrapper.unmount();
   });
 
@@ -321,30 +321,30 @@ describe("Issue #207 visible chat context switching", () => {
     emitCompletedWorkerTurn(workerSocket!);
     await settleUi(wrapper);
 
-    expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="lane-panel-advisor"]').text()).toContain("Advisor history");
-    expect(wrapper.find('[data-testid="lane-panel-advisor"]').text()).not.toContain("Worker answer is complete.");
+    expect(wrapper.find('[data-testid="lane-panel-acopilot"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-panel-acopilot"]').text()).toContain("Advisor history");
+    expect(wrapper.find('[data-testid="lane-panel-acopilot"]').text()).not.toContain("Worker answer is complete.");
 
-    await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
+    await wrapper.find('[data-testid="lane-tab-actions"]').trigger("click");
     await settleUi(wrapper);
     emitObjectShapedExecuteResult(workerSocket!);
     await settleUi(wrapper);
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).toContain("Worker answer is complete.");
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).toContain("npm test");
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).not.toContain("[object Object]");
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).not.toContain("Advisor history");
+    expect(wrapper.find('[data-testid="lane-panel-actions"]').text()).toContain("Worker answer is complete.");
+    expect(wrapper.find('[data-testid="lane-panel-actions"]').text()).toContain("npm test");
+    expect(wrapper.find('[data-testid="lane-panel-actions"]').text()).not.toContain("[object Object]");
+    expect(wrapper.find('[data-testid="lane-panel-actions"]').text()).not.toContain("Advisor history");
 
-    await wrapper.find('[data-testid="lane-tab-advisor"]').trigger("click");
+    await wrapper.find('[data-testid="lane-tab-acopilot"]').trigger("click");
     await settleUi(wrapper);
-    expect(wrapper.find('[data-testid="lane-panel-advisor"]').text()).toContain("Advisor history");
-    expect(wrapper.find('[data-testid="lane-panel-advisor"]').text()).not.toContain("Worker answer is complete.");
+    expect(wrapper.find('[data-testid="lane-panel-acopilot"]').text()).toContain("Advisor history");
+    expect(wrapper.find('[data-testid="lane-panel-acopilot"]').text()).not.toContain("Worker answer is complete.");
 
     const projectB = wrapper.findAll("button.projectRow").find((row) => row.text().includes("B"));
     expect(projectB).toBeTruthy();
     await projectB!.trigger("click");
     await settleUi(wrapper);
     expect((wrapper.vm as any).activeProjectId).toBe("sess-b");
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).not.toContain("Worker answer is complete.");
+    expect(wrapper.find('[data-testid="lane-panel-actions"]').text()).not.toContain("Worker answer is complete.");
 
     wrapper.unmount();
   });

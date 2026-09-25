@@ -186,7 +186,7 @@ describe("failed turn preservation and in-place retry (Issue #221)", () => {
 
     const messages = wrapper.vm.messages as Array<any>;
     expect(messages.filter((m) => m.role === "system" && m.kind === "error")).toHaveLength(0);
-    expect(wrapper.vm.workerConnectionStatus).toEqual({ kind: "error", message: interruptMessage });
+    expect(wrapper.vm.actionsConnectionStatus).toEqual({ kind: "error", message: interruptMessage });
 
     wrapper.unmount();
   });
@@ -206,7 +206,7 @@ describe("failed turn preservation and in-place retry (Issue #221)", () => {
 
     const messages = wrapper.vm.messages as Array<any>;
     expect(messages.filter((m) => m.role === "system" && m.kind === "error")).toHaveLength(0);
-    expect(wrapper.vm.workerConnectionStatus).toEqual({ kind: "error", message: interruptMessage });
+    expect(wrapper.vm.actionsConnectionStatus).toEqual({ kind: "error", message: interruptMessage });
 
     wrapper.unmount();
   });
@@ -238,7 +238,7 @@ describe("failed turn preservation and in-place retry (Issue #221)", () => {
     expect(cards).toHaveLength(1);
     expect(cards[0]!.id).toBe("turn-failure:u-reload-1");
     expect(cards[0]!.content).toBe("[server_overloaded] 服务过载");
-    expect(wrapper.vm.workerConnectionStatus).toEqual({ kind: "error", message: "[server_overloaded] 服务过载" });
+    expect(wrapper.vm.actionsConnectionStatus).toEqual({ kind: "error", message: "[server_overloaded] 服务过载" });
 
     // A reconnect replaying the same history must not duplicate the turn.
     lastWs!.onMessage?.(historyFrame);

@@ -17,7 +17,7 @@
 
 export type LaneDeps = {
   connectWs: (projectId?: string) => Promise<void>;
-  connectAdvisorWs: (projectId?: string) => Promise<void>;
+  connectAcopilotWs: (projectId?: string) => Promise<void>;
 };
 
 type RuntimeWebSocket = {
@@ -45,9 +45,9 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      activeProject,
      normalizeProjectId,
      getRuntime,
-     getAdvisorRuntime,
+     getAcopilotRuntime,
      activeRuntime,
-     activeAdvisorRuntime,
+     activeAcopilotRuntime,
     apiError,
     models,
     withWorkspaceQuery,
@@ -124,7 +124,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      };
 
      ensureRuntimeModelId(activeRuntime.value);
-     ensureRuntimeModelId(activeAdvisorRuntime.value);
+     ensureRuntimeModelId(activeAcopilotRuntime.value);
    };
 
    const sendMainPrompt = (content: string): void => {
@@ -143,15 +143,15 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      worker.composerDraft.value = "";
    };
 
-   const sendAdvisorPrompt = (content: string): void => {
+   const sendAcopilotPrompt = (content: string): void => {
      crumb(`send:advisor(${String(content ?? "").length}字)`);
      apiError.value = null;
      const text = String(content ?? "");
-     const advisor = activeAdvisorRuntime.value;
+     const advisor = activeAcopilotRuntime.value;
      const images = advisor.pendingImages.value.slice();
      advisor.pendingImages.value = [];
      if (text.trim().toLowerCase() === "/clear") {
-       clearAdvisorChat();
+       clearAcopilotChat();
        advisor.composerDraft.value = "";
        return;
      }
@@ -209,17 +209,17 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      sendModelOverride(rt);
    };
 
-   const setAdvisorModelReasoningEffort = (effort: string): void => {
+   const setAcopilotModelReasoningEffort = (effort: string): void => {
      apiError.value = null;
-     const rt = activeAdvisorRuntime.value;
+     const rt = activeAcopilotRuntime.value;
      rt.modelReasoningEffort.value = normalizeReasoningEffort(effort);
      persistReasoningEffort(rt);
      sendModelOverride(rt);
    };
 
-   const setAdvisorModelId = (modelId: string): void => {
+   const setAcopilotModelId = (modelId: string): void => {
      apiError.value = null;
-     const rt = activeAdvisorRuntime.value;
+     const rt = activeAcopilotRuntime.value;
      rt.modelId.value = normalizeModelId(modelId);
      persistModelId(rt);
      sendModelOverride(rt);
@@ -272,11 +272,11 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      rt.ws?.send?.("set_agent", { agentId: next });
    };
 
-   const switchAdvisorAgent = (agentId: string): void => {
+   const switchAcopilotAgent = (agentId: string): void => {
      apiError.value = null;
      const next = String(agentId ?? "").trim();
      if (!next) return;
-     const rt = activeAdvisorRuntime.value;
+     const rt = activeAcopilotRuntime.value;
      if (!rt.availableAgents.value.some((agent) => agent.id === next && agent.ready)) return;
      rt.activeAgentId.value = next;
      alignRuntimeModelForAgent(rt, next);
@@ -301,8 +301,8 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      interruptRuntime(activeRuntime.value);
    };
 
-   const interruptAdvisor = (): void => {
-     interruptRuntime(activeAdvisorRuntime.value);
+   const interruptAcopilot = (): void => {
+     interruptRuntime(activeAcopilotRuntime.value);
    };
 
    const laneClearHistoryPayload = (rt: ProjectRuntime): { scope: "lane"; sourceChatSessionId: string } => ({
@@ -325,8 +325,8 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
     });
   };
 
-  const clearAdvisorChat = (): void => {
-    const rt = activeAdvisorRuntime.value;
+  const clearAcopilotChat = (): void => {
+    const rt = activeAcopilotRuntime.value;
     rt.queuedPrompts.value = [];
     clearPendingPromptReplayState(rt);
     threadReset(rt, {
@@ -342,8 +342,8 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
     rt.ignoreNextHistoryGeneration = undefined;
   };
 
-  const startNewAdvisorSession = (): void => {
-    const rt = activeAdvisorRuntime.value;
+  const startNewAcopilotSession = (): void => {
+    const rt = activeAcopilotRuntime.value;
     rt.queuedPrompts.value = [];
     clearPendingPromptReplayState(rt);
     threadReset(rt, {
@@ -431,12 +431,12 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      }
    };
 
-  const resumeAdvisorThread = async (
+  const resumeAcopilotThread = async (
     projectId: string = activeProjectId.value,
     options?: { sessionId?: string },
   ): Promise<void> => {
     const pid = normalizeProjectId(projectId);
-    const rt = getAdvisorRuntime(pid);
+    const rt = getAcopilotRuntime(pid);
     rt.apiError.value = null;
     clearNotice(pid);
 
@@ -449,7 +449,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
 
     try {
       if (!rt.ws || !rt.connected.value) {
-        await deps.connectAdvisorWs(pid);
+        await deps.connectAcopilotWs(pid);
       }
       const sessionId = options?.sessionId?.trim();
       const sent = sessionId ? rt.ws?.send("task_resume", { threadId: sessionId }) : rt.ws?.send("task_resume");
@@ -478,30 +478,30 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      }
    };
 
-   const addAdvisorPendingImages = (images: IncomingImage[]): void => {
-     activeAdvisorRuntime.value.pendingImages.value.push(...images);
+   const addAcopilotPendingImages = (images: IncomingImage[]): void => {
+     activeAcopilotRuntime.value.pendingImages.value.push(...images);
    };
 
-   const clearAdvisorPendingImages = (): void => {
-     activeAdvisorRuntime.value.pendingImages.value = [];
+   const clearAcopilotPendingImages = (): void => {
+     activeAcopilotRuntime.value.pendingImages.value = [];
    };
 
-   const removeAdvisorPendingImage = (index: number): void => {
-     const list = activeAdvisorRuntime.value.pendingImages.value;
+   const removeAcopilotPendingImage = (index: number): void => {
+     const list = activeAcopilotRuntime.value.pendingImages.value;
      if (index >= 0 && index < list.length) {
        list.splice(index, 1);
      }
    };
 
-  const removeAdvisorQueuedPrompt = (promptId: string): void => {
+  const removeAcopilotQueuedPrompt = (promptId: string): void => {
      const id = String(promptId ?? "").trim();
      if (!id) return;
-     const list = activeAdvisorRuntime.value.queuedPrompts.value;
-    activeAdvisorRuntime.value.queuedPrompts.value = list.filter((p) => p.id !== id);
+     const list = activeAcopilotRuntime.value.queuedPrompts.value;
+    activeAcopilotRuntime.value.queuedPrompts.value = list.filter((p) => p.id !== id);
   };
 
-  const retryAdvisorQueuedPrompt = (promptId: string): void => {
-    retryQueuedPrompt(promptId, activeAdvisorRuntime.value);
+  const retryAcopilotQueuedPrompt = (promptId: string): void => {
+    retryQueuedPrompt(promptId, activeAcopilotRuntime.value);
   };
 
   return {
@@ -509,29 +509,29 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
     clearNotice,
     loadModels,
     sendMainPrompt,
-    sendAdvisorPrompt,
+    sendAcopilotPrompt,
     switchMainAgent,
-    switchAdvisorAgent,
+    switchAcopilotAgent,
     interruptActive,
-    interruptAdvisor,
+    interruptAcopilot,
     clearActiveChat,
-    clearAdvisorChat,
-    startNewAdvisorSession,
+    clearAcopilotChat,
+    startNewAcopilotSession,
     resumeTaskThread,
     listResumableSessions,
-    resumeAdvisorThread,
+    resumeAcopilotThread,
     addPendingImages,
     clearPendingImages,
     removePendingImage,
-    addAdvisorPendingImages,
-    clearAdvisorPendingImages,
-    removeAdvisorPendingImage,
-    removeAdvisorQueuedPrompt,
-    retryAdvisorQueuedPrompt,
+    addAcopilotPendingImages,
+    clearAcopilotPendingImages,
+    removeAcopilotPendingImage,
+    removeAcopilotQueuedPrompt,
+    retryAcopilotQueuedPrompt,
     setMainModelReasoningEffort,
-    setAdvisorModelReasoningEffort,
+    setAcopilotModelReasoningEffort,
     setMainModelId,
-    setAdvisorModelId,
+    setAcopilotModelId,
   };
 }
 

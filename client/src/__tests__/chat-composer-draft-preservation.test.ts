@@ -66,22 +66,22 @@ describe("composer draft preservation on session reset", () => {
     });
     const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       connectWs: vi.fn(async () => {}),
-      connectAdvisorWs: vi.fn(async () => {}),
+      connectAcopilotWs: vi.fn(async () => {}),
     });
 
     ctx.loggedIn.value = true;
     projects.initializeProjects();
 
-    const workerRt = ctx.activeRuntime.value;
-    const advisorRt = ctx.activeAdvisorRuntime.value;
-    workerRt.composerDraft.value = "Worker reset draft";
-    advisorRt.composerDraft.value = "Advisor reset draft";
+    const actionsRt = ctx.activeRuntime.value;
+    const acopilotRt = ctx.activeAcopilotRuntime.value;
+    actionsRt.composerDraft.value = "Worker reset draft";
+    acopilotRt.composerDraft.value = "Advisor reset draft";
 
     tasks.clearActiveChat();
-    tasks.clearAdvisorChat();
+    tasks.clearAcopilotChat();
 
-    expect(workerRt.composerDraft.value).toBe("Worker reset draft");
-    expect(advisorRt.composerDraft.value).toBe("Advisor reset draft");
+    expect(actionsRt.composerDraft.value).toBe("Worker reset draft");
+    expect(acopilotRt.composerDraft.value).toBe("Advisor reset draft");
   });
 
   it("clears worker and advisor drafts after their prompts are queued", () => {
@@ -89,21 +89,21 @@ describe("composer draft preservation on session reset", () => {
     const chat = createChatActions(ctx as AppContext);
     const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       connectWs: vi.fn(async () => {}),
-      connectAdvisorWs: vi.fn(async () => {}),
+      connectAcopilotWs: vi.fn(async () => {}),
     });
 
-    const workerRt = ctx.activeRuntime.value;
-    const advisorRt = ctx.activeAdvisorRuntime.value;
-    workerRt.composerDraft.value = "Worker prompt";
-    advisorRt.composerDraft.value = "Advisor prompt";
+    const actionsRt = ctx.activeRuntime.value;
+    const acopilotRt = ctx.activeAcopilotRuntime.value;
+    actionsRt.composerDraft.value = "Worker prompt";
+    acopilotRt.composerDraft.value = "Advisor prompt";
 
     tasks.sendMainPrompt("Worker prompt");
-    tasks.sendAdvisorPrompt("Advisor prompt");
+    tasks.sendAcopilotPrompt("Advisor prompt");
 
-    expect(workerRt.composerDraft.value).toBe("");
-    expect(advisorRt.composerDraft.value).toBe("");
-    expect(workerRt.queuedPrompts.value[0]?.text).toBe("Worker prompt");
-    expect(advisorRt.queuedPrompts.value[0]?.text).toBe("Advisor prompt");
+    expect(actionsRt.composerDraft.value).toBe("");
+    expect(acopilotRt.composerDraft.value).toBe("");
+    expect(actionsRt.queuedPrompts.value[0]?.text).toBe("Worker prompt");
+    expect(acopilotRt.queuedPrompts.value[0]?.text).toBe("Advisor prompt");
   });
 
   it("preserves drafts when prompt enqueue fails before dispatch", () => {
@@ -116,15 +116,15 @@ describe("composer draft preservation on session reset", () => {
       { ...ctx, ...chat, enqueueMainPrompt } as AppContext & ReturnType<typeof createChatActions>,
       {
         connectWs: vi.fn(async () => {}),
-        connectAdvisorWs: vi.fn(async () => {}),
+        connectAcopilotWs: vi.fn(async () => {}),
       },
     );
 
-    const workerRt = ctx.activeRuntime.value;
-    workerRt.composerDraft.value = "Retry this prompt";
+    const actionsRt = ctx.activeRuntime.value;
+    actionsRt.composerDraft.value = "Retry this prompt";
 
     expect(() => tasks.sendMainPrompt("Retry this prompt")).toThrow("dispatch unavailable");
-    expect(workerRt.composerDraft.value).toBe("Retry this prompt");
+    expect(actionsRt.composerDraft.value).toBe("Retry this prompt");
   });
 
   it("scopes worker and advisor backend clears to their originating lanes", () => {
@@ -135,22 +135,22 @@ describe("composer draft preservation on session reset", () => {
     });
     const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       connectWs: vi.fn(async () => {}),
-      connectAdvisorWs: vi.fn(async () => {}),
+      connectAcopilotWs: vi.fn(async () => {}),
     });
 
     ctx.loggedIn.value = true;
     projects.initializeProjects();
 
-    const workerRt = ctx.activeRuntime.value;
-    const advisorRt = ctx.activeAdvisorRuntime.value;
-    workerRt.ws = { clearHistory: vi.fn() } as any;
-    advisorRt.ws = { clearHistory: vi.fn() } as any;
+    const actionsRt = ctx.activeRuntime.value;
+    const acopilotRt = ctx.activeAcopilotRuntime.value;
+    actionsRt.ws = { clearHistory: vi.fn() } as any;
+    acopilotRt.ws = { clearHistory: vi.fn() } as any;
 
     tasks.clearActiveChat();
-    tasks.clearAdvisorChat();
+    tasks.clearAcopilotChat();
 
-    expect(workerRt.ws?.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "main" });
-    expect(advisorRt.ws?.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "advisor" });
+    expect(actionsRt.ws?.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "main" });
+    expect(acopilotRt.ws?.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "advisor" });
   });
 
   it("uses an in-band new-session reset for the advisor lane", () => {
@@ -158,15 +158,15 @@ describe("composer draft preservation on session reset", () => {
     const chat = createChatActions(ctx as AppContext);
     const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
       connectWs: vi.fn(async () => {}),
-      connectAdvisorWs: vi.fn(async () => {}),
+      connectAcopilotWs: vi.fn(async () => {}),
     });
 
     ctx.loggedIn.value = true;
-    ctx.activeAdvisorRuntime.value.ws = { clearHistory: vi.fn() } as any;
+    ctx.activeAcopilotRuntime.value.ws = { clearHistory: vi.fn() } as any;
 
-    tasks.startNewAdvisorSession();
+    tasks.startNewAcopilotSession();
 
-    expect(ctx.activeAdvisorRuntime.value.ws?.clearHistory).toHaveBeenCalledWith({
+    expect(ctx.activeAcopilotRuntime.value.ws?.clearHistory).toHaveBeenCalledWith({
       scope: "lane",
       sourceChatSessionId: "advisor",
       mode: "new_session",
@@ -176,17 +176,17 @@ describe("composer draft preservation on session reset", () => {
   it("downgrades a advisor shared clear request to the advisor lane", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
-    const advisorRt = ctx.activeAdvisorRuntime.value;
-    advisorRt.ws = { clearHistory: vi.fn() } as any;
+    const acopilotRt = ctx.activeAcopilotRuntime.value;
+    acopilotRt.ws = { clearHistory: vi.fn() } as any;
 
-    chat.threadReset(advisorRt, {
+    chat.threadReset(acopilotRt, {
       notice: "",
       clearBackendHistory: true,
       clearHistoryPayload: { scope: "shared" },
       resetThreadId: true,
     });
 
-    expect(advisorRt.ws?.clearHistory).toHaveBeenCalledWith({
+    expect(acopilotRt.ws?.clearHistory).toHaveBeenCalledWith({
       scope: "lane",
       sourceChatSessionId: "advisor",
     });

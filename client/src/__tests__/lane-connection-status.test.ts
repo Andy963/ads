@@ -11,15 +11,23 @@ function readAppCss(): string {
 }
 
 describe("lane connection status", () => {
-  it("maps the Advisor and Worker tabs to their independent runtime states", () => {
-    const states = { advisor: true, worker: false };
+  it("maps the Acopilot and Actions tabs to their independent runtime states", () => {
+    const states = { acopilot: true, actions: false };
 
-    expect(isLaneConnected("advisor", states)).toBe(true);
-    expect(isLaneConnected("worker", states)).toBe(false);
+    expect(isLaneConnected("acopilot", states)).toBe(true);
+    expect(isLaneConnected("actions", states)).toBe(false);
   });
 
-  it("does not mark the Task tab as connected", () => {
-    expect(isLaneConnected("advisor", { advisor: false, worker: true })).toBe(false);
+  it("does not mark a lane connected when only the other lane is", () => {
+    expect(isLaneConnected("acopilot", { acopilot: false, actions: true })).toBe(false);
+  });
+
+  it("ignores legacy lane spellings", () => {
+    // The tab id is a canonical lane; a legacy spelling is not a lane and must
+    // not be reported as connected.
+    const states = { acopilot: true, actions: true };
+    expect(isLaneConnected("advisor" as never, states)).toBe(false);
+    expect(isLaneConnected("worker" as never, states)).toBe(false);
   });
 
   it("renders connection state with an independent six-pixel status dot", () => {

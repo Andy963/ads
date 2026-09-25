@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 export async function verifyMonotonicHistory({ page, send, waitForReply, chooseLane, settle, report }) {
   const snapshots = [];
   report.snapshots = snapshots;
-  await chooseLane("advisor");
+  await chooseLane("acopilot");
   const chat = page.locator('.lanePanel:not([aria-hidden]) .chat');
   const list = chat.locator(".messageList");
   const loadedCount = async () => Number(await list.getAttribute("data-loaded-messages"));
@@ -30,7 +30,7 @@ export async function verifyMonotonicHistory({ page, send, waitForReply, chooseL
 
   await page.reload();
   await page.waitForSelector("textarea:not(:disabled):visible");
-  await chooseLane("advisor");
+  await chooseLane("acopilot");
   await waitForReply("Advisor reply: browser-advisor-scroll-34");
   await settle();
   assert.equal(Number(await list.getAttribute("data-total-messages")), persistedTotal);
