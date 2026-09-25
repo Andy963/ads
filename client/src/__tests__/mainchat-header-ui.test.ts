@@ -12,24 +12,56 @@ function readUtf8(relFromThisFile: string): string {
   return fs.readFileSync(p, "utf8");
 }
 
+function selectors_rule(css: string, selector: string): string {
+  return css.match(new RegExp(`\\${selector}\\s*\\{[^}]*\\}`))?.[0] ?? "";
+}
+
 describe("MainChat header UI", () => {
   it("keeps lane and model controls in one continuous header surface", () => {
     const css = readUtf8("../App.css");
+    const selectors = readUtf8("../components/MainChatModelSelectors.vue");
     const surface = css.match(/\.laneTabs\s*\{[^}]*\}/)?.[0];
     const group = css.match(/\.laneTabGroup\s*\{[^}]*\}/)?.[0];
+    const divider = css.match(/\.laneControlDivider\s*\{[^}]*\}/)?.[0];
     const controls = css.match(/\.laneModelControls\s*\{[^}]*\}/)?.[0];
+
+    // The bar itself is the only painted surface: one border, one radius, one fill.
     expect(surface).toMatch(/gap:\s*0\s*;/);
     expect(surface).toMatch(/overflow:\s*hidden\s*;/);
+    expect(surface).toMatch(/padding:\s*3px\s*;/);
+    expect(surface).toMatch(/border-radius:\s*12px\s*;/);
+    expect(surface).toMatch(/background:\s*rgba\(15, 23, 42, 0\.05\)\s*;/);
+    expect(surface).not.toMatch(/border-bottom:\s*1px/);
+
+    // The lane group is a bare slot inside that surface, not a second box.
     expect(group).toMatch(/display:\s*inline-flex\s*;/);
-    expect(group).toMatch(/border-radius:\s*10px\s*;/);
+    expect(group).not.toMatch(/background:/);
+    expect(group).not.toMatch(/border:/);
+    expect(group).not.toMatch(/border-radius:/);
+    expect(group).not.toMatch(/padding:/);
+
+    // Separation is a short hairline inside the surface, never a full-height rule.
+    expect(divider).toBeDefined();
+    expect(divider).toMatch(/flex:\s*0 0 1px\s*;/);
+    expect(divider).toMatch(/height:\s*18px\s*;/);
+    expect(divider).toMatch(/align-self:\s*center\s*;/);
+    expect(controls).toMatch(/border-left:\s*none\s*;/);
+    expect(controls).not.toMatch(/border-left:\s*1px/);
+    expect(controls).toMatch(/padding-left:\s*0\s*;/);
     expect(controls).toMatch(/min-width:\s*0\s*;/);
     expect(controls).toMatch(/flex:\s*1 1 0\s*;/);
     expect(controls).toMatch(/margin-left:\s*0\s*;/);
-    expect(controls).toMatch(/border-left:\s*1px solid var\(--border\)\s*;/);
     expect(controls).toMatch(/justify-content:\s*flex-end\s*;/);
 
+    // Every segment in the surface is exactly as tall as the lane tab.
+    const tab = css.match(/\.laneTab\s*\{[^}]*\}/)?.[0];
+    expect(tab).toMatch(/min-height:\s*28px\s*;/);
+    const capsule = selectors_rule(readUtf8("../components/MainChatModelSelectors.vue"), ".modelCapsule");
+    expect(capsule).toMatch(/height:\s*28px\s*;/);
+    expect(capsule).toMatch(/background:\s*transparent\s*;/);
+    expect(capsule).toMatch(/border:\s*1px solid transparent\s*;/);
+
     expect(css).not.toMatch(/\.laneTab\s*\{[^}]*justify-self\s*;/);
-    const selectors = readUtf8("../components/MainChatModelSelectors.vue");
     expect(selectors.match(/<select\s/g)).toHaveLength(2);
     expect(selectors).toMatch(/\.modelSelect\s*\{[^}]*width:\s*100%\s*;[^}]*min-width:\s*0\s*;/);
     expect(selectors).toMatch(/\.modelField\s*\{[^}]*height:\s*28px\s*;[^}]*font-size:\s*12px\s*;/);
@@ -51,9 +83,18 @@ describe("MainChat header UI", () => {
 
     expect(app).toMatch(/--topbar-height:\s*40px\s*;/);
     expect(mobileApp).toMatch(/--topbar-height:\s*36px\s*;/);
-    expect(mobileCss).toMatch(/\.laneTabs\s*\{[^}]*min-height:\s*38px\s*;[^}]*padding:\s*2px 8px\s*;/);
+    expect(mobileCss).toMatch(/\.laneTabs\s*\{[^}]*min-height:\s*36px\s*;[^}]*padding:\s*3px\s*;/);
     expect(mobileCss).toMatch(/\.laneTabs\s*\{[^}]*gap:\s*0\s*;/);
-    expect(mobileCss).toMatch(/\.laneModelControls\s*\{[^}]*padding-left:\s*8px\s*;/);
+    expect(mobileCss).toMatch(/\.laneModelControls\s*\{[^}]*padding-left:\s*0\s*;/);
+
+    // The sliding activation pill covers a tab exactly, with no inner offset.
+    const pill = mobileCss.match(/\.laneTabGroup::before\s*\{[^}]*\}/)?.[0];
+    expect(pill).toMatch(/top:\s*0\s*;/);
+    expect(pill).toMatch(/bottom:\s*0\s*;/);
+    expect(pill).toMatch(/left:\s*0\s*;/);
+    expect(pill).toMatch(/width:\s*50%\s*;/);
+    const mobileGroup = mobileCss.match(/\.laneTabGroup\s*\{[^}]*\}/)?.[0];
+    expect(mobileGroup).toMatch(/padding:\s*0\s*;/);
     expect(mobileCss).toMatch(/\.mobileMenuBtn\s*\{[^}]*height:\s*var\(--topbar-height\)\s*;/);
   });
 
@@ -70,12 +111,18 @@ describe("MainChat header UI", () => {
   it("blends mobile navigation into the chat background without horizontal separators", () => {
     const css = readUtf8("../App.css");
     const mobileCss = css.slice(css.indexOf("@media (max-width: 900px)"));
-    const navigation = mobileCss.match(/\.topbar,\s*\.laneTabs\s*\{[^}]*\}/)?.[0];
+    const topbar = mobileCss.match(/\.topbar\s*\{[^}]*\}/)?.[0];
+    const laneBar = mobileCss.match(/\.laneTabs\s*\{[^}]*\}/)?.[0];
 
-    expect(navigation).toBeDefined();
-    expect(navigation).toMatch(/border-bottom:\s*0\s*;/);
-    expect(navigation).toMatch(/box-shadow:\s*none\s*;/);
-    expect(navigation).toMatch(/background:\s*var\(--app-bg\)\s*;/);
+    expect(topbar).toBeDefined();
+    expect(topbar).toMatch(/border-bottom:\s*0\s*;/);
+    expect(topbar).toMatch(/box-shadow:\s*none\s*;/);
+    expect(topbar).toMatch(/background:\s*var\(--app-bg\)\s*;/);
+
+    // The lane bar paints no page-level chrome; the pill surface is the only skin.
+    expect(laneBar).toMatch(/border-bottom:\s*none\s*;/);
+    expect(laneBar).toMatch(/box-shadow:\s*none\s*;/);
+    expect(laneBar).not.toMatch(/background:\s*var\(--app-bg\)\s*;/);
   });
 
   it("does not render a busy label in the header", () => {

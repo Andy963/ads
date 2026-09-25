@@ -88,7 +88,8 @@ try {
       page.on("console", (message) => { if (message.type() === "error") result.errors.push(message.text()); });
       page.on("dialog", async (dialog) => { result.dialogs.push(dialog.message()); await dialog.dismiss(); });
       await page.goto(origin);
-      const input = page.locator("textarea.composer-input:visible");
+      // Both lane panels stay in the DOM on mobile, so scope to the active one.
+      const input = page.locator(".lanePanel:not(.lanePanel--inactive) textarea.composer-input:visible");
       await input.waitFor();
       const settle = () => page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 
@@ -105,6 +106,72 @@ try {
       }
 
       await input.fill("");
+      for (const width of [320, 390, 414]) {
+        await page.setViewportSize({ width, height: 430 });
+        await settle();
+        const laneSurface = await page.evaluate(() => {
+          const rect = (selector) => {
+            const element = document.querySelector(selector);
+            if (!element) return null;
+            const box = element.getBoundingClientRect();
+            return { top: box.top, bottom: box.bottom, height: box.height, width: box.width };
+          };
+          const style = (selector) => {
+            const element = document.querySelector(selector);
+            if (!element) return null;
+            const computed = getComputedStyle(element);
+            return {
+              background: computed.backgroundColor,
+              borderTopWidth: computed.borderTopWidth,
+              borderLeftWidth: computed.borderLeftWidth,
+            };
+          };
+          return {
+            surface: rect(".laneTabs"),
+            group: rect(".laneTabGroup"),
+            tab: rect(".laneTab"),
+            divider: rect(".laneControlDivider"),
+            controls: rect(".laneModelControls"),
+            capsule: rect(".modelCapsule"),
+            groupStyle: style(".laneTabGroup"),
+            controlsStyle: style(".laneModelControls"),
+          };
+        });
+
+        for (const key of ["surface", "group", "tab", "divider", "controls", "capsule"]) {
+          assert.ok(laneSurface[key], `Lane control surface must render ${key}`);
+        }
+        const tolerance = 0.6;
+        assert.ok(
+          Math.abs(laneSurface.tab.height - laneSurface.capsule.height) <= tolerance,
+          `Lane tab and model capsule must share one height; got ${laneSurface.tab.height} vs ${laneSurface.capsule.height}`,
+        );
+        assert.ok(
+          Math.abs(laneSurface.tab.top - laneSurface.capsule.top) <= tolerance,
+          `Lane tab and model capsule must sit flush; got ${laneSurface.tab.top} vs ${laneSurface.capsule.top}`,
+        );
+        assert.ok(
+          laneSurface.divider.height < laneSurface.surface.height,
+          `Lane divider must be a hairline inside the surface; got ${laneSurface.divider.height} in ${laneSurface.surface.height}`,
+        );
+        assert.equal(laneSurface.groupStyle.background, "rgba(0, 0, 0, 0)", "Lane group must not paint a second surface");
+        assert.equal(laneSurface.groupStyle.borderTopWidth, "0px", "Lane group must not paint a second border");
+        assert.equal(laneSurface.controlsStyle.background, "rgba(0, 0, 0, 0)", "Model controls must not paint a second surface");
+        assert.equal(laneSurface.controlsStyle.borderLeftWidth, "0px", "Model controls must not carry a full-height rule");
+        result.checks.push({
+          kind: "lane-control-single-surface",
+          width,
+          tabHeight: laneSurface.tab.height,
+          capsuleHeight: laneSurface.capsule.height,
+          surfaceHeight: laneSurface.surface.height,
+          dividerHeight: laneSurface.divider.height,
+        });
+      }
+
+      await page.setViewportSize({ width: 390, height: 430 });
+      await input.fill("");
+      await settle();
+
       await input.evaluate((element) => {
         window.__layoutLiveReads = 0;
         Object.defineProperty(element, "scrollHeight", {
@@ -139,12 +206,60 @@ try {
       assert.equal(await page.locator(".composerMainRow--expanded:visible").count(), 1);
       await input.fill("Line\n".repeat(8));
       await settle();
-      const height = await input.evaluate((element) => element.getBoundingClientRect().height);
-      assert.equal(height, 130, "Five rows must remain available at the simulated keyboard viewport height");
+      const geometry = await input.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const lineHeight = parseFloat(style.lineHeight);
+        const verticalPadding = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+        const fiveRows = lineHeight * 5 + verticalPadding;
+
+        // Mirror the viewport budget the composer reserves for its own chrome, so
+        // the expectation follows the live padding and viewport instead of a
+        // frozen pixel count that silently rots on the next styling change.
+        const row = element.closest(".composerMainRow");
+        const composer = element.closest(".composer");
+        const container = element.closest(".detail");
+        const bounds = container?.getBoundingClientRect() ?? null;
+        let viewportCap = Number.POSITIVE_INFINITY;
+        if (row && composer && container && bounds && bounds.height > 0) {
+          const chat = container.querySelector(".chat");
+          const chatStyle = chat ? getComputedStyle(chat) : null;
+          const insets = chatStyle
+            ? [chatStyle.paddingTop, chatStyle.paddingBottom, chatStyle.borderTopWidth, chatStyle.borderBottomWidth]
+                .reduce((total, value) => total + (parseFloat(value) || 0), 0)
+            : 0;
+          const chatTop = chat ? chat.getBoundingClientRect().top : bounds.top;
+          const available = bounds.bottom - Math.max(bounds.top, chatTop) - insets;
+          const rowStyle = getComputedStyle(row);
+          const rowPadding = (parseFloat(rowStyle.paddingTop) || 0) + (parseFloat(rowStyle.paddingBottom) || 0);
+          const tools = Math.max(
+            row.querySelector(".composerMainRowLeft")?.offsetHeight ?? 0,
+            row.querySelector(".composerMainRowRight")?.offsetHeight ?? 0,
+          );
+          const chrome = composer.offsetHeight - row.offsetHeight + rowPadding + tools + (parseFloat(rowStyle.rowGap) || 0);
+          viewportCap = Math.max(0, available - chrome);
+        }
+        return {
+          height: element.getBoundingClientRect().height,
+          fiveRows,
+          expected: Math.ceil(Math.min(fiveRows, viewportCap)),
+        };
+      });
+      // The invariant is "five rows stay available"; the exact pixel count is
+      // whatever the current padding and viewport budget allow.
+      assert.ok(
+        geometry.height + 0.5 >= geometry.fiveRows,
+        `Five rows must remain available; box ${geometry.height} cannot show ${geometry.fiveRows}`,
+      );
+      assert.equal(geometry.height, geometry.expected, "Composer height must equal the viewport-aware five-row cap");
       await input.fill("");
       await settle();
       assert.equal(await page.locator("[data-composer-measure]").count(), 0, "Clearing the draft must release the measurement node");
-      result.checks.push({ kind: "composition-five-rows-and-clear", height });
+      result.checks.push({
+        kind: "composition-five-rows-and-clear",
+        height: geometry.height,
+        fiveRows: geometry.fiveRows,
+        expected: geometry.expected,
+      });
       result.runtimeDiagnostics = await page.evaluate(() => window.__ADS_RUNTIME_DIAGNOSTICS__ ?? []);
       assert.deepEqual(result.errors, []);
       assert.deepEqual(result.runtimeDiagnostics, []);

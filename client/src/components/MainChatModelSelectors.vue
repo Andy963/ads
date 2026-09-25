@@ -476,34 +476,41 @@ function selectReasoningEffort(effort: string): void {
   min-width: 0;
 }
 
+/* Segment of the shared lane control surface, not a standalone button: it
+   drops its own border and background so it reads as one control with the
+   lane tabs, and reuses the exact active-tab treatment on hover. */
 .modelCapsule {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   height: 28px;
   padding: 0 10px;
-  border: 1px solid var(--border, rgba(15, 23, 42, 0.12));
+  border: 1px solid transparent;
   border-radius: 8px;
-  background: var(--surface);
+  background: transparent;
   color: var(--text);
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
   cursor: pointer;
   width: 100%;
   max-width: 220px;
   min-width: 0;
-  transition: all 0.15s ease;
+  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
   white-space: nowrap;
 }
 
 .modelCapsule:hover:not(:disabled) {
-  border-color: rgba(37, 99, 235, 0.35);
-  background-color: rgba(37, 99, 235, 0.05);
+  border-color: transparent;
+  background-color: var(--surface);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
 }
 
 .modelCapsule--disabled {
   opacity: 0.55;
   cursor: not-allowed;
+  background: transparent;
+  box-shadow: none;
 }
 
 .modelCapsuleIcon {

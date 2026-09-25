@@ -638,15 +638,20 @@
   gap: 0;
 }
 
+/* One shared control surface: the lane switch, the divider and the model/effort
+   capsule are segments of a single pill, so they can never drift apart in
+   height, border or background. */
 .laneTabs {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 0;
-  min-height: 40px;
-  padding: 3px 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  min-height: 36px;
+  margin: 6px 12px;
+  padding: 3px;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.05);
   box-sizing: border-box;
   overflow: hidden;
 }
@@ -657,10 +662,15 @@
   flex: 0 0 auto;
   gap: 2px;
   min-width: 0;
-  padding: 3px;
-  border: 1px solid rgba(15, 23, 42, 0.04);
-  border-radius: 10px;
-  background: rgba(15, 23, 42, 0.05);
+}
+
+/* Short hairline inside the surface, never a full-height rule across it. */
+.laneControlDivider {
+  flex: 0 0 1px;
+  align-self: center;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--border);
 }
 
 .laneModelControls {
@@ -671,8 +681,8 @@
   flex: 1 1 0;
   min-width: 0;
   margin-left: 0;
-  padding-left: 12px;
-  border-left: 1px solid var(--border);
+  padding-left: 0;
+  border-left: none;
   overflow: hidden;
 }
 
@@ -853,11 +863,14 @@
   .app {
     --topbar-height: 36px;
   }
-  .topbar,
-  .laneTabs {
+  .topbar {
     border-bottom: 0;
     box-shadow: none;
     background: var(--app-bg);
+  }
+  .laneTabs {
+    border-bottom: none;
+    box-shadow: none;
   }
   .layout {
     grid-template-columns: 1fr;
@@ -1251,9 +1264,10 @@
     min-height: 0;
   }
   .laneTabs {
-    width: 100%;
-    min-height: 38px;
-    padding: 2px 8px;
+    width: auto;
+    min-height: 36px;
+    margin: 4px 8px;
+    padding: 3px;
     gap: 0;
   }
 
@@ -1261,20 +1275,23 @@
     position: relative;
     display: inline-grid;
     grid-template-columns: 1fr 1fr;
-    padding: 2px;
+    align-items: center;
+    padding: 0;
     gap: 0;
   }
 
   /* Sliding activation pill, in sync with the panel carousel easing. The
-     per-tab background highlight is removed so only the pill carries it. */
+     per-tab background highlight is removed so only the pill carries it.
+     Offsets resolve against the group's padding box, which no longer has its
+     own padding, so the pill lands exactly on a tab instead of inside it. */
   .laneTabGroup::before {
     content: "";
     position: absolute;
-    top: 2px;
-    bottom: 2px;
-    left: 2px;
+    top: 0;
+    bottom: 0;
+    left: 0;
     z-index: 0;
-    width: calc(50% - 2px);
+    width: 50%;
     border-radius: 8px;
     background: white;
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
@@ -1305,7 +1322,7 @@
   .laneModelControls {
     flex: 1 1 0;
     gap: 6px;
-    padding-left: 8px;
+    padding-left: 0;
   }
 }
 
