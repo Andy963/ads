@@ -69,6 +69,7 @@ export function preflightPersistAndAck(args: {
   userId: number;
   onPersistedMessage?: (message: { clientMessageId: string; role: "user"; text: string }) => void;
   emitUserSyncEvent?: (event: { type: "user"; clientMessageId: string; text: string; ts: number; eventId?: string; kind?: string }) => { ok: boolean };
+  persistPromptQueue?: () => { ok: true; duplicate: boolean; status?: string; position?: number } | { ok: false; error?: string };
 }): { enqueue: boolean } {
   if (args.isLaneCurrent && !args.isLaneCurrent() && args.parsed.type !== "clear_history") {
     return { enqueue: false };
@@ -84,6 +85,24 @@ export function preflightPersistAndAck(args: {
     const payload = args.parsed.payload && typeof args.parsed.payload === "object" && !Array.isArray(args.parsed.payload)
       ? (args.parsed.payload as Record<string, unknown>)
       : {};
+    if (args.persistPromptQueue) {
+      const queueResult = args.persistPromptQueue();
+      if (!queueResult.ok) {
+        args.warn(
+          `[WebSocket][PromptQueue] req=${args.requestId} session=${args.sessionId} user=${args.userId} failed to persist prompt before ack`,
+        );
+        args.sendJson({ type: "error", message: queueResult.error ?? "消息排队失败，请重试" });
+        return { enqueue: false };
+      }
+      args.sendJson({
+        type: "ack",
+        client_message_id: args.clientMessageId,
+        duplicate: queueResult.duplicate,
+        ...(queueResult.status ? { queue_status: queueResult.status } : {}),
+        ...(typeof queueResult.position === "number" ? { queue_position: queueResult.position } : {}),
+      });
+      return { enqueue: false };
+    }
     const entryKind = buildClientMessageHistoryKind({
       clientMessageId: args.clientMessageId,
       metadata: {

@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import WebSocket, { type RawData } from "ws";
 
-import { resetStateDatabaseForTests } from "../../server/state/database.js";
+import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
 import { HybridOrchestrator } from "../../server/agents/orchestrator.js";
 import { AsyncLock } from "../../server/utils/asyncLock.js";
 import { HistoryStore } from "../../server/utils/historyStore.js";
@@ -18,6 +18,7 @@ import { NoopAgentAvailability } from "../../server/agents/health/agentAvailabil
 import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
 import { SyncEventStore } from "../../server/web/server/sync/store.js";
 import { resolveSyncNamespace } from "../../server/web/server/sync/lane.js";
+import { createPromptQueueStore } from "../../server/state/promptQueueStore.js";
 
 type WsJson = { type?: unknown; [k: string]: unknown };
 
@@ -69,8 +70,12 @@ describe("web/server/ws/preflight-persistence", () => {
   let wss: import("ws").WebSocketServer;
   let historyStore: HistoryStore;
   let syncEventStore: SyncEventStore;
+  let promptQueueStore: ReturnType<typeof createPromptQueueStore>;
   let lock: AsyncLock;
   let unblockCommands: (() => void) | null;
+  let failAgentRequests: boolean;
+  /** Held by tests that need a prompt to occupy the lane while another waits. */
+  let holdAgentRequests: Promise<void> | null;
   const originalEnv = { ...process.env };
 
   beforeEach(async (t) => {
@@ -96,12 +101,18 @@ describe("web/server/ws/preflight-persistence", () => {
         workspaceRoot?: string;
       }
     >();
+    failAgentRequests = false;
+    holdAgentRequests = null;
     const createSession = ({ cwd }: { cwd: string }): HybridOrchestrator => new HybridOrchestrator({
       initialWorkingDirectory: cwd,
       adapters: [{
         id: "codex",
         metadata: { id: "codex", name: "Preflight fixture", capabilities: ["text"] },
-        send: async () => ({ response: "Fixture reply", usage: null, agentId: "codex" }),
+        send: async () => {
+          if (holdAgentRequests) await holdAgentRequests;
+          if (failAgentRequests) throw new Error("fixture agent failure");
+          return { response: "Fixture reply", usage: null, agentId: "codex" };
+        },
         status: () => ({ ready: true, streaming: false }),
         onEvent: () => () => {},
         reset: () => {},
@@ -113,6 +124,7 @@ describe("web/server/ws/preflight-persistence", () => {
     const advisorHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-advisor" });
     historyStore = workerHistoryStore;
     syncEventStore = new SyncEventStore({ stateDbPath: process.env.ADS_STATE_DB_PATH });
+    promptQueueStore = createPromptQueueStore(getStateDatabase(process.env.ADS_STATE_DB_PATH));
     lock = new AsyncLock();
     const agentAvailability = new NoopAgentAvailability();
     const directoryManager = new DirectoryManager([workspaceRoot]);
@@ -147,6 +159,7 @@ describe("web/server/ws/preflight-persistence", () => {
       },
       state: {
         syncEventStore,
+        promptQueueStore,
         directoryManager,
         workspaceCache: new Map(),
         sessionCacheRegistry: { registerBinding: () => {}, clearForUser: () => {} },
@@ -212,6 +225,7 @@ describe("web/server/ws/preflight-persistence", () => {
       assert.ok(Date.now() < deadline, "Queued fixture turns must finish before database teardown");
       await delay(5);
     }
+    await wss.stopPromptQueue();
     try {
       wss.close();
     } catch {
@@ -297,13 +311,175 @@ describe("web/server/ws/preflight-persistence", () => {
       );
       const clientMessageId = String(ack.client_message_id);
       const entries = historyStore.get("test::test::main");
-      const matched = entries.filter((entry) => entry.kind === `client_message_id:${clientMessageId}`);
+      const matched = entries.filter((entry) => String(entry.kind ?? "").startsWith(`client_message_id:${clientMessageId}`));
 
       assert.equal(ack.duplicate, false);
+      assert.equal(ack.queue_status, "queued");
       assert.equal(matched.length, 1);
       assert.equal(matched[0]?.role, "user");
       assert.equal(matched[0]?.text, "queued prompt");
     } finally {
+      client.terminate();
+    }
+  });
+
+  it("persists a prompt queue row before ack and deduplicates retries by client id", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
+    const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+
+    try {
+      await waitForWsOpen(client);
+      client.send(JSON.stringify({ type: "command", payload: "echo slow", client_message_id: "slow-blocker" }));
+      client.send(JSON.stringify({ type: "prompt", payload: "durable prompt", client_message_id: "durable-1" }));
+
+      const firstAck = await waitForWsMessage(
+        client,
+        (msg) => msg.type === "ack" && msg.client_message_id === "durable-1" && msg.duplicate === false,
+        2000,
+      );
+      assert.equal(firstAck.queue_status, "queued");
+      assert.equal(promptQueueStore.getByClientMessageId("durable-1") !== null, true);
+
+      client.send(JSON.stringify({ type: "prompt", payload: "durable prompt", client_message_id: "durable-1" }));
+      const duplicateAck = await waitForWsMessage(
+        client,
+        (msg) => msg.type === "ack" && msg.client_message_id === "durable-1" && msg.duplicate === true,
+        2000,
+      );
+      assert.equal(duplicateAck.queue_status !== undefined, true);
+      assert.equal(promptQueueStore.getByClientMessageId("durable-1")?.clientMessageId, "durable-1");
+      const history = historyStore.get("test::test::main").filter(
+        (entry) => String(entry.kind ?? "").startsWith("client_message_id:durable-1"),
+      );
+      assert.equal(history.length, 1);
+    } finally {
+      client.terminate();
+    }
+  });
+
+  it("requeues an explicit retry for a failed prompt and persists lifecycle transitions", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
+    const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+
+    try {
+      await waitForWsOpen(client);
+      failAgentRequests = true;
+      client.send(JSON.stringify({
+        type: "prompt",
+        payload: { text: "retry me" },
+        client_message_id: "retry-1",
+      }));
+      await waitForWsMessage(
+        client,
+        (msg) => msg.type === "ack" && msg.client_message_id === "retry-1",
+        2000,
+      );
+      const failedDeadline = Date.now() + 3000;
+      while (promptQueueStore.getByClientMessageId("retry-1")?.status !== "failed") {
+        assert.ok(Date.now() < failedDeadline, "failed prompt should reach durable failed state");
+        await delay(5);
+      }
+
+      failAgentRequests = false;
+      client.send(JSON.stringify({
+        type: "prompt",
+        payload: { text: "retry me", replay_incomplete: true },
+        client_message_id: "retry-1",
+      }));
+      const retryAck = await waitForWsMessage(
+        client,
+        (msg) => msg.type === "ack" && msg.client_message_id === "retry-1" && msg.duplicate === false,
+        2000,
+      );
+      assert.equal(retryAck.queue_status, "queued");
+      const completedDeadline = Date.now() + 3000;
+      while (promptQueueStore.getByClientMessageId("retry-1")?.status !== "completed") {
+        assert.ok(Date.now() < completedDeadline, "explicit retry should complete");
+        await delay(5);
+      }
+      const entry = promptQueueStore.getByClientMessageId("retry-1");
+      assert.equal(entry?.attempts, 2);
+      assert.deepEqual(entry?.payload, {});
+
+      const replay = syncEventStore.readAfter({
+        namespace: resolveSyncNamespace("main"),
+        laneKey: "test::test::main",
+      });
+      const lifecycle = replay.events.filter((event) => event.type === "prompt_queue");
+      assert.equal(lifecycle.length, 1);
+      assert.equal(lifecycle[0]?.payload.entry.status, "completed");
+      assert.ok(Number(lifecycle[0]?.seq) > 0);
+    } finally {
+      client.terminate();
+    }
+  });
+
+  it("reports an obsolete-generation failure with the row's own generation", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
+    const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+
+    // Collect every frame for the whole test. Adding and removing listeners
+    // around the reset races with the very events under assertion.
+    const frames: WsJson[] = [];
+    const collect = (raw: RawData): void => {
+      try {
+        frames.push(JSON.parse(raw.toString("utf8")) as WsJson);
+      } catch {
+        // ignore non-JSON frames
+      }
+    };
+    const waitForFrame = async (predicate: (msg: WsJson) => boolean, timeoutMs = 5000): Promise<WsJson> => {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const hit = frames.find(predicate);
+        if (hit) return hit;
+        assert.ok(Date.now() < deadline, "timed out waiting for a ws frame");
+        await delay(5);
+      }
+    };
+
+    try {
+      await waitForWsOpen(client);
+      client.on("message", collect);
+
+      // Park the first prompt inside the agent so the lane stays busy and the
+      // second one is left queued. Moving the generation on while a row is still
+      // queued is the real shape of stranded work: the row is written under
+      // generation 1 but only fails once generation 2 is live.
+      let releaseAgent!: () => void;
+      holdAgentRequests = new Promise<void>((resolve) => { releaseAgent = resolve; });
+      client.send(JSON.stringify({ type: "prompt", payload: "occupy the lane", client_message_id: "occupier-1" }));
+      client.send(JSON.stringify({ type: "prompt", payload: "stranded work", client_message_id: "stranded-1" }));
+
+      const runningDeadline = Date.now() + 3000;
+      while (promptQueueStore.getByClientMessageId("occupier-1")?.status !== "running") {
+        assert.ok(Date.now() < runningDeadline, "first prompt should occupy the lane");
+        await delay(5);
+      }
+      assert.equal(promptQueueStore.getByClientMessageId("stranded-1")?.status, "queued");
+
+      client.send(JSON.stringify({ type: "clear_history" }));
+      const reset = await waitForFrame((msg) => msg.type === "session_reset");
+      assert.equal(reset.laneGeneration, 2);
+
+      holdAgentRequests = null;
+      releaseAgent();
+      const event = await waitForFrame(
+        (msg) => msg.type === "prompt_queue" && (msg.entry as Record<string, unknown>)?.clientMessageId === "stranded-1"
+          && (msg.entry as Record<string, unknown>)?.status === "failed",
+      );
+
+      // The event is routed to whichever sockets own the lane now, but the row it
+      // reports must keep its own generation. A client decides whether it may
+      // reuse the client id from exactly this field, and a rewritten value would
+      // produce a retry the server rejects as a different prompt scope.
+      assert.equal((event.entry as Record<string, unknown>).laneGeneration, 1);
+    } finally {
+      holdAgentRequests = null;
+      client.off("message", collect);
       client.terminate();
     }
   });

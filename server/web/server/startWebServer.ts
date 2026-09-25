@@ -12,6 +12,7 @@ import { resolveAdsStateDir } from "../../workspace/adsPaths.js";
 import { detectWorkspace } from "../../workspace/detector.js";
 import { resolveStateDbPath, getStateDatabase } from "../../state/database.js";
 import { createLanePromptStore } from "../../state/lanePromptStore.js";
+import { createPromptQueueStore } from "../../state/promptQueueStore.js";
 import { HistoryMaintenanceScheduler } from "../../state/historyMaintenance.js";
 import { HistoryStore } from "../../utils/historyStore.js";
 import { createLogger } from "../../utils/logger.js";
@@ -87,6 +88,9 @@ async function ensureWebPidFile(): Promise<{ pidFile: string; cleanupPidFile: ()
         while (Date.now() < deadline && isProcessRunning(existingPid)) {
           await wait(100);
         }
+        if (isProcessRunning(existingPid)) {
+          throw new Error(`Timed out waiting for existing web server pid ${existingPid} to exit`);
+        }
       } else {
         logger.info(`pid file ${pidFile} points to pid ${existingPid}, but command line is different; leaving it running`);
       }
@@ -116,6 +120,7 @@ async function ensureWebPidFile(): Promise<{ pidFile: string; cleanupPidFile: ()
 
 interface WebShutdownDeps {
   cleanupPidFile: () => void;
+  stopPromptQueue: () => Promise<void>;
   scheduler: { stop: () => void };
   historyMaintenance: { stop: () => void };
   sessionManagers: Array<{ destroy: () => void }>;
@@ -156,6 +161,11 @@ function registerWebShutdown(deps: WebShutdownDeps): void {
       return;
     }
     shutdownHandled = true;
+    try {
+      await deps.stopPromptQueue();
+    } catch (err) {
+      logger.warn(`[shutdown] promptQueue.stop failed: ${err instanceof Error ? err.message : err}`);
+    }
     stopSyncResources();
     try {
       const mod = await import("../../codex/appServer/daemonRegistry.js");
@@ -237,6 +247,7 @@ export async function startWebServer(): Promise<void> {
     },
   });
   const lanePromptStore = createLanePromptStore(getStateDatabase(stateDbPath));
+  const promptQueueStore = createPromptQueueStore(getStateDatabase(stateDbPath));
   const sessionManager = laneResources.worker.sessionManager;
   const advisorSessionManager = laneResources.advisor.sessionManager;
   sessionCacheRegistry = createSessionCacheRegistry({
@@ -361,7 +372,10 @@ export async function startWebServer(): Promise<void> {
 
   const server = createHttpServer({ handleApiRequest: apiHandler, logger });
 
-  attachWebSocketServer({
+  const { cleanupPidFile } = await ensureWebPidFile();
+  let promptQueueLifecycle: { stopPromptQueue: () => Promise<void> } | null = null;
+  try {
+    const wss = attachWebSocketServer({
     server,
     logger,
     config: {
@@ -372,6 +386,7 @@ export async function startWebServer(): Promise<void> {
       maxMissedPongs: webConfig.wsMaxMissedPongs,
       maxPayloadBytes: webConfig.wsMaxPayloadBytes,
       traceWsDuplication: webConfig.traceWsDuplication,
+      autoStartPromptQueue: false,
     },
     auth: {
       allowedOrigins,
@@ -400,6 +415,8 @@ export async function startWebServer(): Promise<void> {
       persistCwdStore,
       syncEventStore,
       laneGenerationStore,
+      promptQueueStore,
+      isProcessRunning,
     },
     sessions: {
       workerSessionManager: sessionManager,
@@ -419,16 +436,29 @@ export async function startWebServer(): Promise<void> {
       scheduleCompiler,
       scheduler,
     },
-  });
-
-  const { cleanupPidFile } = await ensureWebPidFile();
-  registerWebShutdown({
-    cleanupPidFile,
-    scheduler,
-    historyMaintenance,
-    sessionManagers: [sessionManager, advisorSessionManager],
-  });
-  await listenServer(server, webConfig.port, webConfig.host);
+    });
+    promptQueueLifecycle = wss;
+    await wss.startPromptQueue();
+    await listenServer(server, webConfig.port, webConfig.host);
+    registerWebShutdown({
+      cleanupPidFile,
+      stopPromptQueue: wss.stopPromptQueue,
+      scheduler,
+      historyMaintenance,
+      sessionManagers: [sessionManager, advisorSessionManager],
+    });
+  } catch (error) {
+    await promptQueueLifecycle?.stopPromptQueue().catch(() => undefined);
+    scheduler.stop();
+    historyMaintenance.stop();
+    sessionManager.destroy();
+    advisorSessionManager.destroy();
+    if (server.listening) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    cleanupPidFile();
+    throw error;
+  }
   logger.info(`WebSocket server listening on ws://${webConfig.host}:${webConfig.port}`);
   logger.info(`Workspace: ${workspaceRoot}`);
 

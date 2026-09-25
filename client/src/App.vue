@@ -99,6 +99,8 @@ const {
   removeAdvisorPendingImage,
   removeQueuedPrompt,
   removeAdvisorQueuedPrompt,
+  retryQueuedPrompt,
+  retryAdvisorQueuedPrompt,
   apiNotice,
   resolveActiveWorkspaceRoot,
   projectDialogOpen,
@@ -1874,6 +1876,7 @@ const advisorConnectionStatus = computed(() => {
                 @clearImages="clearAdvisorPendingImages"
                 @removeImage="removeAdvisorPendingImage"
                 @removeQueued="removeAdvisorQueuedPrompt"
+                @retryQueued="retryAdvisorQueuedPrompt"
               />
             </section>
 
@@ -1965,6 +1968,7 @@ const advisorConnectionStatus = computed(() => {
                 @clearImages="clearPendingImages"
                 @removeImage="removePendingImage"
                 @removeQueued="removeQueuedPrompt"
+                @retryQueued="retryQueuedPrompt"
               />
             </section>
           </div>

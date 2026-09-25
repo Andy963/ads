@@ -34,4 +34,10 @@ export type RenderMessage = ChatMessage & {
 };
 
 export type IncomingImage = { name?: string; mime?: string; data: string };
-export type QueuedPrompt = { id: string; text: string; imagesCount: number };
+export type QueuedPrompt = {
+  id: string;
+  text: string;
+  imagesCount: number;
+  deliveryStatus?: "offline" | "awaiting_ack" | "queued" | "running" | "failed";
+  queueError?: string;
+};

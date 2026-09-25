@@ -48,7 +48,7 @@ Web Console 聚焦于双 Lane 交互界面与 GitHub-Native 交付流：
 - 会话文件健康判定：断线或重连时若会话文件存在则原生恢复，缺失时平滑降级并友好提示。
 - 新建聊天会话时，在线 WebSocket 通过原连接内协议切换 session；连接状态保持在线，离线时自动回退到完整重连。
 - 重连或后端重启后，只要持久化历史存在就会发送历史快照；即使后端上下文暂时是 fresh，客户端也保留本地聊天记录，只有显式线程重置才会清空历史。
-- Bootstrap 等待期间提交的提示会进入持久 outbox，待历史同步完成后继续发送；若历史帧丢失，5 秒兜底会解除等待锁，避免 Composer 永久冻结。
+- 在线提示在 WebSocket 接收后由服务端 SQLite 队列持久化并按 lane FIFO 执行，浏览器 outbox 仅保留断线、尚未完成服务端 intake 或恢复所需的提示；页面重开后以服务端队列快照重建状态。若历史帧丢失，5 秒兜底会解除等待锁，避免 Composer 永久冻结。
 - 清空或新建会话不会删除 Composer 中尚未提交的草稿文本；每轮消息遵循 `User -> 可选结构化执行活动 -> 最新 Execute -> Patch/Final assistant` 的可见契约。后端不转发或持久化 thought、plan、todo，也不再生成新的 live-step；已持久化的 legacy live-step 历史仅保留只读兼容。
 - Worker 与 Advisor 的清空操作默认只作用于发起操作的 chat lane；跨 lane 清理必须显式请求 shared scope，且 session reset 广播会校验来源 lane。
 

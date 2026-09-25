@@ -1,18 +1,20 @@
 /**
- * Durable, cross-tab outbox for prompts that have not reached the server yet.
+ * Durable, cross-tab fallback for prompts that have not reached the server yet.
  *
  * Two gaps this closes:
  *
  * - The pending prompt lived in `sessionStorage`, so a refresh in a *new* tab lost
- *   it, and the queue behind it was memory-only — closing the tab silently dropped
- *   everything the user had lined up. Both now live in `localStorage`.
+ *   it, and disconnected prompts had no durable browser-side recovery path. Both
+ *   now live in `localStorage` until server intake succeeds.
  * - With storage now shared across tabs, two tabs could each replay the same queue.
  *   Every write is broadcast so siblings converge on one view. A racing double-send
  *   is still harmless: prompts keep their `clientMessageId` and the server answers
  *   the second copy with `ack.duplicate`.
  *
- * Images are deliberately not persisted — they are in-memory blobs that cannot
- * survive a reload, so a prompt carrying them stays memory-only.
+ * Once the server accepts a prompt, its SQLite queue is the source of truth. The
+ * browser keeps each sent-but-unacknowledged fallback only until an ACK or queue
+ * snapshot proves that handoff succeeded. Images are deliberately not persisted
+ * because they are in-memory blobs that cannot survive a reload.
  */
 export type PersistedPrompt = {
   clientMessageId: string;
@@ -22,20 +24,30 @@ export type PersistedPrompt = {
   model?: string;
   modelReasoningEffort?: string;
   replayIncomplete?: boolean;
+  /** The frame was handed to WebSocket, but no authoritative ACK arrived yet. */
+  sentAwaitingAck?: boolean;
   /** Legacy key kept for entries written before the rename. */
   model_reasoning_effort?: string;
 };
 
 export type OutboxSnapshot = {
-  /** The prompt already handed to the server, awaiting its ack. */
+  /** Legacy single-prompt fallback retained for upgrade compatibility. */
   pending: PersistedPrompt | null;
+  /** All normal sends handed to WebSocket before their acknowledgement arrived. */
+  sent: PersistedPrompt[];
   /** Prompts still waiting their turn, in send order. */
   queued: PersistedPrompt[];
+  /**
+   * Client ids the user explicitly removed from a server-tracked card. The
+   * durable row stays on the server, so the dismissal has to be remembered or
+   * the next queue snapshot resurrects the card.
+   */
+  dismissed: string[];
 };
 
 export const OUTBOX_CHANNEL_NAME = "ads.outbox";
 
-const EMPTY: OutboxSnapshot = { pending: null, queued: [] };
+const EMPTY: OutboxSnapshot = { pending: null, sent: [], queued: [], dismissed: [] };
 
 /** An explicit auth boundary must not replay another account's private input. */
 export function clearPersistedOutboxes(): void {
@@ -71,6 +83,7 @@ function normalizePrompt(value: unknown): PersistedPrompt | null {
   if (!clientMessageId) return null;
   const effort = String(record.modelReasoningEffort ?? record.model_reasoning_effort ?? "").trim();
   const replayIncomplete = record.replayIncomplete === true || record.replay_incomplete === true;
+  const sentAwaitingAck = record.sentAwaitingAck === true;
   const prompt: PersistedPrompt = {
     clientMessageId,
     text: String(record.text ?? ""),
@@ -82,14 +95,23 @@ function normalizePrompt(value: unknown): PersistedPrompt | null {
   if (model) prompt.model = model;
   if (effort) prompt.modelReasoningEffort = effort;
   if (replayIncomplete) prompt.replayIncomplete = true;
+  if (sentAwaitingAck) prompt.sentAwaitingAck = true;
   return prompt;
 }
 
 function normalizeSnapshot(value: unknown): OutboxSnapshot {
   if (!value || typeof value !== "object" || Array.isArray(value)) return EMPTY;
   const record = value as Record<string, unknown>;
+  const sentRaw = Array.isArray(record.sent) ? record.sent : [];
   const queuedRaw = Array.isArray(record.queued) ? record.queued : [];
   const seen = new Set<string>();
+  const sent: PersistedPrompt[] = [];
+  for (const entry of sentRaw) {
+    const prompt = normalizePrompt(entry);
+    if (!prompt || seen.has(prompt.clientMessageId)) continue;
+    seen.add(prompt.clientMessageId);
+    sent.push(prompt);
+  }
   const queued: PersistedPrompt[] = [];
   for (const entry of queuedRaw) {
     const prompt = normalizePrompt(entry);
@@ -97,11 +119,26 @@ function normalizeSnapshot(value: unknown): OutboxSnapshot {
     seen.add(prompt.clientMessageId);
     queued.push(prompt);
   }
-  return { pending: normalizePrompt(record.pending), queued };
+  const pending = normalizePrompt(record.pending);
+  if (pending && !seen.has(pending.clientMessageId)) {
+    sent.unshift(pending);
+  }
+  // A live entry is never hidden by a stale dismissal left over from a retry.
+  const dismissedRaw = Array.isArray(record.dismissed) ? record.dismissed : [];
+  const dismissed: string[] = [];
+  for (const entry of dismissedRaw) {
+    const clientMessageId = String(entry ?? "").trim();
+    if (!clientMessageId || seen.has(clientMessageId) || dismissed.includes(clientMessageId)) continue;
+    dismissed.push(clientMessageId);
+  }
+  return { pending, sent, queued, dismissed };
 }
 
 export function isEmptyOutboxSnapshot(snapshot: OutboxSnapshot): boolean {
-  return !snapshot.pending && snapshot.queued.length === 0;
+  return !snapshot.pending
+    && snapshot.sent.length === 0
+    && snapshot.queued.length === 0
+    && snapshot.dismissed.length === 0;
 }
 
 export type OutboxStore = ReturnType<typeof createOutboxStore>;
@@ -186,7 +223,12 @@ export function createOutboxStore(options: { channelName?: string } = {}) {
     if (!legacyPending) return;
     const current = read(args.key);
     if (current.pending) return;
-    write(args.key, { pending: legacyPending, queued: current.queued });
+    write(args.key, {
+      pending: legacyPending,
+      sent: current.sent,
+      queued: current.queued,
+      dismissed: current.dismissed,
+    });
   };
 
   const subscribe = (listener: (key: string, snapshot: OutboxSnapshot) => void): (() => void) => {
