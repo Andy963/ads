@@ -301,20 +301,13 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
       if (error instanceof NativeProviderError) throw error;
       throw new NativeProviderError("Native upstream returned malformed non-streaming JSON", {
         kind: "malformed",
-        cause: error,
       });
     }
   }
   if (!response.body || !contentType.includes("text/event-stream")) {
-    try {
-      return parseNonStreamingResult(await response.json());
-    } catch (error) {
-      if (error instanceof NativeProviderError) throw error;
-      throw new NativeProviderError("Native upstream returned malformed response JSON", {
-        kind: "malformed",
-        cause: error,
-      });
-    }
+    throw new NativeProviderError("Native upstream returned a non-SSE response for a streaming request", {
+      kind: "malformed",
+    });
   }
 
   let text = "";
@@ -335,8 +328,8 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
       let payload: unknown;
       try {
         payload = JSON.parse(data);
-      } catch (error) {
-        throw new NativeProviderError("Native upstream returned malformed SSE JSON", { kind: "malformed", cause: error });
+      } catch {
+        throw new NativeProviderError("Native upstream returned malformed SSE JSON", { kind: "malformed" });
       }
       const root = asRecord(payload);
       if (!root) {

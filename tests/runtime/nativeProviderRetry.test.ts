@@ -224,11 +224,29 @@ describe("Native provider retry and recovery", () => {
         model: "test-model",
         messages: [],
         tools: [],
+        fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { content: "done" }, finish_reason: "stop" }] }), {
+          headers: { "content-type": "application/json" },
+        }),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
         fetchImpl: async () => new Response("data: {not-json}\n\ndata: [DONE]\n\n", {
           headers: { "content-type": "text/event-stream" },
         }),
       }),
-      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+      (error: unknown) => {
+        assert.ok(error instanceof NativeProviderError);
+        assert.equal(error.kind, "malformed");
+        assert.equal(error.cause, undefined);
+        return true;
+      },
     );
     await assert.rejects(
       completeNativeChat({

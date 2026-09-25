@@ -73,6 +73,7 @@ describe("native provider capabilities", () => {
       model: "test-model",
       messages,
       tools: [],
+      streaming: false,
       options: { includeUsage: false },
       fetchImpl: async (_input, init) => {
         body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
