@@ -27,7 +27,7 @@ provider capability negotiation 和 bounded recovery。这些契约需要一个�
 | Runtime backend | ADS 进程选择的 `codex-app-server` 或 `native` | 进程级配置；session 内不可切换 |
 | Execution session | 一个 user、project 和 lifecycle 对应的内存 adapter/orchestrator 生命周期 | disposal 时释放；不是 provider thread |
 | Provider session | Codex provider thread 或 Native request sequence | Codex thread ID 由 provider 持有；Native execution ID 仅存在于进程内 |
-| ADS transcript | 按顺序保存的 provider-neutral Native message 和执行 artifact | 只为 completed durable Native turn 保存；绝不导入为 Codex rollout |
+| ADS transcript | 按顺序保存的 provider-neutral Native message 和执行 artifact | durable session 会 checkpoint 所有 turn 状态；只有 completed turn 可恢复；绝不导入为 Codex rollout |
 
 `ADS_AGENT_RUNTIME` 在进程启动时解析完成。session 在整个生命周期内绑定该 backend。
 持久化 backend 不匹配时必须显式失败；ADS 绝不跨 backend 迁移、恢复或静默注入上下文。
@@ -39,8 +39,9 @@ request。
 普通 Web 和 Actions Developer session 使用 `durable` lifecycle。Native durable session
 在 ADS state store 中按顺序 checkpoint message 和 tool artifact。只有 `completed` turn
 可以恢复。进程中断时，残留的 `running` turn 会标记为 `interrupted`；failed、cancelled
-和 interrupted turn 保留审计记录，但不会作为成功上下文重放。新 session 会清除当前
-transcript；transcript 不可用时才回退到有界的 ADS history projection。
+和 interrupted turn 保留审计记录，但不会作为成功上下文重放。普通重建 durable session
+不会自动清除 completed transcript；只有显式 reset/fresh 或不兼容的替换路径才会清除
+历史。transcript 不可用时才回退到有界的 ADS history projection。
 
 `ephemeral` session 是全新且不持久化的 session。独立 Actions Reviewer session 使用此
 lifecycle，并在 verdict 产生后释放。它们不写入 durable thread state 或 Native
@@ -81,9 +82,17 @@ sandbox 的等价模式。
 - capability failure 显式且可操作，不会被静默忽略或伪装成成功执行。
 - Native 直接宿主机执行仍是有明确风险的安全取舍，不应被描述为 Codex app-server
   sandbox 的等价物。
-- 该契约由 runtime preflight 以及共享 backend 测试共同验证：
-  `tests/actions/runtimePreflight.test.ts`、`tests/actions/runtimeBackendContract.test.ts`
-  和 `tests/runtime/agentAdapterContract.test.ts`。
+- 该契约由 runtime preflight、共享 backend、Native transcript、projection、capability、
+  retry 和 tool safety 测试共同验证：
+  [`runtimePreflight.test.ts`](../../tests/actions/runtimePreflight.test.ts)、
+  [`runtimeBackendContract.test.ts`](../../tests/actions/runtimeBackendContract.test.ts)、
+  [`agentAdapterContract.test.ts`](../../tests/runtime/agentAdapterContract.test.ts)、
+  [`sessionManagerAgents.test.ts`](../../tests/sessions/sessionManagerAgents.test.ts)、
+  [`nativeAgentAdapter.test.ts`](../../tests/runtime/nativeAgentAdapter.test.ts)、
+  [`nativeContextProjection.test.ts`](../../tests/runtime/nativeContextProjection.test.ts)、
+  [`nativeProviderCapabilities.test.ts`](../../tests/runtime/nativeProviderCapabilities.test.ts)、
+  [`nativeProviderRetry.test.ts`](../../tests/runtime/nativeProviderRetry.test.ts) 和
+  [`nativeTools.test.ts`](../../tests/runtime/nativeTools.test.ts)。
 
 ## Related work
 
