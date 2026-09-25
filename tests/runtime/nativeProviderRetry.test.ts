@@ -111,7 +111,7 @@ describe("Native provider retry and recovery", () => {
         credentialOwner: "test-owner",
         workspaceRoot: workspace,
         modelResolver: resolver(),
-        retryBackoffMs: [100],
+        retryBackoffMs: [0],
         fetchImpl: async () => {
           requests += 1;
           return new Response("temporary", { status: 503 });
@@ -237,6 +237,31 @@ describe("Native provider retry and recovery", () => {
     }
   });
 
+  it("does not start another provider attempt after a destructive reset during retry", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-reset-race-"));
+    try {
+      let requests = 0;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelResolver: resolver(),
+        retryBackoffMs: [0],
+        fetchImpl: async () => {
+          requests += 1;
+          return new Response("temporary", { status: 503 });
+        },
+      });
+      adapter.onEvent((event) => {
+        if (event.retry) adapter.reset({ clearPersistedState: true });
+      });
+
+      await assert.rejects(adapter.send("reset during retry"), /superseded by a destructive session reset/);
+      assert.equal(requests, 1);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("finalizes a turn when cancellation races with a transient provider failure", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-race-"));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-race-db-"));
@@ -339,6 +364,48 @@ describe("Native provider retry and recovery", () => {
         fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { content: "done" }, finish_reason: "stop" }] }), {
           headers: { "content-type": "application/json" },
         }),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        fetchImpl: async () => new Response(
+          "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":null,\"type\":\"function\",\"id\":\"call-1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        fetchImpl: async () => new Response(
+          "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"id\":1,\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        fetchImpl: async () => new Response(
+          "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"id\":\"same-call\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}},{\"index\":1,\"type\":\"function\",\"id\":\"same-call\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
       }),
       (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
     );

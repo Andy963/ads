@@ -357,6 +357,7 @@ export class NativeToolExecutor {
   }
 
   async execute(call: NativeChatToolCall): Promise<NativeToolExecutionResult> {
+    this.throwIfAborted();
     const args = parseArguments(call);
     switch (call.function.name) {
       case "exec_command":
@@ -374,7 +375,14 @@ export class NativeToolExecutor {
     }
   }
 
+  private throwIfAborted(): void {
+    if (this.signal?.aborted) {
+      throw new DOMException("Aborted", "AbortError");
+    }
+  }
+
   private dispatchActionJob(args: JsonRecord): NativeToolExecutionResult {
+    this.throwIfAborted();
     const title = stringArgument(args, "title");
     const description = stringArgument(args, "description");
     const kind = args.kind === "local_prompt" ? "local_prompt" : "github_issue";
@@ -552,6 +560,7 @@ export class NativeToolExecutor {
   }
 
   private applyPatch(args: JsonRecord): NativeToolExecutionResult {
+    this.throwIfAborted();
     const patch = stringArgument(args, "patch");
     const operations = parsePatchOperations(patch);
     const staged = new Map<string, string | null>();
@@ -573,6 +582,7 @@ export class NativeToolExecutor {
     const written: string[] = [];
     try {
       for (const [target, content] of staged) {
+        this.throwIfAborted();
         if (content === null) {
           fs.unlinkSync(target);
         } else {

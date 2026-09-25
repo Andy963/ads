@@ -201,6 +201,24 @@ describe("NativeToolExecutor", () => {
     await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
   });
 
+  it("rejects synchronous tools after cancellation", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const executor = new NativeToolExecutor({ workspaceRoot: workspace, signal: controller.signal });
+    const patch = [
+      "*** Begin Patch",
+      "*** Add File: should-not-exist.txt",
+      "+created after cancellation",
+      "*** End Patch",
+    ].join("\n");
+
+    await assert.rejects(
+      executor.execute(call("apply_patch", { patch })),
+      (error: unknown) => error instanceof Error && error.name === "AbortError",
+    );
+    assert.equal(fs.existsSync(path.join(workspace, "should-not-exist.txt")), false);
+  });
+
   it("dispatches an action job to the queue via native executor", async () => {
     const executor = new NativeToolExecutor({ workspaceRoot: workspace });
     const res = await executor.execute(call("dispatch_action_job", {

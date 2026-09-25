@@ -359,10 +359,10 @@ function isThreadItem(value: unknown): value is ThreadItem {
 }
 
 async function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  if (ms <= 0) return;
   if (signal?.aborted) {
     throw new DOMException("Aborted", "AbortError");
   }
+  if (ms <= 0) return;
   let abort: (() => void) | undefined;
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(resolve, ms);

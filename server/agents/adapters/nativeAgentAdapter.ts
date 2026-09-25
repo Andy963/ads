@@ -315,6 +315,7 @@ export class NativeAgentAdapter implements AgentAdapter {
       return;
     }
     this.transcriptStore?.claimTranscriptAndClear(nextTranscriptId, this.transcriptWriterId);
+    this.resetGeneration += 1;
     this.transcriptId = nextTranscriptId;
     this.activeTranscriptTurns.clear();
     this.conversation = [];
@@ -356,6 +357,7 @@ export class NativeAgentAdapter implements AgentAdapter {
   async send(input: Input, options: AgentSendOptions = {}): Promise<AgentRunResult> {
     if (options.signal?.aborted) throw createAbortError("Native runtime request aborted");
     const turnId = `native-turn-${randomUUID()}`;
+    const resetGeneration = this.resetGeneration;
     const turn = createCombinedSignal(options.signal, this.turnTimeoutMs);
     try {
       return await this.sendLock.runExclusive(
@@ -373,7 +375,7 @@ export class NativeAgentAdapter implements AgentAdapter {
                 error,
               ),
             },
-            (retryState) => this.runTurn(input, options, retryState, turnId, turn.signal),
+            (retryState) => this.runTurn(input, options, retryState, turnId, turn.signal, resetGeneration),
           );
         },
         turn.signal,
@@ -497,6 +499,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     retryState: RetryAttemptState,
     turnId: string,
     signal: AbortSignal,
+    resetGeneration: number,
   ): Promise<AgentRunResult> {
     const userText = textFromInput(input);
     const model = this.resolver.resolve(this.model, this.modelConfig);
@@ -535,7 +538,6 @@ export class NativeAgentAdapter implements AgentAdapter {
       parallelToolCalls: capabilities.parallelToolCalls === "unsupported" ? false : undefined,
       includeUsage: capabilities.usage === "supported",
     };
-    const resetGeneration = this.resetGeneration;
     const userMessage: NativeChatMessage = { role: "user", content: userText };
     const workingDirectory = this.workingDirectory ?? this.workspaceRoot;
     const toolExecutor = new NativeToolExecutor({

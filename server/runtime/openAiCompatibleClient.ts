@@ -180,25 +180,48 @@ function mergeToolCall(
   if (!record) {
     throw new NativeProviderError("Native upstream returned an invalid tool-call chunk", { kind: "malformed" });
   }
-  const index = Number(record.index);
-  if (!Number.isInteger(index) || index < 0) {
+  if (typeof record.index !== "number" || !Number.isInteger(record.index) || record.index < 0) {
     throw new NativeProviderError("Native upstream returned a tool call without a valid index", { kind: "malformed" });
   }
+  const index = record.index;
   const existing = calls.get(index);
-  if (!existing && record.type !== "function") {
-    throw new NativeProviderError("Native upstream returned a tool call without a valid type", { kind: "malformed" });
+  const functionRecord = asRecord(record.function);
+  if (!existing) {
+    if (record.type !== "function") {
+      throw new NativeProviderError("Native upstream returned a tool call without a valid type", { kind: "malformed" });
+    }
+    if (typeof record.id !== "string" || !record.id.trim()) {
+      throw new NativeProviderError("Native upstream returned a tool call without a valid id", { kind: "malformed" });
+    }
+    if (!functionRecord || typeof functionRecord.name !== "string" || !functionRecord.name.trim()) {
+      throw new NativeProviderError("Native upstream returned a tool call without a valid function name", { kind: "malformed" });
+    }
   }
   if (record.type !== undefined && record.type !== "function") {
     throw new NativeProviderError("Native upstream returned an unsupported tool-call type", { kind: "malformed" });
+  }
+  if (record.id !== undefined && (typeof record.id !== "string" || !record.id.trim())) {
+    throw new NativeProviderError("Native upstream returned an invalid tool-call id", { kind: "malformed" });
+  }
+  if (existing && typeof record.id === "string" && existing.id !== record.id) {
+    throw new NativeProviderError("Native upstream returned conflicting tool-call ids", { kind: "malformed" });
+  }
+  if (record.function !== undefined && !asRecord(record.function)) {
+    throw new NativeProviderError("Native upstream returned an invalid tool-call function", { kind: "malformed" });
   }
   const call = existing ?? {
     id: "",
     type: "function" as const,
     function: { name: "", arguments: "" },
   };
-  const functionRecord = asRecord(record.function);
-  if (typeof record.id === "string" && record.id) call.id = record.id;
+  if (!existing && typeof record.id === "string") call.id = record.id;
   if (functionRecord) {
+    if (functionRecord.name !== undefined && (typeof functionRecord.name !== "string" || !functionRecord.name.trim())) {
+      throw new NativeProviderError("Native upstream returned an invalid tool-call function name", { kind: "malformed" });
+    }
+    if (functionRecord.arguments !== undefined && typeof functionRecord.arguments !== "string") {
+      throw new NativeProviderError("Native upstream returned invalid tool-call arguments", { kind: "malformed" });
+    }
     if (typeof functionRecord.name === "string") call.function.name += functionRecord.name;
     if (typeof functionRecord.arguments === "string") call.function.arguments += functionRecord.arguments;
   }
@@ -409,6 +432,7 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
   const completedToolCalls = [...toolCalls.entries()]
     .sort(([left], [right]) => left - right)
     .map(([, call]) => call);
+  const toolCallIndexes = new Map<string, number>();
   for (const call of completedToolCalls) {
     if (!call.id || !call.function.name || !call.function.arguments.trim()) {
       throw new NativeProviderError(
@@ -416,6 +440,11 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
         { kind: "malformed" },
       );
     }
+    const previousIndex = toolCallIndexes.get(call.id);
+    if (previousIndex !== undefined) {
+      throw new NativeProviderError("Native upstream returned duplicate tool-call ids", { kind: "malformed" });
+    }
+    toolCallIndexes.set(call.id, toolCalls.size);
   }
   if ((finishReason === "tool_calls") !== (completedToolCalls.length > 0)) {
     throw new NativeProviderError("Native upstream returned an incomplete tool call response", {
