@@ -20,7 +20,7 @@ import {
   type SavedSessionState,
   shouldClearSavedThreadsForCwdChange,
 } from './sessionState.js';
-import { SessionRuntimeRegistry } from './sessionRuntimeRegistry.js';
+import { SessionRuntimeRegistry, type SessionRuntimeRecord } from './sessionRuntimeRegistry.js';
 import { SystemPromptManager, resolveReinjectionConfig } from '../systemPrompt/manager.js';
 import { detectWorkspaceFrom } from '../workspace/detector.js';
 import { deriveProjectSessionId } from '../web/server/projectSessionId.js';
@@ -49,6 +49,7 @@ function buildNativeTranscriptId(input: {
   owner: string;
   sessionKey: string;
   projectId: string;
+  domain?: string;
   lane: LaneName | 'default';
   lifecycle: SessionLifecycle;
 }): string {
@@ -58,6 +59,7 @@ function buildNativeTranscriptId(input: {
       owner: input.owner,
       sessionKey: input.sessionKey,
       projectId: input.projectId,
+      domain: input.domain ?? "default",
       lane: input.lane,
       lifecycle: input.lifecycle,
     }))
@@ -77,6 +79,8 @@ export interface SessionManagerOptions {
   agentAllowlist?: AgentIdentifier[];
   /** Optional role lane. Only the Web Advisor and Worker sessions set this value. */
   lane?: LaneName;
+  /** Stable namespace for durable sessions that do not own a ThreadStorage instance. */
+  sessionDomain?: string;
   /** State database used for the versioned lane prompt store. */
   stateDbPath?: string;
   createSession?: (args: {
@@ -172,6 +176,7 @@ export class SessionManager {
         if (this.runtime.updateWorkingDirectory(userId, cwd, { preserveSession: !clearThreads })) {
           if (clearThreads) {
             this.runtime.setContextRestoreMode(userId, "fresh");
+            this.retargetNativeTranscriptForCwd(userId, existing, cwd);
           }
           this.syncStoredState(userId, { cwd, clearThreads });
         }
@@ -193,6 +198,7 @@ export class SessionManager {
           owner,
           sessionKey: String(userId),
           projectId,
+          domain: this.getSessionDomain(),
           lane: this.options.lane ?? "default",
           lifecycle,
         })
@@ -477,6 +483,36 @@ export class SessionManager {
     return this.runtimeBackend;
   }
 
+  private getSessionDomain(): string {
+    return this.threadStorage?.getNamespace() ?? this.options.sessionDomain ?? "default";
+  }
+
+  private retargetNativeTranscriptForCwd(
+    userId: number,
+    record: SessionRuntimeRecord<HybridOrchestrator, ConversationLogger>,
+    cwd: string,
+  ): void {
+    if (record.runtimeBackend !== "native") {
+      record.nativeTranscriptId = undefined;
+      return;
+    }
+    const projectId = deriveProjectSessionId(detectWorkspaceFrom(cwd));
+    const transcriptId = buildNativeTranscriptId({
+      owner: record.transcriptOwner ?? String(userId),
+      sessionKey: String(userId),
+      projectId,
+      domain: this.getSessionDomain(),
+      lane: this.options.lane ?? "default",
+      lifecycle: record.lifecycle,
+    });
+    const adapter = record.session.getAdapter("codex");
+    if (adapter instanceof NativeAgentAdapter) {
+      adapter.retargetTranscript(transcriptId);
+    }
+    record.nativeTranscriptId = transcriptId;
+    record.projectId = projectId;
+  }
+
   reset(userId: number, options?: { preserveThreadForResume?: boolean }): void {
     const record = this.runtime.getRecord(userId);
     const storage = this.threadStorage;
@@ -538,24 +574,7 @@ export class SessionManager {
     this.runtime.updateWorkingDirectory(userId, cwd, { preserveSession: !clearThreads });
     if (clearThreads) {
       this.runtime.setContextRestoreMode(userId, "fresh");
-      if (record.runtimeBackend === "native") {
-        const projectId = deriveProjectSessionId(detectWorkspaceFrom(cwd));
-        const transcriptId = buildNativeTranscriptId({
-          owner: record.transcriptOwner ?? String(userId),
-          sessionKey: String(userId),
-          projectId,
-          lane: this.options.lane ?? "default",
-          lifecycle: record.lifecycle,
-        });
-        const adapter = record.session.getAdapter("codex");
-        if (adapter instanceof NativeAgentAdapter) {
-          adapter.retargetTranscript(transcriptId);
-        }
-        record.nativeTranscriptId = transcriptId;
-        record.projectId = projectId;
-      } else {
-        record.nativeTranscriptId = undefined;
-      }
+      this.retargetNativeTranscriptForCwd(userId, record, cwd);
     }
     this.syncStoredState(userId, { cwd, clearThreads });
   }
@@ -675,6 +694,7 @@ export class SessionManager {
                 owner,
                 sessionKey: String(args.userId),
                 projectId,
+                domain: this.getSessionDomain(),
                 lane: this.options.lane ?? "default",
                 lifecycle: args.lifecycle,
               })

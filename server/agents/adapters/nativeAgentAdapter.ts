@@ -80,7 +80,7 @@ function collectSecretValues(env: NodeJS.ProcessEnv): string[] {
   return Object.entries(env)
     .filter(([key, value]) => SECRET_ENV_NAME.test(key) && typeof value === "string")
     .map(([, value]) => String(value).trim())
-    .filter((value) => value.length >= 4);
+    .filter((value) => value.length > 0);
 }
 
 function textFromInput(input: Input): string {
@@ -222,6 +222,7 @@ export class NativeAgentAdapter implements AgentAdapter {
         })
       : undefined;
     if (this.transcriptId && this.transcriptStore) {
+      this.transcriptStore.claimTranscript(this.transcriptId, this.transcriptWriterId);
       this.transcriptStore.addRedactions(this.secretValues);
       if (transcriptMode === "replace") {
         this.transcriptStore.clear(this.transcriptId);
@@ -598,7 +599,7 @@ export class NativeAgentAdapter implements AgentAdapter {
         persistenceError = error;
       }
       const safeMessage = [model.apiKey, ...this.secretValues]
-        .filter((value) => value.length >= 4)
+        .filter((value) => value.length > 0)
         .reduce((message, secret) => message.replaceAll(secret, "[redacted]"), formatToolError(normalized, model.apiKey));
       this.emitRaw({ type: "turn.failed", error: { message: safeMessage } });
       if (persistenceError) {

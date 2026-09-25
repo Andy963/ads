@@ -54,6 +54,13 @@ export interface NativeTranscriptStoreOptions {
   redactions?: string[];
 }
 
+export class NativeTranscriptWriterSupersededError extends Error {
+  constructor() {
+    super("Native transcript writer was superseded by a newer session instance.");
+    this.name = "NativeTranscriptWriterSupersededError";
+  }
+}
+
 type StoredTurnRow = {
   turn_id: string;
   status: NativeTranscriptTurnStatus;
@@ -203,6 +210,14 @@ export class NativeTranscriptStore {
     });
   }
 
+  claimTranscript(transcriptId: string, writerId: string): void {
+    this.db.prepare(`
+      INSERT INTO native_transcript_leases (transcript_id, writer_id, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(transcript_id) DO UPDATE SET writer_id = excluded.writer_id, updated_at = excluded.updated_at
+    `).run(transcriptId, writerId, Date.now());
+  }
+
   beginTurn(input: {
     transcriptId: string;
     turnId: string;
@@ -211,6 +226,13 @@ export class NativeTranscriptStore {
     provider: NativeTranscriptProviderMetadata;
     writerId?: string;
   }): void {
+    const writerId = String(input.writerId ?? "");
+    const lease = this.db.prepare(`
+      SELECT writer_id FROM native_transcript_leases WHERE transcript_id = ?
+    `).get(input.transcriptId) as { writer_id?: string } | undefined;
+    if (lease && lease.writer_id !== writerId) {
+      throw new NativeTranscriptWriterSupersededError();
+    }
     const now = Date.now();
     this.db.prepare(`
       INSERT INTO native_transcript_turns (

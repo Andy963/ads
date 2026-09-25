@@ -708,4 +708,17 @@ Core reviewing rules:
       }
     },
   },
+  {
+    version: 23,
+    description: "Lease Native transcript ownership across adapter replacement",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS native_transcript_leases (
+          transcript_id TEXT PRIMARY KEY,
+          writer_id TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      `);
+    },
+  },
 ];

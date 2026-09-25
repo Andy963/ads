@@ -99,6 +99,10 @@ export class ThreadStorage {
     this.migrateLegacyThreads();
   }
 
+  getNamespace(): string {
+    return this.namespace;
+  }
+
   private loadSalt(): string {
     const kvNamespace = 'thread_storage';
     const kvKey = 'salt';

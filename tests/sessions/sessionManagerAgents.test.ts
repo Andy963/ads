@@ -19,6 +19,7 @@ function buildNativeTranscriptId(input: {
   owner: string;
   sessionKey: string;
   projectId: string;
+  domain?: string;
 }): string {
   return createHash("sha256")
     .update(JSON.stringify({
@@ -26,6 +27,7 @@ function buildNativeTranscriptId(input: {
       owner: input.owner,
       sessionKey: input.sessionKey,
       projectId: input.projectId,
+      domain: input.domain ?? "default",
       lane: "worker",
       lifecycle: "durable",
     }))
@@ -256,7 +258,7 @@ describe("SessionManager agent allowlists", () => {
     const owner = "auth-user-cwd-scope";
     const projectId = "project-cwd-scope";
     const userId = 123460;
-    const transcriptId = buildNativeTranscriptId({ owner, sessionKey: String(userId), projectId });
+    const transcriptId = buildNativeTranscriptId({ owner, sessionKey: String(userId), projectId, domain: "native-cwd-scope" });
     const store = new NativeTranscriptStore(getStateDatabase(dbPath));
     const threadStorage = new ThreadStorage({ stateDbPath: dbPath, namespace: "native-cwd-scope" });
     store.beginTurn({
@@ -316,7 +318,7 @@ describe("SessionManager agent allowlists", () => {
     const owner = "auth-user-reset-after-dispose";
     const projectId = "project-reset-after-dispose";
     const userId = 123461;
-    const transcriptId = buildNativeTranscriptId({ owner, sessionKey: String(userId), projectId });
+    const transcriptId = buildNativeTranscriptId({ owner, sessionKey: String(userId), projectId, domain: "native-reset-after-dispose" });
     const store = new NativeTranscriptStore(getStateDatabase(dbPath));
     const threadStorage = new ThreadStorage({ stateDbPath: dbPath, namespace: "native-reset-after-dispose" });
     store.beginTurn({
@@ -371,7 +373,7 @@ describe("SessionManager agent allowlists", () => {
     const owner = "auth-user-active-cwd";
     const projectId = "project-active-cwd";
     const userId = 123462;
-    const oldTranscriptId = buildNativeTranscriptId({ owner, sessionKey: String(userId), projectId });
+    const oldTranscriptId = buildNativeTranscriptId({ owner, sessionKey: String(userId), projectId, domain: "native-active-cwd" });
     const store = new NativeTranscriptStore(getStateDatabase(dbPath));
     const threadStorage = new ThreadStorage({ stateDbPath: dbPath, namespace: "native-active-cwd" });
     store.beginTurn({
@@ -405,7 +407,11 @@ describe("SessionManager agent allowlists", () => {
         projectId,
         lifecycle: "durable",
       });
-      manager.setUserCwd(userId, secondDirectory);
+      manager.getOrCreate(userId, secondDirectory, true, {
+        authUserId: owner,
+        projectId,
+        lifecycle: "durable",
+      });
 
       const nextTranscriptId = threadStorage.getRecord(userId)?.nativeTranscriptId;
       assert.ok(nextTranscriptId);

@@ -616,6 +616,47 @@ describe("NativeAgentAdapter", () => {
     });
   });
 
+  it("redacts short secret-shaped environment values from durable output", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-short-secret-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-short-secret-state-"));
+    const dbPath = path.join(stateDir, "state.db");
+    const transcriptId = "native-transcript-short-secret";
+    const store = new NativeTranscriptStore(getStateDatabase(dbPath));
+    try {
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-api-key",
+            provider: "test",
+          }),
+        },
+        transcriptId,
+        transcriptStore: store,
+        env: { SHORT_SECRET: "q" },
+        fetchImpl: async () => sse([
+          JSON.stringify({ choices: [{ delta: { content: "q" }, finish_reason: "stop" }] }),
+        ]),
+      });
+      await adapter.send("short secret");
+      const raw = JSON.stringify(
+        getStateDatabase(dbPath)
+          .prepare("SELECT messages_json, entries_json FROM native_transcript_turns")
+          .all(),
+      );
+      assert.doesNotMatch(raw, /q/);
+      assert.match(raw, /\[redacted\]/);
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("restores completed Native transcripts without persisting execution ids or secrets", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-restore-"));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-state-"));

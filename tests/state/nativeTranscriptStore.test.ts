@@ -121,13 +121,25 @@ describe("NativeTranscriptStore", () => {
   it("does not allow an old writer to complete an interrupted turn", () => {
     const { store } = createStore();
     const transcriptId = "transcript-writer-fence";
+    store.claimTranscript(transcriptId, "new-writer");
+    assert.throws(
+      () => store.beginTurn({
+        transcriptId,
+        turnId: "stale-turn",
+        messages: [{ role: "user", content: "stale" }],
+        entries: [{ kind: "message", message: { role: "user", content: "stale" } }],
+        provider: { provider: "test", model: "test-model" },
+        writerId: "old-writer",
+      }),
+      /superseded/,
+    );
     store.beginTurn({
       transcriptId,
       turnId: "turn-writer-fence",
       messages: [{ role: "user", content: "run" }],
       entries: [{ kind: "message", message: { role: "user", content: "run" } }],
       provider: { provider: "test", model: "test-model" },
-      writerId: "old-writer",
+      writerId: "new-writer",
     });
 
     store.listTurns(transcriptId);
@@ -139,7 +151,7 @@ describe("NativeTranscriptStore", () => {
         messages: [{ role: "user", content: "run" }],
         entries: [{ kind: "message", message: { role: "user", content: "run" } }],
         usage: null,
-        writerId: "old-writer",
+        writerId: "new-writer",
       }),
       /turn not found|superseded/,
     );
