@@ -38,6 +38,7 @@ interface ThreadState {
   activeAgentId?: string;
   runtimeBackend?: AgentRuntimeBackend;
   lifecycle?: SessionLifecycle;
+  nativeTranscriptId?: string;
 }
 
 const logger = createLogger('ThreadStorage');
@@ -96,6 +97,10 @@ export class ThreadStorage {
 
     this.salt = this.loadSalt();
     this.migrateLegacyThreads();
+  }
+
+  getNamespace(): string {
+    return this.namespace;
   }
 
   private loadSalt(): string {
@@ -239,6 +244,7 @@ export class ThreadStorage {
             Object.prototype.hasOwnProperty.call(parsed, "activeAgentId") ||
             Object.prototype.hasOwnProperty.call(parsed, "runtimeBackend") ||
             Object.prototype.hasOwnProperty.call(parsed, "lifecycle") ||
+            Object.prototype.hasOwnProperty.call(parsed, "nativeTranscriptId") ||
             Object.prototype.hasOwnProperty.call(parsed, "version");
           if (hasStructuredState) {
             const agentThreads = this.normalizeAgentThreads(parsed.agentThreads);
@@ -266,6 +272,9 @@ export class ThreadStorage {
               activeAgentId,
               runtimeBackend: this.normalizeRuntimeBackend(parsed.runtimeBackend),
               lifecycle: this.normalizeLifecycle(parsed.lifecycle),
+              nativeTranscriptId: typeof parsed.nativeTranscriptId === "string" && parsed.nativeTranscriptId.trim()
+                ? parsed.nativeTranscriptId.trim()
+                : undefined,
             };
           }
 
@@ -306,7 +315,10 @@ export class ThreadStorage {
       typeof state.activeAgentId === "string" && state.activeAgentId.trim() ? state.activeAgentId.trim() : undefined;
     const runtimeBackend = this.normalizeRuntimeBackend(state.runtimeBackend);
     const lifecycle = this.normalizeLifecycle(state.lifecycle);
-    const hasMetadata = Boolean(model || modelReasoningEffort || activeAgentId || runtimeBackend || lifecycle);
+    const nativeTranscriptId = typeof state.nativeTranscriptId === "string" && state.nativeTranscriptId.trim()
+      ? state.nativeTranscriptId.trim()
+      : undefined;
+    const hasMetadata = Boolean(model || modelReasoningEffort || activeAgentId || runtimeBackend || lifecycle || nativeTranscriptId);
     if (keys.length === 0 && !hasMetadata) {
       return null;
     }
@@ -325,6 +337,7 @@ export class ThreadStorage {
       activeAgentId,
       runtimeBackend,
       lifecycle,
+      nativeTranscriptId,
     });
   }
 
@@ -357,6 +370,7 @@ export class ThreadStorage {
       activeAgentId: existing?.activeAgentId,
       runtimeBackend: existing?.runtimeBackend,
       lifecycle: existing?.lifecycle,
+      nativeTranscriptId: existing?.nativeTranscriptId,
     });
   }
 
@@ -384,6 +398,7 @@ export class ThreadStorage {
       activeAgentId: existing.activeAgentId,
       runtimeBackend: existing.runtimeBackend,
       lifecycle: existing.lifecycle,
+      nativeTranscriptId: existing.nativeTranscriptId,
     });
   }
 

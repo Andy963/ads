@@ -671,4 +671,54 @@ Core reviewing rules:
       `);
     },
   },
+  {
+    version: 21,
+    description: "Persist durable Native runtime transcripts",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS native_transcript_turns (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          transcript_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed', 'cancelled', 'interrupted')),
+          messages_json TEXT NOT NULL DEFAULT '[]',
+          entries_json TEXT NOT NULL DEFAULT '[]',
+          usage_json TEXT,
+          provider_json TEXT,
+          error_message TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          UNIQUE(transcript_id, turn_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_native_transcript_turns_order
+          ON native_transcript_turns(transcript_id, id);
+      `);
+    },
+  },
+  {
+    version: 22,
+    description: "Fence Native transcript writers across process replacement",
+    up: (db) => {
+      const columns = db
+        .prepare("PRAGMA table_info(native_transcript_turns)")
+        .all() as Array<{ name?: string }>;
+      if (!columns.some((column) => column.name === "writer_id")) {
+        db.exec("ALTER TABLE native_transcript_turns ADD COLUMN writer_id TEXT NOT NULL DEFAULT ''");
+      }
+    },
+  },
+  {
+    version: 23,
+    description: "Lease Native transcript ownership across adapter replacement",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS native_transcript_leases (
+          transcript_id TEXT PRIMARY KEY,
+          writer_id TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      `);
+    },
+  },
 ];

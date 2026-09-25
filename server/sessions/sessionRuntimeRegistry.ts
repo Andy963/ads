@@ -4,7 +4,8 @@ import type { AgentRuntimeBackend, SessionLifecycle } from "../runtime/config.js
 export interface RuntimeSession {
   setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void;
   getThreadId(): string | null;
-  reset(): void;
+  reset(options?: { clearPersistedState?: boolean }): void;
+  isBusy?(): boolean;
 }
 
 export interface RuntimeLogger {
@@ -23,6 +24,9 @@ export interface SessionRuntimeRecord<
   logger?: TLogger;
   runtimeBackend: AgentRuntimeBackend;
   lifecycle: SessionLifecycle;
+  nativeTranscriptId?: string;
+  transcriptOwner?: string;
+  projectId?: string;
 }
 
 export class SessionRuntimeRegistry<
@@ -61,7 +65,13 @@ export class SessionRuntimeRegistry<
     userId: number,
     session: TSession,
     cwd: string,
-    metadata: { runtimeBackend: AgentRuntimeBackend; lifecycle: SessionLifecycle },
+    metadata: {
+      runtimeBackend: AgentRuntimeBackend;
+      lifecycle: SessionLifecycle;
+      nativeTranscriptId?: string;
+      transcriptOwner?: string;
+      projectId?: string;
+    },
   ): void {
     this.sessions.set(userId, {
       session,
@@ -178,7 +188,7 @@ export class SessionRuntimeRegistry<
     }
     const expiredUsers: number[] = [];
     for (const [userId, record] of this.sessions.entries()) {
-      if (now - record.lastActivity > sessionTimeoutMs) {
+      if (now - record.lastActivity > sessionTimeoutMs && !record.session.isBusy?.()) {
         expiredUsers.push(userId);
       }
     }

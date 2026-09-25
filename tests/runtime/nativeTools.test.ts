@@ -129,6 +129,21 @@ describe("NativeToolExecutor", () => {
     assert.match(result.output, /should-be-visible/);
   });
 
+  it("uses context-aware redaction for short secrets", async () => {
+    const executor = new NativeToolExecutor({
+      workspaceRoot: workspace,
+      redactions: ["q", "/"],
+    });
+    const result = await executor.execute(call("exec_command", {
+      cmd: process.execPath,
+      args: ["-e", "process.stdout.write('q /tmp/q\\nsecret=q\\n/')"],
+    }));
+
+    assert.match(result.output, /q \/tmp\/q/);
+    assert.match(result.output, /secret=\[redacted\]/);
+    assert.match(result.output, /stdout[^\n]*\[redacted\]/);
+  });
+
   it("tokenizes a complete command string without invoking a shell", async () => {
     const executor = new NativeToolExecutor({ workspaceRoot: workspace });
     const result = await executor.execute(call("exec_command", {

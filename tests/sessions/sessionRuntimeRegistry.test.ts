@@ -7,9 +7,12 @@ type FakeSession = {
   workingDirectory?: string;
   threadId: string | null;
   resetCalls: number;
+  busy: boolean;
   setWorkingDirectory: (workingDirectory?: string) => void;
   getThreadId: () => string | null;
-  reset: () => void;
+  resetOptions: Array<{ clearPersistedState?: boolean } | undefined>;
+  reset: (options?: { clearPersistedState?: boolean }) => void;
+  isBusy: () => boolean;
 };
 
 type FakeLogger = {
@@ -25,13 +28,17 @@ function createFakeSession(workingDirectory = "/tmp/project", threadId = "thread
     workingDirectory,
     threadId,
     resetCalls: 0,
+    busy: false,
+    resetOptions: [],
     setWorkingDirectory: (nextWorkingDirectory) => {
       session.workingDirectory = nextWorkingDirectory;
     },
     getThreadId: () => session.threadId,
-    reset: () => {
+    reset: (options) => {
       session.resetCalls += 1;
+      session.resetOptions.push(options);
     },
+    isBusy: () => session.busy,
   };
   return session;
 }
@@ -110,6 +117,17 @@ describe("telegram/sessionRuntimeRegistry", () => {
     assert.deepEqual(logger.attachedThreadIds, []);
   });
 
+  it("does not expire sessions while a turn is in flight", () => {
+    const registry = new SessionRuntimeRegistry<FakeSession, FakeLogger>();
+    const session = createFakeSession();
+    registry.trackSession(1, session, "/tmp/a");
+    session.busy = true;
+
+    assert.deepEqual(registry.getExpiredUserIds(10, Date.now() + 1_000), []);
+    session.busy = false;
+    assert.deepEqual(registry.getExpiredUserIds(10, Date.now() + 1_000), [1]);
+  });
+
   it("tracks and migrates history injection continuity state", () => {
     const registry = new SessionRuntimeRegistry<FakeSession, FakeLogger>();
 
@@ -139,6 +157,7 @@ describe("telegram/sessionRuntimeRegistry", () => {
 
     assert.equal(released?.session, session);
     assert.equal(session.resetCalls, 1);
+    assert.deepEqual(session.resetOptions, [undefined]);
     assert.equal(logger.closeCalls, 1);
     assert.equal(registry.hasSession(1), false);
     assert.equal(registry.needsHistoryInjection(1), false);

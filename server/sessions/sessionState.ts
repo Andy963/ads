@@ -17,6 +17,7 @@ export type SavedSessionState = {
   activeAgentId?: AgentIdentifier;
   runtimeBackend?: AgentRuntimeBackend;
   lifecycle?: SessionLifecycle;
+  nativeTranscriptId?: string;
 };
 
 export type ContextRestoreMode = "fresh" | "thread_resumed" | "history_injection";
@@ -35,6 +36,7 @@ export type ActiveSessionState = {
   activeAgentId?: AgentIdentifier;
   runtimeBackend?: AgentRuntimeBackend;
   lifecycle?: SessionLifecycle;
+  nativeTranscriptId?: string;
 };
 
 export class RuntimeBackendMismatchError extends Error {
@@ -66,6 +68,7 @@ export function getSavedSessionState(storage: ThreadStorage | undefined, userId:
     activeAgentId: record.activeAgentId === "codex" ? "codex" : undefined,
     runtimeBackend: record.runtimeBackend,
     lifecycle: record.lifecycle,
+    nativeTranscriptId: record.nativeTranscriptId,
   };
 }
 
@@ -131,6 +134,7 @@ export function resolveResumeState(args: {
   logger: Pick<Logger, "info">;
   currentCwd?: string;
   runtimeBackend?: AgentRuntimeBackend;
+  nativeTranscriptAvailable?: boolean;
 }): ResumeState {
   const record = args.storage?.getRecord(args.userId);
   const currentBackend = args.runtimeBackend ?? "codex-app-server";
@@ -151,6 +155,28 @@ export function resolveResumeState(args: {
   const savedCwd = normalizeCwd(record?.cwd);
   const currentCwd = normalizeCwd(args.currentCwd);
 
+  if (savedCwd && currentCwd && !areSessionCwdsCompatible(savedCwd, currentCwd)) {
+    args.logger.info(
+      `[Continuity] user=${args.userId} restore=fresh reason=cwd_mismatch agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId) ?? "none"} savedCwd=${savedCwd} currentCwd=${currentCwd}`,
+    );
+    return {
+      activeAgentId: savedActiveAgentId,
+      shouldInjectHistory: false,
+      restoreMode: "fresh",
+    };
+  }
+
+  if (currentBackend === "native" && args.nativeTranscriptAvailable) {
+    args.logger.info(
+      `[Continuity] user=${args.userId} restore=thread_resumed reason=native_transcript_restored agent=${savedActiveAgentId ?? "unknown"}`,
+    );
+    return {
+      activeAgentId: savedActiveAgentId,
+      shouldInjectHistory: false,
+      restoreMode: "thread_resumed",
+    };
+  }
+
   if (isNativeExecutionId(candidateThreadId)) {
     args.logger.info(
       `[Continuity] user=${args.userId} restore=history_injection reason=native_execution_alias agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId)}`,
@@ -159,17 +185,6 @@ export function resolveResumeState(args: {
       activeAgentId: savedActiveAgentId,
       shouldInjectHistory: true,
       restoreMode: "history_injection",
-    };
-  }
-
-  if (candidateThreadId && savedCwd && currentCwd && !areSessionCwdsCompatible(savedCwd, currentCwd)) {
-    args.logger.info(
-      `[Continuity] user=${args.userId} restore=fresh reason=cwd_mismatch agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId)} savedCwd=${savedCwd} currentCwd=${currentCwd}`,
-    );
-    return {
-      activeAgentId: savedActiveAgentId,
-      shouldInjectHistory: false,
-      restoreMode: "fresh",
     };
   }
 
@@ -257,7 +272,8 @@ export function clearSavedResumeThreadId(storage: ThreadStorage | undefined, use
     !record.modelReasoningEffort &&
     !record.activeAgentId &&
     !record.runtimeBackend &&
-    !record.lifecycle
+    !record.lifecycle &&
+    !record.nativeTranscriptId
   ) {
     storage.removeThread(userId);
     return;
@@ -271,6 +287,7 @@ export function clearSavedResumeThreadId(storage: ThreadStorage | undefined, use
     activeAgentId: record.activeAgentId,
     runtimeBackend: record.runtimeBackend,
     lifecycle: record.lifecycle,
+    nativeTranscriptId: record.nativeTranscriptId,
   });
 }
 
@@ -284,6 +301,7 @@ export function buildSyncedSessionState(args: {
   clearThreads?: boolean;
   runtimeBackend?: AgentRuntimeBackend;
   lifecycle?: SessionLifecycle;
+  nativeTranscriptId?: string;
 }): SavedSessionState {
   const nativeRuntime = args.runtimeBackend === "native";
   const ambiguousLegacyThread = Boolean(
@@ -311,6 +329,9 @@ export function buildSyncedSessionState(args: {
       : {}),
     ...(args.lifecycle ?? args.storedState?.lifecycle
       ? { lifecycle: args.lifecycle ?? args.storedState?.lifecycle }
+      : {}),
+    ...(args.nativeTranscriptId ?? args.storedState?.nativeTranscriptId
+      ? { nativeTranscriptId: args.nativeTranscriptId ?? args.storedState?.nativeTranscriptId }
       : {}),
   };
 }

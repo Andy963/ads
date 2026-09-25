@@ -244,6 +244,80 @@ describe("telegram/sessionState helpers", () => {
     assert.equal(resume.shouldInjectHistory, true);
   });
 
+  it("restores a Native transcript without injecting ADS history", () => {
+    storage.setRecord(18, {
+      cwd: "/tmp/project",
+      agentThreads: {},
+      activeAgentId: "codex",
+      runtimeBackend: "native",
+      lifecycle: "durable",
+    });
+
+    const resume = resolveResumeState({
+      userId: 18,
+      resumeThread: true,
+      storage,
+      logger: { info: () => {} },
+      currentCwd: "/tmp/project",
+      runtimeBackend: "native",
+      nativeTranscriptAvailable: true,
+    });
+
+    assert.equal(resume.restoreMode, "thread_resumed");
+    assert.equal(resume.resumeThreadId, undefined);
+    assert.equal(resume.shouldInjectHistory, false);
+  });
+
+  it("prefers a restored Native transcript over a legacy execution alias", () => {
+    storage.setRecord(20, {
+      threadId: "native-turn-20",
+      cwd: "/tmp/project",
+      agentThreads: { codex: "native-turn-20" },
+      activeAgentId: "codex",
+      runtimeBackend: "native",
+      lifecycle: "durable",
+    });
+
+    const resume = resolveResumeState({
+      userId: 20,
+      resumeThread: true,
+      storage,
+      logger: { info: () => {} },
+      currentCwd: "/tmp/project",
+      runtimeBackend: "native",
+      nativeTranscriptAvailable: true,
+    });
+
+    assert.equal(resume.restoreMode, "thread_resumed");
+    assert.equal(resume.shouldInjectHistory, false);
+  });
+
+  it("does not restore a Native transcript after an incompatible CWD change", () => {
+    storage.setRecord(21, {
+      cwd: "/tmp/project-a",
+      agentThreads: {},
+      activeAgentId: "codex",
+      runtimeBackend: "native",
+      lifecycle: "durable",
+    });
+
+    const resume = resolveResumeState({
+      userId: 21,
+      resumeThread: true,
+      storage,
+      logger: { info: () => {} },
+      currentCwd: "/tmp/project-b",
+      runtimeBackend: "native",
+      nativeTranscriptAvailable: true,
+    });
+
+    assert.deepEqual(resume, {
+      activeAgentId: "codex",
+      shouldInjectHistory: false,
+      restoreMode: "fresh",
+    });
+  });
+
   it("uses history injection when a Codex record contains a Native execution alias", () => {
     storage.setRecord(19, {
       threadId: "native-turn-19",
