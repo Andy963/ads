@@ -1282,7 +1282,7 @@
     transition: var(--lane-pill-transition, transform 0.36s cubic-bezier(0.25, 1, 0.5, 1));
     pointer-events: none;
   }
-  .laneTabGroup:has([data-testid="lane-tab-worker"].active)::before {
+  .laneTabGroup:has([data-testid="lane-tab-actions"].active)::before {
     transform: translateX(calc(var(--lane-pill-progress, 1) * 100%));
   }
   .laneTab {

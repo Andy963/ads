@@ -10,13 +10,11 @@ import type { LaneDeps } from "./laneActions";
 import { createProjectRuntime } from "./projectRuntime";
 import { createTranscriptCache } from "./transcriptCache";
 import { clearPersistedOutboxes } from "./outbox";
-import { toWireChatSessionId } from "../lib/laneWire";
+import { WIRE_ACOPILOT_SESSION_ID } from "../lib/laneWire";
 
-/**
- * The Acopilot lane always shares one server-side chat session, addressed by
- * the legacy wire id. See laneWire for why the value is still "advisor".
- */
-const WIRE_ACOPILOT_SESSION_ID = toWireChatSessionId("acopilot");
+// The Acopilot lane always shares one server-side chat session, addressed by
+// the legacy wire id. See laneWire for why the value is still "advisor"; the
+// constant is imported (not re-derived) so laneWire stays the single owner.
 import type { ProjectRuntime, ProjectTab } from "./controllerTypes";
 import { createProjectActions } from "./projectsWs";
 import type { ProjectDeps } from "./projectsWs";

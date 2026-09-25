@@ -1,5 +1,5 @@
 import { AdsWebSocket } from "../../api/ws";
-import type { SyncEventsResponse } from "../../api/types";
+import type { SyncEventsResponse, LaneName } from "../../api/types";
 import { diagAlert } from "../../lib/diagAlert";
 import {
   normalizeModelId,
@@ -20,7 +20,8 @@ import type { WsDeps } from "./types";
 import { isReconnectNotice, pickReconnectNotice } from "./reconnectNotice";
 import { createSyncEventSequencer } from "./syncSequencer";
 import { createWsMessageHandler } from "./wsMessage";
-import { WIRE_ACOPILOT_SESSION_ID, type WireChatSessionId } from "../../lib/laneWire";
+import { WIRE_ACOPILOT_SESSION_ID } from "../../lib/laneWire";
+import { ACOPILOT_LANE_ID } from "../../lib/laneIds";
 
 const TERMINAL_BOOTSTRAP_COVERED_EVENT_TYPES = new Set([
   "history",
@@ -220,10 +221,12 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     }
   };
 
-  type WsMode = WireChatSessionId;
+  // A lane selector, not a wire id. It is canonical; the wire value is derived
+  // only at the boundary in resolveChatSessionId.
+  type WsMode = LaneName;
 
   const resolveChatSessionId = (project: ProjectTab, mode: WsMode): string => {
-    if (mode === WIRE_ACOPILOT_SESSION_ID) {
+    if (mode === ACOPILOT_LANE_ID) {
       return WIRE_ACOPILOT_SESSION_ID;
     }
     return String(project.chatSessionId ?? "").trim() || "main";
@@ -327,7 +330,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     rt.reconnectAttempts += 1;
     rt.reconnectTimer = window.setTimeout(() => {
       rt.reconnectTimer = null;
-      const connectFn = mode === WIRE_ACOPILOT_SESSION_ID ? connectAcopilotWs : connectWs;
+      const connectFn = mode === ACOPILOT_LANE_ID ? connectAcopilotWs : connectWs;
       void connectFn(projectId).catch(() => {
         scheduleReconnect(mode, projectId, rt, "connect failed");
       });
@@ -335,7 +338,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   };
 
   const getRuntimeForMode = (mode: WsMode, pid: string): ProjectRuntime => {
-    if (mode === WIRE_ACOPILOT_SESSION_ID) {
+    if (mode === ACOPILOT_LANE_ID) {
       return getAcopilotRuntime(pid);
     }
     return getRuntime(pid);
@@ -1297,7 +1300,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     connectWsInternal("actions", projectId);
 
   const connectAcopilotWs = async (projectId: string = activeProjectId.value): Promise<void> =>
-    connectWsInternal(WIRE_ACOPILOT_SESSION_ID, projectId);
+    connectWsInternal(ACOPILOT_LANE_ID, projectId);
 
   return {
     clearReconnectTimer,
