@@ -349,11 +349,25 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
         kind: "malformed",
       });
     }
+    let payload: unknown;
     try {
-      return parseNonStreamingResult(await response.json());
+      payload = await response.json();
+    } catch (error) {
+      if (error instanceof Error && (error.name === "AbortError" || error.message === "Aborted")) throw error;
+      if (error instanceof SyntaxError) {
+        throw new NativeProviderError("Native upstream returned malformed non-streaming JSON", {
+          kind: "malformed",
+        });
+      }
+      throw new NativeProviderError("Native upstream non-streaming response was interrupted", {
+        kind: "transient",
+        cause: error,
+      });
+    }
+    try {
+      return parseNonStreamingResult(payload);
     } catch (error) {
       if (error instanceof NativeProviderError) throw error;
-      if (error instanceof Error && (error.name === "AbortError" || error.message === "Aborted")) throw error;
       throw new NativeProviderError("Native upstream returned malformed non-streaming JSON", {
         kind: "malformed",
       });

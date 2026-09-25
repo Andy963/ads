@@ -284,6 +284,7 @@ export async function runWithTransientModelRetry<T>(
       return await runAttempt(state);
     } catch (error) {
       if (isAbortError(error)) {
+        notifyRetryAbort(options, error);
         throw error;
       }
       const message = error instanceof Error ? error.message : String(error);
@@ -327,13 +328,7 @@ export async function runWithTransientModelRetry<T>(
         await delay(delayMs, options.signal);
       } catch (error) {
         if (isAbortError(error)) {
-          try {
-            options.onRetryAbort?.(error);
-          } catch (callbackError) {
-            options.log?.(
-              `[${options.agentName}] failed to finalize aborted retry: ${callbackError instanceof Error ? callbackError.message : String(callbackError)}`,
-            );
-          }
+          notifyRetryAbort(options, error);
         }
         throw error;
       }
@@ -341,6 +336,16 @@ export async function runWithTransientModelRetry<T>(
   }
 
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function notifyRetryAbort(options: TransientModelRetryOptions, error: unknown): void {
+  try {
+    options.onRetryAbort?.(error);
+  } catch (callbackError) {
+    options.log?.(
+      `[${options.agentName}] failed to finalize aborted retry: ${callbackError instanceof Error ? callbackError.message : String(callbackError)}`,
+    );
+  }
 }
 
 function isThreadItem(value: unknown): value is ThreadItem {

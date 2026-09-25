@@ -131,6 +131,42 @@ describe("Native provider retry and recovery", () => {
     }
   });
 
+  it("finalizes a pending retry when cancellation wins after backoff resolution", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-boundary-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-boundary-db-"));
+    const store = new NativeTranscriptStore(getStateDatabase(path.join(stateDir, "state.db")));
+    try {
+      const controller = new AbortController();
+      let requests = 0;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelResolver: resolver(),
+        retryBackoffMs: [0],
+        transcriptId: "retry-cancel-boundary",
+        transcriptStore: store,
+        fetchImpl: async () => {
+          requests += 1;
+          return new Response("temporary", { status: 503 });
+        },
+      });
+      adapter.onEvent((event) => {
+        if (event.retry) queueMicrotask(() => controller.abort());
+      });
+
+      await assert.rejects(
+        adapter.send("cancel at retry boundary", { signal: controller.signal }),
+        (error: unknown) => error instanceof Error && error.name === "AbortError",
+      );
+      assert.equal(requests, 1);
+      assert.equal(store.listTurns("retry-cancel-boundary")[0]?.status, "cancelled");
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("shares one turn timeout across retry backoff", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-timeout-"));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-timeout-db-"));
@@ -593,6 +629,39 @@ describe("Native provider retry and recovery", () => {
         env: { ADS_TEST_NOOP: "1" },
       });
       await assert.rejects(adapter.send("run once"), (error: unknown) => error instanceof NativeProviderError);
+      assert.equal(requests, 2);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("retries a non-streaming response interrupted during body read", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-non-streaming-disconnect-"));
+    try {
+      let requests = 0;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelResolver: resolver(),
+        retryBackoffMs: [0],
+        fetchImpl: async () => {
+          requests += 1;
+          if (requests === 1) {
+            return {
+              ok: true,
+              status: 200,
+              headers: new Headers({ "content-type": "application/json" }),
+              json: async () => { throw new TypeError("terminated"); },
+            } as unknown as Response;
+          }
+          return new Response(JSON.stringify({
+            choices: [{ message: { content: "recovered" }, finish_reason: "stop" }],
+          }), { headers: { "content-type": "application/json" } });
+        },
+      });
+
+      const result = await adapter.send("recover non-streaming disconnect", { streaming: false });
+      assert.equal(result.response, "recovered");
       assert.equal(requests, 2);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
