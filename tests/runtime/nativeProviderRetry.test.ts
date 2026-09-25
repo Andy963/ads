@@ -164,6 +164,51 @@ describe("Native provider retry and recovery", () => {
     }
   });
 
+  it("preserves a retry checkpoint while another send waits for the lock", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-queue-race-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-queue-race-db-"));
+    const store = new NativeTranscriptStore(getStateDatabase(path.join(stateDir, "state.db")));
+    try {
+      const controller = new AbortController();
+      let requests = 0;
+      let queuedSend: Promise<unknown> | undefined;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelResolver: resolver(),
+        retryBackoffMs: [100],
+        transcriptId: "retry-queue-race",
+        transcriptStore: store,
+        fetchImpl: async () => {
+          requests += 1;
+          return requests === 1
+            ? new Response("temporary", { status: 503 })
+            : sse([JSON.stringify({ choices: [{ delta: { content: "second completed" }, finish_reason: "stop" }] })]);
+        },
+      });
+      adapter.onEvent((event) => {
+        if (event.retry && !queuedSend) {
+          queuedSend = adapter.send("second turn");
+          controller.abort();
+        }
+      });
+
+      const firstSend = adapter.send("first turn", { signal: controller.signal });
+      await assert.rejects(
+        firstSend,
+        (error: unknown) => error instanceof Error && error.name === "AbortError",
+      );
+      assert.ok(queuedSend);
+      const secondResult = await queuedSend;
+      assert.equal(secondResult.response, "second completed");
+      assert.equal(store.listTurns("retry-queue-race")[0]?.status, "cancelled");
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not restore a turn cancelled during retry backoff", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-state-"));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-db-"));

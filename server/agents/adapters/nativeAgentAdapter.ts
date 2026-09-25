@@ -356,24 +356,26 @@ export class NativeAgentAdapter implements AgentAdapter {
   async send(input: Input, options: AgentSendOptions = {}): Promise<AgentRunResult> {
     if (options.signal?.aborted) throw createAbortError("Native runtime request aborted");
     const turnId = `native-turn-${randomUUID()}`;
-    this.pendingRetryCheckpoint = undefined;
     const turn = createCombinedSignal(options.signal, this.turnTimeoutMs);
     try {
       return await this.sendLock.runExclusive(
-        () => runWithTransientModelRetry(
-          {
-            agentName: "native-runtime",
-            ...(this.retryBackoffMs ? { backoffMs: this.retryBackoffMs } : {}),
-            signal: turn.signal,
-            log: (message) => logger.info(message),
-            onRetry: (notice) => this.emitAgentEvent(createTransientModelRetryEvent(notice)),
-            onRetryAbort: (error) => this.finalizePendingRetry(
-              options.signal?.aborted ? "cancelled" : "interrupted",
-              error,
-            ),
-          },
-          (retryState) => this.runTurn(input, options, retryState, turnId, turn.signal),
-        ),
+        () => {
+          this.pendingRetryCheckpoint = undefined;
+          return runWithTransientModelRetry(
+            {
+              agentName: "native-runtime",
+              ...(this.retryBackoffMs ? { backoffMs: this.retryBackoffMs } : {}),
+              signal: turn.signal,
+              log: (message) => logger.info(message),
+              onRetry: (notice) => this.emitAgentEvent(createTransientModelRetryEvent(notice)),
+              onRetryAbort: (error) => this.finalizePendingRetry(
+                options.signal?.aborted ? "cancelled" : "interrupted",
+                error,
+              ),
+            },
+            (retryState) => this.runTurn(input, options, retryState, turnId, turn.signal),
+          );
+        },
         turn.signal,
       );
     } finally {
