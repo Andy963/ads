@@ -101,8 +101,10 @@ describe("atomic transcript cache", () => {
 
   it("retains review-only messages on a new session without transferring the old cursor", () => {
     const { cache, rt, key } = seed();
+    rt.transcriptViewport.value = { following: false, firstLoadedId: message.id, anchorId: message.id, anchorOffset: 0, scrollTop: 240 };
     cache.attach(rt, { ...scope, chatSessionId: "new-session" });
     expect(rt.messages.value).toEqual([message]);
+    expect(rt.transcriptViewport.value).toBeNull();
     expect(rt.transcriptCursor).toBe(0);
     expect(rt.transcriptReady).toBe(false);
     expect(readCachedTranscript(key)).toMatchObject({ messages: [message], cursor: 15 });
