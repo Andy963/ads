@@ -1106,7 +1106,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     lastWs!.onMessage?.({
       type: "history",
       items: [
-        { role: "user", text: "resume me", ts: 1 },
+        { role: "user", text: "resume me", ts: 1, kind: "client_message_id:pending-1" },
         { role: "ai", text: "done", ts: 2 },
       ],
     });
@@ -1441,7 +1441,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
-  it("does not drop a pending replay when only older history has the same text", async () => {
+  it("preserves a pending replay when same-text history has a different client id", async () => {
     const { wrapper, rt } = await mountReconnectHarness();
 
     rt.pendingAckClientMessageId = "pending-new";
@@ -1465,10 +1465,15 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     });
     await settleUi(wrapper);
 
+    // "older" is not this prompt's id, so bootstrap history must not retire it.
+    // The lane is idle, so the surviving prompt replays right away and is marked
+    // as an incomplete-turn recovery rather than a fresh submission.
     expect(lastSentPromptPayload).toMatchObject({
       text: "repeat",
       agentId: "claude",
+      replay_incomplete: true,
     });
+    expect(sentPromptFrames.at(-1)?.clientMessageId).toBe("pending-new");
     expect(rt.pendingAckClientMessageId).toBe("pending-new");
     expect(rt.queuedPrompts.value).toEqual([]);
     expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(PENDING_PROMPT_REPLAY_NOTICE);

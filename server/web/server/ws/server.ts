@@ -94,7 +94,7 @@ type ResetBarrierToken = {
 const DEFAULT_WS_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 
 export type PromptQueueWebSocketServer = WebSocketServer & {
-  startPromptQueue: () => void;
+  startPromptQueue: () => Promise<void>;
   stopPromptQueue: () => Promise<void>;
 };
 
@@ -323,13 +323,15 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
   };
 
   const queueTransportWs = { readyState: 1 } as unknown as WebSocket;
+  let promptQueueService: PromptQueueService | null = null;
   const runQueuedPrompt = async (entry: PromptQueueEntry): Promise<{ ok: boolean; error?: string }> => {
     const laneResources = resolveWsLaneResources({ chatSessionId: entry.chatSessionId, sessions, history });
     const orchestrator = laneResources.sessionManager.getOrCreate(entry.userId, entry.workspaceRoot, true, {
       authUserId: entry.authUserId,
     });
     const isCurrent = (): boolean =>
-      getLaneGeneration(entry.laneNamespace, entry.logicalHistoryKey) === entry.laneGeneration;
+      promptQueueService?.isOwner() === true
+      && getLaneGeneration(entry.laneNamespace, entry.logicalHistoryKey) === entry.laneGeneration;
     const parsedPrompt = { type: "prompt", payload: entry.payload } as WsMessage;
     preflightPersistAndAck({
       parsed: parsedPrompt,
@@ -426,7 +428,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
     return result.outcome;
   };
 
-  const promptQueueService = state.promptQueueStore
+  promptQueueService = state.promptQueueStore
     ? new PromptQueueService({
         store: state.promptQueueStore,
         workerId: `web-${process.pid}-${crypto.randomUUID()}`,
@@ -447,6 +449,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
           return null;
         },
         runPrompt: runQueuedPrompt,
+        abortRun: (entry) => state.interruptControllers.get(entry.historyKey)?.abort(),
         emitSnapshot: (entry) => {
           const currentGeneration = getLaneGeneration(entry.laneNamespace, entry.logicalHistoryKey);
           const currentHistoryKey = getLaneHistoryKey(entry.logicalHistoryKey, currentGeneration);
@@ -474,14 +477,14 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
         onError: (error) => logger.warn(`[PromptQueue] execution failed: ${error instanceof Error ? error.message : String(error)}`),
       })
     : null;
-  const startPromptQueue = (): void => {
-    promptQueueService?.start();
+  const startPromptQueue = async (): Promise<void> => {
+    await promptQueueService?.start();
   };
   const stopPromptQueue = async (): Promise<void> => {
     await promptQueueService?.stop();
   };
   if (config.autoStartPromptQueue !== false) {
-    startPromptQueue();
+    void startPromptQueue();
   }
 
   const historyKeyBelongsToLogicalLane = (historyKey: string, logicalHistoryKey: string): boolean => {

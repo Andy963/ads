@@ -52,7 +52,7 @@ export type PromptQueueOwnershipClaim = {
   previousOwnerId: string | null;
 };
 
-const INTERRUPTED_PROMPT_ERROR =
+export const INTERRUPTED_PROMPT_ERROR =
   "Prompt execution was interrupted before completion. Retry explicitly to resume with incomplete-turn recovery.";
 
 export function ensurePromptQueueTables(db: DatabaseType): void {
@@ -233,27 +233,41 @@ export function createPromptQueueStore(db: DatabaseType) {
     WHERE status = 'queued'
     ORDER BY id ASC
   `);
+  const listInterruptedStmt = db.prepare(`
+    SELECT *, 0 AS position
+    FROM prompt_queue
+    WHERE status = 'running'
+      AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ? OR lease_owner = ?)
+    ORDER BY id ASC
+  `);
   const markRunningStmt = db.prepare(`
     UPDATE prompt_queue
     SET status = 'running', attempts = attempts + 1, started_at = ?, updated_at = ?,
         lease_owner = ?, lease_expires_at = ?, last_error = NULL
     WHERE id = ? AND status = 'queued'
+      AND EXISTS (
+        SELECT 1 FROM prompt_queue_ownership
+        WHERE id = 1 AND owner_id = ? AND lease_expires_at > ?
+      )
   `);
   const markCompletedStmt = db.prepare(`
     UPDATE prompt_queue
     SET status = 'completed', payload_json = '{}', updated_at = ?, completed_at = ?,
         lease_owner = NULL, lease_expires_at = NULL
     WHERE id = ? AND status = 'running' AND lease_owner = ?
+      AND EXISTS (
+        SELECT 1 FROM prompt_queue_ownership
+        WHERE id = 1 AND owner_id = ? AND lease_expires_at > ?
+      )
   `);
-  const markQueuedFailedStmt = db.prepare(`
+  const markFailedStmt = db.prepare(`
     UPDATE prompt_queue
     SET status = 'failed', updated_at = ?, completed_at = ?, last_error = ?, lease_owner = NULL, lease_expires_at = NULL
-    WHERE id = ? AND status = 'queued'
-  `);
-  const markRunningFailedStmt = db.prepare(`
-    UPDATE prompt_queue
-    SET status = 'failed', updated_at = ?, completed_at = ?, last_error = ?, lease_owner = NULL, lease_expires_at = NULL
-    WHERE id = ? AND status = 'running' AND lease_owner = ?
+    WHERE id = ? AND status IN ('queued', 'running')
+      AND EXISTS (
+        SELECT 1 FROM prompt_queue_ownership
+        WHERE id = 1 AND owner_id = ? AND lease_expires_at > ?
+      )
   `);
   const retryFailedStmt = db.prepare(`
     UPDATE prompt_queue
@@ -262,12 +276,27 @@ export function createPromptQueueStore(db: DatabaseType) {
         lease_owner = NULL, lease_expires_at = NULL
     WHERE id = ? AND status = 'failed'
   `);
-  const recoverStmt = db.prepare(`
+  const completeInterruptedStmt = db.prepare(`
+    UPDATE prompt_queue
+    SET status = 'completed', payload_json = '{}', updated_at = ?, completed_at = ?,
+        lease_owner = NULL, lease_expires_at = NULL
+    WHERE id = ? AND status = 'running'
+      AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ? OR lease_owner = ?)
+      AND EXISTS (
+        SELECT 1 FROM prompt_queue_ownership
+        WHERE id = 1 AND owner_id = ? AND lease_expires_at > ?
+      )
+  `);
+  const failInterruptedStmt = db.prepare(`
     UPDATE prompt_queue
     SET status = 'failed', updated_at = ?, completed_at = ?, last_error = ?,
         lease_owner = NULL, lease_expires_at = NULL
-    WHERE status = 'running'
+    WHERE id = ? AND status = 'running'
       AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ? OR lease_owner = ?)
+      AND EXISTS (
+        SELECT 1 FROM prompt_queue_ownership
+        WHERE id = 1 AND owner_id = ? AND lease_expires_at > ?
+      )
   `);
   const getOwnershipStmt = db.prepare(`
     SELECT owner_id, owner_pid, lease_expires_at
@@ -287,6 +316,12 @@ export function createPromptQueueStore(db: DatabaseType) {
     DELETE FROM prompt_queue_ownership
     WHERE id = 1 AND owner_id = ?
   `);
+  const isOwnershipCurrentStmt = db.prepare(`
+    SELECT 1
+    FROM prompt_queue_ownership
+    WHERE id = 1 AND owner_id = ? AND lease_expires_at > ?
+    LIMIT 1
+  `);
 
   const getByClientMessageId = (clientMessageId: string): PromptQueueEntry | null => {
     const id = requiredText(clientMessageId, "clientMessageId");
@@ -297,8 +332,31 @@ export function createPromptQueueStore(db: DatabaseType) {
   const enqueue = (input: EnqueuePromptInput): { entry: PromptQueueEntry; duplicate: boolean } => {
     const clientMessageId = requiredText(input.clientMessageId, "clientMessageId");
     const payloadHash = hashPayload(input.payload);
+    const scope = {
+      authUserId: requiredText(input.authUserId, "authUserId"),
+      userId: Math.floor(Number(input.userId)),
+      sessionId: requiredText(input.sessionId, "sessionId"),
+      chatSessionId: requiredText(input.chatSessionId, "chatSessionId"),
+      historyKey: requiredText(input.historyKey, "historyKey"),
+      logicalHistoryKey: requiredText(input.logicalHistoryKey, "logicalHistoryKey"),
+      laneNamespace: requiredText(input.laneNamespace, "laneNamespace"),
+      laneGeneration: Math.max(1, Math.floor(Number(input.laneGeneration))),
+      workspaceRoot: requiredText(input.workspaceRoot, "workspaceRoot"),
+    };
     const existing = getByClientMessageId(clientMessageId);
     if (existing) {
+      const sameScope = existing.authUserId === scope.authUserId
+        && existing.userId === scope.userId
+        && existing.sessionId === scope.sessionId
+        && existing.chatSessionId === scope.chatSessionId
+        && existing.historyKey === scope.historyKey
+        && existing.logicalHistoryKey === scope.logicalHistoryKey
+        && existing.laneNamespace === scope.laneNamespace
+        && existing.laneGeneration === scope.laneGeneration
+        && existing.workspaceRoot === scope.workspaceRoot;
+      if (!sameScope) {
+        throw new Error("clientMessageId is already associated with a different prompt scope");
+      }
       if (existing.payloadHash && existing.payloadHash !== payloadHash) {
         throw new Error("clientMessageId is already associated with a different prompt payload");
       }
@@ -317,15 +375,15 @@ export function createPromptQueueStore(db: DatabaseType) {
     const now = Number.isFinite(input.createdAt) ? Math.floor(Number(input.createdAt)) : Date.now();
     const result = insertStmt.run(
       clientMessageId,
-      requiredText(input.authUserId, "authUserId"),
-      Math.floor(Number(input.userId)),
-      requiredText(input.sessionId, "sessionId"),
-      requiredText(input.chatSessionId, "chatSessionId"),
-      requiredText(input.historyKey, "historyKey"),
-      requiredText(input.logicalHistoryKey, "logicalHistoryKey"),
-      requiredText(input.laneNamespace, "laneNamespace"),
-      Math.max(1, Math.floor(Number(input.laneGeneration))),
-      requiredText(input.workspaceRoot, "workspaceRoot"),
+      scope.authUserId,
+      scope.userId,
+      scope.sessionId,
+      scope.chatSessionId,
+      scope.historyKey,
+      scope.logicalHistoryKey,
+      scope.laneNamespace,
+      scope.laneGeneration,
+      scope.workspaceRoot,
       JSON.stringify(input.payload),
       payloadHash,
       now,
@@ -362,18 +420,35 @@ export function createPromptQueueStore(db: DatabaseType) {
   const listRecoverable = (): PromptQueueEntry[] =>
     (listRecoverableStmt.all() as Record<string, unknown>[]).map(toEntry);
 
+  const listInterrupted = (previousOwnerId: string | null, now = Date.now()): PromptQueueEntry[] =>
+    (listInterruptedStmt.all(now, previousOwnerId) as Record<string, unknown>[]).map(toEntry);
+
   const markRunning = (id: number, leaseOwner: string, now = Date.now(), leaseMs = 60_000): boolean =>
-    markRunningStmt.run(now, now, requiredText(leaseOwner, "leaseOwner"), now + leaseMs, id).changes === 1;
+    markRunningStmt.run(
+      now,
+      now,
+      requiredText(leaseOwner, "leaseOwner"),
+      now + leaseMs,
+      id,
+      requiredText(leaseOwner, "leaseOwner"),
+      now,
+    ).changes === 1;
 
   const markCompleted = (id: number, leaseOwner: string, now = Date.now()): boolean =>
-    markCompletedStmt.run(now, now, id, requiredText(leaseOwner, "leaseOwner")).changes === 1;
+    markCompletedStmt.run(
+      now,
+      now,
+      id,
+      requiredText(leaseOwner, "leaseOwner"),
+      requiredText(leaseOwner, "leaseOwner"),
+      now,
+    ).changes === 1;
 
-  const markFailed = (id: number, error: unknown, now = Date.now(), leaseOwner?: string): boolean => {
+  const markFailed = (id: number, error: unknown, leaseOwner: string, now = Date.now()): boolean => {
     const message = error instanceof Error ? error.message : String(error);
     const trimmed = message.slice(0, 2_000);
-    return leaseOwner
-      ? markRunningFailedStmt.run(now, now, trimmed, id, leaseOwner).changes === 1
-      : markQueuedFailedStmt.run(now, now, trimmed, id).changes === 1;
+    const owner = requiredText(leaseOwner, "leaseOwner");
+    return markFailedStmt.run(now, now, trimmed, id, owner, now).changes === 1;
   };
 
   const claimOwnership = (
@@ -422,8 +497,43 @@ export function createPromptQueueStore(db: DatabaseType) {
   const releaseOwnership = (ownerId: string): boolean =>
     releaseOwnershipStmt.run(requiredText(ownerId, "ownerId")).changes === 1;
 
-  const recoverInterrupted = (previousOwnerId: string | null, now = Date.now()): number =>
-    recoverStmt.run(now, now, INTERRUPTED_PROMPT_ERROR, now, previousOwnerId).changes;
+  const isOwnershipCurrent = (ownerId: string, now = Date.now()): boolean =>
+    isOwnershipCurrentStmt.get(requiredText(ownerId, "ownerId"), now) !== undefined;
+
+  const completeInterrupted = (
+    id: number,
+    ownerId: string,
+    previousOwnerId: string | null,
+    now = Date.now(),
+  ): boolean => completeInterruptedStmt.run(
+    now,
+    now,
+    id,
+    now,
+    previousOwnerId,
+    requiredText(ownerId, "ownerId"),
+    now,
+  ).changes === 1;
+
+  const failInterrupted = (
+    id: number,
+    ownerId: string,
+    previousOwnerId: string | null,
+    error: unknown,
+    now = Date.now(),
+  ): boolean => {
+    const message = error instanceof Error ? error.message : String(error);
+    return failInterruptedStmt.run(
+      now,
+      now,
+      message.slice(0, 2_000),
+      id,
+      now,
+      previousOwnerId,
+      requiredText(ownerId, "ownerId"),
+      now,
+    ).changes === 1;
+  };
 
   return {
     enqueue,
@@ -431,12 +541,15 @@ export function createPromptQueueStore(db: DatabaseType) {
     listLane,
     listLogicalLane,
     listRecoverable,
+    listInterrupted,
     markRunning,
     markCompleted,
     markFailed,
     claimOwnership,
     releaseOwnership,
-    recoverInterrupted,
+    isOwnershipCurrent,
+    completeInterrupted,
+    failInterrupted,
   };
 }
 

@@ -470,10 +470,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     return true;
   };
 
-  const reconcilePendingPromptsFromBootstrapHistory = (items: unknown[], terminalHistoryTail: boolean): void => {
+  const reconcilePendingPromptsFromBootstrapHistory = (items: unknown[]): void => {
     if (!rt.awaitingBootstrapHistory) return;
     const serverUserClientMessageIds = new Set<string>();
-    let newestServerUser = "";
     for (const item of [...items].reverse()) {
       const entry = item as { role?: unknown; text?: unknown; kind?: unknown };
       if (String(entry.role ?? "") !== "user") {
@@ -482,9 +481,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const kind = String(entry.kind ?? "").trim();
       const clientMessageId = parseClientMessageIdFromHistoryKind(kind);
       if (clientMessageId) serverUserClientMessageIds.add(clientMessageId);
-      if (!newestServerUser) {
-        newestServerUser = normalizeWireText(entry.text).trim();
-      }
     }
     const completedClientMessageIds = collectCompletedClientMessageIdsFromHistoryItems(items);
     const backendStillRunning = rt.busy.value || rt.turnInFlight;
@@ -513,25 +509,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
         const pendingAckClientMessageId = String(rt.pendingAckClientMessageId ?? "").trim();
         if (!pendingAckClientMessageId || removedIds.has(pendingAckClientMessageId)) {
-          rt.pendingAckClientMessageId = null;
-        }
-      }
-    } else if (newestServerUser && (terminalHistoryTail || backendStillRunning)) {
-      const before = rt.queuedPrompts.value;
-      const after = before.filter((prompt) =>
-        prompt.serverQueueTracked || String(prompt.text ?? "").trim() !== newestServerUser,
-      );
-      if (after.length !== before.length) {
-        const afterIds = new Set(after.map((prompt) => String(prompt.clientMessageId ?? "").trim()).filter(Boolean));
-        const removedIds = before
-          .map((prompt) => String(prompt.clientMessageId ?? "").trim())
-          .filter((clientMessageId) => clientMessageId && !afterIds.has(clientMessageId));
-        rt.queuedPrompts.value = after;
-        for (const clientMessageId of removedIds) {
-          clearPendingPrompt(rt, clientMessageId);
-        }
-        const pendingAckClientMessageId = String(rt.pendingAckClientMessageId ?? "").trim();
-        if (!pendingAckClientMessageId || removedIds.includes(pendingAckClientMessageId)) {
           rt.pendingAckClientMessageId = null;
         }
       }
@@ -1355,7 +1332,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const resumeReplacePending = rt.resumeReplacePending;
       const items = Array.isArray(msg.items) ? (msg.items as unknown[]) : [];
       const terminalHistoryTail = hasTerminalHistoryTail(items);
-      reconcilePendingPromptsFromBootstrapHistory(items, terminalHistoryTail);
+      reconcilePendingPromptsFromBootstrapHistory(items);
       if (!resumeReplacePending && rt.ignoreNextHistory) {
         const historyGenerationRaw = Number((msg as Record<string, unknown>).laneGeneration);
         const historyGeneration = Number.isFinite(historyGenerationRaw) && historyGenerationRaw >= 1

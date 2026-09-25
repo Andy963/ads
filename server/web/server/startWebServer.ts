@@ -438,8 +438,8 @@ export async function startWebServer(): Promise<void> {
     },
     });
     promptQueueLifecycle = wss;
+    await wss.startPromptQueue();
     await listenServer(server, webConfig.port, webConfig.host);
-    wss.startPromptQueue();
     registerWebShutdown({
       cleanupPidFile,
       stopPromptQueue: wss.stopPromptQueue,

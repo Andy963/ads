@@ -636,6 +636,28 @@ export function createChatActions(ctx: AppContext) {
     state.queuedPrompts.value = state.queuedPrompts.value.filter((q) => q.id !== target);
   };
 
+  const retryQueuedPrompt = (id: string, rt?: ProjectRuntime): void => {
+    const target = String(id ?? "").trim();
+    if (!target) return;
+    const state = runtimeOrActive(rt);
+    const prompt = state.queuedPrompts.value.find((entry) => entry.id === target);
+    if (!prompt || prompt.deliveryStatus !== "failed") return;
+    ensureOutboxBinding(state);
+    state.queuedPrompts.value = state.queuedPrompts.value.map((entry) =>
+      entry.id === target
+        ? {
+          ...entry,
+          replayIncomplete: true,
+          restoredFromStorage: true,
+          deliveryStatus: state.connected.value ? "awaiting_ack" : "offline",
+          serverQueueTracked: false,
+          queueError: undefined,
+        }
+        : entry,
+    );
+    void flushQueuedPrompts(state);
+  };
+
   const enqueuePrompt = (text: string, images: IncomingImage[], rt?: ProjectRuntime): void => {
     const state = runtimeOrActive(rt);
     const content = String(text ?? "").trim();
@@ -932,6 +954,7 @@ export function createChatActions(ctx: AppContext) {
     upsertExecuteBlock,
     finalizeCommandBlock,
     removeQueuedPrompt,
+    retryQueuedPrompt,
     enqueuePrompt,
     enqueueMainPrompt,
     retryPrompt,

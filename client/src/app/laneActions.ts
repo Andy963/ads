@@ -58,6 +58,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
     threadReset,
     enqueueMainPrompt,
     enqueuePrompt,
+    retryQueuedPrompt,
     randomUuid,
    } = ctx;
 
@@ -492,12 +493,16 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      }
    };
 
-   const removeAdvisorQueuedPrompt = (promptId: string): void => {
+  const removeAdvisorQueuedPrompt = (promptId: string): void => {
      const id = String(promptId ?? "").trim();
      if (!id) return;
      const list = activeAdvisorRuntime.value.queuedPrompts.value;
-     activeAdvisorRuntime.value.queuedPrompts.value = list.filter((p) => p.id !== id);
-   };
+    activeAdvisorRuntime.value.queuedPrompts.value = list.filter((p) => p.id !== id);
+  };
+
+  const retryAdvisorQueuedPrompt = (promptId: string): void => {
+    retryQueuedPrompt(promptId, activeAdvisorRuntime.value);
+  };
 
   return {
     setNotice,
@@ -522,6 +527,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
     clearAdvisorPendingImages,
     removeAdvisorPendingImage,
     removeAdvisorQueuedPrompt,
+    retryAdvisorQueuedPrompt,
     setMainModelReasoningEffort,
     setAdvisorModelReasoningEffort,
     setMainModelId,

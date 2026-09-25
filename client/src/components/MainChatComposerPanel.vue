@@ -45,6 +45,7 @@ const emit = defineEmits<{
   (e: "clearImages"): void;
   (e: "removeImage", index: number): void;
   (e: "removeQueued", id: string): void;
+  (e: "retryQueued", id: string): void;
 }>();
 
 const canInterrupt = computed(() => props.busy);
@@ -434,7 +435,11 @@ onBeforeUnmount(() => {
           <span>{{ q.text || `[图片 x${q.imagesCount}]` }}</span>
           <span v-if="q.text && q.imagesCount" class="queue-sub"> · 图片 x{{ q.imagesCount }}</span>
         </div>
-        <span class="queue-status" :data-status="q.deliveryStatus ?? 'offline'">
+        <span
+          class="queue-status"
+          :data-status="q.deliveryStatus ?? 'offline'"
+          :title="q.queueError || undefined"
+        >
           <template v-if="q.deliveryStatus === 'offline'">Waiting for connection</template>
           <template v-else-if="q.deliveryStatus === 'awaiting_ack'">Sending</template>
           <template v-else-if="q.deliveryStatus === 'queued'">Queued on server</template>
@@ -442,8 +447,20 @@ onBeforeUnmount(() => {
           <template v-else-if="q.deliveryStatus === 'failed'">Failed</template>
         </span>
         <button
-          v-if="q.deliveryStatus === 'offline' || q.deliveryStatus === undefined"
-          class="queue-del"
+          v-if="q.deliveryStatus === 'failed'"
+          class="queue-action queue-action--retry"
+          type="button"
+          title="重试"
+          aria-label="重试排队消息"
+          @click="emit('retryQueued', q.id)"
+        >
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+            <path d="M10 3.5a6.5 6.5 0 1 1-6.26 8.33.75.75 0 1 1 1.44-.43A5 5 0 1 0 7.2 6.7H5.25V5.2a.75.75 0 0 1 1.5 0v.8h.8a.75.75 0 0 1 0 1.5H5.25V6a.75.75 0 0 1 1.5 0v.9A6.48 6.48 0 0 1 10 3.5Z" />
+          </svg>
+        </button>
+        <button
+          v-if="q.deliveryStatus === 'offline' || q.deliveryStatus === 'failed' || q.deliveryStatus === undefined"
+          class="queue-action queue-action--remove"
           type="button"
           title="移除"
           @click="emit('removeQueued', q.id)"
@@ -918,7 +935,7 @@ onBeforeUnmount(() => {
   color: #dc2626;
 }
 
-.queue-del {
+.queue-action {
   width: 24px;
   height: 24px;
   border-radius: 6px;
@@ -933,9 +950,14 @@ onBeforeUnmount(() => {
   transition: color 0.12s ease, background 0.12s ease;
 }
 
-.queue-del:hover {
+.queue-action:hover {
   color: #ef4444;
   background: rgba(239, 68, 68, 0.08);
+}
+
+.queue-action--retry:hover {
+  color: #2563eb;
+  background: rgba(37, 99, 235, 0.08);
 }
 
 .inputWrap {

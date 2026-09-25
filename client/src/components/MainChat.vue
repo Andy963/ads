@@ -42,6 +42,7 @@ const emit = defineEmits<{
   (e: "clearImages"): void;
   (e: "removeImage", index: number): void;
   (e: "removeQueued", id: string): void;
+  (e: "retryQueued", id: string): void;
 }>();
 
 const listRef = ref<HTMLElement | null>(null);
@@ -858,6 +859,7 @@ onBeforeUnmount(() => {
       @clear-images="emit('clearImages')"
       @remove-image="emit('removeImage', $event)"
       @remove-queued="emit('removeQueued', $event)"
+      @retry-queued="emit('retryQueued', $event)"
     />
   </div>
 </template>
