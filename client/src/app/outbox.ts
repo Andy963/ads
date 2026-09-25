@@ -37,11 +37,17 @@ export type OutboxSnapshot = {
   sent: PersistedPrompt[];
   /** Prompts still waiting their turn, in send order. */
   queued: PersistedPrompt[];
+  /**
+   * Client ids the user explicitly removed from a server-tracked card. The
+   * durable row stays on the server, so the dismissal has to be remembered or
+   * the next queue snapshot resurrects the card.
+   */
+  dismissed: string[];
 };
 
 export const OUTBOX_CHANNEL_NAME = "ads.outbox";
 
-const EMPTY: OutboxSnapshot = { pending: null, sent: [], queued: [] };
+const EMPTY: OutboxSnapshot = { pending: null, sent: [], queued: [], dismissed: [] };
 
 /** An explicit auth boundary must not replay another account's private input. */
 export function clearPersistedOutboxes(): void {
@@ -117,11 +123,22 @@ function normalizeSnapshot(value: unknown): OutboxSnapshot {
   if (pending && !seen.has(pending.clientMessageId)) {
     sent.unshift(pending);
   }
-  return { pending, sent, queued };
+  // A live entry is never hidden by a stale dismissal left over from a retry.
+  const dismissedRaw = Array.isArray(record.dismissed) ? record.dismissed : [];
+  const dismissed: string[] = [];
+  for (const entry of dismissedRaw) {
+    const clientMessageId = String(entry ?? "").trim();
+    if (!clientMessageId || seen.has(clientMessageId) || dismissed.includes(clientMessageId)) continue;
+    dismissed.push(clientMessageId);
+  }
+  return { pending, sent, queued, dismissed };
 }
 
 export function isEmptyOutboxSnapshot(snapshot: OutboxSnapshot): boolean {
-  return !snapshot.pending && snapshot.sent.length === 0 && snapshot.queued.length === 0;
+  return !snapshot.pending
+    && snapshot.sent.length === 0
+    && snapshot.queued.length === 0
+    && snapshot.dismissed.length === 0;
 }
 
 export type OutboxStore = ReturnType<typeof createOutboxStore>;
@@ -206,7 +223,12 @@ export function createOutboxStore(options: { channelName?: string } = {}) {
     if (!legacyPending) return;
     const current = read(args.key);
     if (current.pending) return;
-    write(args.key, { pending: legacyPending, sent: current.sent, queued: current.queued });
+    write(args.key, {
+      pending: legacyPending,
+      sent: current.sent,
+      queued: current.queued,
+      dismissed: current.dismissed,
+    });
   };
 
   const subscribe = (listener: (key: string, snapshot: OutboxSnapshot) => void): (() => void) => {

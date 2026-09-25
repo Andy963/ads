@@ -36,6 +36,8 @@ export type QueuedPrompt = {
   queueAttempts?: number;
   queueError?: string;
   serverQueueTracked?: boolean;
+  /** Lane generation the durable server row was written under. */
+  queueLaneGeneration?: number;
 };
 
 export type ChatExecutionContext = {
@@ -166,6 +168,8 @@ export type ProjectRuntime = {
   transcriptViewport: Ref<TranscriptViewport | null>;
   transcriptCache?: { schedule: () => void; invalidate: () => void };
   laneGeneration?: number;
+  /** Client ids the user removed from a server-tracked card; see OutboxSnapshot. */
+  dismissedPromptIds?: Set<string>;
   laneGenerationScope?: string;
   lastConsumedResetGeneration?: number;
   legacySessionResetConsumed?: boolean;

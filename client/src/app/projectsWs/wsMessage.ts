@@ -999,10 +999,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
                     serverQueueTracked: true,
                     restoredFromStorage: false,
                     replayIncomplete: false,
+                    queueLaneGeneration: Number(msg.lane_generation ?? prompt.queueLaneGeneration) || undefined,
                   }
                 : prompt,
             );
-        } else {
+        } else if (!(rt.dismissedPromptIds?.has(id) ?? false)) {
           rt.queuedPrompts.value = [
             ...rt.queuedPrompts.value,
             {
@@ -1010,6 +1011,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
               deliveryStatus: rawStatus === "running" || rawStatus === "failed" ? rawStatus : "queued",
               queueError: rawStatus === "failed" ? String(msg.error ?? "") || undefined : undefined,
               serverQueueTracked: true,
+              queueLaneGeneration: Number(msg.lane_generation) || undefined,
             },
           ];
         }
@@ -1032,6 +1034,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (!clientMessageId) continue;
         clearPendingPrompt(rt, clientMessageId);
         const status = String(record.status ?? "queued") as "queued" | "running" | "failed" | "completed";
+        // A card the user explicitly removed stays removed even though the
+        // durable row is still on the server.
+        if (rt.dismissedPromptIds?.has(clientMessageId)) continue;
         activeIds.add(clientMessageId);
         const existing = rt.queuedPrompts.value.find((prompt) => prompt.clientMessageId === clientMessageId);
         if (status === "completed") {
@@ -1052,6 +1057,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
                 serverQueueTracked: true,
                 restoredFromStorage: false,
                 replayIncomplete: false,
+                queueLaneGeneration: Number(record.laneGeneration) || prompt.queueLaneGeneration,
               }
             : prompt)
           : [...rt.queuedPrompts.value, {
@@ -1065,6 +1071,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
               queueAttempts: Number(record.attempts) || undefined,
               queueError: String(record.lastError ?? "") || undefined,
               serverQueueTracked: true,
+              queueLaneGeneration: Number(record.laneGeneration) || undefined,
             }];
       }
       if (type === "prompt_queue_snapshot") {

@@ -262,6 +262,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
     clientMessageId: entry.clientMessageId,
     status: entry.status,
     position: entry.position,
+    laneGeneration: entry.laneGeneration,
     attempts: entry.attempts,
     lastError: entry.lastError,
     createdAt: entry.createdAt,

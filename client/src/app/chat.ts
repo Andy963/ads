@@ -183,6 +183,7 @@ export function createChatActions(ctx: AppContext) {
     outbox.write(key, {
       pending: nextPending,
       sent: nextSent,
+      dismissed: Array.from(rt.dismissedPromptIds ?? []),
       queued: rt.queuedPrompts.value
         .filter((prompt) => prompt.deliveryStatus === "offline" || prompt.restoredFromStorage || prompt.replayIncomplete)
         .map(toPersistedPrompt)
@@ -190,10 +191,31 @@ export function createChatActions(ctx: AppContext) {
     });
   };
 
+  const applyDismissals = (rt: ProjectRuntime, snapshot: OutboxSnapshot): void => {
+    const dismissed = rt.dismissedPromptIds ?? new Set<string>();
+    const live = new Set(
+      [...snapshot.sent, ...snapshot.queued].map((prompt) => prompt.clientMessageId),
+    );
+    for (const clientMessageId of snapshot.dismissed) {
+      if (!live.has(clientMessageId)) dismissed.add(clientMessageId);
+    }
+    rt.dismissedPromptIds = dismissed;
+    const before = rt.queuedPrompts.value.length;
+    const after = rt.queuedPrompts.value.filter(
+      (prompt) => !(prompt.serverQueueTracked === true && dismissed.has(prompt.clientMessageId)),
+    );
+    if (after.length !== before) rt.queuedPrompts.value = after;
+  };
+
   const applyRemoteOutbox = (rt: ProjectRuntime, snapshot: OutboxSnapshot): void => {
-    // Keep prompts this tab cannot persist (image prompts) and re-apply the shared
-    // order around them, so a sibling's dequeue is reflected without losing local work.
-    const localOnly = rt.queuedPrompts.value.filter((prompt) => prompt.images.length > 0);
+    applyDismissals(rt, snapshot);
+    // Keep prompts this tab cannot persist (image prompts) plus every card the
+    // server still owns. The outbox deliberately omits acknowledged work, so
+    // trusting it alone would hide queued/running/failed cards until the next
+    // authoritative queue event arrived.
+    const localOnly = rt.queuedPrompts.value.filter(
+      (prompt) => prompt.images.length > 0 || prompt.serverQueueTracked === true,
+    );
     const shared = [...snapshot.sent, ...snapshot.queued].map((prompt) => {
       const existing = rt.queuedPrompts.value.find((q) => q.clientMessageId === prompt.clientMessageId);
       return existing ?? ({
@@ -247,6 +269,9 @@ export function createChatActions(ctx: AppContext) {
       });
     }
     peers.add(rt);
+    // Restoring has to re-filter too: a reload can render the queue before this
+    // tab binds its outbox, and a card dismissed in a sibling tab must stay gone.
+    applyDismissals(rt, readOutboxFor(rt));
     // `sync` so a queue change survives an immediate tab close.
     outboxBindingStops.add(watch(rt.queuedPrompts, () => persistOutbox(rt), { flush: "sync" }));
   };
@@ -633,7 +658,18 @@ export function createChatActions(ctx: AppContext) {
     const target = String(id ?? "").trim();
     if (!target) return;
     const state = runtimeOrActive(rt);
+    const removed = state.queuedPrompts.value.find((q) => q.id === target);
+    if (!removed) return;
     state.queuedPrompts.value = state.queuedPrompts.value.filter((q) => q.id !== target);
+    if (removed.serverQueueTracked !== true) return;
+    // The durable row outlives this card, so remember the dismissal; otherwise
+    // the next queue snapshot would just re-insert what the user dismissed.
+    const clientMessageId = String(removed.clientMessageId ?? "").trim();
+    if (!clientMessageId) return;
+    state.dismissedPromptIds = state.dismissedPromptIds ?? new Set<string>();
+    state.dismissedPromptIds.add(clientMessageId);
+    ensureOutboxBinding(state);
+    persistOutbox(state);
   };
 
   const retryQueuedPrompt = (id: string, rt?: ProjectRuntime): void => {
@@ -643,15 +679,27 @@ export function createChatActions(ctx: AppContext) {
     const prompt = state.queuedPrompts.value.find((entry) => entry.id === target);
     if (!prompt || prompt.deliveryStatus !== "failed") return;
     ensureOutboxBinding(state);
+    // A retry reuses the original client id so the server requeues the same
+    // durable row. That only holds while the lane is unchanged: the id is bound
+    // to its generation, so work stranded by a reset has to be resubmitted as a
+    // new prompt instead of colliding with a different prompt scope.
+    const rowGeneration = Number(prompt.queueLaneGeneration ?? 0);
+    const laneGeneration = Number(state.laneGeneration ?? 0);
+    const generationMoved = rowGeneration > 0 && laneGeneration > 0 && rowGeneration !== laneGeneration;
+    const clientMessageId = generationMoved ? randomUuid() : prompt.clientMessageId;
+    const dismissed = state.dismissedPromptIds;
+    if (dismissed) dismissed.delete(prompt.clientMessageId);
     state.queuedPrompts.value = state.queuedPrompts.value.map((entry) =>
       entry.id === target
         ? {
           ...entry,
+          clientMessageId,
           replayIncomplete: true,
           restoredFromStorage: true,
           deliveryStatus: state.connected.value ? "awaiting_ack" : "offline",
           serverQueueTracked: false,
           queueError: undefined,
+          queueLaneGeneration: undefined,
         }
         : entry,
     );
