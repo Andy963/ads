@@ -72,6 +72,34 @@ describe("SystemPromptManager prompt injection", () => {
     assert.match(updated.text, /Custom acopilot prompt/);
   });
 
+  it("falls back to the canonical baseline when the store fails, even for a legacy lane", () => {
+    // Regression: the built-in-baseline fallback used to index
+    // BASE_LANE_PROMPTS with the raw lane, so a legacy id produced undefined and
+    // crashed prompt assembly instead of falling back.
+    const throwingStore = {
+      getActiveLanePrompt: () => {
+        throw new Error("store unavailable");
+      },
+    } as never;
+
+    for (const [lane, expected] of [
+      ["acopilot", /ADS Acopilot/],
+      ["actions", /ADS Actions Developer/],
+      ["advisor", /ADS Acopilot/],
+      ["planner", /ADS Acopilot/],
+      ["worker", /ADS Actions Developer/],
+    ] as const) {
+      const manager = new SystemPromptManager({
+        workspaceRoot: workspace,
+        lane: lane as never,
+        lanePromptStore: throwingStore,
+      });
+      const injection = manager.maybeInject();
+      assert(injection, `${lane} should fall back rather than throw`);
+      assert.match(injection.text, expected);
+    }
+  });
+
   it("does not inject a lane prompt when no lane is assigned", () => {
     const manager = new SystemPromptManager({ workspaceRoot: workspace });
     const injection = manager.maybeInject();

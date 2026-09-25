@@ -764,17 +764,67 @@ function rebuildLanePromptTablesForCanonicalLanes(db: DatabaseType): void {
     "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
   );
 
-  const versionsSql = readTableSql.get("lane_system_prompt_versions") as { sql?: unknown } | undefined;
-  if (!versionsSql?.sql) {
-    // Tables were never created on this database; ensureLanePromptTables will
-    // create them with the canonical constraint when the store is first opened.
-    return;
-  }
-  if (String(versionsSql.sql).includes("'acopilot'")) {
+  const readTableDdl = (name: string): string => {
+    const row = readTableSql.get(name) as { sql?: unknown } | undefined;
+    return row?.sql ? String(row.sql) : "";
+  };
+
+  // A table needs rebuilding when it exists and its DDL does not already
+  // constrain lane to the canonical ids. Each table is judged independently so
+  // a half-migrated or damaged schema cannot leave a legacy CHECK in place.
+  const needsRebuild = (ddl: string): boolean => ddl !== "" && !ddl.includes("'acopilot'");
+
+  const versionsDdl = readTableDdl("lane_system_prompt_versions");
+  const stateDdl = readTableDdl("lane_system_prompt_state");
+
+  if (!needsRebuild(versionsDdl) && !needsRebuild(stateDdl)) {
+    // Either the tables were never created (ensureLanePromptTables will create
+    // them with the canonical constraint on first use) or they are already
+    // canonical. Either way there is nothing to migrate.
     return;
   }
 
   db.pragma("defer_foreign_keys = ON");
+
+  if (!versionsDdl) {
+    // The versions table is gone but a legacy state table survived. Its rows
+    // reference a parent that no longer exists, so they carry no recoverable
+    // prompt state; keeping the table would leave a legacy CHECK that
+    // ensureLanePromptTables cannot repair (CREATE TABLE IF NOT EXISTS keeps
+    // existing DDL), which would then fail its canonical seeding and prevent
+    // the store from opening at all. Drop the orphan and let it be recreated.
+    db.exec("DROP TABLE IF EXISTS lane_system_prompt_state;");
+    return;
+  }
+
+  if (!needsRebuild(versionsDdl)) {
+    // Versions are already canonical; only the state table still carries the
+    // legacy constraint. Rebuild just that one against the canonical parent.
+    db.exec(`
+      CREATE TABLE lane_system_prompt_state__canonical (
+        lane TEXT PRIMARY KEY CHECK (lane IN ('acopilot', 'actions')),
+        current_version INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (lane, current_version)
+          REFERENCES lane_system_prompt_versions(lane, version)
+      );
+
+      INSERT OR REPLACE INTO lane_system_prompt_state__canonical (lane, current_version, updated_at)
+      SELECT
+        CASE lane
+          WHEN 'advisor' THEN 'acopilot'
+          WHEN 'planner' THEN 'acopilot'
+          WHEN 'worker' THEN 'actions'
+          ELSE lane
+        END,
+        current_version, updated_at
+      FROM lane_system_prompt_state;
+
+      DROP TABLE lane_system_prompt_state;
+      ALTER TABLE lane_system_prompt_state__canonical RENAME TO lane_system_prompt_state;
+    `);
+    return;
+  }
   db.exec(`
     CREATE TABLE lane_system_prompt_versions__canonical (
       lane TEXT NOT NULL CHECK (lane IN ('acopilot', 'actions')),
@@ -797,8 +847,7 @@ function rebuildLanePromptTablesForCanonicalLanes(db: DatabaseType): void {
     FROM lane_system_prompt_versions;
   `);
 
-  const stateSql = readTableSql.get("lane_system_prompt_state") as { sql?: unknown } | undefined;
-  if (stateSql?.sql) {
+  if (stateDdl) {
     db.exec(`
       CREATE TABLE lane_system_prompt_state__canonical (
         lane TEXT PRIMARY KEY CHECK (lane IN ('acopilot', 'actions')),
@@ -828,7 +877,7 @@ function rebuildLanePromptTablesForCanonicalLanes(db: DatabaseType): void {
     ALTER TABLE lane_system_prompt_versions__canonical RENAME TO lane_system_prompt_versions;
   `);
 
-  if (stateSql?.sql) {
+  if (stateDdl) {
     db.exec(`
       ALTER TABLE lane_system_prompt_state__canonical RENAME TO lane_system_prompt_state;
     `);

@@ -252,6 +252,91 @@ describe("state/lanePromptLaneIdMigration", () => {
     }
   });
 
+  it("repairs an orphaned legacy state table when the versions table is gone", () => {
+    // Half-migrated / damaged schema: the state table survived but its parent
+    // did not. Leaving the legacy CHECK in place would make the canonical
+    // seeding in ensureLanePromptTables fail, so the store could never open.
+    const db = new DatabaseConstructor(dbPath);
+    db.exec(`
+      CREATE TABLE lane_system_prompt_state (
+        lane TEXT PRIMARY KEY CHECK (lane IN ('advisor', 'worker')),
+        current_version INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO lane_system_prompt_state (lane, current_version, updated_at) VALUES ('advisor', 2, 2000);
+      CREATE TABLE schema_version (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        version INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO schema_version (id, version) VALUES (1, ${CANONICAL_LANE_MIGRATION_VERSION - 1});
+    `);
+    db.close();
+
+    const migrated = getStateDatabase();
+    const ddl = readTableSql(migrated, "lane_system_prompt_state");
+    assert.doesNotMatch(ddl, /'advisor'/, "legacy CHECK must not survive");
+
+    // The store must open and seed cleanly afterwards.
+    const store = createLanePromptStore(migrated);
+    assert.deepEqual(store.listLanePrompts().map((entry) => entry.lane), ["acopilot", "actions"]);
+  });
+
+  it("rebuilds only the state table when the versions table is already canonical", () => {
+    const db = new DatabaseConstructor(dbPath);
+    // Build the half-migrated state with FK enforcement off: a legacy `advisor`
+    // state row cannot satisfy a foreign key against canonical versions, which
+    // is exactly what makes this state damaged rather than merely unusual.
+    db.pragma("foreign_keys = OFF");
+    db.exec(`
+      CREATE TABLE lane_system_prompt_versions (
+        lane TEXT NOT NULL CHECK (lane IN ('acopilot', 'actions')),
+        version INTEGER NOT NULL CHECK (version >= 1),
+        prompt TEXT NOT NULL,
+        is_base INTEGER NOT NULL DEFAULT 0 CHECK (is_base IN (0, 1)),
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (lane, version)
+      );
+      CREATE UNIQUE INDEX idx_lane_system_prompt_base
+        ON lane_system_prompt_versions(lane) WHERE is_base = 1;
+      CREATE TABLE lane_system_prompt_state (
+        lane TEXT PRIMARY KEY CHECK (lane IN ('advisor', 'worker')),
+        current_version INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (lane, current_version) REFERENCES lane_system_prompt_versions(lane, version)
+      );
+      INSERT INTO lane_system_prompt_versions VALUES ('acopilot', 1, 'Canonical base', 1, 1000);
+      INSERT INTO lane_system_prompt_versions VALUES ('acopilot', 2, 'Custom', 0, 2000);
+      INSERT INTO lane_system_prompt_state VALUES ('advisor', 2, 2000);
+      CREATE TABLE schema_version (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        version INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO schema_version (id, version) VALUES (1, ${CANONICAL_LANE_MIGRATION_VERSION - 1});
+    `);
+    db.pragma("foreign_keys = ON");
+    db.close();
+
+    const migrated = getStateDatabase();
+    const stateDdl = readTableSql(migrated, "lane_system_prompt_state");
+    assert.match(stateDdl, /'acopilot'/);
+    assert.doesNotMatch(stateDdl, /'advisor'/);
+
+    // The versions table must be left exactly as it was, prompt data intact.
+    const rows = migrated
+      .prepare("SELECT lane, version, prompt FROM lane_system_prompt_versions ORDER BY version")
+      .all() as Array<{ lane: string; version: number; prompt: string }>;
+    assert.deepEqual(rows, [
+      { lane: "acopilot", version: 1, prompt: "Canonical base" },
+      { lane: "acopilot", version: 2, prompt: "Custom" },
+    ]);
+
+    const state = migrated.prepare("SELECT lane, current_version FROM lane_system_prompt_state").all();
+    assert.deepEqual(state, [{ lane: "acopilot", current_version: 2 }]);
+    assert.deepEqual(migrated.pragma("foreign_key_check"), []);
+  });
+
   it("is a no-op on a database where the tables were never created", () => {
     const db = new DatabaseConstructor(":memory:");
     try {
