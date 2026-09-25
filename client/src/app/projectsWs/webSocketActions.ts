@@ -1052,6 +1052,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       disconnectWasBusy = rt.busy.value;
       rt.needsChatSync = true;
       rt.connected.value = false;
+      rt.queuedPrompts.value = rt.queuedPrompts.value.map((prompt) =>
+        prompt.deliveryStatus === "awaiting_ack" || prompt.deliveryStatus === "queued"
+          ? { ...prompt, deliveryStatus: "offline" }
+          : prompt,
+      );
       clearSyncRetryTimer();
       clearBootstrapHistoryWatchdog();
       finishBootstrapHistoryWait();

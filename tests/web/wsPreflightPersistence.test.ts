@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import WebSocket, { type RawData } from "ws";
 
-import { resetStateDatabaseForTests } from "../../server/state/database.js";
+import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
 import { HybridOrchestrator } from "../../server/agents/orchestrator.js";
 import { AsyncLock } from "../../server/utils/asyncLock.js";
 import { HistoryStore } from "../../server/utils/historyStore.js";
@@ -18,6 +18,7 @@ import { NoopAgentAvailability } from "../../server/agents/health/agentAvailabil
 import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
 import { SyncEventStore } from "../../server/web/server/sync/store.js";
 import { resolveSyncNamespace } from "../../server/web/server/sync/lane.js";
+import { createPromptQueueStore } from "../../server/state/promptQueueStore.js";
 
 type WsJson = { type?: unknown; [k: string]: unknown };
 
@@ -69,6 +70,7 @@ describe("web/server/ws/preflight-persistence", () => {
   let wss: import("ws").WebSocketServer;
   let historyStore: HistoryStore;
   let syncEventStore: SyncEventStore;
+  let promptQueueStore: ReturnType<typeof createPromptQueueStore>;
   let lock: AsyncLock;
   let unblockCommands: (() => void) | null;
   const originalEnv = { ...process.env };
@@ -113,6 +115,7 @@ describe("web/server/ws/preflight-persistence", () => {
     const advisorHistoryStore = new HistoryStore({ storagePath: process.env.ADS_STATE_DB_PATH, namespace: "test-advisor" });
     historyStore = workerHistoryStore;
     syncEventStore = new SyncEventStore({ stateDbPath: process.env.ADS_STATE_DB_PATH });
+    promptQueueStore = createPromptQueueStore(getStateDatabase(process.env.ADS_STATE_DB_PATH));
     lock = new AsyncLock();
     const agentAvailability = new NoopAgentAvailability();
     const directoryManager = new DirectoryManager([workspaceRoot]);
@@ -147,6 +150,7 @@ describe("web/server/ws/preflight-persistence", () => {
       },
       state: {
         syncEventStore,
+        promptQueueStore,
         directoryManager,
         workspaceCache: new Map(),
         sessionCacheRegistry: { registerBinding: () => {}, clearForUser: () => {} },
@@ -297,12 +301,48 @@ describe("web/server/ws/preflight-persistence", () => {
       );
       const clientMessageId = String(ack.client_message_id);
       const entries = historyStore.get("test::test::main");
-      const matched = entries.filter((entry) => entry.kind === `client_message_id:${clientMessageId}`);
+      const matched = entries.filter((entry) => String(entry.kind ?? "").startsWith(`client_message_id:${clientMessageId}`));
 
       assert.equal(ack.duplicate, false);
+      assert.equal(ack.queue_status, "queued");
       assert.equal(matched.length, 1);
       assert.equal(matched[0]?.role, "user");
       assert.equal(matched[0]?.text, "queued prompt");
+    } finally {
+      client.terminate();
+    }
+  });
+
+  it("persists a prompt queue row before ack and deduplicates retries by client id", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
+    const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+
+    try {
+      await waitForWsOpen(client);
+      client.send(JSON.stringify({ type: "command", payload: "echo slow", client_message_id: "slow-blocker" }));
+      client.send(JSON.stringify({ type: "prompt", payload: "durable prompt", client_message_id: "durable-1" }));
+
+      const firstAck = await waitForWsMessage(
+        client,
+        (msg) => msg.type === "ack" && msg.client_message_id === "durable-1" && msg.duplicate === false,
+        2000,
+      );
+      assert.equal(firstAck.queue_status, "queued");
+      assert.equal(promptQueueStore.getByClientMessageId("durable-1") !== null, true);
+
+      client.send(JSON.stringify({ type: "prompt", payload: "durable prompt", client_message_id: "durable-1" }));
+      const duplicateAck = await waitForWsMessage(
+        client,
+        (msg) => msg.type === "ack" && msg.client_message_id === "durable-1" && msg.duplicate === true,
+        2000,
+      );
+      assert.equal(duplicateAck.queue_status !== undefined, true);
+      assert.equal(promptQueueStore.getByClientMessageId("durable-1")?.clientMessageId, "durable-1");
+      const history = historyStore.get("test::test::main").filter(
+        (entry) => String(entry.kind ?? "").startsWith("client_message_id:durable-1"),
+      );
+      assert.equal(history.length, 1);
     } finally {
       client.terminate();
     }

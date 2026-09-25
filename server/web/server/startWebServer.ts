@@ -12,6 +12,7 @@ import { resolveAdsStateDir } from "../../workspace/adsPaths.js";
 import { detectWorkspace } from "../../workspace/detector.js";
 import { resolveStateDbPath, getStateDatabase } from "../../state/database.js";
 import { createLanePromptStore } from "../../state/lanePromptStore.js";
+import { createPromptQueueStore } from "../../state/promptQueueStore.js";
 import { HistoryMaintenanceScheduler } from "../../state/historyMaintenance.js";
 import { HistoryStore } from "../../utils/historyStore.js";
 import { createLogger } from "../../utils/logger.js";
@@ -237,6 +238,7 @@ export async function startWebServer(): Promise<void> {
     },
   });
   const lanePromptStore = createLanePromptStore(getStateDatabase(stateDbPath));
+  const promptQueueStore = createPromptQueueStore(getStateDatabase(stateDbPath));
   const sessionManager = laneResources.worker.sessionManager;
   const advisorSessionManager = laneResources.advisor.sessionManager;
   sessionCacheRegistry = createSessionCacheRegistry({
@@ -400,6 +402,7 @@ export async function startWebServer(): Promise<void> {
       persistCwdStore,
       syncEventStore,
       laneGenerationStore,
+      promptQueueStore,
     },
     sessions: {
       workerSessionManager: sessionManager,

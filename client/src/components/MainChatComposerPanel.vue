@@ -434,7 +434,20 @@ onBeforeUnmount(() => {
           <span>{{ q.text || `[图片 x${q.imagesCount}]` }}</span>
           <span v-if="q.text && q.imagesCount" class="queue-sub"> · 图片 x{{ q.imagesCount }}</span>
         </div>
-        <button class="queue-del" type="button" title="移除" @click="emit('removeQueued', q.id)">
+        <span class="queue-status" :data-status="q.deliveryStatus ?? 'offline'">
+          <template v-if="q.deliveryStatus === 'offline'">Waiting for connection</template>
+          <template v-else-if="q.deliveryStatus === 'awaiting_ack'">Sending</template>
+          <template v-else-if="q.deliveryStatus === 'queued'">Queued on server</template>
+          <template v-else-if="q.deliveryStatus === 'running'">Running</template>
+          <template v-else-if="q.deliveryStatus === 'failed'">Failed</template>
+        </span>
+        <button
+          v-if="q.deliveryStatus === 'offline' || q.deliveryStatus === undefined"
+          class="queue-del"
+          type="button"
+          title="移除"
+          @click="emit('removeQueued', q.id)"
+        >
           <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
             <path
               fill-rule="evenodd"
@@ -882,6 +895,27 @@ onBeforeUnmount(() => {
   color: #64748b;
   font-weight: 600;
   font-size: 11.5px;
+}
+
+.queue-status {
+  flex-shrink: 0;
+  align-self: center;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.queue-status[data-status="queued"] {
+  color: #2563eb;
+}
+
+.queue-status[data-status="running"] {
+  color: #15803d;
+}
+
+.queue-status[data-status="failed"] {
+  color: #dc2626;
 }
 
 .queue-del {

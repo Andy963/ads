@@ -1,18 +1,19 @@
 /**
- * Durable, cross-tab outbox for prompts that have not reached the server yet.
+ * Durable, cross-tab fallback for prompts that have not reached the server yet.
  *
  * Two gaps this closes:
  *
  * - The pending prompt lived in `sessionStorage`, so a refresh in a *new* tab lost
- *   it, and the queue behind it was memory-only — closing the tab silently dropped
- *   everything the user had lined up. Both now live in `localStorage`.
+ *   it, and disconnected prompts had no durable browser-side recovery path. Both
+ *   now live in `localStorage` until server intake succeeds.
  * - With storage now shared across tabs, two tabs could each replay the same queue.
  *   Every write is broadcast so siblings converge on one view. A racing double-send
  *   is still harmless: prompts keep their `clientMessageId` and the server answers
  *   the second copy with `ack.duplicate`.
  *
- * Images are deliberately not persisted — they are in-memory blobs that cannot
- * survive a reload, so a prompt carrying them stays memory-only.
+ * Once the server accepts a prompt, its SQLite queue is the source of truth and
+ * this outbox stops persisting the normal online queue. Images are deliberately
+ * not persisted because they are in-memory blobs that cannot survive a reload.
  */
 export type PersistedPrompt = {
   clientMessageId: string;

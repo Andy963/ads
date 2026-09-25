@@ -14,6 +14,7 @@ import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { WsMessage } from "./schema.js";
 import type { SessionCacheRegistry } from "./sessionCacheRegistry.js";
 import type { SyncEventStore } from "../sync/store.js";
+import type { PromptQueueStore } from "../../../state/promptQueueStore.js";
 
 export type WsLogger = {
   info: (msg: string) => void;
@@ -97,6 +98,7 @@ export type WsStateDeps = {
   persistCwdStore: (storePath: string, store: Map<string, string>) => void;
   syncEventStore?: SyncEventStore;
   laneGenerationStore?: import("../sync/laneGeneration.js").WebLaneGenerationStore;
+  promptQueueStore?: PromptQueueStore;
 };
 
 export type WsSessionDeps = {
@@ -205,6 +207,11 @@ export type WsPromptHandlerDeps = {
   history: WsHistoryRuntimeDeps;
   scheduler: WsSchedulerDeps;
   middleware?: MiddlewarePipeline;
+};
+
+export type WsPromptOutcome = {
+  ok: boolean;
+  error?: string;
 };
 
 export type WsCommandHandlerDeps = {

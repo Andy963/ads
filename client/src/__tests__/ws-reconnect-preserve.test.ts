@@ -1162,6 +1162,34 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
+  it("reconstructs server-owned queue state from a bootstrap snapshot", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+    lastWs!.onMessage?.({
+      type: "prompt_queue_snapshot",
+      entries: [{
+        clientMessageId: "server-queued-1",
+        status: "queued",
+        position: 1,
+        attempts: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }],
+    });
+    await settleUi(wrapper);
+
+    expect(rt.queuedPrompts.value).toHaveLength(1);
+    expect(rt.queuedPrompts.value[0]).toMatchObject({
+      clientMessageId: "server-queued-1",
+      deliveryStatus: "queued",
+      queuePosition: 1,
+      serverQueueTracked: true,
+    });
+    wrapper.unmount();
+  });
+
   it("reconciles an unacked prompt before preserving a fresh in-flight run", async () => {
     const { wrapper, rt } = await mountReconnectHarness();
 

@@ -194,7 +194,9 @@ describe("error placeholder cleanup", () => {
     (wrapper.vm as any).sendMainPrompt("second");
     await settleUi(wrapper);
 
-    expect((wrapper.vm as any).queuedPrompts).toHaveLength(1);
+    expect((wrapper.vm as any).queuedPrompts).toHaveLength(0);
+    expect(lastWs!.sendPrompt).toHaveBeenCalledTimes(2);
+    const secondClientMessageId = String(lastWs!.sendPrompt.mock.calls[1]?.[1] ?? "");
 
     lastWs!.onMessage?.({ type: "error", message: "first failed" });
     await settleUi(wrapper);
@@ -202,6 +204,9 @@ describe("error placeholder cleanup", () => {
     expect((wrapper.vm as any).queuedPrompts).toHaveLength(0);
     expect((wrapper.vm as any).workerConnectionStatus).toEqual({ kind: "error", message: "first failed" });
     expect(lastWs!.sendPrompt).toHaveBeenCalledTimes(2);
+
+    lastWs!.onMessage?.({ type: "user", clientMessageId: secondClientMessageId, text: "second" });
+    await settleUi(wrapper);
 
     lastWs!.onMessage?.({ type: "result", ok: true, output: "second done" });
     await settleUi(wrapper);

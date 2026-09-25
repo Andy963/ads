@@ -31,6 +31,11 @@ export type QueuedPrompt = {
   modelReasoningEffort?: string;
   replayIncomplete?: boolean;
   restoredFromStorage?: boolean;
+  deliveryStatus?: "offline" | "awaiting_ack" | "queued" | "running" | "failed";
+  queuePosition?: number;
+  queueAttempts?: number;
+  queueError?: string;
+  serverQueueTracked?: boolean;
 };
 
 export type ChatExecutionContext = {

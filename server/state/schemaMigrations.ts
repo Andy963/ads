@@ -4,6 +4,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 
 import { ensureLanePromptTables } from "./lanePromptStore.js";
 import { sanitizeModelConfigJson } from "./modelConfigTypes.js";
+import { ensurePromptQueueTables } from "./promptQueueStore.js";
 
 export interface StateSchemaMigration {
   version: number;
@@ -719,6 +720,13 @@ Core reviewing rules:
           updated_at INTEGER NOT NULL
         );
       `);
+    },
+  },
+  {
+    version: 24,
+    description: "Persist durable server-owned web prompts",
+    up: (db) => {
+      ensurePromptQueueTables(db);
     },
   },
 ];

@@ -479,9 +479,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       const kind = String(entry.kind ?? "").trim();
       const clientMessageId = parseClientMessageIdFromHistoryKind(kind);
-      if (clientMessageId) {
-        serverUserClientMessageIds.add(clientMessageId);
-      }
+      if (clientMessageId) serverUserClientMessageIds.add(clientMessageId);
       if (!newestServerUser) {
         newestServerUser = normalizeWireText(entry.text).trim();
       }
@@ -491,10 +489,34 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (completedClientMessageIds.size > 0) {
       reconcilePendingPromptsByClientMessageIds(completedClientMessageIds);
     } else if (backendStillRunning && serverUserClientMessageIds.size > 0) {
-      reconcilePendingPromptsByClientMessageIds(serverUserClientMessageIds);
+      const before = rt.queuedPrompts.value;
+      const after = before.filter((prompt) => {
+        const id = String(prompt.clientMessageId ?? "").trim();
+        return !(
+          id &&
+          serverUserClientMessageIds.has(id) &&
+          !prompt.serverQueueTracked &&
+          (prompt.restoredFromStorage || prompt.replayIncomplete)
+        );
+      });
+      if (after.length !== before.length) {
+        const removedIds = new Set(
+          before
+            .filter((prompt) => !after.includes(prompt))
+            .map((prompt) => String(prompt.clientMessageId ?? "").trim()),
+        );
+        rt.queuedPrompts.value = after;
+        const pendingAckClientMessageId = String(rt.pendingAckClientMessageId ?? "").trim();
+        if (!pendingAckClientMessageId || removedIds.has(pendingAckClientMessageId)) {
+          rt.pendingAckClientMessageId = null;
+          clearPendingPrompt(rt);
+        }
+      }
     } else if (newestServerUser && (terminalHistoryTail || backendStillRunning)) {
       const before = rt.queuedPrompts.value;
-      const after = before.filter((prompt) => String(prompt.text ?? "").trim() !== newestServerUser);
+      const after = before.filter((prompt) =>
+        prompt.serverQueueTracked || String(prompt.text ?? "").trim() !== newestServerUser,
+      );
       if (after.length !== before.length) {
         const afterIds = new Set(after.map((prompt) => String(prompt.clientMessageId ?? "").trim()).filter(Boolean));
         const removedIds = before
@@ -964,9 +986,71 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
     if (type === "ack") {
       const id = String(msg.client_message_id ?? "").trim();
+      const queued = id ? rt.queuedPrompts.value.find((prompt) => prompt.clientMessageId === id) : undefined;
+      if (queued) {
+        if (queued.serverQueueTracked) {
+          rt.queuedPrompts.value = rt.queuedPrompts.value.map((prompt) =>
+            prompt.clientMessageId === id
+              ? { ...prompt, deliveryStatus: msg.queue_status === "running" ? "running" : "queued" }
+              : prompt,
+          );
+        } else {
+          rt.queuedPrompts.value = rt.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== id);
+        }
+      }
       if (id && rt.pendingAckClientMessageId === id) {
         rt.pendingAckClientMessageId = null;
         clearPendingPrompt(rt);
+      }
+      return;
+    }
+
+    if (type === "prompt_queue_snapshot" || type === "prompt_queue") {
+      const entries = type === "prompt_queue_snapshot"
+        ? (Array.isArray(msg.entries) ? msg.entries : [])
+        : (msg.entry && typeof msg.entry === "object" ? [msg.entry] : []);
+      const activeIds = new Set<string>();
+      for (const raw of entries) {
+        if (!raw || typeof raw !== "object") continue;
+        const record = raw as Record<string, unknown>;
+        const clientMessageId = String(record.clientMessageId ?? "").trim();
+        if (!clientMessageId) continue;
+        const status = String(record.status ?? "queued") as "queued" | "running" | "failed" | "completed";
+        activeIds.add(clientMessageId);
+        const existing = rt.queuedPrompts.value.find((prompt) => prompt.clientMessageId === clientMessageId);
+        if (status === "completed") {
+          rt.queuedPrompts.value = rt.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== clientMessageId);
+          continue;
+        }
+        const text = rt.messages.value.find((message) => message.id === clientMessageId)?.content || "Server queued request";
+        rt.queuedPrompts.value = existing
+          ? rt.queuedPrompts.value.map((prompt) => prompt.clientMessageId === clientMessageId
+            ? {
+                ...prompt,
+                deliveryStatus: status,
+                queuePosition: Number(record.position) || prompt.queuePosition,
+                queueAttempts: Number(record.attempts) || prompt.queueAttempts,
+                queueError: String(record.lastError ?? ""),
+                serverQueueTracked: true,
+              }
+            : prompt)
+          : [...rt.queuedPrompts.value, {
+              id: `server-${clientMessageId}`,
+              clientMessageId,
+              text,
+              images: [],
+              createdAt: Number(record.createdAt) || Date.now(),
+              deliveryStatus: status,
+              queuePosition: Number(record.position) || undefined,
+              queueAttempts: Number(record.attempts) || undefined,
+              queueError: String(record.lastError ?? "") || undefined,
+              serverQueueTracked: true,
+            }];
+      }
+      if (type === "prompt_queue_snapshot") {
+        rt.queuedPrompts.value = rt.queuedPrompts.value.filter(
+          (prompt) => prompt.deliveryStatus === "offline" || activeIds.has(prompt.clientMessageId),
+        );
       }
       return;
     }
@@ -1490,6 +1574,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (type === "user") {
       markTurnActive(msg as Record<string, unknown>);
       const clientMessageId = String(msg.clientMessageId ?? msg.client_message_id ?? "").trim();
+      if (clientMessageId) {
+        rt.queuedPrompts.value = rt.queuedPrompts.value.filter(
+          (prompt) => !prompt.serverQueueTracked || prompt.clientMessageId !== clientMessageId,
+        );
+      }
       const text = firstWireText(msg.text, msg.content).trim();
       const eventTsRaw = Number((msg as { ts?: unknown }).ts);
       const eventTs = Number.isFinite(eventTsRaw) && eventTsRaw > 0 ? Math.floor(eventTsRaw) : Date.now();

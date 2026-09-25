@@ -31,7 +31,6 @@ type UploadedImageAttachment = {
 export function createChatActions(ctx: AppContext) {
   const {
     runtimeOrActive,
-    runtimeAgentBusy,
     maxExecutePreviewLines,
     maxRecentCommands,
     maxTurnCommands,
@@ -119,6 +118,7 @@ export function createChatActions(ctx: AppContext) {
   const outboxGenerations = new WeakMap<ProjectRuntime, number>();
   const outboxBindingStops = new Set<() => void>();
   const runtimesByOutboxKey = new Map<string, Set<ProjectRuntime>>();
+  const sendingQueuedPromptIds = new WeakMap<ProjectRuntime, Set<string>>();
   /** Set while a sibling tab's snapshot is being applied, so we don't echo it back. */
   let applyingRemoteOutbox = false;
 
@@ -176,7 +176,10 @@ export function createChatActions(ctx: AppContext) {
     const nextPending = pending === undefined ? readOutboxFor(rt).pending : pending;
     outbox.write(key, {
       pending: nextPending,
-      queued: rt.queuedPrompts.value.map(toPersistedPrompt).filter(Boolean) as PersistedPrompt[],
+      queued: rt.queuedPrompts.value
+        .filter((prompt) => prompt.deliveryStatus === "offline" || prompt.restoredFromStorage || prompt.replayIncomplete)
+        .map(toPersistedPrompt)
+        .filter(Boolean) as PersistedPrompt[],
     });
   };
 
@@ -614,6 +617,7 @@ export function createChatActions(ctx: AppContext) {
         images: imgs,
         createdAt: Date.now(),
         agentId,
+        deliveryStatus: state.connected.value ? "awaiting_ack" : "offline",
       },
     ];
     void flushQueuedPrompts(state);
@@ -658,6 +662,7 @@ export function createChatActions(ctx: AppContext) {
         ...(execution.model ? { model: execution.model } : {}),
         ...(execution.modelReasoningEffort ? { modelReasoningEffort: execution.modelReasoningEffort } : {}),
         replayIncomplete: true,
+        deliveryStatus: state.connected.value ? "awaiting_ack" : "offline",
       },
     ];
     void flushQueuedPrompts(state);
@@ -670,15 +675,29 @@ export function createChatActions(ctx: AppContext) {
     const state = runtimeOrActive(rt);
     if (state.syncInProgress || state.awaitingBootstrapHistory) return;
     if (state.inputLocked.value && !state.queuedPrompts.value[0]?.restoredFromStorage) return;
-    if (runtimeAgentBusy(state)) return;
     if (!state.connected.value) return;
     if (!state.ws) return;
     if (state.queuedPrompts.value.length === 0) return;
 
     const account = ctx.accountGeneration?.value;
     const isCurrentAccount = (): boolean => ctx.accountGeneration?.value === account;
-    const next = state.queuedPrompts.value[0]!;
-    state.queuedPrompts.value = state.queuedPrompts.value.slice(1);
+    let sending = sendingQueuedPromptIds.get(state);
+    if (!sending) {
+      sending = new Set<string>();
+      sendingQueuedPromptIds.set(state, sending);
+    }
+    const next = state.queuedPrompts.value.find((prompt) =>
+      !sending.has(prompt.clientMessageId) &&
+      (prompt.deliveryStatus === "offline" || prompt.deliveryStatus === "awaiting_ack" || prompt.deliveryStatus === undefined),
+    );
+    if (!next) return;
+    sending.add(next.clientMessageId);
+    const runtimeWasBusy = state.busy.value || state.turnInFlight;
+    state.queuedPrompts.value = state.queuedPrompts.value.map((prompt) =>
+      prompt.clientMessageId === next.clientMessageId
+        ? { ...prompt, deliveryStatus: "awaiting_ack" }
+        : prompt,
+    );
     state.ignoreNextHistory = false;
     state.ignoreNextHistoryGeneration = undefined;
     let sendAccepted = false;
@@ -711,6 +730,11 @@ export function createChatActions(ctx: AppContext) {
       if (!isCurrentAccount()) return;
       finalizeCommandBlock(state);
       clearStepLive(state);
+      state.queuedPrompts.value = state.queuedPrompts.value.map((prompt) =>
+        prompt.clientMessageId === next.clientMessageId
+          ? { ...prompt, deliveryStatus: "queued" }
+          : prompt,
+      );
       const queuedEffort = String(next.modelReasoningEffort ?? "").trim();
       const effort = queuedEffort || String(state.modelReasoningEffort.value ?? "").trim() || "high";
       const queuedModel = String(next.model ?? "").trim();
@@ -725,16 +749,20 @@ export function createChatActions(ctx: AppContext) {
         ...(effort ? { modelReasoningEffort: effort } : {}),
       };
       const alreadyInMessages = state.messages.value.some((m) => m.id === next.clientMessageId);
-      if (!alreadyInMessages) {
+      if (!runtimeWasBusy && !alreadyInMessages) {
         pushMessageBeforeLive(
           { id: next.clientMessageId, role: "user", kind: "text", content: display, execution, ts: next.createdAt ?? Date.now() },
           state,
         );
       }
-      pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true, ts: Date.now() }, state);
-      state.busy.value = true;
-      state.turnInFlight = true;
-      state.pendingAckClientMessageId = next.clientMessageId;
+      if (!runtimeWasBusy) {
+        pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true, ts: Date.now() }, state);
+        state.busy.value = true;
+        state.turnInFlight = true;
+      }
+      if (!runtimeWasBusy || next.restoredFromStorage || next.replayIncomplete) {
+        state.pendingAckClientMessageId = next.clientMessageId;
+      }
       const recovery = next.restoredFromStorage || next.replayIncomplete ? { replay_incomplete: true } : {};
       const payload =
         next.images.length > 0
@@ -751,8 +779,16 @@ export function createChatActions(ctx: AppContext) {
         state.inputLocked.value = true;
         state.laneStatus.value = { kind: "progress", message: "请求已重新发送，正在等待后端结果…" };
       }
+      state.queuedPrompts.value = state.queuedPrompts.value.filter(
+        (prompt) => prompt.clientMessageId !== next.clientMessageId,
+      );
+      sending.delete(next.clientMessageId);
+      queueMicrotask(() => {
+        void flushQueuedPrompts(state, { preserveErrorStatus: true });
+      });
     } catch {
       if (!isCurrentAccount()) return;
+      sending.delete(next.clientMessageId);
       dropEmptyAssistantPlaceholder(state);
       state.busy.value = false;
       state.turnInFlight = false;
@@ -764,8 +800,11 @@ export function createChatActions(ctx: AppContext) {
           state.laneStatus.value = { kind: "error", message: "Failed to send prompt: connection lost or prompt rejected." };
         }
       }
-      const remaining = state.queuedPrompts.value.filter((q) => q.clientMessageId !== next.clientMessageId);
-      state.queuedPrompts.value = [next, ...remaining];
+      state.queuedPrompts.value = state.queuedPrompts.value.map((prompt) =>
+        prompt.clientMessageId === next.clientMessageId
+          ? { ...prompt, deliveryStatus: "offline" }
+          : prompt,
+      );
     }
   };
 

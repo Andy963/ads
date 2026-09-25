@@ -257,6 +257,7 @@ describe("failed turn preservation and in-place retry (Issue #221)", () => {
     wrapper.vm.sendMainPrompt("first");
     wrapper.vm.sendMainPrompt("second");
     await settleUi(wrapper);
+    const secondClientMessageId = String(lastWs!.sendPrompt.mock.calls[1]?.[1] ?? "");
 
     lastWs!.onMessage?.({ type: "error", message: "first failed" });
     await settleUi(wrapper);
@@ -265,9 +266,14 @@ describe("failed turn preservation and in-place retry (Issue #221)", () => {
     const cards = after.filter((m) => m.role === "system" && m.kind === "error");
     expect(cards).toHaveLength(1);
     expect(cards[0]!.content).toBe("first failed");
-    const firstUserIndex = after.findIndex((m) => m.role === "user" && m.content === "first");
-    const cardIndex = after.findIndex((m) => m.id === cards[0]!.id);
-    const secondUserIndex = after.findIndex((m) => m.role === "user" && m.content === "second");
+    expect(after.some((m) => m.role === "user" && m.content === "second")).toBe(false);
+
+    lastWs!.onMessage?.({ type: "user", clientMessageId: secondClientMessageId, text: "second" });
+    await settleUi(wrapper);
+    const afterSecondStart = wrapper.vm.messages as Array<any>;
+    const firstUserIndex = afterSecondStart.findIndex((m) => m.role === "user" && m.content === "first");
+    const cardIndex = afterSecondStart.findIndex((m) => m.id === cards[0]!.id);
+    const secondUserIndex = afterSecondStart.findIndex((m) => m.role === "user" && m.content === "second");
     expect(cardIndex).toBeGreaterThan(firstUserIndex);
     expect(secondUserIndex).toBeGreaterThan(cardIndex);
 
