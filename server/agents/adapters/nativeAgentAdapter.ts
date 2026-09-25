@@ -15,6 +15,7 @@ import { createAbortError, isAbortError } from "../../utils/abort.js";
 import { createLogger } from "../../utils/logger.js";
 import {
   completeNativeChat,
+  NativeProviderError,
   type NativeChatMessage,
   type NativeChatToolCall,
   type NativeCompletionResult,
@@ -384,7 +385,6 @@ export class NativeAgentAdapter implements AgentAdapter {
     try {
       return await this.sendLock.runExclusive(
         () => {
-          this.pendingRetryCheckpoint = undefined;
           this.activeTurnAbort = abortTurn;
           return runWithTransientModelRetry(
             {
@@ -605,13 +605,36 @@ export class NativeAgentAdapter implements AgentAdapter {
     signal: AbortSignal,
     resetGeneration: number,
   ): Promise<AgentRunResult> {
+    try {
+      return await this.runTurnInternal(input, options, retryState, turnId, signal, resetGeneration);
+    } catch (error) {
+      if (this.pendingRetryCheckpoint
+        && !isAbortError(error)
+        && !(error instanceof NativeProviderError && error.kind === "transient")) {
+        try {
+          this.finalizePendingRetry("interrupted", error);
+        } catch (persistenceError) {
+          throw new AggregateError([error, persistenceError], "Native retry setup failed and its checkpoint could not be persisted");
+        }
+      }
+      throw error;
+    }
+  }
+
+  private async runTurnInternal(
+    input: Input,
+    options: AgentSendOptions,
+    retryState: RetryAttemptState,
+    turnId: string,
+    signal: AbortSignal,
+    resetGeneration: number,
+  ): Promise<AgentRunResult> {
     const assertTurnActive = () => this.assertTurnActive(resetGeneration, signal);
     const emitTurnEvent = (event: ThreadEvent) => {
       assertTurnActive();
       this.emitRaw(event);
     };
     assertTurnActive();
-    if (retryState.attempt > 1) this.pendingRetryCheckpoint = undefined;
     const userText = textFromInput(input);
     const model = this.resolver.resolve(this.model, this.modelConfig);
     const capabilities = resolveNativeProviderCapabilities(model.capabilities);
@@ -695,6 +718,7 @@ export class NativeAgentAdapter implements AgentAdapter {
         usage: null,
         provider: providerMetadata,
       });
+      if (retryState.attempt > 1) this.pendingRetryCheckpoint = undefined;
       for (let round = 0; this.maxToolRounds === 0 || round < this.maxToolRounds; round += 1) {
         const itemId = `${turnId}-message-${round}`;
         let roundText = "";
