@@ -2,8 +2,9 @@
  * Canonical ADS lane and Actions-role terminology.
  *
  * This module is the single source of truth for the values that the rest of the
- * system writes. It is imported by both the server and the web client, so it
- * must stay dependency-free and free of Node or DOM APIs.
+ * system writes. The web client consumes it today; the server adopts it in a
+ * later slice, so it must stay dependency-free and free of Node or DOM APIs
+ * until then.
  *
  * Three categories of value must never be conflated:
  *
@@ -139,6 +140,12 @@ export function normalizeStoredRoleProfileValue(value: unknown): StoredRoleProfi
 
 /**
  * Every spelling that can denote a lane, canonical first.
+ *
+ * A canonical input expands to the canonical value followed by its legacy
+ * aliases. Any other input -- a legacy alias, or a value that denotes no lane
+ * at all -- is echoed back unchanged as a single element; this helper does not
+ * resolve aliases on its own. Callers that want the full expansion for an alias
+ * must normalize first, as the client helper does.
  *
  * Read paths use this to try each key in turn; write paths must use only the
  * canonical value. The order is stable so storage lookups are deterministic.

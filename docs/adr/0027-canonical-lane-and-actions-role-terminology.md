@@ -123,7 +123,7 @@ workspace root 解析 `shared/`。client 侧沿用既有的 `.js` 后缀导入�
 ### 正面
 
 - lane 与 role 词汇在类型层面不相交，「Reviewer 变成顶层 lane」不再可能静默发生。
-- legacy 映射只有一处定义，服务端与客户端不再各自维护一份。
+- legacy 映射收敛到单一事实来源；本分片后 client 侧已不再重复定义，server 侧将在后续分片移除其重复定义。
 - `worker` 的双语境语义被显式记录，避免后续按字面替换时出错。
 - 契约不依赖运行时环境，server 与 client 可以共用而无需调整构建拓扑。
 
