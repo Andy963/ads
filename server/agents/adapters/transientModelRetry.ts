@@ -1,5 +1,6 @@
 import type { AgentEvent } from "../../codex/events.js";
 import type { ThreadEvent, ThreadItem } from "../protocol/types.js";
+import { NativeProviderError } from "../../runtime/openAiCompatibleClient.js";
 import { isAbortError } from "../../utils/abort.js";
 
 export const TRANSIENT_MODEL_RETRY_COUNT_ENV = "ADS_UPSTREAM_RETRY_COUNT";
@@ -31,6 +32,8 @@ export interface TransientModelRetryNotice {
 
 export interface RetryAttemptState {
   readonly attempt: number;
+  readonly isFinalAttempt: boolean;
+  readonly sideEffectObserved: boolean;
   markSideEffect(event: AgentEvent | ThreadEvent | ThreadItem | null | undefined): void;
 }
 
@@ -114,9 +117,13 @@ export function isHttp503UpstreamError(message: string): boolean {
 }
 
 export function isHttpGateway5xxUpstreamError(message: string): boolean {
+  return isHttp5xxUpstreamError(message);
+}
+
+export function isHttp5xxUpstreamError(message: string): boolean {
   const normalized = message.replace(/\s+/g, " ").trim().toLowerCase();
   if (!normalized) return false;
-  return /(?:api error|http|status code|unexpected status)[^0-9]{0,32}52[0-4]\b/.test(normalized);
+  return /(?:api error|http|status code|returned http|unexpected status)[^0-9]{0,32}5\d\d\b/.test(normalized);
 }
 
 export function isBadResponseStatusCode400UpstreamError(message: string): boolean {
@@ -161,6 +168,10 @@ export function isTransientUpstreamModelError(message: string): boolean {
     isClaudeSafeguardError(message) ||
     isStreamDisconnectedUpstreamError(message)
   );
+}
+
+export function isRetryableNativeProviderError(error: unknown): boolean {
+  return error instanceof NativeProviderError && error.kind === "transient";
 }
 
 function parseNonNegativeInteger(value: string | undefined): number | null {
@@ -259,14 +270,18 @@ export async function runWithTransientModelRetry<T>(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     let sideEffectObserved = false;
-    const state: RetryAttemptState = {
+    const state = {
       attempt,
+      isFinalAttempt: attempt >= maxAttempts,
+      get sideEffectObserved() {
+        return sideEffectObserved;
+      },
       markSideEffect(event) {
         if (eventHasSideEffect(event)) {
           sideEffectObserved = true;
         }
       },
-    };
+    } satisfies RetryAttemptState;
 
     try {
       return await runAttempt(state);
@@ -278,7 +293,7 @@ export async function runWithTransientModelRetry<T>(
       const retryable =
         error instanceof TransientModelRetryAttemptError
           ? error.retryable
-          : isTransientUpstreamModelError(message);
+          : isRetryableNativeProviderError(error) || isTransientUpstreamModelError(message);
       const unsafe =
         sideEffectObserved ||
         (error instanceof TransientModelRetryAttemptError && error.sideEffectObserved);

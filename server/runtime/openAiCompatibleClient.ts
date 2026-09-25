@@ -57,6 +57,22 @@ export interface NativeCompletionResult {
   usage: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | null;
 }
 
+export type NativeProviderErrorKind = "transient" | "permanent" | "malformed";
+
+export class NativeProviderError extends Error {
+  readonly code = "NATIVE_PROVIDER_ERROR";
+  readonly kind: NativeProviderErrorKind;
+  readonly status?: number;
+
+  constructor(message: string, options: { kind: NativeProviderErrorKind; status?: number; cause?: unknown }) {
+    super(message);
+    this.name = "NativeProviderError";
+    this.kind = options.kind;
+    this.status = options.status;
+    if (options.cause !== undefined) this.cause = options.cause;
+  }
+}
+
 type JsonRecord = Record<string, unknown>;
 
 function asRecord(value: unknown): JsonRecord | null {
@@ -163,9 +179,13 @@ function mergeToolCall(
   value: unknown,
 ): NativeChatToolCall | null {
   const record = asRecord(value);
-  if (!record) return null;
+  if (!record) {
+    throw new NativeProviderError("Native upstream returned an invalid tool-call chunk", { kind: "malformed" });
+  }
   const index = Number(record.index);
-  if (!Number.isInteger(index) || index < 0) return null;
+  if (!Number.isInteger(index) || index < 0) {
+    throw new NativeProviderError("Native upstream returned a tool call without a valid index", { kind: "malformed" });
+  }
   const existing = calls.get(index) ?? {
     id: "",
     type: "function" as const,
@@ -185,15 +205,15 @@ function parseNonStreamingResult(body: unknown): NativeCompletionResult {
   const root = asRecord(body);
   const choices = root && Array.isArray(root.choices) ? root.choices : [];
   if (choices.length === 0) {
-    throw new Error("Native upstream returned a non-streaming response without choices");
+    throw new NativeProviderError("Native upstream returned a non-streaming response without choices", { kind: "malformed" });
   }
   const choice = asRecord(choices[0]);
   if (!choice) {
-    throw new Error("Native upstream returned an invalid non-streaming choice");
+    throw new NativeProviderError("Native upstream returned an invalid non-streaming choice", { kind: "malformed" });
   }
   const message = asRecord(choice?.message);
   if (!message) {
-    throw new Error("Native upstream returned a non-streaming response without a message");
+    throw new NativeProviderError("Native upstream returned a non-streaming response without a message", { kind: "malformed" });
   }
   const text = readText(message?.content);
   const toolCalls = Array.isArray(message?.tool_calls)
@@ -203,12 +223,16 @@ function parseNonStreamingResult(body: unknown): NativeCompletionResult {
         const id = readText(record?.id);
         const name = readText(fn?.name);
         if (!id || !name) {
-          throw new Error("Native upstream returned an invalid non-streaming tool call");
+          throw new NativeProviderError("Native upstream returned an invalid non-streaming tool call", { kind: "malformed" });
+        }
+        const args = readText(fn?.arguments);
+        if (!args.trim()) {
+          throw new NativeProviderError("Native upstream returned a tool call without arguments", { kind: "malformed" });
         }
         return {
           id,
           type: "function" as const,
-          function: { name, arguments: readText(fn?.arguments) },
+          function: { name, arguments: args },
         };
       })
     : [];
@@ -222,66 +246,138 @@ function parseNonStreamingResult(body: unknown): NativeCompletionResult {
 
 export async function completeNativeChat(request: NativeCompletionRequest): Promise<NativeCompletionResult> {
   const fetchImpl = request.fetchImpl ?? fetch;
-  const response = await fetchImpl(buildChatCompletionsEndpoint(request.baseUrl), {
-    method: "POST",
-    headers: {
-      Accept: request.streaming === false ? "application/json" : "text/event-stream",
-      Authorization: `Bearer ${request.apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(buildRequestBody(request)),
-    signal: request.signal,
-    redirect: "error",
-  });
+  let response: Response;
+  try {
+    response = await fetchImpl(buildChatCompletionsEndpoint(request.baseUrl), {
+      method: "POST",
+      headers: {
+        Accept: request.streaming === false ? "application/json" : "text/event-stream",
+        Authorization: `Bearer ${request.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(buildRequestBody(request)),
+      signal: request.signal,
+      redirect: "error",
+    });
+  } catch (error) {
+    if (error instanceof Error && (error.name === "AbortError" || error.message === "Aborted")) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new NativeProviderError(
+      `Native upstream request failed: ${safeErrorText(message, request.apiKey)}`,
+      { kind: "transient", cause: error },
+    );
+  }
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`Native upstream returned HTTP ${response.status}: ${safeErrorText(text, request.apiKey)}`);
+    const retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+    throw new NativeProviderError(
+      `Native upstream returned HTTP ${response.status}: ${safeErrorText(text, request.apiKey)}`,
+      { kind: retryable ? "transient" : "permanent", status: response.status },
+    );
   }
 
   const contentType = String(response.headers.get("content-type") ?? "").toLowerCase();
   const streaming = request.streaming !== false;
   if (!streaming) {
     if (contentType.includes("text/event-stream")) {
-      throw new Error("Native upstream returned a streaming response for a non-streaming request");
+      throw new NativeProviderError("Native upstream returned a streaming response for a non-streaming request", {
+        kind: "malformed",
+      });
     }
-    return parseNonStreamingResult(await response.json());
+    try {
+      return parseNonStreamingResult(await response.json());
+    } catch (error) {
+      if (error instanceof NativeProviderError) throw error;
+      throw new NativeProviderError("Native upstream returned malformed non-streaming JSON", {
+        kind: "malformed",
+        cause: error,
+      });
+    }
   }
   if (!response.body || !contentType.includes("text/event-stream")) {
-    return parseNonStreamingResult(await response.json());
+    try {
+      return parseNonStreamingResult(await response.json());
+    } catch (error) {
+      if (error instanceof NativeProviderError) throw error;
+      throw new NativeProviderError("Native upstream returned malformed response JSON", {
+        kind: "malformed",
+        cause: error,
+      });
+    }
   }
 
   let text = "";
   let finishReason: string | undefined;
   let usage: NativeCompletionResult["usage"] = null;
   const toolCalls = new Map<number, NativeChatToolCall>();
+  let sawChunk = false;
+  let sawDone = false;
 
-  for await (const data of readSseData(response.body)) {
-    if (data === "[DONE]") break;
-    let payload: unknown;
-    try {
-      payload = JSON.parse(data);
-    } catch {
-      continue;
+  try {
+    for await (const data of readSseData(response.body)) {
+      if (data === "[DONE]") {
+        sawDone = true;
+        break;
+      }
+      sawChunk = true;
+      let payload: unknown;
+      try {
+        payload = JSON.parse(data);
+      } catch (error) {
+        throw new NativeProviderError("Native upstream returned malformed SSE JSON", { kind: "malformed", cause: error });
+      }
+      const root = asRecord(payload);
+      if (!root) {
+        throw new NativeProviderError("Native upstream returned a malformed SSE payload", { kind: "malformed" });
+      }
+      usage = parseUsage(root.usage) ?? usage;
+      if (root.choices !== undefined && !Array.isArray(root.choices)) {
+        throw new NativeProviderError("Native upstream returned malformed SSE choices", { kind: "malformed" });
+      }
+      const choices = Array.isArray(root.choices) ? root.choices : [];
+      const choice = asRecord(choices[0]);
+      if (choices.length > 0 && !choice) {
+        throw new NativeProviderError("Native upstream returned a malformed SSE choice", { kind: "malformed" });
+      }
+      finishReason = readText(choice?.finish_reason) || finishReason;
+      const delta = asRecord(choice?.delta);
+      const content = readText(delta?.content);
+      if (content) {
+        text += content;
+        request.onTextDelta?.(text);
+      }
+      const chunks = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];
+      for (const chunk of chunks) mergeToolCall(toolCalls, chunk);
     }
-    const root = asRecord(payload);
-    usage = parseUsage(root?.usage) ?? usage;
-    const choices = root && Array.isArray(root.choices) ? root.choices : [];
-    const choice = asRecord(choices[0]);
-    finishReason = readText(choice?.finish_reason) || finishReason;
-    const delta = asRecord(choice?.delta);
-    const content = readText(delta?.content);
-    if (content) {
-      text += content;
-      request.onTextDelta?.(text);
+  } catch (error) {
+    if (error instanceof NativeProviderError) throw error;
+    if (error instanceof Error && (error.name === "AbortError" || error.message === "Aborted")) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new NativeProviderError(
+      `Native upstream stream disconnected: ${safeErrorText(message, request.apiKey)}`,
+      { kind: "transient", cause: error },
+    );
+  }
+
+  if (!sawChunk || !sawDone) {
+    throw new NativeProviderError("Native upstream stream ended before a complete response", { kind: "malformed" });
+  }
+  const completedToolCalls = [...toolCalls.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, call]) => call);
+  for (const call of completedToolCalls) {
+    if (!call.id || !call.function.name || !call.function.arguments.trim()) {
+      throw new NativeProviderError(
+        `Native upstream returned an incomplete tool call ${call.id || "<missing-id>"}`,
+        { kind: "malformed" },
+      );
     }
-    const chunks = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];
-    for (const chunk of chunks) mergeToolCall(toolCalls, chunk);
   }
 
   return {
     text,
-    toolCalls: [...toolCalls.entries()].sort(([left], [right]) => left - right).map(([, call]) => call),
+    toolCalls: completedToolCalls,
     finishReason,
     usage,
   };
