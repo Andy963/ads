@@ -1,5 +1,6 @@
 import type { AgentEvent } from "../../codex/events.js";
 import type { ThreadEvent, ThreadItem } from "../protocol/types.js";
+import { NativeProviderError } from "../../runtime/openAiCompatibleClient.js";
 import { isAbortError } from "../../utils/abort.js";
 
 export const TRANSIENT_MODEL_RETRY_COUNT_ENV = "ADS_UPSTREAM_RETRY_COUNT";
@@ -19,6 +20,7 @@ export interface TransientModelRetryOptions {
   signal?: AbortSignal;
   log?: (message: string) => void;
   onRetry?: (notice: TransientModelRetryNotice) => void;
+  onRetryAbort?: (error: unknown) => void;
 }
 
 export interface TransientModelRetryNotice {
@@ -31,6 +33,8 @@ export interface TransientModelRetryNotice {
 
 export interface RetryAttemptState {
   readonly attempt: number;
+  readonly isFinalAttempt: boolean;
+  readonly sideEffectObserved: boolean;
   markSideEffect(event: AgentEvent | ThreadEvent | ThreadItem | null | undefined): void;
 }
 
@@ -163,6 +167,10 @@ export function isTransientUpstreamModelError(message: string): boolean {
   );
 }
 
+export function isRetryableNativeProviderError(error: unknown): boolean {
+  return error instanceof NativeProviderError && error.kind === "transient";
+}
+
 function parseNonNegativeInteger(value: string | undefined): number | null {
   const raw = String(value ?? "").trim();
   if (!raw) return null;
@@ -259,26 +267,33 @@ export async function runWithTransientModelRetry<T>(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     let sideEffectObserved = false;
-    const state: RetryAttemptState = {
+    const state = {
       attempt,
+      isFinalAttempt: attempt >= maxAttempts,
+      get sideEffectObserved() {
+        return sideEffectObserved;
+      },
       markSideEffect(event) {
         if (eventHasSideEffect(event)) {
           sideEffectObserved = true;
         }
       },
-    };
+    } satisfies RetryAttemptState;
 
     try {
       return await runAttempt(state);
     } catch (error) {
       if (isAbortError(error)) {
+        notifyRetryAbort(options, error);
         throw error;
       }
       const message = error instanceof Error ? error.message : String(error);
       const retryable =
-        error instanceof TransientModelRetryAttemptError
-          ? error.retryable
-          : isTransientUpstreamModelError(message);
+        error instanceof NativeProviderError
+          ? error.kind === "transient"
+          : error instanceof TransientModelRetryAttemptError
+            ? error.retryable
+            : isTransientUpstreamModelError(message);
       const unsafe =
         sideEffectObserved ||
         (error instanceof TransientModelRetryAttemptError && error.sideEffectObserved);
@@ -309,11 +324,29 @@ export async function runWithTransientModelRetry<T>(
       options.log?.(
         `[${options.agentName}] transient upstream model error; retrying attempt ${attempt + 1}/${maxAttempts} after ${delayMs}ms`,
       );
-      await delay(delayMs, options.signal);
+      try {
+        await delay(delayMs, options.signal);
+      } catch (error) {
+        if (isAbortError(error)) {
+          notifyRetryAbort(options, error);
+        }
+        throw error;
+      }
     }
   }
 
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function notifyRetryAbort(options: TransientModelRetryOptions, error: unknown): void {
+  try {
+    options.onRetryAbort?.(error);
+  } catch (callbackError) {
+    throw new AggregateError(
+      [error, callbackError],
+      `[${options.agentName}] failed to finalize aborted retry`,
+    );
+  }
 }
 
 function isThreadItem(value: unknown): value is ThreadItem {
@@ -332,10 +365,10 @@ function isThreadItem(value: unknown): value is ThreadItem {
 }
 
 async function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  if (ms <= 0) return;
   if (signal?.aborted) {
     throw new DOMException("Aborted", "AbortError");
   }
+  if (ms <= 0) return;
   let abort: (() => void) | undefined;
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(resolve, ms);

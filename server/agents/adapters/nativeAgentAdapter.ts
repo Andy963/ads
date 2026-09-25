@@ -15,10 +15,17 @@ import { createAbortError, isAbortError } from "../../utils/abort.js";
 import { createLogger } from "../../utils/logger.js";
 import {
   completeNativeChat,
+  NativeProviderError,
   type NativeChatMessage,
   type NativeChatToolCall,
   type NativeCompletionResult,
 } from "../../runtime/openAiCompatibleClient.js";
+import {
+  createTransientModelRetryEvent,
+  isRetryableNativeProviderError,
+  runWithTransientModelRetry,
+  type RetryAttemptState,
+} from "./transientModelRetry.js";
 import { createNativeModelResolver, type NativeModelResolver } from "../../runtime/modelResolver.js";
 import {
   DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS,
@@ -80,6 +87,7 @@ export interface NativeAgentAdapterOptions {
   fetchImpl?: typeof fetch;
   turnTimeoutMs?: number;
   maxToolRounds?: number;
+  retryBackoffMs?: readonly number[];
   transcriptId?: string;
   transcriptStore?: NativeTranscriptStore;
   transcriptMode?: "restore" | "replace" | "disabled";
@@ -113,6 +121,7 @@ function readNonNegativeInteger(value: unknown, fallback: number, max?: number):
 
 function createCombinedSignal(signal: AbortSignal | undefined, timeoutMs: number): {
   signal: AbortSignal;
+  abort: (reason?: unknown) => void;
   cleanup: () => void;
 } {
   const controller = new AbortController();
@@ -127,6 +136,7 @@ function createCombinedSignal(signal: AbortSignal | undefined, timeoutMs: number
   timer?.unref?.();
   return {
     signal: controller.signal,
+    abort: (reason?: unknown) => controller.abort(reason),
     cleanup: () => {
       if (signal) signal.removeEventListener("abort", onAbort);
       if (timer) clearTimeout(timer);
@@ -174,6 +184,7 @@ export class NativeAgentAdapter implements AgentAdapter {
   private readonly sendLock = new AsyncLock();
   private readonly listeners = new Set<(event: AgentEvent) => void>();
   private readonly maxToolRounds: number;
+  private readonly retryBackoffMs?: readonly number[];
   private readonly turnTimeoutMs: number;
   private readonly secretValues: string[];
   private conversation: NativeChatMessage[] = [];
@@ -187,9 +198,26 @@ export class NativeAgentAdapter implements AgentAdapter {
   private transcriptId?: string;
   private readonly transcriptStore?: NativeTranscriptStore;
   private readonly activeTranscriptTurns = new Set<string>();
+  private activeTurnCheckpoint?: {
+    turnId: string;
+    resetGeneration: number;
+    messages: NativeChatMessage[];
+    entries: NativeTranscriptEntry[];
+    usage: Usage | null;
+    provider: NativeTranscriptProviderMetadata;
+  };
+  private activeTurnAbort?: (reason?: unknown) => void;
   private resetGeneration = 0;
   private readonly transcriptWriterId = randomUUID();
   private nativeTranscriptRestored = false;
+  private pendingRetryCheckpoint?: {
+    turnId: string;
+    resetGeneration: number;
+    messages: NativeChatMessage[];
+    entries: NativeTranscriptEntry[];
+    usage: Usage | null;
+    provider: NativeTranscriptProviderMetadata;
+  };
 
   constructor(options: NativeAgentAdapterOptions) {
     this.credentialOwner = String(options.credentialOwner ?? "").trim();
@@ -223,6 +251,7 @@ export class NativeAgentAdapter implements AgentAdapter {
         ?? this.env.ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS,
       DEFAULT_MAX_TOOL_ROUNDS,
     );
+    this.retryBackoffMs = options.retryBackoffMs;
     this.transcriptId = String(options.transcriptId ?? "").trim() || undefined;
     const transcriptMode = options.transcriptMode ?? "restore";
     if (options.transcriptStore && !this.transcriptId) {
@@ -276,6 +305,7 @@ export class NativeAgentAdapter implements AgentAdapter {
 
   reset(options?: { clearPersistedState?: boolean }): void {
     if (options?.clearPersistedState) {
+      this.activeTurnAbort?.(createAbortError("Native runtime session reset"));
       this.resetGeneration += 1;
       this.activeTranscriptTurns.clear();
     }
@@ -285,6 +315,8 @@ export class NativeAgentAdapter implements AgentAdapter {
     this.conversation = [];
     this.threadId = `native-${randomUUID()}`;
     this.threadStartedEmitted = false;
+    if (options?.clearPersistedState) this.pendingRetryCheckpoint = undefined;
+    if (options?.clearPersistedState) this.activeTurnCheckpoint = undefined;
   }
 
   retargetTranscript(transcriptId: string): void {
@@ -296,12 +328,22 @@ export class NativeAgentAdapter implements AgentAdapter {
       this.reset({ clearPersistedState: true });
       return;
     }
+    this.activeTurnAbort?.(createAbortError("Native transcript was retargeted"));
+    const resetError = new Error("Native transcript was retargeted during an active turn");
+    if (this.pendingRetryCheckpoint) {
+      this.finalizePendingRetry("interrupted", resetError);
+    } else {
+      this.finalizeActiveTurn("interrupted", resetError);
+    }
     this.transcriptStore?.claimTranscriptAndClear(nextTranscriptId, this.transcriptWriterId);
+    this.resetGeneration += 1;
     this.transcriptId = nextTranscriptId;
     this.activeTranscriptTurns.clear();
     this.conversation = [];
     this.threadId = `native-${randomUUID()}`;
     this.threadStartedEmitted = false;
+    this.pendingRetryCheckpoint = undefined;
+    this.activeTurnAbort = undefined;
   }
 
   setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void {
@@ -335,7 +377,89 @@ export class NativeAgentAdapter implements AgentAdapter {
   }
 
   async send(input: Input, options: AgentSendOptions = {}): Promise<AgentRunResult> {
-    return await this.sendLock.runExclusive(() => this.runTurn(input, options), options.signal);
+    if (options.signal?.aborted) throw createAbortError("Native runtime request aborted");
+    const turnId = `native-turn-${randomUUID()}`;
+    const resetGeneration = this.resetGeneration;
+    const turn = createCombinedSignal(options.signal, this.turnTimeoutMs);
+    const abortTurn = turn.abort;
+    try {
+      return await this.sendLock.runExclusive(
+        () => {
+          this.activeTurnAbort = abortTurn;
+          return runWithTransientModelRetry(
+            {
+              agentName: "native-runtime",
+              ...(this.retryBackoffMs ? { backoffMs: this.retryBackoffMs } : {}),
+              signal: turn.signal,
+              log: (message) => logger.info(message),
+              onRetry: (notice) => {
+                this.assertTurnActive(resetGeneration, turn.signal);
+                this.emitAgentEvent(createTransientModelRetryEvent(notice));
+              },
+              onRetryAbort: (error) => this.finalizePendingRetry(
+                options.signal?.aborted ? "cancelled" : "interrupted",
+                error,
+              ),
+            },
+            (retryState) => this.runTurn(input, options, retryState, turnId, turn.signal, resetGeneration),
+          );
+        },
+        turn.signal,
+      );
+    } catch (error) {
+      if (this.resetGeneration !== resetGeneration) {
+        throw new NativeTurnResetError();
+      }
+      throw error;
+    } finally {
+      if (this.activeTurnAbort === abortTurn) this.activeTurnAbort = undefined;
+      turn.cleanup();
+    }
+  }
+
+  private emitAgentEvent(event: AgentEvent): void {
+    for (const handler of this.listeners) {
+      try {
+        handler(event);
+      } catch (error) {
+        logger.warn(`event handler failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  private finalizePendingRetry(
+    status: "cancelled" | "interrupted",
+    error: unknown,
+  ): void {
+    const pending = this.pendingRetryCheckpoint;
+    if (!pending) return;
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    this.checkpointTurn({
+      ...pending,
+      status,
+      errorMessage: normalized.message,
+    });
+    this.pendingRetryCheckpoint = undefined;
+    this.activeTurnCheckpoint = undefined;
+    const safeMessage = redactNativeTranscriptText(normalized.message, this.secretValues);
+    this.emitRaw({ type: "turn.failed", error: { message: safeMessage } });
+  }
+
+  private finalizeActiveTurn(
+    status: "cancelled" | "interrupted",
+    error: unknown,
+  ): void {
+    const active = this.activeTurnCheckpoint;
+    if (!active) return;
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    this.checkpointTurn({
+      ...active,
+      status,
+      errorMessage: normalized.message,
+    });
+    this.activeTurnCheckpoint = undefined;
+    const safeMessage = redactNativeTranscriptText(normalized.message, this.secretValues);
+    this.emitRaw({ type: "turn.failed", error: { message: safeMessage } });
   }
 
   private emitRaw(event: ThreadEvent): void {
@@ -350,15 +474,51 @@ export class NativeAgentAdapter implements AgentAdapter {
     }
   }
 
-  private emitResponseSnapshot(itemId: string, text: string): void {
+  private emitResponseSnapshot(
+    assertTurnActive: () => void,
+    itemId: string,
+    text: string,
+  ): void {
+    assertTurnActive();
     this.emitRaw({
       type: "item.updated",
       item: { type: "agent_message", id: itemId, text },
     });
   }
 
-  private emitToolEvent(type: "item.started" | "item.completed", item: ThreadItem): void {
+  private emitToolEvent(
+    assertTurnActive: () => void,
+    type: "item.started" | "item.completed",
+    item: ThreadItem,
+  ): void {
+    assertTurnActive();
     this.emitRaw({ type, item });
+  }
+
+  private emitToolCompletionEvents(
+    assertTurnActive: () => void,
+    callId: string,
+    result: NativeToolExecutionResult,
+  ): void {
+    if (result.command) {
+      this.emitToolEvent(assertTurnActive, "item.completed", {
+        type: "command_execution",
+        id: result.command.id,
+        command: result.command.command,
+        status: result.command.status,
+        ...(result.command.exit_code === null || result.command.exit_code === undefined
+          ? {}
+          : { exit_code: result.command.exit_code }),
+        aggregated_output: result.command.aggregated_output,
+      });
+    }
+    if (result.changedFiles && result.changedFiles.length > 0) {
+      this.emitToolEvent(assertTurnActive, "item.completed", {
+        type: "file_change",
+        id: callId,
+        changes: result.changedFiles,
+      });
+    }
   }
 
   private buildMessages(userText: string): NativeChatMessage[] {
@@ -385,6 +545,16 @@ export class NativeAgentAdapter implements AgentAdapter {
     errorMessage?: string | null;
   }): void {
     this.assertResetGeneration(input.resetGeneration);
+    if (input.status === "running") {
+      this.activeTurnCheckpoint = {
+        turnId: input.turnId,
+        resetGeneration: input.resetGeneration,
+        messages: [...input.messages],
+        entries: [...input.entries],
+        usage: input.usage,
+        provider: input.provider,
+      };
+    }
     if (!this.transcriptId || !this.transcriptStore) return;
     if (input.status === "running" && !this.activeTranscriptTurns.has(input.turnId)) {
       this.transcriptStore.beginTurn({
@@ -410,6 +580,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     });
     if (input.status !== "running") {
       this.activeTranscriptTurns.delete(input.turnId);
+      if (this.activeTurnCheckpoint?.turnId === input.turnId) this.activeTurnCheckpoint = undefined;
     }
   }
 
@@ -419,7 +590,51 @@ export class NativeAgentAdapter implements AgentAdapter {
     }
   }
 
-  private async runTurn(input: Input, options: AgentSendOptions): Promise<AgentRunResult> {
+  private assertTurnActive(resetGeneration: number, signal: AbortSignal): void {
+    this.assertResetGeneration(resetGeneration);
+    if (signal.aborted) {
+      throw createAbortError("Native runtime request aborted");
+    }
+  }
+
+  private async runTurn(
+    input: Input,
+    options: AgentSendOptions,
+    retryState: RetryAttemptState,
+    turnId: string,
+    signal: AbortSignal,
+    resetGeneration: number,
+  ): Promise<AgentRunResult> {
+    try {
+      return await this.runTurnInternal(input, options, retryState, turnId, signal, resetGeneration);
+    } catch (error) {
+      if (this.pendingRetryCheckpoint
+        && !isAbortError(error)
+        && !(error instanceof NativeProviderError && error.kind === "transient")) {
+        try {
+          this.finalizePendingRetry("interrupted", error);
+        } catch (persistenceError) {
+          throw new AggregateError([error, persistenceError], "Native retry setup failed and its checkpoint could not be persisted");
+        }
+      }
+      throw error;
+    }
+  }
+
+  private async runTurnInternal(
+    input: Input,
+    options: AgentSendOptions,
+    retryState: RetryAttemptState,
+    turnId: string,
+    signal: AbortSignal,
+    resetGeneration: number,
+  ): Promise<AgentRunResult> {
+    const assertTurnActive = () => this.assertTurnActive(resetGeneration, signal);
+    const emitTurnEvent = (event: ThreadEvent) => {
+      assertTurnActive();
+      this.emitRaw(event);
+    };
+    assertTurnActive();
     const userText = textFromInput(input);
     const model = this.resolver.resolve(this.model, this.modelConfig);
     const capabilities = resolveNativeProviderCapabilities(model.capabilities);
@@ -457,9 +672,6 @@ export class NativeAgentAdapter implements AgentAdapter {
       parallelToolCalls: capabilities.parallelToolCalls === "unsupported" ? false : undefined,
       includeUsage: capabilities.usage === "supported",
     };
-    const combined = createCombinedSignal(options.signal, this.turnTimeoutMs);
-    const resetGeneration = this.resetGeneration;
-    const turnId = `native-turn-${randomUUID()}`;
     const userMessage: NativeChatMessage = { role: "user", content: userText };
     const workingDirectory = this.workingDirectory ?? this.workspaceRoot;
     const toolExecutor = new NativeToolExecutor({
@@ -475,14 +687,14 @@ export class NativeAgentAdapter implements AgentAdapter {
           }
         : undefined,
       redactions: [model.apiKey, ...this.secretValues],
-      signal: combined.signal,
+      signal,
     });
 
     if (!this.threadStartedEmitted) {
       this.threadStartedEmitted = true;
-      this.emitRaw({ type: "thread.started", thread_id: this.threadId });
+      emitTurnEvent({ type: "thread.started", thread_id: this.threadId });
     }
-    this.emitRaw({ type: "turn.started" });
+    if (retryState.attempt === 1) emitTurnEvent({ type: "turn.started" });
 
     let currentMessages = this.buildMessages(userText);
     const turnMessages: NativeChatMessage[] = [userMessage];
@@ -506,6 +718,7 @@ export class NativeAgentAdapter implements AgentAdapter {
         usage: null,
         provider: providerMetadata,
       });
+      if (retryState.attempt > 1) this.pendingRetryCheckpoint = undefined;
       for (let round = 0; this.maxToolRounds === 0 || round < this.maxToolRounds; round += 1) {
         const itemId = `${turnId}-message-${round}`;
         let roundText = "";
@@ -520,7 +733,7 @@ export class NativeAgentAdapter implements AgentAdapter {
           tools: NATIVE_TOOL_DEFINITIONS,
         });
         if (contextProjection.diagnostic.compacted) {
-          this.emitRaw({
+          emitTurnEvent({
             type: "item.completed",
             item: {
               type: "context",
@@ -536,19 +749,20 @@ export class NativeAgentAdapter implements AgentAdapter {
           messages: contextProjection.messages,
           tools: NATIVE_TOOL_DEFINITIONS,
           options: requestOptions,
-          signal: combined.signal,
+          signal,
           fetchImpl: this.fetchImpl,
           ...(streaming
             ? {
                 onTextDelta: (snapshot: string) => {
                   roundText = snapshot;
-                  this.emitResponseSnapshot(itemId, roundText);
+                  this.emitResponseSnapshot(assertTurnActive, itemId, roundText);
                 },
               }
             : {}),
           streaming,
           outputSchema: options.outputSchema,
         });
+        assertTurnActive();
         if (capabilities.parallelToolCalls !== "supported" && completion.toolCalls.length > 1) {
           throw new NativeCapabilityError(
             "parallelToolCalls",
@@ -563,7 +777,7 @@ export class NativeAgentAdapter implements AgentAdapter {
           ...(completion.toolCalls.length > 0 ? { tool_calls: completion.toolCalls } : {}),
         };
         if (completion.toolCalls.length === 0) {
-          this.emitRaw({ type: "item.completed", item: { type: "agent_message", id: itemId, text: completion.text } });
+          emitTurnEvent({ type: "item.completed", item: { type: "agent_message", id: itemId, text: completion.text } });
           turnMessages.push(assistantMessage);
           turnEntries.push({ kind: "message", message: assistantMessage });
           this.checkpointTurn({
@@ -576,11 +790,12 @@ export class NativeAgentAdapter implements AgentAdapter {
             provider: providerMetadata,
           });
           this.appendConversation(turnMessages);
-          this.emitRaw({ type: "turn.completed", usage: usage ?? undefined });
+          emitTurnEvent({ type: "turn.completed", usage: usage ?? undefined });
+          this.pendingRetryCheckpoint = undefined;
           return { response: responseText.trim(), usage, agentId: this.id };
         }
 
-        this.emitRaw({ type: "item.completed", item: { type: "agent_message", id: itemId, text: completion.text } });
+        emitTurnEvent({ type: "item.completed", item: { type: "agent_message", id: itemId, text: completion.text } });
         currentMessages = [...currentMessages, assistantMessage];
         turnMessages.push(assistantMessage);
         turnEntries.push({ kind: "message", message: assistantMessage });
@@ -594,7 +809,10 @@ export class NativeAgentAdapter implements AgentAdapter {
           provider: providerMetadata,
         });
         for (const call of completion.toolCalls) {
-          const result = await this.executeTool(call, toolExecutor, model.apiKey);
+          assertTurnActive();
+          retryState.markSideEffect({ type: "tool_call", id: call.id, name: call.function.name });
+          const result = await this.executeTool(call, toolExecutor, model.apiKey, assertTurnActive);
+          assertTurnActive();
           const toolMessage: NativeChatMessage = { role: "tool", content: result.output, tool_call_id: call.id };
           currentMessages.push(toolMessage);
           turnMessages.push(toolMessage);
@@ -625,6 +843,8 @@ export class NativeAgentAdapter implements AgentAdapter {
             usage,
             provider: providerMetadata,
           });
+          this.emitToolCompletionEvents(assertTurnActive, call.id, result);
+          assertTurnActive();
         }
 
         if (this.maxToolRounds > 0 && round + 1 >= this.maxToolRounds) {
@@ -632,7 +852,7 @@ export class NativeAgentAdapter implements AgentAdapter {
           const limitText = responseText.trim()
             ? `${responseText.trim()}\n\n${TOOL_ROUND_LIMIT_MESSAGE}`
             : TOOL_ROUND_LIMIT_MESSAGE;
-          this.emitRaw({
+          emitTurnEvent({
             type: "item.completed",
             item: { type: "agent_message", id: limitItemId, text: TOOL_ROUND_LIMIT_MESSAGE },
           });
@@ -646,20 +866,39 @@ export class NativeAgentAdapter implements AgentAdapter {
             provider: providerMetadata,
           });
           this.appendConversation([...turnMessages]);
-          this.emitRaw({ type: "turn.completed", usage: usage ?? undefined });
+          emitTurnEvent({ type: "turn.completed", usage: usage ?? undefined });
+          this.pendingRetryCheckpoint = undefined;
           return { response: limitText, usage, agentId: this.id };
         }
       }
     } catch (error) {
+      if (this.resetGeneration !== resetGeneration) {
+        throw new NativeTurnResetError();
+      }
       if (error instanceof NativeTurnResetError) {
-        this.emitRaw({ type: "turn.failed", error: { message: error.message } });
         throw error;
       }
-      const normalized = isAbortError(error) || combined.signal.aborted
+      const normalized = isAbortError(error) || signal.aborted
         ? createAbortError("Native runtime request aborted")
         : error instanceof Error
           ? error
           : new Error(String(error));
+      const retryableProviderFailure = isRetryableNativeProviderError(error)
+        && !signal.aborted
+        && !isAbortError(error)
+        && !retryState.sideEffectObserved
+        && !retryState.isFinalAttempt;
+      if (retryableProviderFailure) {
+        this.pendingRetryCheckpoint = {
+          turnId,
+          resetGeneration,
+          messages: [...turnMessages],
+          entries: [...turnEntries],
+          usage,
+          provider: providerMetadata,
+        };
+        throw normalized;
+      }
       const status = options.signal?.aborted
         ? "cancelled"
         : isAbortError(normalized)
@@ -691,9 +930,8 @@ export class NativeAgentAdapter implements AgentAdapter {
           "Native turn failed and its transcript could not be persisted",
         );
       }
+      this.pendingRetryCheckpoint = undefined;
       throw normalized;
-    } finally {
-      combined.cleanup();
     }
     throw new Error("Native runtime turn ended without a result");
   }
@@ -702,6 +940,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     call: NativeChatToolCall,
     executor: NativeToolExecutor,
     apiKey: string,
+    assertTurnActive: () => void,
   ): Promise<NativeToolExecutionResult> {
     // Internal tool invocations never become raw tool_call items: those were
     // intercepted by ActivityTracker and leaked low-level `- **Tool**` bullets
@@ -718,17 +957,19 @@ export class NativeAgentAdapter implements AgentAdapter {
           command: [commandName, ...args].join(" ").trim(),
           status: "in_progress",
         };
-        this.emitToolEvent("item.started", {
+        this.emitToolEvent(assertTurnActive, "item.started", {
           type: "command_execution",
           id: call.id,
           command: command.command,
           status: "in_progress",
         });
+        assertTurnActive();
       } catch {
         command = undefined;
       }
     }
 
+    assertTurnActive();
     let result: NativeToolExecutionResult;
     try {
       result = await executor.execute(call);
@@ -744,25 +985,6 @@ export class NativeAgentAdapter implements AgentAdapter {
       };
     }
 
-    if (result.command) {
-      this.emitToolEvent("item.completed", {
-        type: "command_execution",
-        id: result.command.id,
-        command: result.command.command,
-        status: result.command.status,
-        ...(result.command.exit_code === null || result.command.exit_code === undefined
-          ? {}
-          : { exit_code: result.command.exit_code }),
-        aggregated_output: result.command.aggregated_output,
-      });
-    }
-    if (result.changedFiles && result.changedFiles.length > 0) {
-      this.emitToolEvent("item.completed", {
-        type: "file_change",
-        id: call.id,
-        changes: result.changedFiles,
-      });
-    }
     return result;
   }
 }

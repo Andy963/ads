@@ -46,12 +46,12 @@ describe("NativeAgentAdapter", () => {
           requestNumber += 1;
           if (requestNumber === 1) {
             return sse([
-              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "read-1", function: { name: "read_file", arguments: '{"file":"hello.txt"}' } }] } }] }),
+              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, type: "function", id: "read-1", function: { name: "read_file", arguments: '{"file":"hello.txt"}' } }] } }] }),
               JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }], usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 } }),
             ]);
           }
           return sse([
-            JSON.stringify({ choices: [{ delta: { content: "The file says hello." } }] }),
+            JSON.stringify({ choices: [{ delta: { content: "The file says hello." }, finish_reason: "stop" }] }),
             JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 } }),
           ]);
         },
@@ -126,7 +126,7 @@ describe("NativeAgentAdapter", () => {
           if (call) {
             return sse([
               JSON.stringify({
-                choices: [{ delta: { tool_calls: [{ index: 0, id: call.id, function: { name: call.name, arguments: call.arguments } }] } }],
+                choices: [{ delta: { tool_calls: [{ index: 0, type: "function", id: call.id, function: { name: call.name, arguments: call.arguments } }] } }],
               }),
               JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
             ]);
@@ -180,7 +180,7 @@ describe("NativeAgentAdapter", () => {
           requestNumber += 1;
           if (requestNumber === 1) {
             return sse([
-              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "read-1", function: { name: "read_file", arguments: '{"file":"hello.txt"}' } }] } }] }),
+              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, type: "function", id: "read-1", function: { name: "read_file", arguments: '{"file":"hello.txt"}' } }] } }] }),
               JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
             ]);
           }
@@ -227,6 +227,7 @@ describe("NativeAgentAdapter", () => {
                   delta: {
                     tool_calls: [{
                       index: 0,
+                      type: "function",
                       id: "dispatch-1",
                       function: {
                         name: "dispatch_action_job",
@@ -281,12 +282,12 @@ describe("NativeAgentAdapter", () => {
           requestNumber += 1;
           if (requestNumber === 1) {
             return sse([
-              JSON.stringify({ choices: [{ delta: { content: "First round", tool_calls: [{ index: 0, id: "read-1", function: { name: "read_file", arguments: '{"file":"hello.txt"}' } }] } }] }),
+              JSON.stringify({ choices: [{ delta: { content: "First round", tool_calls: [{ index: 0, type: "function", id: "read-1", function: { name: "read_file", arguments: '{"file":"hello.txt"}' } }] } }] }),
               JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
             ]);
           }
           return sse([
-            JSON.stringify({ choices: [{ delta: { content: "Second round" } }] }),
+            JSON.stringify({ choices: [{ delta: { content: "Second round" }, finish_reason: "stop" }] }),
             JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
           ]);
         },
@@ -330,12 +331,12 @@ describe("NativeAgentAdapter", () => {
           if (requestNumber === 2) recoveryMessages = body.messages ?? [];
           if (requestNumber === 1) {
             return sse([
-              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "missing-1", function: { name: "read_file", arguments: '{"file":"missing.txt"}' } }] } }] }),
+              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, type: "function", id: "missing-1", function: { name: "read_file", arguments: '{"file":"missing.txt"}' } }] } }] }),
               JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
             ]);
           }
           return sse([
-            JSON.stringify({ choices: [{ delta: { content: "Recovered after the tool error." } }] }),
+            JSON.stringify({ choices: [{ delta: { content: "Recovered after the tool error." }, finish_reason: "stop" }] }),
             JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
           ]);
         },
@@ -386,6 +387,7 @@ describe("NativeAgentAdapter", () => {
                   delta: {
                     tool_calls: [{
                       index: 0,
+                      type: "function",
                       id: `read-${requestNumber}`,
                       function: { name: "read_file", arguments: '{"file":"hello.txt"}' },
                     }],
@@ -433,7 +435,7 @@ describe("NativeAgentAdapter", () => {
           fetchImpl: async () => {
             requestNumber += 1;
             return sse([
-              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "env-limit-1", function: { name: "read_file", arguments: '{"file":"missing.txt"}' } }] } }] }),
+            JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, type: "function", id: "env-limit-1", function: { name: "read_file", arguments: '{"file":"missing.txt"}' } }] } }] }),
               JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
             ]);
           },
@@ -471,7 +473,7 @@ describe("NativeAgentAdapter", () => {
         fetchImpl: async () => {
           requestNumber += 1;
           return sse([
-            JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "limit-1", function: { name: "read_file", arguments: '{"file":"missing.txt"}' } }] } }] }),
+            JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, type: "function", id: "limit-1", function: { name: "read_file", arguments: '{"file":"missing.txt"}' } }] } }] }),
             JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
           ]);
         },
@@ -574,7 +576,7 @@ describe("NativeAgentAdapter", () => {
           requestNumber += 1;
           setTimeout(() => controller.abort(), 50);
           return sse([
-            JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "exec-1", function: { name: "exec_command", arguments: JSON.stringify({ cmd: process.execPath, args: ["-e", "setTimeout(() => {}, 10000)"], timeout_ms: 120_000 }) } }] } }] }),
+            JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, type: "function", id: "exec-1", function: { name: "exec_command", arguments: JSON.stringify({ cmd: process.execPath, args: ["-e", "setTimeout(() => {}, 10000)"], timeout_ms: 120_000 }) } }] } }] }),
             JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
           ]);
         },
@@ -696,7 +698,7 @@ describe("NativeAgentAdapter", () => {
           firstRequest += 1;
           if (firstRequest === 1) {
             return sse([
-              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "exec-1", function: { name: "exec_command", arguments: JSON.stringify({ cmd: process.execPath, args: ["-e", "process.stdout.write(process.env.ADS_WEB_SESSION_PEPPER ?? '')"] }) } }] } }] }),
+              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, type: "function", id: "exec-1", function: { name: "exec_command", arguments: JSON.stringify({ cmd: process.execPath, args: ["-e", "process.stdout.write(process.env.ADS_WEB_SESSION_PEPPER ?? '')"] }) } }] } }] }),
               JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
             ]);
           }
@@ -886,6 +888,7 @@ describe("NativeAgentAdapter", () => {
                   delta: {
                     tool_calls: [{
                       index: 0,
+                      type: "function",
                       id: "exec-1",
                       function: {
                         name: "exec_command",
@@ -960,6 +963,7 @@ describe("NativeAgentAdapter", () => {
                   delta: {
                     tool_calls: [{
                       index: 0,
+                      type: "function",
                       id: "exec-1",
                       function: {
                         name: "exec_command",
@@ -984,7 +988,7 @@ describe("NativeAgentAdapter", () => {
 
       await assert.rejects(adapter.send("run a tool"), /superseded by a destructive session reset/);
       assert.deepEqual(store.listTurns(transcriptId), []);
-      assert.equal(events.some((event) => event.type === "turn.failed"), true);
+      assert.equal(events.some((event) => event.type === "turn.failed"), false);
     } finally {
       resetStateDatabaseForTests();
       fs.rmSync(workspace, { recursive: true, force: true });
@@ -1126,7 +1130,7 @@ describe("NativeAgentAdapter", () => {
           requestNumber += 1;
           if (requestNumber === 1) {
             return sse([
-              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "exec-1", function: { name: "exec_command", arguments: JSON.stringify({ cmd: "echo", args: ["safe"] }) } }] } }] }),
+              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, type: "function", id: "exec-1", function: { name: "exec_command", arguments: JSON.stringify({ cmd: "echo", args: ["safe"] }) } }] } }] }),
               JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
             ]);
           }
@@ -1148,7 +1152,7 @@ describe("NativeAgentAdapter", () => {
         fetchImpl: async () => {
           setTimeout(() => controller.abort(), 50);
           return sse([
-            JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "exec-2", function: { name: "exec_command", arguments: JSON.stringify({ cmd: process.execPath, args: ["-e", "setTimeout(() => {}, 10000)"], timeout_ms: 120_000 }) } }] } }] }),
+            JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, type: "function", id: "exec-2", function: { name: "exec_command", arguments: JSON.stringify({ cmd: process.execPath, args: ["-e", "setTimeout(() => {}, 10000)"], timeout_ms: 120_000 }) } }] } }] }),
             JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
           ]);
         },
