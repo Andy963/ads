@@ -41,8 +41,8 @@ import { handlePromptMessage } from "./handlePrompt.js";
 import { ensureWsSessionLogger } from "./messageControl.js";
 import type { WsMessage } from "./schema.js";
 import { PromptQueueService } from "../promptQueueService.js";
+import { getPromptQueueHistoryOutcome } from "../promptQueueHistory.js";
 import type { PromptQueueEntry } from "../../../state/promptQueueStore.js";
-import { getHistoryClientMessageId } from "../../../utils/historyKind.js";
 
 type AliveWebSocket = WebSocket & { isAlive?: boolean; missedPongs?: number; sessionTokenHash?: string; isConnector?: boolean };
 
@@ -262,21 +262,47 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     completedAt: entry.completedAt,
   });
 
+  const promptQueueEventRevision = (entry: PromptQueueEntry): number => {
+    const statusRevision: Record<PromptQueueEntry["status"], number> = {
+      queued: 1,
+      running: 2,
+      completed: 3,
+      failed: 4,
+    };
+    return (Math.max(0, entry.attempts) + 1) * 10 + statusRevision[entry.status];
+  };
+
   const emitPromptQueuePayload = (entry: PromptQueueEntry, payload: unknown): void => {
-    const framed = projectCommandFrame(payload);
+    let framed = projectCommandFrame(payload);
     const record = framed && typeof framed === "object" && !Array.isArray(framed)
       ? framed as Record<string, unknown>
       : null;
     const type = String(record?.type ?? "").trim();
     if (state.syncEventStore && record && type && !isTransientSyncEvent(type)) {
-      state.syncEventStore.append({
-        namespace: entry.laneNamespace,
-        laneKey: entry.historyKey,
-        type,
-        payload: record,
-        eventId: typeof record.clientMessageId === "string" ? `${type}:${record.clientMessageId}` : undefined,
-        ts: Date.now(),
-      });
+      if (type === "prompt_queue") {
+        const seq = state.syncEventStore.appendCoalesced({
+          namespace: entry.laneNamespace,
+          laneKey: entry.historyKey,
+          type,
+          eventId: `prompt_queue:${entry.clientMessageId}`,
+          revision: promptQueueEventRevision(entry),
+          payload: record,
+          ts: Date.now(),
+        });
+        if (seq !== null) {
+          framed = { ...record, seq };
+        }
+      } else {
+        const explicitEventId = String(record.eventId ?? record.event_id ?? "").trim();
+        state.syncEventStore.append({
+          namespace: entry.laneNamespace,
+          laneKey: entry.historyKey,
+          type,
+          payload: record,
+          eventId: explicitEventId || undefined,
+          ts: Date.now(),
+        });
+      }
     }
     broadcastJsonToHistoryKey({
       clientMetaByWs: state.clientMetaByWs,
@@ -333,13 +359,16 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         });
       },
     });
-    const persisted = laneResources.historyStore.get(entry.historyKey).some(
-      (historyEntry) =>
-        historyEntry.role === "user" &&
-        getHistoryClientMessageId(historyEntry.kind) === entry.clientMessageId,
+    const historyOutcome = getPromptQueueHistoryOutcome(
+      laneResources.historyStore.get(entry.historyKey),
+      entry.clientMessageId,
+      entry.payload.replay_incomplete === true,
     );
-    if (!persisted) {
+    if (historyOutcome === "missing") {
       return { ok: false, error: "Queued prompt history could not be persisted" };
+    }
+    if (historyOutcome === "completed") {
+      return { ok: true };
     }
     const result = await handlePromptMessage({
       request: {
@@ -391,6 +420,15 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
         store: state.promptQueueStore,
         workerId: `web-${process.pid}-${crypto.randomUUID()}`,
         resolveCurrentGeneration: (entry) => getLaneGeneration(entry.laneNamespace, entry.logicalHistoryKey),
+        reconcileBeforeRun: async (entry) => {
+          const laneResources = resolveWsLaneResources({ chatSessionId: entry.chatSessionId, sessions, history });
+          const outcome = getPromptQueueHistoryOutcome(
+            laneResources.historyStore.get(entry.historyKey),
+            entry.clientMessageId,
+            entry.payload.replay_incomplete === true,
+          );
+          return outcome === "completed" ? { ok: true } : null;
+        },
         runPrompt: runQueuedPrompt,
         emitSnapshot: (entry) => {
           const snapshot = state.promptQueueStore?.listLane({
@@ -1286,6 +1324,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
                     laneGeneration: lane.laneGeneration,
                     workspaceRoot: lane.currentCwd,
                     payload,
+                    retryFailed: payload.replay_incomplete === true,
                     createdAt: receivedAt,
                   });
                   promptQueued = true;

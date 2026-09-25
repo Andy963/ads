@@ -989,11 +989,17 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const queued = id ? rt.queuedPrompts.value.find((prompt) => prompt.clientMessageId === id) : undefined;
       if (queued) {
         if (queued.serverQueueTracked) {
-          rt.queuedPrompts.value = rt.queuedPrompts.value.map((prompt) =>
-            prompt.clientMessageId === id
-              ? { ...prompt, deliveryStatus: msg.queue_status === "running" ? "running" : "queued" }
-              : prompt,
-          );
+          const rawStatus = String(msg.queue_status ?? "queued");
+          rt.queuedPrompts.value = rawStatus === "completed"
+            ? rt.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== id)
+            : rt.queuedPrompts.value.map((prompt) =>
+                prompt.clientMessageId === id
+                  ? {
+                      ...prompt,
+                      deliveryStatus: rawStatus === "running" || rawStatus === "failed" ? rawStatus : "queued",
+                    }
+                  : prompt,
+              );
         } else {
           rt.queuedPrompts.value = rt.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== id);
         }

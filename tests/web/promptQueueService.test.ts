@@ -7,6 +7,9 @@ import path from "node:path";
 import DatabaseConstructor from "better-sqlite3";
 
 import { createPromptQueueStore, type PromptQueueEntry } from "../../server/state/promptQueueStore.js";
+import { buildClientMessageHistoryKind } from "../../server/utils/historyKind.js";
+import { HistoryStore } from "../../server/utils/historyStore.js";
+import { getPromptQueueHistoryOutcome } from "../../server/web/server/promptQueueHistory.js";
 import { PromptQueueService } from "../../server/web/server/promptQueueService.js";
 
 describe("web/promptQueueService", () => {
@@ -108,6 +111,61 @@ describe("web/promptQueueService", () => {
     assert.equal(store.getByClientMessageId("first-2")?.status, "completed");
     service.stop();
     db.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("reconciles persisted terminal history after a process boundary without executing again", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-prompt-queue-terminal-"));
+    const dbPath = path.join(tempDir, "state.db");
+    const firstDb = new DatabaseConstructor(dbPath);
+    const firstStore = createPromptQueueStore(firstDb);
+    const historyKey = "auth-1::session-1::main:generation:1";
+    const lane = {
+      authUserId: "auth-1",
+      userId: 7,
+      sessionId: "session-1",
+      chatSessionId: "main",
+      historyKey,
+      logicalHistoryKey: "auth-1::session-1::main",
+      laneNamespace: "auth-1::session-1",
+      laneGeneration: 1,
+      workspaceRoot: "/workspace/project",
+    };
+    const first = firstStore.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
+    const firstHistory = new HistoryStore({ storagePath: dbPath, namespace: "test-worker" });
+    const kind = buildClientMessageHistoryKind({ clientMessageId: "client-1" });
+    firstHistory.add(historyKey, { role: "user", text: "one", ts: 1000, kind });
+    firstHistory.add(historyKey, { role: "ai", text: "done", ts: 1100 });
+    assert.equal(firstStore.markRunning(first.entry.id, "old-worker", 1200), true);
+    firstDb.close();
+
+    const secondDb = new DatabaseConstructor(dbPath);
+    const secondStore = createPromptQueueStore(secondDb);
+    const secondHistory = new HistoryStore({ storagePath: dbPath, namespace: "test-worker" });
+    let executions = 0;
+    const service = new PromptQueueService({
+      store: secondStore,
+      workerId: "new-worker",
+      resolveCurrentGeneration: () => 1,
+      reconcileBeforeRun: async (entry) => (
+        getPromptQueueHistoryOutcome(secondHistory.get(entry.historyKey), entry.clientMessageId) === "completed"
+          ? { ok: true }
+          : null
+      ),
+      runPrompt: async () => {
+        executions += 1;
+        return { ok: true };
+      },
+      emitSnapshot: () => undefined,
+    });
+    service.start();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(executions, 0);
+    assert.equal(secondStore.getByClientMessageId("client-1")?.status, "completed");
+    assert.deepEqual(secondStore.getByClientMessageId("client-1")?.payload, {});
+    service.stop();
+    secondDb.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 });

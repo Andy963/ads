@@ -73,6 +73,7 @@ describe("web/server/ws/preflight-persistence", () => {
   let promptQueueStore: ReturnType<typeof createPromptQueueStore>;
   let lock: AsyncLock;
   let unblockCommands: (() => void) | null;
+  let failAgentRequests: boolean;
   const originalEnv = { ...process.env };
 
   beforeEach(async (t) => {
@@ -98,12 +99,16 @@ describe("web/server/ws/preflight-persistence", () => {
         workspaceRoot?: string;
       }
     >();
+    failAgentRequests = false;
     const createSession = ({ cwd }: { cwd: string }): HybridOrchestrator => new HybridOrchestrator({
       initialWorkingDirectory: cwd,
       adapters: [{
         id: "codex",
         metadata: { id: "codex", name: "Preflight fixture", capabilities: ["text"] },
-        send: async () => ({ response: "Fixture reply", usage: null, agentId: "codex" }),
+        send: async () => {
+          if (failAgentRequests) throw new Error("fixture agent failure");
+          return { response: "Fixture reply", usage: null, agentId: "codex" };
+        },
         status: () => ({ ready: true, streaming: false }),
         onEvent: () => () => {},
         reset: () => {},
@@ -343,6 +348,64 @@ describe("web/server/ws/preflight-persistence", () => {
         (entry) => String(entry.kind ?? "").startsWith("client_message_id:durable-1"),
       );
       assert.equal(history.length, 1);
+    } finally {
+      client.terminate();
+    }
+  });
+
+  it("requeues an explicit retry for a failed prompt and persists lifecycle transitions", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
+    const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+
+    try {
+      await waitForWsOpen(client);
+      failAgentRequests = true;
+      client.send(JSON.stringify({
+        type: "prompt",
+        payload: { text: "retry me" },
+        client_message_id: "retry-1",
+      }));
+      await waitForWsMessage(
+        client,
+        (msg) => msg.type === "ack" && msg.client_message_id === "retry-1",
+        2000,
+      );
+      const failedDeadline = Date.now() + 3000;
+      while (promptQueueStore.getByClientMessageId("retry-1")?.status !== "failed") {
+        assert.ok(Date.now() < failedDeadline, "failed prompt should reach durable failed state");
+        await delay(5);
+      }
+
+      failAgentRequests = false;
+      client.send(JSON.stringify({
+        type: "prompt",
+        payload: { text: "retry me", replay_incomplete: true },
+        client_message_id: "retry-1",
+      }));
+      const retryAck = await waitForWsMessage(
+        client,
+        (msg) => msg.type === "ack" && msg.client_message_id === "retry-1" && msg.duplicate === false,
+        2000,
+      );
+      assert.equal(retryAck.queue_status, "queued");
+      const completedDeadline = Date.now() + 3000;
+      while (promptQueueStore.getByClientMessageId("retry-1")?.status !== "completed") {
+        assert.ok(Date.now() < completedDeadline, "explicit retry should complete");
+        await delay(5);
+      }
+      const entry = promptQueueStore.getByClientMessageId("retry-1");
+      assert.equal(entry?.attempts, 2);
+      assert.deepEqual(entry?.payload, {});
+
+      const replay = syncEventStore.readAfter({
+        namespace: resolveSyncNamespace("main"),
+        laneKey: "test::test::main",
+      });
+      const lifecycle = replay.events.filter((event) => event.type === "prompt_queue");
+      assert.equal(lifecycle.length, 1);
+      assert.equal(lifecycle[0]?.payload.entry.status, "completed");
+      assert.ok(Number(lifecycle[0]?.seq) > 0);
     } finally {
       client.terminate();
     }

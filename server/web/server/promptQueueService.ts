@@ -14,6 +14,7 @@ export type PromptQueueServiceOptions = {
   store: PromptQueueStore;
   workerId: string;
   resolveCurrentGeneration: (entry: PromptQueueEntry) => number;
+  reconcileBeforeRun?: (entry: PromptQueueEntry) => Promise<PromptQueueRunOutcome | null>;
   runPrompt: (entry: PromptQueueEntry) => Promise<PromptQueueRunOutcome>;
   emitSnapshot: (entry: PromptQueueEntry) => void;
   onError?: (error: unknown) => void;
@@ -23,6 +24,7 @@ export class PromptQueueService {
   private readonly store: PromptQueueStore;
   private readonly workerId: string;
   private readonly resolveCurrentGeneration: PromptQueueServiceOptions["resolveCurrentGeneration"];
+  private readonly reconcileBeforeRun: PromptQueueServiceOptions["reconcileBeforeRun"];
   private readonly runPrompt: PromptQueueServiceOptions["runPrompt"];
   private readonly emitSnapshot: PromptQueueServiceOptions["emitSnapshot"];
   private readonly onError: PromptQueueServiceOptions["onError"];
@@ -34,6 +36,7 @@ export class PromptQueueService {
     this.store = options.store;
     this.workerId = options.workerId;
     this.resolveCurrentGeneration = options.resolveCurrentGeneration;
+    this.reconcileBeforeRun = options.reconcileBeforeRun;
     this.runPrompt = options.runPrompt;
     this.emitSnapshot = options.emitSnapshot;
     this.onError = options.onError;
@@ -43,7 +46,7 @@ export class PromptQueueService {
     if (this.started) return;
     this.started = true;
     this.stopped = false;
-    this.store.recoverInterrupted();
+    this.store.recoverInterrupted(this.workerId);
     const scheduledLanes = new Set<string>();
     for (const entry of this.store.listRecoverable()) {
       const laneKey = this.laneKey(entry);
@@ -115,14 +118,15 @@ export class PromptQueueService {
       const running = this.store.getByClientMessageId(next.clientMessageId) ?? next;
       this.emitSnapshot(running);
       try {
-        const outcome = await this.runPrompt(running);
+        const reconciled = await this.reconcileBeforeRun?.(running);
+        const outcome = reconciled ?? await this.runPrompt(running);
         if (outcome.ok) {
-          this.store.markCompleted(running.id);
+          this.store.markCompleted(running.id, this.workerId);
         } else {
-          this.store.markFailed(running.id, new Error(outcome.error ?? "Prompt execution failed"));
+          this.store.markFailed(running.id, new Error(outcome.error ?? "Prompt execution failed"), Date.now(), this.workerId);
         }
       } catch (error) {
-        this.store.markFailed(running.id, error);
+        this.store.markFailed(running.id, error, Date.now(), this.workerId);
         this.onError?.(error);
       }
       this.emitSnapshot(this.store.getByClientMessageId(running.clientMessageId) ?? running);

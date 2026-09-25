@@ -38,7 +38,7 @@ describe("state/promptQueueStore", () => {
     const duplicate = store.enqueue({
       ...lane,
       clientMessageId: "client-1",
-      payload: { text: "different" },
+      payload: { text: "hello", model: "auto" },
       createdAt: 2000,
     });
 
@@ -48,6 +48,10 @@ describe("state/promptQueueStore", () => {
     assert.deepEqual(duplicate.entry.payload, { text: "hello", model: "auto" });
     assert.equal(duplicate.entry.status, "queued");
     assert.equal(duplicate.entry.position, 0);
+    assert.throws(
+      () => store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "conflicting" } }),
+      /different prompt payload/,
+    );
   });
 
   it("executes each lane in FIFO order and reports queue positions", () => {
@@ -60,7 +64,7 @@ describe("state/promptQueueStore", () => {
     assert.deepEqual(queued.map((entry) => entry.clientMessageId), ["client-1", "client-2"]);
     assert.deepEqual(queued.map((entry) => entry.position), [1, 2]);
     assert.equal(store.markRunning(queued[0]!.id, "worker-1", 2000), true);
-    assert.equal(store.markCompleted(queued[0]!.id, 2100), true);
+    assert.equal(store.markCompleted(queued[0]!.id, "worker-1", 2100), true);
 
     const remaining = store.listLane(lane);
     assert.deepEqual(remaining.map((entry) => entry.status), ["completed", "queued"]);
@@ -75,11 +79,53 @@ describe("state/promptQueueStore", () => {
 
     assert.equal(store.markRunning(first.entry.id, "old-worker", 1000), true);
     assert.equal(store.markRunning(second.entry.id, "old-worker", 1000), true);
-    assert.equal(store.recoverInterrupted(2000), 2);
+    assert.equal(store.recoverInterrupted("new-worker", 2000), 2);
     assert.equal(store.markFailed(second.entry.id, new Error("generation changed"), 3000), true);
 
     assert.equal(store.getByClientMessageId("client-1")?.status, "queued");
     assert.equal(store.getByClientMessageId("client-2")?.status, "failed");
     assert.equal(store.getByClientMessageId("client-2")?.lastError, "generation changed");
+  });
+
+  it("fences stale workers and requeues an explicit failed retry", () => {
+    db = new DatabaseConstructor(":memory:");
+    const store = createPromptQueueStore(db);
+    const first = store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
+    assert.equal(store.markRunning(first.entry.id, "old-worker", 1000), true);
+    assert.equal(store.recoverInterrupted("new-worker", 1100), 1);
+    assert.equal(store.markCompleted(first.entry.id, "old-worker", 1200), false);
+
+    assert.equal(store.markRunning(first.entry.id, "new-worker", 1300), true);
+    assert.equal(store.markFailed(first.entry.id, new Error("failed"), 1400, "new-worker"), true);
+    const failed = store.getByClientMessageId("client-1");
+    assert.equal(failed?.status, "failed");
+    assert.equal(failed?.payload.text, "one");
+
+    const retried = store.enqueue({
+      ...lane,
+      clientMessageId: "client-1",
+      payload: { text: "one", replay_incomplete: true },
+      retryFailed: true,
+    });
+    assert.equal(retried.duplicate, false);
+    assert.equal(retried.entry.status, "queued");
+    assert.equal(retried.entry.attempts, 2);
+    assert.equal(retried.entry.lastError, null);
+  });
+
+  it("scrubs completed payloads while retaining conflict detection", () => {
+    db = new DatabaseConstructor(":memory:");
+    const store = createPromptQueueStore(db);
+    const first = store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "private" } });
+    assert.equal(store.markRunning(first.entry.id, "worker-1", 1000), true);
+    assert.equal(store.markCompleted(first.entry.id, "worker-1", 1100), true);
+    assert.deepEqual(store.getByClientMessageId("client-1")?.payload, {});
+
+    const duplicate = store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "private" } });
+    assert.equal(duplicate.duplicate, true);
+    assert.throws(
+      () => store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "different" } }),
+      /different prompt payload/,
+    );
   });
 });

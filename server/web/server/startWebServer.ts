@@ -88,6 +88,9 @@ async function ensureWebPidFile(): Promise<{ pidFile: string; cleanupPidFile: ()
         while (Date.now() < deadline && isProcessRunning(existingPid)) {
           await wait(100);
         }
+        if (isProcessRunning(existingPid)) {
+          throw new Error(`Timed out waiting for existing web server pid ${existingPid} to exit`);
+        }
       } else {
         logger.info(`pid file ${pidFile} points to pid ${existingPid}, but command line is different; leaving it running`);
       }
@@ -363,7 +366,16 @@ export async function startWebServer(): Promise<void> {
 
   const server = createHttpServer({ handleApiRequest: apiHandler, logger });
 
-  attachWebSocketServer({
+  const { cleanupPidFile } = await ensureWebPidFile();
+  registerWebShutdown({
+    cleanupPidFile,
+    scheduler,
+    historyMaintenance,
+    sessionManagers: [sessionManager, advisorSessionManager],
+  });
+
+  try {
+    attachWebSocketServer({
     server,
     logger,
     config: {
@@ -422,15 +434,11 @@ export async function startWebServer(): Promise<void> {
       scheduleCompiler,
       scheduler,
     },
-  });
-
-  const { cleanupPidFile } = await ensureWebPidFile();
-  registerWebShutdown({
-    cleanupPidFile,
-    scheduler,
-    historyMaintenance,
-    sessionManagers: [sessionManager, advisorSessionManager],
-  });
+    });
+  } catch (error) {
+    cleanupPidFile();
+    throw error;
+  }
   await listenServer(server, webConfig.port, webConfig.host);
   logger.info(`WebSocket server listening on ws://${webConfig.host}:${webConfig.port}`);
   logger.info(`Workspace: ${workspaceRoot}`);

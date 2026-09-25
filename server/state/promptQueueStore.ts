@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { Database as DatabaseType } from "better-sqlite3";
 
 export type PromptQueueStatus = "queued" | "running" | "completed" | "failed";
@@ -15,6 +17,7 @@ export type PromptQueueEntry = {
   laneGeneration: number;
   workspaceRoot: string;
   payload: Record<string, unknown>;
+  payloadHash: string;
   status: PromptQueueStatus;
   position: number;
   attempts: number;
@@ -40,6 +43,7 @@ export type EnqueuePromptInput = PromptQueueLane & {
   userId: number;
   workspaceRoot: string;
   payload: Record<string, unknown>;
+  retryFailed?: boolean;
   createdAt?: number;
 };
 
@@ -58,6 +62,7 @@ export function ensurePromptQueueTables(db: DatabaseType): void {
       lane_generation INTEGER NOT NULL CHECK(lane_generation >= 1),
       workspace_root TEXT NOT NULL,
       payload_json TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
       status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed')),
       attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
       last_error TEXT,
@@ -75,6 +80,11 @@ export function ensurePromptQueueTables(db: DatabaseType): void {
     CREATE INDEX IF NOT EXISTS idx_prompt_queue_active
       ON prompt_queue(status, id);
   `);
+
+  const columns = db.prepare("PRAGMA table_info(prompt_queue)").all() as Array<{ name?: unknown }>;
+  if (!columns.some((column) => String(column.name ?? "") === "payload_hash")) {
+    db.exec("ALTER TABLE prompt_queue ADD COLUMN payload_hash TEXT NOT NULL DEFAULT ''");
+  }
 }
 
 function requiredText(value: unknown, field: string): string {
@@ -98,6 +108,26 @@ function parsePayload(value: unknown): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+function canonicalizePayload(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalizePayload);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  const normalized: Record<string, unknown> = {};
+  for (const key of Object.keys(record).sort()) {
+    if (key === "replay_incomplete") continue;
+    normalized[key] = canonicalizePayload(record[key]);
+  }
+  return normalized;
+}
+
+function hashPayload(payload: Record<string, unknown>): string {
+  return createHash("sha256").update(JSON.stringify(canonicalizePayload(payload))).digest("hex");
+}
+
 function toEntry(row: Record<string, unknown>): PromptQueueEntry {
   const status = String(row.status ?? "queued") as PromptQueueStatus;
   return {
@@ -113,6 +143,7 @@ function toEntry(row: Record<string, unknown>): PromptQueueEntry {
     laneGeneration: Number(row.lane_generation),
     workspaceRoot: String(row.workspace_root),
     payload: parsePayload(row.payload_json),
+    payloadHash: String(row.payload_hash ?? ""),
     status,
     position: Number(row.position ?? 0),
     attempts: Number(row.attempts ?? 0),
@@ -131,8 +162,8 @@ export function createPromptQueueStore(db: DatabaseType) {
     INSERT INTO prompt_queue (
       client_message_id, auth_user_id, user_id, session_id, chat_session_id,
       history_key, logical_history_key, lane_namespace, lane_generation,
-      workspace_root, payload_json, status, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+      workspace_root, payload_json, payload_hash, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
   `);
   const getByClientMessageIdStmt = db.prepare(`
     SELECT *, 0 AS position
@@ -175,18 +206,32 @@ export function createPromptQueueStore(db: DatabaseType) {
   `);
   const markCompletedStmt = db.prepare(`
     UPDATE prompt_queue
-    SET status = 'completed', updated_at = ?, completed_at = ?, lease_owner = NULL, lease_expires_at = NULL
-    WHERE id = ? AND status = 'running'
+    SET status = 'completed', payload_json = '{}', updated_at = ?, completed_at = ?,
+        lease_owner = NULL, lease_expires_at = NULL
+    WHERE id = ? AND status = 'running' AND lease_owner = ?
   `);
-  const markFailedStmt = db.prepare(`
+  const markQueuedFailedStmt = db.prepare(`
     UPDATE prompt_queue
     SET status = 'failed', updated_at = ?, completed_at = ?, last_error = ?, lease_owner = NULL, lease_expires_at = NULL
-    WHERE id = ? AND status IN ('queued', 'running')
+    WHERE id = ? AND status = 'queued'
+  `);
+  const markRunningFailedStmt = db.prepare(`
+    UPDATE prompt_queue
+    SET status = 'failed', updated_at = ?, completed_at = ?, last_error = ?, lease_owner = NULL, lease_expires_at = NULL
+    WHERE id = ? AND status = 'running' AND lease_owner = ?
+  `);
+  const retryFailedStmt = db.prepare(`
+    UPDATE prompt_queue
+    SET status = 'queued', payload_json = ?, payload_hash = ?,
+        last_error = NULL, created_at = ?, updated_at = ?, started_at = NULL, completed_at = NULL,
+        lease_owner = NULL, lease_expires_at = NULL
+    WHERE id = ? AND status = 'failed'
   `);
   const recoverStmt = db.prepare(`
     UPDATE prompt_queue
     SET status = 'queued', updated_at = ?, lease_owner = NULL, lease_expires_at = NULL
     WHERE status = 'running'
+      AND (lease_owner IS NULL OR lease_owner != ? OR lease_expires_at IS NULL OR lease_expires_at <= ?)
   `);
 
   const getByClientMessageId = (clientMessageId: string): PromptQueueEntry | null => {
@@ -197,8 +242,22 @@ export function createPromptQueueStore(db: DatabaseType) {
 
   const enqueue = (input: EnqueuePromptInput): { entry: PromptQueueEntry; duplicate: boolean } => {
     const clientMessageId = requiredText(input.clientMessageId, "clientMessageId");
+    const payloadHash = hashPayload(input.payload);
     const existing = getByClientMessageId(clientMessageId);
     if (existing) {
+      if (existing.payloadHash && existing.payloadHash !== payloadHash) {
+        throw new Error("clientMessageId is already associated with a different prompt payload");
+      }
+      if (existing.status === "failed" && input.retryFailed) {
+        const now = Date.now();
+        const changed = retryFailedStmt.run(JSON.stringify(input.payload), payloadHash, now, now, existing.id).changes;
+        if (changed === 1) {
+          return {
+            entry: getByClientMessageId(clientMessageId) ?? { ...existing, status: "queued" },
+            duplicate: false,
+          };
+        }
+      }
       return { entry: existing, duplicate: true };
     }
     const now = Number.isFinite(input.createdAt) ? Math.floor(Number(input.createdAt)) : Date.now();
@@ -214,6 +273,7 @@ export function createPromptQueueStore(db: DatabaseType) {
       Math.max(1, Math.floor(Number(input.laneGeneration))),
       requiredText(input.workspaceRoot, "workspaceRoot"),
       JSON.stringify(input.payload),
+      payloadHash,
       now,
       now,
     );
@@ -241,15 +301,19 @@ export function createPromptQueueStore(db: DatabaseType) {
   const markRunning = (id: number, leaseOwner: string, now = Date.now(), leaseMs = 60_000): boolean =>
     markRunningStmt.run(now, now, requiredText(leaseOwner, "leaseOwner"), now + leaseMs, id).changes === 1;
 
-  const markCompleted = (id: number, now = Date.now()): boolean =>
-    markCompletedStmt.run(now, now, id).changes === 1;
+  const markCompleted = (id: number, leaseOwner: string, now = Date.now()): boolean =>
+    markCompletedStmt.run(now, now, id, requiredText(leaseOwner, "leaseOwner")).changes === 1;
 
-  const markFailed = (id: number, error: unknown, now = Date.now()): boolean => {
+  const markFailed = (id: number, error: unknown, now = Date.now(), leaseOwner?: string): boolean => {
     const message = error instanceof Error ? error.message : String(error);
-    return markFailedStmt.run(now, now, message.slice(0, 2_000), id).changes === 1;
+    const trimmed = message.slice(0, 2_000);
+    return leaseOwner
+      ? markRunningFailedStmt.run(now, now, trimmed, id, leaseOwner).changes === 1
+      : markQueuedFailedStmt.run(now, now, trimmed, id).changes === 1;
   };
 
-  const recoverInterrupted = (now = Date.now()): number => recoverStmt.run(now).changes;
+  const recoverInterrupted = (workerId: string, now = Date.now()): number =>
+    recoverStmt.run(now, requiredText(workerId, "workerId"), now).changes;
 
   return {
     enqueue,
