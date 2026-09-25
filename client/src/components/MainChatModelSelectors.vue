@@ -472,6 +472,7 @@ function selectReasoningEffort(effort: string): void {
 .modelSelectors {
   display: flex;
   align-items: center;
+  width: 100%;
   min-width: 0;
 }
 
@@ -488,6 +489,7 @@ function selectReasoningEffort(effort: string): void {
   font-size: 12px;
   font-weight: 500;
   cursor: pointer;
+  width: 100%;
   max-width: 220px;
   min-width: 0;
   transition: all 0.15s ease;
