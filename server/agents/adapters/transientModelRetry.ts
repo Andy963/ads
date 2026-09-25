@@ -342,8 +342,9 @@ function notifyRetryAbort(options: TransientModelRetryOptions, error: unknown): 
   try {
     options.onRetryAbort?.(error);
   } catch (callbackError) {
-    options.log?.(
-      `[${options.agentName}] failed to finalize aborted retry: ${callbackError instanceof Error ? callbackError.message : String(callbackError)}`,
+    throw new AggregateError(
+      [error, callbackError],
+      `[${options.agentName}] failed to finalize aborted retry`,
     );
   }
 }

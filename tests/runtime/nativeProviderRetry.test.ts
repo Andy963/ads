@@ -478,28 +478,32 @@ describe("Native provider retry and recovery", () => {
     const store = new NativeTranscriptStore(getStateDatabase(path.join(stateDir, "state.db")));
     try {
       const completedPath = path.join(workspace, "tool-completed");
+      let requests = 0;
       const adapter = new NativeAgentAdapter({
         credentialOwner: "test-owner",
         workspaceRoot: workspace,
         modelResolver: resolver(),
         transcriptId: "tool-completion-old",
         transcriptStore: store,
-        fetchImpl: async () => sse([JSON.stringify({
-          choices: [{
-            delta: {
-              tool_calls: [{
-                index: 0,
-                type: "function",
-                id: "tool-completion-1",
-                function: {
-                  name: "exec_command",
-                  arguments: JSON.stringify({ cmd: "touch", args: [completedPath] }),
-                },
-              }],
-            },
-            finish_reason: "tool_calls",
-          }],
-        })]),
+        fetchImpl: async () => {
+          requests += 1;
+          return sse([JSON.stringify({
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  type: "function",
+                  id: "tool-completion-1",
+                  function: {
+                    name: "exec_command",
+                    arguments: JSON.stringify({ cmd: "touch", args: [completedPath] }),
+                  },
+                }],
+              },
+              finish_reason: "tool_calls",
+            }],
+          })]);
+        },
       });
       adapter.onEvent((event) => {
         if (event.raw.type === "item.completed" && event.raw.item.type === "command_execution") {
@@ -513,9 +517,46 @@ describe("Native provider retry and recovery", () => {
       );
       const turn = store.listTurns("tool-completion-old")[0];
       assert.equal(fs.existsSync(completedPath), true);
+      assert.equal(requests, 1);
       assert.equal(turn?.status, "interrupted");
       assert.equal(turn?.entries.some((entry) => entry.kind === "command"), true);
       assert.equal(turn?.entries.some((entry) => entry.kind === "message" && entry.message.role === "tool"), true);
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates retry cancellation persistence failures", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-persist-failure-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-persist-failure-db-"));
+    class FailingTerminalStore extends NativeTranscriptStore {
+      override updateTurn(input: Parameters<NativeTranscriptStore["updateTurn"]>[0]): void {
+        if (input.status === "cancelled") throw new Error("terminal checkpoint failed");
+        super.updateTurn(input);
+      }
+    }
+    const store = new FailingTerminalStore(getStateDatabase(path.join(stateDir, "state.db")));
+    try {
+      const controller = new AbortController();
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelResolver: resolver(),
+        retryBackoffMs: [0],
+        transcriptId: "retry-persist-failure",
+        transcriptStore: store,
+        fetchImpl: async () => new Response("temporary", { status: 503 }),
+      });
+      adapter.onEvent((event) => {
+        if (event.retry) queueMicrotask(() => controller.abort());
+      });
+
+      await assert.rejects(
+        adapter.send("surface retry persistence failure", { signal: controller.signal }),
+        (error: unknown) => error instanceof AggregateError && /failed to finalize aborted retry/.test(error.message),
+      );
     } finally {
       resetStateDatabaseForTests();
       fs.rmSync(workspace, { recursive: true, force: true });

@@ -432,7 +432,6 @@ export class NativeAgentAdapter implements AgentAdapter {
     error: unknown,
   ): void {
     const pending = this.pendingRetryCheckpoint;
-    this.pendingRetryCheckpoint = undefined;
     if (!pending) return;
     const normalized = error instanceof Error ? error : new Error(String(error));
     this.checkpointTurn({
@@ -440,6 +439,7 @@ export class NativeAgentAdapter implements AgentAdapter {
       status,
       errorMessage: normalized.message,
     });
+    this.pendingRetryCheckpoint = undefined;
     this.activeTurnCheckpoint = undefined;
     const safeMessage = redactNativeTranscriptText(normalized.message, this.secretValues);
     this.emitRaw({ type: "turn.failed", error: { message: safeMessage } });
@@ -820,6 +820,7 @@ export class NativeAgentAdapter implements AgentAdapter {
             provider: providerMetadata,
           });
           this.emitToolCompletionEvents(assertTurnActive, call.id, result);
+          assertTurnActive();
         }
 
         if (this.maxToolRounds > 0 && round + 1 >= this.maxToolRounds) {
