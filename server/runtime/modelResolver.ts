@@ -4,6 +4,10 @@ import { normalizeConfiguredReasoningEffort } from "../state/modelConfigTypes.js
 import { createUpstreamCredentialStore } from "../state/upstreamCredentialStore.js";
 import { getStateDatabase } from "../state/database.js";
 import { normalizeUpstreamBaseUrl } from "../utils/upstreamUrl.js";
+import {
+  resolveNativeProviderCapabilities,
+  type NativeProviderCapabilities,
+} from "./nativeProviderCapabilities.js";
 
 export interface NativeModelRequestOptions {
   temperature?: number;
@@ -18,6 +22,7 @@ export interface NativeModelConfig {
   apiKey: string;
   provider: string;
   contextWindow?: number;
+  capabilities?: Partial<NativeProviderCapabilities>;
   options?: NativeModelRequestOptions;
   supportsReasoningEffort?: boolean;
 }
@@ -50,30 +55,6 @@ function readFiniteNumber(
   if (options.min !== undefined && value < options.min) return undefined;
   if (options.max !== undefined && value > options.max) return undefined;
   return value;
-}
-
-function readBoolean(config: Record<string, unknown> | null | undefined, key: string): boolean | undefined {
-  const value = config?.[key];
-  return typeof value === "boolean" ? value : undefined;
-}
-
-function hasConfiguredReasoningEfforts(config: Record<string, unknown> | null | undefined): boolean | undefined {
-  const raw = config?.reasoningEfforts;
-  if (!Array.isArray(raw)) return undefined;
-  return raw.some((entry) => String(entry ?? "").trim().length > 0);
-}
-
-function inferReasoningEffortSupport(
-  config: Record<string, unknown> | null | undefined,
-  model: string,
-): boolean {
-  const explicit = readBoolean(config, "supportsReasoningEffort") ?? readBoolean(config, "reasoningEffortSupported");
-  if (explicit !== undefined) return explicit;
-
-  const configured = hasConfiguredReasoningEfforts(config);
-  if (configured !== undefined) return configured;
-
-  return /(?:^|[/_:-])(?:o[134](?:$|[._:-])|gpt-5(?:$|[._:-])|deepseek-(?:reasoner|r1)(?:$|[._:-])|qwq(?:$|[._:-])|qwen[^/]*thinking(?:$|[._:-]))/i.test(model);
 }
 
 function requestOptions(config: Record<string, unknown> | null | undefined): NativeModelRequestOptions | undefined {
@@ -165,6 +146,25 @@ function resolveSavedModelConfig(
   }
 
   const resolvedContextWindow = contextWindow(config);
+  const capabilities = resolveNativeProviderCapabilities(config);
+  const hasExplicitCapabilities = config && (
+    "capabilities" in config
+    || "streaming" in config
+    || "nonStreaming" in config
+    || "toolCalls" in config
+    || "parallelToolCalls" in config
+    || "usage" in config
+    || "contextMetadata" in config
+    || "supportsStructuredOutput" in config
+    || "structuredOutput" in config
+    || "supportsReasoningEffort" in config
+    || "reasoningEffortSupported" in config
+    || "reasoningEfforts" in config
+    || "supportsImageInput" in config
+    || "imageInput" in config
+    || "providerOptions" in config
+    || "supportsProviderOptions" in config
+  );
   return {
     model: String(saved.modelId ?? model).trim() || model,
     baseUrl,
@@ -172,9 +172,8 @@ function resolveSavedModelConfig(
     provider: savedProvider || (credentials?.provider ?? "openai"),
     options: requestOptions(config),
     ...(resolvedContextWindow ? { contextWindow: resolvedContextWindow } : {}),
-    ...(inferReasoningEffortSupport(config, String(saved.modelId ?? model).trim() || model)
-      ? { supportsReasoningEffort: true }
-      : {}),
+    ...(hasExplicitCapabilities ? { capabilities } : {}),
+    ...(capabilities.reasoningEffort === "supported" ? { supportsReasoningEffort: true } : {}),
   };
 }
 
@@ -198,10 +197,13 @@ export function createNativeModelResolver(options: ResolverOptions): NativeModel
         baseUrl: normalizeUpstreamBaseUrl(fallback.baseUrl),
         apiKey: fallback.apiKey,
         provider: "openai",
+        capabilities: fallback.modelReasoningEffort
+          ? { reasoningEffort: "supported" as const }
+          : undefined,
         options: {
           reasoningEffort: fallback.modelReasoningEffort,
         },
-        ...(inferReasoningEffortSupport(null, modelId) ? { supportsReasoningEffort: true } : {}),
+        ...(fallback.modelReasoningEffort ? { supportsReasoningEffort: true } : {}),
       };
     },
   };

@@ -490,7 +490,7 @@ describe("NativeAgentAdapter", () => {
     }
   });
 
-  it("omits reasoning_effort for models without explicit reasoning support", async () => {
+  it("rejects reasoning_effort for models without explicit reasoning support", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-reasoning-"));
     try {
       let requestBody: Record<string, unknown> | null = null;
@@ -514,9 +514,8 @@ describe("NativeAgentAdapter", () => {
         },
       });
 
-      await adapter.send("hello");
-
-      assert.equal(requestBody?.reasoning_effort, undefined);
+      await assert.rejects(adapter.send("hello"), /reasoningEffort.*unsupported/i);
+      assert.equal(requestBody, null);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }

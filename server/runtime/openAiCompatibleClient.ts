@@ -34,12 +34,16 @@ export interface NativeCompletionRequest {
   model: string;
   messages: NativeChatMessage[];
   tools: NativeToolDefinition[];
+  streaming?: boolean;
+  outputSchema?: unknown;
   options?: {
     temperature?: number;
     topP?: number;
     maxTokens?: number;
     reasoningEffort?: string;
     supportsReasoningEffort?: boolean;
+    parallelToolCalls?: boolean;
+    includeUsage?: boolean;
   };
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
@@ -84,20 +88,35 @@ function safeErrorText(value: string, apiKey: string): string {
 }
 
 function buildRequestBody(request: NativeCompletionRequest): JsonRecord {
+  const streaming = request.streaming !== false;
+  const options = request.options;
   const body: JsonRecord = {
     model: request.model,
     messages: request.messages,
     tools: request.tools,
     tool_choice: "auto",
-    stream: true,
-    stream_options: { include_usage: true },
+    stream: streaming,
   };
-  const options = request.options;
+  if (streaming && options?.includeUsage !== false) body.stream_options = { include_usage: true };
   if (options?.temperature !== undefined) body.temperature = options.temperature;
   if (options?.topP !== undefined) body.top_p = options.topP;
   if (options?.maxTokens !== undefined) body.max_tokens = options.maxTokens;
   if (options?.supportsReasoningEffort === true && options.reasoningEffort) {
     body.reasoning_effort = options.reasoningEffort;
+  }
+  if (options?.parallelToolCalls !== undefined) body.parallel_tool_calls = options.parallelToolCalls;
+  if (request.outputSchema !== undefined && request.outputSchema !== null) {
+    const schema = asRecord(request.outputSchema);
+    body.response_format = schema && (schema.type === "json_schema" || schema.type === "json_object")
+      ? request.outputSchema
+      : {
+          type: "json_schema",
+          json_schema: {
+            name: "ads_output",
+            strict: true,
+            schema: request.outputSchema,
+          },
+        };
   }
   return body;
 }
@@ -162,21 +181,34 @@ function mergeToolCall(
   return existing;
 }
 
-function parseNonStreamingResult(body: unknown, request: NativeCompletionRequest): NativeCompletionResult {
+function parseNonStreamingResult(body: unknown): NativeCompletionResult {
   const root = asRecord(body);
   const choices = root && Array.isArray(root.choices) ? root.choices : [];
+  if (choices.length === 0) {
+    throw new Error("Native upstream returned a non-streaming response without choices");
+  }
   const choice = asRecord(choices[0]);
+  if (!choice) {
+    throw new Error("Native upstream returned an invalid non-streaming choice");
+  }
   const message = asRecord(choice?.message);
+  if (!message) {
+    throw new Error("Native upstream returned a non-streaming response without a message");
+  }
   const text = readText(message?.content);
-  if (text && request.onTextDelta) request.onTextDelta(text);
   const toolCalls = Array.isArray(message?.tool_calls)
     ? message.tool_calls.map((call) => {
         const record = asRecord(call);
         const fn = asRecord(record?.function);
+        const id = readText(record?.id);
+        const name = readText(fn?.name);
+        if (!id || !name) {
+          throw new Error("Native upstream returned an invalid non-streaming tool call");
+        }
         return {
-          id: readText(record?.id) || `native-tool-${Math.random().toString(36).slice(2)}`,
+          id,
           type: "function" as const,
-          function: { name: readText(fn?.name), arguments: readText(fn?.arguments) },
+          function: { name, arguments: readText(fn?.arguments) },
         };
       })
     : [];
@@ -193,7 +225,7 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
   const response = await fetchImpl(buildChatCompletionsEndpoint(request.baseUrl), {
     method: "POST",
     headers: {
-      Accept: "text/event-stream",
+      Accept: request.streaming === false ? "application/json" : "text/event-stream",
       Authorization: `Bearer ${request.apiKey}`,
       "Content-Type": "application/json",
     },
@@ -208,8 +240,15 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
   }
 
   const contentType = String(response.headers.get("content-type") ?? "").toLowerCase();
+  const streaming = request.streaming !== false;
+  if (!streaming) {
+    if (contentType.includes("text/event-stream")) {
+      throw new Error("Native upstream returned a streaming response for a non-streaming request");
+    }
+    return parseNonStreamingResult(await response.json());
+  }
   if (!response.body || !contentType.includes("text/event-stream")) {
-    return parseNonStreamingResult(await response.json(), request);
+    return parseNonStreamingResult(await response.json());
   }
 
   let text = "";
