@@ -287,7 +287,7 @@ describe("shared AgentAdapter contract", () => {
       });
       await native.send("change files");
       assert.ok(nativeEvents.some((event) => event.phase === "command" && event.rawType === "command_execution"));
-      assert.ok(nativeEvents.some((event) => event.rawType === "file_change"));
+      assert.ok(nativeEvents.some((event) => event.phase === "editing" && event.rawType === "file_change"));
       assert.equal(fs.readFileSync(path.join(workspace, "contract.txt"), "utf8"), "ok\n");
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
@@ -324,7 +324,17 @@ describe("shared AgentAdapter contract", () => {
         },
         fetchImpl: async () => new Response("provider failed", { status: 400 }),
       });
+      const nativeEvents: Array<{ phase: string; detail?: string; rawType?: string }> = [];
+      native.onEvent((event) => {
+        const raw = event.raw as { type?: string; error?: { message?: string } };
+        nativeEvents.push({ phase: event.phase, detail: event.detail, rawType: raw.type });
+      });
       await assert.rejects(native.send("fail"), /provider|upstream|400/i);
+      assert.ok(nativeEvents.some((event) => (
+        event.phase === "error"
+        && event.rawType === "turn.failed"
+        && /provider|upstream|400/i.test(event.detail ?? "")
+      )));
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
