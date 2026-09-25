@@ -368,6 +368,16 @@ export class NativeTranscriptStore {
       .flatMap((turn) => turn.messages);
   }
 
+  hasCompletedMessages(transcriptId: string): boolean {
+    const row = this.db.prepare(`
+      SELECT 1 AS present
+      FROM native_transcript_turns
+      WHERE transcript_id = ? AND status = 'completed'
+      LIMIT 1
+    `).get(transcriptId);
+    return Boolean(row);
+  }
+
   clear(transcriptId: string, writerId?: string): void {
     if (writerId === undefined) {
       this.db.prepare("DELETE FROM native_transcript_turns WHERE transcript_id = ?").run(transcriptId);

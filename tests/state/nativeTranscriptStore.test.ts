@@ -197,6 +197,32 @@ describe("NativeTranscriptStore", () => {
     );
   });
 
+  it("checks completed messages without claiming or interrupting a running turn", () => {
+    const { store } = createStore();
+    const transcriptId = "transcript-read-only-probe";
+    store.claimTranscript(transcriptId, "active-writer");
+    store.beginTurn({
+      transcriptId,
+      turnId: "running-turn",
+      messages: [{ role: "user", content: "run" }],
+      entries: [{ kind: "message", message: { role: "user", content: "run" } }],
+      provider: { provider: "test", model: "test-model" },
+      writerId: "active-writer",
+    });
+
+    assert.equal(store.hasCompletedMessages(transcriptId), false);
+    store.updateTurn({
+      transcriptId,
+      turnId: "running-turn",
+      status: "completed",
+      messages: [{ role: "user", content: "run" }],
+      entries: [{ kind: "message", message: { role: "user", content: "run" } }],
+      usage: null,
+      writerId: "active-writer",
+    });
+    assert.equal(store.hasCompletedMessages(transcriptId), true);
+  });
+
   it("redacts explicit credentials even when they are shorter than four characters", () => {
     const { dbPath, store } = createStore(["abc"]);
     const transcriptId = "transcript-short-credential";

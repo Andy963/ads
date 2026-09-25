@@ -207,12 +207,8 @@ export class SessionManager {
     const nativeTranscriptAvailable = restoreNativeTranscript
       && (!savedState?.cwd || areSessionCwdsCompatible(savedState.cwd, effectiveCwd))
       && nativeTranscriptId
-      ? (() => {
-          const store = new NativeTranscriptStore(getStateDatabase(this.options.stateDbPath));
-          const writerId = `availability-${randomUUID()}`;
-          store.claimTranscript(nativeTranscriptId, writerId);
-          return store.loadCompletedMessages(nativeTranscriptId, writerId).length > 0;
-        })()
+      ? new NativeTranscriptStore(getStateDatabase(this.options.stateDbPath))
+          .hasCompletedMessages(nativeTranscriptId)
       : false;
 
     let activeAgentId: AgentIdentifier | undefined = savedState?.activeAgentId;
