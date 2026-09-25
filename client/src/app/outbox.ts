@@ -11,9 +11,10 @@
  *   is still harmless: prompts keep their `clientMessageId` and the server answers
  *   the second copy with `ack.duplicate`.
  *
- * Once the server accepts a prompt, its SQLite queue is the source of truth and
- * this outbox stops persisting the normal online queue. Images are deliberately
- * not persisted because they are in-memory blobs that cannot survive a reload.
+ * Once the server accepts a prompt, its SQLite queue is the source of truth. The
+ * browser keeps each sent-but-unacknowledged fallback only until an ACK or queue
+ * snapshot proves that handoff succeeded. Images are deliberately not persisted
+ * because they are in-memory blobs that cannot survive a reload.
  */
 export type PersistedPrompt = {
   clientMessageId: string;
@@ -23,20 +24,24 @@ export type PersistedPrompt = {
   model?: string;
   modelReasoningEffort?: string;
   replayIncomplete?: boolean;
+  /** The frame was handed to WebSocket, but no authoritative ACK arrived yet. */
+  sentAwaitingAck?: boolean;
   /** Legacy key kept for entries written before the rename. */
   model_reasoning_effort?: string;
 };
 
 export type OutboxSnapshot = {
-  /** The prompt already handed to the server, awaiting its ack. */
+  /** Legacy single-prompt fallback retained for upgrade compatibility. */
   pending: PersistedPrompt | null;
+  /** All normal sends handed to WebSocket before their acknowledgement arrived. */
+  sent: PersistedPrompt[];
   /** Prompts still waiting their turn, in send order. */
   queued: PersistedPrompt[];
 };
 
 export const OUTBOX_CHANNEL_NAME = "ads.outbox";
 
-const EMPTY: OutboxSnapshot = { pending: null, queued: [] };
+const EMPTY: OutboxSnapshot = { pending: null, sent: [], queued: [] };
 
 /** An explicit auth boundary must not replay another account's private input. */
 export function clearPersistedOutboxes(): void {
@@ -72,6 +77,7 @@ function normalizePrompt(value: unknown): PersistedPrompt | null {
   if (!clientMessageId) return null;
   const effort = String(record.modelReasoningEffort ?? record.model_reasoning_effort ?? "").trim();
   const replayIncomplete = record.replayIncomplete === true || record.replay_incomplete === true;
+  const sentAwaitingAck = record.sentAwaitingAck === true;
   const prompt: PersistedPrompt = {
     clientMessageId,
     text: String(record.text ?? ""),
@@ -83,14 +89,23 @@ function normalizePrompt(value: unknown): PersistedPrompt | null {
   if (model) prompt.model = model;
   if (effort) prompt.modelReasoningEffort = effort;
   if (replayIncomplete) prompt.replayIncomplete = true;
+  if (sentAwaitingAck) prompt.sentAwaitingAck = true;
   return prompt;
 }
 
 function normalizeSnapshot(value: unknown): OutboxSnapshot {
   if (!value || typeof value !== "object" || Array.isArray(value)) return EMPTY;
   const record = value as Record<string, unknown>;
+  const sentRaw = Array.isArray(record.sent) ? record.sent : [];
   const queuedRaw = Array.isArray(record.queued) ? record.queued : [];
   const seen = new Set<string>();
+  const sent: PersistedPrompt[] = [];
+  for (const entry of sentRaw) {
+    const prompt = normalizePrompt(entry);
+    if (!prompt || seen.has(prompt.clientMessageId)) continue;
+    seen.add(prompt.clientMessageId);
+    sent.push(prompt);
+  }
   const queued: PersistedPrompt[] = [];
   for (const entry of queuedRaw) {
     const prompt = normalizePrompt(entry);
@@ -98,11 +113,15 @@ function normalizeSnapshot(value: unknown): OutboxSnapshot {
     seen.add(prompt.clientMessageId);
     queued.push(prompt);
   }
-  return { pending: normalizePrompt(record.pending), queued };
+  const pending = normalizePrompt(record.pending);
+  if (pending && !seen.has(pending.clientMessageId)) {
+    sent.unshift(pending);
+  }
+  return { pending, sent, queued };
 }
 
 export function isEmptyOutboxSnapshot(snapshot: OutboxSnapshot): boolean {
-  return !snapshot.pending && snapshot.queued.length === 0;
+  return !snapshot.pending && snapshot.sent.length === 0 && snapshot.queued.length === 0;
 }
 
 export type OutboxStore = ReturnType<typeof createOutboxStore>;
@@ -187,7 +206,7 @@ export function createOutboxStore(options: { channelName?: string } = {}) {
     if (!legacyPending) return;
     const current = read(args.key);
     if (current.pending) return;
-    write(args.key, { pending: legacyPending, queued: current.queued });
+    write(args.key, { pending: legacyPending, sent: current.sent, queued: current.queued });
   };
 
   const subscribe = (listener: (key: string, snapshot: OutboxSnapshot) => void): (() => void) => {

@@ -461,9 +461,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const matchedPendingAck = Boolean(pendingAckClientMessageId && clientMessageIds.has(pendingAckClientMessageId));
     if (after.length === before.length && !matchedPendingAck) return false;
     rt.queuedPrompts.value = after;
+    for (const clientMessageId of clientMessageIds) {
+      clearPendingPrompt(rt, clientMessageId);
+    }
     if (!pendingAckClientMessageId || matchedPendingAck) {
       rt.pendingAckClientMessageId = null;
-      clearPendingPrompt(rt);
     }
     return true;
   };
@@ -506,10 +508,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             .map((prompt) => String(prompt.clientMessageId ?? "").trim()),
         );
         rt.queuedPrompts.value = after;
+        for (const clientMessageId of removedIds) {
+          clearPendingPrompt(rt, clientMessageId);
+        }
         const pendingAckClientMessageId = String(rt.pendingAckClientMessageId ?? "").trim();
         if (!pendingAckClientMessageId || removedIds.has(pendingAckClientMessageId)) {
           rt.pendingAckClientMessageId = null;
-          clearPendingPrompt(rt);
         }
       }
     } else if (newestServerUser && (terminalHistoryTail || backendStillRunning)) {
@@ -523,10 +527,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           .map((prompt) => String(prompt.clientMessageId ?? "").trim())
           .filter((clientMessageId) => clientMessageId && !afterIds.has(clientMessageId));
         rt.queuedPrompts.value = after;
+        for (const clientMessageId of removedIds) {
+          clearPendingPrompt(rt, clientMessageId);
+        }
         const pendingAckClientMessageId = String(rt.pendingAckClientMessageId ?? "").trim();
         if (!pendingAckClientMessageId || removedIds.includes(pendingAckClientMessageId)) {
           rt.pendingAckClientMessageId = null;
-          clearPendingPrompt(rt);
         }
       }
     }
@@ -986,27 +992,53 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
     if (type === "ack") {
       const id = String(msg.client_message_id ?? "").trim();
-      const queued = id ? rt.queuedPrompts.value.find((prompt) => prompt.clientMessageId === id) : undefined;
+      const acknowledged = id ? clearPendingPrompt(rt, id) : null;
+      const existing = id
+        ? rt.queuedPrompts.value.find((prompt) => prompt.clientMessageId === id)
+        : undefined;
+      const queued = existing ?? (id && acknowledged
+        ? {
+            id: `server-${id}`,
+            clientMessageId: id,
+            text: acknowledged.text,
+            images: [],
+            createdAt: acknowledged.createdAt,
+            agentId: acknowledged.agentId,
+            model: acknowledged.model,
+            modelReasoningEffort: acknowledged.modelReasoningEffort,
+          }
+        : undefined);
       if (queued) {
-        if (queued.serverQueueTracked) {
-          const rawStatus = String(msg.queue_status ?? "queued");
-          rt.queuedPrompts.value = rawStatus === "completed"
-            ? rt.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== id)
-            : rt.queuedPrompts.value.map((prompt) =>
-                prompt.clientMessageId === id
-                  ? {
-                      ...prompt,
-                      deliveryStatus: rawStatus === "running" || rawStatus === "failed" ? rawStatus : "queued",
-                    }
-                  : prompt,
-              );
-        } else {
+        const rawStatus = String(msg.queue_status ?? "queued");
+        if (rawStatus === "completed") {
           rt.queuedPrompts.value = rt.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== id);
+        } else if (existing) {
+          rt.queuedPrompts.value = rt.queuedPrompts.value.map((prompt) =>
+              prompt.clientMessageId === id
+                ? {
+                    ...prompt,
+                    deliveryStatus: rawStatus === "running" || rawStatus === "failed" ? rawStatus : "queued",
+                    queueError: rawStatus === "failed" ? String(msg.error ?? prompt.queueError ?? "") : prompt.queueError,
+                    serverQueueTracked: true,
+                    restoredFromStorage: false,
+                    replayIncomplete: false,
+                  }
+                : prompt,
+            );
+        } else {
+          rt.queuedPrompts.value = [
+            ...rt.queuedPrompts.value,
+            {
+              ...queued,
+              deliveryStatus: rawStatus === "running" || rawStatus === "failed" ? rawStatus : "queued",
+              queueError: rawStatus === "failed" ? String(msg.error ?? "") || undefined : undefined,
+              serverQueueTracked: true,
+            },
+          ];
         }
       }
       if (id && rt.pendingAckClientMessageId === id) {
         rt.pendingAckClientMessageId = null;
-        clearPendingPrompt(rt);
       }
       return;
     }
@@ -1021,6 +1053,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         const record = raw as Record<string, unknown>;
         const clientMessageId = String(record.clientMessageId ?? "").trim();
         if (!clientMessageId) continue;
+        clearPendingPrompt(rt, clientMessageId);
         const status = String(record.status ?? "queued") as "queued" | "running" | "failed" | "completed";
         activeIds.add(clientMessageId);
         const existing = rt.queuedPrompts.value.find((prompt) => prompt.clientMessageId === clientMessageId);
@@ -1028,7 +1061,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           rt.queuedPrompts.value = rt.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== clientMessageId);
           continue;
         }
-        const text = rt.messages.value.find((message) => message.id === clientMessageId)?.content || "Server queued request";
+        const text = existing?.text
+          || rt.messages.value.find((message) => message.id === clientMessageId)?.content
+          || "Server queued request";
         rt.queuedPrompts.value = existing
           ? rt.queuedPrompts.value.map((prompt) => prompt.clientMessageId === clientMessageId
             ? {
@@ -1038,6 +1073,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
                 queueAttempts: Number(record.attempts) || prompt.queueAttempts,
                 queueError: String(record.lastError ?? ""),
                 serverQueueTracked: true,
+                restoredFromStorage: false,
+                replayIncomplete: false,
               }
             : prompt)
           : [...rt.queuedPrompts.value, {
@@ -1054,6 +1091,17 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             }];
       }
       if (type === "prompt_queue_snapshot") {
+        rt.queuedPrompts.value = rt.queuedPrompts.value.map((prompt) =>
+          !activeIds.has(prompt.clientMessageId) &&
+          !prompt.serverQueueTracked &&
+          (prompt.deliveryStatus === undefined ||
+            prompt.deliveryStatus === "awaiting_ack" ||
+            prompt.deliveryStatus === "queued" ||
+            prompt.restoredFromStorage ||
+            prompt.replayIncomplete)
+            ? { ...prompt, deliveryStatus: "offline", serverQueueTracked: false }
+            : prompt,
+        );
         rt.queuedPrompts.value = rt.queuedPrompts.value.filter(
           (prompt) => prompt.deliveryStatus === "offline" || activeIds.has(prompt.clientMessageId),
         );
@@ -1838,8 +1886,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.turnHasPatch = false;
       clearStreamTracking();
       resetTurnPatchSummary();
+      const terminalPromptId = String(rt.pendingAckClientMessageId ?? "").trim();
       rt.pendingAckClientMessageId = null;
-      clearPendingPrompt(rt);
+      if (terminalPromptId) clearPendingPrompt(rt, terminalPromptId);
       const output = normalizeWireText(msg.output);
       if (msg.ok === true && resultKind === "clear_history") {
         rt.ignoreNextHistory = false;
@@ -1948,8 +1997,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.turnHasPatch = false;
       clearStreamTracking();
       resetTurnPatchSummary();
+      const terminalPromptId = String(rt.pendingAckClientMessageId ?? "").trim();
       rt.pendingAckClientMessageId = null;
-      clearPendingPrompt(rt);
+      if (terminalPromptId) clearPendingPrompt(rt, terminalPromptId);
       clearStepLive(rt);
       finalizeCommandBlock(rt);
       // Ensure the assistant placeholder created when the prompt was sent does not

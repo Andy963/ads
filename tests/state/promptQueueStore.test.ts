@@ -71,7 +71,7 @@ describe("state/promptQueueStore", () => {
     assert.deepEqual(store.listRecoverable().map((entry) => entry.clientMessageId), ["client-2"]);
   });
 
-  it("recovers interrupted running work and retains terminal failures", () => {
+  it("marks interrupted running work failed instead of replaying it automatically", () => {
     db = new DatabaseConstructor(":memory:");
     const store = createPromptQueueStore(db);
     const first = store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
@@ -80,11 +80,11 @@ describe("state/promptQueueStore", () => {
     assert.equal(store.markRunning(first.entry.id, "old-worker", 1000), true);
     assert.equal(store.markRunning(second.entry.id, "old-worker", 1000), true);
     assert.equal(store.recoverInterrupted("old-worker", 2000), 2);
-    assert.equal(store.markFailed(second.entry.id, new Error("generation changed"), 3000), true);
 
-    assert.equal(store.getByClientMessageId("client-1")?.status, "queued");
+    assert.equal(store.getByClientMessageId("client-1")?.status, "failed");
     assert.equal(store.getByClientMessageId("client-2")?.status, "failed");
-    assert.equal(store.getByClientMessageId("client-2")?.lastError, "generation changed");
+    assert.match(String(store.getByClientMessageId("client-1")?.lastError), /interrupted before completion/);
+    assert.deepEqual(store.listRecoverable(), []);
   });
 
   it("fences stale workers and requeues an explicit failed retry", () => {
@@ -95,8 +95,6 @@ describe("state/promptQueueStore", () => {
     assert.equal(store.recoverInterrupted("old-worker", 1100), 1);
     assert.equal(store.markCompleted(first.entry.id, "old-worker", 1200), false);
 
-    assert.equal(store.markRunning(first.entry.id, "new-worker", 1300), true);
-    assert.equal(store.markFailed(first.entry.id, new Error("failed"), 1400, "new-worker"), true);
     const failed = store.getByClientMessageId("client-1");
     assert.equal(failed?.status, "failed");
     assert.equal(failed?.payload.text, "one");
@@ -109,8 +107,20 @@ describe("state/promptQueueStore", () => {
     });
     assert.equal(retried.duplicate, false);
     assert.equal(retried.entry.status, "queued");
-    assert.equal(retried.entry.attempts, 2);
+    assert.equal(retried.entry.attempts, 1);
     assert.equal(retried.entry.lastError, null);
+
+    assert.equal(store.markRunning(first.entry.id, "new-worker", 1300), true);
+    assert.equal(store.markFailed(first.entry.id, new Error("failed"), 1400, "new-worker"), true);
+    const retriedAgain = store.enqueue({
+      ...lane,
+      clientMessageId: "client-1",
+      payload: { text: "one", replay_incomplete: true },
+      retryFailed: true,
+    });
+    assert.equal(retriedAgain.duplicate, false);
+    assert.equal(retriedAgain.entry.status, "queued");
+    assert.equal(retriedAgain.entry.attempts, 2);
   });
 
   it("scrubs completed payloads while retaining conflict detection", () => {

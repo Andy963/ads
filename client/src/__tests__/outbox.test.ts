@@ -26,7 +26,7 @@ describe("outbox store", () => {
 
   it("survives a reload: the queue is read back from localStorage, not sessionStorage", () => {
     const store = createOutboxStore();
-    store.write(KEY, { pending: prompt("m-1", "sent"), queued: [prompt("m-2", "waiting")] });
+    store.write(KEY, { pending: prompt("m-1", "sent"), sent: [], queued: [prompt("m-2", "waiting")] });
 
     // A fresh store stands in for a reloaded tab.
     const reloaded = createOutboxStore().read(KEY);
@@ -37,10 +37,10 @@ describe("outbox store", () => {
 
   it("removes the storage entry once the outbox drains", () => {
     const store = createOutboxStore();
-    store.write(KEY, { pending: prompt("m-1", "sent"), queued: [] });
+    store.write(KEY, { pending: prompt("m-1", "sent"), sent: [], queued: [] });
     expect(localStorage.getItem(KEY)).not.toBeNull();
 
-    store.write(KEY, { pending: null, queued: [] });
+    store.write(KEY, { pending: null, sent: [], queued: [] });
     expect(localStorage.getItem(KEY)).toBeNull();
     expect(isEmptyOutboxSnapshot(store.read(KEY))).toBe(true);
   });
@@ -51,7 +51,7 @@ describe("outbox store", () => {
     const seen: Array<{ key: string; snapshot: OutboxSnapshot }> = [];
     reader.subscribe((key, snapshot) => seen.push({ key, snapshot }));
 
-    writer.write(KEY, { pending: null, queued: [prompt("m-9", "from the other tab")] });
+    writer.write(KEY, { pending: null, sent: [], queued: [prompt("m-9", "from the other tab")] });
 
     await vi.waitFor(() => expect(seen).toHaveLength(1));
     expect(seen[0]?.key).toBe(KEY);
@@ -91,7 +91,7 @@ describe("outbox store", () => {
     const legacyKey = legacyPendingPromptStorageKey("session-a", "main");
     sessionStorage.setItem(legacyKey, JSON.stringify(prompt("m-legacy", "stale")));
     const store = createOutboxStore();
-    store.write(KEY, { pending: prompt("m-current", "current"), queued: [] });
+    store.write(KEY, { pending: prompt("m-current", "current"), sent: [], queued: [] });
 
     store.migrateLegacyPending({ key: KEY, legacyKey });
 
@@ -104,8 +104,24 @@ describe("outbox store", () => {
     });
     const store = createOutboxStore();
 
-    expect(() => store.write(KEY, { pending: prompt("m-1", "x"), queued: [] })).not.toThrow();
+    expect(() => store.write(KEY, { pending: prompt("m-1", "x"), sent: [], queued: [] })).not.toThrow();
     setItem.mockRestore();
     expect(isEmptyOutboxSnapshot(store.read(KEY))).toBe(true);
+  });
+
+  it("retains every sent prompt until its own acknowledgement arrives", () => {
+    const store = createOutboxStore();
+    store.write(KEY, {
+      pending: null,
+      sent: [
+        { ...prompt("m-1", "first"), sentAwaitingAck: true },
+        { ...prompt("m-2", "second"), sentAwaitingAck: true },
+      ],
+      queued: [],
+    });
+
+    const reloaded = createOutboxStore().read(KEY);
+    expect(reloaded.sent.map((entry) => entry.text)).toEqual(["first", "second"]);
+    expect(reloaded.sent.every((entry) => entry.sentAwaitingAck)).toBe(true);
   });
 });

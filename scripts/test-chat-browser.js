@@ -62,6 +62,8 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       /\/(?:sw\.js|api\/[^ ]+) due to access control checks\.$/.test(text) ||
       /Failed to load resource: the server responded with a status of 503 \(Service Unavailable\)/.test(text)
     );
+    const isWebKitApiCorsNoise = (text) => mobile &&
+      /^\/(?:127\.0\.0\.1|localhost):\d+\/api\/[^ ]+ due to access control checks\.$/.test(text);
     result.browserErrors = browserWarnings;
     result.dialogs = [];
     page.on("dialog", async (dialog) => {
@@ -69,6 +71,14 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       await dialog.dismiss();
     });
     page.on("pageerror", (error) => {
+      if (isWebKitApiCorsNoise(error.message)) {
+        // Linux WebKit can emit a pageerror for successful same-origin API
+        // responses while a service worker replaces the legacy worker. Keep
+        // the event visible in the report; request and functional assertions
+        // still determine whether the browser run actually failed.
+        browserWarnings.push(error.message);
+        return;
+      }
       if (isExpectedOutageError(error.message)) {
         browserWarnings.push(error.message);
         return;
@@ -86,6 +96,10 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     page.on("console", (message) => {
       if (message.type() !== "error") return;
       const text = message.text();
+      if (isWebKitApiCorsNoise(text)) {
+        browserWarnings.push(text);
+        return;
+      }
       if (isExpectedOutageError(text)) {
         browserWarnings.push(text);
         return;

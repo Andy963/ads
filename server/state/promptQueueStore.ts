@@ -52,6 +52,9 @@ export type PromptQueueOwnershipClaim = {
   previousOwnerId: string | null;
 };
 
+const INTERRUPTED_PROMPT_ERROR =
+  "Prompt execution was interrupted before completion. Retry explicitly to resume with incomplete-turn recovery.";
+
 export function ensurePromptQueueTables(db: DatabaseType): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS prompt_queue (
@@ -261,7 +264,8 @@ export function createPromptQueueStore(db: DatabaseType) {
   `);
   const recoverStmt = db.prepare(`
     UPDATE prompt_queue
-    SET status = 'queued', updated_at = ?, lease_owner = NULL, lease_expires_at = NULL
+    SET status = 'failed', updated_at = ?, completed_at = ?, last_error = ?,
+        lease_owner = NULL, lease_expires_at = NULL
     WHERE status = 'running'
       AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ? OR lease_owner = ?)
   `);
@@ -419,7 +423,7 @@ export function createPromptQueueStore(db: DatabaseType) {
     releaseOwnershipStmt.run(requiredText(ownerId, "ownerId")).changes === 1;
 
   const recoverInterrupted = (previousOwnerId: string | null, now = Date.now()): number =>
-    recoverStmt.run(now, now, previousOwnerId).changes;
+    recoverStmt.run(now, now, INTERRUPTED_PROMPT_ERROR, now, previousOwnerId).changes;
 
   return {
     enqueue,

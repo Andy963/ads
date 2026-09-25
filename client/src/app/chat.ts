@@ -143,7 +143,7 @@ export function createChatActions(ctx: AppContext) {
   // Advisor rename is not lost; the next persistOutbox write lands on the new key.
   const readOutboxFor = (rt: ProjectRuntime): OutboxSnapshot => {
     const key = outboxKeyFor(rt);
-    if (!key) return { pending: null, queued: [] };
+    if (!key) return { pending: null, sent: [], queued: [] };
     const snapshot = outbox.read(key);
     if (!isEmptyOutboxSnapshot(snapshot) || rt.chatSessionId !== ADVISOR_LANE_ID) {
       return snapshot;
@@ -169,13 +169,20 @@ export function createChatActions(ctx: AppContext) {
     };
   };
 
-  const persistOutbox = (rt: ProjectRuntime, pending?: PersistedPrompt | null): void => {
+  const persistOutbox = (
+    rt: ProjectRuntime,
+    pending?: PersistedPrompt | null,
+    sent?: PersistedPrompt[],
+  ): void => {
     if (applyingRemoteOutbox) return;
     const key = outboxKeyFor(rt);
     if (!key) return;
-    const nextPending = pending === undefined ? readOutboxFor(rt).pending : pending;
+    const current = readOutboxFor(rt);
+    const nextPending = pending === undefined ? current.pending : pending;
+    const nextSent = sent === undefined ? current.sent : sent;
     outbox.write(key, {
       pending: nextPending,
+      sent: nextSent,
       queued: rt.queuedPrompts.value
         .filter((prompt) => prompt.deliveryStatus === "offline" || prompt.restoredFromStorage || prompt.replayIncomplete)
         .map(toPersistedPrompt)
@@ -187,7 +194,7 @@ export function createChatActions(ctx: AppContext) {
     // Keep prompts this tab cannot persist (image prompts) and re-apply the shared
     // order around them, so a sibling's dequeue is reflected without losing local work.
     const localOnly = rt.queuedPrompts.value.filter((prompt) => prompt.images.length > 0);
-    const shared = snapshot.queued.map((prompt) => {
+    const shared = [...snapshot.sent, ...snapshot.queued].map((prompt) => {
       const existing = rt.queuedPrompts.value.find((q) => q.clientMessageId === prompt.clientMessageId);
       return existing ?? ({
         id: randomId("q"),
@@ -199,6 +206,7 @@ export function createChatActions(ctx: AppContext) {
         model: String(prompt.model ?? ""),
         modelReasoningEffort: String(prompt.modelReasoningEffort ?? prompt.model_reasoning_effort ?? ""),
         ...(prompt.replayIncomplete ? { replayIncomplete: true } : {}),
+        ...(prompt.sentAwaitingAck ? { replayIncomplete: true, restoredFromStorage: true } : {}),
       } satisfies QueuedPrompt);
     });
     const next = [...shared, ...localOnly];
@@ -249,9 +257,36 @@ export function createChatActions(ctx: AppContext) {
     persistOutbox(rt, toPersistedPrompt(prompt));
   };
 
-  const clearPendingPrompt = (rt: ProjectRuntime): void => {
+  const saveSentPrompt = (rt: ProjectRuntime, prompt: QueuedPrompt): void => {
     if (!rt.projectSessionId) return;
-    persistOutbox(rt, null);
+    ensureOutboxBinding(rt);
+    const persisted = toPersistedPrompt(prompt);
+    if (!persisted) return;
+    persisted.sentAwaitingAck = true;
+    const current = readOutboxFor(rt);
+    persistOutbox(
+      rt,
+      current.pending,
+      [...current.sent.filter((entry) => entry.clientMessageId !== persisted.clientMessageId), persisted],
+    );
+  };
+
+  const clearPendingPrompt = (rt: ProjectRuntime, clientMessageId?: string): PersistedPrompt | null => {
+    if (!rt.projectSessionId) return null;
+    const id = String(clientMessageId ?? "").trim();
+    const current = readOutboxFor(rt);
+    if (!id) {
+      persistOutbox(rt, null, []);
+      return null;
+    }
+    const acknowledged = current.sent.find((entry) => entry.clientMessageId === id)
+      ?? (current.pending?.clientMessageId === id ? current.pending : null);
+    persistOutbox(
+      rt,
+      current.pending?.clientMessageId === id ? null : current.pending,
+      current.sent.filter((entry) => entry.clientMessageId !== id),
+    );
+    return acknowledged;
   };
 
   const readPendingPrompt = (rt: ProjectRuntime): PersistedPrompt | null => {
@@ -269,6 +304,9 @@ export function createChatActions(ctx: AppContext) {
     const storedClientMessageId = String(readPendingPrompt(rt)?.clientMessageId ?? "").trim();
     if (storedClientMessageId) {
       pendingIds.add(storedClientMessageId);
+    }
+    for (const sent of readOutboxFor(rt).sent) {
+      pendingIds.add(sent.clientMessageId);
     }
     if (pendingIds.size > 0) {
       rt.queuedPrompts.value = rt.queuedPrompts.value.filter((q) => !pendingIds.has(String(q.clientMessageId ?? "").trim()));
@@ -308,7 +346,7 @@ export function createChatActions(ctx: AppContext) {
     }
 
     // Prompts still waiting their turn were never sent; they requeue as-is.
-    for (const queued of snapshot.queued) {
+    for (const queued of [...snapshot.sent, ...snapshot.queued]) {
       const clientMessageId = String(queued.clientMessageId ?? "").trim();
       if (!clientMessageId || queuedByClientMessageId.has(clientMessageId)) continue;
       queuedByClientMessageId.add(clientMessageId);
@@ -321,7 +359,8 @@ export function createChatActions(ctx: AppContext) {
         agentId: String(queued.agentId ?? "").trim(),
         model: String(queued.model ?? "").trim(),
         modelReasoningEffort: String(queued.modelReasoningEffort ?? queued.model_reasoning_effort ?? "").trim(),
-        ...(queued.replayIncomplete ? { replayIncomplete: true } : {}),
+        ...(queued.replayIncomplete || queued.sentAwaitingAck ? { replayIncomplete: true } : {}),
+        ...(queued.sentAwaitingAck ? { restoredFromStorage: true } : {}),
       });
     }
 
@@ -742,7 +781,6 @@ export function createChatActions(ctx: AppContext) {
       const queuedAgentId = String(next.agentId ?? "").trim();
       const activeAgentId = String(state.activeAgentId.value ?? "").trim();
       const agentId = queuedAgentId || activeAgentId;
-      savePendingPrompt(state, { ...next, agentId, model, modelReasoningEffort: effort });
       const execution = {
         ...(agentId ? { agentId } : {}),
         ...(model ? { model } : {}),
@@ -772,6 +810,7 @@ export function createChatActions(ctx: AppContext) {
       if (!sendAccepted) {
         throw new Error("WebSocket prompt send was not accepted");
       }
+      saveSentPrompt(state, { ...next, agentId, model, modelReasoningEffort: effort });
       if (!options?.preserveErrorStatus || state.laneStatus.value?.kind !== "error") {
         state.laneStatus.value = null;
       }
@@ -793,7 +832,9 @@ export function createChatActions(ctx: AppContext) {
       state.busy.value = false;
       state.turnInFlight = false;
       state.turnHasPatch = false;
-      state.pendingAckClientMessageId = null;
+      if (state.pendingAckClientMessageId === next.clientMessageId) {
+        state.pendingAckClientMessageId = null;
+      }
       if (!sendAccepted) {
         state.connected.value = false;
         if (!options?.preserveErrorStatus && !state.laneStatus.value) {

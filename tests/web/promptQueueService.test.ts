@@ -29,10 +29,11 @@ describe("web/promptQueueService", () => {
       laneGeneration: 1,
       workspaceRoot: "/workspace/project",
     };
-    const first = firstStore.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
-    firstStore.enqueue({ ...lane, clientMessageId: "client-2", payload: { text: "two" } });
+    firstStore.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
+    const interrupted = firstStore.enqueue({ ...lane, clientMessageId: "client-2", payload: { text: "two" } });
+    firstStore.enqueue({ ...lane, clientMessageId: "client-3", payload: { text: "three" } });
     firstStore.claimOwnership("old-worker", 1111, 1000);
-    assert.equal(firstStore.markRunning(first.entry.id, "old-worker"), true);
+    assert.equal(firstStore.markRunning(interrupted.entry.id, "old-worker"), true);
     firstDb.close();
 
     const secondDb = new DatabaseConstructor(dbPath);
@@ -53,9 +54,11 @@ describe("web/promptQueueService", () => {
     service.start();
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    assert.deepEqual(executed, ["client-1", "client-2"]);
+    assert.deepEqual(executed, ["client-1", "client-3"]);
     assert.equal(secondStore.getByClientMessageId("client-1")?.status, "completed");
-    assert.equal(secondStore.getByClientMessageId("client-2")?.status, "completed");
+    assert.equal(secondStore.getByClientMessageId("client-2")?.status, "failed");
+    assert.match(String(secondStore.getByClientMessageId("client-2")?.lastError), /interrupted before completion/);
+    assert.equal(secondStore.getByClientMessageId("client-3")?.status, "completed");
     await service.stop();
     secondDb.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -214,13 +217,11 @@ describe("web/promptQueueService", () => {
       laneGeneration: 1,
       workspaceRoot: "/workspace/project",
     };
-    const first = firstStore.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
+    firstStore.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
     const firstHistory = new HistoryStore({ storagePath: dbPath, namespace: "test-worker" });
     const kind = buildClientMessageHistoryKind({ clientMessageId: "client-1" });
     firstHistory.add(historyKey, { role: "user", text: "one", ts: 1000, kind });
     firstHistory.add(historyKey, { role: "ai", text: "done", ts: 1100 });
-    firstStore.claimOwnership("old-worker", 1111, 1000);
-    assert.equal(firstStore.markRunning(first.entry.id, "old-worker", 1200), true);
     firstDb.close();
 
     const secondDb = new DatabaseConstructor(dbPath);
@@ -272,13 +273,11 @@ describe("web/promptQueueService", () => {
       laneGeneration: 1,
       workspaceRoot: "/workspace/project",
     };
-    const first = firstStore.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
+    firstStore.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
     const firstHistory = new HistoryStore({ storagePath: dbPath, namespace: "test-worker" });
     const kind = buildClientMessageHistoryKind({ clientMessageId: "client-1" });
     firstHistory.add(historyKey, { role: "user", text: "one", ts: 1000, kind });
     firstHistory.add(historyKey, { role: "status", text: "failed", ts: 1100, kind: "error" });
-    firstStore.claimOwnership("old-worker", 1111, 1000);
-    assert.equal(firstStore.markRunning(first.entry.id, "old-worker", 1200), true);
     firstDb.close();
 
     const secondDb = new DatabaseConstructor(dbPath);
