@@ -650,7 +650,12 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       if (nextChatSessionId === syncChatSessionId) return false;
 
       syncLaneEpoch += 1;
-      rt.transcriptCache?.invalidate();
+      ctx.transcriptCache.attach(rt, {
+        projectId,
+        sessionId: project.sessionId,
+        chatSessionId: nextChatSessionId,
+        workspace: project.path,
+      });
       rt.transcriptReady = false;
       rt.transcriptCursor = 0;
       snapshotBootstrapPending = false;

@@ -152,8 +152,11 @@ export function createTranscriptCache() {
         previous.scope.sessionId === scope.sessionId && previous.scope.workspace === scope.workspace;
       if (!sameProject) {
         rt.messages.value = [];
-        rt.transcriptViewport.value = null;
       }
+      // A viewport belongs to one chat session only. Keep the review-only
+      // messages above the new divider, but never restore its scroll position
+      // into a different session scope.
+      rt.transcriptViewport.value = null;
       rt.transcriptReady = false;
       rt.transcriptRestored = false;
       rt.transcriptCursor = 0;
