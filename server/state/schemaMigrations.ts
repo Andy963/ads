@@ -696,4 +696,16 @@ Core reviewing rules:
       `);
     },
   },
+  {
+    version: 22,
+    description: "Fence Native transcript writers across process replacement",
+    up: (db) => {
+      const columns = db
+        .prepare("PRAGMA table_info(native_transcript_turns)")
+        .all() as Array<{ name?: string }>;
+      if (!columns.some((column) => column.name === "writer_id")) {
+        db.exec("ALTER TABLE native_transcript_turns ADD COLUMN writer_id TEXT NOT NULL DEFAULT ''");
+      }
+    },
+  },
 ];

@@ -173,10 +173,11 @@ export class NativeAgentAdapter implements AgentAdapter {
   private developerInstructions?: string;
   private threadId: string;
   private threadStartedEmitted = false;
-  private readonly transcriptId?: string;
+  private transcriptId?: string;
   private readonly transcriptStore?: NativeTranscriptStore;
   private readonly activeTranscriptTurns = new Set<string>();
   private resetGeneration = 0;
+  private readonly transcriptWriterId = randomUUID();
 
   constructor(options: NativeAgentAdapterOptions) {
     this.credentialOwner = String(options.credentialOwner ?? "").trim();
@@ -270,6 +271,19 @@ export class NativeAgentAdapter implements AgentAdapter {
     this.threadStartedEmitted = false;
   }
 
+  retargetTranscript(transcriptId: string): void {
+    const nextTranscriptId = String(transcriptId ?? "").trim();
+    if (!nextTranscriptId || nextTranscriptId === this.transcriptId) {
+      return;
+    }
+    this.transcriptId = nextTranscriptId;
+    this.activeTranscriptTurns.clear();
+    this.conversation = [];
+    this.threadId = `native-${randomUUID()}`;
+    this.threadStartedEmitted = false;
+    this.transcriptStore?.clear(nextTranscriptId);
+  }
+
   setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void {
     if (this.workingDirectory === workingDirectory) return;
     this.workingDirectory = workingDirectory;
@@ -355,6 +369,7 @@ export class NativeAgentAdapter implements AgentAdapter {
         messages: input.messages,
         entries: input.entries,
         provider: input.provider,
+        writerId: this.transcriptWriterId,
       });
       this.activeTranscriptTurns.add(input.turnId);
       return;
@@ -367,6 +382,7 @@ export class NativeAgentAdapter implements AgentAdapter {
       entries: input.entries,
       usage: input.usage,
       errorMessage: input.errorMessage,
+      writerId: this.transcriptWriterId,
     });
     if (input.status !== "running") {
       this.activeTranscriptTurns.delete(input.turnId);

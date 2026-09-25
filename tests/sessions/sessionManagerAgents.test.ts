@@ -363,4 +363,60 @@ describe("SessionManager agent allowlists", () => {
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
+
+  it("retargets the durable Native transcript when an active session changes CWD", () => {
+    const firstDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-session-active-cwd-a-"));
+    const secondDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-session-active-cwd-b-"));
+    const dbPath = path.join(firstDirectory, "state.db");
+    const owner = "auth-user-active-cwd";
+    const projectId = "project-active-cwd";
+    const userId = 123462;
+    const oldTranscriptId = buildNativeTranscriptId({ owner, sessionKey: String(userId), projectId });
+    const store = new NativeTranscriptStore(getStateDatabase(dbPath));
+    const threadStorage = new ThreadStorage({ stateDbPath: dbPath, namespace: "native-active-cwd" });
+    store.beginTurn({
+      transcriptId: oldTranscriptId,
+      turnId: "old-turn",
+      messages: [{ role: "user", content: "old cwd" }],
+      entries: [{ kind: "message", message: { role: "user", content: "old cwd" } }],
+      provider: { provider: "test", model: "test-model" },
+    });
+    store.updateTurn({
+      transcriptId: oldTranscriptId,
+      turnId: "old-turn",
+      status: "completed",
+      messages: [{ role: "user", content: "old cwd" }],
+      entries: [{ kind: "message", message: { role: "user", content: "old cwd" } }],
+      usage: null,
+    });
+
+    const manager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      threadStorage,
+      { ADS_AGENT_RUNTIME: "native", ADS_WEB_SESSION_PEPPER: "test-only-pepper" },
+      { stateDbPath: dbPath, lane: "worker" },
+    );
+    try {
+      manager.getOrCreate(userId, firstDirectory, true, {
+        authUserId: owner,
+        projectId,
+        lifecycle: "durable",
+      });
+      manager.setUserCwd(userId, secondDirectory);
+
+      const nextTranscriptId = threadStorage.getRecord(userId)?.nativeTranscriptId;
+      assert.ok(nextTranscriptId);
+      assert.notEqual(nextTranscriptId, oldTranscriptId);
+      assert.deepEqual(store.loadCompletedMessages(oldTranscriptId), []);
+      assert.equal(manager.getContextRestoreMode(userId), "fresh");
+    } finally {
+      manager.destroy();
+      closeAllStateDatabases();
+      fs.rmSync(firstDirectory, { recursive: true, force: true });
+      fs.rmSync(secondDirectory, { recursive: true, force: true });
+    }
+  });
 });

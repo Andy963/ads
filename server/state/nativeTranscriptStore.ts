@@ -100,7 +100,7 @@ function isCredentialField(key: string): boolean {
 function collectExplicitRedactions(options: NativeTranscriptStoreOptions): string[] {
   const values = (options.redactions ?? [])
     .map((value) => String(value ?? ""))
-    .filter((value) => value.length >= 4);
+    .filter((value) => value.length > 0);
   const variants = new Set<string>();
   for (const value of values) {
     variants.add(value);
@@ -209,19 +209,21 @@ export class NativeTranscriptStore {
     messages: NativeChatMessage[];
     entries: NativeTranscriptEntry[];
     provider: NativeTranscriptProviderMetadata;
+    writerId?: string;
   }): void {
     const now = Date.now();
     this.db.prepare(`
       INSERT INTO native_transcript_turns (
         transcript_id, turn_id, status, messages_json, entries_json,
-        usage_json, provider_json, error_message, created_at, updated_at
-      ) VALUES (?, ?, 'running', ?, ?, NULL, ?, NULL, ?, ?)
+        usage_json, provider_json, error_message, writer_id, created_at, updated_at
+      ) VALUES (?, ?, 'running', ?, ?, NULL, ?, NULL, ?, ?, ?)
     `).run(
       input.transcriptId,
       input.turnId,
       this.stringify(input.messages),
       this.stringify(input.entries),
       this.stringify(input.provider),
+      String(input.writerId ?? ""),
       now,
       now,
     );
@@ -235,11 +237,12 @@ export class NativeTranscriptStore {
     entries: NativeTranscriptEntry[];
     usage: Usage | null;
     errorMessage?: string | null;
+    writerId?: string;
   }): void {
     const result = this.db.prepare(`
       UPDATE native_transcript_turns
       SET status = ?, messages_json = ?, entries_json = ?, usage_json = ?, error_message = ?, updated_at = ?
-      WHERE transcript_id = ? AND turn_id = ?
+      WHERE transcript_id = ? AND turn_id = ? AND status = 'running' AND writer_id = ?
     `).run(
       input.status,
       this.stringify(input.messages),
@@ -251,6 +254,7 @@ export class NativeTranscriptStore {
       Date.now(),
       input.transcriptId,
       input.turnId,
+      String(input.writerId ?? ""),
     );
     if (result.changes !== 1) {
       throw new Error(`Native transcript turn not found: ${input.turnId}`);

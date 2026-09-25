@@ -255,6 +255,8 @@ export class SessionManager {
       runtimeBackend: this.runtimeBackend,
       lifecycle,
       nativeTranscriptId,
+      transcriptOwner: owner,
+      projectId,
     });
     this.syncStoredState(userId);
 
@@ -536,6 +538,24 @@ export class SessionManager {
     this.runtime.updateWorkingDirectory(userId, cwd, { preserveSession: !clearThreads });
     if (clearThreads) {
       this.runtime.setContextRestoreMode(userId, "fresh");
+      if (record.runtimeBackend === "native") {
+        const projectId = deriveProjectSessionId(detectWorkspaceFrom(cwd));
+        const transcriptId = buildNativeTranscriptId({
+          owner: record.transcriptOwner ?? String(userId),
+          sessionKey: String(userId),
+          projectId,
+          lane: this.options.lane ?? "default",
+          lifecycle: record.lifecycle,
+        });
+        const adapter = record.session.getAdapter("codex");
+        if (adapter instanceof NativeAgentAdapter) {
+          adapter.retargetTranscript(transcriptId);
+        }
+        record.nativeTranscriptId = transcriptId;
+        record.projectId = projectId;
+      } else {
+        record.nativeTranscriptId = undefined;
+      }
     }
     this.syncStoredState(userId, { cwd, clearThreads });
   }

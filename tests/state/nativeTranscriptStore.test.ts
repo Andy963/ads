@@ -118,6 +118,54 @@ describe("NativeTranscriptStore", () => {
     assert.match(turns[0]?.errorMessage ?? "", /interrupted/);
   });
 
+  it("does not allow an old writer to complete an interrupted turn", () => {
+    const { store } = createStore();
+    const transcriptId = "transcript-writer-fence";
+    store.beginTurn({
+      transcriptId,
+      turnId: "turn-writer-fence",
+      messages: [{ role: "user", content: "run" }],
+      entries: [{ kind: "message", message: { role: "user", content: "run" } }],
+      provider: { provider: "test", model: "test-model" },
+      writerId: "old-writer",
+    });
+
+    store.listTurns(transcriptId);
+    assert.throws(
+      () => store.updateTurn({
+        transcriptId,
+        turnId: "turn-writer-fence",
+        status: "completed",
+        messages: [{ role: "user", content: "run" }],
+        entries: [{ kind: "message", message: { role: "user", content: "run" } }],
+        usage: null,
+        writerId: "old-writer",
+      }),
+      /turn not found|superseded/,
+    );
+    assert.equal(store.listTurns(transcriptId)[0]?.status, "interrupted");
+  });
+
+  it("redacts explicit credentials even when they are shorter than four characters", () => {
+    const { dbPath, store } = createStore(["abc"]);
+    const transcriptId = "transcript-short-credential";
+    store.beginTurn({
+      transcriptId,
+      turnId: "short-credential-turn",
+      messages: [{ role: "user", content: "credential=abc" }],
+      entries: [{ kind: "message", message: { role: "user", content: "credential=abc" } }],
+      provider: { provider: "test", model: "test-model" },
+    });
+
+    const raw = JSON.stringify(
+      getStateDatabase(dbPath)
+        .prepare("SELECT messages_json, entries_json FROM native_transcript_turns")
+        .all(),
+    );
+    assert.doesNotMatch(raw, /abc/);
+    assert.match(raw, /\[redacted\]/);
+  });
+
   it("redacts common credential formats before persistence", () => {
     const { dbPath, store } = createStore();
     const transcriptId = "transcript-common-credentials";

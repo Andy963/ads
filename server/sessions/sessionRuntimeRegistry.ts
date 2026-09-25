@@ -25,6 +25,8 @@ export interface SessionRuntimeRecord<
   runtimeBackend: AgentRuntimeBackend;
   lifecycle: SessionLifecycle;
   nativeTranscriptId?: string;
+  transcriptOwner?: string;
+  projectId?: string;
 }
 
 export class SessionRuntimeRegistry<
@@ -63,7 +65,13 @@ export class SessionRuntimeRegistry<
     userId: number,
     session: TSession,
     cwd: string,
-    metadata: { runtimeBackend: AgentRuntimeBackend; lifecycle: SessionLifecycle; nativeTranscriptId?: string },
+    metadata: {
+      runtimeBackend: AgentRuntimeBackend;
+      lifecycle: SessionLifecycle;
+      nativeTranscriptId?: string;
+      transcriptOwner?: string;
+      projectId?: string;
+    },
   ): void {
     this.sessions.set(userId, {
       session,
