@@ -13,6 +13,7 @@ import { closeAllStateDatabases, getStateDatabase } from "../../server/state/dat
 import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
 import { createUpstreamCredentialStore } from "../../server/state/upstreamCredentialStore.js";
 import { NativeTranscriptStore } from "../../server/state/nativeTranscriptStore.js";
+import { ThreadStorage } from "../../server/sessions/threadStorage.js";
 
 function buildNativeTranscriptId(input: {
   owner: string;
@@ -245,6 +246,67 @@ describe("SessionManager agent allowlists", () => {
       manager.destroy();
       closeAllStateDatabases();
       fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces a Native transcript when the saved CWD is no longer compatible", () => {
+    const firstDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-session-cwd-a-"));
+    const secondDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-session-cwd-b-"));
+    const dbPath = path.join(firstDirectory, "state.db");
+    const owner = "auth-user-cwd-scope";
+    const projectId = "project-cwd-scope";
+    const userId = 123460;
+    const transcriptId = buildNativeTranscriptId({ owner, sessionKey: String(userId), projectId });
+    const store = new NativeTranscriptStore(getStateDatabase(dbPath));
+    const threadStorage = new ThreadStorage({ stateDbPath: dbPath, namespace: "native-cwd-scope" });
+    store.beginTurn({
+      transcriptId,
+      turnId: "old-turn",
+      messages: [{ role: "user", content: "old project context" }],
+      entries: [{ kind: "message", message: { role: "user", content: "old project context" } }],
+      provider: { provider: "test", model: "test-model" },
+    });
+    store.updateTurn({
+      transcriptId,
+      turnId: "old-turn",
+      status: "completed",
+      messages: [{ role: "user", content: "old project context" }],
+      entries: [{ kind: "message", message: { role: "user", content: "old project context" } }],
+      usage: null,
+    });
+
+    const manager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      threadStorage,
+      { ADS_AGENT_RUNTIME: "native", ADS_WEB_SESSION_PEPPER: "test-only-pepper" },
+      { stateDbPath: dbPath, lane: "worker" },
+    );
+    try {
+      manager.getOrCreate(userId, firstDirectory, true, {
+        authUserId: owner,
+        projectId,
+        lifecycle: "durable",
+      });
+      assert.equal(manager.getContextRestoreMode(userId), "thread_resumed");
+      manager.dropSession(userId);
+
+      manager.getOrCreate(userId, secondDirectory, true, {
+        authUserId: owner,
+        projectId,
+        lifecycle: "durable",
+      });
+
+      assert.equal(manager.getContextRestoreMode(userId), "fresh");
+      assert.equal(manager.needsHistoryInjection(userId), false);
+      assert.deepEqual(store.loadCompletedMessages(transcriptId), []);
+    } finally {
+      manager.destroy();
+      closeAllStateDatabases();
+      fs.rmSync(firstDirectory, { recursive: true, force: true });
+      fs.rmSync(secondDirectory, { recursive: true, force: true });
     }
   });
 });

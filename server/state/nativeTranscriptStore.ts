@@ -68,8 +68,34 @@ type StoredTurnRow = {
 
 const INTERRUPTED_ERROR = "Native turn was interrupted before completion.";
 const MAX_TRANSCRIPT_ERROR_LENGTH = 64 * 1024;
-const CREDENTIAL_FIELD_NAME = /^(?:auth|authorization|proxy-authorization|cookie|set-cookie|password|secret|token|api[_-]?key|x-api-key|auth[_-]?token|access[_-]?token|refresh[_-]?token|.*credential.*)$/i;
-const CREDENTIAL_ASSIGNMENT = /(\b(?:api[_-]?key|authorization|auth[_-]?token|access[_-]?token|refresh[_-]?token|secret|password|cookie)\b\s*["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n,;&}]+)/gi;
+const CREDENTIAL_ASSIGNMENT = /(\b[A-Za-z_][A-Za-z0-9_.-]*\b\s*["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n,;&}]+)/g;
+const CREDENTIAL_KEY_PARTS = [
+  "auth",
+  "authorization",
+  "cookie",
+  "password",
+  "passwd",
+  "secret",
+  "credential",
+  "apikey",
+  "authtoken",
+  "accesstoken",
+  "refreshtoken",
+  "privatekey",
+  "signingkey",
+  "pepper",
+];
+
+function isCredentialField(key: string): boolean {
+  const normalized = key.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
+  return normalized === "token"
+    || normalized.endsWith("token")
+    || CREDENTIAL_KEY_PARTS.some((part) => normalized.includes(part))
+    || (
+      normalized.endsWith("key")
+      && (normalized.includes("client") || normalized.includes("private") || normalized.includes("signing"))
+    );
+}
 
 function collectExplicitRedactions(options: NativeTranscriptStoreOptions): string[] {
   const values = (options.redactions ?? [])
@@ -111,7 +137,9 @@ function redactSensitiveText(value: string, redactions: string[], depth = 0): st
     .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1[redacted]@")
     .replace(
       CREDENTIAL_ASSIGNMENT,
-      (_match, prefix: string, secretValue: string) => {
+      (match: string, prefix: string, secretValue: string) => {
+        const key = prefix.match(/^[A-Za-z_][A-Za-z0-9_.-]*/)?.[0] ?? "";
+        if (!isCredentialField(key)) return match;
         const quote = secretValue.startsWith("\"") || secretValue.startsWith("'") ? secretValue[0] : "";
         return `${prefix}${quote}[redacted]${quote}`;
       },
@@ -128,9 +156,9 @@ function sanitizeTranscriptValue(value: unknown, redactions: string[], depth = 0
   }
   if (!value || typeof value !== "object") return String(value ?? "");
 
-  const result: Record<string, unknown> = {};
+  const result = Object.create(null) as Record<string, unknown>;
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    if (CREDENTIAL_FIELD_NAME.test(key)) {
+    if (isCredentialField(key)) {
       result[key] = "[redacted]";
       continue;
     }

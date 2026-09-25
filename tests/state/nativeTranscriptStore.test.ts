@@ -249,4 +249,68 @@ describe("NativeTranscriptStore", () => {
     });
     assert.deepEqual(JSON.parse(restored[2]?.content ?? "{}"), { credential: "[redacted]" });
   });
+
+  it("redacts broad credential field names and preserves own __proto__ fields", () => {
+    const { dbPath, store } = createStore();
+    const transcriptId = "transcript-broad-credentials";
+    const toolArguments = JSON.parse(JSON.stringify({
+      client_secret: "client-secret-value",
+      nested: {
+        clientSecret: "camel-secret-value",
+        private_key: "private-key-value",
+        signingKey: "signing-key-value",
+        "X-Auth-Token": "auth-token-value",
+      },
+    }));
+    Object.defineProperty(toolArguments, "__proto__", {
+      value: { safe: "proto-value" },
+      enumerable: true,
+      configurable: true,
+    });
+    const messages = [{
+      role: "assistant" as const,
+      content: null,
+      tool_calls: [{
+        id: "credential-call",
+        type: "function" as const,
+        function: { name: "apply_patch", arguments: JSON.stringify(toolArguments) },
+      }],
+    }];
+
+    store.beginTurn({
+      transcriptId,
+      turnId: "credential-turn",
+      messages,
+      entries: [{ kind: "message", message: messages[0] }],
+      provider: { provider: "test", model: "test-model" },
+    });
+    store.updateTurn({
+      transcriptId,
+      turnId: "credential-turn",
+      status: "completed",
+      messages,
+      entries: [{ kind: "message", message: messages[0] }],
+      usage: null,
+    });
+
+    const raw = JSON.stringify(
+      getStateDatabase(dbPath)
+        .prepare("SELECT messages_json, entries_json FROM native_transcript_turns")
+        .all(),
+    );
+    assert.doesNotMatch(raw, /client-secret-value|camel-secret-value|private-key-value|signing-key-value|auth-token-value/);
+
+    const restoredArguments = JSON.parse(
+      store.loadCompletedMessages(transcriptId)[0]?.tool_calls?.[0]?.function.arguments ?? "{}",
+    ) as Record<string, unknown>;
+    assert.equal(Object.hasOwn(restoredArguments, "__proto__"), true);
+    assert.deepEqual(restoredArguments.__proto__, { safe: "proto-value" });
+    assert.equal(restoredArguments.client_secret, "[redacted]");
+    assert.deepEqual(restoredArguments.nested, {
+      clientSecret: "[redacted]",
+      private_key: "[redacted]",
+      signingKey: "[redacted]",
+      "X-Auth-Token": "[redacted]",
+    });
+  });
 });

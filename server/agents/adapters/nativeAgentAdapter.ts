@@ -40,6 +40,13 @@ const DEFAULT_MAX_TOOL_ROUNDS = 0;
 const TOOL_ROUND_LIMIT_MESSAGE =
   "Native runtime reached the configured tool-round limit. The completed tool results are available above; continue with the next prompt if you want to proceed.";
 
+class NativeTurnResetError extends Error {
+  constructor() {
+    super("Native turn was superseded by a destructive session reset.");
+    this.name = "NativeTurnResetError";
+  }
+}
+
 const DEFAULT_METADATA: AgentMetadata = {
   id: NATIVE_ADAPTER_ID,
   name: "Native Runtime",
@@ -169,6 +176,7 @@ export class NativeAgentAdapter implements AgentAdapter {
   private readonly transcriptId?: string;
   private readonly transcriptStore?: NativeTranscriptStore;
   private readonly activeTranscriptTurns = new Set<string>();
+  private resetGeneration = 0;
 
   constructor(options: NativeAgentAdapterOptions) {
     this.credentialOwner = String(options.credentialOwner ?? "").trim();
@@ -250,11 +258,12 @@ export class NativeAgentAdapter implements AgentAdapter {
   }
 
   reset(options?: { clearPersistedState?: boolean }): void {
+    if (options?.clearPersistedState) {
+      this.resetGeneration += 1;
+      this.activeTranscriptTurns.clear();
+    }
     if (options?.clearPersistedState && this.transcriptId && this.transcriptStore) {
       this.transcriptStore.clear(this.transcriptId);
-    }
-    if (options?.clearPersistedState) {
-      this.activeTranscriptTurns.clear();
     }
     this.conversation = [];
     this.threadId = `native-${randomUUID()}`;
@@ -329,6 +338,7 @@ export class NativeAgentAdapter implements AgentAdapter {
 
   private checkpointTurn(input: {
     turnId: string;
+    resetGeneration: number;
     status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
     messages: NativeChatMessage[];
     entries: NativeTranscriptEntry[];
@@ -336,6 +346,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     provider: NativeTranscriptProviderMetadata;
     errorMessage?: string | null;
   }): void {
+    this.assertResetGeneration(input.resetGeneration);
     if (!this.transcriptId || !this.transcriptStore) return;
     if (input.status === "running" && !this.activeTranscriptTurns.has(input.turnId)) {
       this.transcriptStore.beginTurn({
@@ -362,6 +373,12 @@ export class NativeAgentAdapter implements AgentAdapter {
     }
   }
 
+  private assertResetGeneration(expected: number): void {
+    if (expected !== this.resetGeneration) {
+      throw new NativeTurnResetError();
+    }
+  }
+
   private async runTurn(input: Input, options: AgentSendOptions): Promise<AgentRunResult> {
     const userText = textFromInput(input);
     const model = this.resolver.resolve(this.model, this.modelConfig);
@@ -374,6 +391,7 @@ export class NativeAgentAdapter implements AgentAdapter {
         : undefined,
     };
     const combined = createCombinedSignal(options.signal, this.turnTimeoutMs);
+    const resetGeneration = this.resetGeneration;
     const turnId = `native-turn-${randomUUID()}`;
     const userMessage: NativeChatMessage = { role: "user", content: userText };
     const workingDirectory = this.workingDirectory ?? this.workspaceRoot;
@@ -414,6 +432,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     try {
       this.checkpointTurn({
         turnId,
+        resetGeneration,
         status: "running",
         messages: turnMessages,
         entries: turnEntries,
@@ -450,6 +469,7 @@ export class NativeAgentAdapter implements AgentAdapter {
           turnEntries.push({ kind: "message", message: assistantMessage });
           this.checkpointTurn({
             turnId,
+            resetGeneration,
             status: "completed",
             messages: turnMessages,
             entries: turnEntries,
@@ -467,6 +487,7 @@ export class NativeAgentAdapter implements AgentAdapter {
         turnEntries.push({ kind: "message", message: assistantMessage });
         this.checkpointTurn({
           turnId,
+          resetGeneration,
           status: "running",
           messages: turnMessages,
           entries: turnEntries,
@@ -498,6 +519,7 @@ export class NativeAgentAdapter implements AgentAdapter {
           turnEntries.push({ kind: "message", message: toolMessage });
           this.checkpointTurn({
             turnId,
+            resetGeneration,
             status: "running",
             messages: turnMessages,
             entries: turnEntries,
@@ -517,6 +539,7 @@ export class NativeAgentAdapter implements AgentAdapter {
           });
           this.checkpointTurn({
             turnId,
+            resetGeneration,
             status: "completed",
             messages: turnMessages,
             entries: turnEntries,
@@ -529,6 +552,10 @@ export class NativeAgentAdapter implements AgentAdapter {
         }
       }
     } catch (error) {
+      if (error instanceof NativeTurnResetError) {
+        this.emitRaw({ type: "turn.failed", error: { message: error.message } });
+        throw error;
+      }
       const normalized = isAbortError(error) || combined.signal.aborted
         ? createAbortError("Native runtime request aborted")
         : error instanceof Error
@@ -543,6 +570,7 @@ export class NativeAgentAdapter implements AgentAdapter {
       try {
         this.checkpointTurn({
           turnId,
+          resetGeneration,
           status,
           messages: turnMessages,
           entries: turnEntries,

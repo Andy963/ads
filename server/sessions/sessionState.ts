@@ -152,6 +152,17 @@ export function resolveResumeState(args: {
   const savedCwd = normalizeCwd(record?.cwd);
   const currentCwd = normalizeCwd(args.currentCwd);
 
+  if (savedCwd && currentCwd && !areSessionCwdsCompatible(savedCwd, currentCwd)) {
+    args.logger.info(
+      `[Continuity] user=${args.userId} restore=fresh reason=cwd_mismatch agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId) ?? "none"} savedCwd=${savedCwd} currentCwd=${currentCwd}`,
+    );
+    return {
+      activeAgentId: savedActiveAgentId,
+      shouldInjectHistory: false,
+      restoreMode: "fresh",
+    };
+  }
+
   if (currentBackend === "native" && args.nativeTranscriptAvailable) {
     args.logger.info(
       `[Continuity] user=${args.userId} restore=thread_resumed reason=native_transcript_restored agent=${savedActiveAgentId ?? "unknown"}`,
@@ -171,17 +182,6 @@ export function resolveResumeState(args: {
       activeAgentId: savedActiveAgentId,
       shouldInjectHistory: true,
       restoreMode: "history_injection",
-    };
-  }
-
-  if (candidateThreadId && savedCwd && currentCwd && !areSessionCwdsCompatible(savedCwd, currentCwd)) {
-    args.logger.info(
-      `[Continuity] user=${args.userId} restore=fresh reason=cwd_mismatch agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId)} savedCwd=${savedCwd} currentCwd=${currentCwd}`,
-    );
-    return {
-      activeAgentId: savedActiveAgentId,
-      shouldInjectHistory: false,
-      restoreMode: "fresh",
     };
   }
 

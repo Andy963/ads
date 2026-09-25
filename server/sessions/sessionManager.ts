@@ -12,6 +12,7 @@ import {
   buildPreservedResetState,
   buildSyncedSessionState,
   clearSavedResumeThreadId,
+  areSessionCwdsCompatible,
   type ContextRestoreMode,
   getSavedResumeThreadId,
   getSavedSessionState,
@@ -197,7 +198,9 @@ export class SessionManager {
         })
       : undefined;
     const restoreNativeTranscript = lifecycle === "durable" && Boolean(resumeThread);
-    const nativeTranscriptAvailable = restoreNativeTranscript && nativeTranscriptId
+    const nativeTranscriptAvailable = restoreNativeTranscript
+      && (!savedState?.cwd || areSessionCwdsCompatible(savedState.cwd, effectiveCwd))
+      && nativeTranscriptId
       ? new NativeTranscriptStore(getStateDatabase(this.options.stateDbPath))
           .loadCompletedMessages(nativeTranscriptId).length > 0
       : false;
@@ -245,7 +248,7 @@ export class SessionManager {
       workspaceRoot,
       projectId: options?.projectId,
       lifecycle,
-      restoreNativeTranscript,
+      restoreNativeTranscript: restoreNativeTranscript && resumeState.restoreMode === "thread_resumed",
     });
 
     this.runtime.trackSession(userId, session, effectiveCwd, {

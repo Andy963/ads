@@ -292,6 +292,32 @@ describe("telegram/sessionState helpers", () => {
     assert.equal(resume.shouldInjectHistory, false);
   });
 
+  it("does not restore a Native transcript after an incompatible CWD change", () => {
+    storage.setRecord(21, {
+      cwd: "/tmp/project-a",
+      agentThreads: {},
+      activeAgentId: "codex",
+      runtimeBackend: "native",
+      lifecycle: "durable",
+    });
+
+    const resume = resolveResumeState({
+      userId: 21,
+      resumeThread: true,
+      storage,
+      logger: { info: () => {} },
+      currentCwd: "/tmp/project-b",
+      runtimeBackend: "native",
+      nativeTranscriptAvailable: true,
+    });
+
+    assert.deepEqual(resume, {
+      activeAgentId: "codex",
+      shouldInjectHistory: false,
+      restoreMode: "fresh",
+    });
+  });
+
   it("uses history injection when a Codex record contains a Native execution alias", () => {
     storage.setRecord(19, {
       threadId: "native-turn-19",

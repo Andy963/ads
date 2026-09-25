@@ -867,6 +867,83 @@ describe("NativeAgentAdapter", () => {
     }
   });
 
+  it("rejects an in-flight turn after a destructive reset", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-destructive-reset-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-destructive-reset-state-"));
+    const dbPath = path.join(stateDir, "state.db");
+    const transcriptId = "native-transcript-destructive-reset";
+
+    class ResetDuringCheckpointStore extends NativeTranscriptStore {
+      onRunningCheckpoint: (() => void) | undefined;
+      private triggered = false;
+
+      override updateTurn(input: Parameters<NativeTranscriptStore["updateTurn"]>[0]): void {
+        super.updateTurn(input);
+        if (input.status === "running" && !this.triggered) {
+          this.triggered = true;
+          this.onRunningCheckpoint?.();
+        }
+      }
+    }
+
+    const store = new ResetDuringCheckpointStore(getStateDatabase(dbPath));
+    try {
+      let requestNumber = 0;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        workingDirectory: workspace,
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-api-key",
+            provider: "test",
+          }),
+        },
+        transcriptId,
+        transcriptStore: store,
+        fetchImpl: async () => {
+          requestNumber += 1;
+          if (requestNumber === 1) {
+            return sse([
+              JSON.stringify({
+                choices: [{
+                  delta: {
+                    tool_calls: [{
+                      index: 0,
+                      id: "exec-1",
+                      function: {
+                        name: "exec_command",
+                        arguments: JSON.stringify({ cmd: "echo", args: ["safe"] }),
+                      },
+                    }],
+                  },
+                }],
+              }),
+              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+            ]);
+          }
+          return sse([JSON.stringify({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] })]);
+        },
+      });
+      store.onRunningCheckpoint = () => adapter.reset({ clearPersistedState: true });
+      const events: Array<{ type: string; message?: string }> = [];
+      adapter.onEvent((event) => {
+        const raw = event.raw as { type?: string; error?: { message?: string } };
+        events.push({ type: String(raw.type ?? ""), message: raw.error?.message });
+      });
+
+      await assert.rejects(adapter.send("run a tool"), /superseded by a destructive session reset/);
+      assert.deepEqual(store.listTurns(transcriptId), []);
+      assert.equal(events.some((event) => event.type === "turn.failed"), true);
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("clears durable Native context only for an explicit destructive reset", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-clear-"));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-clear-state-"));
