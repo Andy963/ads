@@ -35,4 +35,5 @@
 - 0020 - [ADR 0020: Isolate Actions Reviewer Context and Persist Review Contracts](0020-isolated-actions-reviewer-contract.md)
 - 0021 - [ADR 0021: Enforce Exclusive Runtime Backend and Session Lifecycle](0021-exclusive-runtime-backend-lifecycle.md)
 - 0022 - [ADR 0022: 持久化 Native Runtime Transcript](0022-persist-native-runtime-transcripts.md)
+- 0023 - [ADR 0023: 为 Native Runtime 引入 Token-aware Context Projection](0023-token-aware-native-context-projection.md)
 <!-- ADS:ADR_INDEX_END -->

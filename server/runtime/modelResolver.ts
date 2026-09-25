@@ -17,6 +17,7 @@ export interface NativeModelConfig {
   baseUrl: string;
   apiKey: string;
   provider: string;
+  contextWindow?: number;
   options?: NativeModelRequestOptions;
   supportsReasoningEffort?: boolean;
 }
@@ -91,6 +92,23 @@ function requestOptions(config: Record<string, unknown> | null | undefined): Nat
   return options;
 }
 
+function contextWindow(config: Record<string, unknown> | null | undefined): number | undefined {
+  for (const key of [
+    "contextWindow",
+    "context_window",
+    "modelContextWindow",
+    "model_context_window",
+    "maxContextTokens",
+    "max_context_tokens",
+  ]) {
+    const value = Number(config?.[key]);
+    if (Number.isSafeInteger(value) && value >= 256 && value <= 100_000_000) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 function resolveSavedModelConfig(
   model: string,
   overrideConfig: Record<string, unknown> | null | undefined,
@@ -146,12 +164,14 @@ function resolveSavedModelConfig(
     apiKey = fallback.apiKey;
   }
 
+  const resolvedContextWindow = contextWindow(config);
   return {
     model: String(saved.modelId ?? model).trim() || model,
     baseUrl,
     apiKey,
     provider: savedProvider || (credentials?.provider ?? "openai"),
     options: requestOptions(config),
+    ...(resolvedContextWindow ? { contextWindow: resolvedContextWindow } : {}),
     ...(inferReasoningEffortSupport(config, String(saved.modelId ?? model).trim() || model)
       ? { supportsReasoningEffort: true }
       : {}),

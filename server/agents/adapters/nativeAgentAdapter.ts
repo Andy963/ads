@@ -20,6 +20,12 @@ import {
   type NativeCompletionResult,
 } from "../../runtime/openAiCompatibleClient.js";
 import { createNativeModelResolver, type NativeModelResolver } from "../../runtime/modelResolver.js";
+import {
+  DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS,
+  DEFAULT_NATIVE_CONTEXT_WINDOW,
+  formatNativeContextDiagnostic,
+  projectNativeContext,
+} from "../../runtime/nativeContextProjection.js";
 import { getStateDatabase } from "../../state/database.js";
 import {
   NativeTranscriptStore,
@@ -471,11 +477,31 @@ export class NativeAgentAdapter implements AgentAdapter {
       for (let round = 0; this.maxToolRounds === 0 || round < this.maxToolRounds; round += 1) {
         const itemId = `${turnId}-message-${round}`;
         let roundText = "";
+        const contextProjection = projectNativeContext(currentMessages, {
+          contextWindow: model.contextWindow
+            ?? readNonNegativeInteger(this.env.ADS_NATIVE_CONTEXT_WINDOW, DEFAULT_NATIVE_CONTEXT_WINDOW),
+          reservedTokens: model.options?.maxTokens
+            ?? readNonNegativeInteger(
+              this.env.ADS_NATIVE_CONTEXT_RESERVED_TOKENS,
+              DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS,
+            ),
+          tools: NATIVE_TOOL_DEFINITIONS,
+        });
+        if (contextProjection.diagnostic.compacted) {
+          this.emitRaw({
+            type: "item.completed",
+            item: {
+              type: "context",
+              id: `${turnId}-context-projection`,
+              text: formatNativeContextDiagnostic(contextProjection.diagnostic),
+            },
+          });
+        }
         const completion = await completeNativeChat({
           baseUrl: model.baseUrl,
           apiKey: model.apiKey,
           model: model.model,
-          messages: currentMessages,
+          messages: contextProjection.messages,
           tools: NATIVE_TOOL_DEFINITIONS,
           options: requestOptions,
           signal: combined.signal,
