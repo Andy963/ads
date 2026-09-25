@@ -298,6 +298,19 @@ export class NativeAgentAdapter implements AgentAdapter {
     }
   }
 
+  getCapabilities(): AgentMetadata["capabilities"] {
+    const model = this.resolver.resolve(this.model, this.modelConfig);
+    const capabilities = resolveNativeProviderCapabilities(model.capabilities);
+    const supported: AgentMetadata["capabilities"] = ["text"];
+    if (capabilities.toolCalls === "supported") {
+      supported.push("files", "commands");
+    }
+    if (capabilities.imageInput === "supported") {
+      supported.push("images");
+    }
+    return supported;
+  }
+
   onEvent(handler: (event: AgentEvent) => void): () => void {
     this.listeners.add(handler);
     return () => this.listeners.delete(handler);

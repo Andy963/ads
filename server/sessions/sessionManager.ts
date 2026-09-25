@@ -4,7 +4,7 @@ import type { SandboxMode } from '../config.js';
 import { createLogger } from '../utils/logger.js';
 import { CodexAppServerAdapter } from '../agents/adapters/codexAppServerAdapter.js';
 import { NativeAgentAdapter } from '../agents/adapters/nativeAgentAdapter.js';
-import type { AgentAdapter, AgentIdentifier } from '../agents/types.js';
+import type { AgentAdapter, AgentCapability, AgentIdentifier } from '../agents/types.js';
 import { HybridOrchestrator } from '../agents/orchestrator.js';
 import { ConversationLogger } from '../utils/conversationLogger.js';
 import { ThreadStorage } from './threadStorage.js';
@@ -489,6 +489,31 @@ export class SessionManager {
 
   getRuntimeBackend(): AgentRuntimeBackend {
     return this.runtimeBackend;
+  }
+
+  getActionsRuntimePreflight(input: {
+    workspaceRoot: string;
+    owner: string;
+  }): { backend: AgentRuntimeBackend; capabilities: AgentCapability[] } {
+    if (this.runtimeBackend === "native") {
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: input.owner,
+        stateDbPath: this.options.stateDbPath,
+        workspaceRoot: input.workspaceRoot,
+        model: this.defaultModel,
+        env: this.codexEnv,
+        transcriptMode: "disabled",
+      });
+      return {
+        backend: this.runtimeBackend,
+        capabilities: adapter.getCapabilities(),
+      };
+    }
+
+    return {
+      backend: this.runtimeBackend,
+      capabilities: ["text", "images", "files", "commands"],
+    };
   }
 
   private getSessionDomain(): string {
