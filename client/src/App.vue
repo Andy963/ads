@@ -26,6 +26,10 @@ import {
 import { purgeLatestPromptPreferences } from "./lib/preferencesStore";
 import type { TranscriptViewport } from "./app/transcriptCache";
 import {
+  buildTranscriptViewportScopeKey,
+  isTranscriptViewportScopeCurrent,
+} from "./lib/transcriptViewportScope";
+import {
   ArrowRight,
   CirclePlus,
   ChatDotRound,
@@ -208,8 +212,16 @@ const {
   listResumableSessions,
 });
 
-const advisorViewportScopeKey = computed(() => `${advisorPanelKey.value}:${errorRecoveryGeneration.value}`);
-const workerViewportScopeKey = computed(() => `${workerPanelKey.value}:${errorRecoveryGeneration.value}`);
+const advisorViewportScopeKey = computed(() => buildTranscriptViewportScopeKey({
+  panelKey: advisorPanelKey.value,
+  errorRecoveryGeneration: errorRecoveryGeneration.value,
+  accountGeneration: accountGeneration.value,
+}));
+const workerViewportScopeKey = computed(() => buildTranscriptViewportScopeKey({
+  panelKey: workerPanelKey.value,
+  errorRecoveryGeneration: errorRecoveryGeneration.value,
+  accountGeneration: accountGeneration.value,
+}));
 const advisorViewportScope = ref<string | undefined>();
 const workerViewportScope = ref<string | undefined>();
 
@@ -222,12 +234,12 @@ function handleWorkerViewportScope(scope: string | undefined): void {
 }
 
 function handleAdvisorViewport(viewport: TranscriptViewport): void {
-  if (advisorViewportScope.value !== advisorViewportScopeKey.value) return;
+  if (!isTranscriptViewportScopeCurrent(advisorViewportScope.value, advisorViewportScopeKey.value)) return;
   if (activeAdvisorRuntime.value.transcriptViewport) activeAdvisorRuntime.value.transcriptViewport.value = viewport;
 }
 
 function handleWorkerViewport(viewport: TranscriptViewport): void {
-  if (workerViewportScope.value !== workerViewportScopeKey.value) return;
+  if (!isTranscriptViewportScopeCurrent(workerViewportScope.value, workerViewportScopeKey.value)) return;
   if (activeRuntime.value.transcriptViewport) activeRuntime.value.transcriptViewport.value = viewport;
 }
 
