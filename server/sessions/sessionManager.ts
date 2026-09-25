@@ -204,8 +204,9 @@ export class SessionManager {
         })
       : undefined;
     const restoreNativeTranscript = lifecycle === "durable" && Boolean(resumeThread);
-    const nativeTranscriptAvailable = restoreNativeTranscript
-      && (!savedState?.cwd || areSessionCwdsCompatible(savedState.cwd, effectiveCwd))
+    const nativeTranscriptCompatible = restoreNativeTranscript
+      && (!savedState?.cwd || areSessionCwdsCompatible(savedState.cwd, effectiveCwd));
+    const nativeTranscriptAvailable = nativeTranscriptCompatible
       && nativeTranscriptId
       ? new NativeTranscriptStore(getStateDatabase(this.options.stateDbPath))
           .hasCompletedMessages(nativeTranscriptId)
@@ -254,7 +255,7 @@ export class SessionManager {
       workspaceRoot,
       projectId: options?.projectId,
       lifecycle,
-      restoreNativeTranscript: restoreNativeTranscript && resumeState.restoreMode === "thread_resumed",
+      restoreNativeTranscript: nativeTranscriptCompatible,
     });
 
     this.runtime.trackSession(userId, session, effectiveCwd, {
