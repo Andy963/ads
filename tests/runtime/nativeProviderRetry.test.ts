@@ -275,6 +275,62 @@ describe("Native provider retry and recovery", () => {
     }
   });
 
+  it("finalizes the newest retry checkpoint when retargeting an active retry", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-active-retry-retarget-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-active-retry-retarget-db-"));
+    const store = new NativeTranscriptStore(getStateDatabase(path.join(stateDir, "state.db")));
+    try {
+      let releaseResponse!: (response: Response) => void;
+      let markActiveRetryStarted!: () => void;
+      const responseReady = new Promise<Response>((resolve) => { releaseResponse = resolve; });
+      const activeRetryStarted = new Promise<void>((resolve) => { markActiveRetryStarted = resolve; });
+      let requests = 0;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelResolver: resolver(),
+        retryBackoffMs: [0],
+        transcriptId: "active-retry-old",
+        transcriptStore: store,
+        fetchImpl: async () => {
+          requests += 1;
+          if (requests === 1) return new Response("temporary", { status: 503 });
+          if (requests === 2) {
+            return sse([JSON.stringify({
+              choices: [{
+                delta: {
+                  tool_calls: [{
+                    index: 0,
+                    type: "function",
+                    id: "retry-read-1",
+                    function: { name: "read_file", arguments: "{\"file\":\"missing.txt\"}" },
+                  }],
+                },
+                finish_reason: "tool_calls",
+              }],
+            })]);
+          }
+          markActiveRetryStarted();
+          return responseReady;
+        },
+      });
+
+      const pending = adapter.send("retarget active retry");
+      await activeRetryStarted;
+      adapter.retargetTranscript("active-retry-new");
+      releaseResponse(sse([JSON.stringify({ choices: [{ delta: { content: "late" }, finish_reason: "stop" }] })]));
+
+      await assert.rejects(pending, /superseded by a destructive session reset/);
+      const turn = store.listTurns("active-retry-old")[0];
+      assert.equal(turn?.status, "interrupted");
+      assert.equal(turn?.entries.some((entry) => entry.kind === "message" && entry.message.role === "tool"), true);
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("finalizes an active provider turn before retargeting its transcript", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-active-retarget-"));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-active-retarget-db-"));
@@ -373,6 +429,57 @@ describe("Native provider retry and recovery", () => {
       assert.equal(fs.existsSync(latePath), false);
       assert.equal(store.listTurns("active-tool-old")[0]?.status, "interrupted");
       assert.deepEqual(events.slice(eventCountAtRetarget), []);
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists tool side effects before publishing completion events", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-tool-completion-retarget-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-tool-completion-retarget-db-"));
+    const store = new NativeTranscriptStore(getStateDatabase(path.join(stateDir, "state.db")));
+    try {
+      const completedPath = path.join(workspace, "tool-completed");
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelResolver: resolver(),
+        transcriptId: "tool-completion-old",
+        transcriptStore: store,
+        fetchImpl: async () => sse([JSON.stringify({
+          choices: [{
+            delta: {
+              tool_calls: [{
+                index: 0,
+                type: "function",
+                id: "tool-completion-1",
+                function: {
+                  name: "exec_command",
+                  arguments: JSON.stringify({ cmd: "touch", args: [completedPath] }),
+                },
+              }],
+            },
+            finish_reason: "tool_calls",
+          }],
+        })]),
+      });
+      adapter.onEvent((event) => {
+        if (event.raw.type === "item.completed" && event.raw.item.type === "command_execution") {
+          adapter.retargetTranscript("tool-completion-new");
+        }
+      });
+
+      await assert.rejects(
+        adapter.send("retarget on tool completion"),
+        /superseded by a destructive session reset/,
+      );
+      const turn = store.listTurns("tool-completion-old")[0];
+      assert.equal(fs.existsSync(completedPath), true);
+      assert.equal(turn?.status, "interrupted");
+      assert.equal(turn?.entries.some((entry) => entry.kind === "command"), true);
+      assert.equal(turn?.entries.some((entry) => entry.kind === "message" && entry.message.role === "tool"), true);
     } finally {
       resetStateDatabaseForTests();
       fs.rmSync(workspace, { recursive: true, force: true });
@@ -535,6 +642,20 @@ describe("Native provider retry and recovery", () => {
         fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { content: "done" }, finish_reason: "stop" }] }), {
           headers: { "content-type": "application/json" },
         }),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        fetchImpl: async () => new Response(
+          "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"type\":\"function\",\"id\":\"call-2\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
       }),
       (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
     );

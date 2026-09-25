@@ -495,6 +495,32 @@ export class NativeAgentAdapter implements AgentAdapter {
     this.emitRaw({ type, item });
   }
 
+  private emitToolCompletionEvents(
+    assertTurnActive: () => void,
+    callId: string,
+    result: NativeToolExecutionResult,
+  ): void {
+    if (result.command) {
+      this.emitToolEvent(assertTurnActive, "item.completed", {
+        type: "command_execution",
+        id: result.command.id,
+        command: result.command.command,
+        status: result.command.status,
+        ...(result.command.exit_code === null || result.command.exit_code === undefined
+          ? {}
+          : { exit_code: result.command.exit_code }),
+        aggregated_output: result.command.aggregated_output,
+      });
+    }
+    if (result.changedFiles && result.changedFiles.length > 0) {
+      this.emitToolEvent(assertTurnActive, "item.completed", {
+        type: "file_change",
+        id: callId,
+        changes: result.changedFiles,
+      });
+    }
+  }
+
   private buildMessages(userText: string): NativeChatMessage[] {
     const messages: NativeChatMessage[] = [];
     if (this.developerInstructions) {
@@ -585,6 +611,7 @@ export class NativeAgentAdapter implements AgentAdapter {
       this.emitRaw(event);
     };
     assertTurnActive();
+    if (retryState.attempt > 1) this.pendingRetryCheckpoint = undefined;
     const userText = textFromInput(input);
     const model = this.resolver.resolve(this.model, this.modelConfig);
     const capabilities = resolveNativeProviderCapabilities(model.capabilities);
@@ -792,6 +819,7 @@ export class NativeAgentAdapter implements AgentAdapter {
             usage,
             provider: providerMetadata,
           });
+          this.emitToolCompletionEvents(assertTurnActive, call.id, result);
         }
 
         if (this.maxToolRounds > 0 && round + 1 >= this.maxToolRounds) {
@@ -932,26 +960,6 @@ export class NativeAgentAdapter implements AgentAdapter {
       };
     }
 
-    assertTurnActive();
-    if (result.command) {
-      this.emitToolEvent(assertTurnActive, "item.completed", {
-        type: "command_execution",
-        id: result.command.id,
-        command: result.command.command,
-        status: result.command.status,
-        ...(result.command.exit_code === null || result.command.exit_code === undefined
-          ? {}
-          : { exit_code: result.command.exit_code }),
-        aggregated_output: result.command.aggregated_output,
-      });
-    }
-    if (result.changedFiles && result.changedFiles.length > 0) {
-      this.emitToolEvent(assertTurnActive, "item.completed", {
-        type: "file_change",
-        id: call.id,
-        changes: result.changedFiles,
-      });
-    }
     return result;
   }
 }

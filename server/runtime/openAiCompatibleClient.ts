@@ -447,9 +447,14 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
   if (!sawChunk || !sawChoice || !sawDone || !finishReason) {
     throw new NativeProviderError("Native upstream stream ended before a complete response", { kind: "malformed" });
   }
-  const completedToolCalls = [...toolCalls.entries()]
-    .sort(([left], [right]) => left - right)
-    .map(([, call]) => call);
+  const completedToolCallEntries = [...toolCalls.entries()]
+    .sort(([left], [right]) => left - right);
+  if (completedToolCallEntries.some(([index], position) => index !== position)) {
+    throw new NativeProviderError("Native upstream returned non-contiguous tool-call indexes", {
+      kind: "malformed",
+    });
+  }
+  const completedToolCalls = completedToolCallEntries.map(([, call]) => call);
   const toolCallIndexes = new Map<string, number>();
   for (const call of completedToolCalls) {
     if (!call.id || !call.function.name || !call.function.arguments.trim()) {
