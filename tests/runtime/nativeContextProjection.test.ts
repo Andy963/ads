@@ -7,6 +7,7 @@ import {
   projectNativeContext,
 } from "../../server/runtime/nativeContextProjection.js";
 import type { NativeChatMessage } from "../../server/runtime/openAiCompatibleClient.js";
+import type { NativeToolDefinition } from "../../server/runtime/openAiCompatibleClient.js";
 
 function user(text: string): NativeChatMessage {
   return { role: "user", content: text };
@@ -87,6 +88,26 @@ describe("native context projection", () => {
         reservedTokens: 64,
       }),
       (error: unknown) => error instanceof NativeContextLimitError && error.code === "NATIVE_CONTEXT_LIMIT",
+    );
+  });
+
+  it("includes tool-definition payload tokens in the input budget", () => {
+    const tools: NativeToolDefinition[] = [{
+      type: "function",
+      function: {
+        name: "read_file",
+        description: "x".repeat(10_000),
+        parameters: { type: "object" },
+      },
+    }];
+
+    assert.throws(
+      () => projectNativeContext([user("request")], {
+        contextWindow: 256,
+        reservedTokens: 64,
+        tools,
+      }),
+      /tool definitions require/i,
     );
   });
 

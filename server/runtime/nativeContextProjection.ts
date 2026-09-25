@@ -1,4 +1,8 @@
-import type { NativeChatMessage, NativeChatToolCall } from "./openAiCompatibleClient.js";
+import type {
+  NativeChatMessage,
+  NativeChatToolCall,
+  NativeToolDefinition,
+} from "./openAiCompatibleClient.js";
 
 export const DEFAULT_NATIVE_CONTEXT_WINDOW = 32_768;
 export const DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS = 4_096;
@@ -11,6 +15,7 @@ export interface NativeContextProjectionOptions {
   contextWindow?: number;
   reservedTokens?: number;
   maxOutputTokens?: number;
+  tools?: NativeToolDefinition[];
 }
 
 export interface NativeContextProjectionDiagnostic {
@@ -75,6 +80,14 @@ function estimateNativeToolCallTokens(call: NativeChatToolCall): number {
 
 function estimateMessagesTokens(messages: NativeChatMessage[]): number {
   return messages.reduce((total, message) => total + estimateNativeMessageTokens(message), 0);
+}
+
+function estimateToolDefinitionTokens(tools: NativeToolDefinition[] | undefined): number {
+  if (!tools || tools.length === 0) return 0;
+  return tools.reduce(
+    (total, tool) => total + MESSAGE_OVERHEAD_TOKENS + textTokens(JSON.stringify(tool)),
+    0,
+  );
 }
 
 function normalizeContextWindow(value: number | undefined): number {
@@ -261,15 +274,16 @@ export function projectNativeContext(
   }
 
   const grouped = groupMessages(messages);
+  const toolDefinitionTokens = estimateToolDefinitionTokens(options.tools);
   const systemTokens = estimateMessagesTokens(grouped.system);
-  if (systemTokens > inputBudget) {
+  if (systemTokens + toolDefinitionTokens > inputBudget) {
     throw new NativeContextLimitError(
-      `Native context limit exceeded: system messages require ${systemTokens} tokens, but only ${inputBudget} input tokens are available.`,
+      `Native context limit exceeded: system messages and tool definitions require ${systemTokens + toolDefinitionTokens} tokens, but only ${inputBudget} input tokens are available.`,
     );
   }
 
   const selected: ContextTurn[] = [];
-  let usedTokens = systemTokens;
+  let usedTokens = systemTokens + toolDefinitionTokens;
   let droppedMessages = 0;
   let truncatedToolOutputs = 0;
   for (let index = grouped.turns.length - 1; index >= 0; index -= 1) {
@@ -311,7 +325,7 @@ export function projectNativeContext(
       compacted,
       contextWindow,
       reservedTokens,
-      estimatedTokens: estimateMessagesTokens(projectedMessages),
+      estimatedTokens: estimateMessagesTokens(projectedMessages) + toolDefinitionTokens,
       droppedMessages,
       truncatedToolOutputs,
     },

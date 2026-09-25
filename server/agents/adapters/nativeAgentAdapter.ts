@@ -485,6 +485,7 @@ export class NativeAgentAdapter implements AgentAdapter {
               this.env.ADS_NATIVE_CONTEXT_RESERVED_TOKENS,
               DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS,
             ),
+          tools: NATIVE_TOOL_DEFINITIONS,
         });
         if (contextProjection.diagnostic.compacted) {
           this.emitRaw({

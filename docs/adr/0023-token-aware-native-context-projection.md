@@ -20,7 +20,7 @@ transcript 已经可以长期保存，但发送给 provider 的派生上下文�
    tool result 保持原子关系，检测到孤立或不完整的 tool chain 时拒绝请求。
 3. 使用保守的字符/token estimator，并优先读取模型配置中的 context window；没有
    provider metadata 时使用可配置的保守 fallback。输入预算为 context window 减去
-   completion reserve。
+   completion reserve，且每次请求附带的 tool definitions 也计入该预算。
 4. 从最新 turn 向后选择完整 turn。旧 turn 超出预算时直接丢弃；最新 turn 的
    超大 tool output 仅在派生 projection 中截断，并写入明确 marker。无法容纳的
    非 tool turn 返回带 `NATIVE_CONTEXT_LIMIT` code 的 context-limit error。

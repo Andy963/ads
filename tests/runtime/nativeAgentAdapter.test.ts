@@ -1203,7 +1203,7 @@ describe("NativeAgentAdapter", () => {
             baseUrl: "https://provider.test/v1",
             apiKey: "test-api-key",
             provider: "test",
-            contextWindow: 300,
+            contextWindow: 1_000,
           }),
         },
         transcriptId,
