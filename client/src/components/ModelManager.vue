@@ -3,7 +3,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import { Close, CopyDocument, EditPen, Plus, Refresh, StarFilled } from "@element-plus/icons-vue";
 
 import type { ApiClient } from "../api/client";
-import type { LaneName, LanePromptSnapshot, ModelConfig } from "../api/types";
+import type { LaneName, LanePromptSnapshot, ModelConfig, StoredRoleProfileValue } from "../api/types";
+import { STORED_ROLE_PROFILE_VALUES } from "../../../shared/terminology.js";
 
 type ModelForm = {
   id: string;
@@ -17,11 +18,9 @@ type ModelForm = {
 
 type SettingsTab = "roles" | "models" | "lane-prompts";
 
-type RoleName = "acopilot" | "developer" | "reviewer";
-
 type RoleProfile = {
   id: string;
-  role: RoleName;
+  role: StoredRoleProfileValue;
   name: string;
   model_id: string;
   reasoning_effort: "low" | "medium" | "high";
@@ -76,9 +75,9 @@ const editingId = ref<string | null>(null);
 const dialogOpen = ref(false);
 const selectedModelId = ref<string | null>(null);
 const activeTab = ref<SettingsTab>(props.initialTab);
-const selectedRole = ref<RoleName>("acopilot");
+const selectedRole = ref<StoredRoleProfileValue>("acopilot");
 const roleProfiles = ref<RoleProfile[]>([]);
-const roleProfileBaselines = reactive<Record<RoleName, RoleProfileBaseline | null>>({
+const roleProfileBaselines = reactive<Record<StoredRoleProfileValue, RoleProfileBaseline | null>>({
   acopilot: null,
   developer: null,
   reviewer: null,
@@ -137,7 +136,7 @@ function roleProfileBaseline(profile: RoleProfile): RoleProfileBaseline {
   };
 }
 
-function selectRole(role: RoleName): void {
+function selectRole(role: StoredRoleProfileValue): void {
   selectedRole.value = role;
   if (role === "acopilot") {
     selectLane("acopilot");
@@ -752,7 +751,7 @@ async function loadLanePrompts(): Promise<void> {
     if (profiles && profiles.length > 0) {
       roleProfiles.value = profiles;
     }
-    for (const role of ["acopilot", "developer", "reviewer"] as const) {
+    for (const role of STORED_ROLE_PROFILE_VALUES) {
       const profile = profiles.find((item) => item.role === role);
       roleProfileBaselines[role] = profile ? roleProfileBaseline(profile) : null;
     }
