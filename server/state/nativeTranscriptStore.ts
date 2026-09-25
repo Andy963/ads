@@ -128,7 +128,7 @@ function redactSensitiveText(value: string, redactions: string[], depth = 0): st
       // Fall through to delimiter-aware redaction for malformed JSON-like text.
     }
   }
-  for (const secret of redactions) {
+  for (const secret of redactions.filter((value) => value.length >= 4)) {
     result = result.replaceAll(secret, "[redacted]");
   }
   result = result
@@ -218,6 +218,13 @@ export class NativeTranscriptStore {
     `).run(transcriptId, writerId, Date.now());
   }
 
+  claimTranscriptAndClear(transcriptId: string, writerId: string): void {
+    this.db.transaction(() => {
+      this.claimTranscript(transcriptId, writerId);
+      this.clear(transcriptId, writerId);
+    })();
+  }
+
   beginTurn(input: {
     transcriptId: string;
     turnId: string;
@@ -227,28 +234,30 @@ export class NativeTranscriptStore {
     writerId?: string;
   }): void {
     const writerId = String(input.writerId ?? "");
-    const lease = this.db.prepare(`
-      SELECT writer_id FROM native_transcript_leases WHERE transcript_id = ?
-    `).get(input.transcriptId) as { writer_id?: string } | undefined;
-    if (lease && lease.writer_id !== writerId) {
-      throw new NativeTranscriptWriterSupersededError();
-    }
-    const now = Date.now();
-    this.db.prepare(`
-      INSERT INTO native_transcript_turns (
-        transcript_id, turn_id, status, messages_json, entries_json,
-        usage_json, provider_json, error_message, writer_id, created_at, updated_at
-      ) VALUES (?, ?, 'running', ?, ?, NULL, ?, NULL, ?, ?, ?)
-    `).run(
-      input.transcriptId,
-      input.turnId,
-      this.stringify(input.messages),
-      this.stringify(input.entries),
-      this.stringify(input.provider),
-      String(input.writerId ?? ""),
-      now,
-      now,
-    );
+    this.db.transaction(() => {
+      const lease = this.db.prepare(`
+        SELECT writer_id FROM native_transcript_leases WHERE transcript_id = ?
+      `).get(input.transcriptId) as { writer_id?: string } | undefined;
+      if (lease && lease.writer_id !== writerId) {
+        throw new NativeTranscriptWriterSupersededError();
+      }
+      const now = Date.now();
+      this.db.prepare(`
+        INSERT INTO native_transcript_turns (
+          transcript_id, turn_id, status, messages_json, entries_json,
+          usage_json, provider_json, error_message, writer_id, created_at, updated_at
+        ) VALUES (?, ?, 'running', ?, ?, NULL, ?, NULL, ?, ?, ?)
+      `).run(
+        input.transcriptId,
+        input.turnId,
+        this.stringify(input.messages),
+        this.stringify(input.entries),
+        this.stringify(input.provider),
+        writerId,
+        now,
+        now,
+      );
+    })();
   }
 
   updateTurn(input: {
@@ -265,6 +274,16 @@ export class NativeTranscriptStore {
       UPDATE native_transcript_turns
       SET status = ?, messages_json = ?, entries_json = ?, usage_json = ?, error_message = ?, updated_at = ?
       WHERE transcript_id = ? AND turn_id = ? AND status = 'running' AND writer_id = ?
+        AND (
+          NOT EXISTS (
+            SELECT 1 FROM native_transcript_leases
+            WHERE transcript_id = ?
+          )
+          OR EXISTS (
+            SELECT 1 FROM native_transcript_leases
+            WHERE transcript_id = ? AND writer_id = ?
+          )
+        )
     `).run(
       input.status,
       this.stringify(input.messages),
@@ -277,14 +296,23 @@ export class NativeTranscriptStore {
       input.transcriptId,
       input.turnId,
       String(input.writerId ?? ""),
+      input.transcriptId,
+      input.transcriptId,
+      String(input.writerId ?? ""),
     );
     if (result.changes !== 1) {
+      const lease = this.db.prepare(`
+        SELECT writer_id FROM native_transcript_leases WHERE transcript_id = ?
+      `).get(input.transcriptId) as { writer_id?: string } | undefined;
+      if (lease && lease.writer_id !== String(input.writerId ?? "")) {
+        throw new NativeTranscriptWriterSupersededError();
+      }
       throw new Error(`Native transcript turn not found: ${input.turnId}`);
     }
   }
 
-  listTurns(transcriptId: string): NativeTranscriptTurnRecord[] {
-    this.markRunningTurnsInterrupted(transcriptId);
+  listTurns(transcriptId: string, writerId?: string): NativeTranscriptTurnRecord[] {
+    this.markRunningTurnsInterrupted(transcriptId, writerId);
     const rows = this.db.prepare(`
       SELECT turn_id, status, messages_json, entries_json, usage_json,
              provider_json, error_message, created_at, updated_at
@@ -306,22 +334,34 @@ export class NativeTranscriptStore {
     }));
   }
 
-  loadCompletedMessages(transcriptId: string): NativeChatMessage[] {
-    return this.listTurns(transcriptId)
+  loadCompletedMessages(transcriptId: string, writerId?: string): NativeChatMessage[] {
+    return this.listTurns(transcriptId, writerId)
       .filter((turn) => turn.status === "completed")
       .flatMap((turn) => turn.messages);
   }
 
-  clear(transcriptId: string): void {
-    this.db.prepare("DELETE FROM native_transcript_turns WHERE transcript_id = ?").run(transcriptId);
+  clear(transcriptId: string, writerId?: string): void {
+    if (writerId === undefined) {
+      this.db.prepare("DELETE FROM native_transcript_turns WHERE transcript_id = ?").run(transcriptId);
+      return;
+    }
+    this.db.prepare(`
+      DELETE FROM native_transcript_turns
+      WHERE transcript_id = ?
+        AND EXISTS (
+          SELECT 1 FROM native_transcript_leases
+          WHERE transcript_id = ? AND writer_id = ?
+        )
+    `).run(transcriptId, transcriptId, writerId);
   }
 
-  private markRunningTurnsInterrupted(transcriptId: string): void {
+  private markRunningTurnsInterrupted(transcriptId: string, writerId?: string): void {
     this.db.prepare(`
       UPDATE native_transcript_turns
       SET status = 'interrupted', error_message = ?, updated_at = ?
       WHERE transcript_id = ? AND status = 'running'
-    `).run(INTERRUPTED_ERROR, Date.now(), transcriptId);
+        AND (? IS NULL OR writer_id != ?)
+    `).run(INTERRUPTED_ERROR, Date.now(), transcriptId, writerId ?? null, writerId ?? null);
   }
 
   private stringify(value: unknown): string {

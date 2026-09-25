@@ -616,7 +616,7 @@ describe("NativeAgentAdapter", () => {
     });
   });
 
-  it("redacts short secret-shaped environment values from durable output", async () => {
+  it("redacts short secret-shaped environment values only in credential contexts", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-short-secret-"));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-short-secret-state-"));
     const dbPath = path.join(stateDir, "state.db");
@@ -637,9 +637,14 @@ describe("NativeAgentAdapter", () => {
         },
         transcriptId,
         transcriptStore: store,
-        env: { SHORT_SECRET: "q" },
+        env: { SHORT_SECRET: "q", PATH_SEPARATOR: "/" },
         fetchImpl: async () => sse([
-          JSON.stringify({ choices: [{ delta: { content: "q" }, finish_reason: "stop" }] }),
+          JSON.stringify({
+            choices: [{
+              delta: { content: "SHORT_SECRET=q and PATH_SEPARATOR=/" },
+              finish_reason: "stop",
+            }],
+          }),
         ]),
       });
       await adapter.send("short secret");
@@ -648,7 +653,8 @@ describe("NativeAgentAdapter", () => {
           .prepare("SELECT messages_json, entries_json FROM native_transcript_turns")
           .all(),
       );
-      assert.doesNotMatch(raw, /q/);
+      assert.doesNotMatch(raw, /SHORT_SECRET=q/);
+      assert.doesNotMatch(raw, /PATH_SEPARATOR=\//);
       assert.match(raw, /\[redacted\]/);
     } finally {
       resetStateDatabaseForTests();

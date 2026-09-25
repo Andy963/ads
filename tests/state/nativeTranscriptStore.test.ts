@@ -158,6 +158,45 @@ describe("NativeTranscriptStore", () => {
     assert.equal(store.listTurns(transcriptId)[0]?.status, "interrupted");
   });
 
+  it("fences every running-turn mutation after ownership changes", () => {
+    const { store } = createStore();
+    const transcriptId = "transcript-atomic-writer-fence";
+    store.claimTranscript(transcriptId, "writer-one");
+    store.beginTurn({
+      transcriptId,
+      turnId: "turn-one",
+      messages: [{ role: "user", content: "run" }],
+      entries: [{ kind: "message", message: { role: "user", content: "run" } }],
+      provider: { provider: "test", model: "test-model" },
+      writerId: "writer-one",
+    });
+
+    store.claimTranscript(transcriptId, "writer-two");
+    assert.throws(
+      () => store.updateTurn({
+        transcriptId,
+        turnId: "turn-one",
+        status: "completed",
+        messages: [{ role: "user", content: "run" }],
+        entries: [{ kind: "message", message: { role: "user", content: "run" } }],
+        usage: null,
+        writerId: "writer-one",
+      }),
+      /superseded/,
+    );
+    assert.throws(
+      () => store.beginTurn({
+        transcriptId,
+        turnId: "stale-turn",
+        messages: [{ role: "user", content: "stale" }],
+        entries: [{ kind: "message", message: { role: "user", content: "stale" } }],
+        provider: { provider: "test", model: "test-model" },
+        writerId: "writer-one",
+      }),
+      /superseded/,
+    );
+  });
+
   it("redacts explicit credentials even when they are shorter than four characters", () => {
     const { dbPath, store } = createStore(["abc"]);
     const transcriptId = "transcript-short-credential";

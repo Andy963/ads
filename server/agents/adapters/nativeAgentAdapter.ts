@@ -225,9 +225,9 @@ export class NativeAgentAdapter implements AgentAdapter {
       this.transcriptStore.claimTranscript(this.transcriptId, this.transcriptWriterId);
       this.transcriptStore.addRedactions(this.secretValues);
       if (transcriptMode === "replace") {
-        this.transcriptStore.clear(this.transcriptId);
+        this.transcriptStore.clear(this.transcriptId, this.transcriptWriterId);
       } else {
-        this.appendConversation(this.transcriptStore.loadCompletedMessages(this.transcriptId));
+        this.appendConversation(this.transcriptStore.loadCompletedMessages(this.transcriptId, this.transcriptWriterId));
       }
     }
     this.metadata = {
@@ -265,7 +265,7 @@ export class NativeAgentAdapter implements AgentAdapter {
       this.activeTranscriptTurns.clear();
     }
     if (options?.clearPersistedState && this.transcriptId && this.transcriptStore) {
-      this.transcriptStore.clear(this.transcriptId);
+      this.transcriptStore.clear(this.transcriptId, this.transcriptWriterId);
     }
     this.conversation = [];
     this.threadId = `native-${randomUUID()}`;
@@ -274,15 +274,19 @@ export class NativeAgentAdapter implements AgentAdapter {
 
   retargetTranscript(transcriptId: string): void {
     const nextTranscriptId = String(transcriptId ?? "").trim();
-    if (!nextTranscriptId || nextTranscriptId === this.transcriptId) {
+    if (!nextTranscriptId) {
       return;
     }
+    if (nextTranscriptId === this.transcriptId) {
+      this.reset({ clearPersistedState: true });
+      return;
+    }
+    this.transcriptStore?.claimTranscriptAndClear(nextTranscriptId, this.transcriptWriterId);
     this.transcriptId = nextTranscriptId;
     this.activeTranscriptTurns.clear();
     this.conversation = [];
     this.threadId = `native-${randomUUID()}`;
     this.threadStartedEmitted = false;
-    this.transcriptStore?.clear(nextTranscriptId);
   }
 
   setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void {

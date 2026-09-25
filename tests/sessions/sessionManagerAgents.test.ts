@@ -415,7 +415,18 @@ describe("SessionManager agent allowlists", () => {
 
       const nextTranscriptId = threadStorage.getRecord(userId)?.nativeTranscriptId;
       assert.ok(nextTranscriptId);
-      assert.notEqual(nextTranscriptId, oldTranscriptId);
+      assert.equal(nextTranscriptId, oldTranscriptId);
+      assert.equal(
+        nextTranscriptId,
+        buildNativeTranscriptId({
+          owner,
+          sessionKey: String(userId),
+          projectId,
+          domain: "native-active-cwd",
+          lane: "worker",
+          lifecycle: "durable",
+        }),
+      );
       assert.deepEqual(store.loadCompletedMessages(oldTranscriptId), []);
       assert.equal(manager.getContextRestoreMode(userId), "fresh");
     } finally {

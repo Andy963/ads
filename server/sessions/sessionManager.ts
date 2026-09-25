@@ -176,7 +176,7 @@ export class SessionManager {
         if (this.runtime.updateWorkingDirectory(userId, cwd, { preserveSession: !clearThreads })) {
           if (clearThreads) {
             this.runtime.setContextRestoreMode(userId, "fresh");
-            this.retargetNativeTranscriptForCwd(userId, existing, cwd);
+            this.retargetNativeTranscriptForCwd(userId, existing, cwd, options?.projectId);
           }
           this.syncStoredState(userId, { cwd, clearThreads });
         }
@@ -491,12 +491,14 @@ export class SessionManager {
     userId: number,
     record: SessionRuntimeRecord<HybridOrchestrator, ConversationLogger>,
     cwd: string,
+    explicitProjectId?: string,
   ): void {
     if (record.runtimeBackend !== "native") {
       record.nativeTranscriptId = undefined;
       return;
     }
-    const projectId = deriveProjectSessionId(detectWorkspaceFrom(cwd));
+    const projectId = String(explicitProjectId ?? "").trim()
+      || deriveProjectSessionId(detectWorkspaceFrom(cwd));
     const transcriptId = buildNativeTranscriptId({
       owner: record.transcriptOwner ?? String(userId),
       sessionKey: String(userId),
