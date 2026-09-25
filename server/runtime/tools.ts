@@ -7,6 +7,7 @@ import { findSecurityViolation } from "../middleware/builtin/globalRulesMiddlewa
 import { getExecAllowlistFromEnv, hasShellSyntax, runCommand, tokenizeCommandLine } from "../utils/commandRunner.js";
 import type { ThreadItem } from "../agents/protocol/types.js";
 import type { NativeChatToolCall, NativeToolDefinition } from "./openAiCompatibleClient.js";
+import { redactNativeTranscriptText } from "../state/nativeTranscriptStore.js";
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_PATCH_BYTES = 512 * 1024;
@@ -185,11 +186,7 @@ function trimOutput(text: string, maxLines = 200): string {
 }
 
 function redact(text: string, redactions: string[]): string {
-  let result = String(text ?? "");
-  for (const secret of redactions) {
-    if (secret) result = result.replaceAll(secret, "[redacted]");
-  }
-  return result.slice(0, MAX_TOOL_OUTPUT_CHARS);
+  return redactNativeTranscriptText(String(text ?? ""), redactions).slice(0, MAX_TOOL_OUTPUT_CHARS);
 }
 
 function normalizePatchPath(value: string): string {

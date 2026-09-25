@@ -118,7 +118,7 @@ function collectExplicitRedactions(options: NativeTranscriptStoreOptions): strin
   return [...variants].sort((left, right) => right.length - left.length);
 }
 
-function redactSensitiveText(value: string, redactions: string[], depth = 0): string {
+export function redactNativeTranscriptText(value: string, redactions: string[], depth = 0): string {
   let result = String(value ?? "");
   const trimmed = result.trimStart();
   if (depth < 5 && (trimmed.startsWith("{") || trimmed.startsWith("["))) {
@@ -135,6 +135,20 @@ function redactSensitiveText(value: string, redactions: string[], depth = 0): st
     const trimmed = result.trim();
     if (trimmed === secret || trimmed === JSON.stringify(secret)) {
       return "[redacted]";
+    }
+    const lines = result.split("\n");
+    if (lines.some((line) => {
+      const normalized = line.trim();
+      return normalized === secret || normalized === JSON.stringify(secret);
+    })) {
+      result = lines
+        .map((line) => {
+          const normalized = line.trim();
+          return normalized === secret || normalized === JSON.stringify(secret)
+            ? line.replace(secret, "[redacted]")
+            : line;
+        })
+        .join("\n");
     }
   }
   result = result
@@ -162,7 +176,7 @@ function redactSensitiveText(value: string, redactions: string[], depth = 0): st
 
 function sanitizeTranscriptValue(value: unknown, redactions: string[], depth = 0): unknown {
   if (depth > 20) return "[truncated]";
-  if (typeof value === "string") return redactSensitiveText(value, redactions);
+  if (typeof value === "string") return redactNativeTranscriptText(value, redactions);
   if (value === null || typeof value === "number" || typeof value === "boolean") return value;
   if (Array.isArray(value)) {
     return value.map((item) => sanitizeTranscriptValue(item, redactions, depth + 1));
@@ -299,7 +313,7 @@ export class NativeTranscriptStore {
       this.stringify(input.entries),
       input.usage ? this.stringify(input.usage) : null,
       input.errorMessage
-        ? redactSensitiveText(input.errorMessage, this.redactions).slice(0, MAX_TRANSCRIPT_ERROR_LENGTH)
+        ? redactNativeTranscriptText(input.errorMessage, this.redactions).slice(0, MAX_TRANSCRIPT_ERROR_LENGTH)
         : null,
       Date.now(),
       input.transcriptId,

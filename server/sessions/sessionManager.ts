@@ -524,7 +524,7 @@ export class SessionManager {
     const storage = this.threadStorage;
     const savedState = storage?.getRecord(userId);
     const nativeTranscriptId = record?.nativeTranscriptId ?? savedState?.nativeTranscriptId;
-    if (this.runtimeBackend === "native" && nativeTranscriptId) {
+    if (this.runtimeBackend === "native" && nativeTranscriptId && !record) {
       new NativeTranscriptStore(getStateDatabase(this.options.stateDbPath))
         .claimTranscriptAndClear(nativeTranscriptId, `reset-${randomUUID()}`);
     }

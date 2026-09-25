@@ -23,6 +23,7 @@ import { createNativeModelResolver, type NativeModelResolver } from "../../runti
 import { getStateDatabase } from "../../state/database.js";
 import {
   NativeTranscriptStore,
+  redactNativeTranscriptText,
   type NativeTranscriptEntry,
   type NativeTranscriptProviderMetadata,
 } from "../../state/nativeTranscriptStore.js";
@@ -602,9 +603,10 @@ export class NativeAgentAdapter implements AgentAdapter {
       } catch (error) {
         persistenceError = error;
       }
-      const safeMessage = [model.apiKey, ...this.secretValues]
-        .filter((value) => value.length > 0)
-        .reduce((message, secret) => message.replaceAll(secret, "[redacted]"), formatToolError(normalized, model.apiKey));
+      const safeMessage = redactNativeTranscriptText(
+        formatToolError(normalized, model.apiKey),
+        [model.apiKey, ...this.secretValues].filter((value) => value.length > 0),
+      );
       this.emitRaw({ type: "turn.failed", error: { message: safeMessage } });
       if (persistenceError) {
         throw new AggregateError(
