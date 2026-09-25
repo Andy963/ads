@@ -105,6 +105,37 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(stored.branch, "codex/issue-277");
   });
 
+  it("keeps a job queued when the runtime preflight reports missing capabilities", async () => {
+    const db = getStateDatabase();
+    const bus = new LaneDispatchBus(db, {
+      sessionManager: {
+        getActionsRuntimePreflight: () => ({
+          backend: "native",
+          capabilities: ["text", "files"],
+        }),
+      } as any,
+    });
+    const dispatched = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 374,
+      issueTitle: "Runtime preflight contract",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Fail before checkout when capabilities are missing"],
+    });
+
+    const result = await bus.evaluateQueue(repoDir, repoDir);
+    const job = bus.getJob(dispatched.jobId);
+
+    assert.strictEqual(result.allowed, false);
+    assert.match(result.reason ?? "", /missing capabilities: commands/);
+    assert.strictEqual(job?.status, "queued");
+    assert.match(job?.error_message ?? "", /Actions runtime preflight failed/);
+    assert.strictEqual(
+      spawnSync("git", ["branch", "--show-current"], { cwd: repoDir, encoding: "utf8" }).stdout.trim(),
+      "dev",
+    );
+  });
+
   it("rejects GitHub Issue dispatches without a complete immutable contract", () => {
     const bus = new LaneDispatchBus(getStateDatabase());
 

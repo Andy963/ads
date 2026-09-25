@@ -37,6 +37,8 @@ import {
 } from "./pipeline.js";
 import { deriveProjectSessionId } from "../web/server/projectSessionId.js";
 import { resolveActionsLaneIdentity } from "./laneIdentity.js";
+import { checkActionsRuntimePreflight } from "./runtimePreflight.js";
+import { resolveAgentRuntime, type AgentRuntimeBackend } from "../runtime/config.js";
 
 const MAX_REWORK_ATTEMPTS = 2;
 const AUTOMATED_ACTION_EXECUTION_MODE = "automated_action" as const;
@@ -254,6 +256,14 @@ export interface LaneDispatchBusOptions {
   reviewerRunner?: ReviewerRunner;
   testCommand?: string;
   reviewerTimeoutMs?: number;
+  runtimePreflight?: (input: {
+    backend?: AgentRuntimeBackend;
+    userId: number;
+    workspaceRoot: string;
+    authUserId?: string;
+    requireDurableState: boolean;
+    requireProviderResume: boolean;
+  }) => ReturnType<typeof checkActionsRuntimePreflight> | Promise<ReturnType<typeof checkActionsRuntimePreflight>>;
   hasRemoteOrigin?: (repoPath: string) => boolean;
   pullRequestCreator?: (options: {
     cwd: string;
@@ -490,6 +500,47 @@ export class LaneDispatchBus {
           });
         }
         return gateResult;
+      }
+
+      const preflightInput = {
+        backend: this.options.sessionManager?.getRuntimeBackend?.(),
+        ...this.laneIdentityForJob(nextJob, repoPath),
+        workspaceRoot: repoPath,
+        requireDurableState: true,
+        requireProviderResume: false,
+      };
+      let preflight;
+      try {
+        preflight = await (this.options.runtimePreflight ?? ((input) => {
+          const runtime = this.options.sessionManager?.getActionsRuntimePreflight?.({
+            userId: input.userId,
+            workspaceRoot: input.workspaceRoot,
+            authUserId: input.authUserId,
+          });
+          return checkActionsRuntimePreflight({
+            backend: runtime?.backend ?? input.backend,
+            capabilities: runtime?.capabilities,
+            requireDurableState: input.requireDurableState,
+            requireProviderResume: input.requireProviderResume,
+          });
+        }))(preflightInput);
+      } catch (error) {
+        preflight = {
+          ok: false,
+          backend: preflightInput.backend ?? resolveAgentRuntime(),
+          missingCapabilities: [],
+          unsupportedRuntimeCapabilities: [],
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+      if (!preflight.ok) {
+        this.updateJobStatus(nextJob.id, "queued", {
+          error_message: `Actions runtime preflight failed: ${preflight.reason ?? "unsupported capabilities"}`,
+        });
+        return {
+          allowed: false,
+          reason: `Actions runtime preflight failed: ${preflight.reason ?? "unsupported capabilities"}`,
+        };
       }
 
       // Gate passed: checkout feature branch and mark running
