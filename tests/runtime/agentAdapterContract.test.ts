@@ -18,6 +18,12 @@ function sseResponse(payload: unknown): Response {
   });
 }
 
+function sseEventsResponse(payloads: unknown[]): Response {
+  return new Response(`${payloads.map((payload) => `data: ${JSON.stringify(payload)}\n\n`).join("")}data: [DONE]\n\n`, {
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
 function assertTurnContractResult(
   result: Awaited<ReturnType<AgentAdapter["send"]>>,
   events: string[],
@@ -132,12 +138,12 @@ describe("shared AgentAdapter contract", () => {
     });
     server.notify("turn/completed", {
       threadId: "contract-thread",
-      turn: { id: "contract-turn", usage: { input_tokens: 2, output_tokens: 3 } },
-      usage: { input_tokens: 2, output_tokens: 3 },
+      turn: { id: "contract-turn", usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 } },
+      usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 },
     });
 
     const result = await pending;
-    assertTurnContractResult({ ...result, usage: result.usage ? { ...result.usage, total_tokens: 5 } : null }, events);
+    assertTurnContractResult(result, events);
     assert.ok(server.requests.some((request) => request.method === "turn/start"));
     await registry.stopAll();
   });
@@ -172,8 +178,10 @@ describe("shared AgentAdapter contract", () => {
     }
   });
 
-  it("rejects pre-cancelled turns for both backends", async () => {
-    const codex = new CodexAppServerAdapter({ projectId: "contract-codex-cancel" });
+  it("cancels in-flight turns for both backends", async () => {
+    const server = createCodexTestServer();
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => server.client });
+    const codex = new CodexAppServerAdapter({ projectId: "contract-codex-cancel", registry });
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-contract-cancel-"));
     try {
       const native = new NativeAgentAdapter({
@@ -187,10 +195,115 @@ describe("shared AgentAdapter contract", () => {
             provider: "test",
           }),
         },
+        fetchImpl: async (_input, init) => await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(Object.assign(new Error("request aborted"), { name: "AbortError" }));
+          }, { once: true });
+        }),
       });
-      const signal = AbortSignal.abort();
-      await assert.rejects(codex.send("cancelled", { signal }), /abort|interrupt|cancel/i);
-      await assert.rejects(native.send("cancelled", { signal }), /abort|interrupt|cancel/i);
+      const codexController = new AbortController();
+      const codexPending = codex.send("cancelled", { signal: codexController.signal });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      server.notify("thread/started", { thread: { id: "contract-thread" } });
+      server.notify("turn/started", { threadId: "contract-thread", turn: { id: "cancelled-turn" } });
+      codexController.abort();
+      await assert.rejects(codexPending, /abort|interrupt|cancel/i);
+
+      const nativeController = new AbortController();
+      const nativePending = native.send("cancelled", { signal: nativeController.signal });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      nativeController.abort();
+      await assert.rejects(nativePending, /abort|interrupt|cancel/i);
+      await registry.stopAll();
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves structured command and file-change events for both backends", async () => {
+    const server = createCodexTestServer();
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => server.client });
+    const codex = new CodexAppServerAdapter({ projectId: "contract-codex-events", registry });
+    const codexEvents: Array<{ phase: string; rawType?: string }> = [];
+    codex.onEvent((event) => {
+      const item = (event.raw as { item?: { type?: string } }).item;
+      codexEvents.push({ phase: event.phase, rawType: item?.type });
+    });
+    const codexPending = codex.send("change files");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    server.notify("thread/started", { thread: { id: "contract-thread" } });
+    server.notify("turn/started", { threadId: "contract-thread", turn: { id: "events-turn" } });
+    server.notify("item/started", {
+      item: { type: "commandExecution", command: "git status", status: "in_progress" },
+      threadId: "contract-thread",
+      turnId: "events-turn",
+    });
+    server.notify("item/completed", {
+      item: { type: "fileChange", changes: [{ kind: "update", path: "README.md" }] },
+      threadId: "contract-thread",
+      turnId: "events-turn",
+    });
+    server.notify("turn/completed", { threadId: "contract-thread", turn: { id: "events-turn" } });
+    await codexPending;
+    assert.ok(codexEvents.some((event) => event.phase === "command" && event.rawType === "command_execution"));
+    assert.ok(codexEvents.some((event) => event.phase === "editing" && event.rawType === "file_change"));
+    await registry.stopAll();
+
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-contract-events-"));
+    try {
+      let request = 0;
+      const native = new NativeAgentAdapter({
+        credentialOwner: "contract-owner",
+        workspaceRoot: workspace,
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-key",
+            provider: "test",
+          }),
+        },
+        fetchImpl: async () => {
+          request += 1;
+          if (request === 1) {
+            return sseEventsResponse([
+              { choices: [{ delta: { tool_calls: [{ index: 0, id: "native-patch", type: "function", function: { name: "apply_patch", arguments: JSON.stringify({ patch: "*** Begin Patch\n*** Add File: contract.txt\n+ok\n*** End Patch" }) } }] } }] },
+              { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+            ]);
+          }
+          return sseResponse({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] });
+        },
+      });
+      const nativeEvents: Array<{ phase: string; rawType?: string }> = [];
+      native.onEvent((event) => {
+        const item = (event.raw as { item?: { type?: string } }).item;
+        nativeEvents.push({ phase: event.phase, rawType: item?.type });
+      });
+      await native.send("change files");
+      assert.ok(nativeEvents.some((event) => event.rawType === "file_change"));
+      assert.equal(fs.readFileSync(path.join(workspace, "contract.txt"), "utf8"), "ok\n");
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces terminal failures for both backends", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-contract-failure-"));
+    try {
+      const native = new NativeAgentAdapter({
+        credentialOwner: "contract-owner",
+        workspaceRoot: workspace,
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-key",
+            provider: "test",
+          }),
+        },
+        fetchImpl: async () => new Response("provider failed", { status: 400 }),
+      });
+      await assert.rejects(native.send("fail"), /provider|upstream|400/i);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
