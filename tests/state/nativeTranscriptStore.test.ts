@@ -187,4 +187,66 @@ describe("NativeTranscriptStore", () => {
     assert.equal(restored[1]?.tool_calls?.[0]?.function.arguments, largeArguments);
     assert.equal(restored[2]?.content, largeResult);
   });
+
+  it("redacts escaped and delimiter-delimited secrets without corrupting tool arguments", () => {
+    const quotedSecret = "quoted\"slash\\LEAKQUOTE";
+    const spacedSecret = "correct horse battery staple LEAKSPACE";
+    const { dbPath, store } = createStore([quotedSecret, spacedSecret]);
+    const transcriptId = "transcript-structured-secrets";
+    const toolArguments = JSON.stringify({
+      password: quotedSecret,
+      note: spacedSecret,
+      nested: { api_key: quotedSecret },
+    });
+    const jsonContent = JSON.stringify({ credential: quotedSecret });
+    const messages = [
+      { role: "user" as const, content: `password=${spacedSecret}; next=value` },
+      {
+        role: "assistant" as const,
+        content: null,
+        tool_calls: [{
+          id: "secret-call",
+          type: "function" as const,
+          function: { name: "apply_patch", arguments: toolArguments },
+        }],
+      },
+      { role: "tool" as const, content: jsonContent, tool_call_id: "secret-call" },
+    ];
+    store.beginTurn({
+      transcriptId,
+      turnId: "secret-turn",
+      messages,
+      entries: messages.map((message) => ({ kind: "message" as const, message })),
+      provider: { provider: "test", model: "test-model" },
+    });
+    store.updateTurn({
+      transcriptId,
+      turnId: "secret-turn",
+      status: "completed",
+      messages,
+      entries: messages.map((message) => ({ kind: "message" as const, message })),
+      usage: null,
+    });
+
+    const raw = JSON.stringify(
+      getStateDatabase(dbPath)
+        .prepare("SELECT messages_json, entries_json FROM native_transcript_turns")
+        .all(),
+    );
+    assert.doesNotMatch(raw, /LEAKQUOTE|LEAKSPACE/);
+
+    const restored = store.loadCompletedMessages(transcriptId);
+    assert.match(restored[0]?.content ?? "", /password=\[redacted\]; next=value/);
+    const restoredArguments = JSON.parse(restored[1]?.tool_calls?.[0]?.function.arguments ?? "{}") as {
+      password: string;
+      note: string;
+      nested: { api_key: string };
+    };
+    assert.deepEqual(restoredArguments, {
+      password: "[redacted]",
+      note: "[redacted]",
+      nested: { api_key: "[redacted]" },
+    });
+    assert.deepEqual(JSON.parse(restored[2]?.content ?? "{}"), { credential: "[redacted]" });
+  });
 });

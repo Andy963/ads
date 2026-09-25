@@ -68,17 +68,33 @@ type StoredTurnRow = {
 
 const INTERRUPTED_ERROR = "Native turn was interrupted before completion.";
 const MAX_TRANSCRIPT_ERROR_LENGTH = 64 * 1024;
+const CREDENTIAL_FIELD_NAME = /^(?:auth|authorization|proxy-authorization|cookie|set-cookie|password|secret|token|api[_-]?key|x-api-key|auth[_-]?token|access[_-]?token|refresh[_-]?token|.*credential.*)$/i;
+const CREDENTIAL_ASSIGNMENT = /(\b(?:api[_-]?key|authorization|auth[_-]?token|access[_-]?token|refresh[_-]?token|secret|password|cookie)\b\s*["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n,;&}]+)/gi;
 
 function collectExplicitRedactions(options: NativeTranscriptStoreOptions): string[] {
-  return [...new Set(
-    (options.redactions ?? [])
-      .map((value) => String(value ?? ""))
-      .filter((value) => value.length >= 4),
-  )].sort((left, right) => right.length - left.length);
+  const values = (options.redactions ?? [])
+    .map((value) => String(value ?? ""))
+    .filter((value) => value.length >= 4);
+  const variants = new Set<string>();
+  for (const value of values) {
+    variants.add(value);
+    const escaped = JSON.stringify(value).slice(1, -1);
+    variants.add(escaped);
+    variants.add(JSON.stringify(escaped).slice(1, -1));
+  }
+  return [...variants].sort((left, right) => right.length - left.length);
 }
 
-function redactSensitiveText(value: string, redactions: string[]): string {
+function redactSensitiveText(value: string, redactions: string[], depth = 0): string {
   let result = String(value ?? "");
+  const trimmed = result.trimStart();
+  if (depth < 5 && (trimmed.startsWith("{") || trimmed.startsWith("["))) {
+    try {
+      return JSON.stringify(sanitizeTranscriptValue(JSON.parse(result), redactions, depth + 1));
+    } catch {
+      // Fall through to delimiter-aware redaction for malformed JSON-like text.
+    }
+  }
   for (const secret of redactions) {
     result = result.replaceAll(secret, "[redacted]");
   }
@@ -94,8 +110,11 @@ function redactSensitiveText(value: string, redactions: string[]): string {
     )
     .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1[redacted]@")
     .replace(
-      /((?:api[_-]?key|authorization|auth[_-]?token|access[_-]?token|refresh[_-]?token|secret|password|cookie)\s*["']?\s*[:=]\s*["']?)([^\s"',;}]+)/gi,
-      "$1[redacted]",
+      CREDENTIAL_ASSIGNMENT,
+      (_match, prefix: string, secretValue: string) => {
+        const quote = secretValue.startsWith("\"") || secretValue.startsWith("'") ? secretValue[0] : "";
+        return `${prefix}${quote}[redacted]${quote}`;
+      },
     );
   return result;
 }
@@ -111,7 +130,7 @@ function sanitizeTranscriptValue(value: unknown, redactions: string[], depth = 0
 
   const result: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-    if (/^(?:auth|authorization|proxy-authorization|cookie|set-cookie|password|secret|token|api[_-]?key|x-api-key|auth[_-]?token|access[_-]?token|refresh[_-]?token|.*credential.*)$/i.test(key)) {
+    if (CREDENTIAL_FIELD_NAME.test(key)) {
       result[key] = "[redacted]";
       continue;
     }
