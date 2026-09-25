@@ -337,6 +337,89 @@ describe("state/lanePromptLaneIdMigration", () => {
     assert.deepEqual(migrated.pragma("foreign_key_check"), []);
   });
 
+  it("detects a legacy CHECK even when the DDL mentions acopilot elsewhere", () => {
+    // Regression: detection used to sniff the whole DDL for the literal
+    // 'acopilot'. This legacy table carries exactly that string in an unrelated
+    // column default, so the old check would have declared it canonical, left
+    // the legacy CHECK in place, and left the store unable to open. The default
+    // value is intentionally a quoted literal, which is what the old substring
+    // test matched on.
+    const db = new DatabaseConstructor(dbPath);
+    db.exec(`
+      CREATE TABLE lane_system_prompt_versions (
+        lane TEXT NOT NULL CHECK (lane IN ('advisor', 'worker')),
+        version INTEGER NOT NULL CHECK (version >= 1),
+        prompt TEXT NOT NULL,
+        is_base INTEGER NOT NULL DEFAULT 0 CHECK (is_base IN (0, 1)),
+        created_at INTEGER NOT NULL,
+        note TEXT DEFAULT 'acopilot',
+        PRIMARY KEY (lane, version)
+      );
+      CREATE UNIQUE INDEX idx_lane_system_prompt_base
+        ON lane_system_prompt_versions(lane) WHERE is_base = 1;
+      CREATE TABLE lane_system_prompt_state (
+        lane TEXT PRIMARY KEY CHECK (lane IN ('advisor', 'worker')),
+        current_version INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (lane, current_version) REFERENCES lane_system_prompt_versions(lane, version)
+      );
+      INSERT INTO lane_system_prompt_versions (lane, version, prompt, is_base, created_at)
+        VALUES ('advisor', 1, 'Legacy base', 1, 1000);
+      INSERT INTO lane_system_prompt_state VALUES ('advisor', 1, 1000);
+      CREATE TABLE schema_version (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        version INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO schema_version (id, version) VALUES (1, ${CANONICAL_LANE_MIGRATION_VERSION - 1});
+    `);
+    db.close();
+
+    const migrated = getStateDatabase();
+    const ddl = readTableSql(migrated, "lane_system_prompt_versions");
+    assert.doesNotMatch(ddl, /'advisor'/, "legacy CHECK must not survive");
+    assert.match(ddl, /'acopilot'/);
+  });
+
+  it("aborts loudly when the copied state would dangle", () => {
+    // A state row pointing at a version that does not exist cannot be repaired
+    // by remapping. Failing the migration is deliberate: it rolls back and stops
+    // startup rather than leaving a store that silently serves the wrong
+    // prompt version.
+    const db = new DatabaseConstructor(dbPath);
+    db.pragma("foreign_keys = OFF");
+    db.exec(`
+      CREATE TABLE lane_system_prompt_versions (
+        lane TEXT NOT NULL CHECK (lane IN ('advisor', 'worker')),
+        version INTEGER NOT NULL CHECK (version >= 1),
+        prompt TEXT NOT NULL,
+        is_base INTEGER NOT NULL DEFAULT 0 CHECK (is_base IN (0, 1)),
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (lane, version)
+      );
+      CREATE UNIQUE INDEX idx_lane_system_prompt_base
+        ON lane_system_prompt_versions(lane) WHERE is_base = 1;
+      CREATE TABLE lane_system_prompt_state (
+        lane TEXT PRIMARY KEY CHECK (lane IN ('advisor', 'worker')),
+        current_version INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (lane, current_version) REFERENCES lane_system_prompt_versions(lane, version)
+      );
+      INSERT INTO lane_system_prompt_versions (lane, version, prompt, is_base, created_at)
+        VALUES ('advisor', 1, 'Legacy base', 1, 1000);
+      INSERT INTO lane_system_prompt_state VALUES ('advisor', 7, 1000);
+      CREATE TABLE schema_version (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        version INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO schema_version (id, version) VALUES (1, ${CANONICAL_LANE_MIGRATION_VERSION - 1});
+    `);
+    db.close();
+
+    assert.throws(() => getStateDatabase(), /dangling reference|State migration 25/);
+  });
+
   it("is a no-op on a database where the tables were never created", () => {
     const db = new DatabaseConstructor(":memory:");
     try {

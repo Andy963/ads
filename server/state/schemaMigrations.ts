@@ -749,14 +749,30 @@ Core reviewing rules:
  * way to change the constraint, so the tables are recreated and the rows copied
  * with their lane ids remapped.
  *
- * Design notes:
- * - Idempotent: a database that is already canonical (or on which the tables
- *   were never created) is left untouched.
- * - Non-destructive: prompt text and version history are preserved verbatim. No
- *   base prompt is re-seeded, so user customizations survive.
- * - `defer_foreign_keys` covers the window where the child table briefly
- *   references a table being replaced. Migrations run inside a transaction, and
+ * Three branches, decided per table from the CHECK clause each one actually
+ * declares:
+ *  1. Neither table needs rebuilding -> no-op. This covers both an already
+ *     canonical database and one where the tables were never created.
+ *  2. The versions table is missing but a state table survives -> the state
+ *     table is an orphan whose rows point at a parent that no longer exists.
+ *     Those rows hold no recoverable prompt state, so the table is DROPPED and
+ *     recreated on next use. This deliberately discards the active-version
+ *     pointer: it is unrecoverable, and keeping the legacy CHECK would make the
+ *     store impossible to open.
+ *  3. The versions table is already canonical but the state table is not ->
+ *     only the state table is rebuilt, leaving prompt rows byte-identical.
+ *
+ * Other design notes:
+ * - Non-destructive on the normal path: prompt text and version history are
+ *   preserved verbatim and no base prompt is re-seeded, so user customizations
+ *   survive.
+ * - `defer_foreign_keys` lets the child table briefly reference a table that is
+ *   being replaced. Migrations run inside a transaction, and
  *   `PRAGMA foreign_keys` cannot be changed there, but `defer_foreign_keys` can.
+ *   It is NOT sufficient on its own: SQLite discards the pending deferred
+ *   violation counter when a table is dropped, so an explicit
+ *   `PRAGMA foreign_key_check` runs at the end to make corruption fail loudly
+ *   instead of silently producing an unusable prompt store.
  * - The child table is dropped before its parent to avoid an FK violation.
  */
 function rebuildLanePromptTablesForCanonicalLanes(db: DatabaseType): void {
@@ -769,10 +785,24 @@ function rebuildLanePromptTablesForCanonicalLanes(db: DatabaseType): void {
     return row?.sql ? String(row.sql) : "";
   };
 
-  // A table needs rebuilding when it exists and its DDL does not already
-  // constrain lane to the canonical ids. Each table is judged independently so
-  // a half-migrated or damaged schema cannot leave a legacy CHECK in place.
-  const needsRebuild = (ddl: string): boolean => ddl !== "" && !ddl.includes("'acopilot'");
+  // Read the lane values a table's CHECK clause actually permits, rather than
+  // sniffing the whole DDL for a literal. A bare `includes` would call a legacy
+  // table canonical if the word appeared anywhere in its DDL, which is the
+  // precise failure this migration exists to prevent. A table with no
+  // recognisable CHECK is treated as needing a rebuild, which is the safe
+  // direction: the copy is verbatim, so an unnecessary rebuild is harmless.
+  const LANE_CHECK_PATTERN = /CHECK\s*\(\s*lane\s+IN\s*\(([^)]*)\)\s*\)/i;
+  const readLaneConstraint = (ddl: string): string[] => {
+    const match = LANE_CHECK_PATTERN.exec(ddl);
+    if (!match?.[1]) return [];
+    return [...match[1].matchAll(/'([^']*)'/g)].map((entry) => entry[1] as string).sort();
+  };
+  const CANONICAL_LANE_CONSTRAINT = ["acopilot", "actions"];
+  const needsRebuild = (ddl: string): boolean => {
+    if (ddl === "") return false;
+    const allowed = readLaneConstraint(ddl);
+    return allowed.length === 0 || allowed.join(",") !== CANONICAL_LANE_CONSTRAINT.join(",");
+  };
 
   const versionsDdl = readTableDdl("lane_system_prompt_versions");
   const stateDdl = readTableDdl("lane_system_prompt_state");
@@ -786,6 +816,26 @@ function rebuildLanePromptTablesForCanonicalLanes(db: DatabaseType): void {
 
   db.pragma("defer_foreign_keys = ON");
 
+  // `defer_foreign_keys` alone is not a sufficient safety net: SQLite discards
+  // the pending deferred-violation counter when a table is dropped, so a
+  // dangling reference introduced by the copy would survive to COMMIT. This
+  // explicit check turns that into a hard failure, which rolls the migration
+  // back and aborts startup instead of leaving a prompt store that silently
+  // serves the wrong version.
+  //
+  // The check is scoped to the state table on purpose. A database-wide
+  // `foreign_key_check` would also report unrelated pre-existing violations and
+  // block startup for a problem this migration did not cause.
+  const assertNoDanglingPrompts = (): void => {
+    const violations = db.pragma("foreign_key_check(lane_system_prompt_state)") as unknown[];
+    if (violations.length > 0) {
+      throw new Error(
+        `Lane prompt migration produced ${violations.length} dangling reference(s) in ` +
+          "lane_system_prompt_state; aborting so the database is not left with an unusable prompt store",
+      );
+    }
+  };
+
   if (!versionsDdl) {
     // The versions table is gone but a legacy state table survived. Its rows
     // reference a parent that no longer exists, so they carry no recoverable
@@ -796,6 +846,7 @@ function rebuildLanePromptTablesForCanonicalLanes(db: DatabaseType): void {
     db.exec("DROP TABLE IF EXISTS lane_system_prompt_state;");
     return;
   }
+
 
   if (!needsRebuild(versionsDdl)) {
     // Versions are already canonical; only the state table still carries the
@@ -809,7 +860,7 @@ function rebuildLanePromptTablesForCanonicalLanes(db: DatabaseType): void {
           REFERENCES lane_system_prompt_versions(lane, version)
       );
 
-      INSERT OR REPLACE INTO lane_system_prompt_state__canonical (lane, current_version, updated_at)
+      INSERT INTO lane_system_prompt_state__canonical (lane, current_version, updated_at)
       SELECT
         CASE lane
           WHEN 'advisor' THEN 'acopilot'
@@ -823,6 +874,7 @@ function rebuildLanePromptTablesForCanonicalLanes(db: DatabaseType): void {
       DROP TABLE lane_system_prompt_state;
       ALTER TABLE lane_system_prompt_state__canonical RENAME TO lane_system_prompt_state;
     `);
+    assertNoDanglingPrompts();
     return;
   }
   db.exec(`
@@ -888,4 +940,6 @@ function rebuildLanePromptTablesForCanonicalLanes(db: DatabaseType): void {
       ON lane_system_prompt_versions(lane)
       WHERE is_base = 1;
   `);
+
+  assertNoDanglingPrompts();
 }
