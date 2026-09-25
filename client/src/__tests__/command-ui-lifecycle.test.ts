@@ -299,7 +299,7 @@ describe("command UI lifecycle", () => {
     const messages = (wrapper.vm as any).messages as Array<any>;
     expect(messages.some((m) => m.role === "system" && m.kind === "text" && m.content === "当前工作目录: /tmp/project")).toBe(false);
     expect(messages.some((m) => m.role === "assistant" && String(m.content ?? "").includes("当前工作目录"))).toBe(false);
-    expect((wrapper.vm as any).workerConnectionStatus).toEqual({
+    expect((wrapper.vm as any).actionsConnectionStatus).toEqual({
       kind: "info",
       message: "当前工作目录: /tmp/project",
     });
@@ -307,7 +307,7 @@ describe("command UI lifecycle", () => {
     (wrapper.vm as any).sendMainPrompt("continue");
     await settleUi(wrapper);
 
-    expect((wrapper.vm as any).workerConnectionStatus).toBeNull();
+    expect((wrapper.vm as any).actionsConnectionStatus).toBeNull();
 
     lastWs!.onMessage?.({ type: "result", ok: true, output: "done" });
     await settleUi(wrapper);
@@ -366,7 +366,7 @@ describe("command UI lifecycle", () => {
     lastWs!.onClose?.({ code: 1006, reason: "network changed" });
     await settleUi(wrapper);
 
-    expect((wrapper.vm as any).workerConnectionStatus).toEqual({
+    expect((wrapper.vm as any).actionsConnectionStatus).toEqual({
       kind: "progress",
       message: RECONNECT_PENDING_RESEND_NOTICE,
     });

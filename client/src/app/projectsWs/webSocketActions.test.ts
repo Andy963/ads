@@ -69,12 +69,12 @@ describe("webSocketActions model preference restore", () => {
 
     // Simulate the runtime state carried over from a previous connection: the
     // agent is already known, and the selector currently shows a stale value.
-    const rt = ctx.getAdvisorRuntime("default");
+    const rt = ctx.getAcopilotRuntime("default");
     rt.activeAgentId.value = "codex";
     rt.modelId.value = "gemini-3.8-flash-high";
     rt.modelReasoningEffort.value = "high";
 
-    await actions.connectAdvisorWs("default");
+    await actions.connectAcopilotWs("default");
 
     expect(rt.modelId.value).toBe("gpt-4o");
     expect(rt.modelReasoningEffort.value).toBe("low");
@@ -99,11 +99,11 @@ describe("webSocketActions model preference restore", () => {
     const { ctx, actions } = setup();
     writeModelPreference("default", "advisor", "codex", { modelId: "gpt-4o" });
 
-    const rt = ctx.getAdvisorRuntime("default");
+    const rt = ctx.getAcopilotRuntime("default");
     rt.activeAgentId.value = "claude";
     rt.modelId.value = "server-default";
 
-    await actions.connectAdvisorWs("default");
+    await actions.connectAcopilotWs("default");
 
     expect(rt.modelId.value).toBe("server-default");
   });

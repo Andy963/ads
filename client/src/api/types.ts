@@ -1,3 +1,5 @@
+import type { CanonicalLaneId } from "../../../shared/terminology.js";
+
 export type AuthStatus = {
   initialized: boolean;
 };
@@ -28,7 +30,14 @@ export interface ModelConfig {
   configJson?: Record<string, unknown> | null;
 }
 
-export type LaneName = "advisor" | "worker";
+/**
+ * Lane identifiers as the API reports them.
+ *
+ * The server writes only canonical lane ids (see ADR 0027), so this is the
+ * shared `CanonicalLaneId` rather than a client-local copy. Legacy spellings
+ * never appear in a response; they are resolved at the boundary instead.
+ */
+export type LaneName = CanonicalLaneId;
 
 export interface LanePromptVersion {
   lane: LaneName;

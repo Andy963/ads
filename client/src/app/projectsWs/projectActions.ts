@@ -32,7 +32,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     activeProject,
     activeRuntime,
     getRuntime,
-    getAdvisorRuntime,
+    getAcopilotRuntime,
     normalizeProjectId,
     runtimeProjectInProgress,
     busy,
@@ -348,8 +348,8 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
 
     const pid = normalizeProjectId(targetId);
     const rt = getRuntime(pid);
-    const advisorRt = getAdvisorRuntime(pid);
-    if (runtimeProjectInProgress(rt) || runtimeProjectInProgress(advisorRt)) {
+    const acopilotRt = getAcopilotRuntime(pid);
+    if (runtimeProjectInProgress(rt) || runtimeProjectInProgress(acopilotRt)) {
       apiError.value = "Project is busy; cannot remove right now.";
       return;
     }

@@ -127,17 +127,17 @@ describe("ModelManager", () => {
     const workerPrompt = "Worker baseline prompt";
     const snapshots: LanePromptSnapshot[] = [
       {
-        lane: "advisor",
-        current: { lane: "advisor", version: 1, prompt: advisorPrompt, isBase: true, createdAt: 1 },
-        base: { lane: "advisor", version: 1, prompt: advisorPrompt, isBase: true, createdAt: 1 },
-        versions: [{ lane: "advisor", version: 1, prompt: advisorPrompt, isBase: true, createdAt: 1 }],
+        lane: "acopilot",
+        current: { lane: "acopilot", version: 1, prompt: advisorPrompt, isBase: true, createdAt: 1 },
+        base: { lane: "acopilot", version: 1, prompt: advisorPrompt, isBase: true, createdAt: 1 },
+        versions: [{ lane: "acopilot", version: 1, prompt: advisorPrompt, isBase: true, createdAt: 1 }],
         updatedAt: 1,
       },
       {
-        lane: "worker",
-        current: { lane: "worker", version: 1, prompt: workerPrompt, isBase: true, createdAt: 1 },
-        base: { lane: "worker", version: 1, prompt: workerPrompt, isBase: true, createdAt: 1 },
-        versions: [{ lane: "worker", version: 1, prompt: workerPrompt, isBase: true, createdAt: 1 }],
+        lane: "actions",
+        current: { lane: "actions", version: 1, prompt: workerPrompt, isBase: true, createdAt: 1 },
+        base: { lane: "actions", version: 1, prompt: workerPrompt, isBase: true, createdAt: 1 },
+        versions: [{ lane: "actions", version: 1, prompt: workerPrompt, isBase: true, createdAt: 1 }],
         updatedAt: 1,
       },
     ];
@@ -171,12 +171,12 @@ describe("ModelManager", () => {
     await wrapper.find('[data-testid="lane-prompt-editor"]').setValue("Custom advisor prompt");
     await wrapper.find('[data-testid="lane-prompt-save"]').trigger("click");
     await settle(wrapper);
-    expect(api.put).toHaveBeenCalledWith("/api/lane-prompts/advisor", { prompt: "Custom advisor prompt" });
+    expect(api.put).toHaveBeenCalledWith("/api/lane-prompts/acopilot", { prompt: "Custom advisor prompt" });
     expect(wrapper.find('[data-testid="lane-prompt-status"]').text()).toContain("已保存");
     expect(wrapper.find('[data-testid="lane-prompt-history"]').text()).toContain("当前生效：v2");
     expect(wrapper.find('[data-testid="lane-prompt-history"] details').exists()).toBe(false);
 
-    await wrapper.find('[data-testid="lane-prompt-lane-worker"]').trigger("click");
+    await wrapper.find('[data-testid="lane-prompt-lane-developer"]').trigger("click");
     expect((wrapper.find('[data-testid="lane-prompt-editor"]').element as HTMLTextAreaElement).value).toBe(workerPrompt);
     wrapper.unmount();
   });
@@ -186,28 +186,28 @@ describe("ModelManager", () => {
     const advisorCustom = "Advisor custom prompt";
     const snapshots: LanePromptSnapshot[] = [
       {
-        lane: "advisor",
-        current: { lane: "advisor", version: 2, prompt: advisorCustom, isBase: false, createdAt: 2 },
-        base: { lane: "advisor", version: 1, prompt: advisorBase, isBase: true, createdAt: 1 },
+        lane: "acopilot",
+        current: { lane: "acopilot", version: 2, prompt: advisorCustom, isBase: false, createdAt: 2 },
+        base: { lane: "acopilot", version: 1, prompt: advisorBase, isBase: true, createdAt: 1 },
         versions: [
-          { lane: "advisor", version: 2, prompt: advisorCustom, isBase: false, createdAt: 2 },
-          { lane: "advisor", version: 1, prompt: advisorBase, isBase: true, createdAt: 1 },
+          { lane: "acopilot", version: 2, prompt: advisorCustom, isBase: false, createdAt: 2 },
+          { lane: "acopilot", version: 1, prompt: advisorBase, isBase: true, createdAt: 1 },
         ],
         updatedAt: 2,
       },
       {
-        lane: "worker",
-        current: { lane: "worker", version: 1, prompt: "Worker baseline prompt", isBase: true, createdAt: 1 },
-        base: { lane: "worker", version: 1, prompt: "Worker baseline prompt", isBase: true, createdAt: 1 },
-        versions: [{ lane: "worker", version: 1, prompt: "Worker baseline prompt", isBase: true, createdAt: 1 }],
+        lane: "actions",
+        current: { lane: "actions", version: 1, prompt: "Worker baseline prompt", isBase: true, createdAt: 1 },
+        base: { lane: "actions", version: 1, prompt: "Worker baseline prompt", isBase: true, createdAt: 1 },
+        versions: [{ lane: "actions", version: 1, prompt: "Worker baseline prompt", isBase: true, createdAt: 1 }],
         updatedAt: 1,
       },
     ];
     const restored = {
       ...snapshots[0],
-      current: { lane: "advisor", version: 3, prompt: advisorBase, isBase: false, createdAt: 3 },
+      current: { lane: "acopilot", version: 3, prompt: advisorBase, isBase: false, createdAt: 3 },
       versions: [
-        { lane: "advisor", version: 3, prompt: advisorBase, isBase: false, createdAt: 3 },
+        { lane: "acopilot", version: 3, prompt: advisorBase, isBase: false, createdAt: 3 },
         ...snapshots[0].versions,
       ],
       updatedAt: 3,
@@ -243,7 +243,7 @@ describe("ModelManager", () => {
 
     await wrapper.find('[data-testid="lane-prompt-restore"]').trigger("click");
     await settle(wrapper);
-    expect(api.put).toHaveBeenCalledWith("/api/lane-prompts/advisor", { prompt: advisorBase });
+    expect(api.put).toHaveBeenCalledWith("/api/lane-prompts/acopilot", { prompt: advisorBase });
     expect((wrapper.find('[data-testid="lane-prompt-editor"]').element as HTMLTextAreaElement).value).toBe(advisorBase);
     expect(wrapper.find('[data-testid="lane-prompt-history"]').text()).toContain("当前生效：v3");
     expect(wrapper.find('[data-testid="lane-prompt-version-notice"]').exists()).toBe(false);
@@ -1075,14 +1075,14 @@ describe("ModelManager", () => {
         if (url === "/api/lane-prompts") {
           return [
             {
-              lane: "advisor",
-              current: { lane: "advisor", version: 1, prompt: "Advisor original prompt" },
-              versions: [{ lane: "advisor", version: 1, prompt: "Advisor original prompt" }],
+              lane: "acopilot",
+              current: { lane: "acopilot", version: 1, prompt: "Advisor original prompt" },
+              versions: [{ lane: "acopilot", version: 1, prompt: "Advisor original prompt" }],
             },
             {
-              lane: "worker",
-              current: { lane: "worker", version: 1, prompt: "Worker original prompt" },
-              versions: [{ lane: "worker", version: 1, prompt: "Worker original prompt" }],
+              lane: "actions",
+              current: { lane: "actions", version: 1, prompt: "Worker original prompt" },
+              versions: [{ lane: "actions", version: 1, prompt: "Worker original prompt" }],
             },
           ];
         }
@@ -1107,12 +1107,12 @@ describe("ModelManager", () => {
     await textarea.setValue("Modified Advisor draft text");
 
     // Switch to worker
-    await wrapper.find('[data-testid="lane-prompt-lane-worker"]').trigger("click");
+    await wrapper.find('[data-testid="lane-prompt-lane-developer"]').trigger("click");
     await settle(wrapper);
     expect((wrapper.find('[data-testid="lane-prompt-editor"]').element as HTMLTextAreaElement).value).toBe("Worker original prompt");
 
     // Switch back to advisor
-    await wrapper.find('[data-testid="lane-prompt-lane-advisor"]').trigger("click");
+    await wrapper.find('[data-testid="lane-prompt-lane-acopilot"]').trigger("click");
     await settle(wrapper);
     expect((wrapper.find('[data-testid="lane-prompt-editor"]').element as HTMLTextAreaElement).value).toBe("Modified Advisor draft text");
 
@@ -1178,8 +1178,8 @@ describe("ModelManager", () => {
     await settle(wrapper);
 
     // Verify 3 role buttons exist
-    expect(wrapper.find('[data-testid="lane-prompt-lane-advisor"]').text()).toContain("Acopilot");
-    expect(wrapper.find('[data-testid="lane-prompt-lane-worker"]').text()).toContain("Developer");
+    expect(wrapper.find('[data-testid="lane-prompt-lane-acopilot"]').text()).toContain("Acopilot");
+    expect(wrapper.find('[data-testid="lane-prompt-lane-developer"]').text()).toContain("Developer");
     expect(wrapper.find('[data-testid="lane-prompt-lane-reviewer"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="lane-prompt-lane-reviewer"]').text()).toContain("Reviewer");
 
@@ -1211,10 +1211,10 @@ describe("ModelManager", () => {
       version: 1,
     };
     const snapshot: LanePromptSnapshot = {
-      lane: "advisor",
-      current: { lane: "advisor", version: 1, prompt, isBase: true, createdAt: 1 },
-      base: { lane: "advisor", version: 1, prompt, isBase: true, createdAt: 1 },
-      versions: [{ lane: "advisor", version: 1, prompt, isBase: true, createdAt: 1 }],
+      lane: "acopilot",
+      current: { lane: "acopilot", version: 1, prompt, isBase: true, createdAt: 1 },
+      base: { lane: "acopilot", version: 1, prompt, isBase: true, createdAt: 1 },
+      versions: [{ lane: "acopilot", version: 1, prompt, isBase: true, createdAt: 1 }],
       updatedAt: 1,
     };
     const models = [
@@ -1263,7 +1263,7 @@ describe("ModelManager", () => {
       reasoning_effort: "high",
       system_prompt: prompt,
     });
-    expect(api.put).not.toHaveBeenCalledWith("/api/lane-prompts/advisor", { prompt });
+    expect(api.put).not.toHaveBeenCalledWith("/api/lane-prompts/acopilot", { prompt });
     expect(saveButton.attributes("disabled")).toBeDefined();
 
     failRoleSave = true;

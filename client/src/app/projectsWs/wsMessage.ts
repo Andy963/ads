@@ -26,6 +26,7 @@ import { crumb } from "../../lib/diagBreadcrumbs";
 import type { ExecuteBlockUpdate } from "../chatExecute";
 
 import { isReconnectNotice } from "./reconnectNotice";
+import { WIRE_ACOPILOT_SESSION_ID } from "../../lib/laneWire";
 
 type Ref<T> = { value: T };
 
@@ -875,7 +876,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
     const resetScope = String(payload.scope ?? "").trim().toLowerCase() || "lane";
     const sourceChatSessionId = String(payload.sourceChatSessionId ?? "").trim();
-    if (resetScope === "shared" && effectiveChatSessionId === "advisor") {
+    if (resetScope === "shared" && effectiveChatSessionId === WIRE_ACOPILOT_SESSION_ID) {
       return;
     }
     if (resetScope !== "shared" && sourceChatSessionId !== effectiveChatSessionId) {

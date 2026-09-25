@@ -22,7 +22,7 @@ export async function verifyPostSendInteractions({ page, fixture, mobile }) {
       const track = document.querySelector(".lanePanelsTrack");
       if (track && getComputedStyle(track).display !== "contents") {
         const tx = new DOMMatrixReadOnly(getComputedStyle(track).transform).m41;
-        const expected = expectedLane === "worker" ? -track.clientWidth / 2 : 0;
+        const expected = expectedLane === "actions" ? -track.clientWidth / 2 : 0;
         if (Math.abs(tx - expected) > 2) return false;
       }
       return true;
@@ -64,7 +64,7 @@ export async function verifyPostSendInteractions({ page, fixture, mobile }) {
     return metrics;
   };
 
-  await chooseLane("advisor");
+  await chooseLane("acopilot");
   await input().fill("");
   await activate(input());
   await setKeyboardViewport(430);
@@ -129,28 +129,28 @@ export async function verifyPostSendInteractions({ page, fixture, mobile }) {
     assert.equal(await input().inputValue(), "Advisor draft after two sends", "A delayed compositionend must not restore sent text or erase the new draft");
   }
   await setKeyboardViewport(300, 72);
-  await chooseLane("worker");
+  await chooseLane("actions");
   assert.equal(await input().inputValue(), "");
   assert.ok(!(await visibleChat().innerText()).includes(firstPrompt));
   assert.ok(!(await visibleChat().innerText()).includes(secondPrompt));
   await input().pressSequentially("Worker draft after two sends");
   await setKeyboardViewport(430, 24);
-  await chooseLane("advisor");
+  await chooseLane("acopilot");
   assert.equal(await input().inputValue(), "Advisor draft after two sends");
   assert.ok((await visibleChat().innerText()).includes(secondPrompt));
-  await chooseLane("worker");
+  await chooseLane("actions");
   assert.equal(await input().inputValue(), "Worker draft after two sends");
   releaseActiveReply();
-  await chooseLane("advisor");
+  await chooseLane("acopilot");
   await page.waitForFunction((marker) => document.querySelector('.lanePanel:not([aria-hidden]) .chat')?.textContent.includes(`Advisor reply: ${marker}`), activePrompt);
   assert.equal(await input().inputValue(), "Advisor draft after two sends");
   assert.equal(fixture.received.filter(({ marker }) => marker === firstPrompt).length, 1);
   assert.equal(fixture.received.filter(({ marker }) => marker === secondPrompt).length, 1);
   if (mobile) assert.equal(fixture.received.filter(({ marker }) => marker === activePrompt).length, 1);
   await input().fill("");
-  await chooseLane("worker");
+  await chooseLane("actions");
   await input().fill("");
-  await chooseLane("advisor");
+  await chooseLane("acopilot");
   await setKeyboardViewport(mobile ? 844 : 900);
   await originalEditor.dispose();
   return { firstSend, secondSend, composedSend, rowsAfterSending };

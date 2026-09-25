@@ -264,7 +264,7 @@ describe("reasoning effort WS payload", () => {
     await ensureWsConnected(wrapper);
     await ensureAdvisorWsConnected(wrapper);
 
-    wrapper.vm.sendAdvisorPrompt?.("hello");
+    wrapper.vm.sendAcopilotPrompt?.("hello");
     await settleUi(wrapper);
 
     expect(lastAdvisorSendPromptPayload).toBeTruthy();
@@ -288,8 +288,8 @@ describe("reasoning effort WS payload", () => {
     });
     await settleUi(wrapper);
 
-    wrapper.vm.switchAdvisorAgent?.("claude");
-    wrapper.vm.sendAdvisorPrompt?.("hello");
+    wrapper.vm.switchAcopilotAgent?.("claude");
+    wrapper.vm.sendAcopilotPrompt?.("hello");
     await settleUi(wrapper);
 
     expect(lastAdvisorSendPromptPayload).toBeTruthy();

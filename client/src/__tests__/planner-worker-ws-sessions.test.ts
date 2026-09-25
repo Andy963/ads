@@ -138,50 +138,50 @@ describe("Lane websocket sessions", () => {
   it("keeps reconnect and only swaps lane history after resume snapshots arrive", async () => {
     const { wrapper, controller } = await mountController();
 
-    const workerRt = controller.getRuntime("default");
-    const advisorRt = controller.getAdvisorRuntime("default");
+    const actionsRt = controller.getRuntime("default");
+    const acopilotRt = controller.getAcopilotRuntime("default");
     const workerWs = wsByChatSessionId.get("main");
     const advisorWs = wsByChatSessionId.get("advisor");
 
     expect(workerWs).toBeTruthy();
     expect(advisorWs).toBeTruthy();
 
-    workerRt.messages.value = [{ id: "w-1", role: "assistant", kind: "text", content: "worker history" }];
-    advisorRt.messages.value = [{ id: "p-1", role: "assistant", kind: "text", content: "advisor history" }];
-    workerRt.busy.value = false;
-    advisorRt.busy.value = true;
+    actionsRt.messages.value = [{ id: "w-1", role: "assistant", kind: "text", content: "worker history" }];
+    acopilotRt.messages.value = [{ id: "p-1", role: "assistant", kind: "text", content: "advisor history" }];
+    actionsRt.busy.value = false;
+    acopilotRt.busy.value = true;
     await settleUi(wrapper as any);
 
     advisorWs.onClose?.({ code: 1006, reason: "" });
     await settleUi(wrapper as any);
 
-    expect(advisorRt.connected.value).toBe(false);
-    expect(workerRt.connected.value).toBe(true);
-    expect(advisorRt.busy.value).toBe(true);
-    expect(workerRt.busy.value).toBe(false);
+    expect(acopilotRt.connected.value).toBe(false);
+    expect(actionsRt.connected.value).toBe(true);
+    expect(acopilotRt.busy.value).toBe(true);
+    expect(actionsRt.busy.value).toBe(false);
 
     advisorWs.onOpen?.();
     await settleUi(wrapper as any);
     advisorWs.onMessage?.({ type: "welcome", inFlight: false });
     await settleUi(wrapper as any);
 
-    expect(advisorRt.connected.value).toBe(true);
+    expect(acopilotRt.connected.value).toBe(true);
 
-    advisorRt.messages.value = [];
+    acopilotRt.messages.value = [];
     advisorWs.onMessage?.({
       type: "history",
       items: [{ role: "ai", text: "advisor restored only", kind: "text", ts: Date.now() }],
     });
     await settleUi(wrapper as any);
 
-    expect(advisorRt.messages.value.map((entry: any) => entry.content)).toContain("advisor restored only");
-    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
+    expect(acopilotRt.messages.value.map((entry: any) => entry.content)).toContain("advisor restored only");
+    expect(actionsRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
 
-    await controller.resumeAdvisorThread();
+    await controller.resumeAcopilotThread();
     expect(advisorWs.send).toHaveBeenCalledWith("task_resume");
     expect(workerWs.send).not.toHaveBeenCalledWith("task_resume");
-    expect(advisorRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor restored only"]);
-    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
+    expect(acopilotRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor restored only"]);
+    expect(actionsRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
 
     advisorWs.onMessage?.({
       type: "history",
@@ -189,12 +189,12 @@ describe("Lane websocket sessions", () => {
     });
     await settleUi(wrapper as any);
 
-    expect(advisorRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor resumed only"]);
+    expect(acopilotRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor resumed only"]);
 
     await controller.resumeTaskThread();
     expect(workerWs.send).toHaveBeenCalledWith("task_resume");
-    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
-    expect(advisorRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor resumed only"]);
+    expect(actionsRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
+    expect(acopilotRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor resumed only"]);
 
     workerWs.onMessage?.({
       type: "history",
@@ -202,59 +202,59 @@ describe("Lane websocket sessions", () => {
     });
     await settleUi(wrapper as any);
 
-    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker resumed only"]);
-    expect(advisorRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor resumed only"]);
+    expect(actionsRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker resumed only"]);
+    expect(acopilotRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor resumed only"]);
     wrapper.unmount();
   });
 
   it("keeps existing chat visible when worker or advisor resume fails", async () => {
     const { wrapper, controller } = await mountController();
 
-    const workerRt = controller.getRuntime("default");
-    const advisorRt = controller.getAdvisorRuntime("default");
+    const actionsRt = controller.getRuntime("default");
+    const acopilotRt = controller.getAcopilotRuntime("default");
     const workerWs = wsByChatSessionId.get("main");
     const advisorWs = wsByChatSessionId.get("advisor");
 
     expect(workerWs).toBeTruthy();
     expect(advisorWs).toBeTruthy();
 
-    workerRt.messages.value = [{ id: "w-1", role: "assistant", kind: "text", content: "worker history" }];
-    advisorRt.messages.value = [{ id: "p-1", role: "assistant", kind: "text", content: "advisor history" }];
+    actionsRt.messages.value = [{ id: "w-1", role: "assistant", kind: "text", content: "worker history" }];
+    acopilotRt.messages.value = [{ id: "p-1", role: "assistant", kind: "text", content: "advisor history" }];
     await settleUi(wrapper as any);
 
     await controller.resumeTaskThread();
-    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
+    expect(actionsRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
 
     workerWs.onMessage?.({ type: "error", message: "worker resume failed" });
     await settleUi(wrapper as any);
 
-    expect(workerRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
-    expect(workerRt.laneStatus.value).toEqual({ kind: "error", message: "worker resume failed" });
+    expect(actionsRt.messages.value.map((entry: any) => entry.content)).toEqual(["worker history"]);
+    expect(actionsRt.laneStatus.value).toEqual({ kind: "error", message: "worker resume failed" });
 
-    await controller.resumeAdvisorThread();
-    expect(advisorRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor history"]);
+    await controller.resumeAcopilotThread();
+    expect(acopilotRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor history"]);
 
     advisorWs.onMessage?.({ type: "error", message: "advisor resume failed" });
     await settleUi(wrapper as any);
 
-    expect(advisorRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor history"]);
-    expect(advisorRt.laneStatus.value).toEqual({ kind: "error", message: "advisor resume failed" });
+    expect(acopilotRt.messages.value.map((entry: any) => entry.content)).toEqual(["advisor history"]);
+    expect(acopilotRt.laneStatus.value).toEqual({ kind: "error", message: "advisor resume failed" });
     wrapper.unmount();
   });
 
   it("suppresses resume attempts while lane input is locked", async () => {
     const { wrapper, controller } = await mountController();
 
-    const workerRt = controller.getRuntime("default");
-    const advisorRt = controller.getAdvisorRuntime("default");
+    const actionsRt = controller.getRuntime("default");
+    const acopilotRt = controller.getAcopilotRuntime("default");
     const workerWs = wsByChatSessionId.get("main");
     const advisorWs = wsByChatSessionId.get("advisor");
 
-    workerRt.inputLocked.value = true;
-    advisorRt.inputLocked.value = true;
+    actionsRt.inputLocked.value = true;
+    acopilotRt.inputLocked.value = true;
 
     await controller.resumeTaskThread();
-    await controller.resumeAdvisorThread();
+    await controller.resumeAcopilotThread();
     await settleUi(wrapper as any);
 
     expect(workerWs.send).not.toHaveBeenCalledWith("task_resume");
@@ -265,16 +265,16 @@ describe("Lane websocket sessions", () => {
   it("unlocks the target lane when a resume request is not accepted by the websocket", async () => {
     const { wrapper, controller } = await mountController();
 
-    const workerRt = controller.getRuntime("default");
+    const actionsRt = controller.getRuntime("default");
     const workerWs = wsByChatSessionId.get("main");
     workerWs.send.mockReturnValueOnce(false);
 
     await controller.resumeTaskThread();
     await settleUi(wrapper as any);
 
-    expect(workerRt.inputLocked.value).toBe(false);
-    expect(workerRt.resumeReplacePending).toBe(false);
-    expect(workerRt.laneStatus.value).toEqual({
+    expect(actionsRt.inputLocked.value).toBe(false);
+    expect(actionsRt.resumeReplacePending).toBe(false);
+    expect(actionsRt.laneStatus.value).toEqual({
       kind: "error",
       message: "恢复上下文失败：WebSocket 尚未连接，请稍后重试",
     });

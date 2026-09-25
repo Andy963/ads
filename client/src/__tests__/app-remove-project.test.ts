@@ -264,8 +264,8 @@ describe("App.removeProject", () => {
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await waitForProjectIds(wrapper as any, ["default", "p1", "p2"]);
 
-    const advisorRuntime = (wrapper.vm as any).getAdvisorRuntime("p2") as { busy: { value: boolean } };
-    advisorRuntime.busy.value = true;
+    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime("p2") as { busy: { value: boolean } };
+    acopilotRuntime.busy.value = true;
     await settleUi(wrapper);
 
     const removeButton = wrapper.find('[data-testid="project-swipe-remove-p2"]');

@@ -104,37 +104,37 @@ describe("project status spinner", () => {
     const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
     expect(pid).not.toBe("");
 
-    const workerRuntime = (wrapper.vm as any).getRuntime(pid) as { busy: { value: boolean } };
-    const advisorRuntime = (wrapper.vm as any).getAdvisorRuntime(pid) as { busy: { value: boolean } };
-    workerRuntime.busy.value = false;
-    advisorRuntime.busy.value = false;
+    const actionsRuntime = (wrapper.vm as any).getRuntime(pid) as { busy: { value: boolean } };
+    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime(pid) as { busy: { value: boolean } };
+    actionsRuntime.busy.value = false;
+    acopilotRuntime.busy.value = false;
     await settleUi(wrapper);
 
     expect(wrapper.find(".projectStatus").classes("spinning")).toBe(false);
-    expect(wrapper.find('[data-testid="lane-tab-status-advisor"]').classes("laneTabStatusDot--busy-advisor")).toBe(false);
-    expect(wrapper.find('[data-testid="lane-tab-status-worker"]').classes("laneTabStatusDot--busy-worker")).toBe(false);
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes("laneTabStatusDot--busy-acopilot")).toBe(false);
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes("laneTabStatusDot--busy-actions")).toBe(false);
 
-    advisorRuntime.busy.value = true;
+    acopilotRuntime.busy.value = true;
     await settleUi(wrapper);
     const projectStatus = wrapper.find(".projectStatus");
-    expect(projectStatus.classes()).toEqual(expect.arrayContaining(["spinning", "spinning--advisor"]));
-    expect(projectStatus.attributes("title")).toBe("Advisor 正在规划…");
-    expect(wrapper.find('[data-testid="lane-tab-status-advisor"]').classes()).toContain("laneTabStatusDot--busy-advisor");
-    expect(wrapper.find('[data-testid="lane-tab-status-worker"]').classes("laneTabStatusDot--busy-worker")).toBe(false);
+    expect(projectStatus.classes()).toEqual(expect.arrayContaining(["spinning", "spinning--acopilot"]));
+    expect(projectStatus.attributes("title")).toBe("Acopilot 正在规划…");
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes()).toContain("laneTabStatusDot--busy-acopilot");
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes("laneTabStatusDot--busy-actions")).toBe(false);
 
-    workerRuntime.busy.value = true;
+    actionsRuntime.busy.value = true;
     await settleUi(wrapper);
     expect(projectStatus.classes()).toEqual(expect.arrayContaining(["spinning", "spinning--both"]));
-    expect(projectStatus.attributes("title")).toBe("Advisor 与 Worker 均在运行中…");
-    expect(wrapper.find('[data-testid="lane-tab-status-worker"]').classes()).toContain("laneTabStatusDot--busy-worker");
+    expect(projectStatus.attributes("title")).toBe("Acopilot 与 Actions 均在运行中…");
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes()).toContain("laneTabStatusDot--busy-actions");
 
-    advisorRuntime.busy.value = false;
+    acopilotRuntime.busy.value = false;
     await settleUi(wrapper);
-    expect(projectStatus.classes()).toEqual(expect.arrayContaining(["spinning", "spinning--worker"]));
-    expect(projectStatus.classes("spinning--advisor")).toBe(false);
-    expect(projectStatus.attributes("title")).toBe("Worker 正在执行…");
+    expect(projectStatus.classes()).toEqual(expect.arrayContaining(["spinning", "spinning--actions"]));
+    expect(projectStatus.classes("spinning--acopilot")).toBe(false);
+    expect(projectStatus.attributes("title")).toBe("Actions 正在执行…");
 
-    workerRuntime.busy.value = false;
+    actionsRuntime.busy.value = false;
     await settleUi(wrapper);
     expect(projectStatus.classes("spinning")).toBe(false);
     expect(projectStatus.attributes("title")).toBeUndefined();
@@ -144,8 +144,8 @@ describe("project status spinner", () => {
 
   it("uses pulsing breathing animation for busy lane dots", () => {
     const css = readUtf8("../App.css");
-    const advisorDot = css.match(/\.laneTabStatusDot--busy-advisor\s*\{[^}]*\}/)?.[0];
-    const workerDot = css.match(/\.laneTabStatusDot--busy-worker\s*\{[^}]*\}/)?.[0];
+    const advisorDot = css.match(/\.laneTabStatusDot--busy-acopilot\s*\{[^}]*\}/)?.[0];
+    const workerDot = css.match(/\.laneTabStatusDot--busy-actions\s*\{[^}]*\}/)?.[0];
 
     expect(advisorDot).toBeDefined();
     expect(advisorDot).toMatch(/background:\s*#a855f7\s*;/);

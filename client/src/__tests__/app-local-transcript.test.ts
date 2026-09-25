@@ -61,8 +61,8 @@ describe("cached app bootstrap and authentication", () => {
     try {
       const wrapper = mountApp();
       // Both lane panels stay mounted; the restored worker lane shows its own cache.
-      expect(wrapper.find('[data-testid="lane-panel-worker"] .chat').text()).toContain("Cached main answer");
-      expect(wrapper.find('[data-testid="lane-panel-advisor"] .chat').text()).toContain("Cached advisor answer");
+      expect(wrapper.find('[data-testid="lane-panel-actions"] .chat').text()).toContain("Cached main answer");
+      expect(wrapper.find('[data-testid="lane-panel-acopilot"] .chat').text()).toContain("Cached advisor answer");
     } finally {
       Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
     }
@@ -110,8 +110,8 @@ describe("cached app bootstrap and authentication", () => {
     const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
     try {
       const wrapper = mountApp();
-      await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
-      await wrapper.find('[data-testid="lane-tab-advisor"]').trigger("click");
+      await wrapper.find('[data-testid="lane-tab-actions"]').trigger("click");
+      await wrapper.find('[data-testid="lane-tab-acopilot"]').trigger("click");
       await vi.advanceTimersByTimeAsync(400);
       expect(wrapper.find(".chat").text()).toContain("Cached advisor answer");
       expect(alert).not.toHaveBeenCalled();

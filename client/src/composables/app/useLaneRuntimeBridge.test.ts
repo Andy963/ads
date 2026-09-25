@@ -24,80 +24,80 @@ async function flushRemountBarrier(): Promise<void> {
 }
 
 describe("useLaneRuntimeBridge", () => {
-  it("defaults the visible lane to advisor", () => {
-    const advisorRuntime = createRuntime();
+  it("defaults the visible lane to acopilot", () => {
+    const acopilotRuntime = createRuntime();
 
     const bridge = useLaneRuntimeBridge({
       activeProjectId: ref("p1"),
       activeProject: ref({ chatSessionId: "main" }),
       activeRuntime: shallowRef(createRuntime()),
-      activeAdvisorRuntime: shallowRef(advisorRuntime),
+      activeAcopilotRuntime: shallowRef(acopilotRuntime),
       queuedPrompts: ref([]),
       pendingImages: ref([]),
       agentBusy: ref(false),
-      clearAdvisorChat: () => {},
+      clearAcopilotChat: () => {},
       startNewChatSession: () => {},
-      resumeAdvisorThread: () => {},
+      resumeAcopilotThread: () => {},
       resumeTaskThread: () => {},
     });
 
-    expect(bridge.activeChatLane.value).toBe("advisor");
+    expect(bridge.activeChatLane.value).toBe("acopilot");
   });
 
-  it("keeps the worker latest-prompt key stable across chat sessions", async () => {
-    const advisorRuntime = createRuntime();
+  it("keeps the actions latest-prompt key stable across chat sessions", async () => {
+    const acopilotRuntime = createRuntime();
     const activeProject = ref({ chatSessionId: "session-1" });
 
     const bridge = useLaneRuntimeBridge({
       activeProjectId: ref("p1"),
       activeProject,
       activeRuntime: shallowRef(createRuntime()),
-      activeAdvisorRuntime: shallowRef(advisorRuntime),
+      activeAcopilotRuntime: shallowRef(acopilotRuntime),
       queuedPrompts: ref([]),
       pendingImages: ref([]),
       agentBusy: ref(false),
-      clearAdvisorChat: () => {},
+      clearAcopilotChat: () => {},
       startNewChatSession: () => {},
-      resumeAdvisorThread: () => {},
+      resumeAcopilotThread: () => {},
       resumeTaskThread: () => {},
     });
 
-    expect(bridge.workerChatKey.value).toBe("p1:session-1");
-    expect(bridge.workerPanelKey.value).toBe("p1:session-1:0:worker");
-    expect(bridge.workerLatestPromptKey.value).toBe("p1:worker");
+    expect(bridge.actionsChatKey.value).toBe("p1:session-1");
+    expect(bridge.actionsPanelKey.value).toBe("p1:session-1:0:actions");
+    expect(bridge.actionsLatestPromptKey.value).toBe("p1:actions");
 
     activeProject.value = { chatSessionId: "session-2" };
     await nextTick();
     await flushRemountBarrier();
 
-    expect(bridge.workerChatKey.value).toBe("p1:session-2");
-    expect(bridge.workerPanelKey.value).toBe("p1:session-2:1:worker");
-    expect(bridge.workerLatestPromptKey.value).toBe("p1:worker");
+    expect(bridge.actionsChatKey.value).toBe("p1:session-2");
+    expect(bridge.actionsPanelKey.value).toBe("p1:session-2:1:actions");
+    expect(bridge.actionsLatestPromptKey.value).toBe("p1:actions");
   });
 
   it("does not change the selected lane when the active project changes", async () => {
-    const advisorRuntime = createRuntime();
+    const acopilotRuntime = createRuntime();
     const activeProjectId = ref("p1");
 
     const bridge = useLaneRuntimeBridge({
       activeProjectId,
       activeProject: ref({ chatSessionId: "main" }),
       activeRuntime: shallowRef(createRuntime()),
-      activeAdvisorRuntime: shallowRef(advisorRuntime),
+      activeAcopilotRuntime: shallowRef(acopilotRuntime),
       queuedPrompts: ref([]),
       pendingImages: ref([]),
       agentBusy: ref(false),
-      clearAdvisorChat: () => {},
+      clearAcopilotChat: () => {},
       startNewChatSession: () => {},
-      resumeAdvisorThread: () => {},
+      resumeAcopilotThread: () => {},
       resumeTaskThread: () => {},
     });
 
-    bridge.activeChatLane.value = "advisor";
+    bridge.activeChatLane.value = "acopilot";
     activeProjectId.value = "p3";
     await nextTick();
     await flushRemountBarrier();
-    expect(bridge.activeChatLane.value).toBe("advisor");
+    expect(bridge.activeChatLane.value).toBe("acopilot");
   });
 
   it("keeps the panel key stable across lane switches so panels stay mounted", () => {
@@ -105,23 +105,23 @@ describe("useLaneRuntimeBridge", () => {
       activeProjectId: ref("p1"),
       activeProject: ref({ chatSessionId: "main" }),
       activeRuntime: shallowRef(createRuntime()),
-      activeAdvisorRuntime: shallowRef(createRuntime()),
+      activeAcopilotRuntime: shallowRef(createRuntime()),
       queuedPrompts: ref([]),
       pendingImages: ref([]),
       agentBusy: ref(false),
-      clearAdvisorChat: () => {},
+      clearAcopilotChat: () => {},
       startNewChatSession: () => {},
-      resumeAdvisorThread: () => {},
+      resumeAcopilotThread: () => {},
       resumeTaskThread: () => {},
     });
 
-    const initialWorkerPanelKey = bridge.workerPanelKey.value;
-    const initialAdvisorPanelKey = bridge.advisorPanelKey.value;
-    bridge.setActiveChatLane("worker");
+    const initialWorkerPanelKey = bridge.actionsPanelKey.value;
+    const initialAdvisorPanelKey = bridge.acopilotPanelKey.value;
+    bridge.setActiveChatLane("actions");
 
-    expect(bridge.workerPanelKey.value).toBe(initialWorkerPanelKey);
-    expect(bridge.advisorPanelKey.value).toBe(initialAdvisorPanelKey);
-    expect(bridge.workerLatestPromptKey.value).toBe("p1:worker");
+    expect(bridge.actionsPanelKey.value).toBe(initialWorkerPanelKey);
+    expect(bridge.acopilotPanelKey.value).toBe(initialAdvisorPanelKey);
+    expect(bridge.actionsLatestPromptKey.value).toBe("p1:actions");
   });
 
   it("bumps the panel key when the active project changes", async () => {
@@ -130,21 +130,21 @@ describe("useLaneRuntimeBridge", () => {
       activeProjectId,
       activeProject: ref({ chatSessionId: "main" }),
       activeRuntime: shallowRef(createRuntime()),
-      activeAdvisorRuntime: shallowRef(createRuntime()),
+      activeAcopilotRuntime: shallowRef(createRuntime()),
       queuedPrompts: ref([]),
       pendingImages: ref([]),
       agentBusy: ref(false),
-      clearAdvisorChat: () => {},
+      clearAcopilotChat: () => {},
       startNewChatSession: () => {},
-      resumeAdvisorThread: () => {},
+      resumeAcopilotThread: () => {},
       resumeTaskThread: () => {},
     });
 
-    const initialPanelKey = bridge.advisorPanelKey.value;
+    const initialPanelKey = bridge.acopilotPanelKey.value;
     activeProjectId.value = "p3";
     await nextTick();
     await flushRemountBarrier();
-    expect(bridge.advisorPanelKey.value).not.toBe(initialPanelKey);
+    expect(bridge.acopilotPanelKey.value).not.toBe(initialPanelKey);
   });
 
   it("defers the remount barrier while a lane is busy and applies it once idle", async () => {
@@ -154,27 +154,27 @@ describe("useLaneRuntimeBridge", () => {
       activeProjectId,
       activeProject: ref({ chatSessionId: "main" }),
       activeRuntime: shallowRef(createRuntime()),
-      activeAdvisorRuntime: shallowRef(createRuntime()),
+      activeAcopilotRuntime: shallowRef(createRuntime()),
       queuedPrompts: ref([]),
       pendingImages: ref([]),
       agentBusy,
-      clearAdvisorChat: () => {},
+      clearAcopilotChat: () => {},
       startNewChatSession: () => {},
-      resumeAdvisorThread: () => {},
+      resumeAcopilotThread: () => {},
       resumeTaskThread: () => {},
     });
 
-    const initialPanelKey = bridge.workerPanelKey.value;
-    expect(initialPanelKey).toBe("p1:main:0:worker");
+    const initialPanelKey = bridge.actionsPanelKey.value;
+    expect(initialPanelKey).toBe("p1:main:0:actions");
     agentBusy.value = true;
     activeProjectId.value = "p3";
     await nextTick();
-    expect(bridge.workerPanelKey.value).toBe(initialPanelKey);
+    expect(bridge.actionsPanelKey.value).toBe(initialPanelKey);
 
     agentBusy.value = false;
     await nextTick();
     await flushRemountBarrier();
-    expect(bridge.workerPanelKey.value).toBe("p3:main:1:worker");
+    expect(bridge.actionsPanelKey.value).toBe("p3:main:1:actions");
   });
 
   it("retries the remount barrier when only turnInFlight changes to idle", async () => {
@@ -185,84 +185,84 @@ describe("useLaneRuntimeBridge", () => {
       activeProjectId,
       activeProject: ref({ chatSessionId: "main" }),
       activeRuntime: shallowRef(activeRuntime),
-      activeAdvisorRuntime: shallowRef(createRuntime()),
+      activeAcopilotRuntime: shallowRef(createRuntime()),
       queuedPrompts: ref([]),
       pendingImages: ref([]),
       agentBusy: ref(false),
-      clearAdvisorChat: () => {},
+      clearAcopilotChat: () => {},
       startNewChatSession: () => {},
-      resumeAdvisorThread: () => {},
+      resumeAcopilotThread: () => {},
       resumeTaskThread: () => {},
     });
 
-    const initialPanelKey = bridge.workerPanelKey.value;
+    const initialPanelKey = bridge.actionsPanelKey.value;
     activeProjectId.value = "p3";
     await nextTick();
-    expect(bridge.workerPanelKey.value).toBe(initialPanelKey);
+    expect(bridge.actionsPanelKey.value).toBe(initialPanelKey);
 
     activeRuntime.turnInFlight = false;
     await flushRemountBarrier();
-    expect(bridge.workerPanelKey.value).toBe("p3:main:1:worker");
+    expect(bridge.actionsPanelKey.value).toBe("p3:main:1:actions");
   });
 
-  it("blocks disconnected advisor lane resets but keeps worker new-session available", () => {
-    const clearAdvisorChat = vi.fn();
+  it("blocks disconnected acopilot lane resets but keeps actions new-session available", () => {
+    const clearAcopilotChat = vi.fn();
     const startNewChatSession = vi.fn();
 
     const bridge = useLaneRuntimeBridge({
       activeProjectId: ref("p1"),
       activeProject: ref({ chatSessionId: "main" }),
       activeRuntime: shallowRef(createRuntime()),
-      activeAdvisorRuntime: shallowRef({
+      activeAcopilotRuntime: shallowRef({
         ...createRuntime(),
         connected: ref(false),
       }),
       queuedPrompts: ref([]),
       pendingImages: ref([]),
       agentBusy: ref(false),
-      clearAdvisorChat,
+      clearAcopilotChat,
       startNewChatSession,
-      resumeAdvisorThread: () => {},
+      resumeAcopilotThread: () => {},
       resumeTaskThread: () => {},
     });
 
-    bridge.activeChatLane.value = "advisor";
+    bridge.activeChatLane.value = "acopilot";
     expect(bridge.activeLaneNewSessionBlocked.value).toBe(true);
     bridge.handleLaneNewSession();
-    expect(clearAdvisorChat).not.toHaveBeenCalled();
+    expect(clearAcopilotChat).not.toHaveBeenCalled();
 
-    bridge.activeChatLane.value = "worker";
+    bridge.activeChatLane.value = "actions";
     expect(bridge.activeLaneNewSessionBlocked.value).toBe(false);
     bridge.handleLaneNewSession();
     expect(startNewChatSession).toHaveBeenCalledTimes(1);
   });
 
-  it("allows advisor lane resets again once its websocket reconnects", () => {
-    const clearAdvisorChat = vi.fn();
-    const startNewAdvisorSession = vi.fn();
+  it("allows acopilot lane resets again once its websocket reconnects", () => {
+    const clearAcopilotChat = vi.fn();
+    const startNewAcopilotSession = vi.fn();
 
-    const advisorBridge = useLaneRuntimeBridge({
+    const acopilotBridge = useLaneRuntimeBridge({
       activeProjectId: ref("p1"),
       activeProject: ref({ chatSessionId: "main" }),
       activeRuntime: shallowRef(createRuntime()),
-      activeAdvisorRuntime: shallowRef({
+      activeAcopilotRuntime: shallowRef({
         ...createRuntime(),
         connected: ref(true),
       }),
       queuedPrompts: ref([]),
       pendingImages: ref([]),
       agentBusy: ref(false),
-      clearAdvisorChat,
-      startNewAdvisorSession,
+      clearAcopilotChat,
+      startNewAcopilotSession,
       startNewChatSession: () => {},
-      resumeAdvisorThread: () => {},
+      resumeAcopilotThread: () => {},
       resumeTaskThread: () => {},
     });
 
-    advisorBridge.activeChatLane.value = "advisor";
-    expect(advisorBridge.activeLaneNewSessionBlocked.value).toBe(false);
-    advisorBridge.handleLaneNewSession();
-    expect(startNewAdvisorSession).toHaveBeenCalledTimes(1);
-    expect(clearAdvisorChat).not.toHaveBeenCalled();
+    acopilotBridge.activeChatLane.value = "acopilot";
+    expect(acopilotBridge.activeLaneNewSessionBlocked.value).toBe(false);
+    acopilotBridge.handleLaneNewSession();
+    expect(startNewAcopilotSession).toHaveBeenCalledTimes(1);
+    expect(clearAcopilotChat).not.toHaveBeenCalled();
   });
 });
