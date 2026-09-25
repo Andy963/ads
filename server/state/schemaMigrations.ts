@@ -729,4 +729,114 @@ Core reviewing rules:
       ensurePromptQueueTables(db);
     },
   },
+  {
+    version: 25,
+    description: "Rename lane system prompt rows to canonical lane ids",
+    up: (db) => {
+      rebuildLanePromptTablesForCanonicalLanes(db);
+    },
+  },
 ];
+
+/**
+ * Rebuild the lane system prompt tables so their CHECK constraints and stored
+ * lane values use the canonical `acopilot` / `actions` ids.
+ *
+ * SQLite cannot ALTER a CHECK constraint, and `CREATE TABLE IF NOT EXISTS`
+ * silently keeps an existing table's original DDL. An installation created
+ * before the terminology migration therefore keeps rejecting canonical lane
+ * ids even though the application now writes only those. Rebuilding is the only
+ * way to change the constraint, so the tables are recreated and the rows copied
+ * with their lane ids remapped.
+ *
+ * Design notes:
+ * - Idempotent: a database that is already canonical (or on which the tables
+ *   were never created) is left untouched.
+ * - Non-destructive: prompt text and version history are preserved verbatim. No
+ *   base prompt is re-seeded, so user customizations survive.
+ * - `defer_foreign_keys` covers the window where the child table briefly
+ *   references a table being replaced. Migrations run inside a transaction, and
+ *   `PRAGMA foreign_keys` cannot be changed there, but `defer_foreign_keys` can.
+ * - The child table is dropped before its parent to avoid an FK violation.
+ */
+function rebuildLanePromptTablesForCanonicalLanes(db: DatabaseType): void {
+  const readTableSql = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+  );
+
+  const versionsSql = readTableSql.get("lane_system_prompt_versions") as { sql?: unknown } | undefined;
+  if (!versionsSql?.sql) {
+    // Tables were never created on this database; ensureLanePromptTables will
+    // create them with the canonical constraint when the store is first opened.
+    return;
+  }
+  if (String(versionsSql.sql).includes("'acopilot'")) {
+    return;
+  }
+
+  db.pragma("defer_foreign_keys = ON");
+  db.exec(`
+    CREATE TABLE lane_system_prompt_versions__canonical (
+      lane TEXT NOT NULL CHECK (lane IN ('acopilot', 'actions')),
+      version INTEGER NOT NULL CHECK (version >= 1),
+      prompt TEXT NOT NULL,
+      is_base INTEGER NOT NULL DEFAULT 0 CHECK (is_base IN (0, 1)),
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (lane, version)
+    );
+
+    INSERT INTO lane_system_prompt_versions__canonical (lane, version, prompt, is_base, created_at)
+    SELECT
+      CASE lane
+        WHEN 'advisor' THEN 'acopilot'
+        WHEN 'planner' THEN 'acopilot'
+        WHEN 'worker' THEN 'actions'
+        ELSE lane
+      END,
+      version, prompt, is_base, created_at
+    FROM lane_system_prompt_versions;
+  `);
+
+  const stateSql = readTableSql.get("lane_system_prompt_state") as { sql?: unknown } | undefined;
+  if (stateSql?.sql) {
+    db.exec(`
+      CREATE TABLE lane_system_prompt_state__canonical (
+        lane TEXT PRIMARY KEY CHECK (lane IN ('acopilot', 'actions')),
+        current_version INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (lane, current_version)
+          REFERENCES lane_system_prompt_versions__canonical(lane, version)
+      );
+
+      INSERT INTO lane_system_prompt_state__canonical (lane, current_version, updated_at)
+      SELECT
+        CASE lane
+          WHEN 'advisor' THEN 'acopilot'
+          WHEN 'planner' THEN 'acopilot'
+          WHEN 'worker' THEN 'actions'
+          ELSE lane
+        END,
+        current_version, updated_at
+      FROM lane_system_prompt_state;
+
+      DROP TABLE lane_system_prompt_state;
+    `);
+  }
+
+  db.exec(`
+    DROP TABLE lane_system_prompt_versions;
+    ALTER TABLE lane_system_prompt_versions__canonical RENAME TO lane_system_prompt_versions;
+  `);
+
+  if (stateSql?.sql) {
+    db.exec(`
+      ALTER TABLE lane_system_prompt_state__canonical RENAME TO lane_system_prompt_state;
+    `);
+  }
+
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_lane_system_prompt_base
+      ON lane_system_prompt_versions(lane)
+      WHERE is_base = 1;
+  `);
+}
