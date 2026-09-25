@@ -65,6 +65,26 @@ describe("native provider capabilities", () => {
     assert.equal(deltaCalls, 0);
   });
 
+  it("omits usage requests when the provider capability is not supported", async () => {
+    let body: Record<string, unknown> | undefined;
+    await completeNativeChat({
+      baseUrl: "https://provider.test/v1",
+      apiKey: "test-key",
+      model: "test-model",
+      messages,
+      tools: [],
+      options: { includeUsage: false },
+      fetchImpl: async (_input, init) => {
+        body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return new Response(JSON.stringify({ choices: [{ message: { content: "done" } }] }), {
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+
+    assert.equal(body?.stream_options, undefined);
+  });
+
   it("passes a configured JSON schema as response_format", async () => {
     let body: Record<string, unknown> | undefined;
     await completeNativeChat({

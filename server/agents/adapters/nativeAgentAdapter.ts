@@ -455,6 +455,7 @@ export class NativeAgentAdapter implements AgentAdapter {
         ? this.modelReasoningEffort ?? model.options?.reasoningEffort
         : undefined,
       parallelToolCalls: capabilities.parallelToolCalls === "unsupported" ? false : undefined,
+      includeUsage: capabilities.usage === "supported",
     };
     const combined = createCombinedSignal(options.signal, this.turnTimeoutMs);
     const resetGeneration = this.resetGeneration;

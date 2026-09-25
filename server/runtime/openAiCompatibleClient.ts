@@ -43,6 +43,7 @@ export interface NativeCompletionRequest {
     reasoningEffort?: string;
     supportsReasoningEffort?: boolean;
     parallelToolCalls?: boolean;
+    includeUsage?: boolean;
   };
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
@@ -88,6 +89,7 @@ function safeErrorText(value: string, apiKey: string): string {
 
 function buildRequestBody(request: NativeCompletionRequest): JsonRecord {
   const streaming = request.streaming !== false;
+  const options = request.options;
   const body: JsonRecord = {
     model: request.model,
     messages: request.messages,
@@ -95,8 +97,7 @@ function buildRequestBody(request: NativeCompletionRequest): JsonRecord {
     tool_choice: "auto",
     stream: streaming,
   };
-  if (streaming) body.stream_options = { include_usage: true };
-  const options = request.options;
+  if (streaming && options?.includeUsage !== false) body.stream_options = { include_usage: true };
   if (options?.temperature !== undefined) body.temperature = options.temperature;
   if (options?.topP !== undefined) body.top_p = options.topP;
   if (options?.maxTokens !== undefined) body.max_tokens = options.maxTokens;
