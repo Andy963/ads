@@ -642,12 +642,13 @@
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 0;
   min-height: 40px;
   padding: 3px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   box-sizing: border-box;
+  overflow: hidden;
 }
 
 .laneTabGroup {
@@ -667,9 +668,11 @@
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
-  margin-left: auto;
+  margin-left: 0;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
   overflow: hidden;
 }
 
@@ -1251,7 +1254,7 @@
     width: 100%;
     min-height: 38px;
     padding: 2px 8px;
-    gap: 8px;
+    gap: 0;
   }
 
   .laneTabGroup {
@@ -1300,8 +1303,9 @@
     font-size: 13px;
   }
   .laneModelControls {
-    flex: 1 1 auto;
+    flex: 1 1 0;
     gap: 6px;
+    padding-left: 8px;
   }
 }
 

@@ -13,14 +13,19 @@ function readUtf8(relFromThisFile: string): string {
 }
 
 describe("MainChat header UI", () => {
-  it("groups lane buttons in a segmented control with model controls pushed right", () => {
+  it("keeps lane and model controls in one continuous header surface", () => {
     const css = readUtf8("../App.css");
+    const surface = css.match(/\.laneTabs\s*\{[^}]*\}/)?.[0];
     const group = css.match(/\.laneTabGroup\s*\{[^}]*\}/)?.[0];
     const controls = css.match(/\.laneModelControls\s*\{[^}]*\}/)?.[0];
+    expect(surface).toMatch(/gap:\s*0\s*;/);
+    expect(surface).toMatch(/overflow:\s*hidden\s*;/);
     expect(group).toMatch(/display:\s*inline-flex\s*;/);
     expect(group).toMatch(/border-radius:\s*10px\s*;/);
     expect(controls).toMatch(/min-width:\s*0\s*;/);
-    expect(controls).toMatch(/margin-left:\s*auto\s*;/);
+    expect(controls).toMatch(/flex:\s*1 1 0\s*;/);
+    expect(controls).toMatch(/margin-left:\s*0\s*;/);
+    expect(controls).toMatch(/border-left:\s*1px solid var\(--border\)\s*;/);
     expect(controls).toMatch(/justify-content:\s*flex-end\s*;/);
 
     expect(css).not.toMatch(/\.laneTab\s*\{[^}]*justify-self\s*;/);
@@ -32,6 +37,7 @@ describe("MainChat header UI", () => {
     expect(css).toMatch(/\.laneTab\s*\{[^}]*font-size:\s*13px\s*;/);
     expect(selectors).not.toContain('role="dialog"');
     const app = readUtf8("../App.vue");
+    expect(app).toContain('data-testid="chat-control-surface"');
     const header = app.match(/<header class="topbar">([\s\S]*?)<\/header>/)?.[1];
     expect(header).toContain('data-testid="lane-new-session"');
     expect(app.slice(app.indexOf('class="laneTabGroup"'))).not.toContain('class="laneSessionActions"');
@@ -46,6 +52,8 @@ describe("MainChat header UI", () => {
     expect(app).toMatch(/--topbar-height:\s*40px\s*;/);
     expect(mobileApp).toMatch(/--topbar-height:\s*36px\s*;/);
     expect(mobileCss).toMatch(/\.laneTabs\s*\{[^}]*min-height:\s*38px\s*;[^}]*padding:\s*2px 8px\s*;/);
+    expect(mobileCss).toMatch(/\.laneTabs\s*\{[^}]*gap:\s*0\s*;/);
+    expect(mobileCss).toMatch(/\.laneModelControls\s*\{[^}]*padding-left:\s*8px\s*;/);
     expect(mobileCss).toMatch(/\.mobileMenuBtn\s*\{[^}]*height:\s*var\(--topbar-height\)\s*;/);
   });
 

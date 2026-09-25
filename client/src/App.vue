@@ -1733,7 +1733,7 @@ const advisorConnectionStatus = computed(() => {
       </section>
 
       <section v-if="!isMobile || mobileDrawerSection === 'projects'" class="chatShell">
-        <div class="laneTabs">
+        <div class="laneTabs" data-testid="chat-control-surface">
           <div class="laneTabGroup" :style="laneTabGroupStyle" role="tablist" aria-label="切换工作区">
             <template v-for="tab in workspaceTabs" :key="tab.id">
               <button
