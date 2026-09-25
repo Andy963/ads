@@ -357,23 +357,28 @@ export class NativeAgentAdapter implements AgentAdapter {
     if (options.signal?.aborted) throw createAbortError("Native runtime request aborted");
     const turnId = `native-turn-${randomUUID()}`;
     this.pendingRetryCheckpoint = undefined;
-    return await this.sendLock.runExclusive(
-      () => runWithTransientModelRetry(
-        {
-          agentName: "native-runtime",
-          ...(this.retryBackoffMs ? { backoffMs: this.retryBackoffMs } : {}),
-          ...(options.signal ? { signal: options.signal } : {}),
-          log: (message) => logger.info(message),
-          onRetry: (notice) => this.emitAgentEvent(createTransientModelRetryEvent(notice)),
-          onRetryAbort: (error) => this.finalizePendingRetry(
-            options.signal?.aborted ? "cancelled" : "interrupted",
-            error,
-          ),
-        },
-        (retryState) => this.runTurn(input, options, retryState, turnId),
-      ),
-      options.signal,
-    );
+    const turn = createCombinedSignal(options.signal, this.turnTimeoutMs);
+    try {
+      return await this.sendLock.runExclusive(
+        () => runWithTransientModelRetry(
+          {
+            agentName: "native-runtime",
+            ...(this.retryBackoffMs ? { backoffMs: this.retryBackoffMs } : {}),
+            signal: turn.signal,
+            log: (message) => logger.info(message),
+            onRetry: (notice) => this.emitAgentEvent(createTransientModelRetryEvent(notice)),
+            onRetryAbort: (error) => this.finalizePendingRetry(
+              options.signal?.aborted ? "cancelled" : "interrupted",
+              error,
+            ),
+          },
+          (retryState) => this.runTurn(input, options, retryState, turnId, turn.signal),
+        ),
+        turn.signal,
+      );
+    } finally {
+      turn.cleanup();
+    }
   }
 
   private emitAgentEvent(event: AgentEvent): void {
@@ -489,6 +494,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     options: AgentSendOptions,
     retryState: RetryAttemptState,
     turnId: string,
+    signal: AbortSignal,
   ): Promise<AgentRunResult> {
     const userText = textFromInput(input);
     const model = this.resolver.resolve(this.model, this.modelConfig);
@@ -527,7 +533,6 @@ export class NativeAgentAdapter implements AgentAdapter {
       parallelToolCalls: capabilities.parallelToolCalls === "unsupported" ? false : undefined,
       includeUsage: capabilities.usage === "supported",
     };
-    const combined = createCombinedSignal(options.signal, this.turnTimeoutMs);
     const resetGeneration = this.resetGeneration;
     const userMessage: NativeChatMessage = { role: "user", content: userText };
     const workingDirectory = this.workingDirectory ?? this.workspaceRoot;
@@ -544,7 +549,7 @@ export class NativeAgentAdapter implements AgentAdapter {
           }
         : undefined,
       redactions: [model.apiKey, ...this.secretValues],
-      signal: combined.signal,
+      signal,
     });
 
     if (!this.threadStartedEmitted) {
@@ -605,7 +610,7 @@ export class NativeAgentAdapter implements AgentAdapter {
           messages: contextProjection.messages,
           tools: NATIVE_TOOL_DEFINITIONS,
           options: requestOptions,
-          signal: combined.signal,
+          signal,
           fetchImpl: this.fetchImpl,
           ...(streaming
             ? {
@@ -727,13 +732,13 @@ export class NativeAgentAdapter implements AgentAdapter {
         this.emitRaw({ type: "turn.failed", error: { message: error.message } });
         throw error;
       }
-      const normalized = isAbortError(error) || combined.signal.aborted
+      const normalized = isAbortError(error) || signal.aborted
         ? createAbortError("Native runtime request aborted")
         : error instanceof Error
           ? error
           : new Error(String(error));
       const retryableProviderFailure = isRetryableNativeProviderError(error)
-        && !combined.signal.aborted
+        && !signal.aborted
         && !isAbortError(error)
         && !retryState.sideEffectObserved
         && !retryState.isFinalAttempt;
@@ -781,8 +786,6 @@ export class NativeAgentAdapter implements AgentAdapter {
       }
       this.pendingRetryCheckpoint = undefined;
       throw normalized;
-    } finally {
-      combined.cleanup();
     }
     throw new Error("Native runtime turn ended without a result");
   }

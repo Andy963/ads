@@ -131,6 +131,39 @@ describe("Native provider retry and recovery", () => {
     }
   });
 
+  it("shares one turn timeout across retry backoff", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-timeout-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-timeout-db-"));
+    const store = new NativeTranscriptStore(getStateDatabase(path.join(stateDir, "state.db")));
+    try {
+      let requests = 0;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelResolver: resolver(),
+        retryBackoffMs: [100],
+        turnTimeoutMs: 20,
+        transcriptId: "retry-timeout",
+        transcriptStore: store,
+        fetchImpl: async () => {
+          requests += 1;
+          return new Response("temporary", { status: 503 });
+        },
+      });
+
+      await assert.rejects(
+        adapter.send("timeout across retries"),
+        (error: unknown) => error instanceof Error && error.name === "AbortError",
+      );
+      assert.equal(requests, 1);
+      assert.equal(store.listTurns("retry-timeout")[0]?.status, "interrupted");
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not restore a turn cancelled during retry backoff", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-state-"));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-db-"));
