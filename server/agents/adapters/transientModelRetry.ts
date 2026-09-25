@@ -20,6 +20,7 @@ export interface TransientModelRetryOptions {
   signal?: AbortSignal;
   log?: (message: string) => void;
   onRetry?: (notice: TransientModelRetryNotice) => void;
+  onRetryAbort?: (error: unknown) => void;
 }
 
 export interface TransientModelRetryNotice {
@@ -291,9 +292,11 @@ export async function runWithTransientModelRetry<T>(
       }
       const message = error instanceof Error ? error.message : String(error);
       const retryable =
-        error instanceof TransientModelRetryAttemptError
-          ? error.retryable
-          : isRetryableNativeProviderError(error) || isTransientUpstreamModelError(message);
+        error instanceof NativeProviderError
+          ? error.kind === "transient"
+          : error instanceof TransientModelRetryAttemptError
+            ? error.retryable
+            : isTransientUpstreamModelError(message);
       const unsafe =
         sideEffectObserved ||
         (error instanceof TransientModelRetryAttemptError && error.sideEffectObserved);
@@ -324,7 +327,20 @@ export async function runWithTransientModelRetry<T>(
       options.log?.(
         `[${options.agentName}] transient upstream model error; retrying attempt ${attempt + 1}/${maxAttempts} after ${delayMs}ms`,
       );
-      await delay(delayMs, options.signal);
+      try {
+        await delay(delayMs, options.signal);
+      } catch (error) {
+        if (isAbortError(error)) {
+          try {
+            options.onRetryAbort?.(error);
+          } catch (callbackError) {
+            options.log?.(
+              `[${options.agentName}] failed to finalize aborted retry: ${callbackError instanceof Error ? callbackError.message : String(callbackError)}`,
+            );
+          }
+        }
+        throw error;
+      }
     }
   }
 

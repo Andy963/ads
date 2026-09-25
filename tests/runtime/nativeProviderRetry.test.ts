@@ -70,7 +70,7 @@ describe("Native provider retry and recovery", () => {
         retryBackoffMs: [0],
         fetchImpl: async () => {
           requests += 1;
-          return new Response("unauthorized", { status: 401 });
+          return new Response("fetch failed: HTTP 503 secret-response-body", { status: 401 });
         },
       });
 
@@ -115,6 +115,34 @@ describe("Native provider retry and recovery", () => {
     }
   });
 
+  it("does not restore a turn cancelled during retry backoff", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-state-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-db-"));
+    const store = new NativeTranscriptStore(getStateDatabase(path.join(stateDir, "state.db")));
+    try {
+      const controller = new AbortController();
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelResolver: resolver(),
+        retryBackoffMs: [100],
+        transcriptId: "retry-cancel",
+        transcriptStore: store,
+        fetchImpl: async () => new Response("temporary", { status: 503 }),
+      });
+      adapter.onEvent((event) => {
+        if (event.retry) controller.abort();
+      });
+
+      await assert.rejects(adapter.send("cancel persisted retry", { signal: controller.signal }));
+      assert.equal(store.listTurns("retry-cancel")[0]?.status, "cancelled");
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not replay a tool side effect when a later provider request fails", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-side-effect-"));
     try {
@@ -127,7 +155,7 @@ describe("Native provider retry and recovery", () => {
         fetchImpl: async () => {
           requests += 1;
           if (requests === 1) {
-            return sse([JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "read-1", function: { name: "read_file", arguments: "{\"file\":\"missing.txt\"}" } }] } }] })]);
+            return sse([JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "read-1", function: { name: "read_file", arguments: "{\"file\":\"missing.txt\"}" } }] }, finish_reason: "tool_calls" }] })]);
           }
           return new Response("upstream failed", { status: 503 });
         },

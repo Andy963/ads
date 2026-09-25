@@ -198,6 +198,14 @@ export class NativeAgentAdapter implements AgentAdapter {
   private resetGeneration = 0;
   private readonly transcriptWriterId = randomUUID();
   private nativeTranscriptRestored = false;
+  private pendingRetryCheckpoint?: {
+    turnId: string;
+    resetGeneration: number;
+    messages: NativeChatMessage[];
+    entries: NativeTranscriptEntry[];
+    usage: Usage | null;
+    provider: NativeTranscriptProviderMetadata;
+  };
 
   constructor(options: NativeAgentAdapterOptions) {
     this.credentialOwner = String(options.credentialOwner ?? "").trim();
@@ -294,6 +302,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     this.conversation = [];
     this.threadId = `native-${randomUUID()}`;
     this.threadStartedEmitted = false;
+    this.pendingRetryCheckpoint = undefined;
   }
 
   retargetTranscript(transcriptId: string): void {
@@ -311,6 +320,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     this.conversation = [];
     this.threadId = `native-${randomUUID()}`;
     this.threadStartedEmitted = false;
+    this.pendingRetryCheckpoint = undefined;
   }
 
   setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void {
@@ -346,6 +356,7 @@ export class NativeAgentAdapter implements AgentAdapter {
   async send(input: Input, options: AgentSendOptions = {}): Promise<AgentRunResult> {
     if (options.signal?.aborted) throw createAbortError("Native runtime request aborted");
     const turnId = `native-turn-${randomUUID()}`;
+    this.pendingRetryCheckpoint = undefined;
     return await this.sendLock.runExclusive(
       () => runWithTransientModelRetry(
         {
@@ -354,6 +365,10 @@ export class NativeAgentAdapter implements AgentAdapter {
           ...(options.signal ? { signal: options.signal } : {}),
           log: (message) => logger.info(message),
           onRetry: (notice) => this.emitAgentEvent(createTransientModelRetryEvent(notice)),
+          onRetryAbort: (error) => this.finalizePendingRetry(
+            options.signal?.aborted ? "cancelled" : "interrupted",
+            error,
+          ),
         },
         (retryState) => this.runTurn(input, options, retryState, turnId),
       ),
@@ -369,6 +384,23 @@ export class NativeAgentAdapter implements AgentAdapter {
         logger.warn(`event handler failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+  }
+
+  private finalizePendingRetry(
+    status: "cancelled" | "interrupted",
+    error: unknown,
+  ): void {
+    const pending = this.pendingRetryCheckpoint;
+    this.pendingRetryCheckpoint = undefined;
+    if (!pending) return;
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    this.checkpointTurn({
+      ...pending,
+      status,
+      errorMessage: normalized.message,
+    });
+    const safeMessage = redactNativeTranscriptText(normalized.message, this.secretValues);
+    this.emitRaw({ type: "turn.failed", error: { message: safeMessage } });
   }
 
   private emitRaw(event: ThreadEvent): void {
@@ -614,6 +646,7 @@ export class NativeAgentAdapter implements AgentAdapter {
           });
           this.appendConversation(turnMessages);
           this.emitRaw({ type: "turn.completed", usage: usage ?? undefined });
+          this.pendingRetryCheckpoint = undefined;
           return { response: responseText.trim(), usage, agentId: this.id };
         }
 
@@ -685,6 +718,7 @@ export class NativeAgentAdapter implements AgentAdapter {
           });
           this.appendConversation([...turnMessages]);
           this.emitRaw({ type: "turn.completed", usage: usage ?? undefined });
+          this.pendingRetryCheckpoint = undefined;
           return { response: limitText, usage, agentId: this.id };
         }
       }
@@ -701,7 +735,17 @@ export class NativeAgentAdapter implements AgentAdapter {
       const retryableProviderFailure = isRetryableNativeProviderError(error)
         && !retryState.sideEffectObserved
         && !retryState.isFinalAttempt;
-      if (retryableProviderFailure) throw normalized;
+      if (retryableProviderFailure) {
+        this.pendingRetryCheckpoint = {
+          turnId,
+          resetGeneration,
+          messages: [...turnMessages],
+          entries: [...turnEntries],
+          usage,
+          provider: providerMetadata,
+        };
+        throw normalized;
+      }
       const status = options.signal?.aborted
         ? "cancelled"
         : isAbortError(normalized)
@@ -733,6 +777,7 @@ export class NativeAgentAdapter implements AgentAdapter {
           "Native turn failed and its transcript could not be persisted",
         );
       }
+      this.pendingRetryCheckpoint = undefined;
       throw normalized;
     } finally {
       combined.cleanup();

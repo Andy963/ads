@@ -99,10 +99,6 @@ function parseUsage(value: unknown): NativeCompletionResult["usage"] {
     : null;
 }
 
-function safeErrorText(value: string, apiKey: string): string {
-  return value.replaceAll(apiKey, "[redacted]").slice(0, 2_000);
-}
-
 function buildRequestBody(request: NativeCompletionRequest): JsonRecord {
   const streaming = request.streaming !== false;
   const options = request.options;
@@ -261,18 +257,16 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
     });
   } catch (error) {
     if (error instanceof Error && (error.name === "AbortError" || error.message === "Aborted")) throw error;
-    const message = error instanceof Error ? error.message : String(error);
     throw new NativeProviderError(
-      `Native upstream request failed: ${safeErrorText(message, request.apiKey)}`,
+      "Native upstream request failed",
       { kind: "transient", cause: error },
     );
   }
 
   if (!response.ok) {
-    const text = await response.text().catch(() => "");
     const retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
     throw new NativeProviderError(
-      `Native upstream returned HTTP ${response.status}: ${safeErrorText(text, request.apiKey)}`,
+      `Native upstream returned HTTP ${response.status} [redacted]`,
       { kind: retryable ? "transient" : "permanent", status: response.status },
     );
   }
@@ -312,6 +306,7 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
   let usage: NativeCompletionResult["usage"] = null;
   const toolCalls = new Map<number, NativeChatToolCall>();
   let sawChunk = false;
+  let sawChoice = false;
   let sawDone = false;
 
   try {
@@ -340,8 +335,12 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
       if (choices.length > 0 && !choice) {
         throw new NativeProviderError("Native upstream returned a malformed SSE choice", { kind: "malformed" });
       }
+      if (choice) sawChoice = true;
       finishReason = readText(choice?.finish_reason) || finishReason;
       const delta = asRecord(choice?.delta);
+      if (delta?.tool_calls !== undefined && !Array.isArray(delta.tool_calls)) {
+        throw new NativeProviderError("Native upstream returned malformed SSE tool calls", { kind: "malformed" });
+      }
       const content = readText(delta?.content);
       if (content) {
         text += content;
@@ -353,14 +352,13 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
   } catch (error) {
     if (error instanceof NativeProviderError) throw error;
     if (error instanceof Error && (error.name === "AbortError" || error.message === "Aborted")) throw error;
-    const message = error instanceof Error ? error.message : String(error);
     throw new NativeProviderError(
-      `Native upstream stream disconnected: ${safeErrorText(message, request.apiKey)}`,
+      "Native upstream stream disconnected",
       { kind: "transient", cause: error },
     );
   }
 
-  if (!sawChunk || !sawDone) {
+  if (!sawChunk || !sawChoice || !sawDone || !finishReason) {
     throw new NativeProviderError("Native upstream stream ended before a complete response", { kind: "malformed" });
   }
   const completedToolCalls = [...toolCalls.entries()]

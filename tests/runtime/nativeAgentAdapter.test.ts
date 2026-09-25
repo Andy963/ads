@@ -51,7 +51,7 @@ describe("NativeAgentAdapter", () => {
             ]);
           }
           return sse([
-            JSON.stringify({ choices: [{ delta: { content: "The file says hello." } }] }),
+            JSON.stringify({ choices: [{ delta: { content: "The file says hello." }, finish_reason: "stop" }] }),
             JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 12, completion_tokens: 5, total_tokens: 17 } }),
           ]);
         },
@@ -286,7 +286,7 @@ describe("NativeAgentAdapter", () => {
             ]);
           }
           return sse([
-            JSON.stringify({ choices: [{ delta: { content: "Second round" } }] }),
+            JSON.stringify({ choices: [{ delta: { content: "Second round" }, finish_reason: "stop" }] }),
             JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
           ]);
         },
@@ -335,7 +335,7 @@ describe("NativeAgentAdapter", () => {
             ]);
           }
           return sse([
-            JSON.stringify({ choices: [{ delta: { content: "Recovered after the tool error." } }] }),
+            JSON.stringify({ choices: [{ delta: { content: "Recovered after the tool error." }, finish_reason: "stop" }] }),
             JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
           ]);
         },
