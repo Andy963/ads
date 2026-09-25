@@ -258,8 +258,9 @@ export interface LaneDispatchBusOptions {
   reviewerTimeoutMs?: number;
   runtimePreflight?: (input: {
     backend?: AgentRuntimeBackend;
+    userId: number;
     workspaceRoot: string;
-    owner: string;
+    authUserId?: string;
     requireDurableState: boolean;
     requireProviderResume: boolean;
   }) => ReturnType<typeof checkActionsRuntimePreflight> | Promise<ReturnType<typeof checkActionsRuntimePreflight>>;
@@ -503,8 +504,8 @@ export class LaneDispatchBus {
 
       const preflightInput = {
         backend: this.options.sessionManager?.getRuntimeBackend?.(),
+        ...this.laneIdentityForJob(nextJob, repoPath),
         workspaceRoot: repoPath,
-        owner: nextJob.auth_user_id ?? `actions:${nextJob.id}`,
         requireDurableState: true,
         requireProviderResume: false,
       };
@@ -512,8 +513,9 @@ export class LaneDispatchBus {
       try {
         preflight = await (this.options.runtimePreflight ?? ((input) => {
           const runtime = this.options.sessionManager?.getActionsRuntimePreflight?.({
+            userId: input.userId,
             workspaceRoot: input.workspaceRoot,
-            owner: input.owner,
+            authUserId: input.authUserId,
           });
           return checkActionsRuntimePreflight({
             backend: runtime?.backend ?? input.backend,

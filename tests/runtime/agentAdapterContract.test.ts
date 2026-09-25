@@ -12,10 +12,20 @@ import { CodexAppServerClient } from "../../server/codex/appServer/rpcClient.js"
 import { CodexAppServerDaemonRegistry } from "../../server/codex/appServer/daemonRegistry.js";
 import { isNativeExecutionId } from "../../server/runtime/sessionIdentity.js";
 
-function jsonResponse(payload: unknown): Response {
-  return new Response(JSON.stringify(payload), {
-    headers: { "content-type": "application/json" },
+function sseResponse(payload: unknown): Response {
+  return new Response(`data: ${JSON.stringify(payload)}\n\ndata: [DONE]\n\n`, {
+    headers: { "content-type": "text/event-stream" },
   });
+}
+
+function assertTurnContractResult(
+  result: Awaited<ReturnType<AgentAdapter["send"]>>,
+  events: string[],
+): void {
+  assert.equal(result.response, "contract response");
+  assert.deepEqual(result.usage, { input_tokens: 2, output_tokens: 3, total_tokens: 5 });
+  assert.ok(events.some((event) => event.startsWith("responding:")));
+  assert.ok(events.some((event) => event.startsWith("completed:")));
 }
 
 function createCodexTestServer(): {
@@ -127,10 +137,7 @@ describe("shared AgentAdapter contract", () => {
     });
 
     const result = await pending;
-    assert.equal(result.response, "contract response");
-    assert.deepEqual(result.usage, { input_tokens: 2, output_tokens: 3 });
-    assert.ok(events.some((event) => event.startsWith("responding:")));
-    assert.ok(events.some((event) => event.startsWith("completed:")));
+    assertTurnContractResult({ ...result, usage: result.usage ? { ...result.usage, total_tokens: 5 } : null }, events);
     assert.ok(server.requests.some((request) => request.method === "turn/start"));
     await registry.stopAll();
   });
@@ -149,20 +156,41 @@ describe("shared AgentAdapter contract", () => {
             provider: "test",
           }),
         },
-        fetchImpl: async () => jsonResponse({
-          choices: [{ message: { content: "native response" }, finish_reason: "stop" }],
-          usage: { prompt_tokens: 4, completion_tokens: 3, total_tokens: 7 },
+        fetchImpl: async () => sseResponse({
+          choices: [{ delta: { content: "contract response" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 },
         }),
       });
       const events: string[] = [];
       adapter.onEvent((event) => events.push(`${event.phase}:${event.title}`));
 
-      const result = await adapter.send("contract turn", { streaming: false });
+      const result = await adapter.send("contract turn", { streaming: true });
 
-      assert.equal(result.response, "native response");
-      assert.deepEqual(result.usage, { input_tokens: 4, output_tokens: 3, total_tokens: 7 });
-      assert.ok(events.some((event) => event.startsWith("responding:")));
-      assert.ok(events.some((event) => event.startsWith("completed:")));
+      assertTurnContractResult(result, events);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects pre-cancelled turns for both backends", async () => {
+    const codex = new CodexAppServerAdapter({ projectId: "contract-codex-cancel" });
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-contract-cancel-"));
+    try {
+      const native = new NativeAgentAdapter({
+        credentialOwner: "contract-owner",
+        workspaceRoot: workspace,
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-key",
+            provider: "test",
+          }),
+        },
+      });
+      const signal = AbortSignal.abort();
+      await assert.rejects(codex.send("cancelled", { signal }), /abort|interrupt|cancel/i);
+      await assert.rejects(native.send("cancelled", { signal }), /abort|interrupt|cancel/i);
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }

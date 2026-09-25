@@ -492,15 +492,17 @@ export class SessionManager {
   }
 
   getActionsRuntimePreflight(input: {
+    userId: number;
     workspaceRoot: string;
-    owner: string;
+    authUserId?: string;
   }): { backend: AgentRuntimeBackend; capabilities: AgentCapability[] } {
+    const effective = this.getEffectiveState(input.userId);
     if (this.runtimeBackend === "native") {
       const adapter = new NativeAgentAdapter({
-        credentialOwner: input.owner,
+        credentialOwner: input.authUserId ?? String(input.userId),
         stateDbPath: this.options.stateDbPath,
         workspaceRoot: input.workspaceRoot,
-        model: this.defaultModel,
+        model: effective.model,
         env: this.codexEnv,
         transcriptMode: "disabled",
       });
