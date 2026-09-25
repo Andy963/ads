@@ -1,17 +1,39 @@
 // Canonical lane identifiers. Evolved to Acopilot and Actions.
-export const ACOPILOT_LANE_ID = "acopilot";
-export const ACTIONS_LANE_ID = "actions";
+//
+// The vocabulary itself is owned by the shared terminology contract so the
+// server and the client cannot drift apart. This module keeps the client's
+// existing API surface and its permissive pass-through behaviour; moving
+// consumers onto the strict contract is a separate slice.
+import {
+  ACTIONS_LANE_ID,
+  ACOPILOT_LANE_ID,
+  LEGACY_LANE_ALIASES,
+  type CanonicalLaneId,
+} from "../../../shared/terminology.js";
+
+export { ACOPILOT_LANE_ID, ACTIONS_LANE_ID };
+
+/** Legacy spellings kept for compatibility with persisted state and older clients. */
 export const ADVISOR_LANE_ID = "advisor";
 export const WORKER_LANE_ID = "worker";
 export const LEGACY_ADVISOR_LANE_ID = "planner";
 
+/**
+ * Resolve a lane id, tolerating legacy spellings.
+ *
+ * Unlike the shared `normalizeLaneId`, an unrecognised value is passed through
+ * rather than rejected. Callers here key preferences and storage off the result
+ * and supply their own defaults, so changing this to fail closed would silently
+ * change how unknown persisted lanes are stored. Use the shared normalizer where
+ * a lane slot must reject unknown input.
+ */
 export function normalizeLaneId(value: unknown): string {
   const normalized = String(value ?? "").trim();
-  if (normalized === LEGACY_ADVISOR_LANE_ID || normalized === ADVISOR_LANE_ID) {
-    return ACOPILOT_LANE_ID;
-  }
-  if (normalized === WORKER_LANE_ID) {
-    return ACTIONS_LANE_ID;
+  // Object.hasOwn, not a bare index: without it an input such as "toString"
+  // would resolve to an inherited function and the declared `string` return
+  // type would be a lie. Unknown input still passes through unchanged.
+  if (Object.hasOwn(LEGACY_LANE_ALIASES, normalized)) {
+    return LEGACY_LANE_ALIASES[normalized as keyof typeof LEGACY_LANE_ALIASES];
   }
   return normalized;
 }
@@ -20,11 +42,10 @@ export function normalizeLaneId(value: unknown): string {
 export function laneIdVariants(value: unknown): string[] {
   const normalized = normalizeLaneId(value);
   if (!normalized) return [];
-  if (normalized === ACOPILOT_LANE_ID) {
-    return [ACOPILOT_LANE_ID, ADVISOR_LANE_ID, LEGACY_ADVISOR_LANE_ID];
-  }
-  if (normalized === ACTIONS_LANE_ID) {
-    return [ACTIONS_LANE_ID, WORKER_LANE_ID];
-  }
-  return [normalized];
+  const isCanonicalLane = normalized === ACOPILOT_LANE_ID || normalized === ACTIONS_LANE_ID;
+  if (!isCanonicalLane) return [normalized];
+  // Object.keys only yields own properties, so this filter is already safe.
+  const aliases = Object.keys(LEGACY_LANE_ALIASES)
+    .filter((alias) => LEGACY_LANE_ALIASES[alias as keyof typeof LEGACY_LANE_ALIASES] === normalized);
+  return [normalized as CanonicalLaneId, ...aliases];
 }
