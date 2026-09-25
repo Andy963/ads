@@ -1,11 +1,12 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
-export type RoleType = "acopilot" | "developer" | "reviewer";
+import type { StoredRoleProfileValue } from "../../shared/terminology.js";
+
 export type ReasoningEffortLevel = "low" | "medium" | "high";
 
 export interface RoleProfileRecord {
   id: string;
-  role: RoleType;
+  role: StoredRoleProfileValue;
   name: string;
   model_id: string;
   reasoning_effort: ReasoningEffortLevel;
@@ -18,7 +19,7 @@ export interface RoleProfileRecord {
 
 export interface RoleSettingsHistoryRecord {
   id: number;
-  role: RoleType;
+  role: StoredRoleProfileValue;
   version: number;
   model_id: string;
   reasoning_effort: string;
@@ -26,7 +27,7 @@ export interface RoleSettingsHistoryRecord {
   created_at: number;
 }
 
-export function getRoleProfiles(db: DatabaseType, role?: RoleType): RoleProfileRecord[] {
+export function getRoleProfiles(db: DatabaseType, role?: StoredRoleProfileValue): RoleProfileRecord[] {
   if (role) {
     return db
       .prepare(`SELECT * FROM role_profiles WHERE role = ? ORDER BY is_default DESC, updated_at DESC`)
@@ -37,7 +38,7 @@ export function getRoleProfiles(db: DatabaseType, role?: RoleType): RoleProfileR
     .all() as RoleProfileRecord[];
 }
 
-export function getDefaultRoleProfile(db: DatabaseType, role: RoleType): RoleProfileRecord | null {
+export function getDefaultRoleProfile(db: DatabaseType, role: StoredRoleProfileValue): RoleProfileRecord | null {
   const row = db
     .prepare(`SELECT * FROM role_profiles WHERE role = ? AND is_default = 1 LIMIT 1`)
     .get(role) as RoleProfileRecord | undefined;
@@ -53,7 +54,7 @@ export function saveRoleProfile(
   db: DatabaseType,
   profile: {
     id: string;
-    role: RoleType;
+    role: StoredRoleProfileValue;
     name: string;
     model_id: string;
     reasoning_effort?: ReasoningEffortLevel;
@@ -120,7 +121,7 @@ export function saveRoleProfile(
   };
 }
 
-export function getRoleSettingsHistory(db: DatabaseType, role: RoleType): RoleSettingsHistoryRecord[] {
+export function getRoleSettingsHistory(db: DatabaseType, role: StoredRoleProfileValue): RoleSettingsHistoryRecord[] {
   return db
     .prepare(`SELECT * FROM role_settings_history WHERE role = ? ORDER BY version DESC, id DESC`)
     .all(role) as RoleSettingsHistoryRecord[];

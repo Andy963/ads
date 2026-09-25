@@ -1,5 +1,15 @@
 import type { CanonicalLaneId } from "../../../shared/terminology.js";
 
+/**
+ * Role-profile values as the API stores and reports them.
+ *
+ * This is the shared `StoredRoleProfileValue`, not a client-local copy: the
+ * `role_profiles.role` column holds a lane-level `acopilot` profile alongside
+ * the two Actions roles, which is why it is a distinct vocabulary from
+ * `ActionsRole`. See ADR 0027.
+ */
+export type { StoredRoleProfileValue } from "../../../shared/terminology.js";
+
 export type AuthStatus = {
   initialized: boolean;
 };
