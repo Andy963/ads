@@ -67,7 +67,7 @@ export interface NativeAgentAdapterOptions {
   transcriptMode?: "restore" | "replace" | "disabled";
 }
 
-const SECRET_ENV_NAME = /(?:API[_-]?KEY|AUTH|COOKIE|CREDENTIAL|PASSWORD|SECRET|TOKEN)/i;
+const SECRET_ENV_NAME = /(?:API[_-]?KEY|AUTH|COOKIE|CREDENTIAL|PASSWORD|PEPPER|PRIVATE[_-]?KEY|SECRET|SIGNING[_-]?KEY|TOKEN)/i;
 
 function collectSecretValues(env: NodeJS.ProcessEnv): string[] {
   return Object.entries(env)

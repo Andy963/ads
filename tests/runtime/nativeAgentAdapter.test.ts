@@ -640,12 +640,15 @@ describe("NativeAgentAdapter", () => {
         modelResolver: resolver,
         transcriptId,
         transcriptStore: store,
-        env: { NATIVE_TEST_SECRET: "environment-secret" },
+        env: {
+          ADS_WEB_SESSION_PEPPER: "session-pepper-value",
+          NATIVE_TEST_SECRET: "environment-secret",
+        },
         fetchImpl: async () => {
           firstRequest += 1;
           if (firstRequest === 1) {
             return sse([
-              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "exec-1", function: { name: "exec_command", arguments: JSON.stringify({ cmd: "echo", args: ["safe"] }) } }] } }] }),
+              JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "exec-1", function: { name: "exec_command", arguments: JSON.stringify({ cmd: process.execPath, args: ["-e", "process.stdout.write(process.env.ADS_WEB_SESSION_PEPPER ?? '')"] }) } }] } }] }),
               JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
             ]);
           }
@@ -673,6 +676,7 @@ describe("NativeAgentAdapter", () => {
       const raw = JSON.stringify(rawRows);
       assert.doesNotMatch(raw, /secret-api-key/);
       assert.doesNotMatch(raw, /environment-secret/);
+      assert.doesNotMatch(raw, /session-pepper-value/);
       assert.doesNotMatch(raw, new RegExp(executionId ?? "native-execution-id"));
 
       firstAdapter.reset();
@@ -685,7 +689,10 @@ describe("NativeAgentAdapter", () => {
         modelResolver: resolver,
         transcriptId,
         transcriptStore: store,
-        env: { NATIVE_TEST_SECRET: "environment-secret" },
+        env: {
+          ADS_WEB_SESSION_PEPPER: "session-pepper-value",
+          NATIVE_TEST_SECRET: "environment-secret",
+        },
         fetchImpl: async (_input, init) => {
           restoredRequest = JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ role: string; content: string | null }> };
           return sse([
@@ -704,6 +711,7 @@ describe("NativeAgentAdapter", () => {
       ]);
       assert.equal(restoredRequest?.messages?.[0]?.content?.includes("secret-api-key"), false);
       assert.equal(restoredRequest?.messages?.[0]?.content?.includes("environment-secret"), false);
+      assert.equal(restoredRequest?.messages?.[2]?.content?.includes("session-pepper-value"), false);
       assert.notEqual(restoredAdapter.getThreadId(), executionId);
     } finally {
       resetStateDatabaseForTests();
