@@ -733,6 +733,8 @@ export class NativeAgentAdapter implements AgentAdapter {
           ? error
           : new Error(String(error));
       const retryableProviderFailure = isRetryableNativeProviderError(error)
+        && !combined.signal.aborted
+        && !isAbortError(error)
         && !retryState.sideEffectObserved
         && !retryState.isFinalAttempt;
       if (retryableProviderFailure) {

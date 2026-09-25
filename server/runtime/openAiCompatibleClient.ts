@@ -75,6 +75,8 @@ export class NativeProviderError extends Error {
 
 type JsonRecord = Record<string, unknown>;
 
+const SUPPORTED_FINISH_REASONS = new Set(["stop", "length", "tool_calls", "content_filter"]);
+
 function asRecord(value: unknown): JsonRecord | null {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : null;
 }
@@ -224,7 +226,17 @@ function parseNonStreamingResult(body: unknown): NativeCompletionResult {
       kind: "malformed",
     });
   }
+  if (!SUPPORTED_FINISH_REASONS.has(finishReason)) {
+    throw new NativeProviderError("Native upstream returned an unsupported finish_reason", {
+      kind: "malformed",
+    });
+  }
   const text = readText(message?.content);
+  if (message?.function_call !== undefined) {
+    throw new NativeProviderError("Native upstream returned an unsupported legacy function_call", {
+      kind: "malformed",
+    });
+  }
   if (message?.tool_calls !== undefined && !Array.isArray(message.tool_calls)) {
     throw new NativeProviderError("Native upstream returned invalid non-streaming tool calls", {
       kind: "malformed",
@@ -356,12 +368,18 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
       const hadFinishReason = Boolean(finishReason);
       const nextFinishReason = readText(choice?.finish_reason);
       if (nextFinishReason) {
+        if (!SUPPORTED_FINISH_REASONS.has(nextFinishReason)) {
+          throw new NativeProviderError("Native upstream returned an unsupported finish_reason", { kind: "malformed" });
+        }
         if (finishReason && finishReason !== nextFinishReason) {
           throw new NativeProviderError("Native upstream returned conflicting finish reasons", { kind: "malformed" });
         }
         finishReason = nextFinishReason;
       }
       const delta = asRecord(choice?.delta);
+      if (delta?.function_call !== undefined) {
+        throw new NativeProviderError("Native upstream returned an unsupported legacy function_call", { kind: "malformed" });
+      }
       if (delta?.tool_calls !== undefined && !Array.isArray(delta.tool_calls)) {
         throw new NativeProviderError("Native upstream returned malformed SSE tool calls", { kind: "malformed" });
       }

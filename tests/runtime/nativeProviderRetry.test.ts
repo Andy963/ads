@@ -159,6 +159,40 @@ describe("Native provider retry and recovery", () => {
     }
   });
 
+  it("finalizes a turn when cancellation races with a transient provider failure", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-race-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-race-db-"));
+    const store = new NativeTranscriptStore(getStateDatabase(path.join(stateDir, "state.db")));
+    try {
+      const controller = new AbortController();
+      let requests = 0;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelResolver: resolver(),
+        retryBackoffMs: [0],
+        transcriptId: "retry-cancel-race",
+        transcriptStore: store,
+        fetchImpl: async () => {
+          requests += 1;
+          controller.abort();
+          return new Response("temporary", { status: 503 });
+        },
+      });
+
+      await assert.rejects(
+        adapter.send("cancel during provider failure", { signal: controller.signal }),
+        (error: unknown) => error instanceof Error && error.name === "AbortError",
+      );
+      assert.equal(requests, 1);
+      assert.equal(store.listTurns("retry-cancel-race")[0]?.status, "cancelled");
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not replay a tool side effect when a later provider request fails", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-side-effect-"));
     try {
@@ -404,6 +438,48 @@ describe("Native provider retry and recovery", () => {
         }) as Response,
       }),
       (error: unknown) => error instanceof Error && error.name === "AbortError",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        streaming: false,
+        fetchImpl: async () => new Response(JSON.stringify({
+          choices: [{ message: { content: "legacy", function_call: { name: "read_file", arguments: "{}" } }, finish_reason: "function_call" }],
+        }), { headers: { "content-type": "application/json" } }),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        fetchImpl: async () => new Response(
+          "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"function_call\"}]}\n\ndata: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        fetchImpl: async () => new Response(
+          "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"mystery\"}]}\n\ndata: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
     );
   });
 });
