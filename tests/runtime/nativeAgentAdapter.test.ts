@@ -637,11 +637,11 @@ describe("NativeAgentAdapter", () => {
         },
         transcriptId,
         transcriptStore: store,
-        env: { SHORT_SECRET: "q", SHORT_SECRET_SLASH: "/" },
+        env: { SHORT_SECRET: "q", SHORT_SECRET_SLASH: "/", GIT_AUTHOR_NAME: "Andy" },
         fetchImpl: async () => sse([
           JSON.stringify({
             choices: [{
-              delta: { content: "SHORT_SECRET=q\nSHORT_SECRET_SLASH=/\nPATH_SEPARATOR=/" },
+              delta: { content: "SHORT_SECRET=q\nSHORT_SECRET_SLASH=/\nPATH_SEPARATOR=/\nauthor=Andy" },
               finish_reason: "stop",
             }],
           }),
@@ -656,6 +656,7 @@ describe("NativeAgentAdapter", () => {
       assert.doesNotMatch(raw, /SHORT_SECRET=q/);
       assert.doesNotMatch(raw, /SHORT_SECRET_SLASH=\//);
       assert.match(raw, /PATH_SEPARATOR=\//);
+      assert.match(raw, /author=Andy/);
       assert.match(raw, /\[redacted\]/);
     } finally {
       resetStateDatabaseForTests();

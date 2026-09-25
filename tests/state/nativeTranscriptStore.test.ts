@@ -438,5 +438,31 @@ describe("NativeTranscriptStore", () => {
       signingKey: "[redacted]",
       "X-Auth-Token": "[redacted]",
     });
+
+    const ordinaryFieldMessages = [{
+      role: "assistant" as const,
+      content: null,
+      tool_calls: [{
+        id: "ordinary-fields",
+        type: "function" as const,
+        function: {
+          name: "apply_patch",
+          arguments: JSON.stringify({ author: "Andy", secretary: "Andy", author_name: "Andy" }),
+        },
+      }],
+    }];
+    store.beginTurn({
+      transcriptId,
+      turnId: "ordinary-fields-turn",
+      messages: ordinaryFieldMessages,
+      entries: [{ kind: "message", message: ordinaryFieldMessages[0] }],
+      provider: { provider: "test", model: "test-model" },
+    });
+    const ordinaryRaw = JSON.stringify(
+      getStateDatabase(dbPath)
+        .prepare("SELECT messages_json, entries_json FROM native_transcript_turns WHERE turn_id = ?")
+        .all("ordinary-fields-turn"),
+    );
+    assert.match(ordinaryRaw, /Andy/);
   });
 });

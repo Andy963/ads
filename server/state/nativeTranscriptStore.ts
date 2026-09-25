@@ -76,32 +76,37 @@ type StoredTurnRow = {
 const INTERRUPTED_ERROR = "Native turn was interrupted before completion.";
 const MAX_TRANSCRIPT_ERROR_LENGTH = 64 * 1024;
 const CREDENTIAL_ASSIGNMENT = /(\b[A-Za-z_][A-Za-z0-9_.-]*\b\s*["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n,;&}]+)/g;
-const CREDENTIAL_KEY_PARTS = [
-  "auth",
-  "authorization",
-  "cookie",
-  "password",
-  "passwd",
-  "secret",
-  "credential",
-  "apikey",
-  "authtoken",
-  "accesstoken",
-  "refreshtoken",
-  "privatekey",
-  "signingkey",
-  "pepper",
-];
-
 function isCredentialField(key: string): boolean {
   const normalized = key.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
-  return normalized === "token"
-    || normalized.endsWith("token")
-    || CREDENTIAL_KEY_PARTS.some((part) => normalized.includes(part))
-    || (
-      normalized.endsWith("key")
-      && (normalized.includes("client") || normalized.includes("private") || normalized.includes("signing"))
-    );
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .map((word) => word.toLowerCase())
+    .filter(Boolean);
+  const credentialWords = new Set([
+    "auth",
+    "authorization",
+    "authentication",
+    "cookie",
+    "password",
+    "passwd",
+    "passphrase",
+    "pepper",
+    "secret",
+    "credential",
+    "token",
+  ]);
+  if (words.some((word) => credentialWords.has(word))) return true;
+  return normalized.endsWith("token")
+    || normalized.endsWith("secret")
+    || normalized.endsWith("password")
+    || normalized.endsWith("passwd")
+    || normalized.endsWith("credential")
+    || normalized.endsWith("cookie")
+    || normalized.endsWith("apikey")
+    || normalized.endsWith("privatekey")
+    || normalized.endsWith("signingkey")
+    || normalized.endsWith("secretkey");
 }
 
 function collectExplicitRedactions(options: NativeTranscriptStoreOptions): string[] {
