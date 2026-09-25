@@ -38,4 +38,5 @@
 - 0023 - [ADR 0023: 为 Native Runtime 引入 Token-aware Context Projection](0023-token-aware-native-context-projection.md)
 - 0024 - [ADR 0024: Define Native Provider Capability Contracts](0024-native-provider-capability-contract.md)
 - 0025 - [ADR 0025: Harden Native Retry, Cancellation, and Recovery](0025-native-bounded-retry-and-recovery.md)
+- 0026 - [ADR 0026: Define the Native Runtime Lifecycle and Capability Contract](0026-native-runtime-lifecycle-and-capability-contract.md)
 <!-- ADS:ADR_INDEX_END -->

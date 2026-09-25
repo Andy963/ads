@@ -11,7 +11,7 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_STATE_DIR` | `<repo>/.ads` | ADS 全局状态目录，存放 `state.db` 及全局运行时数据 |
 | `ADS_STATE_DB_PATH` | `$ADS_STATE_DIR/state.db` | 全局 SQLite 数据库路径覆盖 |
 | `ALLOWED_DIRS` | 当前运行目录 | Web Console 与 Telegram 允许访问/切换的工作区根目录列表（逗号分隔） |
-| `SANDBOX_MODE` | `workspace-write` | Agent 默认沙箱权限：`read-only`、`workspace-write` 或 `danger-full-access` |
+| `SANDBOX_MODE` | `workspace-write` | Codex/Worker 默认沙箱权限：`read-only`、`workspace-write` 或 `danger-full-access`；Native Runtime 不提供 sandbox isolation，命令直接宿主机执行 |
 | `ADS_ENV_PATH` | 未设置 | 显式指定被加载的 `.env` 配置文件绝对路径 |
 | `ADS_DEBUG` | `0` | 设为 `1` 启用 Debug 级别详细日志 |
 | `ADS_LOG_FILE` / `ADS_LOG_DIR` | 未设置 | 运行时日志输出文件或目录 |
@@ -37,7 +37,7 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_WEB_LOGIN_LOCKOUT_MS` | `300000` (5分钟) | 触发锁定后的基础冷却时长 |
 | `ADS_WEB_SESSION_SLIDING` | `false` | 是否开启滑动刷新 Session 有效期 |
 | `ADS_ADVISOR_CODEX_MODEL` | 未设置 | Advisor Lane 专用的 Codex 模型覆盖（旧名 `ADS_PLANNER_CODEX_MODEL` 仍兼容，已弃用） |
-| `ADS_ADVISOR_SANDBOX_MODE` | `danger-full-access` | Advisor Lane 沙箱权限覆盖；用于需要调用 GitHub CLI 的场景。非法值安全回退为 `workspace-write`（旧名 `ADS_PLANNER_SANDBOX_MODE` 仍兼容，已弃用） |
+| `ADS_ADVISOR_SANDBOX_MODE` | `danger-full-access` | Codex/Advisor Lane 沙箱权限覆盖；用于需要调用 GitHub CLI 的场景。非法值安全回退为 `workspace-write`（旧名 `ADS_PLANNER_SANDBOX_MODE` 仍兼容，已弃用）；不影响 Native Runtime 的直接宿主机执行语义 |
 | `ADS_SCHEDULER_MODEL` | 未设置 | Scheduler 执行定时 Prompt 时使用的模型覆盖 |
 
 ---
@@ -61,12 +61,19 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 
 ## 4. 原生运行时 (Native Runtime)
 
-仅当 `ADS_AGENT_RUNTIME=native` 时生效；详见 [ADR 0013](adr/0013-native-agent-runtime-phase-1.md)。
+仅当 `ADS_AGENT_RUNTIME=native` 时生效。`ADS_AGENT_RUNTIME` 是进程级、互斥的 backend 选择；session 生命周期内不能切换到 Codex app-server，也不能跨 backend resume。逻辑 agent `codex`、runtime backend、execution session、provider session 和 ADS transcript 是不同身份，详见 [ADR 0026](adr/0026-native-runtime-lifecycle-and-capability-contract.md)。
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
 | `ADS_AGENT_MAX_TOOL_ROUNDS` | `0`（不限制） | 单次 turn 内模型-工具循环的最大轮数；仅配置正整数时才启用上限，达到上限返回正常的 continuation notice（兼容旧名 `ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS`） |
 | `ADS_NATIVE_RUNTIME_TURN_TIMEOUT_MS` | `0`（不限制） | 原生 turn 的总 wall-clock 超时（毫秒），上限 `600000`；`0` 或未设置时 turn 仅受用户取消与各工具自身超时约束 |
+
+### Native lifecycle 与 capability 边界
+
+- `durable` Web/Actions Developer session 将 completed Native turn 保存到 ADS state store；`ephemeral` session（包括独立 Actions Reviewer session）始终新建，并在使用后释放。
+- 只有 completed turn 才会恢复。interrupted、failed 和 cancelled turn 保留审计记录，但不会作为成功上下文重放；下一次 provider request 使用 durable transcript 的 token-budgeted projection。
+- Native command 直接在宿主机执行，保留现有 safety、allowlist、timeout、output 和 cancellation 检查，并继承宿主 environment 与 `$HOME`。运维不能把 `native` 视为 Codex app-server sandbox 的等价模式。
+- Provider capability 为 `supported`、`unsupported` 或 `unknown`。请求 unsupported 或 unknown 能力时，在 provider request 前以结构化 `NATIVE_CAPABILITY_UNSUPPORTED` error 失败，不做静默降级。
 
 ---
 

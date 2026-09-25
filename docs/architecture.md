@@ -31,7 +31,7 @@ ADS (Agent Dispatch & Orchestration System) 采用分层解耦的架构设计，
 │ - NativeAgentAdapter         │ │ - 工作区库: <ws>/ads.db      │
 │   (可选, ADS_AGENT_RUNTIME=  │ │   (附件/调度/历史)            │
 │    native, 进程内直连        │ │                              │
-│    OpenAI 兼容端点 + 沙箱)   │ │                              │
+│    OpenAI 兼容端点)          │ │                              │
 └──────────────────────────────┘ └──────────────────────────────┘
 ```
 
@@ -39,7 +39,9 @@ ADS (Agent Dispatch & Orchestration System) 采用分层解耦的架构设计，
 
 ## 2. 核心架构特性
 
-模型切换按 provider 能力处理：支持同线程切换的 adapter 保留 native thread；不支持的 adapter 只清除当前 agent 的线程并走历史注入，不影响其他 agent 的线程绑定。
+逻辑 agent、runtime backend、execution session、provider session 和 ADS transcript
+是五个不同层次。`ADS_AGENT_RUNTIME` 在进程启动时选择唯一的 backend；一个 session
+生命周期内不能切换 backend，也不能跨 backend resume 或迁移 provider session。
 
 ### 2.0 统一会话消息记录
 
@@ -60,8 +62,9 @@ Web 与独立 Channel Connector 通过 Core WebSocket 协议使用各自隔离�
 - **统一适配器抽象 (`AgentAdapter`)**：
   - 双运行时引擎实现同一 `AgentAdapter` / `AgentEvent` 契约，WebSocket 协议与前端无需感知后端差异：
     - **`CodexAppServerAdapter`（默认）**：通过 Codex App-Server 标准化封装多 Provider 模型的 RPC 调用、结构化事件与进程生命周期，支持 Codex App Server JSON-RPC 长连接与一次性 CLI 的无缝降级。
-    - **`NativeAgentAdapter`（可选，`ADS_AGENT_RUNTIME=native`）**：进程内直连 OpenAI 兼容 `/chat/completions` SSE，按模型配置与认证用户解析 endpoint、model 与加密凭据 profile；内置 `exec_command` / `read_file` / `search` / `apply_patch` 四个受限工具，文件工具限制在工作区内，命令（含 Shell 元字符的管道/复合命令）直接在宿主机执行并继承宿主环境与 `$HOME`，sandbox 语义与 Web 工作区 Worker/Advisor 会话的 `danger-full-access` 一致。
-  - Native conversation 仅保留在当前 adapter 生命周期内，跨进程恢复依赖既有 history injection（详见 [ADR 0013](adr/0013-native-agent-runtime-phase-1.md)）。
+    - **`NativeAgentAdapter`（可选，`ADS_AGENT_RUNTIME=native`）**：进程内直连 OpenAI 兼容 `/chat/completions` SSE，按模型配置与认证用户解析 endpoint、model 与加密凭据 profile；内置 `exec_command` / `read_file` / `search` / `apply_patch` 四个受限工具，文件工具限制在工作区内，命令（含 Shell 元字符的管道/复合命令）直接在宿主机执行并继承宿主环境与 `$HOME`。Native 是直接宿主机执行模式，不等同于 Codex app-server 的 sandbox policy。
+  - Native durable conversation 使用 ADS state store 中的 provider-neutral transcript，按 completed turn 恢复；ephemeral session（例如 Actions Reviewer）不持久化。上下文发送前经过独立的 token-aware projection，不能把 Native transcript 当作 Codex rollout。
+  - Native provider capability 按 `supported` / `unsupported` / `unknown` 协商；未知或不支持的能力在请求前以结构化错误拒绝，不静默降级。完整边界见 [ADR 0026](adr/0026-native-runtime-lifecycle-and-capability-contract.md)。
 - **上游重试与自愈 (Upstream Retry & Healing)**：
   - 自动识别限流（429）、服务器高负载（503）、Cloudflare/网关超时（520–524）以及上游安全拦截。
   - 仅在未产生命令执行或文件写入等副作用前，自动指数退避重试，保障网络波动下的任务可靠性。
