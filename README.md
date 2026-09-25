@@ -3,16 +3,17 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node Version](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
 
-ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编排中枢。它以项目工作区为核心，围绕 Advisor（方案规划）/ Worker（代码执行）双 Lane 构建 AI 开发工作流。Agent 运行时提供双引擎：默认通过 Codex App-Server 统一接入多 Provider 模型，也可通过 `ADS_AGENT_RUNTIME=native` 切换到进程内原生运行时（Native Runtime），直连 OpenAI 兼容端点并在项目级沙箱中执行工具。同时还支持可选的独立 Channel Connector。
+ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编排中枢。它以项目工作区为核心，围绕 Acopilot（方案规划）/ Actions（代码执行）双 Lane 构建 AI 开发工作流。Agent 运行时提供双引擎：默认通过 Codex App-Server 统一接入多 Provider 模型，也可通过 `ADS_AGENT_RUNTIME=native` 切换到进程内原生运行时（Native Runtime），直连 OpenAI 兼容端点并在项目级沙箱中执行工具。同时还支持可选的独立 Channel Connector。
 
 ---
 
 ## 核心特性
 
 - **现代 Web Console**：基于 Vue 3 + Vite 构建的响应式控制台，支持移动端抽屉导航与桌面端全功能布局。
-- **双 Lane 协作工作流**：
-  - **Advisor (规划 Lane)**：专属架构方案研讨，可通过 GitHub Issue/PR 追踪设计与交付。
-  - **Worker (执行 Lane)**：专注代码执行、命令运行与文件修改，实时输出紧凑的阶段进展和执行预览。
+- **双 Lane 协作工作流**：顶层只有两个 Lane，Actions Lane 内部再分执行角色，两套词汇互不相交（见 [ADR 0027](docs/adr/0027-canonical-lane-and-actions-role-terminology.md)）。
+  - **Acopilot (规划 Lane)**：专属架构方案研讨，可通过 GitHub Issue/PR 追踪设计与交付。
+  - **Actions (执行 Lane)**：专注代码执行、命令运行与文件修改，实时输出紧凑的阶段进展和执行预览。
+  - **Actions 执行角色**：`Developer` 负责代码执行；`Reviewer` 在物理隔离的干净上下文中做独立审查，不是顶层 Lane。
 - **双引擎 Agent 运行时**：默认经 **Codex App-Server** 路由多 Provider 模型（包括 Anthropic Claude、Google Gemini 与 DeepSeek）；设置 `ADS_AGENT_RUNTIME=native` 可切换到进程内 **Native Runtime**，直连 OpenAI 兼容端点并在项目级沙箱内执行工具。支持模型可视化启用/停用与即时配置。
 - **确定性安全拦截**：在命令执行边界保护 ADS 自身进程和 SQLite 数据库文件，不依赖模型提示或可变数据库规则。
 - **Codex 标准技能体系**：全局技能原生对齐 `$CODEX_HOME/skills`（默认 `~/.codex/skills`）；支持对话中 `<skill_save>` 自动沉淀与存量遗留技能无损原子迁移，与 native Codex CLI 完全互通。

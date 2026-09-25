@@ -145,3 +145,135 @@ workspace root 解析 `shared/`。client 侧沿用既有的 `.js` 后缀导入�
 
 历史 ADR（例如 0010）描述的是当时的架构，保持原样；本 ADR 取代其**术语**，不重写其
 决策上下文。需要标注取代关系时，以追加说明的方式进行。
+
+## 附录：静态审计报告（2026-09-26，slice 5）
+
+本附录是 #377 最后一片的验收项之一：把仓库内剩余的 legacy 术语按类别逐条归类，
+使「为什么这里还是 `advisor`」成为可复核的显式决定，而不是遗留的疏漏。
+
+审计范围为 `server/`、`client/src/`、`shared/`、`scripts/` 下的源码；测试文件、
+Markdown 文档、service worker 引导脚本与 vitest worker pool 配置不在范围内
+（后两者与 lane 无关）。审计结果固化在
+`tests/shared/legacyTerminologyStaticCheck.test.ts` 的 allowlist 中，本附录与该
+allowlist 一一对应；两者不一致时以测试为准。
+
+共 35 个文件、225 行保留 legacy 术语，全部落在下列四类之一。
+
+### 兼容读取路径 (compatibility)
+
+| 文件 | 保留行数 | 保留原因 |
+| --- | --- | --- |
+| `client/src/lib/preferencesStore.ts` | 14 | reads legacy lane spellings out of localStorage preferences |
+| `client/src/app/laneActions.ts` | 7 | local variable and breadcrumb names for the acopilot runtime |
+| `shared/terminology.ts` | 6 | the canonical LEGACY_LANE_ALIASES / LEGACY_ROLE_PROFILE_ALIASES tables |
+| `client/src/app/chat.ts` | 2 | falls back to the legacy planner outbox key on read |
+| `client/src/lib/mobileWorkspacePreferences.ts` | 2 | reads legacy lane spellings from mobile workspace preferences |
+| `client/src/app/controller.ts` | 1 | comment describing the legacy wire value |
+| `client/src/lib/laneIds.ts` | 1 | LEGACY_ADVISOR_LANE_ID re-export |
+| `server/state/lanePromptDefaults.ts` | 1 | documents that legacy spellings are rejected here |
+| `server/state/lanePromptStore.ts` | 1 | accepts legacy lane ids on read |
+| `server/web/server/api/routes/lanePrompts.ts` | 1 | accepts legacy lane ids on read |
+| `server/web/server/api/routes/roleProfiles.ts` | 1 | maps a stored `worker` role profile onto developer |
+
+### 兼容读取路径 + 持久化键 (compatibility + persistence-key)
+
+| 文件 | 保留行数 | 保留原因 |
+| --- | --- | --- |
+| `server/web/server/ws/session.ts` | 6 | normalizes advisor/planner/acopilot onto the stable ADVISOR_CHAT_SESSION_ID |
+
+### 持久化键 (persistence-key)
+
+| 文件 | 保留行数 | 保留原因 |
+| --- | --- | --- |
+| `server/web/server/start/webLaneResources.ts` | 20 | WEB_WORKER_NAMESPACE / WEB_ADVISOR_NAMESPACE history namespaces |
+| `server/web/server/startWebServer.ts` | 17 | advisor/worker lane runtime wiring keyed on the history namespaces |
+| `server/utils/historyStore.ts` | 7 | history keys embed '::advisor' with a legacy '::planner' fallback |
+| `server/web/server/api/routes/sync.ts` | 5 | resolveSyncNamespace selects the advisor/worker history stores |
+| `server/web/server/ws/deps.ts` | 5 | advisorSessionManager / advisorHistoryStore dependency names |
+| `server/web/server/ws/laneResources.ts` | 8 | selects advisor vs worker history and session stores by lane |
+| `server/web/server/api/handler.ts` | 4 | advisor/worker history store dependency names |
+| `server/web/server/ws/handlePrompt.ts` | 4 | workerPromptHandler naming for the actions lane runtime |
+| `server/sessions/sessionManager.ts` | 3 | 'web-advisor' / 'web-worker' agent allowlist namespaces |
+
+### 持久化键 + 协议字段 (persistence-key + protocol-field)
+
+| 文件 | 保留行数 | 保留原因 |
+| --- | --- | --- |
+| `client/src/App.vue` | 11 | localStorage composer stash keys and data-* DOM hooks |
+
+### 协议字段 (protocol-field)
+
+| 文件 | 保留行数 | 保留原因 |
+| --- | --- | --- |
+| `client/src/lib/laneWire.ts` | 7 | WireChatSessionId is the on-the-wire chat session vocabulary |
+| `client/src/components/MainChat.css` | 5 | .chatHost--advisor CSS class referenced from App.vue |
+| `client/src/App.css` | 1 | .lanePanelsTrack--worker CSS class referenced from App.vue |
+| `client/src/app/projectsWs/webSocketActions.ts` | 1 | developer-facing diag alert text mentions the advisor runtime |
+
+### 历史记录 (historical-record)
+
+| 文件 | 保留行数 | 保留原因 |
+| --- | --- | --- |
+| `scripts/tmp-repro-ios3.mjs` | 22 | throwaway repro script, slated for deletion in a follow-up |
+| `scripts/test-chat-browser.js` | 14 | browser test fixture strings predate the rename |
+| `scripts/lib/chat-browser-server.js` | 13 | browser test fixture namespaces predate the rename |
+| `scripts/lib/chat-browser-post-send.js` | 10 | browser test fixture strings predate the rename |
+| `server/state/schemaMigrations.ts` | 10 | SQL CASE WHEN mapping persisted legacy values onto canonical ones |
+| `scripts/lib/chat-browser-history.js` | 5 | browser test fixture strings predate the rename |
+| `scripts/lib/chat-browser-local-first.js` | 4 | browser test fixture strings predate the rename |
+| `scripts/tmp-repro-wrap.mjs` | 3 | throwaway repro script, slated for deletion in a follow-up |
+| `server/config.ts` | 3 | ADS_ADVISOR_* / ADS_PLANNER_* env vars kept for compatibility |
+
+### 判定为缺陷并已修复
+
+| 位置 | 问题 | 处理 |
+| --- | --- | --- |
+| `client/src/components/ModelManager.vue:1406` | 角色指令面板的副标题仍以 legacy 词汇面向用户显示「配置 Advisor 与 Worker 的系统边界和工作方式。」 | 改为 canonical 词汇「配置 Acopilot 与 Actions 的系统边界和工作方式。」 |
+
+### WebSocket 边界上的取舍
+
+`chatSessionId` 并不只是协议字段，它同时嵌在两侧的**已落盘 key** 里：
+
+- server：`buildWsConnectionIdentity.historyKey` 形如
+  `authUserId::sessionId::chatSessionId[::generation:N]`，同步游标 key 由它派生；
+- client：`rt.chatSessionId` 决定 localStorage 中 model / reasoning-effort 偏好的
+  存储键。
+
+因此 canonical 值 `acopilot` 在 WebSocket 边界被**接受并归一化回** `advisor`，
+而不是作为新的落盘值写入。`normalizeLaneChatSessionId` 同时接受 `planner`、
+`advisor` 与 `acopilot` 三种拼写并统一落到 `ADVISOR_CHAT_SESSION_ID`，
+保证升级后既有 lane 历史与 thread 状态不会「消失」。client 侧继续经 `laneWire.ts`
+发送 `advisor`：若改发 `acopilot`，在 server 回声纠正之前会存在一个窗口，
+使 `rt.chatSessionId` 短暂为 `acopilot`，从而孤立既有的 localStorage 偏好键，
+却没有任何功能收益。
+
+这正是本 ADR「禁止就地重命名已落盘的 key、session id 或 namespace」非目标的直接
+推论：落盘键的重命名必须先有迁移与回滚方案，不能作为纯文本替换的副产品。
+
+### 静态检查的边界
+
+该检查是**文件粒度 allowlist + 每文件行数预算**的组合。其边界需要明示，而不是
+让文档去承诺它做不到的事：
+
+1. 调高某个条目的 `legacyLines` 预算即可让新增的 legacy 引用合法通过。这是刻意
+   保留的逃生口——预算变更会出现在 diff 中，需要评审者显式认可。
+2. 预算统计的是**命中行数**而非出现次数，因此把第二个 legacy 引用追加到一行已经
+   命中的代码上不会被发现。
+3. 检查遍历**工作树**而非 `git ls-files`，因此未 staged 的新文件同样会被拦下。
+4. `worker` 只在一组明确枚举的 lane 位置被识别，新的 `workerFoo` 标识符不会被
+   捕获。这是刻意取舍：prompt queue 中的 `workerId` 是通用的 job owner id，与
+   Actions lane 无关，不应被误报。
+5. camelCase 复合词（`advisorHandler`、`isAdvisorLane`、`advisorConfig`）由一条
+   **大小写敏感**的独立模式匹配。它无法并入主模式：主模式带 `i` 标志，会让
+   `[A-Z]` 边界同时匹配小写，从而把 `advisory` 这类无关英文单词误报。
+
+删除某个条目即为「安排一次重命名」的信号：检查会立即失败，直到该引用被重命名，
+或被重新归类并附上理由。
+
+### 后续清理（不在本 issue 范围内）
+
+- `scripts/tmp-repro-ios3.mjs` 与 `scripts/tmp-repro-wrap.mjs` 是被 git 跟踪的
+  临时复现脚本，已被 `scripts/lib/chat-browser-*` 取代，应单独删除。
+- `ADS_PLANNER_*` 环境变量已在 `server/web/server/start/webLaneResources.ts` 中
+  标记 deprecated 并对 `ADS_ADVISOR_*` 给出告警，可在确认无存量部署后移除。
+- `client/src/lib/laneWire.ts` 的 `WireChatSessionId` 只能随落盘键迁移一并收敛。

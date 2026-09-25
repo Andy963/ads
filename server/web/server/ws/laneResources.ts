@@ -1,4 +1,5 @@
 import type { AttachWebSocketServerDeps } from "./deps.js";
+import { isAcopilotChatSessionId } from "./session.js";
 
 export type WsLaneResources = {
   isAdvisorChat: boolean;
@@ -13,7 +14,7 @@ export function resolveWsLaneResources(args: {
   history: AttachWebSocketServerDeps["history"];
 }): WsLaneResources {
   const { chatSessionId, sessions, history } = args;
-  const isAdvisorChat = chatSessionId === "advisor";
+  const isAdvisorChat = isAcopilotChatSessionId(chatSessionId);
 
   return {
     isAdvisorChat,

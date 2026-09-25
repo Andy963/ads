@@ -22,3 +22,20 @@ Non-goals: renaming the Worker lane; migrating historical rows in `state.db`; re
 ## Consequences
 
 New code has a single source of truth for the lane id (constants on both client and server). Old clients, old persisted history, and old environment configurations keep working for the compatibility window. The legacy aliases (`planner` lane id, `ADS_PLANNER_*` variables, `web-planner` namespace value) can be retired in a follow-up release after the compat window closes; until then, `rg -i planner` matches are limited to those intentional aliases and ADR archives.
+
+## 补充说明：术语已被 ADR 0027 取代（2026-09-26）
+
+本 ADR 的决策与推理保持原样，它准确描述了当时的架构。ADR 0027
+（`0027-canonical-lane-and-actions-role-terminology.md`）取代了其中的**术语**：
+
+- `advisor` 不再是 canonical lane id。canonical 值为 `acopilot` 与 `actions`；
+  `advisor` 与 `planner` 退化为 legacy alias，仅在读路径上被解析。
+- `advisor` 作为 **WebSocket 内部 chat session id** 则被有意保留：它是已落盘
+  key 的组成部分（history key、sync 游标 key，以及 client 侧的 localStorage
+  偏好键），就地重命名会使既有历史、thread 状态与偏好全部失效。canonical 值
+  `acopilot` 在 WebSocket 边界被接受并归一化回 `advisor`。
+- 因此本 ADR 描述的兼容机制（read-old / write-new、namespace 不改名）不仅
+  仍然成立，并且被 ADR 0027 升级为强制约束。
+
+取代关系仅限术语。本 ADR 中关于 wire 边界、history 回退、localStorage 回退、
+storage namespace 与环境变量的技术决策依然有效。

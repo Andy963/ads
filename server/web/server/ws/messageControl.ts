@@ -1,4 +1,5 @@
 import type { WebSocket } from "ws";
+import { isAcopilotChatSessionId } from "./session.js";
 
 import type { SessionManager } from "../../../sessions/sessionManager.js";
 import { getStateDatabase } from "../../../state/database.js";
@@ -53,7 +54,7 @@ function readConfiguredReasoningEfforts(configJson: unknown): string[] {
 }
 
 function resolveClearHistoryScope(payload: unknown, chatSessionId: string): ClearHistoryScope {
-  if (String(chatSessionId ?? "").trim() === "advisor") {
+  if (isAcopilotChatSessionId(chatSessionId)) {
     return "lane";
   }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
