@@ -13,6 +13,8 @@ export type PromptQueueRunOutcome = {
 export type PromptQueueServiceOptions = {
   store: PromptQueueStore;
   workerId: string;
+  ownerPid?: number;
+  isOwnerAlive?: (pid: number) => boolean;
   resolveCurrentGeneration: (entry: PromptQueueEntry) => number;
   reconcileBeforeRun?: (entry: PromptQueueEntry) => Promise<PromptQueueRunOutcome | null>;
   runPrompt: (entry: PromptQueueEntry) => Promise<PromptQueueRunOutcome>;
@@ -23,6 +25,8 @@ export type PromptQueueServiceOptions = {
 export class PromptQueueService {
   private readonly store: PromptQueueStore;
   private readonly workerId: string;
+  private readonly ownerPid: number;
+  private readonly isOwnerAlive: (pid: number) => boolean;
   private readonly resolveCurrentGeneration: PromptQueueServiceOptions["resolveCurrentGeneration"];
   private readonly reconcileBeforeRun: PromptQueueServiceOptions["reconcileBeforeRun"];
   private readonly runPrompt: PromptQueueServiceOptions["runPrompt"];
@@ -30,11 +34,14 @@ export class PromptQueueService {
   private readonly onError: PromptQueueServiceOptions["onError"];
   private started = false;
   private stopped = false;
+  private ownershipTimer: ReturnType<typeof setInterval> | null = null;
   private readonly laneTails = new Map<string, Promise<void>>();
 
   constructor(options: PromptQueueServiceOptions) {
     this.store = options.store;
     this.workerId = options.workerId;
+    this.ownerPid = Math.max(1, Math.floor(options.ownerPid ?? process.pid));
+    this.isOwnerAlive = options.isOwnerAlive ?? (() => false);
     this.resolveCurrentGeneration = options.resolveCurrentGeneration;
     this.reconcileBeforeRun = options.reconcileBeforeRun;
     this.runPrompt = options.runPrompt;
@@ -44,9 +51,36 @@ export class PromptQueueService {
 
   start(): void {
     if (this.started) return;
+    const claim = this.store.claimOwnership(
+      this.workerId,
+      this.ownerPid,
+      Date.now(),
+      60_000,
+      this.isOwnerAlive,
+    );
+    if (!claim.claimed) {
+      throw new Error("Prompt queue ownership is held by another live process");
+    }
     this.started = true;
     this.stopped = false;
-    this.store.recoverInterrupted(this.workerId);
+    this.store.recoverInterrupted(claim.previousOwnerId);
+    this.ownershipTimer = setInterval(() => {
+      try {
+        const renewed = this.store.claimOwnership(
+          this.workerId,
+          this.ownerPid,
+          Date.now(),
+          60_000,
+          this.isOwnerAlive,
+        );
+        if (!renewed.claimed) {
+          this.onError?.(new Error("Prompt queue ownership renewal failed"));
+        }
+      } catch (error) {
+        this.onError?.(error);
+      }
+    }, 20_000);
+    this.ownershipTimer.unref?.();
     const scheduledLanes = new Set<string>();
     for (const entry of this.store.listRecoverable()) {
       const laneKey = this.laneKey(entry);
@@ -56,8 +90,16 @@ export class PromptQueueService {
     }
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
+    if (!this.started) return;
     this.stopped = true;
+    if (this.ownershipTimer) {
+      clearInterval(this.ownershipTimer);
+      this.ownershipTimer = null;
+    }
+    await Promise.allSettled(Array.from(this.laneTails.values()));
+    this.store.releaseOwnership(this.workerId);
+    this.started = false;
   }
 
   enqueue(input: EnqueuePromptInput): { entry: PromptQueueEntry; duplicate: boolean } {
@@ -73,7 +115,7 @@ export class PromptQueueService {
   }
 
   getSnapshot(lane: PromptQueueLane): PromptQueueEntry[] {
-    return this.store.listLane(lane).filter((entry) => entry.status !== "completed");
+    return this.store.listLogicalLane(lane).filter((entry) => entry.status !== "completed");
   }
 
   private laneKey(entry: PromptQueueEntry): string {

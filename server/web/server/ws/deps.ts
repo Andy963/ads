@@ -68,6 +68,7 @@ export type WsConfigDeps = {
   /** 单个 WebSocket 帧的最大字节数（内存型 DoS 防护）。未设置时回退到内置默认值。 */
   maxPayloadBytes?: number;
   traceWsDuplication: boolean;
+  autoStartPromptQueue?: boolean;
 };
 
 export type WsAuthDeps = {
@@ -99,6 +100,7 @@ export type WsStateDeps = {
   syncEventStore?: SyncEventStore;
   laneGenerationStore?: import("../sync/laneGeneration.js").WebLaneGenerationStore;
   promptQueueStore?: PromptQueueStore;
+  isProcessRunning?: (pid: number) => boolean;
 };
 
 export type WsSessionDeps = {

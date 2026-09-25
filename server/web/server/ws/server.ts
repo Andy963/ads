@@ -93,7 +93,12 @@ type ResetBarrierToken = {
 /** WebSocket 单帧默认上限：16MB（足够容纳带 base64 图片的 prompt，又能挡住内存型 DoS）。 */
 const DEFAULT_WS_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 
-export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocketServer {
+export type PromptQueueWebSocketServer = WebSocketServer & {
+  startPromptQueue: () => void;
+  stopPromptQueue: () => Promise<void>;
+};
+
+export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQueueWebSocketServer {
   const { auth, agents, commands, config, history, logger, scheduler, sessions, state } = deps;
   const wss = new WebSocketServer({
     server: deps.server,
@@ -250,6 +255,9 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
   const isLaneGenerationCurrent = (lane: Pick<WsLaneSnapshot, "laneNamespace" | "logicalHistoryKey" | "laneGeneration">): boolean =>
     getLaneGeneration(lane.laneNamespace, lane.logicalHistoryKey) === lane.laneGeneration;
 
+  const getLaneHistoryKey = (logicalHistoryKey: string, laneGeneration: number): string =>
+    laneGeneration > 1 ? `${logicalHistoryKey}:generation:${laneGeneration}` : logicalHistoryKey;
+
   const publicPromptQueueEntry = (entry: PromptQueueEntry): Record<string, unknown> => ({
     clientMessageId: entry.clientMessageId,
     status: entry.status,
@@ -370,6 +378,9 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     if (historyOutcome === "completed") {
       return { ok: true };
     }
+    if (historyOutcome === "failed") {
+      return { ok: false, error: "Prompt execution failed before queue completion" };
+    }
     const result = await handlePromptMessage({
       request: {
         parsed: parsedPrompt,
@@ -419,6 +430,8 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     ? new PromptQueueService({
         store: state.promptQueueStore,
         workerId: `web-${process.pid}-${crypto.randomUUID()}`,
+        ownerPid: process.pid,
+        isOwnerAlive: state.isProcessRunning ?? (() => false),
         resolveCurrentGeneration: (entry) => getLaneGeneration(entry.laneNamespace, entry.logicalHistoryKey),
         reconcileBeforeRun: async (entry) => {
           const laneResources = resolveWsLaneResources({ chatSessionId: entry.chatSessionId, sessions, history });
@@ -427,30 +440,49 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
             entry.clientMessageId,
             entry.payload.replay_incomplete === true,
           );
-          return outcome === "completed" ? { ok: true } : null;
+          if (outcome === "completed") return { ok: true };
+          if (outcome === "failed") {
+            return { ok: false, error: "Prompt execution failed before queue completion" };
+          }
+          return null;
         },
         runPrompt: runQueuedPrompt,
         emitSnapshot: (entry) => {
-          const snapshot = state.promptQueueStore?.listLane({
+          const currentGeneration = getLaneGeneration(entry.laneNamespace, entry.logicalHistoryKey);
+          const currentHistoryKey = getLaneHistoryKey(entry.logicalHistoryKey, currentGeneration);
+          const snapshot = state.promptQueueStore?.listLogicalLane({
             authUserId: entry.authUserId,
             sessionId: entry.sessionId,
             chatSessionId: entry.chatSessionId,
-            historyKey: entry.historyKey,
+            historyKey: currentHistoryKey,
             logicalHistoryKey: entry.logicalHistoryKey,
             laneNamespace: entry.laneNamespace,
-            laneGeneration: entry.laneGeneration,
-          }) ?? [entry];
+            laneGeneration: currentGeneration,
+          }).filter((candidate) => candidate.status !== "completed") ?? [entry];
           const current = snapshot.find((candidate) => candidate.clientMessageId === entry.clientMessageId) ?? entry;
-          emitPromptQueuePayload(entry, {
+          const viewEntry = {
+            ...current,
+            historyKey: currentHistoryKey,
+            laneGeneration: currentGeneration,
+          };
+          emitPromptQueuePayload(viewEntry, {
             type: "prompt_queue",
-            entry: publicPromptQueueEntry(current),
+            entry: publicPromptQueueEntry(viewEntry),
             entries: snapshot.map(publicPromptQueueEntry),
           });
         },
         onError: (error) => logger.warn(`[PromptQueue] execution failed: ${error instanceof Error ? error.message : String(error)}`),
       })
     : null;
-  promptQueueService?.start();
+  const startPromptQueue = (): void => {
+    promptQueueService?.start();
+  };
+  const stopPromptQueue = async (): Promise<void> => {
+    await promptQueueService?.stop();
+  };
+  if (config.autoStartPromptQueue !== false) {
+    startPromptQueue();
+  }
 
   const historyKeyBelongsToLogicalLane = (historyKey: string, logicalHistoryKey: string): boolean => {
     const normalizedHistoryKey = String(historyKey ?? "").trim();
@@ -556,7 +588,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
       clearInterval(pingTimer);
     }
     removeTaskTerminalListener();
-    promptQueueService?.stop();
+    void stopPromptQueue();
   });
 
   wss.on("connection", (ws: WebSocket, req) => {
@@ -1664,5 +1696,5 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): WebSocke
     });
   });
 
-  return wss;
+  return Object.assign(wss, { startPromptQueue, stopPromptQueue });
 }

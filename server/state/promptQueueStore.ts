@@ -47,6 +47,11 @@ export type EnqueuePromptInput = PromptQueueLane & {
   createdAt?: number;
 };
 
+export type PromptQueueOwnershipClaim = {
+  claimed: boolean;
+  previousOwnerId: string | null;
+};
+
 export function ensurePromptQueueTables(db: DatabaseType): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS prompt_queue (
@@ -79,6 +84,14 @@ export function ensurePromptQueueTables(db: DatabaseType): void {
 
     CREATE INDEX IF NOT EXISTS idx_prompt_queue_active
       ON prompt_queue(status, id);
+
+    CREATE TABLE IF NOT EXISTS prompt_queue_ownership (
+      id INTEGER PRIMARY KEY CHECK(id = 1),
+      owner_id TEXT NOT NULL,
+      owner_pid INTEGER NOT NULL CHECK(owner_pid > 0),
+      lease_expires_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
 
   const columns = db.prepare("PRAGMA table_info(prompt_queue)").all() as Array<{ name?: unknown }>;
@@ -192,6 +205,25 @@ export function createPromptQueueStore(db: DatabaseType) {
       AND status IN ('queued', 'running', 'completed', 'failed')
     ORDER BY id ASC
   `);
+  const listLogicalLaneStmt = db.prepare(`
+    SELECT *, (
+      SELECT COUNT(*)
+      FROM prompt_queue earlier
+      WHERE earlier.auth_user_id = prompt_queue.auth_user_id
+        AND earlier.session_id = prompt_queue.session_id
+        AND earlier.chat_session_id = prompt_queue.chat_session_id
+        AND earlier.logical_history_key = prompt_queue.logical_history_key
+        AND earlier.status IN ('queued', 'running')
+        AND earlier.id <= prompt_queue.id
+    ) AS position
+    FROM prompt_queue
+    WHERE auth_user_id = ?
+      AND session_id = ?
+      AND chat_session_id = ?
+      AND logical_history_key = ?
+      AND status IN ('queued', 'running', 'completed', 'failed')
+    ORDER BY id ASC
+  `);
   const listRecoverableStmt = db.prepare(`
     SELECT *, 0 AS position
     FROM prompt_queue
@@ -231,7 +263,25 @@ export function createPromptQueueStore(db: DatabaseType) {
     UPDATE prompt_queue
     SET status = 'queued', updated_at = ?, lease_owner = NULL, lease_expires_at = NULL
     WHERE status = 'running'
-      AND (lease_owner IS NULL OR lease_owner != ? OR lease_expires_at IS NULL OR lease_expires_at <= ?)
+      AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ? OR lease_owner = ?)
+  `);
+  const getOwnershipStmt = db.prepare(`
+    SELECT owner_id, owner_pid, lease_expires_at
+    FROM prompt_queue_ownership
+    WHERE id = 1
+  `);
+  const insertOwnershipStmt = db.prepare(`
+    INSERT INTO prompt_queue_ownership (id, owner_id, owner_pid, lease_expires_at, updated_at)
+    VALUES (1, ?, ?, ?, ?)
+  `);
+  const updateOwnershipStmt = db.prepare(`
+    UPDATE prompt_queue_ownership
+    SET owner_id = ?, owner_pid = ?, lease_expires_at = ?, updated_at = ?
+    WHERE id = 1 AND owner_id = ?
+  `);
+  const releaseOwnershipStmt = db.prepare(`
+    DELETE FROM prompt_queue_ownership
+    WHERE id = 1 AND owner_id = ?
   `);
 
   const getByClientMessageId = (clientMessageId: string): PromptQueueEntry | null => {
@@ -295,6 +345,16 @@ export function createPromptQueueStore(db: DatabaseType) {
     return rows.map(toEntry);
   };
 
+  const listLogicalLane = (lane: PromptQueueLane): PromptQueueEntry[] => {
+    const rows = listLogicalLaneStmt.all(
+      requiredText(lane.authUserId, "authUserId"),
+      requiredText(lane.sessionId, "sessionId"),
+      requiredText(lane.chatSessionId, "chatSessionId"),
+      requiredText(lane.logicalHistoryKey, "logicalHistoryKey"),
+    ) as Record<string, unknown>[];
+    return rows.map(toEntry);
+  };
+
   const listRecoverable = (): PromptQueueEntry[] =>
     (listRecoverableStmt.all() as Record<string, unknown>[]).map(toEntry);
 
@@ -312,17 +372,66 @@ export function createPromptQueueStore(db: DatabaseType) {
       : markQueuedFailedStmt.run(now, now, trimmed, id).changes === 1;
   };
 
-  const recoverInterrupted = (workerId: string, now = Date.now()): number =>
-    recoverStmt.run(now, requiredText(workerId, "workerId"), now).changes;
+  const claimOwnership = (
+    ownerId: string,
+    ownerPid: number,
+    now = Date.now(),
+    leaseMs = 60_000,
+    isOwnerAlive: (pid: number) => boolean = () => false,
+  ): PromptQueueOwnershipClaim => {
+    const normalizedOwnerId = requiredText(ownerId, "ownerId");
+    const normalizedPid = Math.floor(Number(ownerPid));
+    if (!Number.isInteger(normalizedPid) || normalizedPid <= 0) {
+      throw new Error("ownerPid must be a positive integer");
+    }
+    const claimTx = db.transaction((): PromptQueueOwnershipClaim => {
+      const row = getOwnershipStmt.get() as
+        | { owner_id?: unknown; owner_pid?: unknown; lease_expires_at?: unknown }
+        | undefined;
+      if (!row) {
+        insertOwnershipStmt.run(normalizedOwnerId, normalizedPid, now + leaseMs, now);
+        return { claimed: true, previousOwnerId: null };
+      }
+      const existingOwnerId = String(row.owner_id ?? "");
+      if (existingOwnerId === normalizedOwnerId) {
+        updateOwnershipStmt.run(normalizedOwnerId, normalizedPid, now + leaseMs, now, existingOwnerId);
+        return { claimed: true, previousOwnerId: null };
+      }
+      const existingPid = Math.floor(Number(row.owner_pid));
+      const leaseExpiresAt = Number(row.lease_expires_at);
+      const ownerIsAlive = leaseExpiresAt > now && Number.isInteger(existingPid) && isOwnerAlive(existingPid);
+      if (ownerIsAlive) {
+        return { claimed: false, previousOwnerId: existingOwnerId };
+      }
+      const changed = updateOwnershipStmt.run(
+        normalizedOwnerId,
+        normalizedPid,
+        now + leaseMs,
+        now,
+        existingOwnerId,
+      ).changes;
+      return { claimed: changed === 1, previousOwnerId: changed === 1 ? existingOwnerId : null };
+    });
+    return claimTx.immediate();
+  };
+
+  const releaseOwnership = (ownerId: string): boolean =>
+    releaseOwnershipStmt.run(requiredText(ownerId, "ownerId")).changes === 1;
+
+  const recoverInterrupted = (previousOwnerId: string | null, now = Date.now()): number =>
+    recoverStmt.run(now, now, previousOwnerId).changes;
 
   return {
     enqueue,
     getByClientMessageId,
     listLane,
+    listLogicalLane,
     listRecoverable,
     markRunning,
     markCompleted,
     markFailed,
+    claimOwnership,
+    releaseOwnership,
     recoverInterrupted,
   };
 }

@@ -79,7 +79,7 @@ describe("state/promptQueueStore", () => {
 
     assert.equal(store.markRunning(first.entry.id, "old-worker", 1000), true);
     assert.equal(store.markRunning(second.entry.id, "old-worker", 1000), true);
-    assert.equal(store.recoverInterrupted("new-worker", 2000), 2);
+    assert.equal(store.recoverInterrupted("old-worker", 2000), 2);
     assert.equal(store.markFailed(second.entry.id, new Error("generation changed"), 3000), true);
 
     assert.equal(store.getByClientMessageId("client-1")?.status, "queued");
@@ -92,7 +92,7 @@ describe("state/promptQueueStore", () => {
     const store = createPromptQueueStore(db);
     const first = store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
     assert.equal(store.markRunning(first.entry.id, "old-worker", 1000), true);
-    assert.equal(store.recoverInterrupted("new-worker", 1100), 1);
+    assert.equal(store.recoverInterrupted("old-worker", 1100), 1);
     assert.equal(store.markCompleted(first.entry.id, "old-worker", 1200), false);
 
     assert.equal(store.markRunning(first.entry.id, "new-worker", 1300), true);
@@ -127,5 +127,23 @@ describe("state/promptQueueStore", () => {
       () => store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "different" } }),
       /different prompt payload/,
     );
+  });
+
+  it("claims queue ownership atomically and only reclaims a dead owner", () => {
+    db = new DatabaseConstructor(":memory:");
+    const store = createPromptQueueStore(db);
+    assert.deepEqual(store.claimOwnership("owner-1", 101, 1000, 60_000, () => false), {
+      claimed: true,
+      previousOwnerId: null,
+    });
+    assert.deepEqual(store.claimOwnership("owner-2", 202, 1100, 60_000, () => true), {
+      claimed: false,
+      previousOwnerId: "owner-1",
+    });
+    assert.deepEqual(store.claimOwnership("owner-2", 202, 1100, 60_000, () => false), {
+      claimed: true,
+      previousOwnerId: "owner-1",
+    });
+    assert.equal(store.releaseOwnership("owner-2"), true);
   });
 });

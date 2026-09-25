@@ -221,6 +221,7 @@ describe("web/server/ws/preflight-persistence", () => {
       assert.ok(Date.now() < deadline, "Queued fixture turns must finish before database teardown");
       await delay(5);
     }
+    await wss.stopPromptQueue();
     try {
       wss.close();
     } catch {

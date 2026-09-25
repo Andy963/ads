@@ -1,8 +1,7 @@
 import { getHistoryClientMessageId } from "../../utils/historyKind.js";
-import { isClientMessageCompleted } from "./ws/preflight.js";
 import type { HistoryEntry } from "../../utils/historyStore.js";
 
-export type PromptQueueHistoryOutcome = "missing" | "pending" | "completed";
+export type PromptQueueHistoryOutcome = "missing" | "pending" | "completed" | "failed";
 
 export function getPromptQueueHistoryOutcome(
   entries: HistoryEntry[],
@@ -13,5 +12,21 @@ export function getPromptQueueHistoryOutcome(
     (entry) => entry.role === "user" && getHistoryClientMessageId(entry.kind) === clientMessageId,
   );
   if (!persisted) return "missing";
-  return isClientMessageCompleted(entries, clientMessageId, { allowErrorReplay }) ? "completed" : "pending";
+  let awaitingTerminal = false;
+  let failed = false;
+  for (const entry of entries) {
+    if (entry.role === "user") {
+      awaitingTerminal = getHistoryClientMessageId(entry.kind) === clientMessageId;
+      failed = false;
+      continue;
+    }
+    if (!awaitingTerminal) continue;
+    if (entry.role === "ai") {
+      return "completed";
+    }
+    if (!allowErrorReplay && entry.role === "status" && entry.kind === "error") {
+      failed = true;
+    }
+  }
+  return failed ? "failed" : "pending";
 }
