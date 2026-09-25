@@ -179,6 +179,7 @@ export class NativeAgentAdapter implements AgentAdapter {
   private readonly activeTranscriptTurns = new Set<string>();
   private resetGeneration = 0;
   private readonly transcriptWriterId = randomUUID();
+  private nativeTranscriptRestored = false;
 
   constructor(options: NativeAgentAdapterOptions) {
     this.credentialOwner = String(options.credentialOwner ?? "").trim();
@@ -228,7 +229,9 @@ export class NativeAgentAdapter implements AgentAdapter {
       if (transcriptMode === "replace") {
         this.transcriptStore.clear(this.transcriptId, this.transcriptWriterId);
       } else {
-        this.appendConversation(this.transcriptStore.loadCompletedMessages(this.transcriptId, this.transcriptWriterId));
+        const restoredMessages = this.transcriptStore.loadCompletedMessages(this.transcriptId, this.transcriptWriterId);
+        this.nativeTranscriptRestored = restoredMessages.length > 0;
+        this.appendConversation(restoredMessages);
       }
     }
     this.metadata = {
@@ -314,6 +317,10 @@ export class NativeAgentAdapter implements AgentAdapter {
 
   getThreadId(): string | null {
     return this.threadId;
+  }
+
+  hasRestoredTranscript(): boolean {
+    return this.nativeTranscriptRestored;
   }
 
   async send(input: Input, options: AgentSendOptions = {}): Promise<AgentRunResult> {

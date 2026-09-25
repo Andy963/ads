@@ -265,6 +265,13 @@ export class SessionManager {
       transcriptOwner: owner,
       projectId,
     });
+    if (nativeRuntime && nativeTranscriptCompatible && resumeState.shouldInjectHistory) {
+      const adapter = session.getAdapter("codex");
+      if (adapter instanceof NativeAgentAdapter && adapter.hasRestoredTranscript()) {
+        this.runtime.clearHistoryInjection(userId);
+        this.runtime.setContextRestoreMode(userId, "thread_resumed");
+      }
+    }
     this.syncStoredState(userId);
 
     return session;
