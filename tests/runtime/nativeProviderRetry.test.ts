@@ -86,6 +86,22 @@ describe("Native provider retry and recovery", () => {
     }
   });
 
+  it("keeps protocol and unsupported 5xx responses terminal", async () => {
+    for (const status of [501, 505, 525, 526, 527]) {
+      await assert.rejects(
+        completeNativeChat({
+          baseUrl: "https://provider.test/v1",
+          apiKey: "test-key",
+          model: "test-model",
+          messages: [],
+          tools: [],
+          fetchImpl: async () => new Response("permanent protocol failure", { status }),
+        }),
+        (error: unknown) => error instanceof NativeProviderError && error.kind === "permanent" && error.status === status,
+      );
+    }
+  });
+
   it("cancels a retry backoff without starting another provider request", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-"));
     try {
@@ -236,6 +252,62 @@ describe("Native provider retry and recovery", () => {
         tools: [],
         fetchImpl: async () => new Response(
           "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"call-1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]}}]}\n\ndata: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        streaming: false,
+        fetchImpl: async () => new Response(JSON.stringify({
+          choices: [{ message: { content: "done", tool_calls: {} }, finish_reason: "stop" }],
+        }), { headers: { "content-type": "application/json" } }),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        streaming: false,
+        fetchImpl: async () => new Response(JSON.stringify({
+          choices: [{ message: { content: "done" } }],
+        }), { headers: { "content-type": "application/json" } }),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        fetchImpl: async () => new Response(
+          "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        fetchImpl: async () => new Response(
+          "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
           { headers: { "content-type": "text/event-stream" } },
         ),
       }),

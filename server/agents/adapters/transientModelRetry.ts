@@ -118,13 +118,9 @@ export function isHttp503UpstreamError(message: string): boolean {
 }
 
 export function isHttpGateway5xxUpstreamError(message: string): boolean {
-  return isHttp5xxUpstreamError(message);
-}
-
-export function isHttp5xxUpstreamError(message: string): boolean {
   const normalized = message.replace(/\s+/g, " ").trim().toLowerCase();
   if (!normalized) return false;
-  return /(?:api error|http|status code|returned http|unexpected status)[^0-9]{0,32}5\d\d\b/.test(normalized);
+  return /(?:api error|http|status code|unexpected status)[^0-9]{0,32}52[0-4]\b/.test(normalized);
 }
 
 export function isBadResponseStatusCode400UpstreamError(message: string): boolean {

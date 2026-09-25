@@ -211,7 +211,18 @@ function parseNonStreamingResult(body: unknown): NativeCompletionResult {
   if (!message) {
     throw new NativeProviderError("Native upstream returned a non-streaming response without a message", { kind: "malformed" });
   }
+  const finishReason = readText(choice?.finish_reason);
+  if (!finishReason) {
+    throw new NativeProviderError("Native upstream returned a non-streaming response without finish_reason", {
+      kind: "malformed",
+    });
+  }
   const text = readText(message?.content);
+  if (message?.tool_calls !== undefined && !Array.isArray(message.tool_calls)) {
+    throw new NativeProviderError("Native upstream returned invalid non-streaming tool calls", {
+      kind: "malformed",
+    });
+  }
   const toolCalls = Array.isArray(message?.tool_calls)
     ? message.tool_calls.map((call) => {
         const record = asRecord(call);
@@ -232,10 +243,15 @@ function parseNonStreamingResult(body: unknown): NativeCompletionResult {
         };
       })
     : [];
+  if ((finishReason === "tool_calls") !== (toolCalls.length > 0)) {
+    throw new NativeProviderError("Native upstream returned an incomplete non-streaming tool call response", {
+      kind: "malformed",
+    });
+  }
   return {
     text,
     toolCalls,
-    finishReason: readText(choice?.finish_reason) || undefined,
+    finishReason,
     usage: parseUsage(root?.usage),
   };
 }
@@ -264,7 +280,7 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
   }
 
   if (!response.ok) {
-    const retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+    const retryable = new Set([408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]).has(response.status);
     throw new NativeProviderError(
       `Native upstream returned HTTP ${response.status} [redacted]`,
       { kind: retryable ? "transient" : "permanent", status: response.status },
@@ -371,6 +387,11 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
         { kind: "malformed" },
       );
     }
+  }
+  if ((finishReason === "tool_calls") !== (completedToolCalls.length > 0)) {
+    throw new NativeProviderError("Native upstream returned an incomplete tool call response", {
+      kind: "malformed",
+    });
   }
 
   return {

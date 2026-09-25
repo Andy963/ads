@@ -76,7 +76,7 @@ describe("native provider capabilities", () => {
       options: { includeUsage: false },
       fetchImpl: async (_input, init) => {
         body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-        return new Response(JSON.stringify({ choices: [{ message: { content: "done" } }] }), {
+        return new Response(JSON.stringify({ choices: [{ message: { content: "done" }, finish_reason: "stop" }] }), {
           headers: { "content-type": "application/json" },
         });
       },
@@ -97,7 +97,7 @@ describe("native provider capabilities", () => {
       outputSchema: { type: "object", properties: { ok: { type: "boolean" } } },
       fetchImpl: async (_input, init) => {
         body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-        return new Response(JSON.stringify({ choices: [{ message: { content: "{\"ok\":true}" } }] }), {
+        return new Response(JSON.stringify({ choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }] }), {
           headers: { "content-type": "application/json" },
         });
       },
@@ -153,7 +153,7 @@ describe("native provider capabilities", () => {
         },
         fetchImpl: async () => {
           fetchCalls += 1;
-          return new Response(JSON.stringify({ choices: [{ message: { content: "unused" } }] }), {
+          return new Response(JSON.stringify({ choices: [{ message: { content: "unused" }, finish_reason: "stop" }] }), {
             headers: { "content-type": "application/json" },
           });
         },
@@ -220,7 +220,7 @@ describe("native provider capabilities", () => {
         },
         fetchImpl: async (_input, init) => {
           body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-          return new Response(JSON.stringify({ choices: [{ message: { content: "done" } }] }), {
+          return new Response(JSON.stringify({ choices: [{ message: { content: "done" }, finish_reason: "stop" }] }), {
             headers: { "content-type": "application/json" },
           });
         },
