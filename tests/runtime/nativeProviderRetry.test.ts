@@ -310,6 +310,76 @@ describe("Native provider retry and recovery", () => {
     }
   });
 
+  it("cancels an in-flight tool before retargeting its transcript", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-active-tool-retarget-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-active-tool-retarget-db-"));
+    const store = new NativeTranscriptStore(getStateDatabase(path.join(stateDir, "state.db")));
+    try {
+      const startedPath = path.join(workspace, "tool-started");
+      const latePath = path.join(workspace, "tool-late");
+      let toolStarted!: () => void;
+      const toolStartedPromise = new Promise<void>((resolve) => { toolStarted = resolve; });
+      const events: string[] = [];
+      let requests = 0;
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        modelResolver: resolver(),
+        transcriptId: "active-tool-old",
+        transcriptStore: store,
+        fetchImpl: async () => {
+          requests += 1;
+          return sse([JSON.stringify({
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  type: "function",
+                  id: "tool-retarget-1",
+                  function: {
+                    name: "exec_command",
+                    arguments: JSON.stringify({ cmd: `touch ${startedPath}; sleep 1; touch ${latePath}` }),
+                  },
+                }],
+              },
+              finish_reason: "tool_calls",
+            }],
+          })]);
+        },
+      });
+      adapter.onEvent((event) => {
+        events.push(event.raw.type);
+        if (event.raw.type === "item.started" && event.raw.item.type === "command_execution") {
+          toolStarted();
+        }
+      });
+
+      const pending = adapter.send("retarget active tool turn");
+      await toolStartedPromise;
+      const waitForToolStart = async () => {
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          if (fs.existsSync(startedPath)) return;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        throw new Error("tool did not start");
+      };
+      await waitForToolStart();
+      adapter.retargetTranscript("active-tool-new");
+      const eventCountAtRetarget = events.length;
+
+      await assert.rejects(pending, /superseded by a destructive session reset/);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      assert.equal(requests, 1);
+      assert.equal(fs.existsSync(latePath), false);
+      assert.equal(store.listTurns("active-tool-old")[0]?.status, "interrupted");
+      assert.deepEqual(events.slice(eventCountAtRetarget), []);
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not restore a turn cancelled during retry backoff", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-state-"));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-cancel-db-"));

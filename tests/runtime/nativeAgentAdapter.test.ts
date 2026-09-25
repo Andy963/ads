@@ -988,7 +988,7 @@ describe("NativeAgentAdapter", () => {
 
       await assert.rejects(adapter.send("run a tool"), /superseded by a destructive session reset/);
       assert.deepEqual(store.listTurns(transcriptId), []);
-      assert.equal(events.some((event) => event.type === "turn.failed"), true);
+      assert.equal(events.some((event) => event.type === "turn.failed"), false);
     } finally {
       resetStateDatabaseForTests();
       fs.rmSync(workspace, { recursive: true, force: true });
