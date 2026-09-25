@@ -171,7 +171,7 @@ describe("Native provider retry and recovery", () => {
         fetchImpl: async () => {
           requests += 1;
           if (requests === 1) {
-            return sse([JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "read-1", function: { name: "read_file", arguments: "{\"file\":\"missing.txt\"}" } }] }, finish_reason: "tool_calls" }] })]);
+            return sse([JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, type: "function", id: "read-1", function: { name: "read_file", arguments: "{\"file\":\"missing.txt\"}" } }] }, finish_reason: "tool_calls" }] })]);
           }
           return new Response("upstream failed", { status: 503 });
         },
@@ -330,6 +330,80 @@ describe("Native provider retry and recovery", () => {
         ),
       }),
       (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        fetchImpl: async () => new Response(
+          "data: {\"choices\":[{\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"late\"}}]}\n\ndata: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        fetchImpl: async () => new Response(
+          "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"function\",\"id\":\"late-call\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]}}]}\n\ndata: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        fetchImpl: async () => new Response(
+          "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        fetchImpl: async () => new Response(
+          "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"type\":\"custom\",\"id\":\"call-1\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+      }),
+      (error: unknown) => error instanceof NativeProviderError && error.kind === "malformed",
+    );
+    await assert.rejects(
+      completeNativeChat({
+        baseUrl: "https://provider.test/v1",
+        apiKey: "test-key",
+        model: "test-model",
+        messages: [],
+        tools: [],
+        streaming: false,
+        fetchImpl: async () => ({
+          ok: true,
+          headers: new Headers({ "content-type": "application/json" }),
+          json: async () => {
+            throw new DOMException("Aborted", "AbortError");
+          },
+        }) as Response,
+      }),
+      (error: unknown) => error instanceof Error && error.name === "AbortError",
     );
   });
 });

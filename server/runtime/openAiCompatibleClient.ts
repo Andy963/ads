@@ -182,19 +182,26 @@ function mergeToolCall(
   if (!Number.isInteger(index) || index < 0) {
     throw new NativeProviderError("Native upstream returned a tool call without a valid index", { kind: "malformed" });
   }
-  const existing = calls.get(index) ?? {
+  const existing = calls.get(index);
+  if (!existing && record.type !== "function") {
+    throw new NativeProviderError("Native upstream returned a tool call without a valid type", { kind: "malformed" });
+  }
+  if (record.type !== undefined && record.type !== "function") {
+    throw new NativeProviderError("Native upstream returned an unsupported tool-call type", { kind: "malformed" });
+  }
+  const call = existing ?? {
     id: "",
     type: "function" as const,
     function: { name: "", arguments: "" },
   };
   const functionRecord = asRecord(record.function);
-  if (typeof record.id === "string" && record.id) existing.id = record.id;
+  if (typeof record.id === "string" && record.id) call.id = record.id;
   if (functionRecord) {
-    if (typeof functionRecord.name === "string") existing.function.name += functionRecord.name;
-    if (typeof functionRecord.arguments === "string") existing.function.arguments += functionRecord.arguments;
+    if (typeof functionRecord.name === "string") call.function.name += functionRecord.name;
+    if (typeof functionRecord.arguments === "string") call.function.arguments += functionRecord.arguments;
   }
-  calls.set(index, existing);
-  return existing;
+  calls.set(index, call);
+  return call;
 }
 
 function parseNonStreamingResult(body: unknown): NativeCompletionResult {
@@ -229,7 +236,7 @@ function parseNonStreamingResult(body: unknown): NativeCompletionResult {
         const fn = asRecord(record?.function);
         const id = readText(record?.id);
         const name = readText(fn?.name);
-        if (!id || !name) {
+        if (record?.type !== "function" || !id || !name) {
           throw new NativeProviderError("Native upstream returned an invalid non-streaming tool call", { kind: "malformed" });
         }
         const args = readText(fn?.arguments);
@@ -299,6 +306,7 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
       return parseNonStreamingResult(await response.json());
     } catch (error) {
       if (error instanceof NativeProviderError) throw error;
+      if (error instanceof Error && (error.name === "AbortError" || error.message === "Aborted")) throw error;
       throw new NativeProviderError("Native upstream returned malformed non-streaming JSON", {
         kind: "malformed",
       });
@@ -345,17 +353,27 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
         throw new NativeProviderError("Native upstream returned a malformed SSE choice", { kind: "malformed" });
       }
       if (choice) sawChoice = true;
-      finishReason = readText(choice?.finish_reason) || finishReason;
+      const hadFinishReason = Boolean(finishReason);
+      const nextFinishReason = readText(choice?.finish_reason);
+      if (nextFinishReason) {
+        if (finishReason && finishReason !== nextFinishReason) {
+          throw new NativeProviderError("Native upstream returned conflicting finish reasons", { kind: "malformed" });
+        }
+        finishReason = nextFinishReason;
+      }
       const delta = asRecord(choice?.delta);
       if (delta?.tool_calls !== undefined && !Array.isArray(delta.tool_calls)) {
         throw new NativeProviderError("Native upstream returned malformed SSE tool calls", { kind: "malformed" });
       }
       const content = readText(delta?.content);
+      const chunks = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];
+      if (hadFinishReason && (content || chunks.length > 0)) {
+        throw new NativeProviderError("Native upstream returned data after finish_reason", { kind: "malformed" });
+      }
       if (content) {
         text += content;
         request.onTextDelta?.(text);
       }
-      const chunks = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];
       for (const chunk of chunks) mergeToolCall(toolCalls, chunk);
     }
   } catch (error) {
