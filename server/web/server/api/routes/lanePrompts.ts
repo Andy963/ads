@@ -5,7 +5,8 @@ import {
   createLanePromptStore,
   type LanePromptStore,
 } from "../../../../state/lanePromptStore.js";
-import { isLaneName, type LaneName } from "../../../../state/lanePromptDefaults.js";
+import type { LaneName } from "../../../../state/lanePromptDefaults.js";
+import { normalizeLaneId } from "../../../../../shared/terminology.js";
 import type { ApiRouteContext } from "../types.js";
 import { readJsonBody, sendJson } from "../../http.js";
 
@@ -27,11 +28,19 @@ function getLanePromptStore(deps: LanePromptRouteDeps): LanePromptStore {
   return deps.lanePromptStore ?? createLanePromptStore(getStateDatabase());
 }
 
+/**
+ * Resolve a lane from a URL segment.
+ *
+ * Legacy `advisor` / `worker` / `planner` ids are still accepted so older
+ * clients and bookmarked URLs keep working; they resolve to the canonical lane
+ * and every response reports the canonical id.
+ */
 function validateLane(rawLane: string): LaneName {
-  if (!isLaneName(rawLane)) {
+  const lane = normalizeLaneId(rawLane);
+  if (!lane) {
     throw new Error(`Unknown lane: ${rawLane || "empty"}`);
   }
-  return rawLane;
+  return lane;
 }
 
 export async function handleLanePromptRoutes(

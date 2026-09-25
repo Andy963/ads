@@ -177,27 +177,27 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find(".chatShell").exists()).toBe(true);
     expect(wrapper.find(".mobileMainPanel").exists()).toBe(false);
     expect(wrapper.findAll(".laneTab").map((tab) => tab.text())).toEqual(["Acopilot", "Actions"]);
-    expect(wrapper.find('[data-testid="lane-tab-status-advisor"]').classes()).toContain("laneTabStatusDot--connected");
-    expect(wrapper.find('[data-testid="lane-tab-status-worker"]').classes()).toContain("laneTabStatusDot--connected");
-    expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes()).toContain("laneTabStatusDot--connected");
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes()).toContain("laneTabStatusDot--connected");
+    expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");
 
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-new-session"]').exists()).toBe(true);
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
 
-    await wrapper.find('[data-testid="lane-tab-advisor"]').trigger("click");
+    await wrapper.find('[data-testid="lane-tab-acopilot"]').trigger("click");
     await settleUi(wrapper);
     // Both lane panels stay mounted; only the inactive one is marked hidden.
-    expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="lane-panel-advisor"]').classes()).not.toContain("lanePanel--inactive");
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').classes()).toContain("lanePanel--inactive");
+    expect(wrapper.find('[data-testid="lane-panel-acopilot"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-panel-actions"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-panel-acopilot"]').classes()).not.toContain("lanePanel--inactive");
+    expect(wrapper.find('[data-testid="lane-panel-actions"]').classes()).toContain("lanePanel--inactive");
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="mobile-context-action-resume"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="mobile-context-action-new-session"]').exists()).toBe(true);
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
-    await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
+    await wrapper.find('[data-testid="lane-tab-actions"]').trigger("click");
     await settleUi(wrapper);
     expect(readStoredMobileTab("default")).toBe("actions");
     expect(localStorage.getItem("ads.mobileWorkspaceTab.default")).toBeNull();
@@ -251,11 +251,11 @@ describe("mobile navigation behavior", () => {
     });
     await settleUi(wrapper);
 
-    const advisorRuntime = (wrapper.vm as any).activeAdvisorRuntime as {
+    const acopilotRuntime = (wrapper.vm as any).activeAcopilotRuntime as {
       busy: { value: boolean };
       connected: { value: boolean };
     };
-    advisorRuntime.busy.value = true;
+    acopilotRuntime.busy.value = true;
     await settleUi(wrapper);
     await wrapper.find('[data-testid="mobile-context-menu-toggle"]').trigger("click");
 
@@ -267,8 +267,8 @@ describe("mobile navigation behavior", () => {
     expect(actions).toHaveLength(2);
     expect(actions.every((action) => (action.element as HTMLButtonElement).disabled)).toBe(true);
 
-    advisorRuntime.busy.value = false;
-    advisorRuntime.connected.value = false;
+    acopilotRuntime.busy.value = false;
+    acopilotRuntime.connected.value = false;
     await settleUi(wrapper);
     expect((menu.find('[data-testid="mobile-context-action-resume"]').element as HTMLButtonElement).disabled).toBe(false);
     expect((menu.find('[data-testid="mobile-context-action-new-session"]').element as HTMLButtonElement).disabled).toBe(true);
@@ -301,8 +301,8 @@ describe("mobile navigation behavior", () => {
     });
     await settleUi(wrapper);
 
-    expect(wrapper.find('[data-testid="lane-tab-worker"]').classes()).toContain("active");
-    expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).not.toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-actions"]').classes()).toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).not.toContain("active");
 
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
     await settleUi(wrapper);
@@ -310,7 +310,7 @@ describe("mobile navigation behavior", () => {
     expect(projectB).toBeDefined();
     await projectB!.trigger("click");
     await settleUi(wrapper);
-    expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");
 
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
     await settleUi(wrapper);
@@ -318,8 +318,8 @@ describe("mobile navigation behavior", () => {
     expect(projectA).toBeDefined();
     await projectA!.trigger("click");
     await settleUi(wrapper);
-    expect(wrapper.find('[data-testid="lane-tab-worker"]').classes()).toContain("active");
-    expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).not.toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-actions"]').classes()).toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).not.toContain("active");
 
     wrapper.unmount();
   }, 40_000);
@@ -340,7 +340,7 @@ describe("mobile navigation behavior", () => {
     });
     await settleUi(wrapper);
 
-    await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
+    await wrapper.find('[data-testid="lane-tab-actions"]').trigger("click");
     expect(localStorage.getItem("ads.mobileWorkspaceTab.default")).toBeNull();
 
     wrapper.unmount();
@@ -383,7 +383,7 @@ describe("mobile navigation behavior", () => {
 
     it("tracks the panels 1:1 during a swipe and snaps to Worker on release", async () => {
       const wrapper = await mountMobileChat();
-      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+      expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");
 
       const panels = wrapper.get(".lanePanels").element;
       dispatchTouch(panels, "touchstart", { clientX: 220, clientY: 320 }, 1000);
@@ -394,8 +394,8 @@ describe("mobile navigation behavior", () => {
       expect((track.element as HTMLElement).style.transform).toBe("translate3d(-70px, 0, 0)");
       expect(track.classes()).toContain("lanePanelsTrack--dragging");
       // Both panels stay mounted mid-drag, so no blank gap shows between them.
-      expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
-      expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="lane-panel-acopilot"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="lane-panel-actions"]').exists()).toBe(true);
 
       dispatchTouch(panels, "touchmove", { clientX: 60, clientY: 320 }, 1040);
       await settleUi(wrapper);
@@ -405,15 +405,15 @@ describe("mobile navigation behavior", () => {
       await waitForSnap();
       await settleUi(wrapper);
 
-      expect(wrapper.find('[data-testid="lane-tab-worker"]').classes()).toContain("active");
+      expect(wrapper.find('[data-testid="lane-tab-actions"]').classes()).toContain("active");
       expect(wrapper.get(".lanePanelsTrack").classes()).toContain("lanePanelsTrack--worker");
       expect(wrapper.get(".lanePanelsTrack").classes()).not.toContain("lanePanelsTrack--dragging");
       expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
-      const advisorPanel = wrapper.get('[data-testid="lane-panel-advisor"]');
+      const advisorPanel = wrapper.get('[data-testid="lane-panel-acopilot"]');
       expect(advisorPanel.classes()).toContain("lanePanel--inactive");
       expect(advisorPanel.attributes("aria-hidden")).toBe("true");
       expect(advisorPanel.attributes("inert")).toBeDefined();
-      const workerPanel = wrapper.get('[data-testid="lane-panel-worker"]');
+      const workerPanel = wrapper.get('[data-testid="lane-panel-actions"]');
       expect(workerPanel.classes()).not.toContain("lanePanel--inactive");
       expect(workerPanel.attributes("aria-hidden")).toBeUndefined();
       expect(workerPanel.attributes("inert")).toBeUndefined();
@@ -435,7 +435,7 @@ describe("mobile navigation behavior", () => {
       dispatchTouch(panels, "touchend", null, 1600);
       await waitForSnap();
       await settleUi(wrapper);
-      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+      expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");
       expect(wrapper.get(".lanePanelsTrack").classes()).not.toContain("lanePanelsTrack--worker");
       expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
       expect(readStoredMobileTab("default")).toBeNull();
@@ -452,7 +452,7 @@ describe("mobile navigation behavior", () => {
       dispatchTouch(panels, "touchend", null, 1050);
       await waitForSnap();
       await settleUi(wrapper);
-      expect(wrapper.find('[data-testid="lane-tab-worker"]').classes()).toContain("active");
+      expect(wrapper.find('[data-testid="lane-tab-actions"]').classes()).toContain("active");
       expect(wrapper.get(".lanePanelsTrack").classes()).toContain("lanePanelsTrack--worker");
       wrapper.unmount();
     });
@@ -469,16 +469,16 @@ describe("mobile navigation behavior", () => {
       dispatchTouch(panels, "touchcancel", null, 1050);
       await waitForSnap();
       await settleUi(wrapper);
-      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+      expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");
       expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
       wrapper.unmount();
     });
 
     it("switches from Worker back to Advisor on a rightward drag", async () => {
       const wrapper = await mountMobileChat();
-      await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
+      await wrapper.find('[data-testid="lane-tab-actions"]').trigger("click");
       await settleUi(wrapper);
-      expect(wrapper.find('[data-testid="lane-tab-worker"]').classes()).toContain("active");
+      expect(wrapper.find('[data-testid="lane-tab-actions"]').classes()).toContain("active");
       expect(wrapper.get(".lanePanelsTrack").classes()).toContain("lanePanelsTrack--worker");
 
       const panels = wrapper.get(".lanePanels").element;
@@ -491,7 +491,7 @@ describe("mobile navigation behavior", () => {
       dispatchTouch(panels, "touchend", null, 1500);
       await waitForSnap();
       await settleUi(wrapper);
-      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+      expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");
       expect(wrapper.get(".lanePanelsTrack").classes()).not.toContain("lanePanelsTrack--worker");
       expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
       wrapper.unmount();
@@ -499,20 +499,20 @@ describe("mobile navigation behavior", () => {
 
     it("keeps both lane panels mounted with identical DOM elements across switches", async () => {
       const wrapper = await mountMobileChat();
-      const advisorEl = wrapper.get('[data-testid="lane-panel-advisor"]').element;
-      const workerEl = wrapper.get('[data-testid="lane-panel-worker"]').element;
+      const advisorEl = wrapper.get('[data-testid="lane-panel-acopilot"]').element;
+      const workerEl = wrapper.get('[data-testid="lane-panel-actions"]').element;
 
-      await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
+      await wrapper.find('[data-testid="lane-tab-actions"]').trigger("click");
       await settleUi(wrapper);
-      expect(wrapper.get('[data-testid="lane-panel-advisor"]').element).toBe(advisorEl);
-      expect(wrapper.get('[data-testid="lane-panel-worker"]').element).toBe(workerEl);
-      expect(wrapper.get('[data-testid="lane-panel-advisor"]').attributes("aria-hidden")).toBe("true");
+      expect(wrapper.get('[data-testid="lane-panel-acopilot"]').element).toBe(advisorEl);
+      expect(wrapper.get('[data-testid="lane-panel-actions"]').element).toBe(workerEl);
+      expect(wrapper.get('[data-testid="lane-panel-acopilot"]').attributes("aria-hidden")).toBe("true");
 
-      await wrapper.find('[data-testid="lane-tab-advisor"]').trigger("click");
+      await wrapper.find('[data-testid="lane-tab-acopilot"]').trigger("click");
       await settleUi(wrapper);
-      expect(wrapper.get('[data-testid="lane-panel-advisor"]').element).toBe(advisorEl);
-      expect(wrapper.get('[data-testid="lane-panel-worker"]').element).toBe(workerEl);
-      expect(wrapper.get('[data-testid="lane-panel-worker"]').attributes("aria-hidden")).toBe("true");
+      expect(wrapper.get('[data-testid="lane-panel-acopilot"]').element).toBe(advisorEl);
+      expect(wrapper.get('[data-testid="lane-panel-actions"]').element).toBe(workerEl);
+      expect(wrapper.get('[data-testid="lane-panel-actions"]').attributes("aria-hidden")).toBe("true");
       wrapper.unmount();
     });
 
@@ -524,8 +524,8 @@ describe("mobile navigation behavior", () => {
       await settleUi(wrapper);
 
       expect(wrapper.find(".mobileDrawer").exists()).toBe(true);
-      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
-      expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");
+      expect(wrapper.find('[data-testid="lane-panel-acopilot"]').exists()).toBe(true);
       expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
       await panels.trigger("touchend", { touches: [] });
       wrapper.unmount();
@@ -539,7 +539,7 @@ describe("mobile navigation behavior", () => {
       await panels.trigger("touchmove", { touches: [{ clientX: 206, clientY: 320 }] });
       await panels.trigger("touchend", { touches: [] });
       await settleUi(wrapper);
-      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+      expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");
       expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
 
       // |dx| above the lock threshold but failing the horizontal ratio gate.
@@ -547,7 +547,7 @@ describe("mobile navigation behavior", () => {
       await panels.trigger("touchmove", { touches: [{ clientX: 250, clientY: 260 }] });
       await panels.trigger("touchend", { touches: [] });
       await settleUi(wrapper);
-      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
+      expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");
       expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
       expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
       wrapper.unmount();
@@ -567,8 +567,8 @@ describe("mobile navigation behavior", () => {
       pre.dispatchEvent(move);
       await settleUi(wrapper);
 
-      expect(wrapper.find('[data-testid="lane-tab-advisor"]').classes()).toContain("active");
-      expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
+      expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");
+      expect(wrapper.find('[data-testid="lane-panel-acopilot"]').exists()).toBe(true);
       expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
       expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
       pre.remove();

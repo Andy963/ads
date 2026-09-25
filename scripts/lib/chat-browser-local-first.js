@@ -9,7 +9,7 @@ async function until(predicate, label) {
 }
 
 export async function verifyLocalFirstTranscript({ page, context, fixture, frames, send, waitForReply, chooseLane, settle, report, engine }) {
-  await chooseLane("advisor");
+  await chooseLane("acopilot");
   const chat = page.locator('.lanePanel:not([aria-hidden]) .chat');
   const syncResponses = [];
   report.syncResponses = syncResponses;

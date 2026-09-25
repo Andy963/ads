@@ -4,6 +4,25 @@ import { createAppContext, type AppContext } from "../app/controller";
 import { createChatActions } from "../app/chat";
 
 describe("flushQueuedPrompts error handling", () => {
+  it("sends a prompt immediately while the current runtime is busy", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const rt = ctx.activeRuntime.value;
+
+    rt.connected.value = true;
+    rt.busy.value = true;
+    rt.turnInFlight = true;
+    rt.ws = {
+      sendPrompt: vi.fn().mockReturnValue(true),
+      clearHistory: vi.fn(),
+    } as unknown as typeof rt.ws;
+
+    chat.enqueuePrompt("Queue this behind the active turn", []);
+
+    expect(rt.ws.sendPrompt).toHaveBeenCalledTimes(1);
+    expect(rt.queuedPrompts.value).toHaveLength(0);
+  });
+
   it("preserves user message bubble in transcript when ws sendPrompt fails", async () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);

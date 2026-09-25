@@ -55,10 +55,10 @@ describe("Issue #385 transcript viewport scope", () => {
     expect(mainChat).toMatch(/viewportScopeKey\?:\s*string\s*;/);
     expect(mainChat).toMatch(/emit\("update:viewportScope", props\.viewportScopeKey\)/);
     expect(mainChat.indexOf('emit("update:viewportScope"')).toBeLessThan(mainChat.indexOf('emit("update:viewport", viewport)'));
-    expect(app).toMatch(/:viewport-scope-key="advisorViewportScopeKey"/);
-    expect(app).toMatch(/:viewport-scope-key="workerViewportScopeKey"/);
+    expect(app).toMatch(/:viewport-scope-key="acopilotViewportScopeKey"/);
+    expect(app).toMatch(/:viewport-scope-key="actionsViewportScopeKey"/);
     expect(app).toMatch(/accountGeneration\.value/);
-    expect(app).toMatch(/isTranscriptViewportScopeCurrent\(advisorViewportScope\.value, advisorViewportScopeKey\.value\)/);
-    expect(app).toMatch(/isTranscriptViewportScopeCurrent\(workerViewportScope\.value, workerViewportScopeKey\.value\)/);
+    expect(app).toMatch(/isTranscriptViewportScopeCurrent\(acopilotViewportScope\.value, acopilotViewportScopeKey\.value\)/);
+    expect(app).toMatch(/isTranscriptViewportScopeCurrent\(actionsViewportScope\.value, actionsViewportScopeKey\.value\)/);
   });
 });

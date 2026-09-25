@@ -24,36 +24,80 @@ describe("SystemPromptManager prompt injection", () => {
     fs.rmSync(workspace, { recursive: true, force: true });
   });
 
-  it("injects the configured Advisor and Worker lane prompts", () => {
-    const advisor = new SystemPromptManager({ workspaceRoot: workspace, lane: "advisor" });
-    const worker = new SystemPromptManager({ workspaceRoot: workspace, lane: "worker" });
+  it("injects the configured Acopilot and Actions lane prompts", () => {
+    const acopilot = new SystemPromptManager({ workspaceRoot: workspace, lane: "acopilot" });
+    const actions = new SystemPromptManager({ workspaceRoot: workspace, lane: "actions" });
 
-    const advisorInjection = advisor.maybeInject();
-    const workerInjection = worker.maybeInject();
+    const acopilotInjection = acopilot.maybeInject();
+    const actionsInjection = actions.maybeInject();
 
-    assert(advisorInjection);
+    assert(acopilotInjection);
+    assert(actionsInjection);
+    assert.match(acopilotInjection.text, /ADS Acopilot/);
+    assert.doesNotMatch(acopilotInjection.text, /You are the ADS Actions Developer/);
+    assert.match(actionsInjection.text, /ADS Actions Developer/);
+    assert.doesNotMatch(actionsInjection.text, /You are the ADS Acopilot/);
+  });
+
+  it("resolves a legacy lane id to the same canonical prompt", () => {
+    // Compatibility matrix: legacy spellings are accepted on read and must
+    // resolve to the canonical lane's prompt, not a separate one.
+    for (const legacy of ["advisor", "planner"] as const) {
+      const manager = new SystemPromptManager({ workspaceRoot: workspace, lane: legacy as never });
+      const injection = manager.maybeInject();
+      assert(injection, `${legacy} should still resolve`);
+      assert.match(injection.text, /ADS Acopilot/);
+    }
+
+    const workerManager = new SystemPromptManager({ workspaceRoot: workspace, lane: "worker" as never });
+    const workerInjection = workerManager.maybeInject();
     assert(workerInjection);
-    assert.match(advisorInjection.text, /ADS Advisor/);
-    assert.doesNotMatch(advisorInjection.text, /You are the ADS Worker/);
-    assert.match(workerInjection.text, /ADS Worker/);
-    assert.doesNotMatch(workerInjection.text, /You are the ADS Advisor/);
+    assert.match(workerInjection.text, /ADS Actions Developer/);
   });
 
   it("hot-loads a new database version on the next injection", () => {
     const store = createLanePromptStore(getStateDatabase());
-    const manager = new SystemPromptManager({ workspaceRoot: workspace, lane: "advisor", lanePromptStore: store });
+    const manager = new SystemPromptManager({ workspaceRoot: workspace, lane: "acopilot", lanePromptStore: store });
 
     const initial = manager.maybeInject();
     assert(initial);
-    assert.match(initial.text, /ADS Advisor/);
+    assert.match(initial.text, /ADS Acopilot/);
 
-    store.setLanePrompt("advisor", "Custom advisor prompt");
+    store.setLanePrompt("acopilot", "Custom acopilot prompt");
     manager.completeTurn();
     const updated = manager.maybeInject();
 
     assert(updated);
     assert.equal(updated.reason, "lane-prompt-updated");
-    assert.match(updated.text, /Custom advisor prompt/);
+    assert.match(updated.text, /Custom acopilot prompt/);
+  });
+
+  it("falls back to the canonical baseline when the store fails, even for a legacy lane", () => {
+    // Regression: the built-in-baseline fallback used to index
+    // BASE_LANE_PROMPTS with the raw lane, so a legacy id produced undefined and
+    // crashed prompt assembly instead of falling back.
+    const throwingStore = {
+      getActiveLanePrompt: () => {
+        throw new Error("store unavailable");
+      },
+    } as never;
+
+    for (const [lane, expected] of [
+      ["acopilot", /ADS Acopilot/],
+      ["actions", /ADS Actions Developer/],
+      ["advisor", /ADS Acopilot/],
+      ["planner", /ADS Acopilot/],
+      ["worker", /ADS Actions Developer/],
+    ] as const) {
+      const manager = new SystemPromptManager({
+        workspaceRoot: workspace,
+        lane: lane as never,
+        lanePromptStore: throwingStore,
+      });
+      const injection = manager.maybeInject();
+      assert(injection, `${lane} should fall back rather than throw`);
+      assert.match(injection.text, expected);
+    }
   });
 
   it("does not inject a lane prompt when no lane is assigned", () => {
@@ -61,13 +105,13 @@ describe("SystemPromptManager prompt injection", () => {
     const injection = manager.maybeInject();
 
     if (injection) {
-      assert.doesNotMatch(injection.text, /You are the ADS (?:Advisor|Worker)/);
+      assert.doesNotMatch(injection.text, /You are the ADS (?:Acopilot|Actions Developer)/);
     }
   });
 
   it("does not read legacy templates or soul files", () => {
     fs.writeFileSync(path.join(workspace, "soul.md"), "secret preference\n", "utf8");
-    const manager = new SystemPromptManager({ workspaceRoot: workspace, lane: "worker" });
+    const manager = new SystemPromptManager({ workspaceRoot: workspace, lane: "actions" });
     const injection = manager.maybeInject();
 
     assert(injection);

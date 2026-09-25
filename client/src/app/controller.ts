@@ -10,7 +10,11 @@ import type { LaneDeps } from "./laneActions";
 import { createProjectRuntime } from "./projectRuntime";
 import { createTranscriptCache } from "./transcriptCache";
 import { clearPersistedOutboxes } from "./outbox";
-import { ADVISOR_LANE_ID } from "../lib/laneIds";
+import { WIRE_ACOPILOT_SESSION_ID } from "../lib/laneWire";
+
+// The Acopilot lane always shares one server-side chat session, addressed by
+// the legacy wire id. See laneWire for why the value is still "advisor"; the
+// constant is imported (not re-derived) so laneWire stays the single owner.
 import type { ProjectRuntime, ProjectTab } from "./controllerTypes";
 import { createProjectActions } from "./projectsWs";
 import type { ProjectDeps } from "./projectsWs";
@@ -70,20 +74,20 @@ export function createAppContext() {
   const activeProject = computed(() => projects.value.find((p) => p.id === activeProjectId.value) ?? null);
 
   const runtimeByProjectId = new Map<string, ProjectRuntime>();
-  const advisorRuntimeByProjectId = new Map<string, ProjectRuntime>();
+  const acopilotRuntimeByProjectId = new Map<string, ProjectRuntime>();
 
   const normalizeProjectId = (id: string | null | undefined): string => {
     const trimmed = String(id ?? "").trim();
     return trimmed || "default";
   };
 
-  const attachTranscript = (id: string, rt: ProjectRuntime, advisor = false): void => {
+  const attachTranscript = (id: string, rt: ProjectRuntime, acopilot = false): void => {
     const project = projects.value.find((item) => item.id === id);
     if (!project) return;
     transcriptCache.attach(rt, {
       projectId: id,
       sessionId: project.sessionId,
-      chatSessionId: advisor ? ADVISOR_LANE_ID : project.chatSessionId || "main",
+      chatSessionId: acopilot ? WIRE_ACOPILOT_SESSION_ID : project.chatSessionId || "main",
       workspace: project.path,
     });
     if (rt.transcriptRestored && rt.messages.value.length > 0) cachedTranscriptAvailable.value = true;
@@ -103,29 +107,29 @@ export function createAppContext() {
     return created;
   };
 
-  const getAdvisorRuntime = (projectId: string | null | undefined): ProjectRuntime => {
+  const getAcopilotRuntime = (projectId: string | null | undefined): ProjectRuntime => {
     const id = normalizeProjectId(projectId);
-    const existing = advisorRuntimeByProjectId.get(id);
+    const existing = acopilotRuntimeByProjectId.get(id);
     if (existing) {
       attachTranscript(id, existing, true);
       return existing;
     }
     const created = createProjectRuntime({ maxLiveActivitySteps });
-    created.chatSessionId = ADVISOR_LANE_ID;
-    advisorRuntimeByProjectId.set(id, created);
+    created.chatSessionId = WIRE_ACOPILOT_SESSION_ID;
+    acopilotRuntimeByProjectId.set(id, created);
     attachTranscript(id, created, true);
     return created;
   };
 
   const activeRuntime = computed(() => { void accountGeneration.value; return getRuntime(activeProjectId.value); });
-  const activeAdvisorRuntime = computed(() => { void accountGeneration.value; return getAdvisorRuntime(activeProjectId.value); });
+  const activeAcopilotRuntime = computed(() => { void accountGeneration.value; return getAcopilotRuntime(activeProjectId.value); });
 
   const handleAuthRequired = (): void => {
     loggedIn.value = false;
     currentUser.value = null;
     cachedTranscriptAvailable.value = false;
     transcriptCache.clear();
-    for (const rt of [...runtimeByProjectId.values(), ...advisorRuntimeByProjectId.values()]) {
+    for (const rt of [...runtimeByProjectId.values(), ...acopilotRuntimeByProjectId.values()]) {
       rt.syncGeneration += 1;
       const socket = rt.ws as { close: () => void } | null;
       rt.ws = null;
@@ -139,7 +143,7 @@ export function createAppContext() {
       }
     }
     runtimeByProjectId.clear();
-    advisorRuntimeByProjectId.clear();
+    acopilotRuntimeByProjectId.clear();
     accountGeneration.value += 1;
     clearPersistedOutboxes();
   };
@@ -257,12 +261,12 @@ export function createAppContext() {
     isMobile,
     activeProject,
     runtimeByProjectId,
-    advisorRuntimeByProjectId,
+    acopilotRuntimeByProjectId,
     normalizeProjectId,
     getRuntime,
-    getAdvisorRuntime,
+    getAcopilotRuntime,
     activeRuntime,
-    activeAdvisorRuntime,
+    activeAcopilotRuntime,
     connected,
     apiError,
     apiNotice,
@@ -298,7 +302,7 @@ export function createAppController() {
   const chat = createChatActions(ctx as AppContext);
   const laneDeps: LaneDeps = {
     connectWs: async () => {},
-    connectAdvisorWs: async () => {},
+    connectAcopilotWs: async () => {},
   };
   const laneActions = createLaneActions({ ...ctx, ...chat } as AppContext & ChatActions, laneDeps);
 
@@ -313,7 +317,7 @@ export function createAppController() {
   });
 
   laneDeps.connectWs = ws.connectWs;
-  laneDeps.connectAdvisorWs = ws.connectAdvisorWs;
+  laneDeps.connectAcopilotWs = ws.connectAcopilotWs;
 
   const clearRuntimeTimers = (rt: { noticeTimer: number | null; liveActivityTtlTimer: number | null }): void => {
     if (rt.noticeTimer !== null) {
@@ -337,51 +341,51 @@ export function createAppController() {
   const closeProjectConnections = (projectId: string): void => {
     const pid = ctx.normalizeProjectId(projectId);
 
-    const workerRt = ctx.runtimeByProjectId.get(pid);
-    if (workerRt) {
-      ws.closeRuntimeConnection(workerRt);
-      clearRuntimeTimers(workerRt);
-      ctx.transcriptCache.detach(workerRt);
+    const actionsRt = ctx.runtimeByProjectId.get(pid);
+    if (actionsRt) {
+      ws.closeRuntimeConnection(actionsRt);
+      clearRuntimeTimers(actionsRt);
+      ctx.transcriptCache.detach(actionsRt);
       ctx.runtimeByProjectId.delete(pid);
     }
 
-    const advisorRt = ctx.advisorRuntimeByProjectId.get(pid);
-    if (advisorRt) {
-      ws.closeRuntimeConnection(advisorRt);
-      clearRuntimeTimers(advisorRt);
-      ctx.transcriptCache.detach(advisorRt);
-      ctx.advisorRuntimeByProjectId.delete(pid);
+    const acopilotRt = ctx.acopilotRuntimeByProjectId.get(pid);
+    if (acopilotRt) {
+      ws.closeRuntimeConnection(acopilotRt);
+      clearRuntimeTimers(acopilotRt);
+      ctx.transcriptCache.detach(acopilotRt);
+      ctx.acopilotRuntimeByProjectId.delete(pid);
     }
 
   };
 
   const invalidateProjectConnections = (projectId: string): void => {
     const pid = ctx.normalizeProjectId(projectId);
-    const workerRt = ctx.runtimeByProjectId.get(pid);
-    if (workerRt) {
-      ws.closeRuntimeConnection(workerRt);
-      clearRuntimeTimers(workerRt);
+    const actionsRt = ctx.runtimeByProjectId.get(pid);
+    if (actionsRt) {
+      ws.closeRuntimeConnection(actionsRt);
+      clearRuntimeTimers(actionsRt);
     }
 
-    const advisorRt = ctx.advisorRuntimeByProjectId.get(pid);
-    if (advisorRt) {
-      ws.closeRuntimeConnection(advisorRt);
-      clearRuntimeTimers(advisorRt);
+    const acopilotRt = ctx.acopilotRuntimeByProjectId.get(pid);
+    if (acopilotRt) {
+      ws.closeRuntimeConnection(acopilotRt);
+      clearRuntimeTimers(acopilotRt);
     }
   };
 
   const activateProject = async (projectId: string): Promise<void> => {
     const pid = ctx.normalizeProjectId(projectId);
     const rt = ctx.getRuntime(pid);
-    const advisorRt = ctx.getAdvisorRuntime(pid);
+    const acopilotRt = ctx.getAcopilotRuntime(pid);
     if (!ctx.loggedIn.value) return;
     rt.apiError.value = null;
     rt.wsError.value = null;
-    advisorRt.wsError.value = null;
+    acopilotRt.wsError.value = null;
     try {
       await Promise.all([
         (!rt.ws || !rt.connected.value) ? ws.connectWs(pid) : Promise.resolve(),
-        (!advisorRt.ws || !advisorRt.connected.value) ? ws.connectAdvisorWs(pid) : Promise.resolve(),
+        (!acopilotRt.ws || !acopilotRt.connected.value) ? ws.connectAcopilotWs(pid) : Promise.resolve(),
       ]);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -412,7 +416,7 @@ export function createAppController() {
     ctx.currentUser.value = me;
     ws.closeAllConnections();
     ctx.getRuntime(ctx.activeProjectId.value);
-    ctx.getAdvisorRuntime(ctx.activeProjectId.value);
+    ctx.getAcopilotRuntime(ctx.activeProjectId.value);
     if (!appMounted) return;
     const account = ctx.accountGeneration.value;
     void (async () => {
@@ -426,7 +430,7 @@ export function createAppController() {
   // first render or LoginGate's authentication requests.
   projects.initializeProjects();
   ctx.getRuntime(ctx.activeProjectId.value);
-  ctx.getAdvisorRuntime(ctx.activeProjectId.value);
+  ctx.getAcopilotRuntime(ctx.activeProjectId.value);
   ctx.updateIsMobile();
 
   onMounted(() => {
@@ -461,7 +465,7 @@ export function createAppController() {
   onBeforeUnmount(() => {
     window.removeEventListener("resize", ctx.updateIsMobile);
     (ctx as AppContext & { __connectivityCleanup?: () => void }).__connectivityCleanup?.();
-    for (const rt of [...ctx.runtimeByProjectId.values(), ...ctx.advisorRuntimeByProjectId.values()]) {
+    for (const rt of [...ctx.runtimeByProjectId.values(), ...ctx.acopilotRuntimeByProjectId.values()]) {
       if (rt.liveActivityTtlTimer === null) continue;
       window.clearTimeout(rt.liveActivityTtlTimer);
       rt.liveActivityTtlTimer = null;

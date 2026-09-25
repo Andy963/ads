@@ -205,14 +205,14 @@ describe("Model selector persistence", () => {
       await ensureWsConnected(wrapper);
       const controller = wrapper.vm as any;
       controller.setMainModelId("gpt-4.1");
-      controller.setAdvisorModelId("gpt-4o");
+      controller.setAcopilotModelId("gpt-4o");
       controller.setMainModelReasoningEffort("medium");
-      controller.setAdvisorModelReasoningEffort("high");
-      await wrapper.get('[data-testid="lane-tab-worker"]').trigger("click");
+      controller.setAcopilotModelReasoningEffort("high");
+      await wrapper.get('[data-testid="lane-tab-actions"]').trigger("click");
       await settleUi(wrapper);
 
       const order = Array.from(wrapper.get(".laneTabGroup").element.children).map((element) => element.getAttribute("data-testid"));
-      expect(order).toEqual(["lane-tab-advisor", "lane-tab-worker"]);
+      expect(order).toEqual(["lane-tab-acopilot", "lane-tab-actions"]);
       expect(wrapper.get('[data-testid="lane-model-controls"]').classes()).toContain("laneModelControls");
       const selector = wrapper.findComponent({ name: "MainChatModelSelectors" });
       expect(selector.props("modelReasoningEffort")).toBe("medium");
@@ -223,7 +223,7 @@ describe("Model selector persistence", () => {
       expect(lastSendPromptPayload).toMatchObject({ text: "Worker prompt", model: "gpt-4.1", model_reasoning_effort: "ultra" });
 
       lastWorkerWs!.onMessage?.({ type: "result", ok: true, output: "Worker done" });
-      await wrapper.get('[data-testid="lane-tab-advisor"]').trigger("click");
+      await wrapper.get('[data-testid="lane-tab-acopilot"]').trigger("click");
       await settleUi(wrapper);
       expect(_lastAdvisorWs).toBeTruthy();
       _lastAdvisorWs!.onOpen?.();
@@ -231,11 +231,11 @@ describe("Model selector persistence", () => {
       expect(selector.props("modelReasoningEffort")).toBe("high");
       selector.vm.$emit("setReasoningEffort", "max");
       await settleUi(wrapper);
-      controller.sendAdvisorPrompt("Advisor prompt");
+      controller.sendAcopilotPrompt("Advisor prompt");
       await settleUi(wrapper);
       expect(lastSendPromptPayload).toMatchObject({ text: "Advisor prompt", model: "gpt-4o", model_reasoning_effort: "max" });
 
-      await wrapper.get('[data-testid="lane-tab-worker"]').trigger("click");
+      await wrapper.get('[data-testid="lane-tab-actions"]').trigger("click");
       await settleUi(wrapper);
       expect(selector.props("modelReasoningEffort")).toBe("ultra");
     } finally {
@@ -362,7 +362,7 @@ describe("Model selector persistence", () => {
         await ensureWsConnected(wrapper);
 
         // Open the advisor lane so its socket connects.
-        await wrapper.get('[data-testid="lane-tab-advisor"]').trigger("click");
+        await wrapper.get('[data-testid="lane-tab-acopilot"]').trigger("click");
         await settleUi(wrapper);
         expect(_lastAdvisorWs).toBeTruthy();
         _lastAdvisorWs!.onOpen?.();
@@ -375,7 +375,7 @@ describe("Model selector persistence", () => {
         });
         await settleUi(wrapper);
 
-        wrapper.vm.setAdvisorModelId?.("gpt-4o");
+        wrapper.vm.setAcopilotModelId?.("gpt-4o");
         await settleUi(wrapper);
         expect(readStoredModelId("default", "advisor", "codex")).toBe("gpt-4o");
 
@@ -391,7 +391,7 @@ describe("Model selector persistence", () => {
           effectiveModelReasoningEffort: "high",
         });
         await settleUi(wrapper);
-        expect(wrapper.vm.activeAdvisorRuntime.modelId.value).toBe("gpt-4o");
+        expect(wrapper.vm.activeAcopilotRuntime.modelId.value).toBe("gpt-4o");
         expect(readStoredModelId("default", "advisor", "codex")).toBe("gpt-4o");
 
         // Same for the per-turn result echo.
@@ -404,7 +404,7 @@ describe("Model selector persistence", () => {
           effectiveModelReasoningEffort: "high",
         });
         await settleUi(wrapper);
-        expect(wrapper.vm.activeAdvisorRuntime.modelId.value).toBe("gpt-4o");
+        expect(wrapper.vm.activeAcopilotRuntime.modelId.value).toBe("gpt-4o");
         expect(readStoredModelId("default", "advisor", "codex")).toBe("gpt-4o");
       } finally {
         wrapper.unmount();
@@ -665,8 +665,8 @@ describe("Model selector persistence", () => {
       await settleUi(wrapper);
 
       // Available agents must be populated immediately without waiting for catch-up HTTP to finish
-      expect(wrapper.vm.workerAgents.length).toBe(2);
-      expect(wrapper.vm.workerAgents[0].id).toBe("codex");
+      expect(wrapper.vm.actionsAgents.length).toBe(2);
+      expect(wrapper.vm.actionsAgents[0].id).toBe("codex");
 
       if (syncResolver) {
         syncResolver({ events: [], latestSeq: 10, hasMore: false });

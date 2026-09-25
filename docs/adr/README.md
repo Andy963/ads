@@ -39,4 +39,5 @@
 - 0024 - [ADR 0024: Define Native Provider Capability Contracts](0024-native-provider-capability-contract.md)
 - 0025 - [ADR 0025: Harden Native Retry, Cancellation, and Recovery](0025-native-bounded-retry-and-recovery.md)
 - 0026 - [ADR 0026: Define the Native Runtime Lifecycle and Capability Contract](0026-native-runtime-lifecycle-and-capability-contract.md)
+- 0027 - [ADR 0027: 建立 Canonical Lane 与 Actions Role 术语契约](0027-canonical-lane-and-actions-role-terminology.md)
 <!-- ADS:ADR_INDEX_END -->

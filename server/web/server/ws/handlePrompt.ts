@@ -8,7 +8,7 @@ import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { resolveWorkspaceStatePath } from "../../../workspace/adsPaths.js";
 import { buildPromptInput, buildUserLogEntry, cleanupTempFiles } from "../../utils.js";
 import { runAgentTurn } from "../../../agents/turn.js";
-import type { WsPromptHandlerDeps } from "./deps.js";
+import type { WsPromptHandlerDeps, WsPromptOutcome } from "./deps.js";
 import { processScheduleOutput } from "../advisor/scheduleHandler.js";
 import { preferInMemoryThreadId } from "./threadIds.js";
 import {
@@ -38,9 +38,14 @@ export function excludeCurrentClientMessage(
 export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
   handled: boolean;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
+  outcome: WsPromptOutcome;
 }> {
   if (deps.request.parsed.type !== "prompt") {
-    return { handled: false, orchestrator: deps.sessions.orchestrator };
+    return {
+      handled: false,
+      orchestrator: deps.sessions.orchestrator,
+      outcome: { ok: false, error: "Unsupported prompt payload" },
+    };
   }
 
   const sendToChat = (payload: unknown): void => {
@@ -54,6 +59,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
   const isLaneCurrent = (): boolean => (deps.context.isLaneCurrent ? deps.context.isLaneCurrent() : true);
 
   let orchestrator = deps.sessions.orchestrator;
+  let outcome: WsPromptOutcome = { ok: false, error: "Prompt did not complete" };
 
   const workspaceRoot = detectWorkspaceFrom(deps.context.currentCwd);
   const lock = deps.sessions.getWorkspaceLock(workspaceRoot);
@@ -72,6 +78,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         kind: "error",
       });
       sendToChat({ type: "error", message: promptInput.message });
+      outcome = { ok: false, error: promptInput.message };
       return;
     }
     const tempAttachments = promptInput.attachments || [];
@@ -79,6 +86,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     const userLogEntry = buildUserLogEntry(promptInput.input, deps.context.currentCwd);
     if (!isLaneCurrent()) {
       cleanupAttachments();
+      outcome = { ok: false, error: "Lane generation changed before execution" };
       return;
     }
     deps.observability.sessionLogger?.logInput(userLogEntry);
@@ -122,6 +130,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       if (!isLaneCurrent()) {
         promptRun.cleanup();
         cleanupAfter();
+        outcome = { ok: false, error: "Lane generation changed before execution" };
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
@@ -136,6 +145,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       sendToChat({ type: "error", message });
       promptRun.cleanup();
       cleanupAfter();
+      outcome = { ok: false, error: message };
       return;
     }
     const status = orchestrator.status();
@@ -143,6 +153,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       if (!isLaneCurrent()) {
         promptRun.cleanup();
         cleanupAfter();
+        outcome = { ok: false, error: "Lane generation changed before execution" };
         return;
       }
       const message = status.error ?? "代理未启用，请配置凭证";
@@ -156,6 +167,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       sendToChat({ type: "error", message });
       promptRun.cleanup();
       cleanupAfter();
+      outcome = { ok: false, error: message };
       return;
     }
     const rawPayload = deps.request.parsed.payload;
@@ -389,6 +401,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       } else {
         deps.transport.sendWorkspaceState(deps.transport.ws, turnCwd);
       }
+      outcome = { ok: true };
     } catch (error) {
       if (isWsPromptAbort(error)) {
         const activePromise = typeof agentTurnPromise !== "undefined" ? agentTurnPromise : undefined;
@@ -411,6 +424,10 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         sendToChat,
         isCurrent: deps.context.isLaneCurrent,
       });
+      outcome = {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
     } finally {
       unsubscribe();
       promptRun.cleanup();
@@ -418,5 +435,5 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     }
   });
 
-  return { handled: true, orchestrator };
+  return { handled: true, orchestrator, outcome };
 }

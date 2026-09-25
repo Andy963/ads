@@ -14,6 +14,7 @@ import type { AsyncLock } from "../../../utils/asyncLock.js";
 import type { WsMessage } from "./schema.js";
 import type { SessionCacheRegistry } from "./sessionCacheRegistry.js";
 import type { SyncEventStore } from "../sync/store.js";
+import type { PromptQueueStore } from "../../../state/promptQueueStore.js";
 
 export type WsLogger = {
   info: (msg: string) => void;
@@ -67,6 +68,7 @@ export type WsConfigDeps = {
   /** 单个 WebSocket 帧的最大字节数（内存型 DoS 防护）。未设置时回退到内置默认值。 */
   maxPayloadBytes?: number;
   traceWsDuplication: boolean;
+  autoStartPromptQueue?: boolean;
 };
 
 export type WsAuthDeps = {
@@ -97,6 +99,8 @@ export type WsStateDeps = {
   persistCwdStore: (storePath: string, store: Map<string, string>) => void;
   syncEventStore?: SyncEventStore;
   laneGenerationStore?: import("../sync/laneGeneration.js").WebLaneGenerationStore;
+  promptQueueStore?: PromptQueueStore;
+  isProcessRunning?: (pid: number) => boolean;
 };
 
 export type WsSessionDeps = {
@@ -205,6 +209,11 @@ export type WsPromptHandlerDeps = {
   history: WsHistoryRuntimeDeps;
   scheduler: WsSchedulerDeps;
   middleware?: MiddlewarePipeline;
+};
+
+export type WsPromptOutcome = {
+  ok: boolean;
+  error?: string;
 };
 
 export type WsCommandHandlerDeps = {

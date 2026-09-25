@@ -1,5 +1,5 @@
 import { AdsWebSocket } from "../../api/ws";
-import type { SyncEventsResponse } from "../../api/types";
+import type { SyncEventsResponse, LaneName } from "../../api/types";
 import { diagAlert } from "../../lib/diagAlert";
 import {
   normalizeModelId,
@@ -20,6 +20,8 @@ import type { WsDeps } from "./types";
 import { isReconnectNotice, pickReconnectNotice } from "./reconnectNotice";
 import { createSyncEventSequencer } from "./syncSequencer";
 import { createWsMessageHandler } from "./wsMessage";
+import { WIRE_ACOPILOT_SESSION_ID } from "../../lib/laneWire";
+import { ACOPILOT_LANE_ID } from "../../lib/laneIds";
 
 const TERMINAL_BOOTSTRAP_COVERED_EVENT_TYPES = new Set([
   "history",
@@ -47,10 +49,10 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     activeProjectId,
     pendingSwitchProjectId,
     runtimeByProjectId,
-    advisorRuntimeByProjectId,
+    acopilotRuntimeByProjectId,
     normalizeProjectId,
     getRuntime,
-    getAdvisorRuntime,
+    getAcopilotRuntime,
     maxTurnCommands,
   } = ctx;
 
@@ -131,7 +133,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     for (const rt of runtimeByProjectId.values()) {
       closeRuntimeConnection(rt);
     }
-    for (const rt of advisorRuntimeByProjectId.values()) {
+    for (const rt of acopilotRuntimeByProjectId.values()) {
       closeRuntimeConnection(rt);
     }
   };
@@ -179,14 +181,14 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         }
         runtimeByProjectId.delete(oldKey);
       }
-      const advisorRt = advisorRuntimeByProjectId.get(oldKey);
-      if (advisorRt) {
-        if (!advisorRuntimeByProjectId.has(nextKey)) {
-          advisorRuntimeByProjectId.set(nextKey, advisorRt);
-        } else if (advisorRt.ws || advisorRt.connected.value) {
+      const acopilotRt = acopilotRuntimeByProjectId.get(oldKey);
+      if (acopilotRt) {
+        if (!acopilotRuntimeByProjectId.has(nextKey)) {
+          acopilotRuntimeByProjectId.set(nextKey, acopilotRt);
+        } else if (acopilotRt.ws || acopilotRt.connected.value) {
           diagAlert("runtime分裂: advisor旧runtime被丢弃且连接未关闭", { oldKey, nextKey });
         }
-        advisorRuntimeByProjectId.delete(oldKey);
+        acopilotRuntimeByProjectId.delete(oldKey);
       }
       renameProjectPreferences(oldKey, nextKey);
     }
@@ -219,11 +221,13 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     }
   };
 
-  type WsMode = "worker" | "advisor";
+  // A lane selector, not a wire id. It is canonical; the wire value is derived
+  // only at the boundary in resolveChatSessionId.
+  type WsMode = LaneName;
 
   const resolveChatSessionId = (project: ProjectTab, mode: WsMode): string => {
-    if (mode === "advisor") {
-      return "advisor";
+    if (mode === ACOPILOT_LANE_ID) {
+      return WIRE_ACOPILOT_SESSION_ID;
     }
     return String(project.chatSessionId ?? "").trim() || "main";
   };
@@ -326,7 +330,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     rt.reconnectAttempts += 1;
     rt.reconnectTimer = window.setTimeout(() => {
       rt.reconnectTimer = null;
-      const connectFn = mode === "advisor" ? connectAdvisorWs : connectWs;
+      const connectFn = mode === ACOPILOT_LANE_ID ? connectAcopilotWs : connectWs;
       void connectFn(projectId).catch(() => {
         scheduleReconnect(mode, projectId, rt, "connect failed");
       });
@@ -334,8 +338,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   };
 
   const getRuntimeForMode = (mode: WsMode, pid: string): ProjectRuntime => {
-    if (mode === "advisor") {
-      return getAdvisorRuntime(pid);
+    if (mode === ACOPILOT_LANE_ID) {
+      return getAcopilotRuntime(pid);
     }
     return getRuntime(pid);
   };
@@ -710,7 +714,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
       const resetScope = String(payload.scope ?? "").trim().toLowerCase() || "lane";
       const sourceChatSessionId = String(payload.sourceChatSessionId ?? "").trim();
-      if (resetScope === "shared" && effectiveChatSessionId === "advisor") {
+      if (resetScope === "shared" && effectiveChatSessionId === WIRE_ACOPILOT_SESSION_ID) {
         return false;
       }
       if (resetScope !== "shared" && sourceChatSessionId !== effectiveChatSessionId) {
@@ -1052,6 +1056,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       disconnectWasBusy = rt.busy.value;
       rt.needsChatSync = true;
       rt.connected.value = false;
+      rt.queuedPrompts.value = rt.queuedPrompts.value.map((prompt) =>
+        prompt.deliveryStatus === "awaiting_ack" || prompt.deliveryStatus === "queued"
+          ? { ...prompt, deliveryStatus: "offline" }
+          : prompt,
+      );
       clearSyncRetryTimer();
       clearBootstrapHistoryWatchdog();
       finishBootstrapHistoryWait();
@@ -1288,16 +1297,16 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   };
 
   const connectWs = async (projectId: string = activeProjectId.value): Promise<void> =>
-    connectWsInternal("worker", projectId);
+    connectWsInternal("actions", projectId);
 
-  const connectAdvisorWs = async (projectId: string = activeProjectId.value): Promise<void> =>
-    connectWsInternal("advisor", projectId);
+  const connectAcopilotWs = async (projectId: string = activeProjectId.value): Promise<void> =>
+    connectWsInternal(ACOPILOT_LANE_ID, projectId);
 
   return {
     clearReconnectTimer,
     closeRuntimeConnection,
     closeAllConnections,
     connectWs,
-    connectAdvisorWs,
+    connectAcopilotWs,
   };
 }

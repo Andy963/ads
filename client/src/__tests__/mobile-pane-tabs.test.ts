@@ -91,24 +91,24 @@ describe("mobile navigation shell", () => {
     expect(wrapper.find('[data-testid="lane-tab-reviewer"]').exists()).toBe(false);
 
     // Both lane panels stay mounted; the inactive one is hidden from view.
-    expect(wrapper.find('[data-testid="lane-panel-advisor"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').exists()).toBe(true);
-    expect((wrapper.find('[data-testid="lane-panel-worker"]').element as HTMLElement).style.display).toBe("none");
-    expect((wrapper.find('[data-testid="lane-panel-advisor"]').element as HTMLElement).style.display).toBe("");
+    expect(wrapper.find('[data-testid="lane-panel-acopilot"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="lane-panel-actions"]').exists()).toBe(true);
+    expect((wrapper.find('[data-testid="lane-panel-actions"]').element as HTMLElement).style.display).toBe("none");
+    expect((wrapper.find('[data-testid="lane-panel-acopilot"]').element as HTMLElement).style.display).toBe("");
 
-    await wrapper.get('[data-testid="lane-tab-worker"]').trigger("click");
+    await wrapper.get('[data-testid="lane-tab-actions"]').trigger("click");
     await settleUi(wrapper);
 
-    expect((wrapper.find('[data-testid="lane-panel-worker"]').element as HTMLElement).style.display).toBe("");
-    expect((wrapper.find('[data-testid="lane-panel-advisor"]').element as HTMLElement).style.display).toBe("none");
-    expect(wrapper.get('[data-testid="lane-tab-worker"]').attributes("aria-selected")).toBe("true");
-    expect(wrapper.get('[data-testid="lane-tab-advisor"]').attributes("aria-selected")).toBe("false");
+    expect((wrapper.find('[data-testid="lane-panel-actions"]').element as HTMLElement).style.display).toBe("");
+    expect((wrapper.find('[data-testid="lane-panel-acopilot"]').element as HTMLElement).style.display).toBe("none");
+    expect(wrapper.get('[data-testid="lane-tab-actions"]').attributes("aria-selected")).toBe("true");
+    expect(wrapper.get('[data-testid="lane-tab-acopilot"]').attributes("aria-selected")).toBe("false");
 
-    await wrapper.get('[data-testid="lane-tab-advisor"]').trigger("click");
+    await wrapper.get('[data-testid="lane-tab-acopilot"]').trigger("click");
     await settleUi(wrapper);
 
-    expect((wrapper.find('[data-testid="lane-panel-advisor"]').element as HTMLElement).style.display).toBe("");
-    expect((wrapper.find('[data-testid="lane-panel-worker"]').element as HTMLElement).style.display).toBe("none");
+    expect((wrapper.find('[data-testid="lane-panel-acopilot"]').element as HTMLElement).style.display).toBe("");
+    expect((wrapper.find('[data-testid="lane-panel-actions"]').element as HTMLElement).style.display).toBe("none");
 
     wrapper.unmount();
   });

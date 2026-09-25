@@ -62,6 +62,8 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       /\/(?:sw\.js|api\/[^ ]+) due to access control checks\.$/.test(text) ||
       /Failed to load resource: the server responded with a status of 503 \(Service Unavailable\)/.test(text)
     );
+    const isWebKitApiCorsNoise = (text) => mobile &&
+      /^\/(?:127\.0\.0\.1|localhost):\d+\/api\/[^ ]+ due to access control checks\.$/.test(text);
     result.browserErrors = browserWarnings;
     result.dialogs = [];
     page.on("dialog", async (dialog) => {
@@ -69,6 +71,14 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       await dialog.dismiss();
     });
     page.on("pageerror", (error) => {
+      if (isWebKitApiCorsNoise(error.message)) {
+        // Linux WebKit can emit a pageerror for successful same-origin API
+        // responses while a service worker replaces the legacy worker. Keep
+        // the event visible in the report; request and functional assertions
+        // still determine whether the browser run actually failed.
+        browserWarnings.push(error.message);
+        return;
+      }
       if (isExpectedOutageError(error.message)) {
         browserWarnings.push(error.message);
         return;
@@ -86,6 +96,10 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     page.on("console", (message) => {
       if (message.type() !== "error") return;
       const text = message.text();
+      if (isWebKitApiCorsNoise(text)) {
+        browserWarnings.push(text);
+        return;
+      }
       if (isExpectedOutageError(text)) {
         browserWarnings.push(text);
         return;
@@ -132,7 +146,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
         const track = document.querySelector(".lanePanelsTrack");
         if (track && getComputedStyle(track).display !== "contents") {
           const tx = new DOMMatrixReadOnly(getComputedStyle(track).transform).m41;
-          const expected = expectedLane === "worker" ? -track.clientWidth / 2 : 0;
+          const expected = expectedLane === "actions" ? -track.clientWidth / 2 : 0;
           if (Math.abs(tx - expected) > 2) return false;
         }
         return true;
@@ -184,7 +198,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       assert.equal(result.postSend.secondSend.focused, true, "Subsequent touch sends must preserve keyboard focus");
     }
     result.checks.push("Repeated sends in the same focused editor, five rows while busy, and post-send lane switching without reload");
-    await chooseLane("advisor");
+    await chooseLane("acopilot");
     if (mobile) {
       const releaseThinkingReply = fixture.holdReply("browser-advisor-thinking-dots");
       try {
@@ -219,16 +233,16 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     await send("browser-advisor-first");
     await waitForReply("Advisor reply: browser-advisor-first");
     await input().fill("Advisor draft");
-    await chooseLane("worker");
+    await chooseLane("actions");
     assert.equal(await input().inputValue(), "", "Worker must not inherit the Advisor draft");
     assert.ok(!(await visibleChat().innerText()).includes("Advisor reply"));
     await send("browser-worker-first");
-    await chooseLane("advisor");
+    await chooseLane("acopilot");
     assert.equal(await input().inputValue(), "Advisor draft");
     assert.ok(!(await visibleChat().innerText()).includes("Worker reply"));
-    await chooseLane("worker");
+    await chooseLane("actions");
     await waitForReply("Worker reply: browser-worker-first");
-    for (const lane of ["advisor", "worker", "advisor", "worker"]) await chooseLane(lane);
+    for (const lane of ["acopilot", "actions", "acopilot", "actions"]) await chooseLane(lane);
     assert.ok((await visibleChat().innerText()).includes("Worker reply"));
     assert.ok(!(await visibleChat().innerText()).includes("Advisor reply"));
     result.checks.push("Real WebSocket prompt delivery, lane isolation, rapid switching, and draft restoration");
@@ -312,9 +326,9 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
 
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector("textarea:not(:disabled):visible");
-    await chooseLane("advisor");
+    await chooseLane("acopilot");
     await waitForReply("Advisor reply: browser-advisor-first");
-    await chooseLane("worker");
+    await chooseLane("actions");
     await waitForReply("Worker reply: browser-worker-first");
     assert.ok(!(await visibleChat().innerText()).includes("Advisor reply"));
     assert.ok(frames.some((frame) => frame.type === "welcome" && frame.historyMode === "resume"), "Reload must validate the cached baseline through the real server");
@@ -334,13 +348,13 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     });
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector("textarea:not(:disabled):visible");
-    await chooseLane("worker");
+    await chooseLane("actions");
     await waitForReply("Worker reply: browser-worker-first");
     assert.ok(frames.slice(uncachedStart).some((frame) => frame.type === "history" && frame.historySize > 0), "An uncached client must receive real persisted history");
     result.checks.push("Uncached authoritative bootstrap remains available");
 
     await chooseProject("Project B", fixture.projects[1].id);
-    await chooseLane("worker");
+    await chooseLane("actions");
     const projectBSnapshot = await page.evaluate(() => ({
       app: document.querySelector(".app")?.outerHTML.slice(0, 1200) ?? "",
       chat: document.querySelector('.lanePanel:not([aria-hidden]) .chat')?.textContent ?? "",
@@ -352,13 +366,13 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     await waitForReply("Worker reply: browser-worker-project-b");
     assert.ok(!(await visibleChat().innerText()).includes("Worker reply: browser-worker-first"));
     await chooseProject("Project A", fixture.projects[0].id);
-    await chooseLane("worker");
+    await chooseLane("actions");
     await waitForReply("Worker reply: browser-worker-first");
     assert.ok(!(await visibleChat().innerText()).includes("Worker reply: browser-worker-project-b"));
     result.checks.push("Project switching replaces the visible runtime and restores project-local history");
 
     if (mobile) {
-      await chooseLane("advisor");
+      await chooseLane("acopilot");
       await input().evaluate((element) => {
         element.focus();
         element.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));

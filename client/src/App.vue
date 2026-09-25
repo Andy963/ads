@@ -60,7 +60,7 @@ const {
   reorderProjects,
   removeProject,
   getRuntime,
-  getAdvisorRuntime,
+  getAcopilotRuntime,
   connectWs,
   runtimeProjectInProgress,
   formatProjectBranch,
@@ -69,36 +69,38 @@ const {
   apiAuthorized,
   resumeTaskThread,
   listResumableSessions,
-  resumeAdvisorThread,
+  resumeAcopilotThread,
   clearActiveChat,
-  clearAdvisorChat,
-  startNewAdvisorSession,
+  clearAcopilotChat,
+  startNewAcopilotSession,
   startNewChatSession,
   messages,
   activeRuntime,
-  activeAdvisorRuntime,
+  activeAcopilotRuntime,
   queuedPrompts,
   pendingImages,
   agentBusy,
   sendMainPrompt,
-  sendAdvisorPrompt,
+  sendAcopilotPrompt,
   retryPrompt,
   setMainModelId,
-  setAdvisorModelId,
+  setAcopilotModelId,
   setMainModelReasoningEffort,
-  setAdvisorModelReasoningEffort,
+  setAcopilotModelReasoningEffort,
   switchMainAgent,
-  switchAdvisorAgent,
+  switchAcopilotAgent,
   interruptActive,
-  interruptAdvisor,
+  interruptAcopilot,
   addPendingImages,
   clearPendingImages,
   removePendingImage,
-  addAdvisorPendingImages,
-  clearAdvisorPendingImages,
-  removeAdvisorPendingImage,
+  addAcopilotPendingImages,
+  clearAcopilotPendingImages,
+  removeAcopilotPendingImage,
   removeQueuedPrompt,
-  removeAdvisorQueuedPrompt,
+  removeAcopilotQueuedPrompt,
+  retryQueuedPrompt,
+  retryAcopilotQueuedPrompt,
   apiNotice,
   resolveActiveWorkspaceRoot,
   projectDialogOpen,
@@ -146,37 +148,37 @@ const mobileContextMenuOpen = ref(false);
 const mobileSettingsRef = ref<MobileManagerHandle | null>(null);
 
 const chatLanes: Array<{ id: ChatLane; label: string }> = [
-  { id: "advisor", label: "Acopilot" },
-  { id: "worker", label: "Actions" },
+  { id: "acopilot", label: "Acopilot" },
+  { id: "actions", label: "Actions" },
 ];
 const workspaceTabs = computed<Array<{ id: ChatLane; label: string }>>(() => chatLanes);
 
 const {
   activeChatLane,
   setActiveChatLane,
-  advisorMessages,
-  advisorQueuedPrompts,
-  advisorPendingImages,
-  advisorConnected,
-  advisorBusy,
-  advisorInputLocked,
-  advisorLaneStatus,
-  advisorComposerDraft,
-  advisorAgents,
-  advisorActiveAgentId,
-  advisorThreadWarning,
-  advisorChatKey,
-  advisorPanelKey,
-  workerAgents,
-  workerInputLocked,
-  workerLaneStatus,
-  workerActiveAgentId,
-  workerComposerDraft,
-  workerThreadWarning,
-  workerLatestPromptKey,
-  workerChatKey,
-  workerPanelKey,
-  workerQueuedPrompts,
+  acopilotMessages,
+  acopilotQueuedPrompts,
+  acopilotPendingImages,
+  acopilotConnected,
+  acopilotBusy,
+  acopilotInputLocked,
+  acopilotLaneStatus,
+  acopilotComposerDraft,
+  acopilotAgents,
+  acopilotActiveAgentId,
+  acopilotThreadWarning,
+  acopilotChatKey,
+  acopilotPanelKey,
+  actionsAgents,
+  actionsInputLocked,
+  actionsLaneStatus,
+  actionsActiveAgentId,
+  actionsComposerDraft,
+  actionsThreadWarning,
+  actionsLatestPromptKey,
+  actionsChatKey,
+  actionsPanelKey,
+  actionsQueuedPrompts,
   resumableSessions,
   resumableSessionsBusy,
   resumableSessionsError,
@@ -199,47 +201,47 @@ const {
   activeProjectId,
   activeProject,
   activeRuntime,
-  activeAdvisorRuntime,
+  activeAcopilotRuntime,
   queuedPrompts,
   pendingImages,
   agentBusy,
   clearActiveChat,
-  clearAdvisorChat,
-  startNewAdvisorSession,
+  clearAcopilotChat,
+  startNewAcopilotSession,
   startNewChatSession,
-  resumeAdvisorThread,
+  resumeAcopilotThread,
   resumeTaskThread,
   listResumableSessions,
 });
 
-const advisorViewportScopeKey = computed(() => buildTranscriptViewportScopeKey({
-  panelKey: advisorPanelKey.value,
+const acopilotViewportScopeKey = computed(() => buildTranscriptViewportScopeKey({
+  panelKey: acopilotPanelKey.value,
   errorRecoveryGeneration: errorRecoveryGeneration.value,
   accountGeneration: accountGeneration.value,
 }));
-const workerViewportScopeKey = computed(() => buildTranscriptViewportScopeKey({
-  panelKey: workerPanelKey.value,
+const actionsViewportScopeKey = computed(() => buildTranscriptViewportScopeKey({
+  panelKey: actionsPanelKey.value,
   errorRecoveryGeneration: errorRecoveryGeneration.value,
   accountGeneration: accountGeneration.value,
 }));
-const advisorViewportScope = ref<string | undefined>();
-const workerViewportScope = ref<string | undefined>();
+const acopilotViewportScope = ref<string | undefined>();
+const actionsViewportScope = ref<string | undefined>();
 
-function handleAdvisorViewportScope(scope: string | undefined): void {
-  advisorViewportScope.value = scope;
+function handleAcopilotViewportScope(scope: string | undefined): void {
+  acopilotViewportScope.value = scope;
 }
 
-function handleWorkerViewportScope(scope: string | undefined): void {
-  workerViewportScope.value = scope;
+function handleActionsViewportScope(scope: string | undefined): void {
+  actionsViewportScope.value = scope;
 }
 
-function handleAdvisorViewport(viewport: TranscriptViewport): void {
-  if (!isTranscriptViewportScopeCurrent(advisorViewportScope.value, advisorViewportScopeKey.value)) return;
-  if (activeAdvisorRuntime.value.transcriptViewport) activeAdvisorRuntime.value.transcriptViewport.value = viewport;
+function handleAcopilotViewport(viewport: TranscriptViewport): void {
+  if (!isTranscriptViewportScopeCurrent(acopilotViewportScope.value, acopilotViewportScopeKey.value)) return;
+  if (activeAcopilotRuntime.value.transcriptViewport) activeAcopilotRuntime.value.transcriptViewport.value = viewport;
 }
 
-function handleWorkerViewport(viewport: TranscriptViewport): void {
-  if (!isTranscriptViewportScopeCurrent(workerViewportScope.value, workerViewportScopeKey.value)) return;
+function handleActionsViewport(viewport: TranscriptViewport): void {
+  if (!isTranscriptViewportScopeCurrent(actionsViewportScope.value, actionsViewportScopeKey.value)) return;
   if (activeRuntime.value.transcriptViewport) activeRuntime.value.transcriptViewport.value = viewport;
 }
 
@@ -249,64 +251,64 @@ type MainChatHandle = {
   refreshAfterVisibility?: () => void | Promise<void>;
 };
 
-const advisorChatRef = ref<MainChatHandle | null>(null);
-const workerChatRef = ref<MainChatHandle | null>(null);
+const acopilotChatRef = ref<MainChatHandle | null>(null);
+const actionsChatRef = ref<MainChatHandle | null>(null);
 
 const activeLaneConnected = computed(() =>
-  activeWorkspaceTab.value === "advisor" ? Boolean(advisorConnected.value) : Boolean(connected.value),
+  activeWorkspaceTab.value === "acopilot" ? Boolean(acopilotConnected.value) : Boolean(connected.value),
 );
 const activeLaneInputLocked = computed(() =>
-  activeWorkspaceTab.value === "advisor" ? Boolean(advisorInputLocked.value) : Boolean(workerInputLocked.value),
+  activeWorkspaceTab.value === "acopilot" ? Boolean(acopilotInputLocked.value) : Boolean(actionsInputLocked.value),
 );
 const activeLaneAgents = computed(() =>
-  activeWorkspaceTab.value === "advisor" ? advisorAgents.value : workerAgents.value,
+  activeWorkspaceTab.value === "acopilot" ? acopilotAgents.value : actionsAgents.value,
 );
 const activeLaneActiveAgentId = computed(() =>
-  activeWorkspaceTab.value === "advisor" ? advisorActiveAgentId.value : workerActiveAgentId.value,
+  activeWorkspaceTab.value === "acopilot" ? acopilotActiveAgentId.value : actionsActiveAgentId.value,
 );
 const activeLaneModelId = computed(() =>
-  activeWorkspaceTab.value === "advisor"
-    ? activeAdvisorRuntime.value.modelId.value
+  activeWorkspaceTab.value === "acopilot"
+    ? activeAcopilotRuntime.value.modelId.value
     : activeRuntime.value.modelId.value,
 );
 const activeLaneModelReasoningEffort = computed(() =>
-  activeWorkspaceTab.value === "advisor"
-    ? activeAdvisorRuntime.value.modelReasoningEffort.value
+  activeWorkspaceTab.value === "acopilot"
+    ? activeAcopilotRuntime.value.modelReasoningEffort.value
     : activeRuntime.value.modelReasoningEffort.value,
 );
 
 function handleActiveLaneSwitchAgent(agentId: string): void {
-  if (activeWorkspaceTab.value === "advisor") {
-    switchAdvisorAgent(agentId);
+  if (activeWorkspaceTab.value === "acopilot") {
+    switchAcopilotAgent(agentId);
   } else {
     switchMainAgent(agentId);
   }
 }
 
 function handleActiveLaneSetModel(modelId: string): void {
-  if (activeWorkspaceTab.value === "advisor") {
-    setAdvisorModelId(modelId);
+  if (activeWorkspaceTab.value === "acopilot") {
+    setAcopilotModelId(modelId);
   } else {
     setMainModelId(modelId);
   }
 }
 
 function handleActiveLaneSetReasoningEffort(effort: string): void {
-  if (activeWorkspaceTab.value === "advisor") {
-    setAdvisorModelReasoningEffort(effort);
+  if (activeWorkspaceTab.value === "acopilot") {
+    setAcopilotModelReasoningEffort(effort);
   } else {
     setMainModelReasoningEffort(effort);
   }
 }
 
-type ProjectBusyState = "idle" | "advisor" | "worker" | "both";
+type ProjectBusyState = "idle" | "acopilot" | "actions" | "both";
 
 function projectBusyState(projectId: string): ProjectBusyState {
-  const advisorBusy = runtimeProjectInProgress(getAdvisorRuntime(projectId));
-  const workerBusy = runtimeProjectInProgress(getRuntime(projectId));
-  if (advisorBusy && workerBusy) return "both";
-  if (advisorBusy) return "advisor";
-  if (workerBusy) return "worker";
+  const acopilotBusy = runtimeProjectInProgress(getAcopilotRuntime(projectId));
+  const actionsBusy = runtimeProjectInProgress(getRuntime(projectId));
+  if (acopilotBusy && actionsBusy) return "both";
+  if (acopilotBusy) return "acopilot";
+  if (actionsBusy) return "actions";
   return "idle";
 }
 
@@ -317,9 +319,9 @@ function projectStatusClass(projectId: string): string {
 
 function projectStatusTitle(projectId: string): string | undefined {
   const state = projectBusyState(projectId);
-  if (state === "advisor") return "Advisor 正在规划…";
-  if (state === "worker") return "Worker 正在执行…";
-  if (state === "both") return "Advisor 与 Worker 均在运行中…";
+  if (state === "acopilot") return "Acopilot 正在规划…";
+  if (state === "actions") return "Actions 正在执行…";
+  if (state === "both") return "Acopilot 与 Actions 均在运行中…";
   return undefined;
 }
 
@@ -424,7 +426,7 @@ function restoreMobileWorkspaceTab(): void {
 async function refreshVisibleLaneChat(lane: ChatLane): Promise<void> {
   await nextTick();
   if (activeWorkspaceTab.value !== lane) return;
-  const chat = lane === "advisor" ? advisorChatRef.value : workerChatRef.value;
+  const chat = lane === "acopilot" ? acopilotChatRef.value : actionsChatRef.value;
   await chat?.refreshAfterVisibility?.();
 }
 
@@ -961,7 +963,7 @@ function cancelLaneGesture(): void {
 
 function settleLaneGesture(target: ChatLane, width: number): void {
   laneSnapSettling.value = true;
-  laneTrackOffset.value = target === "worker" ? -width : 0;
+  laneTrackOffset.value = target === "actions" ? -width : 0;
   laneSettleTimer = setTimeout(() => {
     laneSettleTimer = null;
     laneSnapSettling.value = false;
@@ -1021,7 +1023,7 @@ function onLaneSwipeTouchMove(ev: TouchEvent): void {
   gesture.lastTime = ev.timeStamp;
   gesture.samples.push({ x: touch.x, time: ev.timeStamp });
   if (gesture.samples.length > 5) gesture.samples.shift();
-  const base = gesture.startLane === "worker" ? -gesture.width : 0;
+  const base = gesture.startLane === "actions" ? -gesture.width : 0;
   laneTrackOffset.value = clampLaneOffsetWithResistance(base + dx, gesture.width);
 }
 
@@ -1036,7 +1038,7 @@ function finishLaneGesture(ev: TouchEvent, cancelled: boolean): void {
     settleLaneGesture(gesture.startLane, width);
     return;
   }
-  const base = gesture.startLane === "worker" ? -width : 0;
+  const base = gesture.startLane === "actions" ? -width : 0;
   const position = clampLaneOffsetWithResistance(base + (gesture.lastX - gesture.startX), width);
   // Calculate flick velocity over a rolling window (up to ~80ms) to avoid single-frame noise
   let velocity = 0;
@@ -1051,16 +1053,16 @@ function finishLaneGesture(ev: TouchEvent, cancelled: boolean): void {
   }
   let target: ChatLane;
   if (velocity <= -LANE_FLICK_VELOCITY_PX_PER_MS) {
-    target = "worker";
+    target = "actions";
   } else if (velocity >= LANE_FLICK_VELOCITY_PX_PER_MS) {
-    target = "advisor";
+    target = "acopilot";
   } else if (position > 0) {
-    target = "advisor";
+    target = "acopilot";
   } else if (position < -width) {
-    target = "worker";
+    target = "actions";
   } else {
-    const moved = gesture.startLane === "advisor" ? -position / width : (position + width) / width;
-    const otherLane: ChatLane = gesture.startLane === "advisor" ? "worker" : "advisor";
+    const moved = gesture.startLane === "acopilot" ? -position / width : (position + width) / width;
+    const otherLane: ChatLane = gesture.startLane === "acopilot" ? "actions" : "acopilot";
     target = moved > LANE_SNAP_RATIO ? otherLane : gesture.startLane;
   }
   settleLaneGesture(target, width);
@@ -1125,7 +1127,7 @@ watch(activeProjectId, (projectId, previousProjectId) => {
     restoreMobileWorkspaceTab();
     return;
   }
-  if (previousProjectId?.trim()) setActiveChatLane("worker");
+  if (previousProjectId?.trim()) setActiveChatLane("actions");
 });
 
 watch(activeWorkspaceTab, (lane) => {
@@ -1148,15 +1150,17 @@ watch(accountGeneration, () => {
 
 function stashComposerDrafts(): void {
   try {
-    const worker = String(workerComposerDraft.value ?? "");
-    const advisor = String(advisorComposerDraft.value ?? "");
-    if (!worker && !advisor) {
+    const actionsDraft = String(actionsComposerDraft.value ?? "");
+    const acopilotDraft = String(acopilotComposerDraft.value ?? "");
+    if (!actionsDraft && !acopilotDraft) {
       sessionStorage.removeItem(DRAFT_STASH_KEY);
       return;
     }
     sessionStorage.setItem(
       DRAFT_STASH_KEY,
-      JSON.stringify({ projectId: activeProjectId.value, worker, advisor }),
+      // Payload keys stay `worker` / `advisor`: they are persisted in
+      // sessionStorage and renaming them would drop existing users' drafts.
+      JSON.stringify({ projectId: activeProjectId.value, worker: actionsDraft, advisor: acopilotDraft }),
     );
   } catch {
     // ignore
@@ -1170,10 +1174,10 @@ function restoreStashedComposerDrafts(): void {
     sessionStorage.removeItem(DRAFT_STASH_KEY);
     const stash = JSON.parse(raw) as { projectId?: unknown; worker?: unknown; advisor?: unknown };
     if (String(stash.projectId ?? "") !== activeProjectId.value) return;
-    const worker = String(stash.worker ?? "");
-    const advisor = String(stash.advisor ?? "");
-    if (worker && !workerComposerDraft.value) workerComposerDraft.value = worker;
-    if (advisor && !advisorComposerDraft.value) advisorComposerDraft.value = advisor;
+    const actionsDraft = String(stash.worker ?? "");
+    const acopilotDraft = String(stash.advisor ?? "");
+    if (actionsDraft && !actionsComposerDraft.value) actionsComposerDraft.value = actionsDraft;
+    if (acopilotDraft && !acopilotComposerDraft.value) acopilotComposerDraft.value = acopilotDraft;
   } catch {
     // ignore
   }
@@ -1228,7 +1232,7 @@ const {
 } = useProjectSidebar({
   projects,
   getRuntime,
-  getAdvisorRuntime,
+  getAcopilotRuntime,
   runtimeProjectInProgress,
   requestProjectSwitch: requestProjectSwitchFromMobile,
   reorderProjects,
@@ -1445,9 +1449,9 @@ const runningTaskCount = computed(() => 0);
 
 const disconnectedStatusMessage = "连接已断开，正在重连…";
 
-const workerConnectionStatus = computed(() => {
+const actionsConnectionStatus = computed(() => {
   if (!loggedIn.value) return { kind: "info" as const, message: "Cached conversation: read-only until sign-in." };
-  const laneStatus = workerLaneStatus.value;
+  const laneStatus = actionsLaneStatus.value;
   if (!connected.value && laneStatus?.kind === "progress") return laneStatus;
   const error = String(wsError.value ?? "").trim();
   if (error) return { kind: "error" as const, message: error };
@@ -1455,13 +1459,13 @@ const workerConnectionStatus = computed(() => {
   return laneStatus;
 });
 
-const advisorConnectionStatus = computed(() => {
+const acopilotConnectionStatus = computed(() => {
   if (!loggedIn.value) return { kind: "info" as const, message: "Cached conversation: read-only until sign-in." };
-  const laneStatus = advisorLaneStatus.value;
-  if (!advisorConnected.value && laneStatus?.kind === "progress") return laneStatus;
-  const error = String(activeAdvisorRuntime.value.wsError.value ?? "").trim();
+  const laneStatus = acopilotLaneStatus.value;
+  if (!acopilotConnected.value && laneStatus?.kind === "progress") return laneStatus;
+  const error = String(activeAcopilotRuntime.value.wsError.value ?? "").trim();
   if (error) return { kind: "error" as const, message: error };
-  if (!advisorConnected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
+  if (!acopilotConnected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
   return laneStatus;
 });
 
@@ -1482,9 +1486,9 @@ const advisorConnectionStatus = computed(() => {
     :data-active-lane="activeWorkspaceTab"
     :data-project-id="activeProjectId"
     :data-worker-message-count="messages.length"
-    :data-advisor-message-count="advisorMessages.length"
-    :data-worker-panel-key="workerPanelKey"
-    :data-advisor-panel-key="advisorPanelKey"
+    :data-advisor-message-count="acopilotMessages.length"
+    :data-worker-panel-key="actionsPanelKey"
+    :data-advisor-panel-key="acopilotPanelKey"
     @click="closeMobileContextMenu"
     @touchstart.passive="onDrawerEdgeTouchStart"
     @touchmove.passive="onDrawerEdgeTouchMove"
@@ -1790,11 +1794,11 @@ const advisorConnectionStatus = computed(() => {
               <span
                 class="laneTabStatusDot"
                 :class="[
-                  isLaneConnected(tab.id, { advisor: advisorConnected, worker: connected })
+                  isLaneConnected(tab.id, { acopilot: acopilotConnected, actions: connected })
                     ? 'laneTabStatusDot--connected'
                     : 'laneTabStatusDot--disconnected',
-                  (tab.id === 'advisor' ? advisorBusy : agentBusy)
-                    ? (tab.id === 'advisor' ? 'laneTabStatusDot--busy-advisor' : 'laneTabStatusDot--busy-worker')
+                  (tab.id === 'acopilot' ? acopilotBusy : agentBusy)
+                    ? (tab.id === 'acopilot' ? 'laneTabStatusDot--busy-acopilot' : 'laneTabStatusDot--busy-actions')
                     : '',
                 ]"
                :data-testid="`lane-tab-status-${tab.id}`"
@@ -1831,64 +1835,65 @@ const advisorConnectionStatus = computed(() => {
         >
           <div
             class="lanePanelsTrack"
-            :class="{ 'lanePanelsTrack--worker': activeWorkspaceTab === 'worker', 'lanePanelsTrack--dragging': laneDragTracking }"
+            :class="{ 'lanePanelsTrack--worker': activeWorkspaceTab === 'actions', 'lanePanelsTrack--dragging': laneDragTracking }"
             :style="laneTrackStyle"
           >
             <section
-              id="lane-panel-advisor"
+              id="lane-panel-acopilot"
               class="lanePanel"
-              :class="{ 'lanePanel--inactive': activeWorkspaceTab !== 'advisor' }"
-              :style="!isMobile && activeWorkspaceTab !== 'advisor' ? { display: 'none' } : undefined"
+              :class="{ 'lanePanel--inactive': activeWorkspaceTab !== 'acopilot' }"
+              :style="!isMobile && activeWorkspaceTab !== 'acopilot' ? { display: 'none' } : undefined"
               role="tabpanel"
-              aria-labelledby="lane-tab-advisor"
-              :aria-hidden="activeWorkspaceTab === 'advisor' ? undefined : 'true'"
-              :inert="activeWorkspaceTab !== 'advisor' ? true : undefined"
-              data-testid="lane-panel-advisor"
-              :data-message-count="advisorMessages.length"
-              :data-panel-key="`${advisorPanelKey}:${errorRecoveryGeneration}`"
+              aria-labelledby="lane-tab-acopilot"
+              :aria-hidden="activeWorkspaceTab === 'acopilot' ? undefined : 'true'"
+              :inert="activeWorkspaceTab !== 'acopilot' ? true : undefined"
+              data-testid="lane-panel-acopilot"
+              :data-message-count="acopilotMessages.length"
+              :data-panel-key="`${acopilotPanelKey}:${errorRecoveryGeneration}`"
             >
               <MainChatView
-                ref="advisorChatRef"
-                :key="`${advisorPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
+                ref="acopilotChatRef"
+                :key="`${acopilotPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
                 class="chatHost chatHost--advisor"
-                :messages="advisorMessages"
-                :viewport="activeAdvisorRuntime.transcriptViewport?.value"
-                :viewport-scope-key="advisorViewportScopeKey"
-                :draft="advisorComposerDraft"
-                :latest-prompt-key="advisorChatKey"
-                :queued-prompts="advisorQueuedPrompts"
-                :pending-images="advisorPendingImages"
-                :connected="advisorConnected"
-                :busy="advisorBusy"
-                :input-locked="!loggedIn || advisorInputLocked"
+                :messages="acopilotMessages"
+                :viewport="activeAcopilotRuntime.transcriptViewport?.value"
+                :viewport-scope-key="acopilotViewportScopeKey"
+                :draft="acopilotComposerDraft"
+                :latest-prompt-key="acopilotChatKey"
+                :queued-prompts="acopilotQueuedPrompts"
+                :pending-images="acopilotPendingImages"
+                :connected="acopilotConnected"
+                :busy="acopilotBusy"
+                :input-locked="!loggedIn || acopilotInputLocked"
                 :workspace-root="resolveActiveWorkspaceRoot()"
-                :connection-status-kind="advisorConnectionStatus?.kind ?? null"
-                :connection-status-message="advisorConnectionStatus?.message ?? null"
-                :thread-warning="advisorThreadWarning"
-                @send="sendAdvisorPrompt"
-                @update:draft="advisorComposerDraft = $event"
-                @update:viewport-scope="handleAdvisorViewportScope"
-                @update:viewport="handleAdvisorViewport"
-                @interrupt="interruptAdvisor"
-                @addImages="addAdvisorPendingImages"
-                @clearImages="clearAdvisorPendingImages"
-                @removeImage="removeAdvisorPendingImage"
-                @removeQueued="removeAdvisorQueuedPrompt"
+                :connection-status-kind="acopilotConnectionStatus?.kind ?? null"
+                :connection-status-message="acopilotConnectionStatus?.message ?? null"
+                :thread-warning="acopilotThreadWarning"
+                @send="sendAcopilotPrompt"
+                @update:draft="acopilotComposerDraft = $event"
+                @update:viewport-scope="handleAcopilotViewportScope"
+                @update:viewport="handleAcopilotViewport"
+                @interrupt="interruptAcopilot"
+                @addImages="addAcopilotPendingImages"
+                @clearImages="clearAcopilotPendingImages"
+                @removeImage="removeAcopilotPendingImage"
+                @removeQueued="removeAcopilotQueuedPrompt"
+                @retryQueued="retryAcopilotQueuedPrompt"
               />
             </section>
 
             <section
-              id="lane-panel-worker"
+              id="lane-panel-actions"
               class="lanePanel"
-              :class="{ 'lanePanel--inactive': activeWorkspaceTab !== 'worker' }"
-              :style="!isMobile && activeWorkspaceTab !== 'worker' ? { display: 'none' } : undefined"
+              :class="{ 'lanePanel--inactive': activeWorkspaceTab !== 'actions' }"
+              :style="!isMobile && activeWorkspaceTab !== 'actions' ? { display: 'none' } : undefined"
               role="tabpanel"
-              aria-labelledby="lane-tab-worker"
-              :aria-hidden="activeWorkspaceTab === 'worker' ? undefined : 'true'"
-              :inert="activeWorkspaceTab !== 'worker' ? true : undefined"
-              data-testid="lane-panel-worker"
+              aria-labelledby="lane-tab-actions"
+              :aria-hidden="activeWorkspaceTab === 'actions' ? undefined : 'true'"
+              :inert="activeWorkspaceTab !== 'actions' ? true : undefined"
+              data-testid="lane-panel-actions"
               :data-message-count="messages.length"
-              :data-panel-key="`${workerPanelKey}:${errorRecoveryGeneration}`"
+              :data-panel-key="`${actionsPanelKey}:${errorRecoveryGeneration}`"
             >
               <div v-if="actionQueueJobs.length" class="actionsJobBanner actionsQueue" data-testid="actions-job-banner">
                 <div class="actionsQueueHeader">
@@ -1936,35 +1941,36 @@ const advisorConnectionStatus = computed(() => {
                 </div>
               </div>
               <MainChatView
-                ref="workerChatRef"
-                :key="`${workerPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
+                ref="actionsChatRef"
+                :key="`${actionsPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
                 class="chatHost"
                 :messages="messages"
                 :viewport="activeRuntime.transcriptViewport?.value"
-                :viewport-scope-key="workerViewportScopeKey"
-                :draft="workerComposerDraft"
-                :latest-prompt-key="workerLatestPromptKey"
-                :queued-prompts="workerQueuedPrompts"
+                :viewport-scope-key="actionsViewportScopeKey"
+                :draft="actionsComposerDraft"
+                :latest-prompt-key="actionsLatestPromptKey"
+                :queued-prompts="actionsQueuedPrompts"
                 :pending-images="pendingImages"
                 :connected="connected"
                 :busy="agentBusy"
-                :input-locked="!loggedIn || workerInputLocked"
+                :input-locked="!loggedIn || actionsInputLocked"
                 :workspace-root="resolveActiveWorkspaceRoot()"
                 :running-task-count="runningTaskCount"
-                :connection-status-kind="workerConnectionStatus?.kind ?? null"
-                :connection-status-message="workerConnectionStatus?.message ?? null"
-                :thread-warning="workerThreadWarning"
+                :connection-status-kind="actionsConnectionStatus?.kind ?? null"
+                :connection-status-message="actionsConnectionStatus?.message ?? null"
+                :thread-warning="actionsThreadWarning"
                 @send="sendMainPrompt"
                 @retry-message="loggedIn && retryPrompt($event)"
-                @update:draft="workerComposerDraft = $event"
-                @update:viewport-scope="handleWorkerViewportScope"
-                @update:viewport="handleWorkerViewport"
+                @update:draft="actionsComposerDraft = $event"
+                @update:viewport-scope="handleActionsViewportScope"
+                @update:viewport="handleActionsViewport"
                 @interrupt="interruptActive"
                 @clear="clearActiveChat"
                 @addImages="addPendingImages"
                 @clearImages="clearPendingImages"
                 @removeImage="removePendingImage"
                 @removeQueued="removeQueuedPrompt"
+                @retryQueued="retryQueuedPrompt"
               />
             </section>
           </div>
@@ -1992,7 +1998,7 @@ const advisorConnectionStatus = computed(() => {
         :error="resumableSessionsError"
         :hidden="resumableSessionsHidden"
         :next-cursor="resumableSessionsNextCursor"
-        :agent-id="workerActiveAgentId"
+        :agent-id="actionsActiveAgentId"
         :disabled="activeLaneBusy || resumeThreadBlocked"
         :disabled-reason="sessionResumeDisabledReason"
         @close="closeSessionPicker"

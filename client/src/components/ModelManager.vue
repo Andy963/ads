@@ -3,7 +3,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import { Close, CopyDocument, EditPen, Plus, Refresh, StarFilled } from "@element-plus/icons-vue";
 
 import type { ApiClient } from "../api/client";
-import type { LaneName, LanePromptSnapshot, ModelConfig } from "../api/types";
+import type { LaneName, LanePromptSnapshot, ModelConfig, StoredRoleProfileValue } from "../api/types";
+import { STORED_ROLE_PROFILE_VALUES } from "../../../shared/terminology.js";
 
 type ModelForm = {
   id: string;
@@ -17,11 +18,9 @@ type ModelForm = {
 
 type SettingsTab = "roles" | "models" | "lane-prompts";
 
-type RoleName = "acopilot" | "developer" | "reviewer";
-
 type RoleProfile = {
   id: string;
-  role: RoleName;
+  role: StoredRoleProfileValue;
   name: string;
   model_id: string;
   reasoning_effort: "low" | "medium" | "high";
@@ -76,15 +75,15 @@ const editingId = ref<string | null>(null);
 const dialogOpen = ref(false);
 const selectedModelId = ref<string | null>(null);
 const activeTab = ref<SettingsTab>(props.initialTab);
-const selectedRole = ref<RoleName>("acopilot");
+const selectedRole = ref<StoredRoleProfileValue>("acopilot");
 const roleProfiles = ref<RoleProfile[]>([]);
-const roleProfileBaselines = reactive<Record<RoleName, RoleProfileBaseline | null>>({
+const roleProfileBaselines = reactive<Record<StoredRoleProfileValue, RoleProfileBaseline | null>>({
   acopilot: null,
   developer: null,
   reviewer: null,
 });
 const lanePromptSnapshots = ref<LanePromptSnapshot[]>([]);
-const selectedLane = ref<LaneName | "reviewer">("advisor");
+const selectedLane = ref<LaneName | "reviewer">("acopilot");
 const selectedVersion = ref<number | null>(null);
 const lanePromptText = ref("");
 const lanePromptLoading = ref(false);
@@ -92,16 +91,22 @@ const lanePromptSaving = ref(false);
 const lanePromptError = ref<string | null>(null);
 const lanePromptStatus = ref<string | null>(null);
 const lanePromptDrafts = reactive<Record<string, string | null>>({
-  advisor: null,
-  worker: null,
   acopilot: null,
-  developer: null,
+  actions: null,
   reviewer: null,
 });
 
 const enabledModelConfigs = computed(() => modelConfigs.value.filter((m) => m.isEnabled));
 
 const currentRoleProfile = computed(() => roleProfiles.value.find((p) => p.role === selectedRole.value));
+
+const LANE_PROMPT_LANE_LABELS: Record<LaneName | "reviewer", string> = {
+  acopilot: "Acopilot",
+  actions: "Developer",
+  reviewer: "Reviewer",
+};
+
+const lanePromptLaneLabel = computed(() => LANE_PROMPT_LANE_LABELS[selectedLane.value] ?? "Lane");
 
 const selectedRoleModelId = computed({
   get() {
@@ -131,12 +136,12 @@ function roleProfileBaseline(profile: RoleProfile): RoleProfileBaseline {
   };
 }
 
-function selectRole(role: RoleName): void {
+function selectRole(role: StoredRoleProfileValue): void {
   selectedRole.value = role;
   if (role === "acopilot") {
-    selectLane("advisor");
+    selectLane("acopilot");
   } else if (role === "developer") {
-    selectLane("worker");
+    selectLane("actions");
   } else {
     lanePromptDrafts[selectedLane.value] = lanePromptText.value;
     selectedLane.value = "reviewer" as any;
@@ -166,10 +171,10 @@ function onLaneSwipeTouchEnd(ev: TouchEvent): void {
   const dx = touch.clientX - laneSwipeStartX;
   const dy = touch.clientY - laneSwipeStartY;
   if (Math.abs(dx) > 35 && Math.abs(dx) > Math.abs(dy) * 1.2) {
-    if (dx < 0 && selectedLane.value === "advisor") {
-      selectLane("worker");
-    } else if (dx > 0 && selectedLane.value === "worker") {
-      selectLane("advisor");
+    if (dx < 0 && selectedLane.value === "acopilot") {
+      selectLane("actions");
+    } else if (dx > 0 && selectedLane.value === "actions") {
+      selectLane("acopilot");
     }
   }
 }
@@ -746,16 +751,14 @@ async function loadLanePrompts(): Promise<void> {
     if (profiles && profiles.length > 0) {
       roleProfiles.value = profiles;
     }
-    for (const role of ["acopilot", "developer", "reviewer"] as const) {
+    for (const role of STORED_ROLE_PROFILE_VALUES) {
       const profile = profiles.find((item) => item.role === role);
       roleProfileBaselines[role] = profile ? roleProfileBaseline(profile) : null;
     }
     selectedVersion.value = null;
     lanePromptText.value = selectedLaneSnapshot.value?.current.prompt ?? currentRoleProfile.value?.system_prompt ?? "";
-    lanePromptDrafts.advisor = null;
-    lanePromptDrafts.worker = null;
     lanePromptDrafts.acopilot = null;
-    lanePromptDrafts.developer = null;
+    lanePromptDrafts.actions = null;
     lanePromptDrafts.reviewer = null;
   } catch (err) {
     lanePromptError.value = err instanceof Error ? err.message : String(err);
@@ -774,7 +777,7 @@ function selectLane(lane: LaneName): void {
   } else {
     lanePromptText.value =
       lanePromptSnapshots.value.find((snapshot) => snapshot.lane === lane)?.current.prompt ??
-      (lane === "advisor"
+      (lane === "acopilot"
         ? roleProfiles.value.find((profile) => profile.role === "acopilot")?.system_prompt
         : roleProfiles.value.find((profile) => profile.role === "developer")?.system_prompt) ??
       "";
@@ -811,7 +814,7 @@ async function persistLanePrompt(
     }
 
     const shouldPersistLanePrompt =
-      (selectedLane.value === "advisor" || selectedLane.value === "worker") &&
+      (selectedLane.value === "acopilot" || selectedLane.value === "actions") &&
       (options.forceLanePrompt === true || prompt !== activeLanePromptBaseline.value);
     if (shouldPersistLanePrompt) {
       const snapshot = await props.api.put<LanePromptSnapshot>(
@@ -1342,7 +1345,7 @@ defineExpose({
           class="lanePromptLane"
           :class="{ active: selectedRole === 'acopilot' }"
           :aria-selected="selectedRole === 'acopilot'"
-          data-testid="lane-prompt-lane-advisor"
+          data-testid="lane-prompt-lane-acopilot"
           @click="selectRole('acopilot')"
         >
           🧠 Acopilot
@@ -1352,7 +1355,7 @@ defineExpose({
           class="lanePromptLane"
           :class="{ active: selectedRole === 'developer' }"
           :aria-selected="selectedRole === 'developer'"
-          data-testid="lane-prompt-lane-worker"
+          data-testid="lane-prompt-lane-developer"
           @click="selectRole('developer')"
         >
           ⚙️ Developer
@@ -1400,7 +1403,7 @@ defineExpose({
         >
           <div v-if="showTabs">
             <div class="lanePromptEditorTitle">角色指令</div>
-            <div class="lanePromptEditorSubtitle">配置 Advisor 与 Worker 的系统边界和工作方式。</div>
+            <div class="lanePromptEditorSubtitle">配置 Acopilot 与 Actions 的系统边界和工作方式。</div>
           </div>
           <label class="lanePromptVersionField">
             <span class="modelLabel">版本</span>
@@ -1439,7 +1442,7 @@ defineExpose({
           </button>
         </div>
         <label class="modelField lanePromptField">
-          <span class="modelLabel">{{ selectedLane === 'advisor' ? 'Advisor' : 'Worker' }} 系统指令</span>
+          <span class="modelLabel">{{ lanePromptLaneLabel }} 系统指令</span>
           <textarea
             v-model="lanePromptText"
             class="modelTextarea lanePromptTextarea"

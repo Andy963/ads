@@ -26,6 +26,7 @@ import { crumb } from "../../lib/diagBreadcrumbs";
 import type { ExecuteBlockUpdate } from "../chatExecute";
 
 import { isReconnectNotice } from "./reconnectNotice";
+import { WIRE_ACOPILOT_SESSION_ID } from "../../lib/laneWire";
 
 type Ref<T> = { value: T };
 
@@ -461,17 +462,18 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const matchedPendingAck = Boolean(pendingAckClientMessageId && clientMessageIds.has(pendingAckClientMessageId));
     if (after.length === before.length && !matchedPendingAck) return false;
     rt.queuedPrompts.value = after;
+    for (const clientMessageId of clientMessageIds) {
+      clearPendingPrompt(rt, clientMessageId);
+    }
     if (!pendingAckClientMessageId || matchedPendingAck) {
       rt.pendingAckClientMessageId = null;
-      clearPendingPrompt(rt);
     }
     return true;
   };
 
-  const reconcilePendingPromptsFromBootstrapHistory = (items: unknown[], terminalHistoryTail: boolean): void => {
+  const reconcilePendingPromptsFromBootstrapHistory = (items: unknown[]): void => {
     if (!rt.awaitingBootstrapHistory) return;
     const serverUserClientMessageIds = new Set<string>();
-    let newestServerUser = "";
     for (const item of [...items].reverse()) {
       const entry = item as { role?: unknown; text?: unknown; kind?: unknown };
       if (String(entry.role ?? "") !== "user") {
@@ -479,32 +481,36 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       const kind = String(entry.kind ?? "").trim();
       const clientMessageId = parseClientMessageIdFromHistoryKind(kind);
-      if (clientMessageId) {
-        serverUserClientMessageIds.add(clientMessageId);
-      }
-      if (!newestServerUser) {
-        newestServerUser = normalizeWireText(entry.text).trim();
-      }
+      if (clientMessageId) serverUserClientMessageIds.add(clientMessageId);
     }
     const completedClientMessageIds = collectCompletedClientMessageIdsFromHistoryItems(items);
     const backendStillRunning = rt.busy.value || rt.turnInFlight;
     if (completedClientMessageIds.size > 0) {
       reconcilePendingPromptsByClientMessageIds(completedClientMessageIds);
     } else if (backendStillRunning && serverUserClientMessageIds.size > 0) {
-      reconcilePendingPromptsByClientMessageIds(serverUserClientMessageIds);
-    } else if (newestServerUser && (terminalHistoryTail || backendStillRunning)) {
       const before = rt.queuedPrompts.value;
-      const after = before.filter((prompt) => String(prompt.text ?? "").trim() !== newestServerUser);
+      const after = before.filter((prompt) => {
+        const id = String(prompt.clientMessageId ?? "").trim();
+        return !(
+          id &&
+          serverUserClientMessageIds.has(id) &&
+          !prompt.serverQueueTracked &&
+          (prompt.restoredFromStorage || prompt.replayIncomplete)
+        );
+      });
       if (after.length !== before.length) {
-        const afterIds = new Set(after.map((prompt) => String(prompt.clientMessageId ?? "").trim()).filter(Boolean));
-        const removedIds = before
-          .map((prompt) => String(prompt.clientMessageId ?? "").trim())
-          .filter((clientMessageId) => clientMessageId && !afterIds.has(clientMessageId));
+        const removedIds = new Set(
+          before
+            .filter((prompt) => !after.includes(prompt))
+            .map((prompt) => String(prompt.clientMessageId ?? "").trim()),
+        );
         rt.queuedPrompts.value = after;
+        for (const clientMessageId of removedIds) {
+          clearPendingPrompt(rt, clientMessageId);
+        }
         const pendingAckClientMessageId = String(rt.pendingAckClientMessageId ?? "").trim();
-        if (!pendingAckClientMessageId || removedIds.includes(pendingAckClientMessageId)) {
+        if (!pendingAckClientMessageId || removedIds.has(pendingAckClientMessageId)) {
           rt.pendingAckClientMessageId = null;
-          clearPendingPrompt(rt);
         }
       }
     }
@@ -870,7 +876,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const effectiveChatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
     const resetScope = String(payload.scope ?? "").trim().toLowerCase() || "lane";
     const sourceChatSessionId = String(payload.sourceChatSessionId ?? "").trim();
-    if (resetScope === "shared" && effectiveChatSessionId === "advisor") {
+    if (resetScope === "shared" && effectiveChatSessionId === WIRE_ACOPILOT_SESSION_ID) {
       return;
     }
     if (resetScope !== "shared" && sourceChatSessionId !== effectiveChatSessionId) {
@@ -964,9 +970,129 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
     if (type === "ack") {
       const id = String(msg.client_message_id ?? "").trim();
+      const acknowledged = id ? clearPendingPrompt(rt, id) : null;
+      const existing = id
+        ? rt.queuedPrompts.value.find((prompt) => prompt.clientMessageId === id)
+        : undefined;
+      const queued = existing ?? (id && acknowledged
+        ? {
+            id: `server-${id}`,
+            clientMessageId: id,
+            text: acknowledged.text,
+            images: [],
+            createdAt: acknowledged.createdAt,
+            agentId: acknowledged.agentId,
+            model: acknowledged.model,
+            modelReasoningEffort: acknowledged.modelReasoningEffort,
+          }
+        : undefined);
+      if (queued) {
+        const rawStatus = String(msg.queue_status ?? "queued");
+        if (rawStatus === "completed") {
+          rt.queuedPrompts.value = rt.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== id);
+        } else if (existing) {
+          rt.queuedPrompts.value = rt.queuedPrompts.value.map((prompt) =>
+              prompt.clientMessageId === id
+                ? {
+                    ...prompt,
+                    deliveryStatus: rawStatus === "running" || rawStatus === "failed" ? rawStatus : "queued",
+                    queueError: rawStatus === "failed" ? String(msg.error ?? prompt.queueError ?? "") : prompt.queueError,
+                    serverQueueTracked: true,
+                    restoredFromStorage: false,
+                    replayIncomplete: false,
+                    // The ack frame carries no generation: the row was just
+                    // accepted into the lane this socket is on. The authoritative
+                    // value arrives with the prompt_queue event.
+                    queueLaneGeneration: Number(rt.laneGeneration ?? prompt.queueLaneGeneration) || undefined,
+                  }
+                : prompt,
+            );
+        } else if (!(rt.dismissedPromptIds?.has(id) ?? false)) {
+          rt.queuedPrompts.value = [
+            ...rt.queuedPrompts.value,
+            {
+              ...queued,
+              deliveryStatus: rawStatus === "running" || rawStatus === "failed" ? rawStatus : "queued",
+              queueError: rawStatus === "failed" ? String(msg.error ?? "") || undefined : undefined,
+              serverQueueTracked: true,
+              queueLaneGeneration: Number(rt.laneGeneration) || undefined,
+            },
+          ];
+        }
+      }
       if (id && rt.pendingAckClientMessageId === id) {
         rt.pendingAckClientMessageId = null;
-        clearPendingPrompt(rt);
+      }
+      return;
+    }
+
+    if (type === "prompt_queue_snapshot" || type === "prompt_queue") {
+      const entries = type === "prompt_queue_snapshot"
+        ? (Array.isArray(msg.entries) ? msg.entries : [])
+        : (msg.entry && typeof msg.entry === "object" ? [msg.entry] : []);
+      const activeIds = new Set<string>();
+      for (const raw of entries) {
+        if (!raw || typeof raw !== "object") continue;
+        const record = raw as Record<string, unknown>;
+        const clientMessageId = String(record.clientMessageId ?? "").trim();
+        if (!clientMessageId) continue;
+        clearPendingPrompt(rt, clientMessageId);
+        const status = String(record.status ?? "queued") as "queued" | "running" | "failed" | "completed";
+        // A card the user explicitly removed stays removed even though the
+        // durable row is still on the server.
+        if (rt.dismissedPromptIds?.has(clientMessageId)) continue;
+        activeIds.add(clientMessageId);
+        const existing = rt.queuedPrompts.value.find((prompt) => prompt.clientMessageId === clientMessageId);
+        if (status === "completed") {
+          rt.queuedPrompts.value = rt.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== clientMessageId);
+          continue;
+        }
+        const text = existing?.text
+          || rt.messages.value.find((message) => message.id === clientMessageId)?.content
+          || "Server queued request";
+        rt.queuedPrompts.value = existing
+          ? rt.queuedPrompts.value.map((prompt) => prompt.clientMessageId === clientMessageId
+            ? {
+                ...prompt,
+                deliveryStatus: status,
+                queuePosition: Number(record.position) || prompt.queuePosition,
+                queueAttempts: Number(record.attempts) || prompt.queueAttempts,
+                queueError: String(record.lastError ?? ""),
+                serverQueueTracked: true,
+                restoredFromStorage: false,
+                replayIncomplete: false,
+                queueLaneGeneration: Number(record.laneGeneration) || prompt.queueLaneGeneration,
+              }
+            : prompt)
+          : [...rt.queuedPrompts.value, {
+              id: `server-${clientMessageId}`,
+              clientMessageId,
+              text,
+              images: [],
+              createdAt: Number(record.createdAt) || Date.now(),
+              deliveryStatus: status,
+              queuePosition: Number(record.position) || undefined,
+              queueAttempts: Number(record.attempts) || undefined,
+              queueError: String(record.lastError ?? "") || undefined,
+              serverQueueTracked: true,
+              queueLaneGeneration: Number(record.laneGeneration) || undefined,
+            }];
+      }
+      if (type === "prompt_queue_snapshot") {
+        rt.queuedPrompts.value = rt.queuedPrompts.value.map((prompt) =>
+          !activeIds.has(prompt.clientMessageId) &&
+          !prompt.serverQueueTracked &&
+          (prompt.deliveryStatus === undefined ||
+            prompt.deliveryStatus === "awaiting_ack" ||
+            prompt.deliveryStatus === "queued" ||
+            prompt.restoredFromStorage ||
+            prompt.replayIncomplete)
+            ? { ...prompt, deliveryStatus: "offline", serverQueueTracked: false }
+            : prompt,
+        );
+        rt.queuedPrompts.value = rt.queuedPrompts.value.filter(
+          (prompt) => prompt.deliveryStatus === "offline" || activeIds.has(prompt.clientMessageId),
+        );
       }
       return;
     }
@@ -1217,7 +1343,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const resumeReplacePending = rt.resumeReplacePending;
       const items = Array.isArray(msg.items) ? (msg.items as unknown[]) : [];
       const terminalHistoryTail = hasTerminalHistoryTail(items);
-      reconcilePendingPromptsFromBootstrapHistory(items, terminalHistoryTail);
+      reconcilePendingPromptsFromBootstrapHistory(items);
       if (!resumeReplacePending && rt.ignoreNextHistory) {
         const historyGenerationRaw = Number((msg as Record<string, unknown>).laneGeneration);
         const historyGeneration = Number.isFinite(historyGenerationRaw) && historyGenerationRaw >= 1
@@ -1490,6 +1616,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (type === "user") {
       markTurnActive(msg as Record<string, unknown>);
       const clientMessageId = String(msg.clientMessageId ?? msg.client_message_id ?? "").trim();
+      if (clientMessageId) {
+        rt.queuedPrompts.value = rt.queuedPrompts.value.filter(
+          (prompt) => !prompt.serverQueueTracked || prompt.clientMessageId !== clientMessageId,
+        );
+      }
       const text = firstWireText(msg.text, msg.content).trim();
       const eventTsRaw = Number((msg as { ts?: unknown }).ts);
       const eventTs = Number.isFinite(eventTsRaw) && eventTsRaw > 0 ? Math.floor(eventTsRaw) : Date.now();
@@ -1743,8 +1874,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.turnHasPatch = false;
       clearStreamTracking();
       resetTurnPatchSummary();
+      const terminalPromptId = String(rt.pendingAckClientMessageId ?? "").trim();
       rt.pendingAckClientMessageId = null;
-      clearPendingPrompt(rt);
+      if (terminalPromptId) clearPendingPrompt(rt, terminalPromptId);
       const output = normalizeWireText(msg.output);
       if (msg.ok === true && resultKind === "clear_history") {
         rt.ignoreNextHistory = false;
@@ -1853,8 +1985,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       rt.turnHasPatch = false;
       clearStreamTracking();
       resetTurnPatchSummary();
+      const terminalPromptId = String(rt.pendingAckClientMessageId ?? "").trim();
       rt.pendingAckClientMessageId = null;
-      clearPendingPrompt(rt);
+      if (terminalPromptId) clearPendingPrompt(rt, terminalPromptId);
       clearStepLive(rt);
       finalizeCommandBlock(rt);
       // Ensure the assistant placeholder created when the prompt was sent does not

@@ -6,6 +6,7 @@ import { discoverSkills, loadSkillBody, renderCompactSkills, renderSkillMetaInst
 import { readMemory } from "../memory/memory.js";
 import { getStateDatabase } from "../state/database.js";
 import { BASE_LANE_PROMPTS, type LaneName } from "../state/lanePromptDefaults.js";
+import { normalizeLaneId } from "../../shared/terminology.js";
 import { type ActiveLanePrompt, createLanePromptStore, type LanePromptStore } from "../state/lanePromptStore.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 
@@ -88,7 +89,11 @@ export class SystemPromptManager {
 
   constructor(options: SystemPromptManagerOptions) {
     this.workspaceRoot = detectWorkspaceFrom(options.workspaceRoot);
-    this.lane = options.lane ?? null;
+    // Resolve the lane once, at the boundary. Everything downstream -- the
+    // store lookup and the built-in baseline fallback -- then indexes with a
+    // canonical value, so a legacy id can never yield `undefined` from
+    // BASE_LANE_PROMPTS and crash the prompt assembly.
+    this.lane = normalizeLaneId(options.lane);
     this.logger = options.logger ?? createLogger("SystemPrompt");
     this.reinjection = {
       enabled: options.reinjection?.enabled ?? true,

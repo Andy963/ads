@@ -136,11 +136,11 @@ describe("Issue #198 lane conversation switching", () => {
       global: { stubs: { LoginGate: false, MainChatView: MainChatViewStub } },
     });
     await settleUi(wrapper);
-    const workerTab = wrapper.get('[data-testid="lane-tab-worker"]');
+    const workerTab = wrapper.get('[data-testid="lane-tab-actions"]');
     const pointer = { pointerId: 1, pointerType: "touch", isPrimary: true };
 
     await workerTab.trigger("pointerdown", pointer);
-    expect(wrapper.get('[data-testid="lane-tab-advisor"]').attributes("aria-selected")).toBe("true");
+    expect(wrapper.get('[data-testid="lane-tab-acopilot"]').attributes("aria-selected")).toBe("true");
     await workerTab.trigger("pointercancel", pointer);
     await workerTab.trigger("pointerup", pointer);
     expect(workerTab.attributes("aria-selected")).toBe("false");
@@ -149,8 +149,8 @@ describe("Issue #198 lane conversation switching", () => {
     await workerTab.trigger("pointerup", pointer);
     await settleUi(wrapper);
     expect(workerTab.attributes("aria-selected")).toBe("true");
-    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-worker"]'))).toBe(true);
-    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-advisor"]'))).toBe(false);
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-actions"]'))).toBe(true);
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-acopilot"]'))).toBe(false);
     wrapper.unmount();
   });
 
@@ -170,44 +170,44 @@ describe("Issue #198 lane conversation switching", () => {
 
     await settleUi(wrapper);
 
-    const advisorRuntime = (wrapper.vm as any).activeAdvisorRuntime;
-    const workerRuntime = (wrapper.vm as any).activeRuntime;
-    advisorRuntime.messages.value = [message("advisor-1", "Advisor response")];
-    workerRuntime.messages.value = [message("worker-1", "Worker response")];
+    const acopilotRuntime = (wrapper.vm as any).activeAcopilotRuntime;
+    const actionsRuntime = (wrapper.vm as any).activeRuntime;
+    acopilotRuntime.messages.value = [message("advisor-1", "Advisor response")];
+    actionsRuntime.messages.value = [message("worker-1", "Worker response")];
     await settleUi(wrapper);
 
     expect(wrapper.findAll(".main-chat-stub")).toHaveLength(2);
-    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-advisor"]'))).toBe(true);
-    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-worker"]'))).toBe(false);
-    expect(wrapper.find('[data-testid="lane-panel-advisor"]').text()).toContain("Advisor response");
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-acopilot"]'))).toBe(true);
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-actions"]'))).toBe(false);
+    expect(wrapper.find('[data-testid="lane-panel-acopilot"]').text()).toContain("Advisor response");
 
-    await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
+    await wrapper.find('[data-testid="lane-tab-actions"]').trigger("click");
     await settleUi(wrapper);
 
     expect(wrapper.findAll(".main-chat-stub")).toHaveLength(2);
-    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-worker"]'))).toBe(true);
-    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-advisor"]'))).toBe(false);
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).toContain("Worker response");
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).not.toContain("Advisor response");
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-actions"]'))).toBe(true);
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-acopilot"]'))).toBe(false);
+    expect(wrapper.find('[data-testid="lane-panel-actions"]').text()).toContain("Worker response");
+    expect(wrapper.find('[data-testid="lane-panel-actions"]').text()).not.toContain("Advisor response");
 
-    await wrapper.find('[data-testid="lane-tab-advisor"]').trigger("click");
+    await wrapper.find('[data-testid="lane-tab-acopilot"]').trigger("click");
     await settleUi(wrapper);
 
     expect(wrapper.findAll(".main-chat-stub")).toHaveLength(2);
-    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-advisor"]'))).toBe(true);
-    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-worker"]'))).toBe(false);
-    expect(wrapper.find('[data-testid="lane-panel-advisor"]').text()).toContain("Advisor response");
-    expect(wrapper.find('[data-testid="lane-panel-advisor"]').text()).not.toContain("Worker response");
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-acopilot"]'))).toBe(true);
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-actions"]'))).toBe(false);
+    expect(wrapper.find('[data-testid="lane-panel-acopilot"]').text()).toContain("Advisor response");
+    expect(wrapper.find('[data-testid="lane-panel-acopilot"]').text()).not.toContain("Worker response");
 
-    await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
-    await wrapper.find('[data-testid="lane-tab-advisor"]').trigger("click");
-    await wrapper.find('[data-testid="lane-tab-worker"]').trigger("click");
+    await wrapper.find('[data-testid="lane-tab-actions"]').trigger("click");
+    await wrapper.find('[data-testid="lane-tab-acopilot"]').trigger("click");
+    await wrapper.find('[data-testid="lane-tab-actions"]').trigger("click");
     await settleUi(wrapper);
 
-    expect((wrapper.vm as any).activeChatLane).toBe("worker");
-    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-worker"]'))).toBe(true);
-    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-advisor"]'))).toBe(false);
-    expect(wrapper.find('[data-testid="lane-panel-worker"]').text()).toContain("Worker response");
+    expect((wrapper.vm as any).activeChatLane).toBe("actions");
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-actions"]'))).toBe(true);
+    expect(isPanelDisplayed(wrapper.find('[data-testid="lane-panel-acopilot"]'))).toBe(false);
+    expect(wrapper.find('[data-testid="lane-panel-actions"]').text()).toContain("Worker response");
 
     wrapper.unmount();
   });

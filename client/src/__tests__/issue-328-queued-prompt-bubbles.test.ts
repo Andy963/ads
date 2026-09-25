@@ -30,10 +30,35 @@ describe("issue-328 queued prompt bubbles", () => {
     expect(queueItems[1]?.find(".queue-sub").text()).toContain("图片 x2");
 
     // Verify deletion emit
-    await queueItems[0]?.find(".queue-del").trigger("click");
+    await queueItems[0]?.find(".queue-action--remove").trigger("click");
     expect(wrapper.emitted("removeQueued")).toEqual([["q-1"]]);
 
-    await queueItems[1]?.find(".queue-del").trigger("click");
+    await queueItems[1]?.find(".queue-action--remove").trigger("click");
     expect(wrapper.emitted("removeQueued")).toEqual([["q-1"], ["q-2"]]);
+  });
+
+  it("offers explicit retry and removal for a failed server queue card", async () => {
+    const wrapper = mount(MainChatComposerPanel, {
+      props: {
+        draft: "",
+        queuedPrompts: [{
+          id: "q-failed",
+          text: "Interrupted turn",
+          imagesCount: 0,
+          deliveryStatus: "failed",
+          queueError: "Prompt execution was interrupted",
+        }],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+    });
+
+    const item = wrapper.get(".queue-item");
+    expect(item.get(".queue-status").attributes("title")).toBe("Prompt execution was interrupted");
+    await item.get(".queue-action--retry").trigger("click");
+    await item.get(".queue-action--remove").trigger("click");
+    expect(wrapper.emitted("retryQueued")).toEqual([["q-failed"]]);
+    expect(wrapper.emitted("removeQueued")).toEqual([["q-failed"]]);
   });
 });

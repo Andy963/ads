@@ -18,7 +18,7 @@ describe("state/lanePromptStore", () => {
     const store = createLanePromptStore(db);
 
     const snapshots = store.listLanePrompts();
-    assert.deepEqual(snapshots.map((snapshot) => snapshot.lane), ["advisor", "worker"]);
+    assert.deepEqual(snapshots.map((snapshot) => snapshot.lane), ["acopilot", "actions"]);
     for (const snapshot of snapshots) {
       assert.equal(snapshot.current.version, 1);
       assert.equal(snapshot.current.isBase, true);

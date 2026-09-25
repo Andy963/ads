@@ -16,7 +16,8 @@ import {
   type OutboxSnapshot,
   type PersistedPrompt,
 } from "./outbox";
-import { ADVISOR_LANE_ID, LEGACY_ADVISOR_LANE_ID } from "../lib/laneIds";
+import { LEGACY_ADVISOR_LANE_ID } from "../lib/laneIds";
+import { WIRE_ACOPILOT_SESSION_ID } from "../lib/laneWire";
 
 type UploadedImageAttachment = {
   id: string;
@@ -31,7 +32,6 @@ type UploadedImageAttachment = {
 export function createChatActions(ctx: AppContext) {
   const {
     runtimeOrActive,
-    runtimeAgentBusy,
     maxExecutePreviewLines,
     maxRecentCommands,
     maxTurnCommands,
@@ -119,6 +119,7 @@ export function createChatActions(ctx: AppContext) {
   const outboxGenerations = new WeakMap<ProjectRuntime, number>();
   const outboxBindingStops = new Set<() => void>();
   const runtimesByOutboxKey = new Map<string, Set<ProjectRuntime>>();
+  const sendingQueuedPromptIds = new WeakMap<ProjectRuntime, Set<string>>();
   /** Set while a sibling tab's snapshot is being applied, so we don't echo it back. */
   let applyingRemoteOutbox = false;
 
@@ -143,9 +144,9 @@ export function createChatActions(ctx: AppContext) {
   // Advisor rename is not lost; the next persistOutbox write lands on the new key.
   const readOutboxFor = (rt: ProjectRuntime): OutboxSnapshot => {
     const key = outboxKeyFor(rt);
-    if (!key) return { pending: null, queued: [] };
+    if (!key) return { pending: null, sent: [], queued: [] };
     const snapshot = outbox.read(key);
-    if (!isEmptyOutboxSnapshot(snapshot) || rt.chatSessionId !== ADVISOR_LANE_ID) {
+    if (!isEmptyOutboxSnapshot(snapshot) || rt.chatSessionId !== WIRE_ACOPILOT_SESSION_ID) {
       return snapshot;
     }
     const sessionId = String(rt.projectSessionId ?? "").trim();
@@ -169,22 +170,54 @@ export function createChatActions(ctx: AppContext) {
     };
   };
 
-  const persistOutbox = (rt: ProjectRuntime, pending?: PersistedPrompt | null): void => {
+  const persistOutbox = (
+    rt: ProjectRuntime,
+    pending?: PersistedPrompt | null,
+    sent?: PersistedPrompt[],
+  ): void => {
     if (applyingRemoteOutbox) return;
     const key = outboxKeyFor(rt);
     if (!key) return;
-    const nextPending = pending === undefined ? readOutboxFor(rt).pending : pending;
+    const current = readOutboxFor(rt);
+    const nextPending = pending === undefined ? current.pending : pending;
+    const nextSent = sent === undefined ? current.sent : sent;
     outbox.write(key, {
       pending: nextPending,
-      queued: rt.queuedPrompts.value.map(toPersistedPrompt).filter(Boolean) as PersistedPrompt[],
+      sent: nextSent,
+      dismissed: Array.from(rt.dismissedPromptIds ?? []),
+      queued: rt.queuedPrompts.value
+        .filter((prompt) => prompt.deliveryStatus === "offline" || prompt.restoredFromStorage || prompt.replayIncomplete)
+        .map(toPersistedPrompt)
+        .filter(Boolean) as PersistedPrompt[],
     });
   };
 
+  const applyDismissals = (rt: ProjectRuntime, snapshot: OutboxSnapshot): void => {
+    const dismissed = rt.dismissedPromptIds ?? new Set<string>();
+    const live = new Set(
+      [...snapshot.sent, ...snapshot.queued].map((prompt) => prompt.clientMessageId),
+    );
+    for (const clientMessageId of snapshot.dismissed) {
+      if (!live.has(clientMessageId)) dismissed.add(clientMessageId);
+    }
+    rt.dismissedPromptIds = dismissed;
+    const before = rt.queuedPrompts.value.length;
+    const after = rt.queuedPrompts.value.filter(
+      (prompt) => !(prompt.serverQueueTracked === true && dismissed.has(prompt.clientMessageId)),
+    );
+    if (after.length !== before) rt.queuedPrompts.value = after;
+  };
+
   const applyRemoteOutbox = (rt: ProjectRuntime, snapshot: OutboxSnapshot): void => {
-    // Keep prompts this tab cannot persist (image prompts) and re-apply the shared
-    // order around them, so a sibling's dequeue is reflected without losing local work.
-    const localOnly = rt.queuedPrompts.value.filter((prompt) => prompt.images.length > 0);
-    const shared = snapshot.queued.map((prompt) => {
+    applyDismissals(rt, snapshot);
+    // Keep prompts this tab cannot persist (image prompts) plus every card the
+    // server still owns. The outbox deliberately omits acknowledged work, so
+    // trusting it alone would hide queued/running/failed cards until the next
+    // authoritative queue event arrived.
+    const localOnly = rt.queuedPrompts.value.filter(
+      (prompt) => prompt.images.length > 0 || prompt.serverQueueTracked === true,
+    );
+    const shared = [...snapshot.sent, ...snapshot.queued].map((prompt) => {
       const existing = rt.queuedPrompts.value.find((q) => q.clientMessageId === prompt.clientMessageId);
       return existing ?? ({
         id: randomId("q"),
@@ -196,9 +229,17 @@ export function createChatActions(ctx: AppContext) {
         model: String(prompt.model ?? ""),
         modelReasoningEffort: String(prompt.modelReasoningEffort ?? prompt.model_reasoning_effort ?? ""),
         ...(prompt.replayIncomplete ? { replayIncomplete: true } : {}),
+        ...(prompt.sentAwaitingAck ? { replayIncomplete: true, restoredFromStorage: true } : {}),
       } satisfies QueuedPrompt);
     });
-    const next = [...shared, ...localOnly];
+    // A delayed broadcast can still mention an id this tab already tracks (or the
+    // same id twice). Merging blindly would render two cards for one prompt, with
+    // duplicate keys and two competing retry/remove targets.
+    const merged = new Map<string, ProjectRuntime["queuedPrompts"]["value"][number]>();
+    for (const prompt of [...shared, ...localOnly]) {
+      if (!merged.has(prompt.clientMessageId)) merged.set(prompt.clientMessageId, prompt);
+    }
+    const next = Array.from(merged.values());
     const unchanged =
       next.length === rt.queuedPrompts.value.length &&
       next.every((prompt, index) => prompt.clientMessageId === rt.queuedPrompts.value[index]?.clientMessageId);
@@ -236,6 +277,9 @@ export function createChatActions(ctx: AppContext) {
       });
     }
     peers.add(rt);
+    // Restoring has to re-filter too: a reload can render the queue before this
+    // tab binds its outbox, and a card dismissed in a sibling tab must stay gone.
+    applyDismissals(rt, readOutboxFor(rt));
     // `sync` so a queue change survives an immediate tab close.
     outboxBindingStops.add(watch(rt.queuedPrompts, () => persistOutbox(rt), { flush: "sync" }));
   };
@@ -246,9 +290,36 @@ export function createChatActions(ctx: AppContext) {
     persistOutbox(rt, toPersistedPrompt(prompt));
   };
 
-  const clearPendingPrompt = (rt: ProjectRuntime): void => {
+  const saveSentPrompt = (rt: ProjectRuntime, prompt: QueuedPrompt): void => {
     if (!rt.projectSessionId) return;
-    persistOutbox(rt, null);
+    ensureOutboxBinding(rt);
+    const persisted = toPersistedPrompt(prompt);
+    if (!persisted) return;
+    persisted.sentAwaitingAck = true;
+    const current = readOutboxFor(rt);
+    persistOutbox(
+      rt,
+      current.pending,
+      [...current.sent.filter((entry) => entry.clientMessageId !== persisted.clientMessageId), persisted],
+    );
+  };
+
+  const clearPendingPrompt = (rt: ProjectRuntime, clientMessageId?: string): PersistedPrompt | null => {
+    if (!rt.projectSessionId) return null;
+    const id = String(clientMessageId ?? "").trim();
+    const current = readOutboxFor(rt);
+    if (!id) {
+      persistOutbox(rt, null, []);
+      return null;
+    }
+    const acknowledged = current.sent.find((entry) => entry.clientMessageId === id)
+      ?? (current.pending?.clientMessageId === id ? current.pending : null);
+    persistOutbox(
+      rt,
+      current.pending?.clientMessageId === id ? null : current.pending,
+      current.sent.filter((entry) => entry.clientMessageId !== id),
+    );
+    return acknowledged;
   };
 
   const readPendingPrompt = (rt: ProjectRuntime): PersistedPrompt | null => {
@@ -266,6 +337,9 @@ export function createChatActions(ctx: AppContext) {
     const storedClientMessageId = String(readPendingPrompt(rt)?.clientMessageId ?? "").trim();
     if (storedClientMessageId) {
       pendingIds.add(storedClientMessageId);
+    }
+    for (const sent of readOutboxFor(rt).sent) {
+      pendingIds.add(sent.clientMessageId);
     }
     if (pendingIds.size > 0) {
       rt.queuedPrompts.value = rt.queuedPrompts.value.filter((q) => !pendingIds.has(String(q.clientMessageId ?? "").trim()));
@@ -305,7 +379,7 @@ export function createChatActions(ctx: AppContext) {
     }
 
     // Prompts still waiting their turn were never sent; they requeue as-is.
-    for (const queued of snapshot.queued) {
+    for (const queued of [...snapshot.sent, ...snapshot.queued]) {
       const clientMessageId = String(queued.clientMessageId ?? "").trim();
       if (!clientMessageId || queuedByClientMessageId.has(clientMessageId)) continue;
       queuedByClientMessageId.add(clientMessageId);
@@ -318,7 +392,8 @@ export function createChatActions(ctx: AppContext) {
         agentId: String(queued.agentId ?? "").trim(),
         model: String(queued.model ?? "").trim(),
         modelReasoningEffort: String(queued.modelReasoningEffort ?? queued.model_reasoning_effort ?? "").trim(),
-        ...(queued.replayIncomplete ? { replayIncomplete: true } : {}),
+        ...(queued.replayIncomplete || queued.sentAwaitingAck ? { replayIncomplete: true } : {}),
+        ...(queued.sentAwaitingAck ? { restoredFromStorage: true } : {}),
       });
     }
 
@@ -433,7 +508,7 @@ export function createChatActions(ctx: AppContext) {
       : {};
     const requestedScope = String(payloadRecord.scope ?? "").trim().toLowerCase();
     const chatSessionId = String(rt.chatSessionId ?? "").trim() || "main";
-    if (requestedScope === "shared" && chatSessionId !== "advisor") {
+    if (requestedScope === "shared" && chatSessionId !== WIRE_ACOPILOT_SESSION_ID) {
       return { ...payloadRecord, scope: "shared" };
     }
     return {
@@ -591,7 +666,58 @@ export function createChatActions(ctx: AppContext) {
     const target = String(id ?? "").trim();
     if (!target) return;
     const state = runtimeOrActive(rt);
+    const removed = state.queuedPrompts.value.find((q) => q.id === target);
+    if (!removed) return;
     state.queuedPrompts.value = state.queuedPrompts.value.filter((q) => q.id !== target);
+    if (removed.serverQueueTracked !== true) return;
+    // The durable row outlives this card, so remember the dismissal; otherwise
+    // the next queue snapshot would just re-insert what the user dismissed.
+    const clientMessageId = String(removed.clientMessageId ?? "").trim();
+    if (!clientMessageId) return;
+    state.dismissedPromptIds = state.dismissedPromptIds ?? new Set<string>();
+    state.dismissedPromptIds.add(clientMessageId);
+    ensureOutboxBinding(state);
+    persistOutbox(state);
+  };
+
+  const retryQueuedPrompt = (id: string, rt?: ProjectRuntime): void => {
+    const target = String(id ?? "").trim();
+    if (!target) return;
+    const state = runtimeOrActive(rt);
+    const prompt = state.queuedPrompts.value.find((entry) => entry.id === target);
+    if (!prompt || prompt.deliveryStatus !== "failed") return;
+    ensureOutboxBinding(state);
+    // A retry reuses the original client id so the server requeues the same
+    // durable row. That only holds while the lane is unchanged: the id is bound
+    // to its generation, so work stranded by a reset has to be resubmitted as a
+    // new prompt instead of colliding with a different prompt scope.
+    const rowGeneration = Number(prompt.queueLaneGeneration ?? 0);
+    const laneGeneration = Number(state.laneGeneration ?? 0);
+    const generationMoved = rowGeneration > 0 && laneGeneration > 0 && rowGeneration !== laneGeneration;
+    const clientMessageId = generationMoved ? randomUuid() : prompt.clientMessageId;
+    // Re-keying orphans the original durable row, and an obsolete-generation row
+    // stays in the logical-lane snapshot. Retire it explicitly, otherwise the next
+    // snapshot resurrects the failed card next to the retry and invites a second
+    // duplicate retry.
+    const dismissed = state.dismissedPromptIds ?? new Set<string>();
+    state.dismissedPromptIds = dismissed;
+    if (generationMoved) dismissed.add(prompt.clientMessageId);
+    else dismissed.delete(prompt.clientMessageId);
+    state.queuedPrompts.value = state.queuedPrompts.value.map((entry) =>
+      entry.id === target
+        ? {
+          ...entry,
+          clientMessageId,
+          replayIncomplete: true,
+          restoredFromStorage: true,
+          deliveryStatus: state.connected.value ? "awaiting_ack" : "offline",
+          serverQueueTracked: false,
+          queueError: undefined,
+          queueLaneGeneration: undefined,
+        }
+        : entry,
+    );
+    void flushQueuedPrompts(state);
   };
 
   const enqueuePrompt = (text: string, images: IncomingImage[], rt?: ProjectRuntime): void => {
@@ -614,6 +740,7 @@ export function createChatActions(ctx: AppContext) {
         images: imgs,
         createdAt: Date.now(),
         agentId,
+        deliveryStatus: state.connected.value ? "awaiting_ack" : "offline",
       },
     ];
     void flushQueuedPrompts(state);
@@ -658,6 +785,7 @@ export function createChatActions(ctx: AppContext) {
         ...(execution.model ? { model: execution.model } : {}),
         ...(execution.modelReasoningEffort ? { modelReasoningEffort: execution.modelReasoningEffort } : {}),
         replayIncomplete: true,
+        deliveryStatus: state.connected.value ? "awaiting_ack" : "offline",
       },
     ];
     void flushQueuedPrompts(state);
@@ -670,15 +798,29 @@ export function createChatActions(ctx: AppContext) {
     const state = runtimeOrActive(rt);
     if (state.syncInProgress || state.awaitingBootstrapHistory) return;
     if (state.inputLocked.value && !state.queuedPrompts.value[0]?.restoredFromStorage) return;
-    if (runtimeAgentBusy(state)) return;
     if (!state.connected.value) return;
     if (!state.ws) return;
     if (state.queuedPrompts.value.length === 0) return;
 
     const account = ctx.accountGeneration?.value;
     const isCurrentAccount = (): boolean => ctx.accountGeneration?.value === account;
-    const next = state.queuedPrompts.value[0]!;
-    state.queuedPrompts.value = state.queuedPrompts.value.slice(1);
+    let sending = sendingQueuedPromptIds.get(state);
+    if (!sending) {
+      sending = new Set<string>();
+      sendingQueuedPromptIds.set(state, sending);
+    }
+    const next = state.queuedPrompts.value.find((prompt) =>
+      !sending.has(prompt.clientMessageId) &&
+      (prompt.deliveryStatus === "offline" || prompt.deliveryStatus === "awaiting_ack" || prompt.deliveryStatus === undefined),
+    );
+    if (!next) return;
+    sending.add(next.clientMessageId);
+    const runtimeWasBusy = state.busy.value || state.turnInFlight;
+    state.queuedPrompts.value = state.queuedPrompts.value.map((prompt) =>
+      prompt.clientMessageId === next.clientMessageId
+        ? { ...prompt, deliveryStatus: "awaiting_ack" }
+        : prompt,
+    );
     state.ignoreNextHistory = false;
     state.ignoreNextHistoryGeneration = undefined;
     let sendAccepted = false;
@@ -711,6 +853,11 @@ export function createChatActions(ctx: AppContext) {
       if (!isCurrentAccount()) return;
       finalizeCommandBlock(state);
       clearStepLive(state);
+      state.queuedPrompts.value = state.queuedPrompts.value.map((prompt) =>
+        prompt.clientMessageId === next.clientMessageId
+          ? { ...prompt, deliveryStatus: "queued" }
+          : prompt,
+      );
       const queuedEffort = String(next.modelReasoningEffort ?? "").trim();
       const effort = queuedEffort || String(state.modelReasoningEffort.value ?? "").trim() || "high";
       const queuedModel = String(next.model ?? "").trim();
@@ -718,23 +865,26 @@ export function createChatActions(ctx: AppContext) {
       const queuedAgentId = String(next.agentId ?? "").trim();
       const activeAgentId = String(state.activeAgentId.value ?? "").trim();
       const agentId = queuedAgentId || activeAgentId;
-      savePendingPrompt(state, { ...next, agentId, model, modelReasoningEffort: effort });
       const execution = {
         ...(agentId ? { agentId } : {}),
         ...(model ? { model } : {}),
         ...(effort ? { modelReasoningEffort: effort } : {}),
       };
       const alreadyInMessages = state.messages.value.some((m) => m.id === next.clientMessageId);
-      if (!alreadyInMessages) {
+      if (!runtimeWasBusy && !alreadyInMessages) {
         pushMessageBeforeLive(
           { id: next.clientMessageId, role: "user", kind: "text", content: display, execution, ts: next.createdAt ?? Date.now() },
           state,
         );
       }
-      pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true, ts: Date.now() }, state);
-      state.busy.value = true;
-      state.turnInFlight = true;
-      state.pendingAckClientMessageId = next.clientMessageId;
+      if (!runtimeWasBusy) {
+        pushMessageBeforeLive({ role: "assistant", kind: "text", content: "", streaming: true, ts: Date.now() }, state);
+        state.busy.value = true;
+        state.turnInFlight = true;
+      }
+      if (!runtimeWasBusy || next.restoredFromStorage || next.replayIncomplete) {
+        state.pendingAckClientMessageId = next.clientMessageId;
+      }
       const recovery = next.restoredFromStorage || next.replayIncomplete ? { replay_incomplete: true } : {};
       const payload =
         next.images.length > 0
@@ -744,6 +894,7 @@ export function createChatActions(ctx: AppContext) {
       if (!sendAccepted) {
         throw new Error("WebSocket prompt send was not accepted");
       }
+      saveSentPrompt(state, { ...next, agentId, model, modelReasoningEffort: effort });
       if (!options?.preserveErrorStatus || state.laneStatus.value?.kind !== "error") {
         state.laneStatus.value = null;
       }
@@ -751,21 +902,34 @@ export function createChatActions(ctx: AppContext) {
         state.inputLocked.value = true;
         state.laneStatus.value = { kind: "progress", message: "请求已重新发送，正在等待后端结果…" };
       }
+      state.queuedPrompts.value = state.queuedPrompts.value.filter(
+        (prompt) => prompt.clientMessageId !== next.clientMessageId,
+      );
+      sending.delete(next.clientMessageId);
+      queueMicrotask(() => {
+        void flushQueuedPrompts(state, { preserveErrorStatus: true });
+      });
     } catch {
       if (!isCurrentAccount()) return;
+      sending.delete(next.clientMessageId);
       dropEmptyAssistantPlaceholder(state);
       state.busy.value = false;
       state.turnInFlight = false;
       state.turnHasPatch = false;
-      state.pendingAckClientMessageId = null;
+      if (state.pendingAckClientMessageId === next.clientMessageId) {
+        state.pendingAckClientMessageId = null;
+      }
       if (!sendAccepted) {
         state.connected.value = false;
         if (!options?.preserveErrorStatus && !state.laneStatus.value) {
           state.laneStatus.value = { kind: "error", message: "Failed to send prompt: connection lost or prompt rejected." };
         }
       }
-      const remaining = state.queuedPrompts.value.filter((q) => q.clientMessageId !== next.clientMessageId);
-      state.queuedPrompts.value = [next, ...remaining];
+      state.queuedPrompts.value = state.queuedPrompts.value.map((prompt) =>
+        prompt.clientMessageId === next.clientMessageId
+          ? { ...prompt, deliveryStatus: "offline" }
+          : prompt,
+      );
     }
   };
 
@@ -852,6 +1016,7 @@ export function createChatActions(ctx: AppContext) {
     upsertExecuteBlock,
     finalizeCommandBlock,
     removeQueuedPrompt,
+    retryQueuedPrompt,
     enqueuePrompt,
     enqueueMainPrompt,
     retryPrompt,

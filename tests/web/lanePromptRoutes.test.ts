@@ -96,6 +96,49 @@ describe("web/lane-prompt routes", () => {
     assert.equal(reset.current.version, reset.base.version);
   });
 
+  it("accepts legacy lane ids and always reports canonical ones", async () => {
+    // Compatibility matrix: advisor/worker/planner are readable aliases, but a
+    // response must never echo the legacy spelling back as the lane id.
+    const cases: Array<[legacy: string, canonical: string]> = [
+      ["advisor", "acopilot"],
+      ["planner", "acopilot"],
+      ["worker", "actions"],
+    ];
+
+    for (const [legacy, canonical] of cases) {
+      const res = createRes();
+      const handled = await handleLanePromptRoutes(
+        routeContext(createReq("GET"), res, `/api/lane-prompts/${legacy}`),
+        { lanePromptStore: store },
+      );
+      assert.equal(handled, true);
+      assert.equal(res.statusCode, 200, `${legacy} should resolve`);
+      assert.equal(parseJson<{ lane: string }>(res.body).lane, canonical);
+    }
+  });
+
+  it("writes a legacy lane id through to the canonical lane", async () => {
+    const res = createRes();
+    await handleLanePromptRoutes(
+      routeContext(createReq("PUT", { prompt: "Written via legacy id" }), res, "/api/lane-prompts/worker"),
+      { lanePromptStore: store },
+    );
+    assert.equal(res.statusCode, 200);
+    assert.equal(parseJson<{ lane: string }>(res.body).lane, "actions");
+
+    // The write landed on the canonical lane, so reading it back via the
+    // canonical id must return the same content.
+    const canonicalRes = createRes();
+    await handleLanePromptRoutes(
+      routeContext(createReq("GET"), canonicalRes, "/api/lane-prompts/actions"),
+      { lanePromptStore: store },
+    );
+    assert.equal(
+      parseJson<{ current: { prompt: string } }>(canonicalRes.body).current.prompt,
+      "Written via legacy id",
+    );
+  });
+
   it("rejects unknown lanes and invalid payloads", async () => {
     const laneRes = createRes();
     await handleLanePromptRoutes(routeContext(createReq("GET"), laneRes, "/api/lane-prompts/telegram"), { lanePromptStore: store });

@@ -1,6 +1,11 @@
 import { computed, onBeforeUnmount, ref, watch, type Ref } from "vue";
 
-export type ChatLane = "advisor" | "worker";
+// This file sits one level deeper than client/src/api, so the shared module
+// needs four parent hops to reach the repo root. A type-only import is erased
+// at build time, so a wrong depth here would not fail build or vitest.
+import type { CanonicalLaneId } from "../../../../shared/terminology.js";
+
+export type ChatLane = CanonicalLaneId;
 
 type RuntimePrompt = { id: string; text: string; images: unknown[] };
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
@@ -26,14 +31,14 @@ type RuntimeShape = {
   resumableSessionsHidden: Ref<ResumableSessionsHiddenShape | null>;
   resumableSessionsNextCursor: Ref<string | null>;
 };
-type AdvisorRuntimeShape = RuntimeShape;
+type AcopilotRuntimeShape = RuntimeShape;
 
 function asRuntimeShape(value: unknown): RuntimeShape {
   return value as RuntimeShape;
 }
 
-function asAdvisorRuntimeShape(value: unknown): AdvisorRuntimeShape {
-  return value as AdvisorRuntimeShape;
+function asAcopilotRuntimeShape(value: unknown): AcopilotRuntimeShape {
+  return value as AcopilotRuntimeShape;
 }
 
 function mapQueuedPrompts(
@@ -50,22 +55,22 @@ export function useLaneRuntimeBridge(params: {
   activeProjectId: Ref<string>;
   activeProject: Ref<{ chatSessionId?: string } | null>;
   activeRuntime: Ref<unknown>;
-  activeAdvisorRuntime: Ref<unknown>;
+  activeAcopilotRuntime: Ref<unknown>;
   queuedPrompts: Ref<Array<{ id: string; text: string; images: unknown[] }>>;
   pendingImages: Ref<unknown[]>;
   agentBusy: Ref<boolean>;
   clearActiveChat?: () => void;
-  clearAdvisorChat: () => void;
-  startNewAdvisorSession?: () => void;
+  clearAcopilotChat: () => void;
+  startNewAcopilotSession?: () => void;
   startNewChatSession: () => void;
-  resumeAdvisorThread: () => void;
+  resumeAcopilotThread: () => void;
   resumeTaskThread: (projectId?: string, options?: { sessionId?: string }) => void;
   listResumableSessions: (
     projectId?: string,
     options?: { search?: string; includeAllCwds?: boolean; includeNoise?: boolean; cursor?: string },
   ) => void;
 }) {
-  const activeChatLane = ref<ChatLane>("advisor");
+  const activeChatLane = ref<ChatLane>("acopilot");
   const projectContextGeneration = ref(0);
   // Latched panel context: while a turn is streaming, the panel key must stay
   // frozen even if the project identity is rewritten in the background. The
@@ -80,9 +85,9 @@ export function useLaneRuntimeBridge(params: {
 
   const lanesBusy = (): boolean =>
     Boolean(params.agentBusy.value) ||
-    Boolean(asAdvisorRuntimeShape(params.activeAdvisorRuntime.value).busy.value) ||
+    Boolean(asAcopilotRuntimeShape(params.activeAcopilotRuntime.value).busy.value) ||
     Boolean(params.activeRuntime.value && (params.activeRuntime.value as RuntimeShape).turnInFlight) ||
-    Boolean(asAdvisorRuntimeShape(params.activeAdvisorRuntime.value).turnInFlight);
+    Boolean(asAcopilotRuntimeShape(params.activeAcopilotRuntime.value).turnInFlight);
 
   /**
    * Re-keying a lane panel unmounts+remounts the entire chat tree. Triggering
@@ -163,86 +168,86 @@ export function useLaneRuntimeBridge(params: {
     activeChatLane.value = lane;
   }
 
-  const advisorRuntime = computed(() => asAdvisorRuntimeShape(params.activeAdvisorRuntime.value));
-  const workerRuntime = computed(() => asRuntimeShape(params.activeRuntime.value));
+  const acopilotRuntime = computed(() => asAcopilotRuntimeShape(params.activeAcopilotRuntime.value));
+  const actionsRuntime = computed(() => asRuntimeShape(params.activeRuntime.value));
 
-  const advisorMessages = computed(() => advisorRuntime.value.messages.value);
-  const advisorQueuedPrompts = computed(() =>
-    mapQueuedPrompts(advisorRuntime.value.queuedPrompts.value),
+  const acopilotMessages = computed(() => acopilotRuntime.value.messages.value);
+  const acopilotQueuedPrompts = computed(() =>
+    mapQueuedPrompts(acopilotRuntime.value.queuedPrompts.value),
   );
-  const advisorPendingImages = computed(() => advisorRuntime.value.pendingImages.value);
-  const advisorConnected = computed(() => advisorRuntime.value.connected.value);
-  const advisorBusy = computed(() => advisorRuntime.value.busy.value);
-  const advisorInputLocked = computed(() => advisorRuntime.value.inputLocked.value);
-  const advisorLaneStatus = computed(() => advisorRuntime.value.laneStatus.value);
-  const advisorComposerDraft = computed({
-    get: () => advisorRuntime.value.composerDraft.value,
+  const acopilotPendingImages = computed(() => acopilotRuntime.value.pendingImages.value);
+  const acopilotConnected = computed(() => acopilotRuntime.value.connected.value);
+  const acopilotBusy = computed(() => acopilotRuntime.value.busy.value);
+  const acopilotInputLocked = computed(() => acopilotRuntime.value.inputLocked.value);
+  const acopilotLaneStatus = computed(() => acopilotRuntime.value.laneStatus.value);
+  const acopilotComposerDraft = computed({
+    get: () => acopilotRuntime.value.composerDraft.value,
     set: (value: string) => {
-      advisorRuntime.value.composerDraft.value = value;
+      acopilotRuntime.value.composerDraft.value = value;
     },
   });
-  const advisorAgents = computed(() => advisorRuntime.value.availableAgents.value);
-  const advisorActiveAgentId = computed(() => advisorRuntime.value.activeAgentId.value);
-  const advisorThreadWarning = computed(() => advisorRuntime.value.threadWarning.value);
-  const advisorChatKey = computed(
-    () => `${params.activeProjectId.value}:advisor`,
+  const acopilotAgents = computed(() => acopilotRuntime.value.availableAgents.value);
+  const acopilotActiveAgentId = computed(() => acopilotRuntime.value.activeAgentId.value);
+  const acopilotThreadWarning = computed(() => acopilotRuntime.value.threadWarning.value);
+  const acopilotChatKey = computed(
+    () => `${params.activeProjectId.value}:acopilot`,
   );
-  const advisorPanelKey = computed(
-    () => `${panelContextKey.value}:${projectContextGeneration.value}:advisor`,
+  const acopilotPanelKey = computed(
+    () => `${panelContextKey.value}:${projectContextGeneration.value}:acopilot`,
   );
 
-  const workerAgents = computed(() => workerRuntime.value.availableAgents.value);
-  const workerInputLocked = computed(() => workerRuntime.value.inputLocked.value);
-  const workerLaneStatus = computed(() => workerRuntime.value.laneStatus.value);
-  const workerActiveAgentId = computed(() => workerRuntime.value.activeAgentId.value);
-  const workerComposerDraft = computed({
-    get: () => workerRuntime.value.composerDraft.value,
+  const actionsAgents = computed(() => actionsRuntime.value.availableAgents.value);
+  const actionsInputLocked = computed(() => actionsRuntime.value.inputLocked.value);
+  const actionsLaneStatus = computed(() => actionsRuntime.value.laneStatus.value);
+  const actionsActiveAgentId = computed(() => actionsRuntime.value.activeAgentId.value);
+  const actionsComposerDraft = computed({
+    get: () => actionsRuntime.value.composerDraft.value,
     set: (value: string) => {
-      workerRuntime.value.composerDraft.value = value;
+      actionsRuntime.value.composerDraft.value = value;
     },
   });
-  const workerThreadWarning = computed(() => workerRuntime.value.threadWarning.value);
-  const workerLatestPromptKey = computed(
-    () => `${params.activeProjectId.value}:worker`,
+  const actionsThreadWarning = computed(() => actionsRuntime.value.threadWarning.value);
+  const actionsLatestPromptKey = computed(
+    () => `${params.activeProjectId.value}:actions`,
   );
-  const workerChatKey = computed(
+  const actionsChatKey = computed(
     () => `${params.activeProjectId.value}:${params.activeProject.value?.chatSessionId ?? "main"}`,
   );
-  const workerPanelKey = computed(
-    () => `${panelContextKey.value}:${projectContextGeneration.value}:worker`,
+  const actionsPanelKey = computed(
+    () => `${panelContextKey.value}:${projectContextGeneration.value}:actions`,
   );
-  const workerQueuedPrompts = computed(() => mapQueuedPrompts(params.queuedPrompts.value));
-  const resumableSessions = computed(() => workerRuntime.value.resumableSessions.value);
-  const resumableSessionsBusy = computed(() => workerRuntime.value.resumableSessionsBusy.value);
-  const resumableSessionsError = computed(() => workerRuntime.value.resumableSessionsError.value);
-  const resumableSessionsHidden = computed(() => workerRuntime.value.resumableSessionsHidden.value);
-  const resumableSessionsNextCursor = computed(() => workerRuntime.value.resumableSessionsNextCursor.value);
+  const actionsQueuedPrompts = computed(() => mapQueuedPrompts(params.queuedPrompts.value));
+  const resumableSessions = computed(() => actionsRuntime.value.resumableSessions.value);
+  const resumableSessionsBusy = computed(() => actionsRuntime.value.resumableSessionsBusy.value);
+  const resumableSessionsError = computed(() => actionsRuntime.value.resumableSessionsError.value);
+  const resumableSessionsHidden = computed(() => actionsRuntime.value.resumableSessionsHidden.value);
+  const resumableSessionsNextCursor = computed(() => actionsRuntime.value.resumableSessionsNextCursor.value);
 
   const resumeThreadBlocked = computed(() => false);
 
   const activeLaneBusy = computed(() => {
-    if (activeChatLane.value === "advisor") return advisorBusy.value;
+    if (activeChatLane.value === "acopilot") return acopilotBusy.value;
     return params.agentBusy.value;
   });
 
   const activeLaneThreadWarning = computed(() => {
-    if (activeChatLane.value === "advisor") return advisorThreadWarning.value;
-    return workerThreadWarning.value;
+    if (activeChatLane.value === "acopilot") return acopilotThreadWarning.value;
+    return actionsThreadWarning.value;
   });
 
   const activeLaneHasResume = computed(() => true);
   const activeLaneNewSessionBlocked = computed(() => {
-    if (activeChatLane.value === "advisor") return !advisorConnected.value;
+    if (activeChatLane.value === "acopilot") return !acopilotConnected.value;
     return false;
   });
 
   function handleLaneNewSession(): void {
     if (activeLaneNewSessionBlocked.value) return;
-    if (activeChatLane.value === "advisor") {
-      if (params.startNewAdvisorSession) {
-        params.startNewAdvisorSession();
+    if (activeChatLane.value === "acopilot") {
+      if (params.startNewAcopilotSession) {
+        params.startNewAcopilotSession();
       } else {
-        params.clearAdvisorChat();
+        params.clearAcopilotChat();
       }
     } else {
       params.startNewChatSession();
@@ -251,26 +256,26 @@ export function useLaneRuntimeBridge(params: {
 
   function handleLaneClearChat(): void {
     if (activeLaneBusy.value) return;
-    if (activeChatLane.value === "advisor") params.clearAdvisorChat();
+    if (activeChatLane.value === "acopilot") params.clearAcopilotChat();
     else params.clearActiveChat?.();
   }
 
   function handleLaneResumeThread(): void {
-    if (activeChatLane.value === "advisor") params.resumeAdvisorThread();
-    else if (activeChatLane.value === "worker") params.resumeTaskThread();
+    if (activeChatLane.value === "acopilot") params.resumeAcopilotThread();
+    else if (activeChatLane.value === "actions") params.resumeTaskThread();
   }
 
   /**
-   * The picker only backs the worker lane, where provider sessions are tracked.
-   * The advisor lane keeps the original one-click resume.
+   * The picker only backs the Actions lane, where provider sessions are tracked.
+   * The Acopilot lane keeps the original one-click resume.
    */
   const sessionPickerOpen = ref(false);
-  const sessionPickerSupported = computed(() => activeChatLane.value === "worker");
+  const sessionPickerSupported = computed(() => activeChatLane.value === "actions");
   let lastSessionQuery: { search?: string; includeAllCwds?: boolean; includeNoise?: boolean } = {};
 
   function openSessionPicker(): void {
     if (!sessionPickerSupported.value) {
-      params.resumeAdvisorThread();
+      params.resumeAcopilotThread();
       return;
     }
     sessionPickerOpen.value = true;
@@ -307,29 +312,29 @@ export function useLaneRuntimeBridge(params: {
   return {
     activeChatLane,
     setActiveChatLane,
-    advisorMessages,
-    advisorQueuedPrompts,
-    advisorPendingImages,
-    advisorConnected,
-    advisorBusy,
-    advisorInputLocked,
-    advisorLaneStatus,
-    advisorComposerDraft,
-    advisorAgents,
-    advisorActiveAgentId,
-    advisorThreadWarning,
-    advisorChatKey,
-    advisorPanelKey,
-    workerAgents,
-    workerInputLocked,
-    workerLaneStatus,
-    workerActiveAgentId,
-    workerComposerDraft,
-    workerThreadWarning,
-    workerLatestPromptKey,
-    workerChatKey,
-    workerPanelKey,
-    workerQueuedPrompts,
+    acopilotMessages,
+    acopilotQueuedPrompts,
+    acopilotPendingImages,
+    acopilotConnected,
+    acopilotBusy,
+    acopilotInputLocked,
+    acopilotLaneStatus,
+    acopilotComposerDraft,
+    acopilotAgents,
+    acopilotActiveAgentId,
+    acopilotThreadWarning,
+    acopilotChatKey,
+    acopilotPanelKey,
+    actionsAgents,
+    actionsInputLocked,
+    actionsLaneStatus,
+    actionsActiveAgentId,
+    actionsComposerDraft,
+    actionsThreadWarning,
+    actionsLatestPromptKey,
+    actionsChatKey,
+    actionsPanelKey,
+    actionsQueuedPrompts,
     resumableSessions,
     resumableSessionsBusy,
     resumableSessionsError,
