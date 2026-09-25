@@ -254,6 +254,7 @@ export class SessionManager {
     this.runtime.trackSession(userId, session, effectiveCwd, {
       runtimeBackend: this.runtimeBackend,
       lifecycle,
+      nativeTranscriptId,
     });
     this.syncStoredState(userId);
 
@@ -477,6 +478,11 @@ export class SessionManager {
   reset(userId: number, options?: { preserveThreadForResume?: boolean }): void {
     const record = this.runtime.getRecord(userId);
     const storage = this.threadStorage;
+    const savedState = storage?.getRecord(userId);
+    const nativeTranscriptId = record?.nativeTranscriptId ?? savedState?.nativeTranscriptId;
+    if (this.runtimeBackend === "native" && nativeTranscriptId) {
+      new NativeTranscriptStore(getStateDatabase(this.options.stateDbPath)).clear(nativeTranscriptId);
+    }
     const preserve = Boolean(options?.preserveThreadForResume) && this.runtimeBackend === "codex-app-server";
     if (storage) {
       if (preserve) {
@@ -705,6 +711,7 @@ export class SessionManager {
         clearThreads: options?.clearThreads,
         runtimeBackend: sessionRecord.runtimeBackend,
         lifecycle: sessionRecord.lifecycle,
+        nativeTranscriptId: sessionRecord.nativeTranscriptId ?? getSavedSessionState(storage, userId)?.nativeTranscriptId,
       }),
     );
   }

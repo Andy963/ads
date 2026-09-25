@@ -309,4 +309,58 @@ describe("SessionManager agent allowlists", () => {
       fs.rmSync(secondDirectory, { recursive: true, force: true });
     }
   });
+
+  it("clears a durable Native transcript when reset arrives after disposal", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-session-reset-after-dispose-"));
+    const dbPath = path.join(directory, "state.db");
+    const owner = "auth-user-reset-after-dispose";
+    const projectId = "project-reset-after-dispose";
+    const userId = 123461;
+    const transcriptId = buildNativeTranscriptId({ owner, sessionKey: String(userId), projectId });
+    const store = new NativeTranscriptStore(getStateDatabase(dbPath));
+    const threadStorage = new ThreadStorage({ stateDbPath: dbPath, namespace: "native-reset-after-dispose" });
+    store.beginTurn({
+      transcriptId,
+      turnId: "old-turn",
+      messages: [{ role: "user", content: "old context" }],
+      entries: [{ kind: "message", message: { role: "user", content: "old context" } }],
+      provider: { provider: "test", model: "test-model" },
+    });
+    store.updateTurn({
+      transcriptId,
+      turnId: "old-turn",
+      status: "completed",
+      messages: [{ role: "user", content: "old context" }],
+      entries: [{ kind: "message", message: { role: "user", content: "old context" } }],
+      usage: null,
+    });
+
+    const manager = new SessionManager(
+      0,
+      0,
+      "workspace-write",
+      undefined,
+      threadStorage,
+      { ADS_AGENT_RUNTIME: "native", ADS_WEB_SESSION_PEPPER: "test-only-pepper" },
+      { stateDbPath: dbPath, lane: "worker" },
+    );
+    try {
+      manager.getOrCreate(userId, directory, true, {
+        authUserId: owner,
+        projectId,
+        lifecycle: "durable",
+      });
+      assert.equal(threadStorage.getRecord(userId)?.nativeTranscriptId, transcriptId);
+      manager.dropSession(userId);
+      assert.equal(store.listTurns(transcriptId).length, 1);
+
+      manager.reset(userId);
+      assert.deepEqual(store.listTurns(transcriptId), []);
+      assert.equal(threadStorage.getRecord(userId), undefined);
+    } finally {
+      manager.destroy();
+      closeAllStateDatabases();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });

@@ -17,6 +17,7 @@ export type SavedSessionState = {
   activeAgentId?: AgentIdentifier;
   runtimeBackend?: AgentRuntimeBackend;
   lifecycle?: SessionLifecycle;
+  nativeTranscriptId?: string;
 };
 
 export type ContextRestoreMode = "fresh" | "thread_resumed" | "history_injection";
@@ -35,6 +36,7 @@ export type ActiveSessionState = {
   activeAgentId?: AgentIdentifier;
   runtimeBackend?: AgentRuntimeBackend;
   lifecycle?: SessionLifecycle;
+  nativeTranscriptId?: string;
 };
 
 export class RuntimeBackendMismatchError extends Error {
@@ -66,6 +68,7 @@ export function getSavedSessionState(storage: ThreadStorage | undefined, userId:
     activeAgentId: record.activeAgentId === "codex" ? "codex" : undefined,
     runtimeBackend: record.runtimeBackend,
     lifecycle: record.lifecycle,
+    nativeTranscriptId: record.nativeTranscriptId,
   };
 }
 
@@ -269,7 +272,8 @@ export function clearSavedResumeThreadId(storage: ThreadStorage | undefined, use
     !record.modelReasoningEffort &&
     !record.activeAgentId &&
     !record.runtimeBackend &&
-    !record.lifecycle
+    !record.lifecycle &&
+    !record.nativeTranscriptId
   ) {
     storage.removeThread(userId);
     return;
@@ -283,6 +287,7 @@ export function clearSavedResumeThreadId(storage: ThreadStorage | undefined, use
     activeAgentId: record.activeAgentId,
     runtimeBackend: record.runtimeBackend,
     lifecycle: record.lifecycle,
+    nativeTranscriptId: record.nativeTranscriptId,
   });
 }
 
@@ -296,6 +301,7 @@ export function buildSyncedSessionState(args: {
   clearThreads?: boolean;
   runtimeBackend?: AgentRuntimeBackend;
   lifecycle?: SessionLifecycle;
+  nativeTranscriptId?: string;
 }): SavedSessionState {
   const nativeRuntime = args.runtimeBackend === "native";
   const ambiguousLegacyThread = Boolean(
@@ -323,6 +329,9 @@ export function buildSyncedSessionState(args: {
       : {}),
     ...(args.lifecycle ?? args.storedState?.lifecycle
       ? { lifecycle: args.lifecycle ?? args.storedState?.lifecycle }
+      : {}),
+    ...(args.nativeTranscriptId ?? args.storedState?.nativeTranscriptId
+      ? { nativeTranscriptId: args.nativeTranscriptId ?? args.storedState?.nativeTranscriptId }
       : {}),
   };
 }

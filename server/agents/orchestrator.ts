@@ -50,6 +50,7 @@ export class HybridOrchestrator {
   private readonly systemPromptManager?: SystemPromptManager;
   private readonly skillAutoloadEnabled: boolean;
   private readonly skillAutosaveEnabled: boolean;
+  private inFlightTurns = 0;
 
   constructor(options: HybridOrchestratorOptions) {
     if (!options.adapters.length) {
@@ -387,12 +388,18 @@ export class HybridOrchestrator {
     options?: AgentSendOptions,
   ): Promise<AgentRunResult> {
     const prompt = this.applySystemPrompt(agentId, input);
+    this.inFlightTurns += 1;
     try {
       const result = await entry.adapter.send(prompt, options);
       return this.buildResultWithSavedArtifacts(result);
     } finally {
+      this.inFlightTurns -= 1;
       this.completeTurn(agentId);
     }
+  }
+
+  isBusy(): boolean {
+    return this.inFlightTurns > 0;
   }
 
   status(): AgentStatus & { agentId: AgentIdentifier } {
