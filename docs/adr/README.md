@@ -36,4 +36,5 @@
 - 0021 - [ADR 0021: Enforce Exclusive Runtime Backend and Session Lifecycle](0021-exclusive-runtime-backend-lifecycle.md)
 - 0022 - [ADR 0022: 持久化 Native Runtime Transcript](0022-persist-native-runtime-transcripts.md)
 - 0023 - [ADR 0023: 为 Native Runtime 引入 Token-aware Context Projection](0023-token-aware-native-context-projection.md)
+- 0024 - [ADR 0024: Define Native Provider Capability Contracts](0024-native-provider-capability-contract.md)
 <!-- ADS:ADR_INDEX_END -->

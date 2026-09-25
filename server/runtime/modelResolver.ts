@@ -4,6 +4,10 @@ import { normalizeConfiguredReasoningEffort } from "../state/modelConfigTypes.js
 import { createUpstreamCredentialStore } from "../state/upstreamCredentialStore.js";
 import { getStateDatabase } from "../state/database.js";
 import { normalizeUpstreamBaseUrl } from "../utils/upstreamUrl.js";
+import {
+  resolveNativeProviderCapabilities,
+  type NativeProviderCapabilities,
+} from "./nativeProviderCapabilities.js";
 
 export interface NativeModelRequestOptions {
   temperature?: number;
@@ -18,6 +22,7 @@ export interface NativeModelConfig {
   apiKey: string;
   provider: string;
   contextWindow?: number;
+  capabilities?: Partial<NativeProviderCapabilities>;
   options?: NativeModelRequestOptions;
   supportsReasoningEffort?: boolean;
 }
@@ -165,6 +170,18 @@ function resolveSavedModelConfig(
   }
 
   const resolvedContextWindow = contextWindow(config);
+  const capabilities = resolveNativeProviderCapabilities(config);
+  const hasExplicitCapabilities = config && (
+    "capabilities" in config
+    || "supportsStructuredOutput" in config
+    || "structuredOutput" in config
+    || "supportsReasoningEffort" in config
+    || "reasoningEffortSupported" in config
+    || "supportsImageInput" in config
+    || "imageInput" in config
+    || "providerOptions" in config
+    || "supportsProviderOptions" in config
+  );
   return {
     model: String(saved.modelId ?? model).trim() || model,
     baseUrl,
@@ -172,6 +189,7 @@ function resolveSavedModelConfig(
     provider: savedProvider || (credentials?.provider ?? "openai"),
     options: requestOptions(config),
     ...(resolvedContextWindow ? { contextWindow: resolvedContextWindow } : {}),
+    ...(hasExplicitCapabilities ? { capabilities } : {}),
     ...(inferReasoningEffortSupport(config, String(saved.modelId ?? model).trim() || model)
       ? { supportsReasoningEffort: true }
       : {}),

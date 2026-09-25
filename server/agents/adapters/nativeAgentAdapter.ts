@@ -26,6 +26,10 @@ import {
   formatNativeContextDiagnostic,
   projectNativeContext,
 } from "../../runtime/nativeContextProjection.js";
+import {
+  NativeCapabilityError,
+  resolveNativeProviderCapabilities,
+} from "../../runtime/nativeProviderCapabilities.js";
 import { getStateDatabase } from "../../state/database.js";
 import {
   NativeTranscriptStore,
@@ -94,7 +98,7 @@ function textFromInput(input: Input): string {
   if (typeof input === "string") return input;
   if (!Array.isArray(input)) return String(input ?? "");
   const localImage = input.find((part) => part.type === "local_image");
-  if (localImage) throw new Error("Native runtime does not support local image input yet");
+  if (localImage) throw new NativeCapabilityError("imageInput");
   return input
     .filter((part): part is { type: "text"; text: string } => part.type === "text")
     .map((part) => part.text)
@@ -253,8 +257,9 @@ export class NativeAgentAdapter implements AgentAdapter {
 
   status(): AgentStatus {
     try {
-      this.resolver.resolve(this.model, this.modelConfig);
-      return { ready: true, streaming: true };
+      const model = this.resolver.resolve(this.model, this.modelConfig);
+      const capabilities = resolveNativeProviderCapabilities(model.capabilities);
+      return { ready: true, streaming: capabilities.streaming === "supported" };
     } catch (error) {
       return {
         ready: false,
@@ -417,11 +422,33 @@ export class NativeAgentAdapter implements AgentAdapter {
   private async runTurn(input: Input, options: AgentSendOptions): Promise<AgentRunResult> {
     const userText = textFromInput(input);
     const model = this.resolver.resolve(this.model, this.modelConfig);
+    const capabilities = resolveNativeProviderCapabilities(model.capabilities);
+    if (model.capabilities === undefined && model.supportsReasoningEffort !== undefined) {
+      capabilities.reasoningEffort = model.supportsReasoningEffort ? "supported" : "unsupported";
+    }
+    const streaming = options.streaming !== false;
+    if (!streaming && capabilities.nonStreaming !== "supported") {
+      throw new NativeCapabilityError("nonStreaming");
+    }
+    if (streaming && capabilities.streaming !== "supported") {
+      throw new NativeCapabilityError("streaming");
+    }
+    if (options.outputSchema !== undefined && capabilities.structuredOutput !== "supported") {
+      throw new NativeCapabilityError("structuredOutput", "configure the provider capability before requesting structured output");
+    }
+    const configuredReasoningEffort = model.options?.reasoningEffort;
+    const requestedReasoningEffort = this.modelReasoningEffort ?? configuredReasoningEffort;
+    if (requestedReasoningEffort && capabilities.reasoningEffort !== "supported") {
+      throw new NativeCapabilityError(
+        "reasoningEffort",
+        `requested effort "${requestedReasoningEffort}" but the provider capability is ${capabilities.reasoningEffort}`,
+      );
+    }
     this.transcriptStore?.addRedactions([model.apiKey]);
     const requestOptions = {
       ...model.options,
-      supportsReasoningEffort: model.supportsReasoningEffort === true,
-      reasoningEffort: model.supportsReasoningEffort === true
+      supportsReasoningEffort: capabilities.reasoningEffort === "supported",
+      reasoningEffort: capabilities.reasoningEffort === "supported"
         ? this.modelReasoningEffort ?? model.options?.reasoningEffort
         : undefined,
     };
@@ -506,10 +533,16 @@ export class NativeAgentAdapter implements AgentAdapter {
           options: requestOptions,
           signal: combined.signal,
           fetchImpl: this.fetchImpl,
-          onTextDelta: (snapshot) => {
-            roundText = snapshot;
-            this.emitResponseSnapshot(itemId, roundText);
-          },
+          ...(streaming
+            ? {
+                onTextDelta: (snapshot: string) => {
+                  roundText = snapshot;
+                  this.emitResponseSnapshot(itemId, roundText);
+                },
+              }
+            : {}),
+          streaming,
+          outputSchema: options.outputSchema,
         });
         usage = addUsage(usage, completion.usage);
         responseText += completion.text;
