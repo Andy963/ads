@@ -42,6 +42,15 @@ export async function verifyLocalFirstTranscript({ page, context, fixture, frame
       configurable: true, get: () => native.get.call(root),
       set: (value) => { window.__localFirstProbe.writes.push(value); native.set.call(root, value); },
     });
+    window.__localFirstProbe.reanchor = () => {
+      const probe = window.__localFirstProbe;
+      const anchor = [...root.querySelectorAll(".msg")]
+        .find((row) => row.getBoundingClientRect().bottom > root.getBoundingClientRect().top);
+      probe.scrollTop = native.get.call(root);
+      probe.anchor = anchor;
+      probe.anchorTop = anchor.getBoundingClientRect().top;
+      probe.writes = [];
+    };
   });
   const snapshot = () => page.evaluate(() => {
     const probe = window.__localFirstProbe;
@@ -69,6 +78,17 @@ export async function verifyLocalFirstTranscript({ page, context, fixture, frame
     const release = fixture.holdReply(marker);
     await send(marker);
     await until(() => fixture.received.some((entry) => entry.marker === marker), "held provider request");
+    // Submission intentionally follows the newly sent turn. Park the viewport
+    // away from the tail again while the provider reply is still held, then
+    // rebase the probe so this stage measures only reconnect and HTTP delta
+    // catch-up stability.
+    await chat.evaluate((root) => {
+      root.dispatchEvent(new Event("wheel"));
+      root.scrollTop = Math.max(300, (root.scrollHeight - root.clientHeight) / 2);
+      root.dispatchEvent(new Event("scroll"));
+    });
+    await settle();
+    await chat.evaluate(() => window.__localFirstProbe.reanchor());
     const deltaStart = frames.length;
     const responseStart = syncResponses.length;
     fixture.disconnectClients();

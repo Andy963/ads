@@ -482,6 +482,12 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     const newChatSessionId = crypto.randomUUID?.() ?? randomId("chat");
     updateProject(pid, { chatSessionId: newChatSessionId });
     activeRuntime.value.chatSessionId = newChatSessionId;
+    ctx.transcriptCache.attach(activeRuntime.value, {
+      projectId: pid,
+      sessionId: project.sessionId,
+      chatSessionId: newChatSessionId,
+      workspace: project.path,
+    });
     activeRuntime.value.ignoreNextHistory = false;
     activeRuntime.value.ignoreNextHistoryGeneration = undefined;
     activeRuntime.value.suppressNextClearHistoryResult = false;
