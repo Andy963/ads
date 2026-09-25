@@ -1,6 +1,7 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
-import { BASE_LANE_PROMPTS, LANE_NAMES, type LaneName, isLaneName } from "./lanePromptDefaults.js";
+import { normalizeLaneId } from "../../shared/terminology.js";
+import { BASE_LANE_PROMPTS, LANE_NAMES, type LaneName } from "./lanePromptDefaults.js";
 
 export const MAX_LANE_PROMPT_LENGTH = 100_000;
 
@@ -26,10 +27,18 @@ export type ActiveLanePrompt = {
   prompt: string;
 };
 
+/**
+ * Resolve any accepted lane input to its canonical id.
+ *
+ * Legacy `advisor` / `worker` / `planner` spellings are accepted on read and
+ * resolved to the lane they denote, per the compatibility matrix. Everything
+ * downstream -- and every write -- uses only the canonical value.
+ */
 function validateLane(value: unknown): LaneName {
-  const lane = String(value ?? "").trim().toLowerCase();
-  if (!isLaneName(lane)) {
-    throw new Error(`Unknown lane: ${lane || "empty"}`);
+  const lane = normalizeLaneId(value);
+  if (!lane) {
+    const raw = String(value ?? "").trim().toLowerCase();
+    throw new Error(`Unknown lane: ${raw || "empty"}`);
   }
   return lane;
 }
@@ -58,7 +67,7 @@ function toVersion(row: Record<string, unknown>): LanePromptVersion {
 export function ensureLanePromptTables(db: DatabaseType, now = Date.now()): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS lane_system_prompt_versions (
-      lane TEXT NOT NULL CHECK (lane IN ('advisor', 'worker')),
+      lane TEXT NOT NULL CHECK (lane IN ('acopilot', 'actions')),
       version INTEGER NOT NULL CHECK (version >= 1),
       prompt TEXT NOT NULL,
       is_base INTEGER NOT NULL DEFAULT 0 CHECK (is_base IN (0, 1)),
@@ -71,7 +80,7 @@ export function ensureLanePromptTables(db: DatabaseType, now = Date.now()): void
       WHERE is_base = 1;
 
     CREATE TABLE IF NOT EXISTS lane_system_prompt_state (
-      lane TEXT PRIMARY KEY CHECK (lane IN ('advisor', 'worker')),
+      lane TEXT PRIMARY KEY CHECK (lane IN ('acopilot', 'actions')),
       current_version INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       FOREIGN KEY (lane, current_version)

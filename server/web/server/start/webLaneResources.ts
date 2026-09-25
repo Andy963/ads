@@ -1,4 +1,5 @@
 import type { SandboxMode } from "../../../config.js";
+import type { CanonicalLaneId } from "../../../../shared/terminology.js";
 import {
   SessionManager,
   resolveSessionAgentAllowlist,
@@ -136,7 +137,7 @@ export type WebLaneResources = {
 
 function createLaneRuntime(args: {
   namespace: string;
-  lane: "advisor" | "worker";
+  lane: CanonicalLaneId;
   sandboxMode: SandboxMode;
   defaultModel?: string;
   sessionTimeoutMs: number;
@@ -222,7 +223,7 @@ export function createWebLaneResources(args: {
   return {
     worker: createLaneRuntime({
       namespace: WEB_WORKER_NAMESPACE,
-      lane: "worker",
+      lane: "actions",
       sandboxMode: "danger-full-access",
       sessionTimeoutMs: args.sessionTimeoutMs,
       sessionCleanupIntervalMs: args.sessionCleanupIntervalMs,
@@ -234,7 +235,7 @@ export function createWebLaneResources(args: {
     }),
     advisor: createLaneRuntime({
       namespace: WEB_ADVISOR_NAMESPACE,
-      lane: "advisor",
+      lane: "acopilot",
       // The Advisor uses danger-full-access for planning and GitHub operations (e.g. gh CLI).
       sandboxMode: advisorSandboxMode,
       defaultModel: args.advisorCodexModel,
