@@ -408,4 +408,119 @@ describe("web/promptQueueService", () => {
     db.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
+
+  it("reports recent completions so a returning client can purge its restored cards", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-prompt-queue-completed-snapshot-"));
+    const db = new DatabaseConstructor(path.join(tempDir, "state.db"));
+    const store = createPromptQueueStore(db);
+    const lane = {
+      authUserId: "auth-1",
+      userId: 7,
+      sessionId: "session-1",
+      chatSessionId: "main",
+      historyKey: "auth-1::session-1::main",
+      logicalHistoryKey: "auth-1::session-1::main",
+      laneNamespace: "auth-1::session-1",
+      laneGeneration: 1,
+      workspaceRoot: "/workspace/project",
+    };
+    const now = Date.now();
+    const recent = store.enqueue({ ...lane, clientMessageId: "done-recent", payload: { text: "recent" } });
+    const stale = store.enqueue({ ...lane, clientMessageId: "done-stale", payload: { text: "stale" } });
+    store.enqueue({ ...lane, clientMessageId: "still-queued", payload: { text: "queued" } });
+    const complete = db.prepare("UPDATE prompt_queue SET status='completed', completed_at=?, updated_at=? WHERE id=?");
+    complete.run(now - 1_000, now - 1_000, recent.entry.id);
+    complete.run(now - 48 * 60 * 60 * 1_000, now - 48 * 60 * 60 * 1_000, stale.entry.id);
+
+    const service = new PromptQueueService({
+      store,
+      workerId: "worker-1",
+      resolveCurrentGeneration: () => 1,
+      runPrompt: async () => ({ ok: true }),
+      emitSnapshot: () => undefined,
+    });
+
+    // The stale completion is outside the window, but the recent one is
+    // reported: that is the signal the client needs to drop a card it
+    // restored from its local outbox.
+    assert.deepEqual(
+      service.getSnapshot(lane, now).map((entry) => entry.clientMessageId),
+      ["done-recent", "still-queued"],
+    );
+    db.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("keeps the newest completions and every live row when the snapshot overflows", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-prompt-queue-snapshot-cap-"));
+    const db = new DatabaseConstructor(path.join(tempDir, "state.db"));
+    const store = createPromptQueueStore(db);
+    const lane = {
+      authUserId: "auth-1",
+      userId: 7,
+      sessionId: "session-1",
+      chatSessionId: "main",
+      historyKey: "auth-1::session-1::main",
+      logicalHistoryKey: "auth-1::session-1::main",
+      laneNamespace: "auth-1::session-1",
+      laneGeneration: 1,
+      workspaceRoot: "/workspace/project",
+    };
+    const now = Date.now();
+    // Seeded directly and in one transaction: the cap is 200, so going through
+    // the enqueue path 251 times costs minutes of fsync for no extra coverage.
+    const seed = db.transaction((count) => {
+      const insert = db.prepare(
+        "INSERT INTO prompt_queue ("
+        + "client_message_id, auth_user_id, user_id, session_id, chat_session_id, "
+        + "history_key, logical_history_key, lane_namespace, lane_generation, "
+        + "workspace_root, payload_json, payload_hash, status, "
+        + "created_at, updated_at, completed_at"
+        + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 'hash', 'completed', ?, ?, ?)",
+      );
+      for (let index = 0; index < count; index += 1) {
+        // Completion time runs backwards against row id, the way a retried
+        // low-id row ends up with the newest completion. Trimming by id would
+        // drop the entry a returning client most likely still holds.
+        const completedAt = now - 1_000 - index;
+        insert.run(
+          "completed-" + String(index).padStart(3, "0"),
+          lane.authUserId,
+          lane.userId,
+          lane.sessionId,
+          lane.chatSessionId,
+          lane.historyKey,
+          lane.logicalHistoryKey,
+          lane.laneNamespace,
+          lane.laneGeneration,
+          lane.workspaceRoot,
+          completedAt,
+          completedAt,
+          completedAt,
+        );
+      }
+    });
+    seed(251);
+    store.enqueue({ ...lane, clientMessageId: "still-queued", payload: { text: "queued" } });
+
+    const service = new PromptQueueService({
+      store,
+      workerId: "worker-1",
+      resolveCurrentGeneration: () => 1,
+      runPrompt: async () => ({ ok: true }),
+      emitSnapshot: () => undefined,
+    });
+
+    const snapshot = service.getSnapshot(lane, now);
+    const ids = snapshot.map((entry) => entry.clientMessageId);
+    assert.equal(ids.length, 200);
+    // Live work is never trimmed to make room for the cap.
+    assert.ok(ids.includes("still-queued"));
+    // Trimming follows completion time, not row id: the lowest id here carries
+    // the newest completion, so it survives while the highest id does not.
+    assert.ok(ids.includes("completed-000"));
+    assert.ok(!ids.includes("completed-250"));
+    db.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
 });
