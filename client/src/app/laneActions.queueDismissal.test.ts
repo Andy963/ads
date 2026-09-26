@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { createAppContext, type AppContext, type ProjectRuntime, type QueuedPrompt } from "./controller";
+import { createAppContext, type AppContext, type ProjectRuntime } from "./controller";
 import { createChatActions } from "./chat";
 import { createLaneActions } from "./laneActions";
 
@@ -19,17 +19,6 @@ const createHarness = () => {
   return { actions, chat, runtime };
 };
 
-const restoredCard = (): QueuedPrompt => ({
-  id: "q-acopilot-restored",
-  clientMessageId: "cmid-acopilot-restored",
-  text: "resume the interrupted Advisor turn",
-  images: [],
-  createdAt: 1000,
-  restoredFromStorage: true,
-  replayIncomplete: true,
-  deliveryStatus: "offline",
-});
-
 describe("Acopilot queue dismissal", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -37,14 +26,28 @@ describe("Acopilot queue dismissal", () => {
   });
 
   it("persists removal of a restored card across a reconnect", () => {
-    const first = createHarness();
-    first.runtime.queuedPrompts.value = [restoredCard()];
+    localStorage.setItem(OUTBOX_KEY, JSON.stringify({
+      pending: {
+        clientMessageId: "cmid-acopilot-restored",
+        text: "resume the interrupted Advisor turn",
+        createdAt: 1000,
+      },
+      sent: [],
+      queued: [],
+      dismissed: [],
+    }));
 
-    first.actions.removeAcopilotQueuedPrompt("q-acopilot-restored");
+    const first = createHarness();
+    first.chat.restorePendingPrompt(first.runtime);
+    const promptId = first.runtime.queuedPrompts.value[0]?.id;
+    expect(promptId).toBeTruthy();
+
+    first.actions.removeAcopilotQueuedPrompt(String(promptId));
 
     expect(first.runtime.queuedPrompts.value).toEqual([]);
     expect(first.runtime.dismissedPromptIds).toEqual(new Set(["cmid-acopilot-restored"]));
-    const stored = JSON.parse(localStorage.getItem(OUTBOX_KEY) ?? "{}") as { dismissed?: string[] };
+    const stored = JSON.parse(localStorage.getItem(OUTBOX_KEY) ?? "{}") as { pending?: unknown; dismissed?: string[] };
+    expect(stored.pending).toBeNull();
     expect(stored.dismissed).toEqual(["cmid-acopilot-restored"]);
 
     const second = createHarness();
