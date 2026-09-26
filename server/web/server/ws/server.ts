@@ -1658,6 +1658,41 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
               safeJsonSend,
               sendWorkspaceState,
               broadcastWorkspaceState: (workspaceRoot) => broadcastWorkspaceStateForLane(lane, workspaceRoot),
+              cancelPrompt: (clientMessageId) => {
+                if (!promptQueueService) {
+                  return { ok: true as const, cancelled: false, reason: "already_cancelled" as const };
+                }
+                try {
+                  const result = promptQueueService.cancel({
+                    clientMessageId,
+                    authUserId: lane.authUserId,
+                    userId: lane.userId,
+                    sessionId: lane.sessionId,
+                    chatSessionId: lane.chatSessionId,
+                    historyKey: lane.historyKey,
+                    logicalHistoryKey: lane.logicalHistoryKey,
+                    laneNamespace: lane.laneNamespace,
+                    laneGeneration: lane.laneGeneration,
+                  });
+                  if (result.cancelled) {
+                    const event = appendSyncEventForLane(lane, {
+                      type: "prompt_queue_cancelled",
+                      clientMessageId,
+                      laneGeneration: lane.laneGeneration,
+                      eventId: `prompt_queue_cancelled:${clientMessageId}`,
+                    });
+                    if (event.ok) {
+                      broadcastJsonForLane(lane, event.payload);
+                    }
+                  }
+                  return { ok: true as const, cancelled: result.cancelled, reason: result.reason };
+                } catch (error) {
+                  return {
+                    ok: false as const,
+                    error: error instanceof Error ? error.message : String(error),
+                  };
+                }
+              },
               traceWsDuplication: config.traceWsDuplication,
               logger,
               updateWorkspaceRootMeta: (cwd) => {

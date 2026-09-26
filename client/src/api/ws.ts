@@ -101,6 +101,12 @@ export class AdsWebSocket {
     return this.send("prompt", payload, { clientMessageId: id });
   }
 
+  cancelPrompt(clientMessageId: string): boolean {
+    const id = String(clientMessageId ?? "").trim();
+    if (!id) return false;
+    return this.send("cancel_prompt", undefined, { clientMessageId: id });
+  }
+
   /** Returns false when the socket is not open, so the caller can fall back to HTTP. */
   interrupt(): boolean {
     return this.send("interrupt");

@@ -175,4 +175,59 @@ describe("state/promptQueueStore", () => {
     });
     assert.equal(store.releaseOwnership("owner-2"), true);
   });
+
+  it("cancels a still queued prompt and blocks its id from re-entering the queue", () => {
+    db = new DatabaseConstructor(":memory:");
+    const store = createPromptQueueStore(db);
+    const queued = store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
+    store.enqueue({ ...lane, clientMessageId: "client-2", payload: { text: "two" } });
+
+    const result = store.cancel({ ...lane, clientMessageId: "client-1" }, 1000);
+
+    assert.equal(result.cancelled, true);
+    assert.equal(result.reason, "cancelled");
+    assert.equal(result.entry?.id, queued.entry.id);
+    assert.equal(store.getByClientMessageId("client-1"), null);
+    // Cancelling one prompt must leave the rest of the lane intact.
+    assert.equal(store.getByClientMessageId("client-2")?.status, "queued");
+    assert.throws(
+      () => store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } }),
+      /was cancelled/,
+    );
+  });
+
+  it("refuses to cancel a running prompt so a queue delete cannot stop an in-flight turn", () => {
+    db = new DatabaseConstructor(":memory:");
+    const store = createPromptQueueStore(db);
+    assert.equal(store.claimOwnership("worker-1", 101, 900, 60_000, () => false).claimed, true);
+    const entry = store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } }).entry;
+    assert.equal(store.markRunning(entry.id, "worker-1", 1000), true);
+
+    const result = store.cancel({ ...lane, clientMessageId: "client-1" }, 1100);
+
+    assert.equal(result.cancelled, false);
+    assert.equal(result.reason, "not_queued");
+    assert.equal(store.getByClientMessageId("client-1")?.status, "running");
+    // No tombstone either: the id is still the live turn's identity, so the
+    // agent's own completion must not be rejected as a replay.
+    assert.equal(
+      store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } }).duplicate,
+      true,
+    );
+    assert.equal(store.markCompleted(entry.id, "worker-1", 1200), true);
+  });
+
+  it("treats a repeated cancellation as a no-op", () => {
+    db = new DatabaseConstructor(":memory:");
+    const store = createPromptQueueStore(db);
+    store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
+
+    const first = store.cancel({ ...lane, clientMessageId: "client-1" }, 1000);
+    const second = store.cancel({ ...lane, clientMessageId: "client-1" }, 2000);
+
+    assert.equal(first.cancelled, true);
+    assert.equal(second.cancelled, false);
+    assert.equal(second.reason, "already_cancelled");
+    assert.equal(second.entry, null);
+  });
 });

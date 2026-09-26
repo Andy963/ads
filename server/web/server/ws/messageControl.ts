@@ -100,6 +100,9 @@ export async function handleWsControlMessage(args: {
     sourceChatSessionId: string;
   }) => WsResetResult;
   completeAfterReset?: () => void;
+  cancelPrompt?: (clientMessageId: string) =>
+    | { ok: true; cancelled: boolean; reason: "cancelled" | "already_cancelled" | "not_queued" }
+    | { ok: false; error: string };
   logger: Pick<WsLogger, "info" | "warn">;
 }): Promise<{
   handled: boolean;
@@ -182,6 +185,42 @@ export async function handleWsControlMessage(args: {
     args.broadcastSessionReset?.(resetPayload);
     args.completeAfterReset?.();
     args.sendJson({ type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
+    return { handled: true, orchestrator: args.orchestrator };
+  }
+
+  if (args.parsed.type === "cancel_prompt") {
+    const payload = args.parsed.payload && typeof args.parsed.payload === "object" && !Array.isArray(args.parsed.payload)
+      ? args.parsed.payload as Record<string, unknown>
+      : null;
+    const clientMessageId = String(
+      args.parsed.client_message_id ?? payload?.clientMessageId ?? payload?.client_message_id ?? "",
+    ).trim();
+    if (!clientMessageId) {
+      args.sendJson({ type: "error", message: "Missing client message id for prompt cancellation" });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+    if (!args.cancelPrompt) {
+      args.sendJson({ type: "ack", client_message_id: clientMessageId, queue_status: "cancelled", duplicate: true });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+    let result:
+      | { ok: true; cancelled: boolean; reason: "cancelled" | "already_cancelled" | "not_queued" }
+      | { ok: false; error: string };
+    try {
+      result = args.cancelPrompt(clientMessageId);
+    } catch (error) {
+      result = { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+    if (!result.ok) {
+      args.sendJson({ type: "error", message: result.error, client_message_id: clientMessageId });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+    args.sendJson({
+      type: "ack",
+      client_message_id: clientMessageId,
+      queue_status: result.ok && !result.cancelled ? "ignored" : "cancelled",
+      duplicate: !result.cancelled,
+    });
     return { handled: true, orchestrator: args.orchestrator };
   }
 
