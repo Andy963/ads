@@ -1116,8 +1116,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             ? { ...prompt, deliveryStatus: "offline", serverQueueTracked: false }
             : prompt,
         );
+        const dismissed = rt.dismissedPromptIds ?? new Set<string>();
         rt.queuedPrompts.value = rt.queuedPrompts.value.filter(
-          (prompt) => prompt.deliveryStatus === "offline" || activeIds.has(prompt.clientMessageId),
+          (prompt) => !dismissed.has(prompt.clientMessageId)
+            && (prompt.deliveryStatus === "offline" || activeIds.has(prompt.clientMessageId)),
         );
       }
       return;
