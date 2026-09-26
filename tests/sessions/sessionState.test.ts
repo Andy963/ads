@@ -13,7 +13,6 @@ import {
   clearSavedResumeThreadId,
   getSavedResumeThreadId,
   resolveResumeState,
-  RuntimeBackendMismatchError,
 } from "../../server/sessions/sessionState.js";
 
 describe("telegram/sessionState helpers", () => {
@@ -392,7 +391,7 @@ describe("telegram/sessionState helpers", () => {
     assert.equal(resume.shouldInjectHistory, false);
   });
 
-  it("rejects a persisted backend mismatch explicitly", () => {
+  it("uses history injection when persisted runtime backend differs from active runtime", () => {
     storage.setRecord(18, {
       threadId: "native-execution",
       cwd: "/tmp/project",
@@ -402,21 +401,46 @@ describe("telegram/sessionState helpers", () => {
       lifecycle: "durable",
     });
 
-    assert.throws(
-      () => resolveResumeState({
-        userId: 18,
-        resumeThread: true,
-        storage,
-        logger: { info: () => {} },
-        currentCwd: "/tmp/project",
-        runtimeBackend: "codex-app-server",
-      }),
-      (error: unknown) => {
-        assert(error instanceof RuntimeBackendMismatchError);
-        assert.match(error.message, /Cross-runtime resume is not supported/);
-        return true;
-      },
-    );
+    const resume = resolveResumeState({
+      userId: 18,
+      resumeThread: true,
+      storage,
+      logger: { info: () => {} },
+      currentCwd: "/tmp/project",
+      runtimeBackend: "codex-app-server",
+    });
+
+    assert.deepEqual(resume, {
+      activeAgentId: "codex",
+      shouldInjectHistory: true,
+      restoreMode: "history_injection",
+    });
+  });
+
+  it("uses history injection when switching from codex-app-server to native runtime", () => {
+    storage.setRecord(22, {
+      threadId: "codex-thread-22",
+      cwd: "/tmp/project",
+      agentThreads: { codex: "codex-thread-22" },
+      activeAgentId: "codex",
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
+    });
+
+    const resume = resolveResumeState({
+      userId: 22,
+      resumeThread: true,
+      storage,
+      logger: { info: () => {} },
+      currentCwd: "/tmp/project",
+      runtimeBackend: "native",
+    });
+
+    assert.deepEqual(resume, {
+      activeAgentId: "codex",
+      shouldInjectHistory: true,
+      restoreMode: "history_injection",
+    });
   });
 
   it("defines backend capabilities without cross-runtime resume", () => {

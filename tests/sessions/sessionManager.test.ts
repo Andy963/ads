@@ -344,7 +344,7 @@ describe("SessionManager", () => {
     }
   });
 
-  it("rejects backend mismatches even when durable resume is disabled", () => {
+  it("allows cross-runtime continuation via history injection and updates stored backend metadata", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-runtime-mismatch-"));
     const storage = new ThreadStorage({
       namespace: "runtime-mismatch",
@@ -371,12 +371,13 @@ describe("SessionManager", () => {
     );
 
     try {
-      assert.throws(
-        () => codexManager.getOrCreate(3, directory, false),
-        /Cross-runtime resume is not supported/,
-      );
-      assert.equal(storage.getRecord(3)?.runtimeBackend, "native");
-      assert.equal(storage.getRecord(3)?.threadId, "native-thread");
+      const session = codexManager.getOrCreate(3, directory, true) as unknown as FakeSession;
+      assert.equal(session.threadId, null);
+      assert.equal(codexManager.getContextRestoreMode(3), "history_injection");
+      assert.equal(codexManager.needsHistoryInjection(3), true);
+      assert.equal(storage.getRecord(3)?.runtimeBackend, "codex-app-server");
+      assert.equal(storage.getRecord(3)?.threadId, undefined);
+      assert.deepEqual(storage.getRecord(3)?.agentThreads, {});
     } finally {
       codexManager.destroy();
       fs.rmSync(directory, { recursive: true, force: true });
