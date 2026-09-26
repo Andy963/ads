@@ -198,7 +198,7 @@ export function createChatActions(ctx: AppContext) {
     const isDismissed = (prompt: { clientMessageId?: unknown }): boolean =>
       dismissed.has(String(prompt.clientMessageId ?? "").trim());
     outbox.write(key, {
-      pending: nextPending,
+      pending: nextPending && !isDismissed(nextPending) ? nextPending : null,
       sent: nextSent.filter((prompt) => !isDismissed(prompt)),
       dismissed: Array.from(dismissed),
       queued: rt.queuedPrompts.value
@@ -375,6 +375,7 @@ export function createChatActions(ctx: AppContext) {
     const queuedByClientMessageId = new Set(
       rt.queuedPrompts.value.map((q) => String(q.clientMessageId ?? "").trim()),
     );
+    const dismissed = rt.dismissedPromptIds ?? new Set<string>();
 
     const restored: QueuedPrompt[] = [];
     const stored = snapshot.pending;
@@ -382,7 +383,7 @@ export function createChatActions(ctx: AppContext) {
       const clientMessageId = String(stored.clientMessageId ?? "").trim();
       // The pending prompt was already sent, so it is replayed with the
       // `replay_incomplete` marker rather than treated as a fresh queue entry.
-      if (clientMessageId && !queuedByClientMessageId.has(clientMessageId)) {
+      if (clientMessageId && !dismissed.has(clientMessageId) && !queuedByClientMessageId.has(clientMessageId)) {
         queuedByClientMessageId.add(clientMessageId);
         restored.push({
           id: randomId("q"),
@@ -399,7 +400,6 @@ export function createChatActions(ctx: AppContext) {
     }
 
     // Prompts still waiting their turn were never sent; they requeue as-is.
-    const dismissed = rt.dismissedPromptIds ?? new Set<string>();
     for (const queued of [...snapshot.sent, ...snapshot.queued]) {
       const clientMessageId = String(queued.clientMessageId ?? "").trim();
       if (!clientMessageId || queuedByClientMessageId.has(clientMessageId)) continue;
