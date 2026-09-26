@@ -11,10 +11,11 @@ import { resetStateDatabaseForTests } from "../../server/state/database.js";
 import { AsyncLock } from "../../server/utils/asyncLock.js";
 import { HistoryStore } from "../../server/utils/historyStore.js";
 import { SessionManager } from "../../server/sessions/sessionManager.js";
-import { RuntimeBackendMismatchError } from "../../server/sessions/sessionState.js";
+import { ThreadStorage } from "../../server/sessions/threadStorage.js";
 import { DirectoryManager } from "../../server/sessions/directoryManager.js";
 import { NoopAgentAvailability } from "../../server/agents/health/agentAvailability.js";
 import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
+import { buildWsConnectionIdentity } from "../../server/web/server/ws/connectionIdentity.js";
 
 type AuthStub = {
   authenticateRequest?: (req: http.IncomingMessage) => { ok: false } | { ok: true; userId: string; tokenHash?: string; connector?: true };
@@ -193,44 +194,64 @@ describe("web/server/ws security hardening", () => {
     assert.equal(code, 1009, "expected close code 1009 (message too big)");
   });
 
-  it("reports a runtime backend mismatch without registering partial client state", async (t) => {
-    const sessionManager = new SessionManager(0, 0, "workspace-write", "test-model");
-    sessionManager.getOrCreate = () => {
-      throw new RuntimeBackendMismatchError("native", "codex-app-server");
-    };
+  it("allows cross-runtime connection with history injection fallback", async (t) => {
+    const stateDbPath = process.env.ADS_STATE_DB_PATH as string;
+    const connectionIdentity = buildWsConnectionIdentity({
+      authUserId: "1",
+      sessionId: "test",
+      chatSessionId: "main",
+    });
+    const storage = new ThreadStorage({
+      namespace: "test-worker",
+      stateDbPath,
+      storagePath: path.join(tmpDir, "threads.json"),
+      saltPath: path.join(tmpDir, "salt"),
+    });
+    storage.setRecord(connectionIdentity.userId, {
+      threadId: "native-thread",
+      cwd: workspaceRoot,
+      agentThreads: { codex: "native-thread" },
+      runtimeBackend: "native",
+      lifecycle: "durable",
+      activeAgentId: "codex",
+    });
+
+    const workerSessionManager = new SessionManager(0, 0, "workspace-write", "test-model", storage);
     let clients: Set<WebSocket> | undefined;
-    let clientMetaByWs: Map<WebSocket, unknown> | undefined;
-    const port = await start(t, {}, {}, {
-      workerSessionManager: sessionManager,
+    const port = await start(t, {}, {
+      authenticateRequest: () => ({ ok: true, userId: "1" }),
+    }, {
+      workerSessionManager,
       onState: (state) => {
         clients = state.clients;
-        clientMetaByWs = state.clientMetaByWs;
       },
     });
     if (port === null) return;
 
     const client = connect(port);
-    const messagePromise = new Promise<Record<string, unknown>>((resolve) => {
-      client.once("message", (data) => {
-        resolve(JSON.parse(String(data)) as Record<string, unknown>);
-      });
+    await new Promise<void>((resolve, reject) => {
+      client.once("open", () => resolve());
+      client.once("error", (err) => reject(err));
+      setTimeout(() => reject(new Error("open timeout")), 1500);
     });
-    const closePromise = new Promise<number>((resolve) => {
-      client.once("close", (code) => resolve(code));
+    t.after(() => {
+      if (client.readyState !== WebSocket.CLOSED) {
+        client.terminate();
+      }
     });
 
-    const [message, code] = await Promise.race([
-      Promise.all([messagePromise, closePromise]),
-      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("mismatch close timeout")), 2000)),
-    ]);
-
-    assert.equal(code, 4400);
-    assert.equal(message.type, "error");
-    assert.equal(message.code, "runtime_backend_mismatch");
-    assert.equal(message.savedBackend, "native");
-    assert.equal(message.currentBackend, "codex-app-server");
-    assert.equal(clients?.size, 0);
-    assert.equal(clientMetaByWs?.size, 0);
+    let closedCode: number | null = null;
+    client.once("close", (c) => {
+      closedCode = c;
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 300));
+    assert.equal(closedCode, null, "mismatched backend session should not be closed");
+    assert.equal(client.readyState, WebSocket.OPEN);
+    assert.equal(clients?.size, 1);
+    assert.equal(workerSessionManager.getContextRestoreMode(connectionIdentity.userId), "history_injection");
+    assert.equal(workerSessionManager.needsHistoryInjection(connectionIdentity.userId), true);
+    client.close();
+    await new Promise<void>((resolve) => client.once("close", () => resolve()));
   });
 
   it("terminates a connection whose session is no longer valid", async (t) => {

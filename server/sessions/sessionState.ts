@@ -138,9 +138,6 @@ export function resolveResumeState(args: {
 }): ResumeState {
   const record = args.storage?.getRecord(args.userId);
   const currentBackend = args.runtimeBackend ?? "codex-app-server";
-  if (record?.runtimeBackend && record.runtimeBackend !== currentBackend) {
-    throw new RuntimeBackendMismatchError(record.runtimeBackend, currentBackend);
-  }
 
   if (!args.resumeThread) {
     args.logger.info(`[Continuity] user=${args.userId} restore=fresh reason=resume_not_requested`);
@@ -163,6 +160,17 @@ export function resolveResumeState(args: {
       activeAgentId: savedActiveAgentId,
       shouldInjectHistory: false,
       restoreMode: "fresh",
+    };
+  }
+
+  if (record?.runtimeBackend && record.runtimeBackend !== currentBackend) {
+    args.logger.info(
+      `[Continuity] user=${args.userId} restore=history_injection reason=runtime_backend_mismatch agent=${savedActiveAgentId ?? "unknown"} savedBackend=${record.runtimeBackend} currentBackend=${currentBackend}`,
+    );
+    return {
+      activeAgentId: savedActiveAgentId,
+      shouldInjectHistory: true,
+      restoreMode: "history_injection",
     };
   }
 
@@ -309,7 +317,12 @@ export function buildSyncedSessionState(args: {
     !args.storedState?.runtimeBackend &&
     (args.storedState?.threadId || Object.keys(args.storedState?.agentThreads ?? {}).length > 0),
   );
-  const clearThreads = Boolean(args.clearThreads || nativeRuntime || ambiguousLegacyThread);
+  const runtimeBackendChanged = Boolean(
+    args.runtimeBackend &&
+    args.storedState?.runtimeBackend &&
+    args.runtimeBackend !== args.storedState.runtimeBackend,
+  );
+  const clearThreads = Boolean(args.clearThreads || nativeRuntime || ambiguousLegacyThread || runtimeBackendChanged);
   return {
     threadId: clearThreads ? undefined : args.storedState?.threadId,
     cwd: args.cwd ?? args.sessionState?.cwd ?? args.storedState?.cwd,
@@ -330,8 +343,8 @@ export function buildSyncedSessionState(args: {
     ...(args.lifecycle ?? args.storedState?.lifecycle
       ? { lifecycle: args.lifecycle ?? args.storedState?.lifecycle }
       : {}),
-    ...(args.nativeTranscriptId ?? args.storedState?.nativeTranscriptId
-      ? { nativeTranscriptId: args.nativeTranscriptId ?? args.storedState?.nativeTranscriptId }
+    ...(args.nativeTranscriptId ?? (runtimeBackendChanged ? undefined : args.storedState?.nativeTranscriptId)
+      ? { nativeTranscriptId: args.nativeTranscriptId ?? (runtimeBackendChanged ? undefined : args.storedState?.nativeTranscriptId) }
       : {}),
   };
 }
