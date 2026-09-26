@@ -327,9 +327,13 @@ describe("web/server/ws/preflight-persistence", () => {
     const url = `ws://127.0.0.1:${port}`;
     const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
     const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+    let releasePrompt: (() => void) | null = null;
 
     try {
       await waitForWsOpen(client);
+      holdAgentRequests = new Promise<void>((resolve) => {
+        releasePrompt = resolve;
+      });
       client.send(JSON.stringify({ type: "command", payload: "echo slow", client_message_id: "slow-blocker" }));
       client.send(JSON.stringify({ type: "prompt", payload: "durable prompt", client_message_id: "durable-1" }));
 
@@ -340,6 +344,22 @@ describe("web/server/ws/preflight-persistence", () => {
       );
       assert.equal(firstAck.queue_status, "queued");
       assert.equal(promptQueueStore.getByClientMessageId("durable-1") !== null, true);
+      const runningDeadline = Date.now() + 2000;
+      while (promptQueueStore.getByClientMessageId("durable-1")?.status !== "running") {
+        assert.ok(Date.now() < runningDeadline, "durable prompt should be visible while running");
+        await delay(5);
+      }
+      const promptLifecycle = syncEventStore.readAfter({
+        namespace: resolveSyncNamespace("main"),
+        laneKey: "test::test::main",
+      }).events.find((event) =>
+        event.type === "prompt_queue"
+        && (event.payload.entry as Record<string, unknown>)?.clientMessageId === "durable-1",
+      );
+      assert.equal((promptLifecycle?.payload.entry as Record<string, unknown>)?.text, "durable prompt");
+      releasePrompt?.();
+      releasePrompt = null;
+      holdAgentRequests = null;
 
       client.send(JSON.stringify({ type: "prompt", payload: "durable prompt", client_message_id: "durable-1" }));
       const duplicateAck = await waitForWsMessage(
@@ -354,6 +374,8 @@ describe("web/server/ws/preflight-persistence", () => {
       );
       assert.equal(history.length, 1);
     } finally {
+      releasePrompt?.();
+      holdAgentRequests = null;
       client.terminate();
     }
   });

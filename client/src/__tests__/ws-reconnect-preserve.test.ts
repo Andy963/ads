@@ -1231,6 +1231,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
       type: "prompt_queue_snapshot",
       entries: [{
         clientMessageId: "server-queued-1",
+        text: "server-owned prompt",
         status: "queued",
         position: 1,
         attempts: 0,
@@ -1247,6 +1248,49 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
       queuePosition: 1,
       serverQueueTracked: true,
     });
+    wrapper.unmount();
+  });
+
+  it("drops a restored card when resume history completes after the queue snapshot", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+    const clientMessageId = "resume-completed-after-snapshot";
+    rt.queuedPrompts.value = [{
+      id: "restored-card",
+      clientMessageId,
+      text: "already completed",
+      images: [],
+      createdAt: 1,
+      restoredFromStorage: true,
+    }];
+    seedOutboxPending("main", { clientMessageId, text: "already completed", createdAt: 1 });
+
+    lastWs!.onMessage?.({
+      type: "prompt_queue_snapshot",
+      entries: [{
+        clientMessageId,
+        text: "already completed",
+        status: "queued",
+        position: 1,
+        attempts: 1,
+        createdAt: 1,
+        updatedAt: 2,
+      }],
+    });
+    await settleUi(wrapper);
+    expect(rt.queuedPrompts.value).toHaveLength(1);
+
+    rt.resumeReplacePending = true;
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        { role: "user", text: "already completed", kind: `client_message_id:${clientMessageId}`, ts: 1 },
+        { role: "ai", text: "done", ts: 2 },
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(localStorage.getItem("ads.outbox.default.main")).toBeNull();
     wrapper.unmount();
   });
 

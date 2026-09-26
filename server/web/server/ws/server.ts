@@ -46,6 +46,7 @@ import { onTaskTerminalEvent } from "../../taskNotifications/taskNotificationDis
 import { handlePromptMessage } from "./handlePrompt.js";
 import { ensureWsSessionLogger } from "./messageControl.js";
 import type { WsMessage } from "./schema.js";
+import { buildPromptHistoryText } from "./promptHistory.js";
 import { PromptQueueService } from "../promptQueueService.js";
 import { getPromptQueueHistoryOutcome } from "../promptQueueHistory.js";
 import type { PromptQueueEntry } from "../../../state/promptQueueStore.js";
@@ -264,18 +265,22 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
   const getLaneHistoryKey = (logicalHistoryKey: string, laneGeneration: number): string =>
     laneGeneration > 1 ? `${logicalHistoryKey}:generation:${laneGeneration}` : logicalHistoryKey;
 
-  const publicPromptQueueEntry = (entry: PromptQueueEntry): Record<string, unknown> => ({
-    clientMessageId: entry.clientMessageId,
-    status: entry.status,
-    position: entry.position,
-    laneGeneration: entry.laneGeneration,
-    attempts: entry.attempts,
-    lastError: entry.lastError,
-    createdAt: entry.createdAt,
-    updatedAt: entry.updatedAt,
-    startedAt: entry.startedAt,
-    completedAt: entry.completedAt,
-  });
+  const publicPromptQueueEntry = (entry: PromptQueueEntry): Record<string, unknown> => {
+    const text = buildPromptHistoryText(entry.payload, commands.sanitizeInput).text;
+    return {
+      clientMessageId: entry.clientMessageId,
+      ...(text ? { text } : {}),
+      status: entry.status,
+      position: entry.position,
+      laneGeneration: entry.laneGeneration,
+      attempts: entry.attempts,
+      lastError: entry.lastError,
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+      startedAt: entry.startedAt,
+      completedAt: entry.completedAt,
+    };
+  };
 
   const promptQueueEventRevision = (entry: PromptQueueEntry): number => {
     const statusRevision: Record<PromptQueueEntry["status"], number> = {
@@ -468,7 +473,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
             logicalHistoryKey: entry.logicalHistoryKey,
             laneNamespace: entry.laneNamespace,
             laneGeneration: currentGeneration,
-          }).filter((candidate) => candidate.status !== "completed") ?? [entry];
+          }).filter((candidate) => candidate.status !== "completed") ?? [];
           const current = snapshot.find((candidate) => candidate.clientMessageId === entry.clientMessageId) ?? entry;
           // Routing and identity are separate concerns. The event is delivered to
           // whichever sockets own the lane *now*, so the routing key carries the

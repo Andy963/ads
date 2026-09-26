@@ -59,6 +59,7 @@ const ackFrame = (clientMessageId: string, queueStatus = "queued") => ({
 
 const queueEntry = (clientMessageId: string, status: string) => ({
   clientMessageId,
+  text: "queued prompt",
   status,
   position: 0,
   attempts: 1,
@@ -112,6 +113,17 @@ describe("issue-402 sent prompt renders once, not as a bubble plus a queue card"
     await settle();
 
     expect(cardsFor(rt, clientMessageId)).toHaveLength(0);
+  });
+
+  it("does not reconstruct a card from a running snapshot", async () => {
+    const { rt, handler } = mountHarness();
+    dropUserBubbles(rt);
+
+    handler({ type: "prompt_queue_snapshot", entries: [queueEntry("cmid-running", "running")] } as never);
+    await settle();
+
+    expect(cardsFor(rt, "cmid-running")).toHaveLength(0);
+    expect(rt.queuedPrompts.value.some((prompt) => prompt.text === "Server queued request")).toBe(false);
   });
 
   it("still appends exactly one card on prompt_queue when the stream holds no matching bubble", async () => {
@@ -192,7 +204,7 @@ describe("issue-402 sent prompt renders once, not as a bubble plus a queue card"
     const { rt, handler } = mountHarness();
     dropUserBubbles(rt);
 
-    handler({ type: "prompt_queue", entry: queueEntry("cmid-cleanup", "running") } as never);
+    handler({ type: "prompt_queue", entry: queueEntry("cmid-cleanup", "queued") } as never);
     await settle();
     expect(cardsFor(rt, "cmid-cleanup")).toHaveLength(1);
 

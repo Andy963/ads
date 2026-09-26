@@ -156,6 +156,53 @@ describe("web/ws/preflight", () => {
     }
   });
 
+  it("does not put an already consumed prompt back into the durable queue", () => {
+    const historyStore = new HistoryStore({ namespace: "test-preflight-consumed-queue", maxEntriesPerSession: 20 });
+    const sent: unknown[] = [];
+    let persistCalls = 0;
+    const historyKey = "history-consumed-queue";
+    const clientMessageId = "consumed-1";
+    historyStore.add(historyKey, {
+      role: "user",
+      text: "already consumed",
+      ts: 1,
+      kind: `client_message_id:${clientMessageId}`,
+    });
+    historyStore.add(historyKey, { role: "ai", text: "done", ts: 2 });
+
+    try {
+      const result = preflightPersistAndAck({
+        parsed: { type: "prompt", payload: { text: "already consumed" }, client_message_id: clientMessageId },
+        requestId: "req-consumed-queue",
+        clientMessageId,
+        receivedAt: 3,
+        historyStore,
+        historyKey,
+        sanitizeInput: (payload) => String((payload as { text?: unknown })?.text ?? payload ?? ""),
+        sendJson: (payload) => sent.push(payload),
+        traceWsDuplication: false,
+        warn: () => {},
+        sessionId: "session-1",
+        userId: 7,
+        persistPromptQueue: () => {
+          persistCalls += 1;
+          return { ok: true, duplicate: false, status: "queued" };
+        },
+      });
+
+      assert.deepEqual(result, { enqueue: false });
+      assert.equal(persistCalls, 0);
+      assert.deepEqual(sent, [{
+        type: "ack",
+        client_message_id: clientMessageId,
+        duplicate: true,
+        queue_status: "completed",
+      }]);
+    } finally {
+      historyStore.clear(historyKey);
+    }
+  });
+
   it("re-enqueues only explicitly recovered duplicate prompts that have no terminal result", () => {
     const historyStore = new HistoryStore({ namespace: "test-preflight-recovery", maxEntriesPerSession: 20 });
     const base = {
