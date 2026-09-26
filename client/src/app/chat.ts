@@ -694,9 +694,12 @@ export function createChatActions(ctx: AppContext) {
     const removed = state.queuedPrompts.value.find((q) => q.id === target);
     if (!removed) return;
     state.queuedPrompts.value = state.queuedPrompts.value.filter((q) => q.id !== target);
-    if (removed.serverQueueTracked !== true) return;
-    // The durable row outlives this card, so remember the dismissal; otherwise
-    // the next queue snapshot would just re-insert what the user dismissed.
+    const persisted = removed.serverQueueTracked === true
+      || removed.restoredFromStorage === true
+      || removed.replayIncomplete === true;
+    if (!persisted) return;
+    // Persisted queue state outlives this card, so remember the dismissal;
+    // otherwise the next reconnect would reinsert what the user dismissed.
     const clientMessageId = String(removed.clientMessageId ?? "").trim();
     if (!clientMessageId) return;
     state.dismissedPromptIds = state.dismissedPromptIds ?? new Set<string>();
