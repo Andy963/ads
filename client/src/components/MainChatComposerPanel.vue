@@ -459,10 +459,10 @@ onBeforeUnmount(() => {
           </svg>
         </button>
         <button
-          v-if="q.deliveryStatus === 'offline' || q.deliveryStatus === 'failed' || q.deliveryStatus === undefined"
           class="queue-action queue-action--remove"
           type="button"
           title="移除"
+          aria-label="移除排队消息"
           @click="emit('removeQueued', q.id)"
         >
           <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">

@@ -195,15 +195,32 @@ function hasCommittedUserBubble(rt: ProjectRuntime, clientMessageId: string): bo
 // still get a card: failed prompts, because the card is the only surface
 // carrying retry; and replayed prompts, because the bubble does not convey that
 // the backend has not confirmed the replay yet.
+//
+// A user abort is the exception. The server records an interrupted turn as a
+// failed durable row, but the user asked for it to stop, so no card may be
+// rebuilt from it: there is nothing left to retry and nothing left to wait for.
 function shouldSuppressQueueCard(
   rt: ProjectRuntime,
   clientMessageId: string,
   acknowledged: { replayIncomplete?: boolean } | null | undefined,
   status: string,
+  failureReason?: string,
 ): boolean {
-  if (status === "failed") return false;
+  if (status === "failed") return isUserAbortFailure(String(failureReason ?? ""));
   if (acknowledged?.replayIncomplete) return false;
   return hasCommittedUserBubble(rt, clientMessageId);
+}
+
+// Interrupting a turn cancels it. The running card has to disappear at once
+// instead of turning into a failed card that nothing will ever run again, and
+// the dismissal has to be recorded because the durable row outlives the card.
+function discardAbortedPromptCard(
+  rt: ProjectRuntime,
+  removeQueuedPrompt: (id: string, rt?: ProjectRuntime) => void,
+): void {
+  const aborted = rt.queuedPrompts.value.find((prompt) => prompt.deliveryStatus === "running");
+  if (!aborted) return;
+  removeQueuedPrompt(aborted.id, rt);
 }
 
 export type WsMessageHandlerArgs = {
@@ -219,6 +236,7 @@ export type WsMessageHandlerArgs = {
   applyResumeHistory: ChatActions["applyResumeHistory"];
   cancelPendingResume: ChatActions["cancelPendingResume"];
   clearPendingPrompt: ChatActions["clearPendingPrompt"];
+  removeQueuedPrompt: ChatActions["removeQueuedPrompt"];
   consumeSessionReset?: (payload: Record<string, unknown>) => boolean;
   clearStepLive: ChatActions["clearStepLive"];
   sealActiveStreamingAssistant?: ChatActions["sealActiveStreamingAssistant"];
@@ -248,6 +266,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     applyResumeHistory,
     cancelPendingResume,
     clearPendingPrompt,
+    removeQueuedPrompt,
     consumeSessionReset,
     clearStepLive,
     sealActiveStreamingAssistant,
@@ -1009,15 +1028,18 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         : undefined);
       if (queued) {
         const rawStatus = String(msg.queue_status ?? "queued");
+        const rawError = String(msg.error ?? "");
         if (rawStatus === "completed") {
           rt.queuedPrompts.value = rt.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== id);
+        } else if (rawStatus === "failed" && isUserAbortFailure(rawError)) {
+          if (existing) removeQueuedPrompt(existing.id, rt);
         } else if (existing) {
           rt.queuedPrompts.value = rt.queuedPrompts.value.map((prompt) =>
               prompt.clientMessageId === id
                 ? {
                     ...prompt,
                     deliveryStatus: rawStatus === "running" || rawStatus === "failed" ? rawStatus : "queued",
-                    queueError: rawStatus === "failed" ? String(msg.error ?? prompt.queueError ?? "") : prompt.queueError,
+                    queueError: rawStatus === "failed" ? rawError || prompt.queueError : prompt.queueError,
                     serverQueueTracked: true,
                     restoredFromStorage: false,
                     replayIncomplete: false,
@@ -1028,7 +1050,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
                   }
                 : prompt,
             );
-        } else if (!(rt.dismissedPromptIds?.has(id) ?? false) && !shouldSuppressQueueCard(rt, id, acknowledged, rawStatus)) {
+        } else if (!(rt.dismissedPromptIds?.has(id) ?? false) && !shouldSuppressQueueCard(rt, id, acknowledged, rawStatus, rawError)) {
           rt.queuedPrompts.value = [
             ...rt.queuedPrompts.value,
             {
@@ -1059,9 +1081,19 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (!clientMessageId) continue;
         const acknowledged = clearPendingPrompt(rt, clientMessageId);
         const status = String(record.status ?? "queued") as "queued" | "running" | "failed" | "completed";
+        const lastError = String(record.lastError ?? "");
+        const aborted = status === "failed" && isUserAbortFailure(lastError);
         // A card the user explicitly removed stays removed even though the
         // durable row is still on the server.
         if (rt.dismissedPromptIds?.has(clientMessageId)) continue;
+        // An interrupted turn is a cancellation, not a pending failure. Drop the
+        // card instead of parking a failed row above the composer that no lane
+        // will ever pick up again.
+        if (aborted) {
+          const card = rt.queuedPrompts.value.find((prompt) => prompt.clientMessageId === clientMessageId);
+          if (card) removeQueuedPrompt(card.id, rt);
+          continue;
+        }
         activeIds.add(clientMessageId);
         const existing = rt.queuedPrompts.value.find((prompt) => prompt.clientMessageId === clientMessageId);
         if (status === "completed") {
@@ -1084,7 +1116,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             : prompt);
           continue;
         }
-        if (!shouldSuppressQueueCard(rt, clientMessageId, acknowledged, status)) {
+        if (!shouldSuppressQueueCard(rt, clientMessageId, acknowledged, status, lastError)) {
           // `existing` is known to be absent here, so the stream is the only
           // local source for the card text.
           const text = rt.messages.value.find((message) => message.id === clientMessageId)?.content
@@ -2050,6 +2082,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           finiteTimestamp((msg as { ts?: unknown }).ts),
         );
       }
+      if (isUserAbort) discardAbortedPromptCard(rt, removeQueuedPrompt);
       void flushQueuedPrompts(rt, { preserveErrorStatus: true });
       return;
     }
