@@ -43,11 +43,13 @@ export type OutboxSnapshot = {
    * the next queue snapshot resurrects the card.
    */
   dismissed: string[];
+  /** Client ids the server has consumed and must never be restored. */
+  consumed?: string[];
 };
 
 export const OUTBOX_CHANNEL_NAME = "ads.outbox";
 
-const EMPTY: OutboxSnapshot = { pending: null, sent: [], queued: [], dismissed: [] };
+const EMPTY: OutboxSnapshot = { pending: null, sent: [], queued: [], dismissed: [], consumed: [] };
 
 /** An explicit auth boundary must not replay another account's private input. */
 export function clearPersistedOutboxes(): void {
@@ -137,14 +139,22 @@ function normalizeSnapshot(value: unknown): OutboxSnapshot {
     if (!clientMessageId || dismissed.includes(clientMessageId)) continue;
     dismissed.push(clientMessageId);
   }
-  return { pending, sent, queued, dismissed };
+  const consumedRaw = Array.isArray(record.consumed) ? record.consumed : [];
+  const consumed: string[] = [];
+  for (const entry of consumedRaw) {
+    const clientMessageId = String(entry ?? "").trim();
+    if (!clientMessageId || consumed.includes(clientMessageId)) continue;
+    consumed.push(clientMessageId);
+  }
+  return { pending, sent, queued, dismissed, consumed };
 }
 
 export function isEmptyOutboxSnapshot(snapshot: OutboxSnapshot): boolean {
   return !snapshot.pending
     && snapshot.sent.length === 0
     && snapshot.queued.length === 0
-    && snapshot.dismissed.length === 0;
+    && snapshot.dismissed.length === 0
+    && (snapshot.consumed?.length ?? 0) === 0;
 }
 
 export type OutboxStore = ReturnType<typeof createOutboxStore>;
@@ -234,6 +244,7 @@ export function createOutboxStore(options: { channelName?: string } = {}) {
       sent: current.sent,
       queued: current.queued,
       dismissed: current.dismissed,
+      consumed: current.consumed,
     });
   };
 

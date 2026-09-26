@@ -1115,7 +1115,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(lastSentPromptPayload).toBeNull();
     expect(rt.queuedPrompts.value).toEqual([]);
     expect(rt.pendingAckClientMessageId).toBeNull();
-    expect(localStorage.getItem("ads.outbox.default.main")).toBeNull();
+    expect(JSON.parse(localStorage.getItem("ads.outbox.default.main") ?? "{}").consumed).toContain("pending-1");
     expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).toEqual(["resume me", "done"]);
     expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(PENDING_PROMPT_REPLAY_NOTICE);
     wrapper.unmount();
@@ -1290,7 +1290,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     await settleUi(wrapper);
 
     expect(rt.queuedPrompts.value).toEqual([]);
-    expect(localStorage.getItem("ads.outbox.default.main")).toBeNull();
+    expect(JSON.parse(localStorage.getItem("ads.outbox.default.main") ?? "{}").consumed).toContain(clientMessageId);
     wrapper.unmount();
   });
 
@@ -1327,7 +1327,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.awaitingBootstrapHistory).toBe(false);
     expect(rt.queuedPrompts.value).toEqual([]);
     expect(rt.pendingAckClientMessageId).toBeNull();
-    expect(localStorage.getItem("ads.outbox.default.main")).toBeNull();
+    expect(JSON.parse(localStorage.getItem("ads.outbox.default.main") ?? "{}").consumed).toContain("pending-fresh");
     expect(lastSentPromptPayload).toBeNull();
     expect(rt.busy.value).toBe(true);
     expect(rt.inputLocked.value).toBe(true);
@@ -1401,7 +1401,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(lastSentPromptPayload).toBeNull();
     expect(rt.queuedPrompts.value).toEqual([]);
     expect(rt.pendingAckClientMessageId).toBeNull();
-    expect(localStorage.getItem("ads.outbox.default.main")).toBeNull();
+    expect(JSON.parse(localStorage.getItem("ads.outbox.default.main") ?? "{}").consumed).toContain("pending-completed");
     expect(lastSentPromptPayload).toBeNull();
     expect(rt.busy.value).toBe(false);
     expect(rt.turnInFlight).toBe(false);
@@ -1453,7 +1453,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.awaitingBootstrapHistory).toBe(false);
     expect(rt.queuedPrompts.value).toEqual([]);
     expect(rt.pendingAckClientMessageId).toBeNull();
-    expect(localStorage.getItem("ads.outbox.default.main")).toBeNull();
+    expect(JSON.parse(localStorage.getItem("ads.outbox.default.main") ?? "{}").consumed).toContain("pending-ignored");
     expect(lastSentPromptPayload).toBeNull();
     expect(rt.inputLocked.value).toBe(false);
     wrapper.unmount();

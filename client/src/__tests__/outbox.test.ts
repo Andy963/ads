@@ -124,4 +124,22 @@ describe("outbox store", () => {
     expect(reloaded.sent.map((entry) => entry.text)).toEqual(["first", "second"]);
     expect(reloaded.sent.every((entry) => entry.sentAwaitingAck)).toBe(true);
   });
+
+  it("retains consumed ids after the prompt entries are cleared", () => {
+    const store = createOutboxStore();
+    store.write(KEY, {
+      pending: null,
+      sent: [],
+      queued: [],
+      dismissed: [],
+      consumed: ["m-consumed"],
+    });
+
+    const reloaded = createOutboxStore().read(KEY);
+    expect(reloaded.pending).toBeNull();
+    expect(reloaded.sent).toEqual([]);
+    expect(reloaded.queued).toEqual([]);
+    expect(reloaded.consumed).toEqual(["m-consumed"]);
+    expect(localStorage.getItem(KEY)).not.toBeNull();
+  });
 });

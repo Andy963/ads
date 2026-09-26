@@ -78,8 +78,54 @@ describe("a restored queue card does not survive the server reporting the prompt
     await settle();
 
     expect(cardsFor(rt, clientMessageId)).toHaveLength(0);
-    // The outbox entry is gone too, so a later reconnect cannot resurrect it.
+    expect(rt.consumedPromptIds?.has(clientMessageId)).toBe(true);
+    expect(JSON.parse(localStorage.getItem("ads.outbox.session-1.main") ?? "{}").consumed).toEqual([clientMessageId]);
+    // The consumed marker prevents a later reconnect from resurrecting it.
     chat.restorePendingPrompt(rt);
+    expect(cardsFor(rt, clientMessageId)).toHaveLength(0);
+  });
+
+  it("marks a running prompt consumed before a stale queued snapshot can restore it", async () => {
+    const { chat, rt, handler } = mountHarness();
+    const clientMessageId = await sendPrompt(rt, chat, "already picked up by the worker");
+
+    chat.restorePendingPrompt(rt);
+    expect(cardsFor(rt, clientMessageId)).toHaveLength(1);
+
+    handler({
+      type: "prompt_queue_snapshot",
+      entries: [queueEntry(clientMessageId, "running")],
+    } as never);
+    await settle();
+
+    expect(cardsFor(rt, clientMessageId)).toHaveLength(0);
+    expect(rt.consumedPromptIds?.has(clientMessageId)).toBe(true);
+
+    localStorage.setItem("ads.outbox.session-1.main", JSON.stringify({
+      pending: null,
+      sent: [],
+      queued: [{ clientMessageId, text: "already picked up by the worker", createdAt: 1000 }],
+      dismissed: [],
+      consumed: [clientMessageId],
+    }));
+    chat.restorePendingPrompt(rt);
+
+    expect(cardsFor(rt, clientMessageId)).toHaveLength(0);
+  });
+
+  it("does not restore a queued entry already marked consumed", () => {
+    const clientMessageId = "cmid-consumed-queued";
+    localStorage.setItem("ads.outbox.session-1.main", JSON.stringify({
+      pending: { clientMessageId, text: "already consumed", createdAt: 1000 },
+      sent: [],
+      queued: [{ clientMessageId, text: "already consumed", createdAt: 1000 }],
+      dismissed: [],
+      consumed: [clientMessageId],
+    }));
+
+    const { chat, rt } = mountHarness();
+    chat.restorePendingPrompt(rt);
+
     expect(cardsFor(rt, clientMessageId)).toHaveLength(0);
   });
 

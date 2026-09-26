@@ -170,6 +170,8 @@ export type ProjectRuntime = {
   laneGeneration?: number;
   /** Client ids the user removed from a server-tracked card; see OutboxSnapshot. */
   dismissedPromptIds?: Set<string>;
+  /** Client ids consumed by the server; see OutboxSnapshot. */
+  consumedPromptIds?: Set<string>;
   laneGenerationScope?: string;
   lastConsumedResetGeneration?: number;
   legacySessionResetConsumed?: boolean;

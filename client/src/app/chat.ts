@@ -144,7 +144,7 @@ export function createChatActions(ctx: AppContext) {
   // Advisor rename is not lost; the next persistOutbox write lands on the new key.
   const readOutboxFor = (rt: ProjectRuntime): OutboxSnapshot => {
     const key = outboxKeyFor(rt);
-    if (!key) return { pending: null, sent: [], queued: [] };
+    if (!key) return { pending: null, sent: [], queued: [], dismissed: [], consumed: [] };
     const snapshot = outbox.read(key);
     if (!isEmptyOutboxSnapshot(snapshot) || rt.chatSessionId !== WIRE_ACOPILOT_SESSION_ID) {
       return snapshot;
@@ -195,49 +195,60 @@ export function createChatActions(ctx: AppContext) {
     const nextPending = pending === undefined ? current.pending : pending;
     const nextSent = sent === undefined ? current.sent : sent;
     const dismissed = rt.dismissedPromptIds ?? new Set<string>();
+    const consumed = rt.consumedPromptIds ?? new Set<string>();
     const isDismissed = (prompt: { clientMessageId?: unknown }): boolean =>
       dismissed.has(String(prompt.clientMessageId ?? "").trim());
+    const isConsumed = (prompt: { clientMessageId?: unknown }): boolean =>
+      consumed.has(String(prompt.clientMessageId ?? "").trim());
     outbox.write(key, {
-      pending: nextPending && !isDismissed(nextPending) ? nextPending : null,
-      sent: nextSent.filter((prompt) => !isDismissed(prompt)),
+      pending: nextPending && !isDismissed(nextPending) && !isConsumed(nextPending) ? nextPending : null,
+      sent: nextSent.filter((prompt) => !isDismissed(prompt) && !isConsumed(prompt)),
       dismissed: Array.from(dismissed),
+      consumed: Array.from(consumed),
       queued: rt.queuedPrompts.value
-        .filter((prompt) => !isDismissed(prompt))
+        .filter((prompt) => !isDismissed(prompt) && !isConsumed(prompt))
         .filter((prompt) => prompt.deliveryStatus === "offline" || prompt.restoredFromStorage || prompt.replayIncomplete)
         .map(toPersistedPrompt)
         .filter(Boolean) as PersistedPrompt[],
     });
   };
 
-  // A dismissal is terminal, not a hint. It used to be dropped whenever the id
-  // was still listed in the persisted outbox, on the theory that the entry was
-  // therefore still live. But a card the user removed is exactly the entry that
-  // lingers in the outbox, so that guard threw away the very dismissals it
-  // existed to keep, and the next reconnect rebuilt the card from storage.
-  const applyDismissals = (rt: ProjectRuntime, snapshot: OutboxSnapshot): void => {
+  const applyPersistedSuppressions = (rt: ProjectRuntime, snapshot: OutboxSnapshot): void => {
     const dismissed = rt.dismissedPromptIds ?? new Set<string>();
     for (const clientMessageId of snapshot.dismissed) {
       if (clientMessageId) dismissed.add(clientMessageId);
     }
     rt.dismissedPromptIds = dismissed;
     pruneDismissals(dismissed);
+    const consumed = rt.consumedPromptIds ?? new Set<string>();
+    for (const clientMessageId of snapshot.consumed ?? []) {
+      if (clientMessageId) consumed.add(clientMessageId);
+    }
+    rt.consumedPromptIds = consumed;
     const before = rt.queuedPrompts.value.length;
     const after = rt.queuedPrompts.value.filter(
-      (prompt) => !dismissed.has(prompt.clientMessageId),
+      (prompt) => !dismissed.has(prompt.clientMessageId) && !consumed.has(prompt.clientMessageId),
     );
     if (after.length !== before) rt.queuedPrompts.value = after;
   };
 
   const applyRemoteOutbox = (rt: ProjectRuntime, snapshot: OutboxSnapshot): void => {
-    applyDismissals(rt, snapshot);
+    applyPersistedSuppressions(rt, snapshot);
+    const dismissed = rt.dismissedPromptIds ?? new Set<string>();
+    const consumed = rt.consumedPromptIds ?? new Set<string>();
+    const isSuppressed = (clientMessageId: string): boolean =>
+      dismissed.has(clientMessageId) || consumed.has(clientMessageId);
     // Keep prompts this tab cannot persist (image prompts) plus every card the
     // server still owns. The outbox deliberately omits acknowledged work, so
     // trusting it alone would hide queued/running/failed cards until the next
     // authoritative queue event arrived.
     const localOnly = rt.queuedPrompts.value.filter(
-      (prompt) => prompt.images.length > 0 || prompt.serverQueueTracked === true,
+      (prompt) => !isSuppressed(prompt.clientMessageId)
+        && (prompt.images.length > 0 || prompt.serverQueueTracked === true),
     );
-    const shared = [...snapshot.sent, ...snapshot.queued].map((prompt) => {
+    const shared = [...snapshot.sent, ...snapshot.queued]
+      .filter((prompt) => !isSuppressed(prompt.clientMessageId))
+      .map((prompt) => {
       const existing = rt.queuedPrompts.value.find((q) => q.clientMessageId === prompt.clientMessageId);
       return existing ?? ({
         id: randomId("q"),
@@ -251,7 +262,7 @@ export function createChatActions(ctx: AppContext) {
         ...(prompt.replayIncomplete ? { replayIncomplete: true } : {}),
         ...(prompt.sentAwaitingAck ? { replayIncomplete: true, restoredFromStorage: true } : {}),
       } satisfies QueuedPrompt);
-    });
+      });
     // A delayed broadcast can still mention an id this tab already tracks (or the
     // same id twice). Merging blindly would render two cards for one prompt, with
     // duplicate keys and two competing retry/remove targets.
@@ -298,8 +309,8 @@ export function createChatActions(ctx: AppContext) {
     }
     peers.add(rt);
     // Restoring has to re-filter too: a reload can render the queue before this
-    // tab binds its outbox, and a card dismissed in a sibling tab must stay gone.
-    applyDismissals(rt, readOutboxFor(rt));
+    // tab binds its outbox, and a suppressed card must stay gone.
+    applyPersistedSuppressions(rt, readOutboxFor(rt));
     // `sync` so a queue change survives an immediate tab close.
     outboxBindingStops.add(watch(rt.queuedPrompts, () => persistOutbox(rt), { flush: "sync" }));
   };
@@ -376,6 +387,9 @@ export function createChatActions(ctx: AppContext) {
       rt.queuedPrompts.value.map((q) => String(q.clientMessageId ?? "").trim()),
     );
     const dismissed = rt.dismissedPromptIds ?? new Set<string>();
+    const consumed = rt.consumedPromptIds ?? new Set<string>();
+    const isSuppressed = (clientMessageId: string): boolean =>
+      dismissed.has(clientMessageId) || consumed.has(clientMessageId);
 
     const restored: QueuedPrompt[] = [];
     const stored = snapshot.pending;
@@ -383,7 +397,7 @@ export function createChatActions(ctx: AppContext) {
       const clientMessageId = String(stored.clientMessageId ?? "").trim();
       // The pending prompt was already sent, so it is replayed with the
       // `replay_incomplete` marker rather than treated as a fresh queue entry.
-      if (clientMessageId && !dismissed.has(clientMessageId) && !queuedByClientMessageId.has(clientMessageId)) {
+      if (clientMessageId && !isSuppressed(clientMessageId) && !queuedByClientMessageId.has(clientMessageId)) {
         queuedByClientMessageId.add(clientMessageId);
         restored.push({
           id: randomId("q"),
@@ -406,7 +420,7 @@ export function createChatActions(ctx: AppContext) {
       // Storage still holding a card the user removed is the normal case, not
       // an exception: honouring the dismissal here is what makes removal stick
       // across a restart instead of only for the lifetime of one page.
-      if (dismissed.has(clientMessageId)) continue;
+      if (isSuppressed(clientMessageId)) continue;
       queuedByClientMessageId.add(clientMessageId);
       restored.push({
         id: randomId("q"),
@@ -686,6 +700,27 @@ export function createChatActions(ctx: AppContext) {
     isLiveMessageId,
     randomId,
   });
+
+  const markPromptConsumed = (
+    rt: ProjectRuntime,
+    clientMessageId: string,
+    options: { onlyIfTracked?: boolean } = {},
+  ): void => {
+    const id = String(clientMessageId ?? "").trim();
+    if (!id) return;
+    const snapshot = readOutboxFor(rt);
+    const tracked = rt.queuedPrompts.value.some((prompt) => prompt.clientMessageId === id)
+      || snapshot.pending?.clientMessageId === id
+      || snapshot.sent.some((prompt) => prompt.clientMessageId === id)
+      || snapshot.queued.some((prompt) => prompt.clientMessageId === id);
+    if (options.onlyIfTracked && !tracked) return;
+    const consumed = rt.consumedPromptIds ?? new Set<string>();
+    consumed.add(id);
+    rt.consumedPromptIds = consumed;
+    rt.queuedPrompts.value = rt.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== id);
+    ensureOutboxBinding(rt);
+    persistOutbox(rt);
+  };
 
   const removeQueuedPrompt = (id: string, rt?: ProjectRuntime): void => {
     const target = String(id ?? "").trim();
@@ -1022,6 +1057,7 @@ export function createChatActions(ctx: AppContext) {
     savePendingPrompt,
     clearPendingPrompt,
     clearPendingPromptReplayState,
+    markPromptConsumed,
     restorePendingPrompt,
     trimChatItems,
     setMessages,
