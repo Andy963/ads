@@ -100,7 +100,7 @@ describe("Actions lane queue visibility and manual start button", () => {
         issue_id: 341,
         issue_title: "Implement manual start button",
         status: "queued",
-        current_step: "Developer should not render this in the queue",
+        current_step: "Developer step is visible in the queue",
         created_at: Date.now(),
         updated_at: Date.now(),
       },
@@ -135,7 +135,7 @@ describe("Actions lane queue visibility and manual start button", () => {
     expect(banner.findAll('[data-testid="actions-queue-row"]')).toHaveLength(2);
     expect(banner.text()).toContain("Implement manual start button");
     expect(banner.text()).toContain("Second queued task");
-    expect(banner.text()).not.toContain("Developer should not render this in the queue");
+    expect(banner.text()).toContain("Developer step is visible in the queue");
     expect(banner.text()).not.toContain("queued details stay in history");
 
     // The queue depth badge and the "Actions 队列" heading were removed: they
@@ -292,7 +292,8 @@ describe("Actions lane queue visibility and manual start button", () => {
     expect(rows[0].text()).toContain("Older Running Task");
     expect(rows[1].text()).toContain("QUEUED");
     expect(rows[1].text()).toContain("Newer Queued Task");
-    expect(banner.text()).not.toContain("Developer executing implementation on feature branch");
+    expect(banner.text()).toContain("Developer executing implementation on feature branch");
+    expect(rows[0].find(`[data-testid="actions-job-step-job-1"]`).exists()).toBe(true);
 
     wrapper.unmount();
   });
@@ -375,7 +376,7 @@ describe("Actions lane queue visibility and manual start button", () => {
     expect(rows[0].text()).toContain("Recover Actions reliability");
     expect(rows[1].text()).toContain("QUEUED");
     expect(rows[1].text()).toContain("Queued behind blocked job");
-    expect(banner.text()).not.toContain("Human attention required after 2 rework attempts.");
+    expect(banner.text()).toContain("Human attention required after 2 rework attempts.");
     expect(banner.text()).not.toContain("PR creation failed twice");
 
     await (wrapper.vm as any).triggerStartActionQueue();

@@ -166,7 +166,7 @@ describe("CodexAppServerAdapter", () => {
     // Verify request shape sent to the daemon.
     const threadStartRequest = fake.requests.find((r) => r.method === "thread/start");
     assert(threadStartRequest, "expected thread/start request");
-    assert.equal((threadStartRequest.params as any).approvalPolicy, "never");
+    assert.equal((threadStartRequest.params as any).approvalPolicy, "untrusted");
     const turnStartRequest = fake.requests.find((r) => r.method === "turn/start");
     assert(turnStartRequest, "expected turn/start request");
     assert.equal((turnStartRequest!.params as any).threadId, "thread-1");
@@ -182,12 +182,11 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
-  it("blocks dangerous commands at the app-server item boundary", async () => {
+  it("declines dangerous command approvals without aborting the turn", async () => {
     const fake = buildFakeServer({
       autoReplies: {
         "thread/start": () => ({ thread: { id: "thread-safety" } }),
         "turn/start": () => ({}),
-        "turn/interrupt": () => ({}),
       },
     });
     const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
@@ -198,16 +197,53 @@ describe("CodexAppServerAdapter", () => {
     const sendPromise = adapter.send("run the command");
     await waitForRequestCount(fake, "turn/start", 1);
     fake.notify("turn/started", { threadId: "thread-safety", turn: { id: "turn-safety" } });
-    fake.notify("item/started", {
-      item: { type: "commandExecution", id: "command-safety", command: "rm -f state.db", status: "in_progress" },
+    fake.stdout.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: "approval-safety",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        itemId: "command-safety",
+        command: "rm -f state.db",
+        threadId: "thread-safety",
+        turnId: "turn-safety",
+        startedAtMs: Date.now(),
+      },
+    })}\n`);
+
+    await new Promise<void>((resolve, reject) => {
+      const deadline = Date.now() + 1000;
+      const timer = setInterval(() => {
+        const response = fake.requests.find((request) => request.id === "approval-safety");
+        if (response) {
+          clearInterval(timer);
+          try {
+            assert.deepEqual(response.result, { decision: "decline" });
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        } else if (Date.now() >= deadline) {
+          clearInterval(timer);
+          reject(new Error("timed out waiting for command approval response"));
+        }
+      }, 5);
+    });
+    fake.notify("item/completed", {
+      item: { type: "commandExecution", id: "command-safety", command: "rm -f state.db", status: "declined" },
       threadId: "thread-safety",
       turnId: "turn-safety",
     });
+    fake.notify("item/completed", {
+      item: { type: "agentMessage", id: "message-safety", text: "I will use a safe command instead." },
+      threadId: "thread-safety",
+      turnId: "turn-safety",
+    });
+    fake.notify("turn/completed", { threadId: "thread-safety", turn: { id: "turn-safety" } });
 
-    await assert.rejects(sendPromise, /Command blocked by security rule: rm -f state\.db/);
-    await waitForRequestCount(fake, "turn/interrupt", 1);
-    assert(events.some((event) => event.phase === "error" && event.detail?.includes("state.db")));
-    assert.equal(events.some((event) => event.phase === "command"), false);
+    const result = await sendPromise;
+    assert.equal(result.response, "I will use a safe command instead.");
+    assert(events.some((event) => event.phase === "command" && event.detail?.includes("state.db")));
+    assert.equal(fake.requests.some((request) => request.method === "turn/interrupt"), false);
 
     await registry.stopAll();
   });
@@ -471,7 +507,7 @@ describe("CodexAppServerAdapter", () => {
     assert.equal(fake.requests.filter((request) => request.method === "thread/start").length, 0);
     const resumeRequest = fake.requests.find((request) => request.method === "thread/resume");
     assert(resumeRequest, "expected thread/resume request");
-    assert.equal((resumeRequest.params as any).approvalPolicy, "never");
+    assert.equal((resumeRequest.params as any).approvalPolicy, "untrusted");
     assert.equal(
       (fake.requests.find((request) => request.method === "turn/start")?.params as any)?.threadId,
       "thread-persisted-abc",

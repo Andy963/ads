@@ -50,6 +50,38 @@ const AUTOMATED_ACTION_INSTRUCTIONS = [
   "Implement the requested changes, run verification, and commit the implementation before responding.",
 ].join("\n");
 
+interface ActionJobStep {
+  status: ActionJobStatus;
+  step: string;
+  ts: number;
+}
+
+function parseActionJobSteps(value: string | null | undefined): ActionJobStep[] {
+  try {
+    const parsed = JSON.parse(String(value ?? "[]"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is ActionJobStep => (
+      Boolean(entry)
+      && typeof entry === "object"
+      && typeof (entry as ActionJobStep).step === "string"
+      && typeof (entry as ActionJobStep).status === "string"
+    ));
+  } catch {
+    return [];
+  }
+}
+
+function buildExecuteHistoryText(command: string, output: string): string {
+  const normalizedCommand = String(command ?? "").trim() || "command";
+  const normalizedOutput = String(output ?? "").replace(/\r\n/g, "\n").trim();
+  return normalizedOutput ? `$ ${normalizedCommand}\n${normalizedOutput}` : `$ ${normalizedCommand}`;
+}
+
+function isTerminalCommandPayload(payload: Record<string, unknown>): boolean {
+  const status = String(payload.status ?? "").trim().toLowerCase();
+  return status === "completed" || status === "failed" || status === "declined" || status === "cancelled";
+}
+
 function resolveCanonicalProjectId(projectId: string, repoPath?: string): string {
   const workspaceRoot = String(repoPath ?? "").trim();
   return workspaceRoot ? deriveProjectSessionId(workspaceRoot) : String(projectId ?? "").trim();
@@ -70,10 +102,7 @@ function generateJobId(issueId?: number | null): string {
 }
 
 function buildActionAgentEventPayload(event: AgentEvent, jobId: string, reviewer = false): Record<string, unknown> {
-  if (
-    (reviewer && event.phase === "responding")
-    || (event.phase !== "command" && event.phase !== "responding")
-  ) {
+  if (reviewer && event.phase === "responding") {
     return {};
   }
 
@@ -97,6 +126,54 @@ function buildActionAgentEventPayload(event: AgentEvent, jobId: string, reviewer
   const rawItem = event.raw && typeof event.raw === "object" && "item" in event.raw
     ? (event.raw as { item?: Record<string, unknown> }).item
     : undefined;
+  const eventType = event.raw && typeof event.raw === "object" && "type" in event.raw
+    ? String(event.raw.type)
+    : "";
+  const itemId = String(rawItem?.id ?? "").trim();
+
+  if (!reviewer && event.phase === "editing") {
+    const changes = Array.isArray(rawItem?.changes)
+      ? rawItem.changes
+        .map((change) => {
+          if (!change || typeof change !== "object") return null;
+          const entry = change as { kind?: unknown; path?: unknown };
+          const path = String(entry.path ?? "").trim();
+          if (!path) return null;
+          return { kind: String(entry.kind ?? "modify"), path };
+        })
+        .filter((entry): entry is { kind: string; path: string } => entry !== null)
+      : [];
+    const identity = `${jobId}:${itemId || "file-change"}`;
+    return {
+      type: "file_change",
+      title,
+      changes,
+      status: eventType === "item.completed" ? "completed" : "running",
+      identity,
+      id: itemId || identity,
+      jobId,
+      timestamp: event.timestamp,
+      phase: event.phase,
+      ...(reviewer ? {} : { raw: event.raw }),
+    };
+  }
+
+  if (!reviewer && (event.phase === "context" || event.phase === "tool" || event.phase === "connection")) {
+    return {
+      type: "action_step",
+      title,
+      detail: event.detail,
+      status: eventType === "item.completed" ? "completed" : "running",
+      jobId,
+      timestamp: event.timestamp,
+      phase: event.phase,
+    };
+  }
+
+  if (event.phase !== "command") {
+    return {};
+  }
+
   const command = String(rawItem?.command ?? event.detail ?? event.title ?? "").trim();
   const output = String(
     rawItem?.aggregated_output
@@ -108,12 +185,11 @@ function buildActionAgentEventPayload(event: AgentEvent, jobId: string, reviewer
       ?? "",
   );
   const rawStatus = String(rawItem?.status ?? "").trim().toLowerCase();
-  const status = rawStatus === "failed" || rawStatus === "completed"
-    ? rawStatus
+  const status = rawStatus === "failed" || rawStatus === "declined" || rawStatus === "completed"
+    ? (rawStatus === "declined" ? "failed" : rawStatus)
     : (event.raw && typeof event.raw === "object" && "type" in event.raw && event.raw.type === "item.completed")
       ? "completed"
       : "running";
-  const itemId = String(rawItem?.id ?? "").trim();
   const identity = `${jobId}:${itemId || command}`;
 
   const payload: Record<string, unknown> = {
@@ -383,7 +459,15 @@ export class LaneDispatchBus {
     status: ActionJobStatus,
     updates?: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "rework_count">>,
   ): ActionJobRecord | null {
-    updateActionJobStatus(this.db, jobId, status, updates);
+    const current = getActionJobById(this.db, jobId);
+    const nextUpdates = { ...(updates ?? {}) };
+    const nextStep = String(nextUpdates.current_step ?? "").trim();
+    if (current && nextStep && nextStep !== current.current_step) {
+      const steps = parseActionJobSteps(current.steps_json);
+      steps.push({ status, step: nextStep, ts: Date.now() });
+      nextUpdates.steps_json = JSON.stringify(steps);
+    }
+    updateActionJobStatus(this.db, jobId, status, nextUpdates);
     const updated = getActionJobById(this.db, jobId);
     if (updated && this.options.broadcastToActionsLane) {
       const historyKey = this.laneIdentityForJob(updated).historyKey;
@@ -393,6 +477,7 @@ export class LaneDispatchBus {
         issueId: updated.issue_id,
         status: updated.status,
         currentStep: updated.current_step,
+        steps: parseActionJobSteps(updated.steps_json),
         reworkCount: updated.rework_count,
         projectId: updated.project_id,
         ts: Date.now(),
@@ -662,9 +747,6 @@ export class LaneDispatchBus {
       const { authUserId, userId, historyKey } = identity;
       const abortCtrl = new AbortController();
       this.activeAbortControllers.set(jobId, abortCtrl);
-      if (this.options.interruptControllers) {
-        this.options.interruptControllers.set(historyKey, abortCtrl);
-      }
 
       // Record user prompt in history
       if (this.options.historyStore) {
@@ -701,14 +783,40 @@ export class LaneDispatchBus {
 
         // Attach event listener for real-time WebSocket streaming
         unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
+          const payload = buildActionAgentEventPayload(event, job.id);
+          if (Object.keys(payload).length === 0) return;
           if (this.options.broadcastToActionsLane) {
-            const payload = buildActionAgentEventPayload(event, job.id);
-            if (Object.keys(payload).length === 0) return;
             this.options.broadcastToActionsLane(
               payload,
               historyKey,
               projectId,
             );
+          }
+          if (this.options.historyStore && payload.type === "command" && isTerminalCommandPayload(payload)) {
+            this.options.historyStore.add(historyKey, {
+              role: "status",
+              text: buildExecuteHistoryText(String(payload.command ?? ""), String(payload.output ?? "")),
+              ts: Date.now(),
+              kind: "execute",
+            });
+          }
+          if (this.options.historyStore && payload.type === "file_change" && payload.status === "completed") {
+            const changes = Array.isArray(payload.changes) ? payload.changes : [];
+            const text = changes
+              .map((change) => {
+                const entry = change && typeof change === "object" ? change as { kind?: unknown; path?: unknown } : {};
+                return `[${String(entry.kind ?? "modify")}] ${String(entry.path ?? "")}`.trim();
+              })
+              .filter(Boolean)
+              .join("\n");
+            if (text) {
+              this.options.historyStore.add(historyKey, {
+                role: "status",
+                text: `[Files]\n${text}`,
+                ts: Date.now(),
+                kind: "file_change",
+              });
+            }
           }
         });
 
@@ -725,9 +833,6 @@ export class LaneDispatchBus {
 
         if (!hasCommittedImplementationDiff(repoPath)) {
           this.activeAbortControllers.delete(jobId);
-          if (this.options.interruptControllers) {
-            this.options.interruptControllers.delete(historyKey);
-          }
           this.scheduleRework(jobId, repoPath, {
             stage: "Developer implementation",
             feedback: "Developer produced no implementation diff",
@@ -756,9 +861,6 @@ export class LaneDispatchBus {
         }
 
         this.activeAbortControllers.delete(jobId);
-        if (this.options.interruptControllers) {
-          this.options.interruptControllers.delete(historyKey);
-        }
 
         // Proceed to verification & detached review
         queueMicrotask(() => {
@@ -767,9 +869,6 @@ export class LaneDispatchBus {
       } catch (err) {
         unsubscribe?.();
         this.activeAbortControllers.delete(jobId);
-        if (this.options.interruptControllers) {
-          this.options.interruptControllers.delete(historyKey);
-        }
 
         if (abortCtrl.signal.aborted) {
           this.updateJobStatus(jobId, "cancelled", {
@@ -958,9 +1057,12 @@ export class LaneDispatchBus {
     if (this.options.historyStore) {
       this.options.historyStore.add(historyKey, {
         role: "status",
-        text: `[Verification] ${testCmd} (exit ${testReport.exitCode}): ${testReport.summary}`,
+        text: buildExecuteHistoryText(
+          `[Verification exit ${testReport.exitCode}] ${testCmd}`,
+          testReport.summary,
+        ),
         ts: Date.now(),
-        kind: "verification",
+        kind: "execute",
       });
     }
 

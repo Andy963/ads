@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { Input, ThreadEvent, ThreadItem, Usage } from "../protocol/types.js";
 import type {
   AgentAdapter,
@@ -608,7 +610,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
       failed: false,
       failureMessage: null,
     };
-    let safetyBlockTriggered = false;
+    const blockedCommandIds = new Set<string>();
+    const blockedCommandReasons = new Map<string, string>();
     const cleanupFns: Array<() => void> = [];
     const emit = (event: ThreadEvent) => {
       const mapped = mapThreadEventToAgentEvent(event, Date.now());
@@ -623,6 +626,37 @@ export class CodexAppServerAdapter implements AgentAdapter {
       turnDone = resolve;
       turnFail = reject;
     });
+
+    cleanupFns.push(
+      client.onServerRequest("item/commandExecution/requestApproval", (params) => {
+        const request = params && typeof params === "object" ? params as Record<string, unknown> : {};
+        const itemId = typeof request.itemId === "string" ? request.itemId : randomUUID();
+        const command = typeof request.command === "string" ? request.command : "";
+        const violation = findSecurityViolation(command);
+        if (!violation) {
+          return { decision: "accept" };
+        }
+
+        const message = "Command blocked by security rule: " + violation;
+        blockedCommandIds.add(itemId);
+        blockedCommandReasons.set(itemId, message);
+        emit({
+          type: "item.completed",
+          item: {
+            type: "command_execution",
+            id: itemId,
+            command,
+            status: "failed",
+            exit_code: 126,
+            aggregated_output: message,
+          },
+        });
+        return { decision: "decline" };
+      }),
+    );
+    cleanupFns.push(
+      client.onServerRequest("item/fileChange/requestApproval", () => ({ decision: "accept" })),
+    );
 
     // The daemon connection is shared by every session of the project, so
     // notifications from other sessions' turns arrive on this client too. A
@@ -697,26 +731,27 @@ export class CodexAppServerAdapter implements AgentAdapter {
         const translated = translateItem(item);
         if (translated) {
           if (translated.type === "command_execution") {
-            const violation = findSecurityViolation(translated.command);
-            if (violation && !safetyBlockTriggered) {
-              safetyBlockTriggered = true;
-              const message = "Command blocked by security rule: " + violation;
-              state.failed = true;
-              state.failureMessage = message;
-              emit({ type: "error", message });
-              const threadId = state.threadIdFromStarted ?? this.threadId;
-              const turnId = state.turnId;
-              if (threadId && turnId) {
-                client
-                  .request("turn/interrupt", { threadId, turnId })
-                  .catch((err) =>
-                    logger.debug(
-                      "turn/interrupt failed after safety block: " +
-                        (err instanceof Error ? err.message : String(err)),
-                    ),
-                  );
+            const blockedReason = translated.id
+              ? blockedCommandReasons.get(translated.id)
+              : undefined;
+            const violation = blockedReason ? null : findSecurityViolation(translated.command);
+            if (blockedReason || violation) {
+              const message = blockedReason ?? `Command blocked by security rule: ${violation}`;
+              const itemId = translated.id ?? randomUUID();
+              if (!blockedCommandIds.has(itemId)) {
+                blockedCommandIds.add(itemId);
+                blockedCommandReasons.set(itemId, message);
+                emit({
+                  type: "item.completed",
+                  item: {
+                    ...translated,
+                    id: itemId,
+                    status: "failed",
+                    exit_code: 126,
+                    aggregated_output: message,
+                  },
+                });
               }
-              turnFail(new Error(message));
               return;
             }
           }
@@ -734,6 +769,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
         const translated = translateItem(item);
         if (!translated) {
           markNativeCollaborationAsSideEffect(item, retryState);
+          return;
+        }
+        if (translated.type === "command_execution" && translated.id && blockedCommandIds.has(translated.id)) {
           return;
         }
         retryState.markSideEffect(translated);
@@ -1132,7 +1170,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const params: Record<string, unknown> = {
       experimentalRawEvents: false,
       persistExtendedHistory: false,
-      approvalPolicy: "never",
+      approvalPolicy: "untrusted",
     };
     if (this.workingDirectory) params.cwd = this.workingDirectory;
     if (this.model) params.model = this.model;
@@ -1151,7 +1189,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const params: Record<string, unknown> = {
       threadId,
       persistExtendedHistory: false,
-      approvalPolicy: "never",
+      approvalPolicy: "untrusted",
     };
     if (this.workingDirectory) params.cwd = this.workingDirectory;
     if (this.model) params.model = this.model;
