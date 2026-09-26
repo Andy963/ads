@@ -138,12 +138,26 @@ describe("MiddlewarePipeline & Core Middlewares", () => {
       "sqlite3 state.db 'SELECT name FROM sqlite_master'",
       "systemctl --user status ads-web",
       "git status",
+      "pkill -9 -f run-tests.js || true; ps aux | grep node",
     ]) {
       const result = await pipeline.executeItemStart(baseCtx, {
         type: "command_execution",
         command,
       });
       assert.equal(result.blockExecution, false, command);
+    }
+
+    for (const command of [
+      "pkill -9 -f ads-web || true",
+      "printf '%s' 'pkill -f ads-web; true'",
+      "echo $(pkill -f ads-web)",
+      "echo `pkill -f ads-web`",
+    ]) {
+      const result = await pipeline.executeItemStart(baseCtx, {
+        type: "command_execution",
+        command,
+      });
+      assert.equal(result.blockExecution, true, command);
     }
   });
 

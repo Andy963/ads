@@ -811,6 +811,35 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
           delta: "git status",
           timestamp: Date.now(),
         });
+        handler({
+          phase: "command",
+          title: "Command completed",
+          timestamp: Date.now(),
+          raw: {
+            type: "item.completed",
+            item: {
+              type: "command_execution",
+              id: "cmd-obs-1",
+              command: "git status",
+              status: "completed",
+              exitCode: 0,
+              aggregated_output: "working tree clean",
+            },
+          },
+        });
+        handler({
+          phase: "editing",
+          title: "Applied file change",
+          timestamp: Date.now(),
+          raw: {
+            type: "item.completed",
+            item: {
+              type: "file_change",
+              id: "file-change-1",
+              changes: [{ kind: "modify", path: "server/example.ts" }],
+            },
+          },
+        });
         return () => {};
       },
       setDeveloperInstructions: (inst: string) => {
@@ -881,10 +910,20 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     ));
     assert.ok(streamedEvents.some((e) => (e.payload.type === "assistant_done" || e.payload.type === "result")));
     assert.ok(streamedEvents.some((e) => e.payload.type === "action_job_updated" && e.payload.status === "running"));
+    assert.ok(streamedEvents.some((e) => e.payload.type === "file_change" && e.payload.status === "completed"));
 
     // Verify history recording
     assert.ok(historyEntries.some((h) => h.entry.role === "user"));
     assert.ok(historyEntries.some((h) => h.entry.role === "assistant"));
+    assert.ok(historyEntries.some((h) =>
+      h.entry.kind === "execute"
+      && h.entry.text.includes("$ git status")
+      && h.entry.text.includes("working tree clean"),
+    ));
+    assert.ok(historyEntries.some((h) =>
+      h.entry.kind === "file_change"
+      && h.entry.text.includes("server/example.ts"),
+    ));
 
     // Wait for full cycle (verification + reviewer) to complete
     for (let i = 0; i < 50; i++) {
@@ -900,6 +939,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
     // Verify history recording for review verdict
     assert.ok(historyEntries.some((h) => h.entry.kind === "review_verdict"));
+    assert.notStrictEqual(bus.getJob(job.jobId)?.steps_json, "[]");
+    assert.strictEqual(interruptControllers.size, 0);
   });
 
   it("keeps detached Reviewer protocol output internal and removes listeners", async () => {

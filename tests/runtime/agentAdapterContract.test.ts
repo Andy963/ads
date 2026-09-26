@@ -342,4 +342,65 @@ describe("shared AgentAdapter contract", () => {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
   });
+
+  it("returns Native security denials to the model and continues the turn", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-security-"));
+    try {
+      let request = 0;
+      let secondRequestBody = "";
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "security-owner",
+        workspaceRoot: workspace,
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-key",
+            provider: "test",
+          }),
+        },
+        fetchImpl: async (_input, init) => {
+          request += 1;
+          if (request === 1) {
+            return sseEventsResponse([
+              {
+                choices: [{
+                  delta: {
+                    tool_calls: [{
+                      index: 0,
+                      id: "native-blocked",
+                      type: "function",
+                      function: {
+                        name: "exec_command",
+                        arguments: JSON.stringify({ cmd: "rm", args: ["-f", "state.db"] }),
+                      },
+                    }],
+                  },
+                }],
+              },
+              { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+            ]);
+          }
+          secondRequestBody = String(init?.body ?? "");
+          return sseResponse({ choices: [{ delta: { content: "recovered" }, finish_reason: "stop" }] });
+        },
+      });
+      const commandStatuses: string[] = [];
+      adapter.onEvent((event) => {
+        const item = (event.raw as { item?: { type?: string; status?: string } }).item;
+        if (item?.type === "command_execution" && item.status) {
+          commandStatuses.push(item.status);
+        }
+      });
+
+      const result = await adapter.send("remove the database");
+
+      assert.equal(result.response, "recovered");
+      assert.equal(request, 2);
+      assert.match(secondRequestBody, /blocked by security rule/i);
+      assert.ok(commandStatuses.includes("failed"));
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 });

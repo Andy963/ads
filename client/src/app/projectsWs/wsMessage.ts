@@ -125,6 +125,22 @@ function parseClientMessageIdFromHistoryKind(kind: string): string {
   return (separator >= 0 ? tail.slice(0, separator) : tail).trim();
 }
 
+function parseFileChangeHistory(text: string): ChatPatchFile[] {
+  return String(text ?? "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .slice(1)
+    .map((line) => {
+      const separator = line.indexOf("] ");
+      if (!line.startsWith("[") || separator < 0) return null;
+      const path = line.slice(separator + 2).trim();
+      if (!path) return null;
+      const kind = line.slice(1, separator).trim() || "modify";
+      return { path, added: null, removed: null, kind };
+    })
+    .filter((file): file is ChatPatchFile & { kind: string } => file !== null);
+}
+
 function contextModeNotice(contextMode: string): string {
   if (contextMode === "thread_resumed") return THREAD_RESUMED_NOTICE;
   if (contextMode === "history_injection") return HISTORY_INJECTION_NOTICE;
@@ -304,6 +320,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
   }>();
   const explicitCommandIdentities = new Map<string, string>();
   const seenCommandFrameIds = new Set<string>();
+  const seenActionFileChangeActivities = new Set<string>();
   let legacyCommandCounter = 0;
 
   const finiteOffset = (value: unknown): number | null => {
@@ -346,6 +363,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     legacyCommandTracks.clear();
     explicitCommandIdentities.clear();
     seenCommandFrameIds.clear();
+    seenActionFileChangeActivities.clear();
     rt.latestExecuteKey = undefined;
     rt.latestExecuteSequence = undefined;
     rt.latestExecuteTimestamp = undefined;
@@ -1495,7 +1513,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const next: ChatItem[] = [];
       for (let idx = 0; idx < items.length; idx++) {
         const entry = items[idx] as { role?: unknown; text?: unknown; kind?: unknown; ts?: unknown };
-        const role = String(entry.role ?? "");
+      const role = String(entry.role ?? "");
         const text = normalizeWireText(entry.text);
         const kind = String(entry.kind ?? "");
         const rawTs = entry.ts;
@@ -1504,6 +1522,20 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (!trimmed) continue;
         const historyText = role === "status" && kind !== "error" ? stripSelectionChangeNotices(trimmed) : trimmed;
         if (!historyText) continue;
+        if (kind === "file_change") {
+          const files = parseFileChangeHistory(historyText);
+          if (files.length > 0) {
+            next.push({
+              id: `h-p-${idx}`,
+              role: "system",
+              kind: "patch",
+              content: "",
+              patch: { files, diff: "" },
+              ts: ts ?? undefined,
+            });
+          }
+          continue;
+        }
         if (kind === "execute") {
           restoredHistoryStatus = null;
           replayedExecuteActivity = true;
@@ -1610,6 +1642,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const eventTs = Number.isFinite(eventTsRaw) && eventTsRaw > 0 ? Math.floor(eventTsRaw) : Date.now();
       if (role === "user") {
         markTurnActive(rec);
+        if (String(rec.jobId ?? "").trim()) {
+          resetTurnPatchSummary();
+          seenActionFileChangeActivities.clear();
+        }
         const clientMessageId = String(rec.clientMessageId ?? rec.client_message_id ?? rec.jobId ?? "").trim();
         const existing = rt.messages.value;
         const lastUser = [...existing].reverse().find((m) => m.role === "user");
@@ -1697,6 +1733,60 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             ts: Number(rec.ts) || Date.now(),
           }, rt);
         }
+      }
+      return;
+    }
+
+    if (type === "file_change") {
+      const rec = msg as Record<string, unknown>;
+      const changes = Array.isArray(rec.changes) ? rec.changes : [];
+      const files = changes
+        .map((change) => {
+          if (!change || typeof change !== "object") return null;
+          const entry = change as { kind?: unknown; path?: unknown };
+          const path = String(entry.path ?? "").trim();
+          if (!path) return null;
+          return {
+            path,
+            added: null,
+            removed: null,
+          } satisfies ChatPatchFile;
+        })
+        .filter((file): file is ChatPatchFile => file !== null);
+      if (files.length === 0) return;
+
+      for (const file of files) {
+        if (!turnPatchFilesByPath.has(file.path)) turnPatchOrder.push(file.path);
+        turnPatchFilesByPath.set(file.path, { added: file.added, removed: file.removed });
+      }
+      upsertTurnPatchMessage(buildTurnPatchPayload(), {
+        beforeTerminalAssistant: true,
+        ts: finiteTimestamp(rec.timestamp ?? rec.ts),
+      });
+
+      const status = String(rec.status ?? "running").trim().toLowerCase();
+      const identity = String(rec.identity ?? rec.id ?? rec.jobId ?? "").trim();
+      const activityKey = `${identity}:${status}:${files.map((file) => file.path).join(",")}`;
+      if (!seenActionFileChangeActivities.has(activityKey)) {
+        seenActionFileChangeActivities.add(activityKey);
+        const verb = status === "completed" ? "Updated" : "Updating";
+        const summary = `${verb} ${files.map((file) => file.path).join(", ")}`;
+        ingestExploredActivity(rt.liveActivity, "Write", summary);
+        upsertLiveActivity(rt);
+      }
+      return;
+    }
+
+    if (type === "action_step") {
+      const globalWindow = typeof window !== "undefined"
+        ? (window as unknown as { __ADS_ON_ACTION_JOB_UPDATED__?: (payload: unknown) => void })
+        : null;
+      const detail = firstWireText(msg.detail, msg.title).trim();
+      if (detail && typeof globalWindow?.__ADS_ON_ACTION_JOB_UPDATED__ === "function") {
+        globalWindow.__ADS_ON_ACTION_JOB_UPDATED__({
+          ...(msg as Record<string, unknown>),
+          currentStep: detail,
+        });
       }
       return;
     }

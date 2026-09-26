@@ -237,4 +237,37 @@ describe("CodexAppServerClient", () => {
 
     await client.close();
   });
+
+  it("dispatches server-initiated requests to registered handlers", async () => {
+    const { client, stdin, stdout } = await buildStartedClient();
+    const detach = readLines(stdin, () => {});
+    client.onServerRequest("item/commandExecution/requestApproval", (params) => {
+      assert.deepEqual(params, { itemId: "item-1", command: "echo test" });
+      return { decision: "decline" };
+    });
+
+    const responsePromise = new Promise<JsonRpcLine>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timed out waiting for handler response")), 1000);
+      const onResponse = readLines(stdin, (msg) => {
+        if (msg.id === "srv-handler-1") {
+          clearTimeout(timer);
+          onResponse();
+          resolve(msg);
+        }
+      });
+    });
+
+    send(stdout, {
+      jsonrpc: "2.0",
+      id: "srv-handler-1",
+      method: "item/commandExecution/requestApproval",
+      params: { itemId: "item-1", command: "echo test" },
+    });
+
+    const response = await responsePromise;
+    assert.deepEqual(response.result, { decision: "decline" });
+    assert.equal(response.error, undefined);
+    detach();
+    await client.close();
+  });
 });

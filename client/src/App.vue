@@ -451,6 +451,7 @@ type ActionJobItem = {
   issue_title: string;
   status: "queued" | "running" | "verifying" | "reviewing" | "waiting_merge" | "completed" | "failed" | "blocked" | "cancelled";
   current_step: string | null;
+  steps_json?: string;
   pr_number: number | null;
   pr_url: string | null;
   error_message: string | null;
@@ -1183,7 +1184,16 @@ onMounted(() => {
   window.addEventListener("keydown", onMobileKeydown);
   window.addEventListener("pagehide", stashComposerDrafts);
   restoreStashedComposerDrafts();
-  (window as any).__ADS_ON_ACTION_JOB_UPDATED__ = () => {
+  (window as any).__ADS_ON_ACTION_JOB_UPDATED__ = (payload?: unknown) => {
+    const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
+    if (record?.type === "action_step") {
+      const jobId = String(record.jobId ?? "").trim();
+      const currentStep = String(record.currentStep ?? record.detail ?? record.title ?? "").trim();
+      if (jobId && currentStep) {
+        actionJobs.value = actionJobs.value.map((job) => job.id === jobId ? { ...job, current_step: currentStep } : job);
+      }
+      return;
+    }
     void loadActionJobs();
   };
   void loadActionJobs();
@@ -1903,8 +1913,17 @@ const acopilotConnectionStatus = computed(() => {
                   <span class="actionsJobBadge" :class="`actionsJobBadge--${job.status}`">
                     {{ job.status.toUpperCase() }}
                   </span>
-                  <span class="actionsJobTitle">
-                    {{ job.issue_id ? `#${job.issue_id}: ` : '' }}{{ job.issue_title }}
+                  <span class="actionsJobMain">
+                    <span class="actionsJobTitle">
+                      {{ job.issue_id ? `#${job.issue_id}: ` : '' }}{{ job.issue_title }}
+                    </span>
+                    <span
+                      v-if="job.current_step"
+                      class="actionsJobStep"
+                      :data-testid="`actions-job-step-${job.id}`"
+                    >
+                      {{ job.current_step }}
+                    </span>
                   </span>
                   <span v-if="job.id === activeActionJob?.id" class="actionsJobActions">
                     <button

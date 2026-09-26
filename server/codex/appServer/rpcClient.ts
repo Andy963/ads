@@ -52,6 +52,11 @@ export interface JsonRpcRequest<T = unknown> {
 }
 
 export type NotificationHandler = (params: unknown, method: string) => void;
+export type ServerRequestHandler = (
+  params: unknown,
+  method: string,
+  id: number | string,
+) => unknown | Promise<unknown>;
 export type CloseHandler = (code: number | null) => void;
 
 interface PendingRequest {
@@ -112,6 +117,7 @@ export class CodexAppServerClient {
   private readonly pending = new Map<number, PendingRequest>();
   private readonly notificationHandlers = new Map<string, Set<NotificationHandler>>();
   private readonly anyNotificationHandlers = new Set<NotificationHandler>();
+  private readonly serverRequestHandlers = new Map<string, Set<ServerRequestHandler>>();
   private readonly closeHandlers = new Set<CloseHandler>();
   private stdoutBuffer = "";
   private closed = false;
@@ -263,7 +269,7 @@ export class CodexAppServerClient {
     const hasRequestId =
       "id" in obj && (typeof obj.id === "number" || typeof obj.id === "string");
     if (hasRequestId && typeof obj.method === "string") {
-      this.rejectServerRequest(obj.id as number | string, obj.method);
+      void this.dispatchServerRequest(obj.id as number | string, obj.method, obj.params);
       return;
     }
     if (hasRequestId) {
@@ -277,26 +283,52 @@ export class CodexAppServerClient {
     logger.debug(`unrouted JSON-RPC payload: ${line.slice(0, 200)}`);
   }
 
-  private rejectServerRequest(id: number | string, method: string): void {
-    if (!this.handle || this.closed) {
-      logger.debug(`cannot reject server request after client close: ${method}`);
+  private async dispatchServerRequest(id: number | string, method: string, params: unknown): Promise<void> {
+    const handlers = this.serverRequestHandlers.get(method);
+    const handler = handlers?.values().next().value as ServerRequestHandler | undefined;
+    if (!handler) {
+      this.rejectServerRequest(id, method);
       return;
     }
-    const response: JsonRpcErrorResponse = {
+
+    try {
+      const result = await handler(params, method, id);
+      this.writeServerResponse({ jsonrpc: "2.0", id, result });
+    } catch (err) {
+      this.writeServerResponse({
+        jsonrpc: "2.0",
+        id,
+        error: {
+          code: -32603,
+          message: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
+  }
+
+  private writeServerResponse(response: JsonRpcSuccessResponse | JsonRpcErrorResponse): void {
+    if (!this.handle || this.closed) {
+      logger.debug(`cannot respond to server request after client close: ${String(response.id)}`);
+      return;
+    }
+    try {
+      this.handle.stdin.write(`${JSON.stringify(response)}\n`);
+    } catch (err) {
+      logger.debug(
+        `failed to respond to server request ${String(response.id)}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  private rejectServerRequest(id: number | string, method: string): void {
+    this.writeServerResponse({
       jsonrpc: "2.0",
       id,
       error: {
         code: -32601,
         message: `Unsupported server request: ${method}`,
       },
-    };
-    try {
-      this.handle.stdin.write(`${JSON.stringify(response)}\n`);
-    } catch (err) {
-      logger.debug(
-        `failed to reject server request ${method}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    });
   }
 
   private dispatchResponse(payload: JsonRpcSuccessResponse | JsonRpcErrorResponse): void {
@@ -361,6 +393,27 @@ export class CodexAppServerClient {
       current.delete(handler);
       if (current.size === 0) {
         this.notificationHandlers.delete(method);
+      }
+    };
+  }
+
+  /**
+   * Register a handler for a JSON-RPC request initiated by the app-server.
+   * Returning a value sends it as the JSON-RPC result for that request.
+   */
+  onServerRequest(method: string, handler: ServerRequestHandler): () => void {
+    let set = this.serverRequestHandlers.get(method);
+    if (!set) {
+      set = new Set();
+      this.serverRequestHandlers.set(method, set);
+    }
+    set.add(handler);
+    return () => {
+      const current = this.serverRequestHandlers.get(method);
+      if (!current) return;
+      current.delete(handler);
+      if (current.size === 0) {
+        this.serverRequestHandlers.delete(method);
       }
     };
   }
