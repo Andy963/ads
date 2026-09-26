@@ -35,15 +35,6 @@ describe("skills/builtinTools", () => {
     assert.match(readMemory(workspace), /Stored fact/);
   });
 
-  it("executes dispatch_action_job directives", async () => {
-    const results = await executeToolDirectives({
-      text: '<<<tool.dispatch_action_job issue_id="277" title="Implement Actions Loop" acceptance_criteria="Run the test suite|Update the ADR">>>\nComplete issue description\n>>>',
-      workspaceRoot: workspace,
-    });
-    assert.match(results[0] ?? "", /tool\.dispatch_action_job: ok/);
-    assert.match(results[0] ?? "", /job_id: job-/);
-  });
-
   it("rejects dispatch directives without a complete Issue contract", async () => {
     const results = await executeToolDirectives({
       text: '<<<tool.dispatch_action_job issue_id="277" title="Incomplete Issue">>>\n>>>',

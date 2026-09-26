@@ -127,6 +127,17 @@ describe("MainChat two-phase reading viewport", () => {
     await vi.waitFor(() => expect(state.top).toBe(700));
     expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
 
+    // The browser then emits its final scroll correction well past the last
+    // animation frame, 400ms into the animation. The host does not always
+    // compensate scrollTop for the container shrink, so the distance check would
+    // read this layout-induced scroll as the user leaving unless the guard
+    // covers the whole animation.
+    state.top = 0;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await wrapper.get(".chat").trigger("scroll");
+    await settleUi(wrapper);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+
     // A real wheel gesture still hands control back to the user.
     await wrapper.get(".chat").trigger("wheel", { deltaX: 0, deltaY: -240, deltaZ: 0 });
     state.top = 0;
@@ -154,6 +165,34 @@ describe("MainChat two-phase reading viewport", () => {
     const composerRect = currentComposer.getBoundingClientRect();
     expect(userRect.top).toBeGreaterThanOrEqual(hostRect.top);
     expect(userRect.bottom).toBeLessThanOrEqual(composerRect.top);
+
+    wrapper.unmount();
+  });
+
+  it("releases tail-following on an arrow key while the keyboard animation window is still open", async () => {
+    const visualViewport = Object.assign(new EventTarget(), {
+      height: 600,
+      offsetTop: 0,
+      width: 390,
+      offsetLeft: 0,
+    });
+    vi.stubGlobal("visualViewport", visualViewport);
+    const state: ScrollState = { top: 0, height: 1000 };
+    const rowOffsets: Record<string, number> = { "a-1": 0 };
+    const { wrapper, host } = mountChat([msg("a-1", "assistant", "earlier")]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+    expect(state.top).toBe(400);
+
+    // The guard is deliberately still open 400ms in. This asserts that a real
+    // key gesture, not only wheel and touch, is what hands control back.
+    visualViewport.dispatchEvent(new Event("resize"));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await wrapper.get(".chat").trigger("keydown", { key: "ArrowUp" });
+    state.top = 0;
+    await wrapper.get(".chat").trigger("scroll");
+    await settleUi(wrapper);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
 
     wrapper.unmount();
   });

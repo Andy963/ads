@@ -95,8 +95,9 @@ export function installTempAdsStateDir(prefix = "ads-state-"): TempAdsStateDir {
 }
 
 export function installProcessAdsStateSandbox(): void {
-  const root = process.env.ADS_TEST_STATE_ROOT?.trim();
-  if (!root) return;
+  // Always sandbox. Falling back to a private temp root keeps ad-hoc runs
+  // (e.g. `node --test tests/foo.test.ts`) from writing into the live state DB.
+  const root = process.env.ADS_TEST_STATE_ROOT?.trim() || fs.mkdtempSync(path.join(os.tmpdir(), "ads-test-state-"));
   const stateDir = path.join(root, String(process.pid));
   fs.mkdirSync(stateDir, { recursive: true });
   process.env.ADS_STATE_DIR = stateDir;
