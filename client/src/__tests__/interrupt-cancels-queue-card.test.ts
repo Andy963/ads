@@ -10,6 +10,8 @@ import type { ProjectRuntime, QueuedPrompt } from "../app/controller";
 
 const OUTBOX_KEY = "ads.outbox.session-1.main";
 const ABORT_MESSAGE = "\u7528\u6237\u4e2d\u65ad\u4e86\u8bf7\u6c42";
+const INTERRUPTED_PROMPT_ERROR =
+  "Prompt execution was interrupted before completion. Retry explicitly to resume with incomplete-turn recovery.";
 
 const mountHarness = () => {
   const ctx = createAppContext();
@@ -94,6 +96,41 @@ describe("interrupting a turn cancels its queue card", () => {
     expect(rt.queuedPrompts.value).toHaveLength(0);
     expect(readDismissed()).toContain("cmid-abort");
   });
+
+  it.each(["prompt_queue", "prompt_queue_snapshot"] as const)(
+    "drops an existing card for the canonical English interruption error from %s",
+    async (type) => {
+      const { rt, handler } = mountHarness();
+      rt.queuedPrompts.value = [runningCard()];
+      const entry = {
+        clientMessageId: "cmid-abort",
+        status: "failed",
+        lastError: INTERRUPTED_PROMPT_ERROR,
+      };
+
+      handler(type === "prompt_queue" ? { type, entry } : { type, entries: [entry] });
+      await settle();
+
+      expect(rt.queuedPrompts.value).toHaveLength(0);
+      expect(readDismissed()).toContain("cmid-abort");
+    },
+  );
+
+  it.each(["prompt_queue", "prompt_queue_snapshot"] as const)(
+    "does not rebuild a card for an unrendered canonical English interruption from %s",
+    (type) => {
+      const { rt, handler } = mountHarness();
+      const entry = {
+        clientMessageId: "cmid-abort",
+        status: "failed",
+        lastError: INTERRUPTED_PROMPT_ERROR,
+      };
+
+      handler(type === "prompt_queue" ? { type, entry } : { type, entries: [entry] });
+
+      expect(rt.queuedPrompts.value).toHaveLength(0);
+    },
+  );
 
   it("does not rebuild a card for an aborted row that was never rendered", () => {
     const { rt, handler } = mountHarness();
