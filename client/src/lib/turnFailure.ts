@@ -2,7 +2,11 @@ import type { ChatItem } from "../app/controllerTypes";
 
 export const TURN_FAILURE_CARD_PREFIX = "turn-failure:";
 
-const USER_ABORT_MARKERS = ["\u5df2\u4e2d\u65ad", "\u7528\u6237\u4e2d\u65ad"];
+const USER_ABORT_MARKERS = [
+  "\u5df2\u4e2d\u65ad",
+  "\u7528\u6237\u4e2d\u65ad",
+  "Prompt execution was interrupted before completion. Retry explicitly to resume with incomplete-turn recovery.",
+];
 
 export function isUserAbortFailure(content: string, aborted?: unknown): boolean {
   if (aborted === true) return true;

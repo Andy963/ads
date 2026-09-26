@@ -494,10 +494,6 @@ const activeActionJob = computed(() => {
   return actionQueueJobs.value.find((job) => job.status !== "queued") ?? actionQueueJobs.value[0] ?? null;
 });
 
-const queuedActionJobsCount = computed(() => {
-  return actionJobs.value.filter((j) => j.status === "queued").length;
-});
-
 function showActionNotice(message: string): void {
   const text = String(message ?? "").trim();
   if (!text) return;
@@ -1897,48 +1893,40 @@ const acopilotConnectionStatus = computed(() => {
               :data-panel-key="`${actionsPanelKey}:${errorRecoveryGeneration}`"
             >
               <div v-if="actionQueueJobs.length" class="actionsJobBanner actionsQueue" data-testid="actions-job-banner">
-                <div class="actionsQueueHeader">
-                  <span class="actionsQueueTitle">Actions 队列</span>
-                  <span v-if="queuedActionJobsCount > 0" class="actionsJobQueueCountBadge" data-testid="actions-queue-count-badge">
-                    队列中 {{ queuedActionJobsCount }} 个任务
+                <div
+                  v-for="job in actionQueueJobs"
+                  :key="job.id"
+                  class="actionsQueueRow"
+                  :class="{ 'actionsQueueRow--active': job.id === activeActionJob?.id }"
+                  data-testid="actions-queue-row"
+                >
+                  <span class="actionsJobBadge" :class="`actionsJobBadge--${job.status}`">
+                    {{ job.status.toUpperCase() }}
                   </span>
-                </div>
-                <div class="actionsQueueRows">
-                  <div
-                    v-for="job in actionQueueJobs"
-                    :key="job.id"
-                    class="actionsQueueRow"
-                    :class="{ 'actionsQueueRow--active': job.id === activeActionJob?.id }"
-                    data-testid="actions-queue-row"
-                  >
-                    <span class="actionsJobBadge" :class="`actionsJobBadge--${job.status}`">
-                      {{ job.status.toUpperCase() }}
-                    </span>
-                    <span class="actionsJobTitle">
-                      {{ job.issue_id ? `#${job.issue_id}: ` : '' }}{{ job.issue_title }}
-                    </span>
-                  </div>
-                </div>
-                <div class="actionsJobActions">
-                  <button
-                    v-if="activeActionJob.status === 'queued'"
-                    type="button"
-                    class="btnActionStart"
-                    :disabled="isStartingQueue"
-                    data-testid="btn-action-start"
-                    @click="triggerStartActionQueue"
-                  >
-                    {{ isStartingQueue ? '启动中...' : '▶ 启动执行' }}
-                  </button>
-                  <button
-                    v-if="['queued', 'running', 'verifying', 'reviewing', 'waiting_merge', 'blocked'].includes(activeActionJob.status)"
-                    type="button"
-                    class="btnActionCancel"
-                    data-testid="btn-action-cancel"
-                    @click="cancelActionJob(activeActionJob.id)"
-                  >
-                    Cancel
-                  </button>
+                  <span class="actionsJobTitle">
+                    {{ job.issue_id ? `#${job.issue_id}: ` : '' }}{{ job.issue_title }}
+                  </span>
+                  <span v-if="job.id === activeActionJob?.id" class="actionsJobActions">
+                    <button
+                      v-if="activeActionJob.status === 'queued'"
+                      type="button"
+                      class="btnActionStart"
+                      :disabled="isStartingQueue"
+                      data-testid="btn-action-start"
+                      @click="triggerStartActionQueue"
+                    >
+                      {{ isStartingQueue ? '启动中...' : '启动执行' }}
+                    </button>
+                    <button
+                      v-if="['queued', 'running', 'verifying', 'reviewing', 'waiting_merge', 'blocked'].includes(activeActionJob.status)"
+                      type="button"
+                      class="btnActionCancel"
+                      data-testid="btn-action-cancel"
+                      @click="cancelActionJob(activeActionJob.id)"
+                    >
+                      Cancel
+                    </button>
+                  </span>
                 </div>
               </div>
               <MainChatView

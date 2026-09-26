@@ -123,12 +123,18 @@ function normalizeSnapshot(value: unknown): OutboxSnapshot {
   if (pending && !seen.has(pending.clientMessageId)) {
     sent.unshift(pending);
   }
-  // A live entry is never hidden by a stale dismissal left over from a retry.
+  // A dismissal outranks a lingering outbox entry. This used to skip any
+  // dismissal whose id was also listed in `sent`/`queued`, on the theory that a
+  // live entry means the dismissal was stale. That is backwards: a card the user
+  // removed is exactly the entry that keeps lingering there, so the guard
+  // discarded the dismissal on the way out of storage and the next reconnect
+  // rebuilt the card. Retries, the case the guard was written for, clear the
+  // dismissal explicitly via `dismissed.delete` and do not rely on this.
   const dismissedRaw = Array.isArray(record.dismissed) ? record.dismissed : [];
   const dismissed: string[] = [];
   for (const entry of dismissedRaw) {
     const clientMessageId = String(entry ?? "").trim();
-    if (!clientMessageId || seen.has(clientMessageId) || dismissed.includes(clientMessageId)) continue;
+    if (!clientMessageId || dismissed.includes(clientMessageId)) continue;
     dismissed.push(clientMessageId);
   }
   return { pending, sent, queued, dismissed };

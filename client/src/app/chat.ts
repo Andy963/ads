@@ -170,6 +170,19 @@ export function createChatActions(ctx: AppContext) {
     };
   };
 
+  const DISMISSED_LIMIT = 500;
+
+  // The set only ever grows, and a dismissal is only useful while its client id
+  // is still around, so cap it. Set iteration is insertion-ordered, which makes
+  // the leading entries the oldest.
+  const pruneDismissals = (dismissed: Set<string>): void => {
+    if (dismissed.size <= DISMISSED_LIMIT) return;
+    for (const clientMessageId of dismissed) {
+      if (dismissed.size <= DISMISSED_LIMIT) break;
+      dismissed.delete(clientMessageId);
+    }
+  };
+
   const persistOutbox = (
     rt: ProjectRuntime,
     pending?: PersistedPrompt | null,
@@ -181,29 +194,36 @@ export function createChatActions(ctx: AppContext) {
     const current = readOutboxFor(rt);
     const nextPending = pending === undefined ? current.pending : pending;
     const nextSent = sent === undefined ? current.sent : sent;
+    const dismissed = rt.dismissedPromptIds ?? new Set<string>();
+    const isDismissed = (prompt: { clientMessageId?: unknown }): boolean =>
+      dismissed.has(String(prompt.clientMessageId ?? "").trim());
     outbox.write(key, {
       pending: nextPending,
-      sent: nextSent,
-      dismissed: Array.from(rt.dismissedPromptIds ?? []),
+      sent: nextSent.filter((prompt) => !isDismissed(prompt)),
+      dismissed: Array.from(dismissed),
       queued: rt.queuedPrompts.value
+        .filter((prompt) => !isDismissed(prompt))
         .filter((prompt) => prompt.deliveryStatus === "offline" || prompt.restoredFromStorage || prompt.replayIncomplete)
         .map(toPersistedPrompt)
         .filter(Boolean) as PersistedPrompt[],
     });
   };
 
+  // A dismissal is terminal, not a hint. It used to be dropped whenever the id
+  // was still listed in the persisted outbox, on the theory that the entry was
+  // therefore still live. But a card the user removed is exactly the entry that
+  // lingers in the outbox, so that guard threw away the very dismissals it
+  // existed to keep, and the next reconnect rebuilt the card from storage.
   const applyDismissals = (rt: ProjectRuntime, snapshot: OutboxSnapshot): void => {
     const dismissed = rt.dismissedPromptIds ?? new Set<string>();
-    const live = new Set(
-      [...snapshot.sent, ...snapshot.queued].map((prompt) => prompt.clientMessageId),
-    );
     for (const clientMessageId of snapshot.dismissed) {
-      if (!live.has(clientMessageId)) dismissed.add(clientMessageId);
+      if (clientMessageId) dismissed.add(clientMessageId);
     }
     rt.dismissedPromptIds = dismissed;
+    pruneDismissals(dismissed);
     const before = rt.queuedPrompts.value.length;
     const after = rt.queuedPrompts.value.filter(
-      (prompt) => !(prompt.serverQueueTracked === true && dismissed.has(prompt.clientMessageId)),
+      (prompt) => !dismissed.has(prompt.clientMessageId),
     );
     if (after.length !== before) rt.queuedPrompts.value = after;
   };
@@ -379,9 +399,14 @@ export function createChatActions(ctx: AppContext) {
     }
 
     // Prompts still waiting their turn were never sent; they requeue as-is.
+    const dismissed = rt.dismissedPromptIds ?? new Set<string>();
     for (const queued of [...snapshot.sent, ...snapshot.queued]) {
       const clientMessageId = String(queued.clientMessageId ?? "").trim();
       if (!clientMessageId || queuedByClientMessageId.has(clientMessageId)) continue;
+      // Storage still holding a card the user removed is the normal case, not
+      // an exception: honouring the dismissal here is what makes removal stick
+      // across a restart instead of only for the lifetime of one page.
+      if (dismissed.has(clientMessageId)) continue;
       queuedByClientMessageId.add(clientMessageId);
       restored.push({
         id: randomId("q"),
