@@ -52,6 +52,9 @@ export async function dispatchWsMessage(args: {
     }) => WsResetResult;
     completeAfterReset?: () => void;
   };
+  cancelPrompt?: (clientMessageId: string) =>
+    | { ok: true; cancelled: boolean; reason: "cancelled" | "already_cancelled" | "not_queued" }
+    | { ok: false; error: string };
   registerSessionCacheBinding: () => void;
   broadcastJson: (payload: unknown) => void;
   safeJsonSend: (ws: WebSocket, payload: unknown) => void;
@@ -102,6 +105,7 @@ export async function dispatchWsMessage(args: {
       resetLaneState: args.state.resetLaneState,
       resetSharedSessionState: args.state.resetSharedSessionState,
       completeAfterReset: args.state.completeAfterReset,
+      cancelPrompt: args.cancelPrompt,
       logger: args.logger,
     });
     if (control.handled) {

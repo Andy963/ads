@@ -238,6 +238,7 @@ export type WsMessageHandlerArgs = {
   cancelPendingResume: ChatActions["cancelPendingResume"];
   clearPendingPrompt: ChatActions["clearPendingPrompt"];
   markPromptConsumed: ChatActions["markPromptConsumed"];
+  dismissPromptByClientMessageId: ChatActions["dismissPromptByClientMessageId"];
   removeQueuedPrompt: ChatActions["removeQueuedPrompt"];
   consumeSessionReset?: (payload: Record<string, unknown>) => boolean;
   clearStepLive: ChatActions["clearStepLive"];
@@ -269,6 +270,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     cancelPendingResume,
     clearPendingPrompt,
     markPromptConsumed,
+    dismissPromptByClientMessageId,
     removeQueuedPrompt,
     consumeSessionReset,
     clearStepLive,
@@ -1074,6 +1076,17 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
       }
       if (id && rt.pendingAckClientMessageId === id) {
+        rt.pendingAckClientMessageId = null;
+      }
+      return;
+    }
+
+    if (type === "prompt_queue_cancelled") {
+      const clientMessageId = String(msg.clientMessageId ?? msg.client_message_id ?? "").trim();
+      if (!clientMessageId) return;
+      dismissPromptByClientMessageId(rt, clientMessageId, { notifyServer: false });
+      clearPendingPrompt(rt, clientMessageId);
+      if (rt.pendingAckClientMessageId === clientMessageId) {
         rt.pendingAckClientMessageId = null;
       }
       return;

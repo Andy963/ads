@@ -154,4 +154,50 @@ describe("dismissed queue cards stay dismissed across a restart", () => {
     // And nothing was written back that a third session could pick up.
     expect(readOutbox().queued).toEqual([]);
   });
+
+  it("dismisses and cancels a queued card the server has not acked yet", async () => {
+    // A card that only exists locally has no serverQueueTracked flag, so the
+    // delete used to skip persistence entirely and return on the next restart.
+    const sent: Array<{ type: string; clientMessageId?: string }> = [];
+    const { chat, rt } = mountHarness();
+    rt.ws = {
+      sendPrompt: () => true,
+      send: (type: string, _payload?: unknown, options?: { clientMessageId?: string }) => {
+        sent.push({ type, clientMessageId: options?.clientMessageId });
+        return true;
+      },
+      clearHistory: () => {},
+    } as never;
+    rt.queuedPrompts.value = [card({ serverQueueTracked: false, restoredFromStorage: false, deliveryStatus: "awaiting_ack" })];
+
+    chat.removeQueuedPrompt("q-1", rt);
+    await settle();
+
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(rt.dismissedPromptIds?.has("cmid-gone")).toBe(true);
+    expect(readOutbox().dismissed).toEqual(["cmid-gone"]);
+    expect(sent).toEqual([{ type: "cancel_prompt", clientMessageId: "cmid-gone" }]);
+  });
+
+  it("drops a card cancelled in another tab without cancelling again", async () => {
+    // prompt_queue_cancelled is the server's broadcast of someone else's
+    // delete. Re-sending a cancel for it would be redundant traffic, and the
+    // local dismissal still has to land so a later snapshot cannot restore it.
+    const sent: string[] = [];
+    const { rt, handler } = mountHarness();
+    rt.ws = {
+      sendPrompt: () => true,
+      send: (type: string) => { sent.push(type); return true; },
+      clearHistory: () => {},
+    } as never;
+    rt.queuedPrompts.value = [card()];
+
+    handler({ type: "prompt_queue_cancelled", clientMessageId: "cmid-gone" });
+    await settle();
+
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(rt.dismissedPromptIds?.has("cmid-gone")).toBe(true);
+    expect(readOutbox().dismissed).toEqual(["cmid-gone"]);
+    expect(sent).toEqual([]);
+  });
 });

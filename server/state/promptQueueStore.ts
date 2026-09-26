@@ -38,6 +38,17 @@ export type PromptQueueLane = {
   laneGeneration: number;
 };
 
+export type CancelPromptInput = PromptQueueLane & {
+  clientMessageId: string;
+  userId: number;
+};
+
+export type CancelPromptResult = {
+  cancelled: boolean;
+  reason: "cancelled" | "already_cancelled" | "not_queued";
+  entry: PromptQueueEntry | null;
+};
+
 export type EnqueuePromptInput = PromptQueueLane & {
   clientMessageId: string;
   userId: number;
@@ -95,6 +106,21 @@ export function ensurePromptQueueTables(db: DatabaseType): void {
       lease_expires_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS prompt_queue_cancellations (
+      client_message_id TEXT PRIMARY KEY,
+      auth_user_id TEXT NOT NULL,
+      user_id INTEGER NOT NULL,
+      session_id TEXT NOT NULL,
+      chat_session_id TEXT NOT NULL,
+      logical_history_key TEXT NOT NULL,
+      lane_namespace TEXT NOT NULL,
+      lane_generation INTEGER NOT NULL CHECK(lane_generation >= 1),
+      cancelled_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_prompt_queue_cancellations_scope
+      ON prompt_queue_cancellations(auth_user_id, session_id, chat_session_id, logical_history_key);
   `);
 
   const columns = db.prepare("PRAGMA table_info(prompt_queue)").all() as Array<{ name?: unknown }>;
@@ -144,6 +170,15 @@ function hashPayload(payload: Record<string, unknown>): string {
   return createHash("sha256").update(JSON.stringify(canonicalizePayload(payload))).digest("hex");
 }
 
+function samePromptScope(entry: Pick<PromptQueueEntry, "authUserId" | "userId" | "sessionId" | "chatSessionId" | "logicalHistoryKey" | "laneNamespace" | "laneGeneration">, input: CancelPromptInput): boolean {
+  return entry.authUserId === input.authUserId
+    && entry.userId === Math.floor(Number(input.userId))
+    && entry.sessionId === input.sessionId
+    && entry.chatSessionId === input.chatSessionId
+    && entry.logicalHistoryKey === input.logicalHistoryKey
+    && entry.laneNamespace === input.laneNamespace;
+}
+
 function toEntry(row: Record<string, unknown>): PromptQueueEntry {
   const status = String(row.status ?? "queued") as PromptQueueStatus;
   return {
@@ -186,6 +221,22 @@ export function createPromptQueueStore(db: DatabaseType) {
     FROM prompt_queue
     WHERE client_message_id = ?
     LIMIT 1
+  `);
+  const getCancellationStmt = db.prepare(`
+    SELECT *
+    FROM prompt_queue_cancellations
+    WHERE client_message_id = ?
+    LIMIT 1
+  `);
+  const insertCancellationStmt = db.prepare(`
+    INSERT INTO prompt_queue_cancellations (
+      client_message_id, auth_user_id, user_id, session_id, chat_session_id,
+      logical_history_key, lane_namespace, lane_generation, cancelled_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const deletePromptStmt = db.prepare(`
+    DELETE FROM prompt_queue
+    WHERE client_message_id = ? AND status = 'queued'
   `);
   const listLaneStmt = db.prepare(`
     SELECT *, (
@@ -329,6 +380,24 @@ export function createPromptQueueStore(db: DatabaseType) {
     return row ? toEntry(row) : null;
   };
 
+  const isCancelled = (clientMessageId: string, input: CancelPromptInput): boolean => {
+    const row = getCancellationStmt.get(requiredText(clientMessageId, "clientMessageId")) as Record<string, unknown> | undefined;
+    if (!row) return false;
+    const cancellation = {
+      authUserId: String(row.auth_user_id),
+      userId: Number(row.user_id),
+      sessionId: String(row.session_id),
+      chatSessionId: String(row.chat_session_id),
+      logicalHistoryKey: String(row.logical_history_key),
+      laneNamespace: String(row.lane_namespace),
+      laneGeneration: Number(row.lane_generation),
+    };
+    if (!samePromptScope(cancellation, input)) {
+      throw new Error("clientMessageId is already associated with a different prompt scope");
+    }
+    return true;
+  };
+
   const enqueue = (input: EnqueuePromptInput): { entry: PromptQueueEntry; duplicate: boolean } => {
     const clientMessageId = requiredText(input.clientMessageId, "clientMessageId");
     const payloadHash = hashPayload(input.payload);
@@ -343,6 +412,9 @@ export function createPromptQueueStore(db: DatabaseType) {
       laneGeneration: Math.max(1, Math.floor(Number(input.laneGeneration))),
       workspaceRoot: requiredText(input.workspaceRoot, "workspaceRoot"),
     };
+    if (isCancelled(clientMessageId, { ...scope, clientMessageId, userId: scope.userId })) {
+      throw new Error("clientMessageId was cancelled");
+    }
     const existing = getByClientMessageId(clientMessageId);
     if (existing) {
       const sameScope = existing.authUserId === scope.authUserId
@@ -535,6 +607,52 @@ export function createPromptQueueStore(db: DatabaseType) {
     ).changes === 1;
   };
 
+  const cancel = (input: CancelPromptInput, now = Date.now()): CancelPromptResult => {
+    const clientMessageId = requiredText(input.clientMessageId, "clientMessageId");
+    const normalizedInput: CancelPromptInput = {
+      ...input,
+      clientMessageId,
+      authUserId: requiredText(input.authUserId, "authUserId"),
+      userId: Math.floor(Number(input.userId)),
+      sessionId: requiredText(input.sessionId, "sessionId"),
+      chatSessionId: requiredText(input.chatSessionId, "chatSessionId"),
+      historyKey: requiredText(input.historyKey, "historyKey"),
+      logicalHistoryKey: requiredText(input.logicalHistoryKey, "logicalHistoryKey"),
+      laneNamespace: requiredText(input.laneNamespace, "laneNamespace"),
+      laneGeneration: Math.max(1, Math.floor(Number(input.laneGeneration))),
+    };
+    const cancelTx = db.transaction((): CancelPromptResult => {
+      const existing = getByClientMessageIdStmt.get(clientMessageId) as Record<string, unknown> | undefined;
+      const existingEntry = existing ? toEntry(existing) : null;
+      if (existingEntry && !samePromptScope(existingEntry, normalizedInput)) {
+        throw new Error("clientMessageId is already associated with a different prompt scope");
+      }
+      // A prompt leaves the queue the moment the lane marks it running, so the
+      // frontend can only ever cancel a row that is still waiting. Touching a
+      // running row here would pull the floor out from under an in-flight turn.
+      if (existingEntry && existingEntry.status !== "queued") {
+        return { cancelled: false, reason: "not_queued", entry: existingEntry };
+      }
+      if (isCancelled(clientMessageId, normalizedInput)) {
+        return { cancelled: false, reason: "already_cancelled", entry: existingEntry };
+      }
+      insertCancellationStmt.run(
+        clientMessageId,
+        normalizedInput.authUserId,
+        normalizedInput.userId,
+        normalizedInput.sessionId,
+        normalizedInput.chatSessionId,
+        normalizedInput.logicalHistoryKey,
+        normalizedInput.laneNamespace,
+        normalizedInput.laneGeneration,
+        now,
+      );
+      if (existingEntry) deletePromptStmt.run(clientMessageId);
+      return { cancelled: true, reason: "cancelled", entry: existingEntry };
+    });
+    return cancelTx.immediate();
+  };
+
   return {
     enqueue,
     getByClientMessageId,
@@ -550,6 +668,7 @@ export function createPromptQueueStore(db: DatabaseType) {
     isOwnershipCurrent,
     completeInterrupted,
     failInterrupted,
+    cancel,
   };
 }
 

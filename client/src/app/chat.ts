@@ -213,10 +213,27 @@ export function createChatActions(ctx: AppContext) {
     });
   };
 
+  const requestPromptCancellation = (rt: ProjectRuntime, clientMessageId: string): void => {
+    const id = String(clientMessageId ?? "").trim();
+    if (!id) return;
+    const socket = rt.ws as {
+      cancelPrompt?: (promptId: string) => boolean;
+      send?: (type: string, payload?: unknown, options?: { clientMessageId?: string }) => boolean;
+    } | null;
+    if (typeof socket?.cancelPrompt === "function") {
+      socket.cancelPrompt(id);
+      return;
+    }
+    socket?.send?.("cancel_prompt", undefined, { clientMessageId: id });
+  };
+
   const applyPersistedSuppressions = (rt: ProjectRuntime, snapshot: OutboxSnapshot): void => {
     const dismissed = rt.dismissedPromptIds ?? new Set<string>();
     for (const clientMessageId of snapshot.dismissed) {
-      if (clientMessageId) dismissed.add(clientMessageId);
+      if (clientMessageId) {
+        dismissed.add(clientMessageId);
+        requestPromptCancellation(rt, clientMessageId);
+      }
     }
     rt.dismissedPromptIds = dismissed;
     pruneDismissals(dismissed);
@@ -722,25 +739,33 @@ export function createChatActions(ctx: AppContext) {
     persistOutbox(rt);
   };
 
+  const dismissPromptByClientMessageId = (
+    rt: ProjectRuntime,
+    clientMessageId: string,
+    options: { notifyServer?: boolean } = {},
+  ): void => {
+    const id = String(clientMessageId ?? "").trim();
+    if (!id) return;
+    const state = runtimeOrActive(rt);
+    const dismissed = state.dismissedPromptIds ?? new Set<string>();
+    dismissed.add(id);
+    state.dismissedPromptIds = dismissed;
+    pruneDismissals(dismissed);
+    state.queuedPrompts.value = state.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== id);
+    ensureOutboxBinding(state);
+    persistOutbox(state);
+    if (options.notifyServer !== false) requestPromptCancellation(state, id);
+  };
+
   const removeQueuedPrompt = (id: string, rt?: ProjectRuntime): void => {
     const target = String(id ?? "").trim();
     if (!target) return;
     const state = runtimeOrActive(rt);
     const removed = state.queuedPrompts.value.find((q) => q.id === target);
     if (!removed) return;
-    state.queuedPrompts.value = state.queuedPrompts.value.filter((q) => q.id !== target);
-    const persisted = removed.serverQueueTracked === true
-      || removed.restoredFromStorage === true
-      || removed.replayIncomplete === true;
-    if (!persisted) return;
-    // Persisted queue state outlives this card, so remember the dismissal;
-    // otherwise the next reconnect would reinsert what the user dismissed.
     const clientMessageId = String(removed.clientMessageId ?? "").trim();
-    if (!clientMessageId) return;
-    state.dismissedPromptIds = state.dismissedPromptIds ?? new Set<string>();
-    state.dismissedPromptIds.add(clientMessageId);
-    ensureOutboxBinding(state);
-    persistOutbox(state);
+    state.queuedPrompts.value = state.queuedPrompts.value.filter((q) => q.id !== target);
+    if (clientMessageId) dismissPromptByClientMessageId(state, clientMessageId);
   };
 
   const retryQueuedPrompt = (id: string, rt?: ProjectRuntime): void => {
@@ -1058,6 +1083,7 @@ export function createChatActions(ctx: AppContext) {
     clearPendingPrompt,
     clearPendingPromptReplayState,
     markPromptConsumed,
+    dismissPromptByClientMessageId,
     restorePendingPrompt,
     trimChatItems,
     setMessages,

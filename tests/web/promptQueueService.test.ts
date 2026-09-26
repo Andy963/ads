@@ -447,4 +447,64 @@ describe("web/promptQueueService", () => {
     db.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
+
+  it("drops a queued prompt on cancel without aborting the running turn", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-prompt-queue-cancel-"));
+    const db = new DatabaseConstructor(path.join(tempDir, "state.db"));
+    const store = createPromptQueueStore(db);
+    const lane = {
+      authUserId: "auth-1",
+      userId: 7,
+      sessionId: "session-1",
+      chatSessionId: "main",
+      historyKey: "auth-1::session-1::main:generation:1",
+      logicalHistoryKey: "auth-1::session-1::main",
+      laneNamespace: "auth-1::session-1",
+      laneGeneration: 1,
+      workspaceRoot: "/workspace/project",
+    };
+    store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
+    store.enqueue({ ...lane, clientMessageId: "client-2", payload: { text: "two" } });
+
+    const aborted: string[] = [];
+    let releaseFirstRun = (): void => undefined;
+    const firstRunGate = new Promise<void>((resolve) => { releaseFirstRun = resolve; });
+    const service = new PromptQueueService({
+      store,
+      workerId: "worker-1",
+      resolveCurrentGeneration: () => 1,
+      runPrompt: async (entry: PromptQueueEntry) => {
+        if (entry.clientMessageId === "client-1") await firstRunGate;
+        return { ok: true };
+      },
+      abortRun: (entry: PromptQueueEntry) => { aborted.push(entry.clientMessageId); },
+      emitSnapshot: () => undefined,
+    });
+
+    await service.start();
+    while (store.getByClientMessageId("client-1")?.status !== "running") {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    // client-1 already left the queue, so a cancel aimed at it must be refused
+    // and must never reach the abort hook that stopping a turn would use.
+    const refused = service.cancel({ ...lane, clientMessageId: "client-1" });
+    assert.equal(refused.cancelled, false);
+    assert.equal(refused.reason, "not_queued");
+    assert.deepEqual(aborted, []);
+
+    // client-2 is still waiting, so its cancel takes effect immediately.
+    const dropped = service.cancel({ ...lane, clientMessageId: "client-2" });
+    assert.equal(dropped.cancelled, true);
+    assert.equal(store.getByClientMessageId("client-2"), null);
+    assert.deepEqual(aborted, []);
+
+    releaseFirstRun();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(store.getByClientMessageId("client-1")?.status, "completed");
+    assert.deepEqual(aborted, []);
+    await service.stop();
+    db.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
 });

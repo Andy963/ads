@@ -1,4 +1,6 @@
 import type {
+  CancelPromptInput,
+  CancelPromptResult,
   EnqueuePromptInput,
   PromptQueueEntry,
   PromptQueueLane,
@@ -127,6 +129,16 @@ export class PromptQueueService {
 
   getSnapshot(lane: PromptQueueLane): PromptQueueEntry[] {
     return this.store.listLogicalLane(lane).filter((entry) => entry.status !== "completed");
+  }
+
+  cancel(input: CancelPromptInput): CancelPromptResult {
+    if (!this.isOwner()) {
+      throw new Error("Prompt queue service does not own the queue");
+    }
+    // Cancellation only drops rows that are still queued. Aborting a run here
+    // would let a stale card stop a turn the user never dismissed; stopping a
+    // turn is the interrupt action, not the queue delete action.
+    return this.store.cancel(input);
   }
 
   isOwner(): boolean {
