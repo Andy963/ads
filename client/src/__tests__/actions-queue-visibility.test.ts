@@ -92,7 +92,7 @@ describe("Actions lane queue visibility and manual start button", () => {
     vi.clearAllMocks();
   });
 
-  it("renders queue depth badge and start button when a task is queued, and triggers /api/actions/queue/start on click", async () => {
+  it("renders one compact line per queued task with the start button inline, and triggers /api/actions/queue/start on click", async () => {
     const mockJobs = [
       {
         id: "job-1",
@@ -138,13 +138,18 @@ describe("Actions lane queue visibility and manual start button", () => {
     expect(banner.text()).not.toContain("Developer should not render this in the queue");
     expect(banner.text()).not.toContain("queued details stay in history");
 
-    const queueBadge = wrapper.find('[data-testid="actions-queue-count-badge"]');
-    expect(queueBadge.exists()).toBe(true);
-    expect(queueBadge.text()).toContain("队列中 2 个任务");
+    // The queue depth badge and the "Actions 队列" heading were removed: they
+    // are chrome, and the banner is now one line per task.
+    expect(banner.find('[data-testid="actions-queue-count-badge"]').exists()).toBe(false);
+    expect(banner.text()).not.toContain("Actions 队列");
+    expect(banner.text()).not.toContain("个任务");
 
-    const startBtn = wrapper.find('[data-testid="btn-action-start"]');
+    const rows = banner.findAll('[data-testid="actions-queue-row"]');
+    const startBtn = rows[0].find('[data-testid="btn-action-start"]');
     expect(startBtn.exists()).toBe(true);
     expect(startBtn.text()).toContain("启动执行");
+    // Only the active job carries the controls; the other job stays text-only.
+    expect(rows[1].find('[data-testid="btn-action-start"]').exists()).toBe(false);
 
     // Click start button and verify API invocation
     await startBtn.trigger("click");
@@ -198,13 +203,14 @@ describe("Actions lane queue visibility and manual start button", () => {
     onJobUpdate({ type: "action_job_updated", jobId: "job-new", issueId: 345, status: "queued" });
     await settleUi(wrapper);
 
-    expect(wrapper.find('[data-testid="actions-job-banner"]').text()).toContain("New queued task");
-    expect(wrapper.find('[data-testid="actions-queue-count-badge"]').text()).toContain("队列中 1 个任务");
+    const bannerAfterUpdate = wrapper.find('[data-testid="actions-job-banner"]');
+    expect(bannerAfterUpdate.text()).toContain("New queued task");
+    expect(bannerAfterUpdate.find('[data-testid="actions-queue-count-badge"]').exists()).toBe(false);
 
     onJobUpdate({ type: "action_job_updated", jobId: "job-new", issueId: 345, status: "queued" });
     await settleUi(wrapper);
     expect(wrapper.findAll('[data-testid="actions-queue-row"]')).toHaveLength(1);
-    expect(wrapper.find('[data-testid="actions-queue-count-badge"]').text()).toContain("队列中 1 个任务");
+    expect(wrapper.find('[data-testid="actions-queue-count-badge"]').exists()).toBe(false);
 
     wrapper.unmount();
   });
