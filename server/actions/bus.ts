@@ -42,6 +42,7 @@ import { resolveAgentRuntime, type AgentRuntimeBackend } from "../runtime/config
 
 const MAX_REWORK_ATTEMPTS = 2;
 const AUTOMATED_ACTION_EXECUTION_MODE = "automated_action" as const;
+const ACTION_EXECUTE_HISTORY_KIND = "action_execute";
 const AUTOMATED_ACTION_INSTRUCTIONS = [
   `Execution mode: ${AUTOMATED_ACTION_EXECUTION_MODE}.`,
   "AUTOMATED ACTION MODE: This queued job is already authorized by the user.",
@@ -797,7 +798,7 @@ export class LaneDispatchBus {
               role: "status",
               text: buildExecuteHistoryText(String(payload.command ?? ""), String(payload.output ?? "")),
               ts: Date.now(),
-              kind: "execute",
+              kind: ACTION_EXECUTE_HISTORY_KIND,
             });
           }
           if (this.options.historyStore && payload.type === "file_change" && payload.status === "completed") {
@@ -1062,7 +1063,7 @@ export class LaneDispatchBus {
           testReport.summary,
         ),
         ts: Date.now(),
-        kind: "execute",
+        kind: ACTION_EXECUTE_HISTORY_KIND,
       });
     }
 

@@ -117,6 +117,13 @@ describe("context resume — history injection", () => {
     assert.ok(result.includes("[exit code 1]"));
   });
 
+  it("labels Action command output during history injection", () => {
+    const result = buildHistoryInjectionContext([
+      { role: "status", kind: "action_execute", text: "$ npm test\npassed" },
+    ]);
+    assert.ok(result?.includes("Command output: $ npm test\npassed"));
+  });
+
   it("limits total transcript length", () => {
     const entries = Array.from({ length: 50 }, (_, i) => ({
       role: i % 2 === 0 ? "user" : "ai",

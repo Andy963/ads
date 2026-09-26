@@ -44,6 +44,10 @@ const SELECTION_NOTICE_PATTERNS = [
   /^模型已切换到.+，已启动新会话线程。?$/,
 ];
 
+function isExecuteHistoryKind(kind: string): boolean {
+  return kind === "execute" || kind === "action_execute";
+}
+
 function normalizeWirePrimitive(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
@@ -175,7 +179,7 @@ function hasTerminalHistoryTail(items: unknown[]): boolean {
     if (role === "status" && kind === "status" && !replayedLaneStatus(kind, text)) {
       continue;
     }
-    return role === "ai" || role === "assistant" || (role === "status" && (kind === "execute" || kind === "error" || Boolean(replayedLaneStatus(kind, text))));
+    return role === "ai" || role === "assistant" || (role === "status" && (isExecuteHistoryKind(kind) || kind === "error" || Boolean(replayedLaneStatus(kind, text))));
   }
   return false;
 }
@@ -193,7 +197,7 @@ function collectCompletedClientMessageIdsFromHistoryItems(items: unknown[]): Set
       continue;
     }
     if (!currentClientMessageId) continue;
-    if (role === "ai" || role === "assistant" || (role === "status" && (kind === "error" || kind === "execute"))) {
+    if (role === "ai" || role === "assistant" || (role === "status" && (kind === "error" || isExecuteHistoryKind(kind)))) {
       completed.add(currentClientMessageId);
       currentClientMessageId = "";
     }
@@ -1536,7 +1540,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           }
           continue;
         }
-        if (kind === "execute") {
+        if (isExecuteHistoryKind(kind)) {
           restoredHistoryStatus = null;
           replayedExecuteActivity = true;
           const lines = historyText.split("\n");

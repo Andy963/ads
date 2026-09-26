@@ -191,8 +191,8 @@ describe("CodexAppServerAdapter", () => {
     });
     const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
     const adapter = new CodexAppServerAdapter({ projectId: "safety", registry });
-    const events: Array<{ phase: string; title: string; detail?: string }> = [];
-    adapter.onEvent((event) => events.push({ phase: event.phase, title: event.title, detail: event.detail }));
+    const events: Array<{ phase: string; title: string; detail?: string; raw?: unknown }> = [];
+    adapter.onEvent((event) => events.push({ phase: event.phase, title: event.title, detail: event.detail, raw: event.raw }));
 
     const sendPromise = adapter.send("run the command");
     await waitForRequestCount(fake, "turn/start", 1);
@@ -242,7 +242,20 @@ describe("CodexAppServerAdapter", () => {
 
     const result = await sendPromise;
     assert.equal(result.response, "I will use a safe command instead.");
-    assert(events.some((event) => event.phase === "command" && event.detail?.includes("state.db")));
+    const blockedEvent = events.find((event) => (
+      event.phase === "command"
+      && (event.raw as { item?: { aggregated_output?: unknown } } | undefined)?.item?.aggregated_output
+        === "Command blocked by security rule: rm -f state.db"
+    ));
+    assert(blockedEvent);
+    assert.equal(
+      events.filter((event) => event.phase === "command" && event.detail?.includes("state.db")).length,
+      1,
+    );
+    assert.equal(
+      ((blockedEvent.raw as { item?: { aggregated_output?: unknown } } | undefined)?.item?.aggregated_output),
+      "Command blocked by security rule: rm -f state.db",
+    );
     assert.equal(fake.requests.some((request) => request.method === "turn/interrupt"), false);
 
     await registry.stopAll();

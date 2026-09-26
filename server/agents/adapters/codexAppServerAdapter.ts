@@ -20,6 +20,7 @@ import {
   type DaemonOptions,
 } from "../../codex/appServer/daemonRegistry.js";
 import type { CodexAppServerClient } from "../../codex/appServer/rpcClient.js";
+import type { CommandExecutionRequestApprovalResponse } from "../../codex/appServer/protocol/v2/CommandExecutionRequestApprovalResponse.js";
 import { AsyncLock } from "../../utils/asyncLock.js";
 import type { ThreadGoal } from "../../codex/appServer/protocol/v2/ThreadGoal.js";
 import type { ThreadGoalStatus } from "../../codex/appServer/protocol/v2/ThreadGoalStatus.js";
@@ -612,12 +613,46 @@ export class CodexAppServerAdapter implements AgentAdapter {
     };
     const blockedCommandIds = new Set<string>();
     const blockedCommandReasons = new Map<string, string>();
+    const emittedBlockedCommandIds = new Set<string>();
     const cleanupFns: Array<() => void> = [];
     const emit = (event: ThreadEvent) => {
       const mapped = mapThreadEventToAgentEvent(event, Date.now());
       if (mapped) {
         this.emitEvent(mapped);
       }
+    };
+
+    const emitBlockedCommandFailure = (item: ThreadItem, message: string): void => {
+      const itemId = item.id ?? randomUUID();
+      if (emittedBlockedCommandIds.has(itemId)) return;
+      emittedBlockedCommandIds.add(itemId);
+      emit({
+        type: "item.completed",
+        item: {
+          ...item,
+          id: itemId,
+          status: "failed",
+          exit_code: 126,
+          aggregated_output: message,
+        },
+      });
+    };
+
+    const matchesCurrentTurnRequest = (params: unknown): boolean => {
+      const requestThreadId = extractThreadId(params);
+      const requestTurnId = extractTurnId(params);
+      const expectedThreadId = state.threadIdFromStarted ?? this.threadId;
+      const expectedTurnId = state.turnId;
+      if (!requestThreadId && !requestTurnId) return false;
+      if (requestThreadId && expectedThreadId && requestThreadId !== expectedThreadId) return false;
+      if (requestTurnId && expectedTurnId && requestTurnId !== expectedTurnId) return false;
+      if (requestTurnId && !expectedTurnId && requestThreadId) {
+        return Boolean(expectedThreadId && requestThreadId === expectedThreadId);
+      }
+      return Boolean(
+        (requestTurnId && expectedTurnId && requestTurnId === expectedTurnId)
+        || (requestThreadId && expectedThreadId && requestThreadId === expectedThreadId && !requestTurnId),
+      );
     };
 
     let turnDone: (value: void) => void;
@@ -634,28 +669,29 @@ export class CodexAppServerAdapter implements AgentAdapter {
         const command = typeof request.command === "string" ? request.command : "";
         const violation = findSecurityViolation(command);
         if (!violation) {
-          return { decision: "accept" };
+          const response: CommandExecutionRequestApprovalResponse = { decision: "accept" };
+          return response;
         }
 
         const message = "Command blocked by security rule: " + violation;
         blockedCommandIds.add(itemId);
         blockedCommandReasons.set(itemId, message);
-        emit({
-          type: "item.completed",
-          item: {
-            type: "command_execution",
-            id: itemId,
-            command,
-            status: "failed",
-            exit_code: 126,
-            aggregated_output: message,
-          },
-        });
-        return { decision: "decline" };
-      }),
+        emitBlockedCommandFailure({
+          type: "command_execution",
+          id: itemId,
+          command,
+          status: "failed",
+        }, message);
+        const response: CommandExecutionRequestApprovalResponse = { decision: "decline" };
+        return response;
+      }, { matches: matchesCurrentTurnRequest }),
     );
     cleanupFns.push(
-      client.onServerRequest("item/fileChange/requestApproval", () => ({ decision: "accept" })),
+      client.onServerRequest(
+        "item/fileChange/requestApproval",
+        () => ({ decision: "accept" }),
+        { matches: matchesCurrentTurnRequest },
+      ),
     );
 
     // The daemon connection is shared by every session of the project, so
@@ -741,16 +777,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
               if (!blockedCommandIds.has(itemId)) {
                 blockedCommandIds.add(itemId);
                 blockedCommandReasons.set(itemId, message);
-                emit({
-                  type: "item.completed",
-                  item: {
-                    ...translated,
-                    id: itemId,
-                    status: "failed",
-                    exit_code: 126,
-                    aggregated_output: message,
-                  },
-                });
+                emitBlockedCommandFailure({ ...translated, id: itemId }, message);
               }
               return;
             }
@@ -772,6 +799,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
           return;
         }
         if (translated.type === "command_execution" && translated.id && blockedCommandIds.has(translated.id)) {
+          const blockedReason = blockedCommandReasons.get(translated.id);
+          if (blockedReason) {
+            emitBlockedCommandFailure(translated, blockedReason);
+          }
           return;
         }
         retryState.markSideEffect(translated);

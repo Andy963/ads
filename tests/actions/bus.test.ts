@@ -916,7 +916,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.ok(historyEntries.some((h) => h.entry.role === "user"));
     assert.ok(historyEntries.some((h) => h.entry.role === "assistant"));
     assert.ok(historyEntries.some((h) =>
-      h.entry.kind === "execute"
+      h.entry.kind === "action_execute"
       && h.entry.text.includes("$ git status")
       && h.entry.text.includes("working tree clean"),
     ));

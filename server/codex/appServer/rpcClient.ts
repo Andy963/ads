@@ -57,6 +57,11 @@ export type ServerRequestHandler = (
   method: string,
   id: number | string,
 ) => unknown | Promise<unknown>;
+export type ServerRequestMatcher = (
+  params: unknown,
+  method: string,
+  id: number | string,
+) => boolean;
 export type CloseHandler = (code: number | null) => void;
 
 interface PendingRequest {
@@ -64,6 +69,11 @@ interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
   timer: ReturnType<typeof setTimeout> | null;
+}
+
+interface RegisteredServerRequestHandler {
+  handler: ServerRequestHandler;
+  matches?: ServerRequestMatcher;
 }
 
 export class CodexAppServerRpcError extends Error {
@@ -117,7 +127,7 @@ export class CodexAppServerClient {
   private readonly pending = new Map<number, PendingRequest>();
   private readonly notificationHandlers = new Map<string, Set<NotificationHandler>>();
   private readonly anyNotificationHandlers = new Set<NotificationHandler>();
-  private readonly serverRequestHandlers = new Map<string, Set<ServerRequestHandler>>();
+  private readonly serverRequestHandlers = new Map<string, Set<RegisteredServerRequestHandler>>();
   private readonly closeHandlers = new Set<CloseHandler>();
   private stdoutBuffer = "";
   private closed = false;
@@ -285,7 +295,23 @@ export class CodexAppServerClient {
 
   private async dispatchServerRequest(id: number | string, method: string, params: unknown): Promise<void> {
     const handlers = this.serverRequestHandlers.get(method);
-    const handler = handlers?.values().next().value as ServerRequestHandler | undefined;
+    const registrations = handlers ? Array.from(handlers) : [];
+    let registration: RegisteredServerRequestHandler | undefined;
+    for (const candidate of registrations) {
+      if (!candidate.matches) continue;
+      try {
+        if (candidate.matches(params, method, id)) {
+          registration = candidate;
+          break;
+        }
+      } catch (err) {
+        logger.warn(
+          `server request matcher for ${method} threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    registration ??= registrations.find((candidate) => !candidate.matches);
+    const handler = registration?.handler;
     if (!handler) {
       this.rejectServerRequest(id, method);
       return;
@@ -401,17 +427,25 @@ export class CodexAppServerClient {
    * Register a handler for a JSON-RPC request initiated by the app-server.
    * Returning a value sends it as the JSON-RPC result for that request.
    */
-  onServerRequest(method: string, handler: ServerRequestHandler): () => void {
+  onServerRequest(
+    method: string,
+    handler: ServerRequestHandler,
+    options?: { matches?: ServerRequestMatcher },
+  ): () => void {
     let set = this.serverRequestHandlers.get(method);
     if (!set) {
       set = new Set();
       this.serverRequestHandlers.set(method, set);
     }
-    set.add(handler);
+    const registration: RegisteredServerRequestHandler = {
+      handler,
+      matches: options?.matches,
+    };
+    set.add(registration);
     return () => {
       const current = this.serverRequestHandlers.get(method);
       if (!current) return;
-      current.delete(handler);
+      current.delete(registration);
       if (current.size === 0) {
         this.serverRequestHandlers.delete(method);
       }
