@@ -1808,6 +1808,7 @@ const acopilotConnectionStatus = computed(() => {
               </button>
             </template>
           </div>
+          <div class="laneControlDivider" aria-hidden="true" />
           <div class="laneModelControls" data-testid="lane-model-controls">
             <MainChatModelSelectors
               :connected="activeLaneConnected"

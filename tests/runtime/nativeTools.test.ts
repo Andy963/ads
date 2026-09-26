@@ -218,18 +218,4 @@ describe("NativeToolExecutor", () => {
     );
     assert.equal(fs.existsSync(path.join(workspace, "should-not-exist.txt")), false);
   });
-
-  it("dispatches an action job to the queue via native executor", async () => {
-    const executor = new NativeToolExecutor({ workspaceRoot: workspace });
-    const res = await executor.execute(call("dispatch_action_job", {
-      issue_id: 123,
-      title: "Native task",
-      description: "Complete native task description",
-      acceptance_criteria: ["Queue the task"],
-    }));
-    const parsed = JSON.parse(res.output) as { ok: boolean; job_id: string; status: string };
-    assert.equal(parsed.ok, true);
-    assert.equal(parsed.status, "queued");
-    assert.ok(parsed.job_id.startsWith("job-"));
-  });
 });

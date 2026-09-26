@@ -11,6 +11,35 @@ export type PromptQueueRunOutcome = {
   error?: string;
 };
 
+// How far back the snapshot reports finished work, and a soft ceiling on how
+// many rows the snapshot may carry once that window is applied.
+//
+// Completed rows used to be filtered out of the snapshot entirely. A client
+// that restored a card from its durable local outbox therefore had no
+// authoritative signal telling it the prompt was already done: the card was
+// flipped to `offline`, re-persisted by the outbox watcher, and resurrected in
+// full on every later reconnect. Reporting recent completions hands the client
+// the one fact it cannot infer, and the reconciliation path it already has
+// drops both the card and the outbox entry.
+//
+// The window is deliberately bounded. An outbox entry only lingers when the
+// client never saw its acknowledgement, which is a same-session-scale event,
+// so a day of history is far more than that reconciliation ever needs.
+//
+// The ceiling is soft on purpose: when the live rows alone already exceed it,
+// the snapshot runs long rather than hiding queued, running or failed work.
+//
+// Known limitation: an outbox entry whose row completed outside this window,
+// or outside the newest `COMPLETED_SNAPSHOT_MAX_ROWS` completions, still gets
+// no purge signal and keeps its self-sustaining restore/offline/persist cycle
+// on the client. Closing that needs the client to hand the server the ids it
+// still holds, or a client-side age-out, which is a protocol change rather
+// than a snapshot tweak.
+const COMPLETED_SNAPSHOT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const COMPLETED_SNAPSHOT_MAX_ROWS = 200;
+
+const completionTimeOf = (entry: PromptQueueEntry): number => entry.completedAt ?? entry.updatedAt;
+
 export type PromptQueueServiceOptions = {
   store: PromptQueueStore;
   workerId: string;
@@ -125,8 +154,26 @@ export class PromptQueueService {
     return result;
   }
 
-  getSnapshot(lane: PromptQueueLane): PromptQueueEntry[] {
-    return this.store.listLogicalLane(lane).filter((entry) => entry.status !== "completed");
+  getSnapshot(lane: PromptQueueLane, now = Date.now()): PromptQueueEntry[] {
+    const entries = this.store.listLogicalLane(lane).filter(
+      (entry) =>
+        entry.status !== "completed"
+        || now - completionTimeOf(entry) <= COMPLETED_SNAPSHOT_WINDOW_MS,
+    );
+    const overflow = entries.length - COMPLETED_SNAPSHOT_MAX_ROWS;
+    if (overflow <= 0) return entries;
+    // A returning client still holds the most recent completions, so trim
+    // oldest-first by completion time rather than by row id: `retryFailed`
+    // re-queues an existing low-id row, which means id order is FIFO order and
+    // not completion order.
+    const trimmed = entries
+      .filter((entry) => entry.status === "completed")
+      .sort((left, right) => completionTimeOf(left) - completionTimeOf(right))
+      .slice(0, overflow)
+      .map((entry) => entry.id);
+    if (trimmed.length === 0) return entries;
+    const dropped = new Set(trimmed);
+    return entries.filter((entry) => !dropped.has(entry.id));
   }
 
   isOwner(): boolean {

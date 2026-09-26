@@ -95,6 +95,28 @@ const LIVE_ACTIVITY_MESSAGE_ID = "live-activity";
 const CHAT_STICKY_THRESHOLD_PX = 80;
 const READING_LOCK_TOP_OFFSET_PX = 12;
 const TOUCH_SCROLL_INTENT_THRESHOLD_PX = 10;
+// Window during which a scroll event is attributed to visualViewport layout
+// rather than to the user. Mobile keyboard and browser-toolbar animations run
+// for 250-300ms and can emit their final scroll correction long after the last
+// animation frame, so the two-frame window this replaces expired while the
+// animation was still running and misread that late correction as "the user
+// scrolled away". The value tracks the viewport-metric burst ladder in
+// client/src/lib/viewport.ts (50/150/300/500/800/1200/1800ms) so both layers
+// cover the same churn. Real wheel/touch/key input still cancels this
+// immediately via onChatScrollIntent.
+//
+// This window deliberately applies to visualViewport events only. Content
+// growth arms its own much shorter guard on every ResizeObserver callback, and
+// widening that one to match would hold the guard open for the whole of a
+// stream, because streaming deltas arrive faster than any window that still
+// expires between them. Do not rename this back to a viewport-wide constant:
+// that is what let it reach the content path once already.
+//
+// Accepted trade-off: for this long a scroll carrying no wheel, touch or key
+// intent - a native scrollbar-thumb drag - cannot stop tail-following. The
+// issue's acceptance criteria mandate exactly this, and every other scroll
+// source the chat exposes is covered by onChatScrollIntent.
+const CHAT_KEYBOARD_LAYOUT_TRANSITION_MS = 1800;
 
 const liveStepPinnedToBottom = ref(true);
 let liveStepScrollEl: HTMLElement | null = null;
@@ -110,8 +132,10 @@ let settlingBottom = false;
 let chatTouchStart: { x: number; y: number } | null = null;
 let chatPhysicalScrollIntent = false;
 let chatVisualViewport: VisualViewport | null = null;
-let chatViewportLayoutTransition = false;
-let chatViewportLayoutTransitionFrame: number | null = null;
+let chatKeyboardLayoutTransition = false;
+let chatKeyboardLayoutTransitionTimer: number | null = null;
+let chatContentLayoutTransition = false;
+let chatContentLayoutTransitionFrame: number | null = null;
 
 // Two-phase reading viewport. Phase 1 (intermediate execution): the viewport
 // follows the streaming tail so commands and live steps stay visible. Phase 2
@@ -310,11 +334,14 @@ function pauseChatAutoScroll(): void {
 
 function onChatScrollIntent(): void {
   chatPhysicalScrollIntent = true;
-  chatViewportLayoutTransition = false;
-  if (chatViewportLayoutTransitionFrame !== null) {
-    cancelFrame(chatViewportLayoutTransitionFrame);
-    chatViewportLayoutTransitionFrame = null;
+  chatKeyboardLayoutTransition = false;
+  chatContentLayoutTransition = false;
+  if (chatKeyboardLayoutTransitionTimer !== null) {
+    window.clearTimeout(chatKeyboardLayoutTransitionTimer);
+    chatKeyboardLayoutTransitionTimer = null;
   }
+  if (chatContentLayoutTransitionFrame !== null) cancelFrame(chatContentLayoutTransitionFrame);
+  chatContentLayoutTransitionFrame = null;
   initialViewportActive = false;
   followEpoch += 1;
   readingLockSeq += 1;
@@ -403,24 +430,35 @@ function scheduleChatScrollToBottom(): void {
 }
 
 function onVisualViewportChange(): void {
-  markChatViewportLayoutTransition();
+  markChatKeyboardLayoutTransition();
   if (!autoScroll.value || readingLockEl || readingLockAligning) return;
   scheduleChatScrollToBottom();
 }
 
+function markChatKeyboardLayoutTransition(): void {
+  chatKeyboardLayoutTransition = true;
+  if (chatKeyboardLayoutTransitionTimer !== null) window.clearTimeout(chatKeyboardLayoutTransitionTimer);
+  chatKeyboardLayoutTransitionTimer = window.setTimeout(() => {
+    chatKeyboardLayoutTransitionTimer = null;
+    chatKeyboardLayoutTransition = false;
+  }, CHAT_KEYBOARD_LAYOUT_TRANSITION_MS);
+}
+
 function markChatViewportLayoutTransition(): void {
-  chatViewportLayoutTransition = true;
-  if (chatViewportLayoutTransitionFrame !== null) cancelFrame(chatViewportLayoutTransitionFrame);
-  chatViewportLayoutTransitionFrame = scheduleFrame(() => {
-    chatViewportLayoutTransitionFrame = scheduleFrame(() => {
-      chatViewportLayoutTransitionFrame = null;
-      chatViewportLayoutTransition = false;
+  chatContentLayoutTransition = true;
+  if (chatContentLayoutTransitionFrame !== null) cancelFrame(chatContentLayoutTransitionFrame);
+  chatContentLayoutTransitionFrame = scheduleFrame(() => {
+    chatContentLayoutTransitionFrame = scheduleFrame(() => {
+      chatContentLayoutTransitionFrame = null;
+      chatContentLayoutTransition = false;
     });
   });
 }
 
 function handleSend(content: string): void {
-  scrollChatToBottom();
+  // Pin across the frames in which the optimistic bubble and the assistant
+  // placeholder render, so a wrapped prompt cannot settle above the fold.
+  scrollChatToBottom(true);
   emit("send", content);
 }
 
@@ -548,7 +586,7 @@ function handleScroll() {
     scheduleViewportSave();
     return;
   }
-  if (!physicalScrollIntent && chatViewportLayoutTransition) {
+  if (!physicalScrollIntent && (chatKeyboardLayoutTransition || chatContentLayoutTransition)) {
     scheduleViewportSave();
     return;
   }
@@ -758,9 +796,12 @@ onBeforeUnmount(() => {
   chatVisualViewport?.removeEventListener("resize", onVisualViewportChange);
   chatVisualViewport?.removeEventListener("scroll", onVisualViewportChange);
   chatVisualViewport = null;
-  if (chatViewportLayoutTransitionFrame !== null) cancelFrame(chatViewportLayoutTransitionFrame);
-  chatViewportLayoutTransitionFrame = null;
-  chatViewportLayoutTransition = false;
+  if (chatKeyboardLayoutTransitionTimer !== null) window.clearTimeout(chatKeyboardLayoutTransitionTimer);
+  chatKeyboardLayoutTransitionTimer = null;
+  chatKeyboardLayoutTransition = false;
+  if (chatContentLayoutTransitionFrame !== null) cancelFrame(chatContentLayoutTransitionFrame);
+  chatContentLayoutTransitionFrame = null;
+  chatContentLayoutTransition = false;
   followEpoch += 1;
   readingLockSeq += 1;
   readingLockAligning = false;

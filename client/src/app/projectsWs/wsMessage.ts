@@ -185,6 +185,27 @@ function collectCompletedClientMessageIdsFromHistoryItems(items: unknown[]): Set
   return completed;
 }
 
+function hasCommittedUserBubble(rt: ProjectRuntime, clientMessageId: string): boolean {
+  if (!clientMessageId) return false;
+  return rt.messages.value.some((message) => message.id === clientMessageId && message.role === "user");
+}
+
+// A freshly sent prompt already renders as a user bubble, so rebuilding a queue
+// card for the same client id would show the same text twice. Two cases must
+// still get a card: failed prompts, because the card is the only surface
+// carrying retry; and replayed prompts, because the bubble does not convey that
+// the backend has not confirmed the replay yet.
+function shouldSuppressQueueCard(
+  rt: ProjectRuntime,
+  clientMessageId: string,
+  acknowledged: { replayIncomplete?: boolean } | null | undefined,
+  status: string,
+): boolean {
+  if (status === "failed") return false;
+  if (acknowledged?.replayIncomplete) return false;
+  return hasCommittedUserBubble(rt, clientMessageId);
+}
+
 export type WsMessageHandlerArgs = {
   projects: Ref<ProjectTab[]>;
   pid: string;
@@ -1007,7 +1028,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
                   }
                 : prompt,
             );
-        } else if (!(rt.dismissedPromptIds?.has(id) ?? false)) {
+        } else if (!(rt.dismissedPromptIds?.has(id) ?? false) && !shouldSuppressQueueCard(rt, id, acknowledged, rawStatus)) {
           rt.queuedPrompts.value = [
             ...rt.queuedPrompts.value,
             {
@@ -1036,7 +1057,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         const record = raw as Record<string, unknown>;
         const clientMessageId = String(record.clientMessageId ?? "").trim();
         if (!clientMessageId) continue;
-        clearPendingPrompt(rt, clientMessageId);
+        const acknowledged = clearPendingPrompt(rt, clientMessageId);
         const status = String(record.status ?? "queued") as "queued" | "running" | "failed" | "completed";
         // A card the user explicitly removed stays removed even though the
         // durable row is still on the server.
@@ -1047,11 +1068,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           rt.queuedPrompts.value = rt.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== clientMessageId);
           continue;
         }
-        const text = existing?.text
-          || rt.messages.value.find((message) => message.id === clientMessageId)?.content
-          || "Server queued request";
-        rt.queuedPrompts.value = existing
-          ? rt.queuedPrompts.value.map((prompt) => prompt.clientMessageId === clientMessageId
+        if (existing) {
+          rt.queuedPrompts.value = rt.queuedPrompts.value.map((prompt) => prompt.clientMessageId === clientMessageId
             ? {
                 ...prompt,
                 deliveryStatus: status,
@@ -1063,20 +1081,28 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
                 replayIncomplete: false,
                 queueLaneGeneration: Number(record.laneGeneration) || prompt.queueLaneGeneration,
               }
-            : prompt)
-          : [...rt.queuedPrompts.value, {
-              id: `server-${clientMessageId}`,
-              clientMessageId,
-              text,
-              images: [],
-              createdAt: Number(record.createdAt) || Date.now(),
-              deliveryStatus: status,
-              queuePosition: Number(record.position) || undefined,
-              queueAttempts: Number(record.attempts) || undefined,
-              queueError: String(record.lastError ?? "") || undefined,
-              serverQueueTracked: true,
-              queueLaneGeneration: Number(record.laneGeneration) || undefined,
-            }];
+            : prompt);
+          continue;
+        }
+        if (!shouldSuppressQueueCard(rt, clientMessageId, acknowledged, status)) {
+          // `existing` is known to be absent here, so the stream is the only
+          // local source for the card text.
+          const text = rt.messages.value.find((message) => message.id === clientMessageId)?.content
+            || "Server queued request";
+          rt.queuedPrompts.value = [...rt.queuedPrompts.value, {
+            id: `server-${clientMessageId}`,
+            clientMessageId,
+            text,
+            images: [],
+            createdAt: Number(record.createdAt) || Date.now(),
+            deliveryStatus: status,
+            queuePosition: Number(record.position) || undefined,
+            queueAttempts: Number(record.attempts) || undefined,
+            queueError: String(record.lastError ?? "") || undefined,
+            serverQueueTracked: true,
+            queueLaneGeneration: Number(record.laneGeneration) || undefined,
+          }];
+        }
       }
       if (type === "prompt_queue_snapshot") {
         rt.queuedPrompts.value = rt.queuedPrompts.value.map((prompt) =>
