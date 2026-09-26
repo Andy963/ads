@@ -111,7 +111,7 @@ describe("interrupting a turn cancels its queue card", () => {
 
     handler({
       type: "prompt_queue",
-      entry: { clientMessageId: "cmid-real", status: "failed", lastError: "provider connection reset" },
+      entry: { clientMessageId: "cmid-real", text: "retry this prompt", status: "failed", lastError: "provider connection reset" },
     });
 
     expect(rt.queuedPrompts.value.map((prompt) => prompt.clientMessageId)).toEqual(["cmid-real"]);

@@ -206,6 +206,7 @@ function shouldSuppressQueueCard(
   status: string,
   failureReason?: string,
 ): boolean {
+  if (status === "running" || status === "completed") return true;
   if (status === "failed") return isUserAbortFailure(String(failureReason ?? ""));
   if (acknowledged?.replayIncomplete) return false;
   return hasCommittedUserBubble(rt, clientMessageId);
@@ -1033,6 +1034,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           rt.queuedPrompts.value = rt.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== id);
         } else if (rawStatus === "failed" && isUserAbortFailure(rawError)) {
           if (existing) removeQueuedPrompt(existing.id, rt);
+        } else if (rawStatus === "running") {
+          rt.queuedPrompts.value = rt.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== id);
         } else if (existing) {
           rt.queuedPrompts.value = rt.queuedPrompts.value.map((prompt) =>
               prompt.clientMessageId === id
@@ -1094,6 +1097,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           if (card) removeQueuedPrompt(card.id, rt);
           continue;
         }
+        if (status === "running") {
+          rt.queuedPrompts.value = rt.queuedPrompts.value.filter(
+            (prompt) => prompt.clientMessageId !== clientMessageId,
+          );
+          continue;
+        }
         activeIds.add(clientMessageId);
         const existing = rt.queuedPrompts.value.find((prompt) => prompt.clientMessageId === clientMessageId);
         if (status === "completed") {
@@ -1117,10 +1126,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           continue;
         }
         if (!shouldSuppressQueueCard(rt, clientMessageId, acknowledged, status, lastError)) {
-          // `existing` is known to be absent here, so the stream is the only
-          // local source for the card text.
-          const text = rt.messages.value.find((message) => message.id === clientMessageId)?.content
-            || "Server queued request";
+          const text = firstWireText(
+            rt.messages.value.find((message) => message.id === clientMessageId)?.content,
+            record.text,
+          ).trim();
+          if (!text) continue;
           rt.queuedPrompts.value = [...rt.queuedPrompts.value, {
             id: `server-${clientMessageId}`,
             clientMessageId,
@@ -1403,6 +1413,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const resumeReplacePending = rt.resumeReplacePending;
       const items = Array.isArray(msg.items) ? (msg.items as unknown[]) : [];
       const terminalHistoryTail = hasTerminalHistoryTail(items);
+      const completedClientMessageIds = collectCompletedClientMessageIdsFromHistoryItems(items);
+      reconcilePendingPromptsByClientMessageIds(completedClientMessageIds);
       reconcilePendingPromptsFromBootstrapHistory(items);
       if (!resumeReplacePending && rt.ignoreNextHistory) {
         const historyGenerationRaw = Number((msg as Record<string, unknown>).laneGeneration);

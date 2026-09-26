@@ -131,6 +131,7 @@ describe("issue-379 failed queued prompt recovery", () => {
       type: "prompt_queue_snapshot",
       entries: [{
         clientMessageId: "cmid-original",
+        text: "resume the interrupted turn",
         status: "failed",
         position: 0,
         attempts: 1,
@@ -191,6 +192,7 @@ describe("issue-379 failed queued prompt recovery", () => {
       type: "prompt_queue_snapshot",
       entries: [{
         clientMessageId: "cmid-original",
+        text: "resume the interrupted turn",
         status: "failed",
         position: 0,
         attempts: 1,

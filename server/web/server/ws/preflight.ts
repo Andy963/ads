@@ -29,6 +29,19 @@ export function isClientMessageCompleted(
   return false;
 }
 
+function promptHistoryStatus(
+  entries: HistoryEntry[],
+  clientMessageId: string,
+): "completed" | "failed" | "running" | null {
+  const hasPersistedPrompt = entries.some(
+    (entry) => entry.role === "user" && getHistoryClientMessageId(entry.kind) === clientMessageId,
+  );
+  if (!hasPersistedPrompt) return null;
+  if (isClientMessageCompleted(entries, clientMessageId, { allowErrorReplay: true })) return "completed";
+  if (isClientMessageCompleted(entries, clientMessageId)) return "failed";
+  return "running";
+}
+
 export function shouldPersistCommandMessage(args: {
   sanitizeInput: (payload: unknown) => string;
   payload: unknown;
@@ -86,6 +99,17 @@ export function preflightPersistAndAck(args: {
       ? (args.parsed.payload as Record<string, unknown>)
       : {};
     if (args.persistPromptQueue) {
+      const historyStatus = promptHistoryStatus(args.historyStore.get(args.historyKey), args.clientMessageId);
+      const allowsExplicitReplay = payload.replay_incomplete === true;
+      if (historyStatus && (!allowsExplicitReplay || historyStatus === "completed")) {
+        args.sendJson({
+          type: "ack",
+          client_message_id: args.clientMessageId,
+          duplicate: true,
+          queue_status: historyStatus,
+        });
+        return { enqueue: false };
+      }
       const queueResult = args.persistPromptQueue();
       if (!queueResult.ok) {
         args.warn(
