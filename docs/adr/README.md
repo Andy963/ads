@@ -41,4 +41,5 @@
 - 0026 - [ADR 0026: Define the Native Runtime Lifecycle and Capability Contract](0026-native-runtime-lifecycle-and-capability-contract.md)
 - 0027 - [ADR 0027: 建立 Canonical Lane 与 Actions Role 术语契约](0027-canonical-lane-and-actions-role-terminology.md)
 - 0028 - [ADR 0028: Allow Cross-Runtime Session Continuation via History Injection](0028-cross-runtime-session-continuation-via-history-injection.md)
+- 0029 - [ADR 0029: Actions 队列派发自动启动与执行期输入锁定](0029-actions-queue-auto-start-and-execution-input-lock.md)
 <!-- ADS:ADR_INDEX_END -->

@@ -105,6 +105,139 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(stored.branch, "codex/issue-277");
   });
 
+  it("auto-starts a dispatched job without a manual queue start when the queue is idle", async () => {
+    const db = getStateDatabase();
+    const bus = new LaneDispatchBus(db);
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 601,
+      issueTitle: "Auto start on dispatch",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify auto start"],
+      repoPath: repoDir,
+    });
+
+    await waitFor(() => bus.getJob(job.jobId)?.status === "running");
+
+    const runningJob = bus.getJob(job.jobId);
+    const steps = JSON.parse(runningJob?.steps_json ?? "[]") as Array<{ status: string; step: string }>;
+    assert.deepStrictEqual(steps.map((step) => step.status), ["queued", "running"]);
+    assert.strictEqual(
+      spawnSync("git", ["branch", "--show-current"], { cwd: repoDir, encoding: "utf8" }).stdout.trim(),
+      "codex/issue-601",
+    );
+  });
+
+  it("does not double-start when a follow-up job is dispatched while another job is running", async () => {
+    const db = getStateDatabase();
+    const bus = new LaneDispatchBus(db);
+
+    const first = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 602,
+      issueTitle: "First auto-started task",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify the first job starts"],
+      repoPath: repoDir,
+    });
+    await waitFor(() => bus.getJob(first.jobId)?.status === "running");
+
+    const second = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 603,
+      issueTitle: "Second task stays queued",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify no double start"],
+      repoPath: repoDir,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const secondJob = bus.getJob(second.jobId);
+    assert.strictEqual(secondJob?.status, "queued");
+    assert.strictEqual(secondJob?.error_message, null);
+    assert.strictEqual(
+      spawnSync("git", ["branch", "--show-current"], { cwd: repoDir, encoding: "utf8" }).stdout.trim(),
+      "codex/issue-602",
+    );
+  });
+
+  it("posts the failure stage and detail to the Actions chat stream when a job ends blocked", async () => {
+    const db = getStateDatabase();
+    const historyEntries: any[] = [];
+    const broadcasts: Array<Record<string, unknown>> = [];
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => {
+        commitImplementation("blocked-failure");
+        return { exitCode: 0 };
+      },
+      reviewerRunner: async () => JSON.stringify({ status: "PASS", summary: "Should not run", defects: [] }),
+      testCommand: "node -e process.exit(1)",
+      historyStore: {
+        add: (key, entry) => historyEntries.push({ key, entry }),
+      },
+      broadcastToActionsLane: (payload) => broadcasts.push(payload as Record<string, unknown>),
+    });
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 604,
+      issueTitle: "Blocked failure surfacing",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify failure logs reach the chat stream"],
+      repoPath: repoDir,
+    });
+
+    await waitFor(() => bus.getJob(job.jobId)?.status === "blocked");
+
+    const failureEntry = historyEntries.find((h) => h.entry.kind === "action_blocked");
+    assert.ok(failureEntry, "expected a persisted action_blocked chat entry");
+    assert.strictEqual(failureEntry.entry.role, "assistant");
+    assert.match(failureEntry.entry.text, /Verification failed:/);
+
+    const failureBroadcast = broadcasts.find((payload) =>
+      payload.type === "message"
+      && typeof payload.text === "string"
+      && payload.text.includes("Verification failed:"),
+    );
+    assert.ok(failureBroadcast, "expected a live chat broadcast with the failure detail");
+    assert.strictEqual(failureBroadcast.role, "assistant");
+
+    const blockedJob = bus.getJob(job.jobId);
+    const statuses = (JSON.parse(blockedJob?.steps_json ?? "[]") as Array<{ status: string }>)
+      .map((step) => step.status);
+    assert.ok(statuses.includes("queued"));
+    assert.ok(statuses.includes("running"));
+    assert.ok(statuses.includes("verifying"));
+    assert.ok(statuses.includes("blocked"));
+  });
+
+  it("posts a cancellation notice to the Actions chat stream", () => {
+    const db = getStateDatabase();
+    const historyEntries: any[] = [];
+    const bus = new LaneDispatchBus(db, {
+      historyStore: {
+        add: (key, entry) => historyEntries.push({ key, entry }),
+      },
+    });
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 605,
+      issueTitle: "Cancellation notice",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify cancellation surfacing"],
+    });
+
+    bus.cancelJob(job.jobId, repoDir);
+
+    const entry = historyEntries.find((h) => h.entry.kind === "action_cancelled");
+    assert.ok(entry, "expected a persisted action_cancelled chat entry");
+    assert.strictEqual(entry.entry.role, "assistant");
+    assert.match(entry.entry.text, /cancelled/);
+    assert.strictEqual(bus.getJob(job.jobId)?.status, "cancelled");
+  });
+
   it("keeps a job queued when the runtime preflight reports missing capabilities", async () => {
     const db = getStateDatabase();
     const bus = new LaneDispatchBus(db, {
@@ -217,7 +350,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.match(reviewPrompt, /git log -1 --pretty=%s/);
   });
 
-  it("does not evaluate the queue or attach gate errors during dispatch", async () => {
+  it("keeps a follow-up job queued without gate errors while another job runs, even with auto-start on dispatch", async () => {
     const db = getStateDatabase();
     const bus = new LaneDispatchBus(db);
     const activeJob = bus.dispatchJob({
@@ -241,7 +374,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       repoPath: repoDir,
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     assert.strictEqual(bus.getJob(queuedJob.jobId)?.status, "queued");
     assert.strictEqual(bus.getJob(queuedJob.jobId)?.error_message, null);
   });
