@@ -55,7 +55,7 @@ vi.mock("../api/ws", () => {
 
     constructor(options: { sessionId: string; chatSessionId?: string }) {
       const chatSessionId = String(options.chatSessionId ?? "main").trim() || "main";
-      if (chatSessionId === "advisor") {
+      if (chatSessionId === "acopilot") {
         lastAdvisorWs = this as unknown as typeof lastWs;
         return;
       } else {
@@ -151,7 +151,7 @@ describe("reasoning effort WS payload", () => {
     }
   });
 
-  it("defaults worker model_reasoning_effort to high", async () => {
+  it("defaults actions model_reasoning_effort to high", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await settleUi(wrapper);
@@ -257,7 +257,7 @@ describe("reasoning effort WS payload", () => {
     wrapper.unmount();
   });
 
-  it("keeps advisor default model_reasoning_effort at high", async () => {
+  it("keeps acopilot default model_reasoning_effort at high", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await settleUi(wrapper);
@@ -271,7 +271,7 @@ describe("reasoning effort WS payload", () => {
     expect(lastAdvisorSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "high", model: "auto" });
   });
 
-  it("uses an optimistically selected advisor agent for immediate advisor prompts", async () => {
+  it("uses an optimistically selected acopilot agent for immediate acopilot prompts", async () => {
     const App = (await import("../App.vue")).default;
     const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
     await settleUi(wrapper);

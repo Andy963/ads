@@ -1088,9 +1088,9 @@ describe("ws workspace project sync", () => {
     expect(rt.activeThreadId.value).toBeNull();
   });
 
-  it("ignores a shared reset delivered to the advisor lane", () => {
+  it("ignores a shared reset delivered to the acopilot lane", () => {
     const rt = createRuntime();
-    rt.chatSessionId = "advisor";
+    rt.chatSessionId = "acopilot";
     rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "keep me" }];
     rt.activeThreadId.value = "advisor-thread";
     rt.busy.value = true;

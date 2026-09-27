@@ -7,18 +7,16 @@ import {
 } from "./laneWire";
 
 describe("lane wire compatibility", () => {
-  it("maps canonical lanes to the legacy wire ids the server still expects", () => {
-    // The server routes with `chatSessionId === "advisor" ? acopilot : actions`,
-    // so these two exact strings are the contract. Sending anything else routes
-    // Acopilot traffic into Actions.
-    expect(toWireChatSessionId("acopilot")).toBe("advisor");
-    expect(toWireChatSessionId("actions")).toBe("worker");
+  it("maps canonical lanes to the canonical wire ids", () => {
+    // The server resolves `acopilot` to the Acopilot lane and routes every
+    // other value to Actions, so these two strings are the contract.
+    expect(toWireChatSessionId("acopilot")).toBe("acopilot");
+    expect(toWireChatSessionId("actions")).toBe("actions");
   });
 
-  it("resolves received wire ids back to canonical lanes", () => {
+  it("resolves retired wire ids back to canonical lanes", () => {
     expect(fromWireChatSessionId("advisor")).toBe("acopilot");
     expect(fromWireChatSessionId("worker")).toBe("actions");
-    // planner was the pre-rename spelling of the same lane.
     expect(fromWireChatSessionId("planner")).toBe("acopilot");
   });
 
@@ -27,6 +25,8 @@ describe("lane wire compatibility", () => {
     // "main"; those must not be mistaken for a lane.
     expect(fromWireChatSessionId("main")).toBeNull();
     expect(isWireLaneSessionId("main")).toBe(false);
+    expect(isWireLaneSessionId("acopilot")).toBe(true);
+    expect(isWireLaneSessionId("actions")).toBe(true);
     expect(isWireLaneSessionId("advisor")).toBe(true);
     expect(isWireLaneSessionId("worker")).toBe(true);
   });
@@ -43,11 +43,9 @@ describe("lane wire compatibility", () => {
     }
   });
 
-  it("never emits a canonical id on the wire", () => {
-    // Guards the whole point of this module: if a canonical value ever leaked
-    // into the wire vocabulary, the server would silently route it to Actions.
+  it("emits only canonical or retired lane ids on the wire", () => {
     for (const lane of ["acopilot", "actions"] as const) {
-      expect(toWireChatSessionId(lane)).not.toBe(lane);
+      expect(isWireLaneSessionId(toWireChatSessionId(lane))).toBe(true);
     }
   });
 });

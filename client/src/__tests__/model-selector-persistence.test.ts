@@ -79,7 +79,7 @@ vi.mock("../api/ws", () => {
 
     constructor(options: { sessionId: string; chatSessionId?: string }) {
       const chatSessionId = String(options.chatSessionId ?? "main").trim() || "main";
-      if (chatSessionId === "advisor") {
+      if (chatSessionId === "acopilot") {
         _lastAdvisorWs = this as unknown as typeof lastWorkerWs;
       } else {
         lastWorkerWs = this as unknown as typeof lastWorkerWs;
@@ -351,7 +351,7 @@ describe("Model selector persistence", () => {
   );
 
   it(
-    "keeps the advisor agent model selection across welcome and result server echoes",
+    "keeps the acopilot agent model selection across welcome and result server echoes",
     async () => {
       const App = (await import("../App.vue")).default;
       const wrapper = shallowMount(App, {
@@ -361,7 +361,7 @@ describe("Model selector persistence", () => {
         await settleUi(wrapper);
         await ensureWsConnected(wrapper);
 
-        // Open the advisor lane so its socket connects.
+        // Open the acopilot lane so its socket connects.
         await wrapper.get('[data-testid="lane-tab-acopilot"]').trigger("click");
         await settleUi(wrapper);
         expect(_lastAdvisorWs).toBeTruthy();
@@ -384,7 +384,7 @@ describe("Model selector persistence", () => {
         _lastAdvisorWs!.onMessage?.({
           type: "welcome",
           threadId: null,
-          chatSessionId: "advisor",
+          chatSessionId: "acopilot",
           inFlight: false,
           activeAgentId: "codex",
           effectiveModel: "gpt-4.1",

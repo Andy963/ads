@@ -87,4 +87,57 @@ describe("Actions WebSocket event contract", () => {
 
     expect(rt.messages.value.filter((message) => message.role === "assistant" && message.content === "Done")).toHaveLength(2);
   });
+
+  it("renders Action file changes and forwards step progress", () => {
+    const { rt, handler } = setup();
+    const onJobUpdate = vi.fn();
+    (window as unknown as { __ADS_ON_ACTION_JOB_UPDATED__?: (payload: unknown) => void }).__ADS_ON_ACTION_JOB_UPDATED__ = onJobUpdate;
+
+    handler({ type: "message", role: "user", text: "Implement the change", jobId: "job-1", ts: 1000 });
+    handler({
+      type: "file_change",
+      jobId: "job-1",
+      identity: "job-1:file-1",
+      status: "completed",
+      changes: [{ kind: "modify", path: "server/example.ts" }],
+      timestamp: 1001,
+    });
+    handler({
+      type: "action_step",
+      jobId: "job-1",
+      title: "Running verification",
+      detail: "npm test",
+      status: "running",
+    });
+
+    expect(rt.messages.value.some((message) => (
+      message.kind === "patch"
+      && message.patch?.files.some((file) => file.path === "server/example.ts")
+    ))).toBe(true);
+    expect(rt.messages.value.some((message) => message.id === "live-activity" && message.content.includes("server/example.ts"))).toBe(true);
+    expect(onJobUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      type: "action_step",
+      jobId: "job-1",
+      currentStep: "npm test",
+    }));
+  });
+
+  it("restores persisted Action file changes as patch metadata", () => {
+    const { rt, handler } = setup();
+
+    handler({
+      type: "history",
+      items: [
+        { role: "user", text: "Implement the change", kind: "action_dispatch", ts: 1000 },
+        { role: "status", text: "[Files]\n[modify] server/example.ts", kind: "file_change", ts: 1001 },
+        { role: "assistant", text: "Implementation complete", ts: 1002 },
+      ],
+    });
+
+    expect(rt.messages.value.some((message) => (
+      message.kind === "patch"
+      && message.patch?.files.some((file) => file.path === "server/example.ts")
+    ))).toBe(true);
+    expect(rt.messages.value.some((message) => message.role === "assistant" && message.content === "Implementation complete")).toBe(true);
+  });
 });

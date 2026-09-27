@@ -10,6 +10,11 @@ describe("web/ws/bootstrapReplay", () => {
     assert.match(entry.text, /private output/);
   });
 
+  it("keeps Action command output during history replay", () => {
+    const entry = { role: "status", kind: "action_execute", text: "$ npm test\nprivate output\nprivate error", ts: 1 };
+    assert.deepEqual(buildHistoryBootstrapPayload([entry])?.items, [entry]);
+  });
+
   it("does not replay legacy thought or plan history entries", () => {
     const payload = buildHistoryBootstrapPayload([
       { role: "user", text: "hello", ts: 1 },

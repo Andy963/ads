@@ -35,7 +35,7 @@ vi.mock("../api/ws", () => {
 
     constructor(options: { sessionId: string; chatSessionId?: string }) {
       const chatSessionId = String(options.chatSessionId ?? "main").trim() || "main";
-      if (chatSessionId === "advisor") return;
+      if (chatSessionId === "acopilot") return;
       lastWs = this as unknown as typeof lastWs;
     }
 
@@ -1948,11 +1948,11 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
-  it("clears pending replay state for advisor reset flows", async () => {
+  it("clears pending replay state for acopilot reset flows", async () => {
     const { wrapper, controller } = await mountReconnectHarness();
     const acopilotRt = controller.getAcopilotRuntime("default");
 
-    seedPendingReplayState(acopilotRt, "advisor", "advisor-ack");
+    seedPendingReplayState(acopilotRt, "acopilot", "acopilot-ack");
     acopilotRt.ignoreNextHistory = true;
     acopilotRt.ignoreNextHistoryGeneration = 1;
     controller.clearAcopilotChat();
@@ -1970,7 +1970,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
 
     expect(acopilotRt.ignoreNextHistory).toBe(false);
     expect(acopilotRt.ignoreNextHistoryGeneration).toBeUndefined();
-    expect(localStorage.getItem("ads.outbox.default.advisor")).toBeNull();
+    expect(localStorage.getItem("ads.outbox.default.acopilot")).toBeNull();
     wrapper.unmount();
   });
 

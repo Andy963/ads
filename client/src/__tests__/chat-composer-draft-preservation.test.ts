@@ -127,7 +127,7 @@ describe("composer draft preservation on session reset", () => {
     expect(actionsRt.composerDraft.value).toBe("Retry this prompt");
   });
 
-  it("scopes worker and advisor backend clears to their originating lanes", () => {
+  it("scopes actions and acopilot backend clears to their originating lanes", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
@@ -150,10 +150,10 @@ describe("composer draft preservation on session reset", () => {
     tasks.clearAcopilotChat();
 
     expect(actionsRt.ws?.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "main" });
-    expect(acopilotRt.ws?.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "advisor" });
+    expect(acopilotRt.ws?.clearHistory).toHaveBeenCalledWith({ scope: "lane", sourceChatSessionId: "acopilot" });
   });
 
-  it("uses an in-band new-session reset for the advisor lane", () => {
+  it("uses an in-band new-session reset for the acopilot lane", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const tasks = createLaneActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
@@ -168,12 +168,12 @@ describe("composer draft preservation on session reset", () => {
 
     expect(ctx.activeAcopilotRuntime.value.ws?.clearHistory).toHaveBeenCalledWith({
       scope: "lane",
-      sourceChatSessionId: "advisor",
+      sourceChatSessionId: "acopilot",
       mode: "new_session",
     });
   });
 
-  it("downgrades a advisor shared clear request to the advisor lane", () => {
+  it("downgrades an acopilot shared clear request to the acopilot lane", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const acopilotRt = ctx.activeAcopilotRuntime.value;
@@ -188,7 +188,7 @@ describe("composer draft preservation on session reset", () => {
 
     expect(acopilotRt.ws?.clearHistory).toHaveBeenCalledWith({
       scope: "lane",
-      sourceChatSessionId: "advisor",
+      sourceChatSessionId: "acopilot",
     });
   });
 });

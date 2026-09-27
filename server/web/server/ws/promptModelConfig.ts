@@ -24,6 +24,10 @@ const UNANSWERED_LABEL_SUFFIX = " [UNANSWERED]";
 const UNANSWERED_NOTE =
   'Lines tagged "[UNANSWERED]" are earlier user requests that ended without any assistant reply — they were interrupted and may still be outstanding. Do not assume they were completed.';
 
+function isCommandOutputHistoryKind(kind: string | undefined): boolean {
+  return kind === "execute" || kind === "action_execute";
+}
+
 export function parseModelReasoningEffortFromPayload(payload: unknown): { present: boolean; effort?: string } {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
     return { present: false };
@@ -77,7 +81,7 @@ export function parseAgentIdFromPayload(payload: unknown): { present: boolean; a
 function labelForHistoryInjectionEntry(entry: HistoryInjectionEntry): string | null {
   if (entry.role === "user") return "User";
   if (entry.role === "ai") return "Assistant";
-  if (entry.role === "status" && entry.kind === "execute") return "Command output";
+  if (entry.role === "status" && isCommandOutputHistoryKind(entry.kind)) return "Command output";
   if (entry.role === "status" && entry.kind === "error") return "System error";
   return null;
 }
@@ -86,7 +90,7 @@ function truncateHistoryInjectionText(entry: HistoryInjectionEntry, text: string
   if (text.length <= HISTORY_INJECTION_MAX_CHARS_PER_ENTRY) {
     return text;
   }
-  if (entry.role === "status" && entry.kind === "execute") {
+  if (entry.role === "status" && isCommandOutputHistoryKind(entry.kind)) {
     const normalized = text.replace(/\r\n/g, "\n");
     const firstNewlineIndex = normalized.indexOf("\n");
     if (firstNewlineIndex > 0) {

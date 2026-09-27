@@ -277,3 +277,39 @@ allowlist 一一对应；两者不一致时以测试为准。
 - `ADS_PLANNER_*` 环境变量已在 `server/web/server/start/webLaneResources.ts` 中
   标记 deprecated 并对 `ADS_ADVISOR_*` 给出告警，可在确认无存量部署后移除。
 - `client/src/lib/laneWire.ts` 的 `WireChatSessionId` 只能随落盘键迁移一并收敛。
+
+## 附录：落盘命名空间与 wire 协议收敛（2026-09-27，#412）
+
+#412 落地了上文「WebSocket 边界上的取舍」所推迟的持久化迁移，该节的取舍随之失效：
+
+- schema migration 26（`server/state/schemaMigrations.ts`）把 `thread_state`、
+  `history_entries`、`history_session_links`、`sync_events`、`sync_lane_state`、
+  `web_lane_generations` 中的 `web-planner` / `web-advisor` / `web-worker` 命名空间
+  一次性迁移到 `web-acopilot` / `web-actions`，并把 historyKey 中的 `::advisor` /
+  `::planner` 段重写为 `::acopilot`。迁移逐行进行：当 retired 行与既有 canonical 行
+  落到同一目标键时，canonical 行胜出，retired 行按 MAX 合并计数列后删除，不会以
+  约束冲突中断迁移，也不丢弃会话历史。`prompt_queue` 被刻意排除：其 `user_id`
+  是 web 层持有的 lane session key 加盐哈希，重写键而不重算哈希会丢队列中尚未消费的
+  prompt；读路径仍接受 retired 拼写。
+- `normalizeLaneChatSessionId` 现在把 `advisor` / `planner` 归一化到 canonical
+  值 `acopilot`（`ACOPILOT_CHAT_SESSION_ID`），`acopilot` 成为新的落盘值；client 侧
+  `laneWire.ts` 直接在 wire 上发送 `acopilot`。server 日志随之输出 `chat=acopilot`。
+- `HistoryStore.get` 保留对 retired `::advisor` / `::planner` 键的读路径回退，
+  覆盖未迁移的 JSON 导入与滚动升级窗口。
+
+allowlist 预算随本 slice 更新（「两者不一致时以测试为准」不变）：
+
+| 文件 | 原预算 → 新预算 | 变化原因 |
+| --- | --- | --- |
+| `server/web/server/ws/session.ts` | 6 → 4 | 归一化目标改为 canonical id，类别从 compatibility + persistence-key 变为 compatibility |
+| `client/src/app/chat.ts` | 2 → 0（移出 allowlist） | outbox 读回退改为经 `RETIRED_ACOPILOT_WIRE_SESSION_IDS` 探测两个 retired 键 |
+| `client/src/lib/laneIds.ts` | 1 → 0（移出 allowlist） | `LEGACY_ADVISOR_LANE_ID` 的唯一消费方迁走，常量随之删除 |
+| `server/web/server/start/webLaneResources.ts` | 20 → 16 | 命名空间常量改为 `WEB_ACOPILOT_NAMESPACE` / `WEB_ACTIONS_NAMESPACE` |
+| `server/web/server/startWebServer.ts` | 17 → 16 | 同上 |
+| `server/web/server/api/routes/sync.ts` | 5 → 4 | `resolveSyncNamespace("acopilot")` |
+| `server/sessions/sessionManager.ts` | 3 → 1 | agent allowlist 命名空间改为 `web-acopilot` / `web-actions` |
+| `server/utils/historyStore.ts` | 7 → 3 | 读路径回退改为枚举两个 retired 段 |
+| `client/src/lib/laneWire.ts` | 7 → 3 | wire 词汇收敛为 canonical；新增 retired wire id 表供升级读路径探测 |
+| `server/state/schemaMigrations.ts` | 10 → 15 | 新增 migration 26 的 retired 值映射表 |
+
+上一附录中「`WireChatSessionId` 只能随落盘键迁移一并收敛」的后续项由本 slice 完成。

@@ -274,7 +274,11 @@ function mapItemEvent(event: ItemEvent, timestamp: number): AgentEvent | null {
 
 function mapCommandExecution(event: ItemEvent, item: CommandExecutionItem, timestamp: number): AgentEvent {
   const phase: AgentPhase = "command";
-  const base = item.status === "completed" ? "命令完成" : item.status === "failed" ? "命令失败" : "执行命令";
+  const base = item.status === "completed"
+    ? "命令完成"
+    : item.status === "failed" || item.status === "declined"
+      ? "命令失败"
+      : "执行命令";
   const details: string[] = [item.command];
   if (item.exit_code !== undefined) {
     details.push(`退出码 ${item.exit_code}`);

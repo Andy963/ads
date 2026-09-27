@@ -51,7 +51,7 @@ vi.mock("../api/ws", () => {
 
     constructor(options: { sessionId: string; chatSessionId?: string }) {
       const chatSessionId = String(options.chatSessionId ?? "main").trim() || "main";
-      if (chatSessionId === "advisor") return;
+      if (chatSessionId === "acopilot") return;
       lastWs = this as unknown as typeof lastWs;
     }
 

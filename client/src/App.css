@@ -1510,10 +1510,26 @@
 }
 
 .actionsJobTitle {
-  flex: 1 1 auto;
   min-width: 0;
   font-weight: 600;
   color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.actionsJobMain {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.actionsJobStep {
+  min-width: 0;
+  color: var(--muted-2);
+  font-weight: 400;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
