@@ -41,7 +41,6 @@ export interface NativeCompletionRequest {
     topP?: number;
     maxTokens?: number;
     reasoningEffort?: string;
-    supportsReasoningEffort?: boolean;
     parallelToolCalls?: boolean;
     includeUsage?: boolean;
   };
@@ -115,7 +114,7 @@ function buildRequestBody(request: NativeCompletionRequest): JsonRecord {
   if (options?.temperature !== undefined) body.temperature = options.temperature;
   if (options?.topP !== undefined) body.top_p = options.topP;
   if (options?.maxTokens !== undefined) body.max_tokens = options.maxTokens;
-  if (options?.supportsReasoningEffort === true && options.reasoningEffort) {
+  if (options?.reasoningEffort) {
     body.reasoning_effort = options.reasoningEffort;
   }
   if (options?.parallelToolCalls !== undefined) body.parallel_tool_calls = options.parallelToolCalls;

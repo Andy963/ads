@@ -1,6 +1,9 @@
 import { resolveCodexConfig } from "../codexConfig.js";
 import { createGlobalModelConfigStore } from "../state/globalModelConfigStore.js";
-import { normalizeConfiguredReasoningEffort } from "../state/modelConfigTypes.js";
+import {
+  DEFAULT_REASONING_EFFORT,
+  normalizeConfiguredReasoningEffort,
+} from "../state/modelConfigTypes.js";
 import { createUpstreamCredentialStore } from "../state/upstreamCredentialStore.js";
 import { getStateDatabase } from "../state/database.js";
 import { normalizeUpstreamBaseUrl } from "../utils/upstreamUrl.js";
@@ -24,7 +27,6 @@ export interface NativeModelConfig {
   contextWindow?: number;
   capabilities?: Partial<NativeProviderCapabilities>;
   options?: NativeModelRequestOptions;
-  supportsReasoningEffort?: boolean;
 }
 
 export interface NativeModelResolver {
@@ -61,15 +63,14 @@ function requestOptions(config: Record<string, unknown> | null | undefined): Nat
   const temperature = readFiniteNumber(config, "temperature", { min: 0, max: 2 });
   const topP = readFiniteNumber(config, "topP", { min: 0, max: 1 });
   const maxTokens = readFiniteNumber(config, "maxTokens", { min: 1, max: 1_000_000, integer: true });
-  const reasoningEffort = normalizeConfiguredReasoningEffort(config?.reasoningEffort);
-  if (temperature === undefined && topP === undefined && maxTokens === undefined && reasoningEffort === undefined) {
-    return undefined;
+  const reasoningEffort = normalizeConfiguredReasoningEffort(config?.reasoningEffort) ?? DEFAULT_REASONING_EFFORT;
+  if (temperature === undefined && topP === undefined && maxTokens === undefined) {
+    return { reasoningEffort };
   }
-  const options: NativeModelRequestOptions = {};
+  const options: NativeModelRequestOptions = { reasoningEffort };
   if (temperature !== undefined) options.temperature = temperature;
   if (topP !== undefined) options.topP = topP;
   if (maxTokens !== undefined) options.maxTokens = maxTokens;
-  if (reasoningEffort !== undefined) options.reasoningEffort = reasoningEffort;
   return options;
 }
 
@@ -157,9 +158,6 @@ function resolveSavedModelConfig(
     || "contextMetadata" in config
     || "supportsStructuredOutput" in config
     || "structuredOutput" in config
-    || "supportsReasoningEffort" in config
-    || "reasoningEffortSupported" in config
-    || "reasoningEfforts" in config
     || "supportsImageInput" in config
     || "imageInput" in config
     || "providerOptions" in config
@@ -173,7 +171,6 @@ function resolveSavedModelConfig(
     options: requestOptions(config),
     ...(resolvedContextWindow ? { contextWindow: resolvedContextWindow } : {}),
     ...(hasExplicitCapabilities ? { capabilities } : {}),
-    ...(capabilities.reasoningEffort === "supported" ? { supportsReasoningEffort: true } : {}),
   };
 }
 
@@ -197,13 +194,9 @@ export function createNativeModelResolver(options: ResolverOptions): NativeModel
         baseUrl: normalizeUpstreamBaseUrl(fallback.baseUrl),
         apiKey: fallback.apiKey,
         provider: "openai",
-        capabilities: fallback.modelReasoningEffort
-          ? { reasoningEffort: "supported" as const }
-          : undefined,
         options: {
-          reasoningEffort: fallback.modelReasoningEffort,
+          reasoningEffort: fallback.modelReasoningEffort ?? DEFAULT_REASONING_EFFORT,
         },
-        ...(fallback.modelReasoningEffort ? { supportsReasoningEffort: true } : {}),
       };
     },
   };

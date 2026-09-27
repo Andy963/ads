@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { NativeAgentAdapter } from "../../server/agents/adapters/nativeAgentAdapter.js";
+import { DEFAULT_REASONING_EFFORT } from "../../server/state/modelConfigTypes.js";
 import {
   DEFAULT_NATIVE_PROVIDER_CAPABILITIES,
   NativeCapabilityError,
@@ -22,14 +23,12 @@ describe("native provider capabilities", () => {
     const capabilities = resolveNativeProviderCapabilities({
       streaming: "unsupported",
       structuredOutput: true,
-      supportsReasoningEffort: false,
       imageInput: "supported",
     });
 
     assert.equal(capabilities.streaming, "unsupported");
     assert.equal(capabilities.nonStreaming, DEFAULT_NATIVE_PROVIDER_CAPABILITIES.nonStreaming);
     assert.equal(capabilities.structuredOutput, "supported");
-    assert.equal(capabilities.reasoningEffort, "unsupported");
     assert.equal(capabilities.imageInput, "supported");
   });
 
@@ -203,16 +202,14 @@ describe("native provider capabilities", () => {
     }
   });
 
-  it("sends a requested effort only when the capability is supported", async () => {
+  it("always sends a reasoning effort and defaults it to high", async () => {
     const undeclared = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-cap-effort-unknown-"));
-    const unsupported = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-cap-effort-bad-"));
-    const supported = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-cap-effort-ok-"));
+    const explicit = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-cap-effort-explicit-"));
     try {
       let undeclaredBody: Record<string, unknown> | undefined;
       const unknownAdapter = new NativeAgentAdapter({
         credentialOwner: "test-owner",
         workspaceRoot: undeclared,
-        modelReasoningEffort: "high",
         modelResolver: {
           resolve: () => ({
             model: "test-model",
@@ -229,52 +226,34 @@ describe("native provider capabilities", () => {
         },
       });
       await unknownAdapter.send("hello", { streaming: false });
-      assert.equal(undeclaredBody?.reasoning_effort, undefined);
+      assert.equal(undeclaredBody?.reasoning_effort, DEFAULT_REASONING_EFFORT);
 
-      const unsupportedAdapter = new NativeAgentAdapter({
+      let explicitBody: Record<string, unknown> | undefined;
+      const explicitAdapter = new NativeAgentAdapter({
         credentialOwner: "test-owner",
-        workspaceRoot: unsupported,
-        modelReasoningEffort: "high",
+        workspaceRoot: explicit,
+        modelReasoningEffort: "low",
         modelResolver: {
           resolve: () => ({
             model: "test-model",
             baseUrl: "https://provider.test/v1",
             apiKey: "test-key",
             provider: "test",
-            capabilities: { reasoningEffort: "unsupported" },
-          }),
-        },
-        fetchImpl: async () => new Response("{}", { headers: { "content-type": "application/json" } }),
-      });
-      await assert.rejects(unsupportedAdapter.send("hello"), /reasoningEffort/);
-
-      let supportedBody: Record<string, unknown> | undefined;
-      const supportedAdapter = new NativeAgentAdapter({
-        credentialOwner: "test-owner",
-        workspaceRoot: supported,
-        modelReasoningEffort: "high",
-        modelResolver: {
-          resolve: () => ({
-            model: "test-model",
-            baseUrl: "https://provider.test/v1",
-            apiKey: "test-key",
-            provider: "test",
-            capabilities: { reasoningEffort: "supported" },
+            capabilities: { parallelToolCalls: "unsupported" },
           }),
         },
         fetchImpl: async (_input, init) => {
-          supportedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+          explicitBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
           return new Response(JSON.stringify({ choices: [{ message: { content: "done" }, finish_reason: "stop" }] }), {
             headers: { "content-type": "application/json" },
           });
         },
       });
-      await supportedAdapter.send("hello", { streaming: false });
-      assert.equal(supportedBody?.reasoning_effort, "high");
+      await explicitAdapter.send("hello", { streaming: false });
+      assert.equal(explicitBody?.reasoning_effort, "low");
     } finally {
       fs.rmSync(undeclared, { recursive: true, force: true });
-      fs.rmSync(unsupported, { recursive: true, force: true });
-      fs.rmSync(supported, { recursive: true, force: true });
+      fs.rmSync(explicit, { recursive: true, force: true });
     }
   });
 

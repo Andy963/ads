@@ -7,7 +7,6 @@ export interface NativeProviderCapabilities {
   parallelToolCalls: NativeProviderCapabilityStatus;
   imageInput: NativeProviderCapabilityStatus;
   structuredOutput: NativeProviderCapabilityStatus;
-  reasoningEffort: NativeProviderCapabilityStatus;
   usage: NativeProviderCapabilityStatus;
   contextMetadata: NativeProviderCapabilityStatus;
   providerOptions: NativeProviderCapabilityStatus;
@@ -20,7 +19,6 @@ export const DEFAULT_NATIVE_PROVIDER_CAPABILITIES: Readonly<NativeProviderCapabi
   parallelToolCalls: "supported",
   imageInput: "unsupported",
   structuredOutput: "unknown",
-  reasoningEffort: "unknown",
   usage: "supported",
   contextMetadata: "supported",
   providerOptions: "unknown",
@@ -66,11 +64,6 @@ export function resolveNativeProviderCapabilities(
   result.structuredOutput = status(record.structuredOutput)
     ?? booleanStatus(record.supportsStructuredOutput)
     ?? result.structuredOutput;
-  result.reasoningEffort = status(record.reasoningEffort)
-    ?? booleanStatus(record.supportsReasoningEffort)
-    ?? booleanStatus(record.reasoningEffortSupported)
-    ?? (Array.isArray(record.reasoningEfforts) && record.reasoningEfforts.length > 0 ? "supported" : undefined)
-    ?? result.reasoningEffort;
   result.imageInput = status(record.imageInput)
     ?? booleanStatus(record.supportsImageInput)
     ?? result.imageInput;

@@ -317,7 +317,6 @@ describe("NativeAgentAdapter", () => {
           baseUrl: "https://provider.test/v1",
           apiKey: "test-api-key",
           provider: "test",
-          supportsReasoningEffort: false,
         }),
       };
       const adapter = new NativeAgentAdapter({
@@ -461,7 +460,6 @@ describe("NativeAgentAdapter", () => {
           baseUrl: "https://provider.test/v1",
           apiKey: "test-api-key",
           provider: "test",
-          supportsReasoningEffort: false,
         }),
       };
       const adapter = new NativeAgentAdapter({
@@ -492,7 +490,7 @@ describe("NativeAgentAdapter", () => {
     }
   });
 
-  it("rejects reasoning_effort for models without explicit reasoning support", async () => {
+  it("sends reasoning_effort for models that do not declare the capability", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-reasoning-"));
     try {
       let requestBody: Record<string, unknown> | null = null;
@@ -507,7 +505,6 @@ describe("NativeAgentAdapter", () => {
             apiKey: "test-api-key",
             provider: "test",
             options: { reasoningEffort: "high" },
-            supportsReasoningEffort: false,
           }),
         },
         fetchImpl: async (_input, init) => {
@@ -516,14 +513,15 @@ describe("NativeAgentAdapter", () => {
         },
       });
 
-      await assert.rejects(adapter.send("hello"), /reasoningEffort.*unsupported/i);
-      assert.equal(requestBody, null);
+      await adapter.send("hello");
+
+      assert.equal(requestBody?.reasoning_effort, "high");
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
   });
 
-  it("includes reasoning_effort for models with explicit reasoning support", async () => {
+  it("includes the session reasoning_effort for every model", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-reasoning-supported-"));
     try {
       let requestBody: Record<string, unknown> | null = null;
@@ -537,7 +535,6 @@ describe("NativeAgentAdapter", () => {
             baseUrl: "https://provider.test/v1",
             apiKey: "test-api-key",
             provider: "test",
-            supportsReasoningEffort: true,
           }),
         },
         fetchImpl: async (_input, init) => {

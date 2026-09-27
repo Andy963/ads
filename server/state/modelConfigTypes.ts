@@ -23,6 +23,8 @@ const STANDARD_MODEL_REASONING_EFFORTS = [
 
 const standardModelReasoningEfforts = new Set<string>(STANDARD_MODEL_REASONING_EFFORTS);
 
+export const DEFAULT_REASONING_EFFORT = "high";
+
 export function normalizeConfiguredReasoningEffort(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().toLowerCase();
@@ -48,19 +50,22 @@ export function sanitizeModelConfigJson(
     ];
 
     if (efforts.length === 0) {
-      config.reasoningEfforts = ["high"];
-      config.defaultReasoningEffort = "high";
+      config.reasoningEfforts = [DEFAULT_REASONING_EFFORT];
+      config.defaultReasoningEffort = DEFAULT_REASONING_EFFORT;
     } else {
       config.reasoningEfforts = efforts;
       const configuredDefault = normalizeConfiguredReasoningEffort(config.defaultReasoningEffort);
       if (configuredDefault && efforts.includes(configuredDefault)) {
         config.defaultReasoningEffort = configuredDefault;
       } else if (Object.prototype.hasOwnProperty.call(config, "defaultReasoningEffort")) {
-        config.defaultReasoningEffort = efforts.includes("high") ? "high" : efforts[0];
+        config.defaultReasoningEffort = efforts.includes(DEFAULT_REASONING_EFFORT)
+          ? DEFAULT_REASONING_EFFORT
+          : efforts[0];
       }
     }
   } else if (Object.prototype.hasOwnProperty.call(config, "defaultReasoningEffort")) {
-    config.defaultReasoningEffort = normalizeConfiguredReasoningEffort(config.defaultReasoningEffort) ?? "high";
+    config.defaultReasoningEffort =
+      normalizeConfiguredReasoningEffort(config.defaultReasoningEffort) ?? DEFAULT_REASONING_EFFORT;
   }
 
   if (Object.prototype.hasOwnProperty.call(config, "reasoningEffort")) {
