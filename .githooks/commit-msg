@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+msg_file="$1"
+if grep -qiE '^[[:space:]]*co-?authored-?by[[:space:]]*:' "$msg_file"; then
+  echo "ERROR: commit message contains a Co-authored-by trailer, which is not allowed." >&2
+  echo "Remove the trailer and commit again." >&2
+  exit 1
+fi
