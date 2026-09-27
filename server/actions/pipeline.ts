@@ -11,6 +11,31 @@ export interface MergeResult {
   error?: string;
 }
 
+// gh pr merge reads no confirmation flag; without a TTY it merges immediately.
+// Passing an unknown flag makes gh exit non-zero before any merge is attempted.
+const GH_PR_MERGE_SUPPORTED_FLAGS = new Set([
+  "--admin",
+  "--author-email",
+  "--auto",
+  "--body",
+  "--body-file",
+  "--delete-branch",
+  "--disable-auto",
+  "--match-head-commit",
+  "--merge",
+  "--rebase",
+  "--squash",
+  "--subject",
+]);
+
+export function buildPrMergeArgs(prNumber: number): string[] {
+  return ["pr", "merge", String(prNumber), "--squash"];
+}
+
+export function unsupportedPrMergeFlags(args: string[]): string[] {
+  return args.filter((arg) => arg.startsWith("--") && !GH_PR_MERGE_SUPPORTED_FLAGS.has(arg));
+}
+
 interface PullRequestMergeState {
   state?: string;
   mergedAt?: string | null;
@@ -77,7 +102,7 @@ export function mergeAndCleanupPipeline(options: {
 
   // 1. Merge PR if prNumber is provided
   if (options.prNumber) {
-    const mergeRes = spawnSync("gh", ["pr", "merge", String(options.prNumber), "--squash", "--delete-branch=false", "--yes"], {
+    const mergeRes = spawnSync("gh", buildPrMergeArgs(options.prNumber), {
       cwd: options.cwd,
       encoding: "utf8",
     });
