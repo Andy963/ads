@@ -3,10 +3,12 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import type { IncomingImage } from "./types";
 import { autosizeTextarea, createTextareaWrapMeasurer } from "../../lib/textarea_autosize";
 import {
-  computeVoiceWaveformFrame,
+  computeVoiceWaveformRms,
   createIdleVoiceWaveformLevels,
+  pushVoiceWaveformLevel,
+  VoiceWaveformEnvelope,
   VOICE_WAVEFORM_BAR_COUNT,
-  VOICE_WAVEFORM_IDLE_LEVEL,
+  VOICE_WAVEFORM_SAMPLE_INTERVAL_MS,
 } from "../../lib/voiceWaveform";
 
 type VoiceStatusKind = "idle" | "recording" | "transcribing" | "error" | "ok";
@@ -331,7 +333,6 @@ export function useMainChatComposer(params: {
   let voiceAnalyser: AnalyserNode | null = null;
   let voiceSource: MediaStreamAudioSourceNode | null = null;
   let voiceAnalysisFrame: number | null = null;
-  let smoothedVoiceAmplitude = VOICE_WAVEFORM_IDLE_LEVEL;
 
   const stopVoiceAnalysis = (): void => {
     if (voiceAnalysisFrame !== null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
@@ -344,7 +345,6 @@ export function useMainChatComposer(params: {
     voiceAnalysisFrame = null;
     voiceWaveformReactive.value = false;
     voiceWaveformLevels.value = createIdleVoiceWaveformLevels();
-    smoothedVoiceAmplitude = VOICE_WAVEFORM_IDLE_LEVEL;
 
     try {
       voiceSource?.disconnect();
@@ -389,17 +389,19 @@ export function useMainChatComposer(params: {
       voiceSource = source;
       voiceWaveformReactive.value = true;
       const samples = new Uint8Array(analyser.fftSize);
+      const envelope = new VoiceWaveformEnvelope();
+      let history = createIdleVoiceWaveformLevels(VOICE_WAVEFORM_BAR_COUNT);
+      let lastSampleAt = Number.NEGATIVE_INFINITY;
 
-      const sampleFrame = (): void => {
+      const sampleFrame = (timestamp: number): void => {
         if (voiceAudioContext !== context || voiceAnalyser !== analyser) return;
-        analyser.getByteTimeDomainData(samples);
-        const frame = computeVoiceWaveformFrame(
-          samples,
-          smoothedVoiceAmplitude,
-          VOICE_WAVEFORM_BAR_COUNT,
-        );
-        smoothedVoiceAmplitude = frame.amplitude;
-        voiceWaveformLevels.value = frame.levels;
+        if (timestamp - lastSampleAt >= VOICE_WAVEFORM_SAMPLE_INTERVAL_MS) {
+          lastSampleAt = timestamp;
+          analyser.getByteTimeDomainData(samples);
+          const level = envelope.push(computeVoiceWaveformRms(samples));
+          history = pushVoiceWaveformLevel(history, level, VOICE_WAVEFORM_BAR_COUNT);
+          voiceWaveformLevels.value = history;
+        }
         voiceAnalysisFrame = window.requestAnimationFrame(sampleFrame);
       };
 

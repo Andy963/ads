@@ -11,6 +11,10 @@ import {
   readLatestPromptPreference,
   writeLatestPromptPreference,
 } from "../lib/preferencesStore";
+import {
+  VOICE_WAVEFORM_IDLE_LEVEL,
+  voiceWaveformBarOpacity,
+} from "../lib/voiceWaveform";
 
 type PendingImagePreview = {
   key: string;
@@ -94,6 +98,25 @@ watch(latestPromptScopeKey, loadLatestPrompt, { immediate: true });
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
+}
+
+const VOICE_BAR_MIN_HEIGHT_PX = 8;
+const VOICE_BAR_MAX_HEIGHT_PX = 56;
+
+function voiceBarHeight(level: number): number {
+  const normalized = clamp((level - VOICE_WAVEFORM_IDLE_LEVEL) / (1 - VOICE_WAVEFORM_IDLE_LEVEL), 0, 1);
+  return VOICE_BAR_MIN_HEIGHT_PX + normalized * (VOICE_BAR_MAX_HEIGHT_PX - VOICE_BAR_MIN_HEIGHT_PX);
+}
+
+function voiceBarStyle(level: number, index: number, total: number): Record<string, string> {
+  const style: Record<string, string> = {
+    height: `${voiceBarHeight(level)}px`,
+    opacity: String(voiceWaveformBarOpacity(index, total)),
+  };
+  if (!voiceWaveformReactive.value) {
+    style.animationDelay = `${(index % 6) * 0.1}s`;
+  }
+  return style;
 }
 
 const pendingImageViewerOpen = ref(false);
@@ -572,24 +595,15 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="recording || transcribing" class="voiceWaveformContainer" aria-hidden="true">
           <template v-if="recording">
-            <div class="voiceDotTrail">
-              <span v-for="i in 14" :key="`dot-${i}`" class="voiceDot" />
-            </div>
             <div
               class="voiceEqualizerBars"
               :class="{ 'voiceEqualizerBars--reactive': voiceWaveformReactive }"
             >
               <span
-                v-for="i in 18"
+                v-for="(level, i) in voiceWaveformLevels"
                 :key="`eq-${i}`"
                 class="eqBar"
-                :style="voiceWaveformReactive
-                  ? {
-                      animation: 'none',
-                      opacity: String(0.45 + (voiceWaveformLevels[i - 1] ?? 0.12) * 0.5),
-                      transform: `scaleY(${voiceWaveformLevels[i - 1] ?? 0.12})`,
-                    }
-                  : { animationDelay: `${(i % 5) * 0.12}s` }"
+                :style="voiceBarStyle(level, i, voiceWaveformLevels.length)"
               />
             </div>
           </template>
@@ -1009,7 +1023,7 @@ onBeforeUnmount(() => {
   background: var(--surface-2, #f1f5f9);
   border-radius: 999px;
   align-items: center;
-  min-height: 48px;
+  min-height: 68px;
   padding: 4px 8px;
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.04);
   transition: background-color 0.2s ease, border-radius 0.2s ease;
@@ -1045,65 +1059,43 @@ onBeforeUnmount(() => {
   grid-area: input;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-  height: 36px;
+  justify-content: center;
+  height: 60px;
   overflow: hidden;
   padding: 0 6px;
   user-select: none;
 }
 
-.voiceDotTrail {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  opacity: 0.55;
-  overflow: hidden;
-}
-
-.voiceDot {
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: #94a3b8;
-  flex-shrink: 0;
-}
-
 .voiceEqualizerBars {
   display: flex;
   align-items: center;
-  gap: 2.5px;
-  height: 28px;
-  padding-right: 4px;
+  gap: 3px;
+  height: 100%;
+  max-width: 100%;
 }
 
 .eqBar {
-  width: 3px;
-  min-height: 4px;
-  height: 12px;
+  width: 6px;
+  min-height: 8px;
+  height: 8px;
   border-radius: 999px;
   background: var(--text, #334155);
-  animation: eqWave 0.65s ease-in-out infinite alternate;
+  flex-shrink: 0;
+  animation: eqWave 0.9s ease-in-out infinite alternate;
+  transition: height 90ms ease-out, opacity 200ms linear;
 }
 
 .voiceEqualizerBars--reactive .eqBar {
   animation: none;
-  transform-origin: center;
-  will-change: transform, opacity;
+  will-change: height, opacity;
 }
 
 @keyframes eqWave {
   0% {
-    height: 5px;
-    opacity: 0.45;
-  }
-  50% {
-    height: 24px;
-    opacity: 0.95;
+    height: 8px;
   }
   100% {
-    height: 12px;
-    opacity: 0.65;
+    height: 40px;
   }
 }
 
