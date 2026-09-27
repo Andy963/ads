@@ -40,11 +40,7 @@ import {
   Clock,
 } from "@element-plus/icons-vue";
 import { isLaneConnected } from "./lib/laneConnectionStatus";
-import {
-  formatBlockedDuration,
-  hasLockingActionJob,
-  parseActionJobAttempts,
-} from "./lib/actionJobs";
+import { formatBlockedDuration, hasLockingActionJob, parseActionJobAttempts } from "./lib/actionJobs";
 const {
   isExecuteBlockFixture,
   loggedIn,
@@ -280,16 +276,11 @@ const actionJobAttemptsById = computed<Record<string, ReturnType<typeof parseAct
   return entries;
 });
 
-const actionJobBlockedForById = computed<Record<string, string | null>>(() => {
-  const now = Date.now();
-  const entries: Record<string, string | null> = {};
-  for (const job of actionJobs.value) {
-    entries[job.id] = job.status === "blocked"
-      ? formatBlockedDuration(job.blocked_at, now, job.updated_at)
-      : null;
-  }
-  return entries;
-});
+function actionJobBlockedFor(job: ActionJobItem): string | null {
+  return job.status === "blocked"
+    ? formatBlockedDuration(job.blocked_at, Date.now(), job.updated_at)
+    : null;
+}
 
 const actionsJobExecutionActive = computed(() => hasLockingActionJob(actionJobs.value));
 const actionsComposerInputLocked = computed(() =>
@@ -617,16 +608,13 @@ async function cancelActionJob(jobId: string): Promise<void> {
   }
 }
 
-const BLOCKED_RESOLVE_ACTIONS = ["resume", "complete", "abandon"] as const;
-type BlockedResolveAction = typeof BLOCKED_RESOLVE_ACTIONS[number];
+const BLOCKED_RESOLVE_ACTIONS = [
+  { action: "resume", label: "Resume" },
+  { action: "complete", label: "Mark completed" },
+  { action: "abandon", label: "Abandon" },
+] as const;
 
-const BLOCKED_RESOLVE_LABELS: Record<BlockedResolveAction, string> = {
-  resume: "Resume",
-  complete: "Mark completed",
-  abandon: "Abandon",
-};
-
-async function resolveActionJob(jobId: string, action: BlockedResolveAction): Promise<void> {
+async function resolveActionJob(jobId: string, action: string): Promise<void> {
   if (!jobId) return;
   const pid = activeProjectId.value.trim();
   const repoPath = resolveActiveWorkspaceRoot() || activeProject.value?.path || "";
@@ -2010,12 +1998,8 @@ const acopilotConnectionStatus = computed(() => {
                         {{ `Attempt ${attempt.attempt} (${attempt.stage}): ${attempt.failure}` }}
                       </li>
                     </ul>
-                    <span
-                      v-if="actionJobBlockedForById[job.id]"
-                      class="actionsJobBlockedFor"
-                      :data-testid="`actions-job-blocked-for-${job.id}`"
-                    >
-                      {{ `Blocked for ${actionJobBlockedForById[job.id]}` }}
+                    <span v-if="actionJobBlockedFor(job)" class="actionsJobBlockedFor">
+                      {{ `Blocked for ${actionJobBlockedFor(job)}` }}
                     </span>
                   </span>
                   <span v-if="job.id === activeActionJob?.id" class="actionsJobActions">
@@ -2040,14 +2024,14 @@ const acopilotConnectionStatus = computed(() => {
                     </button>
                     <template v-if="activeActionJob.status === 'blocked'">
                       <button
-                        v-for="resolveAction in BLOCKED_RESOLVE_ACTIONS"
-                        :key="resolveAction"
+                        v-for="resolve in BLOCKED_RESOLVE_ACTIONS"
+                        :key="resolve.action"
                         type="button"
-                        class="btnActionResolve"
-                        :data-testid="`btn-action-resolve-${resolveAction}`"
-                        @click="resolveActionJob(activeActionJob.id, resolveAction)"
+                        class="btnActionCancel"
+                        :data-testid="`btn-action-resolve-${resolve.action}`"
+                        @click="resolveActionJob(activeActionJob.id, resolve.action)"
                       >
-                        {{ BLOCKED_RESOLVE_LABELS[resolveAction] }}
+                        {{ resolve.label }}
                       </button>
                     </template>
                   </span>

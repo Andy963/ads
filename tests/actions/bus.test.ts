@@ -10,6 +10,7 @@ import { createReviewerUserId, LaneDispatchBus, validateGitEvidence } from "../.
 import { handleActionRoutes, setBusInstance } from "../../server/web/server/api/routes/actions.js";
 import { checkThreePointGate } from "../../server/actions/threePointGate.js";
 import { updateActionJobStatus } from "../../server/state/actionJobStore.js";
+import type { PullRequestStateResult } from "../../server/actions/pipeline.js";
 import { getDefaultRoleProfile } from "../../server/state/roleProfileStore.js";
 import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
 import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
@@ -1799,121 +1800,88 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     );
   });
 
-  function dispatchBlockedJob(bus: LaneDispatchBus, issueId: number, prNumber: number | null = null): string {
-    const job = bus.dispatchJob({
+  function dispatchJob(bus: LaneDispatchBus, issueId: number, issueTitle: string): string {
+    return bus.dispatchJob({
       projectId: repoDir,
       issueId,
-      issueTitle: `Reconcile probe ${issueId}`,
+      issueTitle,
       issueDescription: "Complete issue description",
       acceptanceCriteria: ["Verify reconciliation"],
-    });
-    // Two identical rejections trip the repeated-failure short circuit and block the job.
-    for (const reworkCount of [0, 1]) {
-      bus.handleReviewResult({
-        jobId: job.jobId,
-        repoPath: repoDir,
-        verdict: "REJECT",
-        reviewSummary: "Identical defect",
-        reworkCount,
-      });
-    }
-    if (prNumber !== null) {
-      updateActionJobStatus(getStateDatabase(), job.jobId, "blocked", { pr_number: prNumber });
-    }
-    return job.jobId;
+    }).jobId;
   }
 
-  it("converges a blocked job whose pull request merged into the expected base branch", () => {
-    const db = getStateDatabase();
-    const bus = new LaneDispatchBus(db, {
-      pullRequestStateReader: () => ({ state: "MERGED", merged: true, baseRefName: "dev", mergedAt: 1 }),
+  function blockJob(bus: LaneDispatchBus, jobId: string, prNumber?: number): string {
+    // Two identical rejections trip the repeated-failure short circuit and block the job.
+    for (const reworkCount of [0, 1]) {
+      bus.handleReviewResult({ jobId, repoPath: repoDir, verdict: "REJECT", reviewSummary: "Identical defect", reworkCount });
+    }
+    if (prNumber !== undefined) updateActionJobStatus(getStateDatabase(), jobId, "blocked", { pr_number: prNumber });
+    return jobId;
+  }
+
+  function busWithPrStates(states: Record<number, Partial<PullRequestStateResult>>): LaneDispatchBus {
+    const baseline: PullRequestStateResult = { state: null, merged: false, baseRefName: null, mergedAt: null };
+    return new LaneDispatchBus(getStateDatabase(), {
+      pullRequestStateReader: ({ prNumber }) => ({ ...baseline, ...states[prNumber] }),
     });
-    const jobId = dispatchBlockedJob(bus, 4501, 900);
+  }
 
-    assert.strictEqual(bus.getJob(jobId)?.status, "blocked");
-    const converged = bus.reconcileJobsWithGitHub(repoDir, repoDir);
-
-    assert.strictEqual(converged.length, 1);
-    const after = bus.getJob(jobId);
-    assert.strictEqual(after?.status, "completed");
-    assert.strictEqual(after?.blocked_at, null);
-    assert.strictEqual(after?.error_message, null);
-  });
-
-  it("does not converge a pull request merged into a different base branch", () => {
-    const db = getStateDatabase();
-    const bus = new LaneDispatchBus(db, {
-      pullRequestStateReader: () => ({ state: "MERGED", merged: true, baseRefName: "main", mergedAt: 1 }),
+  it("converges only pull requests merged into the expected base branch", () => {
+    const bus = busWithPrStates({
+      900: { merged: true, baseRefName: "dev" },
+      901: { merged: true, baseRefName: "main" },
+      902: { merged: false, baseRefName: "dev" },
+      903: { error: "gh unavailable" },
     });
-    const jobId = dispatchBlockedJob(bus, 4502, 901);
+    const convergedId = blockJob(bus, dispatchJob(bus, 4501, "Merged into dev"), 900);
+    const mismatchedId = blockJob(bus, dispatchJob(bus, 4502, "Merged into main"), 901);
+    const openId = blockJob(bus, dispatchJob(bus, 4503, "Still open"), 902);
+    const unreadId = blockJob(bus, dispatchJob(bus, 4504, "Unreadable state"), 903);
 
-    const converged = bus.reconcileJobsWithGitHub(repoDir, repoDir);
+    assert.strictEqual(bus.getJob(convergedId)?.status, "blocked");
+    assert.strictEqual(bus.reconcileJobsWithGitHub(repoDir, repoDir).length, 1);
 
-    assert.strictEqual(converged.length, 0);
-    const after = bus.getJob(jobId);
-    assert.strictEqual(after?.status, "blocked");
-    assert.match(after?.error_message ?? "", /merged into 'main' instead of 'dev'/);
-  });
+    const converged = bus.getJob(convergedId);
+    assert.strictEqual(converged?.status, "completed");
+    assert.strictEqual(converged?.blocked_at, null);
+    assert.strictEqual(converged?.error_message, null);
 
-  it("leaves a pull request alone while it is still open", () => {
-    const db = getStateDatabase();
-    const bus = new LaneDispatchBus(db, {
-      pullRequestStateReader: () => ({ state: "OPEN", merged: false, baseRefName: "dev", mergedAt: null }),
-    });
-    const jobId = dispatchBlockedJob(bus, 4503, 902);
-
-    assert.strictEqual(bus.reconcileJobsWithGitHub(repoDir, repoDir).length, 0);
-    assert.strictEqual(bus.getJob(jobId)?.status, "blocked");
+    const mismatched = bus.getJob(mismatchedId);
+    assert.strictEqual(mismatched?.status, "blocked");
+    assert.match(mismatched?.error_message ?? "", /merged into 'main' instead of 'dev'/);
+    assert.strictEqual(bus.getJob(openId)?.status, "blocked");
+    assert.strictEqual(bus.getJob(unreadId)?.status, "blocked");
   });
 
   it("resolves a blocked job through resume, complete, and abandon", () => {
-    const db = getStateDatabase();
-    const bus = new LaneDispatchBus(db);
-
-    const resumeId = dispatchBlockedJob(bus, 4510);
+    const bus = new LaneDispatchBus(getStateDatabase());
+    const resumeId = blockJob(bus, dispatchJob(bus, 4510, "Resume me"));
     assert.deepStrictEqual(bus.resolveJob(resumeId, "resume"), { ok: true, status: "queued" });
-    assert.strictEqual(bus.getJob(resumeId)?.status, "queued");
     assert.strictEqual(bus.getJob(resumeId)?.rework_count, 0);
     assert.strictEqual(bus.getJob(resumeId)?.blocked_at, null);
 
-    const completeId = dispatchBlockedJob(bus, 4511);
+    const completeId = blockJob(bus, dispatchJob(bus, 4511, "Complete me"));
     assert.deepStrictEqual(bus.resolveJob(completeId, "complete", { note: "shipped by hand" }), { ok: true, status: "completed" });
-    assert.strictEqual(bus.getJob(completeId)?.status, "completed");
     assert.strictEqual(bus.getJob(completeId)?.blocked_at, null);
 
-    const abandonId = dispatchBlockedJob(bus, 4512);
+    const abandonId = blockJob(bus, dispatchJob(bus, 4512, "Abandon me"));
     assert.deepStrictEqual(bus.resolveJob(abandonId, "abandon", { note: "superseded" }), { ok: true, status: "failed" });
-    assert.strictEqual(bus.getJob(abandonId)?.status, "failed");
     assert.strictEqual(bus.getJob(abandonId)?.error_message, "superseded");
   });
 
   it("refuses to resolve a job that is not blocked", () => {
-    const db = getStateDatabase();
-    const bus = new LaneDispatchBus(db);
-    const job = bus.dispatchJob({
-      projectId: repoDir,
-      issueId: 4520,
-      issueTitle: "Still running",
-      issueDescription: "Complete issue description",
-      acceptanceCriteria: ["Verify resolution guard"],
-    });
+    const bus = new LaneDispatchBus(getStateDatabase());
+    const jobId = dispatchJob(bus, 4520, "Still running");
 
-    const result = bus.resolveJob(job.jobId, "complete");
+    const result = bus.resolveJob(jobId, "complete");
     assert.strictEqual(result.ok, false);
     assert.match(result.error ?? "", /is 'queued'; only blocked jobs can be resolved/);
-    assert.strictEqual(bus.getJob(job.jobId)?.status, "queued");
+    assert.strictEqual(bus.getJob(jobId)?.status, "queued");
   });
 
   it("stops cancel from re-evaluating the queue", async () => {
-    const db = getStateDatabase();
-    const bus = new LaneDispatchBus(db);
-    const job = bus.dispatchJob({
-      projectId: repoDir,
-      issueId: 4530,
-      issueTitle: "Cancellation side effects",
-      issueDescription: "Complete issue description",
-      acceptanceCriteria: ["Verify cancel does not unfreeze the queue"],
-    });
+    const bus = new LaneDispatchBus(getStateDatabase());
+    const jobId = dispatchJob(bus, 4530, "Cancellation side effects");
     let evaluations = 0;
     const original = bus.evaluateQueue.bind(bus);
     (bus as unknown as { evaluateQueue: typeof original }).evaluateQueue = ((...args: Parameters<typeof original>) => {
@@ -1921,10 +1889,10 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       return original(...args);
     }) as typeof original;
 
-    bus.cancelJob(job.jobId, repoDir);
+    bus.cancelJob(jobId, repoDir);
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    assert.strictEqual(bus.getJob(job.jobId)?.status, "cancelled");
+    assert.strictEqual(bus.getJob(jobId)?.status, "cancelled");
     assert.strictEqual(evaluations, 0);
   });
 
@@ -1933,10 +1901,10 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     const bus = new LaneDispatchBus(db);
     setBusInstance(bus);
     addWebProjectMapping(db, repoDir);
-
-    const jobId = dispatchBlockedJob(bus, 4540);
+    const jobId = blockJob(bus, dispatchJob(bus, 4540, "Endpoint probe"));
 
     async function postResolve(targetId: string, payload: Record<string, unknown>) {
+      const routePath = `/api/actions/jobs/${encodeURIComponent(targetId)}/resolve`;
       const fakeReq: any = {
         method: "POST",
         headers: {},
@@ -1950,10 +1918,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
         end(data: string) { responseBody = data; },
       };
       const handled = await handleActionRoutes({
-        req: fakeReq,
-        res: fakeRes,
-        pathname: `/api/actions/jobs/${encodeURIComponent(targetId)}/resolve`,
-        url: new URL(`http://localhost/api/actions/jobs/${encodeURIComponent(targetId)}/resolve`),
+        req: fakeReq, res: fakeRes, pathname: routePath,
+        url: new URL(`http://localhost${routePath}`),
         auth: { userId: "user-1", username: "tester" },
       }, { allowedDirs: [repoDir] });
       return { handled, statusCode, body: responseBody ? JSON.parse(responseBody) : null };
@@ -1964,19 +1930,11 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(completed.statusCode, 200);
     assert.strictEqual(completed.body.status, "completed");
 
-    const queuedJob = bus.dispatchJob({
-      projectId: repoDir,
-      issueId: 4541,
-      issueTitle: "Not blocked",
-      issueDescription: "Complete issue description",
-      acceptanceCriteria: ["Verify endpoint guard"],
-    });
-    const rejected = await postResolve(queuedJob.jobId, { action: "complete", projectId: repoDir });
+    const queuedId = dispatchJob(bus, 4541, "Not blocked");
+    const rejected = await postResolve(queuedId, { action: "complete", projectId: repoDir });
     assert.strictEqual(rejected.statusCode, 409);
-    assert.strictEqual(bus.getJob(queuedJob.jobId)?.status, "queued");
-
-    const badAction = await postResolve(jobId, { action: "merge", projectId: repoDir });
-    assert.strictEqual(badAction.statusCode, 400);
+    assert.strictEqual(bus.getJob(queuedId)?.status, "queued");
+    assert.strictEqual((await postResolve(jobId, { action: "merge", projectId: repoDir })).statusCode, 400);
   });
 
 });

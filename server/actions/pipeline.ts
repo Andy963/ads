@@ -341,36 +341,26 @@ export function readPullRequestState(options: {
   cwd: string;
   prNumber: number;
 }): PullRequestStateResult {
+  const unknown: PullRequestStateResult = { state: null, merged: false, baseRefName: null, mergedAt: null };
   const res = spawnSync(
     "gh",
     ["pr", "view", String(options.prNumber), "--json", "state,mergedAt,baseRefName"],
     { cwd: options.cwd, encoding: "utf8" },
   );
   if (res.status !== 0) {
-    return {
-      state: null,
-      merged: false,
-      baseRefName: null,
-      mergedAt: null,
-      error: res.stderr?.trim() || "Failed to read pull request state",
-    };
+    return { ...unknown, error: res.stderr?.trim() || "Failed to read pull request state" };
   }
 
   let parsed: { state?: unknown; mergedAt?: unknown; baseRefName?: unknown };
   try {
     parsed = JSON.parse(res.stdout || "{}") as typeof parsed;
   } catch (error) {
-    return {
-      state: null,
-      merged: false,
-      baseRefName: null,
-      mergedAt: null,
-      error: `Unparseable pull request state: ${String(error)}`,
-    };
+    return { ...unknown, error: `Unparseable pull request state: ${String(error)}` };
   }
 
   const mergedAt = typeof parsed.mergedAt === "string" ? parsed.mergedAt : "";
   return {
+    ...unknown,
     state: typeof parsed.state === "string" ? parsed.state : null,
     merged: mergedAt.length > 0,
     baseRefName: typeof parsed.baseRefName === "string" ? parsed.baseRefName : null,

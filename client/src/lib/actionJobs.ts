@@ -57,33 +57,27 @@ export function hasLockingActionJob(jobs: ReadonlyArray<{ status: string }>): bo
 }
 
 /**
- * Renders how long a blocked job has been waiting for a human. Jobs blocked
- * before `blocked_at` existed fall back to `updated_at` so the row still
- * reports a duration instead of an empty gap.
+ * Renders how long a blocked job has waited for a human. Jobs predating the
+ * `blocked_at` column fall back to `updated_at` so the row still reports a
+ * duration instead of an empty gap.
  */
 export function formatBlockedDuration(
   blockedAt: number | null | undefined,
   now: number,
   fallbackUpdatedAt?: number | null,
 ): string | null {
-  const start = typeof blockedAt === "number" && Number.isFinite(blockedAt)
-    ? blockedAt
-    : typeof fallbackUpdatedAt === "number" && Number.isFinite(fallbackUpdatedAt)
-      ? fallbackUpdatedAt
-      : null;
+  const finite = (value: number | null | undefined): number | null =>
+    typeof value === "number" && Number.isFinite(value) ? value : null;
+  const start = finite(blockedAt) ?? finite(fallbackUpdatedAt);
   if (start === null) return null;
 
-  const totalMinutes = Math.max(0, Math.floor((now - start) / 60000));
-  if (totalMinutes < 1) return "just now";
-  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const minutes = Math.max(0, Math.floor((now - start) / 60000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m`;
 
-  const hours = Math.floor(totalMinutes / 60);
-  if (hours < 24) {
-    const remainder = totalMinutes % 60;
-    return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
-  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
 
   const days = Math.floor(hours / 24);
-  const remainderHours = hours % 24;
-  return remainderHours ? `${days}d ${remainderHours}h` : `${days}d`;
+  return hours % 24 ? `${days}d ${hours % 24}h` : `${days}d`;
 }

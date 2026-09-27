@@ -271,6 +271,12 @@ export type ReviewerRunner = (prompt: string, systemPrompt: string) => Promise<s
 
 export type BlockedJobResolution = "resume" | "complete" | "abandon";
 
+const BLOCKED_RESOLUTION_OUTCOMES: Record<BlockedJobResolution, { status: ActionJobStatus; summary: string }> = {
+  resume: { status: "queued", summary: "resumed on the existing feature branch" },
+  complete: { status: "completed", summary: "marked completed outside the queue" },
+  abandon: { status: "failed", summary: "abandoned" },
+};
+
 const DEFAULT_REVIEWER_TIMEOUT_MS = 30 * 60 * 1000;
 
 export function createReviewerUserId(
@@ -614,10 +620,10 @@ export class LaneDispatchBus {
   }
 
   /**
-   * Converges job records onto the pull request state GitHub actually reports.
-   * The pass only reads: it never merges, and it converges a job only when the
-   * pull request landed on the expected base branch. Converging on any other
-   * base would release the queue onto a baseline without the change.
+   * Converges job records onto the pull request state GitHub reports. The pass
+   * only reads, and converges a job only when the pull request landed on the
+   * expected base branch: converging on any other base would release the queue
+   * onto a baseline without the change.
    */
   public reconcileJobsWithGitHub(projectId: string, repoPath: string): ActionJobRecord[] {
     const canonicalProjectId = resolveCanonicalProjectId(projectId, repoPath);
@@ -643,14 +649,13 @@ export class LaneDispatchBus {
           blocked_at: null,
         });
         if (updated) converged.push(updated);
-        continue;
+      } else {
+        const mismatch = `PR #${job.pr_number} merged into '${prState.baseRefName ?? "unknown"}' instead of '${ACTIONS_BASE_BRANCH}'.`;
+        this.updateJobStatus(job.id, job.status, {
+          current_step: `Reconcile: ${mismatch}`,
+          error_message: mismatch,
+        });
       }
-
-      const mismatch = `PR #${job.pr_number} merged into '${prState.baseRefName ?? "unknown"}' instead of '${ACTIONS_BASE_BRANCH}'.`;
-      this.updateJobStatus(job.id, job.status, {
-        current_step: `Reconcile: ${mismatch}`,
-        error_message: mismatch,
-      });
     }
 
     return converged;
@@ -1501,9 +1506,9 @@ export class LaneDispatchBus {
   }
 
   /**
-   * Records an operator decision on a blocked job. Resolution is only legal
-   * from `blocked`: any other state, including `waiting_merge`, is owned by the
-   * deterministic backend pipeline and must not be short-circuited by hand.
+   * Records an operator decision on a blocked job. Only `blocked` is legal: any
+   * other state, including `waiting_merge`, is owned by the deterministic
+   * backend pipeline and must not be short-circuited by hand.
    */
   public resolveJob(
     jobId: string,
@@ -1511,9 +1516,7 @@ export class LaneDispatchBus {
     options: { note?: string; repoPath?: string } = {},
   ): { ok: boolean; status?: ActionJobStatus; error?: string } {
     const job = getActionJobById(this.db, jobId);
-    if (!job) {
-      return { ok: false, error: `Job not found: ${jobId}` };
-    }
+    if (!job) return { ok: false, error: `Job not found: ${jobId}` };
     if (job.status !== "blocked") {
       return { ok: false, error: `Job ${jobId} is '${job.status}'; only blocked jobs can be resolved` };
     }
@@ -1521,41 +1524,14 @@ export class LaneDispatchBus {
     const note = String(options.note ?? "").trim();
     const targetRepo = options.repoPath || job.project_id;
     const noteSuffix = note ? ` Operator note: ${note}` : "";
+    const outcome = BLOCKED_RESOLUTION_OUTCOMES[action];
 
-    if (action === "resume") {
-      this.updateJobStatus(jobId, "queued", {
-        rework_count: 0,
-        current_step: `Resolved by operator: resuming on branch '${job.branch ?? "dev"}'.${noteSuffix}`,
-        error_message: null,
-        blocked_at: null,
-      });
-      this.recordActionMessage(
-        job,
-        targetRepo,
-        `Actions job '${job.issue_title}' was resumed.${noteSuffix}`,
-        "action_resolved",
-        "assistant",
-      );
-      queueMicrotask(() => {
-        void this.evaluateQueue(job.project_id, targetRepo, job.auth_user_id ?? undefined);
-      });
-      return { ok: true, status: "queued" };
-    }
-
-    if (action === "complete") {
-      this.updateJobStatus(jobId, "completed", {
-        current_step: `Resolved by operator: marked completed outside the queue.${noteSuffix}`,
-        error_message: null,
-        blocked_at: null,
-      });
-    } else {
-      this.updateJobStatus(jobId, "failed", {
-        current_step: `Resolved by operator: abandoned.${noteSuffix}`,
-        error_message: note || "Abandoned by operator.",
-        blocked_at: null,
-      });
-    }
-
+    this.updateJobStatus(jobId, outcome.status, {
+      current_step: `Resolved by operator: ${outcome.summary}.${noteSuffix}`,
+      error_message: action === "abandon" ? note || "Abandoned by operator." : null,
+      blocked_at: null,
+      ...(action === "resume" ? { rework_count: 0 } : {}),
+    });
     this.recordActionMessage(
       job,
       targetRepo,
@@ -1566,7 +1542,7 @@ export class LaneDispatchBus {
     queueMicrotask(() => {
       void this.evaluateQueue(job.project_id, targetRepo, job.auth_user_id ?? undefined);
     });
-    return { ok: true, status: action === "complete" ? "completed" : "failed" };
+    return { ok: true, status: outcome.status };
   }
 
   public getJobs(projectId: string, repoPath?: string, authUserId?: string): ActionJobRecord[] {

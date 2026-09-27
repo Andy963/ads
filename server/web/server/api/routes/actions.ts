@@ -46,11 +46,6 @@ type ActionMutationBody = {
   repoPath?: unknown;
 };
 
-type ActionResolveBody = ActionMutationBody & {
-  action?: unknown;
-  note?: unknown;
-};
-
 export type ResolvedProjectContext = {
   projectId: string;
   repoPath: string;
@@ -312,11 +307,11 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
 
   const resolveMatch = /^\/api\/actions\/jobs\/([^/]+)\/resolve$/.exec(pathname);
   if (resolveMatch && req.method === "POST") {
-    let body: ActionResolveBody = {};
+    let body: ActionMutationBody & { action?: unknown; note?: unknown } = {};
     try {
       const parsed = await readJsonBody(req);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        body = parsed as ActionResolveBody;
+        body = parsed as typeof body;
       }
     } catch {
       // ignore
