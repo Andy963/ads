@@ -237,4 +237,83 @@ describe("CodexAppServerClient", () => {
 
     await client.close();
   });
+
+  it("dispatches server-initiated requests to registered handlers", async () => {
+    const { client, stdin, stdout } = await buildStartedClient();
+    const detach = readLines(stdin, () => {});
+    client.onServerRequest("item/commandExecution/requestApproval", (params) => {
+      assert.deepEqual(params, { itemId: "item-1", command: "echo test" });
+      return { decision: "decline" };
+    });
+
+    const responsePromise = new Promise<JsonRpcLine>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timed out waiting for handler response")), 1000);
+      const onResponse = readLines(stdin, (msg) => {
+        if (msg.id === "srv-handler-1") {
+          clearTimeout(timer);
+          onResponse();
+          resolve(msg);
+        }
+      });
+    });
+
+    send(stdout, {
+      jsonrpc: "2.0",
+      id: "srv-handler-1",
+      method: "item/commandExecution/requestApproval",
+      params: { itemId: "item-1", command: "echo test" },
+    });
+
+    const response = await responsePromise;
+    assert.deepEqual(response.result, { decision: "decline" });
+    assert.equal(response.error, undefined);
+    detach();
+    await client.close();
+  });
+
+  it("routes concurrent server requests to matching handlers", async () => {
+    const { client, stdin, stdout } = await buildStartedClient();
+    const responses = new Map<string, JsonRpcLine>();
+    const detach = readLines(stdin, (msg) => {
+      if (typeof msg.id === "string" && msg.id.startsWith("srv-concurrent-")) {
+        responses.set(msg.id, msg);
+      }
+    });
+
+    client.onServerRequest(
+      "item/commandExecution/requestApproval",
+      async () => {
+        await new Promise((resolve) => setTimeout(resolve, 15));
+        return { decision: "accept", owner: "turn-1" };
+      },
+      { matches: (params) => (params as { turnId?: unknown }).turnId === "turn-1" },
+    );
+    client.onServerRequest(
+      "item/commandExecution/requestApproval",
+      () => ({ decision: "decline", owner: "turn-2" }),
+      { matches: (params) => (params as { turnId?: unknown }).turnId === "turn-2" },
+    );
+
+    send(stdout, {
+      jsonrpc: "2.0",
+      id: "srv-concurrent-1",
+      method: "item/commandExecution/requestApproval",
+      params: { turnId: "turn-1" },
+    });
+    send(stdout, {
+      jsonrpc: "2.0",
+      id: "srv-concurrent-2",
+      method: "item/commandExecution/requestApproval",
+      params: { turnId: "turn-2" },
+    });
+
+    const deadline = Date.now() + 1_000;
+    while (responses.size < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.deepEqual(responses.get("srv-concurrent-1")?.result, { decision: "accept", owner: "turn-1" });
+    assert.deepEqual(responses.get("srv-concurrent-2")?.result, { decision: "decline", owner: "turn-2" });
+    detach();
+    await client.close();
+  });
 });
