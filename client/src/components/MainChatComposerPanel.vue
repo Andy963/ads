@@ -1082,7 +1082,7 @@ onBeforeUnmount(() => {
   background: var(--text, #334155);
   flex-shrink: 0;
   animation: eqWave 0.9s ease-in-out infinite alternate;
-  transition: height 90ms ease-out, opacity 200ms linear;
+  transition: height 130ms ease-out, opacity 200ms linear;
 }
 
 .voiceEqualizerBars--reactive .eqBar {
