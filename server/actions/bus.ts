@@ -429,7 +429,7 @@ export class LaneDispatchBus {
         current_step: `Human attention required after ${MAX_REWORK_ATTEMPTS} rework attempts.`,
         error_message: message,
       });
-      this.recordActionMessage(job, repoPath, message, "action_blocked");
+      this.recordActionMessage(job, repoPath, message, "action_blocked", "assistant");
       return { status: "blocked", reworkCount: currentCount };
     }
 
@@ -445,7 +445,7 @@ export class LaneDispatchBus {
       current_step: statusMessage,
       error_message: failure,
     });
-    this.recordActionMessage(job, repoPath, statusMessage, "action_rework");
+    this.recordActionMessage(job, repoPath, statusMessage, "action_rework", "assistant");
     queueMicrotask(() => {
       void this.executeDeveloper(job.id, repoPath, {
         reworkFeedback: feedback,
@@ -545,11 +545,26 @@ export class LaneDispatchBus {
       error_message: null,
     });
 
+    this.triggerAutoStart(projectId, params.repoPath, params.authUserId);
+
     return {
       ok: true,
       jobId: job.id,
       status: job.status,
     };
+  }
+
+  private triggerAutoStart(projectId: string, repoPath?: string, authUserId?: string): void {
+    const workspaceRoot = String(repoPath ?? "").trim();
+    if (!workspaceRoot) {
+      console.warn(`[actions] queued job for project '${projectId}' was not auto-started: no repoPath resolved`);
+      return;
+    }
+    queueMicrotask(() => {
+      void this.evaluateQueue(projectId, workspaceRoot, authUserId).catch((error) => {
+        console.warn(`[actions] auto-start evaluation failed for project '${projectId}':`, error);
+      });
+    });
   }
 
   public async evaluateQueue(projectId: string, repoPath: string, authUserId?: string): Promise<GateCheckResult & { dequeuedJobId?: string }> {
@@ -582,6 +597,7 @@ export class LaneDispatchBus {
       if (!gateResult.allowed) {
         if (gateResult.gateBlocked === "cleanliness") {
           this.updateJobStatus(nextJob.id, "queued", {
+            current_step: "Queued — waiting for a clean dev workspace",
             error_message: gateResult.reason,
           });
         }
@@ -620,12 +636,15 @@ export class LaneDispatchBus {
         };
       }
       if (!preflight.ok) {
+        const reason = `Actions runtime preflight failed: ${preflight.reason ?? "unsupported capabilities"}`;
         this.updateJobStatus(nextJob.id, "queued", {
-          error_message: `Actions runtime preflight failed: ${preflight.reason ?? "unsupported capabilities"}`,
+          current_step: "Queued — Actions runtime preflight failed",
+          error_message: reason,
         });
+        this.recordActionMessage(nextJob, repoPath, reason, "action_preflight_failed", "assistant");
         return {
           allowed: false,
-          reason: `Actions runtime preflight failed: ${preflight.reason ?? "unsupported capabilities"}`,
+          reason,
         };
       }
 
@@ -655,9 +674,12 @@ export class LaneDispatchBus {
         }).stdout?.trim();
 
         if (!checkoutOk || currentBranch !== nextJob.branch) {
+          const checkoutFailure = `Failed to checkout feature branch '${nextJob.branch}'. Current branch is '${currentBranch}'.`;
           this.updateJobStatus(nextJob.id, "failed", {
-            error_message: `Failed to checkout feature branch '${nextJob.branch}'. Current branch is '${currentBranch}'.`,
+            current_step: "Feature branch checkout failed",
+            error_message: checkoutFailure,
           });
+          this.recordActionMessage(nextJob, repoPath, `Actions job failed: ${checkoutFailure}`, "action_failed", "assistant");
           safeResetToDev(repoPath);
           return {
             allowed: false,
@@ -1366,6 +1388,13 @@ export class LaneDispatchBus {
     });
 
     const targetRepo = repoPath || job.project_id;
+    this.recordActionMessage(
+      job,
+      targetRepo,
+      `Actions job '${job.issue_title}' was cancelled.`,
+      "action_cancelled",
+      "assistant",
+    );
     if (targetRepo) {
       safeResetToDev(targetRepo);
       queueMicrotask(() => {

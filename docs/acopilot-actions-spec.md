@@ -177,7 +177,7 @@ CREATE INDEX IF NOT EXISTS idx_role_profiles_role ON role_profiles(role, is_enab
 ## 5. 关键工程挑战与异常防御矩阵 (Edge Cases & Resilience)
 
 ### 5.1 单工作区并发与输入意图区分
-* **意图区分规则**：当 Actions 处于 `running` 状态时，底部输入框敲入的内容一律作为当前 Developer 轮次的**实时转向指令 (Steering Context)**；发起全新独立任务一律通过 Acopilot 派发或使用显式前缀命令（如 `/enqueue <prompt>`）；
+* **执行期输入锁定规则**：当 Actions 任务处于 `running` / `verifying` / `reviewing` / `waiting_merge` 状态时，底部输入框保持锁定——共享会话中的用户输入会触发 abort 信号并杀死正在运行的 Developer 轮次；任务跃迁至 `completed` / `failed` / `blocked` / `cancelled` 后输入框自动解锁。发起全新独立任务一律通过 Acopilot 派发（派发即自动启动，无需人工点击“启动执行”）；
 * **本地脏代码拦截**：调度器检出新分支前若发现工作区存在未暂存/未跟踪修改，状态置为 `blocked_dirty_workspace` 并挂起队列，在 Actions 界面提示用户人工清理或放弃，严禁自动执行破坏性 `git reset --hard`。
 
 ### 5.2 外部 Git & GitHub 调用的降级机制

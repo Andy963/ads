@@ -40,6 +40,7 @@ import {
   Clock,
 } from "@element-plus/icons-vue";
 import { isLaneConnected } from "./lib/laneConnectionStatus";
+import { hasLockingActionJob } from "./lib/actionJobs";
 const {
   isExecuteBlockFixture,
   loggedIn,
@@ -247,6 +248,29 @@ function handleActionsViewport(viewport: TranscriptViewport): void {
 
 const activeWorkspaceTab = computed<ChatLane>(() => activeChatLane.value);
 
+type ActionJobItem = {
+  id: string;
+  project_id: string;
+  issue_id: number | null;
+  issue_title: string;
+  status: "queued" | "running" | "verifying" | "reviewing" | "waiting_merge" | "completed" | "failed" | "blocked" | "cancelled";
+  current_step: string | null;
+  steps_json?: string;
+  pr_number: number | null;
+  pr_url: string | null;
+  error_message: string | null;
+  rework_count: number;
+  created_at?: number;
+  updated_at?: number;
+};
+
+const actionJobs = ref<ActionJobItem[]>([]);
+
+const actionsJobExecutionActive = computed(() => hasLockingActionJob(actionJobs.value));
+const actionsComposerInputLocked = computed(() =>
+  Boolean(actionsInputLocked.value) || actionsJobExecutionActive.value,
+);
+
 type MainChatHandle = {
   refreshAfterVisibility?: () => void | Promise<void>;
 };
@@ -258,7 +282,7 @@ const activeLaneConnected = computed(() =>
   activeWorkspaceTab.value === "acopilot" ? Boolean(acopilotConnected.value) : Boolean(connected.value),
 );
 const activeLaneInputLocked = computed(() =>
-  activeWorkspaceTab.value === "acopilot" ? Boolean(acopilotInputLocked.value) : Boolean(actionsInputLocked.value),
+  activeWorkspaceTab.value === "acopilot" ? Boolean(acopilotInputLocked.value) : actionsComposerInputLocked.value,
 );
 const activeLaneAgents = computed(() =>
   activeWorkspaceTab.value === "acopilot" ? acopilotAgents.value : actionsAgents.value,
@@ -444,29 +468,11 @@ function selectMobileDrawerSettings(tab: "lane-prompts" | "models"): void {
   selectMobileDrawerSection("settings");
 }
 
-type ActionJobItem = {
-  id: string;
-  project_id: string;
-  issue_id: number | null;
-  issue_title: string;
-  status: "queued" | "running" | "verifying" | "reviewing" | "waiting_merge" | "completed" | "failed" | "blocked" | "cancelled";
-  current_step: string | null;
-  steps_json?: string;
-  pr_number: number | null;
-  pr_url: string | null;
-  error_message: string | null;
-  rework_count: number;
-  created_at?: number;
-  updated_at?: number;
-};
-
 type QueueStartResponse = {
   allowed?: boolean;
   reason?: string;
   dequeuedJobId?: string;
 };
-
-const actionJobs = ref<ActionJobItem[]>([]);
 
 const actionQueueStatusOrder: Record<ActionJobItem["status"], number> = {
   queued: 50,
@@ -584,6 +590,21 @@ async function cancelActionJob(jobId: string): Promise<void> {
     const message = err instanceof Error ? err.message : String(err);
     showActionNotice(`取消任务失败：${message}`);
   }
+}
+
+// The Actions lane session is shared with running queue jobs: a prompt sent
+// mid-execution would fire an abort into the active Developer turn.
+function sendActionsPrompt(content: string): void {
+  if (actionsJobExecutionActive.value) {
+    showActionNotice("任务正在执行中，请先等待任务完成或取消任务。");
+    return;
+  }
+  sendMainPrompt(content);
+}
+
+function retryActionsMessage(message: Parameters<typeof retryPrompt>[0]): void {
+  if (!loggedIn.value || actionsJobExecutionActive.value) return;
+  retryPrompt(message);
 }
 
 function toggleMobileContextMenu(): void {
@@ -1961,14 +1982,14 @@ const acopilotConnectionStatus = computed(() => {
                 :pending-images="pendingImages"
                 :connected="connected"
                 :busy="agentBusy"
-                :input-locked="!loggedIn || actionsInputLocked"
+                :input-locked="!loggedIn || actionsComposerInputLocked"
                 :workspace-root="resolveActiveWorkspaceRoot()"
                 :running-task-count="runningTaskCount"
                 :connection-status-kind="actionsConnectionStatus?.kind ?? null"
                 :connection-status-message="actionsConnectionStatus?.message ?? null"
                 :thread-warning="actionsThreadWarning"
-                @send="sendMainPrompt"
-                @retry-message="loggedIn && retryPrompt($event)"
+                @send="sendActionsPrompt"
+                @retry-message="retryActionsMessage($event)"
                 @update:draft="actionsComposerDraft = $event"
                 @update:viewport-scope="handleActionsViewportScope"
                 @update:viewport="handleActionsViewport"
