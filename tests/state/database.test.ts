@@ -9,6 +9,26 @@ import {
   getStateDatabaseInfo,
   resetStateDatabaseForTests,
 } from "../../server/state/database.js";
+import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
+import {
+  createActionJob,
+  getActionJobs,
+  getActionJobById,
+  updateActionJobStatus,
+  deleteActionJobsByProject,
+} from "../../server/state/actionJobStore.js";
+import { createLanePromptStore } from "../../server/state/lanePromptStore.js";
+import {
+  getRoleProfiles,
+  getDefaultRoleProfile,
+  saveRoleProfile,
+  getRoleSettingsHistory,
+} from "../../server/state/roleProfileStore.js";
+import { deleteWebProject } from "../../server/web/projects/store.js";
+import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
+import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
+import { ThreadStorage } from "../../server/sessions/threadStorage.js";
+import { HistoryStore } from "../../server/utils/historyStore.js";
 
 describe("state/database", () => {
   let tmpDir: string;
@@ -356,5 +376,298 @@ describe("state/database", () => {
         { role: "reviewer", is_default: 1 },
       ],
     );
+  });
+
+  describe("state/actionJobStore", () => {
+    it("creates, queries, and updates action jobs", () => {
+      const db = getStateDatabase();
+      const job = createActionJob(db, {
+        id: "job-100-277-abcd",
+        project_id: "/home/andy/repos/ads",
+        issue_id: 277,
+        issue_title: "Acopilot & Actions refactor",
+        issue_snapshot: {
+          title: "Acopilot & Actions refactor",
+          description: "Complete immutable contract",
+          acceptanceCriteria: ["Reviewer is isolated"],
+          adrs: [{ id: "ADR 0020", title: "Reviewer context", decision: "Use a fresh session" }],
+        },
+        status: "queued",
+        branch: "codex/issue-277",
+      });
+
+      assert.strictEqual(job.id, "job-100-277-abcd");
+      assert.strictEqual(job.status, "queued");
+      assert.strictEqual(job.rework_count, 0);
+
+      const retrieved = getActionJobById(db, "job-100-277-abcd");
+      assert.ok(retrieved);
+      assert.strictEqual(retrieved.issue_id, 277);
+      assert.deepStrictEqual(JSON.parse(retrieved.issue_snapshot_json), {
+        title: "Acopilot & Actions refactor",
+        description: "Complete immutable contract",
+        acceptanceCriteria: ["Reviewer is isolated"],
+        adrs: [{ id: "ADR 0020", title: "Reviewer context", decision: "Use a fresh session" }],
+      });
+
+      updateActionJobStatus(db, "job-100-277-abcd", "running", {
+        current_step: "Implementing schema migrations",
+        rework_count: 1,
+      });
+
+      const updated = getActionJobById(db, "job-100-277-abcd");
+      assert.ok(updated);
+      assert.strictEqual(updated.status, "running");
+      assert.strictEqual(updated.current_step, "Implementing schema migrations");
+      assert.strictEqual(updated.rework_count, 1);
+
+      const list = getActionJobs(db, "/home/andy/repos/ads");
+      assert.strictEqual(list.length, 1);
+
+      createActionJob(db, {
+        id: "job-standalone-del",
+        project_id: "/home/andy/repos/standalone",
+        issue_title: "Standalone task",
+      });
+      const deleted = deleteActionJobsByProject(db, "/home/andy/repos/standalone");
+      assert.strictEqual(deleted, 1);
+    });
+
+    it("cascade deletes action_jobs when project is deleted", () => {
+      const db = getStateDatabase();
+      ensureWebAuthTables(db);
+      ensureWebProjectTables(db);
+      db.prepare("INSERT OR IGNORE INTO web_users (id, username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(
+        "u1",
+        "user1",
+        "hash",
+        1,
+        1,
+      );
+      db.prepare("INSERT OR IGNORE INTO web_projects (user_id, project_id, workspace_root, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)").run(
+        "u1",
+        "proj-to-delete",
+        "/tmp/proj",
+        "Test Project",
+        1,
+        1,
+      );
+
+      createActionJob(db, {
+        id: "job-del-1",
+        project_id: "proj-to-delete",
+        issue_title: "Task 1",
+      });
+
+      assert.strictEqual(getActionJobs(db, "proj-to-delete").length, 1);
+
+      deleteWebProject(db, "u1", "proj-to-delete");
+
+      assert.strictEqual(getActionJobs(db, "proj-to-delete").length, 0);
+    });
+  });
+
+  describe("state/lanePromptStore", () => {
+    let laneDb: DatabaseType | null = null;
+
+    afterEach(() => {
+      laneDb?.close();
+      laneDb = null;
+    });
+
+    it("seeds both lane baselines and exposes the active versions", () => {
+      laneDb = new DatabaseConstructor(":memory:");
+      const store = createLanePromptStore(laneDb);
+
+      const snapshots = store.listLanePrompts();
+      assert.deepEqual(snapshots.map((snapshot) => snapshot.lane), ["acopilot", "actions"]);
+      for (const snapshot of snapshots) {
+        assert.equal(snapshot.current.version, 1);
+        assert.equal(snapshot.current.isBase, true);
+        assert.equal(snapshot.current.prompt.length > 0, true);
+        assert.deepEqual(snapshot.versions.map((version) => version.version), [1]);
+      }
+    });
+
+    it("appends versions and reset points to the immutable base version", () => {
+      laneDb = new DatabaseConstructor(":memory:");
+      const store = createLanePromptStore(laneDb);
+
+      const saved = store.setLanePrompt("advisor", "Custom advisor prompt", 1000);
+      assert.equal(saved.current.version, 2);
+      assert.equal(saved.current.prompt, "Custom advisor prompt");
+      assert.equal(saved.base.version, 1);
+      assert.equal(saved.versions.length, 2);
+      assert.equal(saved.updatedAt, 1000);
+
+      const second = store.setLanePrompt("advisor", "Second advisor prompt", 2000);
+      assert.equal(second.current.version, 3);
+      assert.deepEqual(second.versions.map((version) => version.version), [3, 2, 1]);
+
+      const reset = store.resetLanePrompt("advisor");
+      assert.equal(reset.current.version, 1);
+      assert.equal(reset.current.prompt, reset.base.prompt);
+      assert.equal(reset.versions.length, 3);
+    });
+
+    it("rejects invalid lanes and empty prompts", () => {
+      laneDb = new DatabaseConstructor(":memory:");
+      const store = createLanePromptStore(laneDb);
+
+      assert.throws(() => store.getLanePrompt("telegram" as never), /Unknown lane/);
+      assert.throws(() => store.setLanePrompt("worker", "   "), /Prompt must not be empty/);
+    });
+  });
+
+  describe("state/roleProfileStore", () => {
+    it("retrieves seeded default role profiles", () => {
+      const db = getStateDatabase();
+      const allProfiles = getRoleProfiles(db);
+      assert.ok(allProfiles.length >= 3);
+
+      const acopilot = getDefaultRoleProfile(db, "acopilot");
+      const developer = getDefaultRoleProfile(db, "developer");
+      const reviewer = getDefaultRoleProfile(db, "reviewer");
+
+      assert.ok(acopilot);
+      assert.strictEqual(acopilot.role, "acopilot");
+      assert.strictEqual(acopilot.is_default, 1);
+
+      assert.ok(developer);
+      assert.strictEqual(developer.role, "developer");
+      assert.strictEqual(developer.is_default, 1);
+
+      assert.ok(reviewer);
+      assert.strictEqual(reviewer.role, "reviewer");
+      assert.strictEqual(reviewer.is_default, 1);
+    });
+
+    it("keeps the Developer and Reviewer roles in separate, independently-defaulted profiles", () => {
+      const db = getStateDatabase();
+
+      // The role_profiles vocabulary holds a lane-level `acopilot` profile
+      // alongside the two Actions roles, so a role filter must select exactly
+      // one role and never bleed into another.
+      for (const role of ["acopilot", "developer", "reviewer"] as const) {
+        const rows = getRoleProfiles(db, role);
+        assert.ok(rows.length > 0, `expected at least one ${role} profile`);
+        assert.ok(
+          rows.every((row) => row.role === role),
+          `role filter ${role} returned a foreign role: ${rows.map((r) => r.role).join(",")}`,
+        );
+      }
+
+      const developerDefault = getDefaultRoleProfile(db, "developer");
+      const reviewerDefault = getDefaultRoleProfile(db, "reviewer");
+      assert.ok(developerDefault && reviewerDefault);
+      assert.notStrictEqual(developerDefault.id, reviewerDefault.id);
+      assert.notStrictEqual(developerDefault.system_prompt, reviewerDefault.system_prompt);
+
+      // Promoting a Developer default must not clear the Reviewer default: the
+      // reset is scoped by role, which is what keeps the detached Reviewer
+      // context from being merged into the Developer one.
+      const promoted = saveRoleProfile(db, {
+        id: "profile-developer-alt",
+        role: "developer",
+        name: "Developer Alternate",
+        model_id: "gpt-5.6",
+        system_prompt: "Developer alternate prompt",
+        is_default: true,
+      });
+      assert.strictEqual(promoted.role, "developer");
+
+      assert.strictEqual(getDefaultRoleProfile(db, "developer")?.id, "profile-developer-alt");
+
+      // Assert the is_default flag itself rather than the returned id:
+      // getDefaultRoleProfile falls back to any row for the role when no default
+      // is flagged, so comparing ids would pass even if the promotion had
+      // cleared every other role's default.
+      assert.strictEqual(
+        getRoleProfiles(db, "reviewer").filter((row) => row.is_default === 1).length,
+        1,
+        "the Reviewer must keep exactly one flagged default after a Developer promotion",
+      );
+      assert.strictEqual(
+        getRoleProfiles(db, "acopilot").filter((row) => row.is_default === 1).length,
+        1,
+        "the Acopilot lane profile must keep exactly one flagged default after a Developer promotion",
+      );
+      assert.strictEqual(
+        getRoleProfiles(db, "developer").filter((row) => row.is_default === 1).length,
+        1,
+        "promoting a Developer default must leave exactly one Developer default",
+      );
+    });
+
+    it("saves a new role profile and updates default status and history", () => {
+      const db = getStateDatabase();
+      const newProfile = saveRoleProfile(db, {
+        id: "profile-acopilot-gemini",
+        role: "acopilot",
+        name: "Acopilot Gemini Pro",
+        model_id: "gemini-2.5-pro",
+        reasoning_effort: "medium",
+        system_prompt: "Custom system prompt for testing",
+        is_default: true,
+      });
+
+      assert.strictEqual(newProfile.id, "profile-acopilot-gemini");
+      assert.strictEqual(newProfile.version, 1);
+      assert.strictEqual(newProfile.is_default, 1);
+
+      const defaultProfile = getDefaultRoleProfile(db, "acopilot");
+      assert.ok(defaultProfile);
+      assert.strictEqual(defaultProfile.id, "profile-acopilot-gemini");
+
+      const history = getRoleSettingsHistory(db, "acopilot");
+      assert.ok(history.length >= 2);
+      assert.strictEqual(history[0]?.model_id, "gemini-2.5-pro");
+    });
+  });
+
+  describe("shared prepared statements on state.db", () => {
+    it("does not prepare a fresh thread/history statement set for each additional lane", () => {
+      const db = getStateDatabase(dbPath);
+      const originalPrepare = db.prepare.bind(db);
+      let prepareCount = 0;
+
+      (db as { prepare: typeof db.prepare }).prepare = ((...args: Parameters<typeof db.prepare>) => {
+        prepareCount += 1;
+        return originalPrepare(...args);
+      }) as typeof db.prepare;
+
+      try {
+        const workerThreads = new ThreadStorage({ namespace: "web-worker", stateDbPath: dbPath });
+        const workerHistory = new HistoryStore({ namespace: "web-worker", storagePath: dbPath });
+        const afterWorkerLane = prepareCount;
+
+        assert.ok(afterWorkerLane > 0);
+
+        const advisorThreads = new ThreadStorage({ namespace: "web-advisor", stateDbPath: dbPath });
+        const advisorHistory = new HistoryStore({ namespace: "web-advisor", storagePath: dbPath });
+        const customThreads = new ThreadStorage({ namespace: "web-custom", stateDbPath: dbPath });
+        const customHistory = new HistoryStore({ namespace: "web-custom", storagePath: dbPath });
+
+        assert.equal(prepareCount, afterWorkerLane);
+
+        workerThreads.setRecord(1, { threadId: "worker-thread", cwd: "/tmp/worker", agentThreads: { codex: "worker-thread" } });
+        advisorThreads.setRecord(1, { threadId: "advisor-thread", cwd: "/tmp/advisor", agentThreads: { codex: "advisor-thread" } });
+        customThreads.setRecord(1, { threadId: "custom-thread", cwd: "/tmp/custom", agentThreads: { codex: "custom-thread" } });
+
+        workerHistory.add("session-1", { role: "user", text: "worker-entry", ts: 1 });
+        advisorHistory.add("session-1", { role: "user", text: "advisor-entry", ts: 2 });
+        customHistory.add("session-1", { role: "user", text: "custom-entry", ts: 3 });
+
+        assert.equal(workerThreads.getRecord(1)?.threadId, "worker-thread");
+        assert.equal(advisorThreads.getRecord(1)?.threadId, "advisor-thread");
+        assert.equal(customThreads.getRecord(1)?.threadId, "custom-thread");
+
+        assert.deepEqual(workerHistory.get("session-1").map((entry) => entry.text), ["worker-entry"]);
+        assert.deepEqual(advisorHistory.get("session-1").map((entry) => entry.text), ["advisor-entry"]);
+        assert.deepEqual(customHistory.get("session-1").map((entry) => entry.text), ["custom-entry"]);
+      } finally {
+        (db as { prepare: typeof db.prepare }).prepare = originalPrepare as typeof db.prepare;
+      }
+    });
   });
 });

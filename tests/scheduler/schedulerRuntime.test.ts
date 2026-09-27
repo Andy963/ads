@@ -7,7 +7,9 @@ import path from "node:path";
 import { SchedulerRuntime } from "../../server/scheduler/runtime.js";
 import type { ScheduleSpec } from "../../server/scheduler/scheduleSpec.js";
 import { ScheduleStore } from "../../server/scheduler/store.js";
-import { resetDatabaseForTests } from "../../server/storage/database.js";
+import { computeNextCronRunAt } from "../../server/scheduler/cron.js";
+import { parseSchedulerJobPayload } from "../../server/scheduler/runtimeJobLifecycle.js";
+import { resetDatabaseForTests, getDatabase } from "../../server/storage/database.js";
 import { resetStateDatabaseForTests } from "../../server/state/database.js";
 import { onTaskTerminalEvent } from "../../server/web/taskNotifications/taskNotificationDispatcher.js";
 
@@ -100,32 +102,32 @@ function createLoggerSpy(): {
   };
 }
 
+let tmpDir: string;
+const originalEnv = { ...process.env };
+
+beforeEach(() => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-scheduler-runtime-"));
+  fs.mkdirSync(path.join(tmpDir, ".git"));
+  process.env.ADS_DATABASE_PATH = path.join(tmpDir, "ads.db");
+  process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
+  delete process.env.TELEGRAM_ALLOWED_USER_ID;
+  delete process.env.TELEGRAM_ALLOWED_USERS;
+  resetDatabaseForTests();
+  resetStateDatabaseForTests();
+});
+
+afterEach(() => {
+  resetDatabaseForTests();
+  resetStateDatabaseForTests();
+  process.env = { ...originalEnv };
+  try {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  } catch {
+    // ignore
+  }
+});
+
 describe("scheduler/runtime-liteque", () => {
-  let tmpDir: string;
-  const originalEnv = { ...process.env };
-
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-scheduler-runtime-"));
-    fs.mkdirSync(path.join(tmpDir, ".git"));
-    process.env.ADS_DATABASE_PATH = path.join(tmpDir, "ads.db");
-    process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
-    delete process.env.TELEGRAM_ALLOWED_USER_ID;
-    delete process.env.TELEGRAM_ALLOWED_USERS;
-    resetDatabaseForTests();
-    resetStateDatabaseForTests();
-  });
-
-  afterEach(() => {
-    resetDatabaseForTests();
-    resetStateDatabaseForTests();
-    process.env = { ...originalEnv };
-    try {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    } catch {
-      // ignore
-    }
-  });
-
   it("registers workspaces lazily and materializes scheduler state on the first due tick", async () => {
     const store = new ScheduleStore({ workspacePath: tmpDir });
     const now = Date.now();
@@ -661,5 +663,118 @@ describe("scheduler/runtime-liteque", () => {
     assert.ok(warning.message.includes(`scheduleId=${schedule.id}`));
     assert.ok(warning.message.includes(`externalId=${run?.externalId}`));
     assert.ok(warning.message.includes("err=Only dom='*' and mon='*' are supported"));
+  });
+});
+
+describe("scheduler/runtime helpers", () => {
+  it("normalizes scheduler job payloads to the workspace root and rejects invalid shapes", () => {
+    const nestedWorkspace = path.join(tmpDir, "packages", "demo");
+    fs.mkdirSync(nestedWorkspace, { recursive: true });
+
+    assert.deepEqual(
+      parseSchedulerJobPayload({
+        workspaceRoot: nestedWorkspace,
+        scheduleId: "schedule-1",
+        externalId: "run-1",
+        runAt: 1234.9,
+        prompt: "frozen prompt text",
+      }),
+      {
+        workspaceRoot: tmpDir,
+        scheduleId: "schedule-1",
+        externalId: "run-1",
+        runAt: 1234,
+        prompt: "frozen prompt text",
+      },
+    );
+
+    assert.equal(
+      parseSchedulerJobPayload({ workspaceRoot: nestedWorkspace, scheduleId: "", externalId: "run-1", runAt: 1 }),
+      null,
+    );
+    assert.equal(parseSchedulerJobPayload({ workspaceRoot: nestedWorkspace, scheduleId: "s", externalId: "", runAt: 1 }), null);
+    assert.equal(parseSchedulerJobPayload({ workspaceRoot: nestedWorkspace, scheduleId: "s", externalId: "e", runAt: Number.NaN }), null);
+    assert.equal(parseSchedulerJobPayload(null), null);
+  });
+});
+
+describe("scheduler/store", () => {
+  function buildStoreSpec(): ScheduleSpec {
+    return buildScheduleSpec({
+      name: "daily-sample",
+      instruction: "Every day at 09:00 UTC, produce a sample report.",
+      compiledTask: {
+        title: "Produce a sample report",
+        prompt: "Return a single JSON object.",
+      },
+    });
+  }
+
+  it("creates schedules and enforces run external_id uniqueness", () => {
+    const afterMs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const next = computeNextCronRunAt({ cron: "0 9 * * *", timezone: "UTC", afterMs });
+    assert.equal(new Date(next).toISOString(), "2026-01-01T09:00:00.000Z");
+
+    const afterBeforeMidnight = Date.UTC(2025, 11, 31, 23, 59, 0);
+    const midnight = computeNextCronRunAt({ cron: "0 0 * * *", timezone: "UTC", afterMs: afterBeforeMidnight });
+    assert.equal(new Date(midnight).toISOString(), "2026-01-01T00:00:00.000Z");
+
+    const spec = buildStoreSpec();
+
+    const store = new ScheduleStore({ workspacePath: tmpDir });
+    const schedule = store.createSchedule(
+      { instruction: spec.instruction, spec, enabled: true, nextRunAt: next },
+      1234,
+    );
+    assert.equal(schedule.enabled, true);
+    assert.equal(schedule.nextRunAt, next);
+
+    const runAtIso = new Date(next).toISOString();
+    const externalId = `sch:${schedule.id}:${runAtIso}`;
+
+    const first = store.insertRun(
+      { scheduleId: schedule.id, externalId, runAt: next, taskId: null, status: "queued" },
+      2000,
+    );
+    assert.equal(first.inserted, true);
+
+    const second = store.insertRun(
+      { scheduleId: schedule.id, externalId, runAt: next, taskId: null, status: "queued" },
+      2001,
+    );
+    assert.equal(second.inserted, false);
+
+    const fetched = store.getRunByExternalId(externalId);
+    assert.ok(fetched);
+    assert.equal(fetched?.externalId, externalId);
+  });
+
+  it("falls back to default list limit, trims external id lookups, and normalizes persisted run status", () => {
+    const afterMs = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const next = computeNextCronRunAt({ cron: "0 9 * * *", timezone: "UTC", afterMs });
+
+    const spec = buildStoreSpec();
+
+    const store = new ScheduleStore({ workspacePath: tmpDir });
+    const schedule = store.createSchedule(
+      { instruction: spec.instruction, spec, enabled: true, nextRunAt: next },
+      1234,
+    );
+
+    const externalId = `sch:${schedule.id}:${new Date(next).toISOString()}`;
+    store.insertRun({ scheduleId: schedule.id, externalId, runAt: next, taskId: null, status: "queued" }, 2000);
+
+    assert.equal(store.listSchedules({ limit: 0 }).length, 1);
+    assert.equal(store.listRuns(schedule.id, { limit: Number.NaN }).length, 1);
+
+    const fetched = store.getRunByExternalId(`  ${externalId}  `);
+    assert.ok(fetched);
+    assert.equal(fetched?.externalId, externalId);
+
+    getDatabase(tmpDir).prepare(`UPDATE schedule_runs SET status = ? WHERE external_id = ?`).run("unknown", externalId);
+
+    const normalized = store.getRunByExternalId(externalId);
+    assert.ok(normalized);
+    assert.equal(normalized?.status, "queued");
   });
 });

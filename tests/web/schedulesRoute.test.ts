@@ -6,8 +6,11 @@ import path from "node:path";
 
 import { resetDatabaseForTests } from "../../server/storage/database.js";
 import { handleScheduleRoutes } from "../../server/web/server/api/routes/schedules.js";
+import { handlePromptMessage } from "../../server/web/server/ws/handlePrompt.js";
+import { processScheduleOutput } from "../../server/web/server/advisor/scheduleHandler.js";
 import type { ScheduleSpec } from "../../server/scheduler/scheduleSpec.js";
 import { SchedulerRuntime } from "../../server/scheduler/runtime.js";
+import { ScheduleStore } from "../../server/scheduler/store.js";
 
 type FakeReq = {
   method: string;
@@ -59,13 +62,179 @@ function parseJson<T>(body: string): T {
   return JSON.parse(body) as T;
 }
 
-describe("web/api/schedules", () => {
+type HistoryEntry = { role: string; text: string; ts: number; kind?: string };
+
+class MemoryHistoryStore {
+  private readonly store = new Map<string, HistoryEntry[]>();
+
+  get(sessionId: string): HistoryEntry[] {
+    return this.store.get(sessionId) ?? [];
+  }
+
+  add(sessionId: string, entry: HistoryEntry): boolean {
+    const list = this.store.get(sessionId) ?? [];
+    list.push(entry);
+    this.store.set(sessionId, list);
+    return true;
+  }
+}
+
+class FakeOrchestrator {
+  invokeCount = 0;
+
+  constructor(private readonly responseText: string) {}
+
+  status(): { ready: boolean; error?: string; streaming: boolean } {
+    return { ready: true, streaming: true };
+  }
+
+  setWorkingDirectory(_workingDirectory?: string): void {}
+
+  setModel(_model?: string): void {}
+
+  setModelReasoningEffort(_effort?: string): void {}
+
+  getActiveAgentId(): string {
+    return "codex";
+  }
+
+  listAgents(): Array<{ metadata: { id: string; name: string }; status: { ready: boolean; streaming: boolean; error?: string } }> {
+    return [
+      {
+        metadata: { id: "codex", name: "Codex" },
+        status: { ready: true, streaming: true },
+      },
+    ];
+  }
+
+  hasAgent(agentId: string): boolean {
+    return agentId === "codex";
+  }
+
+  onEvent(_handler: (event: unknown) => void): () => void {
+    return () => undefined;
+  }
+
+  async invokeAgent(agentId: string, _input: unknown): Promise<{ response: string; usage: null; agentId: string }> {
+    this.invokeCount += 1;
+    return { response: this.responseText, usage: null, agentId };
+  }
+
+  getThreadId(): string {
+    return "thread-test";
+  }
+}
+
+function buildScheduleSpec(): any {
+  return {
+    version: 1,
+    name: "daily-water-reminder",
+    enabled: true,
+    schedule: { type: "cron", cron: "0 9 * * *", timezone: "Asia/Shanghai" },
+    instruction: "每天 09:00 提醒我喝水",
+    delivery: {
+      channels: ["web"],
+      web: { audience: "owner" },
+      telegram: { chatId: null },
+    },
+    policy: {
+      workspaceWrite: false,
+      network: "deny",
+      maxDurationMs: 600000,
+      maxRetries: 0,
+      concurrencyKey: "schedule:{scheduleId}",
+      idempotencyKeyTemplate: "sch:{scheduleId}:{runAtIso}",
+    },
+    compiledTask: {
+      title: "Remind to drink water",
+      prompt: "Return a reminder message.",
+      expectedResultSchema: { type: "object" },
+      verification: { commands: [] },
+    },
+    questions: [],
+  };
+}
+
+function createPromptDeps(args: {
+  payload: unknown;
+  requestId: string;
+  workspaceRoot: string;
+  chatSessionId: string;
+  chatMessages: unknown[];
+  clientMessages: unknown[];
+  historyStore: MemoryHistoryStore;
+  orchestrator: FakeOrchestrator;
+  scheduler?: {
+    scheduleCompiler?: unknown;
+    scheduler?: unknown;
+  };
+}) {
+  return {
+    request: {
+      parsed: { type: "prompt" as const, payload: args.payload },
+      requestId: args.requestId,
+      clientMessageId: null,
+      receivedAt: Date.now(),
+    },
+    transport: {
+      ws: {} as any,
+      safeJsonSend: (_ws: unknown, payload: unknown) => args.clientMessages.push(payload),
+      broadcastJson: (payload: unknown) => args.chatMessages.push(payload),
+      sendWorkspaceState: () => {},
+    },
+    observability: {
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      sessionLogger: {
+        logInput: () => {},
+        logOutput: () => {},
+        logError: () => {},
+        logEvent: () => {},
+        attachThreadId: () => {},
+      },
+      traceWsDuplication: false,
+    },
+    context: {
+      authUserId: "test-user",
+      sessionId: "s",
+      chatSessionId: args.chatSessionId,
+      userId: 1,
+      historyKey: "h",
+      currentCwd: args.workspaceRoot,
+    },
+    sessions: {
+      sessionManager: {
+        getOrCreate: () => args.orchestrator as any,
+        getSavedThreadId: () => undefined,
+        getUserModel: () => "test-model",
+        getUserModelReasoningEffort: () => "high",
+        getEffectiveState: () => ({ model: "test-model", modelReasoningEffort: "high", activeAgentId: "codex" }),
+        needsHistoryInjection: () => false,
+        clearHistoryInjection: () => {},
+        setUserModel: () => {},
+        setUserModelReasoningEffort: () => {},
+        saveThreadId: () => {},
+      } as any,
+      orchestrator: args.orchestrator as any,
+      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
+      interruptControllers: new Map<string, AbortController>(),
+    },
+    history: {
+      historyStore: args.historyStore as any,
+    },
+    tasks: {},
+    scheduler: args.scheduler ?? {},
+  };
+}
+
+describe("web/schedules", () => {
   let tmpDir: string;
+  let routingWorkspaceRoot: string;
   const originalEnv = { ...process.env };
   const originalNow = Date.now;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-schedules-route-"));
+    routingWorkspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-schedule-routing-workspace-"));
     process.env.ADS_DATABASE_PATH = path.join(tmpDir, "ads.db");
     resetDatabaseForTests();
   });
@@ -79,337 +248,431 @@ describe("web/api/schedules", () => {
     } catch {
       // ignore
     }
+    try {
+      fs.rmSync(routingWorkspaceRoot, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
   });
 
-  it("creates, lists, enables and disables schedules", async () => {
-    const now = Date.UTC(2026, 0, 1, 0, 0, 0);
-    Date.now = () => now;
+  describe("web/api/schedules", () => {
+    it("creates, lists, enables and disables schedules", async () => {
+      const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+      Date.now = () => now;
 
-    const workspaceRoot = tmpDir;
-    const baseSpec: ScheduleSpec = {
-      version: 1,
-      name: "daily-sample",
-      enabled: true,
-      schedule: { type: "cron", cron: "0 9 * * *", timezone: "UTC" },
-      instruction: "Every day at 09:00 UTC, produce a sample report.",
-      delivery: { channels: ["web"], web: { audience: "owner" }, telegram: { chatId: null } },
-      policy: {
-        workspaceWrite: false,
-        network: "deny",
-        maxDurationMs: 600000,
-        maxRetries: 0,
-        concurrencyKey: "schedule:{scheduleId}",
-        idempotencyKeyTemplate: "sch:{scheduleId}:{runAtIso}",
-      },
-      compiledTask: {
-        title: "Produce a sample report",
-        prompt: "Return a single JSON object.",
-        expectedResultSchema: { type: "object" },
-        verification: { commands: [] },
-      },
-      questions: [],
-    };
-
-    const compiler = {
-      async compile({ instruction }: { instruction: string }) {
-        return { ...baseSpec, instruction };
-      },
-    };
-
-    const scheduler = new SchedulerRuntime({ enabled: false });
-
-    const deps = {
-      resolveWorkspaceRoot() {
-        return workspaceRoot;
-      },
-      scheduleCompiler: compiler as any,
-      scheduler,
-    };
-
-    const reqCreate = createReq("POST", { instruction: baseSpec.instruction });
-    const resCreate = createRes();
-    const createUrl = new URL(`http://localhost/api/schedules?workspace=${encodeURIComponent(workspaceRoot)}`);
-    assert.equal(
-      await handleScheduleRoutes(
-        { req: reqCreate as any, res: resCreate as any, url: createUrl, pathname: "/api/schedules", auth: {} as any } as any,
-        deps as any,
-      ),
-      true,
-    );
-    assert.equal(resCreate.statusCode, 201);
-    const created = parseJson<{ schedule: { id: string; enabled: boolean; nextRunAt: number | null } }>(resCreate.body).schedule;
-    assert.equal(created.enabled, true);
-    assert.equal(created.nextRunAt, Date.UTC(2026, 0, 1, 9, 0, 0));
-
-    const reqList = createReq("GET");
-    const resList = createRes();
-    assert.equal(
-      await handleScheduleRoutes(
-        { req: reqList as any, res: resList as any, url: createUrl, pathname: "/api/schedules", auth: {} as any } as any,
-        deps as any,
-      ),
-      true,
-    );
-    assert.equal(resList.statusCode, 200);
-    const schedules = parseJson<{ schedules: Array<{ id: string }> }>(resList.body).schedules;
-    assert.equal(schedules.length, 1);
-    assert.equal(schedules[0]!.id, created.id);
-
-    const reqDisable = createReq("POST");
-    const resDisable = createRes();
-    const disableUrl = new URL(
-      `http://localhost/api/schedules/${encodeURIComponent(created.id)}/disable?workspace=${encodeURIComponent(workspaceRoot)}`,
-    );
-    assert.equal(
-      await handleScheduleRoutes(
-        {
-          req: reqDisable as any,
-          res: resDisable as any,
-          url: disableUrl,
-          pathname: `/api/schedules/${created.id}/disable`,
-          auth: {} as any,
-        } as any,
-        deps as any,
-      ),
-      true,
-    );
-    assert.equal(resDisable.statusCode, 200);
-    const disabled = parseJson<{ schedule: { enabled: boolean; nextRunAt: number | null } }>(resDisable.body).schedule;
-    assert.equal(disabled.enabled, false);
-    assert.equal(disabled.nextRunAt, null);
-
-    const reqEnable = createReq("POST");
-    const resEnable = createRes();
-    const enableUrl = new URL(
-      `http://localhost/api/schedules/${encodeURIComponent(created.id)}/enable?workspace=${encodeURIComponent(workspaceRoot)}`,
-    );
-    assert.equal(
-      await handleScheduleRoutes(
-        {
-          req: reqEnable as any,
-          res: resEnable as any,
-          url: enableUrl,
-          pathname: `/api/schedules/${created.id}/enable`,
-          auth: {} as any,
-        } as any,
-        deps as any,
-      ),
-      true,
-    );
-    assert.equal(resEnable.statusCode, 200);
-    const enabled = parseJson<{ schedule: { enabled: boolean; nextRunAt: number | null } }>(resEnable.body).schedule;
-    assert.equal(enabled.enabled, true);
-    assert.equal(enabled.nextRunAt, Date.UTC(2026, 0, 1, 9, 0, 0));
-
-    const reqRuns = createReq("GET");
-    const resRuns = createRes();
-    const runsUrl = new URL(
-      `http://localhost/api/schedules/${encodeURIComponent(created.id)}/runs?workspace=${encodeURIComponent(workspaceRoot)}`,
-    );
-    assert.equal(
-      await handleScheduleRoutes(
-        { req: reqRuns as any, res: resRuns as any, url: runsUrl, pathname: `/api/schedules/${created.id}/runs`, auth: {} as any } as any,
-        deps as any,
-      ),
-      true,
-    );
-    assert.equal(resRuns.statusCode, 200);
-    assert.deepEqual(parseJson<{ runs: unknown[] }>(resRuns.body).runs, []);
-  });
-
-  it("prevents enabling schedules with questions", async () => {
-    const now = Date.UTC(2026, 0, 1, 0, 0, 0);
-    Date.now = () => now;
-
-    const workspaceRoot = tmpDir;
-    const baseSpec: ScheduleSpec = {
-      version: 1,
-      name: "needs-timezone",
-      enabled: false,
-      schedule: { type: "cron", cron: "0 9 * * *", timezone: "UTC" },
-      instruction: "Every day at 09:00, do something.",
-      delivery: { channels: ["web"], web: { audience: "owner" }, telegram: { chatId: null } },
-      policy: {
-        workspaceWrite: false,
-        network: "deny",
-        maxDurationMs: 600000,
-        maxRetries: 0,
-        concurrencyKey: "schedule:{scheduleId}",
-        idempotencyKeyTemplate: "sch:{scheduleId}:{runAtIso}",
-      },
-      compiledTask: {
-        title: "Do something",
-        prompt: "Return a single JSON object.",
-        expectedResultSchema: { type: "object" },
-        verification: { commands: [] },
-      },
-      questions: ["Which timezone should be used?"],
-    };
-
-    const compiler = {
-      async compile({ instruction }: { instruction: string }) {
-        return { ...baseSpec, instruction };
-      },
-    };
-
-    const scheduler = new SchedulerRuntime({ enabled: false });
-
-    const deps = {
-      resolveWorkspaceRoot() {
-        return workspaceRoot;
-      },
-      scheduleCompiler: compiler as any,
-      scheduler,
-    };
-
-    const reqCreate = createReq("POST", { instruction: baseSpec.instruction });
-    const resCreate = createRes();
-    const createUrl = new URL(`http://localhost/api/schedules?workspace=${encodeURIComponent(workspaceRoot)}`);
-    assert.equal(
-      await handleScheduleRoutes(
-        { req: reqCreate as any, res: resCreate as any, url: createUrl, pathname: "/api/schedules", auth: {} as any } as any,
-        deps as any,
-      ),
-      true,
-    );
-    assert.equal(resCreate.statusCode, 201);
-    const created = parseJson<{ schedule: { id: string; enabled: boolean } }>(resCreate.body).schedule;
-    assert.equal(created.enabled, false);
-
-    const reqEnable = createReq("POST");
-    const resEnable = createRes();
-    const enableUrl = new URL(
-      `http://localhost/api/schedules/${encodeURIComponent(created.id)}/enable?workspace=${encodeURIComponent(workspaceRoot)}`,
-    );
-    assert.equal(
-      await handleScheduleRoutes(
-        {
-          req: reqEnable as any,
-          res: resEnable as any,
-          url: enableUrl,
-          pathname: `/api/schedules/${created.id}/enable`,
-          auth: {} as any,
-        } as any,
-        deps as any,
-      ),
-      true,
-    );
-    assert.equal(resEnable.statusCode, 409);
-    const payload = parseJson<{ error: string; questions: string[] }>(resEnable.body);
-    assert.equal(payload.questions.length, 1);
-  });
-
-  it("preserves telegram delivery with explicit chat id on create", async () => {
-    const workspaceRoot = tmpDir;
-    const baseSpec: ScheduleSpec = {
-      version: 1,
-      name: "telegram-default-chat",
-      enabled: true,
-      schedule: { type: "cron", cron: "*/5 * * * *", timezone: "Asia/Shanghai" },
-      instruction: "每 5 分钟给我在 TG 发一个笑话，时区为 Asia/Shanghai",
-      delivery: { channels: ["telegram"], web: { audience: "owner" }, telegram: { chatId: "123456" } },
-      policy: {
-        workspaceWrite: false,
-        network: "deny",
-        maxDurationMs: 600000,
-        maxRetries: 0,
-        concurrencyKey: "schedule:{scheduleId}",
-        idempotencyKeyTemplate: "sch:{scheduleId}:{runAtIso}",
-      },
-      compiledTask: {
-        title: "Tell a joke",
-        prompt: "Return a single JSON object.",
-        expectedResultSchema: { type: "object" },
-        verification: { commands: [] },
-      },
-      questions: [],
-    };
-
-    const deps = {
-      resolveWorkspaceRoot() {
-        return workspaceRoot;
-      },
-      scheduleCompiler: {
-        async compile() {
-          return { ...baseSpec };
+      const workspaceRoot = tmpDir;
+      const baseSpec: ScheduleSpec = {
+        version: 1,
+        name: "daily-sample",
+        enabled: true,
+        schedule: { type: "cron", cron: "0 9 * * *", timezone: "UTC" },
+        instruction: "Every day at 09:00 UTC, produce a sample report.",
+        delivery: { channels: ["web"], web: { audience: "owner" }, telegram: { chatId: null } },
+        policy: {
+          workspaceWrite: false,
+          network: "deny",
+          maxDurationMs: 600000,
+          maxRetries: 0,
+          concurrencyKey: "schedule:{scheduleId}",
+          idempotencyKeyTemplate: "sch:{scheduleId}:{runAtIso}",
         },
-      } as any,
-      scheduler: new SchedulerRuntime({ enabled: false }),
-    };
+        compiledTask: {
+          title: "Produce a sample report",
+          prompt: "Return a single JSON object.",
+          expectedResultSchema: { type: "object" },
+          verification: { commands: [] },
+        },
+        questions: [],
+      };
 
-    const reqCreate = createReq("POST", { instruction: baseSpec.instruction });
-    const resCreate = createRes();
-    const createUrl = new URL(`http://localhost/api/schedules?workspace=${encodeURIComponent(workspaceRoot)}`);
-    assert.equal(
-      await handleScheduleRoutes(
-        { req: reqCreate as any, res: resCreate as any, url: createUrl, pathname: "/api/schedules", auth: {} as any } as any,
-        deps as any,
-      ),
-      true,
-    );
+      const compiler = {
+        async compile({ instruction }: { instruction: string }) {
+          return { ...baseSpec, instruction };
+        },
+      };
 
-    assert.equal(resCreate.statusCode, 201);
-    const created = parseJson<{ schedule: { enabled: boolean; spec: ScheduleSpec } }>(resCreate.body).schedule;
-    assert.equal(created.enabled, true);
-    assert.equal(created.spec.enabled, true);
-    assert.equal(created.spec.delivery.telegram.chatId, "123456");
-    assert.deepEqual(created.spec.questions, []);
+      const scheduler = new SchedulerRuntime({ enabled: false });
+
+      const deps = {
+        resolveWorkspaceRoot() {
+          return workspaceRoot;
+        },
+        scheduleCompiler: compiler as any,
+        scheduler,
+      };
+
+      const reqCreate = createReq("POST", { instruction: baseSpec.instruction });
+      const resCreate = createRes();
+      const createUrl = new URL(`http://localhost/api/schedules?workspace=${encodeURIComponent(workspaceRoot)}`);
+      assert.equal(
+        await handleScheduleRoutes(
+          { req: reqCreate as any, res: resCreate as any, url: createUrl, pathname: "/api/schedules", auth: {} as any } as any,
+          deps as any,
+        ),
+        true,
+      );
+      assert.equal(resCreate.statusCode, 201);
+      const created = parseJson<{ schedule: { id: string; enabled: boolean; nextRunAt: number | null } }>(resCreate.body).schedule;
+      assert.equal(created.enabled, true);
+      assert.equal(created.nextRunAt, Date.UTC(2026, 0, 1, 9, 0, 0));
+
+      const reqList = createReq("GET");
+      const resList = createRes();
+      assert.equal(
+        await handleScheduleRoutes(
+          { req: reqList as any, res: resList as any, url: createUrl, pathname: "/api/schedules", auth: {} as any } as any,
+          deps as any,
+        ),
+        true,
+      );
+      assert.equal(resList.statusCode, 200);
+      const schedules = parseJson<{ schedules: Array<{ id: string }> }>(resList.body).schedules;
+      assert.equal(schedules.length, 1);
+      assert.equal(schedules[0]!.id, created.id);
+
+      const reqDisable = createReq("POST");
+      const resDisable = createRes();
+      const disableUrl = new URL(
+        `http://localhost/api/schedules/${encodeURIComponent(created.id)}/disable?workspace=${encodeURIComponent(workspaceRoot)}`,
+      );
+      assert.equal(
+        await handleScheduleRoutes(
+          {
+            req: reqDisable as any,
+            res: resDisable as any,
+            url: disableUrl,
+            pathname: `/api/schedules/${created.id}/disable`,
+            auth: {} as any,
+          } as any,
+          deps as any,
+        ),
+        true,
+      );
+      assert.equal(resDisable.statusCode, 200);
+      const disabled = parseJson<{ schedule: { enabled: boolean; nextRunAt: number | null } }>(resDisable.body).schedule;
+      assert.equal(disabled.enabled, false);
+      assert.equal(disabled.nextRunAt, null);
+
+      const reqEnable = createReq("POST");
+      const resEnable = createRes();
+      const enableUrl = new URL(
+        `http://localhost/api/schedules/${encodeURIComponent(created.id)}/enable?workspace=${encodeURIComponent(workspaceRoot)}`,
+      );
+      assert.equal(
+        await handleScheduleRoutes(
+          {
+            req: reqEnable as any,
+            res: resEnable as any,
+            url: enableUrl,
+            pathname: `/api/schedules/${created.id}/enable`,
+            auth: {} as any,
+          } as any,
+          deps as any,
+        ),
+        true,
+      );
+      assert.equal(resEnable.statusCode, 200);
+      const enabled = parseJson<{ schedule: { enabled: boolean; nextRunAt: number | null } }>(resEnable.body).schedule;
+      assert.equal(enabled.enabled, true);
+      assert.equal(enabled.nextRunAt, Date.UTC(2026, 0, 1, 9, 0, 0));
+
+      const reqRuns = createReq("GET");
+      const resRuns = createRes();
+      const runsUrl = new URL(
+        `http://localhost/api/schedules/${encodeURIComponent(created.id)}/runs?workspace=${encodeURIComponent(workspaceRoot)}`,
+      );
+      assert.equal(
+        await handleScheduleRoutes(
+          { req: reqRuns as any, res: resRuns as any, url: runsUrl, pathname: `/api/schedules/${created.id}/runs`, auth: {} as any } as any,
+          deps as any,
+        ),
+        true,
+      );
+      assert.equal(resRuns.statusCode, 200);
+      assert.deepEqual(parseJson<{ runs: unknown[] }>(resRuns.body).runs, []);
+    });
+
+    it("prevents enabling schedules with questions", async () => {
+      const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+      Date.now = () => now;
+
+      const workspaceRoot = tmpDir;
+      const baseSpec: ScheduleSpec = {
+        version: 1,
+        name: "needs-timezone",
+        enabled: false,
+        schedule: { type: "cron", cron: "0 9 * * *", timezone: "UTC" },
+        instruction: "Every day at 09:00, do something.",
+        delivery: { channels: ["web"], web: { audience: "owner" }, telegram: { chatId: null } },
+        policy: {
+          workspaceWrite: false,
+          network: "deny",
+          maxDurationMs: 600000,
+          maxRetries: 0,
+          concurrencyKey: "schedule:{scheduleId}",
+          idempotencyKeyTemplate: "sch:{scheduleId}:{runAtIso}",
+        },
+        compiledTask: {
+          title: "Do something",
+          prompt: "Return a single JSON object.",
+          expectedResultSchema: { type: "object" },
+          verification: { commands: [] },
+        },
+        questions: ["Which timezone should be used?"],
+      };
+
+      const compiler = {
+        async compile({ instruction }: { instruction: string }) {
+          return { ...baseSpec, instruction };
+        },
+      };
+
+      const scheduler = new SchedulerRuntime({ enabled: false });
+
+      const deps = {
+        resolveWorkspaceRoot() {
+          return workspaceRoot;
+        },
+        scheduleCompiler: compiler as any,
+        scheduler,
+      };
+
+      const reqCreate = createReq("POST", { instruction: baseSpec.instruction });
+      const resCreate = createRes();
+      const createUrl = new URL(`http://localhost/api/schedules?workspace=${encodeURIComponent(workspaceRoot)}`);
+      assert.equal(
+        await handleScheduleRoutes(
+          { req: reqCreate as any, res: resCreate as any, url: createUrl, pathname: "/api/schedules", auth: {} as any } as any,
+          deps as any,
+        ),
+        true,
+      );
+      assert.equal(resCreate.statusCode, 201);
+      const created = parseJson<{ schedule: { id: string; enabled: boolean } }>(resCreate.body).schedule;
+      assert.equal(created.enabled, false);
+
+      const reqEnable = createReq("POST");
+      const resEnable = createRes();
+      const enableUrl = new URL(
+        `http://localhost/api/schedules/${encodeURIComponent(created.id)}/enable?workspace=${encodeURIComponent(workspaceRoot)}`,
+      );
+      assert.equal(
+        await handleScheduleRoutes(
+          {
+            req: reqEnable as any,
+            res: resEnable as any,
+            url: enableUrl,
+            pathname: `/api/schedules/${created.id}/enable`,
+            auth: {} as any,
+          } as any,
+          deps as any,
+        ),
+        true,
+      );
+      assert.equal(resEnable.statusCode, 409);
+      const payload = parseJson<{ error: string; questions: string[] }>(resEnable.body);
+      assert.equal(payload.questions.length, 1);
+    });
+
+    it("preserves telegram delivery with explicit chat id on create", async () => {
+      const workspaceRoot = tmpDir;
+      const baseSpec: ScheduleSpec = {
+        version: 1,
+        name: "telegram-default-chat",
+        enabled: true,
+        schedule: { type: "cron", cron: "*/5 * * * *", timezone: "Asia/Shanghai" },
+        instruction: "每 5 分钟给我在 TG 发一个笑话，时区为 Asia/Shanghai",
+        delivery: { channels: ["telegram"], web: { audience: "owner" }, telegram: { chatId: "123456" } },
+        policy: {
+          workspaceWrite: false,
+          network: "deny",
+          maxDurationMs: 600000,
+          maxRetries: 0,
+          concurrencyKey: "schedule:{scheduleId}",
+          idempotencyKeyTemplate: "sch:{scheduleId}:{runAtIso}",
+        },
+        compiledTask: {
+          title: "Tell a joke",
+          prompt: "Return a single JSON object.",
+          expectedResultSchema: { type: "object" },
+          verification: { commands: [] },
+        },
+        questions: [],
+      };
+
+      const deps = {
+        resolveWorkspaceRoot() {
+          return workspaceRoot;
+        },
+        scheduleCompiler: {
+          async compile() {
+            return { ...baseSpec };
+          },
+        } as any,
+        scheduler: new SchedulerRuntime({ enabled: false }),
+      };
+
+      const reqCreate = createReq("POST", { instruction: baseSpec.instruction });
+      const resCreate = createRes();
+      const createUrl = new URL(`http://localhost/api/schedules?workspace=${encodeURIComponent(workspaceRoot)}`);
+      assert.equal(
+        await handleScheduleRoutes(
+          { req: reqCreate as any, res: resCreate as any, url: createUrl, pathname: "/api/schedules", auth: {} as any } as any,
+          deps as any,
+        ),
+        true,
+      );
+
+      assert.equal(resCreate.statusCode, 201);
+      const created = parseJson<{ schedule: { enabled: boolean; spec: ScheduleSpec } }>(resCreate.body).schedule;
+      assert.equal(created.enabled, true);
+      assert.equal(created.spec.enabled, true);
+      assert.equal(created.spec.delivery.telegram.chatId, "123456");
+      assert.deepEqual(created.spec.questions, []);
+    });
+
+    it("disables telegram delivery schedules when chat id cannot be resolved", async () => {
+      const workspaceRoot = tmpDir;
+      const baseSpec: ScheduleSpec = {
+        version: 1,
+        name: "telegram-missing-chat",
+        enabled: true,
+        schedule: { type: "cron", cron: "*/5 * * * *", timezone: "Asia/Shanghai" },
+        instruction: "每 5 分钟给我在 TG 发一个笑话，时区为 Asia/Shanghai",
+        delivery: { channels: ["telegram"], web: { audience: "owner" }, telegram: { chatId: null } },
+        policy: {
+          workspaceWrite: false,
+          network: "deny",
+          maxDurationMs: 600000,
+          maxRetries: 0,
+          concurrencyKey: "schedule:{scheduleId}",
+          idempotencyKeyTemplate: "sch:{scheduleId}:{runAtIso}",
+        },
+        compiledTask: {
+          title: "Tell a joke",
+          prompt: "Return a single JSON object.",
+          expectedResultSchema: { type: "object" },
+          verification: { commands: [] },
+        },
+        questions: [],
+      };
+
+      const deps = {
+        resolveWorkspaceRoot() {
+          return workspaceRoot;
+        },
+        scheduleCompiler: {
+          async compile() {
+            return { ...baseSpec };
+          },
+        } as any,
+        scheduler: new SchedulerRuntime({ enabled: false }),
+      };
+
+      const reqCreate = createReq("POST", { instruction: baseSpec.instruction });
+      const resCreate = createRes();
+      const createUrl = new URL(`http://localhost/api/schedules?workspace=${encodeURIComponent(workspaceRoot)}`);
+      assert.equal(
+        await handleScheduleRoutes(
+          { req: reqCreate as any, res: resCreate as any, url: createUrl, pathname: "/api/schedules", auth: {} as any } as any,
+          deps as any,
+        ),
+        true,
+      );
+
+      assert.equal(resCreate.statusCode, 201);
+      const created = parseJson<{ schedule: { enabled: boolean; spec: ScheduleSpec } }>(resCreate.body).schedule;
+      assert.equal(created.enabled, false);
+      assert.equal(created.spec.enabled, false);
+      assert.equal(created.spec.delivery.telegram.chatId, null);
+      assert.ok(created.spec.questions.includes("Which Telegram chatId should receive the schedule result?"));
+    });
   });
 
-  it("disables telegram delivery schedules when chat id cannot be resolved", async () => {
-    const workspaceRoot = tmpDir;
-    const baseSpec: ScheduleSpec = {
-      version: 1,
-      name: "telegram-missing-chat",
-      enabled: true,
-      schedule: { type: "cron", cron: "*/5 * * * *", timezone: "Asia/Shanghai" },
-      instruction: "每 5 分钟给我在 TG 发一个笑话，时区为 Asia/Shanghai",
-      delivery: { channels: ["telegram"], web: { audience: "owner" }, telegram: { chatId: null } },
-      policy: {
-        workspaceWrite: false,
-        network: "deny",
-        maxDurationMs: 600000,
-        maxRetries: 0,
-        concurrencyKey: "schedule:{scheduleId}",
-        idempotencyKeyTemplate: "sch:{scheduleId}:{runAtIso}",
-      },
-      compiledTask: {
-        title: "Tell a joke",
-        prompt: "Return a single JSON object.",
-        expectedResultSchema: { type: "object" },
-        verification: { commands: [] },
-      },
-      questions: [],
-    };
+  describe("web/schedule output routing", () => {
+    it("creates schedules from worker chat output", async () => {
+      const workspaceRoot = routingWorkspaceRoot;
+      const chatMessages: unknown[] = [];
+      const clientMessages: unknown[] = [];
+      const historyStore = new MemoryHistoryStore();
+      const orchestrator = new FakeOrchestrator(
+        ["好的。", "```ads-schedule", "每天 09:00 提醒我喝水", "```"].join("\n"),
+      );
 
-    const deps = {
-      resolveWorkspaceRoot() {
-        return workspaceRoot;
-      },
-      scheduleCompiler: {
-        async compile() {
-          return { ...baseSpec };
+      let registeredWorkspace: string | null = null;
+      const compiler = {
+        async compile(): Promise<any> {
+          return buildScheduleSpec();
         },
-      } as any,
-      scheduler: new SchedulerRuntime({ enabled: false }),
-    };
+      };
 
-    const reqCreate = createReq("POST", { instruction: baseSpec.instruction });
-    const resCreate = createRes();
-    const createUrl = new URL(`http://localhost/api/schedules?workspace=${encodeURIComponent(workspaceRoot)}`);
-    assert.equal(
-      await handleScheduleRoutes(
-        { req: reqCreate as any, res: resCreate as any, url: createUrl, pathname: "/api/schedules", auth: {} as any } as any,
-        deps as any,
-      ),
-      true,
-    );
+      await handlePromptMessage(
+        createPromptDeps({
+          payload: "请帮我每天提醒喝水",
+          requestId: "req-worker-schedule-1",
+          workspaceRoot,
+          chatSessionId: "main",
+          chatMessages,
+          clientMessages,
+          historyStore,
+          orchestrator,
+          scheduler: {
+            scheduleCompiler: compiler,
+            scheduler: {
+              registerWorkspace(root: string) {
+                registeredWorkspace = root;
+              },
+            },
+          },
+        }) as any,
+      );
 
-    assert.equal(resCreate.statusCode, 201);
-    const created = parseJson<{ schedule: { enabled: boolean; spec: ScheduleSpec } }>(resCreate.body).schedule;
-    assert.equal(created.enabled, false);
-    assert.equal(created.spec.enabled, false);
-    assert.equal(created.spec.delivery.telegram.chatId, null);
-    assert.ok(created.spec.questions.includes("Which Telegram chatId should receive the schedule result?"));
+      const result = chatMessages.find((message) => message && typeof message === "object" && (message as { type?: unknown }).type === "result");
+      assert.ok(result);
+      const output = String((result as { output?: unknown }).output ?? "");
+      assert.match(output, /定时任务「daily-water-reminder」已创建/);
+      assert.doesNotMatch(output, /```ads-schedule/);
+      assert.equal(registeredWorkspace, workspaceRoot);
+
+      const store = new ScheduleStore({ workspacePath: workspaceRoot });
+      const schedules = store.listSchedules({ limit: 10 });
+      assert.equal(schedules.length, 1);
+      assert.equal(schedules[0]!.instruction, "每天 09:00 提醒我喝水");
+    });
+
+    it("binds the current telegram chat when tg output creates a schedule", async () => {
+      const workspaceRoot = routingWorkspaceRoot;
+      const compiler = {
+        async compile(): Promise<any> {
+          return buildScheduleSpec();
+        },
+      };
+
+      let registeredWorkspace: string | null = null;
+      const output = await processScheduleOutput({
+        outputForChat: ["收到。", "```ads-schedule", "每天 09:00 提醒我喝水", "```"].join("\n"),
+        workspaceRoot,
+        scheduleCompiler: compiler as any,
+        scheduler: {
+          registerWorkspace(root: string) {
+            registeredWorkspace = root;
+          },
+        } as any,
+        logger: { info: () => {}, warn: () => {} },
+        source: "telegram",
+        telegramChatId: "786273482",
+        preferTelegramDelivery: true,
+      });
+
+      assert.match(output, /定时任务「daily-water-reminder」已创建/);
+      assert.doesNotMatch(output, /```ads-schedule/);
+      assert.equal(registeredWorkspace, workspaceRoot);
+
+      const store = new ScheduleStore({ workspacePath: workspaceRoot });
+      const schedule = store.listSchedules({ limit: 1 })[0];
+      assert.ok(schedule);
+      assert.ok(schedule.spec.delivery.channels.includes("telegram"));
+      assert.equal(schedule.spec.delivery.telegram.chatId, "786273482");
+    });
   });
 });
