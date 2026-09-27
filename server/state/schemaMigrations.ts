@@ -780,6 +780,13 @@ Core reviewing rules:
       addColumnIfMissing(db, "action_jobs", "blocked_at", "INTEGER");
     },
   },
+  {
+    version: 29,
+    description: "Record the base commit an Actions job branched from",
+    up: (db) => {
+      addColumnIfMissing(db, "action_jobs", "base_sha", "TEXT");
+    },
+  },
 ];
 
 /**

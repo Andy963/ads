@@ -36,6 +36,7 @@ export interface ActionJobRecord {
   issue_snapshot_json: string;
   status: ActionJobStatus;
   branch: string | null;
+  base_sha: string | null;
   developer_profile_id: string | null;
   reviewer_profile_ids_json: string;
   current_step: string | null;
@@ -87,6 +88,7 @@ export function createActionJob(
     issue_snapshot?: ActionJobIssueSnapshot;
     status?: ActionJobStatus;
     branch?: string | null;
+    base_sha?: string | null;
     developer_profile_id?: string | null;
     reviewer_profile_ids_json?: string;
     auth_user_id?: string | null;
@@ -110,11 +112,11 @@ export function createActionJob(
 
   db.prepare(`
     INSERT INTO action_jobs
-      (id, project_id, job_kind, issue_id, issue_title, issue_snapshot_json, status, branch,
+      (id, project_id, job_kind, issue_id, issue_title, issue_snapshot_json, status, branch, base_sha,
        developer_profile_id, reviewer_profile_ids_json, current_step, steps_json,
        review_verdicts_json, attempts_json, pr_number, pr_url, error_message, rework_count,
        blocked_at, auth_user_id, chat_session_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', '[]', NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', '[]', NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?)
   `).run(
     job.id,
     job.project_id,
@@ -124,6 +126,7 @@ export function createActionJob(
     issueSnapshotJson,
     status,
     branch,
+    job.base_sha ?? null,
     devProfileId,
     reviewerProfilesJson,
     job.auth_user_id ?? null,
@@ -141,6 +144,7 @@ export function createActionJob(
     issue_snapshot_json: issueSnapshotJson,
     status,
     branch,
+    base_sha: job.base_sha ?? null,
     developer_profile_id: devProfileId,
     reviewer_profile_ids_json: reviewerProfilesJson,
     current_step: null,
@@ -163,7 +167,7 @@ export function updateActionJobStatus(
   db: DatabaseType,
   id: string,
   status: ActionJobStatus,
-  updates: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "attempts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "rework_count" | "blocked_at">> = {},
+  updates: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "attempts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "base_sha" | "rework_count" | "blocked_at">> = {},
   now = Date.now(),
 ): void {
   const fields = ["status = ?", "updated_at = ?"];
@@ -200,6 +204,10 @@ export function updateActionJobStatus(
   if ("branch" in updates) {
     fields.push("branch = ?");
     values.push(updates.branch ?? null);
+  }
+  if ("base_sha" in updates) {
+    fields.push("base_sha = ?");
+    values.push(updates.base_sha ?? null);
   }
   if ("rework_count" in updates) {
     fields.push("rework_count = ?");

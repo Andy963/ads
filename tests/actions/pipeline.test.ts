@@ -11,6 +11,7 @@ import {
   buildPrCreateArgs,
   buildPrMergeArgs,
   checkFeatureBranchScope,
+  parseOpenPullRequest,
   unsupportedPrMergeFlags,
 } from "../../server/actions/pipeline.js";
 
@@ -23,6 +24,12 @@ function commit(cwd: string, message: string): void {
   fs.writeFileSync(path.join(cwd, "file.txt"), message);
   git(cwd, "add", "-A");
   git(cwd, "commit", "-m", message);
+}
+
+function revParse(cwd: string, ref: string): string {
+  const res = spawnSync("git", ["rev-parse", ref], { cwd, encoding: "utf8" });
+  assert.equal(res.status, 0, `git rev-parse ${ref} failed: ${res.stderr}`);
+  return res.stdout.trim();
 }
 
 function initRepo(): string {
@@ -47,6 +54,47 @@ describe("Actions PR creation arguments", () => {
     assert.notEqual(baseIndex, -1, `expected --base in ${args.join(" ")}`);
     assert.equal(args[baseIndex + 1], "dev");
   });
+
+  it("passes the head branch so a switched workspace cannot redirect the pull request", () => {
+    const args = buildPrCreateArgs({
+      title: "feat(web): something",
+      body: "Closes #1",
+      labels: ["feat"],
+      baseBranch: ACTIONS_BASE_BRANCH,
+      headBranch: "codex/issue-7",
+    });
+
+    const headIndex = args.indexOf("--head");
+    assert.notEqual(headIndex, -1, `expected --head in ${args.join(" ")}`);
+    assert.equal(args[headIndex + 1], "codex/issue-7");
+  });
+
+  it("omits --head when no branch is supplied", () => {
+    const args = buildPrCreateArgs({
+      title: "feat(web): something",
+      body: "Closes #1",
+      labels: ["feat"],
+      baseBranch: ACTIONS_BASE_BRANCH,
+    });
+
+    assert.equal(args.includes("--head"), false);
+  });
+});
+
+describe("Actions existing pull request lookup", () => {
+  it("reads the first open pull request for a branch", () => {
+    assert.deepEqual(parseOpenPullRequest('[{"number":439,"url":"https://github.com/Andy963/ads/pull/439"}]'), {
+      prNumber: 439,
+      prUrl: "https://github.com/Andy963/ads/pull/439",
+    });
+  });
+
+  it("returns nothing for an empty, malformed, or unusable payload", () => {
+    assert.equal(parseOpenPullRequest("[]"), null);
+    assert.equal(parseOpenPullRequest("not json"), null);
+    assert.equal(parseOpenPullRequest('[{"number":0,"url":"https://example.test/pull/0"}]'), null);
+    assert.equal(parseOpenPullRequest('[{"number":439}]'), null);
+  });
 });
 
 describe("Actions PR merge arguments", () => {
@@ -66,12 +114,26 @@ describe("Actions PR merge arguments", () => {
 });
 
 describe("Actions feature branch scope", () => {
-  it("accepts a branch that stacks commits on the base tip", () => {
+  it("accepts a branch that stacks commits on the recorded base commit", () => {
     const cwd = initRepo();
+    const anchor = revParse(cwd, "dev");
     git(cwd, "checkout", "-b", "codex/issue-1");
     commit(cwd, "job work");
 
-    assert.equal(checkFeatureBranchScope(cwd, "dev", "codex/issue-1"), null);
+    assert.equal(checkFeatureBranchScope(cwd, "dev", "codex/issue-1", anchor), null);
+  });
+
+  it("accepts the branch after the base branch moved on", () => {
+    // The base advancing after the branch was cut is normal, and the old check
+    // rejected it with a message claiming the branch carried foreign commits.
+    const cwd = initRepo();
+    const anchor = revParse(cwd, "dev");
+    git(cwd, "checkout", "-b", "codex/issue-1");
+    commit(cwd, "job work");
+    git(cwd, "checkout", "dev");
+    commit(cwd, "dev moved on");
+
+    assert.equal(checkFeatureBranchScope(cwd, "dev", "codex/issue-1", anchor), null);
   });
 
   it("rejects a branch carrying history from another line", () => {
@@ -80,21 +142,40 @@ describe("Actions feature branch scope", () => {
     commit(cwd, "unrelated");
     git(cwd, "checkout", "dev");
     commit(cwd, "dev moved on");
+    const anchor = revParse(cwd, "dev");
 
-    const error = checkFeatureBranchScope(cwd, "dev", "other");
+    const error = checkFeatureBranchScope(cwd, "dev", "other", anchor);
     assert.ok(error, "expected the branch to be rejected");
-    assert.match(error, /does not descend from 'dev'/);
+    assert.match(error, /does not descend from the 'dev' commit recorded when the job started/);
     assert.match(error, /unrelated to this job/);
+  });
+
+  it("skips the check for jobs with no recorded base commit", () => {
+    const cwd = initRepo();
+    git(cwd, "checkout", "-b", "other");
+    commit(cwd, "unrelated");
+    git(cwd, "checkout", "dev");
+    commit(cwd, "dev moved on");
+
+    assert.equal(checkFeatureBranchScope(cwd, "dev", "other", null), null);
+  });
+
+  it("skips the check when the recorded base commit no longer exists", () => {
+    const cwd = initRepo();
+    git(cwd, "checkout", "-b", "codex/issue-1");
+    commit(cwd, "job work");
+
+    assert.equal(checkFeatureBranchScope(cwd, "dev", "codex/issue-1", "0".repeat(40)), null);
   });
 
   it("reports a missing base branch instead of opening a pull request", () => {
     const cwd = initRepo();
-    assert.match(checkFeatureBranchScope(cwd, "no-such-base", "dev") ?? "", /could not be resolved/);
+    assert.match(checkFeatureBranchScope(cwd, "no-such-base", "dev", revParse(cwd, "dev")) ?? "", /could not be resolved/);
   });
 
-  it("passes when the merge base equals the base tip", () => {
+  it("passes when the merge base equals the recorded base commit", () => {
     assert.equal(
-      branchScopeError({ baseBranch: "dev", branch: "b", baseSha: "abc", mergeBaseSha: "abc" }),
+      branchScopeError({ baseBranch: "dev", branch: "b", expectedBaseSha: "abc", mergeBaseSha: "abc" }),
       null,
     );
   });

@@ -21,12 +21,16 @@ export function buildPrCreateArgs(options: {
   body: string;
   labels: string[];
   baseBranch: string;
+  headBranch?: string;
 }): string[] {
   return [
     "pr",
     "create",
     "--base",
     options.baseBranch,
+    // Without --head gh reads the checked-out branch, so a workspace switched by
+    // another session would open the pull request against the wrong branch.
+    ...(options.headBranch ? ["--head", options.headBranch] : []),
     "--title",
     options.title,
     "--body",
@@ -38,14 +42,14 @@ export function buildPrCreateArgs(options: {
 export function branchScopeError(params: {
   baseBranch: string;
   branch: string;
-  baseSha: string;
+  expectedBaseSha: string;
   mergeBaseSha: string;
 }): string | null {
-  if (params.baseSha === params.mergeBaseSha) return null;
+  if (params.expectedBaseSha === params.mergeBaseSha) return null;
   return (
-    `Feature branch '${params.branch}' does not descend from '${params.baseBranch}' ` +
-    `(merge-base ${params.mergeBaseSha} is behind ${params.baseSha}). ` +
-    "It carries commits unrelated to this job."
+    `Feature branch '${params.branch}' does not descend from the '${params.baseBranch}' commit ` +
+    `recorded when the job started (${params.expectedBaseSha}); its merge-base is ` +
+    `${params.mergeBaseSha}. It carries commits unrelated to this job.`
   );
 }
 
@@ -80,23 +84,65 @@ interface PullRequestMergeState {
   mergeCommit?: { oid?: string | null } | null;
 }
 
-export function checkFeatureBranchScope(cwd: string, baseBranch: string, branch: string): string | null {
+export function checkFeatureBranchScope(
+  cwd: string,
+  baseBranch: string,
+  branch: string,
+  expectedBaseSha?: string | null,
+): string | null {
   const baseSha = spawnSync("git", ["rev-parse", baseBranch], { cwd, encoding: "utf8" });
   if (baseSha.status !== 0) {
     return `Base branch '${baseBranch}' could not be resolved in '${cwd}'.`;
   }
 
-  const mergeBase = spawnSync("git", ["merge-base", baseBranch, branch], { cwd, encoding: "utf8" });
+  // The recorded anchor, not the current base tip, decides the verdict: the base
+  // branch advancing after the branch was created is normal and must not reject
+  // a clean feature branch. Jobs predating the anchor column carry no value, and
+  // a wrong rejection would strand them, so they skip the check.
+  if (!expectedBaseSha) return null;
+
+  const anchor = spawnSync("git", ["cat-file", "-e", `${expectedBaseSha}^{commit}`], { cwd, encoding: "utf8" });
+  if (anchor.status !== 0) return null;
+
+  const mergeBase = spawnSync("git", ["merge-base", expectedBaseSha, branch], { cwd, encoding: "utf8" });
   if (mergeBase.status !== 0) {
-    return `No common ancestor between '${baseBranch}' and '${branch}'. The branch carries unrelated history.`;
+    return `No common ancestor between '${baseBranch}' at ${expectedBaseSha} and '${branch}'. The branch carries unrelated history.`;
   }
 
   return branchScopeError({
     baseBranch,
     branch,
-    baseSha: baseSha.stdout?.trim() ?? "",
+    expectedBaseSha,
     mergeBaseSha: mergeBase.stdout?.trim() ?? "",
   });
+}
+
+export interface ExistingPullRequest {
+  prNumber: number;
+  prUrl: string;
+}
+
+export function parseOpenPullRequest(raw: string): ExistingPullRequest | null {
+  let parsed: Array<{ number?: unknown; url?: unknown }>;
+  try {
+    parsed = JSON.parse(raw || "[]") as typeof parsed;
+  } catch {
+    return null;
+  }
+  const first = Array.isArray(parsed) ? parsed[0] : undefined;
+  const prNumber = Number(first?.number);
+  const prUrl = typeof first?.url === "string" ? first.url : "";
+  return Number.isInteger(prNumber) && prNumber > 0 && prUrl ? { prNumber, prUrl } : null;
+}
+
+export function findOpenPullRequest(cwd: string, branch: string): ExistingPullRequest | null {
+  const res = spawnSync(
+    "gh",
+    ["pr", "list", "--head", branch, "--state", "open", "--limit", "1", "--json", "number,url"],
+    { cwd, encoding: "utf8" },
+  );
+  if (res.status !== 0) return null;
+  return parseOpenPullRequest(res.stdout?.trim() || "");
 }
 
 export function createPullRequest(options: {
@@ -107,19 +153,34 @@ export function createPullRequest(options: {
   labels?: string[];
   baseBranch?: string;
   branch?: string;
+  baseSha?: string | null;
 }): CreatePrResult {
   const baseBranch = options.baseBranch ?? ACTIONS_BASE_BRANCH;
   const labels = options.labels && options.labels.length > 0 ? options.labels : ["feat"];
   const bodyText = options.body ?? (options.issueId ? `Closes #${options.issueId}` : "Automated Actions PR");
 
   if (options.branch) {
-    const scopeError = checkFeatureBranchScope(options.cwd, baseBranch, options.branch);
+    // A rework pass reaches this point with the branch already carrying a pull
+    // request. Reusing it keeps the job on the same PR instead of failing on
+    // "a pull request for this branch already exists".
+    const existing = findOpenPullRequest(options.cwd, options.branch);
+    if (existing) {
+      return { prNumber: existing.prNumber, prUrl: existing.prUrl };
+    }
+
+    const scopeError = checkFeatureBranchScope(options.cwd, baseBranch, options.branch, options.baseSha);
     if (scopeError) {
       return { prNumber: null, prUrl: null, error: scopeError };
     }
   }
 
-  const args = buildPrCreateArgs({ title: options.title, body: bodyText, labels, baseBranch });
+  const args = buildPrCreateArgs({
+    title: options.title,
+    body: bodyText,
+    labels,
+    baseBranch,
+    headBranch: options.branch,
+  });
 
   const res = spawnSync("gh", args, {
     cwd: options.cwd,

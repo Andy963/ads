@@ -6,7 +6,12 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
-import { createReviewerUserId, LaneDispatchBus, validateGitEvidence } from "../../server/actions/bus.js";
+import {
+  classifyActionsFailure,
+  createReviewerUserId,
+  LaneDispatchBus,
+  validateGitEvidence,
+} from "../../server/actions/bus.js";
 import { handleActionRoutes, setBusInstance } from "../../server/web/server/api/routes/actions.js";
 import { checkThreePointGate } from "../../server/actions/threePointGate.js";
 import { updateActionJobStatus } from "../../server/state/actionJobStore.js";
@@ -504,10 +509,58 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(res.dequeuedJobId, job.jobId);
 
     const activeJob = bus.getJob(job.jobId);
-    assert.ok(activeJob?.status === "running" || activeJob?.status === "waiting_merge");
+    // What runs after the gate depends on the harness: with no developer runner
+    // the job either blocks on the missing session manager or parks in running.
+    // Both leave the queue, which is what this gate is responsible for.
+    assert.notStrictEqual(activeJob?.status, "queued");
 
     const currentBranch = spawnSync("git", ["branch", "--show-current"], { cwd: repoDir, encoding: "utf8" }).stdout.trim();
     assert.strictEqual(currentBranch, "codex/issue-202");
+  });
+
+  it("records the base commit the feature branch was cut from", async () => {
+    const db = getStateDatabase();
+    const bus = new LaneDispatchBus(db);
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 204,
+      issueTitle: "Task 204",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify task 204"],
+    });
+
+    await bus.evaluateQueue(repoDir, repoDir);
+
+    const branchTip = spawnSync("git", ["rev-parse", "codex/issue-204"], { cwd: repoDir, encoding: "utf8" })
+      .stdout.trim();
+    assert.strictEqual(bus.getJob(job.jobId)?.base_sha, branchTip);
+  });
+
+  it("keeps the recorded base commit when a rework pass reuses the branch", async () => {
+    const db = getStateDatabase();
+    const bus = new LaneDispatchBus(db);
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 205,
+      issueTitle: "Task 205",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify task 205"],
+    });
+
+    await bus.evaluateQueue(repoDir, repoDir);
+    const anchor = bus.getJob(job.jobId)?.base_sha;
+    assert.ok(anchor, "expected the first pass to record a base commit");
+
+    // dev advances and the same branch is checked out again, as a rework does.
+    fs.writeFileSync(path.join(repoDir, "README.md"), "# Test Repo\nmore\n");
+    spawnSync("git", ["add", "README.md"], { cwd: repoDir });
+    spawnSync("git", ["commit", "-m", "dev moved on"], { cwd: repoDir });
+    spawnSync("git", ["checkout", "codex/issue-205"], { cwd: repoDir });
+    await bus.evaluateQueue(repoDir, repoDir);
+
+    assert.strictEqual(bus.getJob(job.jobId)?.base_sha, anchor);
   });
 
   it("handles reviewer PASS and completes the automatic merge", () => {
@@ -787,11 +840,13 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.match(bus.getJob(job.jobId)?.error_message ?? "", /Verification/);
   });
 
-  it("recovers from PR creation failure on the same job and branch", async () => {
+  it("retries a failing pull request creation on the CLI instead of re-running the Developer", async () => {
     const db = getStateDatabase();
     let prCalls = 0;
+    let developerCalls = 0;
     const bus = new LaneDispatchBus(db, {
       developerRunner: async () => {
+        developerCalls += 1;
         commitImplementation("pr-recovery");
         return { exitCode: 0 };
       },
@@ -825,14 +880,66 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       verdict: "PASS",
       reviewSummary: "Ready",
     });
-    assert.strictEqual(firstResult.status, "running");
     await waitFor(() => bus.getJob(job.jobId)?.status === "completed");
 
     const recovered = bus.getJob(job.jobId);
+    assert.strictEqual(firstResult.status, "completed");
     assert.strictEqual(prCalls, 2);
-    assert.strictEqual(recovered?.rework_count, 1);
+    // The retry happened on the CLI call, so no rework budget was spent and the
+    // Developer was never asked to run again.
+    assert.strictEqual(recovered?.rework_count, 0);
+    assert.strictEqual(developerCalls, 0);
     assert.strictEqual(recovered?.branch, "codex/issue-408");
     assert.strictEqual(recovered?.pr_number, 345);
+  });
+
+  it("blocks without spending rework or re-running the Developer when PR creation keeps failing", async () => {
+    const db = getStateDatabase();
+    let prCalls = 0;
+    let developerCalls = 0;
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => {
+        developerCalls += 1;
+        commitImplementation("pr-blocked");
+        return { exitCode: 0 };
+      },
+      reviewerRunner: async () => JSON.stringify({
+        status: "PASS",
+        summary: "PR creation still failing.",
+        defects: [],
+      }),
+      testCommand: "git status",
+      hasRemoteOrigin: () => true,
+      pullRequestCreator: () => {
+        prCalls += 1;
+        return { prNumber: null, prUrl: null, error: "simulated PR failure" };
+      },
+      mergePipeline: () => ({ success: true }),
+    });
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 409,
+      issueTitle: "PR creation blocked",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify PR creation blocking"],
+    });
+    spawnSync("git", ["checkout", "-b", job.branch!], { cwd: repoDir });
+
+    const result = bus.handleReviewResult({
+      jobId: job.jobId,
+      repoPath: repoDir,
+      verdict: "PASS",
+      reviewSummary: "Ready",
+    });
+
+    assert.strictEqual(result.status, "blocked");
+    const blocked = bus.getJob(job.jobId);
+    assert.strictEqual(blocked?.status, "blocked");
+    assert.strictEqual(blocked?.rework_count, 0);
+    assert.strictEqual(blocked?.attempts_json, "[]");
+    assert.strictEqual(prCalls, 3);
+    assert.strictEqual(developerCalls, 0);
+    assert.match(blocked?.error_message ?? "", /PR creation failed: simulated PR failure \(tried 3 times\)/);
   });
 
   it("recovers from merge failure and only then advances the queue", async () => {
@@ -1937,4 +2044,20 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual((await postResolve(jobId, { action: "merge", projectId: repoDir })).statusCode, 400);
   });
 
+});
+
+describe("Actions failure classification", () => {
+  it("spends rework budget on implementation failures", () => {
+    assert.strictEqual(classifyActionsFailure({ failureClass: "implementation", attemptIndex: 1, repeated: false }), "rework");
+    assert.strictEqual(classifyActionsFailure({ failureClass: "implementation", attemptIndex: 2, repeated: false }), "rework");
+  });
+
+  it("blocks an implementation failure that repeats or exhausts the budget", () => {
+    assert.strictEqual(classifyActionsFailure({ failureClass: "implementation", attemptIndex: 2, repeated: true }), "block-exhausted");
+    assert.strictEqual(classifyActionsFailure({ failureClass: "implementation", attemptIndex: 3, repeated: false }), "block-exhausted");
+  });
+
+  it("blocks an infrastructure failure on the first attempt without rework", () => {
+    assert.strictEqual(classifyActionsFailure({ failureClass: "infrastructure", attemptIndex: 1, repeated: false }), "block-infrastructure");
+  });
 });

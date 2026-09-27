@@ -45,6 +45,7 @@ import { checkActionsRuntimePreflight } from "./runtimePreflight.js";
 import { resolveAgentRuntime, type AgentRuntimeBackend } from "../runtime/config.js";
 
 const MAX_REWORK_ATTEMPTS = 3;
+const PR_CREATION_ATTEMPTS = 3;
 const AUTOMATED_ACTION_EXECUTION_MODE = "automated_action" as const;
 const ACTION_EXECUTE_HISTORY_KIND = "action_execute";
 const AUTOMATED_ACTION_INSTRUCTIONS = [
@@ -269,6 +270,46 @@ export type DeveloperRunner = (
 
 export type ReviewerRunner = (prompt: string, systemPrompt: string) => Promise<string>;
 
+export type ActionsFailureClass = "implementation" | "infrastructure";
+
+export type ActionsFailureOutcome = "rework" | "block-exhausted" | "block-infrastructure";
+
+export interface PullRequestCreationOutcome {
+  result: CreatePrResult;
+  attempts: number;
+}
+
+/**
+ * Retries the pull request creation call itself.
+ *
+ * Verification and detached review already passed by the time this runs, so a
+ * `gh` failure says nothing about the code. Re-running the Developer would spend
+ * a full agent turn to produce the same diff and fail at the same place, so the
+ * retry stays on the CLI call and costs no model tokens.
+ */
+export function createPullRequestWithRetry(
+  create: () => CreatePrResult,
+  maxAttempts = PR_CREATION_ATTEMPTS,
+): PullRequestCreationOutcome {
+  let result = create();
+  let attempts = 1;
+  while (result.error && attempts < maxAttempts) {
+    attempts += 1;
+    result = create();
+  }
+  return { result, attempts };
+}
+
+export function classifyActionsFailure(input: {
+  failureClass: ActionsFailureClass;
+  attemptIndex: number;
+  repeated: boolean;
+}): ActionsFailureOutcome {
+  if (input.failureClass === "infrastructure") return "block-infrastructure";
+  if (input.repeated || input.attemptIndex >= MAX_REWORK_ATTEMPTS) return "block-exhausted";
+  return "rework";
+}
+
 export type BlockedJobResolution = "resume" | "complete" | "abandon";
 
 const BLOCKED_RESOLUTION_OUTCOMES: Record<BlockedJobResolution, { status: ActionJobStatus; summary: string }> = {
@@ -453,7 +494,12 @@ export class LaneDispatchBus {
   private scheduleRework(
     jobId: string,
     repoPath: string,
-    input: { stage: string; feedback: string; reworkCount?: number },
+    input: {
+      stage: string;
+      feedback: string;
+      reworkCount?: number;
+      failureClass?: ActionsFailureClass;
+    },
   ): { status: ActionJobStatus; reworkCount: number } {
     const job = getActionJobById(this.db, jobId);
     if (!job) return { status: "failed", reworkCount: 0 };
@@ -462,13 +508,35 @@ export class LaneDispatchBus {
     const failure = `${input.stage} failed: ${input.feedback}`;
     const attemptIndex = currentCount + 1;
     const attempts = parseActionJobAttempts(job.attempts_json);
+    // The attempt about to be recorded is not in the list yet, so the entry
+    // before it is the current last one.
+    const previous = attempts.length >= 1 ? attempts[attempts.length - 1] : null;
+    const repeated = previous !== null && previous.failure === failure;
+    const outcome = classifyActionsFailure({
+      failureClass: input.failureClass ?? "implementation",
+      attemptIndex,
+      repeated,
+    });
+
+    // A missing runtime is not something another developer attempt can change.
+    // Block without touching attempts_json so the attempt ledger keeps matching
+    // the rework budget the job actually spent.
+    if (outcome === "block-infrastructure") {
+      const reason = `${failure} The environment must be fixed before this job can continue; no rework attempt was spent.`;
+      this.updateJobStatus(job.id, "blocked", {
+        current_step: reason,
+        error_message: failure,
+        blocked_at: Date.now(),
+      });
+      this.recordActionMessage(job, repoPath, reason, "action_blocked", "assistant");
+      return { status: "blocked", reworkCount: currentCount };
+    }
+
     attempts.push({ attempt: attemptIndex, stage: input.stage, failure, ts: Date.now() });
     const attemptsJson = JSON.stringify(attempts);
     const history = formatAttemptHistory(attempts);
-    const previous = attempts.length >= 2 ? attempts[attempts.length - 2] : null;
-    const repeated = previous !== null && previous.failure === failure;
 
-    if (repeated || attemptIndex >= MAX_REWORK_ATTEMPTS) {
+    if (outcome === "block-exhausted") {
       const reason = repeated
         ? `Attempt ${attemptIndex} repeated the failure of attempt ${previous.attempt} unchanged, so the retry was cut short.`
         : `Human attention required after ${MAX_REWORK_ATTEMPTS} rework attempts.`;
@@ -510,7 +578,7 @@ export class LaneDispatchBus {
   private updateJobStatus(
     jobId: string,
     status: ActionJobStatus,
-    updates?: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "attempts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "rework_count" | "blocked_at">>,
+    updates?: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "attempts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "base_sha" | "rework_count" | "blocked_at">>,
   ): ActionJobRecord | null {
     const current = getActionJobById(this.db, jobId);
     const nextUpdates = { ...(updates ?? {}) };
@@ -745,6 +813,7 @@ export class LaneDispatchBus {
       }
 
       // Gate passed: checkout feature branch and mark running
+      let createdAnchor: string | null = null;
       if (nextJob.branch) {
         let checkoutOk = false;
         const branchCheck = spawnSync("git", ["checkout", "-b", nextJob.branch], {
@@ -753,6 +822,8 @@ export class LaneDispatchBus {
         });
         if (branchCheck.status === 0) {
           checkoutOk = true;
+          const anchor = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" });
+          createdAnchor = anchor.status === 0 ? anchor.stdout?.trim() || null : null;
         } else {
           // If branch already exists (e.g. rework), check it out directly
           const fallbackCheck = spawnSync("git", ["checkout", nextJob.branch], {
@@ -787,6 +858,9 @@ export class LaneDispatchBus {
 
       this.updateJobStatus(nextJob.id, "running", {
         current_step: "Developer executing implementation on feature branch",
+        // A rework pass checks out an existing branch and must keep the anchor
+        // recorded when the branch was first cut.
+        ...(createdAnchor && !nextJob.base_sha ? { base_sha: createdAnchor } : {}),
       });
 
       // Submit task directly into Actions lane session
@@ -1017,6 +1091,7 @@ export class LaneDispatchBus {
         stage: "Developer execution",
         feedback: "No Actions session manager configured for task execution",
         reworkCount,
+        failureClass: "infrastructure",
       });
       return;
     }
@@ -1033,6 +1108,7 @@ export class LaneDispatchBus {
       stage: "Developer execution",
       feedback: "No Actions session manager configured for task execution",
       reworkCount,
+      failureClass: "infrastructure",
     });
   }
 
@@ -1364,19 +1440,23 @@ export class LaneDispatchBus {
       let prUrl: string | null = null;
 
       if (hasRemote) {
-        const prRes = (this.options.pullRequestCreator ?? createPullRequest)({
-          cwd: params.repoPath,
-          issueId: job.issue_id,
-          title: job.issue_title,
-          baseBranch: ACTIONS_BASE_BRANCH,
-          branch: job.branch ?? undefined,
-        });
+        const { result: prRes, attempts: prAttempts } = createPullRequestWithRetry(() =>
+          (this.options.pullRequestCreator ?? createPullRequest)({
+            cwd: params.repoPath,
+            issueId: job.issue_id,
+            title: job.issue_title,
+            baseBranch: ACTIONS_BASE_BRANCH,
+            branch: job.branch ?? undefined,
+            baseSha: job.base_sha,
+          }),
+        );
 
         if (prRes.error || !prRes.prNumber) {
           const rework = this.scheduleRework(job.id, params.repoPath, {
             stage: "PR creation",
-            feedback: prRes.error || "Unknown error",
+            feedback: `${prRes.error || "Unknown error"} (tried ${prAttempts} times)`,
             reworkCount: params.reworkCount ?? job.rework_count,
+            failureClass: "infrastructure",
           });
           return { status: rework.status };
         }
