@@ -669,7 +669,10 @@ export class NativeAgentAdapter implements AgentAdapter {
     }
     const configuredReasoningEffort = model.options?.reasoningEffort;
     const requestedReasoningEffort = this.modelReasoningEffort ?? configuredReasoningEffort;
-    if (requestedReasoningEffort && capabilities.reasoningEffort !== "supported") {
+    // An undeclared capability ("unknown") omits the parameter in requestOptions
+    // below, so it is not a failure. Only a provider that declares the capability
+    // as unsupported is rejected.
+    if (requestedReasoningEffort && capabilities.reasoningEffort === "unsupported") {
       throw new NativeCapabilityError(
         "reasoningEffort",
         `requested effort "${requestedReasoningEffort}" but the provider capability is ${capabilities.reasoningEffort}`,

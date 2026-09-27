@@ -10,6 +10,7 @@ import { createReviewerUserId, LaneDispatchBus, validateGitEvidence } from "../.
 import { handleActionRoutes, setBusInstance } from "../../server/web/server/api/routes/actions.js";
 import { checkThreePointGate } from "../../server/actions/threePointGate.js";
 import { updateActionJobStatus } from "../../server/state/actionJobStore.js";
+import { getDefaultRoleProfile } from "../../server/state/roleProfileStore.js";
 import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
 import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
 
@@ -69,6 +70,15 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     assert.fail("Timed out waiting for condition");
+  }
+
+  function withReviewerEffort<T extends object>(
+    sessionManager: T,
+    onEffort?: (userId: number, effort?: string) => void,
+  ): T & { setUserModelReasoningEffort: (userId: number, effort?: string) => void } {
+    return Object.assign(sessionManager, {
+      setUserModelReasoningEffort: (userId: number, effort?: string) => onEffort?.(userId, effort),
+    });
   }
 
   function commitImplementation(label = "implementation"): void {
@@ -992,9 +1002,9 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       },
     };
 
-    const mockSessionManager = {
+    const mockSessionManager = withReviewerEffort({
       getOrCreate: () => mockOrchestrator,
-    };
+    });
 
     const bus = new LaneDispatchBus(db, {
       sessionManager: mockSessionManager as any,
@@ -1119,7 +1129,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       testReport: { command: "npm test", exitCode: 0, summary: "passed" },
     };
     const passingBus = new LaneDispatchBus(db, {
-      sessionManager: { getOrCreate: () => createOrchestrator(false) } as any,
+      sessionManager: withReviewerEffort({ getOrCreate: () => createOrchestrator(false) }) as any,
       broadcastToActionsLane: (event) => broadcasts.push(event as Record<string, unknown>),
     });
     const verdict = await passingBus.executeReviewer(payload, repoDir, undefined, "history", "project", "job-350");
@@ -1130,7 +1140,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.doesNotMatch(JSON.stringify(broadcasts), /"status":"PASS"/);
 
     const failingBus = new LaneDispatchBus(db, {
-      sessionManager: { getOrCreate: () => createOrchestrator(true) } as any,
+      sessionManager: withReviewerEffort({ getOrCreate: () => createOrchestrator(true) }) as any,
     });
     await assert.rejects(
       failingBus.executeReviewer(payload, repoDir, undefined, "history", "project", "job-350-failure"),
@@ -1151,7 +1161,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       send: async () => ({ response: JSON.stringify({ status: "PASS", summary: "isolated", defects: [] }) }),
     });
     const bus = new LaneDispatchBus(db, {
-      sessionManager: {
+      sessionManager: withReviewerEffort({
         getOrCreate: (userId: number, _cwd: string, resumeThread: boolean, options?: { lifecycle?: string }) => {
           userIds.push(userId);
           resumeFlags.push(resumeThread);
@@ -1159,7 +1169,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
           return createOrchestrator();
         },
         releaseEphemeralSession: (userId: number) => released.push(userId),
-      } as any,
+      }) as any,
     });
     const payload = {
       issue: { id: 366, title: "Isolation" },
@@ -1176,6 +1186,40 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.deepStrictEqual(released, userIds);
   });
 
+  it("applies the reviewer role profile reasoning effort to the detached session", async () => {
+    const db = getStateDatabase();
+    const efforts: Array<string | undefined> = [];
+    const profile = getDefaultRoleProfile(db, "reviewer");
+    assert.ok(profile, "expected a seeded reviewer role profile");
+
+    const bus = new LaneDispatchBus(db, {
+      sessionManager: withReviewerEffort(
+        {
+          getOrCreate: () => ({
+            onEvent: () => () => {},
+            setDeveloperInstructions() {},
+            send: async () => ({
+              response: JSON.stringify({ status: "PASS", summary: "ok", defects: [] }),
+              usage: null,
+            }),
+          }),
+        },
+        (_userId, effort) => efforts.push(effort),
+      ) as any,
+    });
+
+    await bus.executeReviewer(
+      { issue: { id: 367, title: "Effort" }, diff: "diff --git a/a.ts b/a.ts\n+ change" },
+      repoDir,
+      undefined,
+      "history",
+      "project",
+      "job-367",
+    );
+
+    assert.deepStrictEqual(efforts, [profile.reasoning_effort]);
+  });
+
   it("releases the Reviewer session when a job is cancelled during review", async () => {
     const db = getStateDatabase();
     let released = 0;
@@ -1185,7 +1229,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
         commitImplementation("cancel-review");
         return { exitCode: 0 };
       },
-      sessionManager: {
+      sessionManager: withReviewerEffort({
         getOrCreate: () => ({
           onEvent: () => () => {},
           setDeveloperInstructions() {},
@@ -1197,7 +1241,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
         releaseEphemeralSession: () => {
           released += 1;
         },
-      } as any,
+      }) as any,
       reviewerTimeoutMs: 1000,
       testCommand: "git status",
     });
@@ -1227,7 +1271,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
         commitImplementation("timeout-review");
         return { exitCode: 0 };
       },
-      sessionManager: {
+      sessionManager: withReviewerEffort({
         getOrCreate: () => ({
           onEvent: () => () => {},
           setDeveloperInstructions() {},
@@ -1238,7 +1282,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
         releaseEphemeralSession: () => {
           released += 1;
         },
-      } as any,
+      }) as any,
       reviewerTimeoutMs: 20,
       testCommand: "git status",
     });
@@ -1276,7 +1320,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
         commitImplementation(`reviewer-failure-${developerCalls}`);
         return { exitCode: 0 };
       },
-      sessionManager: { getOrCreate: () => reviewerOrchestrator } as any,
+      sessionManager: withReviewerEffort({ getOrCreate: () => reviewerOrchestrator }) as any,
       testCommand: "git status",
     });
     const job = bus.dispatchJob({

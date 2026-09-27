@@ -992,6 +992,13 @@ export class LaneDispatchBus {
           orchestrator.setDeveloperInstructions(systemPrompt);
         }
 
+        // Apply the reviewer role profile's reasoning effort. Without this the
+        // session inherits the model config default, which is `max` for the
+        // seeded profiles and pushed every review past the reviewer timeout.
+        if (reviewerProfile?.reasoning_effort) {
+          this.options.sessionManager.setUserModelReasoningEffort(userId, reviewerProfile.reasoning_effort);
+        }
+
         // Attach event listener for real-time Reviewer streaming to Actions lane
         unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
           const payload = buildActionAgentEventPayload(event, jobId ?? "reviewer", true);

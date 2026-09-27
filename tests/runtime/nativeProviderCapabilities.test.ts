@@ -203,6 +203,81 @@ describe("native provider capabilities", () => {
     }
   });
 
+  it("sends a requested effort only when the capability is supported", async () => {
+    const undeclared = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-cap-effort-unknown-"));
+    const unsupported = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-cap-effort-bad-"));
+    const supported = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-cap-effort-ok-"));
+    try {
+      let undeclaredBody: Record<string, unknown> | undefined;
+      const unknownAdapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: undeclared,
+        modelReasoningEffort: "high",
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-key",
+            provider: "test",
+          }),
+        },
+        fetchImpl: async (_input, init) => {
+          undeclaredBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+          return new Response(JSON.stringify({ choices: [{ message: { content: "done" }, finish_reason: "stop" }] }), {
+            headers: { "content-type": "application/json" },
+          });
+        },
+      });
+      await unknownAdapter.send("hello", { streaming: false });
+      assert.equal(undeclaredBody?.reasoning_effort, undefined);
+
+      const unsupportedAdapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: unsupported,
+        modelReasoningEffort: "high",
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-key",
+            provider: "test",
+            capabilities: { reasoningEffort: "unsupported" },
+          }),
+        },
+        fetchImpl: async () => new Response("{}", { headers: { "content-type": "application/json" } }),
+      });
+      await assert.rejects(unsupportedAdapter.send("hello"), /reasoningEffort/);
+
+      let supportedBody: Record<string, unknown> | undefined;
+      const supportedAdapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: supported,
+        modelReasoningEffort: "high",
+        modelResolver: {
+          resolve: () => ({
+            model: "test-model",
+            baseUrl: "https://provider.test/v1",
+            apiKey: "test-key",
+            provider: "test",
+            capabilities: { reasoningEffort: "supported" },
+          }),
+        },
+        fetchImpl: async (_input, init) => {
+          supportedBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+          return new Response(JSON.stringify({ choices: [{ message: { content: "done" }, finish_reason: "stop" }] }), {
+            headers: { "content-type": "application/json" },
+          });
+        },
+      });
+      await supportedAdapter.send("hello", { streaming: false });
+      assert.equal(supportedBody?.reasoning_effort, "high");
+    } finally {
+      fs.rmSync(undeclared, { recursive: true, force: true });
+      fs.rmSync(unsupported, { recursive: true, force: true });
+      fs.rmSync(supported, { recursive: true, force: true });
+    }
+  });
+
   it("requests single-tool behavior when parallel calls are unsupported", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-capabilities-parallel-"));
     try {
