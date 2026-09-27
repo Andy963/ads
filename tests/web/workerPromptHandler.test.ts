@@ -654,4 +654,62 @@ describe("web/server/ws/workerPromptHandler", () => {
     phaseEvents = sent.filter((p: any) => p.type === "phase_complete");
     assert.equal(phaseEvents.length, 2);
   });
+
+  describe("issue-129: backend visible execution contract", () => {
+    it("drops hidden reasoning and legacy provider summaries", () => {
+      const { emit, handler, sent } = createHarness();
+
+      // Turn starts
+      emit({
+        phase: "analysis",
+        title: "turn",
+        timestamp: Date.now(),
+        raw: { type: "turn.started" },
+      });
+
+      // Reasoning arrives
+      emit(reasoningEvent("Thinking through the solution..."));
+
+      // Incremental reasoning arrives
+      emit(reasoningEvent("Thinking through the solution... Found the issue."));
+
+      emit(liveStepEvent("I will inspect the relevant files before running a command."));
+
+      assert.equal(sent.length, 0);
+      assert.equal("getThoughtText" in handler, false);
+    });
+
+    it("does not turn tool executions into synthetic live-step text", () => {
+      const { emit, handler, sent } = createHarness();
+
+      emit({
+        phase: "analysis",
+        title: "turn",
+        timestamp: Date.now(),
+        raw: { type: "turn.started" },
+      });
+
+      emit({
+        phase: "tool",
+        title: "Calling tool",
+        detail: "bash",
+        timestamp: Date.now(),
+        raw: { type: "item.started", item: { type: "tool_call" } },
+      });
+
+      emit({
+        phase: "editing",
+        title: "Editing file",
+        detail: "file.ts",
+        timestamp: Date.now(),
+        raw: { type: "item.started", item: { type: "file_change" } },
+      });
+
+      const stepDeltas = sent.filter(
+        (m: any) => m.type === "delta" && m.source === "step",
+      );
+      assert.deepEqual(stepDeltas.map((item: any) => item.delta), []);
+      assert.equal("getThoughtText" in handler, false);
+    });
+  });
 });

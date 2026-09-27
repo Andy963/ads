@@ -14,6 +14,8 @@ import {
   type SkillMetadata,
 } from "../../server/skills/loader.js";
 import { resolveGlobalSkillsDir } from "../../server/skills/paths.js";
+import { loadSkillRegistry } from "../../server/skills/registryMetadata.js";
+import { SkillFrontmatterV1Schema } from "../../server/skills/schema.js";
 
 let workspaceRoot: string;
 let adsStateDir: string;
@@ -27,26 +29,27 @@ function createGlobalSkill(name: string, frontmatter: string): void {
   fs.writeFileSync(path.join(dir, "SKILL.md"), frontmatter, "utf-8");
 }
 
+beforeEach(() => {
+  originalEnv = { ...process.env };
+  workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-workspace-"));
+  adsStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-state-"));
+  codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-codex-"));
+  process.env.ADS_STATE_DIR = adsStateDir;
+  process.env.CODEX_HOME = codexHomeDir;
+  process.env.ADS_MIGRATE_LEGACY_SKILLS = "0";
+  delete process.env.ADS_SKILLS_METADATA_PATH;
+  resetSkillFileCacheForTests();
+});
+
+afterEach(() => {
+  process.env = { ...originalEnv };
+  resetSkillFileCacheForTests();
+  fs.rmSync(workspaceRoot, { recursive: true, force: true });
+  fs.rmSync(adsStateDir, { recursive: true, force: true });
+  fs.rmSync(codexHomeDir, { recursive: true, force: true });
+});
+
 describe("skills/loader", () => {
-  beforeEach(() => {
-    originalEnv = { ...process.env };
-    workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-workspace-"));
-    adsStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-state-"));
-    codexHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-skill-codex-"));
-    process.env.ADS_STATE_DIR = adsStateDir;
-    process.env.CODEX_HOME = codexHomeDir;
-    process.env.ADS_MIGRATE_LEGACY_SKILLS = "0";
-    resetSkillFileCacheForTests();
-  });
-
-  afterEach(() => {
-    process.env = { ...originalEnv };
-    resetSkillFileCacheForTests();
-    fs.rmSync(workspaceRoot, { recursive: true, force: true });
-    fs.rmSync(adsStateDir, { recursive: true, force: true });
-    fs.rmSync(codexHomeDir, { recursive: true, force: true });
-  });
-
   it("discovers skills from global Codex skills directory by default", () => {
     createGlobalSkill("my-skill", [
       "---",
@@ -282,3 +285,43 @@ function makeSkillMeta(
     deprecated: false,
   };
 }
+
+describe("skills/registryMetadata global registry", () => {
+  it("loads global metadata.yaml for skill registry overrides", () => {
+    const dir = resolveGlobalSkillsDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "metadata.yaml"), [
+      "version: 1",
+      "mode: overlay",
+      "skills:",
+      "  demo-skill:",
+      "    provides: [demo]",
+      "    priority: 100",
+      "",
+    ].join("\n"), "utf8");
+
+    const registry = loadSkillRegistry(workspaceRoot);
+    assert.ok(registry);
+    const entry = registry.skills.get("demo-skill");
+    assert.ok(entry);
+    assert.equal(entry.priority, 100);
+    assert.deepEqual(entry.provides, ["demo"]);
+  });
+});
+
+describe("skills/schema", () => {
+  it("accepts SKILL.md v1 frontmatter", () => {
+    const parsed = SkillFrontmatterV1Schema.parse({
+      name: "session-search",
+      description: "Search prior sessions",
+      provides: ["memory.session-search"],
+    });
+    assert.equal(parsed.version, 1);
+    assert.equal(parsed.priority, 100);
+    assert.deepEqual(parsed.platforms, ["linux", "macos", "win32"]);
+  });
+
+  it("rejects invalid names", () => {
+    assert.equal(SkillFrontmatterV1Schema.safeParse({ name: "Bad Name", description: "x" }).success, false);
+  });
+});
