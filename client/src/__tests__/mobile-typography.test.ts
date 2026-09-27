@@ -22,24 +22,27 @@ describe("mobile typography", () => {
     expect(css).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?textarea\s*\{[\s\S]*?font-size:\s*16px\s*;/);
   });
 
-  it("keeps compact desktop Markdown styles and adds readable mobile sizes", () => {
+  it("keeps chat Markdown on the unified 16px baseline across viewports", () => {
     const sfc = readUtf8("../components/MarkdownContent.vue");
 
-    expect(sfc).toMatch(/\.md\s*\{[\s\S]*?font-size:\s*13px\s*;/);
-    expect(sfc).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.md\s*\{[\s\S]*?font-size:\s*16px\s*;/);
-    expect(sfc).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.md\s*:deep\(h1\)\s*\{[\s\S]*?font-size:\s*19px\s*;/);
-    expect(sfc).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.md\s*:deep\(h2\)\s*\{[\s\S]*?font-size:\s*17px\s*;/);
-    expect(sfc).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.md\s*:deep\(h3\)[\s\S]*?font-size:\s*16px\s*;/);
-    expect(sfc).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.md\s*:deep\(\.md-codeblock pre > code\)[\s\S]*?font-size:\s*14px\s*;/);
+    expect(sfc).toMatch(/\.md\s*\{[\s\S]*?font-size:\s*16px\s*;/);
+    // Every heading shares the 16px baseline; hierarchy is carried by weight.
+    expect(sfc).toMatch(/\.md\s*:deep\(h1\)\s*\{[\s\S]*?font-size:\s*16px\s*;[\s\S]*?font-weight:\s*800\s*;/);
+    expect(sfc).toMatch(/\.md\s*:deep\(h2\)\s*\{[\s\S]*?font-size:\s*16px\s*;[\s\S]*?font-weight:\s*700\s*;/);
+    expect(sfc).toMatch(/\.md\s*:deep\(h3\)[\s\S]*?font-size:\s*16px\s*;[\s\S]*?font-weight:\s*600\s*;/);
+    expect(sfc).toMatch(/\.md\s*:deep\(code\)\s*\{[\s\S]*?font-size:\s*14px\s*;/);
+    // No viewport-dependent typography: the 16px contract applies everywhere.
+    expect(sfc).not.toMatch(/@media\s*\(max-width:\s*768px\)/);
   });
 
-  it("enlarges mobile command text and metadata", () => {
+  it("keeps command text at 14px and metadata at 12px across viewports", () => {
     const sfc = readUtf8("../components/MainChatMessageList.vue");
 
-    expect(sfc).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.execute-cmd[\s\S]*?font-size:\s*14px\s*;/);
-    expect(sfc).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.patchCardDiff[\s\S]*?font-size:\s*14px\s*;/);
-    expect(sfc).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.msgTime[\s\S]*?font-size:\s*12px\s*;/);
-    expect(sfc).toMatch(/@media\s*\(max-width:\s*768px\)[\s\S]*?\.retryBadge[\s\S]*?font-size:\s*12px\s*;/);
+    expect(sfc).toMatch(/\.execute-cmd\s*\{[\s\S]*?font-size:\s*14px\s*;/);
+    expect(sfc).toMatch(/\.command-cmd\s*\{[\s\S]*?font-size:\s*14px\s*;/);
+    expect(sfc).toMatch(/\.patchCardDiff\s*\{[\s\S]*?font-size:\s*14px\s*;/);
+    expect(sfc).toMatch(/\.msgTime\s*\{[\s\S]*?font-size:\s*12px\s*;/);
+    expect(sfc).toMatch(/\.retryBadge\s*\{[\s\S]*?font-size:\s*12px\s*;/);
   });
 
   it("raises mobile App chrome microcopy to the minimum readable size", () => {

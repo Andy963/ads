@@ -96,7 +96,7 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 <style scoped>
 .md {
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 16px;
   line-height: 1.6;
   color: var(--github-text);
   white-space: normal;
@@ -130,21 +130,28 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 
 /*
   Markdown headings default to very large browser styles (e.g. h1 ~2em).
-  Clamp them to chat-friendly typography so pasted prompts don't blow up the layout.
+  All headings share the 16px chat baseline; hierarchy is carried by weight
+  and spacing so pasted prompts never blow up the layout.
 */
 .md :deep(h1) {
-  font-size: 15px;
+  font-size: 16px;
+  font-weight: 800;
+  margin: 12px 0 8px 0;
 }
 
 .md :deep(h2) {
-  font-size: 14px;
+  font-size: 16px;
+  font-weight: 700;
+  margin: 10px 0 6px 0;
 }
 
 .md :deep(h3),
 .md :deep(h4),
 .md :deep(h5),
 .md :deep(h6) {
-  font-size: 13px;
+  font-size: 16px;
+  font-weight: 600;
+  margin: 8px 0 4px 0;
 }
 
 .md :deep(ul),
@@ -169,7 +176,7 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 
 .md :deep(code) {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
 }
 
 .md :deep(:not(pre) > code) {
@@ -182,7 +189,7 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 
 .md :deep(.md-diffstat) {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   white-space: nowrap;
 }
 
@@ -233,7 +240,7 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   background: var(--github-code-header);
   padding: 10px 12px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.45;
   color: var(--github-muted);
   display: flex;
@@ -337,7 +344,7 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   background: var(--github-code-header);
   color: var(--github-muted);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-align: center;
 }
@@ -390,7 +397,7 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   border: 1px solid var(--github-border);
   background: rgba(255, 255, 255, 0.92);
   color: var(--github-muted);
-  font-size: 11px;
+  font-size: 12px;
   cursor: pointer;
   opacity: 0.75;
   transition:
@@ -590,45 +597,6 @@ const html = computed(() => renderMarkdownToHtml(props.content));
 
 .md :deep(strong) {
   color: var(--github-text);
-}
-
-@media (max-width: 768px) {
-  .md {
-    font-size: 16px;
-    line-height: 1.6;
-  }
-
-  .md :deep(h1) {
-    font-size: 19px;
-  }
-
-  .md :deep(h2) {
-    font-size: 17px;
-  }
-
-  .md :deep(h3),
-  .md :deep(h4),
-  .md :deep(h5),
-  .md :deep(h6) {
-    font-size: 16px;
-  }
-
-  .md :deep(code),
-  .md :deep(.md-diffstat),
-  .md :deep(.md-codeblock pre),
-  .md :deep(.md-codeblock pre > code),
-  .md :deep(details.md-codeblock > summary) {
-    font-size: 14px;
-  }
-
-  .md :deep(.md-codeblock pre),
-  .md :deep(.md-codeblock pre > code) {
-    line-height: 1.5;
-  }
-
-  .md :deep(.md-code-toggle) {
-    font-size: 12px;
-  }
 }
 
 @media (max-width: 480px) {

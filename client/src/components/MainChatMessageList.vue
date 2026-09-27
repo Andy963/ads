@@ -725,7 +725,7 @@ function retryUserTurn(message: RenderMessage, index: number): void {
   padding: 18px;
   text-align: center;
   color: #94a3b8;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 /* Loaded rows need real geometry for native prepend anchoring in WebKit.
@@ -795,7 +795,7 @@ function retryUserTurn(message: RenderMessage, index: number): void {
 
 .execute-cmd {
   color: #0f172a;
-  font-size: 12px;
+  font-size: 14px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   flex: 1 1 auto;
   min-width: 0;
@@ -882,7 +882,7 @@ function retryUserTurn(message: RenderMessage, index: number): void {
   color: #0f172a;
   border-radius: 999px;
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.2;
   font-weight: 700;
   cursor: pointer;
@@ -905,7 +905,7 @@ function retryUserTurn(message: RenderMessage, index: number): void {
   border: 1px solid var(--github-border);
   background: var(--github-code-bg);
   color: var(--github-text);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.45;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   overflow: auto;
@@ -972,7 +972,7 @@ function retryUserTurn(message: RenderMessage, index: number): void {
 
 .prompt-tag {
   color: var(--accent);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   text-transform: none;
@@ -1000,14 +1000,14 @@ function retryUserTurn(message: RenderMessage, index: number): void {
 .command-tree-branch {
   color: #94a3b8;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
+  font-size: 14px;
   user-select: none;
   flex-shrink: 0;
 }
 
 .command-cmd {
   color: #64748b;
-  font-size: 12px;
+  font-size: 14px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1069,7 +1069,7 @@ function retryUserTurn(message: RenderMessage, index: number): void {
   background: rgba(251, 146, 60, 0.16);
   border: 1px solid rgba(251, 146, 60, 0.42);
   color: #9a3412;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   line-height: 18px;
   text-align: center;
@@ -1110,7 +1110,7 @@ function retryUserTurn(message: RenderMessage, index: number): void {
 }
 
 .msgTime {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
   padding: 2px;
   color: #94a3b8;
@@ -1258,7 +1258,7 @@ function retryUserTurn(message: RenderMessage, index: number): void {
 
 .thoughtCardToggleText {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--accent);
   font-weight: 500;
 }
@@ -1364,7 +1364,7 @@ function retryUserTurn(message: RenderMessage, index: number): void {
   color: var(--github-muted);
   border-radius: 999px;
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.2;
   font-weight: 700;
   cursor: pointer;
@@ -1428,7 +1428,7 @@ function retryUserTurn(message: RenderMessage, index: number): void {
 
 .sessionBoundaryTag {
   padding: 3px 12px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.04em;
   color: #b45309;
@@ -1443,7 +1443,7 @@ function retryUserTurn(message: RenderMessage, index: number): void {
 }
 
 .sessionBoundaryNotice {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.45;
   color: var(--muted, #64748b);
   text-align: center;
@@ -1501,27 +1501,9 @@ function retryUserTurn(message: RenderMessage, index: number): void {
 }
 
 @media (max-width: 768px) {
-  .execute-cmd,
-  .command-tree-branch,
-  .command-cmd,
-  .patchCardDiff {
-    font-size: 14px;
-  }
-
   .msg[data-role="user"] .bubble {
     width: 100%;
     max-width: 100%;
-  }
-
-  .prompt-tag,
-  .patchCardToggle,
-  .retryBadge,
-  .msgTime,
-  .thoughtCardToggleText,
-  .liveStepToggleBtn,
-  .sessionBoundaryTag,
-  .sessionBoundaryNotice {
-    font-size: 12px;
   }
 }
 
