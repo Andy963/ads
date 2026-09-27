@@ -47,8 +47,8 @@ describe("SessionManager agent allowlists", () => {
 
   it("uses interactive allowlists for telegram and interactive web lanes", () => {
     assert.deepEqual(resolveSessionAgentAllowlist("telegram"), ["codex"]);
-    assert.deepEqual(resolveSessionAgentAllowlist("web-worker"), ["codex"]);
-    assert.deepEqual(resolveSessionAgentAllowlist("web-advisor"), ["codex"]);
+    assert.deepEqual(resolveSessionAgentAllowlist("web-actions"), ["codex"]);
+    assert.deepEqual(resolveSessionAgentAllowlist("web-acopilot"), ["codex"]);
   });
 
   it("uses codex-only allowlists for scheduler surfaces", () => {
@@ -60,7 +60,7 @@ describe("SessionManager agent allowlists", () => {
     process.env.ADS_CLAUDE_ENABLED = "0";
 
     assert.deepEqual(resolveSessionAgentAllowlist("telegram"), ["codex"]);
-    assert.deepEqual(resolveSessionAgentAllowlist("web-worker"), ["codex"]);
+    assert.deepEqual(resolveSessionAgentAllowlist("web-actions"), ["codex"]);
   });
 
   it("keeps the configured allowlist on SessionManager instances", () => {

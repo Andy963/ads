@@ -14,14 +14,6 @@ import {
 export { ACOPILOT_LANE_ID, ACTIONS_LANE_ID };
 
 /**
- * Legacy spelling kept only because it is a persisted storage key.
- *
- * The legacy lane ids themselves are no longer exported: chat session ids
- * travel over the wire as legacy values, which `laneWire` owns.
- */
-export const LEGACY_ADVISOR_LANE_ID = "planner";
-
-/**
  * Resolve a lane id, tolerating legacy spellings.
  *
  * Unlike the shared `normalizeLaneId`, an unrecognised value is passed through

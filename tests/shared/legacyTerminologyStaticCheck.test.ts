@@ -55,12 +55,8 @@ const ALLOWED_LEGACY_TERMINOLOGY: Record<string, LegacyAllowance> = {
   },
   "server/web/server/ws/session.ts": {
     reason:
-      "compatibility + persistence-key: normalizes advisor/planner/acopilot onto the stable ADVISOR_CHAT_SESSION_ID",
-    legacyLines: 6,
-  },
-  "client/src/lib/laneIds.ts": {
-    reason: "compatibility: LEGACY_ADVISOR_LANE_ID re-export",
-    legacyLines: 1,
+      "compatibility: normalizes the retired advisor/planner spellings onto the canonical ACOPILOT_CHAT_SESSION_ID",
+    legacyLines: 4,
   },
   "client/src/lib/preferencesStore.ts": {
     reason: "compatibility: reads legacy lane spellings out of localStorage preferences",
@@ -90,10 +86,6 @@ const ALLOWED_LEGACY_TERMINOLOGY: Record<string, LegacyAllowance> = {
     reason: "compatibility: comment describing the legacy wire value",
     legacyLines: 1,
   },
-  "client/src/app/chat.ts": {
-    reason: "compatibility: falls back to the legacy planner outbox key on read",
-    legacyLines: 2,
-  },
   "client/src/app/laneActions.ts": {
     reason: "compatibility: local variable and breadcrumb names for the acopilot runtime",
     legacyLines: 7,
@@ -101,12 +93,12 @@ const ALLOWED_LEGACY_TERMINOLOGY: Record<string, LegacyAllowance> = {
 
   // ---- persistence keys (must not be renamed in place) ----
   "server/web/server/start/webLaneResources.ts": {
-    reason: "persistence-key: WEB_WORKER_NAMESPACE / WEB_ADVISOR_NAMESPACE history namespaces",
-    legacyLines: 20,
+    reason: "compatibility: advisor-named lane runtime wiring around the canonical WEB_ACOPILOT/WEB_ACTIONS namespaces",
+    legacyLines: 16,
   },
   "server/web/server/startWebServer.ts": {
     reason: "persistence-key: advisor/worker lane runtime wiring keyed on the history namespaces",
-    legacyLines: 17,
+    legacyLines: 16,
   },
   "server/web/server/ws/laneResources.ts": {
     reason: "persistence-key: selects advisor vs worker history and session stores by lane",
@@ -122,19 +114,19 @@ const ALLOWED_LEGACY_TERMINOLOGY: Record<string, LegacyAllowance> = {
   },
   "server/web/server/api/routes/sync.ts": {
     reason: "persistence-key: resolveSyncNamespace selects the advisor/worker history stores",
-    legacyLines: 5,
+    legacyLines: 4,
   },
   "server/web/server/api/handler.ts": {
     reason: "persistence-key: advisor/worker history store dependency names",
     legacyLines: 4,
   },
   "server/sessions/sessionManager.ts": {
-    reason: "persistence-key: 'web-advisor' / 'web-worker' agent allowlist namespaces",
-    legacyLines: 3,
+    reason: "historical-record: comment referencing the old Web Advisor and Worker lane names",
+    legacyLines: 1,
   },
   "server/utils/historyStore.ts": {
-    reason: "persistence-key: history keys embed '::advisor' with a legacy '::planner' fallback",
-    legacyLines: 7,
+    reason: "compatibility: read-path fallback onto the retired '::advisor' / '::planner' history-key segments",
+    legacyLines: 3,
   },
   "client/src/App.vue": {
     reason:
@@ -144,8 +136,8 @@ const ALLOWED_LEGACY_TERMINOLOGY: Record<string, LegacyAllowance> = {
 
   // ---- protocol / DOM and CSS contracts ----
   "client/src/lib/laneWire.ts": {
-    reason: "protocol-field: WireChatSessionId is the on-the-wire chat session vocabulary",
-    legacyLines: 7,
+    reason: "compatibility: owns the retired advisor/planner wire spellings for upgrade read paths",
+    legacyLines: 3,
   },
   "client/src/components/MainChat.css": {
     reason: "protocol-field: .chatHost--advisor CSS class referenced from App.vue",
@@ -162,8 +154,8 @@ const ALLOWED_LEGACY_TERMINOLOGY: Record<string, LegacyAllowance> = {
 
   // ---- historical record ----
   "server/state/schemaMigrations.ts": {
-    reason: "historical-record: SQL CASE WHEN mapping persisted legacy values onto canonical ones",
-    legacyLines: 10,
+    reason: "historical-record: SQL CASE WHEN mapping and the web lane namespace migration onto canonical ids",
+    legacyLines: 15,
   },
   "server/config.ts": {
     reason: "historical-record: ADS_ADVISOR_* / ADS_PLANNER_* env vars kept for compatibility",

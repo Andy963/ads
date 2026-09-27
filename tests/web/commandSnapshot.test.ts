@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { resetStateDatabaseForTests } from "../../server/state/database.js";
-import { WEB_WORKER_NAMESPACE } from "../../server/web/server/start/webLaneResources.js";
+import { WEB_ACTIONS_NAMESPACE } from "../../server/web/server/start/webLaneResources.js";
 import {
   COMMAND_SNAPSHOT_EVENT_TYPE,
   createCommandSnapshotCoalescer,
@@ -34,7 +34,7 @@ describe("server/sync/commandSnapshot", () => {
     const store = new SyncEventStore({ stateDbPath });
     const coalescer = createCommandSnapshotCoalescer({
       store,
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey: "command-lane",
       now: () => 1000,
     });
@@ -60,7 +60,7 @@ describe("server/sync/commandSnapshot", () => {
     assert.equal(second?.startOffset, 17);
     assert.equal(second?.endOffset, 27);
     const snapshots = store.readCoalesced({
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey: "command-lane",
       type: COMMAND_SNAPSHOT_EVENT_TYPE,
     });
@@ -74,7 +74,7 @@ describe("server/sync/commandSnapshot", () => {
     const store = new SyncEventStore({ stateDbPath });
     const coalescer = createCommandSnapshotCoalescer({
       store,
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey: "command-lane",
       now: () => 2000,
     });
@@ -100,7 +100,7 @@ describe("server/sync/commandSnapshot", () => {
   it("hydrates active snapshots after reconnect and removes them only at turn completion", () => {
     const store = new SyncEventStore({ stateDbPath });
     const args = {
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey: "command-lane",
       type: "command" as const,
       command: { id: "cmd-live", command: "npm test", outputDelta: "$ npm test\nPASS\n" },
@@ -110,7 +110,7 @@ describe("server/sync/commandSnapshot", () => {
 
     const reconnect = createCommandSnapshotCoalescer({
       store,
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey: "command-lane",
       hydrate: true,
     });
@@ -119,14 +119,14 @@ describe("server/sync/commandSnapshot", () => {
     assert.equal(Object.hasOwn(reconnect.getSnapshots()[0]!.command as Record<string, unknown>, "output"), false);
 
     writer.finish();
-    assert.equal(store.readCoalesced({ namespace: WEB_WORKER_NAMESPACE, laneKey: "command-lane", type: COMMAND_SNAPSHOT_EVENT_TYPE }).length, 0);
+    assert.equal(store.readCoalesced({ namespace: WEB_ACTIONS_NAMESPACE, laneKey: "command-lane", type: COMMAND_SNAPSHOT_EVENT_TYPE }).length, 0);
   });
 
   it("does not restore a retired command from a late update", () => {
     const store = new SyncEventStore({ stateDbPath });
     const coalescer = createCommandSnapshotCoalescer({
       store,
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey: "command-lane",
       now: () => 4000,
     });
@@ -159,7 +159,7 @@ describe("server/sync/commandSnapshot", () => {
     // Simulate a previous turn where finish() was never called, but status was completed
     const writer = createCommandSnapshotCoalescer({
       store,
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey: "command-lane",
       now: () => 5000,
     });
@@ -172,7 +172,7 @@ describe("server/sync/commandSnapshot", () => {
     // After server restart/reconnect, hydrate should ignore terminal snapshots
     const reconnect = createCommandSnapshotCoalescer({
       store,
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey: "command-lane",
       hydrate: true,
     });

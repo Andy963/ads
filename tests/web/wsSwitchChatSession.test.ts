@@ -248,7 +248,7 @@ describe("web/server/ws: in-band switch_chat_session", () => {
   });
 
   it("switches chatSessionId in-band without dropping the socket connection", async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["ads-v1", "ads-session.main", "ads-chat.advisor"]);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["ads-v1", "ads-session.main", "ads-chat.acopilot"]);
     sockets.push(ws);
 
     let isClosed = false;
@@ -260,7 +260,7 @@ describe("web/server/ws: in-band switch_chat_session", () => {
     await waitForWsOpen(ws);
 
     const initialWelcome = await welcomePromise;
-    assert.equal(initialWelcome.chatSessionId, "advisor");
+    assert.equal(initialWelcome.chatSessionId, "acopilot");
 
     // Send in-band switch message and wait for new welcome
     const switchPromise = waitForWsMessage(ws, (m) => m.type === "welcome" && m.chatSessionId === "session-switched");
@@ -287,10 +287,10 @@ describe("web/server/ws: in-band switch_chat_session", () => {
     const initialLaneKey = resolveSyncLaneKey({
       authUserId: "test",
       sessionId: "main",
-      chatSessionId: "advisor",
+      chatSessionId: "acopilot",
     });
     assert.ok(syncEventStore.getLatestSeqForLanes(resolveSyncNamespace("session-switched"), [switchedLaneKey]) > 0);
-    assert.equal(syncEventStore.getLatestSeqForLanes(resolveSyncNamespace("advisor"), [initialLaneKey]), 0);
+    assert.equal(syncEventStore.getLatestSeqForLanes(resolveSyncNamespace("acopilot"), [initialLaneKey]), 0);
 
     // Connection must have remained open
     assert.equal(isClosed, false);

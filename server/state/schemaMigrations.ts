@@ -736,6 +736,13 @@ Core reviewing rules:
       rebuildLanePromptTablesForCanonicalLanes(db);
     },
   },
+  {
+    version: 26,
+    description: "Migrate web lane persistence namespaces to canonical acopilot and actions ids",
+    up: (db) => {
+      migrateWebLaneNamespaces(db);
+    },
+  },
 ];
 
 /**
@@ -942,4 +949,224 @@ function rebuildLanePromptTablesForCanonicalLanes(db: DatabaseType): void {
   `);
 
   assertNoDanglingPrompts();
+}
+
+/**
+ * Canonical lane persistence identities (ADR 0027).
+ *
+ * `planner` and `advisor` are both retired spellings. The Acopilot lane now
+ * persists under `web-acopilot` with a `::acopilot` history-key segment, and
+ * the Actions lane under `web-actions`. The retired values stay accepted on
+ * the read path so older clients and interrupted runs keep resolving.
+ */
+const CANONICAL_LANE_NAMESPACES: Readonly<Record<string, string>> = {
+  "web-planner": "web-acopilot",
+  "web-advisor": "web-acopilot",
+  "web-worker": "web-actions",
+};
+
+const RETIRED_LANE_SEGMENT_PATTERN = /::(advisor|planner)(?=$|:generation:\d+$)/;
+
+const CLIENT_MESSAGE_ID_PREFIX = "client_message_id:";
+
+/** Remap a `<authUserId>::<sessionId>::<lane>` key onto the canonical lane segment. */
+function remapLaneSessionKey(value: unknown): string {
+  return String(value ?? "").trim().replace(RETIRED_LANE_SEGMENT_PATTERN, "::acopilot");
+}
+
+function remapLaneNamespace(value: unknown): string {
+  const namespace = String(value ?? "").trim();
+  return CANONICAL_LANE_NAMESPACES[namespace] ?? namespace;
+}
+
+type LaneRowMigration = {
+  table: string;
+  /** Column holding the lane session id, when the table stores one. */
+  keyColumn?: string;
+  /** Columns forming the table's natural key inside a namespace. */
+  uniqueColumns?: string[];
+  /**
+   * Extra signature parts mirroring a partial unique index, which only covers
+   * a subset of rows. An empty result means the row is outside the index and
+   * therefore cannot collide.
+   */
+  signatureExtras?: (row: Record<string, unknown>) => string[];
+  /** True when `(namespace, lane key)` is itself a unique key of the table. */
+  uniqueTargetKey?: boolean;
+  /** Counter merged with MAX when a legacy row folds into an existing one. */
+  preserveColumn?: string;
+};
+
+const MIGRATION_ROWID = "__ads_migration_rowid";
+
+/**
+ * A row can only collide with another row if some unique key covers it.
+ * Tables that rely on a partial index leave most rows unconstrained, and
+ * treating those as unique would delete unrelated history on a key match.
+ */
+function isConstrainedLaneRow(spec: LaneRowMigration, row: Record<string, unknown>): boolean {
+  return Boolean(spec.uniqueTargetKey)
+    || (spec.uniqueColumns?.length ?? 0) > 0
+    || (spec.signatureExtras?.(row).length ?? 0) > 0;
+}
+
+function laneRowSignature(args: {
+  namespace: unknown;
+  key: unknown;
+  uniqueColumns: string[];
+  signatureExtras?: (row: Record<string, unknown>) => string[];
+  row: Record<string, unknown>;
+}): string {
+  return [
+    String(args.namespace ?? ""),
+    String(args.key ?? ""),
+    ...args.uniqueColumns.map((column) => String(args.row[column] ?? "")),
+    ...(args.signatureExtras?.(args.row) ?? []),
+  ].join("\u0000");
+}
+
+/**
+ * Rewrite one table's lane identity onto the canonical namespace and lane key.
+ *
+ * Rows move one at a time rather than through a blanket UPDATE because these
+ * tables carry primary or unique keys over `(namespace, ...)`. When a legacy
+ * row and a canonical row land on the same target, the canonical row wins: the
+ * legacy row folds into it with MAX where the table has a counter, and is
+ * deleted otherwise. That preserves the newest canonical state and never
+ * fails the migration on a constraint violation.
+ */
+function migrateLaneRows(db: DatabaseType, spec: LaneRowMigration): void {
+  const keyColumn = spec.keyColumn ?? "namespace";
+  // Older databases may predate some lane tables entirely; a missing table has
+  // no retired rows and must not fail the migration.
+  const tableExists = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(spec.table);
+  if (!tableExists) return;
+  // `rowid` is selected explicitly: SQLite omits it from `SELECT *` unless the
+  // table declares an INTEGER PRIMARY KEY alias for it.
+  const rows = db
+    .prepare(`SELECT rowid AS ${MIGRATION_ROWID}, * FROM ${spec.table}`)
+    .all() as Array<Record<string, unknown>>;
+  if (rows.length === 0) return;
+
+  const uniqueIndex = new Map<string, unknown>();
+  for (const row of rows) {
+    if (!isConstrainedLaneRow(spec, row)) continue;
+    const signature = laneRowSignature({
+      namespace: row.namespace,
+      key: row[keyColumn],
+      uniqueColumns: spec.uniqueColumns ?? [],
+      signatureExtras: spec.signatureExtras,
+      row,
+    });
+    uniqueIndex.set(signature, row[MIGRATION_ROWID]);
+  }
+
+  const setClauses = ["namespace = ?", ...(spec.keyColumn ? [`${spec.keyColumn} = ?`] : [])];
+  const update = db.prepare(`UPDATE ${spec.table} SET ${setClauses.join(", ")} WHERE rowid = ?`);
+  const fold = spec.preserveColumn
+    ? db.prepare(
+        `UPDATE ${spec.table} SET ${spec.preserveColumn} = MAX(${spec.preserveColumn}, ?) WHERE rowid = ?`,
+      )
+    : null;
+  const remove = db.prepare(`DELETE FROM ${spec.table} WHERE rowid = ?`);
+
+  for (const row of rows) {
+    const id = row[MIGRATION_ROWID];
+    const currentKey = row[keyColumn];
+    const targetNamespace = remapLaneNamespace(row.namespace);
+    const targetKey = spec.keyColumn ? remapLaneSessionKey(currentKey) : targetNamespace;
+    if (targetNamespace === row.namespace && targetKey === currentKey) {
+      continue;
+    }
+
+    if (!isConstrainedLaneRow(spec, row)) {
+      const bindings: unknown[] = [targetNamespace];
+      if (spec.keyColumn) bindings.push(targetKey);
+      bindings.push(id);
+      update.run(...bindings);
+      continue;
+    }
+
+    const signature = laneRowSignature({
+      namespace: targetNamespace,
+      key: targetKey,
+      uniqueColumns: spec.uniqueColumns ?? [],
+      signatureExtras: spec.signatureExtras,
+      row,
+    });
+    const occupant = uniqueIndex.get(signature);
+    if (occupant !== undefined && occupant !== id) {
+      if (fold) {
+        fold.run(Number(row[spec.preserveColumn as string] ?? 0), occupant);
+      }
+      remove.run(id);
+      continue;
+    }
+
+    const bindings: unknown[] = [targetNamespace];
+    if (spec.keyColumn) bindings.push(targetKey);
+    bindings.push(id);
+    update.run(...bindings);
+    uniqueIndex.set(signature, id);
+  }
+}
+
+/**
+ * Move every web lane row onto the canonical `web-acopilot` / `web-actions`
+ * namespaces and the canonical `::acopilot` lane segment.
+ *
+ * `sync_events` and `sync_lane_state` are included alongside the four tables
+ * named in Issue #412 because the web server picks one namespace per lane:
+ * leaving the reconnect catch-up rows behind would drop buffered events and
+ * reset the trim cursor on the first reconnect after upgrade.
+ *
+ * `prompt_queue` is deliberately excluded. Its `user_id` is a salted hash of
+ * the lane session key owned by the web layer, so rewriting the key without
+ * recomputing that hash would strand queued rows. Those rows only hold
+ * in-flight prompts, and the read path still accepts the retired spellings.
+ */
+function migrateWebLaneNamespaces(db: DatabaseType): void {
+  migrateLaneRows(db, {
+    table: "thread_state",
+    uniqueColumns: ["user_hash"],
+    preserveColumn: "updated_at",
+  });
+  migrateLaneRows(db, {
+    table: "history_entries",
+    keyColumn: "session_id",
+    signatureExtras: (row) => {
+      const kind = String(row.kind ?? "");
+      if (!kind.startsWith(CLIENT_MESSAGE_ID_PREFIX)) return [];
+      const rest = kind.slice(CLIENT_MESSAGE_ID_PREFIX.length);
+      const end = rest.indexOf(";");
+      return [`client:${end === -1 ? rest : rest.slice(0, end)}`];
+    },
+  });
+  migrateLaneRows(db, {
+    table: "history_session_links",
+    keyColumn: "session_id",
+    uniqueColumns: ["agent_id", "provider_session_id"],
+  });
+  migrateLaneRows(db, {
+    table: "sync_events",
+    keyColumn: "lane_key",
+    signatureExtras: (row) => {
+      if (row.event_id === null || row.event_id === undefined) return [];
+      return [String(row.event_type ?? ""), String(row.event_id), String(row.revision ?? "")];
+    },
+  });
+  migrateLaneRows(db, {
+    table: "sync_lane_state",
+    keyColumn: "lane_key",
+    uniqueTargetKey: true,
+    preserveColumn: "trimmed_through_seq",
+  });
+  migrateLaneRows(db, {
+    table: "web_lane_generations",
+    keyColumn: "lane_key",
+    uniqueTargetKey: true,
+    preserveColumn: "generation",
+  });
 }

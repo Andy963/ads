@@ -291,7 +291,7 @@ describe("web/server/ws: in-band Advisor session reset (Issue #158)", () => {
   });
 
   it("keeps the same Advisor WebSocket OPEN across clear_history reset and delivers advanced generation baseline", async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["ads-v1", "ads-session.test-session", "ads-chat.advisor"]);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["ads-v1", "ads-session.test-session", "ads-chat.acopilot"]);
     sockets.push(ws);
 
     let closed = false;
@@ -303,14 +303,14 @@ describe("web/server/ws: in-band Advisor session reset (Issue #158)", () => {
     await waitForWsOpen(ws);
     const initialWelcome = await initialWelcomePromise;
     assert.equal(initialWelcome.type, "welcome");
-    assert.equal(initialWelcome.chatSessionId, "advisor");
+    assert.equal(initialWelcome.chatSessionId, "acopilot");
     const initialGeneration = Number(initialWelcome.laneGeneration ?? 1);
 
     // Seed history in advisor lane
     const initialHistoryKey = resolveSyncLaneKey({
       authUserId: "test",
       sessionId: "test-session",
-      chatSessionId: "advisor",
+      chatSessionId: "acopilot",
       generation: initialGeneration,
     });
     advisorHistoryStore.add(initialHistoryKey, {
@@ -322,7 +322,7 @@ describe("web/server/ws: in-band Advisor session reset (Issue #158)", () => {
     // Send reset
     const resetPromise = waitForWsMessage(
       ws,
-      (m) => m.type === "session_reset" && m.source === "clear_history" && m.sourceChatSessionId === "advisor",
+      (m) => m.type === "session_reset" && m.source === "clear_history" && m.sourceChatSessionId === "acopilot",
     );
     const resultPromise = waitForWsMessage(
       ws,
@@ -330,7 +330,7 @@ describe("web/server/ws: in-band Advisor session reset (Issue #158)", () => {
     );
     const newWelcomePromise = waitForWsMessage(
       ws,
-      (m) => m.type === "welcome" && m.chatSessionId === "advisor" && Number(m.laneGeneration) > initialGeneration,
+      (m) => m.type === "welcome" && m.chatSessionId === "acopilot" && Number(m.laneGeneration) > initialGeneration,
     );
 
     ws.send(JSON.stringify({ type: "clear_history" }));
@@ -346,7 +346,7 @@ describe("web/server/ws: in-band Advisor session reset (Issue #158)", () => {
 
     const newWelcome = await newWelcomePromise;
     assert.equal(newWelcome.type, "welcome");
-    assert.equal(newWelcome.chatSessionId, "advisor");
+    assert.equal(newWelcome.chatSessionId, "acopilot");
     assert.equal(Number(newWelcome.laneGeneration), nextGeneration);
     assert.equal(newWelcome.contextMode, "fresh");
 
@@ -370,7 +370,7 @@ describe("web/server/ws: in-band Advisor session reset (Issue #158)", () => {
     const newHistoryKey = resolveSyncLaneKey({
       authUserId: "test",
       sessionId: "test-session",
-      chatSessionId: "advisor",
+      chatSessionId: "acopilot",
       generation: nextGeneration,
     });
     const newHistory = advisorHistoryStore.get(newHistoryKey);
@@ -378,7 +378,7 @@ describe("web/server/ws: in-band Advisor session reset (Issue #158)", () => {
   });
 
   it("does not execute a prompt on the old generation arriving during the reset barrier", async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["ads-v1", "ads-session.test-session", "ads-chat.advisor"]);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["ads-v1", "ads-session.test-session", "ads-chat.acopilot"]);
     sockets.push(ws);
 
     const initialWelcomePromise = waitForWsMessage(ws, (m) => m.type === "welcome");
@@ -415,7 +415,7 @@ describe("web/server/ws: in-band Advisor session reset (Issue #158)", () => {
     const oldHistoryKey = resolveSyncLaneKey({
       authUserId: "test",
       sessionId: "test-session",
-      chatSessionId: "advisor",
+      chatSessionId: "acopilot",
       generation: initialGeneration,
     });
     const oldHistory = advisorHistoryStore.get(oldHistoryKey);
@@ -430,7 +430,7 @@ describe("web/server/ws: in-band Advisor session reset (Issue #158)", () => {
   });
 
   it("rebinds multiple live connections for the affected lane consistently", async () => {
-    const protocols = ["ads-v1", "ads-session.test-session", "ads-chat.advisor"];
+    const protocols = ["ads-v1", "ads-session.test-session", "ads-chat.acopilot"];
     const ws1 = new WebSocket(`ws://127.0.0.1:${port}/ws`, protocols);
     const ws2 = new WebSocket(`ws://127.0.0.1:${port}/ws`, protocols);
     sockets.push(ws1, ws2);
@@ -451,8 +451,8 @@ describe("web/server/ws: in-band Advisor session reset (Issue #158)", () => {
 
     const initialWelcome1 = await ws1WelcomePromise;
     const initialWelcome2 = await ws2WelcomePromise;
-    assert.equal(initialWelcome1.chatSessionId, "advisor");
-    assert.equal(initialWelcome2.chatSessionId, "advisor");
+    assert.equal(initialWelcome1.chatSessionId, "acopilot");
+    assert.equal(initialWelcome2.chatSessionId, "acopilot");
     const gen1 = Number(initialWelcome1.laneGeneration ?? 1);
 
     // Reset from ws1
@@ -482,7 +482,7 @@ describe("web/server/ws: in-band Advisor session reset (Issue #158)", () => {
     const newHistoryKey = resolveSyncLaneKey({
       authUserId: "test",
       sessionId: "test-session",
-      chatSessionId: "advisor",
+      chatSessionId: "acopilot",
       generation: nextGeneration,
     });
 
@@ -496,7 +496,7 @@ describe("web/server/ws: in-band Advisor session reset (Issue #158)", () => {
   });
 
   it("does not let an in-flight sibling prompt restore the old lane binding", async () => {
-    const protocols = ["ads-v1", "ads-session.test-session", "ads-chat.advisor"];
+    const protocols = ["ads-v1", "ads-session.test-session", "ads-chat.acopilot"];
     const resetClient = new WebSocket(`ws://127.0.0.1:${port}/ws`, protocols);
     const activeClient = new WebSocket(`ws://127.0.0.1:${port}/ws`, protocols);
     sockets.push(resetClient, activeClient);
@@ -528,7 +528,7 @@ describe("web/server/ws: in-band Advisor session reset (Issue #158)", () => {
     const nextHistoryKey = resolveSyncLaneKey({
       authUserId: "test",
       sessionId: "test-session",
-      chatSessionId: "advisor",
+      chatSessionId: "acopilot",
       generation: nextGeneration,
     });
     const nextPromptResultPromise = waitForWsMessage(
@@ -543,7 +543,7 @@ describe("web/server/ws: in-band Advisor session reset (Issue #158)", () => {
   });
 
   it("leaves unrelated worker lanes isolated and undisturbed during a Advisor reset", async () => {
-    const advisorWs = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["ads-v1", "ads-session.test-session", "ads-chat.advisor"]);
+    const advisorWs = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["ads-v1", "ads-session.test-session", "ads-chat.acopilot"]);
     const workerWs = new WebSocket(`ws://127.0.0.1:${port}/ws`, ["ads-v1", "ads-session.test-session", "ads-chat.main"]);
     sockets.push(advisorWs, workerWs);
 

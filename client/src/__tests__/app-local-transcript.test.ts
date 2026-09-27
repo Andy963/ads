@@ -16,7 +16,7 @@ function seed() {
   localStorage.setItem("ADS_WEB_ACTIVE_PROJECT", "default");
   const cache = createTranscriptCache();
   cache.setOwner("user-1");
-  for (const lane of ["advisor", "main"]) {
+  for (const lane of ["acopilot", "main"]) {
     const rt = createProjectRuntime({ maxLiveActivitySteps: 5 });
     cache.attach(rt, { projectId: "default", sessionId: "default", chatSessionId: lane, workspace: "" });
     rt.laneGeneration = 1;
@@ -46,7 +46,7 @@ describe("cached app bootstrap and authentication", () => {
     state.get.mockReturnValue(new Promise(() => {}));
     const wrapper = mountApp();
     expect(wrapper.find(".app").exists()).toBe(true);
-    expect(wrapper.find(".chat").text()).toContain("Cached advisor answer");
+    expect(wrapper.find(".chat").text()).toContain("Cached acopilot answer");
     expect(wrapper.find(".app").attributes("data-cache-read-only")).toBe("true");
     expect(wrapper.find("textarea.composer-input").attributes("disabled")).toBeDefined();
     const authStatusCalls = state.get.mock.calls.filter(([path]) => path === "/api/auth/status");
@@ -60,9 +60,9 @@ describe("cached app bootstrap and authentication", () => {
     state.get.mockReturnValue(new Promise(() => {}));
     try {
       const wrapper = mountApp();
-      // Both lane panels stay mounted; the restored worker lane shows its own cache.
+      // Both lane panels stay mounted; the restored actions lane shows its own cache.
       expect(wrapper.find('[data-testid="lane-panel-actions"] .chat').text()).toContain("Cached main answer");
-      expect(wrapper.find('[data-testid="lane-panel-acopilot"] .chat').text()).toContain("Cached advisor answer");
+      expect(wrapper.find('[data-testid="lane-panel-acopilot"] .chat').text()).toContain("Cached acopilot answer");
     } finally {
       Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
     }
@@ -113,7 +113,7 @@ describe("cached app bootstrap and authentication", () => {
       await wrapper.find('[data-testid="lane-tab-actions"]').trigger("click");
       await wrapper.find('[data-testid="lane-tab-acopilot"]').trigger("click");
       await vi.advanceTimersByTimeAsync(400);
-      expect(wrapper.find(".chat").text()).toContain("Cached advisor answer");
+      expect(wrapper.find(".chat").text()).toContain("Cached acopilot answer");
       expect(alert).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -125,7 +125,7 @@ describe("cached app bootstrap and authentication", () => {
     const wrapper = mountApp();
     await flushPromises();
     const row = wrapper.find(".msg").element;
-    expect(wrapper.find(".chat").text()).toContain("Cached advisor answer");
+    expect(wrapper.find(".chat").text()).toContain("Cached acopilot answer");
     state.get.mockImplementation(async (path: string) => {
       if (path === "/api/auth/status") return { initialized: true };
       if (path === "/api/auth/me") return { id: "user-1", username: "Andy" };
@@ -137,7 +137,7 @@ describe("cached app bootstrap and authentication", () => {
     await flushPromises();
     expect(wrapper.find(".app").attributes("data-cache-read-only")).toBe("false");
     expect(wrapper.find(".msg").element).toBe(row);
-    expect(wrapper.find(".chat").text()).toContain("Cached advisor answer");
+    expect(wrapper.find(".chat").text()).toContain("Cached acopilot answer");
   });
 
   it("retries an online notification that arrives while the previous auth request is still pending", async () => {
@@ -170,7 +170,7 @@ describe("cached app bootstrap and authentication", () => {
       throw new Error("Unauthorized", { cause: { status } });
     });
     const wrapper = mountApp();
-    expect(wrapper.find(".chat").text()).toContain("Cached advisor answer");
+    expect(wrapper.find(".chat").text()).toContain("Cached acopilot answer");
     await flushPromises();
     expect(wrapper.find(".app").exists()).toBe(false);
     expect(wrapper.find("[data-testid='login-username']").exists()).toBe(true);
@@ -193,7 +193,7 @@ describe("cached app bootstrap and authentication", () => {
     });
     const wrapper = mountApp();
     await flushPromises();
-    expect(wrapper.find(".chat").text()).not.toContain("Cached advisor answer");
+    expect(wrapper.find(".chat").text()).not.toContain("Cached acopilot answer");
     expect(localStorage.getItem(TRANSCRIPT_OWNER_KEY)).toBe("user-2");
     expect(Object.keys(localStorage).filter((key) => key.startsWith(TRANSCRIPT_CACHE_PREFIX))).toEqual([]);
   });

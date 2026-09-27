@@ -16,8 +16,7 @@ import {
   type OutboxSnapshot,
   type PersistedPrompt,
 } from "./outbox";
-import { LEGACY_ADVISOR_LANE_ID } from "../lib/laneIds";
-import { WIRE_ACOPILOT_SESSION_ID } from "../lib/laneWire";
+import { RETIRED_ACOPILOT_WIRE_SESSION_IDS, WIRE_ACOPILOT_SESSION_ID } from "../lib/laneWire";
 
 type UploadedImageAttachment = {
   id: string;
@@ -140,8 +139,9 @@ export function createChatActions(ctx: AppContext) {
     return sessionId ? outboxStorageKey(sessionId, rt.chatSessionId) : "";
   };
 
-  // Reads fall back to the legacy planner key so an outbox persisted before the
-  // Advisor rename is not lost; the next persistOutbox write lands on the new key.
+  // Reads fall back to the retired wire-id keys (newest first) so an outbox
+  // persisted by an older release is not lost; the next write lands on the
+  // canonical key.
   const readOutboxFor = (rt: ProjectRuntime): OutboxSnapshot => {
     const key = outboxKeyFor(rt);
     if (!key) return { pending: null, sent: [], queued: [], dismissed: [], consumed: [] };
@@ -151,7 +151,11 @@ export function createChatActions(ctx: AppContext) {
     }
     const sessionId = String(rt.projectSessionId ?? "").trim();
     if (!sessionId) return snapshot;
-    return outbox.read(outboxStorageKey(sessionId, LEGACY_ADVISOR_LANE_ID));
+    for (const retiredId of RETIRED_ACOPILOT_WIRE_SESSION_IDS) {
+      const fallback = outbox.read(outboxStorageKey(sessionId, retiredId));
+      if (!isEmptyOutboxSnapshot(fallback)) return fallback;
+    }
+    return snapshot;
   };
 
   const toPersistedPrompt = (prompt: QueuedPrompt): PersistedPrompt | null => {
@@ -310,10 +314,17 @@ export function createChatActions(ctx: AppContext) {
     const key = outboxKeyFor(rt);
     if (!key || boundOutboxRuntimes.has(rt)) return;
     boundOutboxRuntimes.add(rt);
-    outbox.migrateLegacyPending({
-      key,
-      legacyKey: legacyPendingPromptStorageKey(rt.projectSessionId, rt.chatSessionId),
-    });
+    // The legacy pending key of the current wire id never existed for the
+    // Acopilot lane: older releases wrote it under the retired spellings.
+    const legacyPendingIds = rt.chatSessionId === WIRE_ACOPILOT_SESSION_ID
+      ? RETIRED_ACOPILOT_WIRE_SESSION_IDS
+      : [rt.chatSessionId];
+    for (const legacyId of legacyPendingIds) {
+      outbox.migrateLegacyPending({
+        key,
+        legacyKey: legacyPendingPromptStorageKey(rt.projectSessionId, legacyId),
+      });
+    }
     let peers = runtimesByOutboxKey.get(key);
     if (!peers) {
       peers = new Set();

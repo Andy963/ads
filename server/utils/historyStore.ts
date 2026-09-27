@@ -93,15 +93,16 @@ function isHistoryInsertTraceEnabled(): boolean {
   return parseBooleanFlag(process.env.ADS_TRACE_HISTORY_INSERT, false);
 }
 
-// History keys embed the lane chat session id: "<user>::<project>::advisor"
-// (optionally "…:generation:N"). Before the Advisor rename the advisor lane
-// used "planner" instead. Only the exact advisor segment maps — arbitrary
-// custom chat session ids (uuids) never match.
-const ADVISOR_HISTORY_KEY_PATTERN = /::advisor(:generation:\d+)?$/;
+// History keys embed the lane chat session id: "<user>::<project>::acopilot"
+// (optionally "…:generation:N"). The Acopilot lane was persisted as "advisor"
+// and, before that, as "planner". Only the exact retired segment maps;
+// arbitrary custom chat session ids (uuids) never match.
+const CANONICAL_LANE_HISTORY_KEY_PATTERN = /::acopilot(:generation:\d+)?$/;
+const RETIRED_LANE_HISTORY_KEYS = ["advisor", "planner"] as const;
 
-function resolveLegacyAdvisorHistoryKey(key: string): string | null {
-  if (!ADVISOR_HISTORY_KEY_PATTERN.test(key)) return null;
-  return key.replace(/::advisor/, "::planner");
+function resolveRetiredLaneHistoryKeys(key: string): string[] {
+  if (!CANONICAL_LANE_HISTORY_KEY_PATTERN.test(key)) return [];
+  return RETIRED_LANE_HISTORY_KEYS.map((retired) => key.replace(/::acopilot/, `::${retired}`));
 }
 
 export class HistoryStore {
@@ -154,11 +155,14 @@ export class HistoryStore {
     if (entries.length > 0) {
       return entries;
     }
-    // Pre-rename advisor lane keys embedded the "planner" chat session id.
-    // New writes use "advisor"; reads fall back to the legacy key so existing
-    // lane history keeps replaying (read-old / write-new, no data migration).
-    const legacyKey = resolveLegacyAdvisorHistoryKey(normalizedKey);
-    return legacyKey ? this.getByKey(legacyKey) : [];
+    // Rows written before schema migration 26 carry a retired lane segment.
+    // Reads fall back to both spellings so an un-migrated row, a JSON-file
+    // import, or a rolling upgrade still replays instead of looking empty.
+    for (const retiredKey of resolveRetiredLaneHistoryKeys(normalizedKey)) {
+      const entries = this.getByKey(retiredKey);
+      if (entries.length > 0) return entries;
+    }
+    return [];
   }
 
   private getByKey(normalizedKey: string): HistoryEntry[] {

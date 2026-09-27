@@ -10,11 +10,8 @@ import type { AsyncLock } from "../../../utils/asyncLock.js";
 import { HistoryStore } from "../../../utils/historyStore.js";
 import { WorkspaceLockPool } from "../workspaceLockPool.js";
 
-export const WEB_WORKER_NAMESPACE = "web-worker";
-// Storage namespace persisted in state.db / thread storage since before the
-// Advisor rename. The VALUE must stay "web-planner" so existing history and
-// thread rows keep resolving; only the identifier was renamed.
-export const WEB_ADVISOR_NAMESPACE = "web-planner";
+export const WEB_ACTIONS_NAMESPACE = "web-actions";
+export const WEB_ACOPILOT_NAMESPACE = "web-acopilot";
 
 export function resolveAdvisorSandboxMode(raw: string | undefined): SandboxMode {
   const value = raw?.trim();
@@ -177,7 +174,9 @@ function createLaneRuntime(args: {
         threadStorage.value,
         undefined,
         {
-          agentAllowlist: resolveSessionAgentAllowlist(args.namespace === WEB_ADVISOR_NAMESPACE ? "web-advisor" : "web-worker"),
+          agentAllowlist: resolveSessionAgentAllowlist(
+            args.namespace === WEB_ACOPILOT_NAMESPACE ? "web-acopilot" : "web-actions",
+          ),
           ...args.sessionManagerOptions,
           lane: args.lane,
           stateDbPath: args.stateDbPath,
@@ -222,7 +221,7 @@ export function createWebLaneResources(args: {
 
   return {
     worker: createLaneRuntime({
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       lane: "actions",
       sandboxMode: "danger-full-access",
       sessionTimeoutMs: args.sessionTimeoutMs,
@@ -234,7 +233,7 @@ export function createWebLaneResources(args: {
       sessionManagerOptions: args.workerSessionManagerOptions,
     }),
     advisor: createLaneRuntime({
-      namespace: WEB_ADVISOR_NAMESPACE,
+      namespace: WEB_ACOPILOT_NAMESPACE,
       lane: "acopilot",
       // The Advisor uses danger-full-access for planning and GitHub operations (e.g. gh CLI).
       sandboxMode: advisorSandboxMode,

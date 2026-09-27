@@ -48,7 +48,7 @@ const stateDbPath = resolveStateDbPath();
 const LEGACY_WEB_NAMESPACE = "web";
 function migrateLegacyWebLaneNamespaces(): void {
   // Keep the raw legacy namespace available as an archive. Generation one
-  // reuses only the already-partitioned web-worker/web-advisor keys; never copy
+  // reuses only the already-partitioned per-lane keys; never copy
   // an undifferentiated legacy thread id into either active lane.
   try {
     void new HistoryStore({
