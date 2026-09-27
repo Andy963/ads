@@ -40,7 +40,7 @@ import {
   Clock,
 } from "@element-plus/icons-vue";
 import { isLaneConnected } from "./lib/laneConnectionStatus";
-import { hasLockingActionJob } from "./lib/actionJobs";
+import { hasLockingActionJob, parseActionJobAttempts } from "./lib/actionJobs";
 const {
   isExecuteBlockFixture,
   loggedIn,
@@ -256,6 +256,7 @@ type ActionJobItem = {
   status: "queued" | "running" | "verifying" | "reviewing" | "waiting_merge" | "completed" | "failed" | "blocked" | "cancelled";
   current_step: string | null;
   steps_json?: string;
+  attempts_json?: string;
   pr_number: number | null;
   pr_url: string | null;
   error_message: string | null;
@@ -265,6 +266,14 @@ type ActionJobItem = {
 };
 
 const actionJobs = ref<ActionJobItem[]>([]);
+
+const actionJobAttemptsById = computed<Record<string, ReturnType<typeof parseActionJobAttempts>>>(() => {
+  const entries: Record<string, ReturnType<typeof parseActionJobAttempts>> = {};
+  for (const job of actionJobs.value) {
+    entries[job.id] = parseActionJobAttempts(job.attempts_json);
+  }
+  return entries;
+});
 
 const actionsJobExecutionActive = computed(() => hasLockingActionJob(actionJobs.value));
 const actionsComposerInputLocked = computed(() =>
@@ -1945,6 +1954,19 @@ const acopilotConnectionStatus = computed(() => {
                     >
                       {{ job.current_step }}
                     </span>
+                    <ul
+                      v-if="(actionJobAttemptsById[job.id] ?? []).length"
+                      class="actionsJobAttempts"
+                      :data-testid="`actions-job-attempts-${job.id}`"
+                    >
+                      <li
+                        v-for="attempt in actionJobAttemptsById[job.id] ?? []"
+                        :key="attempt.attempt"
+                        class="actionsJobAttempt"
+                      >
+                        {{ `Attempt ${attempt.attempt} (${attempt.stage}): ${attempt.failure}` }}
+                      </li>
+                    </ul>
                   </span>
                   <span v-if="job.id === activeActionJob?.id" class="actionsJobActions">
                     <button

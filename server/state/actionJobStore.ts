@@ -20,6 +20,13 @@ export interface ActionJobIssueSnapshot {
   adrs: Array<{ id: string; title: string; decision: string }>;
 }
 
+export interface ActionJobAttempt {
+  attempt: number;
+  stage: string;
+  failure: string;
+  ts: number;
+}
+
 export interface ActionJobRecord {
   id: string;
   project_id: string;
@@ -34,6 +41,7 @@ export interface ActionJobRecord {
   current_step: string | null;
   steps_json: string;
   review_verdicts_json: string;
+  attempts_json: string;
   pr_number: number | null;
   pr_url: string | null;
   error_message: string | null;
@@ -103,9 +111,9 @@ export function createActionJob(
     INSERT INTO action_jobs
       (id, project_id, job_kind, issue_id, issue_title, issue_snapshot_json, status, branch,
        developer_profile_id, reviewer_profile_ids_json, current_step, steps_json,
-       review_verdicts_json, pr_number, pr_url, error_message, rework_count,
+       review_verdicts_json, attempts_json, pr_number, pr_url, error_message, rework_count,
        auth_user_id, chat_session_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', NULL, NULL, NULL, 0, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', '[]', NULL, NULL, NULL, 0, ?, ?, ?, ?)
   `).run(
     job.id,
     job.project_id,
@@ -137,6 +145,7 @@ export function createActionJob(
     current_step: null,
     steps_json: "[]",
     review_verdicts_json: "[]",
+    attempts_json: "[]",
     pr_number: null,
     pr_url: null,
     error_message: null,
@@ -152,7 +161,7 @@ export function updateActionJobStatus(
   db: DatabaseType,
   id: string,
   status: ActionJobStatus,
-  updates: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "rework_count">> = {},
+  updates: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "attempts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "rework_count">> = {},
   now = Date.now(),
 ): void {
   const fields = ["status = ?", "updated_at = ?"];
@@ -169,6 +178,10 @@ export function updateActionJobStatus(
   if ("review_verdicts_json" in updates) {
     fields.push("review_verdicts_json = ?");
     values.push(updates.review_verdicts_json ?? "[]");
+  }
+  if ("attempts_json" in updates) {
+    fields.push("attempts_json = ?");
+    values.push(updates.attempts_json ?? "[]");
   }
   if ("pr_number" in updates) {
     fields.push("pr_number = ?");

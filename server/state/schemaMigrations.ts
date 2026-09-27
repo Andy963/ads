@@ -12,6 +12,29 @@ export interface StateSchemaMigration {
   up: (db: DatabaseType) => void;
 }
 
+/**
+ * Adds a column only when it is absent. Older databases may predate the table
+ * entirely, and a partially migrated database may already carry the column, so
+ * both cases must leave the migration a no-op instead of failing. SQLite has no
+ * `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
+ */
+function addColumnIfMissing(
+  db: DatabaseType,
+  table: string,
+  column: string,
+  definition: string,
+): void {
+  const tableExists = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table);
+  if (!tableExists) return;
+  const columnExists = db
+    .prepare(`SELECT 1 FROM pragma_table_info(?) WHERE name = ?`)
+    .get(table, column);
+  if (columnExists) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+}
+
 export const stateSchemaMigrations: StateSchemaMigration[] = [
   {
     version: 1,
@@ -741,6 +764,13 @@ Core reviewing rules:
     description: "Migrate web lane persistence namespaces to canonical acopilot and actions ids",
     up: (db) => {
       migrateWebLaneNamespaces(db);
+    },
+  },
+  {
+    version: 27,
+    description: "Persist per-attempt Actions rework history",
+    up: (db) => {
+      addColumnIfMissing(db, "action_jobs", "attempts_json", "TEXT NOT NULL DEFAULT '[]'");
     },
   },
 ];

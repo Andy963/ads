@@ -9,6 +9,33 @@ export type ActionJobStatus =
   | "blocked"
   | "cancelled";
 
+export type ActionJobAttempt = {
+  attempt: number;
+  stage: string;
+  failure: string;
+  ts: number;
+};
+
+/**
+ * The Actions panel row lists every recorded rework attempt, so malformed or
+ * partial `attempts_json` payloads must not break the row.
+ */
+export function parseActionJobAttempts(value: string | null | undefined): ActionJobAttempt[] {
+  try {
+    const parsed = JSON.parse(String(value ?? "[]"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is ActionJobAttempt => (
+      Boolean(entry)
+      && typeof entry === "object"
+      && typeof (entry as ActionJobAttempt).attempt === "number"
+      && typeof (entry as ActionJobAttempt).stage === "string"
+      && typeof (entry as ActionJobAttempt).failure === "string"
+    ));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * While a job occupies the shared Actions session, user input would fire abort
  * signals into the running Developer turn, so the composer stays locked until

@@ -11,6 +11,7 @@ import {
   getStateDatabaseInfo,
   resetStateDatabaseForTests,
 } from "../../server/state/database.js";
+import { stateSchemaMigrations } from "../../server/state/schemaMigrations.js";
 
 const LANE_NAMESPACE_MIGRATION_VERSION = 26;
 
@@ -166,7 +167,9 @@ describe("state/laneNamespaceMigration", () => {
     });
 
     const db = getStateDatabase();
-    assert.equal(getStateDatabaseInfo().schemaVersion, LANE_NAMESPACE_MIGRATION_VERSION);
+    // The seeded database must reach the newest schema version, whatever
+    // migrations were appended after the lane namespace migration.
+    assert.equal(getStateDatabaseInfo().schemaVersion, stateSchemaMigrations.length);
 
     for (const table of [
       "thread_state",
