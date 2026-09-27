@@ -6,7 +6,7 @@ import path from 'node:path';
 import { SyncEventStore } from '../../server/web/server/sync/store.js';
 import { createDeltaStreamCoalescer } from '../../server/web/server/sync/deltaStream.js';
 import { resetStateDatabaseForTests } from '../../server/state/database.js';
-import { WEB_WORKER_NAMESPACE } from '../../server/web/server/start/webLaneResources.js';
+import { WEB_ACTIONS_NAMESPACE } from '../../server/web/server/start/webLaneResources.js';
 
 describe('server/sync/deltaStream phase segmentation and lifecycle with real SyncEventStore', () => {
   let tmpDir: string;
@@ -31,7 +31,7 @@ describe('server/sync/deltaStream phase segmentation and lifecycle with real Syn
     const laneKey = 'lane-phase-test';
     const coalescer = createDeltaStreamCoalescer({
       store,
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey,
       flushIntervalMs: 0,
     });
@@ -40,7 +40,7 @@ describe('server/sync/deltaStream phase segmentation and lifecycle with real Syn
     coalescer.appendDelta('Phase 1 explanation');
     coalescer.finishPhase();
     store.append({
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey,
       type: 'phase_complete',
       payload: { type: 'phase_complete', phase: 'assistant' },
@@ -50,7 +50,7 @@ describe('server/sync/deltaStream phase segmentation and lifecycle with real Syn
     coalescer.appendDelta('Phase 2 explanation');
     coalescer.finishPhase();
     store.append({
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey,
       type: 'phase_complete',
       payload: { type: 'phase_complete', phase: 'assistant' },
@@ -60,7 +60,7 @@ describe('server/sync/deltaStream phase segmentation and lifecycle with real Syn
     coalescer.appendDelta('Phase 3 active');
 
     // Read catch-up sequence from real SQLite
-    const result = store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: 0 });
+    const result = store.readAfter({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, afterSeq: 0 });
     assert.equal(result.events.length, 5);
     const sequence = result.events.map((e) => `${e.type}:${(e.payload as any).text ?? (e.payload as any).phase}`);
     assert.deepEqual(sequence, [
@@ -76,7 +76,7 @@ describe('server/sync/deltaStream phase segmentation and lifecycle with real Syn
 
     // Terminal event finish() only retires active Phase 3, keeping sealed Phase 1 and 2
     coalescer.finish();
-    const afterTerminal = store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: 0 });
+    const afterTerminal = store.readAfter({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, afterSeq: 0 });
     assert.equal(afterTerminal.events.length, 4);
     const terminalSeq = afterTerminal.events.map((e) => `${e.type}:${(e.payload as any).text ?? (e.payload as any).phase}`);
     assert.deepEqual(terminalSeq, [
@@ -92,7 +92,7 @@ describe('server/sync/deltaStream phase segmentation and lifecycle with real Syn
     const laneKey = 'lane-turn-collision-test';
     const coalescer = createDeltaStreamCoalescer({
       store,
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey,
       flushIntervalMs: 0,
     });
@@ -101,7 +101,7 @@ describe('server/sync/deltaStream phase segmentation and lifecycle with real Syn
     coalescer.appendDelta('Turn 1 Phase 0 sealed');
     coalescer.finishPhase();
     store.append({
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey,
       type: 'phase_complete',
       payload: { type: 'phase_complete', phase: 'assistant' },
@@ -111,14 +111,14 @@ describe('server/sync/deltaStream phase segmentation and lifecycle with real Syn
     coalescer.finish();
 
     // Verify Turn 1 sealed snapshot exists
-    let read = store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: 0 });
+    let read = store.readAfter({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, afterSeq: 0 });
     assert.equal(read.events.length, 2);
     assert.match(String(read.events[0]?.eventId), /^stream:lane-turn-collision-test:[^:]+:0$/);
     assert.equal((read.events[0]?.payload as any).text, 'Turn 1 Phase 0 sealed');
 
     // Turn 2 begins!
     coalescer.appendDelta('Turn 2 Phase 0');
-    read = store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: 0 });
+    read = store.readAfter({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, afterSeq: 0 });
 
     // Turn 2 must NOT overwrite Turn 1 sealed phase 0
     assert.equal(read.events.length, 3);
@@ -129,19 +129,19 @@ describe('server/sync/deltaStream phase segmentation and lifecycle with real Syn
 
     // Turn 2 completes and terminal finish() cleans active Turn 2 snapshot
     coalescer.finish();
-    read = store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: 0 });
+    read = store.readAfter({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, afterSeq: 0 });
     assert.equal(read.events.length, 2);
     assert.match(String(read.events[0]?.eventId), /^stream:lane-turn-collision-test:[^:]+:0$/);
 
     // Now simulate reconnect: a brand new coalescer is created on the same lane
     const coalescerReconnect = createDeltaStreamCoalescer({
       store,
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey,
       flushIntervalMs: 0,
     });
     coalescerReconnect.appendDelta('Reconnect turn delta');
-    read = store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: 0 });
+    read = store.readAfter({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, afterSeq: 0 });
 
     // Reconnected coalescer must pick non-colliding phase beyond existing sealed phases
     assert.equal(read.events.length, 3);

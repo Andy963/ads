@@ -61,7 +61,7 @@ export async function handleSyncRoutes(
     afterSeq,
     limit,
   });
-  const historyStore = namespace === resolveSyncNamespace("advisor")
+  const historyStore = namespace === resolveSyncNamespace("acopilot")
     ? deps.advisorHistoryStore
     : deps.workerHistoryStore;
   const truncated = result.truncated || afterSeq > result.latestSeq;

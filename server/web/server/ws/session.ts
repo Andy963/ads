@@ -49,43 +49,41 @@ export function resolveWebSocketSessionId(args: { protocols: string[]; workspace
 }
 
 /**
- * Stable internal chat session id for the Acopilot lane.
+ * Canonical chat session id for the Acopilot lane (ADR 0027).
  *
- * This value is embedded in persisted keys -- `buildWsConnectionIdentity`
- * derives `historyKey` as `<authUserId>::<sessionId>::<chatSessionId>` and the
- * sync cursor key from the same pair -- and the client re-keys its localStorage
- * model/effort preferences by the chat session id echoed back in server frames.
- * It therefore must NOT change: doing so would orphan every existing lane
- * history, thread state and preference entry. It is a persisted key, not a
- * canonical value.
+ * This value is embedded in persisted keys: `buildWsConnectionIdentity`
+ * derives `historyKey` as `<authUserId>::<sessionId>::<chatSessionId>`, and the
+ * sync cursor, thread state and lane generation rows are keyed from the same
+ * pair. Schema migration 26 moves existing rows onto this spelling.
  */
-export const ADVISOR_CHAT_SESSION_ID = "advisor";
-/** Pre-rename lane id. Accepted from legacy clients and mapped to the advisor id. */
-export const LEGACY_ADVISOR_CHAT_SESSION_ID = "planner";
-/**
- * Canonical lane id (ADR 0027). Accepted from clients and mapped to the
- * advisor id so routing and persisted keys stay stable.
- */
-export const CANONICAL_ACOPILOT_CHAT_SESSION_ID = "acopilot";
+export const ACOPILOT_CHAT_SESSION_ID = "acopilot";
+/** Retired lane id. Accepted from older clients and mapped to the canonical id. */
+export const LEGACY_ADVISOR_CHAT_SESSION_ID = "advisor";
+/** Retired lane id from the pre-advisor era. Accepted and mapped the same way. */
+export const LEGACY_PLANNER_CHAT_SESSION_ID = "planner";
 
 /**
  * Single boundary that resolves any accepted Acopilot-lane spelling to the
- * stable advisor chat session id. Both the canonical `acopilot` and the legacy
- * `advisor` / `planner` spellings land on ADVISOR_CHAT_SESSION_ID; every other
- * value (including the Actions lane's own project session ids and "main")
- * passes through untouched so it keeps routing to Actions.
+ * canonical chat session id. `acopilot`, `advisor` and `planner` all land on
+ * ACOPILOT_CHAT_SESSION_ID; every other value, including the Actions lane's own
+ * project session ids and "main", passes through untouched so it keeps routing
+ * to Actions.
  */
 export function normalizeLaneChatSessionId(value: string | null | undefined): string {
   const normalized = String(value ?? "").trim();
-  if (normalized === LEGACY_ADVISOR_CHAT_SESSION_ID || normalized === CANONICAL_ACOPILOT_CHAT_SESSION_ID) {
-    return ADVISOR_CHAT_SESSION_ID;
+  if (
+    normalized === LEGACY_ADVISOR_CHAT_SESSION_ID
+    || normalized === LEGACY_PLANNER_CHAT_SESSION_ID
+    || normalized === ACOPILOT_CHAT_SESSION_ID
+  ) {
+    return ACOPILOT_CHAT_SESSION_ID;
   }
   return normalized;
 }
 
 /** True when the chat session id addresses the Acopilot lane, in any accepted spelling. */
 export function isAcopilotChatSessionId(value: string | null | undefined): boolean {
-  return normalizeLaneChatSessionId(value) === ADVISOR_CHAT_SESSION_ID;
+  return normalizeLaneChatSessionId(value) === ACOPILOT_CHAT_SESSION_ID;
 }
 
 export function resolveWebSocketChatSessionId(args: { protocols: string[] }): string {

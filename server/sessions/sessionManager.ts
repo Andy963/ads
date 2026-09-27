@@ -101,8 +101,8 @@ export interface SessionManagerOptions {
 
 export type SessionAgentSurface =
   | "telegram"
-  | "web-worker"
-  | "web-advisor"
+  | "web-actions"
+  | "web-acopilot"
   | "scheduler-runtime"
   | "scheduler-compiler";
 

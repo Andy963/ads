@@ -8,26 +8,22 @@ import {
 /**
  * Chat session ids as they travel over the WebSocket.
  *
- * The wire vocabulary is still the legacy pair. The server routes a lane with
- * `chatSessionId === "advisor" ? acopilot : actions`, so any value that is not
- * exactly "advisor" falls through to the Actions lane. Sending "acopilot"
- * today would therefore route Acopilot traffic into Actions -- silently, with
- * no error. Migrating the server side of this routing is a later slice; until
- * then this module is the single place where a canonical lane is translated to
- * and from the value the server expects.
+ * The wire vocabulary is the canonical lane pair. The server resolves
+ * `acopilot` to the Acopilot lane and routes everything else, including the
+ * Actions lane's own project session ids, to Actions. The server also accepts
+ * the retired `advisor` and `planner` spellings for older clients.
  *
- * Keep every legacy chat-session literal in this file. Nothing else in the
- * client should spell "advisor" or "worker" as a lane value.
+ * Keep every retired chat-session literal in this file. Nothing else in the
+ * client should spell "advisor" or "planner" as a lane value.
  */
-export type WireChatSessionId = "advisor" | "worker";
+export type WireChatSessionId = "acopilot" | "actions";
 
 const WIRE_CHAT_SESSION_IDS: Readonly<Record<CanonicalLaneId, WireChatSessionId>> = {
-  [ACOPILOT_LANE_ID]: "advisor",
-  // The Actions lane does not actually transmit a lane id on the wire: it
+  [ACOPILOT_LANE_ID]: "acopilot",
+  // The Actions lane does not normally transmit a lane id on the wire: it
   // sends the project's own session id (or "main"). This entry keeps the map
-  // total so canonical<->wire translation is symmetric and exhaustively typed;
-  // it has no production caller until the server routing slice lands.
-  [ACTIONS_LANE_ID]: "worker",
+  // total so canonical<->wire translation is symmetric and exhaustively typed.
+  [ACTIONS_LANE_ID]: "actions",
 };
 
 /**
@@ -36,16 +32,22 @@ const WIRE_CHAT_SESSION_IDS: Readonly<Record<CanonicalLaneId, WireChatSessionId>
  * Exported so call sites that must recognise the shared Acopilot session
  * compare against this instead of repeating the legacy literal.
  */
-export const WIRE_ACOPILOT_SESSION_ID: WireChatSessionId = "advisor";
+export const WIRE_ACOPILOT_SESSION_ID: WireChatSessionId = "acopilot";
+
+/**
+ * Retired wire spellings of the Acopilot lane chat session id, newest first.
+ *
+ * Browser storage keys written by older releases (outbox, pending prompt) are
+ * keyed on these values, so upgrade read paths probe them in this order.
+ */
+export const RETIRED_ACOPILOT_WIRE_SESSION_IDS = ["advisor", "planner"] as const;
 
 /**
  * The wire chat session id for a canonical lane.
  *
  * The current production path only ever needs the Acopilot lane, so callers
  * use the WIRE_ACOPILOT_SESSION_ID constant directly. This generic translator
- * is reserved for the server-migration slice, which will need canonical->wire
- * for arbitrary lanes once the server accepts canonical ids; today it is
- * covered only by the round-trip test in laneWire.test.ts.
+ * is covered by the round-trip test in laneWire.test.ts.
  */
 export function toWireChatSessionId(lane: CanonicalLaneId): WireChatSessionId {
   return WIRE_CHAT_SESSION_IDS[lane];

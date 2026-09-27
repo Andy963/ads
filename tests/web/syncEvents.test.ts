@@ -10,7 +10,8 @@ import { handleSyncRoutes } from "../../server/web/server/api/routes/sync.js";
 import { resolveSyncLaneKey, resolveSyncNamespace } from "../../server/web/server/sync/lane.js";
 import { SyncEventStore } from "../../server/web/server/sync/store.js";
 import { canResumeTranscript } from "../../server/web/server/ws/transcriptResume.js";
-import { WEB_WORKER_NAMESPACE } from "../../server/web/server/start/webLaneResources.js";
+import { normalizeLaneChatSessionId } from "../../server/web/server/ws/session.js";
+import { WEB_ACTIONS_NAMESPACE } from "../../server/web/server/start/webLaneResources.js";
 
 type FakeRes = {
   statusCode: number | null;
@@ -64,7 +65,7 @@ describe("web sync events", () => {
     const laneKey = resolveSyncLaneKey({ authUserId: "u-1", sessionId, chatSessionId: "main" });
     const store = new SyncEventStore({ stateDbPath });
     store.append({
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey,
       type: "history",
       payload: { type: "history", items: [{ role: "ai", text: "restored", ts: 1 }] },
@@ -100,11 +101,11 @@ describe("web sync events", () => {
     const store = new SyncEventStore({ stateDbPath });
     const userLane = "user-lane";
     const secondLane = "second-lane";
-    store.append({ namespace: WEB_WORKER_NAMESPACE, laneKey: userLane, type: "delta", payload: { type: "delta", delta: "A" } });
-    store.append({ namespace: WEB_WORKER_NAMESPACE, laneKey: secondLane, type: "result", payload: { type: "result" } });
+    store.append({ namespace: WEB_ACTIONS_NAMESPACE, laneKey: userLane, type: "delta", payload: { type: "delta", delta: "A" } });
+    store.append({ namespace: WEB_ACTIONS_NAMESPACE, laneKey: secondLane, type: "result", payload: { type: "result" } });
 
     const result = store.readAfterLanes({
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKeys: [userLane, secondLane],
       afterSeq: 0,
     });
@@ -117,8 +118,11 @@ describe("web sync events", () => {
       const workspaceRoot = path.join(tmpDir, "workspace");
       fs.mkdirSync(workspaceRoot);
       const sessionId = deriveProjectSessionId(workspaceRoot);
-      const laneKey = resolveSyncLaneKey({ authUserId: "u-1", sessionId, chatSessionId });
-      const namespace = resolveSyncNamespace(chatSessionId);
+      // The wire token may be a retired spelling; events live under the
+      // canonical lane identity after schema migration 26.
+      const canonicalChatSessionId = normalizeLaneChatSessionId(chatSessionId);
+      const laneKey = resolveSyncLaneKey({ authUserId: "u-1", sessionId, chatSessionId: canonicalChatSessionId });
+      const namespace = resolveSyncNamespace(canonicalChatSessionId);
       const store = new SyncEventStore({ stateDbPath });
       const frames = [
         { type: "command", command: { id: "cmd-1", command: "npm test", outputDelta: "private delta" } },
@@ -162,11 +166,11 @@ describe("web sync events", () => {
   it("marks a lane truncated only after retained events were actually removed", () => {
     const store = new SyncEventStore({ stateDbPath, maxEventsPerLane: 2 });
     const laneKey = "trimmed-lane";
-    store.append({ namespace: WEB_WORKER_NAMESPACE, laneKey, type: "delta", payload: { type: "delta", delta: "A" } });
-    store.append({ namespace: WEB_WORKER_NAMESPACE, laneKey, type: "delta", payload: { type: "delta", delta: "B" } });
-    store.append({ namespace: WEB_WORKER_NAMESPACE, laneKey, type: "delta", payload: { type: "delta", delta: "C" } });
+    store.append({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, type: "delta", payload: { type: "delta", delta: "A" } });
+    store.append({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, type: "delta", payload: { type: "delta", delta: "B" } });
+    store.append({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, type: "delta", payload: { type: "delta", delta: "C" } });
 
-    const result = store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: 0 });
+    const result = store.readAfter({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, afterSeq: 0 });
     assert.equal(result.truncated, true);
     assert.equal(result.events.length, 2);
     assert.deepEqual(result.events.map((event) => event.payload.delta), ["B", "C"]);
@@ -175,18 +179,18 @@ describe("web sync events", () => {
   it("keeps a burst of ephemeral decoration from evicting conversation state", () => {
     const store = new SyncEventStore({ stateDbPath, maxEventsPerLane: 4, maxEphemeralEventsPerLane: 2 });
     const laneKey = "class-split-lane";
-    store.append({ namespace: WEB_WORKER_NAMESPACE, laneKey, type: "history", payload: { type: "history" } });
+    store.append({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, type: "history", payload: { type: "history" } });
     for (let index = 0; index < 20; index += 1) {
       store.append({
-        namespace: WEB_WORKER_NAMESPACE,
+        namespace: WEB_ACTIONS_NAMESPACE,
         laneKey,
         type: "command",
         payload: { type: "command", index },
       });
     }
-    store.append({ namespace: WEB_WORKER_NAMESPACE, laneKey, type: "result", payload: { type: "result", ok: true } });
+    store.append({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, type: "result", payload: { type: "result", ok: true } });
 
-    const result = store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: 0 });
+    const result = store.readAfter({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, afterSeq: 0 });
     // Both durable events survive the flood. A cursor that missed decorations
     // must recover them from history instead of silently accepting an incomplete
     // local-first transcript; current cursors still resume without a snapshot.
@@ -196,14 +200,14 @@ describe("web sync events", () => {
     );
     assert.equal(result.events.filter((event) => event.type === "command").length, 2);
     assert.equal(result.truncated, true);
-    assert.equal(store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: result.latestSeq }).truncated, false);
+    assert.equal(store.readAfter({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, afterSeq: result.latestSeq }).truncated, false);
   });
 
   for (const type of ["result", "patch"]) {
     it(`rejects transcript resume after actual ${type} retention loss`, () => {
       const store = new SyncEventStore({ stateDbPath, maxEventsPerLane: 2, maxEphemeralEventsPerLane: 2 });
       const laneKey = "resume-retention-lane";
-      const namespace = WEB_WORKER_NAMESPACE;
+      const namespace = WEB_ACTIONS_NAMESPACE;
       const cursor = store.append({ namespace, laneKey, type: "user", payload: { type: "user", text: "Cached question" } })!;
       for (let index = 0; index < 4; index += 1) {
         store.append({ namespace, laneKey, type, payload: { type, index } });
@@ -219,7 +223,7 @@ describe("web sync events", () => {
     fs.mkdirSync(workspaceRoot);
     const laneKey = resolveSyncLaneKey({ authUserId: "u-1", sessionId: deriveProjectSessionId(workspaceRoot), chatSessionId: "main" });
     const store = new SyncEventStore({ stateDbPath });
-    const latestSeq = store.append({ namespace: WEB_WORKER_NAMESPACE, laneKey, type: "result", payload: { type: "result", ok: true, output: "Server answer" } })!;
+    const latestSeq = store.append({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, type: "result", payload: { type: "result", ok: true, output: "Server answer" } })!;
     let historyReads = 0;
     const read = async (afterSeq: number) => {
       const res = createRes();
@@ -250,7 +254,7 @@ describe("web sync events", () => {
     const store = new SyncEventStore({ stateDbPath });
     const laneKey = "stream-lane";
     const args = {
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey,
       type: "delta_snapshot",
       eventId: `stream:${laneKey}`,
@@ -258,7 +262,7 @@ describe("web sync events", () => {
     const firstSeq = store.appendCoalesced({ ...args, payload: { type: "delta_snapshot", text: "Hel" } });
     const secondSeq = store.appendCoalesced({ ...args, payload: { type: "delta_snapshot", text: "Hello" } });
 
-    const result = store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: 0 });
+    const result = store.readAfter({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, afterSeq: 0 });
     assert.equal(result.events.length, 1);
     assert.equal(result.events[0]?.payload.text, "Hello");
     // A new seq is what makes a client whose cursor passed the old row still see the update.
@@ -266,14 +270,14 @@ describe("web sync events", () => {
 
     // A client that already caught up to the first write still receives the latest text.
     const afterFirst = store.readAfter({
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey,
       afterSeq: Number(firstSeq),
     });
     assert.equal(afterFirst.events[0]?.payload.text, "Hello");
 
     store.deleteCoalesced(args);
-    assert.equal(store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: 0 }).events.length, 0);
+    assert.equal(store.readAfter({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, afterSeq: 0 }).events.length, 0);
   });
   it("preserves phase-segmented delta snapshots and phase_complete ordering through catch-up", () => {
     const store = new SyncEventStore({ stateDbPath });
@@ -281,7 +285,7 @@ describe("web sync events", () => {
 
     // Snapshot 1
     store.appendCoalesced({
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey,
       type: "delta_snapshot",
       eventId: `stream:${laneKey}:0`,
@@ -289,14 +293,14 @@ describe("web sync events", () => {
     });
     // Phase complete 1
     store.append({
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey,
       type: "phase_complete",
       payload: { type: "phase_complete", phase: "assistant" },
     });
     // Snapshot 2
     store.appendCoalesced({
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey,
       type: "delta_snapshot",
       eventId: `stream:${laneKey}:1`,
@@ -304,20 +308,20 @@ describe("web sync events", () => {
     });
     // Phase complete 2
     store.append({
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey,
       type: "phase_complete",
       payload: { type: "phase_complete", phase: "assistant" },
     });
     // Snapshot 3 (active)
     store.appendCoalesced({
-      namespace: WEB_WORKER_NAMESPACE,
+      namespace: WEB_ACTIONS_NAMESPACE,
       laneKey,
       type: "delta_snapshot",
       eventId: `stream:${laneKey}:2`,
       payload: { type: "delta_snapshot", text: "Phase 3 in-flight" },
     });
-    const result = store.readAfter({ namespace: WEB_WORKER_NAMESPACE, laneKey, afterSeq: 0 });
+    const result = store.readAfter({ namespace: WEB_ACTIONS_NAMESPACE, laneKey, afterSeq: 0 });
     const sequence = result.events.map((e) => `${e.type}:${(e.payload as any).text ?? (e.payload as any).phase}`);
     assert.deepEqual(sequence, [
       "delta_snapshot:Phase 1 explanation",

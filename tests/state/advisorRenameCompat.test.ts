@@ -8,15 +8,15 @@ import { resolveWebConfig } from "../../server/config.js";
 import { resetStateDatabaseForTests } from "../../server/state/database.js";
 import { HistoryStore } from "../../server/utils/historyStore.js";
 import {
-  ADVISOR_CHAT_SESSION_ID,
-  CANONICAL_ACOPILOT_CHAT_SESSION_ID,
+  ACOPILOT_CHAT_SESSION_ID,
   isAcopilotChatSessionId,
   LEGACY_ADVISOR_CHAT_SESSION_ID,
+  LEGACY_PLANNER_CHAT_SESSION_ID,
   normalizeLaneChatSessionId,
   resolveWebSocketChatSessionId,
 } from "../../server/web/server/ws/session.js";
 import { resolveSyncNamespace } from "../../server/web/server/sync/lane.js";
-import { WEB_ADVISOR_NAMESPACE, WEB_WORKER_NAMESPACE } from "../../server/web/server/start/webLaneResources.js";
+import { WEB_ACOPILOT_NAMESPACE, WEB_ACTIONS_NAMESPACE } from "../../server/web/server/start/webLaneResources.js";
 import { buildWsConnectionIdentity } from "../../server/web/server/ws/connectionIdentity.js";
 
 describe("advisor rename compatibility", () => {
@@ -37,37 +37,34 @@ describe("advisor rename compatibility", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("maps the legacy planner lane id to advisor at the ws boundary", () => {
-    assert.equal(LEGACY_ADVISOR_CHAT_SESSION_ID, "planner");
-    assert.equal(normalizeLaneChatSessionId("planner"), "advisor");
-    assert.equal(normalizeLaneChatSessionId(" advisor "), "advisor");
-    assert.equal(normalizeLaneChatSessionId("worker"), "worker");
+  it("maps every retired lane id to acopilot at the ws boundary", () => {
+    assert.equal(LEGACY_ADVISOR_CHAT_SESSION_ID, "advisor");
+    assert.equal(LEGACY_PLANNER_CHAT_SESSION_ID, "planner");
+    assert.equal(normalizeLaneChatSessionId("planner"), "acopilot");
+    assert.equal(normalizeLaneChatSessionId(" advisor "), "acopilot");
+    assert.equal(normalizeLaneChatSessionId("acopilot"), "acopilot");
     assert.equal(normalizeLaneChatSessionId("room-a"), "room-a");
     assert.equal(
       resolveWebSocketChatSessionId({ protocols: ["ads-v1", "ads-chat.planner"] }),
-      "advisor",
+      "acopilot",
     );
     assert.equal(resolveWebSocketChatSessionId({ protocols: ["ads-v1"] }), "main");
   });
 
 
-  it("resolves the canonical acopilot lane id to the same stable session id as both legacy spellings", () => {
-    assert.equal(CANONICAL_ACOPILOT_CHAT_SESSION_ID, "acopilot");
-    // The stable value is a persisted key (it is embedded in historyKey and in
-    // the client-side localStorage preference keys), so all three accepted
-    // spellings must collapse onto it.
-    assert.equal(ADVISOR_CHAT_SESSION_ID, "advisor");
+  it("keeps the canonical session id aligned with the persisted history key", () => {
+    assert.equal(ACOPILOT_CHAT_SESSION_ID, "acopilot");
     for (const spelling of ["acopilot", "advisor", "planner", " acopilot "]) {
       assert.equal(
         normalizeLaneChatSessionId(spelling),
-        ADVISOR_CHAT_SESSION_ID,
+        ACOPILOT_CHAT_SESSION_ID,
         `expected ${JSON.stringify(spelling)} to resolve to the stable advisor id`,
       );
       assert.equal(isAcopilotChatSessionId(spelling), true);
     }
     assert.equal(
       resolveWebSocketChatSessionId({ protocols: ["ads-v1", "ads-chat.acopilot"] }),
-      ADVISOR_CHAT_SESSION_ID,
+      ACOPILOT_CHAT_SESSION_ID,
     );
   });
 
@@ -91,10 +88,10 @@ describe("advisor rename compatibility", () => {
 
   it("maps every accepted Acopilot spelling to the advisor sync namespace and nothing else", () => {
     for (const spelling of ["acopilot", "advisor", "planner"]) {
-      assert.equal(resolveSyncNamespace(spelling), WEB_ADVISOR_NAMESPACE);
+      assert.equal(resolveSyncNamespace(spelling), WEB_ACOPILOT_NAMESPACE);
     }
     for (const other of ["main", "worker", "room-a", ""]) {
-      assert.equal(resolveSyncNamespace(other), WEB_WORKER_NAMESPACE);
+      assert.equal(resolveSyncNamespace(other), WEB_ACTIONS_NAMESPACE);
     }
   });
 
@@ -115,7 +112,7 @@ describe("advisor rename compatibility", () => {
     const canonical = key(normalizeLaneChatSessionId("acopilot"));
     assert.equal(canonical, key(normalizeLaneChatSessionId("advisor")));
     assert.equal(canonical, key(normalizeLaneChatSessionId("planner")));
-    assert.equal(canonical, "user-1::proj-1::advisor");
+    assert.equal(canonical, "user-1::proj-1::acopilot");
     // And it stays distinct from the Actions lane.
     assert.notEqual(canonical, key("main"));
     // Sanity: the raw legacy value is genuinely a different persisted key,
@@ -123,32 +120,41 @@ describe("advisor rename compatibility", () => {
     assert.equal(key("planner"), "user-1::proj-1::planner");
   });
 
-  it("replays legacy planner history when the advisor key has no entries", () => {
-    const history = new HistoryStore({ storagePath: dbPath, namespace: "web-advisor" });
-    history.add("user-1::proj-1::planner", { role: "user", text: "legacy turn", ts: 1 });
+  it("replays retired advisor history when the canonical key has no entries", () => {
+    const history = new HistoryStore({ storagePath: dbPath, namespace: WEB_ACOPILOT_NAMESPACE });
+    history.add("user-1::proj-1::advisor", { role: "user", text: "advisor turn", ts: 1 });
 
-    const fallback = history.get("user-1::proj-1::advisor");
+    const fallback = history.get("user-1::proj-1::acopilot");
     assert.equal(fallback.length, 1);
-    assert.equal(fallback[0]?.text, "legacy turn");
+    assert.equal(fallback[0]?.text, "advisor turn");
 
-    // Writes go to the advisor key; once it has entries the legacy key is ignored.
-    history.add("user-1::proj-1::advisor", { role: "user", text: "new turn", ts: 2 });
-    const primary = history.get("user-1::proj-1::advisor");
+    // Writes go to the canonical key; once it has entries the retired key is ignored.
+    history.add("user-1::proj-1::acopilot", { role: "user", text: "new turn", ts: 2 });
+    const primary = history.get("user-1::proj-1::acopilot");
     assert.equal(primary.length, 1);
     assert.equal(primary[0]?.text, "new turn");
   });
 
-  it("replays legacy planner history for fenced generation keys", () => {
-    const history = new HistoryStore({ storagePath: dbPath, namespace: "web-advisor" });
+  it("replays retired planner history when the canonical key has no entries", () => {
+    const history = new HistoryStore({ storagePath: dbPath, namespace: WEB_ACOPILOT_NAMESPACE });
+    history.add("user-1::proj-1::planner", { role: "user", text: "planner turn", ts: 1 });
+
+    const fallback = history.get("user-1::proj-1::acopilot");
+    assert.equal(fallback.length, 1);
+    assert.equal(fallback[0]?.text, "planner turn");
+  });
+
+  it("replays retired advisor history for fenced generation keys", () => {
+    const history = new HistoryStore({ storagePath: dbPath, namespace: WEB_ACOPILOT_NAMESPACE });
     history.add("user-1::proj-1::planner:generation:2", { role: "user", text: "fenced legacy", ts: 1 });
 
-    const fallback = history.get("user-1::proj-1::advisor:generation:2");
+    const fallback = history.get("user-1::proj-1::acopilot:generation:2");
     assert.equal(fallback.length, 1);
     assert.equal(fallback[0]?.text, "fenced legacy");
   });
 
   it("does not fall back for non-advisor keys", () => {
-    const history = new HistoryStore({ storagePath: dbPath, namespace: "web-advisor" });
+    const history = new HistoryStore({ storagePath: dbPath, namespace: WEB_ACOPILOT_NAMESPACE });
     history.add("user-1::proj-1::main", { role: "user", text: "worker lane", ts: 1 });
 
     assert.equal(history.get("user-1::proj-1::main").length, 1);

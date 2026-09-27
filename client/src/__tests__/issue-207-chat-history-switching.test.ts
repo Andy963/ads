@@ -241,7 +241,7 @@ describe("Issue #207 visible chat context switching", () => {
     await settleUi(wrapper);
 
     const oldAdvisorSocket = sockets.find(
-      (socket) => socket.sessionId === "sess-a" && socket.chatSessionId === "advisor",
+      (socket) => socket.sessionId === "sess-a" && socket.chatSessionId === "acopilot",
     );
     const oldWorkerSocket = sockets.find(
       (socket) => socket.sessionId === "sess-a" && socket.chatSessionId === "chat-a",
@@ -309,7 +309,7 @@ describe("Issue #207 visible chat context switching", () => {
     await settleUi(wrapper);
 
     const advisorSocket = sockets.find(
-      (socket) => socket.sessionId === "sess-a" && socket.chatSessionId === "advisor",
+      (socket) => socket.sessionId === "sess-a" && socket.chatSessionId === "acopilot",
     );
     const workerSocket = sockets.find(
       (socket) => socket.sessionId === "sess-a" && socket.chatSessionId === "chat-a",

@@ -122,7 +122,7 @@ describe("Lane websocket sessions", () => {
     localStorage.clear();
   });
 
-  it("opens worker and advisor chat sessions for the default project", async () => {
+  it("opens actions and acopilot chat sessions for the default project", async () => {
     const { wrapper } = await mountController();
 
     const chats = wsConnections
@@ -131,7 +131,7 @@ describe("Lane websocket sessions", () => {
       .sort();
 
     expect(chats).toContain("main");
-    expect(chats).toContain("advisor");
+    expect(chats).toContain("acopilot");
     wrapper.unmount();
   });
 
@@ -141,7 +141,7 @@ describe("Lane websocket sessions", () => {
     const actionsRt = controller.getRuntime("default");
     const acopilotRt = controller.getAcopilotRuntime("default");
     const workerWs = wsByChatSessionId.get("main");
-    const advisorWs = wsByChatSessionId.get("advisor");
+    const advisorWs = wsByChatSessionId.get("acopilot");
 
     expect(workerWs).toBeTruthy();
     expect(advisorWs).toBeTruthy();
@@ -213,7 +213,7 @@ describe("Lane websocket sessions", () => {
     const actionsRt = controller.getRuntime("default");
     const acopilotRt = controller.getAcopilotRuntime("default");
     const workerWs = wsByChatSessionId.get("main");
-    const advisorWs = wsByChatSessionId.get("advisor");
+    const advisorWs = wsByChatSessionId.get("acopilot");
 
     expect(workerWs).toBeTruthy();
     expect(advisorWs).toBeTruthy();
@@ -248,7 +248,7 @@ describe("Lane websocket sessions", () => {
     const actionsRt = controller.getRuntime("default");
     const acopilotRt = controller.getAcopilotRuntime("default");
     const workerWs = wsByChatSessionId.get("main");
-    const advisorWs = wsByChatSessionId.get("advisor");
+    const advisorWs = wsByChatSessionId.get("acopilot");
 
     actionsRt.inputLocked.value = true;
     acopilotRt.inputLocked.value = true;

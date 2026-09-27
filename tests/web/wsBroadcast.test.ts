@@ -484,7 +484,7 @@ describe("web/server/ws/broadcast", () => {
   it("does not allow the advisor lane to reset any worker lane", async () => {
     const url = `ws://127.0.0.1:${port}`;
     const mainProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
-    const advisorProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.advisor"];
+    const advisorProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.acopilot"];
 
     const mainClient = new WebSocket(url, mainProtocols, { origin: "http://localhost" });
     const advisorClient = new WebSocket(url, advisorProtocols, { origin: "http://localhost" });
@@ -503,7 +503,7 @@ describe("web/server/ws/broadcast", () => {
 
     const resetPromise = waitForWsMessage(
       advisorClient,
-      (msg) => msg.type === "session_reset" && msg.sourceChatSessionId === "advisor" && msg.scope === "lane",
+      (msg) => msg.type === "session_reset" && msg.sourceChatSessionId === "acopilot" && msg.scope === "lane",
       1500,
     );
     const resultPromise = waitForWsMessage(
@@ -544,7 +544,7 @@ describe("web/server/ws/broadcast", () => {
   it("resets disconnected worker lanes while keeping the advisor lane isolated", async () => {
     const url = `ws://127.0.0.1:${port}`;
     const mainProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
-    const advisorProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.advisor"];
+    const advisorProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.acopilot"];
     const customWorkerProtocols = ["ads-v1", "ads-session.test-session", "ads-chat.worker-custom"];
 
     const mainClient = new WebSocket(url, mainProtocols, { origin: "http://localhost" });
@@ -559,7 +559,7 @@ describe("web/server/ws/broadcast", () => {
       { role: "user", text: "main stale", ts: Date.now() },
     );
     advisorHistoryStore.add(
-      resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "advisor", generation: 1 }),
+      resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "acopilot", generation: 1 }),
       { role: "user", text: "advisor stale", ts: Date.now() },
     );
     workerHistoryStore.add(
@@ -595,7 +595,7 @@ describe("web/server/ws/broadcast", () => {
     assert.equal(advisorSessions[0]?.threadId === null, false);
     assert.equal(
       advisorHistoryStore.get(
-        resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "advisor", generation: 1 }),
+        resolveSyncLaneKey({ authUserId: "test", sessionId: "test-session", chatSessionId: "acopilot", generation: 1 }),
       )[0]?.text,
       "advisor stale",
     );

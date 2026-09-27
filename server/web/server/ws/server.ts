@@ -13,7 +13,7 @@ import type { AttachWebSocketServerDeps, WsOrchestrator } from "./deps.js";
 import { dispatchWsMessage, type IncomingWsMessage } from "./messageDispatch.js";
 import { handleImmediateWsMessage, parseIncomingWsEnvelope } from "./messageIntake.js";
 import {
-  ADVISOR_CHAT_SESSION_ID,
+  ACOPILOT_CHAT_SESSION_ID,
   isAcopilotChatSessionId,
   normalizeLaneChatSessionId,
   resolveWebSocketChatSessionId,
@@ -40,7 +40,7 @@ import { createDeltaStreamCoalescer } from "../sync/deltaStream.js";
 import { createCommandSnapshotCoalescer } from "../sync/commandSnapshot.js";
 import { projectCommandFrame } from "../commandPresentation.js";
 import { recordConversationMessage } from "../../../utils/conversationMessageRecorder.js";
-import { WEB_WORKER_NAMESPACE } from "../start/webLaneResources.js";
+import { WEB_ACTIONS_NAMESPACE } from "../start/webLaneResources.js";
 import { onTaskTerminalEvent } from "../../taskNotifications/taskNotificationDispatcher.js";
 
 import { handlePromptMessage } from "./handlePrompt.js";
@@ -530,7 +530,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       existing.add(normalizedChatSessionId);
       return;
     }
-    seenChatSessionIdsBySharedSession.set(registryKey, new Set(["main", ADVISOR_CHAT_SESSION_ID, normalizedChatSessionId]));
+    seenChatSessionIdsBySharedSession.set(registryKey, new Set(["main", ACOPILOT_CHAT_SESSION_ID, normalizedChatSessionId]));
   };
 
   wss.on("error", (error) => {
@@ -1516,7 +1516,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
 
             if (
               previousLane.historyKey !== nextIdentity.historyKey &&
-              nextLaneNamespace === WEB_WORKER_NAMESPACE
+              nextLaneNamespace === WEB_ACTIONS_NAMESPACE
             ) {
               const prevEntries = previousLane.historyStore.get(previousLane.historyKey);
               const nextExistingEntries = nextLaneRes.historyStore.get(nextIdentity.historyKey);
