@@ -574,7 +574,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.ok(fs.existsSync(path.join(repoDir, "feature.txt")));
   });
 
-  it("handles reviewer REJECT with rework bounds (max 2)", () => {
+  it("handles reviewer REJECT with rework bounds (max 3)", () => {
     const db = getStateDatabase();
     const bus = new LaneDispatchBus(db);
 
@@ -595,6 +595,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       reworkCount: 0,
     });
     assert.strictEqual(r1.status, "running");
+    assert.strictEqual(bus.getJob(job.jobId)?.rework_count, 1);
 
     // Attempt 2 -> running (rework)
     const r2 = bus.handleReviewResult({
@@ -605,8 +606,9 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       reworkCount: 1,
     });
     assert.strictEqual(r2.status, "running");
+    assert.strictEqual(bus.getJob(job.jobId)?.rework_count, 2);
 
-    // Attempt 3 -> blocked (limit exceeded)
+    // Attempt 3 -> blocked (limit reached, differing failures each time)
     const r3 = bus.handleReviewResult({
       jobId: job.jobId,
       repoPath: repoDir,
@@ -615,7 +617,94 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       reworkCount: 2,
     });
     assert.strictEqual(r3.status, "blocked");
-    assert.strictEqual(bus.getJob(job.jobId)?.rework_count, 2);
+
+    const blocked = bus.getJob(job.jobId);
+    assert.strictEqual(blocked?.rework_count, 3);
+    assert.strictEqual(blocked?.error_message, "Reviewer rejection failed: Defect 3");
+    assert.strictEqual(blocked?.current_step, "Human attention required after 3 rework attempts.");
+
+    const attempts = JSON.parse(blocked?.attempts_json ?? "[]") as Array<Record<string, unknown>>;
+    assert.strictEqual(attempts.length, 3);
+    assert.deepStrictEqual(attempts.map((entry) => entry.attempt), [1, 2, 3]);
+    assert.ok(attempts.every((entry) => entry.stage === "Reviewer rejection"));
+    assert.ok(attempts.every((entry) => typeof entry.ts === "number"));
+    assert.match(String(attempts[0]?.failure), /Defect 1/);
+    assert.match(String(attempts[1]?.failure), /Defect 2/);
+    assert.match(String(attempts[2]?.failure), /Defect 3/);
+  });
+
+  it("blocks a rework whose failure repeats the immediately preceding one", () => {
+    const db = getStateDatabase();
+    const bus = new LaneDispatchBus(db);
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 4041,
+      issueTitle: "Repeated reviewer rejection",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify repeated failure short circuit"],
+    });
+
+    const first = bus.handleReviewResult({
+      jobId: job.jobId,
+      repoPath: repoDir,
+      verdict: "REJECT",
+      reviewSummary: "Identical defect",
+      reworkCount: 0,
+    });
+    assert.strictEqual(first.status, "running");
+
+    const second = bus.handleReviewResult({
+      jobId: job.jobId,
+      repoPath: repoDir,
+      verdict: "REJECT",
+      reviewSummary: "Identical defect",
+      reworkCount: 1,
+    });
+    assert.strictEqual(second.status, "blocked");
+
+    const blocked = bus.getJob(job.jobId);
+    assert.strictEqual(blocked?.rework_count, 2);
+    assert.match(blocked?.current_step ?? "", /retry was cut short/);
+    assert.strictEqual(JSON.parse(blocked?.attempts_json ?? "[]").length, 2);
+  });
+
+  it("carries every recorded attempt into the next Developer prompt", async () => {
+    const db = getStateDatabase();
+    const prompts: string[] = [];
+    let developerCalls = 0;
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async (_job, _repoPath, reworkFeedback) => {
+        developerCalls += 1;
+        if (reworkFeedback) prompts.push(reworkFeedback);
+        return { exitCode: 1, error: `developer failure ${developerCalls}` };
+      },
+      reviewerRunner: async () => JSON.stringify({ status: "PASS", summary: "ok", defects: [] }),
+      testCommand: "git status",
+    });
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 4042,
+      issueTitle: "Attempt history propagation",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify attempt history reaches the prompt"],
+    });
+
+    await bus.evaluateQueue(repoDir, repoDir);
+    await waitFor(() => prompts.length === 2, 8000);
+
+    // The prompt for the third attempt must carry attempts 1 and 2.
+    assert.match(prompts[0] ?? "", /Attempt 1 failed during Developer execution/);
+    assert.match(prompts[0] ?? "", /developer failure 1/);
+    assert.match(prompts[1] ?? "", /Attempt 1 failed during Developer execution/);
+    assert.match(prompts[1] ?? "", /developer failure 1/);
+    assert.match(prompts[1] ?? "", /Attempt 2 failed during Developer execution/);
+    assert.match(prompts[1] ?? "", /developer failure 2/);
+
+    await waitFor(() => bus.getJob(job.jobId)?.status === "blocked", 8000);
+    const blocked = bus.getJob(job.jobId);
+    assert.strictEqual(blocked?.rework_count, 3);
+    assert.strictEqual(JSON.parse(blocked?.attempts_json ?? "[]").length, 3);
   });
 
   it("routes developer failure to bounded rework and advances after automatic merge", async () => {
@@ -1297,7 +1386,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     await bus.evaluateQueue(repoDir, repoDir);
     await waitFor(() => bus.getJob(job.jobId)?.status === "blocked", 3000);
 
-    assert.strictEqual(released, 3);
+    // The timeout repeats identically, so the second attempt is cut short.
+    assert.strictEqual(released, 2);
   });
 
   it("routes Reviewer transport failures into bounded rework", async () => {
@@ -1334,9 +1424,11 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     await bus.evaluateQueue(repoDir, repoDir);
     await waitFor(() => bus.getJob(job.jobId)?.status === "blocked");
     assert.strictEqual(bus.getJob(job.jobId)?.rework_count, 2);
-    assert.strictEqual(developerCalls, 3);
-    assert.strictEqual(reviewerCalls, 3);
+    // The transport failure repeats, so the retry is cut short after the second attempt.
+    assert.strictEqual(developerCalls, 2);
+    assert.strictEqual(reviewerCalls, 2);
     assert.match(bus.getJob(job.jobId)?.error_message ?? "", /Reviewer execution failed/);
+    assert.match(bus.getJob(job.jobId)?.current_step ?? "", /retry was cut short/);
   });
 
   it("routes malformed Reviewer verdicts into bounded rework", async () => {
@@ -1388,7 +1480,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
 
     await bus.evaluateQueue(repoDir, repoDir);
     await waitFor(() => bus.getJob(job.jobId)?.status === "blocked");
-    assert.strictEqual(developerCalls, 3);
+    // The missing diff repeats, so the retry is cut short after the second attempt.
+    assert.strictEqual(developerCalls, 2);
     assert.strictEqual(reviewerCalls, 0);
     assert.strictEqual(bus.getJob(job.jobId)?.rework_count, 2);
     assert.match(bus.getJob(job.jobId)?.error_message ?? "", /Developer produced no implementation diff/);

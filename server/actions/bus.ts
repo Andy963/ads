@@ -23,6 +23,7 @@ import {
   getActionJobs,
   getActionJobById,
   updateActionJobStatus,
+  type ActionJobAttempt,
   type ActionJobRecord,
   type ActionJobIssueSnapshot,
   type ActionJobStatus,
@@ -41,7 +42,7 @@ import { resolveActionsLaneIdentity } from "./laneIdentity.js";
 import { checkActionsRuntimePreflight } from "./runtimePreflight.js";
 import { resolveAgentRuntime, type AgentRuntimeBackend } from "../runtime/config.js";
 
-const MAX_REWORK_ATTEMPTS = 2;
+const MAX_REWORK_ATTEMPTS = 3;
 const AUTOMATED_ACTION_EXECUTION_MODE = "automated_action" as const;
 const ACTION_EXECUTE_HISTORY_KIND = "action_execute";
 const AUTOMATED_ACTION_INSTRUCTIONS = [
@@ -71,6 +72,29 @@ function parseActionJobSteps(value: string | null | undefined): ActionJobStep[] 
   } catch {
     return [];
   }
+}
+
+function parseActionJobAttempts(value: string | null | undefined): ActionJobAttempt[] {
+  try {
+    const parsed = JSON.parse(String(value ?? "[]"));
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is ActionJobAttempt => (
+      Boolean(entry)
+      && typeof entry === "object"
+      && typeof (entry as ActionJobAttempt).attempt === "number"
+      && typeof (entry as ActionJobAttempt).stage === "string"
+      && typeof (entry as ActionJobAttempt).failure === "string"
+      && typeof (entry as ActionJobAttempt).ts === "number"
+    ));
+  } catch {
+    return [];
+  }
+}
+
+function formatAttemptHistory(attempts: ActionJobAttempt[]): string {
+  return attempts
+    .map((entry) => `Attempt ${entry.attempt} failed during ${entry.stage}: ${entry.failure}`)
+    .join("\n");
 }
 
 function buildExecuteHistoryText(command: string, output: string): string {
@@ -425,27 +449,40 @@ export class LaneDispatchBus {
 
     const currentCount = Math.max(0, Math.floor(input.reworkCount ?? job.rework_count ?? 0));
     const failure = `${input.stage} failed: ${input.feedback}`;
-    if (currentCount >= MAX_REWORK_ATTEMPTS) {
-      const message = `Human attention required after ${MAX_REWORK_ATTEMPTS} rework attempts. ${failure}`;
+    const attemptIndex = currentCount + 1;
+    const attempts = parseActionJobAttempts(job.attempts_json);
+    attempts.push({ attempt: attemptIndex, stage: input.stage, failure, ts: Date.now() });
+    const attemptsJson = JSON.stringify(attempts);
+    const history = formatAttemptHistory(attempts);
+    const previous = attempts.length >= 2 ? attempts[attempts.length - 2] : null;
+    const repeated = previous !== null && previous.failure === failure;
+
+    if (repeated || attemptIndex >= MAX_REWORK_ATTEMPTS) {
+      const reason = repeated
+        ? `Attempt ${attemptIndex} repeated the failure of attempt ${previous.attempt} unchanged, so the retry was cut short.`
+        : `Human attention required after ${MAX_REWORK_ATTEMPTS} rework attempts.`;
+      const message = `${reason}\nAttempt history:\n${history}`;
       this.updateJobStatus(job.id, "blocked", {
-        rework_count: currentCount,
-        current_step: `Human attention required after ${MAX_REWORK_ATTEMPTS} rework attempts.`,
-        error_message: message,
+        rework_count: attemptIndex,
+        current_step: reason,
+        attempts_json: attemptsJson,
+        error_message: failure,
       });
       this.recordActionMessage(job, repoPath, message, "action_blocked", "assistant");
-      return { status: "blocked", reworkCount: currentCount };
+      return { status: "blocked", reworkCount: attemptIndex };
     }
 
-    const nextCount = currentCount + 1;
+    const nextCount = attemptIndex;
     const feedback = [
-      `The previous attempt failed during ${input.stage}.`,
-      `Failure context: ${input.feedback}`,
-      "Fix the root cause, preserve the current feature branch, and rerun verification.",
+      "Previous attempt failures:",
+      history,
+      "Fix every recorded root cause, preserve the current feature branch, and rerun verification.",
     ].join("\n");
     const statusMessage = `Actions rework ${nextCount}/${MAX_REWORK_ATTEMPTS} started after ${input.stage} failure.`;
     this.updateJobStatus(job.id, "running", {
       rework_count: nextCount,
       current_step: statusMessage,
+      attempts_json: attemptsJson,
       error_message: failure,
     });
     this.recordActionMessage(job, repoPath, statusMessage, "action_rework", "assistant");
@@ -461,7 +498,7 @@ export class LaneDispatchBus {
   private updateJobStatus(
     jobId: string,
     status: ActionJobStatus,
-    updates?: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "rework_count">>,
+    updates?: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "attempts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "rework_count">>,
   ): ActionJobRecord | null {
     const current = getActionJobById(this.db, jobId);
     const nextUpdates = { ...(updates ?? {}) };
