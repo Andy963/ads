@@ -40,7 +40,7 @@ import {
   Clock,
 } from "@element-plus/icons-vue";
 import { isLaneConnected } from "./lib/laneConnectionStatus";
-import { hasLockingActionJob, parseActionJobAttempts } from "./lib/actionJobs";
+import { formatBlockedDuration, hasLockingActionJob, parseActionJobAttempts } from "./lib/actionJobs";
 const {
   isExecuteBlockFixture,
   loggedIn,
@@ -261,6 +261,7 @@ type ActionJobItem = {
   pr_url: string | null;
   error_message: string | null;
   rework_count: number;
+  blocked_at?: number | null;
   created_at?: number;
   updated_at?: number;
 };
@@ -274,6 +275,12 @@ const actionJobAttemptsById = computed<Record<string, ReturnType<typeof parseAct
   }
   return entries;
 });
+
+function actionJobBlockedFor(job: ActionJobItem): string | null {
+  return job.status === "blocked"
+    ? formatBlockedDuration(job.blocked_at, Date.now(), job.updated_at)
+    : null;
+}
 
 const actionsJobExecutionActive = computed(() => hasLockingActionJob(actionJobs.value));
 const actionsComposerInputLocked = computed(() =>
@@ -598,6 +605,30 @@ async function cancelActionJob(jobId: string): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     showActionNotice(`取消任务失败：${message}`);
+  }
+}
+
+const BLOCKED_RESOLVE_ACTIONS = [
+  { action: "resume", label: "Resume" },
+  { action: "complete", label: "Mark completed" },
+  { action: "abandon", label: "Abandon" },
+] as const;
+
+async function resolveActionJob(jobId: string, action: string): Promise<void> {
+  if (!jobId) return;
+  const pid = activeProjectId.value.trim();
+  const repoPath = resolveActiveWorkspaceRoot() || activeProject.value?.path || "";
+  const note = action === "abandon" ? window.prompt("Abandon reason (optional)") ?? "" : "";
+  try {
+    const res = await api.post<{ status?: string; error?: string }>(
+      `/api/actions/jobs/${encodeURIComponent(jobId)}/resolve`,
+      { action, note, projectId: pid, repoPath },
+    );
+    showActionNotice(`任务已标记为 ${res.status ?? action}。`);
+    await loadActionJobs();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    showActionNotice(`处理任务失败：${message}`);
   }
 }
 
@@ -1967,6 +1998,9 @@ const acopilotConnectionStatus = computed(() => {
                         {{ `Attempt ${attempt.attempt} (${attempt.stage}): ${attempt.failure}` }}
                       </li>
                     </ul>
+                    <span v-if="actionJobBlockedFor(job)" class="actionsJobBlockedFor">
+                      {{ `Blocked for ${actionJobBlockedFor(job)}` }}
+                    </span>
                   </span>
                   <span v-if="job.id === activeActionJob?.id" class="actionsJobActions">
                     <button
@@ -1988,6 +2022,18 @@ const acopilotConnectionStatus = computed(() => {
                     >
                       Cancel
                     </button>
+                    <template v-if="activeActionJob.status === 'blocked'">
+                      <button
+                        v-for="resolve in BLOCKED_RESOLVE_ACTIONS"
+                        :key="resolve.action"
+                        type="button"
+                        class="btnActionCancel"
+                        :data-testid="`btn-action-resolve-${resolve.action}`"
+                        @click="resolveActionJob(activeActionJob.id, resolve.action)"
+                      >
+                        {{ resolve.label }}
+                      </button>
+                    </template>
                   </span>
                 </div>
               </div>

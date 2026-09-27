@@ -323,3 +323,47 @@ export function mergeAndCleanupPipeline(options: {
 
   return { success: true };
 }
+
+export interface PullRequestStateResult {
+  state: string | null;
+  merged: boolean;
+  baseRefName: string | null;
+  mergedAt: number | null;
+  error?: string;
+}
+
+/**
+ * Reads the real state of a pull request from GitHub. This is a read-only
+ * probe: it never merges, so the caller decides what a merged pull request
+ * means for the job.
+ */
+export function readPullRequestState(options: {
+  cwd: string;
+  prNumber: number;
+}): PullRequestStateResult {
+  const unknown: PullRequestStateResult = { state: null, merged: false, baseRefName: null, mergedAt: null };
+  const res = spawnSync(
+    "gh",
+    ["pr", "view", String(options.prNumber), "--json", "state,mergedAt,baseRefName"],
+    { cwd: options.cwd, encoding: "utf8" },
+  );
+  if (res.status !== 0) {
+    return { ...unknown, error: res.stderr?.trim() || "Failed to read pull request state" };
+  }
+
+  let parsed: { state?: unknown; mergedAt?: unknown; baseRefName?: unknown };
+  try {
+    parsed = JSON.parse(res.stdout || "{}") as typeof parsed;
+  } catch (error) {
+    return { ...unknown, error: `Unparseable pull request state: ${String(error)}` };
+  }
+
+  const mergedAt = typeof parsed.mergedAt === "string" ? parsed.mergedAt : "";
+  return {
+    ...unknown,
+    state: typeof parsed.state === "string" ? parsed.state : null,
+    merged: mergedAt.length > 0,
+    baseRefName: typeof parsed.baseRefName === "string" ? parsed.baseRefName : null,
+    mergedAt: mergedAt ? Date.parse(mergedAt) || null : null,
+  };
+}

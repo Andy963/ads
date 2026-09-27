@@ -46,6 +46,7 @@ export interface ActionJobRecord {
   pr_url: string | null;
   error_message: string | null;
   rework_count: number;
+  blocked_at: number | null;
   auth_user_id: string | null;
   chat_session_id: string | null;
   created_at: number;
@@ -112,8 +113,8 @@ export function createActionJob(
       (id, project_id, job_kind, issue_id, issue_title, issue_snapshot_json, status, branch,
        developer_profile_id, reviewer_profile_ids_json, current_step, steps_json,
        review_verdicts_json, attempts_json, pr_number, pr_url, error_message, rework_count,
-       auth_user_id, chat_session_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', '[]', NULL, NULL, NULL, 0, ?, ?, ?, ?)
+       blocked_at, auth_user_id, chat_session_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', '[]', NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?)
   `).run(
     job.id,
     job.project_id,
@@ -150,6 +151,7 @@ export function createActionJob(
     pr_url: null,
     error_message: null,
     rework_count: 0,
+    blocked_at: null,
     auth_user_id: job.auth_user_id ?? null,
     chat_session_id: job.chat_session_id ?? null,
     created_at: now,
@@ -161,7 +163,7 @@ export function updateActionJobStatus(
   db: DatabaseType,
   id: string,
   status: ActionJobStatus,
-  updates: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "attempts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "rework_count">> = {},
+  updates: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "attempts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "rework_count" | "blocked_at">> = {},
   now = Date.now(),
 ): void {
   const fields = ["status = ?", "updated_at = ?"];
@@ -202,6 +204,10 @@ export function updateActionJobStatus(
   if ("rework_count" in updates) {
     fields.push("rework_count = ?");
     values.push(Math.max(0, Math.floor(updates.rework_count ?? 0)));
+  }
+  if ("blocked_at" in updates) {
+    fields.push("blocked_at = ?");
+    values.push(updates.blocked_at ?? null);
   }
 
   values.push(id);

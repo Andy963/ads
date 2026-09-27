@@ -305,6 +305,63 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
     return true;
   }
 
+  const resolveMatch = /^\/api\/actions\/jobs\/([^/]+)\/resolve$/.exec(pathname);
+  if (resolveMatch && req.method === "POST") {
+    let body: ActionMutationBody & { action?: unknown; note?: unknown } = {};
+    try {
+      const parsed = await readJsonBody(req);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        body = parsed as typeof body;
+      }
+    } catch {
+      // ignore
+    }
+
+    const action = typeof body.action === "string" ? body.action.trim() : "";
+    if (action !== "resume" && action !== "complete" && action !== "abandon") {
+      sendJson(res, 400, { error: "action must be one of: resume, complete, abandon" });
+      return true;
+    }
+
+    const jobId = decodeURIComponent(resolveMatch[1] ?? "");
+    const job = bus.getJob(jobId);
+    if (!job) {
+      sendJson(res, 404, { error: `Job not found: ${jobId}` });
+      return true;
+    }
+    const requestedRepoPath = typeof body.repoPath === "string" ? body.repoPath : null;
+    const resolved = resolveProjectContext(
+      stateDb,
+      auth.userId,
+      typeof body.projectId === "string" ? body.projectId : job.project_id,
+      requestedRepoPath,
+      url,
+      deps.resolveWorkspaceRoot,
+      allowedDirs,
+    );
+    if (!resolved) {
+      sendJson(res, 400, { error: `Invalid or unauthorized repository for job '${jobId}'` });
+      return true;
+    }
+    const ownedJob = bus.getJobs(resolved.projectId, resolved.repoPath, auth.userId)
+      .find((candidate) => candidate.id === jobId);
+    if (!ownedJob) {
+      sendJson(res, 404, { error: `Job not found: ${jobId}` });
+      return true;
+    }
+
+    const result = bus.resolveJob(jobId, action, {
+      note: typeof body.note === "string" ? body.note : undefined,
+      repoPath: resolved.repoPath,
+    });
+    if (!result.ok) {
+      sendJson(res, 409, { error: result.error });
+      return true;
+    }
+    sendJson(res, 200, { ok: true, jobId, action, status: result.status });
+    return true;
+  }
+
   const cancelMatch = /^\/api\/actions\/jobs\/([^/]+)\/cancel$/.exec(pathname);
   if (cancelMatch && req.method === "POST") {
     let body: ActionMutationBody = {};
