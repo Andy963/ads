@@ -243,7 +243,7 @@ export type DeveloperRunner = (
 
 export type ReviewerRunner = (prompt: string, systemPrompt: string) => Promise<string>;
 
-const DEFAULT_REVIEWER_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_REVIEWER_TIMEOUT_MS = 30 * 60 * 1000;
 
 export function createReviewerUserId(
   sessionManager?: Pick<SessionManager, "hasSession">,

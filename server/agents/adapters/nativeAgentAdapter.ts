@@ -38,6 +38,7 @@ import {
   resolveNativeProviderCapabilities,
 } from "../../runtime/nativeProviderCapabilities.js";
 import { getStateDatabase } from "../../state/database.js";
+import { DEFAULT_REASONING_EFFORT } from "../../state/modelConfigTypes.js";
 import {
   NativeTranscriptStore,
   redactNativeTranscriptText,
@@ -651,9 +652,6 @@ export class NativeAgentAdapter implements AgentAdapter {
     const userText = textFromInput(input);
     const model = this.resolver.resolve(this.model, this.modelConfig);
     const capabilities = resolveNativeProviderCapabilities(model.capabilities);
-    if (model.capabilities === undefined && model.supportsReasoningEffort !== undefined) {
-      capabilities.reasoningEffort = model.supportsReasoningEffort ? "supported" : "unsupported";
-    }
     const streaming = options.streaming !== false;
     if (!streaming && capabilities.nonStreaming !== "supported") {
       throw new NativeCapabilityError("nonStreaming");
@@ -667,24 +665,16 @@ export class NativeAgentAdapter implements AgentAdapter {
     if (options.outputSchema !== undefined && options.outputSchema !== null && capabilities.structuredOutput !== "supported") {
       throw new NativeCapabilityError("structuredOutput", "configure the provider capability before requesting structured output");
     }
-    const configuredReasoningEffort = model.options?.reasoningEffort;
-    const requestedReasoningEffort = this.modelReasoningEffort ?? configuredReasoningEffort;
-    // An undeclared capability ("unknown") omits the parameter in requestOptions
-    // below, so it is not a failure. Only a provider that declares the capability
-    // as unsupported is rejected.
-    if (requestedReasoningEffort && capabilities.reasoningEffort === "unsupported") {
-      throw new NativeCapabilityError(
-        "reasoningEffort",
-        `requested effort "${requestedReasoningEffort}" but the provider capability is ${capabilities.reasoningEffort}`,
-      );
-    }
+    // An unset effort always resolves to the default so the provider receives an
+    // explicit reasoning_effort instead of silently falling back to its own
+    // highest setting.
+    const requestedReasoningEffort = this.modelReasoningEffort
+      ?? model.options?.reasoningEffort
+      ?? DEFAULT_REASONING_EFFORT;
     this.transcriptStore?.addRedactions([model.apiKey]);
     const requestOptions = {
       ...model.options,
-      supportsReasoningEffort: capabilities.reasoningEffort === "supported",
-      reasoningEffort: capabilities.reasoningEffort === "supported"
-        ? this.modelReasoningEffort ?? model.options?.reasoningEffort
-        : undefined,
+      reasoningEffort: requestedReasoningEffort,
       parallelToolCalls: capabilities.parallelToolCalls === "unsupported" ? false : undefined,
       includeUsage: capabilities.usage === "supported",
     };

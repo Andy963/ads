@@ -8,6 +8,7 @@ import { closeAllStateDatabases, getStateDatabase } from "../../server/state/dat
 import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
 import { createUpstreamCredentialStore } from "../../server/state/upstreamCredentialStore.js";
 import { createNativeModelResolver } from "../../server/runtime/modelResolver.js";
+import { DEFAULT_REASONING_EFFORT } from "../../server/state/modelConfigTypes.js";
 
 describe("native model resolver", () => {
   let directory: string;
@@ -53,13 +54,13 @@ describe("native model resolver", () => {
       baseUrl: "https://provider.test/v1",
       apiKey: "profile-secret",
       provider: "custom",
-      options: { temperature: 0.2 },
+      options: { reasoningEffort: DEFAULT_REASONING_EFFORT, temperature: 0.2 },
     });
     const modelRow = db.prepare("SELECT config_json FROM model_configs WHERE id = ?").get("model-custom") as { config_json: string };
     assert.doesNotMatch(modelRow.config_json, /profile-secret/);
   });
 
-  it("omits invalid reasoning effort values from native request options", () => {
+  it("falls back to the default effort when the configured value is invalid", () => {
     const db = getStateDatabase(dbPath);
     const modelStore = createGlobalModelConfigStore(db);
     const credentials = createUpstreamCredentialStore(db, { pepper: "test-only-pepper" });
@@ -87,13 +88,15 @@ describe("native model resolver", () => {
       stateDbPath: dbPath,
       env: { ADS_WEB_SESSION_PEPPER: "test-only-pepper" },
     });
-    assert.equal(resolver.resolve("custom-model-invalid-reasoning").options, undefined);
-    assert.equal(
+    assert.deepEqual(resolver.resolve("custom-model-invalid-reasoning").options, {
+      reasoningEffort: DEFAULT_REASONING_EFFORT,
+    });
+    assert.deepEqual(
       resolver.resolve("custom-model-invalid-reasoning", {
         credentialProfile: "custom-profile",
         reasoningEffort: "bogus",
       }).options,
-      undefined,
+      { reasoningEffort: DEFAULT_REASONING_EFFORT },
     );
     assert.deepEqual(
       resolver.resolve("custom-model-invalid-reasoning", {
