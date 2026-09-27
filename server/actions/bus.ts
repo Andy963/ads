@@ -30,6 +30,7 @@ import {
 } from "../state/actionJobStore.js";
 import { checkThreePointGate, type GateCheckResult } from "./threePointGate.js";
 import {
+  ACTIONS_BASE_BRANCH,
   createPullRequest,
   mergeAndCleanupPipeline,
   type CreatePrResult,
@@ -348,6 +349,8 @@ export interface LaneDispatchBusOptions {
     title: string;
     body?: string;
     labels?: string[];
+    baseBranch?: string;
+    branch?: string;
   }) => CreatePrResult;
   mergePipeline?: (options: {
     cwd: string;
@@ -1265,6 +1268,8 @@ export class LaneDispatchBus {
           cwd: params.repoPath,
           issueId: job.issue_id,
           title: job.issue_title,
+          baseBranch: ACTIONS_BASE_BRANCH,
+          branch: job.branch ?? undefined,
         });
 
         if (prRes.error || !prRes.prNumber) {

@@ -11,6 +11,44 @@ export interface MergeResult {
   error?: string;
 }
 
+// `gh pr create` without --base targets the repository default branch, which is
+// main in this repo. Creation and delivery must read the same value, so both
+// sides resolve the base from this constant.
+export const ACTIONS_BASE_BRANCH = "dev";
+
+export function buildPrCreateArgs(options: {
+  title: string;
+  body: string;
+  labels: string[];
+  baseBranch: string;
+}): string[] {
+  return [
+    "pr",
+    "create",
+    "--base",
+    options.baseBranch,
+    "--title",
+    options.title,
+    "--body",
+    options.body,
+    ...options.labels.flatMap((label) => ["--label", label]),
+  ];
+}
+
+export function branchScopeError(params: {
+  baseBranch: string;
+  branch: string;
+  baseSha: string;
+  mergeBaseSha: string;
+}): string | null {
+  if (params.baseSha === params.mergeBaseSha) return null;
+  return (
+    `Feature branch '${params.branch}' does not descend from '${params.baseBranch}' ` +
+    `(merge-base ${params.mergeBaseSha} is behind ${params.baseSha}). ` +
+    "It carries commits unrelated to this job."
+  );
+}
+
 // gh pr merge reads no confirmation flag; without a TTY it merges immediately.
 // Passing an unknown flag makes gh exit non-zero before any merge is attempted.
 const GH_PR_MERGE_SUPPORTED_FLAGS = new Set([
@@ -42,25 +80,46 @@ interface PullRequestMergeState {
   mergeCommit?: { oid?: string | null } | null;
 }
 
+export function checkFeatureBranchScope(cwd: string, baseBranch: string, branch: string): string | null {
+  const baseSha = spawnSync("git", ["rev-parse", baseBranch], { cwd, encoding: "utf8" });
+  if (baseSha.status !== 0) {
+    return `Base branch '${baseBranch}' could not be resolved in '${cwd}'.`;
+  }
+
+  const mergeBase = spawnSync("git", ["merge-base", baseBranch, branch], { cwd, encoding: "utf8" });
+  if (mergeBase.status !== 0) {
+    return `No common ancestor between '${baseBranch}' and '${branch}'. The branch carries unrelated history.`;
+  }
+
+  return branchScopeError({
+    baseBranch,
+    branch,
+    baseSha: baseSha.stdout?.trim() ?? "",
+    mergeBaseSha: mergeBase.stdout?.trim() ?? "",
+  });
+}
+
 export function createPullRequest(options: {
   cwd: string;
   issueId?: number | null;
   title: string;
   body?: string;
   labels?: string[];
+  baseBranch?: string;
+  branch?: string;
 }): CreatePrResult {
+  const baseBranch = options.baseBranch ?? ACTIONS_BASE_BRANCH;
   const labels = options.labels && options.labels.length > 0 ? options.labels : ["feat"];
   const bodyText = options.body ?? (options.issueId ? `Closes #${options.issueId}` : "Automated Actions PR");
 
-  const args = [
-    "pr",
-    "create",
-    "--title",
-    options.title,
-    "--body",
-    bodyText,
-    ...labels.flatMap((l) => ["--label", l]),
-  ];
+  if (options.branch) {
+    const scopeError = checkFeatureBranchScope(options.cwd, baseBranch, options.branch);
+    if (scopeError) {
+      return { prNumber: null, prUrl: null, error: scopeError };
+    }
+  }
+
+  const args = buildPrCreateArgs({ title: options.title, body: bodyText, labels, baseBranch });
 
   const res = spawnSync("gh", args, {
     cwd: options.cwd,
@@ -93,7 +152,7 @@ export function mergeAndCleanupPipeline(options: {
   branch: string;
   baseBranch?: string;
 }): MergeResult {
-  const base = options.baseBranch ?? "dev";
+  const base = options.baseBranch ?? ACTIONS_BASE_BRANCH;
   const hasRemote = spawnSync("git", ["remote", "get-url", "origin"], {
     cwd: options.cwd,
     encoding: "utf8",
