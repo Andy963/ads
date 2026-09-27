@@ -773,6 +773,13 @@ Core reviewing rules:
       addColumnIfMissing(db, "action_jobs", "attempts_json", "TEXT NOT NULL DEFAULT '[]'");
     },
   },
+  {
+    version: 28,
+    description: "Track when an Actions job entered the blocked state",
+    up: (db) => {
+      addColumnIfMissing(db, "action_jobs", "blocked_at", "INTEGER");
+    },
+  },
 ];
 
 /**

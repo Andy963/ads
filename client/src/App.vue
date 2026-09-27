@@ -40,7 +40,11 @@ import {
   Clock,
 } from "@element-plus/icons-vue";
 import { isLaneConnected } from "./lib/laneConnectionStatus";
-import { hasLockingActionJob, parseActionJobAttempts } from "./lib/actionJobs";
+import {
+  formatBlockedDuration,
+  hasLockingActionJob,
+  parseActionJobAttempts,
+} from "./lib/actionJobs";
 const {
   isExecuteBlockFixture,
   loggedIn,
@@ -261,6 +265,7 @@ type ActionJobItem = {
   pr_url: string | null;
   error_message: string | null;
   rework_count: number;
+  blocked_at?: number | null;
   created_at?: number;
   updated_at?: number;
 };
@@ -271,6 +276,17 @@ const actionJobAttemptsById = computed<Record<string, ReturnType<typeof parseAct
   const entries: Record<string, ReturnType<typeof parseActionJobAttempts>> = {};
   for (const job of actionJobs.value) {
     entries[job.id] = parseActionJobAttempts(job.attempts_json);
+  }
+  return entries;
+});
+
+const actionJobBlockedForById = computed<Record<string, string | null>>(() => {
+  const now = Date.now();
+  const entries: Record<string, string | null> = {};
+  for (const job of actionJobs.value) {
+    entries[job.id] = job.status === "blocked"
+      ? formatBlockedDuration(job.blocked_at, now, job.updated_at)
+      : null;
   }
   return entries;
 });
@@ -598,6 +614,33 @@ async function cancelActionJob(jobId: string): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     showActionNotice(`取消任务失败：${message}`);
+  }
+}
+
+const BLOCKED_RESOLVE_ACTIONS = ["resume", "complete", "abandon"] as const;
+type BlockedResolveAction = typeof BLOCKED_RESOLVE_ACTIONS[number];
+
+const BLOCKED_RESOLVE_LABELS: Record<BlockedResolveAction, string> = {
+  resume: "Resume",
+  complete: "Mark completed",
+  abandon: "Abandon",
+};
+
+async function resolveActionJob(jobId: string, action: BlockedResolveAction): Promise<void> {
+  if (!jobId) return;
+  const pid = activeProjectId.value.trim();
+  const repoPath = resolveActiveWorkspaceRoot() || activeProject.value?.path || "";
+  const note = action === "abandon" ? window.prompt("Abandon reason (optional)") ?? "" : "";
+  try {
+    const res = await api.post<{ status?: string; error?: string }>(
+      `/api/actions/jobs/${encodeURIComponent(jobId)}/resolve`,
+      { action, note, projectId: pid, repoPath },
+    );
+    showActionNotice(`任务已标记为 ${res.status ?? action}。`);
+    await loadActionJobs();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    showActionNotice(`处理任务失败：${message}`);
   }
 }
 
@@ -1967,6 +2010,13 @@ const acopilotConnectionStatus = computed(() => {
                         {{ `Attempt ${attempt.attempt} (${attempt.stage}): ${attempt.failure}` }}
                       </li>
                     </ul>
+                    <span
+                      v-if="actionJobBlockedForById[job.id]"
+                      class="actionsJobBlockedFor"
+                      :data-testid="`actions-job-blocked-for-${job.id}`"
+                    >
+                      {{ `Blocked for ${actionJobBlockedForById[job.id]}` }}
+                    </span>
                   </span>
                   <span v-if="job.id === activeActionJob?.id" class="actionsJobActions">
                     <button
@@ -1988,6 +2038,18 @@ const acopilotConnectionStatus = computed(() => {
                     >
                       Cancel
                     </button>
+                    <template v-if="activeActionJob.status === 'blocked'">
+                      <button
+                        v-for="resolveAction in BLOCKED_RESOLVE_ACTIONS"
+                        :key="resolveAction"
+                        type="button"
+                        class="btnActionResolve"
+                        :data-testid="`btn-action-resolve-${resolveAction}`"
+                        @click="resolveActionJob(activeActionJob.id, resolveAction)"
+                      >
+                        {{ BLOCKED_RESOLVE_LABELS[resolveAction] }}
+                      </button>
+                    </template>
                   </span>
                 </div>
               </div>
