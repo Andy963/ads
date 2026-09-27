@@ -3,6 +3,7 @@ import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 
 import MainChatComposerPanel from "../components/MainChatComposerPanel.vue";
+import { VOICE_WAVEFORM_BAR_COUNT, VOICE_WAVEFORM_SAMPLE_INTERVAL_MS } from "../lib/voiceWaveform";
 
 class FakeMediaRecorder {
   static latest: FakeMediaRecorder | null = null;
@@ -84,11 +85,13 @@ function installReactiveAudioMocks() {
   vi.stubGlobal("requestAnimationFrame", requestAnimationFrame);
   vi.stubGlobal("cancelAnimationFrame", cancelAnimationFrame);
 
+  let frameTime = 0;
   const runNextFrame = (): void => {
     const entry = frameCallbacks.entries().next().value as [number, FrameRequestCallback] | undefined;
     if (!entry) return;
     frameCallbacks.delete(entry[0]);
-    entry[1](0);
+    entry[1](frameTime);
+    frameTime += VOICE_WAVEFORM_SAMPLE_INTERVAL_MS;
   };
 
   return {
@@ -233,9 +236,10 @@ describe("MainChat composer voice input locking", () => {
     expect(wrapper.find(".composerMainRow--recording").exists()).toBe(true);
     expect(wrapper.find('[data-testid="voice-cancel-btn"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="voice-stop-btn"]').exists()).toBe(true);
-    expect(wrapper.find(".voiceDotTrail").exists()).toBe(true);
+    expect(wrapper.find(".voiceDotTrail").exists()).toBe(false);
     expect(wrapper.find(".voiceEqualizerBars").exists()).toBe(true);
     expect(wrapper.find(".voiceEqualizerBars--reactive").exists()).toBe(false);
+    expect(wrapper.findAll(".eqBar")).toHaveLength(VOICE_WAVEFORM_BAR_COUNT);
     expect(wrapper.find(".eqBar").attributes("style")).toContain("animation-delay");
     expect(wrapper.find(".sendIcon--activeVoice").exists()).toBe(true);
 
@@ -278,24 +282,34 @@ describe("MainChat composer voice input locking", () => {
     await settle();
 
     expect(wrapper.find(".voiceEqualizerBars--reactive").exists()).toBe(true);
+    expect(wrapper.findAll(".eqBar")).toHaveLength(VOICE_WAVEFORM_BAR_COUNT);
     expect(audio.requestAnimationFrame).toHaveBeenCalledTimes(1);
     expect(audio.source.connect).toHaveBeenCalledWith(audio.analyser);
 
+    const barHeight = (index: number): number => {
+      const style = wrapper.findAll(".eqBar")[index]?.attributes("style") ?? "";
+      return Number(style.match(/height:\s*([\d.]+)px/)?.[1] ?? 0);
+    };
+    const lastIndex = VOICE_WAVEFORM_BAR_COUNT - 1;
+
     audio.runNextFrame();
     await nextTick();
-    const loudStyle = wrapper.find(".eqBar").attributes("style") ?? "";
-    const loudScale = Number(loudStyle.match(/scaleY\(([\d.]+)\)/)?.[1] ?? 0);
-    expect(loudScale).toBeGreaterThan(0.12);
+    const loudHeight = barHeight(lastIndex);
+    expect(loudHeight).toBeGreaterThan(8);
 
+    // A following quiet frame shifts the loud peak one bar to the left.
     audio.analyser.getByteTimeDomainData.mockImplementation((samples: Uint8Array) => samples.fill(128));
+    audio.runNextFrame();
+    await nextTick();
+    expect(barHeight(lastIndex - 1)).toBeCloseTo(loudHeight, 5);
+
     for (let index = 0; index < 12; index += 1) {
       audio.runNextFrame();
     }
     await nextTick();
-    const quietStyle = wrapper.find(".eqBar").attributes("style") ?? "";
-    const quietScale = Number(quietStyle.match(/scaleY\(([\d.]+)\)/)?.[1] ?? 1);
-    expect(quietScale).toBeLessThan(loudScale);
-    expect(quietScale).toBeGreaterThanOrEqual(0.12);
+    const quietHeight = barHeight(lastIndex);
+    expect(quietHeight).toBeLessThan(loudHeight);
+    expect(quietHeight).toBeGreaterThanOrEqual(8);
 
     await wrapper.find('[data-testid="voice-cancel-btn"]').trigger("click");
     await settle();
