@@ -52,6 +52,7 @@ jobs:
         run: npm run test:chat-browser
 
       - name: Resolve pre-release version and tag
+        if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
         id: vars
         run: |
           set -euo pipefail
