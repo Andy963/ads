@@ -607,20 +607,17 @@ async function cancelActionJob(jobId: string): Promise<void> {
 }
 
 const BLOCKED_RESOLVE_ACTIONS = [
-  { action: "resume", label: "Resume" },
-  { action: "complete", label: "Mark completed" },
-  { action: "abandon", label: "Abandon" },
+  { action: "dismiss", label: "Dismiss" },
 ] as const;
 
 async function resolveActionJob(jobId: string, action: string): Promise<void> {
   if (!jobId) return;
   const pid = activeProjectId.value.trim();
   const repoPath = resolveActiveWorkspaceRoot() || activeProject.value?.path || "";
-  const note = action === "abandon" ? window.prompt("Abandon reason (optional)") ?? "" : "";
   try {
     const res = await api.post<{ status?: string; error?: string }>(
       `/api/actions/jobs/${encodeURIComponent(jobId)}/resolve`,
-      { action, note, projectId: pid, repoPath },
+      { action, projectId: pid, repoPath },
     );
     showActionNotice(`任务已标记为 ${res.status ?? action}。`);
     await loadActionJobs();
@@ -1999,7 +1996,7 @@ const acopilotConnectionStatus = computed(() => {
                       {{ isStartingQueue ? '启动中...' : '启动执行' }}
                     </button>
                     <button
-                      v-if="['queued', 'running', 'verifying', 'reviewing', 'waiting_merge', 'blocked'].includes(activeActionJob.status)"
+                      v-if="['queued', 'running', 'verifying', 'reviewing', 'waiting_merge'].includes(activeActionJob.status)"
                       type="button"
                       class="btnActionCancel"
                       data-testid="btn-action-cancel"

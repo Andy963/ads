@@ -1998,27 +1998,24 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(bus.getJob(unreadId)?.status, "blocked");
   });
 
-  it("resolves a blocked job through resume, complete, and abandon", () => {
+  it("resolves a blocked job through dismiss", () => {
     const bus = new LaneDispatchBus(getStateDatabase());
-    const resumeId = blockJob(bus, dispatchJob(bus, 4510, "Resume me"));
-    assert.deepStrictEqual(bus.resolveJob(resumeId, "resume"), { ok: true, status: "queued" });
-    assert.strictEqual(bus.getJob(resumeId)?.rework_count, 0);
-    assert.strictEqual(bus.getJob(resumeId)?.blocked_at, null);
+    const dismissId = blockJob(bus, dispatchJob(bus, 4510, "Dismiss me"));
+    assert.deepStrictEqual(bus.resolveJob(dismissId, "dismiss"), { ok: true, status: "failed" });
+    assert.strictEqual(bus.getJob(dismissId)?.blocked_at, null);
+    assert.strictEqual(bus.getJob(dismissId)?.error_message, "Dismissed by operator.");
 
-    const completeId = blockJob(bus, dispatchJob(bus, 4511, "Complete me"));
-    assert.deepStrictEqual(bus.resolveJob(completeId, "complete", { note: "shipped by hand" }), { ok: true, status: "completed" });
-    assert.strictEqual(bus.getJob(completeId)?.blocked_at, null);
-
-    const abandonId = blockJob(bus, dispatchJob(bus, 4512, "Abandon me"));
-    assert.deepStrictEqual(bus.resolveJob(abandonId, "abandon", { note: "superseded" }), { ok: true, status: "failed" });
-    assert.strictEqual(bus.getJob(abandonId)?.error_message, "superseded");
+    const notedId = blockJob(bus, dispatchJob(bus, 4511, "Dismiss with note"));
+    assert.deepStrictEqual(bus.resolveJob(notedId, "dismiss", { note: "superseded" }), { ok: true, status: "failed" });
+    assert.strictEqual(bus.getJob(notedId)?.blocked_at, null);
+    assert.strictEqual(bus.getJob(notedId)?.error_message, "superseded");
   });
 
   it("refuses to resolve a job that is not blocked", () => {
     const bus = new LaneDispatchBus(getStateDatabase());
     const jobId = dispatchJob(bus, 4520, "Still running");
 
-    const result = bus.resolveJob(jobId, "complete");
+    const result = bus.resolveJob(jobId, "dismiss");
     assert.strictEqual(result.ok, false);
     assert.match(result.error ?? "", /is 'queued'; only blocked jobs can be resolved/);
     assert.strictEqual(bus.getJob(jobId)?.status, "queued");
@@ -2070,16 +2067,19 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       return { handled, statusCode, body: responseBody ? JSON.parse(responseBody) : null };
     }
 
-    const completed = await postResolve(jobId, { action: "complete", projectId: repoDir, note: "done" });
-    assert.strictEqual(completed.handled, true);
-    assert.strictEqual(completed.statusCode, 200);
-    assert.strictEqual(completed.body.status, "completed");
+    const dismissed = await postResolve(jobId, { action: "dismiss", projectId: repoDir });
+    assert.strictEqual(dismissed.handled, true);
+    assert.strictEqual(dismissed.statusCode, 200);
+    assert.strictEqual(dismissed.body.status, "failed");
+    assert.strictEqual(bus.getJob(jobId)?.blocked_at, null);
 
     const queuedId = dispatchJob(bus, 4541, "Not blocked");
-    const rejected = await postResolve(queuedId, { action: "complete", projectId: repoDir });
+    const rejected = await postResolve(queuedId, { action: "dismiss", projectId: repoDir });
     assert.strictEqual(rejected.statusCode, 409);
     assert.strictEqual(bus.getJob(queuedId)?.status, "queued");
-    assert.strictEqual((await postResolve(jobId, { action: "merge", projectId: repoDir })).statusCode, 400);
+    assert.strictEqual((await postResolve(jobId, { action: "resume", projectId: repoDir })).statusCode, 400);
+    assert.strictEqual((await postResolve(jobId, { action: "complete", projectId: repoDir })).statusCode, 400);
+    assert.strictEqual((await postResolve(jobId, { action: "abandon", projectId: repoDir })).statusCode, 400);
   });
 
 });
