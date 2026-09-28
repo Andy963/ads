@@ -162,6 +162,55 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
+  it("does not remeasure the running command while assistant text streams", async () => {
+    const wrapper = mount(MainChatMessageList, {
+      props: {
+        messages: [
+          { id: "e-long", role: "system", kind: "execute", content: "out", command: "long command", streaming: true },
+          { id: "a-1", role: "assistant", kind: "text", content: "partial", streaming: true },
+        ],
+        copiedMessageId: null,
+        formatMessageTs: () => "",
+        liveStepExpanded: false,
+        liveStepHasOverflow: false,
+        liveStepCanToggleExpanded: false,
+        liveStepOutlineItems: [],
+        liveStepOutlineHiddenCount: 0,
+        liveStepCollapsedTrivialOutline: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+          ChatFilePreviewModal: true,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    const command = wrapper.get(".execute-cmd");
+    Object.defineProperty(command.element, "clientWidth", { configurable: true, value: 100 });
+    const measure = vi
+      .spyOn(command.get(".execute-cmd-copy").element, "getBoundingClientRect")
+      .mockReturnValue({ width: 200 } as DOMRect);
+
+    await settleUi(wrapper);
+    const callsAfterMount = measure.mock.calls.length;
+    expect(callsAfterMount).toBeGreaterThan(0);
+
+    await wrapper.setProps({
+      messages: [
+        { id: "e-long", role: "system", kind: "execute", content: "out", command: "long command", streaming: true },
+        { id: "a-1", role: "assistant", kind: "text", content: "partial answer with more tokens", streaming: true },
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(measure.mock.calls.length).toBe(callsAfterMount);
+    expect(command.classes()).toContain("execute-cmd--overflowing");
+
+    wrapper.unmount();
+  });
+
   it("never renders legacy full output or output expansion controls", async () => {
     const fullOutput = Array.from({ length: 2500 }, (_, index) => `line ${index + 1}`).join("\n");
     const wrapper = mount(MainChatMessageList, {

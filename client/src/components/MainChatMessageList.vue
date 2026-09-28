@@ -297,6 +297,16 @@ const loadedMessages = computed<RenderMessage[]>(() =>
 
 const hasEarlierMessages = computed(() => loadedStart.value > 0);
 
+// Only the running execute rows can enter or leave the marquee state, so the
+// layout pass is keyed on those instead of the whole transcript, which changes
+// on every streamed token and would force a synchronous reflow per chunk.
+const runningExecuteSignature = computed(() =>
+  renderMessages.value
+    .filter((message) => message.kind === "execute" && message.streaming)
+    .map((message) => `${message.id}:${message.command ?? ""}`)
+    .join("|"),
+);
+
 function isExecuteCommandOverflowing(messageId: string): boolean {
   return overflowingExecuteCommandIds.value.has(messageId);
 }
@@ -326,7 +336,9 @@ function observeExecuteCommandSizes(): void {
   executeCommandResizeObserver = null;
 
   if (typeof ResizeObserver === "undefined") return;
-  const commandElements = messageListEl.value?.querySelectorAll<HTMLElement>(".execute-cmd");
+  const commandElements = messageListEl.value?.querySelectorAll<HTMLElement>(
+    ".execute-block--running .execute-cmd",
+  );
   if (!commandElements?.length) return;
 
   executeCommandResizeObserver = new ResizeObserver(() => {
@@ -434,7 +446,7 @@ onBeforeUnmount(() => {
   messageScrollRoot = null;
 });
 
-watch(loadedMessages, refreshExecuteCommandLayout, { flush: "post" });
+watch([runningExecuteSignature, loadedStart], refreshExecuteCommandLayout, { flush: "post" });
 
 defineExpose({ loadEarlierMessages });
 
