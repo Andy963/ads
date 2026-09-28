@@ -418,7 +418,7 @@ describe("Actions lane queue visibility and manual start button", () => {
     wrapper.unmount();
   });
 
-  it("shows a blocked job with rework details and prevents the queue from advancing", async () => {
+  it("keeps blocked job detail out of the banner and prevents the queue from advancing", async () => {
     getSpy.mockResolvedValue([
       {
         id: "job-blocked",
@@ -429,6 +429,10 @@ describe("Actions lane queue visibility and manual start button", () => {
         current_step: "Human attention required after 2 rework attempts.",
         error_message: "PR creation failed twice",
         rework_count: 2,
+        attempts_json: JSON.stringify([
+          { attempt: 1, stage: "Reviewer rejection", failure: "Reviewer rejection failed: Defect 1", ts: 1 },
+          { attempt: 2, stage: "Developer implementation", failure: "Developer implementation failed: tests failed", ts: 2 },
+        ]),
         created_at: 1000,
         updated_at: 2000,
       },
@@ -460,8 +464,14 @@ describe("Actions lane queue visibility and manual start button", () => {
     expect(rows[0].text()).toContain("Recover Actions reliability");
     expect(rows[1].text()).toContain("QUEUED");
     expect(rows[1].text()).toContain("Queued behind blocked job");
-    expect(banner.text()).toContain("Human attention required after 2 rework attempts.");
+    // The failure text lives in the lane conversation, so the banner keeps only
+    // the title and the blocked duration.
+    expect(banner.text()).not.toContain("Human attention required after 2 rework attempts.");
+    expect(banner.text()).not.toContain("Attempt 1");
+    expect(banner.text()).not.toContain("Defect 1");
     expect(banner.text()).not.toContain("PR creation failed twice");
+    expect(rows[0].find('[data-testid="actions-job-step-job-blocked"]').exists()).toBe(false);
+    expect(rows[0].text()).toContain("Blocked for");
 
     await (wrapper.vm as any).triggerStartActionQueue();
     await settleUi(wrapper);

@@ -761,6 +761,44 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(JSON.parse(blocked?.attempts_json ?? "[]").length, 3);
   });
 
+  it("records every attempt failure in the lane while the job is still retrying", () => {
+    const db = getStateDatabase();
+    const historyEntries: any[] = [];
+    const bus = new LaneDispatchBus(db, {
+      historyStore: {
+        add: (key, entry) => historyEntries.push({ key, entry }),
+      },
+    });
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 4043,
+      issueTitle: "Attempt failure surfacing",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify attempt failures reach the lane"],
+    });
+
+    // The first rejection returns to running rather than blocking, and the lane
+    // must already carry the reason the next Developer pass exists.
+    const first = bus.handleReviewResult({
+      jobId: job.jobId,
+      repoPath: repoDir,
+      verdict: "REJECT",
+      reviewSummary: "Defect 1",
+      reworkCount: 0,
+    });
+    assert.strictEqual(first.status, "running");
+
+    const attemptEntries = historyEntries.filter((entry) => entry.entry.kind === "action_attempt_failed");
+    assert.strictEqual(attemptEntries.length, 1);
+    assert.strictEqual(attemptEntries[0]?.entry.role, "assistant");
+    assert.strictEqual(
+      attemptEntries[0]?.entry.text,
+      "Attempt 1 failed during Reviewer rejection: Reviewer rejection failed: Defect 1",
+    );
+    assert.strictEqual(JSON.parse(bus.getJob(job.jobId)?.attempts_json ?? "[]").length, 1);
+  });
+
   it("routes developer failure to bounded rework and advances after automatic merge", async () => {
     const db = getStateDatabase();
     let developerCalls = 0;

@@ -94,10 +94,12 @@ function parseActionJobAttempts(value: string | null | undefined): ActionJobAtte
   }
 }
 
+function formatAttemptLine(entry: ActionJobAttempt): string {
+  return `Attempt ${entry.attempt} failed during ${entry.stage}: ${entry.failure}`;
+}
+
 function formatAttemptHistory(attempts: ActionJobAttempt[]): string {
-  return attempts
-    .map((entry) => `Attempt ${entry.attempt} failed during ${entry.stage}: ${entry.failure}`)
-    .join("\n");
+  return attempts.map(formatAttemptLine).join("\n");
 }
 
 function buildExecuteHistoryText(command: string, output: string): string {
@@ -532,9 +534,13 @@ export class LaneDispatchBus {
       return { status: "blocked", reworkCount: currentCount };
     }
 
-    attempts.push({ attempt: attemptIndex, stage: input.stage, failure, ts: Date.now() });
+    const attempt = { attempt: attemptIndex, stage: input.stage, failure, ts: Date.now() };
+    attempts.push(attempt);
     const attemptsJson = JSON.stringify(attempts);
     const history = formatAttemptHistory(attempts);
+    // The attempt reaches the lane as soon as it is recorded, so a job that is
+    // still retrying already explains itself in the conversation.
+    this.recordActionMessage(job, repoPath, formatAttemptLine(attempt), "action_attempt_failed", "assistant");
 
     if (outcome === "block-exhausted") {
       const reason = repeated
