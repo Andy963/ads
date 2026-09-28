@@ -318,8 +318,8 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
     }
 
     const action = typeof body.action === "string" ? body.action.trim() : "";
-    if (action !== "resume" && action !== "complete" && action !== "abandon") {
-      sendJson(res, 400, { error: "action must be one of: resume, complete, abandon" });
+    if (action !== "dismiss") {
+      sendJson(res, 400, { error: "action must be: dismiss" });
       return true;
     }
 

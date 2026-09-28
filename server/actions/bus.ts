@@ -312,12 +312,10 @@ export function classifyActionsFailure(input: {
   return "rework";
 }
 
-export type BlockedJobResolution = "resume" | "complete" | "abandon";
+export type BlockedJobResolution = "dismiss";
 
 const BLOCKED_RESOLUTION_OUTCOMES: Record<BlockedJobResolution, { status: ActionJobStatus; summary: string }> = {
-  resume: { status: "queued", summary: "resumed on the existing feature branch" },
-  complete: { status: "completed", summary: "marked completed outside the queue" },
-  abandon: { status: "failed", summary: "abandoned" },
+  dismiss: { status: "failed", summary: "dismissed by operator" },
 };
 
 const DEFAULT_REVIEWER_TIMEOUT_MS = 30 * 60 * 1000;
@@ -1614,9 +1612,8 @@ export class LaneDispatchBus {
 
     this.updateJobStatus(jobId, outcome.status, {
       current_step: `Resolved by operator: ${outcome.summary}.${noteSuffix}`,
-      error_message: action === "abandon" ? note || "Abandoned by operator." : null,
+      error_message: note || "Dismissed by operator.",
       blocked_at: null,
-      ...(action === "resume" ? { rework_count: 0 } : {}),
     });
     this.recordActionMessage(
       job,
