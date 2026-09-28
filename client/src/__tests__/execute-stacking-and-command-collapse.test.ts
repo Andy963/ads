@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 
 import MainChat from "../components/MainChat.vue";
@@ -70,6 +70,9 @@ describe("chat execute stacking and command collapse", () => {
 
     await settleUi(wrapper);
     expect(wrapper.get(".execute-cmd").text()).toBe("cmd-1");
+    expect(wrapper.get(".execute-cmd").attributes("title")).toBe("cmd-1");
+    expect(wrapper.get(".execute-cmd-track").attributes("data-command")).toBe("cmd-1");
+    expect(wrapper.findAll(".execute-cmd-copy")).toHaveLength(1);
     expect(wrapper.get(".execute-block").findAll("button")).toHaveLength(0);
     expect(wrapper.find(".execute-output").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("out-1");
@@ -112,6 +115,49 @@ describe("chat execute stacking and command collapse", () => {
     await settleUi(wrapper);
 
     expect(wrapper.find(".retryBadge").text()).toBe("x3");
+
+    wrapper.unmount();
+  });
+
+  it("marks only overflowing running commands for marquee scrolling", async () => {
+    const wrapper = mount(MainChatMessageList, {
+      props: {
+        messages: [
+          { id: "e-long", role: "system", kind: "execute", content: "out", command: "long command", streaming: true },
+          { id: "e-short", role: "system", kind: "execute", content: "out", command: "short", streaming: true },
+          { id: "e-done", role: "system", kind: "execute", content: "out", command: "completed long command" },
+        ],
+        copiedMessageId: null,
+        formatMessageTs: () => "",
+        liveStepExpanded: false,
+        liveStepHasOverflow: false,
+        liveStepCanToggleExpanded: false,
+        liveStepOutlineItems: [],
+        liveStepOutlineHiddenCount: 0,
+        liveStepCollapsedTrivialOutline: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+          ChatFilePreviewModal: true,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    const commands = wrapper.findAll(".execute-cmd");
+    commands.forEach((command, index) => {
+      Object.defineProperty(command.element, "clientWidth", { configurable: true, value: 100 });
+      vi.spyOn(command.get(".execute-cmd-copy").element, "getBoundingClientRect").mockReturnValue({
+        width: index === 0 ? 200 : 80,
+      } as DOMRect);
+    });
+
+    await settleUi(wrapper);
+
+    expect(commands[0].classes()).toContain("execute-cmd--overflowing");
+    expect(commands[1].classes()).not.toContain("execute-cmd--overflowing");
+    expect(commands[2].classes()).not.toContain("execute-cmd--overflowing");
 
     wrapper.unmount();
   });
