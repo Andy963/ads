@@ -10,13 +10,14 @@ import { createTapActivation } from "../lib/tapActivation";
 import type { TranscriptViewport } from "../app/transcriptCache";
 import { findStreamingAnswerId, hasExecutionBlockAfter } from "../app/chatStreaming";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   messages: ChatMessage[];
   viewport?: TranscriptViewport | null;
   queuedPrompts: QueuedPrompt[];
   pendingImages: IncomingImage[];
   draft?: string;
   latestPromptKey?: string;
+  voiceInputActive?: boolean;
   connected: boolean;
   busy: boolean;
   inputLocked?: boolean;
@@ -28,7 +29,7 @@ const props = defineProps<{
   threadWarning?: string | null;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
   connectionStatusMessage?: string | null;
-}>();
+}>(), { voiceInputActive: true });
 
 const emit = defineEmits<{
   (e: "update:draft", value: string): void;
@@ -884,6 +885,7 @@ onBeforeUnmount(() => {
       v-if="!readOnly"
       :draft="draft"
       :latest-prompt-key="latestPromptKey"
+      :voice-input-active="voiceInputActive"
       :queued-prompts="queuedPrompts"
       :pending-images="pendingImages"
       :connected="connected"

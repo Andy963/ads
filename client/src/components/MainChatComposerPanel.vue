@@ -27,7 +27,7 @@ type TextSelectionRange = {
   end: number;
 };
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   draft?: string;
   latestPromptKey?: string;
   queuedPrompts: QueuedPrompt[];
@@ -35,11 +35,12 @@ const props = defineProps<{
   connected: boolean;
   busy: boolean;
   inputLocked?: boolean;
+  voiceInputActive?: boolean;
   apiToken?: string;
   runningTaskCount?: number;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
   connectionStatusMessage?: string | null;
-}>();
+}>(), { voiceInputActive: true });
 
 const emit = defineEmits<{
   (e: "update:draft", value: string): void;
@@ -194,6 +195,7 @@ const {
   triggerFileInput,
   onFileInputChange,
 } = useMainChatComposer({
+  isVoiceInputActive: () => props.voiceInputActive !== false,
   getDraft: () => String(props.draft ?? ""),
   getDraftScope: () => String(props.latestPromptKey ?? ""),
   onDraftChange: (draft) => emit("update:draft", draft),
@@ -561,7 +563,6 @@ onBeforeUnmount(() => {
             title="取消录音"
             aria-label="取消录音"
             data-testid="voice-cancel-btn"
-            :disabled="transcribing"
             @click="cancelRecording"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

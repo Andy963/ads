@@ -54,7 +54,7 @@ Web Console 聚焦于双 Lane 交互界面与 GitHub-Native 交付流：
 
 ### 5. 多模态与文件联动
 - **多模态图片附件**：支持拖拽、粘贴与上传图片，MainChat 提供紧凑缩略图预览与大图查看器。
-- **语音输入 (Voice Input)**：内置基于 Whisper / Groq 的语音转写，点击麦克风录音即可实时转为 Prompt 输入文本。
+- **语音输入 (Voice Input)**：内置基于 Whisper / Groq 的语音转写，完成账户级语音转写配置后，点击麦克风录音，停止后转为 Prompt 输入文本。
 - **文件与行号跳转预览 (File Preview Modal)**：
   - 对话中输出的代码路径或链接（如 `src/app.ts#L42`）自动渲染为高亮交互链接。
   - 点击即可弹出文件预览模态框，支持语法高亮、精准行号高亮、相邻窗口分页与一键复制。
@@ -106,3 +106,11 @@ JSON.stringify(composerReport, null, 2);
 | `ADS_ADVISOR_CODEX_MODEL` | 未设置 | Advisor Lane 使用的专属 Codex 模型覆盖（旧名 `ADS_PLANNER_CODEX_MODEL` 仍兼容，已弃用） |
 | `ADS_ADVISOR_SANDBOX_MODE` | `danger-full-access` | Advisor Lane 沙箱权限覆盖；非法值回退为 `workspace-write`（旧名 `ADS_PLANNER_SANDBOX_MODE` 仍兼容，已弃用） |
 | `ADS_SCHEDULER_MODEL` | 未设置 | Scheduler 执行定时 Prompt 时使用的模型覆盖 |
+
+### 语音输入设置与验证
+
+在「模型配置」中分别进入 **语音转写** 和 **文本纠错**。两个页面各自填写服务地址、密钥和模型，纠错不从对话模型列表选择，也不显示角色指令。Web 路径不启动技能脚本、不写常规临时音频文件。API 保留 `POST /api/audio/transcriptions` 的 `ok`/`text`，并返回 `correction.status`、安全警告以及 `timings`。ASR 失败与纠错失败分别处理；可在处理期间取消，切换会话或关闭组件会取消上游工作并丢弃旧结果。
+
+`transcriptionMs` 包括 multipart 构造、上传、上游处理、响应读取与解析；`correctionMs` 包括可选纠错阶段或配置失败处理；`totalMs` 从服务收到已读取的音频缓冲区开始，包括校验、配置快照、两个阶段和协调开销，不包括浏览器录音和浏览器到 ADS 的上传。失败和超时同样记录阶段耗时。日志仅包含状态、提供商、字节数和耗时，不记录音频、文本、密钥、推理或原始上游错误。
+
+验证时应在 iOS Safari 和主屏幕安装模式分别检查：长 URL、密钥粘贴/替换、键盘打开/关闭、滚动及保存按钮、刷新和真实录音。自动化 DOM 测试不能替代这些设备验证。性能比较应使用同一批获授权的非敏感录音，分别统计旧技能路径与内置路径在相同模型/纠错设置下的样本数、端到端和各阶段延迟分布，另测 turbo 和关闭纠错；没有真实样本数据时不得声称性能提升。
