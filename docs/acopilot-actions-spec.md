@@ -186,7 +186,8 @@ CREATE INDEX IF NOT EXISTS idx_role_profiles_role ON role_profiles(role, is_enab
 * **远端基线分叉**：若合并后 `git pull --ff-only` 产生冲突，控制器保留特性分支现场并告警，等待人工解决冲突。
 
 ### 5.3 Detached Reviewer 边界与自愈死循环打破
-* **超大 Diff 预过滤**：发送给 Reviewer 的 Diff 自动过滤 `package-lock.json`、编译生成物与二进制文件；对超过 800 行的超大改动附带 `git diff --stat` 变更摘要；
+* **超大 Diff 预过滤**：发送给 Reviewer 的 Diff 自动过滤 `package-lock.json`、编译生成物与二进制文件；过滤后超过 1500 行时，在调用模型前确定性拒绝审核，不允许截断后的 Diff 获得 `PASS`；
+* **直接引用上下文**：从同一已固定的审核提交提取变更文件通过相对路径导入的本仓库声明，在 Diff 前单独展示，最多 32 个文件、累计 3000 行且源码内容不超过 64 KiB；完整声明整体保留或跳过，并说明遗漏。支持同文件辅助类型，不跨文件递归展开依赖或 barrel 重导出，不解析路径别名；源码和遗漏记录均视为不可信数据；
 * **人工特赦通道 (Human Override)**：达到 2 次重做上限后，状态置为 `review_rejected`，Actions 面板提供 `[ 强制放行提 PR ]` 与 `[ 放弃分支 ]` 操作，将终审裁决权交还人类；
 * **显式完工信号契约**：Developer 完工必须通过显式完成工具或状态契约通知控制器，禁止通过自然语言模糊匹配猜测完工状态。
 

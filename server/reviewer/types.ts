@@ -1,3 +1,13 @@
+export interface ReviewRelatedContext {
+  file: string;
+  content: string;
+}
+
+export interface ReviewContextOmission {
+  file: string;
+  reason: string;
+}
+
 export interface ReviewPayload {
   issue: {
     id?: number | null;
@@ -20,6 +30,8 @@ export interface ReviewPayload {
   diff: string;
   diffStat?: string;
   diffCaptureError?: string;
+  relatedContexts?: ReviewRelatedContext[];
+  relatedContextOmissions?: ReviewContextOmission[];
   testReport?: {
     command: string;
     exitCode: number;

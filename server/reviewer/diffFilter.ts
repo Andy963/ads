@@ -8,11 +8,13 @@ const EXCLUDED_PATTERNS = [
   /\.map$/,
 ];
 
+export const REVIEW_DIFF_MAX_LINES = 1500;
+
 export function shouldExcludeFileFromDiff(filePath: string): boolean {
   return EXCLUDED_PATTERNS.some((pattern) => pattern.test(filePath));
 }
 
-export function filterDiff(rawDiff: string, maxLines = 800, diffStat?: string): { diff: string; truncated: boolean } {
+export function filterDiff(rawDiff: string, maxLines = REVIEW_DIFF_MAX_LINES, diffStat?: string): { diff: string; truncated: boolean } {
   const lines = rawDiff.split("\n");
   const filteredLines: string[] = [];
   let skippingCurrentFile = false;
@@ -33,7 +35,7 @@ export function filterDiff(rawDiff: string, maxLines = 800, diffStat?: string): 
 
   if (filteredLines.length > maxLines) {
     const header = [
-      "=== DIFF SUMMARY (TRUNCATED DUE TO SIZE > 800 LINES) ===",
+      `=== DIFF SUMMARY (TRUNCATED DUE TO SIZE > ${maxLines} LINES) ===`,
       diffStat ? `Diff Stats:\n${diffStat}\n` : "",
       `Showing first ${maxLines} lines out of ${filteredLines.length}:\n`,
     ].filter(Boolean).join("\n");

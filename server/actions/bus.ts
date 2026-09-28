@@ -14,7 +14,8 @@ import {
   DEFAULT_REVIEWER_SYSTEM_PROMPT,
   runDetachedReview,
 } from "../reviewer/runner.js";
-import { filterDiff } from "../reviewer/diffFilter.js";
+import { filterDiff, REVIEW_DIFF_MAX_LINES } from "../reviewer/diffFilter.js";
+import { extractRelatedContexts } from "../reviewer/contextExtractor.js";
 import { parseReviewVerdict } from "../reviewer/verdictParser.js";
 import type { ReviewPayload, ReviewVerdict } from "../reviewer/types.js";
 import { getDefaultRoleProfile, getRoleProfileById } from "../state/roleProfileStore.js";
@@ -1128,7 +1129,7 @@ export class LaneDispatchBus {
     if (payload.diffCaptureError) {
       return createDiffCaptureFailureVerdict(payload.diffCaptureError, reviewerProfileId);
     }
-    const { truncated } = filterDiff(payload.diff, 800, payload.diffStat);
+    const { truncated } = filterDiff(payload.diff, REVIEW_DIFF_MAX_LINES, payload.diffStat);
     if (truncated) {
       return createIncompleteDiffVerdict(reviewerProfileId);
     }
@@ -1287,17 +1288,20 @@ export class LaneDispatchBus {
     });
 
     const diffBase = resolveImplementationDiffBase(repoPath);
-    const diffRes = spawnSync("git", ["diff", `${diffBase}...HEAD`], {
+    const baseCommitResult = spawnSync("git", ["rev-parse", diffBase], { cwd: repoPath, encoding: "utf8" });
+    const headCommitResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" });
+    const baseCommit = baseCommitResult.stdout?.trim();
+    const headCommit = headCommitResult.stdout?.trim();
+    const capturedRange = `${baseCommit}...${headCommit}`;
+    const diffRes = spawnSync("git", ["diff", capturedRange], {
       cwd: repoPath,
       encoding: "utf8",
     });
-    const diffStatRes = spawnSync("git", ["diff", "--stat", `${diffBase}...HEAD`], {
+    const diffStatRes = spawnSync("git", ["diff", "--stat", capturedRange], {
       cwd: repoPath,
       encoding: "utf8",
     });
 
-    const baseCommitResult = spawnSync("git", ["rev-parse", diffBase], { cwd: repoPath, encoding: "utf8" });
-    const headCommitResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" });
     const captureErrors: string[] = [];
     if (diffRes.status !== 0) captureErrors.push(`git diff exited with status ${String(diffRes.status)}`);
     if (diffStatRes.status !== 0) captureErrors.push(`git diff --stat exited with status ${String(diffStatRes.status)}`);
@@ -1307,8 +1311,6 @@ export class LaneDispatchBus {
     if (headCommitResult.status !== 0) captureErrors.push(`git rev-parse HEAD exited with status ${String(headCommitResult.status)}`);
     const diff = diffRes.stdout || "";
     const diffStat = diffStatRes.stdout || "";
-    const baseCommit = baseCommitResult.stdout?.trim();
-    const headCommit = headCommitResult.stdout?.trim();
     const evidenceError = validateGitEvidence({ diff, diffStat, baseCommit, headCommit });
     const issueSnapshot = parseActionJobIssueSnapshot(job);
 
@@ -1331,6 +1333,9 @@ export class LaneDispatchBus {
       diffStat,
       diffCaptureError: [...captureErrors, evidenceError].filter((error): error is string => Boolean(error)).join("; ") || undefined,
       testReport,
+      ...(!captureErrors.length && !evidenceError && !filterDiff(diff, REVIEW_DIFF_MAX_LINES, diffStat).truncated
+        ? extractRelatedContexts(repoPath, baseCommit!, headCommit!)
+        : {}),
     };
 
     const reviewerProfile = (job.reviewer_profile_ids_json ? JSON.parse(job.reviewer_profile_ids_json)[0] : null)
