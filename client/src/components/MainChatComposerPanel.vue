@@ -975,11 +975,13 @@ onBeforeUnmount(() => {
 }
 
 .inputWrap {
+  --composer-radius: 24px;
+  --composer-border-width: 1px;
   width: 100%;
   box-sizing: border-box;
   position: relative;
-  border-radius: 24px;
-  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: var(--composer-radius);
+  border: var(--composer-border-width) solid rgba(15, 23, 42, 0.1);
   background: #ffffff;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 8px 24px rgba(15, 23, 42, 0.06);
   display: flex;
@@ -1021,7 +1023,7 @@ onBeforeUnmount(() => {
 
 .composerMainRow--recording {
   background: var(--surface-2, #f1f5f9);
-  border-radius: 999px;
+  border-radius: calc(var(--composer-radius, 24px) - var(--composer-border-width, 1px));
   align-items: center;
   min-height: 68px;
   padding: 4px 8px;
@@ -1164,6 +1166,10 @@ onBeforeUnmount(() => {
 
 .composerMainRowRight {
   grid-area: right;
+}
+
+.composerMainRow--recording .composerMainRowRight {
+  gap: 16px;
 }
 
 .attachIcon {
