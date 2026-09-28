@@ -31,6 +31,7 @@
     "test:composer-layout-browser": "node scripts/test-composer-layout-browser.js",
     "test:chat-browser": "node scripts/test-chat-browser.js",
     "test:execute-marquee-browser": "node scripts/test-execute-marquee-browser.js",
+    "test:role-prompt-keyboard-browser": "node scripts/test-role-prompt-keyboard-browser.js",
     "postbuild": "node scripts/chmod-bins.js",
     "bundle": "npm run build && node scripts/bundle.js",
     "deploy:local": "node scripts/deploy-local.js",
