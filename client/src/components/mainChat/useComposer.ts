@@ -12,7 +12,7 @@ import {
 } from "../../lib/voiceWaveform";
 
 type VoiceStatusKind = "idle" | "recording" | "transcribing" | "error" | "ok";
-type TranscriptionResponse = { ok?: boolean; text?: string; error?: string; message?: string };
+type TranscriptionResponse = { ok?: boolean; text?: string; error?: string; message?: string; correction?: { status: string; warning?: string } };
 
 const COMPOSER_MIN_ROWS = 1;
 const COMPOSER_MAX_ROWS = 5;
@@ -92,6 +92,7 @@ export function useMainChatComposer(params: {
   pendingImages: ReadonlyArray<IncomingImage>;
   isBusy: () => boolean;
   isInputLocked?: () => boolean;
+  isVoiceInputActive?: () => boolean;
   getApiToken: () => string;
   onSend: (content: string) => boolean | void;
   onAddImages: (images: IncomingImage[]) => void;
@@ -321,7 +322,9 @@ export function useMainChatComposer(params: {
   const voiceStatusMessage = ref("");
   const voiceWaveformLevels = ref(createIdleVoiceWaveformLevels());
   const voiceWaveformReactive = ref(false);
-  let isCancelledRecording = false;
+  let voiceGeneration = 0;
+  let microphonePending = false;
+  let transcriptionController: AbortController | null = null;
   let sendAfterTranscribe = false;
   let voiceToastTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -495,7 +498,12 @@ export function useMainChatComposer(params: {
     }
   };
 
-  const transcribeAudio = async (blob: Blob): Promise<void> => {
+  const transcribeAudio = async (blob: Blob, generation: number): Promise<void> => {
+    if (generation !== voiceGeneration) return;
+    transcriptionController?.abort();
+    const controller = new AbortController();
+    transcriptionController = controller;
+    const current = () => generation === voiceGeneration && !controller.signal.aborted;
     transcribing.value = true;
     setVoiceStatus("idle", "");
     try {
@@ -506,8 +514,9 @@ export function useMainChatComposer(params: {
       }
       headers["Content-Type"] = blob.type || "application/octet-stream";
 
-      const res = await fetch("/api/audio/transcriptions", { method: "POST", headers, body: blob });
+      const res = await fetch("/api/audio/transcriptions", { method: "POST", headers, body: blob, signal: controller.signal });
       const payload = (await res.json().catch(() => null)) as TranscriptionResponse | null;
+      if (!current()) return;
       if (!res.ok) {
         const message = String(payload?.error ?? payload?.message ?? `HTTP ${res.status}`).trim();
         throw new Error(message || `HTTP ${res.status}`);
@@ -520,21 +529,31 @@ export function useMainChatComposer(params: {
         return;
       }
       await insertIntoComposer(text);
+      if (!current()) return;
+      transcribing.value = false;
       if (sendAfterTranscribe) {
         sendAfterTranscribe = false;
         await nextTick();
-        send();
+        if (current()) send();
+        if (current() && payload?.correction?.status === "failed") {
+          setVoiceStatus("ok", "纠错失败，已保留原始转写。", 5000);
+        }
       } else {
-        setVoiceStatus("ok", "已追加语音文本", 1200);
+        setVoiceStatus("ok", payload?.correction?.status === "failed" ? "已追加语音文本；纠错失败，已保留原文。" : "已追加语音文本", payload?.correction?.status === "failed" ? 5000 : 1200);
       }
     } catch (error) {
+      if (!current()) return;
+      sendAfterTranscribe = false;
       const raw = error instanceof Error ? error.message : String(error);
       const lowered = raw.trim().toLowerCase();
       const message =
         lowered.includes("fetch failed") || lowered.includes("failed to fetch") ? "语音识别上游连接失败（检查网络/KEY）" : raw;
       setVoiceStatus("error", message || "语音识别失败", 4000);
     } finally {
-      transcribing.value = false;
+      if (transcriptionController === controller) {
+        transcriptionController = null;
+        transcribing.value = false;
+      }
     }
   };
 
@@ -545,13 +564,18 @@ export function useMainChatComposer(params: {
       setVoiceStatus("error", "当前浏览器不支持录音", 3500);
       return;
     }
-    if (params.isBusy() || params.isInputLocked?.() || transcribing.value || recording.value) {
+    if (params.isBusy() || params.isInputLocked?.() || params.isVoiceInputActive?.() === false || transcribing.value || recording.value || microphonePending) {
       return;
     }
+    const generation = ++voiceGeneration;
+    microphonePending = true;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (generation !== voiceGeneration || params.isInputLocked?.() || params.isBusy()) {
+        for (const track of stream.getTracks()) track.stop();
+        return;
+      }
       cleanupRecorder();
-      isCancelledRecording = false;
       sendAfterTranscribe = false;
       recorderStream = stream;
       recorderChunks = [];
@@ -559,25 +583,22 @@ export function useMainChatComposer(params: {
       recorder = new MediaRecorder(stream, recorderMime ? { mimeType: recorderMime } : undefined);
 
       recorder.ondataavailable = (ev) => {
+        if (generation !== voiceGeneration) return;
         if (ev.data && ev.data.size > 0) {
           recorderChunks.push(ev.data);
         }
       };
       recorder.onerror = () => {
-        recording.value = false;
-        cleanupRecorder();
+        if (generation !== voiceGeneration) return;
+        cancelRecording();
         setVoiceStatus("error", "录音失败", 3500);
       };
       recorder.onstop = () => {
-        if (isCancelledRecording) {
-          isCancelledRecording = false;
-          cleanupRecorder();
-          return;
-        }
+        if (generation !== voiceGeneration) return;
         const type = recorderMime || recorder?.mimeType || recorderChunks[0]?.type || "audio/webm";
         const blob = new Blob(recorderChunks, { type });
         cleanupRecorder();
-        void transcribeAudio(blob);
+        void transcribeAudio(blob, generation);
       };
 
       recorder.start();
@@ -585,10 +606,13 @@ export function useMainChatComposer(params: {
       startVoiceAnalysis(stream);
       setVoiceStatus("idle", "");
     } catch (error) {
+      if (generation !== voiceGeneration) return;
       recording.value = false;
       cleanupRecorder();
       const message = error instanceof Error ? error.message : String(error);
       setVoiceStatus("error", `无法访问麦克风：${message}`, 4500);
+    } finally {
+      if (generation === voiceGeneration) microphonePending = false;
     }
   };
 
@@ -616,8 +640,10 @@ export function useMainChatComposer(params: {
   };
 
   const cancelRecording = (): void => {
-    if (!recording.value && !transcribing.value) return;
-    isCancelledRecording = true;
+    voiceGeneration += 1;
+    microphonePending = false;
+    transcriptionController?.abort();
+    transcriptionController = null;
     sendAfterTranscribe = false;
     recording.value = false;
     transcribing.value = false;
@@ -631,6 +657,9 @@ export function useMainChatComposer(params: {
     recorderChunks = [];
     setVoiceStatus("idle", "");
   };
+
+  watch(() => params.getDraftScope?.(), () => cancelRecording(), { flush: "sync" });
+  watch(() => params.isVoiceInputActive?.(), (active) => { if (active === false) cancelRecording(); }, { flush: "sync" });
 
   const stopAndSend = (): void => {
     if (!recording.value && !transcribing.value) return;
@@ -857,17 +886,8 @@ export function useMainChatComposer(params: {
   };
 
   onBeforeUnmount(() => {
+    cancelRecording();
     clearVoiceToast();
-    isCancelledRecording = true;
-    sendAfterTranscribe = false;
-    recording.value = false;
-    transcribing.value = false;
-    try {
-      recorder?.stop();
-    } catch {
-      // ignore
-    }
-    cleanupRecorder();
   });
 
   return {

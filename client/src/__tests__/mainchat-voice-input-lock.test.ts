@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mount } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 
 import MainChatComposerPanel from "../components/MainChatComposerPanel.vue";
@@ -430,4 +430,84 @@ describe("MainChat composer voice input locking", () => {
     expect(trackStop).toHaveBeenCalledTimes(1);
     wrapper.unmount();
   });
+  it("aborts stale transcription after cancellation, navigation, or unmount without inserting or sending", async () => {
+    for (const action of ["cancel", "navigate", "hide", "unmount"]) {
+      const pending = Promise.withResolvers<Response>();
+      const fetchMock = vi.fn().mockReturnValue(pending.promise);
+      globalThis.fetch = fetchMock;
+      const wrapper = mount(MainChatComposerPanel, {
+        props: { queuedPrompts: [], pendingImages: [], connected: true, busy: false, latestPromptKey: "project:session-a" },
+        global: { stubs: { MainChatPendingImageViewer: true } },
+      });
+      await wrapper.get("button.micIcon").trigger("click");
+      await flushPromises();
+      await wrapper.get('[data-testid="composer-send-btn"]').trigger("click");
+      await flushPromises();
+      const signal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+      if (action === "cancel") await wrapper.get('[data-testid="voice-cancel-btn"]').trigger("click");
+      if (action === "navigate") await wrapper.setProps({ latestPromptKey: "project:session-b", draft: "new draft" });
+      if (action === "hide") await wrapper.setProps({ voiceInputActive: false });
+      if (action === "unmount") wrapper.unmount();
+      expect(signal.aborted).toBe(true);
+      pending.resolve({ ok: true, json: async () => ({ ok: true, text: "stale text" }) } as Response);
+      await flushPromises();
+      expect(JSON.stringify(wrapper.emitted("update:draft") ?? [])).not.toContain("stale text");
+      expect(wrapper.emitted("send")).toBeUndefined();
+      if (action !== "unmount") wrapper.unmount();
+    }
+  });
+
+  it("sends exactly once after a current stop-and-send request completes", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, text: "current text", correction: { status: "failed" } }) });
+    const wrapper = mount(MainChatComposerPanel, {
+      props: { queuedPrompts: [], pendingImages: [], connected: true, busy: false },
+      global: { stubs: { MainChatPendingImageViewer: true } },
+    });
+    await wrapper.get("button.micIcon").trigger("click");
+    await flushPromises();
+    await wrapper.get('[data-testid="composer-send-btn"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.emitted("send")).toEqual([["current text"]]);
+    expect(wrapper.text()).toContain("纠错失败");
+    wrapper.unmount();
+  });
+
+  it("releases a microphone granted after navigation without starting a recorder", async () => {
+    const pending = Promise.withResolvers<MediaStream>();
+    const stop = vi.fn();
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia: () => pending.promise } });
+    const wrapper = mount(MainChatComposerPanel, {
+      props: { queuedPrompts: [], pendingImages: [], connected: true, busy: false, latestPromptKey: "first" },
+      global: { stubs: { MainChatPendingImageViewer: true } },
+    });
+    await wrapper.get("button.micIcon").trigger("click");
+    await wrapper.setProps({ latestPromptKey: "second" });
+    pending.resolve({ getTracks: () => [{ stop }] } as unknown as MediaStream);
+    await flushPromises();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(FakeMediaRecorder.latest).toBeNull();
+    wrapper.unmount();
+  });
+
+  it("unlocks the composer when an error arrives after stopping but before the recorder stop event", async () => {
+    globalThis.fetch = vi.fn();
+    const wrapper = mount(MainChatComposerPanel, {
+      props: { queuedPrompts: [], pendingImages: [], connected: true, busy: false },
+      global: { stubs: { MainChatPendingImageViewer: true } },
+    });
+    await wrapper.get("button.micIcon").trigger("click");
+    await flushPromises();
+    const recorder = FakeMediaRecorder.latest!;
+    vi.spyOn(recorder, "stop").mockImplementation(() => {});
+    await wrapper.get('[data-testid="voice-stop-btn"]').trigger("click");
+    expect(wrapper.find(".voiceIndicator.transcribing").exists()).toBe(true);
+    recorder.onerror?.();
+    recorder.onstop?.();
+    await flushPromises();
+    expect(wrapper.find(".voiceIndicator.transcribing").exists()).toBe(false);
+    expect(wrapper.get("button.micIcon").attributes("disabled")).toBeUndefined();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
 });

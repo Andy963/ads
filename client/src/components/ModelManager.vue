@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { Close, CopyDocument, EditPen, Plus, Refresh, StarFilled } from "@element-plus/icons-vue";
 
+import VoiceSettings from "./VoiceSettings.vue";
 import type { ApiClient } from "../api/client";
 import type { LaneName, LanePromptSnapshot, ModelConfig, StoredRoleProfileValue } from "../api/types";
 import { STORED_ROLE_PROFILE_VALUES } from "../../../shared/terminology.js";
@@ -76,6 +77,7 @@ const editingId = ref<string | null>(null);
 const dialogOpen = ref(false);
 const selectedModelId = ref<string | null>(null);
 const activeTab = ref<SettingsTab>(props.initialTab);
+const modelSection = ref<"conversation" | "voice" | "correction">("conversation");
 const selectedRole = ref<StoredRoleProfileValue>("acopilot");
 const roleProfiles = ref<RoleProfile[]>([]);
 const roleProfileBaselines = reactive<Record<StoredRoleProfileValue, RoleProfileBaseline | null>>({
@@ -1115,7 +1117,7 @@ defineExpose({
       </div>
       <div class="modelHeaderActions">
         <button
-          v-if="activeTab === 'models'"
+          v-if="activeTab === 'models' && modelSection === 'conversation'"
           type="button"
           class="syncBtn"
           title="同步上游模型"
@@ -1127,7 +1129,7 @@ defineExpose({
           <span>同步上游</span>
         </button>
         <button
-          v-if="activeTab === 'models'"
+          v-if="activeTab === 'models' && modelSection === 'conversation'"
           type="button"
           class="addBtn"
           :disabled="busy"
@@ -1172,6 +1174,13 @@ defineExpose({
       </button>
     </nav>
 
+    <nav v-if="activeTab === 'models'" class="settingsTabs" aria-label="模型配置分区">
+      <button type="button" class="settingsTab" :class="{ active: modelSection === 'conversation' }" :aria-pressed="modelSection === 'conversation'" @click="modelSection = 'conversation'">对话模型</button>
+      <button type="button" class="settingsTab" :class="{ active: modelSection === 'voice' }" :aria-pressed="modelSection === 'voice'" data-testid="voice-settings-tab" @click="modelSection = 'voice'">语音转写</button>
+      <button type="button" class="settingsTab" :class="{ active: modelSection === 'correction' }" :aria-pressed="modelSection === 'correction'" data-testid="correction-settings-tab" @click="modelSection = 'correction'">文本纠错</button>
+    </nav>
+    <VoiceSettings v-if="activeTab === 'models' && modelSection !== 'conversation'" :key="modelSection" :api="api" :section="modelSection === 'voice' ? 'transcription' : 'correction'" />
+
     <div
       v-if="error && !dialogOpen && activeTab === 'models'"
       class="modelBanner error"
@@ -1182,7 +1191,7 @@ defineExpose({
     </div>
 
     <div
-      v-if="activeTab === 'models'"
+      v-if="activeTab === 'models' && modelSection === 'conversation'"
       id="settings-panel-models"
       class="cliList"
       role="tabpanel"
@@ -1372,7 +1381,7 @@ defineExpose({
     </div>
 
     <div
-      v-else
+      v-else-if="activeTab === 'roles' || activeTab === 'lane-prompts'"
       id="settings-panel-lane-prompts"
       ref="lanePromptPanel"
       class="lanePromptPanel"
