@@ -1454,6 +1454,7 @@
 .actionsQueueRow {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
   padding: 4px 6px;
@@ -1535,26 +1536,6 @@
   text-overflow: ellipsis;
 }
 
-.actionsJobAttempts {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  margin: 2px 0 0;
-  padding: 0;
-  list-style: none;
-  color: var(--muted-2);
-  font-size: 11px;
-  font-weight: 400;
-}
-
-.actionsJobAttempt {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .actionsJobBlockedFor {
   margin-top: 2px;
   color: var(--muted-2);
@@ -1565,6 +1546,8 @@
 .actionsJobActions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
   flex-shrink: 0;
   margin-left: auto;

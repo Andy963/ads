@@ -40,7 +40,7 @@ import {
   Clock,
 } from "@element-plus/icons-vue";
 import { isLaneConnected } from "./lib/laneConnectionStatus";
-import { formatBlockedDuration, hasLockingActionJob, parseActionJobAttempts } from "./lib/actionJobs";
+import { formatBlockedDuration, hasLockingActionJob } from "./lib/actionJobs";
 const {
   isExecuteBlockFixture,
   loggedIn,
@@ -268,13 +268,11 @@ type ActionJobItem = {
 
 const actionJobs = ref<ActionJobItem[]>([]);
 
-const actionJobAttemptsById = computed<Record<string, ReturnType<typeof parseActionJobAttempts>>>(() => {
-  const entries: Record<string, ReturnType<typeof parseActionJobAttempts>> = {};
-  for (const job of actionJobs.value) {
-    entries[job.id] = parseActionJobAttempts(job.attempts_json);
-  }
-  return entries;
-});
+// Blocked and failed jobs keep the banner to the title plus the blocked
+// duration. The lane conversation carries the failure text at full width.
+function isActionJobDetailOnly(job: ActionJobItem): boolean {
+  return job.status === "blocked" || job.status === "failed";
+}
 
 function actionJobBlockedFor(job: ActionJobItem): string | null {
   return job.status === "blocked"
@@ -1979,25 +1977,12 @@ const acopilotConnectionStatus = computed(() => {
                       {{ job.issue_id ? `#${job.issue_id}: ` : '' }}{{ job.issue_title }}
                     </span>
                     <span
-                      v-if="job.current_step"
+                      v-if="job.current_step && !isActionJobDetailOnly(job)"
                       class="actionsJobStep"
                       :data-testid="`actions-job-step-${job.id}`"
                     >
                       {{ job.current_step }}
                     </span>
-                    <ul
-                      v-if="(actionJobAttemptsById[job.id] ?? []).length"
-                      class="actionsJobAttempts"
-                      :data-testid="`actions-job-attempts-${job.id}`"
-                    >
-                      <li
-                        v-for="attempt in actionJobAttemptsById[job.id] ?? []"
-                        :key="attempt.attempt"
-                        class="actionsJobAttempt"
-                      >
-                        {{ `Attempt ${attempt.attempt} (${attempt.stage}): ${attempt.failure}` }}
-                      </li>
-                    </ul>
                     <span v-if="actionJobBlockedFor(job)" class="actionsJobBlockedFor">
                       {{ `Blocked for ${actionJobBlockedFor(job)}` }}
                     </span>
