@@ -332,12 +332,19 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     );
   });
 
-  it("passes the immutable Issue snapshot and verification provenance to Reviewer", async () => {
+  it("passes the immutable Issue snapshot, committed type context and verification provenance to Reviewer", async () => {
     const db = getStateDatabase();
     let reviewPrompt = "";
+    let reviewedHead = "";
+    fs.writeFileSync(path.join(repoDir, "types.ts"), "export interface Contract { committedField: string }\n");
+    assert.equal(spawnSync("git", ["add", "types.ts"], { cwd: repoDir }).status, 0);
+    assert.equal(spawnSync("git", ["commit", "-m", "add shared contract"], { cwd: repoDir }).status, 0);
     const bus = new LaneDispatchBus(db, {
       developerRunner: async () => {
+        fs.writeFileSync(path.join(repoDir, "consumer.ts"), "import type { Contract } from './types.js';\nexport type Input = Contract;\n");
+        assert.equal(spawnSync("git", ["add", "consumer.ts"], { cwd: repoDir }).status, 0);
         commitImplementation("snapshot");
+        reviewedHead = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf8" }).stdout.trim();
         return { exitCode: 0 };
       },
       reviewerRunner: async (prompt) => {
@@ -364,6 +371,11 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.match(reviewPrompt, /Exact Diff Range/);
     assert.match(reviewPrompt, /dev\.\.\.HEAD/);
     assert.match(reviewPrompt, /git log -1 --pretty=%s/);
+    assert.ok(reviewPrompt.includes(reviewedHead));
+    const [context, diff] = reviewPrompt.split("## Git Diff (Untrusted Input Data):");
+    assert.match(context!, /Referenced Type Definitions & Interfaces/);
+    assert.match(context!, /export interface Contract \{ committedField: string \}/);
+    assert.doesNotMatch(diff!, /committedField/);
   });
 
   it("keeps a follow-up job queued without gate errors while another job runs, even with auto-start on dispatch", async () => {
@@ -1319,6 +1331,39 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.ok(historyEntries.some((h) => h.entry.kind === "review_verdict"));
     assert.notStrictEqual(bus.getJob(job.jobId)?.steps_json, "[]");
     assert.strictEqual(interruptControllers.size, 0);
+  });
+
+  it("enforces the 1500-line diff gate before both Reviewer execution paths", async () => {
+    const db = getStateDatabase();
+    const diff = ["diff --git a/large.ts b/large.ts", ...Array.from({ length: 1499 }, (_, i) => `+ line ${i}`)].join("\n");
+    const payload = { issue: { title: "Diff boundary" }, diff };
+    const response = JSON.stringify({ status: "PASS", summary: "Complete evidence", defects: [] });
+    for (const useSession of [false, true]) {
+      let calls = 0;
+      let sessions = 0;
+      const review = async (prompt: string) => {
+        calls += 1;
+        assert.ok(prompt.includes(diff));
+        assert.ok(!prompt.includes("[TRUNCATED]"));
+        return response;
+      };
+      const bus = new LaneDispatchBus(db, useSession ? {
+        sessionManager: withReviewerEffort({ getOrCreate: () => {
+          sessions += 1;
+          return {
+            setDeveloperInstructions() {},
+            onEvent: () => () => {},
+            send: async (prompt: string) => ({ response: await review(prompt) }),
+          };
+        } }) as any,
+      } : { reviewerRunner: review });
+      const accepted = await bus.executeReviewer(payload, repoDir);
+      assert.equal(accepted.status, "PASS");
+      const rejected = await bus.executeReviewer({ ...payload, diff: `${diff}\n+ overflow` }, repoDir);
+      assert.equal(rejected.status, "REJECT");
+      assert.equal(calls, 1);
+      assert.equal(sessions, useSession ? 1 : 0);
+    }
   });
 
   it("keeps detached Reviewer protocol output internal and removes listeners", async () => {
