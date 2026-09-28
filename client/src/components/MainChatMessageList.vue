@@ -288,7 +288,18 @@ const renderMessages = computed<RenderMessage[]>(() => {
 
     processed.push(...visibleTurn);
   }
-  return processed;
+
+  // The transcript keeps a single replaceable command slot: a new command
+  // supersedes the previous one, so only the latest execute block is visible.
+  let latestExecuteIndex = -1;
+  for (let index = processed.length - 1; index >= 0; index -= 1) {
+    if (processed[index]?.kind === "execute") {
+      latestExecuteIndex = index;
+      break;
+    }
+  }
+  if (latestExecuteIndex < 0) return processed;
+  return processed.filter((msg, index) => msg.kind !== "execute" || index === latestExecuteIndex);
 });
 
 const loadedMessages = computed<RenderMessage[]>(() =>
@@ -297,18 +308,19 @@ const loadedMessages = computed<RenderMessage[]>(() =>
 
 const hasEarlierMessages = computed(() => loadedStart.value > 0);
 
-// Only the running execute rows can enter or leave the marquee state, so the
-// layout pass is keyed on those instead of the whole transcript, which changes
-// on every streamed token and would force a synchronous reflow per chunk.
-const runningExecuteSignature = computed(() =>
+// Only the execute row can enter or leave the marquee state, so the layout
+// pass is keyed on it instead of the whole transcript, which changes on every
+// streamed token and would force a synchronous reflow per chunk.
+const executeCommandSignature = computed(() =>
   renderMessages.value
-    .filter((message) => message.kind === "execute" && message.streaming)
-    .map((message) => `${message.id}:${message.command ?? ""}`)
+    .filter((message) => message.kind === "execute")
+    .map((message) => `${String(message.id ?? "").trim()}:${message.command ?? ""}:${message.streaming ? 1 : 0}`)
     .join("|"),
 );
 
-function isExecuteCommandOverflowing(messageId: string): boolean {
-  return overflowingExecuteCommandIds.value.has(messageId);
+function isExecuteCommandOverflowing(messageId: unknown): boolean {
+  const key = String(messageId ?? "").trim();
+  return Boolean(key && overflowingExecuteCommandIds.value.has(key));
 }
 
 function updateExecuteCommandOverflow(): void {
@@ -316,12 +328,14 @@ function updateExecuteCommandOverflow(): void {
   if (!root) return;
 
   const next = new Set<string>();
-  root.querySelectorAll<HTMLElement>(".execute-block--running .execute-cmd").forEach((commandEl) => {
-    const messageId = commandEl.dataset.messageId;
+  root.querySelectorAll<HTMLElement>(".execute-block .execute-cmd").forEach((commandEl) => {
+    const messageId = String(commandEl.dataset.messageId ?? "").trim();
     const textEl = commandEl.querySelector<HTMLElement>(".execute-cmd-copy");
     if (!messageId || !textEl) return;
 
-    if (textEl.getBoundingClientRect().width > commandEl.clientWidth) {
+    const containerWidth = commandEl.clientWidth || commandEl.getBoundingClientRect().width;
+    const textWidth = Math.max(textEl.scrollWidth, textEl.getBoundingClientRect().width);
+    if (containerWidth > 0 && textWidth > containerWidth + 0.5) {
       next.add(messageId);
     }
   });
@@ -337,14 +351,18 @@ function observeExecuteCommandSizes(): void {
 
   if (typeof ResizeObserver === "undefined") return;
   const commandElements = messageListEl.value?.querySelectorAll<HTMLElement>(
-    ".execute-block--running .execute-cmd",
+    ".execute-block .execute-cmd",
   );
   if (!commandElements?.length) return;
 
   executeCommandResizeObserver = new ResizeObserver(() => {
     updateExecuteCommandOverflow();
   });
-  commandElements.forEach((element) => executeCommandResizeObserver?.observe(element));
+  commandElements.forEach((element) => {
+    executeCommandResizeObserver?.observe(element);
+    const copy = element.querySelector<HTMLElement>(".execute-cmd-copy");
+    if (copy) executeCommandResizeObserver?.observe(copy);
+  });
 }
 
 function refreshExecuteCommandLayout(): void {
@@ -436,6 +454,11 @@ onMounted(() => {
   messageScrollRoot = (messageListEl.value?.closest(".chat") as HTMLElement | null) ?? messageListEl.value?.parentElement ?? null;
   observeEarlierMessagesSentinel();
   refreshExecuteCommandLayout();
+  if (typeof document !== "undefined" && "fonts" in document) {
+    void document.fonts.ready.then(() => {
+      refreshExecuteCommandLayout();
+    });
+  }
 });
 
 onBeforeUnmount(() => {
@@ -446,7 +469,7 @@ onBeforeUnmount(() => {
   messageScrollRoot = null;
 });
 
-watch([runningExecuteSignature, loadedStart], refreshExecuteCommandLayout, { flush: "post" });
+watch([executeCommandSignature, loadedStart], refreshExecuteCommandLayout, { flush: "post" });
 
 defineExpose({ loadEarlierMessages });
 
@@ -606,16 +629,17 @@ function retryUserTurn(message: RenderMessage, index: number): void {
         <div class="execute-header">
           <div class="execute-left">
             <span class="prompt-tag">&gt;_</span>
-            <span
+            <div
               class="execute-cmd"
               :class="{ 'execute-cmd--overflowing': isExecuteCommandOverflowing(m.id) }"
               :data-message-id="m.id"
               :title="m.command || ''"
             >
-              <span class="execute-cmd-track" :data-command="m.command || ''">
+              <div :key="m.command" class="execute-cmd-track">
                 <span class="execute-cmd-copy">{{ m.command || "" }}</span>
-              </span>
-            </span>
+                <span v-if="isExecuteCommandOverflowing(m.id)" class="execute-cmd-copy" aria-hidden="true">{{ m.command || "" }}</span>
+              </div>
+            </div>
             <span v-if="m.streaming" class="executeLoadingDots" aria-label="Running...">
               <span class="executeLoadingDot"></span>
               <span class="executeLoadingDot"></span>
@@ -871,7 +895,8 @@ function retryUserTurn(message: RenderMessage, index: number): void {
   color: #0f172a;
   font-size: 14px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  width: 0;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -884,31 +909,24 @@ function retryUserTurn(message: RenderMessage, index: number): void {
 }
 
 .execute-cmd-copy {
+  display: inline-block;
+  width: max-content;
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
-.execute-block--running .execute-cmd--overflowing {
+.execute-cmd--overflowing {
   text-overflow: clip;
 }
 
-.execute-block--running .execute-cmd--overflowing .execute-cmd-track {
+.execute-cmd--overflowing .execute-cmd-track {
   --execute-marquee-gap: 32px;
   --execute-marquee-gap-half: 16px;
   display: inline-flex;
   width: max-content;
   gap: var(--execute-marquee-gap);
-  animation: execute-command-marquee 16s linear infinite;
+  animation: execute-command-marquee 20s linear infinite;
   will-change: transform;
-}
-
-.execute-block--running .execute-cmd--overflowing .execute-cmd-track::after {
-  content: attr(data-command);
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-
-.execute-block--running:hover .execute-cmd--overflowing .execute-cmd-track {
-  animation-play-state: paused;
 }
 
 @keyframes execute-command-marquee {
@@ -921,15 +939,12 @@ function retryUserTurn(message: RenderMessage, index: number): void {
   }
 }
 
+/* Command scrolling exposes otherwise clipped content. Keep this functional
+   motion without changing the global reduced-motion policy for other UI. */
 @media (prefers-reduced-motion: reduce) {
-  .execute-block--running .execute-cmd--overflowing {
-    overflow-x: auto;
-    overflow-y: hidden;
-    text-overflow: clip;
-  }
-
-  .execute-block--running .execute-cmd--overflowing .execute-cmd-track {
-    animation: none !important;
+  .execute-cmd--overflowing .execute-cmd-track {
+    animation-duration: 20s !important;
+    animation-iteration-count: infinite !important;
   }
 }
 

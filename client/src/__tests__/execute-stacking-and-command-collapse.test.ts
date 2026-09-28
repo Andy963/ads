@@ -71,7 +71,6 @@ describe("chat execute stacking and command collapse", () => {
     await settleUi(wrapper);
     expect(wrapper.get(".execute-cmd").text()).toBe("cmd-1");
     expect(wrapper.get(".execute-cmd").attributes("title")).toBe("cmd-1");
-    expect(wrapper.get(".execute-cmd-track").attributes("data-command")).toBe("cmd-1");
     expect(wrapper.findAll(".execute-cmd-copy")).toHaveLength(1);
     expect(wrapper.get(".execute-block").findAll("button")).toHaveLength(0);
     expect(wrapper.find(".execute-output").exists()).toBe(false);
@@ -119,12 +118,10 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("marks only overflowing running commands for marquee scrolling", async () => {
+  it("detects clipped text from its scroll width even after the command completes", async () => {
     const wrapper = mount(MainChatMessageList, {
       props: {
         messages: [
-          { id: "e-long", role: "system", kind: "execute", content: "out", command: "long command", streaming: true },
-          { id: "e-short", role: "system", kind: "execute", content: "out", command: "short", streaming: true },
           { id: "e-done", role: "system", kind: "execute", content: "out", command: "completed long command" },
         ],
         copiedMessageId: null,
@@ -146,18 +143,55 @@ describe("chat execute stacking and command collapse", () => {
     });
 
     const commands = wrapper.findAll(".execute-cmd");
-    commands.forEach((command, index) => {
-      Object.defineProperty(command.element, "clientWidth", { configurable: true, value: 100 });
-      vi.spyOn(command.get(".execute-cmd-copy").element, "getBoundingClientRect").mockReturnValue({
-        width: index === 0 ? 200 : 80,
-      } as DOMRect);
-    });
+    expect(commands).toHaveLength(1);
+    expect(wrapper.get(".execute-block").classes()).not.toContain("execute-block--running");
+    Object.defineProperty(commands[0].element, "clientWidth", { configurable: true, value: 100 });
+    Object.defineProperty(commands[0].get(".execute-cmd-copy").element, "scrollWidth", { configurable: true, value: 200 });
+    vi.spyOn(commands[0].get(".execute-cmd-copy").element, "getBoundingClientRect").mockReturnValue({
+      width: 100,
+    } as DOMRect);
 
     await settleUi(wrapper);
 
     expect(commands[0].classes()).toContain("execute-cmd--overflowing");
-    expect(commands[1].classes()).not.toContain("execute-cmd--overflowing");
-    expect(commands[2].classes()).not.toContain("execute-cmd--overflowing");
+    expect(wrapper.findAll(".execute-cmd-copy")).toHaveLength(2);
+
+    wrapper.unmount();
+  });
+
+  it("does not mark a completed command that fits", async () => {
+    const wrapper = mount(MainChatMessageList, {
+      props: {
+        messages: [
+          { id: "e-done", role: "system", kind: "execute", content: "out", command: "short" },
+        ],
+        copiedMessageId: null,
+        formatMessageTs: () => "",
+        liveStepExpanded: false,
+        liveStepHasOverflow: false,
+        liveStepCanToggleExpanded: false,
+        liveStepOutlineItems: [],
+        liveStepOutlineHiddenCount: 0,
+        liveStepCollapsedTrivialOutline: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+          ChatFilePreviewModal: true,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    const commands = wrapper.findAll(".execute-cmd");
+    Object.defineProperty(commands[0].element, "clientWidth", { configurable: true, value: 100 });
+    vi.spyOn(commands[0].get(".execute-cmd-copy").element, "getBoundingClientRect").mockReturnValue({
+      width: 80,
+    } as DOMRect);
+
+    await settleUi(wrapper);
+
+    expect(commands[0].classes()).not.toContain("execute-cmd--overflowing");
 
     wrapper.unmount();
   });
@@ -209,6 +243,43 @@ describe("chat execute stacking and command collapse", () => {
     expect(command.classes()).toContain("execute-cmd--overflowing");
 
     wrapper.unmount();
+  });
+
+  it("preserves the scrolling track on completion but replaces it when the command changes", async () => {
+    const message = { id: "exec:latest", role: "system" as const, kind: "execute" as const, content: "", command: "first long command", streaming: true };
+    const wrapper = mount(MainChatMessageList, {
+      props: {
+        messages: [message],
+        copiedMessageId: null,
+        formatMessageTs: () => "",
+        liveStepExpanded: false,
+        liveStepHasOverflow: false,
+        liveStepCanToggleExpanded: false,
+        liveStepOutlineItems: [],
+        liveStepOutlineHiddenCount: 0,
+        liveStepCollapsedTrivialOutline: false,
+      },
+      attachTo: document.body,
+    });
+    try {
+      const command = wrapper.get(".execute-cmd");
+      Object.defineProperty(command.element, "clientWidth", { configurable: true, value: 100 });
+      vi.spyOn(command.get(".execute-cmd-copy").element, "getBoundingClientRect").mockReturnValue({ width: 300 } as DOMRect);
+      await settleUi(wrapper);
+      const runningTrack = command.get(".execute-cmd-track").element;
+      expect(command.classes()).toContain("execute-cmd--overflowing");
+
+      await wrapper.setProps({ messages: [{ ...message, streaming: false }] });
+      await settleUi(wrapper);
+      expect(command.get(".execute-cmd-track").element).toBe(runningTrack);
+      expect(command.classes()).toContain("execute-cmd--overflowing");
+
+      await wrapper.setProps({ messages: [{ ...message, command: "next long command" }] });
+      expect(command.get(".execute-cmd-track").element).not.toBe(runningTrack);
+      expect(command.attributes("title")).toBe("next long command");
+    } finally {
+      wrapper.unmount();
+    }
   });
 
   it("never renders legacy full output or output expansion controls", async () => {
@@ -365,7 +436,7 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("shows all finalized execute history blocks in arrival order", async () => {
+  it("keeps only the latest finalized command visible", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -391,15 +462,15 @@ describe("chat execute stacking and command collapse", () => {
     await settleUi(wrapper);
 
     const blocks = wrapper.findAll(".execute-block");
-    expect(blocks).toHaveLength(3);
-    expect(blocks.map((block) => block.find(".execute-cmd").text())).toEqual(["cmd-1", "cmd-2", "cmd-3"]);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].find(".execute-cmd").text()).toBe("cmd-3");
     expect(wrapper.findAll(".execute-output")).toHaveLength(0);
     expect(blocks.every((block) => !block.text().includes("out-"))).toBe(true);
 
     wrapper.unmount();
   });
 
-  it("shows every transient execute preview when multiple previews are consecutive", async () => {
+  it("keeps only the latest streaming command when previews are consecutive", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -425,25 +496,25 @@ describe("chat execute stacking and command collapse", () => {
     await settleUi(wrapper);
 
     const blocks = wrapper.findAll(".execute-block");
-    expect(blocks).toHaveLength(3);
+    expect(blocks).toHaveLength(1);
 
     const left = wrapper.find(".execute-left");
     expect(left.exists()).toBe(true);
     expect(left.find(".prompt-tag").exists()).toBe(true);
     expect(left.find(".execute-cmd").exists()).toBe(true);
-    expect(left.find(".execute-cmd").text()).toContain("cmd-1");
+    expect(left.find(".execute-cmd").text()).toContain("cmd-3");
 
     expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
     expect(wrapper.find(".execute-stack-count").exists()).toBe(false);
 
     expect(wrapper.findAll(".execute-output")).toHaveLength(0);
-    expect(wrapper.findAll(".execute-cmd").map((node) => node.text())).toEqual(["cmd-1", "cmd-2", "cmd-3"]);
+    expect(wrapper.findAll(".execute-cmd").map((node) => node.text())).toEqual(["cmd-3"]);
     expect(wrapper.text()).not.toContain("out-1");
 
     wrapper.unmount();
   });
 
-  it("shows every transient execute preview even when many previews are consecutive", async () => {
+  it("keeps only the latest streaming command when many previews are consecutive", async () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [
@@ -469,18 +540,18 @@ describe("chat execute stacking and command collapse", () => {
 
     await settleUi(wrapper);
 
-    expect(wrapper.findAll(".execute-block")).toHaveLength(4);
+    expect(wrapper.findAll(".execute-block")).toHaveLength(1);
 
     const commands = wrapper.findAll(".execute-cmd");
-    expect(commands).toHaveLength(4);
-    expect(commands.map((node) => node.text())).toEqual(["cmd-1", "cmd-2", "cmd-3", "cmd-4"]);
+    expect(commands).toHaveLength(1);
+    expect(commands.map((node) => node.text())).toEqual(["cmd-4"]);
 
     expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
 
     wrapper.unmount();
   });
 
-  it("renders all blocks without underlays even for large stacks", async () => {
+  it("renders a single block without underlays even for large stacks", async () => {
     const execs = Array.from({ length: 20 }, (_, i) => {
       const n = i + 1;
       return {
@@ -511,13 +582,13 @@ describe("chat execute stacking and command collapse", () => {
 
     await settleUi(wrapper);
 
-    expect(wrapper.findAll(".execute-block")).toHaveLength(20);
+    expect(wrapper.findAll(".execute-block")).toHaveLength(1);
     expect(wrapper.findAll(".execute-underlay")).toHaveLength(0);
     expect(wrapper.find(".execute-stack-count").exists()).toBe(false);
 
     const commands = wrapper.findAll(".execute-cmd");
-    expect(commands).toHaveLength(20);
-    expect(commands.at(-1)?.text()).toContain("cmd-20");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.text()).toContain("cmd-20");
 
     expect(wrapper.findAll(".execute-output")).toHaveLength(0);
     expect(wrapper.text()).not.toContain("out-1");

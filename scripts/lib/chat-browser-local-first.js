@@ -64,7 +64,7 @@ export async function verifyLocalFirstTranscript({ page, context, fixture, frame
   try {
     const unchangedStart = frames.length;
     fixture.disconnectClients();
-    await until(() => frames.slice(unchangedStart).some((frame) => frame.type === "welcome" && frame.chatSessionId === "advisor"), "unchanged reconnect");
+    await until(() => frames.slice(unchangedStart).some((frame) => frame.type === "welcome" && frame.chatSessionId === "acopilot"), "unchanged reconnect");
     await settle();
     assert.ok(frames.slice(unchangedStart).some((frame) => frame.historyMode === "resume"));
     assert.ok(!frames.slice(unchangedStart).some((frame) => frame.type === "history"));
