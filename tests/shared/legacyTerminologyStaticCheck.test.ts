@@ -174,8 +174,8 @@ const ALLOWED_LEGACY_TERMINOLOGY: Record<string, LegacyAllowance> = {
     legacyLines: 5,
   },
   "scripts/lib/chat-browser-local-first.js": {
-    reason: "historical-record: browser test fixture strings predate the rename",
-    legacyLines: 4,
+    reason: "historical-record: fixture prompt markers predate the rename; live session assertions use canonical ids",
+    legacyLines: 3,
   },
   "scripts/lib/chat-browser-post-send.js": {
     reason: "historical-record: browser test fixture strings predate the rename",

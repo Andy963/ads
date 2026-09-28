@@ -10,6 +10,7 @@ import { verifyPostSendInteractions } from "./lib/chat-browser-post-send.js";
 import { verifyMonotonicHistory } from "./lib/chat-browser-history.js";
 import { verifyLocalFirstTranscript } from "./lib/chat-browser-local-first.js";
 import { verifyChatNavigation } from "./lib/chat-browser-navigation.js";
+import { verifyExecuteMarquee } from "./lib/chat-browser-marquee.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const buildRoot = path.resolve(process.env.ADS_CHAT_BUILD_DIR || path.join(repoRoot, "dist/client"));
@@ -370,6 +371,9 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     await waitForReply("Worker reply: browser-worker-first");
     assert.ok(!(await visibleChat().innerText()).includes("Worker reply: browser-worker-project-b"));
     result.checks.push("Project switching replaces the visible runtime and restores project-local history");
+
+    result.marquee = await verifyExecuteMarquee({ page, fixture, send, waitForReply, artifacts, engine });
+    result.checks.push("Long commands move left and expose their tails while running and completed, including reduced-motion; replacement restarts and short commands stay static");
 
     if (mobile) {
       await chooseLane("acopilot");

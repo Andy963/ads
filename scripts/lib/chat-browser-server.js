@@ -51,6 +51,7 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
   const requests = [];
   const refusedRequests = new Set();
   const heldReplies = new Map();
+  const heldCommandCompletions = new Map();
   let heldAuthentication = null;
   let originOffline = false;
   const contentTypes = {
@@ -223,6 +224,13 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
           if (lane === "Worker" && marker.startsWith("browser-worker-")) {
             const ts = Date.now();
             const commandId = `fixture-command-${marker}`;
+            if (marker.startsWith("browser-worker-marquee") && !marker.endsWith("-short")) {
+              const longCommand = `docker run --rm --name ${marker} --env MARQUEE_CHECK=enabled --volume /var/lib/ads/fixtures:/fixtures --network host --label fixture=marquee registry.example.invalid/ads/marquee-verification:latest --execute --report=detailed --output=/reports/marquee.json`;
+              emit({ phase: "command", title: "Run marquee command", detail: longCommand, timestamp: ts, raw: { type: "item.started", item: { type: "command_execution", id: commandId, command: longCommand, status: "in_progress" } } });
+              await heldCommandCompletions.get(marker)?.ready;
+              emit({ phase: "command", title: "Run marquee command", detail: longCommand, timestamp: ts + 1, raw: { type: "item.completed", item: { type: "command_execution", id: commandId, command: longCommand, status: "completed", exit_code: 0, aggregated_output: "marquee fixture ok\n" } } });
+              return { response: `Worker reply: ${marker}`, usage: null, agentId: "codex" };
+            }
             const answerId = `fixture-answer-${marker}`;
             const changedFile = path.join(currentCwd, "fixture.txt");
             await writeFile(changedFile, `updated by ${marker}\n`);
@@ -339,6 +347,16 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
         release();
       };
     },
+    holdCommandCompletion(marker) {
+      if (heldCommandCompletions.has(marker)) throw new Error(`Command completion is already held: ${marker}`);
+      let release;
+      const ready = new Promise((resolve) => { release = resolve; });
+      heldCommandCompletions.set(marker, { ready, release });
+      return () => {
+        heldCommandCompletions.delete(marker);
+        release();
+      };
+    },
     useCurrentServiceWorker() {
       legacyWorker = false;
     },
@@ -346,6 +364,8 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
       heldAuthentication?.release();
       for (const { release } of heldReplies.values()) release();
       heldReplies.clear();
+      for (const { release } of heldCommandCompletions.values()) release();
+      heldCommandCompletions.clear();
       for (const client of clients) client.terminate();
       await new Promise((resolve) => sockets.close(resolve));
       server.closeAllConnections();
