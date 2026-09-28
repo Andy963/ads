@@ -5,6 +5,7 @@ import { Close, CopyDocument, EditPen, Plus, Refresh, StarFilled } from "@elemen
 import type { ApiClient } from "../api/client";
 import type { LaneName, LanePromptSnapshot, ModelConfig, StoredRoleProfileValue } from "../api/types";
 import { STORED_ROLE_PROFILE_VALUES } from "../../../shared/terminology.js";
+import { isTextInputElement } from "../lib/dom";
 
 type ModelForm = {
   id: string;
@@ -90,6 +91,10 @@ const lanePromptLoading = ref(false);
 const lanePromptSaving = ref(false);
 const lanePromptError = ref<string | null>(null);
 const lanePromptStatus = ref<string | null>(null);
+const lanePromptPanel = ref<HTMLElement | null>(null);
+const lanePromptKeyboardOpen = ref(false);
+let promptViewport: VisualViewport | null = null;
+let promptRevealTimer: number | null = null;
 const lanePromptDrafts = reactive<Record<string, string | null>>({
   acopilot: null,
   actions: null,
@@ -627,7 +632,42 @@ function closeSyncDialog(force = false): void {
 
 function handleMobileLayoutChange(event: MediaQueryListEvent): void {
   isMobileLayout.value = event.matches;
+  updateLanePromptKeyboard();
 }
+
+function updateLanePromptKeyboard(focused: EventTarget | null = document.activeElement): void {
+  const panel = lanePromptPanel.value;
+  // Exclude zoom-only shrinkage without rejecting Safari's input auto-zoom.
+  lanePromptKeyboardOpen.value = Boolean(
+    isMobileLayout.value && panel && focused instanceof HTMLElement && panel.contains(focused)
+    && isTextInputElement(focused) && promptViewport
+    && window.innerHeight - promptViewport.height * promptViewport.scale > 120,
+  );
+  if (promptRevealTimer !== null) window.clearTimeout(promptRevealTimer);
+  promptRevealTimer = null;
+  if (!lanePromptKeyboardOpen.value) return;
+
+  // Only scroll the panel after the keyboard settles; scrolling the document
+  // competes with the fixed app shell's visual-viewport positioning.
+  promptRevealTimer = window.setTimeout(() => {
+    promptRevealTimer = null;
+    const editor = document.activeElement;
+    if (!panel || !(editor instanceof HTMLTextAreaElement) || !panel.contains(editor)) return;
+    const panelRect = panel.getBoundingClientRect();
+    const editorRect = editor.getBoundingClientRect();
+    const actions = panel.querySelector<HTMLElement>(".lanePromptActions");
+    const visibleBottom = Math.min(panelRect.bottom, actions?.getBoundingClientRect().top ?? panelRect.bottom);
+    panel.scrollTop += editorRect.bottom > visibleBottom
+      ? editorRect.bottom - visibleBottom
+      : Math.min(0, editorRect.top - panelRect.top);
+  }, 300);
+}
+
+function onPromptViewportChange(): void {
+  updateLanePromptKeyboard();
+}
+
+watch(activeTab, () => updateLanePromptKeyboard(), { flush: "post" });
 
 onBeforeUnmount(() => {
   syncConfigGeneration += 1;
@@ -636,6 +676,9 @@ onBeforeUnmount(() => {
   cancelModelLongPress();
   mobileLayoutMedia?.removeEventListener("change", handleMobileLayoutChange);
   mobileLayoutMedia = null;
+  promptViewport?.removeEventListener("resize", onPromptViewportChange);
+  promptViewport?.removeEventListener("scroll", onPromptViewportChange);
+  if (promptRevealTimer !== null) window.clearTimeout(promptRevealTimer);
 });
 
 function toggleUpstreamModel(modelId: string, selected: boolean): void {
@@ -1046,6 +1089,9 @@ onMounted(() => {
   mobileLayoutMedia = typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 900px)") : null;
   isMobileLayout.value = mobileLayoutMedia?.matches ?? window.innerWidth <= 900;
   mobileLayoutMedia?.addEventListener("change", handleMobileLayoutChange);
+  promptViewport = window.visualViewport ?? null;
+  promptViewport?.addEventListener("resize", onPromptViewportChange, { passive: true });
+  promptViewport?.addEventListener("scroll", onPromptViewportChange, { passive: true });
   void Promise.all([loadModelConfigs(), loadLanePrompts()]);
 });
 
@@ -1328,10 +1374,14 @@ defineExpose({
     <div
       v-else
       id="settings-panel-lane-prompts"
+      ref="lanePromptPanel"
       class="lanePromptPanel"
+      :class="{ 'lanePromptPanel--keyboard-open': lanePromptKeyboardOpen }"
       role="tabpanel"
       aria-labelledby="settings-tab-lane-prompts"
       data-testid="lane-prompt-panel"
+      @focusin="updateLanePromptKeyboard($event.target)"
+      @focusout="updateLanePromptKeyboard($event.relatedTarget)"
     >
       <div
         class="lanePromptLaneSelector"
@@ -3036,6 +3086,40 @@ defineExpose({
     justify-content: center;
     font-size: 14px;
     font-weight: 600;
+  }
+
+  .lanePromptPanel--keyboard-open {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .lanePromptPanel--keyboard-open > :not(.lanePromptField) {
+    flex-shrink: 0;
+  }
+
+  .lanePromptPanel--keyboard-open .roleControlsBar,
+  .lanePromptPanel--keyboard-open .lanePromptEditorHeader,
+  .lanePromptPanel--keyboard-open .modelHelp,
+  .lanePromptPanel--keyboard-open .lanePromptHistory,
+  .lanePromptPanel--keyboard-open .modelBanner.success {
+    display: none;
+  }
+
+  .lanePromptPanel--keyboard-open .lanePromptField,
+  .lanePromptPanel--keyboard-open .lanePromptTextarea {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .lanePromptPanel--keyboard-open .lanePromptTextarea {
+    resize: none;
+    scroll-margin-bottom: 65px;
+  }
+
+  .lanePromptPanel--keyboard-open .lanePromptActions {
+    bottom: 0;
+    margin: 6px 0 0;
+    padding: 10px 0;
   }
 
   .dialogMask {
