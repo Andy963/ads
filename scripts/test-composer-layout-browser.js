@@ -81,6 +81,44 @@ try {
           send() {}
           close() { this.readyState = 3; }
         };
+        // Fake the microphone so the composer can enter its recording layout
+        // without real audio hardware. AudioContext rejects the fake stream and
+        // the composer swallows that path on its own. The stub must live on the
+        // prototype: WebKit recreates the mediaDevices JS wrapper, so own
+        // properties assigned to the instance silently revert to native code.
+        class FakeMediaStream {
+          getTracks() { return [{ kind: "audio", stop() {} }]; }
+          getAudioTracks() { return this.getTracks(); }
+        }
+        class FakeMediaRecorder extends EventTarget {
+          static isTypeSupported() { return true; }
+          constructor(stream, options) {
+            super();
+            this.stream = stream;
+            this.mimeType = options?.mimeType ?? "audio/webm";
+            this.state = "inactive";
+          }
+          start() { this.state = "recording"; }
+          stop() {
+            if (this.state === "inactive") return;
+            this.state = "inactive";
+            this.onstop?.(new Event("stop"));
+          }
+        }
+        window.MediaRecorder = FakeMediaRecorder;
+        const fakeGetUserMedia = () => Promise.resolve(new FakeMediaStream());
+        if (navigator.mediaDevices) {
+          Object.defineProperty(Object.getPrototypeOf(navigator.mediaDevices), "getUserMedia", {
+            configurable: true,
+            writable: true,
+            value: fakeGetUserMedia,
+          });
+        } else {
+          Object.defineProperty(Navigator.prototype, "mediaDevices", {
+            configurable: true,
+            get: () => ({ getUserMedia: fakeGetUserMedia }),
+          });
+        }
       });
       const page = await context.newPage();
       page.setDefaultTimeout(15000);
@@ -171,6 +209,101 @@ try {
       await page.setViewportSize({ width: 390, height: 430 });
       await input.fill("");
       await settle();
+
+      const idleClusterGap = await page.evaluate(() => {
+        const panel = document.querySelector(".lanePanel:not(.lanePanel--inactive)");
+        const cluster = panel?.querySelector(".composerMainRowRight");
+        return cluster ? getComputedStyle(cluster).gap : null;
+      });
+      assert.equal(idleClusterGap, "6px", "Idle composer action cluster gap must stay 6px");
+
+      await page.locator(".lanePanel:not(.lanePanel--inactive) [data-testid='composer-mic-btn']:visible").click();
+      await page.locator(".lanePanel:not(.lanePanel--inactive) .composerMainRow--recording").waitFor();
+      // The capsule eases its border-radius over 0.2s when entering the
+      // recording state; wait until the arc reaches the container inner radius.
+      await page.waitForFunction(() => {
+        const panel = document.querySelector(".lanePanel:not(.lanePanel--inactive)");
+        const wrap = panel?.querySelector(".inputWrap");
+        const row = panel?.querySelector(".composerMainRow--recording");
+        if (!wrap || !row) return false;
+        const wrapStyle = getComputedStyle(wrap);
+        const target = parseFloat(wrapStyle.borderTopLeftRadius) - parseFloat(wrapStyle.borderTopWidth);
+        return Math.abs(parseFloat(getComputedStyle(row).borderTopLeftRadius) - target) <= 0.6;
+      });
+
+      for (const width of [320, 390, 414]) {
+        await page.setViewportSize({ width, height: 430 });
+        await settle();
+        const recordingLayout = await page.evaluate(() => {
+          const panel = document.querySelector(".lanePanel:not(.lanePanel--inactive)");
+          const wrap = panel?.querySelector(".inputWrap");
+          const row = panel?.querySelector(".composerMainRow--recording");
+          const cluster = panel?.querySelector(".composerMainRowRight");
+          const stop = cluster?.querySelector(".voiceStopBtn");
+          const adjacent = cluster?.querySelector(".stopIcon") ?? cluster?.querySelector(".sendIcon");
+          if (!wrap || !row || !cluster || !stop || !adjacent) return null;
+          const wrapStyle = getComputedStyle(wrap);
+          const rowStyle = getComputedStyle(row);
+          const wrapRect = wrap.getBoundingClientRect();
+          const rowRect = row.getBoundingClientRect();
+          const stopRect = stop.getBoundingClientRect();
+          const adjacentRect = adjacent.getBoundingClientRect();
+          return {
+            wrapRadius: parseFloat(wrapStyle.borderTopLeftRadius),
+            wrapBorder: parseFloat(wrapStyle.borderTopWidth),
+            rowRadius: parseFloat(rowStyle.borderTopLeftRadius),
+            innerLeft: wrapRect.left + parseFloat(wrapStyle.borderLeftWidth),
+            innerRight: wrapRect.right - parseFloat(wrapStyle.borderRightWidth),
+            innerTop: wrapRect.top + parseFloat(wrapStyle.borderTopWidth),
+            innerBottom: wrapRect.bottom - parseFloat(wrapStyle.borderBottomWidth),
+            rowLeft: rowRect.left,
+            rowRight: rowRect.right,
+            rowTop: rowRect.top,
+            rowBottom: rowRect.bottom,
+            stopWidth: stopRect.width,
+            stopHeight: stopRect.height,
+            adjacentWidth: adjacentRect.width,
+            adjacentHeight: adjacentRect.height,
+            centerDistance: Math.abs(
+              adjacentRect.left + adjacentRect.width / 2 - (stopRect.left + stopRect.width / 2),
+            ),
+          };
+        });
+        assert.ok(recordingLayout, "Recording capsule layout probes must resolve");
+        const tolerance = 0.6;
+        assert.ok(
+          Math.abs(recordingLayout.rowRadius - (recordingLayout.wrapRadius - recordingLayout.wrapBorder)) <= tolerance,
+          `Recording capsule radius must track the container inner radius; got ${recordingLayout.rowRadius} vs ${recordingLayout.wrapRadius - recordingLayout.wrapBorder}`,
+        );
+        for (const [edge, actual, limit, direction] of [
+          ["left", recordingLayout.rowLeft, recordingLayout.innerLeft, -1],
+          ["right", recordingLayout.rowRight, recordingLayout.innerRight, 1],
+          ["top", recordingLayout.rowTop, recordingLayout.innerTop, -1],
+          ["bottom", recordingLayout.rowBottom, recordingLayout.innerBottom, 1],
+        ]) {
+          assert.ok(
+            direction * (limit - actual) >= -tolerance,
+            `Recording capsule ${edge} edge must stay inside the container border; got ${actual} vs inner ${limit}`,
+          );
+        }
+        for (const [label, size] of [["stop", recordingLayout.stopWidth], ["stop", recordingLayout.stopHeight], ["adjacent", recordingLayout.adjacentWidth], ["adjacent", recordingLayout.adjacentHeight]]) {
+          assert.ok(Math.abs(size - 34) <= tolerance, `Recording ${label} button must stay 34px; got ${size}`);
+        }
+        assert.ok(
+          recordingLayout.centerDistance >= 48 - tolerance,
+          `Recording actions must sit at least 48px center-to-center; got ${recordingLayout.centerDistance}`,
+        );
+        result.checks.push({
+          kind: "recording-capsule-tangency",
+          width,
+          rowRadius: recordingLayout.rowRadius,
+          centerDistance: recordingLayout.centerDistance,
+        });
+      }
+
+      await page.locator(".lanePanel:not(.lanePanel--inactive) [data-testid='voice-cancel-btn']:visible").click();
+      await settle();
+      assert.equal(await page.locator(".composerMainRow--recording:visible").count(), 0, "Cancelling must leave the recording layout");
 
       await input.evaluate((element) => {
         window.__layoutLiveReads = 0;
