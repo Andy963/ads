@@ -22,7 +22,6 @@ import {
   getRoleProfiles,
   getDefaultRoleProfile,
   saveRoleProfile,
-  getRoleSettingsHistory,
 } from "../../server/state/roleProfileStore.js";
 import { deleteWebProject } from "../../server/web/projects/store.js";
 import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
@@ -334,7 +333,7 @@ describe("state/database", () => {
     assert.strictEqual(result[0].foreign_keys, 1, "Foreign keys should be enabled");
   });
 
-  it("should create action_jobs, role_profiles, and role_settings_history tables with seed profiles", () => {
+  it("should create action_jobs and role_profiles tables with seed profiles", () => {
     const db = getStateDatabase();
 
     const actionJobCols = (db.prepare("PRAGMA table_info(action_jobs)").all() as Array<{ name: string }>).map((c) => c.name);
@@ -357,10 +356,10 @@ describe("state/database", () => {
     assert.ok(roleProfileCols.includes("system_prompt"));
     assert.ok(roleProfileCols.includes("is_default"));
 
-    const historyCols = (db.prepare("PRAGMA table_info(role_settings_history)").all() as Array<{ name: string }>).map((c) => c.name);
-    assert.ok(historyCols.includes("role"));
-    assert.ok(historyCols.includes("version"));
-    assert.ok(historyCols.includes("model_id"));
+    const historyTable = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'role_settings_history'")
+      .get();
+    assert.strictEqual(historyTable, undefined);
 
     const profiles = db.prepare("SELECT role, name, is_default FROM role_profiles ORDER BY role ASC").all() as Array<{
       role: string;
@@ -599,7 +598,7 @@ describe("state/database", () => {
       );
     });
 
-    it("saves a new role profile and updates default status and history", () => {
+    it("saves a new role profile and updates default status", () => {
       const db = getStateDatabase();
       const newProfile = saveRoleProfile(db, {
         id: "profile-acopilot-gemini",
@@ -618,10 +617,66 @@ describe("state/database", () => {
       const defaultProfile = getDefaultRoleProfile(db, "acopilot");
       assert.ok(defaultProfile);
       assert.strictEqual(defaultProfile.id, "profile-acopilot-gemini");
+      assert.strictEqual(defaultProfile.model_id, "gemini-2.5-pro");
+    });
 
-      const history = getRoleSettingsHistory(db, "acopilot");
-      assert.ok(history.length >= 2);
-      assert.strictEqual(history[0]?.model_id, "gemini-2.5-pro");
+    it("keeps repeated saves in role_profiles only, without growing any history table", () => {
+      const db = getStateDatabase();
+      for (let i = 0; i < 5; i += 1) {
+        saveRoleProfile(db, {
+          id: "profile-acopilot-repeat",
+          role: "acopilot",
+          name: "Acopilot Repeat",
+          model_id: `model-${i}`,
+          system_prompt: "Repeated save prompt",
+        });
+      }
+
+      const saved = db
+        .prepare("SELECT model_id, version FROM role_profiles WHERE id = ?")
+        .get("profile-acopilot-repeat") as { model_id: string; version: number } | undefined;
+      assert.ok(saved);
+      assert.strictEqual(saved.model_id, "model-4");
+      assert.strictEqual(saved.version, 5);
+
+      const historyTable = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'role_settings_history'")
+        .get();
+      assert.strictEqual(historyTable, undefined);
+    });
+
+    it("drops a legacy role_settings_history table during migration while preserving role profiles", () => {
+      const seedDb = getStateDatabase();
+      seedDb.exec(`
+        CREATE TABLE role_settings_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          role TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          model_id TEXT NOT NULL,
+          reasoning_effort TEXT NOT NULL DEFAULT 'high',
+          system_prompt TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX idx_role_settings_history_role ON role_settings_history(role, version DESC);
+        INSERT INTO role_settings_history (role, version, model_id, reasoning_effort, system_prompt, created_at)
+        VALUES ('acopilot', 1, 'legacy-model', 'high', 'legacy prompt', 1);
+        UPDATE schema_version SET version = 29 WHERE id = 1;
+      `);
+
+      resetStateDatabaseForTests();
+
+      const db = getStateDatabase();
+      const historyTable = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'role_settings_history'")
+        .get();
+      assert.strictEqual(historyTable, undefined);
+      const historyIndex = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_role_settings_history_role'")
+        .get();
+      assert.strictEqual(historyIndex, undefined);
+
+      const profiles = getRoleProfiles(db);
+      assert.strictEqual(profiles.length, 3);
     });
   });
 
