@@ -36,7 +36,7 @@
     "test:role-prompt-keyboard-browser": "node scripts/test-role-prompt-keyboard-browser.js",
     "postbuild": "node scripts/chmod-bins.js",
     "bundle": "npm run build && node scripts/bundle.js",
-    "deploy:local": "node scripts/deploy-local.js",
+    "deploy": "node scripts/deploy-local.js",
     "start": "node dist/server/cli.js web",
     "dev": "tsx watch server/web/server.ts",
     "test": "node scripts/run-tests.js",
