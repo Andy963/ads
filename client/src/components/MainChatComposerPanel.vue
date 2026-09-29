@@ -875,8 +875,8 @@ onBeforeUnmount(() => {
      first text line; later lines reclaim the full card content width. The card
      itself is the three-line scroll viewport so floats stay contained per card. */
   font-size: 12.5px;
-  line-height: 1.6;
-  max-height: calc(1.6em * 3 + 16px);
+  line-height: 1.92;
+  max-height: calc(1.92em * 3 + 16px);
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
@@ -922,7 +922,7 @@ onBeforeUnmount(() => {
   gap: 4px;
   /* Never taller than one text line, or the float would keep narrowing
      the second line as well. */
-  height: 1.6em;
+  height: 1.92em;
   margin-left: 8px;
 }
 
@@ -960,8 +960,8 @@ onBeforeUnmount(() => {
 }
 
 .queue-action {
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   border-radius: 6px;
   border: none;
   background: transparent;
