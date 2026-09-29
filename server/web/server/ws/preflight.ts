@@ -8,27 +8,6 @@ import {
 import type { HistoryEntry } from "../../../utils/historyStore.js";
 import { buildPromptHistoryText } from "./promptHistory.js";
 
-export function isClientMessageCompleted(
-  entries: HistoryEntry[],
-  clientMessageId: string,
-  options: { allowErrorReplay?: boolean } = {},
-): boolean {
-  let awaitingTerminal = false;
-  for (const entry of entries) {
-    if (entry.role === "user") {
-      awaitingTerminal = getHistoryClientMessageId(entry.kind) === clientMessageId;
-      continue;
-    }
-    if (
-      awaitingTerminal &&
-      (entry.role === "ai" || (entry.role === "status" && entry.kind === "error" && !options.allowErrorReplay))
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
 function promptHistoryStatus(
   entries: HistoryEntry[],
   clientMessageId: string,
@@ -37,9 +16,22 @@ function promptHistoryStatus(
     (entry) => entry.role === "user" && getHistoryClientMessageId(entry.kind) === clientMessageId,
   );
   if (!hasPersistedPrompt) return null;
-  if (isClientMessageCompleted(entries, clientMessageId, { allowErrorReplay: true })) return "completed";
-  if (isClientMessageCompleted(entries, clientMessageId)) return "failed";
-  return "running";
+  // The last terminal entry of the turn decides its outcome: a turn that
+  // streamed partial assistant output and then failed is failed, not
+  // completed, so an explicit replay may re-run it.
+  let inTurn = false;
+  let lastTerminal: "completed" | "failed" | null = null;
+  for (const entry of entries) {
+    if (entry.role === "user") {
+      inTurn = getHistoryClientMessageId(entry.kind) === clientMessageId;
+      if (inTurn) lastTerminal = null;
+      continue;
+    }
+    if (!inTurn) continue;
+    if (entry.role === "ai") lastTerminal = "completed";
+    else if (entry.role === "status" && entry.kind === "error") lastTerminal = "failed";
+  }
+  return lastTerminal ?? "running";
 }
 
 export function shouldPersistCommandMessage(args: {
@@ -113,6 +105,9 @@ export function preflightPersistAndAck(args: {
           client_message_id: args.clientMessageId,
           duplicate: true,
           queue_status: historyStatus,
+          ...(allowsExplicitReplay
+            ? { reason: historyStatus === "completed" ? "turn_already_completed" : "turn_in_flight" }
+            : {}),
         });
         return { enqueue: false };
       }
@@ -175,7 +170,7 @@ export function preflightPersistAndAck(args: {
         payload.replay_incomplete === true &&
         !args.inFlight &&
         persistedPrompt?.text === textResult.text &&
-        !isClientMessageCompleted(historyEntries, args.clientMessageId, { allowErrorReplay: true });
+        promptHistoryStatus(historyEntries, args.clientMessageId) !== "completed";
       if (args.traceWsDuplication) {
         args.warn(
           `[WebSocket][Dedupe] req=${args.requestId} session=${args.sessionId} user=${args.userId} history=${args.historyKey} client_message_id=${args.clientMessageId} replay_incomplete=${replayIncomplete}`,
