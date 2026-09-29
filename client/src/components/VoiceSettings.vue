@@ -123,15 +123,13 @@ onBeforeUnmount(() => {
           <legend>{{ title }}</legend>
           <template v-if="isCorrection">
             <label class="check"><input v-model="config.correction.enabled" type="checkbox" data-testid="voice-correction-enabled" /> 启用文本纠错</label>
-            <p>使用独立的 OpenAI 兼容接口纠正转写文本，不读取对话模型、角色指令或聊天记录。</p>
             <label>服务地址<input v-model="config.correction.baseUrl" type="url" :required="config.correction.enabled" placeholder="https://api.example.com/v1" autocapitalize="off" :spellcheck="false" autocomplete="off" data-testid="correction-base-url" /></label>
             <label>API 密钥 <span>{{ hasApiKey ? '已保存，留空保留' : '尚未配置' }}</span>
               <input v-model="apiKey" type="password" autocomplete="new-password" autocapitalize="off" :spellcheck="false" data-testid="correction-api-key" />
             </label>
             <label>模型名称<input v-model="config.correction.model" :required="config.correction.enabled" maxlength="256" autocapitalize="off" :spellcheck="false" autocomplete="off" data-testid="correction-model" /></label>
-            <p>更换服务地址时必须填写匹配的新密钥，不影响语音转写或对话模型。</p>
+            <p>更换服务地址时必须填写匹配的新密钥；纠错不读取对话模型、角色指令或聊天记录。</p>
             <label>系统提示词<textarea v-model="config.correction.systemPrompt" rows="6" maxlength="8000" required data-testid="correction-system-prompt" /></label>
-            <p>仅用于文本纠错，最多 8000 字符；保存后生效，不影响角色指令。</p>
             <button type="button" data-testid="correction-reset-prompt" @click="config.correction.systemPrompt = DEFAULT_CORRECTION_SYSTEM_PROMPT">恢复默认提示词</button>
             <details><summary>高级设置</summary>
               <label>纠错超时（毫秒）<input v-model.number="config.correction.timeoutMs" type="number" min="1000" max="180000" step="1000" required /></label>
@@ -145,7 +143,7 @@ onBeforeUnmount(() => {
             <label>API 密钥 <span>{{ hasApiKey ? '已保存，留空保留' : '尚未配置' }}</span>
               <input v-model="apiKey" type="password" autocomplete="new-password" autocapitalize="off" :spellcheck="false" data-testid="voice-api-key" />
             </label>
-            <p>更换服务地址时必须填写匹配的新密钥。</p>
+            <p>更换服务地址时必须填写匹配的新密钥；纠错不读取对话模型、角色指令或聊天记录。</p>
             <label>转写模型<select v-model="config.transcription.model"><option value="whisper-large-v3">whisper-large-v3</option><option value="whisper-large-v3-turbo">whisper-large-v3-turbo</option></select></label>
             <details><summary>高级设置</summary>
               <label>语言代码（留空自动检测）<input v-model="config.transcription.language" maxlength="16" /></label>
@@ -158,7 +156,7 @@ onBeforeUnmount(() => {
         <div class="voiceActions"><button type="submit" :disabled="busy" :data-testid="isCorrection ? 'correction-save' : 'voice-save'">{{ busy ? '正在保存…' : `保存${title}` }}</button><span v-if="dirty">有未保存的修改</span></div>
       </form>
       <fieldset v-if="!isCorrection"><legend>转写测试</legend>
-        <p>仅使用已保存的设置，不保存当前修改。所选音频会发送到转写服务；若已启用纠错，文本还会发送到纠错服务，可能产生费用。</p>
+        <p>仅使用已保存的设置，不保存当前修改；所选音频会发送到转写服务，若已启用纠错，文本还会发送到纠错服务，可能产生费用。</p>
         <label>音频文件（不超过 25 MiB）<input type="file" accept="audio/*,video/mp4" @change="selectSample" data-testid="voice-sample" /></label>
         <button type="button" :disabled="testing || busy || !sample || !saved?.configured || !saved.config.enabled" @click="testTranscription" data-testid="voice-test">测试已保存的配置</button>
         <button v-if="testing" type="button" @click="cancelTest">取消测试</button>
@@ -175,6 +173,19 @@ onBeforeUnmount(() => {
 .voiceSettings { min-width: 0; overflow-y: auto; padding: 12px; padding-bottom: max(24px, env(safe-area-inset-bottom)); overflow-wrap: anywhere; }
 form, fieldset { min-width: 0; }
 fieldset { display: grid; gap: 12px; margin: 12px 0; border: 1px solid var(--border, #777); border-radius: 8px; padding: 12px; }
+/* The settings form's legend repeats the active sub-tab label; keep it in the
+   accessibility tree but off-screen. The standalone test fieldset legend stays visible. */
+form fieldset legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 label { display: grid; gap: 6px; min-width: 0; }
 input, select, textarea { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; padding: 10px; font: inherit; font-size: 16px; color: inherit; background: var(--bg, transparent); border: 1px solid var(--border, #777); border-radius: 6px; scroll-margin-block: 80px; }
 .check { display: flex; align-items: center; }

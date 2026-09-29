@@ -166,6 +166,60 @@ describe("Voice Input settings", () => {
     expect((prompt.element as HTMLTextAreaElement).value).toBe(customPrompt);
     wrapper.unmount();
   });
+  it("keeps the visually hidden section legend in the accessibility tree", async () => {
+    const api = makeApi();
+    const correction = mount(VoiceSettings, { props: { api: api as any, section: "correction" } });
+    await flushPromises();
+    expect(correction.get("form fieldset legend").text()).toBe("文本纠错");
+    expect(correction.get('[data-testid="correction-settings"]').attributes("aria-label")).toBe("文本纠错");
+    correction.unmount();
+    const voice = mount(VoiceSettings, { props: { api: api as any } });
+    await flushPromises();
+    expect(voice.get("form fieldset legend").text()).toBe("语音转写");
+    expect(voice.get('[data-testid="voice-settings"]').attributes("aria-label")).toBe("语音转写");
+    voice.unmount();
+  });
+
+  it("stretches the model sub-tab row to full width without touching the outer tabs", async () => {
+    const wrapper = mount(ModelManager, {
+      props: { api: makeApi() as any, initialTab: "models", showTabs: true, showHeader: false },
+      global: { stubs: { "el-icon": true } },
+    });
+    try {
+      await flushPromises();
+      expect(wrapper.get('nav[aria-label="模型配置分区"]').classes()).toContain("settingsTabsSub");
+      expect(wrapper.get('[data-testid="settings-tabs"]').classes()).not.toContain("settingsTabsSub");
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it("renders exactly two hint paragraphs per panel with one shared key-change rule", async () => {
+    const api = makeApi();
+    const keyRule = "更换服务地址时必须填写匹配的新密钥；纠错不读取对话模型、角色指令或聊天记录。";
+    const correction = mount(VoiceSettings, { props: { api: api as any, section: "correction" } });
+    await flushPromises();
+    expect(correction.findAll("p").map((p) => p.text())).toEqual([
+      "设置随账户同步，密钥仅在服务端加密保存。",
+      keyRule,
+    ]);
+    expect(correction.text()).not.toContain("最多 8000 字符");
+    correction.unmount();
+    const voice = mount(VoiceSettings, { props: { api: api as any } });
+    await flushPromises();
+    const voiceHints = voice.findAll("p").filter((p) => {
+      const fieldset = p.element.closest("fieldset");
+      return !fieldset || Boolean(fieldset.closest("form"));
+    });
+    expect(voiceHints.map((p) => p.text())).toEqual([
+      "设置随账户同步，密钥仅在服务端加密保存。",
+      keyRule,
+    ]);
+    expect(voice.text()).toContain("仅使用已保存的设置，不保存当前修改");
+    expect(voice.text()).toContain("发送到转写服务");
+    voice.unmount();
+  });
+
   it("tests saved settings only without implicitly saving a dirty draft and aborts when closed", async () => {
     const api = makeApi();
     const pending = Promise.withResolvers<Response>();

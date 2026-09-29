@@ -1174,7 +1174,7 @@ defineExpose({
       </button>
     </nav>
 
-    <nav v-if="activeTab === 'models'" class="settingsTabs" aria-label="模型配置分区">
+    <nav v-if="activeTab === 'models'" class="settingsTabs settingsTabsSub" aria-label="模型配置分区">
       <button type="button" class="settingsTab" :class="{ active: modelSection === 'conversation' }" :aria-pressed="modelSection === 'conversation'" @click="modelSection = 'conversation'">对话模型</button>
       <button type="button" class="settingsTab" :class="{ active: modelSection === 'voice' }" :aria-pressed="modelSection === 'voice'" data-testid="voice-settings-tab" @click="modelSection = 'voice'">语音转写</button>
       <button type="button" class="settingsTab" :class="{ active: modelSection === 'correction' }" :aria-pressed="modelSection === 'correction'" data-testid="correction-settings-tab" @click="modelSection = 'correction'">文本纠错</button>
@@ -1943,6 +1943,17 @@ defineExpose({
   border: 1px solid rgba(15, 23, 42, 0.04);
   border-radius: 10px;
   background: rgba(15, 23, 42, 0.05);
+}
+
+/* Equal-specificity override: must stay after .settingsTabs in source order. */
+.settingsTabsSub {
+  align-self: stretch;
+}
+
+.settingsTabsSub .settingsTab {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
 }
 
 .settingsTab,
