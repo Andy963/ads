@@ -727,7 +727,7 @@
   font-size: 13px;
   line-height: 18px;
   font-weight: 600;
-  padding: 4px 14px;
+  padding: 4px 18px;
   border-radius: 8px;
   cursor: pointer;
   white-space: nowrap;
@@ -739,9 +739,9 @@
 }
 
 .laneTabStatusDot {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 7px;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
   border-radius: 50%;
   background: #94a3b8;
 }
@@ -772,12 +772,12 @@
 @keyframes laneDotPulse {
   0%, 100% {
     transform: scale(1);
-    box-shadow: 0 0 0 2px rgba(var(--lane-pulse-color), 0.2);
-    opacity: 0.85;
+    box-shadow: 0 0 0 2px rgba(var(--lane-pulse-color), 0.45);
+    opacity: 0.9;
   }
   50% {
-    transform: scale(1.2);
-    box-shadow: 0 0 0 5px rgba(var(--lane-pulse-color), 0.4);
+    transform: scale(1.5);
+    box-shadow: 0 0 0 6px rgba(var(--lane-pulse-color), 0.55);
     opacity: 1;
   }
 }
@@ -1315,7 +1315,7 @@
     flex: 0 0 auto;
     min-width: 0;
     white-space: nowrap;
-    padding: 4px 10px;
+    padding: 4px 14px;
     gap: 5px;
     font-size: 13px;
   }

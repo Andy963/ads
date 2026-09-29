@@ -165,6 +165,10 @@ const ALLOWED_LEGACY_TERMINOLOGY: Record<string, LegacyAllowance> = {
     reason: "historical-record: browser test fixture strings predate the rename",
     legacyLines: 14,
   },
+  "scripts/test-lane-control-browser.js": {
+    reason: "historical-record: fixture prompt markers and reply strings are owned by scripts/lib/chat-browser-server.js",
+    legacyLines: 4,
+  },
   "scripts/lib/chat-browser-server.js": {
     reason: "historical-record: browser test fixture namespaces predate the rename",
     legacyLines: 13,
