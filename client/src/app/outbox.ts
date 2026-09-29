@@ -45,11 +45,26 @@ export type OutboxSnapshot = {
   dismissed: string[];
   /** Client ids the server has consumed and must never be restored. */
   consumed?: string[];
+  /** Client ids with a durable server cancellation tombstone. */
+  cancelled?: string[];
+  /** Client ids retired because their lane generation is obsolete. */
+  retired?: string[];
+  /** Cancellation requests that still need an authoritative server result. */
+  cancelIntents?: string[];
 };
 
 export const OUTBOX_CHANNEL_NAME = "ads.outbox";
 
-const EMPTY: OutboxSnapshot = { pending: null, sent: [], queued: [], dismissed: [], consumed: [] };
+const EMPTY: OutboxSnapshot = {
+  pending: null,
+  sent: [],
+  queued: [],
+  dismissed: [],
+  consumed: [],
+  cancelled: [],
+  retired: [],
+  cancelIntents: [],
+};
 
 /** An explicit auth boundary must not replay another account's private input. */
 export function clearPersistedOutboxes(): void {
@@ -140,13 +155,27 @@ function normalizeSnapshot(value: unknown): OutboxSnapshot {
     dismissed.push(clientMessageId);
   }
   const consumedRaw = Array.isArray(record.consumed) ? record.consumed : [];
-  const consumed: string[] = [];
-  for (const entry of consumedRaw) {
-    const clientMessageId = String(entry ?? "").trim();
-    if (!clientMessageId || consumed.includes(clientMessageId)) continue;
-    consumed.push(clientMessageId);
-  }
-  return { pending, sent, queued, dismissed, consumed };
+  const readIds = (values: unknown[]): string[] => [...new Set(values.map((entry) => String(entry ?? "").trim()).filter(Boolean))];
+  const consumed = readIds(consumedRaw);
+  const consumedSet = new Set(consumed);
+  const cancelled = readIds(Array.isArray(record.cancelled) ? record.cancelled : [])
+    .filter((id) => !consumedSet.has(id));
+  const cancelledSet = new Set(cancelled);
+  const retired = readIds(Array.isArray(record.retired) ? record.retired : [])
+    .filter((id) => !consumedSet.has(id) && !cancelledSet.has(id));
+  const cancelIntents = readIds(Array.isArray(record.cancelIntents) ? record.cancelIntents : []);
+  const terminal = new Set([...consumed, ...cancelled, ...retired]);
+  const suppressed = new Set([...terminal, ...dismissed, ...cancelIntents]);
+  return {
+    pending: pending && !suppressed.has(pending.clientMessageId) ? pending : null,
+    sent: sent.filter((prompt) => !suppressed.has(prompt.clientMessageId)),
+    queued: queued.filter((prompt) => !suppressed.has(prompt.clientMessageId)),
+    dismissed: dismissed.filter((id) => !terminal.has(id)),
+    consumed,
+    cancelled,
+    retired,
+    cancelIntents: cancelIntents.filter((id) => !terminal.has(id)),
+  };
 }
 
 export function isEmptyOutboxSnapshot(snapshot: OutboxSnapshot): boolean {
@@ -154,7 +183,10 @@ export function isEmptyOutboxSnapshot(snapshot: OutboxSnapshot): boolean {
     && snapshot.sent.length === 0
     && snapshot.queued.length === 0
     && snapshot.dismissed.length === 0
-    && (snapshot.consumed?.length ?? 0) === 0;
+    && (snapshot.consumed?.length ?? 0) === 0
+    && (snapshot.cancelled?.length ?? 0) === 0
+    && (snapshot.retired?.length ?? 0) === 0
+    && (snapshot.cancelIntents?.length ?? 0) === 0;
 }
 
 export type OutboxStore = ReturnType<typeof createOutboxStore>;
@@ -200,7 +232,15 @@ export function createOutboxStore(options: { channelName?: string } = {}) {
 
   const write = (key: string, snapshot: OutboxSnapshot): void => {
     if (!key) return;
-    const normalized = normalizeSnapshot(snapshot);
+    // A tab can write before receiving the consumption broadcast from a peer.
+    const current = read(key);
+    const normalized = normalizeSnapshot({
+      ...snapshot,
+      consumed: [...(current.consumed ?? []), ...(snapshot.consumed ?? [])],
+      cancelled: [...(current.cancelled ?? []), ...(snapshot.cancelled ?? [])],
+      retired: [...(current.retired ?? []), ...(snapshot.retired ?? [])],
+      cancelIntents: [...(current.cancelIntents ?? []), ...(snapshot.cancelIntents ?? [])],
+    });
     try {
       if (isEmptyOutboxSnapshot(normalized)) {
         localStorage.removeItem(key);
@@ -245,6 +285,9 @@ export function createOutboxStore(options: { channelName?: string } = {}) {
       queued: current.queued,
       dismissed: current.dismissed,
       consumed: current.consumed,
+      cancelled: current.cancelled,
+      retired: current.retired,
+      cancelIntents: current.cancelIntents,
     });
   };
 

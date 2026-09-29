@@ -2,9 +2,11 @@ import type {
   CancelPromptInput,
   CancelPromptResult,
   EnqueuePromptInput,
+  PromptIdentityReconciliation,
   PromptQueueEntry,
   PromptQueueLane,
   PromptQueueStore,
+  ReconcilePromptIdentitiesInput,
 } from "../../state/promptQueueStore.js";
 import { INTERRUPTED_PROMPT_ERROR } from "../../state/promptQueueStore.js";
 
@@ -139,6 +141,13 @@ export class PromptQueueService {
     // would let a stale card stop a turn the user never dismissed; stopping a
     // turn is the interrupt action, not the queue delete action.
     return this.store.cancel(input);
+  }
+
+  reconcile(input: ReconcilePromptIdentitiesInput): PromptIdentityReconciliation[] {
+    if (!this.isOwner()) {
+      throw new Error("Prompt queue service does not own the queue");
+    }
+    return this.store.reconcile(input);
   }
 
   isOwner(): boolean {

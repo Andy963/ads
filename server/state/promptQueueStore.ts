@@ -49,6 +49,18 @@ export type CancelPromptResult = {
   entry: PromptQueueEntry | null;
 };
 
+export type PromptIdentityDisposition = "pending" | "consumed" | "cancelled" | "obsolete" | "unknown";
+
+export type PromptIdentityReconciliation = {
+  clientMessageId: string;
+  disposition: PromptIdentityDisposition;
+};
+
+export type ReconcilePromptIdentitiesInput = PromptQueueLane & {
+  userId: number;
+  clientMessageIds: string[];
+};
+
 export type EnqueuePromptInput = PromptQueueLane & {
   clientMessageId: string;
   userId: number;
@@ -170,7 +182,12 @@ function hashPayload(payload: Record<string, unknown>): string {
   return createHash("sha256").update(JSON.stringify(canonicalizePayload(payload))).digest("hex");
 }
 
-function samePromptScope(entry: Pick<PromptQueueEntry, "authUserId" | "userId" | "sessionId" | "chatSessionId" | "logicalHistoryKey" | "laneNamespace" | "laneGeneration">, input: CancelPromptInput): boolean {
+type PromptScope = Pick<
+  PromptQueueEntry,
+  "authUserId" | "userId" | "sessionId" | "chatSessionId" | "logicalHistoryKey" | "laneNamespace" | "laneGeneration"
+>;
+
+function samePromptScope(entry: PromptScope, input: PromptScope): boolean {
   return entry.authUserId === input.authUserId
     && entry.userId === Math.floor(Number(input.userId))
     && entry.sessionId === input.sessionId
@@ -236,7 +253,7 @@ export function createPromptQueueStore(db: DatabaseType) {
   `);
   const deletePromptStmt = db.prepare(`
     DELETE FROM prompt_queue
-    WHERE client_message_id = ? AND status = 'queued'
+    WHERE client_message_id = ? AND (status = 'queued' OR (status = 'failed' AND attempts = 0))
   `);
   const listLaneStmt = db.prepare(`
     SELECT *, (
@@ -325,7 +342,7 @@ export function createPromptQueueStore(db: DatabaseType) {
     SET status = 'queued', payload_json = ?, payload_hash = ?,
         last_error = NULL, created_at = ?, updated_at = ?, started_at = NULL, completed_at = NULL,
         lease_owner = NULL, lease_expires_at = NULL
-    WHERE id = ? AND status = 'failed'
+    WHERE id = ? AND status = 'failed' AND attempts = 0
   `);
   const completeInterruptedStmt = db.prepare(`
     UPDATE prompt_queue
@@ -432,7 +449,7 @@ export function createPromptQueueStore(db: DatabaseType) {
       if (existing.payloadHash && existing.payloadHash !== payloadHash) {
         throw new Error("clientMessageId is already associated with a different prompt payload");
       }
-      if (existing.status === "failed" && input.retryFailed) {
+      if (existing.status === "failed" && existing.attempts === 0 && input.retryFailed) {
         const now = Date.now();
         const changed = retryFailedStmt.run(JSON.stringify(input.payload), payloadHash, now, now, existing.id).changes;
         if (changed === 1) {
@@ -630,7 +647,11 @@ export function createPromptQueueStore(db: DatabaseType) {
       // A prompt leaves the queue the moment the lane marks it running, so the
       // frontend can only ever cancel a row that is still waiting. Touching a
       // running row here would pull the floor out from under an in-flight turn.
-      if (existingEntry && existingEntry.status !== "queued") {
+      if (
+        existingEntry &&
+        existingEntry.status !== "queued" &&
+        !(existingEntry.status === "failed" && existingEntry.attempts === 0)
+      ) {
         return { cancelled: false, reason: "not_queued", entry: existingEntry };
       }
       if (isCancelled(clientMessageId, normalizedInput)) {
@@ -653,6 +674,49 @@ export function createPromptQueueStore(db: DatabaseType) {
     return cancelTx.immediate();
   };
 
+  const reconcile = (input: ReconcilePromptIdentitiesInput): PromptIdentityReconciliation[] => {
+    const lane: PromptScope = {
+      ...input,
+      userId: Math.floor(Number(input.userId)),
+    };
+    const ids = [...new Set(input.clientMessageIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
+
+    return ids.map((clientMessageId) => {
+      const cancellation = getCancellationStmt.get(clientMessageId) as Record<string, unknown> | undefined;
+      if (cancellation) {
+        const cancelledScope = {
+          authUserId: String(cancellation.auth_user_id),
+          userId: Number(cancellation.user_id),
+          sessionId: String(cancellation.session_id),
+          chatSessionId: String(cancellation.chat_session_id),
+          logicalHistoryKey: String(cancellation.logical_history_key),
+          laneNamespace: String(cancellation.lane_namespace),
+          laneGeneration: Number(cancellation.lane_generation),
+        };
+        if (samePromptScope(cancelledScope, lane)) {
+          return {
+            clientMessageId,
+            disposition: Number(cancellation.lane_generation) === Number(lane.laneGeneration)
+              ? "cancelled"
+              : "obsolete",
+          };
+        }
+      }
+
+      const entry = getByClientMessageId(clientMessageId);
+      if (!entry || !samePromptScope(entry, lane)) {
+        return { clientMessageId, disposition: "unknown" };
+      }
+      if (entry.attempts > 0 || entry.status === "running" || entry.status === "completed") {
+        return { clientMessageId, disposition: "consumed" };
+      }
+      if (entry.laneGeneration !== lane.laneGeneration) {
+        return { clientMessageId, disposition: "obsolete" };
+      }
+      return { clientMessageId, disposition: "pending" };
+    });
+  };
+
   return {
     enqueue,
     getByClientMessageId,
@@ -669,6 +733,7 @@ export function createPromptQueueStore(db: DatabaseType) {
     completeInterrupted,
     failInterrupted,
     cancel,
+    reconcile,
   };
 }
 

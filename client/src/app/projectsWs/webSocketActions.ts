@@ -62,7 +62,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     finalizeCommandBlock,
     applyStreamingDisconnectCleanup,
     pushMessageBeforeLive,
-    restorePendingPrompt,
     flushQueuedPrompts,
     applyResumeHistory,
     cancelPendingResume,
@@ -73,6 +72,10 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     clearPendingPrompt,
     clearPendingPromptReplayState,
     markPromptConsumed,
+    markPromptCancelled,
+    markPromptRetired,
+    reconcilePromptOutbox,
+    applyPromptReconciliation,
     dismissPromptByClientMessageId,
     removeQueuedPrompt,
     threadReset,
@@ -1090,10 +1093,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.reconnectAttempts = 0;
       rt.awaitingBootstrapHistory = false;
       clearReconnectTimer(rt);
-      restorePendingPrompt(rt);
-      for (const clientMessageId of rt.dismissedPromptIds ?? []) {
-        wsInstance.cancelPrompt(clientMessageId);
-      }
+      reconcilePromptOutbox(rt, wsInstance);
     };
 
     wsInstance.onClose = (ev) => {
@@ -1137,6 +1137,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       cancelPendingResume,
       clearPendingPrompt,
       markPromptConsumed,
+      markPromptCancelled,
+      markPromptRetired,
+      applyPromptReconciliation,
       dismissPromptByClientMessageId,
       removeQueuedPrompt,
       consumeSessionReset,

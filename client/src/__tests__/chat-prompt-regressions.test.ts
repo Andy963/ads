@@ -192,7 +192,7 @@ const queueEntry = (clientMessageId: string, status: string) => ({
   text: "queued prompt",
   status,
   position: 0,
-  attempts: 1,
+  attempts: status === "queued" ? 0 : 1,
   createdAt: 1000,
   updatedAt: 1000,
   lastError: status === "failed" ? "Prompt execution failed." : "",
@@ -500,12 +500,11 @@ describe("issue-402: sent prompt renders once, not as a bubble plus a queue card
     expect(cardsFor(rt, clientMessageId)).toHaveLength(1);
   });
 
-  it("keeps the retry card for a failed prompt that already has a bubble", async () => {
+  it("retires a failed card once the server confirms it was consumed", async () => {
     const { chat, rt, handler } = mountHarness();
     const clientMessageId = await sendPromptThroughRuntime(rt, chat, "this one fails");
 
-    // De-duplication must not swallow the failure card: it is the only surface
-    // carrying the retry action.
+    // The ACK alone does not establish whether execution claimed the request.
     handler(ackFrame(clientMessageId, "failed") as never);
     await settle();
 
@@ -516,8 +515,8 @@ describe("issue-402: sent prompt renders once, not as a bubble plus a queue card
     handler({ type: "prompt_queue", entry: queueEntry(clientMessageId, "failed") } as never);
     await settle();
 
-    expect(cardsFor(rt, clientMessageId)).toHaveLength(1);
-    expect(cardsFor(rt, clientMessageId)[0]?.deliveryStatus).toBe("failed");
+    expect(cardsFor(rt, clientMessageId)).toHaveLength(0);
+    expect(rt.consumedPromptIds?.has(clientMessageId)).toBe(true);
   });
 
   it("keeps the card for a replayed prompt that already has a bubble", async () => {

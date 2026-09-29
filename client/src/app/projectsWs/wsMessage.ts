@@ -258,6 +258,9 @@ export type WsMessageHandlerArgs = {
   cancelPendingResume: ChatActions["cancelPendingResume"];
   clearPendingPrompt: ChatActions["clearPendingPrompt"];
   markPromptConsumed: ChatActions["markPromptConsumed"];
+  markPromptCancelled: ChatActions["markPromptCancelled"];
+  markPromptRetired: ChatActions["markPromptRetired"];
+  applyPromptReconciliation: ChatActions["applyPromptReconciliation"];
   dismissPromptByClientMessageId: ChatActions["dismissPromptByClientMessageId"];
   removeQueuedPrompt: ChatActions["removeQueuedPrompt"];
   consumeSessionReset?: (payload: Record<string, unknown>) => boolean;
@@ -290,7 +293,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     cancelPendingResume,
     clearPendingPrompt,
     markPromptConsumed,
-    dismissPromptByClientMessageId,
+    markPromptCancelled,
+    markPromptRetired,
+    applyPromptReconciliation,
     removeQueuedPrompt,
     consumeSessionReset,
     clearStepLive,
@@ -528,7 +533,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const pendingAckClientMessageId = String(rt.pendingAckClientMessageId ?? "").trim();
     const matchedPendingAck = Boolean(pendingAckClientMessageId && clientMessageIds.has(pendingAckClientMessageId));
     if (after.length === before.length && !matchedPendingAck) return false;
-    rt.queuedPrompts.value = after;
+    // Record consumption while queued-only entries are still tracked; removal
+    // synchronously persists the outbox and would otherwise erase that evidence.
     for (const clientMessageId of clientMessageIds) {
       markPromptConsumed(rt, clientMessageId, { onlyIfTracked: true });
       clearPendingPrompt(rt, clientMessageId);
@@ -1041,8 +1047,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const id = String(msg.client_message_id ?? "").trim();
       const rawStatus = String(msg.queue_status ?? "queued");
       const rawError = String(msg.error ?? "");
-      if (id && (rawStatus === "running" || rawStatus === "completed")) {
+      if (id && (rawStatus === "running" || rawStatus === "completed" || rawStatus === "consumed" || Number(msg.queue_attempts) > 0)) {
         markPromptConsumed(rt, id);
+      } else if (id && rawStatus === "cancelled") {
+        markPromptCancelled(rt, id);
       }
       const acknowledged = id ? clearPendingPrompt(rt, id) : null;
       const existing = id
@@ -1084,7 +1092,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
                   }
                 : prompt,
             );
-        } else if (!(rt.dismissedPromptIds?.has(id) ?? false) && !shouldSuppressQueueCard(rt, id, acknowledged, rawStatus, rawError)) {
+        } else if (
+          !(rt.dismissedPromptIds?.has(id) ?? false)
+          && !(rt.consumedPromptIds?.has(id) ?? false)
+          && !(rt.cancelledPromptIds?.has(id) ?? false)
+          && !(rt.retiredPromptIds?.has(id) ?? false)
+          && !shouldSuppressQueueCard(rt, id, acknowledged, rawStatus, rawError)
+        ) {
           rt.queuedPrompts.value = [
             ...rt.queuedPrompts.value,
             {
@@ -1103,10 +1117,30 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
+    if (type === "prompt_reconcile_result") {
+      const identities = Array.isArray(msg.identities)
+        ? msg.identities.filter((entry): entry is { clientMessageId: string; disposition: string } => {
+            if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+            const record = entry as Record<string, unknown>;
+            return Boolean(String(record.clientMessageId ?? "").trim() && String(record.disposition ?? "").trim());
+          }).map((entry) => ({
+            clientMessageId: String(entry.clientMessageId).trim(),
+            disposition: String(entry.disposition),
+          }))
+        : [];
+      applyPromptReconciliation(rt, identities);
+      return;
+    }
+
+    if (type === "prompt_reconcile_error") {
+      rt.wsError.value = String(msg.message ?? "Prompt reconciliation failed");
+      return;
+    }
+
     if (type === "prompt_queue_cancelled") {
       const clientMessageId = String(msg.clientMessageId ?? msg.client_message_id ?? "").trim();
       if (!clientMessageId) return;
-      dismissPromptByClientMessageId(rt, clientMessageId, { notifyServer: false });
+      markPromptCancelled(rt, clientMessageId);
       clearPendingPrompt(rt, clientMessageId);
       if (rt.pendingAckClientMessageId === clientMessageId) {
         rt.pendingAckClientMessageId = null;
@@ -1126,7 +1160,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (!clientMessageId) continue;
         const status = String(record.status ?? "queued") as "queued" | "running" | "failed" | "completed";
         const lastError = String(record.lastError ?? "");
-        if (status === "running" || status === "completed") {
+        if (status === "running" || status === "completed" || Number(record.attempts) > 0) {
           markPromptConsumed(rt, clientMessageId);
         }
         const acknowledged = clearPendingPrompt(rt, clientMessageId);
@@ -1135,6 +1169,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         // durable row is still on the server.
         if (rt.dismissedPromptIds?.has(clientMessageId)) continue;
         if (rt.consumedPromptIds?.has(clientMessageId)) continue;
+        if (rt.cancelledPromptIds?.has(clientMessageId) || rt.retiredPromptIds?.has(clientMessageId)) continue;
+        const entryGeneration = Number(record.laneGeneration);
+        if (entryGeneration > 0 && Number(rt.laneGeneration) > 0 && entryGeneration !== Number(rt.laneGeneration)) {
+          markPromptRetired(rt, clientMessageId);
+          continue;
+        }
         // An interrupted turn is a cancellation, not a pending failure. Drop the
         // card instead of parking a failed row above the composer that no lane
         // will ever pick up again.

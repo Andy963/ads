@@ -16,6 +16,7 @@ import type {
 import { handlePromptMessage } from "./handlePrompt.js";
 import { ensureWsSessionLogger, handleWsControlMessage } from "./messageControl.js";
 import type { WsMessage } from "./schema.js";
+import type { PromptIdentityReconciliation } from "../../../state/promptQueueStore.js";
 
 export type IncomingWsMessage = {
   parsed: WsMessage;
@@ -55,6 +56,10 @@ export async function dispatchWsMessage(args: {
   cancelPrompt?: (clientMessageId: string) =>
     | { ok: true; cancelled: boolean; reason: "cancelled" | "already_cancelled" | "not_queued" }
     | { ok: false; error: string };
+  reconcilePromptIdentities?: (request: {
+    clientMessageIds: string[];
+    cancelClientMessageIds: string[];
+  }) => { ok: true; identities: PromptIdentityReconciliation[] } | { ok: false; error: string };
   registerSessionCacheBinding: () => void;
   broadcastJson: (payload: unknown) => void;
   safeJsonSend: (ws: WebSocket, payload: unknown) => void;
@@ -106,6 +111,7 @@ export async function dispatchWsMessage(args: {
       resetSharedSessionState: args.state.resetSharedSessionState,
       completeAfterReset: args.state.completeAfterReset,
       cancelPrompt: args.cancelPrompt,
+      reconcilePromptIdentities: args.reconcilePromptIdentities,
       logger: args.logger,
     });
     if (control.handled) {
