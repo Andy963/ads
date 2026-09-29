@@ -60,6 +60,23 @@ describe("native model resolver", () => {
     assert.doesNotMatch(modelRow.config_json, /profile-secret/);
   });
 
+  it("requires saved models and credentials belonging to the owner in strict mode", () => {
+    const db = getStateDatabase(dbPath);
+    createGlobalModelConfigStore(db).upsertModelConfig({
+      id: "strict-model", modelId: "strict-model", displayName: "Strict", provider: "openai",
+      isEnabled: true, isDefault: false, configJson: {},
+    });
+    const env = { ADS_WEB_SESSION_PEPPER: "test-only-pepper", OPENAI_API_KEY: "server-secret", OPENAI_BASE_URL: "https://server.test/v1" };
+    const resolver = (owner: string) => createNativeModelResolver({ owner, stateDbPath: dbPath, env, requireOwnerCredentials: true });
+    assert.throws(() => resolver("owner-a").resolve("missing-model"), /saved model/);
+    assert.throws(() => resolver("owner-a").resolve("strict-model"), /credentials are not configured/);
+    createUpstreamCredentialStore(db, { pepper: env.ADS_WEB_SESSION_PEPPER }).save("owner-a", {
+      baseUrl: "https://owner.test/v1", provider: "openai", apiKey: "owner-secret",
+    });
+    assert.equal(resolver("owner-a").resolve("strict-model").apiKey, "owner-secret");
+    assert.throws(() => resolver("owner-b").resolve("strict-model"), /credentials are not configured/);
+  });
+
   it("falls back to the default effort when the configured value is invalid", () => {
     const db = getStateDatabase(dbPath);
     const modelStore = createGlobalModelConfigStore(db);

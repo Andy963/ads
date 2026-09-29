@@ -8,7 +8,6 @@ import { spawnSync } from "node:child_process";
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
 import {
   classifyActionsFailure,
-  createReviewerUserId,
   LaneDispatchBus,
   validateGitEvidence,
 } from "../../server/actions/bus.js";
@@ -16,6 +15,7 @@ import { handleActionRoutes, setBusInstance } from "../../server/web/server/api/
 import { checkThreePointGate } from "../../server/actions/threePointGate.js";
 import { updateActionJobStatus } from "../../server/state/actionJobStore.js";
 import type { PullRequestStateResult } from "../../server/actions/pipeline.js";
+import type { completeNativeChat } from "../../server/runtime/openAiCompatibleClient.js";
 import { getDefaultRoleProfile } from "../../server/state/roleProfileStore.js";
 import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
 import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
@@ -78,13 +78,18 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.fail("Timed out waiting for condition");
   }
 
-  function withReviewerEffort<T extends object>(
-    sessionManager: T,
-    onEffort?: (userId: number, effort?: string) => void,
-  ): T & { setUserModelReasoningEffort: (userId: number, effort?: string) => void } {
-    return Object.assign(sessionManager, {
-      setUserModelReasoningEffort: (userId: number, effort?: string) => onEffort?.(userId, effort),
-    });
+  function reviewerOptions(complete: typeof completeNativeChat) {
+    return {
+      reviewerModelResolver: (model: string) => ({ model, baseUrl: "https://reviewer.invalid/v1", apiKey: "fixture-key", provider: "openai" }),
+      reviewerComplete: complete,
+    };
+  }
+  function reviewerPayload() {
+    const head = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf8" }).stdout).trim();
+    return {
+      issue: { title: "Review fixture" }, diff: "diff --git a/a.ts b/a.ts\n+ change",
+      diffRange: { range: "dev...HEAD", baseRef: "dev", headRef: "HEAD", baseCommit: head, headCommit: head },
+    };
   }
 
   function commitImplementation(label = "implementation"): void {
@@ -294,17 +299,6 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       issueTitle: "Incomplete Issue",
       jobKind: "github_issue",
     }), /complete issueDescription; GitHub Issue jobs also require non-empty acceptanceCriteria/);
-  });
-
-  it("does not reuse an active Reviewer runtime identity", () => {
-    const activeIds = new Set([7, 9]);
-    const candidates = [7, 9, 11];
-    const reviewerUserId = createReviewerUserId(
-      { hasSession: (userId) => activeIds.has(userId) },
-      () => candidates.shift() ?? 13,
-    );
-
-    assert.strictEqual(reviewerUserId, 11);
   });
 
   it("rejects empty or invalid Git evidence", () => {
@@ -1249,12 +1243,11 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       },
     };
 
-    const mockSessionManager = withReviewerEffort({
-      getOrCreate: () => mockOrchestrator,
-    });
+    const mockSessionManager = { getOrCreate: () => mockOrchestrator };
 
     const bus = new LaneDispatchBus(db, {
       sessionManager: mockSessionManager as any,
+      reviewerRunner: async () => JSON.stringify({ status: "PASS", summary: "Session review passed.", defects: [] }),
       historyStore: {
         add: (key, entry) => {
           historyEntries.push({ key, entry });
@@ -1333,293 +1326,109 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(interruptControllers.size, 0);
   });
 
-  it("enforces the 1500-line diff gate before both Reviewer execution paths", async () => {
+  it("enforces the diff gate before either Reviewer transport", async () => {
     const db = getStateDatabase();
     const diff = ["diff --git a/large.ts b/large.ts", ...Array.from({ length: 1499 }, (_, i) => `+ line ${i}`)].join("\n");
-    const payload = { issue: { title: "Diff boundary" }, diff };
     const response = JSON.stringify({ status: "PASS", summary: "Complete evidence", defects: [] });
-    for (const useSession of [false, true]) {
+    for (const useNative of [false, true]) {
       let calls = 0;
-      let sessions = 0;
-      const review = async (prompt: string) => {
-        calls += 1;
-        assert.ok(prompt.includes(diff));
-        assert.ok(!prompt.includes("[TRUNCATED]"));
-        return response;
-      };
-      const bus = new LaneDispatchBus(db, useSession ? {
-        sessionManager: withReviewerEffort({ getOrCreate: () => {
-          sessions += 1;
-          return {
-            setDeveloperInstructions() {},
-            onEvent: () => () => {},
-            send: async (prompt: string) => ({ response: await review(prompt) }),
-          };
-        } }) as any,
-      } : { reviewerRunner: review });
-      const accepted = await bus.executeReviewer(payload, repoDir);
-      assert.equal(accepted.status, "PASS");
-      const rejected = await bus.executeReviewer({ ...payload, diff: `${diff}\n+ overflow` }, repoDir);
-      assert.equal(rejected.status, "REJECT");
+      const review = async (prompt: string) => { calls++; assert.ok(prompt.includes(diff)); return response; };
+      const bus = new LaneDispatchBus(db, useNative ? reviewerOptions(async (request) => ({ text: await review(request.messages[1]!.content!), toolCalls: [], usage: null })) : { reviewerRunner: review });
+      const payload = { ...reviewerPayload(), diff };
+      assert.equal((await bus.executeReviewer(payload, repoDir)).status, "PASS");
+      assert.equal((await bus.executeReviewer({ ...payload, diff: `${diff}\n+ overflow` }, repoDir)).status, "REJECT");
       assert.equal(calls, 1);
-      assert.equal(sessions, useSession ? 1 : 0);
     }
   });
 
-  it("keeps detached Reviewer protocol output internal and removes listeners", async () => {
+  it("uses database Reviewer settings without opening a general agent session or broadcasting protocol data", async () => {
     const db = getStateDatabase();
-    const response = JSON.stringify({ status: "PASS", summary: "Approved", defects: [] });
-    const broadcasts: Array<Record<string, unknown>> = [];
-    let activeListeners = 0;
-    let eventHandler: ((event: Record<string, unknown>) => void) | null = null;
-
-    const createOrchestrator = (fail = false) => ({
-      setDeveloperInstructions() {},
-      onEvent(handler: (event: Record<string, unknown>) => void) {
-        activeListeners += 1;
-        eventHandler = handler;
-        return () => {
-          activeListeners -= 1;
-          eventHandler = null;
-        };
-      },
-      send: async () => {
-        eventHandler?.({
-          phase: "responding",
-          title: "Generating response",
-          delta: response,
-          timestamp: Date.now(),
-          raw: { type: "item.updated", item: { type: "agent_message", text: response } },
-        });
-        eventHandler?.({
-          phase: "tool",
-          title: "Reading diff",
-          liveStep: true,
-          timestamp: Date.now(),
-          raw: { type: "item.completed", item: { type: "command_execution", command: "git diff" } },
-        });
-        if (fail) throw new Error("reviewer transport failed");
-        return { response };
-      },
+    const profile = getDefaultRoleProfile(db, "reviewer")!;
+    db.prepare("UPDATE role_profiles SET model_id = ?, system_prompt = ?, reasoning_effort = ? WHERE id = ?")
+      .run("review-only-model", "Custom review instructions", "low", profile.id);
+    let calls = 0;
+    const broadcasts: unknown[] = [];
+    const bus = new LaneDispatchBus(db, {
+      ...reviewerOptions(async (request) => {
+        calls++;
+        assert.equal(request.model, "review-only-model");
+        assert.equal(request.options?.reasoningEffort, "low");
+        assert.equal(request.messages[0]?.content, "Custom review instructions");
+        assert.deepEqual(request.tools.map((tool) => tool.function.name), ["read_file_range", "search_code", "list_dir"]);
+        assert.equal(request.messages.length, 2);
+        return { text: JSON.stringify({ status: "PASS", summary: "Approved", defects: [] }), toolCalls: [], usage: null };
+      }),
+      sessionManager: { getOrCreate() { throw new Error("general agent session forbidden"); } } as any,
+      broadcastToActionsLane: (event) => broadcasts.push(event),
     });
-
-    const payload = {
-      issue: { id: 350, title: "Reviewer protocol" },
-      diff: "diff --git a/a.ts b/a.ts",
-      testReport: { command: "npm test", exitCode: 0, summary: "passed" },
-    };
-    const passingBus = new LaneDispatchBus(db, {
-      sessionManager: withReviewerEffort({ getOrCreate: () => createOrchestrator(false) }) as any,
-      broadcastToActionsLane: (event) => broadcasts.push(event as Record<string, unknown>),
-    });
-    const verdict = await passingBus.executeReviewer(payload, repoDir, undefined, "history", "project", "job-350");
-
-    assert.strictEqual(verdict.status, "PASS");
-    assert.strictEqual(activeListeners, 0);
-    assert.strictEqual(broadcasts.length, 0);
-    assert.doesNotMatch(JSON.stringify(broadcasts), /"status":"PASS"/);
-
-    const failingBus = new LaneDispatchBus(db, {
-      sessionManager: withReviewerEffort({ getOrCreate: () => createOrchestrator(true) }) as any,
-    });
-    await assert.rejects(
-      failingBus.executeReviewer(payload, repoDir, undefined, "history", "project", "job-350-failure"),
-      /Reviewer execution failed: reviewer transport failed/,
-    );
-    assert.strictEqual(activeListeners, 0);
+    for (let i = 0; i < 2; i++) assert.equal((await bus.executeReviewer(reviewerPayload(), repoDir)).status, "PASS");
+    assert.equal(calls, 2);
+    assert.deepEqual(broadcasts, []);
+    db.prepare("UPDATE role_profiles SET is_enabled = 0 WHERE id = ?").run(profile.id);
+    await assert.rejects(bus.executeReviewer(reviewerPayload(), repoDir), /enabled Reviewer role profile/);
+    assert.equal(calls, 2);
   });
 
-  it("uses a fresh runtime identity per Reviewer job and releases each session", async () => {
-    const db = getStateDatabase();
-    const userIds: number[] = [];
-    const lifecycles: Array<string | undefined> = [];
-    const resumeFlags: boolean[] = [];
-    const released: number[] = [];
-    const createOrchestrator = () => ({
-      onEvent: () => () => {},
-      setDeveloperInstructions() {},
-      send: async () => ({ response: JSON.stringify({ status: "PASS", summary: "isolated", defects: [] }) }),
-    });
-    const bus = new LaneDispatchBus(db, {
-      sessionManager: withReviewerEffort({
-        getOrCreate: (userId: number, _cwd: string, resumeThread: boolean, options?: { lifecycle?: string }) => {
-          userIds.push(userId);
-          resumeFlags.push(resumeThread);
-          lifecycles.push(options?.lifecycle);
-          return createOrchestrator();
-        },
-        releaseEphemeralSession: (userId: number) => released.push(userId),
-      }) as any,
-    });
-    const payload = {
-      issue: { id: 366, title: "Isolation" },
-      diff: "diff --git a/a.ts b/a.ts\n+ change",
-    };
-
-    await bus.executeReviewer(payload, repoDir, undefined, "history", "project", "job-366-a");
-    await bus.executeReviewer(payload, repoDir, undefined, "history", "project", "job-366-b");
-
-    assert.strictEqual(userIds.length, 2);
-    assert.notStrictEqual(userIds[0], userIds[1]);
-    assert.deepStrictEqual(resumeFlags, [false, false]);
-    assert.deepStrictEqual(lifecycles, ["ephemeral", "ephemeral"]);
-    assert.deepStrictEqual(released, userIds);
+  it("aborts pending Reviewer requests and releases in-memory context on cancellation", async () => {
+    const entered = Promise.withResolvers<void>();
+    const abort = new AbortController();
+    let active = 0;
+    let messages: unknown[] = [];
+    const bus = new LaneDispatchBus(getStateDatabase(), reviewerOptions(async (request) => {
+      active++;
+      messages = request.messages;
+      entered.resolve();
+      try { return await new Promise<never>((_resolve, reject) => request.signal!.addEventListener("abort", () => reject(request.signal!.reason), { once: true })); }
+      finally { active--; }
+    }));
+    const pending = bus.executeReviewer(reviewerPayload(), repoDir, undefined, undefined, undefined, undefined, abort.signal);
+    await entered.promise;
+    abort.abort(new Error("cancelled"));
+    await assert.rejects(pending, /cancelled/);
+    assert.equal(active, 0);
+    assert.equal(messages.length, 0);
   });
 
-  it("applies the reviewer role profile reasoning effort to the detached session", async () => {
-    const db = getStateDatabase();
-    const efforts: Array<string | undefined> = [];
-    const profile = getDefaultRoleProfile(db, "reviewer");
-    assert.ok(profile, "expected a seeded reviewer role profile");
-
-    const bus = new LaneDispatchBus(db, {
-      sessionManager: withReviewerEffort(
-        {
-          getOrCreate: () => ({
-            onEvent: () => () => {},
-            setDeveloperInstructions() {},
-            send: async () => ({
-              response: JSON.stringify({ status: "PASS", summary: "ok", defects: [] }),
-              usage: null,
-            }),
-          }),
-        },
-        (_userId, effort) => efforts.push(effort),
-      ) as any,
-    });
-
-    await bus.executeReviewer(
-      { issue: { id: 367, title: "Effort" }, diff: "diff --git a/a.ts b/a.ts\n+ change" },
-      repoDir,
-      undefined,
-      "history",
-      "project",
-      "job-367",
-    );
-
-    assert.deepStrictEqual(efforts, [profile.reasoning_effort]);
-  });
-
-  it("releases the Reviewer session when a job is cancelled during review", async () => {
-    const db = getStateDatabase();
-    let released = 0;
-    let sendStarted = false;
-    const bus = new LaneDispatchBus(db, {
-      developerRunner: async () => {
-        commitImplementation("cancel-review");
-        return { exitCode: 0 };
-      },
-      sessionManager: withReviewerEffort({
-        getOrCreate: () => ({
-          onEvent: () => () => {},
-          setDeveloperInstructions() {},
-          send: async (_input: unknown, options?: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
-            sendStarted = true;
-            options?.signal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
-          }),
-        }),
-        releaseEphemeralSession: () => {
-          released += 1;
-        },
-      }) as any,
+  it("bounds Reviewer requests with a deadline and releases their context", async (context) => {
+    context.mock.timers.enable({ apis: ["setTimeout"] });
+    const entered = Promise.withResolvers<void>();
+    let active = 0;
+    const bus = new LaneDispatchBus(getStateDatabase(), {
       reviewerTimeoutMs: 1000,
-      testCommand: "git status",
+      ...reviewerOptions(async (request) => {
+        active++;
+        entered.resolve();
+        try { return await new Promise<never>((_resolve, reject) => request.signal!.addEventListener("abort", () => reject(request.signal!.reason), { once: true })); }
+        finally { active--; }
+      }),
     });
-    const job = bus.dispatchJob({
-      projectId: repoDir,
-      issueId: 3661,
-      issueTitle: "Cancel reviewer",
-      issueDescription: "Complete issue description",
-      acceptanceCriteria: ["Verify cancellation cleanup"],
-    });
-
-    await bus.evaluateQueue(repoDir, repoDir);
-    await waitFor(() => bus.getJob(job.jobId)?.status === "reviewing");
-    await waitFor(() => sendStarted);
-    bus.cancelJob(job.jobId, repoDir);
-    await waitFor(() => bus.getJob(job.jobId)?.status === "cancelled");
-    await waitFor(() => released === 1);
-
-    assert.strictEqual(released, 1);
-  });
-
-  it("releases the Reviewer session after a Reviewer timeout", async () => {
-    const db = getStateDatabase();
-    let released = 0;
-    const bus = new LaneDispatchBus(db, {
-      developerRunner: async () => {
-        commitImplementation("timeout-review");
-        return { exitCode: 0 };
-      },
-      sessionManager: withReviewerEffort({
-        getOrCreate: () => ({
-          onEvent: () => () => {},
-          setDeveloperInstructions() {},
-          send: async (_input: unknown, options?: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
-            options?.signal?.addEventListener("abort", () => reject(new Error("timed out")), { once: true });
-          }),
-        }),
-        releaseEphemeralSession: () => {
-          released += 1;
-        },
-      }) as any,
-      reviewerTimeoutMs: 20,
-      testCommand: "git status",
-    });
-    const job = bus.dispatchJob({
-      projectId: repoDir,
-      issueId: 3662,
-      issueTitle: "Timeout reviewer",
-      issueDescription: "Complete issue description",
-      acceptanceCriteria: ["Verify timeout cleanup"],
-    });
-
-    await bus.evaluateQueue(repoDir, repoDir);
-    await waitFor(() => bus.getJob(job.jobId)?.status === "blocked", 3000);
-
-    // The timeout repeats identically, so the second attempt is cut short.
-    assert.strictEqual(released, 2);
+    const pending = bus.executeReviewer(reviewerPayload(), repoDir);
+    await entered.promise;
+    context.mock.timers.tick(1000);
+    await assert.rejects(pending, /timed out/);
+    assert.equal(active, 0);
   });
 
   it("routes Reviewer transport failures into bounded rework", async () => {
     const db = getStateDatabase();
     let developerCalls = 0;
     let reviewerCalls = 0;
-    const reviewerOrchestrator = {
-      setDeveloperInstructions() {},
-      onEvent() {
-        return () => {};
-      },
-      send: async () => {
-        reviewerCalls += 1;
-        throw new Error("detached reviewer unavailable");
-      },
-    };
     const bus = new LaneDispatchBus(db, {
       developerRunner: async () => {
-        developerCalls += 1;
+        developerCalls++;
         commitImplementation(`reviewer-failure-${developerCalls}`);
         return { exitCode: 0 };
       },
-      sessionManager: withReviewerEffort({ getOrCreate: () => reviewerOrchestrator }) as any,
+      ...reviewerOptions(async () => { reviewerCalls++; throw new Error("detached reviewer unavailable"); }),
       testCommand: "git status",
     });
-    const job = bus.dispatchJob({
-      projectId: repoDir,
-      issueId: 351,
-      issueTitle: "Reviewer failure recovery",
-      issueDescription: "Complete issue description",
-      acceptanceCriteria: ["Verify reviewer recovery"],
-    });
-
+    const job = bus.dispatchJob({ projectId: repoDir, issueId: 351, issueTitle: "Reviewer failure recovery", issueDescription: "Complete issue description", acceptanceCriteria: ["Verify reviewer recovery"] });
     await bus.evaluateQueue(repoDir, repoDir);
     await waitFor(() => bus.getJob(job.jobId)?.status === "blocked");
-    assert.strictEqual(bus.getJob(job.jobId)?.rework_count, 2);
-    // The transport failure repeats, so the retry is cut short after the second attempt.
-    assert.strictEqual(developerCalls, 2);
-    assert.strictEqual(reviewerCalls, 2);
+    assert.equal(bus.getJob(job.jobId)?.rework_count, 2);
+    assert.equal(developerCalls, 2);
+    assert.equal(reviewerCalls, 2);
     assert.match(bus.getJob(job.jobId)?.error_message ?? "", /Reviewer execution failed/);
-    assert.match(bus.getJob(job.jobId)?.current_step ?? "", /retry was cut short/);
   });
 
   it("routes malformed Reviewer verdicts into bounded rework", async () => {

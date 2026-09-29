@@ -11,11 +11,13 @@ import {
   buildReviewPrompt,
   createDiffCaptureFailureVerdict,
   createIncompleteDiffVerdict,
-  DEFAULT_REVIEWER_SYSTEM_PROMPT,
   runDetachedReview,
 } from "../reviewer/runner.js";
 import { filterDiff, REVIEW_DIFF_MAX_LINES } from "../reviewer/diffFilter.js";
 import { extractRelatedContexts } from "../reviewer/contextExtractor.js";
+import { runReviewerInspection } from "../reviewer/inspectionRunner.js";
+import { createNativeModelResolver, type NativeModelConfig } from "../runtime/modelResolver.js";
+import type { completeNativeChat } from "../runtime/openAiCompatibleClient.js";
 import { parseReviewVerdict } from "../reviewer/verdictParser.js";
 import type { ReviewPayload, ReviewVerdict } from "../reviewer/types.js";
 import { getDefaultRoleProfile, getRoleProfileById } from "../state/roleProfileStore.js";
@@ -321,20 +323,6 @@ const BLOCKED_RESOLUTION_OUTCOMES: Record<BlockedJobResolution, { status: Action
 
 const DEFAULT_REVIEWER_TIMEOUT_MS = 30 * 60 * 1000;
 
-export function createReviewerUserId(
-  sessionManager?: Pick<SessionManager, "hasSession">,
-  nextId: () => number = () => randomBytes(5).readUIntBE(0, 5),
-): number {
-  let userId = nextId();
-  const hasActiveSession = typeof sessionManager?.hasSession === "function"
-    ? (candidate: number) => sessionManager.hasSession(candidate)
-    : () => false;
-  while (userId === 0 || hasActiveSession(userId)) {
-    userId = nextId();
-  }
-  return userId;
-}
-
 export function validateGitEvidence(input: {
   diff: string;
   diffStat: string;
@@ -410,6 +398,9 @@ export interface LaneDispatchBusOptions {
   reviewerRunner?: ReviewerRunner;
   testCommand?: string;
   reviewerTimeoutMs?: number;
+  reviewerToolTurnBudget?: number;
+  reviewerComplete?: typeof completeNativeChat;
+  reviewerModelResolver?: (modelId: string, owner: string) => NativeModelConfig;
   runtimePreflight?: (input: {
     backend?: AgentRuntimeBackend;
     userId: number;
@@ -1121,8 +1112,8 @@ export class LaneDispatchBus {
     payload: ReviewPayload,
     repoPath: string,
     reviewerProfileId?: string,
-    historyKey?: string,
-    projectId?: string,
+    _historyKey?: string,
+    _projectId?: string,
     jobId?: string,
     signal?: AbortSignal,
   ): Promise<ReviewVerdict> {
@@ -1133,77 +1124,42 @@ export class LaneDispatchBus {
     if (truncated) {
       return createIncompleteDiffVerdict(reviewerProfileId);
     }
-    if (this.options.reviewerRunner) {
+    const profile = reviewerProfileId ? getRoleProfileById(this.db, reviewerProfileId) : getDefaultRoleProfile(this.db, "reviewer");
+    if (!profile || profile.role !== "reviewer" || !profile.is_enabled || !profile.model_id.trim() || !profile.system_prompt.trim()) {
+      throw new Error("Reviewer execution failed: configure an enabled Reviewer role profile with a model and system prompt.");
+    }
+    const controller = new AbortController();
+    const timeoutMs = this.options.reviewerTimeoutMs ?? DEFAULT_REVIEWER_TIMEOUT_MS;
+    const timer = setTimeout(() => controller.abort(new Error("Reviewer execution timed out.")), timeoutMs);
+    const reviewerSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    try {
+      reviewerSignal.throwIfAborted();
       const prompt = buildReviewPrompt(payload);
-      const rawVerdict = await this.options.reviewerRunner(prompt, DEFAULT_REVIEWER_SYSTEM_PROMPT);
-      return parseReviewVerdict(rawVerdict, reviewerProfileId);
-    }
-
-    // Retrieve reviewer profile from database
-    const reviewerProfile = (reviewerProfileId ? getRoleProfileById(this.db, reviewerProfileId) : null)
-      ?? getDefaultRoleProfile(this.db, "reviewer");
-    const systemPrompt = reviewerProfile?.system_prompt || DEFAULT_REVIEWER_SYSTEM_PROMPT;
-    const reviewPrompt = buildReviewPrompt(payload);
-
-    if (this.options.sessionManager) {
-      let unsubscribe: (() => void) | null = null;
-      let reviewerUserId: number | null = null;
-      try {
-        const userId = createReviewerUserId(this.options.sessionManager);
-        reviewerUserId = userId;
-        const reviewerJob = jobId ? getActionJobById(this.db, jobId) : null;
-        const reviewerIdentity = buildWsConnectionIdentity({
-          authUserId: `actions-reviewer:${jobId ?? "reviewer"}:${userId}`,
-          sessionId: `${projectId ?? "reviewer"}:${userId}`,
-          chatSessionId: "main",
-          connectionId: randomBytes(3).toString("hex"),
-        });
-        const authUserId = reviewerIdentity.authUserId;
-        const orchestrator = this.options.sessionManager.getOrCreate(userId, repoPath, false, {
-          authUserId,
-          projectId: reviewerJob?.project_id ?? projectId ?? "reviewer-isolated",
-          lifecycle: "ephemeral",
-        });
-
-        if (typeof orchestrator.setDeveloperInstructions === "function") {
-          orchestrator.setDeveloperInstructions(systemPrompt);
-        }
-
-        // Apply the reviewer role profile's reasoning effort. Without this the
-        // session inherits the model config default, which is `max` for the
-        // seeded profiles and pushed every review past the reviewer timeout.
-        if (reviewerProfile?.reasoning_effort) {
-          this.options.sessionManager.setUserModelReasoningEffort(userId, reviewerProfile.reasoning_effort);
-        }
-
-        // Attach event listener for real-time Reviewer streaming to Actions lane
-        unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
-          const payload = buildActionAgentEventPayload(event, jobId ?? "reviewer", true);
-          if (Object.keys(payload).length > 0 && this.options.broadcastToActionsLane) {
-            this.options.broadcastToActionsLane(
-              payload,
-              historyKey,
-              projectId,
-            );
-          }
-        });
-
-        const res = await orchestrator.send(reviewPrompt, {
-          streaming: false,
-          signal,
-        });
-        return parseReviewVerdict(res.response, reviewerProfile?.id);
-      } catch (error) {
-        throw new Error(`Reviewer execution failed: ${error instanceof Error ? error.message : String(error)}`);
-      } finally {
-        unsubscribe?.();
-        if (reviewerUserId !== null) {
-          this.options.sessionManager.releaseEphemeralSession?.(reviewerUserId);
-        }
+      if (this.options.reviewerRunner) {
+        const response = await raceReviewerAbort(this.options.reviewerRunner(prompt, profile.system_prompt), reviewerSignal);
+        return parseReviewVerdict(response, profile.id);
       }
+      const commit = payload.diffRange?.headCommit;
+      if (!commit) throw new Error("Reviewer inspection requires captured head commit evidence.");
+      const owner = (jobId ? getActionJobById(this.db, jobId)?.auth_user_id : null) ?? "";
+      const model = this.options.reviewerModelResolver
+        ? this.options.reviewerModelResolver(profile.model_id, owner)
+        : createNativeModelResolver({ owner, stateDbPath: this.db.name, requireOwnerCredentials: true }).resolve(profile.model_id);
+      const result = await runReviewerInspection({
+        workspace: repoPath, commit, prompt, systemPrompt: profile.system_prompt,
+        model: { ...model, options: { ...model.options, reasoningEffort: profile.reasoning_effort } },
+        profileId: profile.id, signal: reviewerSignal,
+        toolTurnBudget: this.options.reviewerToolTurnBudget ?? Number(process.env.ADS_REVIEWER_TOOL_TURNS ?? 5),
+        complete: this.options.reviewerComplete,
+      });
+      reviewerSignal.throwIfAborted();
+      return result;
+    } catch (error) {
+      throw new Error(`Reviewer execution failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
     }
-
-    throw new Error("Reviewer execution is unavailable: no detached Reviewer session is configured");
   }
 
   public async runJobCycle(
@@ -1350,9 +1306,14 @@ export class LaneDispatchBus {
     }, reviewerTimeoutMs);
     try {
       if (options.callReviewerModel) {
+        const profile = typeof reviewerProfile === "string" ? getRoleProfileById(this.db, reviewerProfile) : reviewerProfile;
+        if (!profile || profile.role !== "reviewer" || !profile.is_enabled || !profile.model_id.trim() || !profile.system_prompt.trim()) {
+          throw new Error("Reviewer execution failed: configure an enabled Reviewer role profile with a model and system prompt.");
+        }
         verdict = await raceReviewerAbort(
           runDetachedReview(payload, {
             callModel: options.callReviewerModel,
+            systemPrompt: profile.system_prompt,
             reviewerProfileId: typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id,
           }),
           reviewerAbort.signal,
