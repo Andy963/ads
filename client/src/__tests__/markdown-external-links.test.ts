@@ -1,8 +1,12 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 
 import MarkdownContent from "../components/MarkdownContent.vue";
 import { renderMarkdownToHtml } from "../lib/markdown";
+import { loadMarkdown } from "../lib/markdown/loader";
+
+// Preload the lazy markdown pipeline so MarkdownContent renders synchronously.
+beforeAll(() => loadMarkdown().then(() => undefined));
 
 describe("markdown external links", () => {
   describe("renderer target attributes", () => {

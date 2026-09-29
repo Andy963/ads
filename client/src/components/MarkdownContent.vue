@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount } from "vue";
-import { renderMarkdownToHtml } from "../lib/markdown";
+import { onBeforeUnmount, ref, watch } from "vue";
+import { loadMarkdown, loadedMarkdown } from "../lib/markdown/loader";
 import { copyTextToClipboard } from "../lib/clipboard";
 
 const props = withDefaults(
@@ -86,11 +86,31 @@ async function onClick(ev: MouseEvent): Promise<void> {
   }
 }
 
-const html = computed(() => renderMarkdownToHtml(props.content));
+// The markdown pipeline loads as an async chunk; until it arrives the source
+// renders as plain text so messages stay readable, then swap to full HTML.
+const html = ref("");
+const pipelineReady = ref(Boolean(loadedMarkdown()));
+
+watch(
+  () => props.content,
+  (content) => {
+    const mod = loadedMarkdown();
+    if (mod) {
+      html.value = mod.renderMarkdownToHtml(content);
+      return;
+    }
+    void loadMarkdown().then((loaded) => {
+      pipelineReady.value = true;
+      html.value = loaded.renderMarkdownToHtml(props.content);
+    });
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
-  <div class="md" :class="{ inverted: tone === 'inverted' }" v-html="html" @click="onClick" />
+  <div v-if="pipelineReady" class="md" :class="{ inverted: tone === 'inverted' }" v-html="html" @click="onClick" />
+  <div v-else class="md mdPending" :class="{ inverted: tone === 'inverted' }">{{ content }}</div>
 </template>
 
 <style scoped>
@@ -102,6 +122,10 @@ const html = computed(() => renderMarkdownToHtml(props.content));
   white-space: normal;
   word-break: break-word;
   overflow-wrap: anywhere;
+}
+
+.mdPending {
+  white-space: pre-wrap;
 }
 
 .md.inverted {

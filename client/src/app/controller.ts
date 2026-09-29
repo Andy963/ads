@@ -36,15 +36,6 @@ export function createAppContext() {
   const maxTurnCommands = 64;
   const maxExecutePreviewLines = 3;
 
-  const fixtureMode = computed(() => {
-    try {
-      return new URLSearchParams(window.location.search).get("fixture") || "";
-    } catch {
-      return "";
-    }
-  });
-  const isExecuteBlockFixture = computed(() => fixtureMode.value === "execute-block");
-
   const loggedIn = ref(false);
   const currentUser = ref<AuthMe | null>(null);
   const transcriptCache = createTranscriptCache();
@@ -235,8 +226,6 @@ export function createAppContext() {
     maxLiveActivitySteps,
     maxTurnCommands,
     maxExecutePreviewLines,
-    fixtureMode,
-    isExecuteBlockFixture,
     loggedIn,
     currentUser,
     transcriptCache,

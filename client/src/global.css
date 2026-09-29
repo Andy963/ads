@@ -90,3 +90,25 @@ pre {
     scroll-behavior: auto !important;
   }
 }
+
+/* Failed lazy chunk load (see lib/asyncComponent.ts) */
+.lazyChunkError {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 16px;
+  color: var(--muted, #64748b);
+  font-size: 13px;
+}
+
+.lazyChunkErrorReload {
+  min-height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 8px;
+  background: var(--surface, #ffffff);
+  color: var(--text, #0f172a);
+  font-size: 13px;
+  cursor: pointer;
+}

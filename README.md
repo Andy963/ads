@@ -89,6 +89,8 @@ npm run web:init-admin -- --username admin --password-stdin
 |---|---|
 | `npm run build` | 完整构建（TypeScript 编译 + 资源同步 + Vite 前端打包） |
 | `npm run build:web` | 仅重新打包前端 Web 资源 |
+| `npm run build:web:fixture` | 打包包含浏览器测试 fixture 入口（fixture.html）的前端构建 |
+| `npm run report:web-bundle` | 构建并输出前端分包体积报告（初始加载/总量、gzip、构建耗时） |
 | `npm run test` | 运行服务端完整单元测试（Node test runner） |
 | `npm run test:web` | 运行前端 Vitest 组件与状态测试 |
 | `npm run lint` | 运行 ESLint 代码规范检查 |

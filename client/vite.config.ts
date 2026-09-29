@@ -88,6 +88,18 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: path.resolve(repoRoot, "dist", "client"),
       emptyOutDir: true,
+      // The execute-block fixture ships only in an explicit fixture build
+      // (ADS_WEB_FIXTURE_ENTRY=1); production output excludes it entirely.
+      ...(env.ADS_WEB_FIXTURE_ENTRY === "1"
+        ? {
+            rollupOptions: {
+              input: {
+                main: path.resolve(__dirname, "index.html"),
+                fixture: path.resolve(__dirname, "fixture.html"),
+              },
+            },
+          }
+        : {}),
     },
   };
 });
