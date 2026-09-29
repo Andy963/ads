@@ -17,16 +17,6 @@ export interface RoleProfileRecord {
   updated_at: number;
 }
 
-export interface RoleSettingsHistoryRecord {
-  id: number;
-  role: StoredRoleProfileValue;
-  version: number;
-  model_id: string;
-  reasoning_effort: string;
-  system_prompt: string;
-  created_at: number;
-}
-
 export function getRoleProfiles(db: DatabaseType, role?: StoredRoleProfileValue): RoleProfileRecord[] {
   if (role) {
     return db
@@ -101,12 +91,6 @@ export function saveRoleProfile(
     now,
   );
 
-  db.prepare(`
-    INSERT INTO role_settings_history
-      (role, version, model_id, reasoning_effort, system_prompt, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(profile.role, nextVersion, profile.model_id, effort, profile.system_prompt, now);
-
   return {
     id: profile.id,
     role: profile.role,
@@ -119,10 +103,4 @@ export function saveRoleProfile(
     version: nextVersion,
     updated_at: now,
   };
-}
-
-export function getRoleSettingsHistory(db: DatabaseType, role: StoredRoleProfileValue): RoleSettingsHistoryRecord[] {
-  return db
-    .prepare(`SELECT * FROM role_settings_history WHERE role = ? ORDER BY version DESC, id DESC`)
-    .all(role) as RoleSettingsHistoryRecord[];
 }

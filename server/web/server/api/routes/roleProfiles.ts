@@ -4,11 +4,9 @@ import { getStateDatabase } from "../../../../state/database.js";
 import {
   getRoleProfiles,
   saveRoleProfile,
-  getRoleSettingsHistory,
   type ReasoningEffortLevel,
 } from "../../../../state/roleProfileStore.js";
 import type { ApiRouteContext } from "../types.js";
-import { normalizeStoredRoleProfileValue } from "../../../../../shared/terminology.js";
 import { readJsonBody, sendJson } from "../../http.js";
 
 const updateProfileSchema = z.object({
@@ -27,22 +25,6 @@ export async function handleRoleProfileRoutes(ctx: ApiRouteContext): Promise<boo
   if (pathname === "/api/role-profiles" && req.method === "GET") {
     const profiles = getRoleProfiles(db);
     sendJson(res, 200, profiles);
-    return true;
-  }
-
-  const historyMatch = /^\/api\/role-profiles\/([^/]+)\/history$/.exec(pathname);
-  if (historyMatch && req.method === "GET") {
-    const rawRole = decodeURIComponent(historyMatch[1] ?? "").trim().toLowerCase();
-    // A stored `worker` profile is the implementation role, not the actions
-    // lane. The shared contract owns that context-sensitive mapping, so the
-    // route no longer carries its own inline copy.
-    const role = normalizeStoredRoleProfileValue(rawRole);
-    if (!role) {
-      sendJson(res, 400, { error: `Invalid role: ${rawRole}` });
-      return true;
-    }
-    const history = getRoleSettingsHistory(db, role);
-    sendJson(res, 200, history);
     return true;
   }
 

@@ -787,6 +787,16 @@ Core reviewing rules:
       addColumnIfMissing(db, "action_jobs", "base_sha", "TEXT");
     },
   },
+  {
+    version: 30,
+    description: "Drop the unbounded role settings history table",
+    up: (db) => {
+      db.exec(`
+        DROP INDEX IF EXISTS idx_role_settings_history_role;
+        DROP TABLE IF EXISTS role_settings_history;
+      `);
+    },
+  },
 ];
 
 /**

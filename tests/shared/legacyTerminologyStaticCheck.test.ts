@@ -78,10 +78,6 @@ const ALLOWED_LEGACY_TERMINOLOGY: Record<string, LegacyAllowance> = {
     reason: "compatibility: accepts legacy lane ids on read",
     legacyLines: 1,
   },
-  "server/web/server/api/routes/roleProfiles.ts": {
-    reason: "compatibility: maps a stored `worker` role profile onto developer",
-    legacyLines: 1,
-  },
   "client/src/app/controller.ts": {
     reason: "compatibility: comment describing the legacy wire value",
     legacyLines: 1,
