@@ -456,48 +456,50 @@ onBeforeUnmount(() => {
     <div v-if="queuedPrompts.length" class="queue" aria-label="排队消息">
       <div v-for="(q, idx) in queuedPrompts" :key="q.id" class="queue-item">
         <span class="queue-badge" :title="`第 ${idx + 1} 条排队消息`">#{{ idx + 1 }}</span>
+        <span class="queue-controls">
+          <span
+            class="queue-status"
+            :data-status="q.deliveryStatus ?? 'offline'"
+            :title="q.queueError || undefined"
+          >
+            <template v-if="q.deliveryStatus === 'offline'">Waiting for connection</template>
+            <template v-else-if="q.deliveryStatus === 'awaiting_ack'">Sending</template>
+            <template v-else-if="q.deliveryStatus === 'queued'">Queued on server</template>
+            <template v-else-if="q.deliveryStatus === 'running'">Running</template>
+            <template v-else-if="q.deliveryStatus === 'failed'">Failed</template>
+          </span>
+          <button
+            v-if="q.deliveryStatus === 'failed'"
+            class="queue-action queue-action--retry"
+            type="button"
+            title="重试"
+            aria-label="重试排队消息"
+            @click="emit('retryQueued', q.id)"
+          >
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path d="M10 3.5a6.5 6.5 0 1 1-6.26 8.33.75.75 0 1 1 1.44-.43A5 5 0 1 0 7.2 6.7H5.25V5.2a.75.75 0 0 1 1.5 0v.8h.8a.75.75 0 0 1 0 1.5H5.25V6a.75.75 0 0 1 1.5 0v.9A6.48 6.48 0 0 1 10 3.5Z" />
+            </svg>
+          </button>
+          <button
+            class="queue-action queue-action--remove"
+            type="button"
+            title="移除"
+            aria-label="移除排队消息"
+            @click="emit('removeQueued', q.id)"
+          >
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path
+                fill-rule="evenodd"
+                d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
+                clip-rule="evenodd"
+              />
+            </svg>
+          </button>
+        </span>
         <div class="queue-text">
           <span>{{ q.text || `[图片 x${q.imagesCount}]` }}</span>
           <span v-if="q.text && q.imagesCount" class="queue-sub"> · 图片 x{{ q.imagesCount }}</span>
         </div>
-        <span
-          class="queue-status"
-          :data-status="q.deliveryStatus ?? 'offline'"
-          :title="q.queueError || undefined"
-        >
-          <template v-if="q.deliveryStatus === 'offline'">Waiting for connection</template>
-          <template v-else-if="q.deliveryStatus === 'awaiting_ack'">Sending</template>
-          <template v-else-if="q.deliveryStatus === 'queued'">Queued on server</template>
-          <template v-else-if="q.deliveryStatus === 'running'">Running</template>
-          <template v-else-if="q.deliveryStatus === 'failed'">Failed</template>
-        </span>
-        <button
-          v-if="q.deliveryStatus === 'failed'"
-          class="queue-action queue-action--retry"
-          type="button"
-          title="重试"
-          aria-label="重试排队消息"
-          @click="emit('retryQueued', q.id)"
-        >
-          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-            <path d="M10 3.5a6.5 6.5 0 1 1-6.26 8.33.75.75 0 1 1 1.44-.43A5 5 0 1 0 7.2 6.7H5.25V5.2a.75.75 0 0 1 1.5 0v.8h.8a.75.75 0 0 1 0 1.5H5.25V6a.75.75 0 0 1 1.5 0v.9A6.48 6.48 0 0 1 10 3.5Z" />
-          </svg>
-        </button>
-        <button
-          class="queue-action queue-action--remove"
-          type="button"
-          title="移除"
-          aria-label="移除排队消息"
-          @click="emit('removeQueued', q.id)"
-        >
-          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-            <path
-              fill-rule="evenodd"
-              d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
-              clip-rule="evenodd"
-            />
-          </svg>
-        </button>
       </div>
     </div>
 
@@ -869,10 +871,17 @@ onBeforeUnmount(() => {
 }
 
 .queue-item {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
+  /* Float-based first-line flow: the badge and control cluster occupy only the
+     first text line; later lines reclaim the full card content width. The card
+     itself is the three-line scroll viewport so floats stay contained per card. */
+  font-size: 12.5px;
+  line-height: 1.6;
+  max-height: calc(1.6em * 3 + 16px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.5) transparent;
   padding: 8px 12px;
   border-radius: 14px;
   border: 1px solid rgba(15, 23, 42, 0.08);
@@ -881,7 +890,17 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(8px);
 }
 
+.queue-item::-webkit-scrollbar {
+  width: 4px;
+}
+
+.queue-item::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.5);
+  border-radius: 999px;
+}
+
 .queue-badge {
+  float: left;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -893,34 +912,26 @@ onBeforeUnmount(() => {
   font-weight: 700;
   font-family: var(--font-mono, monospace);
   line-height: 1.4;
-  flex-shrink: 0;
-  margin-top: 1px;
+  margin: 1px 8px 1px 0;
+}
+
+.queue-controls {
+  float: right;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  /* Never taller than one text line, or the float would keep narrowing
+     the second line as well. */
+  height: 1.6em;
+  margin-left: 8px;
 }
 
 .queue-text {
-  min-width: 0;
-  flex: 1;
-  font-size: 12.5px;
-  line-height: 1.45;
   color: #0f172a;
   font-weight: 500;
-  max-height: calc(1.45em * 3);
-  overflow-y: auto;
-  overflow-x: hidden;
   word-break: break-word;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(148, 163, 184, 0.5) transparent;
-}
-
-.queue-text::-webkit-scrollbar {
-  width: 4px;
-}
-
-.queue-text::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.5);
-  border-radius: 999px;
 }
 
 .queue-sub {
@@ -930,8 +941,6 @@ onBeforeUnmount(() => {
 }
 
 .queue-status {
-  flex-shrink: 0;
-  align-self: center;
   font-size: 10.5px;
   font-weight: 600;
   color: #64748b;
@@ -951,8 +960,8 @@ onBeforeUnmount(() => {
 }
 
 .queue-action {
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
   border-radius: 6px;
   border: none;
   background: transparent;
@@ -961,7 +970,6 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  margin-top: 1px;
   transition: color 0.12s ease, background 0.12s ease;
 }
 
