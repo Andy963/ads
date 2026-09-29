@@ -55,9 +55,51 @@ export async function verifyExecuteMarquee({ page, fixture, send, waitForReply, 
     }, commandSelector, { timeout: 22000, polling: "raf" });
     return measure();
   };
+  // Coverage map: the tail-reveal geometry (copy wider than the slot, one
+  // linear 20s cycle bringing the last characters into view) is independent
+  // of the motion preference. Real-clock evidence that the tail arrives
+  // within a single cycle comes from the no-preference block above; for
+  // reduced motion we seek the same running animation and assert the
+  // identical tail-within-viewport geometry without waiting out the clock.
+  const verifyTailSeeked = async () => {
+    const reached = await page.evaluate((selector) => {
+      const slot = document.querySelector(selector);
+      const track = slot?.querySelector(".execute-cmd-track");
+      const text = slot?.querySelector(".execute-cmd-copy")?.firstChild;
+      if (!slot || !track || !text?.textContent) return { error: "missing marquee nodes" };
+      const animation = track.getAnimations()[0];
+      if (!animation) return { error: "no running animation to seek" };
+      const duration = Number(animation.effect?.getComputedTiming().duration);
+      if (!Number.isFinite(duration) || duration <= 0) return { error: "unexpected animation duration" };
+      const range = document.createRange();
+      range.setStart(text, Math.max(0, text.textContent.length - 12));
+      range.setEnd(text, text.textContent.length);
+      animation.pause();
+      try {
+        for (let time = 0; time <= duration; time += 100) {
+          animation.currentTime = time;
+          const tail = range.getBoundingClientRect();
+          const viewport = slot.getBoundingClientRect();
+          if (tail.width > 0 && tail.left >= viewport.left && tail.right <= viewport.right) {
+            return { reachedAt: time, duration };
+          }
+        }
+        return { error: "tail never enters the viewport within one animation cycle" };
+      } finally {
+        animation.play();
+      }
+    }, commandSelector);
+    assert.ok(!reached.error, `Reduced-motion tail must be reachable within one 20s cycle: ${reached.error}`);
+    return measure();
+  };
 
   try {
     for (const reducedMotion of ["no-preference", "reduce"]) {
+      // no-preference keeps full real-clock waits (movement + both tail
+      // waits) as the 20-second-cycle evidence; reduced motion keeps the
+      // real movement assertion (the animation must ignore the preference)
+      // but seeks the animation for the two tail checks (see verifyTailSeeked).
+      const verifyTailForPreference = reducedMotion === "reduce" ? verifyTailSeeked : verifyTail;
       await page.emulateMedia({ reducedMotion });
       const marker = `browser-worker-marquee-${reducedMotion === "reduce" ? "reduced" : "normal"}`;
       const result = { reducedMotion };
@@ -71,7 +113,7 @@ export async function verifyExecuteMarquee({ page, fixture, send, waitForReply, 
         result.running = await verifyMovement();
         assert.equal(result.running.before.running, true);
         const firstPixels = await command.screenshot();
-        result.runningTail = await verifyTail();
+        result.runningTail = await verifyTailForPreference();
         assert.equal(result.runningTail.running, true);
         const tailPixels = await command.screenshot(artifacts
           ? { path: path.join(artifacts, `${engine}-marquee-${reducedMotion}-running-tail.png`) }
@@ -84,7 +126,7 @@ export async function verifyExecuteMarquee({ page, fixture, send, waitForReply, 
       await waitForReply(`Worker reply: ${marker}`);
       result.completed = await verifyMovement();
       assert.equal(result.completed.before.running, false);
-      result.completedTail = await verifyTail();
+      result.completedTail = await verifyTailForPreference();
       if (artifacts) await command.screenshot({ path: path.join(artifacts, `${engine}-marquee-${reducedMotion}-completed-tail.png`) });
 
       const nextMarker = `${marker}-next`;

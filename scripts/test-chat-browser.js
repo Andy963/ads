@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 
 import { chromium, webkit } from "playwright";
@@ -12,24 +14,29 @@ import { verifyLocalFirstTranscript } from "./lib/chat-browser-local-first.js";
 import { verifyChatNavigation } from "./lib/chat-browser-navigation.js";
 import { verifyExecuteMarquee } from "./lib/chat-browser-marquee.js";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const scriptPath = fileURLToPath(import.meta.url);
+const repoRoot = path.resolve(path.dirname(scriptPath), "..");
 const buildRoot = path.resolve(process.env.ADS_CHAT_BUILD_DIR || path.join(repoRoot, "dist/client"));
 const html = await readFile(path.join(buildRoot, "index.html"), "utf8");
-const artifacts = await mkdtemp(path.join(tmpdir(), "ads-chat-browser-check-"));
-const report = {
-  environment: "Linux/macOS browser engines; simulated mobile viewport and composition, not a physical installed iOS PWA",
-  assetPaths: [...html.matchAll(/(?:src|href)="([^"\s]*\/assets\/[^"\s]+)"/g)].map((match) => match[1]),
-  cases: [],
-};
-const selected = process.env.ADS_CHAT_BROWSER;
-assert.ok(!selected || ["webkit", "chromium"].includes(selected), "Unsupported browser engine");
 
-for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
+const engineFlag = process.argv.slice(2).find((arg) => arg.startsWith("--engine="))?.slice("--engine=".length);
+const selected = engineFlag ?? process.env.ADS_CHAT_BROWSER;
+assert.ok(!selected || ["webkit", "chromium"].includes(selected), "Unsupported browser engine");
+const engines = selected ? [selected] : ["webkit", "chromium"];
+
+async function runEngine(engine, artifacts, report) {
+  const engineStart = performance.now();
+  let stageStart = engineStart;
   const fixture = await startChatBrowserServer(buildRoot, { legacyWorker: true, projects: true });
   let context;
   let page;
   const profile = path.join(artifacts, `${engine}-profile`);
-  const result = { engine, checks: [], received: fixture.received, requests: fixture.requests };
+  const result = { engine, checks: [], timings: [], received: fixture.received, requests: fixture.requests };
+  const stage = (name) => {
+    const now = performance.now();
+    result.timings.push({ name, ms: Math.round(now - stageStart) });
+    stageStart = now;
+  };
   report.cases.push(result);
   try {
     const mobile = engine === "webkit";
@@ -42,6 +49,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       deviceScaleFactor: 1,
     });
     result.version = context.browser()?.version();
+    stage("startup");
     await context.addInitScript(({ mobile }) => {
       if (!mobile) return;
       const viewport = Object.assign(new EventTarget(), { height: 844, width: 390, offsetTop: 0, offsetLeft: 0, scale: 1 });
@@ -190,6 +198,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     });
     await page.waitForFunction(() => navigator.serviceWorker.controller && navigator.serviceWorker.controller !== window.__previousChatWorker);
     result.checks.push("New service worker activates without an updated registration script in the old page");
+    stage("service-worker-upgrade");
     await page.goto(fixture.origin, { waitUntil: "domcontentloaded" });
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => navigator.serviceWorker.controller && document.querySelector("textarea:not(:disabled)"));
@@ -199,6 +208,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       assert.equal(result.postSend.secondSend.focused, true, "Subsequent touch sends must preserve keyboard focus");
     }
     result.checks.push("Repeated sends in the same focused editor, five rows while busy, and post-send lane switching without reload");
+    stage("post-send-interactions");
     await chooseLane("acopilot");
     if (mobile) {
       const releaseThinkingReply = fixture.holdReply("browser-advisor-thinking-dots");
@@ -230,6 +240,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       await waitForReply("Advisor reply: browser-advisor-thinking-dots");
       assert.equal(await page.locator(".thinkingDots:visible").count(), 0);
       result.checks.push("Thinking dots change opacity, position, and painted pixels in mobile WebKit, then disappear on reply");
+      stage("thinking-dots");
     }
     await send("browser-advisor-first");
     await waitForReply("Advisor reply: browser-advisor-first");
@@ -247,6 +258,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     assert.ok((await visibleChat().innerText()).includes("Worker reply"));
     assert.ok(!(await visibleChat().innerText()).includes("Advisor reply"));
     result.checks.push("Real WebSocket prompt delivery, lane isolation, rapid switching, and draft restoration");
+    stage("lane-isolation-and-drafts");
 
     // Two-phase reading viewport: while interim notes and a command stream in,
     // the viewport follows the tail; once the final answer can fill the
@@ -324,6 +336,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     assert.equal(released?.overflowAnchor, "auto", "Releasing the lock must restore native scroll anchoring");
     await waitForReply("burst tail line 50");
     result.checks.push("Two-phase reading viewport: tail-followed commands, one-shot answer anchor, stable burst growth, and button release");
+    stage("reading-viewport");
 
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector("textarea:not(:disabled):visible");
@@ -334,6 +347,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     assert.ok(!(await visibleChat().innerText()).includes("Advisor reply"));
     assert.ok(frames.some((frame) => frame.type === "welcome" && frame.historyMode === "resume"), "Reload must validate the cached baseline through the real server");
     result.checks.push("Cached transcript resume and lane isolation after page reload");
+    stage("cached-reload-resume");
 
     // A client without a cache must still receive the authoritative snapshot.
     await page.evaluate(() => {
@@ -353,6 +367,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     await waitForReply("Worker reply: browser-worker-first");
     assert.ok(frames.slice(uncachedStart).some((frame) => frame.type === "history" && frame.historySize > 0), "An uncached client must receive real persisted history");
     result.checks.push("Uncached authoritative bootstrap remains available");
+    stage("uncached-bootstrap");
 
     await chooseProject("Project B", fixture.projects[1].id);
     await chooseLane("actions");
@@ -371,9 +386,11 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     await waitForReply("Worker reply: browser-worker-first");
     assert.ok(!(await visibleChat().innerText()).includes("Worker reply: browser-worker-project-b"));
     result.checks.push("Project switching replaces the visible runtime and restores project-local history");
+    stage("project-switching");
 
     result.marquee = await verifyExecuteMarquee({ page, fixture, send, waitForReply, artifacts, engine });
     result.checks.push("Long commands move left and expose their tails while running and completed, including reduced-motion; replacement restarts and short commands stay static");
+    stage("marquee");
 
     if (mobile) {
       await chooseLane("acopilot");
@@ -392,17 +409,21 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
       await waitForReply("Advisor reply: browser-advisor-composition");
       assert.equal(fixture.received.length, sentCount + 1, "One touch must dispatch exactly one prompt");
       result.checks.push("Composition-aware touch submission and empty draft after compositionend");
+      stage("composition");
 
     }
 
     result.history = {};
     await verifyMonotonicHistory({ page, send, waitForReply, chooseLane, settle, report: result.history });
     result.checks.push("Bounded initial history, native prepend anchoring, zero scroll writes, and stable DOM rows across direction changes");
+    stage("history");
     result.navigation = await verifyChatNavigation({ page, mobile, settle });
     result.checks.push("Repeated left-edge menu taps, reachable 44px bottom control, and complete bottom navigation");
+    stage("navigation");
     result.localFirst = {};
     await verifyLocalFirstTranscript({ page, context, fixture, frames, send, waitForReply, chooseLane, settle, report: result.localFirst, engine });
     result.checks.push("Cached first frame, retained scroll anchor, offline reload, unchanged reconnect and real HTTP delta catch-up");
+    stage("local-first");
 
     const rowMetrics = [];
     for (const height of mobile ? [844, 430, 300] : [900]) {
@@ -449,6 +470,7 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     }
     result.rowMetrics = rowMetrics;
     result.checks.push("One-to-five row growth, internal scrolling, and keyboard viewport transitions");
+    stage("row-metrics");
     await page.screenshot({ path: path.join(artifacts, `${engine}-five-rows.png`) });
     await input().fill("Short");
     await settle();
@@ -479,10 +501,99 @@ for (const engine of selected ? [selected] : ["webkit", "chromium"]) {
     if (page) await page.screenshot({ path: path.join(artifacts, `${engine}-failure.png`) }).catch(() => {});
     process.exitCode = 1;
   } finally {
+    result.wallMs = Math.round(performance.now() - engineStart);
     await context?.close();
     await fixture.close();
     await rm(profile, { recursive: true, force: true });
     await writeFile(path.join(artifacts, "report.json"), JSON.stringify(report, null, 2));
   }
 }
-console.log(JSON.stringify({ artifacts, ...report }, null, 2));
+
+const formatStages = (timings) => (timings ?? []).map((timing) => `${timing.name}=${timing.ms}ms`).join(" ");
+
+async function runSerial(selectedEngines) {
+  const artifacts = process.env.ADS_CHAT_BROWSER_ARTIFACTS
+    ? path.resolve(process.env.ADS_CHAT_BROWSER_ARTIFACTS)
+    : await mkdtemp(path.join(tmpdir(), "ads-chat-browser-check-"));
+  await mkdir(artifacts, { recursive: true });
+  const report = {
+    environment: "Linux/macOS browser engines; simulated mobile viewport and composition, not a physical installed iOS PWA",
+    assetPaths: [...html.matchAll(/(?:src|href)="([^"\s]*\/assets\/[^"\s]+)"/g)].map((match) => match[1]),
+    cases: [],
+  };
+  const started = performance.now();
+  for (const engine of selectedEngines) await runEngine(engine, artifacts, report);
+  report.wallMs = Math.round(performance.now() - started);
+  await writeFile(path.join(artifacts, "report.json"), JSON.stringify(report, null, 2));
+  for (const entry of report.cases) {
+    console.error(`[chat-browser] ${entry.engine}: status=${entry.status} wall=${entry.wallMs}ms stages: ${formatStages(entry.timings)}`);
+  }
+  console.error(`[chat-browser] total wall=${report.wallMs}ms`);
+  console.log(JSON.stringify({ artifacts, ...report }, null, 2));
+}
+
+// Each engine gets its own child process: the fixture server keeps
+// process-level state (env, DB singleton), so engines cannot share a
+// process, but independent processes run in parallel safely (ephemeral
+// ports, per-process mkdtemp workspaces and artifact directories).
+async function runParallel(selectedEngines) {
+  const artifacts = await mkdtemp(path.join(tmpdir(), "ads-chat-browser-check-"));
+  const started = performance.now();
+  console.error(`[chat-browser] Running ${selectedEngines.join(" + ")} in parallel child processes (ADS_CHAT_BROWSER_JOBS=1 forces serial)`);
+  const buffers = new Map();
+  const forward = (engine, chunk, stream) => {
+    const key = `${engine}:${stream === process.stdout ? "out" : "err"}`;
+    const lines = (buffers.get(key) ?? "") + chunk;
+    const complete = lines.split("\n");
+    buffers.set(key, complete.pop());
+    for (const line of complete) stream.write(`[${engine}] ${line}\n`);
+  };
+  const children = selectedEngines.map((engine) => {
+    const child = spawn(process.execPath, [scriptPath, `--engine=${engine}`], {
+      env: { ...process.env, ADS_CHAT_BROWSER_ARTIFACTS: path.join(artifacts, engine) },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.on("data", (chunk) => forward(engine, chunk, process.stdout));
+    child.stderr.on("data", (chunk) => forward(engine, chunk, process.stderr));
+    return { engine, child };
+  });
+  let terminating = false;
+  const outcomes = await Promise.all(children.map(({ engine, child }) => new Promise((resolve) => {
+    child.on("error", (error) => resolve({ engine, code: 1, error: String(error) }));
+    child.on("exit", (code, signal) => {
+      if (!terminating && code !== 0) {
+        terminating = true;
+        for (const other of children) {
+          if (other.child !== child && other.child.exitCode === null && !other.child.killed) other.child.kill("SIGTERM");
+        }
+      }
+      resolve({ engine, code, signal });
+    });
+  })));
+  for (const [key, rest] of buffers) {
+    if (rest) (key.endsWith(":out") ? process.stdout : process.stderr).write(`[${key.split(":")[0]}] ${rest}\n`);
+  }
+  let summedEngineMs = 0;
+  for (const { engine } of children) {
+    try {
+      const childReport = JSON.parse(await readFile(path.join(artifacts, engine, "report.json"), "utf8"));
+      const entry = childReport.cases?.find((item) => item.engine === engine);
+      if (typeof entry?.wallMs === "number") summedEngineMs += entry.wallMs;
+      console.error(`[chat-browser] ${engine}: status=${entry?.status ?? "unknown"} wall=${entry?.wallMs}ms stages: ${formatStages(entry?.timings)}`);
+    } catch {
+      console.error(`[chat-browser] ${engine}: no report.json (run failed before writing its report)`);
+    }
+  }
+  const wallMs = Math.round(performance.now() - started);
+  for (const outcome of outcomes) {
+    console.error(`[chat-browser] ${outcome.engine} exit: ${outcome.signal ? `signal ${outcome.signal}` : `code ${outcome.code}`}`);
+  }
+  console.error(`[chat-browser] aggregate wall=${wallMs}ms summed engine time=${summedEngineMs}ms artifacts=${artifacts}`);
+  if (outcomes.some((outcome) => outcome.code !== 0)) process.exitCode = 1;
+}
+
+if (engines.length > 1 && process.env.ADS_CHAT_BROWSER_JOBS !== "1") {
+  await runParallel(engines);
+} else {
+  await runSerial(engines);
+}
