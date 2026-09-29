@@ -88,6 +88,23 @@ afterEach(() => {
 });
 
 describe("ActionsQueueStack bounded geometry", () => {
+  it("captures the original button so a stationary mouse click remains actionable", async () => {
+    const wrapper = mountStack([makeJob("a")]);
+    const front = frontEl(wrapper);
+    const button = wrapper.get('[data-testid="btn-action-cancel"]').element;
+    const captureCard = vi.fn();
+    const captureButton = vi.fn();
+    Object.defineProperty(front, "setPointerCapture", { value: captureCard, configurable: true });
+    Object.defineProperty(button, "setPointerCapture", { value: captureButton, configurable: true });
+    button.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerId: 7, isPrimary: true }));
+    expect(captureButton).toHaveBeenCalledWith(7);
+    expect(captureCard).not.toHaveBeenCalled();
+    button.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0, pointerId: 7, isPrimary: true }));
+    await fireClick(wrapper, '[data-testid="btn-action-cancel"]');
+    expect(wrapper.emitted("cancel")).toEqual([["a"]]);
+    wrapper.unmount();
+  });
+
   it.each([1, 3, 10, 50])("keeps the rendered window bounded with %i jobs", (count) => {
     const jobs = Array.from({ length: count }, (_, i) => makeJob(`job-${i}`));
     const wrapper = mountStack(jobs);

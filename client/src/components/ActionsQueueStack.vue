@@ -173,10 +173,11 @@ function onPointerDown(ev: PointerEvent): void {
     tracking: false,
     samples: [{ y: ev.clientY, time: performance.now() }],
   };
-  // Capture keeps the gesture alive when the finger leaves the card mid-drag.
+  // Capture on the original target keeps drags alive without retargeting a
+  // stationary button click to the surrounding card.
   // jsdom lacks the capture APIs, so degrade quietly there.
   try {
-    (ev.currentTarget as HTMLElement | null)?.setPointerCapture?.(ev.pointerId);
+    (ev.target as Element | null)?.setPointerCapture?.(ev.pointerId);
   } catch {
     // best-effort
   }
