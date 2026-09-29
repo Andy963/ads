@@ -253,6 +253,11 @@ export function createChatActions(ctx: AppContext) {
     rt.dismissedPromptIds = dismissed;
     pruneDismissals(dismissed);
     const consumed = rt.consumedPromptIds ?? new Set<string>();
+    for (const prompt of snapshot.queued) {
+      if (prompt.replayIncomplete && !prompt.sentAwaitingAck && !snapshot.consumed?.includes(prompt.clientMessageId)) {
+        consumed.delete(prompt.clientMessageId);
+      }
+    }
     for (const clientMessageId of snapshot.consumed ?? []) {
       if (clientMessageId) consumed.add(clientMessageId);
     }
@@ -437,8 +442,8 @@ export function createChatActions(ctx: AppContext) {
     clearPendingPrompt(rt);
   };
 
-  const restorePendingPrompt = (rt: ProjectRuntime): void => {
-    if (rt.promptReconciliationPending) return;
+  const restorePendingPrompt = (rt: ProjectRuntime, beforeReconciliation = false): void => {
+    if (rt.promptReconciliationPending && !beforeReconciliation) return;
     if (!rt.projectSessionId) return;
     ensureOutboxBinding(rt);
     const snapshot = readOutboxFor(rt);
@@ -510,6 +515,9 @@ export function createChatActions(ctx: AppContext) {
   ): void => {
     rt.promptReconciliationPending = true;
     ensureOutboxBinding(rt);
+    // Hydrate before bootstrap frames arrive, while the reconciliation gate
+    // still prevents sending. Otherwise cold-start retries exist only on disk.
+    restorePendingPrompt(rt, true);
     const snapshot = readOutboxFor(rt);
     const clientMessageIds = new Set<string>();
     for (const prompt of [snapshot.pending, ...snapshot.sent, ...snapshot.queued]) {
@@ -1093,6 +1101,12 @@ export function createChatActions(ctx: AppContext) {
       state.laneStatus.value = { kind: "error", message: "无法重试：找不到该轮对应的原始消息，请重新发送。" };
       return;
     }
+    ensureOutboxBinding(state);
+    if (state.cancelledPromptIds?.has(userItem.id) || state.retiredPromptIds?.has(userItem.id)
+      || !outbox.reactivateForRetry(outboxKeyFor(state), userItem.id)) {
+      state.laneStatus.value = { kind: "error", message: "This message was cancelled or belongs to an obsolete session. Send a new message to continue." };
+      return;
+    }
     // Clear the failure state before re-dispatching; a new failure anchors a
     // fresh card to the retried turn instead.
     setMessages(existing.filter((item) => item.id !== message.id), state);
@@ -1103,7 +1117,6 @@ export function createChatActions(ctx: AppContext) {
     // retry re-activates that identity, so drop those marks before re-sending.
     state.consumedPromptIds?.delete(userItem.id);
     state.dismissedPromptIds?.delete(userItem.id);
-    ensureOutboxBinding(state);
     const execution = userItem.execution ?? {};
     const agentId = String(execution.agentId ?? "").trim() || String(state.activeAgentId.value ?? "").trim();
     state.queuedPrompts.value = [

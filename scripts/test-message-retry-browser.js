@@ -102,7 +102,20 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
             await activate(retry);
             await panel.locator(".queue-item").waitFor();
             assert.equal(prompts.filter(prompt => prompt.payload.text === offlineMarker).length, 1);
+            assert.equal(await page.evaluate(id => Object.keys(localStorage)
+              .filter(key => key.startsWith("ads.outbox."))
+              .some(key => JSON.parse(localStorage.getItem(key)).queued?.some(prompt =>
+                prompt.clientMessageId === id && prompt.replayIncomplete === true)), original.client_message_id),
+            true, "The retry must survive in persistent storage");
+            // Closing the page before reconnect ensures no warm runtime can
+            // hide a missing cold-start retry restoration path.
+            if (width === 390) await page.goto("about:blank");
             await page.context().setOffline(false);
+            if (width === 390) {
+              await page.goto(fixture.origin);
+              await page.locator('[data-testid="chat-model-capsule"]:not(:disabled)').waitFor();
+              await chooseLane(lane);
+            }
             await panel.locator('.msg[data-role="assistant"]').filter({ hasText: `${runtime} reply: ${offlineMarker}` }).waitFor();
             await panel.locator(".queue-item").waitFor({ state: "detached" });
             const attempts = prompts.filter(prompt => prompt.payload.text === offlineMarker);

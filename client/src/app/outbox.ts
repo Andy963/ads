@@ -239,13 +239,13 @@ export function createOutboxStore(options: { channelName?: string } = {}) {
     }
   };
 
-  const write = (key: string, snapshot: OutboxSnapshot): void => {
+  const write = (key: string, snapshot: OutboxSnapshot, reactivatedId?: string): void => {
     if (!key) return;
     // A tab can write before receiving the consumption broadcast from a peer.
     const current = read(key);
     const normalized = normalizeSnapshot({
       ...snapshot,
-      consumed: [...(current.consumed ?? []), ...(snapshot.consumed ?? [])],
+      consumed: [...(current.consumed ?? []), ...(snapshot.consumed ?? [])].filter((id) => id !== reactivatedId),
       cancelled: [...(current.cancelled ?? []), ...(snapshot.cancelled ?? [])],
       retired: [...(current.retired ?? []), ...(snapshot.retired ?? [])],
       cancelIntents: [...(current.cancelIntents ?? []), ...(snapshot.cancelIntents ?? [])],
@@ -268,6 +268,20 @@ export function createOutboxStore(options: { channelName?: string } = {}) {
 
   const clear = (key: string): void => {
     write(key, EMPTY);
+  };
+
+  const reactivateForRetry = (key: string, clientMessageId: string): boolean => {
+    const current = read(key);
+    if ([...(current.cancelled ?? []), ...(current.retired ?? []), ...(current.cancelIntents ?? [])].includes(clientMessageId)) {
+      return false;
+    }
+    // Only an explicit user action may clear the old attempt's consumption.
+    // Ordinary writes still merge tombstones to reject stale peer snapshots.
+    write(key, {
+      ...current,
+      dismissed: current.dismissed.filter((id) => id !== clientMessageId),
+    }, clientMessageId);
+    return true;
   };
 
   /** Adopt an entry written by the pre-outbox `sessionStorage` layout, if any. */
@@ -318,7 +332,7 @@ export function createOutboxStore(options: { channelName?: string } = {}) {
     channel = null;
   };
 
-  return { read, write, clear, subscribe, close, migrateLegacyPending };
+  return { read, write: (key: string, snapshot: OutboxSnapshot) => write(key, snapshot), clear, reactivateForRetry, subscribe, close, migrateLegacyPending };
 }
 
 function safeParse(raw: string): unknown {

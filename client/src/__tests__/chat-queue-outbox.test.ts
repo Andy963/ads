@@ -1336,6 +1336,68 @@ describe("interrupting a turn cancels its queue card", () => {
 });
 
 describe("consumed failure reconciliation", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  it.each(["main", "acopilot"])("persists an explicit %s retry and restores it before cold-start reconciliation", async (lane) => {
+    const key = outboxStorageKey("session-379", lane);
+    const store = createOutboxStore();
+    store.write(key, { pending: null, sent: [], queued: [], dismissed: [], consumed: ["failed-turn"] });
+    const first = mountRetryHarness({ laneGeneration: 1, chatSessionId: lane });
+    first.rt.connected.value = false;
+    const failure = { id: "failure", role: "system" as const, kind: "error" as const, content: "Provider failed" };
+    first.rt.messages.value = [{ id: "failed-turn", role: "user", kind: "text", content: "Retry original",
+      execution: { model: "original-model", modelReasoningEffort: "medium" } }, failure];
+    first.chat.retryPrompt(failure, first.rt);
+    expect(store.read(key).consumed).not.toContain("failed-turn");
+    expect(store.read(key).queued).toEqual([expect.objectContaining({
+      clientMessageId: "failed-turn", replayIncomplete: true, model: "original-model", modelReasoningEffort: "medium",
+    })]);
+
+    const cold = mountRetryHarness({ laneGeneration: 1, chatSessionId: lane });
+    expect(cold.rt.queuedPrompts.value).toHaveLength(0);
+    cold.chat.reconcilePromptOutbox(cold.rt, cold.rt.ws as never);
+    expect(cold.rt.queuedPrompts.value).toHaveLength(1);
+    cold.handler({ type: "prompt_queue_snapshot", entries: [{
+      clientMessageId: "failed-turn", status: "failed", attempts: 1, laneGeneration: 1,
+    }] });
+    cold.handler({ type: "prompt_reconcile_result", identities: [{
+      clientMessageId: "failed-turn", disposition: "consumed", retryable: true,
+    }] });
+    await settle();
+    expect(cold.sentFrames).toEqual([expect.objectContaining({
+      clientMessageId: "failed-turn", payload: expect.objectContaining({
+        replay_incomplete: true, model: "original-model", model_reasoning_effort: "medium",
+      }),
+    })]);
+    store.close();
+  });
+
+  it.each(["cancelled", "retired", "cancelIntents"] as const)("does not reactivate %s identities", (kind) => {
+    const store = createOutboxStore();
+    store.write(ISSUE_379_OUTBOX_KEY, { pending: null, sent: [], queued: [], dismissed: [], [kind]: ["protected-turn"] });
+    expect(store.reactivateForRetry(ISSUE_379_OUTBOX_KEY, "protected-turn")).toBe(false);
+    expect(store.read(ISSUE_379_OUTBOX_KEY)[kind]).toContain("protected-turn");
+    store.close();
+  });
+
+  it("keeps a new completion authoritative over a stale retry snapshot", () => {
+    const store = createOutboxStore();
+    const empty = { pending: null, sent: [], queued: [], dismissed: [] };
+    store.write(ISSUE_379_OUTBOX_KEY, { ...empty, consumed: ["failed-turn"] });
+    expect(store.reactivateForRetry(ISSUE_379_OUTBOX_KEY, "failed-turn")).toBe(true);
+    const retry = { ...empty, queued: [{ ...outboxPrompt("failed-turn", "Retry original"), replayIncomplete: true }] };
+    store.write(ISSUE_379_OUTBOX_KEY, retry);
+    const stale = store.read(ISSUE_379_OUTBOX_KEY);
+    store.write(ISSUE_379_OUTBOX_KEY, { ...empty, consumed: ["failed-turn"] });
+    store.write(ISSUE_379_OUTBOX_KEY, stale);
+    expect(store.read(ISSUE_379_OUTBOX_KEY).queued).toEqual([]);
+    expect(store.read(ISSUE_379_OUTBOX_KEY).consumed).toContain("failed-turn");
+    store.close();
+  });
+
   it.each(["main", "acopilot"])("preserves an unsent explicit retry through the %s reconnect snapshot and reconciliation", async (lane) => {
     const { chat, rt, handler, sentFrames } = mountRetryHarness({ laneGeneration: 1 });
     rt.chatSessionId = lane;
