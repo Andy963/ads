@@ -43,4 +43,5 @@
 - 0028 - [ADR 0028: Allow Cross-Runtime Session Continuation via History Injection](0028-cross-runtime-session-continuation-via-history-injection.md)
 - 0029 - [ADR 0029: Actions 队列派发自动启动与执行期输入锁定](0029-actions-queue-auto-start-and-execution-input-lock.md)
 - 0032 - [ADR 0032: Make Voice Input a Built-in Service with Independent Correction](0032-built-in-voice-input.md)
+- 0033 - [ADR 0033: Isolate bounded Reviewer inspection](0033-bounded-reviewer-inspection.md)
 <!-- ADS:ADR_INDEX_END -->

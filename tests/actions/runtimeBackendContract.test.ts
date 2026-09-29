@@ -130,79 +130,33 @@ describe("Actions runtime backend contracts", () => {
     fs.rmSync(workspace, { recursive: true, force: true });
   });
 
-  it("runs an isolated ephemeral Reviewer with the Native backend", async () => {
-    let createdSessions = 0;
-    let reviewerUserId: number | undefined;
-    const adapter = new NativeAgentAdapter({
-      credentialOwner: "review-owner",
-      workspaceRoot: workspace,
-      modelResolver: {
-        resolve: () => ({
-          model: "test-model",
-          baseUrl: "https://provider.test/v1",
-          apiKey: "test-key",
-          provider: "test",
-        }),
-      },
-      fetchImpl: async () => new Response(JSON.stringify({
-        choices: [{ message: { content: JSON.stringify({ status: "PASS", summary: "native review", defects: [] }) }, finish_reason: "stop" }],
-      }), { headers: { "content-type": "application/json" } }),
+  for (const backend of ["native", "codex-app-server"]) {
+    it(`isolates Reviewer tools from the ${backend} session backend`, async () => {
+      initializeRepository(workspace);
+      const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: workspace, encoding: "utf8" }).stdout.trim();
+      const sessionManager = new SessionManager(0, 0, "workspace-write", "test-model", undefined, {
+        ...process.env, ADS_AGENT_RUNTIME: backend,
+      }, {
+        createSession: () => { throw new Error("Reviewer must not create a general-purpose session"); },
+      });
+      let requests = 0;
+      const bus = new LaneDispatchBus(getStateDatabase(), {
+        sessionManager,
+        reviewerModelResolver: () => ({ model: "test-model", baseUrl: "https://provider.test/v1", apiKey: "test-key", provider: "test" }),
+        reviewerComplete: async (request) => {
+          requests++;
+          assert.deepEqual(request.tools?.map((tool) => tool.function.name), ["read_file_range", "search_code", "list_dir"]);
+          return { text: JSON.stringify({ status: "PASS", summary: "isolated review", defects: [] }), toolCalls: [] };
+        },
+      });
+      const verdict = await bus.executeReviewer({
+        ...reviewPayload(),
+        diffRange: { range: "dev...HEAD", baseRef: "dev", headRef: "HEAD", baseCommit: head, headCommit: head },
+      }, workspace);
+      assert.equal(verdict.status, "PASS");
+      assert.equal(requests, 1);
     });
-    const sessionManager = new SessionManager(0, 0, "workspace-write", "test-model", undefined, {
-      ...process.env,
-      ADS_AGENT_RUNTIME: "native",
-    }, {
-      createSession: ({ userId }) => {
-        createdSessions += 1;
-        reviewerUserId = userId;
-        return new HybridOrchestrator({ adapters: [adapter] });
-      },
-    });
-    const bus = new LaneDispatchBus(getStateDatabase(), { sessionManager });
-
-    const verdict = await bus.executeReviewer(reviewPayload(), workspace, undefined, "history", "project", "job-native");
-
-    assert.equal(verdict.status, "PASS");
-    assert.equal(createdSessions, 1);
-    assert.ok(reviewerUserId);
-    assert.equal(sessionManager.hasSession(reviewerUserId), false);
-  });
-
-  it("runs an isolated ephemeral Reviewer with the Codex app-server backend", async () => {
-    const server = createCodexServer();
-    const registry = new CodexAppServerDaemonRegistry({ factory: () => server.client });
-    const adapter = new CodexAppServerAdapter({ projectId: "review-codex", registry });
-    let createdSessions = 0;
-    const sessionManager = new SessionManager(0, 0, "workspace-write", "test-model", undefined, {
-      ...process.env,
-      ADS_AGENT_RUNTIME: "codex-app-server",
-    }, {
-      createSession: () => {
-        createdSessions += 1;
-        return new HybridOrchestrator({ adapters: [adapter] });
-      },
-    });
-    const bus = new LaneDispatchBus(getStateDatabase(), { sessionManager });
-    const pending = bus.executeReviewer(reviewPayload(), workspace, undefined, "history", "project", "job-codex");
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    server.notify("thread/started", { thread: { id: "review-thread" } });
-    server.notify("turn/started", { threadId: "review-thread", turn: { id: "review-turn" } });
-    server.notify("item/completed", {
-      item: {
-        type: "agentMessage",
-        id: "review-message",
-        text: JSON.stringify({ status: "PASS", summary: "codex review", defects: [] }),
-      },
-      threadId: "review-thread",
-      turnId: "review-turn",
-    });
-    server.notify("turn/completed", { threadId: "review-thread", turn: { id: "review-turn" } });
-
-    const verdict = await pending;
-    assert.equal(verdict.status, "PASS");
-    assert.equal(createdSessions, 1);
-    await registry.stopAll();
-  });
+  }
 
   it("executes an Actions Developer turn with the Native backend", async () => {
     initializeRepository(workspace);

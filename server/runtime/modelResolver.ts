@@ -35,6 +35,7 @@ export interface NativeModelResolver {
 
 type ResolverOptions = {
   owner: string;
+  requireOwnerCredentials?: boolean;
   stateDbPath?: string;
   env?: NodeJS.ProcessEnv;
 };
@@ -97,6 +98,7 @@ function resolveSavedModelConfig(
   stateDbPath: string | undefined,
   owner: string,
   env: NodeJS.ProcessEnv,
+  requireOwnerCredentials: boolean,
 ): NativeModelConfig | null {
   const db = getStateDatabase(stateDbPath);
   const modelStore = createGlobalModelConfigStore(db);
@@ -127,7 +129,7 @@ function resolveSavedModelConfig(
     // The built-in OpenAI model rows predate encrypted credential profiles and
     // must remain usable with the existing server-side Codex environment.
     // Other providers fail closed instead of borrowing another provider's key.
-    if (profile || !["openai", "codex"].includes(savedProvider.toLowerCase())) {
+    if (requireOwnerCredentials || profile || !["openai", "codex"].includes(savedProvider.toLowerCase())) {
       throw new Error(`Native runtime credentials are not configured for model "${saved.modelId ?? model}"`);
     }
     let fallback: ReturnType<typeof resolveCodexConfig>;
@@ -182,8 +184,9 @@ export function createNativeModelResolver(options: ResolverOptions): NativeModel
   return {
     resolve(model = "default", overrideConfig = null): NativeModelConfig {
       const modelId = String(model ?? "default").trim() || "default";
-      const saved = resolveSavedModelConfig(modelId, overrideConfig, options.stateDbPath, owner, env);
+      const saved = resolveSavedModelConfig(modelId, overrideConfig, options.stateDbPath, owner, env, options.requireOwnerCredentials ?? false);
       if (saved) return saved;
+      if (options.requireOwnerCredentials) throw new Error("Reviewer requires a saved model and owner-scoped credentials");
 
       const fallback = resolveCodexConfig({}, env);
       if (!fallback.apiKey || !fallback.baseUrl) {
