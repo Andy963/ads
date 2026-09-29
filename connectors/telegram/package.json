@@ -7,6 +7,7 @@
     "ads-telegram": "./bin/ads-telegram.js"
   },
   "scripts": {
+    "prebuild": "node ../../scripts/clean-build-outputs.js --root . --paths dist",
     "build": "tsc -p tsconfig.json",
     "start": "node bin/ads-telegram.js start",
     "test": "node --import tsx --test 'tests/**/*.test.ts'"

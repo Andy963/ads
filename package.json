@@ -23,7 +23,7 @@
     "url": "https://github.com/Andy963/ads/issues"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/copy-runtime-assets.js && npm run build:web",
+    "build": "node scripts/clean-build-outputs.js && tsc -p tsconfig.build.json && node scripts/copy-runtime-assets.js && npm run build:web",
     "build:web": "vite build --config client/vite.config.ts",
     "build:web:fixture": "ADS_WEB_FIXTURE_ENTRY=1 vite build --config client/vite.config.ts",
     "report:web-bundle": "node scripts/report-web-bundle.js",
