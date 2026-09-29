@@ -54,6 +54,7 @@ export type PromptIdentityDisposition = "pending" | "consumed" | "cancelled" | "
 export type PromptIdentityReconciliation = {
   clientMessageId: string;
   disposition: PromptIdentityDisposition;
+  retryable?: boolean;
 };
 
 export type ReconcilePromptIdentitiesInput = PromptQueueLane & {
@@ -713,7 +714,11 @@ export function createPromptQueueStore(db: DatabaseType) {
         return { clientMessageId, disposition: "unknown" };
       }
       if (entry.attempts > 0 || entry.status === "running" || entry.status === "completed") {
-        return { clientMessageId, disposition: "consumed" };
+        return {
+          clientMessageId,
+          disposition: "consumed",
+          ...(entry.status === "failed" && entry.laneGeneration === lane.laneGeneration ? { retryable: true } : {}),
+        };
       }
       if (entry.laneGeneration !== lane.laneGeneration) {
         return { clientMessageId, disposition: "obsolete" };

@@ -11,6 +11,7 @@ import { createStreamingActions } from "./chatStreaming";
 import {
   createOutboxStore,
   isEmptyOutboxSnapshot,
+  isUnsentTurnRetry,
   legacyPendingPromptStorageKey,
   outboxStorageKey,
   type OutboxSnapshot,
@@ -580,7 +581,7 @@ export function createChatActions(ctx: AppContext) {
 
   const applyPromptReconciliation = (
     rt: ProjectRuntime,
-    identities: Array<{ clientMessageId: string; disposition: string }>,
+    identities: Array<{ clientMessageId: string; disposition: string; retryable?: boolean }>,
   ): void => {
     const returnedIds = new Set(identities.map((identity) => String(identity.clientMessageId ?? "").trim()).filter(Boolean));
     const missingIds = Array.from(rt.promptReconciliationIds ?? []).filter((id) => !returnedIds.has(id));
@@ -594,6 +595,10 @@ export function createChatActions(ctx: AppContext) {
     for (const identity of identities) {
       const id = String(identity.clientMessageId ?? "").trim();
       if (!id) continue;
+      if (identity.disposition === "consumed" && identity.retryable === true
+        && rt.queuedPrompts.value.some((prompt) => prompt.clientMessageId === id && isUnsentTurnRetry(prompt))) {
+        continue;
+      }
       if (["consumed", "cancelled", "obsolete"].includes(identity.disposition)) {
         settledIds.add(id);
       }

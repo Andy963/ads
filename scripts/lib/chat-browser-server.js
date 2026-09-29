@@ -12,6 +12,7 @@ import { DirectoryManager } from "../../dist/server/sessions/directoryManager.js
 import { SessionManager } from "../../dist/server/sessions/sessionManager.js";
 import { getStateDatabase, resetStateDatabaseForTests } from "../../dist/server/state/database.js";
 import { createGlobalModelConfigStore } from "../../dist/server/state/globalModelConfigStore.js";
+import { createPromptQueueStore } from "../../dist/server/state/promptQueueStore.js";
 import { AsyncLock } from "../../dist/server/utils/asyncLock.js";
 import { HistoryStore } from "../../dist/server/utils/historyStore.js";
 import { SyncEventStore } from "../../dist/server/web/server/sync/store.js";
@@ -25,7 +26,7 @@ import { attachWebSocketServer } from "../../dist/server/web/server/ws/server.js
 
 const execFile = promisify(execFileCallback);
 
-export async function startChatBrowserServer(buildRoot, { legacyWorker = false, projects = false, settingsApi = false } = {}) {
+export async function startChatBrowserServer(buildRoot, { legacyWorker = false, projects = false, settingsApi = false, durableQueue = false } = {}) {
   const workspaceRoot = await mkdtemp(path.join(tmpdir(), "ads-chat-browser-server-"));
   const projectFixtures = projects
     ? [
@@ -301,6 +302,7 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
       persistCwdStore: () => {},
       syncEventStore,
       laneGenerationStore,
+      ...(durableQueue ? { promptQueueStore: createPromptQueueStore(getStateDatabase(statePath)) } : {}),
     },
     sessions: {
       workerSessionManager: new SessionManager(0, 0, "workspace-write", "browser-model", undefined, undefined, {

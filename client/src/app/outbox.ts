@@ -55,6 +55,15 @@ export type OutboxSnapshot = {
 
 export const OUTBOX_CHANNEL_NAME = "ads.outbox";
 
+export function isUnsentTurnRetry(prompt: {
+  replayIncomplete?: boolean;
+  restoredFromStorage?: boolean;
+  serverQueueTracked?: boolean;
+}): boolean {
+  // Sent-but-unacknowledged recovery is not a new user retry request.
+  return prompt.replayIncomplete === true && !prompt.restoredFromStorage && !prompt.serverQueueTracked;
+}
+
 const EMPTY: OutboxSnapshot = {
   pending: null,
   sent: [],

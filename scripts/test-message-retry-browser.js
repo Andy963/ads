@@ -10,6 +10,8 @@ const artifacts = await mkdtemp(path.join(tmpdir(), "ads-message-retry-"));
 const report = { environment: "Real WebSocket/history routes and temporary SQLite; task list uses an HTTP fixture", cases: [] };
 const selectedEngine = process.argv.find(arg => arg.startsWith("--engine="))?.split("=")[1];
 const selectedWidth = Number(process.argv.find(arg => arg.startsWith("--width="))?.split("=")[1]);
+const durableQueue = !process.argv.includes("--compat-queue");
+report.durableQueue = durableQueue;
 
 for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]) {
   if (selectedEngine && selectedEngine !== engine) continue;
@@ -17,7 +19,7 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
   try {
     for (const width of [320, 390, 1280]) {
       if (selectedWidth && selectedWidth !== width) continue;
-      const fixture = await startChatBrowserServer(path.resolve("dist/client"), { settingsApi: true });
+      const fixture = await startChatBrowserServer(path.resolve("dist/client"), { settingsApi: true, durableQueue });
       const page = await browser.newPage({ viewport: { width, height: 844 }, isMobile: width < 900, hasTouch: width < 900, serviceWorkers: "block" });
       page.setDefaultTimeout(15000);
       const result = { engine, width, lanes: [] };
@@ -29,9 +31,9 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
       page.on("websocket", socket => {
         socket.on("framereceived", ({ payload }) => {
           const frame = JSON.parse(String(payload));
-          if (["ack", "user", "in_flight", "status", "error", "result", "history"].includes(frame.type)) {
+          if (["ack", "user", "in_flight", "status", "error", "result", "history", "prompt_reconcile_result"].includes(frame.type)) {
             events.push({ type: frame.type, ok: frame.ok, kind: frame.kind, inFlight: frame.inFlight,
-              message: frame.message, clientMessageId: frame.clientMessageId, queueStatus: frame.queue_status });
+              message: frame.message, clientMessageId: frame.clientMessageId, queueStatus: frame.queue_status, identities: frame.identities });
           }
         });
         socket.on("framesent", ({ payload }) => {
@@ -86,6 +88,33 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
           ));
           assert.ok(order.every(classes => classes[0] === "msgTime" && classes[1] === "msgCopyBtn"));
           assert.equal(fixture.received.filter(item => item.marker === marker && item.lane === runtime).length, 2);
+          if (durableQueue) {
+            const offlineMarker = `browser-${runtime.toLowerCase()}-offline-retry-${width}`;
+            fixture.failReplyOnce(offlineMarker);
+            await panel.locator("textarea.composer-input").fill(offlineMarker);
+            await activate(panel.locator('[data-testid="composer-send-btn"]'));
+            await retry.waitFor();
+            const original = prompts.find(prompt => prompt.payload.text === offlineMarker);
+            assert.ok(original);
+            await page.context().setOffline(true);
+            fixture.disconnectClients();
+            await page.locator(`[data-testid="lane-tab-status-${lane}"].laneTabStatusDot--disconnected`).waitFor();
+            await activate(retry);
+            await panel.locator(".queue-item").waitFor();
+            assert.equal(prompts.filter(prompt => prompt.payload.text === offlineMarker).length, 1);
+            await page.context().setOffline(false);
+            await panel.locator('.msg[data-role="assistant"]').filter({ hasText: `${runtime} reply: ${offlineMarker}` }).waitFor();
+            await panel.locator(".queue-item").waitFor({ state: "detached" });
+            const attempts = prompts.filter(prompt => prompt.payload.text === offlineMarker);
+            assert.equal(attempts.length, 2);
+            assert.equal(attempts[1].client_message_id, original.client_message_id);
+            assert.equal(attempts[1].payload.model, original.payload.model);
+            assert.equal(attempts[1].payload.model_reasoning_effort, original.payload.model_reasoning_effort);
+            assert.equal(fixture.received.filter(item => item.marker === offlineMarker && item.lane === runtime).length, 2);
+            assert.ok(events.some(event => event.identities?.some(identity =>
+              identity.clientMessageId === original.client_message_id && identity.retryable === true)),
+            "The offline retry must survive the real durable reconciliation response");
+          }
           result.lanes.push(lane);
         }
 
@@ -105,15 +134,17 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
         const taskPanel = await chooseLane("actions");
         const taskQueue = taskPanel.locator('[data-testid="actions-job-banner"]');
         await taskQueue.waitFor();
-        assert.equal(await taskQueue.locator('[data-testid="actions-queue-row"]').count(), 3);
-        const activeRow = taskQueue.locator(".actionsQueueRow--active");
+        assert.equal(await taskQueue.locator('[data-testid="actions-queue-front"]').count(), 1);
+        assert.equal(await taskQueue.locator('[data-testid="actions-queue-peek"]').count(), 2);
+        const activeRow = taskQueue.locator('[data-testid="actions-queue-front"]');
+        assert.equal(await activeRow.getAttribute("data-job-id"), "running-job");
         assert.equal(await activeRow.evaluate(element => {
           const badge = element.querySelector(".actionsJobBadge").getBoundingClientRect();
           const button = element.querySelector("button").getBoundingClientRect();
-          const main = element.querySelector(".actionsJobMain").getBoundingClientRect();
-          return badge.top < main.bottom && badge.bottom > main.top && button.top < main.bottom && button.bottom > main.top;
+          const title = element.querySelector(".actionsQueueCardTitle").getClientRects()[0];
+          return badge.top < title.bottom && badge.bottom > title.top && button.top < title.bottom && button.bottom > title.top;
         }), true, "Task status, title, and action should share a compact row");
-        assert.deepEqual(await taskQueue.evaluate(element => {
+        assert.deepEqual(await activeRow.evaluate(element => {
           const style = getComputedStyle(element);
           return { radius: style.borderRadius, shadow: style.boxShadow, overflow: element.scrollWidth > element.clientWidth };
         }), { radius: "12px", shadow: "none", overflow: false });
@@ -125,6 +156,17 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
         assert.equal(prompts.length, before, "An active Actions job must block inline retries");
         assert.equal(await retry.count(), 1);
         await page.screenshot({ path: path.join(artifacts, `${engine}-${width}-task-queue.png`) });
+        await activeRow.press("ArrowDown");
+        assert.equal(await activeRow.getAttribute("data-job-id"), "blocked-job");
+        await activeRow.press("ArrowDown");
+        assert.equal(await activeRow.getAttribute("data-job-id"), "queued-job");
+        await page.route("**/api/actions/jobs/queued-job/cancel", route => route.fulfill({
+          contentType: "application/json", body: JSON.stringify({ status: "cancelled" }),
+        }));
+        await Promise.all([
+          page.waitForResponse(response => response.url().endsWith("/api/actions/jobs/queued-job/cancel") && response.ok()),
+          activate(activeRow.locator('[data-testid="btn-action-cancel"]')),
+        ]);
         assert.deepEqual(errors, []);
         result.status = "passed";
       } catch (error) {

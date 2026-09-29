@@ -1,4 +1,5 @@
 import type { ChatActions } from "../chat";
+import { isUnsentTurnRetry } from "../outbox";
 import type {
   ChatItem,
   ChatPatch,
@@ -524,7 +525,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
   };
 
-  const reconcilePendingPromptsByClientMessageIds = (clientMessageIds: Set<string>): boolean => {
+  const reconcilePendingPromptsByClientMessageIds = (clientMessageIds: Set<string>, fromHistory = false): boolean => {
+    if (fromHistory) {
+      clientMessageIds = new Set([...clientMessageIds].filter((id) =>
+        !rt.queuedPrompts.value.some((prompt) => prompt.clientMessageId === id && isUnsentTurnRetry(prompt)),
+      ));
+    }
     if (clientMessageIds.size === 0) return false;
     const before = rt.queuedPrompts.value;
     const after = before.filter(
@@ -560,7 +566,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const completedClientMessageIds = collectCompletedClientMessageIdsFromHistoryItems(items);
     const backendStillRunning = rt.busy.value || rt.turnInFlight;
     if (completedClientMessageIds.size > 0) {
-      reconcilePendingPromptsByClientMessageIds(completedClientMessageIds);
+      reconcilePendingPromptsByClientMessageIds(completedClientMessageIds, true);
     } else if (backendStillRunning && serverUserClientMessageIds.size > 0) {
       const before = rt.queuedPrompts.value;
       const after = before.filter((prompt) => {
@@ -568,6 +574,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         return !(
           id &&
           serverUserClientMessageIds.has(id) &&
+          !isUnsentTurnRetry(prompt) &&
           !prompt.serverQueueTracked &&
           (prompt.restoredFromStorage || prompt.replayIncomplete)
         );
@@ -1132,13 +1139,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
     if (type === "prompt_reconcile_result") {
       const identities = Array.isArray(msg.identities)
-        ? msg.identities.filter((entry): entry is { clientMessageId: string; disposition: string } => {
+        ? msg.identities.filter((entry): entry is { clientMessageId: string; disposition: string; retryable?: boolean } => {
             if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
             const record = entry as Record<string, unknown>;
             return Boolean(String(record.clientMessageId ?? "").trim() && String(record.disposition ?? "").trim());
           }).map((entry) => ({
             clientMessageId: String(entry.clientMessageId).trim(),
             disposition: String(entry.disposition),
+            ...(entry.retryable === true ? { retryable: true } : {}),
           }))
         : [];
       applyPromptReconciliation(rt, identities);
@@ -1173,6 +1181,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (!clientMessageId) continue;
         const status = String(record.status ?? "queued") as "queued" | "running" | "failed" | "completed";
         const lastError = String(record.lastError ?? "");
+        // A reconnect snapshot describes the old failed attempt, not the
+        // explicit retry still waiting in this client's offline outbox.
+        if (status === "failed" && Number(record.laneGeneration) === Number(rt.laneGeneration)
+          && rt.queuedPrompts.value.some((prompt) => prompt.clientMessageId === clientMessageId && isUnsentTurnRetry(prompt))) {
+          activeIds.add(clientMessageId);
+          continue;
+        }
         if (status === "running" || status === "completed" || Number(record.attempts) > 0) {
           markPromptConsumed(rt, clientMessageId);
         }
@@ -1316,7 +1331,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           .map((value) => String(value ?? "").trim())
           .filter(Boolean),
       );
-      reconcilePendingPromptsByClientMessageIds(completedClientMessageIds);
+      reconcilePendingPromptsByClientMessageIds(completedClientMessageIds, true);
       const resumeRequestWasLost =
         rt.resumeReplacePending &&
         inFlight === false &&
@@ -1513,7 +1528,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const items = Array.isArray(msg.items) ? (msg.items as unknown[]) : [];
       const terminalHistoryTail = hasTerminalHistoryTail(items);
       const completedClientMessageIds = collectCompletedClientMessageIdsFromHistoryItems(items);
-      reconcilePendingPromptsByClientMessageIds(completedClientMessageIds);
+      reconcilePendingPromptsByClientMessageIds(completedClientMessageIds, true);
       reconcilePendingPromptsFromBootstrapHistory(items);
       if (!resumeReplacePending && rt.ignoreNextHistory) {
         const historyGenerationRaw = Number((msg as Record<string, unknown>).laneGeneration);

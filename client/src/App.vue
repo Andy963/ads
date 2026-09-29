@@ -7,6 +7,7 @@ const appVersion = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0
 import LoginGate from "./components/LoginGate.vue";
 import MainChatView from "./components/MainChat.vue";
 import MainChatModelSelectors from "./components/MainChatModelSelectors.vue";
+import ActionsQueueStack from "./components/ActionsQueueStack.vue";
 import { lazyComponent } from "./lib/asyncComponent";
 
 // Settings and session pickers sit behind modals/drawers; keep them out of the
@@ -44,7 +45,7 @@ import {
   Clock,
 } from "@element-plus/icons-vue";
 import { isLaneConnected } from "./lib/laneConnectionStatus";
-import { formatBlockedDuration, hasLockingActionJob } from "./lib/actionJobs";
+import { hasLockingActionJob, type ActionJobQueueItem } from "./lib/actionJobs";
 const {
   loggedIn,
   cachedTranscriptAvailable,
@@ -251,37 +252,9 @@ function handleActionsViewport(viewport: TranscriptViewport): void {
 
 const activeWorkspaceTab = computed<ChatLane>(() => activeChatLane.value);
 
-type ActionJobItem = {
-  id: string;
-  project_id: string;
-  issue_id: number | null;
-  issue_title: string;
-  status: "queued" | "running" | "verifying" | "reviewing" | "waiting_merge" | "completed" | "failed" | "blocked" | "cancelled";
-  current_step: string | null;
-  steps_json?: string;
-  attempts_json?: string;
-  pr_number: number | null;
-  pr_url: string | null;
-  error_message: string | null;
-  rework_count: number;
-  blocked_at?: number | null;
-  created_at?: number;
-  updated_at?: number;
-};
+type ActionJobItem = ActionJobQueueItem;
 
 const actionJobs = ref<ActionJobItem[]>([]);
-
-// Blocked and failed jobs keep the banner to the title plus the blocked
-// duration. The lane conversation carries the failure text at full width.
-function isActionJobDetailOnly(job: ActionJobItem): boolean {
-  return job.status === "blocked" || job.status === "failed";
-}
-
-function actionJobBlockedFor(job: ActionJobItem): string | null {
-  return job.status === "blocked"
-    ? formatBlockedDuration(job.blocked_at, Date.now(), job.updated_at)
-    : null;
-}
 
 const actionsJobExecutionActive = computed(() => hasLockingActionJob(actionJobs.value));
 const actionsComposerInputLocked = computed(() =>
@@ -529,8 +502,20 @@ function showActionNotice(message: string): void {
 
 let actionJobsPollTimer: number | null = null;
 
+function stopActionJobsPolling(): void {
+  if (actionJobsPollTimer != null) {
+    clearInterval(actionJobsPollTimer);
+    actionJobsPollTimer = null;
+  }
+}
+
+// Job changes arrive over the project WebSocket (action_job_updated /
+// action_step), so a healthy session never polls. The interval below is a
+// degraded-mode fallback for when that stream is down: it only runs while the
+// lane is disconnected with live jobs, and stops again after the next
+// reconnect resynchronizes the snapshot.
 function ensureActionJobsPolling(): void {
-  if (actionJobsPollTimer != null) return;
+  if (actionJobsPollTimer != null || connected.value) return;
   const hasActiveJob = actionJobs.value.some((j) =>
     ["running", "verifying", "reviewing", "waiting_merge", "queued"].includes(j.status),
   );
@@ -540,12 +525,19 @@ function ensureActionJobsPolling(): void {
     const stillActive = actionJobs.value.some((j) =>
       ["running", "verifying", "reviewing", "waiting_merge", "queued"].includes(j.status),
     );
-    if (!stillActive && actionJobsPollTimer != null) {
-      clearInterval(actionJobsPollTimer);
-      actionJobsPollTimer = null;
-    }
+    if (!stillActive || connected.value) stopActionJobsPolling();
   }, 2000);
 }
+
+watch(connected, (isConnected) => {
+  if (!isConnected) {
+    ensureActionJobsPolling();
+    return;
+  }
+  // Reconnected: resync once, then leave updates to the event stream.
+  stopActionJobsPolling();
+  void loadActionJobs();
+});
 
 async function loadActionJobs(): Promise<void> {
   const pid = activeProjectId.value.trim();
@@ -608,10 +600,6 @@ async function cancelActionJob(jobId: string): Promise<void> {
     showActionNotice(`取消任务失败：${message}`);
   }
 }
-
-const BLOCKED_RESOLVE_ACTIONS = [
-  { action: "dismiss", label: "Dismiss" },
-] as const;
 
 async function resolveActionJob(jobId: string, action: string): Promise<void> {
   if (!jobId) return;
@@ -1274,10 +1262,7 @@ watch(activeProjectId, () => {
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onMobileKeydown);
   window.removeEventListener("pagehide", stashComposerDrafts);
-  if (actionJobsPollTimer != null) {
-    clearInterval(actionJobsPollTimer);
-    actionJobsPollTimer = null;
-  }
+  stopActionJobsPolling();
   if ((window as any).__ADS_ON_ACTION_JOB_UPDATED__) {
     delete (window as any).__ADS_ON_ACTION_JOB_UPDATED__;
   }
@@ -1971,67 +1956,16 @@ const acopilotConnectionStatus = computed(() => {
               :data-message-count="messages.length"
               :data-panel-key="`${actionsPanelKey}:${errorRecoveryGeneration}`"
             >
-              <div v-if="actionQueueJobs.length" class="actionsJobBanner actionsQueue" data-testid="actions-job-banner">
-                <div
-                  v-for="job in actionQueueJobs"
-                  :key="job.id"
-                  class="actionsQueueRow"
-                  :class="{ 'actionsQueueRow--active': job.id === activeActionJob?.id }"
-                  data-testid="actions-queue-row"
-                >
-                  <span class="actionsJobBadge" :class="`actionsJobBadge--${job.status}`">
-                    {{ job.status.toUpperCase() }}
-                  </span>
-                  <span class="actionsJobMain">
-                    <span class="actionsJobTitle">
-                      {{ job.issue_id ? `#${job.issue_id}: ` : '' }}{{ job.issue_title }}
-                    </span>
-                    <span
-                      v-if="job.current_step && !isActionJobDetailOnly(job)"
-                      class="actionsJobStep"
-                      :data-testid="`actions-job-step-${job.id}`"
-                    >
-                      {{ job.current_step }}
-                    </span>
-                    <span v-if="actionJobBlockedFor(job)" class="actionsJobBlockedFor">
-                      {{ `Blocked for ${actionJobBlockedFor(job)}` }}
-                    </span>
-                  </span>
-                  <span v-if="job.id === activeActionJob?.id" class="actionsJobActions">
-                    <button
-                      v-if="activeActionJob.status === 'queued'"
-                      type="button"
-                      class="btnActionStart"
-                      :disabled="isStartingQueue"
-                      data-testid="btn-action-start"
-                      @click="triggerStartActionQueue"
-                    >
-                      {{ isStartingQueue ? '启动中...' : '启动执行' }}
-                    </button>
-                    <button
-                      v-if="['queued', 'running', 'verifying', 'reviewing', 'waiting_merge'].includes(activeActionJob.status)"
-                      type="button"
-                      class="btnActionCancel"
-                      data-testid="btn-action-cancel"
-                      @click="cancelActionJob(activeActionJob.id)"
-                    >
-                      Cancel
-                    </button>
-                    <template v-if="activeActionJob.status === 'blocked'">
-                      <button
-                        v-for="resolve in BLOCKED_RESOLVE_ACTIONS"
-                        :key="resolve.action"
-                        type="button"
-                        class="btnActionCancel"
-                        :data-testid="`btn-action-resolve-${resolve.action}`"
-                        @click="resolveActionJob(activeActionJob.id, resolve.action)"
-                      >
-                        {{ resolve.label }}
-                      </button>
-                    </template>
-                  </span>
-                </div>
-              </div>
+              <ActionsQueueStack
+                v-if="actionQueueJobs.length"
+                :jobs="actionQueueJobs"
+                :active-job-id="activeActionJob?.id ?? null"
+                :starting="isStartingQueue"
+                :reset-key="`${activeProjectId}:${accountGeneration}`"
+                @start="triggerStartActionQueue"
+                @cancel="cancelActionJob"
+                @resolve="resolveActionJob"
+              />
               <MainChatView
                 ref="actionsChatRef"
                 :key="`${actionsPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
