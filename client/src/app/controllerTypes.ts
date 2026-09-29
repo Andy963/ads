@@ -172,6 +172,13 @@ export type ProjectRuntime = {
   dismissedPromptIds?: Set<string>;
   /** Client ids consumed by the server; see OutboxSnapshot. */
   consumedPromptIds?: Set<string>;
+  /** Client ids with a durable server cancellation tombstone. */
+  cancelledPromptIds?: Set<string>;
+  /** Client ids retired because their lane generation is obsolete. */
+  retiredPromptIds?: Set<string>;
+  /** Prevents restored work from dispatching before server reconciliation. */
+  promptReconciliationPending?: boolean;
+  promptReconciliationIds?: Set<string>;
   laneGenerationScope?: string;
   lastConsumedResetGeneration?: number;
   legacySessionResetConsumed?: boolean;

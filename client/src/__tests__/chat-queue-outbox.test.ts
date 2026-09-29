@@ -601,6 +601,70 @@ describe("outbox store", () => {
     expect(reloaded.sent.every((entry) => entry.sentAwaitingAck)).toBe(true);
   });
 
+  it("preserves consumption when a stale tab rewrites all delivery representations", () => {
+    const writer = createOutboxStore();
+    const staleWriter = createOutboxStore();
+    const prompt = outboxPrompt("retired", "fixture");
+    const fresh = outboxPrompt("fresh", "fixture");
+    const stale: OutboxSnapshot = {
+      pending: prompt, sent: [prompt], queued: [prompt, fresh], dismissed: [], consumed: [],
+    };
+    writer.write(OUTBOX_UNIT_KEY, stale);
+    writer.write(OUTBOX_UNIT_KEY, {
+      pending: null, sent: [], queued: [], dismissed: [], consumed: [prompt.clientMessageId],
+    });
+    staleWriter.write(OUTBOX_UNIT_KEY, stale);
+    const restored = staleWriter.read(OUTBOX_UNIT_KEY);
+    expect(restored.consumed).toEqual([prompt.clientMessageId]);
+    expect(restored.pending).toBeNull();
+    expect(restored.sent).toEqual([]);
+    expect(restored.queued).toEqual([fresh]);
+    writer.close();
+    staleWriter.close();
+  });
+
+  it("preserves cancellation intents and tombstones across stale writes and large dismissal sets", () => {
+    const writer = createOutboxStore();
+    const staleWriter = createOutboxStore();
+    const cancelled = outboxPrompt("cancelled", "stale text");
+    const stale: OutboxSnapshot = {
+      pending: cancelled,
+      sent: [cancelled],
+      queued: [cancelled],
+      dismissed: [],
+      consumed: [],
+    };
+    writer.write(OUTBOX_UNIT_KEY, stale);
+    writer.write(OUTBOX_UNIT_KEY, {
+      pending: null,
+      sent: [],
+      queued: [],
+      dismissed: [],
+      consumed: [],
+      cancelled: [cancelled.clientMessageId],
+    });
+    staleWriter.write(OUTBOX_UNIT_KEY, stale);
+
+    const dismissalIds = Array.from({ length: 505 }, (_, index) => `dismissed-${index}`);
+    writer.write(OUTBOX_UNIT_KEY, {
+      pending: null,
+      sent: [],
+      queued: [],
+      dismissed: dismissalIds,
+      consumed: [],
+      cancelIntents: dismissalIds,
+    });
+    const restored = staleWriter.read(OUTBOX_UNIT_KEY);
+
+    expect(restored.cancelled).toContain(cancelled.clientMessageId);
+    expect(restored.pending).toBeNull();
+    expect(restored.sent).toEqual([]);
+    expect(restored.queued).toEqual([]);
+    expect(restored.cancelIntents).toHaveLength(505);
+    writer.close();
+    staleWriter.close();
+  });
+
   it("retains consumed ids after the prompt entries are cleared", () => {
     const store = createOutboxStore();
     store.write(OUTBOX_UNIT_KEY, {
@@ -911,11 +975,11 @@ const dismissedCard = (overrides: Partial<QueuedPrompt> = {}): QueuedPrompt => (
   ...overrides,
 });
 
-const readDismissedOutbox = (): { queued: unknown[]; dismissed: string[] } => {
+const readDismissedOutbox = (): { queued: unknown[]; dismissed: string[]; cancelled?: string[] } => {
   const raw = localStorage.getItem(DISMISSED_OUTBOX_KEY);
   if (!raw) return { queued: [], dismissed: [] };
-  const parsed = JSON.parse(raw) as { queued?: unknown[]; dismissed?: string[] };
-  return { queued: parsed.queued ?? [], dismissed: parsed.dismissed ?? [] };
+  const parsed = JSON.parse(raw) as { queued?: unknown[]; dismissed?: string[]; cancelled?: string[] };
+  return { queued: parsed.queued ?? [], dismissed: parsed.dismissed ?? [], cancelled: parsed.cancelled };
 };
 
 describe("dismissed queue cards stay dismissed across a restart", () => {
@@ -1056,8 +1120,8 @@ describe("dismissed queue cards stay dismissed across a restart", () => {
     await settle();
 
     expect(rt.queuedPrompts.value).toEqual([]);
-    expect(rt.dismissedPromptIds?.has("cmid-gone")).toBe(true);
-    expect(readDismissedOutbox().dismissed).toEqual(["cmid-gone"]);
+    expect(rt.cancelledPromptIds?.has("cmid-gone")).toBe(true);
+    expect(readDismissedOutbox().cancelled).toEqual(["cmid-gone"]);
     expect(sent).toEqual([]);
   });
 });
@@ -1185,6 +1249,149 @@ describe("interrupting a turn cancels its queue card", () => {
   });
 });
 
+describe("consumed failure reconciliation", () => {
+  it("does not restore an executed failure on a client that missed running", () => {
+    const { rt, handler } = mountInterruptHarness();
+    handler({
+      type: "prompt_queue_snapshot",
+      entries: [{ clientMessageId: "consumed-failure", text: "safe fixture", status: "failed", attempts: 1 }],
+    });
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(rt.consumedPromptIds?.has("consumed-failure")).toBe(true);
+  });
+
+  it("waits for server reconciliation before replaying a restored outbox entry", async () => {
+    const { chat, rt, handler, sentFrames } = mountRetryHarness();
+    const clientMessageId = "server-consumed-old-outbox";
+    createOutboxStore().write(ISSUE_379_OUTBOX_KEY, {
+      pending: outboxPrompt(clientMessageId, "old prompt"),
+      sent: [],
+      queued: [],
+      dismissed: [],
+      consumed: [],
+    });
+    rt.queuedPrompts.value = [{
+      id: "restored-old-prompt",
+      clientMessageId,
+      text: "old prompt",
+      images: [],
+      createdAt: 1,
+      deliveryStatus: "offline",
+      restoredFromStorage: true,
+    }];
+    const sentControlFrames: Array<{ type: string; payload?: unknown }> = [];
+    const promptSocket = rt.ws as NonNullable<typeof rt.ws> & {
+      send: (type: string, payload?: unknown) => boolean;
+    };
+    rt.ws = {
+      ...promptSocket,
+      send: (type: string, payload?: unknown) => {
+        sentControlFrames.push({ type, payload });
+        return true;
+      },
+    } as never;
+
+    chat.reconcilePromptOutbox(rt, rt.ws as never);
+    await chat.flushQueuedPrompts(rt);
+    expect(rt.promptReconciliationPending).toBe(true);
+    expect(sentControlFrames).toEqual([{
+      type: "prompt_reconcile",
+      payload: {
+        clientMessageIds: [clientMessageId],
+        cancelClientMessageIds: [],
+      },
+    }]);
+    expect(sentFrames).toEqual([]);
+
+    handler({
+      type: "prompt_reconcile_result",
+      identities: [{ clientMessageId, disposition: "consumed" }],
+    });
+    await settle();
+    expect(rt.promptReconciliationPending).toBe(false);
+    expect(rt.consumedPromptIds?.has(clientMessageId)).toBe(true);
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(sentFrames).toEqual([]);
+    expect(createOutboxStore().read(ISSUE_379_OUTBOX_KEY).pending).toBeNull();
+  });
+
+  it("keeps queued work gated on incomplete reconciliation and resumes unknown work", async () => {
+    const { chat, rt, handler, sentFrames } = mountRetryHarness();
+    const clientMessageId = "unknown-offline-outbox";
+    createOutboxStore().write(ISSUE_379_OUTBOX_KEY, {
+      pending: outboxPrompt(clientMessageId, "offline prompt"),
+      sent: [],
+      queued: [],
+      dismissed: [],
+      consumed: [],
+    });
+    rt.queuedPrompts.value = [{
+      id: "restored-offline-prompt",
+      clientMessageId,
+      text: "offline prompt",
+      images: [],
+      createdAt: 1,
+      deliveryStatus: "offline",
+      restoredFromStorage: true,
+    }];
+    const sentControlFrames: Array<{ type: string; payload?: unknown }> = [];
+    const promptSocket = rt.ws as NonNullable<typeof rt.ws> & {
+      send: (type: string, payload?: unknown) => boolean;
+    };
+    rt.ws = {
+      ...promptSocket,
+      send: (type: string, payload?: unknown) => {
+        sentControlFrames.push({ type, payload });
+        return true;
+      },
+    } as never;
+
+    chat.reconcilePromptOutbox(rt, rt.ws as never);
+    await chat.flushQueuedPrompts(rt);
+    expect(sentFrames).toEqual([]);
+
+    handler({ type: "prompt_reconcile_result", identities: [] });
+    await chat.flushQueuedPrompts(rt);
+    expect(rt.promptReconciliationPending).toBe(true);
+    expect(sentFrames).toEqual([]);
+
+    handler({
+      type: "prompt_reconcile_result",
+      identities: [{ clientMessageId, disposition: "unknown" }],
+    });
+    await settle();
+    expect(rt.promptReconciliationPending).toBe(false);
+    expect(sentFrames).toHaveLength(1);
+    expect(sentFrames[0]?.clientMessageId).toBe(clientMessageId);
+    expect(sentFrames[0]?.payload.replay_incomplete).toBe(true);
+    expect(sentControlFrames).toHaveLength(1);
+  });
+
+  it("keeps queued work gated when the reconciliation request is not accepted", async () => {
+    const { chat, rt, sentFrames } = mountRetryHarness();
+    const clientMessageId = "unsent-reconciliation";
+    rt.queuedPrompts.value = [{
+      id: "restored-unsent-prompt",
+      clientMessageId,
+      text: "must wait",
+      images: [],
+      createdAt: 1,
+      deliveryStatus: "offline",
+      restoredFromStorage: true,
+    }];
+    rt.ws = {
+      send: () => false,
+    } as never;
+
+    chat.reconcilePromptOutbox(rt, rt.ws as never);
+    await chat.flushQueuedPrompts(rt);
+
+    expect(rt.promptReconciliationPending).toBe(true);
+    expect(sentFrames).toEqual([]);
+    expect(rt.queuedPrompts.value.map((prompt) => prompt.clientMessageId)).toContain(clientMessageId);
+  });
+});
+
 // --- issue-379 failed queued prompt recovery ---------------------------------
 
 const ISSUE_379_OUTBOX_KEY = outboxStorageKey("session-379", "main");
@@ -1231,6 +1438,19 @@ describe("issue-379 failed queued prompt recovery", () => {
     });
     expect(rt.queuedPrompts.value).toEqual([]);
     expect(rt.pendingAckClientMessageId).toBe("cmid-original");
+  });
+
+  it("gives a consumed failed attempt a fresh identity without losing its text", async () => {
+    const { chat, rt, sentFrames } = mountRetryHarness();
+    rt.queuedPrompts.value = [failedServerCard({ queueAttempts: 1 })];
+
+    chat.retryQueuedPrompt("q-failed", rt);
+    await settle();
+
+    expect(sentFrames).toHaveLength(1);
+    expect(sentFrames[0]?.clientMessageId).not.toBe("cmid-original");
+    expect(sentFrames[0]?.payload.text).toBe("resume the interrupted turn");
+    expect(rt.dismissedPromptIds?.has("cmid-original")).toBe(true);
   });
 
   it("re-keys a retry whose durable row belongs to an older lane generation", async () => {
@@ -1342,10 +1562,10 @@ describe("issue-379 failed queued prompt recovery", () => {
         text: "resume the interrupted turn",
         status: "failed",
         position: 0,
-        attempts: 1,
+        attempts: 0,
         createdAt: 1000,
         updatedAt: 1000,
-        lastError: "Prompt execution was interrupted before completion.",
+        lastError: "Queue admission failed before execution.",
         laneGeneration: 1,
       }],
     };
@@ -1429,7 +1649,7 @@ const queueEntry = (clientMessageId: string, status: string) => ({
   clientMessageId,
   status,
   position: 0,
-  attempts: 1,
+  attempts: status === "queued" ? 0 : 1,
   createdAt: 1000,
   updatedAt: 1000,
   completedAt: status === "completed" ? 2000 : null,

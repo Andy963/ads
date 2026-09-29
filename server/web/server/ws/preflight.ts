@@ -82,7 +82,13 @@ export function preflightPersistAndAck(args: {
   userId: number;
   onPersistedMessage?: (message: { clientMessageId: string; role: "user"; text: string }) => void;
   emitUserSyncEvent?: (event: { type: "user"; clientMessageId: string; text: string; ts: number; eventId?: string; kind?: string }) => { ok: boolean };
-  persistPromptQueue?: () => { ok: true; duplicate: boolean; status?: string; position?: number } | { ok: false; error?: string };
+  persistPromptQueue?: () => {
+    ok: true;
+    duplicate: boolean;
+    status?: string;
+    position?: number;
+    attempts?: number;
+  } | { ok: false; error?: string };
 }): { enqueue: boolean } {
   if (args.isLaneCurrent && !args.isLaneCurrent() && args.parsed.type !== "clear_history") {
     return { enqueue: false };
@@ -124,6 +130,7 @@ export function preflightPersistAndAck(args: {
         duplicate: queueResult.duplicate,
         ...(queueResult.status ? { queue_status: queueResult.status } : {}),
         ...(typeof queueResult.position === "number" ? { queue_position: queueResult.position } : {}),
+        ...(typeof queueResult.attempts === "number" ? { queue_attempts: queueResult.attempts } : {}),
       });
       return { enqueue: false };
     }

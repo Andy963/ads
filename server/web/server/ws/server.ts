@@ -863,18 +863,21 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       }
       return { ok: true, payload: { ...eventPayload, seq } };
     };
-    const broadcastJsonForLane = (lane: WsLaneSnapshot, payload: unknown): void => {
+    const broadcastAppendedJsonForLane = (lane: WsLaneSnapshot, payload: unknown): void => {
       if (!isLaneGenerationCurrent(lane)) return;
-      const appended = appendSyncEventForLane(lane, payload);
-      if (!appended.ok) return;
       broadcastJsonToHistoryKey({
         clientMetaByWs: state.clientMetaByWs,
         historyKey: lane.historyKey,
         logicalHistoryKey: lane.logicalHistoryKey,
         laneGeneration: lane.laneGeneration,
-        payload: appended.payload,
+        payload,
         sendJson: safeJsonSend,
       });
+    };
+    const broadcastJsonForLane = (lane: WsLaneSnapshot, payload: unknown): void => {
+      const appended = appendSyncEventForLane(lane, payload);
+      if (!appended.ok) return;
+      broadcastAppendedJsonForLane(lane, appended.payload);
     };
     const broadcastHistoryToSiblingConnectionsForLane = (lane: WsLaneSnapshot): void => {
       const payload = buildHistoryBootstrapPayload(lane.historyStore.get(lane.historyKey));
@@ -1391,6 +1394,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
                     duplicate: queued.duplicate,
                     status: current?.status ?? queued.entry.status,
                     position: current?.position ?? queued.entry.position,
+                    attempts: current?.attempts ?? queued.entry.attempts,
                   };
                 } catch (error) {
                   return {
@@ -1660,7 +1664,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
               broadcastWorkspaceState: (workspaceRoot) => broadcastWorkspaceStateForLane(lane, workspaceRoot),
               cancelPrompt: (clientMessageId) => {
                 if (!promptQueueService) {
-                  return { ok: true as const, cancelled: false, reason: "already_cancelled" as const };
+                  return { ok: false as const, error: "Prompt queue is unavailable" };
                 }
                 try {
                   const result = promptQueueService.cancel({
@@ -1681,11 +1685,71 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
                       laneGeneration: lane.laneGeneration,
                       eventId: `prompt_queue_cancelled:${clientMessageId}`,
                     });
-                    if (event.ok) {
-                      broadcastJsonForLane(lane, event.payload);
-                    }
+                    if (event.ok) broadcastAppendedJsonForLane(lane, event.payload);
+                  } else if (result.reason === "already_cancelled") {
+                    broadcastAppendedJsonForLane(lane, {
+                      type: "prompt_queue_cancelled",
+                      clientMessageId,
+                      laneGeneration: lane.laneGeneration,
+                      eventId: `prompt_queue_cancelled:${clientMessageId}`,
+                    });
                   }
                   return { ok: true as const, cancelled: result.cancelled, reason: result.reason };
+                } catch (error) {
+                  return {
+                    ok: false as const,
+                    error: error instanceof Error ? error.message : String(error),
+                  };
+                }
+              },
+              reconcilePromptIdentities: ({ clientMessageIds, cancelClientMessageIds }) => {
+                if (!promptQueueService) {
+                  return { ok: false as const, error: "Prompt reconciliation is unavailable" };
+                }
+                try {
+                  for (const clientMessageId of cancelClientMessageIds) {
+                    const result = promptQueueService.cancel({
+                      clientMessageId,
+                      authUserId: lane.authUserId,
+                      userId: lane.userId,
+                      sessionId: lane.sessionId,
+                      chatSessionId: lane.chatSessionId,
+                      historyKey: lane.historyKey,
+                      logicalHistoryKey: lane.logicalHistoryKey,
+                      laneNamespace: lane.laneNamespace,
+                      laneGeneration: lane.laneGeneration,
+                    });
+                    if (result.cancelled) {
+                      const event = appendSyncEventForLane(lane, {
+                        type: "prompt_queue_cancelled",
+                        clientMessageId,
+                        laneGeneration: lane.laneGeneration,
+                        eventId: `prompt_queue_cancelled:${clientMessageId}`,
+                      });
+                      if (event.ok) broadcastAppendedJsonForLane(lane, event.payload);
+                    } else if (result.reason === "already_cancelled") {
+                      broadcastAppendedJsonForLane(lane, {
+                        type: "prompt_queue_cancelled",
+                        clientMessageId,
+                        laneGeneration: lane.laneGeneration,
+                        eventId: `prompt_queue_cancelled:${clientMessageId}`,
+                      });
+                    }
+                  }
+                  return {
+                    ok: true as const,
+                    identities: promptQueueService.reconcile({
+                      authUserId: lane.authUserId,
+                      userId: lane.userId,
+                      sessionId: lane.sessionId,
+                      chatSessionId: lane.chatSessionId,
+                      historyKey: lane.historyKey,
+                      logicalHistoryKey: lane.logicalHistoryKey,
+                      laneNamespace: lane.laneNamespace,
+                      laneGeneration: lane.laneGeneration,
+                      clientMessageIds: [...new Set([...clientMessageIds, ...cancelClientMessageIds])],
+                    }),
+                  };
                 } catch (error) {
                   return {
                     ok: false as const,

@@ -1271,7 +1271,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
         text: "already completed",
         status: "queued",
         position: 1,
-        attempts: 1,
+        attempts: 0,
         createdAt: 1,
         updatedAt: 2,
       }],
@@ -1289,6 +1289,39 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     });
     await settleUi(wrapper);
 
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(JSON.parse(localStorage.getItem("ads.outbox.default.main") ?? "{}").consumed).toContain(clientMessageId);
+    wrapper.unmount();
+  });
+
+  it("persists consumption before removing a queued-only restored card", async () => {
+    const { wrapper, rt } = await mountReconnectHarness();
+    lastWs!.onOpen?.();
+    await settleUi(wrapper);
+    const clientMessageId = "queued-only-consumed";
+    rt.queuedPrompts.value = [{
+      id: "restored-only",
+      clientMessageId,
+      text: "completed fixture",
+      images: [],
+      createdAt: 1,
+      restoredFromStorage: true,
+    }];
+    await settleUi(wrapper);
+    const before = JSON.parse(localStorage.getItem("ads.outbox.default.main") ?? "{}");
+    expect(before.pending).toBeNull();
+    expect(before.sent).toEqual([]);
+    expect(before.queued.map((entry: { clientMessageId: string }) => entry.clientMessageId)).toContain(clientMessageId);
+
+    rt.resumeReplacePending = true;
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [
+        { role: "user", text: "completed fixture", kind: `client_message_id:${clientMessageId}`, ts: 1 },
+        { role: "ai", text: "done", ts: 2 },
+      ],
+    });
+    await settleUi(wrapper);
     expect(rt.queuedPrompts.value).toEqual([]);
     expect(JSON.parse(localStorage.getItem("ads.outbox.default.main") ?? "{}").consumed).toContain(clientMessageId);
     wrapper.unmount();

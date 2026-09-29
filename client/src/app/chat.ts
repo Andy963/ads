@@ -191,6 +191,7 @@ export function createChatActions(ctx: AppContext) {
     rt: ProjectRuntime,
     pending?: PersistedPrompt | null,
     sent?: PersistedPrompt[],
+    cancelIntents?: string[],
   ): void => {
     if (applyingRemoteOutbox) return;
     const key = outboxKeyFor(rt);
@@ -200,15 +201,22 @@ export function createChatActions(ctx: AppContext) {
     const nextSent = sent === undefined ? current.sent : sent;
     const dismissed = rt.dismissedPromptIds ?? new Set<string>();
     const consumed = rt.consumedPromptIds ?? new Set<string>();
+    const cancelled = rt.cancelledPromptIds ?? new Set<string>();
+    const retired = rt.retiredPromptIds ?? new Set<string>();
     const isDismissed = (prompt: { clientMessageId?: unknown }): boolean =>
       dismissed.has(String(prompt.clientMessageId ?? "").trim());
     const isConsumed = (prompt: { clientMessageId?: unknown }): boolean =>
-      consumed.has(String(prompt.clientMessageId ?? "").trim());
+      consumed.has(String(prompt.clientMessageId ?? "").trim())
+      || cancelled.has(String(prompt.clientMessageId ?? "").trim())
+      || retired.has(String(prompt.clientMessageId ?? "").trim());
     outbox.write(key, {
       pending: nextPending && !isDismissed(nextPending) && !isConsumed(nextPending) ? nextPending : null,
       sent: nextSent.filter((prompt) => !isDismissed(prompt) && !isConsumed(prompt)),
       dismissed: Array.from(dismissed),
       consumed: Array.from(consumed),
+      cancelled: Array.from(cancelled),
+      retired: Array.from(retired),
+      cancelIntents: cancelIntents ?? current.cancelIntents ?? [],
       queued: rt.queuedPrompts.value
         .filter((prompt) => !isDismissed(prompt) && !isConsumed(prompt))
         .filter((prompt) => prompt.deliveryStatus === "offline" || prompt.restoredFromStorage || prompt.replayIncomplete)
@@ -233,10 +241,11 @@ export function createChatActions(ctx: AppContext) {
 
   const applyPersistedSuppressions = (rt: ProjectRuntime, snapshot: OutboxSnapshot): void => {
     const dismissed = rt.dismissedPromptIds ?? new Set<string>();
-    for (const clientMessageId of snapshot.dismissed) {
+    for (const clientMessageId of [...snapshot.dismissed, ...(snapshot.cancelIntents ?? [])]) {
       if (clientMessageId) {
+        const wasDismissed = dismissed.has(clientMessageId);
         dismissed.add(clientMessageId);
-        requestPromptCancellation(rt, clientMessageId);
+        if (!wasDismissed && !rt.promptReconciliationPending) requestPromptCancellation(rt, clientMessageId);
       }
     }
     rt.dismissedPromptIds = dismissed;
@@ -246,19 +255,38 @@ export function createChatActions(ctx: AppContext) {
       if (clientMessageId) consumed.add(clientMessageId);
     }
     rt.consumedPromptIds = consumed;
+    const cancelled = rt.cancelledPromptIds ?? new Set<string>();
+    for (const clientMessageId of snapshot.cancelled ?? []) {
+      if (clientMessageId) cancelled.add(clientMessageId);
+    }
+    rt.cancelledPromptIds = cancelled;
+    const retired = rt.retiredPromptIds ?? new Set<string>();
+    for (const clientMessageId of snapshot.retired ?? []) {
+      if (clientMessageId) retired.add(clientMessageId);
+    }
+    rt.retiredPromptIds = retired;
     const before = rt.queuedPrompts.value.length;
     const after = rt.queuedPrompts.value.filter(
-      (prompt) => !dismissed.has(prompt.clientMessageId) && !consumed.has(prompt.clientMessageId),
+      (prompt) => !dismissed.has(prompt.clientMessageId)
+        && !consumed.has(prompt.clientMessageId)
+        && !cancelled.has(prompt.clientMessageId)
+        && !retired.has(prompt.clientMessageId),
     );
     if (after.length !== before) rt.queuedPrompts.value = after;
   };
 
   const applyRemoteOutbox = (rt: ProjectRuntime, snapshot: OutboxSnapshot): void => {
     applyPersistedSuppressions(rt, snapshot);
+    if (rt.promptReconciliationPending) return;
     const dismissed = rt.dismissedPromptIds ?? new Set<string>();
     const consumed = rt.consumedPromptIds ?? new Set<string>();
+    const cancelled = rt.cancelledPromptIds ?? new Set<string>();
+    const retired = rt.retiredPromptIds ?? new Set<string>();
     const isSuppressed = (clientMessageId: string): boolean =>
-      dismissed.has(clientMessageId) || consumed.has(clientMessageId);
+      dismissed.has(clientMessageId)
+      || consumed.has(clientMessageId)
+      || cancelled.has(clientMessageId)
+      || retired.has(clientMessageId);
     // Keep prompts this tab cannot persist (image prompts) plus every card the
     // server still owns. The outbox deliberately omits acknowledged work, so
     // trusting it alone would hide queued/running/failed cards until the next
@@ -408,6 +436,7 @@ export function createChatActions(ctx: AppContext) {
   };
 
   const restorePendingPrompt = (rt: ProjectRuntime): void => {
+    if (rt.promptReconciliationPending) return;
     if (!rt.projectSessionId) return;
     ensureOutboxBinding(rt);
     const snapshot = readOutboxFor(rt);
@@ -416,8 +445,13 @@ export function createChatActions(ctx: AppContext) {
     );
     const dismissed = rt.dismissedPromptIds ?? new Set<string>();
     const consumed = rt.consumedPromptIds ?? new Set<string>();
+    const cancelled = rt.cancelledPromptIds ?? new Set<string>();
+    const retired = rt.retiredPromptIds ?? new Set<string>();
     const isSuppressed = (clientMessageId: string): boolean =>
-      dismissed.has(clientMessageId) || consumed.has(clientMessageId);
+      dismissed.has(clientMessageId)
+      || consumed.has(clientMessageId)
+      || cancelled.has(clientMessageId)
+      || retired.has(clientMessageId);
 
     const restored: QueuedPrompt[] = [];
     const stored = snapshot.pending;
@@ -466,6 +500,114 @@ export function createChatActions(ctx: AppContext) {
 
     if (restored.length === 0) return;
     rt.queuedPrompts.value = [...restored, ...rt.queuedPrompts.value];
+  };
+
+  const reconcilePromptOutbox = (
+    rt: ProjectRuntime,
+    socket: { send: (type: string, payload?: unknown) => boolean | void } | null = rt.ws,
+  ): void => {
+    rt.promptReconciliationPending = true;
+    ensureOutboxBinding(rt);
+    const snapshot = readOutboxFor(rt);
+    const clientMessageIds = new Set<string>();
+    for (const prompt of [snapshot.pending, ...snapshot.sent, ...snapshot.queued]) {
+      const id = String(prompt?.clientMessageId ?? "").trim();
+      if (id) clientMessageIds.add(id);
+    }
+    for (const prompt of rt.queuedPrompts.value) {
+      const id = String(prompt.clientMessageId ?? "").trim();
+      if (id) clientMessageIds.add(id);
+    }
+    const pendingAckId = String(rt.pendingAckClientMessageId ?? "").trim();
+    if (pendingAckId) clientMessageIds.add(pendingAckId);
+    const terminal = new Set([
+      ...(snapshot.consumed ?? []),
+      ...(snapshot.cancelled ?? []),
+      ...(snapshot.retired ?? []),
+    ]);
+    const cancelClientMessageIds = new Set([
+      ...(snapshot.cancelIntents ?? []),
+      ...snapshot.dismissed,
+    ]);
+    for (const id of [...cancelClientMessageIds]) {
+      if (terminal.has(id)) cancelClientMessageIds.delete(id);
+      else clientMessageIds.add(id);
+    }
+    if (clientMessageIds.size === 0 && cancelClientMessageIds.size === 0) {
+      rt.promptReconciliationPending = false;
+      rt.promptReconciliationIds = undefined;
+      return;
+    }
+    rt.promptReconciliationIds = clientMessageIds;
+    const sent = socket?.send("prompt_reconcile", {
+      clientMessageIds: Array.from(clientMessageIds),
+      cancelClientMessageIds: Array.from(cancelClientMessageIds),
+    });
+    if (!socket || sent === false) {
+      if (socket) rt.wsError.value = "Prompt reconciliation could not be sent";
+      return;
+    }
+    if (sent === undefined) {
+      rt.promptReconciliationPending = false;
+      rt.promptReconciliationIds = undefined;
+      restorePendingPrompt(rt);
+    }
+  };
+
+  const applyPromptReconciliation = (
+    rt: ProjectRuntime,
+    identities: Array<{ clientMessageId: string; disposition: string }>,
+  ): void => {
+    const returnedIds = new Set(identities.map((identity) => String(identity.clientMessageId ?? "").trim()).filter(Boolean));
+    const missingIds = Array.from(rt.promptReconciliationIds ?? []).filter((id) => !returnedIds.has(id));
+    if (missingIds.length > 0) {
+      rt.wsError.value = "Prompt reconciliation returned an incomplete identity set";
+      return;
+    }
+    const settledIds = new Set<string>();
+    const terminalIds = new Set<string>();
+    for (const identity of identities) {
+      const id = String(identity.clientMessageId ?? "").trim();
+      if (!id) continue;
+      if (["pending", "consumed", "cancelled", "obsolete"].includes(identity.disposition)) {
+        settledIds.add(id);
+      }
+      if (identity.disposition === "consumed") {
+        (rt.consumedPromptIds ??= new Set()).add(id);
+        rt.cancelledPromptIds?.delete(id);
+        rt.retiredPromptIds?.delete(id);
+        terminalIds.add(id);
+      } else if (identity.disposition === "cancelled") {
+        if (!rt.consumedPromptIds?.has(id)) (rt.cancelledPromptIds ??= new Set()).add(id);
+        terminalIds.add(id);
+      } else if (identity.disposition === "obsolete") {
+        if (!rt.consumedPromptIds?.has(id) && !rt.cancelledPromptIds?.has(id)) {
+          (rt.retiredPromptIds ??= new Set()).add(id);
+        }
+        terminalIds.add(id);
+      }
+      if (terminalIds.has(id)) rt.dismissedPromptIds?.delete(id);
+    }
+    if (terminalIds.size > 0) {
+      rt.queuedPrompts.value = rt.queuedPrompts.value.filter(
+        (prompt) => !terminalIds.has(prompt.clientMessageId),
+      );
+    }
+    if (rt.pendingAckClientMessageId && settledIds.has(rt.pendingAckClientMessageId)) {
+      rt.pendingAckClientMessageId = null;
+    }
+    rt.promptReconciliationPending = false;
+    rt.promptReconciliationIds = undefined;
+    ensureOutboxBinding(rt);
+    const current = readOutboxFor(rt);
+    persistOutbox(
+      rt,
+      current.pending && !settledIds.has(current.pending.clientMessageId) ? current.pending : null,
+      current.sent.filter((prompt) => !settledIds.has(prompt.clientMessageId)),
+      current.cancelIntents,
+    );
+    restorePendingPrompt(rt);
+    void flushQueuedPrompts(rt);
   };
 
   const trimChatItems = (items: ChatItem[]): ChatItem[] => {
@@ -729,26 +871,55 @@ export function createChatActions(ctx: AppContext) {
     randomId,
   });
 
-  const markPromptConsumed = (
+  const markPromptTerminal = (
     rt: ProjectRuntime,
     clientMessageId: string,
+    disposition: "consumed" | "cancelled" | "retired",
     options: { onlyIfTracked?: boolean } = {},
   ): void => {
     const id = String(clientMessageId ?? "").trim();
     if (!id) return;
+    if (disposition === "cancelled" && rt.consumedPromptIds?.has(id)) return;
+    if (disposition === "retired" && (rt.consumedPromptIds?.has(id) || rt.cancelledPromptIds?.has(id))) return;
     const snapshot = readOutboxFor(rt);
     const tracked = rt.queuedPrompts.value.some((prompt) => prompt.clientMessageId === id)
       || snapshot.pending?.clientMessageId === id
       || snapshot.sent.some((prompt) => prompt.clientMessageId === id)
       || snapshot.queued.some((prompt) => prompt.clientMessageId === id);
     if (options.onlyIfTracked && !tracked) return;
-    const consumed = rt.consumedPromptIds ?? new Set<string>();
-    consumed.add(id);
-    rt.consumedPromptIds = consumed;
+    if (disposition === "consumed") {
+      const consumed = rt.consumedPromptIds ?? new Set<string>();
+      consumed.add(id);
+      rt.consumedPromptIds = consumed;
+      rt.cancelledPromptIds?.delete(id);
+      rt.retiredPromptIds?.delete(id);
+    } else if (disposition === "cancelled") {
+      const cancelled = rt.cancelledPromptIds ?? new Set<string>();
+      cancelled.add(id);
+      rt.cancelledPromptIds = cancelled;
+      rt.retiredPromptIds?.delete(id);
+    } else {
+      const retired = rt.retiredPromptIds ?? new Set<string>();
+      retired.add(id);
+      rt.retiredPromptIds = retired;
+    }
+    rt.dismissedPromptIds?.delete(id);
     rt.queuedPrompts.value = rt.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== id);
     ensureOutboxBinding(rt);
     persistOutbox(rt);
   };
+
+  const markPromptConsumed = (
+    rt: ProjectRuntime,
+    clientMessageId: string,
+    options: { onlyIfTracked?: boolean } = {},
+  ): void => markPromptTerminal(rt, clientMessageId, "consumed", options);
+
+  const markPromptCancelled = (rt: ProjectRuntime, clientMessageId: string): void =>
+    markPromptTerminal(rt, clientMessageId, "cancelled");
+
+  const markPromptRetired = (rt: ProjectRuntime, clientMessageId: string): void =>
+    markPromptTerminal(rt, clientMessageId, "retired");
 
   const dismissPromptByClientMessageId = (
     rt: ProjectRuntime,
@@ -762,10 +933,16 @@ export function createChatActions(ctx: AppContext) {
     dismissed.add(id);
     state.dismissedPromptIds = dismissed;
     pruneDismissals(dismissed);
+    const consumed = state.consumedPromptIds ?? new Set<string>();
+    const cancelled = state.cancelledPromptIds ?? new Set<string>();
+    const retired = state.retiredPromptIds ?? new Set<string>();
+    const current = readOutboxFor(state);
+    const cancelIntents = new Set(current.cancelIntents ?? []);
+    if (!consumed.has(id) && !cancelled.has(id) && !retired.has(id)) cancelIntents.add(id);
     state.queuedPrompts.value = state.queuedPrompts.value.filter((prompt) => prompt.clientMessageId !== id);
     ensureOutboxBinding(state);
-    persistOutbox(state);
-    if (options.notifyServer !== false) requestPromptCancellation(state, id);
+    persistOutbox(state, undefined, undefined, Array.from(cancelIntents));
+    if (options.notifyServer !== false && cancelIntents.has(id)) requestPromptCancellation(state, id);
   };
 
   const removeQueuedPrompt = (id: string, rt?: ProjectRuntime): void => {
@@ -786,22 +963,28 @@ export function createChatActions(ctx: AppContext) {
     const prompt = state.queuedPrompts.value.find((entry) => entry.id === target);
     if (!prompt || prompt.deliveryStatus !== "failed") return;
     ensureOutboxBinding(state);
-    // A retry reuses the original client id so the server requeues the same
-    // durable row. That only holds while the lane is unchanged: the id is bound
-    // to its generation, so work stranded by a reset has to be resubmitted as a
-    // new prompt instead of colliding with a different prompt scope.
+    // Claimed identities are terminal even after failure. Only an unclaimed
+    // failure in the current generation can reuse its identity.
     const rowGeneration = Number(prompt.queueLaneGeneration ?? 0);
     const laneGeneration = Number(state.laneGeneration ?? 0);
     const generationMoved = rowGeneration > 0 && laneGeneration > 0 && rowGeneration !== laneGeneration;
-    const clientMessageId = generationMoved ? randomUuid() : prompt.clientMessageId;
+    const needsNewIdentity = generationMoved || Number(prompt.queueAttempts ?? 0) > 0;
+    const clientMessageId = needsNewIdentity ? randomUuid() : prompt.clientMessageId;
     // Re-keying orphans the original durable row, and an obsolete-generation row
     // stays in the logical-lane snapshot. Retire it explicitly, otherwise the next
     // snapshot resurrects the failed card next to the retry and invites a second
     // duplicate retry.
     const dismissed = state.dismissedPromptIds ?? new Set<string>();
     state.dismissedPromptIds = dismissed;
-    if (generationMoved) dismissed.add(prompt.clientMessageId);
-    else dismissed.delete(prompt.clientMessageId);
+    if (needsNewIdentity) {
+      dismissed.add(prompt.clientMessageId);
+      const cancelIntents = new Set(readOutboxFor(state).cancelIntents ?? []);
+      cancelIntents.add(prompt.clientMessageId);
+      persistOutbox(state, undefined, undefined, Array.from(cancelIntents));
+      requestPromptCancellation(state, prompt.clientMessageId);
+    } else {
+      dismissed.delete(prompt.clientMessageId);
+    }
     state.queuedPrompts.value = state.queuedPrompts.value.map((entry) =>
       entry.id === target
         ? {
@@ -895,6 +1078,7 @@ export function createChatActions(ctx: AppContext) {
     options?: { preserveErrorStatus?: boolean },
   ): Promise<void> => {
     const state = runtimeOrActive(rt);
+    if (state.promptReconciliationPending) return;
     if (state.syncInProgress || state.awaitingBootstrapHistory) return;
     if (state.inputLocked.value && !state.queuedPrompts.value[0]?.restoredFromStorage) return;
     if (!state.connected.value) return;
@@ -1094,6 +1278,10 @@ export function createChatActions(ctx: AppContext) {
     clearPendingPrompt,
     clearPendingPromptReplayState,
     markPromptConsumed,
+    markPromptCancelled,
+    markPromptRetired,
+    reconcilePromptOutbox,
+    applyPromptReconciliation,
     dismissPromptByClientMessageId,
     restorePendingPrompt,
     trimChatItems,

@@ -17,6 +17,7 @@ import { invalidateWsPromptRun } from "./promptLifecycle.js";
 import { handleSessionListMessage } from "./handleSessionList.js";
 import { handleTaskResumeMessage } from "./handleTaskResume.js";
 import type { WsMessage } from "./schema.js";
+import type { PromptIdentityReconciliation } from "../../../state/promptQueueStore.js";
 
 type ClearHistoryScope = "lane" | "shared";
 
@@ -103,6 +104,10 @@ export async function handleWsControlMessage(args: {
   cancelPrompt?: (clientMessageId: string) =>
     | { ok: true; cancelled: boolean; reason: "cancelled" | "already_cancelled" | "not_queued" }
     | { ok: false; error: string };
+  reconcilePromptIdentities?: (request: {
+    clientMessageIds: string[];
+    cancelClientMessageIds: string[];
+  }) => { ok: true; identities: PromptIdentityReconciliation[] } | { ok: false; error: string };
   logger: Pick<WsLogger, "info" | "warn">;
 }): Promise<{
   handled: boolean;
@@ -188,6 +193,32 @@ export async function handleWsControlMessage(args: {
     return { handled: true, orchestrator: args.orchestrator };
   }
 
+  if (args.parsed.type === "prompt_reconcile") {
+    const payload = args.parsed.payload && typeof args.parsed.payload === "object" && !Array.isArray(args.parsed.payload)
+      ? args.parsed.payload as Record<string, unknown>
+      : {};
+    const readIds = (value: unknown): string[] => Array.isArray(value)
+      ? [...new Set(value.map((id) => String(id ?? "").trim()).filter(Boolean))]
+      : [];
+    const clientMessageIds = readIds(payload.clientMessageIds ?? payload.client_message_ids);
+    const cancelClientMessageIds = readIds(payload.cancelClientMessageIds ?? payload.cancel_client_message_ids);
+    if (clientMessageIds.length > 5_000 || cancelClientMessageIds.length > 5_000) {
+      args.sendJson({ type: "prompt_reconcile_error", message: "Too many prompt identities to reconcile" });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+    if (!args.reconcilePromptIdentities) {
+      args.sendJson({ type: "prompt_reconcile_error", message: "Prompt reconciliation is unavailable" });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+    const result = args.reconcilePromptIdentities({ clientMessageIds, cancelClientMessageIds });
+    if (!result.ok) {
+      args.sendJson({ type: "prompt_reconcile_error", message: result.error });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+    args.sendJson({ type: "prompt_reconcile_result", identities: result.identities });
+    return { handled: true, orchestrator: args.orchestrator };
+  }
+
   if (args.parsed.type === "cancel_prompt") {
     const payload = args.parsed.payload && typeof args.parsed.payload === "object" && !Array.isArray(args.parsed.payload)
       ? args.parsed.payload as Record<string, unknown>
@@ -218,7 +249,7 @@ export async function handleWsControlMessage(args: {
     args.sendJson({
       type: "ack",
       client_message_id: clientMessageId,
-      queue_status: result.ok && !result.cancelled ? "ignored" : "cancelled",
+      queue_status: result.reason === "not_queued" ? "consumed" : "cancelled",
       duplicate: !result.cancelled,
     });
     return { handled: true, orchestrator: args.orchestrator };

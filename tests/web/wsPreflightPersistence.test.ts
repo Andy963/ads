@@ -74,6 +74,7 @@ describe("web/server/ws/preflight-persistence", () => {
   let lock: AsyncLock;
   let unblockCommands: (() => void) | null;
   let failAgentRequests: boolean;
+  let agentRequestCount: number;
   /** Held by tests that need a prompt to occupy the lane while another waits. */
   let holdAgentRequests: Promise<void> | null;
   const originalEnv = { ...process.env };
@@ -102,6 +103,7 @@ describe("web/server/ws/preflight-persistence", () => {
       }
     >();
     failAgentRequests = false;
+    agentRequestCount = 0;
     holdAgentRequests = null;
     const createSession = ({ cwd }: { cwd: string }): HybridOrchestrator => new HybridOrchestrator({
       initialWorkingDirectory: cwd,
@@ -109,6 +111,7 @@ describe("web/server/ws/preflight-persistence", () => {
         id: "codex",
         metadata: { id: "codex", name: "Preflight fixture", capabilities: ["text"] },
         send: async () => {
+          agentRequestCount += 1;
           if (holdAgentRequests) await holdAgentRequests;
           if (failAgentRequests) throw new Error("fixture agent failure");
           return { response: "Fixture reply", usage: null, agentId: "codex" };
@@ -380,7 +383,7 @@ describe("web/server/ws/preflight-persistence", () => {
     }
   });
 
-  it("requeues an explicit retry for a failed prompt and persists lifecycle transitions", async () => {
+  it("rejects consumed identity replay and executes a fresh retry identity", async () => {
     const url = `ws://127.0.0.1:${port}`;
     const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
     const client = new WebSocket(url, protocols, { origin: "http://localhost" });
@@ -410,19 +413,34 @@ describe("web/server/ws/preflight-persistence", () => {
         payload: { text: "retry me", replay_incomplete: true },
         client_message_id: "retry-1",
       }));
-      const retryAck = await waitForWsMessage(
+      const duplicateAck = await waitForWsMessage(
         client,
-        (msg) => msg.type === "ack" && msg.client_message_id === "retry-1" && msg.duplicate === false,
+        (msg) => msg.type === "ack" && msg.client_message_id === "retry-1",
         2000,
       );
+      assert.equal(duplicateAck.duplicate, true);
+      assert.equal(duplicateAck.queue_status, "failed");
+      assert.equal(promptQueueStore.getByClientMessageId("retry-1")?.attempts, 1);
+
+      client.send(JSON.stringify({
+        type: "prompt",
+        payload: { text: "retry me" },
+        client_message_id: "retry-2",
+      }));
+      const retryAck = await waitForWsMessage(
+        client,
+        (msg) => msg.type === "ack" && msg.client_message_id === "retry-2",
+        2000,
+      );
+      assert.equal(retryAck.duplicate, false);
       assert.equal(retryAck.queue_status, "queued");
       const completedDeadline = Date.now() + 3000;
-      while (promptQueueStore.getByClientMessageId("retry-1")?.status !== "completed") {
+      while (promptQueueStore.getByClientMessageId("retry-2")?.status !== "completed") {
         assert.ok(Date.now() < completedDeadline, "explicit retry should complete");
         await delay(5);
       }
-      const entry = promptQueueStore.getByClientMessageId("retry-1");
-      assert.equal(entry?.attempts, 2);
+      const entry = promptQueueStore.getByClientMessageId("retry-2");
+      assert.equal(entry?.attempts, 1);
       assert.deepEqual(entry?.payload, {});
 
       const replay = syncEventStore.readAfter({
@@ -430,11 +448,141 @@ describe("web/server/ws/preflight-persistence", () => {
         laneKey: "test::test::main",
       });
       const lifecycle = replay.events.filter((event) => event.type === "prompt_queue");
-      assert.equal(lifecycle.length, 1);
-      assert.equal(lifecycle[0]?.payload.entry.status, "completed");
+      assert.equal(lifecycle.length, 2);
+      assert.equal(lifecycle[0]?.payload.entry.status, "failed");
+      assert.equal(lifecycle[1]?.payload.entry.status, "completed");
       assert.ok(Number(lifecycle[0]?.seq) > 0);
     } finally {
       client.terminate();
+    }
+  });
+
+  it("reconciles a completed prompt after a sibling connection reconnects", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
+    const sender = new WebSocket(url, protocols, { origin: "http://localhost" });
+    const sibling = new WebSocket(url, protocols, { origin: "http://localhost" });
+    const clientMessageId = "reconnect-consumed-1";
+
+    try {
+      await Promise.all([waitForWsOpen(sender), waitForWsOpen(sibling)]);
+      const ack = waitForWsMessage(
+        sender,
+        (msg) => msg.type === "ack" && msg.client_message_id === clientMessageId,
+      );
+      sender.send(JSON.stringify({
+        type: "prompt",
+        payload: { text: "consume once" },
+        client_message_id: clientMessageId,
+      }));
+      await ack;
+
+      const completedDeadline = Date.now() + 3000;
+      while (promptQueueStore.getByClientMessageId(clientMessageId)?.status !== "completed") {
+        assert.ok(Date.now() < completedDeadline, "prompt should complete before the sibling reconnects");
+        await delay(5);
+      }
+      assert.equal(promptQueueStore.getByClientMessageId(clientMessageId)?.attempts, 1);
+      assert.equal(agentRequestCount, 1);
+
+      const siblingClosed = new Promise<void>((resolve) => sibling.once("close", () => resolve()));
+      sibling.close();
+      await siblingClosed;
+      const reconnected = new WebSocket(url, protocols, { origin: "http://localhost" });
+      await waitForWsOpen(reconnected);
+      const reconciliation = waitForWsMessage(reconnected, (msg) => msg.type === "prompt_reconcile_result");
+      reconnected.send(JSON.stringify({
+        type: "prompt_reconcile",
+        payload: { clientMessageIds: [clientMessageId], cancelClientMessageIds: [] },
+      }));
+      const result = await reconciliation;
+      const identities = result.identities as Array<{ clientMessageId: string; disposition: string }>;
+      assert.deepEqual(identities, [{ clientMessageId, disposition: "consumed" }]);
+      assert.equal(promptQueueStore.getByClientMessageId(clientMessageId)?.attempts, 1);
+      assert.equal(agentRequestCount, 1);
+      reconnected.terminate();
+    } finally {
+      sender.terminate();
+      sibling.terminate();
+    }
+  });
+
+  it("syncs an offline cancellation before stale replay and broadcasts it to a sibling", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
+    const sender = new WebSocket(url, protocols, { origin: "http://localhost" });
+    const sibling = new WebSocket(url, protocols, { origin: "http://localhost" });
+    const cancelId = "offline-cancel-1";
+    let releaseAgent!: () => void;
+    holdAgentRequests = new Promise<void>((resolve) => { releaseAgent = resolve; });
+
+    try {
+      await Promise.all([waitForWsOpen(sender), waitForWsOpen(sibling)]);
+      sender.send(JSON.stringify({
+        type: "prompt",
+        payload: { text: "occupy lane" },
+        client_message_id: "cancel-lane-occupier",
+      }));
+      const runningDeadline = Date.now() + 3000;
+      while (promptQueueStore.getByClientMessageId("cancel-lane-occupier")?.status !== "running") {
+        assert.ok(Date.now() < runningDeadline, "first prompt should occupy the lane");
+        await delay(5);
+      }
+
+      const queuedAck = waitForWsMessage(
+        sender,
+        (msg) => msg.type === "ack" && msg.client_message_id === cancelId,
+      );
+      sender.send(JSON.stringify({
+        type: "prompt",
+        payload: { text: "cancel while offline" },
+        client_message_id: cancelId,
+      }));
+      await queuedAck;
+      assert.equal(promptQueueStore.getByClientMessageId(cancelId)?.status, "queued");
+
+      const siblingCancellation = waitForWsMessage(
+        sibling,
+        (msg) => msg.type === "prompt_queue_cancelled" && msg.clientMessageId === cancelId,
+      );
+      sender.send(JSON.stringify({ type: "cancel_prompt", client_message_id: cancelId }));
+      await siblingCancellation;
+      assert.equal(promptQueueStore.getByClientMessageId(cancelId), null);
+
+      releaseAgent();
+      const completedDeadline = Date.now() + 3000;
+      while (promptQueueStore.getByClientMessageId("cancel-lane-occupier")?.status !== "completed") {
+        assert.ok(Date.now() < completedDeadline, "occupying prompt should complete");
+        await delay(5);
+      }
+
+      const siblingClosed = new Promise<void>((resolve) => sibling.once("close", () => resolve()));
+      sibling.close();
+      await siblingClosed;
+      const reconnected = new WebSocket(url, protocols, { origin: "http://localhost" });
+      await waitForWsOpen(reconnected);
+      const reconciliation = waitForWsMessage(reconnected, (msg) => msg.type === "prompt_reconcile_result");
+      reconnected.send(JSON.stringify({
+        type: "prompt_reconcile",
+        payload: { clientMessageIds: [cancelId], cancelClientMessageIds: [cancelId] },
+      }));
+      const result = await reconciliation;
+      assert.deepEqual(result.identities, [{ clientMessageId: cancelId, disposition: "cancelled" }]);
+
+      const replayRejected = waitForWsMessage(reconnected, (msg) => msg.type === "error");
+      reconnected.send(JSON.stringify({
+        type: "prompt",
+        payload: { text: "cancel while offline", replay_incomplete: true },
+        client_message_id: cancelId,
+      }));
+      await replayRejected;
+      assert.equal(promptQueueStore.getByClientMessageId(cancelId), null);
+      assert.equal(agentRequestCount, 1);
+      reconnected.terminate();
+    } finally {
+      releaseAgent();
+      sender.terminate();
+      sibling.terminate();
     }
   });
 

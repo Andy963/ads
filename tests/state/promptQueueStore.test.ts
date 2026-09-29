@@ -103,7 +103,7 @@ describe("state/promptQueueStore", () => {
     assert.deepEqual(store.listRecoverable(), []);
   });
 
-  it("fences stale workers and requeues an explicit failed retry", () => {
+  it("fences stale workers and rejects replay of a consumed identity", () => {
     db = new DatabaseConstructor(":memory:");
     const store = createPromptQueueStore(db);
     assert.equal(store.claimOwnership("old-worker", 101, 900, 60_000, () => false).claimed, true);
@@ -123,22 +123,19 @@ describe("state/promptQueueStore", () => {
       payload: { text: "one", replay_incomplete: true },
       retryFailed: true,
     });
-    assert.equal(retried.duplicate, false);
-    assert.equal(retried.entry.status, "queued");
+    assert.equal(retried.duplicate, true);
+    assert.equal(retried.entry.status, "failed");
     assert.equal(retried.entry.attempts, 1);
-    assert.equal(retried.entry.lastError, null);
+    assert.equal(retried.entry.lastError, "interrupted");
+    assert.equal(store.markRunning(first.entry.id, "new-worker", 1300), false);
 
-    assert.equal(store.markRunning(first.entry.id, "new-worker", 1300), true);
-    assert.equal(store.markFailed(first.entry.id, new Error("failed"), "new-worker", 1400), true);
-    const retriedAgain = store.enqueue({
+    const fresh = store.enqueue({
       ...lane,
-      clientMessageId: "client-1",
-      payload: { text: "one", replay_incomplete: true },
-      retryFailed: true,
+      clientMessageId: "client-new-attempt",
+      payload: { text: "one" },
     });
-    assert.equal(retriedAgain.duplicate, false);
-    assert.equal(retriedAgain.entry.status, "queued");
-    assert.equal(retriedAgain.entry.attempts, 2);
+    assert.equal(fresh.duplicate, false);
+    assert.equal(store.markRunning(fresh.entry.id, "new-worker", 1400), true);
   });
 
   it("scrubs completed payloads while retaining conflict detection", () => {
@@ -229,5 +226,64 @@ describe("state/promptQueueStore", () => {
     assert.equal(second.cancelled, false);
     assert.equal(second.reason, "already_cancelled");
     assert.equal(second.entry, null);
+  });
+
+  it("reconciles queued, consumed, cancelled, obsolete, and out-of-scope identities", () => {
+    db = new DatabaseConstructor(":memory:");
+    const store = createPromptQueueStore(db);
+    store.enqueue({ ...lane, clientMessageId: "pending", payload: { text: "one" } });
+    const consumed = store.enqueue({ ...lane, clientMessageId: "consumed", payload: { text: "two" } });
+    store.enqueue({ ...lane, clientMessageId: "obsolete", payload: { text: "three" } });
+    store.enqueue({ ...lane, authUserId: "other-user", clientMessageId: "private", payload: { text: "four" } });
+    db.prepare("UPDATE prompt_queue SET status='failed', attempts=1 WHERE id=?").run(consumed.entry.id);
+    store.cancel({ ...lane, clientMessageId: "cancelled" }, 1000);
+
+    const identities = store.reconcile({
+      ...lane,
+      userId: lane.userId,
+      clientMessageIds: ["pending", "consumed", "cancelled", "obsolete", "private", "unknown"],
+      laneGeneration: lane.laneGeneration + 1,
+      historyKey: "auth-1::session-1::main:generation:2",
+    });
+
+    assert.deepEqual(Object.fromEntries(identities.map(({ clientMessageId, disposition }) => [clientMessageId, disposition])), {
+      pending: "obsolete",
+      consumed: "consumed",
+      cancelled: "cancelled",
+      obsolete: "obsolete",
+      private: "unknown",
+      unknown: "unknown",
+    });
+    assert.equal(store.getByClientMessageId("pending")?.status, "queued");
+  });
+
+  it("keeps terminal identities beyond time and recent-row cache limits", () => {
+    db = new DatabaseConstructor(":memory:");
+    const store = createPromptQueueStore(db);
+    const completedIds: string[] = [];
+    const cancelledIds: string[] = [];
+
+    for (let index = 0; index < 205; index += 1) {
+      const clientMessageId = `old-completed-${index}`;
+      const entry = store.enqueue({ ...lane, clientMessageId, payload: { text: "old" }, createdAt: 1 }).entry;
+      db.prepare("UPDATE prompt_queue SET status='completed', attempts=1, completed_at=1 WHERE id=?").run(entry.id);
+      completedIds.push(clientMessageId);
+    }
+    for (let index = 0; index < 505; index += 1) {
+      const clientMessageId = `old-cancelled-${index}`;
+      store.cancel({ ...lane, clientMessageId }, 1);
+      cancelledIds.push(clientMessageId);
+    }
+
+    const identities = store.reconcile({
+      ...lane,
+      userId: lane.userId,
+      clientMessageIds: [...completedIds, ...cancelledIds],
+    });
+
+    assert.equal(identities.length, 710);
+    assert.ok(identities.every((identity) => identity.disposition === "consumed" || identity.disposition === "cancelled"));
+    assert.equal(identities.filter((identity) => identity.disposition === "consumed").length, 205);
+    assert.equal(identities.filter((identity) => identity.disposition === "cancelled").length, 505);
   });
 });
