@@ -103,18 +103,20 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
          ? enabledModels.filter((model) => supportsAgentModel({ agentId, model }))
          : enabledModels;
        const compatibleIds = new Set(
-         compatibleModels.map((model) => String(model.modelId ?? model.id ?? "").trim()).filter(Boolean),
+         compatibleModels.map((model) => String(model.id).trim()).filter(Boolean),
        );
        const knownIds = new Set(
-         enabledModels.map((model) => String(model.modelId ?? model.id ?? "").trim()).filter(Boolean),
+         enabledModels.map((model) => String(model.id).trim()).filter(Boolean),
        );
        const fallback = compatibleModels.find((model) => model.isDefault) ?? compatibleModels[0] ?? null;
-       const fallbackModelId = String(fallback?.modelId ?? fallback?.id ?? "").trim();
+       const fallbackModelId = String(fallback?.id ?? "").trim();
        const stored = readModelIdPreference(sessionId, rt.chatSessionId, agentId);
 
        const storedModelId = stored === null ? null : normalizeModelId(stored);
        let candidate = storedModelId ?? normalizeModelId(rt.modelId.value);
-       if (candidate === "auto" || (knownIds.has(candidate) && !compatibleIds.has(candidate))) {
+       const legacyMatches = compatibleModels.filter((model) => model.modelId === candidate);
+       if (!knownIds.has(candidate) && legacyMatches.length === 1) candidate = legacyMatches[0].id;
+       if (candidate === "auto" || !compatibleIds.has(candidate)) {
          candidate = fallbackModelId || "auto";
        }
 
@@ -191,7 +193,9 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
       rt.laneStatus.value = { kind: "error", message: "Model switch failed: the current chat connection is unavailable." };
       return;
     }
-    rt.laneStatus.value = { kind: "progress", message: `Switching model: ${model}…` };
+    const config = models.value.find(item => item.id === model);
+    const label = config?.displayName?.trim() || config?.modelId || "Model";
+    rt.laneStatus.value = { kind: "progress", message: `Switching model: ${label}…` };
   };
 
    const setMainModelReasoningEffort = (effort: string): void => {
@@ -247,14 +251,13 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      const current = normalizeModelId(rt.modelId.value);
      if (current === "auto") return;
      const enabledModels = models.value.filter((model) => model.isEnabled);
-     const currentModel = enabledModels.find((model) => String(model.modelId ?? model.id ?? "").trim() === current);
+     const currentModel = enabledModels.find((model) => String(model.id).trim() === current);
      if (currentModel && supportsAgentModel({ agentId: nextAgentId, model: currentModel })) {
        return;
      }
-     if (!currentModel && current !== "auto") return;
      const compatibleModels = enabledModels.filter((model) => supportsAgentModel({ agentId: nextAgentId, model }));
      const fallback = compatibleModels.find((model) => model.isDefault) ?? compatibleModels[0] ?? null;
-     const fallbackId = String(fallback?.modelId ?? fallback?.id ?? "").trim();
+     const fallbackId = String(fallback?.id ?? "").trim();
      if (!fallbackId || fallbackId === current) return;
      rt.modelId.value = normalizeModelId(fallbackId);
      if (sessionId) {

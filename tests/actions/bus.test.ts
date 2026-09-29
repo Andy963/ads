@@ -100,30 +100,34 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     spawnSync("git", ["commit", "-m", `implement ${label}`], { cwd: repoDir });
   }
 
-  it("dispatches a job non-blockingly with formatted id and queued status", () => {
+  it("dispatches a job non-blockingly with formatted id and queued status", async (context) => {
     const db = getStateDatabase();
     const bus = new LaneDispatchBus(db);
+    const evaluate = context.mock.method(bus, "evaluateQueue", async () => ({ allowed: false }));
 
-    const start = Date.now();
     const result = bus.dispatchJob({
-      projectId: "/home/andy/repos/ads",
+      projectId: repoDir,
+      repoPath: repoDir,
       issueId: 277,
       issueTitle: "Acopilot & Actions refactor",
       issueDescription: "Complete issue description",
       acceptanceCriteria: ["Verify the queued job"],
     });
-    const elapsed = Date.now() - start;
 
     assert.strictEqual(result.ok, true);
     assert.strictEqual(result.status, "queued");
     assert.ok(result.jobId.startsWith("job-"));
     assert.ok(result.jobId.includes("-277-"));
-    assert.ok(elapsed < 50, `Dispatch should be fast, elapsed: ${elapsed}ms`);
+    // Dispatch must return the persisted queued state before auto-start runs;
+    // wall-clock thresholds measure host SQLite contention, not this contract.
+    assert.strictEqual(evaluate.mock.callCount(), 0);
 
     const stored = bus.getJob(result.jobId);
     assert.ok(stored);
     assert.strictEqual(stored.status, "queued");
     assert.strictEqual(stored.branch, "codex/issue-277");
+    await Promise.resolve();
+    assert.strictEqual(evaluate.mock.callCount(), 1);
   });
 
   it("auto-starts a dispatched job without a manual queue start when the queue is idle", async () => {
@@ -850,7 +854,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(blocked.gateBlocked, "terminal");
     assert.strictEqual(bus.getJob(queuedJob.jobId)?.status, "queued");
 
-    await waitFor(() => bus.getJob(failedJob.jobId)?.status === "completed");
+    await waitFor(() => bus.getJob(failedJob.jobId)?.status === "completed"
+      && bus.getJob(queuedJob.jobId)?.status === "completed", 10000);
     assert.strictEqual(developerCalls, 3);
     assert.strictEqual(bus.getJob(queuedJob.jobId)?.status, "completed");
   });

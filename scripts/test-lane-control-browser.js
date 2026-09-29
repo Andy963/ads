@@ -171,11 +171,11 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
         const surface = await readSurface(page);
         result.surface = surface;
         assert.equal(surface.viewport, 1280);
-        assert.ok(surface.capsule.width <= 141, `capsule width ${surface.capsule.width} must not exceed ~140px`);
+        assert.ok(Math.abs(surface.tabs[0].width - surface.capsule.width) <= 4, `Each segment must share the width: ${JSON.stringify(surface)}`);
         assert.ok(surface.capsule.textTruncated, "the long alias must be ellipsized inside the capped capsule");
         const widestTab = Math.max(...surface.tabs.map((tab) => tab.width));
         assert.ok(
-          surface.capsule.width <= widestTab * 1.5,
+          surface.capsule.width <= widestTab * 1.05,
           `capsule ${surface.capsule.width} must not be markedly wider than a tab ${widestTab}`,
         );
         assert.ok(
@@ -285,6 +285,11 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
         await activateLane(page, "acopilot", true);
         const release = await sendHeldAdvisorPrompt(page, fixture, "browser-advisor-pulse-reduced");
         try {
+          await page.waitForFunction(() => {
+            const dot = document.querySelector('[data-testid="lane-tab-status-acopilot"]');
+            const style = getComputedStyle(dot);
+            return style.animationName === "none" && Math.abs(new DOMMatrixReadOnly(style.transform).a - 1.3) <= 0.05;
+          });
           const samples = await sampleDots(page, { durationMs: 1000 });
           result.reducedMotion = samples.at(-1);
           assert.ok(

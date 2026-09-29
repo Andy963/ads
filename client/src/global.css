@@ -1,21 +1,23 @@
-@import url("https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@400;500;600;700&display=swap");
-
 :root {
-  --font-sans: "Fira Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", ui-sans-serif, system-ui, Roboto, "Helvetica Neue", Arial,
     "Noto Sans", "Liberation Sans", sans-serif;
   --font-mono: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 
-  --app-bg: #f6f8fa;
+  --app-bg: #f2f2f7;
   --surface: #ffffff;
-  --surface-2: #f6f8fa;
-  --border: rgba(15, 23, 42, 0.08);
-  --text: #0f172a;
-  --muted: #64748b;
-  --muted-2: #94a3b8;
+  --surface-2: #f2f2f7;
+  --border: #3c3c4321;
+  --text: #1c1c1e;
+  --muted: #6c6c70;
+  --muted-2: #8e8e93;
+  --segmented-bg: #e3e3e8;
+  --selection-bg: #e8f1ff;
+  --hover-bg: #e5e5ea;
+  --focus-ring: rgba(0, 122, 255, 0.18);
 
-  --accent: #2563eb;
-  --accent-2: #1d4ed8;
-  --danger: #ef4444;
+  --accent: #007aff;
+  --accent-2: #0062cc;
+  --danger: #d70015;
   --danger-2: #dc2626;
 
   --github-canvas: #f6f8fa;
@@ -76,7 +78,7 @@ pre {
 }
 
 :focus-visible {
-  outline: 2px solid rgba(37, 99, 235, 0.55);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 

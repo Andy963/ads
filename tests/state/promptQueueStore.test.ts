@@ -267,6 +267,23 @@ describe("state/promptQueueStore", () => {
     assert.equal(store.getByClientMessageId("pending")?.status, "queued");
   });
 
+  it("only marks current-generation failed attempts as retryable during reconciliation", () => {
+    db = new DatabaseConstructor(":memory:");
+    const store = createPromptQueueStore(db);
+    for (const status of ["failed", "running", "completed"] as const) {
+      const entry = store.enqueue({ ...lane, clientMessageId: status, payload: { text: status } }).entry;
+      db.prepare("UPDATE prompt_queue SET status=?, attempts=1 WHERE id=?").run(status, entry.id);
+    }
+    const request = { ...lane, clientMessageIds: ["failed", "running", "completed"] };
+    assert.deepEqual(store.reconcile(request), [
+      { clientMessageId: "failed", disposition: "consumed", retryable: true },
+      { clientMessageId: "running", disposition: "consumed" },
+      { clientMessageId: "completed", disposition: "consumed" },
+    ]);
+    assert.ok(store.reconcile({ ...request, laneGeneration: lane.laneGeneration + 1 }).every((row) => !row.retryable));
+    assert.equal(store.getByClientMessageId("failed")?.status, "failed");
+  });
+
   it("keeps terminal identities beyond time and recent-row cache limits", () => {
     db = new DatabaseConstructor(":memory:");
     const store = createPromptQueueStore(db);

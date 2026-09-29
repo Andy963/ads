@@ -7,7 +7,6 @@ import os from "node:os";
 import DatabaseConstructor from "better-sqlite3";
 
 import {
-  getStateDatabase,
   resetStateDatabaseForTests,
 } from "../../server/state/database.js";
 import { createLanePromptStore } from "../../server/state/lanePromptStore.js";
@@ -54,6 +53,14 @@ describe("state/lanePromptLaneIdMigration", () => {
   let tmpDir: string;
   let dbPath: string;
   const originalEnv = { ...process.env };
+  const opened: DatabaseConstructor.Database[] = [];
+  function migrateCanonicalDatabase() {
+    const db = new DatabaseConstructor(dbPath);
+    opened.push(db);
+    db.pragma("foreign_keys = ON");
+    db.transaction(() => stateSchemaMigrations.find(entry => entry.version === 25)!.up(db))();
+    return db;
+  }
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-lane-migration-"));
@@ -63,6 +70,7 @@ describe("state/lanePromptLaneIdMigration", () => {
   });
 
   afterEach(() => {
+    for (const db of opened.splice(0)) db.close();
     resetStateDatabaseForTests();
     process.env = { ...originalEnv };
     try {
@@ -110,7 +118,7 @@ describe("state/lanePromptLaneIdMigration", () => {
 
   it("rebuilds the CHECK constraints to canonical lane ids", () => {
     seedLegacyDatabase();
-    getStateDatabase();
+    migrateCanonicalDatabase();
 
     const db = new DatabaseConstructor(dbPath, { readonly: true });
     try {
@@ -137,7 +145,7 @@ describe("state/lanePromptLaneIdMigration", () => {
 
   it("remaps stored rows to canonical lanes and preserves prompt history", () => {
     seedLegacyDatabase();
-    getStateDatabase();
+    migrateCanonicalDatabase();
 
     const db = new DatabaseConstructor(dbPath, { readonly: true });
     try {
@@ -172,7 +180,7 @@ describe("state/lanePromptLaneIdMigration", () => {
 
   it("leaves no canonical or temporary tables behind", () => {
     seedLegacyDatabase();
-    getStateDatabase();
+    migrateCanonicalDatabase();
 
     const db = new DatabaseConstructor(dbPath, { readonly: true });
     try {
@@ -189,7 +197,7 @@ describe("state/lanePromptLaneIdMigration", () => {
 
   it("rejects legacy lane ids on write after the migration", () => {
     seedLegacyDatabase();
-    const db = getStateDatabase();
+    const db = migrateCanonicalDatabase();
     const store = createLanePromptStore(db);
 
     // Canonical writes succeed.
@@ -211,9 +219,10 @@ describe("state/lanePromptLaneIdMigration", () => {
 
   it("resolves legacy ids to canonical lanes on read", () => {
     seedLegacyDatabase();
-    const db = getStateDatabase();
+    const db = migrateCanonicalDatabase();
     const store = createLanePromptStore(db);
 
+    stateSchemaMigrations.find(entry => entry.version === 31)!.up(db);
     const fromLegacy = store.getLanePrompt("advisor" as never);
     assert.equal(fromLegacy.lane, "acopilot");
     assert.equal(fromLegacy.current.prompt, "User customized advisor prompt");
@@ -228,7 +237,7 @@ describe("state/lanePromptLaneIdMigration", () => {
 
   it("is idempotent when run against an already canonical database", () => {
     seedLegacyDatabase();
-    getStateDatabase();
+    migrateCanonicalDatabase();
 
     const migration = stateSchemaMigrations.find(
       (entry) => entry.version === CANONICAL_LANE_MIGRATION_VERSION,
@@ -273,7 +282,7 @@ describe("state/lanePromptLaneIdMigration", () => {
     `);
     db.close();
 
-    const migrated = getStateDatabase();
+    const migrated = migrateCanonicalDatabase();
     const ddl = readTableSql(migrated, "lane_system_prompt_state");
     assert.doesNotMatch(ddl, /'advisor'/, "legacy CHECK must not survive");
 
@@ -318,7 +327,7 @@ describe("state/lanePromptLaneIdMigration", () => {
     db.pragma("foreign_keys = ON");
     db.close();
 
-    const migrated = getStateDatabase();
+    const migrated = migrateCanonicalDatabase();
     const stateDdl = readTableSql(migrated, "lane_system_prompt_state");
     assert.match(stateDdl, /'acopilot'/);
     assert.doesNotMatch(stateDdl, /'advisor'/);
@@ -375,7 +384,7 @@ describe("state/lanePromptLaneIdMigration", () => {
     `);
     db.close();
 
-    const migrated = getStateDatabase();
+    const migrated = migrateCanonicalDatabase();
     const ddl = readTableSql(migrated, "lane_system_prompt_versions");
     assert.doesNotMatch(ddl, /'advisor'/, "legacy CHECK must not survive");
     assert.match(ddl, /'acopilot'/);
@@ -417,7 +426,7 @@ describe("state/lanePromptLaneIdMigration", () => {
     `);
     db.close();
 
-    assert.throws(() => getStateDatabase(), /dangling reference|State migration 25/);
+    assert.throws(() => migrateCanonicalDatabase(), /dangling reference|State migration 25/);
   });
 
   it("is a no-op on a database where the tables were never created", () => {

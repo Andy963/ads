@@ -4,6 +4,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { getStateDatabase } from "../../../../state/database.js";
 import { createGlobalModelConfigStore, type GlobalModelConfigStore } from "../../../../state/globalModelConfigStore.js";
 import { createModelProviderStore, type ModelProvider, type ModelProviderStore } from "../../../../state/modelProviderStore.js";
+import { createModelServiceStore } from "../../../../state/modelServiceStore.js";
+import { MODEL_SERVICES } from "../../../../../shared/modelServices.js";
 import type { ModelConfig } from "../../../../state/modelConfigTypes.js";
 import { resolveCodexConfig, type CodexOverrides, type CodexResolvedConfig } from "../../../../codexConfig.js";
 import { createUpstreamCredentialStore, type UpstreamCredentialStore, type UpstreamCredentials } from "../../../../state/upstreamCredentialStore.js";
@@ -276,8 +278,8 @@ function toProviderPayload(provider: ModelProvider, hasCredential: boolean): Mod
 
 async function handleModelProviderRoutes(ctx: ApiRouteContext, deps: ModelRouteDeps): Promise<boolean> {
   const { req, res, pathname } = ctx;
-  const getProviderStore = () => deps.providerStore ?? createModelProviderStore(getStateDatabase());
-  const getUpstreamStore = () => deps.upstreamStore ?? createUpstreamCredentialStore(getStateDatabase());
+  const getProviderStore = () => deps.providerStore ?? createModelProviderStore(deps.modelStore?.db ?? getStateDatabase());
+  const getUpstreamStore = () => deps.upstreamStore ?? createUpstreamCredentialStore(getProviderStore().db);
 
   const providerCredentialProfile = (provider: ModelProvider): string =>
     String(provider.credentialProfile ?? "").trim() || provider.id;
@@ -295,7 +297,8 @@ async function handleModelProviderRoutes(ctx: ApiRouteContext, deps: ModelRouteD
 
   const providerHasCredential = (provider: ModelProvider): boolean => {
     try {
-      return Boolean(getUpstreamStore().getMetadata(ctx.auth.userId, providerCredentialProfile(provider))?.hasApiKey);
+      const metadata = getUpstreamStore().getMetadata(ctx.auth.userId, providerCredentialProfile(provider));
+      return Boolean(metadata?.hasApiKey && normalizeUpstreamBaseUrl(metadata.baseUrl) === normalizeUpstreamBaseUrl(provider.baseUrl));
     } catch {
       return false;
     }
@@ -389,6 +392,9 @@ async function handleModelProviderRoutes(ctx: ApiRouteContext, deps: ModelRouteD
     }
 
     if (req.method === "DELETE") {
+      const used = createModelServiceStore(providerStore.db).list().some((service) => service.modelIds.some((id) =>
+        createGlobalModelConfigStore(providerStore.db).getModelConfig(id)?.providerId === providerId));
+      if (used) { sendJson(res, 409, { error: "Disable this provider's models in all services before deleting it." }); return true; }
       // Model configs referencing the provider are preserved and detached.
       const deleted = providerStore.deleteProvider(providerId);
       sendJson(res, 200, { success: deleted });
@@ -423,8 +429,54 @@ function buildModelConfigPayload(
 export async function handleModelRoutes(ctx: ApiRouteContext, deps: ModelRouteDeps = {}): Promise<boolean> {
   const { req, res, pathname } = ctx;
   const getModelStore = () => deps.modelStore ?? createGlobalModelConfigStore(getStateDatabase());
-  const getProviderStore = () => deps.providerStore ?? createModelProviderStore(getStateDatabase());
-  const getUpstreamStore = () => deps.upstreamStore ?? createUpstreamCredentialStore(getStateDatabase());
+  const getProviderStore = () => deps.providerStore ?? createModelProviderStore(getModelStore().db);
+  const getUpstreamStore = () => deps.upstreamStore ?? createUpstreamCredentialStore(getModelStore().db);
+
+  if (pathname === "/api/model-services" || pathname.startsWith("/api/model-services/")) {
+    const store = createModelServiceStore(getModelStore().db);
+    if (req.method === "GET" && pathname === "/api/model-services") {
+      sendJson(res, 200, store.list());
+      return true;
+    }
+    const service = z.enum(MODEL_SERVICES).safeParse(pathname.split("/")[3]);
+    if (req.method === "PUT" && service.success) {
+      try {
+        const input = z.object({ modelIds: z.array(z.string().min(1)).max(2000), defaultModelId: z.string().min(1).nullable() }).strict().parse(await readJsonBody(req));
+        sendJson(res, 200, store.save(service.data, input.modelIds, input.defaultModelId));
+      } catch (error) {
+        sendJson(res, 400, { error: getUpstreamError(error) });
+      }
+      return true;
+    }
+    return false;
+  }
+
+  const providerSync = /^\/api\/model-providers\/([^/]+)\/models\/sync$/.exec(pathname);
+  if (providerSync && req.method === "POST") {
+    try {
+      const provider = getProviderStore().getProvider(decodeURIComponent(providerSync[1]));
+      if (!provider?.isEnabled) throw new Error("Provider is missing or disabled.");
+      const credentials = getUpstreamStore().getCredentials(ctx.auth.userId, provider.credentialProfile || provider.id);
+      if (!credentials || normalizeUpstreamBaseUrl(credentials.baseUrl) !== normalizeUpstreamBaseUrl(provider.baseUrl)) throw new Error("Configure a matching provider API key first.");
+      const result = await loadUpstreamModels(deps, { ...credentials, baseUrl: provider.baseUrl });
+      if (!result.ok) throw new Error(result.error || "Model sync failed.");
+      const store = getModelStore();
+      // Initialize legacy service memberships before adding catalog-only rows.
+      createModelServiceStore(store.db);
+      store.db.transaction(() => {
+        for (const modelId of result.models) {
+          if (store.getModelConfigByAgentModelId(modelId, provider.id)) continue;
+          store.upsertModelConfig({ id: createModelConfigId(), modelId, displayName: modelId, provider: provider.name,
+            providerId: provider.id, isEnabled: true, isDefault: false,
+            configJson: { reasoningEfforts: ["medium", "high"], defaultReasoningEffort: "high" } });
+        }
+      })();
+      sendJson(res, 200, { ok: true, models: store.listModelConfigs().filter((model) => model.providerId === provider.id) });
+    } catch (error) {
+      sendJson(res, 400, { error: getUpstreamError(error) });
+    }
+    return true;
+  }
 
   if (await handleModelProviderRoutes(ctx, deps)) return true;
 
@@ -447,9 +499,7 @@ export async function handleModelRoutes(ctx: ApiRouteContext, deps: ModelRouteDe
   }
 
   if (req.method === "GET" && pathname === "/api/models") {
-    const modelStore = getModelStore();
-    const configured = modelStore.listModelConfigs();
-    sendJson(res, 200, configured.filter((model) => model.isEnabled));
+    sendJson(res, 200, createModelServiceStore(getModelStore().db).listModels("conversation"));
     return true;
   }
 
@@ -497,6 +547,7 @@ export async function handleModelRoutes(ctx: ApiRouteContext, deps: ModelRouteDe
       return true;
     }
     if (req.method === "POST") {
+      createModelServiceStore(modelStore.db);
       const body = await readJsonBody(req);
       const parsed = createModelConfigSchema.safeParse(body ?? {});
       if (!parsed.success) {
@@ -513,7 +564,7 @@ export async function handleModelRoutes(ctx: ApiRouteContext, deps: ModelRouteDe
         sendJson(res, 400, { error: "Unknown provider" });
         return true;
       }
-      const existing = modelStore.getModelConfigByAgentModelId(agentModelId);
+      const existing = modelStore.getModelConfigByAgentModelId(agentModelId, providerIdRef || null);
       const saved = modelStore.upsertModelConfig(
         buildModelConfigPayload(existing?.id ?? createModelConfigId(), parsed.data, existing ?? undefined),
       );
@@ -551,8 +602,8 @@ export async function handleModelRoutes(ctx: ApiRouteContext, deps: ModelRouteDe
         sendJson(res, 400, { error: "Invalid model id" });
         return true;
       }
-      if (agentModelId) {
-        const conflict = modelStore.getModelConfigByAgentModelId(agentModelId);
+      {
+        const conflict = modelStore.getModelConfigByAgentModelId(agentModelId || existing.modelId || existing.id, parsed.data.providerId === undefined ? existing.providerId ?? null : parsed.data.providerId);
         if (conflict && conflict.id !== modelId) {
           sendJson(res, 409, { error: "Model ID already exists" });
           return true;
@@ -575,11 +626,17 @@ export async function handleModelRoutes(ctx: ApiRouteContext, deps: ModelRouteDe
         sendJson(res, 404, { error: "Not found" });
         return true;
       }
-      if (existing.isDefault) {
-        sendJson(res, 400, { error: "Cannot delete default model" });
+      const services = createModelServiceStore(modelStore.db);
+      const removeReferences = ctx.url.searchParams.get("removeReferences") === "true";
+      if (!removeReferences && services.list().some((service) => service.modelIds.includes(existing.id))) {
+        sendJson(res, 400, { error: "Confirm removal from enabled services before deleting this model." });
         return true;
       }
-      const deleted = modelStore.deleteModelConfig(modelId);
+      const deleted = modelStore.db.transaction(() => {
+        // Keep service defaults and role references consistent with the delete.
+        services.removeModelReferences(modelId);
+        return modelStore.deleteModelConfig(modelId);
+      })();
       sendJson(res, 200, { success: deleted });
       return true;
     }

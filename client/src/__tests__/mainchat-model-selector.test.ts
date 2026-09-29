@@ -109,7 +109,7 @@ describe("MainChat model selector", () => {
     wrapper.unmount();
   });
 
-  it("defaults unconfigured models to a single high reasoning effort option", () => {
+  it("defaults unconfigured models to medium and high reasoning effort options", () => {
     const wrapper = mount(MainChatModelSelectors, {
       props: {
         ...selectorBaseProps,
@@ -121,7 +121,7 @@ describe("MainChat model selector", () => {
     });
 
     const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
-    expect(effortSelect.findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual(["high"]);
+    expect(effortSelect.findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual(["medium", "high"]);
     expect((effortSelect.element as HTMLSelectElement).value).toBe("high");
     wrapper.unmount();
   });
@@ -351,7 +351,7 @@ describe("MainChat model selector", () => {
     wrapper.unmount();
   });
 
-  it("preserves an unknown model preference after the composer unlocks", async () => {
+  it("replaces an unavailable model with the enabled default after unlocking", async () => {
     const model = makeModel("gpt-4.1", "GPT-4.1", "openai");
     model.configJson = {
       reasoningEfforts: ["medium", "high"],
@@ -374,11 +374,9 @@ describe("MainChat model selector", () => {
 
     await wrapper.setProps({ inputLocked: false });
     await wrapper.vm.$nextTick();
-
-    expect(wrapper.emitted("setModel")).toBeUndefined();
-    expect(wrapper.emitted("setReasoningEffort")).toBeUndefined();
-    expect((wrapper.get('[data-testid="chat-model-select"]').element as HTMLSelectElement).value).toBe("removed-model");
-    expect((wrapper.get('[data-testid="chat-reasoning-effort"]').element as HTMLSelectElement).disabled).toBe(true);
+    expect(wrapper.emitted("setModel")?.at(-1)).toEqual(["gpt-4.1"]);
+    expect((wrapper.get('[data-testid="chat-model-select"]').element as HTMLSelectElement).value).toBe("gpt-4.1");
+    expect((wrapper.get('[data-testid="chat-reasoning-effort"]').element as HTMLSelectElement).disabled).toBe(false);
     wrapper.unmount();
   });
 
@@ -447,7 +445,8 @@ describe("MainChat model selector", () => {
 
     const capsule = wrapper.find('[data-testid="chat-model-capsule"]');
     expect(capsule.exists()).toBe(true);
-    expect(wrapper.find('[data-testid="chat-capsule-text"]').text()).toBe("GPT-5.5 · Max");
+    expect(wrapper.find('[data-testid="chat-capsule-text"]').text()).toBe("GPT-5.5");
+    expect(wrapper.find('[data-testid="chat-capsule-effort"]').text()).toBe("Max");
 
     expect(document.body.querySelector('[data-testid="model-picker-sheet"]')).toBeNull();
     await capsule.trigger("click");
@@ -458,15 +457,18 @@ describe("MainChat model selector", () => {
     geminiItem?.click();
     expect(wrapper.emitted("setModel")?.at(-1)?.[0]).toBe("gemini-flash");
 
-    const lowPill = document.body.querySelector('[data-testid="effort-pill-low"]') as HTMLButtonElement | null;
-    expect(lowPill).not.toBeNull();
-    lowPill?.click();
+    const slider = document.body.querySelector('[data-testid="reasoning-effort-slider"]') as HTMLInputElement;
+    expect(slider).not.toBeNull();
+    slider.value = "0";
+    slider.dispatchEvent(new Event("input"));
+    expect(wrapper.emitted("setReasoningEffort")).toBeUndefined();
+    slider.dispatchEvent(new Event("change"));
     expect(wrapper.emitted("setReasoningEffort")?.at(-1)?.[0]).toBe("low");
 
     wrapper.unmount();
   });
 
-  it("supports pointer dragging across the effort segmented slider", async () => {
+  it("previews slider movement and emits only the final configured level", async () => {
     const model = makeModel("gpt-5.5", "GPT-5.5", "openai");
     model.configJson = { reasoningEfforts: ["low", "medium", "high", "max"] };
     const wrapper = mount(MainChatModelSelectors, {
@@ -482,32 +484,21 @@ describe("MainChat model selector", () => {
     });
 
     await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
-    const slider = document.body.querySelector('[data-testid="effort-segmented-slider"]') as HTMLElement;
+    const slider = document.body.querySelector('[data-testid="reasoning-effort-slider"]') as HTMLInputElement;
     expect(slider).not.toBeNull();
 
-    slider.getBoundingClientRect = () => ({
-      left: 0,
-      top: 0,
-      right: 500,
-      bottom: 40,
-      width: 500,
-      height: 40,
-      x: 0,
-      y: 0,
-      toJSON: () => {},
-    });
-
-    slider.dispatchEvent(new PointerEvent("pointerdown", { clientX: 50, pointerId: 1 }));
-    expect(wrapper.emitted("setReasoningEffort")?.at(-1)?.[0]).toBe("low");
-
-    slider.dispatchEvent(new PointerEvent("pointermove", { clientX: 150, pointerId: 1 }));
-    expect(wrapper.emitted("setReasoningEffort")?.at(-1)?.[0]).toBe("medium");
-
-    slider.dispatchEvent(new PointerEvent("pointerup", { clientX: 150, pointerId: 1 }));
+    slider.value = "0";
+    slider.dispatchEvent(new Event("input"));
+    slider.value = "1";
+    slider.dispatchEvent(new Event("input"));
+    expect(wrapper.emitted("setReasoningEffort")).toBeUndefined();
+    slider.dispatchEvent(new Event("change"));
+    expect(wrapper.emitted("setReasoningEffort")).toEqual([["medium"]]);
+    expect(document.body.querySelector('[data-testid="model-picker-sheet"]')).not.toBeNull();
     wrapper.unmount();
   });
 
-  it("displays a clear non-reasoning notice for standard models", async () => {
+  it("exposes ADS effort settings for standard models without capability gating", async () => {
     const gpt4o = makeModel("gpt-4o", "GPT-4o", "openai");
     const wrapper = mount(MainChatModelSelectors, {
       props: {
@@ -523,9 +514,8 @@ describe("MainChat model selector", () => {
     expect(wrapper.find('[data-testid="chat-capsule-text"]').text()).toBe("GPT-4o");
     await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
     const notice = document.body.querySelector(".nonReasoningNotice");
-    expect(notice).not.toBeNull();
-    expect(notice?.textContent).toContain("标准对话模型");
-    expect(document.body.querySelector('[data-testid="effort-segmented-slider"]')).toBeNull();
+    expect(notice).toBeNull();
+    expect(document.body.querySelector('[data-testid="reasoning-effort-slider"]')).not.toBeNull();
     wrapper.unmount();
   });
 
@@ -547,28 +537,18 @@ describe("MainChat model selector", () => {
 
     await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
 
-    const titles = Array.from(document.body.querySelectorAll(".modelPickerSectionTitle")).map((el) => el.textContent?.trim());
-    expect(titles).toContain("推理强度");
-    expect(document.body.querySelector(".modelPickerSectionHint")).toBeNull();
-
-    // Only high, xhigh, max pills exist
-    expect(document.body.querySelector('[data-testid="effort-pill-high"]')).not.toBeNull();
-    expect(document.body.querySelector('[data-testid="effort-pill-xhigh"]')).not.toBeNull();
-    expect(document.body.querySelector('[data-testid="effort-pill-max"]')).not.toBeNull();
-
-    // Low and med should NOT exist
-    expect(document.body.querySelector('[data-testid="effort-pill-low"]')).toBeNull();
-    expect(document.body.querySelector('[data-testid="effort-pill-medium"]')).toBeNull();
-    expect(document.body.querySelector('[data-testid="effort-pill-ultra"]')).toBeNull();
-
-    const pills = document.body.querySelectorAll(".effortPill");
-    expect(pills).toHaveLength(3);
+    const slider = document.body.querySelector('[data-testid="reasoning-effort-slider"]') as HTMLInputElement;
+    expect(slider.getAttribute("aria-label")).toBe("Reasoning effort");
+    expect(slider.getAttribute("aria-valuetext")).toBe("Max");
+    expect(slider.max).toBe("2");
+    expect(Array.from(document.body.querySelectorAll("[data-effort]")).map(el => el.getAttribute("data-effort"))).toEqual(["high", "xhigh", "max"]);
+    expect(document.body.querySelector(".effortPill")).toBeNull();
 
     wrapper.unmount();
     document.body.innerHTML = "";
   });
 
-  it("defaults unconfigured reasoning model to a single high pill", async () => {
+  it("defaults the native slider to the medium and high stops", async () => {
     document.body.innerHTML = "";
     const gpt5 = makeModel("gpt-5.6", "GPT-5.6", "openai");
     const wrapper = mount(MainChatModelSelectors, {
@@ -583,9 +563,11 @@ describe("MainChat model selector", () => {
     });
 
     await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
-    const pills = document.body.querySelectorAll(".effortPill");
-    expect(pills).toHaveLength(1);
-    expect(document.body.querySelector('[data-testid="effort-pill-high"]')).not.toBeNull();
+    const slider = document.body.querySelector('[data-testid="reasoning-effort-slider"]') as HTMLInputElement;
+    expect(slider.type).toBe("range");
+    expect(slider.max).toBe("1");
+    expect(slider.value).toBe("1");
+    expect(document.body.querySelectorAll("[data-effort]")).toHaveLength(2);
     wrapper.unmount();
     document.body.innerHTML = "";
   });

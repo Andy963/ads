@@ -17,7 +17,7 @@
   padding: env(safe-area-inset-top, 0px) 12px 0 12px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  box-shadow: none;
   width: 100%;
   gap: 10px;
   position: relative;
@@ -233,13 +233,13 @@
   gap: 6px;
   flex: 0 0 auto;
   margin-top: auto;
-  padding: 8px 2px 4px;
-  border-top: 1px solid var(--border);
+  padding: 8px 12px 4px;
+  border-top: 0;
 }
 .drawerBrandTitle {
   color: var(--accent);
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 600;
   line-height: 1.2;
   white-space: nowrap;
 }
@@ -248,7 +248,7 @@
   font-weight: 500;
   color: var(--muted);
   background: var(--surface-2);
-  border: 1px solid var(--border);
+  border: 0;
   padding: 1px 5px;
   border-radius: 4px;
   line-height: 1.2;
@@ -268,7 +268,7 @@
   border-radius: 9px;
   border: none;
   background: transparent;
-  color: #64748b;
+  color: var(--accent);
   display: grid;
   place-items: center;
   cursor: pointer;
@@ -276,8 +276,8 @@
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 .topbarIconBtn:hover {
-  background: rgba(15, 23, 42, 0.06);
-  color: #0f172a;
+  background: var(--hover-bg);
+  color: var(--accent-2);
 }
 .layout {
   --sidebar-width: clamp(280px, 24vw, 360px);
@@ -297,8 +297,9 @@
 .left {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px 12px 8px;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--app-bg);
   border-right: 1px solid var(--border);
   min-width: 0;
   min-height: 0;
@@ -308,10 +309,9 @@
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
-  gap: 10px;
-  background: rgba(248, 250, 252, 0.95);
-  border-radius: 16px;
-  padding: 10px;
+  gap: 0;
+  background: transparent;
+  padding: 0;
   height: auto;
   min-height: 0;
   overflow: auto;
@@ -321,7 +321,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 2px 2px;
+  padding: 8px 12px;
+  flex: 0 0 auto;
 }
 .projectTreeHeaderActions {
   display: flex;
@@ -330,13 +331,13 @@
 }
 .projectTreeTitle {
   font-size: 13px;
-  font-weight: 800;
-  color: #64748b;
+  font-weight: 400;
+  color: var(--muted);
 }
 .projectNode {
   position: relative;
   overflow: hidden;
-  border-radius: 10px;
+  border-radius: 0;
   background: var(--surface);
   touch-action: pan-y;
   display: flex;
@@ -345,6 +346,10 @@
   flex-shrink: 0;
   min-height: 46px;
 }
+.projectTreeHeader + .projectNode { border-radius: var(--radius) var(--radius) 0 0; }
+.projectNode:last-child { border-radius: 0 0 var(--radius) var(--radius); }
+.projectTreeHeader + .projectNode:last-child { border-radius: var(--radius); }
+.projectNode + .projectNode::before { content: ""; position: absolute; top: 0; left: 12px; right: 0; height: .5px; background: var(--border); z-index: 2; pointer-events: none; }
 
 .projectSwipeActions {
   position: absolute;
@@ -392,12 +397,12 @@
   width: 100%;
   text-align: left;
   color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 8px 12px;
+  border: 0;
+  border-radius: 0;
+  padding: 10px 12px;
   background: var(--surface);
   cursor: pointer;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  box-shadow: none;
   position: relative;
   z-index: 1;
   touch-action: pan-y;
@@ -409,8 +414,7 @@
 }
 
 .projectNode.active .projectRow {
-  background: rgba(37, 99, 235, 0.08);
-  border-color: rgba(37, 99, 235, 0.28);
+  background: var(--selection-bg);
   box-shadow: none;
 }
 
@@ -420,11 +424,11 @@
 }
 
 .projectNode.active .projectBranch {
-  color: #2563eb;
+  color: var(--accent);
   font-weight: 500;
 }
 .projectRow:hover {
-  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+  background: var(--hover-bg);
 }
 .projectRow.isDragging {
   opacity: 0.7;
@@ -580,8 +584,8 @@
 }
 
 .projectName {
-  font-size: 14px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 400;
   color: inherit;
   white-space: nowrap;
   overflow: hidden;
@@ -591,7 +595,7 @@
   display: block;
   font-size: 11px;
   line-height: 1.2;
-  color: rgba(100, 116, 139, 0.95);
+  color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -642,6 +646,9 @@
    capsule are segments of a single pill, so they can never drift apart in
    height, border or background. */
 .laneTabs {
+  width: calc(100% - 24px);
+  max-width: 600px;
+  align-self: center;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -651,7 +658,7 @@
   padding: 3px;
   border: 1px solid rgba(15, 23, 42, 0.06);
   border-radius: 12px;
-  background: rgba(15, 23, 42, 0.05);
+  background: var(--segmented-bg);
   box-sizing: border-box;
   overflow: hidden;
 }
@@ -659,7 +666,7 @@
 .laneTabGroup {
   display: inline-flex;
   align-items: center;
-  flex: 0 0 auto;
+  flex: 2 1 0;
   gap: 2px;
   min-width: 0;
 }
@@ -676,7 +683,7 @@
 .laneModelControls {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
   gap: 8px;
   flex: 1 1 0;
   min-width: 0;
@@ -719,6 +726,8 @@
 }
 
 .laneTab {
+  flex: 1 1 0;
+  justify-content: center;
   touch-action: manipulation;
   min-height: 28px;
   border: none;
@@ -899,7 +908,7 @@
     border: none;
     border-radius: 9px;
     background: transparent;
-    color: var(--muted);
+    color: var(--accent);
     cursor: pointer;
   }
   .mobileMenuBtn:hover {
@@ -935,9 +944,10 @@
     width: max-content;
     min-width: 140px;
     max-width: calc(100vw - 24px);
-    padding: 6px;
+    padding: 0;
     border: 1px solid var(--border);
-    border-radius: 13px;
+    border-radius: var(--radius);
+    overflow: hidden;
     background: var(--surface);
     box-shadow: 0 18px 42px rgba(15, 23, 42, 0.18);
     z-index: 140;
@@ -950,19 +960,20 @@
     min-height: 44px;
     padding: 8px 10px;
     border: none;
-    border-radius: 9px;
+    border-radius: 0;
     background: transparent;
     color: var(--text);
     text-align: left;
-    font-size: 13px;
-    font-weight: 600;
+    font-size: 15px;
+    font-weight: 400;
     white-space: nowrap;
     cursor: pointer;
   }
   .mobileContextAction:hover:not(:disabled) {
-    background: rgba(37, 99, 235, 0.08);
-    color: var(--accent-2);
+    background: var(--hover-bg);
+    color: var(--accent);
   }
+  .mobileContextAction + .mobileContextAction { border-top: .5px solid var(--border); }
   .mobileContextAction:disabled {
     color: var(--muted-2);
     opacity: 0.72;
@@ -980,10 +991,10 @@
     display: flex;
     width: min(360px, 84vw);
     max-width: calc(100vw - 24px);
-    padding: 12px;
+    padding: 8px 12px;
     border-right: 1px solid var(--border);
     border-radius: 0 16px 16px 0;
-    background: var(--surface);
+    background: var(--app-bg);
     box-shadow: 18px 0 42px rgba(15, 23, 42, 0.16);
     overflow: hidden;
   }
@@ -991,8 +1002,11 @@
     display: flex;
     flex-direction: column;
     flex: 0 0 auto;
-    gap: 4px;
+    gap: 0;
     width: 100%;
+    border-radius: var(--radius);
+    background: var(--surface);
+    overflow: hidden;
   }
   .mobileDrawerNavItem {
     display: flex;
@@ -1002,27 +1016,29 @@
     width: 100%;
     min-width: 0;
     min-height: 44px;
-    padding: 8px 10px;
+    padding: 10px 12px;
     border: none;
-    border-radius: 8px;
+    border-radius: 0;
     background: transparent;
-    color: var(--muted);
-    font-size: 14px;
-    font-weight: 600;
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 400;
     cursor: pointer;
     transition: background-color 0.15s ease, color 0.15s ease;
   }
   .mobileDrawerNavItem.active {
-    background: var(--surface-2);
-    color: var(--accent-2);
+    background: var(--selection-bg);
+    color: var(--accent);
   }
+  .mobileDrawerNavItem { position: relative; }
+  .mobileDrawerNavItem + .mobileDrawerNavItem::before { content: ""; position: absolute; top: 0; left: 12px; right: 0; height: .5px; background: var(--border); }
+  .mobileDrawerNavItem :deep(.el-icon) { color: var(--accent); }
   .mobileDrawerNavItem--link {
-    color: var(--muted);
+    color: var(--text);
   }
   .mobileDrawerNavItem--divider {
-    margin-top: 6px;
-    padding-top: 10px;
-    border-top: 1px solid var(--border);
+    margin-top: 0;
+    border-top: 0;
   }
   .mobileDrawerNavItem--link:active {
     background: var(--surface-2);
@@ -1264,7 +1280,7 @@
     min-height: 0;
   }
   .laneTabs {
-    width: auto;
+    width: calc(100% - 16px);
     min-height: 36px;
     margin: 4px 8px;
     padding: 3px;
@@ -1436,166 +1452,4 @@
 .projectActionSheetItem:disabled {
   color: var(--muted-2);
   cursor: not-allowed;
-}
-
-.actionsJobBanner {
-  padding: 8px 16px;
-  background: rgba(37, 99, 235, 0.06);
-  border-bottom: 1px solid rgba(37, 99, 235, 0.15);
-  font-size: 12.5px;
-  flex-shrink: 0;
-}
-
-.actionsQueue {
-  max-height: 132px;
-  overflow-y: auto;
-}
-
-.actionsQueueRow {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  min-width: 0;
-  padding: 4px 6px;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: rgba(15, 23, 42, 0.04);
-}
-
-.actionsQueueRow + .actionsQueueRow {
-  margin-top: 4px;
-}
-
-.actionsJobBadge {
-  flex-shrink: 0;
-}
-
-.actionsQueueRow--active {
-  border-color: rgba(37, 99, 235, 0.3);
-  background: rgba(37, 99, 235, 0.08);
-}
-
-.actionsJobBadge {
-  font-size: 10px;
-  font-weight: 800;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--muted);
-  color: #fff;
-  text-transform: uppercase;
-}
-
-.actionsJobBadge--running,
-.actionsJobBadge--verifying,
-.actionsJobBadge--reviewing {
-  background: var(--accent);
-}
-
-.actionsJobBadge--waiting_merge {
-  background: #10b981;
-}
-
-.actionsJobBadge--failed {
-  background: #ef4444;
-}
-
-.actionsJobBadge--blocked {
-  background: #d97706;
-}
-
-.actionsJobError {
-  color: #fca5a5;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
-.actionsJobTitle {
-  min-width: 0;
-  font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.actionsJobMain {
-  display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.actionsJobStep {
-  min-width: 0;
-  color: var(--muted-2);
-  font-weight: 400;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.actionsJobBlockedFor {
-  margin-top: 2px;
-  color: var(--muted-2);
-  font-size: 11px;
-  font-weight: 400;
-}
-
-.actionsJobActions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-shrink: 0;
-  margin-left: auto;
-}
-
-.btnActionStart {
-  padding: 4px 10px;
-  border-radius: 6px;
-  background: var(--accent);
-  color: #fff;
-  border: none;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: opacity 0.15s ease;
-}
-
-.btnActionStart:hover {
-  opacity: 0.9;
-}
-
-.btnActionMerge {
-  padding: 4px 10px;
-  border-radius: 6px;
-  background: #10b981;
-  color: #fff;
-  border: none;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: opacity 0.15s ease;
-}
-
-.btnActionMerge:hover {
-  opacity: 0.9;
-}
-
-.btnActionCancel {
-  padding: 4px 8px;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  border: 1px solid var(--border);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.btnActionCancel:hover {
-  color: var(--text);
-  border-color: var(--text);
 }

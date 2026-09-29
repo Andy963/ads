@@ -4,10 +4,12 @@ import { computed, ref, watch } from "vue";
 import type { ModelConfig } from "../api/types";
 import { normalizeReasoningEffort } from "../lib/chatPreferences";
 import { supportsAgentModel } from "../lib/model_agent";
+import SettingsSheet from "./SettingsSheet.vue";
+import ReasoningEffortSlider from "./ReasoningEffortSlider.vue";
 
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
 
-const DEFAULT_REASONING_EFFORTS = ["high"] as const;
+const DEFAULT_REASONING_EFFORTS = ["medium", "high"] as const;
 const REASONING_EFFORT_LABELS: Record<string, string> = {
   off: "Off",
   none: "None",
@@ -106,7 +108,7 @@ function isUnsetModelId(modelId: string): boolean {
 }
 
 function modelKey(model: ModelConfig): string {
-  return normalizeModelId(model.modelId ?? model.id);
+  return normalizeModelId(model.id);
 }
 
 function modelKeyOrEmpty(model: ModelConfig | null): string {
@@ -114,7 +116,7 @@ function modelKeyOrEmpty(model: ModelConfig | null): string {
 }
 
 function formatModelLabel(model: ModelConfig): string {
-  return String(model.displayName ?? "").trim() || modelKey(model) || "model";
+  return String(model.displayName ?? "").trim() || String(model.modelId ?? "").trim() || "Model";
 }
 
 function preferredModel(options: readonly ModelConfig[]): ModelConfig | null {
@@ -131,10 +133,9 @@ const effectiveModelId = computed(() => {
   const options = compatibleModelOptions.value;
   if (options.length === 0) return "";
   const current = normalizeModelId(props.modelId);
-  const known = modelOptions.value.some((model) => modelKey(model) === current);
-  if (!isUnsetModelId(current) && (!known || options.some((model) => modelKey(model) === current))) {
-    return current;
-  }
+  if (!isUnsetModelId(current) && options.some((model) => modelKey(model) === current)) return current;
+  const legacy = options.filter((model) => model.modelId === current);
+  if (legacy.length === 1) return modelKey(legacy[0]);
   return modelKeyOrEmpty(preferredModel(options));
 });
 
@@ -151,11 +152,10 @@ watch(
     if (props.inputLocked) return;
     const options = compatibleModelOptions.value;
     if (options.length === 0) return;
-    const desired = modelKeyOrEmpty(preferredModel(options));
+    const desired = effectiveModelId.value;
     if (!desired) return;
     const current = normalizeModelId(props.modelId);
-    const known = modelOptions.value.some((model) => modelKey(model) === current);
-    if (!isUnsetModelId(current) && (!known || options.some((model) => modelKey(model) === current))) return;
+    if (options.some((model) => modelKey(model) === current)) return;
     if (desired !== current) emit("setModel", desired);
   },
   { immediate: true },
@@ -164,20 +164,6 @@ watch(
 const selectedModel = computed(() => {
   const modelId = effectiveModelId.value;
   return compatibleModelOptions.value.find((model) => modelKey(model) === modelId) ?? null;
-});
-
-function isReasoningSupportedModel(modelId: string, configJson?: Record<string, unknown> | null): boolean {
-  if (configJson && typeof configJson === "object" && !Array.isArray(configJson)) {
-    if (typeof configJson.supportsReasoningEffort === "boolean") return configJson.supportsReasoningEffort;
-    if (typeof configJson.reasoningEffortSupported === "boolean") return configJson.reasoningEffortSupported;
-    if (Array.isArray(configJson.reasoningEfforts) && configJson.reasoningEfforts.length > 0) return true;
-  }
-  return /(?:^|[/_:-])(?:o[134](?:$|[._:-])|gpt-5(?:$|[._:-])|deepseek-(?:reasoner|r1)(?:$|[._:-])|qwq(?:$|[._:-])|qwen[^/]*thinking(?:$|[._:-]))/i.test(modelId);
-}
-
-const isReasoningModel = computed(() => {
-  if (!selectedModel.value) return false;
-  return isReasoningSupportedModel(effectiveModelId.value, selectedModel.value.configJson);
 });
 
 const reasoningEffortOptions = computed(() => {
@@ -190,7 +176,8 @@ const reasoningEffortOptions = computed(() => {
   const values = raw
     .map((entry) => String(entry ?? "").trim().toLowerCase())
     .filter((entry) => Boolean(REASONING_EFFORT_LABELS[entry]));
-  return values.length > 0 ? [...new Set(values)] : [...DEFAULT_REASONING_EFFORTS];
+  const order = Object.keys(REASONING_EFFORT_LABELS);
+  return values.length > 0 ? [...new Set(values)].sort((a, b) => order.indexOf(a) - order.indexOf(b)) : [...DEFAULT_REASONING_EFFORTS];
 });
 
 const reasoningEffortValue = computed(() => {
@@ -223,20 +210,16 @@ const canChange = computed(() => props.connected && !props.busy && !props.inputL
 const capsuleLabel = computed(() => {
   if (!compatibleModelOptions.value.length) return "No models";
   const name = selectedModelLabel.value;
-  if (!isReasoningModel.value || !reasoningEffortOptions.value.length || (reasoningEffortOptions.value.length === 1 && (reasoningEffortOptions.value[0] === "none" || reasoningEffortOptions.value[0] === "off"))) {
+  if (!reasoningEffortOptions.value.length || (reasoningEffortOptions.value.length === 1 && (reasoningEffortOptions.value[0] === "none" || reasoningEffortOptions.value[0] === "off"))) {
     return name;
   }
   const effort = REASONING_EFFORT_SHORT_LABELS[reasoningEffortValue.value] || REASONING_EFFORT_LABELS[reasoningEffortValue.value] || reasoningEffortValue.value;
   return `${name} · ${effort}`;
 });
 
-const displayEfforts = computed(() => {
-  return reasoningEffortOptions.value.map((opt) => ({
-    id: opt,
-    label: REASONING_EFFORT_SHORT_LABELS[opt] || REASONING_EFFORT_LABELS[opt] || opt,
-    active: reasoningEffortValue.value === opt,
-  }));
-});
+const displayEfforts = computed(() => reasoningEffortOptions.value.map(id => ({
+  id, label: REASONING_EFFORT_LABELS[id] || id,
+})));
 
 function togglePicker(): void {
   if (!canChange.value || !compatibleModelOptions.value.length) return;
@@ -245,69 +228,6 @@ function togglePicker(): void {
 
 function closePicker(): void {
   pickerOpen.value = false;
-}
-
-const sliderTrackRef = ref<HTMLElement | null>(null);
-let isDraggingSlider = false;
-
-function getNearestEffortFromX(clientX: number): string | null {
-  const track = sliderTrackRef.value;
-  if (!track) return null;
-  const rect = track.getBoundingClientRect();
-  const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
-  const ratio = x / rect.width;
-  const items = displayEfforts.value;
-  if (!items.length) return null;
-  const index = Math.min(items.length - 1, Math.max(0, Math.floor(ratio * items.length)));
-  const target = items[index];
-  return target?.id ?? null;
-}
-
-function onSliderPointerDown(ev: PointerEvent): void {
-  if (!canChange.value) return;
-  try {
-    (ev.currentTarget as HTMLElement)?.setPointerCapture?.(ev.pointerId);
-  } catch {}
-  isDraggingSlider = true;
-  const effort = getNearestEffortFromX(ev.clientX);
-  if (effort && effort !== reasoningEffortValue.value) {
-    selectReasoningEffort(effort);
-    triggerHaptic();
-  }
-}
-
-function onSliderPointerMove(ev: PointerEvent): void {
-  if (!isDraggingSlider || !canChange.value) return;
-  const effort = getNearestEffortFromX(ev.clientX);
-  if (effort && effort !== reasoningEffortValue.value) {
-    selectReasoningEffort(effort);
-    triggerHaptic();
-  }
-}
-
-function onSliderPointerUp(ev: PointerEvent): void {
-  if (!isDraggingSlider) return;
-  isDraggingSlider = false;
-  try {
-    (ev.currentTarget as HTMLElement)?.releasePointerCapture?.(ev.pointerId);
-  } catch {}
-}
-
-function triggerHaptic(): void {
-  try {
-    if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
-      navigator.vibrate(10);
-    }
-  } catch {}
-}
-
-function handlePickModel(modelId: string): void {
-  selectModel(modelId);
-}
-
-function handlePickEffort(effort: string): void {
-  selectReasoningEffort(effort);
-  closePicker();
 }
 
 function selectModel(modelId: string): void {
@@ -333,12 +253,12 @@ function selectReasoningEffort(effort: string): void {
       :title="capsuleLabel"
       @click="togglePicker"
     >
-      <span class="modelCapsuleIcon" aria-hidden="true">⚡</span>
-      <span class="modelCapsuleText" data-testid="chat-capsule-text">{{ capsuleLabel }}</span>
+      <span class="modelCapsuleText" data-testid="chat-capsule-text">{{ selectedModelLabel }}</span>
+      <span class="modelCapsuleEffort" data-testid="chat-capsule-effort">{{ REASONING_EFFORT_SHORT_LABELS[reasoningEffortValue] || reasoningEffortValue }}</span>
       <span class="modelCapsuleChevron" aria-hidden="true">▾</span>
     </button>
 
-    <!-- Synced hidden native select elements for accessibility and backwards compatibility -->
+    <!-- Legacy programmatic controls stay out of keyboard and screen-reader navigation. -->
     <div class="sr-native-selectors" aria-hidden="true">
       <label class="modelField" :class="{ 'modelField--disabled': !canChange || !compatibleModelOptions.length }">
         <span class="modelFieldValue" data-testid="chat-model-value">
@@ -346,6 +266,7 @@ function selectReasoningEffort(effort: string): void {
         </span>
         <select
           class="modelSelect"
+          tabindex="-1"
           aria-label="Model"
           :title="selectedModelLabel"
           data-testid="chat-model-select"
@@ -370,6 +291,7 @@ function selectReasoningEffort(effort: string): void {
         </span>
         <select
           class="modelSelect"
+          tabindex="-1"
           aria-label="Reasoning effort"
           :title="REASONING_EFFORT_LABELS[reasoningEffortValue] || 'Reasoning effort'"
           data-testid="chat-reasoning-effort"
@@ -389,82 +311,26 @@ function selectReasoningEffort(effort: string): void {
       </label>
     </div>
 
-    <!-- Integrated ActionSheet / Popover -->
-    <Teleport to="body">
-      <div
-        v-if="pickerOpen"
-        class="modelPickerMask"
-        data-testid="model-picker-mask"
-        @click="closePicker"
-      >
-        <div
-          class="modelPickerSheet"
-          role="region"
-          aria-label="选择模型与推理配置"
-          data-testid="model-picker-sheet"
-          @click.stop
-        >
-          <div class="modelPickerHeader">
-            <span class="modelPickerTitle">选择模型与推理配置</span>
-            <button type="button" class="modelPickerClose" aria-label="关闭" @click="closePicker">✕</button>
-          </div>
-
-          <div class="modelPickerSection">
-            <div class="modelPickerSectionTitle">模型列表</div>
-            <div class="modelPickerList">
-              <button
-                v-for="model in compatibleModelOptions"
-                :key="modelKey(model)"
-                type="button"
-                class="modelPickerItem"
-                :class="{ active: modelKey(model) === effectiveModelId }"
-                :data-testid="`model-picker-item-${modelKey(model)}`"
-                @click="handlePickModel(modelKey(model))"
-              >
-                <div class="modelPickerItemMain">
-                  <span class="modelPickerItemName">{{ formatModelLabel(model) }}</span>
-                  <span v-if="model.provider" class="modelProviderBadge">{{ model.provider }}</span>
-                </div>
-                <span v-if="modelKey(model) === effectiveModelId" class="modelActiveBadge">当前</span>
-              </button>
-            </div>
-          </div>
-
-          <div v-if="isReasoningModel" class="modelPickerSection">
-            <div class="modelPickerSectionHeader">
-              <div class="modelPickerSectionTitle">推理强度</div>
-            </div>
-            <div
-              ref="sliderTrackRef"
-              class="effortSegmentedSlider"
-              data-testid="effort-segmented-slider"
-              @pointerdown="onSliderPointerDown"
-              @pointermove="onSliderPointerMove"
-              @pointerup="onSliderPointerUp"
-              @pointercancel="onSliderPointerUp"
-            >
-              <button
-                v-for="effort in displayEfforts"
-                :key="effort.id"
-                type="button"
-                class="effortPill"
-                :class="{ active: effort.active }"
-                :data-testid="`effort-pill-${effort.id}`"
-                @click="handlePickEffort(effort.id)"
-              >
-                {{ effort.label }}
-              </button>
-            </div>
-          </div>
-          <div v-else class="modelPickerSection nonReasoningSection">
-            <div class="nonReasoningNotice">
-              <span class="nonReasoningIcon">ℹ️</span>
-              <span>当前模型（{{ selectedModelLabel }}）为标准对话模型，不支持调节推理思考强度。</span>
-            </div>
-          </div>
+    <SettingsSheet v-if="pickerOpen" title="Model & reasoning" close-label="Done" test-id="model-picker-sheet" @close="closePicker">
+      <div class="settingsBlock">
+        <h2 class="settingsBlockTitle">Conversation models</h2>
+        <div class="settingsList">
+          <button v-for="model in compatibleModelOptions" :key="modelKey(model)" type="button" class="settingsRow"
+            :aria-pressed="modelKey(model) === effectiveModelId" :disabled="!canChange"
+            :data-testid="`model-picker-item-${modelKey(model)}`" @click="selectModel(modelKey(model))">
+            <span class="settingsRowContent"><span>{{ formatModelLabel(model) }}</span><small class="settingsDetail">{{ model.provider }}</small></span>
+            <span class="settingsCheckmark" aria-hidden="true">{{ modelKey(model) === effectiveModelId ? '✓' : '' }}</span>
+          </button>
         </div>
+        <p v-if="!compatibleModelOptions.length" class="settingsNote">Enable conversation models in Models → Chat first.</p>
       </div>
-    </Teleport>
+      <div v-if="selectedModel" class="settingsBlock">
+        <div class="settingsList">
+          <ReasoningEffortSlider :options="displayEfforts" :model-value="reasoningEffortValue" :disabled="!canChange" @change="selectReasoningEffort" />
+        </div>
+        <p class="settingsNote">{{ reasoningEffortOptions.length > 1 ? 'Slide to a configured level. Release to apply.' : 'This model has one configured reasoning level.' }}</p>
+      </div>
+    </SettingsSheet>
   </div>
 </template>
 
@@ -504,9 +370,11 @@ function selectReasoningEffort(effort: string): void {
    the text; on narrow viewports the pill splits the space naturally. */
 @media (min-width: 901px) {
   .modelCapsule {
-    max-width: 140px;
+    max-width: 100%;
   }
 }
+
+.modelCapsuleEffort { flex: 0 0 auto; font-size: 11px; opacity: .8; }
 
 .modelCapsule:hover:not(:disabled) {
   border-color: transparent;
@@ -564,201 +432,4 @@ function selectReasoningEffort(effort: string): void {
   font-size: 16px;
 }
 
-/* ActionSheet / Popover Panel */
-.modelPickerMask {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  background: rgba(15, 23, 42, 0.4);
-  backdrop-filter: blur(2px);
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-}
-
-@media (min-width: 901px) {
-  .modelPickerMask {
-    align-items: center;
-  }
-}
-
-.modelPickerSheet {
-  width: 100%;
-  max-width: 440px;
-  background: var(--surface, #ffffff);
-  border: 1px solid var(--border);
-  border-radius: 16px 16px 0 0;
-  padding: 16px;
-  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
-  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.12);
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  max-height: 80vh;
-  box-sizing: border-box;
-}
-
-@media (min-width: 901px) {
-  .modelPickerSheet {
-    border-radius: 14px;
-    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.18);
-    padding-bottom: 16px;
-  }
-}
-
-.modelPickerHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.modelPickerTitle {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--text);
-}
-
-.modelPickerClose {
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  font-size: 16px;
-  cursor: pointer;
-  padding: 4px 8px;
-  border-radius: 6px;
-}
-
-.modelPickerSectionTitle {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--muted);
-  margin-bottom: 8px;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.modelPickerList {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  overflow-y: auto;
-  max-height: 240px;
-}
-
-.modelPickerItem {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: var(--surface-2, rgba(15, 23, 42, 0.03));
-  cursor: pointer;
-  min-height: 44px;
-  transition: all 0.12s ease;
-}
-
-.modelPickerItem:hover {
-  background: rgba(37, 99, 235, 0.06);
-  border-color: rgba(37, 99, 235, 0.25);
-}
-
-.modelPickerItem.active {
-  background: rgba(37, 99, 235, 0.08);
-  border-color: rgba(37, 99, 235, 0.4);
-}
-
-.modelPickerItemMain {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.modelPickerItemName {
-  font-size: 13.5px;
-  font-weight: 600;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.modelProviderBadge {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(100, 116, 139, 0.12);
-  color: var(--muted);
-}
-
-.modelActiveBadge {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--accent);
-}
-
-.modelPickerSectionHeader {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-
-.effortSegmentedSlider {
-  display: flex;
-  gap: 4px;
-  background: var(--surface-2, rgba(15, 23, 42, 0.05));
-  padding: 3px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  touch-action: none;
-  user-select: none;
-  cursor: grab;
-}
-
-.effortSegmentedSlider:active {
-  cursor: grabbing;
-}
-
-.effortPill {
-  flex: 1 1 0;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 600;
-  padding: 8px 4px;
-  min-height: 38px;
-  border-radius: 7px;
-  cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  user-select: none;
-}
-
-.effortPill.active {
-  background: var(--surface, #ffffff);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
-  color: var(--accent);
-  font-weight: 700;
-}
-
-.nonReasoningNotice {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: 9px;
-  background: var(--surface-2, rgba(15, 23, 42, 0.04));
-  border: 1px dashed var(--border);
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.4;
-}
 </style>

@@ -1,6 +1,6 @@
 {
   "name": "ads",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "type": "module",
   "description": "AI agent workspace and task orchestration with optional channel connectors",
   "author": "ADS Contributors",
@@ -36,6 +36,9 @@
     "test:role-prompt-keyboard-browser": "node scripts/test-role-prompt-keyboard-browser.js",
     "test:login-keyboard-browser": "node scripts/test-login-keyboard-browser.js",
     "test:lane-control-browser": "node scripts/test-lane-control-browser.js",
+    "test:model-settings-browser": "node scripts/test-model-settings-browser.js",
+    "test:model-selection-browser": "node scripts/test-model-selection-browser.js",
+    "test:message-retry-browser": "node scripts/test-message-retry-browser.js",
     "postbuild": "node scripts/chmod-bins.js",
     "bundle": "npm run build && node scripts/bundle.js",
     "deploy": "node scripts/deploy-local.js",

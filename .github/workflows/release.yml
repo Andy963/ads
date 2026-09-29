@@ -45,6 +45,12 @@ jobs:
       - name: Run chat browser regressions
         run: npm run test:chat-browser
 
+      - name: Run model and retry browser regressions
+        run: |
+          npm run test:model-settings-browser
+          npm run test:model-selection-browser
+          npm run test:message-retry-browser
+
       - name: Resolve release version and tag
         id: vars
         run: |

@@ -253,7 +253,7 @@ describe("reasoning effort WS payload", () => {
     await settleUi(wrapper);
 
     expect(lastSendPromptPayload).toBeTruthy();
-    expect(lastSendPromptPayload).toMatchObject({ text: "hello", agentId: "claude", model: "claude-sonnet" });
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", agentId: "claude", model: "claude" });
     wrapper.unmount();
   });
 

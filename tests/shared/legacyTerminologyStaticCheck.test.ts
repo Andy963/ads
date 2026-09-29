@@ -48,6 +48,10 @@ interface LegacyAllowance {
 }
 
 const ALLOWED_LEGACY_TERMINOLOGY: Record<string, LegacyAllowance> = {
+  "scripts/test-message-retry-browser.js": {
+    reason: "historical-record: uses the shared chat browser fixture's existing lane labels and prompt markers",
+    legacyLines: 1,
+  },
   // ---- contract / compatibility tables ----
   "shared/terminology.ts": {
     reason: "compatibility: the canonical LEGACY_LANE_ALIASES / LEGACY_ROLE_PROFILE_ALIASES tables",

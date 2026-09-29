@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import childProcess from "node:child_process";
 import { createUpstreamCredentialStore } from "../../server/state/upstreamCredentialStore.js";
+import { createModelProviderStore } from "../../server/state/modelProviderStore.js";
+import { createModelServiceStore } from "../../server/state/modelServiceStore.js";
 import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
 import { createVoiceSettingsStore, defaultVoiceConfig } from "../../server/audio/settings.js";
 import { transcribeAudioBuffer } from "../../server/audio/transcription.js";
@@ -30,6 +32,12 @@ describe("built-in voice service", () => {
   afterEach(() => { mock.restoreAll(); db.close(); fs.rmSync(directory, { recursive: true, force: true }); });
   function correction(endpoint = "https://llm-a.invalid/v1", apiKey = "correction-private-key") {
     const config = { ...defaultVoiceConfig().correction, enabled: true, baseUrl: endpoint, model: "shared-name", timeoutMs: 1000 };
+    const selected = store.get("alice").config.correction.providerId;
+    if (selected) {
+      const provider = createModelProviderStore(db).getProvider(selected)!;
+      createModelProviderStore(db).upsertProvider({ ...provider, baseUrl: endpoint });
+      credentials.save("alice", { provider: provider.id, baseUrl: endpoint, apiKey }, provider.credentialProfile || provider.id);
+    }
     store.saveCorrection("alice", { config, apiKey });
     return config;
   }
@@ -45,7 +53,7 @@ describe("built-in voice service", () => {
     assert.equal(reopened.get("alice").configured, true);
     assert.equal(reopened.get("bob").configured, false);
     assert.equal(reopened.get("bob").hasApiKey, false);
-    assert.throws(() => reopened.resolve("bob"), /语音转写/);
+    assert.throws(() => reopened.resolve("bob"), /API 密钥/);
     assert.equal(reopened.resolve("alice").transcription.apiKey, "asr-private-fixture-key");
     assert.doesNotMatch(JSON.stringify(reopened.get("alice")), /asr-private-fixture-key/);
     for (const suffix of ["", "-wal"]) assert.ok(!fs.readFileSync(db.name + suffix).includes(Buffer.from("asr-private-fixture-key")));
@@ -55,9 +63,12 @@ describe("built-in voice service", () => {
     credentials.save("alice", { baseUrl: "https://other.invalid/v1", provider: "other", apiKey: "unrelated-key" }, "other");
     const config = asrConfig();
     config.transcription.baseUrl = "https://replacement.invalid/v1";
-    assert.throws(() => store.save("alice", { config }), /新 API 密钥/);
+    assert.throws(() => store.save("alice", { config }), /provider settings/);
     assert.equal(store.resolve("alice").transcription.baseUrl, "https://api.groq.com/openai/v1");
-    store.save("alice", { config, apiKey: "replacement-key" });
+    assert.throws(() => store.save("alice", { config, apiKey: "replacement-key" }), /provider settings/);
+    const provider = createModelProviderStore(db).getProvider(store.get("alice").config.transcription.providerId!)!;
+    createModelProviderStore(db).upsertProvider({ ...provider, baseUrl: config.transcription.baseUrl });
+    credentials.save("alice", { provider: provider.id, baseUrl: config.transcription.baseUrl, apiKey: "replacement-key" }, provider.credentialProfile || provider.id);
     assert.equal(store.resolve("alice").transcription.apiKey, "replacement-key");
     assert.equal(credentials.getCredentials("alice", "other")?.apiKey, "unrelated-key");
     for (const url of ["file:///tmp/audio", "https://user:secret@example.invalid", "https://x.invalid?key=secret"]) {
@@ -143,8 +154,8 @@ describe("built-in voice service", () => {
       assert.doesNotMatch(JSON.stringify(result.correction), /PRIVATE-KEY|upstream body/);
     }
     const row = db.prepare("SELECT value FROM kv_state WHERE namespace = 'voice_settings' AND key = 'alice'").get() as { value: string };
-    const record = JSON.parse(row.value);
-    credentials.save("alice", { provider: "openai", baseUrl: "https://wrong.invalid/v1", apiKey: "wrong-key" }, record.correctionCredentialProfile);
+    assert.equal(JSON.parse(row.value).version, 2);
+    credentials.save("alice", { provider: "openai", baseUrl: "https://wrong.invalid/v1", apiKey: "wrong-key" }, createModelProviderStore(db).getProvider(store.get("alice").config.correction.providerId!)!.credentialProfile!);
     const result = await transcribe({ completeImpl: async () => { throw new Error("must not call"); } });
     assert.ok(result.ok);
     assert.equal(result.correction.status, "failed");
@@ -162,7 +173,8 @@ describe("built-in voice service", () => {
     assert.equal(store.get("bob").hasApiKey, false);
     assert.equal(store.get("bob").correctionHasApiKey, true);
     assert.equal(store.resolve("alice").correction?.apiKey, "correction-private-key");
-    assert.deepEqual(models.listModelConfigs(), before);
+    for (const original of before) assert.deepEqual(models.getModelConfig(original.id), original);
+    assert.deepEqual(createModelServiceStore(db).get("conversation").modelIds, []);
     assert.equal(credentials.getCredentials("alice")?.apiKey, "chat-key");
     assert.equal(store.resolve("alice").transcription.apiKey, "asr-private-fixture-key");
     const reopened = createVoiceSettingsStore(db, credentials);
@@ -177,9 +189,12 @@ describe("built-in voice service", () => {
   it("requires an explicit new correction key for endpoint changes and rejects secret-bearing URLs", () => {
     const config = correction();
     config.baseUrl = "https://replacement.invalid/v1";
-    assert.throws(() => store.saveCorrection("alice", { config }), /新 API 密钥/);
+    assert.throws(() => store.saveCorrection("alice", { config }), /provider settings/);
     assert.equal(store.resolve("alice").correction?.apiKey, "correction-private-key");
-    store.saveCorrection("alice", { config, apiKey: "replacement-key" });
+    assert.throws(() => store.saveCorrection("alice", { config, apiKey: "replacement-key" }), /provider settings/);
+    const provider = createModelProviderStore(db).getProvider(store.get("alice").config.correction.providerId!)!;
+    createModelProviderStore(db).upsertProvider({ ...provider, baseUrl: config.baseUrl });
+    credentials.save("alice", { provider: provider.id, baseUrl: config.baseUrl, apiKey: "replacement-key" }, provider.credentialProfile || provider.id);
     assert.equal(store.resolve("alice").correction?.apiKey, "replacement-key");
     for (const baseUrl of ["file:///tmp/x", "https://user:secret@example.invalid", "https://x.invalid?api_key=secret", "https://x.invalid#secret"]) {
       assert.throws(() => store.saveCorrection("alice", { config: { ...config, baseUrl }, apiKey: "new-key" }));
@@ -207,10 +222,11 @@ describe("built-in voice service", () => {
     const models = createGlobalModelConfigStore(db);
     models.upsertModelConfig({ id: "legacy-model", modelId: "legacy", displayName: "Legacy", provider: "openai", isEnabled: true, isDefault: true });
     credentials.save("alice", { provider: "openai", baseUrl: "https://legacy.invalid/v1", apiKey: "legacy-key" });
-    const row = db.prepare("SELECT value FROM kv_state WHERE namespace = 'voice_settings' AND key = 'alice'").get() as { value: string };
-    const record = JSON.parse(row.value);
-    delete record.correctionCredentialProfile;
-    record.config.correction = { enabled: true, modelConfigId: "legacy-model", timeoutMs: 1000 };
+    const provider = createModelProviderStore(db).getProvider(store.get("alice").config.transcription.providerId!)!;
+    const record = { config: { ...store.get("alice").config,
+      transcription: { ...store.get("alice").config.transcription, providerId: null },
+      correction: { enabled: true, modelConfigId: "legacy-model", timeoutMs: 1000 } },
+      credentialProfile: provider.credentialProfile };
     db.prepare("UPDATE kv_state SET value = ? WHERE namespace = 'voice_settings' AND key = 'alice'").run(JSON.stringify(record));
     assert.equal(store.get("alice").hasApiKey, true);
     assert.equal(store.get("alice").correctionHasApiKey, false);

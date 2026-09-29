@@ -16,7 +16,7 @@ function createHarness(projectSessionId = "default") {
   const runtime = ctx.activeAcopilotRuntime.value;
   runtime.projectSessionId = projectSessionId;
   runtime.chatSessionId = "advisor";
-  return { actions, chat, runtime };
+  return { actions, chat, runtime, ctx };
 }
 
 describe("laneActions regressions", () => {
@@ -67,6 +67,16 @@ describe("laneActions regressions", () => {
         { clientMessageId: expect.any(String) },
       );
       expect(readReasoningEffortPreference("default", "advisor", "codex")).toBe("low");
+    });
+
+    it("shows the alias in pending switch feedback while transmitting the catalog ID", () => {
+      const { actions, runtime, ctx } = createHarness();
+      const send = vi.fn(() => true);
+      runtime.ws = { send };
+      ctx.models.value = [{ id: "catalog-record", modelId: "upstream-name", displayName: "Friendly alias", provider: "openai", isEnabled: true, isDefault: false }];
+      actions.setAcopilotModelId("catalog-record");
+      expect(runtime.laneStatus.value?.message).toBe("Switching model: Friendly alias…");
+      expect(send).toHaveBeenCalledWith("model_override", expect.objectContaining({ model: "catalog-record" }), expect.any(Object));
     });
   });
 

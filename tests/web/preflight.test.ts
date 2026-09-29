@@ -349,6 +349,7 @@ describe("web/ws/preflight", () => {
 
   it("re-enqueues only explicitly recovered duplicate prompts that have no terminal result", () => {
     const historyStore = new HistoryStore({ namespace: "test-preflight-recovery", maxEntriesPerSession: 20 });
+    const acknowledgements: unknown[] = [];
     const base = {
       requestId: "req-recovery",
       clientMessageId: "p-recovery",
@@ -358,7 +359,7 @@ describe("web/ws/preflight", () => {
         typeof payload === "object" && payload !== null
           ? String((payload as Record<string, unknown>).text ?? "")
           : String(payload ?? ""),
-      sendJson: () => {},
+      sendJson: (message: unknown) => acknowledgements.push(message),
       traceWsDuplication: false,
       warn: () => {},
       sessionId: "session-1",
@@ -415,6 +416,12 @@ describe("web/ws/preflight", () => {
       );
 
       historyStore.add("history-recovery", { role: "ai", text: "done", ts: 5 });
+      assert.deepEqual(acknowledgements, [
+        { type: "ack", client_message_id: "p-recovery", duplicate: false },
+        { type: "ack", client_message_id: "p-recovery", duplicate: true },
+        { type: "ack", client_message_id: "p-recovery", duplicate: true },
+        { type: "ack", client_message_id: "p-recovery", duplicate: false },
+      ]);
       assert.deepEqual(
         preflightPersistAndAck({
           ...base,

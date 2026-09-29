@@ -1,8 +1,10 @@
 import type { Database } from "better-sqlite3";
 
 import { createGlobalModelConfigStore } from "../../state/globalModelConfigStore.js";
+import { createModelServiceStore } from "../../state/modelServiceStore.js";
 import { createModelProviderStore, type ModelProvider } from "../../state/modelProviderStore.js";
 import { createUpstreamCredentialStore } from "../../state/upstreamCredentialStore.js";
+import { normalizeUpstreamBaseUrl } from "../../utils/upstreamUrl.js";
 
 /**
  * Name of the environment variable that carries the selected provider's API
@@ -67,9 +69,12 @@ export function resolveCodexProviderInjection(args: {
   const model = String(args.model ?? "").trim();
   if (!model) return null;
   const modelStore = createGlobalModelConfigStore(args.db);
-  const config = modelStore.getModelConfigByAgentModelId(model) ?? modelStore.getModelConfig(model);
+  const config = modelStore.getModelConfig(model) ?? modelStore.getModelConfigByAgentModelId(model);
   const providerId = String(config?.providerId ?? "").trim();
-  if (!providerId) return null;
+  if (!providerId) {
+    if (config) createModelServiceStore(args.db).resolveConversation(config.id);
+    return null;
+  }
 
   const provider = createModelProviderStore(args.db).getProvider(providerId);
   if (!provider) {
@@ -78,11 +83,15 @@ export function resolveCodexProviderInjection(args: {
   if (!provider.isEnabled) {
     throw new Error(`Provider "${provider.name}" is disabled.`);
   }
+  if (config) createModelServiceStore(args.db).resolveConversation(config.id);
   const profile = String(provider.credentialProfile ?? "").trim() || provider.id;
   const credentialStore = createUpstreamCredentialStore(args.db);
   const credentials = credentialStore.getCredentials(args.owner, profile);
   if (!credentials) {
     throw new Error(`Provider "${provider.name}" has no API key configured for this account.`);
+  }
+  if (normalizeUpstreamBaseUrl(credentials.baseUrl) !== normalizeUpstreamBaseUrl(provider.baseUrl)) {
+    throw new Error(`Provider "${provider.name}" endpoint does not match this account's saved credential.`);
   }
   return buildCodexProviderInjection({ provider, apiKey: credentials.apiKey });
 }

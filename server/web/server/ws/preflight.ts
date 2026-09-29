@@ -159,7 +159,6 @@ export function preflightPersistAndAck(args: {
       return { enqueue: false };
     }
     if (persistence === "duplicate") {
-      args.sendJson({ type: "ack", client_message_id: args.clientMessageId, duplicate: true });
       const historyEntries = args.historyStore.get(args.historyKey);
       const persistedPrompt = historyEntries.find(
         (entry) =>
@@ -171,6 +170,9 @@ export function preflightPersistAndAck(args: {
         !args.inFlight &&
         persistedPrompt?.text === textResult.text &&
         promptHistoryStatus(historyEntries, args.clientMessageId) !== "completed";
+      // Reusing persisted history is not a rejected delivery when the caller
+      // explicitly retries an incomplete turn. Match the durable queue ACK.
+      args.sendJson({ type: "ack", client_message_id: args.clientMessageId, duplicate: !replayIncomplete });
       if (args.traceWsDuplication) {
         args.warn(
           `[WebSocket][Dedupe] req=${args.requestId} session=${args.sessionId} user=${args.userId} history=${args.historyKey} client_message_id=${args.clientMessageId} replay_incomplete=${replayIncomplete}`,

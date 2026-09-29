@@ -30,7 +30,7 @@ describe("MainChat header UI", () => {
     expect(surface).toMatch(/overflow:\s*hidden\s*;/);
     expect(surface).toMatch(/padding:\s*3px\s*;/);
     expect(surface).toMatch(/border-radius:\s*12px\s*;/);
-    expect(surface).toMatch(/background:\s*rgba\(15, 23, 42, 0\.05\)\s*;/);
+    expect(surface).toMatch(/background:\s*var\(--segmented-bg\)\s*;/);
     expect(surface).not.toMatch(/border-bottom:\s*1px/);
 
     // The lane group is a bare slot inside that surface, not a second box.
@@ -51,7 +51,7 @@ describe("MainChat header UI", () => {
     expect(controls).toMatch(/min-width:\s*0\s*;/);
     expect(controls).toMatch(/flex:\s*1 1 0\s*;/);
     expect(controls).toMatch(/margin-left:\s*0\s*;/);
-    expect(controls).toMatch(/justify-content:\s*flex-end\s*;/);
+    expect(controls).toMatch(/justify-content:\s*center\s*;/);
 
     // Every segment in the surface is exactly as tall as the lane tab.
     const tab = css.match(/\.laneTab\s*\{[^}]*\}/)?.[0];

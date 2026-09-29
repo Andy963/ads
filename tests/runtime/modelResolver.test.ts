@@ -7,6 +7,7 @@ import path from "node:path";
 import { closeAllStateDatabases, getStateDatabase } from "../../server/state/database.js";
 import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
 import { createModelProviderStore } from "../../server/state/modelProviderStore.js";
+import { createModelServiceStore } from "../../server/state/modelServiceStore.js";
 import { createUpstreamCredentialStore } from "../../server/state/upstreamCredentialStore.js";
 import { createNativeModelResolver } from "../../server/runtime/modelResolver.js";
 import { DEFAULT_REASONING_EFFORT } from "../../server/state/modelConfigTypes.js";
@@ -110,6 +111,51 @@ describe("native model resolver", () => {
     });
     assert.equal(resolver("owner-a").resolve("strict-model").apiKey, "owner-secret");
     assert.throws(() => resolver("owner-b").resolve("strict-model"), /credentials are not configured/);
+  });
+
+  it("keeps provider-specific identities isolated and rejects models outside the conversation service", () => {
+    const db = getStateDatabase(dbPath);
+    const models = createGlobalModelConfigStore(db);
+    const providers = createModelProviderStore(db);
+    const credentials = createUpstreamCredentialStore(db, { pepper: "test-pepper" });
+    for (const id of ["provider-a", "provider-b"]) {
+      providers.upsertProvider({ id, name: id, baseUrl: `https://${id}.test/v1`, wireApi: "chat", isEnabled: true });
+      credentials.save("owner", { baseUrl: `https://${id}.test/v1`, provider: id, apiKey: `${id}-secret` }, id);
+      models.upsertModelConfig({ id: `${id}-model`, providerId: id, provider: "openai", modelId: "shared-model",
+        displayName: id, isEnabled: true, isDefault: false });
+    }
+    const services = createModelServiceStore(db);
+    services.save("conversation", ["provider-a-model", "provider-b-model"], "provider-a-model");
+    const resolver = createNativeModelResolver({ owner: "owner", stateDbPath: dbPath, env: { ADS_WEB_SESSION_PEPPER: "test-pepper" } });
+    for (const id of ["provider-a", "provider-b"]) {
+      const resolved = resolver.resolve(`${id}-model`);
+      assert.equal(resolved.model, "shared-model");
+      assert.equal(resolved.baseUrl, `https://${id}.test/v1`);
+      assert.equal(resolved.apiKey, `${id}-secret`);
+    }
+    assert.throws(() => resolver.resolve("shared-model"), /ambiguous/i);
+    services.save("conversation", ["provider-a-model"], "provider-a-model");
+    assert.throws(() => resolver.resolve("provider-b-model"), /enabled conversation model/i);
+  });
+
+  it("rejects unsupported provider wire formats before sending a native request", () => {
+    const db = getStateDatabase(dbPath);
+    const providers = createModelProviderStore(db);
+    const provider = { id: "provider-wire", name: "Wire provider", baseUrl: "https://wire.test/v1", isEnabled: true };
+    providers.upsertProvider({ ...provider, wireApi: "responses" });
+    createGlobalModelConfigStore(db).upsertModelConfig({ id: "wire-model", providerId: provider.id, provider: "openai",
+      modelId: "upstream-model", displayName: "Wire model", isEnabled: true, isDefault: false });
+    createUpstreamCredentialStore(db, { pepper: "test-pepper" }).save("owner", {
+      baseUrl: provider.baseUrl, provider: provider.id, apiKey: "wire-secret",
+    }, provider.id);
+    const resolver = createNativeModelResolver({ owner: "owner", stateDbPath: dbPath, env: { ADS_WEB_SESSION_PEPPER: "test-pepper" } });
+    assert.throws(() => resolver.resolve("wire-model"), /Native runtime supports only Chat Completions/i);
+    providers.upsertProvider({ ...provider, wireApi: "unknown" });
+    assert.throws(() => resolver.resolve("wire-model"), /Native runtime supports only Chat Completions/i);
+    for (const wireApi of ["chat", null]) {
+      providers.upsertProvider({ ...provider, wireApi, name: "Renamed provider" });
+      assert.equal(resolver.resolve("wire-model").apiKey, "wire-secret");
+    }
   });
 
   it("falls back to the default effort when the configured value is invalid", () => {

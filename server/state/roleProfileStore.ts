@@ -1,6 +1,22 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
 import type { StoredRoleProfileValue } from "../../shared/terminology.js";
+import { BASE_LANE_PROMPTS } from "./lanePromptDefaults.js";
+
+export function ensureRoleProfiles(db: DatabaseType): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS role_profiles (
+    id TEXT PRIMARY KEY, role TEXT NOT NULL UNIQUE CHECK (role IN ('acopilot', 'developer', 'reviewer')),
+    name TEXT NOT NULL, model_id TEXT NOT NULL, reasoning_effort TEXT NOT NULL DEFAULT 'high',
+    system_prompt TEXT NOT NULL, is_enabled INTEGER NOT NULL DEFAULT 1,
+    is_default INTEGER NOT NULL DEFAULT 1, version INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL
+  )`);
+  const insert = db.prepare(`INSERT INTO role_profiles (id, role, name, model_id, system_prompt, updated_at)
+    SELECT ?, ?, ?, '', ?, ? WHERE NOT EXISTS (SELECT 1 FROM role_profiles WHERE role = ?)`);
+  for (const [role, prompt] of [
+    ["acopilot", BASE_LANE_PROMPTS.acopilot], ["developer", BASE_LANE_PROMPTS.actions],
+    ["reviewer", "You are the Detached Reviewer for ADS. Review the proposed change independently."],
+  ]) insert.run(`profile-default-${role}`, role, role, prompt, Date.now(), role);
+}
 
 export type ReasoningEffortLevel = "low" | "medium" | "high";
 
@@ -54,53 +70,55 @@ export function saveRoleProfile(
   },
   now = Date.now(),
 ): RoleProfileRecord {
-  const effort = profile.reasoning_effort ?? "high";
-  const enabled = profile.is_enabled !== false ? 1 : 0;
-  const isDefault = profile.is_default ? 1 : 0;
+  return db.transaction(() => {
+    const effort = profile.reasoning_effort ?? "high";
+    const enabled = profile.is_enabled !== false ? 1 : 0;
+    const isDefault = profile.is_default ? 1 : 0;
 
-  const existing = db.prepare(`SELECT * FROM role_profiles WHERE id = ?`).get(profile.id) as RoleProfileRecord | undefined;
-  const nextVersion = existing ? existing.version + 1 : 1;
+    const existing = db.prepare(`SELECT * FROM role_profiles WHERE id = ?`).get(profile.id) as RoleProfileRecord | undefined;
+    const nextVersion = existing ? existing.version + 1 : 1;
 
-  if (isDefault === 1) {
-    db.prepare(`UPDATE role_profiles SET is_default = 0 WHERE role = ?`).run(profile.role);
-  }
+    if (isDefault === 1) {
+      db.prepare(`UPDATE role_profiles SET is_default = 0 WHERE role = ?`).run(profile.role);
+    }
 
-  db.prepare(`
-    INSERT INTO role_profiles
-      (id, role, name, model_id, reasoning_effort, system_prompt, is_enabled, is_default, version, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name,
-      model_id = excluded.model_id,
-      reasoning_effort = excluded.reasoning_effort,
-      system_prompt = excluded.system_prompt,
-      is_enabled = excluded.is_enabled,
-      is_default = excluded.is_default,
-      version = excluded.version,
-      updated_at = excluded.updated_at
-  `).run(
-    profile.id,
-    profile.role,
-    profile.name,
-    profile.model_id,
-    effort,
-    profile.system_prompt,
-    enabled,
-    isDefault,
-    nextVersion,
-    now,
-  );
+    db.prepare(`
+      INSERT INTO role_profiles
+        (id, role, name, model_id, reasoning_effort, system_prompt, is_enabled, is_default, version, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        model_id = excluded.model_id,
+        reasoning_effort = excluded.reasoning_effort,
+        system_prompt = excluded.system_prompt,
+        is_enabled = excluded.is_enabled,
+        is_default = excluded.is_default,
+        version = excluded.version,
+        updated_at = excluded.updated_at
+    `).run(
+      profile.id,
+      profile.role,
+      profile.name,
+      profile.model_id,
+      effort,
+      profile.system_prompt,
+      enabled,
+      isDefault,
+      nextVersion,
+      now,
+    );
 
-  return {
-    id: profile.id,
-    role: profile.role,
-    name: profile.name,
-    model_id: profile.model_id,
-    reasoning_effort: effort,
-    system_prompt: profile.system_prompt,
-    is_enabled: enabled,
-    is_default: isDefault,
-    version: nextVersion,
-    updated_at: now,
-  };
+    return {
+      id: profile.id,
+      role: profile.role,
+      name: profile.name,
+      model_id: profile.model_id,
+      reasoning_effort: effort,
+      system_prompt: profile.system_prompt,
+      is_enabled: enabled,
+      is_default: isDefault,
+      version: nextVersion,
+      updated_at: now,
+    };
+  })();
 }

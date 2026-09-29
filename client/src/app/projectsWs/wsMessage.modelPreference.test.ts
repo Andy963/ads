@@ -125,6 +125,7 @@ describe("wsMessage applyEffectiveState model preference guard", () => {
       kind: "model_override",
       output: "Model switched to gpt-4o (low)",
       model: "gpt-4o",
+      model_display_name: "gpt-4o",
       model_reasoning_effort: "low",
     });
 
@@ -133,6 +134,14 @@ describe("wsMessage applyEffectiveState model preference guard", () => {
     expect(rt.busy.value).toBe(true);
     expect(rt.turnInFlight).toBe(true);
     expect(rt.laneStatus.value).toEqual({ kind: "info", message: "Model switched to: gpt-4o (low)" });
+  });
+
+  it("displays the alias while retaining the catalog ID as the session selection", () => {
+    const { rt, handler } = setup();
+    handler({ type: "result", ok: true, kind: "model_override", model: "catalog-9d631a", model_display_name: "My conversation model", model_reasoning_effort: "high" });
+    expect(rt.modelId.value).toBe("catalog-9d631a");
+    expect(rt.laneStatus.value?.message).toBe("Model switched to: My conversation model (high)");
+    expect(rt.laneStatus.value?.message).not.toContain("catalog-9d631a");
   });
 
   it("surfaces a model override failure without changing the selected model", () => {

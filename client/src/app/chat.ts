@@ -11,6 +11,7 @@ import { createStreamingActions } from "./chatStreaming";
 import {
   createOutboxStore,
   isEmptyOutboxSnapshot,
+  isUnsentTurnRetry,
   legacyPendingPromptStorageKey,
   outboxStorageKey,
   type OutboxSnapshot,
@@ -252,6 +253,11 @@ export function createChatActions(ctx: AppContext) {
     rt.dismissedPromptIds = dismissed;
     pruneDismissals(dismissed);
     const consumed = rt.consumedPromptIds ?? new Set<string>();
+    for (const prompt of snapshot.queued) {
+      if (prompt.replayIncomplete && !prompt.sentAwaitingAck && !snapshot.consumed?.includes(prompt.clientMessageId)) {
+        consumed.delete(prompt.clientMessageId);
+      }
+    }
     for (const clientMessageId of snapshot.consumed ?? []) {
       if (clientMessageId) consumed.add(clientMessageId);
     }
@@ -436,8 +442,8 @@ export function createChatActions(ctx: AppContext) {
     clearPendingPrompt(rt);
   };
 
-  const restorePendingPrompt = (rt: ProjectRuntime): void => {
-    if (rt.promptReconciliationPending) return;
+  const restorePendingPrompt = (rt: ProjectRuntime, beforeReconciliation = false): void => {
+    if (rt.promptReconciliationPending && !beforeReconciliation) return;
     if (!rt.projectSessionId) return;
     ensureOutboxBinding(rt);
     const snapshot = readOutboxFor(rt);
@@ -509,6 +515,9 @@ export function createChatActions(ctx: AppContext) {
   ): void => {
     rt.promptReconciliationPending = true;
     ensureOutboxBinding(rt);
+    // Hydrate before bootstrap frames arrive, while the reconciliation gate
+    // still prevents sending. Otherwise cold-start retries exist only on disk.
+    restorePendingPrompt(rt, true);
     const snapshot = readOutboxFor(rt);
     const clientMessageIds = new Set<string>();
     for (const prompt of [snapshot.pending, ...snapshot.sent, ...snapshot.queued]) {
@@ -580,7 +589,7 @@ export function createChatActions(ctx: AppContext) {
 
   const applyPromptReconciliation = (
     rt: ProjectRuntime,
-    identities: Array<{ clientMessageId: string; disposition: string }>,
+    identities: Array<{ clientMessageId: string; disposition: string; retryable?: boolean }>,
   ): void => {
     const returnedIds = new Set(identities.map((identity) => String(identity.clientMessageId ?? "").trim()).filter(Boolean));
     const missingIds = Array.from(rt.promptReconciliationIds ?? []).filter((id) => !returnedIds.has(id));
@@ -594,6 +603,10 @@ export function createChatActions(ctx: AppContext) {
     for (const identity of identities) {
       const id = String(identity.clientMessageId ?? "").trim();
       if (!id) continue;
+      if (identity.disposition === "consumed" && identity.retryable === true
+        && rt.queuedPrompts.value.some((prompt) => prompt.clientMessageId === id && isUnsentTurnRetry(prompt))) {
+        continue;
+      }
       if (["consumed", "cancelled", "obsolete"].includes(identity.disposition)) {
         settledIds.add(id);
       }
@@ -1088,6 +1101,12 @@ export function createChatActions(ctx: AppContext) {
       state.laneStatus.value = { kind: "error", message: "无法重试：找不到该轮对应的原始消息，请重新发送。" };
       return;
     }
+    ensureOutboxBinding(state);
+    if (state.cancelledPromptIds?.has(userItem.id) || state.retiredPromptIds?.has(userItem.id)
+      || !outbox.reactivateForRetry(outboxKeyFor(state), userItem.id)) {
+      state.laneStatus.value = { kind: "error", message: "This message was cancelled or belongs to an obsolete session. Send a new message to continue." };
+      return;
+    }
     // Clear the failure state before re-dispatching; a new failure anchors a
     // fresh card to the retried turn instead.
     setMessages(existing.filter((item) => item.id !== message.id), state);
@@ -1098,7 +1117,6 @@ export function createChatActions(ctx: AppContext) {
     // retry re-activates that identity, so drop those marks before re-sending.
     state.consumedPromptIds?.delete(userItem.id);
     state.dismissedPromptIds?.delete(userItem.id);
-    ensureOutboxBinding(state);
     const execution = userItem.execution ?? {};
     const agentId = String(execution.agentId ?? "").trim() || String(state.activeAgentId.value ?? "").trim();
     state.queuedPrompts.value = [
@@ -1116,6 +1134,12 @@ export function createChatActions(ctx: AppContext) {
         deliveryStatus: state.connected.value ? "awaiting_ack" : "offline",
       },
     ];
+    state.laneStatus.value = {
+      kind: "progress",
+      message: state.connected.value && state.ws
+        ? "Retry queued. Waiting to send…"
+        : "Retry queued. Waiting for the connection…",
+    };
     void flushQueuedPrompts(state);
   };
 
@@ -1230,6 +1254,8 @@ export function createChatActions(ctx: AppContext) {
       if (next.restoredFromStorage) {
         state.inputLocked.value = true;
         state.laneStatus.value = { kind: "progress", message: "请求已重新发送，正在等待后端结果…" };
+      } else if (next.replayIncomplete) {
+        state.laneStatus.value = { kind: "progress", message: "Retry sent. Waiting for the response…" };
       }
       state.queuedPrompts.value = state.queuedPrompts.value.filter(
         (prompt) => prompt.clientMessageId !== next.clientMessageId,
@@ -1250,7 +1276,7 @@ export function createChatActions(ctx: AppContext) {
       }
       if (!sendAccepted) {
         state.connected.value = false;
-        if (!options?.preserveErrorStatus && !state.laneStatus.value) {
+        if (next.replayIncomplete || (!options?.preserveErrorStatus && !state.laneStatus.value)) {
           state.laneStatus.value = { kind: "error", message: "Failed to send prompt: connection lost or prompt rejected." };
         }
       }

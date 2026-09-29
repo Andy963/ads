@@ -1,9 +1,20 @@
-import { describe, it } from "node:test";
+import { before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { applySessionOverrides } from "../../server/web/server/ws/sessionOverrides.js";
 
+import { getStateDatabase } from "../../server/state/database.js";
+import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
+import { createModelServiceStore } from "../../server/state/modelServiceStore.js";
+
 describe("web/sessionOverrides", () => {
+  before(() => {
+    const db = getStateDatabase();
+    createGlobalModelConfigStore(db).upsertModelConfig({ id: "gpt-4o", modelId: "gpt-4o", provider: "openai", displayName: "GPT-4o", isEnabled: true, isDefault: false });
+    const services = createModelServiceStore(db);
+    const selection = services.get("conversation");
+    services.save("conversation", [...new Set([...selection.modelIds, "gpt-4o"])], selection.defaultModelId || "gpt-4o");
+  });
   it("rotates the session model without returning a chat notice", () => {
     const calls: Array<{ type: string; value?: string }> = [];
     const sessionManager = {

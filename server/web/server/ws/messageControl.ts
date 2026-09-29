@@ -3,7 +3,7 @@ import { isAcopilotChatSessionId } from "./session.js";
 
 import type { SessionManager } from "../../../sessions/sessionManager.js";
 import { getStateDatabase } from "../../../state/database.js";
-import { createGlobalModelConfigStore } from "../../../state/globalModelConfigStore.js";
+import { createModelServiceStore } from "../../../state/modelServiceStore.js";
 import { normalizeConfiguredReasoningEffort } from "../../../state/modelConfigTypes.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import type {
@@ -121,10 +121,11 @@ export async function handleWsControlMessage(args: {
       return { handled: true, orchestrator: args.orchestrator };
     }
 
-    const modelStore = createGlobalModelConfigStore(getStateDatabase());
-    const modelConfig = modelStore.getModelConfigByAgentModelId(parsed.model) ?? modelStore.getModelConfig(parsed.model);
-    if (!modelConfig || !modelConfig.isEnabled) {
-      args.sendJson({ type: "result", ok: false, kind: "model_override", output: `Unknown or disabled model: ${parsed.model}`, client_message_id: requestId });
+    let modelConfig;
+    try {
+      modelConfig = createModelServiceStore(getStateDatabase()).resolveConversation(parsed.model);
+    } catch (error) {
+      args.sendJson({ type: "result", ok: false, kind: "model_override", output: error instanceof Error ? error.message : "Invalid model", client_message_id: requestId });
       return { handled: true, orchestrator: args.orchestrator };
     }
     const allowedEfforts = readConfiguredReasoningEfforts(modelConfig.configJson);
@@ -133,7 +134,8 @@ export async function handleWsControlMessage(args: {
       return { handled: true, orchestrator: args.orchestrator };
     }
 
-    const modelId = String(modelConfig.modelId ?? modelConfig.id ?? parsed.model).trim();
+    const modelId = modelConfig.id;
+    const modelLabel = modelConfig.displayName?.trim() || modelConfig.modelId || "Model";
     args.sessionManager.setUserModel(args.userId, modelId);
     if (parsed.effort !== undefined) {
       args.sessionManager.setUserModelReasoningEffort(args.userId, parsed.effort);
@@ -144,8 +146,9 @@ export async function handleWsControlMessage(args: {
       type: "result",
       ok: true,
       kind: "model_override",
-      output: `Model switched to ${modelId}${effective.modelReasoningEffort ? ` (${effective.modelReasoningEffort})` : ""}`,
+      output: `Model switched to ${modelLabel}${effective.modelReasoningEffort ? ` (${effective.modelReasoningEffort})` : ""}`,
       model: effective.model,
+      model_display_name: modelLabel,
       model_reasoning_effort: effective.modelReasoningEffort,
       client_message_id: requestId,
     });

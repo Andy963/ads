@@ -10,19 +10,23 @@ import { HybridOrchestrator } from "../../dist/server/agents/orchestrator.js";
 import { NoopAgentAvailability } from "../../dist/server/agents/health/agentAvailability.js";
 import { DirectoryManager } from "../../dist/server/sessions/directoryManager.js";
 import { SessionManager } from "../../dist/server/sessions/sessionManager.js";
-import { resetStateDatabaseForTests } from "../../dist/server/state/database.js";
+import { getStateDatabase, resetStateDatabaseForTests } from "../../dist/server/state/database.js";
+import { createGlobalModelConfigStore } from "../../dist/server/state/globalModelConfigStore.js";
+import { createPromptQueueStore } from "../../dist/server/state/promptQueueStore.js";
 import { AsyncLock } from "../../dist/server/utils/asyncLock.js";
 import { HistoryStore } from "../../dist/server/utils/historyStore.js";
 import { SyncEventStore } from "../../dist/server/web/server/sync/store.js";
 import { WebLaneGenerationStore } from "../../dist/server/web/server/sync/laneGeneration.js";
 import { deriveProjectSessionId } from "../../dist/server/web/server/projectSessionId.js";
 import { handleSyncRoutes } from "../../dist/server/web/server/api/routes/sync.js";
+import { handleModelRoutes } from "../../dist/server/web/server/api/routes/models.js";
+import { handleRoleProfileRoutes } from "../../dist/server/web/server/api/routes/roleProfiles.js";
 import { sanitizeInput } from "../../dist/server/web/utils.js";
 import { attachWebSocketServer } from "../../dist/server/web/server/ws/server.js";
 
 const execFile = promisify(execFileCallback);
 
-export async function startChatBrowserServer(buildRoot, { legacyWorker = false, projects = false } = {}) {
+export async function startChatBrowserServer(buildRoot, { legacyWorker = false, projects = false, settingsApi = false, durableQueue = false } = {}) {
   const workspaceRoot = await mkdtemp(path.join(tmpdir(), "ads-chat-browser-server-"));
   const projectFixtures = projects
     ? [
@@ -47,10 +51,15 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
   delete process.env.CFMEM_URL;
   delete process.env.CFMEM_API_KEY;
   resetStateDatabaseForTests(statePath);
+  // The fixture's selectable model must also exist on the server: production
+  // now validates every selection against the enabled service catalog.
+  createGlobalModelConfigStore(getStateDatabase(statePath)).upsertModelConfig({ id: "m1", modelId: "browser-model",
+    displayName: "Browser model", provider: "openai", isEnabled: true, isDefault: true });
   const received = [];
   const requests = [];
   const refusedRequests = new Set();
   const heldReplies = new Map();
+  const failedReplies = new Set();
   const heldCommandCompletions = new Map();
   let heldAuthentication = null;
   let originOffline = false;
@@ -95,6 +104,10 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
       }
       if (pathname.startsWith("/api/")) {
         requests.push({ method: request.method, pathname, afterSeq: url.searchParams.get("afterSeq") });
+        if (settingsApi && (pathname.startsWith("/api/model") || pathname.startsWith("/api/role-profiles"))) {
+          const context = { req: request, res: response, url, pathname, auth: { userId: "browser-fixture", username: "Browser fixture" } };
+          if (await handleRoleProfileRoutes(context) || await handleModelRoutes(context)) return;
+        }
         if (pathname === "/api/auth/status" && heldAuthentication) {
           heldAuthentication.requests += 1;
           await heldAuthentication.ready;
@@ -176,6 +189,7 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
         send: async (input) => {
           const marker = String(input).match(/browser-(?:advisor|worker)-[a-z0-9-]+/g)?.at(-1) ?? "unrecognized";
           received.push({ lane, marker });
+          if (failedReplies.delete(marker)) throw new Error("Browser fixture provider failure");
           await (heldReplies.get(marker)?.ready ?? new Promise((resolve) => setTimeout(resolve, 200)));
 
           if (lane === "Worker" && marker === "browser-worker-burst") {
@@ -288,6 +302,7 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
       persistCwdStore: () => {},
       syncEventStore,
       laneGenerationStore,
+      ...(durableQueue ? { promptQueueStore: createPromptQueueStore(getStateDatabase(statePath)) } : {}),
     },
     sessions: {
       workerSessionManager: new SessionManager(0, 0, "workspace-write", "browser-model", undefined, undefined, {
@@ -315,10 +330,14 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
   await once(server, "listening");
   return {
     origin: `http://127.0.0.1:${server.address().port}`,
+    statePath,
     received,
     requests,
     refusedRequests,
     projects: projectFixtures,
+    failReplyOnce(marker) {
+      failedReplies.add(marker);
+    },
     holdAuthentication() {
       if (heldAuthentication) throw new Error("Authentication is already held");
       let release;

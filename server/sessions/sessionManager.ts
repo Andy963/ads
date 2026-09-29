@@ -28,6 +28,9 @@ import type { LaneName } from '../state/lanePromptDefaults.js';
 import { resolveAgentRuntime, type AgentRuntimeBackend, type SessionLifecycle } from '../runtime/config.js';
 import { isNativeExecutionId } from '../runtime/sessionIdentity.js';
 import { getStateDatabase } from '../state/database.js';
+import { createGlobalModelConfigStore } from '../state/globalModelConfigStore.js';
+import { createModelServiceStore } from '../state/modelServiceStore.js';
+import { getDefaultRoleProfile } from '../state/roleProfileStore.js';
 import { NativeTranscriptStore } from '../state/nativeTranscriptStore.js';
 import {
   resolveCodexProviderInjection,
@@ -190,8 +193,9 @@ export class SessionManager {
     }
 
     const savedState = lifecycle === "ephemeral" ? undefined : this.getSavedState(userId);
-    const userModel = this.userModels.get(userId) || savedState?.model || this.defaultModel;
-    const userModelReasoningEffort = this.userReasoningEfforts.get(userId) || savedState?.modelReasoningEffort;
+    const roleDefault = this.getRoleDefault();
+    const userModel = this.userModels.get(userId) || savedState?.model || roleDefault?.model || this.defaultModel;
+    const userModelReasoningEffort = this.userReasoningEfforts.get(userId) || savedState?.modelReasoningEffort || roleDefault?.effort;
     const effectiveCwd = cwd || savedState?.cwd || process.cwd();
     const workspaceRoot = detectWorkspaceFrom(effectiveCwd);
     const nativeRuntime = this.runtimeBackend === "native";
@@ -426,6 +430,7 @@ export class SessionManager {
       sessionModel ||
       this.userModels.get(userId) ||
       this.getSavedState(userId)?.model ||
+      this.getRoleDefault()?.model ||
       this.defaultModel ||
       'default'
     );
@@ -450,7 +455,7 @@ export class SessionManager {
     return (
       this.runtime.getSession(userId)?.getModelReasoningEffort?.() ||
       this.userReasoningEfforts.get(userId) ||
-      this.getSavedState(userId)?.modelReasoningEffort
+      this.getSavedState(userId)?.modelReasoningEffort || this.getRoleDefault()?.effort
     );
   }
 
@@ -468,11 +473,11 @@ export class SessionManager {
       saved?.activeAgentId ||
       "codex";
     return {
-      model: record?.session.getModel?.() || this.userModels.get(userId) || saved?.model || this.defaultModel,
+      model: record?.session.getModel?.() || this.userModels.get(userId) || saved?.model || this.getRoleDefault()?.model || this.defaultModel,
       modelReasoningEffort:
         record?.session.getModelReasoningEffort?.() ||
         this.userReasoningEfforts.get(userId) ||
-        saved?.modelReasoningEffort,
+        saved?.modelReasoningEffort || this.getRoleDefault()?.effort,
       activeAgentId,
       runtimeBackend: record?.runtimeBackend ?? this.runtimeBackend,
       lifecycle: record?.lifecycle ?? "durable",
@@ -759,6 +764,11 @@ export class SessionManager {
         resumeThreadId: args.resumeThreadId,
         env: this.codexEnv,
         providerInjection: () => this.resolveCodexProviderInjection(args.userId, args.authUserId),
+        resolveModel: (reference) => {
+          const store = createGlobalModelConfigStore(getStateDatabase(this.options.stateDbPath));
+          const model = store.getModelConfig(reference) ?? store.getModelConfigByAgentModelId(reference);
+          return model?.modelId || reference;
+        },
       }),
     ];
   }
@@ -769,12 +779,24 @@ export class SessionManager {
    * at call time and provider changes spawn a fresh daemon.
    */
   private resolveCodexProviderInjection(userId: number, authUserId?: string): CodexProviderInjection | null {
-    const model = this.userModels.get(userId) || this.getSavedState(userId)?.model || this.defaultModel;
+    const model = this.getUserModel(userId);
     return resolveCodexProviderInjection({
       db: getStateDatabase(this.options.stateDbPath),
       owner: String(authUserId ?? userId),
       model,
     });
+  }
+
+  private getRoleDefault(): { model: string; effort: string } | null {
+    const lane = this.options.lane;
+    if (!lane) return null;
+    const db = getStateDatabase(this.options.stateDbPath);
+    const profile = getDefaultRoleProfile(db, lane === "acopilot" ? "acopilot" : "developer");
+    if (!profile?.is_enabled || !profile.model_id) return null;
+    try {
+      const model = createModelServiceStore(db).resolveConversation(profile.model_id);
+      return { model: model.id, effort: profile.reasoning_effort || "high" };
+    } catch { return null; }
   }
 
   private syncStoredState(userId: number, options?: { cwd?: string; clearThreads?: boolean }): void {
