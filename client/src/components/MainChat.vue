@@ -5,7 +5,7 @@ import MainChatMessageList from "./MainChatMessageList.vue";
 
 import type { ChatMessage, IncomingImage, QueuedPrompt } from "./mainChat/types";
 import { useCopyMessage } from "./mainChat/useCopyMessage";
-import { analyzeMarkdownOutline } from "../lib/markdown";
+import { loadMarkdown, loadedMarkdown } from "../lib/markdown/loader";
 import { createTapActivation } from "../lib/tapActivation";
 import type { TranscriptViewport } from "../app/transcriptCache";
 import { findStreamingAnswerId, hasExecutionBlockAfter } from "../app/chatStreaming";
@@ -546,7 +546,28 @@ const liveStepMessage = computed(
     props.messages.find((m) => m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text") ?? null,
 );
 
-const liveStepOutlineAnalysis = computed(() => analyzeMarkdownOutline(liveStepMessage.value?.content ?? ""));
+const EMPTY_OUTLINE_ANALYSIS = { titles: [] as string[], hasMeaningfulBody: false };
+const liveStepOutlineAnalysis = ref<{ titles: string[]; hasMeaningfulBody: boolean }>(EMPTY_OUTLINE_ANALYSIS);
+
+watch(
+  () => liveStepMessage.value?.content ?? "",
+  (content) => {
+    if (!content) {
+      liveStepOutlineAnalysis.value = EMPTY_OUTLINE_ANALYSIS;
+      return;
+    }
+    const mod = loadedMarkdown();
+    if (mod) {
+      liveStepOutlineAnalysis.value = mod.analyzeMarkdownOutline(content);
+      return;
+    }
+    void loadMarkdown().then((loaded) => {
+      const latest = liveStepMessage.value?.content ?? "";
+      liveStepOutlineAnalysis.value = latest ? loaded.analyzeMarkdownOutline(latest) : EMPTY_OUTLINE_ANALYSIS;
+    });
+  },
+  { immediate: true },
+);
 const liveStepOutlineTitles = computed(() => liveStepOutlineAnalysis.value.titles);
 const liveStepHasMeaningfulBody = computed(() => liveStepOutlineAnalysis.value.hasMeaningfulBody);
 const liveStepOutlineItems = computed(() => {

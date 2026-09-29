@@ -5,12 +5,16 @@ declare const __APP_VERSION__: string | undefined;
 const appVersion = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0.0.1";
 
 import LoginGate from "./components/LoginGate.vue";
-import DraggableModal from "./components/DraggableModal.vue";
 import MainChatView from "./components/MainChat.vue";
 import MainChatModelSelectors from "./components/MainChatModelSelectors.vue";
-import ExecuteBlockFixture from "./components/ExecuteBlockFixture.vue";
-import ModelManager from "./components/ModelManager.vue";
-import SessionResumePicker from "./components/SessionResumePicker.vue";
+import { lazyComponent } from "./lib/asyncComponent";
+
+// Settings and session pickers sit behind modals/drawers; keep them out of the
+// initial chunk. Names stay identical so test stubs keyed by component name
+// keep matching.
+const DraggableModal = lazyComponent(() => import("./components/DraggableModal.vue"));
+const ModelManager = lazyComponent(() => import("./components/ModelManager.vue"));
+const SessionResumePicker = lazyComponent(() => import("./components/SessionResumePicker.vue"));
 
 import { createAppController } from "./app/controller";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
@@ -42,7 +46,6 @@ import {
 import { isLaneConnected } from "./lib/laneConnectionStatus";
 import { formatBlockedDuration, hasLockingActionJob } from "./lib/actionJobs";
 const {
-  isExecuteBlockFixture,
   loggedIn,
   cachedTranscriptAvailable,
   handleAuthRequired,
@@ -1534,15 +1537,14 @@ const acopilotConnectionStatus = computed(() => {
 </script>
 
 <template>
-  <ExecuteBlockFixture v-if="isExecuteBlockFixture" />
   <LoginGate
-    v-if="!isExecuteBlockFixture && !loggedIn"
+    v-if="!loggedIn"
     v-show="!cachedTranscriptAvailable"
     @logged-in="handleLoggedIn"
     @auth-required="handleAuthRequired"
   />
   <div
-    v-if="!isExecuteBlockFixture && (loggedIn || cachedTranscriptAvailable)"
+    v-if="loggedIn || cachedTranscriptAvailable"
     class="app"
     :data-cache-read-only="!loggedIn"
     :data-active-lane="activeWorkspaceTab"

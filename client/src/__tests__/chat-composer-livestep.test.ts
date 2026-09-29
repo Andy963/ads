@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { defineComponent, nextTick, ref, type Ref } from "vue";
 
@@ -9,6 +9,10 @@ import { createAppContext } from "../app/controller";
 import type { ChatItem, ProjectRuntime } from "../app/controller";
 import { createChatActions } from "../app/chat";
 import { createStreamingActions } from "../app/chatStreaming";
+import { loadMarkdown } from "../lib/markdown/loader";
+
+// Preload the lazy markdown pipeline so outline assertions stay synchronous.
+beforeAll(() => loadMarkdown().then(() => undefined));
 
 const MarkdownContentStub = defineComponent({
   name: "MarkdownContent",

@@ -1,6 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { defineComponent, nextTick, ref } from "vue";
+import { loadMarkdown } from "../lib/markdown/loader";
+
+// Preload the lazy markdown pipeline so MarkdownContent renders synchronously.
+beforeAll(() => loadMarkdown().then(() => undefined));
 
 import {
   createAppContext,
