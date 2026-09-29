@@ -39,6 +39,7 @@ export async function transcribeAudioBuffer(args: {
   const timings = { transcriptionMs: 0, correctionMs: 0, totalMs: 0 };
   let status = "failed";
   let correctionStatus = "disabled";
+  let providerName = "unknown";
   try {
     signal.throwIfAborted();
     validateAudio(args.audio, args.contentType ?? "");
@@ -46,6 +47,7 @@ export async function transcribeAudioBuffer(args: {
     try { settings = (args.settingsStore ?? createVoiceSettingsStore(getStateDatabase())).resolve(args.owner); }
     catch { throw new AudioError("语音配置不可用，请在「模型配置 → 语音转写」中保存有效的服务地址和密钥。", 409); }
     const { config } = settings;
+    providerName = config.transcription.provider;
     correctionStatus = config.correction.enabled ? "not_started" : "disabled";
     const total = new AbortController();
     const totalTimer = setTimeout(() => total.abort(new AudioError("语音处理超时。", 504, true)), config.totalTimeoutMs);
@@ -84,7 +86,7 @@ export async function transcribeAudioBuffer(args: {
       correctionStatus = correction.status;
       status = "completed";
       timings.totalMs = Math.round(performance.now() - start);
-      return { ok: true, text, provider: "groq", corrected: text !== rawText, correction, timings };
+      return { ok: true, text, provider: config.transcription.provider, corrected: text !== rawText, correction, timings };
     } finally { clearTimeout(totalTimer); }
   } catch (error) {
     if (signal.aborted) { status = "cancelled"; throw signal.reason; }
@@ -93,6 +95,6 @@ export async function transcribeAudioBuffer(args: {
     return { ok: false, error: failure.message, timedOut: failure.timedOut, status: failure.status };
   } finally {
     timings.totalMs = Math.round(performance.now() - start);
-    args.logger?.info?.(`[Audio] status=${status} provider=groq bytes=${args.audio.length} transcription_ms=${timings.transcriptionMs} correction_ms=${timings.correctionMs} total_ms=${timings.totalMs} correction_status=${correctionStatus}`);
+    args.logger?.info?.(`[Audio] status=${status} provider=${providerName} bytes=${args.audio.length} transcription_ms=${timings.transcriptionMs} correction_ms=${timings.correctionMs} total_ms=${timings.totalMs} correction_status=${correctionStatus}`);
   }
 }

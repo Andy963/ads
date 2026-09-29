@@ -35,9 +35,20 @@ export interface ModelConfig {
   modelId?: string | null;
   displayName: string;
   provider: string;
+  providerId?: string | null;
   isEnabled: boolean;
   isDefault: boolean;
   configJson?: Record<string, unknown> | null;
+}
+
+export interface ModelProvider {
+  id: string;
+  name: string;
+  baseUrl: string;
+  credentialProfile?: string | null;
+  wireApi?: string | null;
+  isEnabled: boolean;
+  hasCredential: boolean;
 }
 
 /**

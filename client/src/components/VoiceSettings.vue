@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import type { ApiClient } from "../api/client";
+import type { ModelProvider } from "../api/types";
 import type { VoiceConfig, VoiceSettingsResponse, VoiceTranscriptionResponse } from "../../../shared/voice";
 import { DEFAULT_CORRECTION_SYSTEM_PROMPT } from "../../../shared/voice";
 
@@ -8,6 +9,7 @@ const props = withDefaults(defineProps<{ api: ApiClient; section?: "transcriptio
 const panel = ref<HTMLElement | null>(null);
 const saved = ref<VoiceSettingsResponse | null>(null);
 const config = ref<VoiceConfig | null>(null);
+const providers = ref<ModelProvider[]>([]);
 const apiKey = ref("");
 const busy = ref(false);
 const error = ref("");
@@ -21,6 +23,20 @@ let viewport: VisualViewport | null = null;
 const isCorrection = computed(() => props.section === "correction");
 const title = computed(() => isCorrection.value ? "文本纠错" : "语音转写");
 const hasApiKey = computed(() => isCorrection.value ? saved.value?.correctionHasApiKey : saved.value?.hasApiKey);
+const stageProviderId = computed({
+  get: () => (isCorrection.value ? config.value?.correction.providerId : config.value?.transcription.providerId) ?? "",
+  set: (value: string) => {
+    if (!config.value) return;
+    const stage = isCorrection.value ? config.value.correction : config.value.transcription;
+    stage.providerId = value || null;
+    const provider = providers.value.find((item) => item.id === value);
+    if (provider) {
+      stage.provider = provider.name;
+      stage.baseUrl = provider.baseUrl;
+    }
+  },
+});
+const stageUsesProvider = computed(() => Boolean(stageProviderId.value));
 function sectionConfig(value: VoiceConfig) {
   if (isCorrection.value) return value.correction;
   return { enabled: value.enabled, transcription: value.transcription, totalTimeoutMs: value.totalTimeoutMs };
@@ -97,6 +113,7 @@ function resizeViewport(): void {
 }
 onMounted(() => {
   void load();
+  props.api.get<ModelProvider[]>("/api/model-providers").then((value) => { if (!disposed) providers.value = value; }).catch(() => {});
   viewport = window.visualViewport;
   viewport?.addEventListener("resize", resizeViewport);
   resizeViewport();
@@ -123,12 +140,21 @@ onBeforeUnmount(() => {
           <legend>{{ title }}</legend>
           <template v-if="isCorrection">
             <label class="check"><input v-model="config.correction.enabled" type="checkbox" data-testid="voice-correction-enabled" /> 启用文本纠错</label>
-            <label>服务地址<input v-model="config.correction.baseUrl" type="url" :required="config.correction.enabled" placeholder="https://api.example.com/v1" autocapitalize="off" :spellcheck="false" autocomplete="off" data-testid="correction-base-url" /></label>
-            <label>API 密钥 <span>{{ hasApiKey ? '已保存，留空保留' : '尚未配置' }}</span>
-              <input v-model="apiKey" type="password" autocomplete="new-password" autocapitalize="off" :spellcheck="false" data-testid="correction-api-key" />
+            <label>服务商
+              <select v-model="stageProviderId" data-testid="correction-provider">
+                <option value="">手动配置</option>
+                <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option>
+              </select>
             </label>
+            <template v-if="!stageUsesProvider">
+              <label>服务地址<input v-model="config.correction.baseUrl" type="url" :required="config.correction.enabled" placeholder="https://api.example.com/v1" autocapitalize="off" :spellcheck="false" autocomplete="off" data-testid="correction-base-url" /></label>
+              <label>API 密钥 <span>{{ hasApiKey ? '已保存，留空保留' : '尚未配置' }}</span>
+                <input v-model="apiKey" type="password" autocomplete="new-password" autocapitalize="off" :spellcheck="false" data-testid="correction-api-key" />
+              </label>
+            </template>
             <label>模型名称<input v-model="config.correction.model" :required="config.correction.enabled" maxlength="256" autocapitalize="off" :spellcheck="false" autocomplete="off" data-testid="correction-model" /></label>
-            <p>更换服务地址时必须填写匹配的新密钥；纠错不读取对话模型、角色指令或聊天记录。</p>
+            <p v-if="!stageUsesProvider">更换服务地址时必须填写匹配的新密钥；纠错不读取对话模型、角色指令或聊天记录。</p>
+            <p v-else>使用所选服务商的服务地址与密钥；纠错不读取对话模型、角色指令或聊天记录。</p>
             <label>系统提示词<textarea v-model="config.correction.systemPrompt" rows="6" maxlength="8000" required data-testid="correction-system-prompt" /></label>
             <button type="button" data-testid="correction-reset-prompt" @click="config.correction.systemPrompt = DEFAULT_CORRECTION_SYSTEM_PROMPT">恢复默认提示词</button>
             <details><summary>高级设置</summary>
@@ -138,13 +164,22 @@ onBeforeUnmount(() => {
           </template>
           <template v-else>
             <label class="check"><input v-model="config.enabled" type="checkbox" /> 启用语音输入</label>
-            <label>服务商<select v-model="config.transcription.provider"><option value="groq">Groq</option></select></label>
-            <label>服务地址<input v-model="config.transcription.baseUrl" type="url" required autocapitalize="off" :spellcheck="false" autocomplete="off" data-testid="voice-base-url" /></label>
-            <label>API 密钥 <span>{{ hasApiKey ? '已保存，留空保留' : '尚未配置' }}</span>
-              <input v-model="apiKey" type="password" autocomplete="new-password" autocapitalize="off" :spellcheck="false" data-testid="voice-api-key" />
+            <label>服务商
+              <select v-model="stageProviderId" data-testid="voice-provider">
+                <option value="">手动配置</option>
+                <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.name }}</option>
+              </select>
             </label>
-            <p>更换服务地址时必须填写匹配的新密钥；纠错不读取对话模型、角色指令或聊天记录。</p>
-            <label>转写模型<select v-model="config.transcription.model"><option value="whisper-large-v3">whisper-large-v3</option><option value="whisper-large-v3-turbo">whisper-large-v3-turbo</option></select></label>
+            <template v-if="!stageUsesProvider">
+              <label>服务商名称<input v-model="config.transcription.provider" required maxlength="128" autocapitalize="off" :spellcheck="false" autocomplete="off" placeholder="groq" data-testid="voice-provider-name" /></label>
+              <label>服务地址<input v-model="config.transcription.baseUrl" type="url" required autocapitalize="off" :spellcheck="false" autocomplete="off" data-testid="voice-base-url" /></label>
+              <label>API 密钥 <span>{{ hasApiKey ? '已保存，留空保留' : '尚未配置' }}</span>
+                <input v-model="apiKey" type="password" autocomplete="new-password" autocapitalize="off" :spellcheck="false" data-testid="voice-api-key" />
+              </label>
+              <p>更换服务地址时必须填写匹配的新密钥；纠错不读取对话模型、角色指令或聊天记录。</p>
+            </template>
+            <p v-else>使用所选服务商的服务地址与密钥；纠错不读取对话模型、角色指令或聊天记录。</p>
+            <label>转写模型<input v-model="config.transcription.model" required maxlength="256" autocapitalize="off" :spellcheck="false" autocomplete="off" placeholder="whisper-large-v3" data-testid="voice-model" /></label>
             <details><summary>高级设置</summary>
               <label>语言代码（留空自动检测）<input v-model="config.transcription.language" maxlength="16" /></label>
               <label>转写提示词<textarea v-model="config.transcription.prompt" maxlength="4000" rows="3" /></label>

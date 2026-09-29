@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { closeAllStateDatabases, getStateDatabase } from "../../server/state/database.js";
 import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
+import { createModelProviderStore } from "../../server/state/modelProviderStore.js";
 import { createUpstreamCredentialStore } from "../../server/state/upstreamCredentialStore.js";
 import { createNativeModelResolver } from "../../server/runtime/modelResolver.js";
 import { DEFAULT_REASONING_EFFORT } from "../../server/state/modelConfigTypes.js";
@@ -58,6 +59,40 @@ describe("native model resolver", () => {
     });
     const modelRow = db.prepare("SELECT config_json FROM model_configs WHERE id = ?").get("model-custom") as { config_json: string };
     assert.doesNotMatch(modelRow.config_json, /profile-secret/);
+  });
+
+  it("resolves base URL and credentials from an attached provider entity", () => {
+    const db = getStateDatabase(dbPath);
+    const modelStore = createGlobalModelConfigStore(db);
+    createModelProviderStore(db).upsertProvider({
+      id: "provider-1",
+      name: "OpenRouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      isEnabled: true,
+    });
+    createUpstreamCredentialStore(db, { pepper: "test-only-pepper" }).save("42", {
+      baseUrl: "https://openrouter.ai/api/v1",
+      provider: "provider-1",
+      apiKey: "provider-secret",
+    }, "provider-1");
+    modelStore.upsertModelConfig({
+      id: "model-attached", modelId: "attached-model", displayName: "Attached", provider: "openai",
+      providerId: "provider-1", isEnabled: true, isDefault: false,
+    });
+
+    const env = { ADS_WEB_SESSION_PEPPER: "test-only-pepper" };
+    const resolved = createNativeModelResolver({ owner: "42", stateDbPath: dbPath, env }).resolve("attached-model");
+    assert.equal(resolved.baseUrl, "https://openrouter.ai/api/v1");
+    assert.equal(resolved.apiKey, "provider-secret");
+
+    modelStore.upsertModelConfig({
+      id: "model-orphan", modelId: "orphan-model", displayName: "Orphan", provider: "openai",
+      providerId: "provider-missing", isEnabled: true, isDefault: false,
+    });
+    assert.throws(
+      () => createNativeModelResolver({ owner: "42", stateDbPath: dbPath, env }).resolve("orphan-model"),
+      /unknown provider/,
+    );
   });
 
   it("requires saved models and credentials belonging to the owner in strict mode", () => {

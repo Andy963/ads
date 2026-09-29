@@ -105,7 +105,7 @@ describe("Voice Input settings", () => {
       config: { enabled: true, provider: "openai", baseUrl: "https://correction.invalid/v1", model: "my-model", systemPrompt: DEFAULT_CORRECTION_SYSTEM_PROMPT, reasoningEffort: "high", timeoutMs: 15000 },
     });
     expect(api.post).not.toHaveBeenCalled();
-    expect(api.get.mock.calls.every(([url]) => url === "/api/voice/settings")).toBe(true);
+    expect(api.get.mock.calls.every(([url]) => url === "/api/voice/settings" || url === "/api/model-providers")).toBe(true);
     expect((wrapper.get('[data-testid="correction-api-key"]').element as HTMLInputElement).value).toBe("");
     expect(wrapper.text()).toContain("文本纠错设置已保存");
     wrapper.unmount();

@@ -29,6 +29,10 @@ import { resolveAgentRuntime, type AgentRuntimeBackend, type SessionLifecycle } 
 import { isNativeExecutionId } from '../runtime/sessionIdentity.js';
 import { getStateDatabase } from '../state/database.js';
 import { NativeTranscriptStore } from '../state/nativeTranscriptStore.js';
+import {
+  resolveCodexProviderInjection,
+  type CodexProviderInjection,
+} from '../codex/appServer/providerInjection.js';
 
 function isConversationLoggingEnabled(): boolean {
   const raw = process.env.ADS_CONVERSATION_LOG;
@@ -754,8 +758,23 @@ export class SessionManager {
         workingDirectory: args.effectiveCwd,
         resumeThreadId: args.resumeThreadId,
         env: this.codexEnv,
+        providerInjection: () => this.resolveCodexProviderInjection(args.userId, args.authUserId),
       }),
     ];
+  }
+
+  /**
+   * Resolve the first-class provider attached to the session's current
+   * conversation model. Runs at daemon-spawn time so credentials are decrypted
+   * at call time and provider changes spawn a fresh daemon.
+   */
+  private resolveCodexProviderInjection(userId: number, authUserId?: string): CodexProviderInjection | null {
+    const model = this.userModels.get(userId) || this.getSavedState(userId)?.model || this.defaultModel;
+    return resolveCodexProviderInjection({
+      db: getStateDatabase(this.options.stateDbPath),
+      owner: String(authUserId ?? userId),
+      model,
+    });
   }
 
   private syncStoredState(userId: number, options?: { cwd?: string; clearThreads?: boolean }): void {

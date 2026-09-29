@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { getStateDatabase } from "../../../../state/database.js";
 import { createGlobalModelConfigStore, type GlobalModelConfigStore } from "../../../../state/globalModelConfigStore.js";
+import { createModelProviderStore, type ModelProvider, type ModelProviderStore } from "../../../../state/modelProviderStore.js";
 import type { ModelConfig } from "../../../../state/modelConfigTypes.js";
 import { resolveCodexConfig, type CodexOverrides, type CodexResolvedConfig } from "../../../../codexConfig.js";
 import { createUpstreamCredentialStore, type UpstreamCredentialStore, type UpstreamCredentials } from "../../../../state/upstreamCredentialStore.js";
@@ -62,6 +63,7 @@ const modelConfigFieldsSchema = {
   modelId: trimmedNonEmptyString.optional(),
   displayName: z.string().trim().optional(),
   provider: trimmedNonEmptyString,
+  providerId: z.string().trim().max(128).nullable().optional(),
   isEnabled: z.boolean().optional(),
   isDefault: z.boolean().optional(),
   configJson: modelConfigJsonSchema,
@@ -79,6 +81,7 @@ const updateModelConfigSchema = z
     modelId: modelConfigFieldsSchema.modelId,
     displayName: modelConfigFieldsSchema.displayName.optional(),
     provider: modelConfigFieldsSchema.provider.optional(),
+    providerId: modelConfigFieldsSchema.providerId,
     isEnabled: modelConfigFieldsSchema.isEnabled,
     isDefault: modelConfigFieldsSchema.isDefault,
     configJson: modelConfigFieldsSchema.configJson,
@@ -90,6 +93,7 @@ type UpdateModelConfigInput = z.infer<typeof updateModelConfigSchema>;
 
 type ModelRouteDeps = {
   modelStore?: GlobalModelConfigStore;
+  providerStore?: ModelProviderStore;
   resolveConfig?: (overrides?: CodexOverrides) => CodexResolvedConfig;
   fetchImpl?: typeof fetch;
   upstreamStore?: UpstreamCredentialStore;
@@ -238,9 +242,164 @@ function normalizeModelConfigId(value: unknown): string | null {
   return id;
 }
 
-function createModelConfigId(): string {
-  return `model-${randomUUID()}`;
+const createModelConfigId = (): string => `model-${randomUUID()}`;
+
+const createModelProviderId = (): string => `provider-${randomUUID()}`;
+
+const providerApiKeyField = z.string().trim().min(1).max(16_384).optional();
+
+const createModelProviderSchema = z
+  .object({
+    name: trimmedNonEmptyString.max(128),
+    baseUrl: trimmedNonEmptyString.max(2048),
+    wireApi: z.string().trim().max(64).nullable().optional(),
+    isEnabled: z.boolean().optional(),
+    apiKey: providerApiKeyField,
+  })
+  .strict();
+
+const updateModelProviderSchema = z
+  .object({
+    name: trimmedNonEmptyString.max(128).optional(),
+    baseUrl: trimmedNonEmptyString.max(2048).optional(),
+    wireApi: z.string().trim().max(64).nullable().optional(),
+    isEnabled: z.boolean().optional(),
+    apiKey: providerApiKeyField,
+  })
+  .strict();
+
+type ModelProviderPayload = ModelProvider & { hasCredential: boolean };
+
+function toProviderPayload(provider: ModelProvider, hasCredential: boolean): ModelProviderPayload {
+  return { ...provider, hasCredential };
 }
+
+async function handleModelProviderRoutes(ctx: ApiRouteContext, deps: ModelRouteDeps): Promise<boolean> {
+  const { req, res, pathname } = ctx;
+  const getProviderStore = () => deps.providerStore ?? createModelProviderStore(getStateDatabase());
+  const getUpstreamStore = () => deps.upstreamStore ?? createUpstreamCredentialStore(getStateDatabase());
+
+  const providerCredentialProfile = (provider: ModelProvider): string =>
+    String(provider.credentialProfile ?? "").trim() || provider.id;
+
+  const saveProviderCredential = (provider: ModelProvider, apiKey: string): void => {
+    // The credential envelope binds the immutable provider id (not the mutable
+    // display name) so a rename does not invalidate the stored key. The base
+    // URL stays bound: changing the endpoint requires re-entering the key.
+    getUpstreamStore().save(
+      ctx.auth.userId,
+      { baseUrl: provider.baseUrl, provider: provider.id, apiKey },
+      providerCredentialProfile(provider),
+    );
+  };
+
+  const providerHasCredential = (provider: ModelProvider): boolean => {
+    try {
+      return Boolean(getUpstreamStore().getMetadata(ctx.auth.userId, providerCredentialProfile(provider))?.hasApiKey);
+    } catch {
+      return false;
+    }
+  };
+
+  if (pathname === "/api/model-providers") {
+    const providerStore = getProviderStore();
+    if (req.method === "GET") {
+      res.setHeader("Cache-Control", "no-store");
+      sendJson(res, 200, providerStore.listProviders().map((provider) => toProviderPayload(provider, providerHasCredential(provider))));
+      return true;
+    }
+    if (req.method === "POST") {
+      const body = await readJsonBody(req);
+      const parsed = createModelProviderSchema.safeParse(body ?? {});
+      if (!parsed.success) {
+        sendJson(res, 400, { error: "Invalid payload" });
+        return true;
+      }
+      let baseUrl: string;
+      try {
+        baseUrl = normalizeUpstreamBaseUrl(parsed.data.baseUrl);
+      } catch (error) {
+        sendJson(res, 400, { error: getUpstreamError(error) });
+        return true;
+      }
+      const saved = providerStore.upsertProvider({
+        id: createModelProviderId(),
+        name: parsed.data.name,
+        baseUrl,
+        wireApi: parsed.data.wireApi ?? null,
+        isEnabled: parsed.data.isEnabled ?? true,
+      });
+      if (parsed.data.apiKey) {
+        saveProviderCredential(saved, parsed.data.apiKey);
+      }
+      sendJson(res, 200, toProviderPayload(saved, providerHasCredential(saved)));
+      return true;
+    }
+    return false;
+  }
+
+  const modelProviderMatch = /^\/api\/model-providers\/([^/]+)$/.exec(pathname);
+  if (modelProviderMatch?.[1]) {
+    let providerId: string;
+    try {
+      providerId = decodeURIComponent(modelProviderMatch[1]).trim();
+    } catch {
+      providerId = String(modelProviderMatch[1]).trim();
+    }
+    const providerStore = getProviderStore();
+    const existing = providerStore.getProvider(providerId);
+    if (!existing) {
+      sendJson(res, 404, { error: "Not found" });
+      return true;
+    }
+
+    if (req.method === "PATCH") {
+      const body = await readJsonBody(req);
+      const parsed = updateModelProviderSchema.safeParse(body ?? {});
+      if (!parsed.success) {
+        sendJson(res, 400, { error: "Invalid payload" });
+        return true;
+      }
+      let baseUrl = existing.baseUrl;
+      if (parsed.data.baseUrl !== undefined) {
+        try {
+          baseUrl = normalizeUpstreamBaseUrl(parsed.data.baseUrl);
+        } catch (error) {
+          sendJson(res, 400, { error: getUpstreamError(error) });
+          return true;
+        }
+      }
+      const endpointChanged = baseUrl !== existing.baseUrl;
+      if (endpointChanged && !parsed.data.apiKey && providerHasCredential(existing)) {
+        sendJson(res, 400, { error: "Changing the provider endpoint requires re-entering its API key; saved keys are bound to their endpoint" });
+        return true;
+      }
+      const saved = providerStore.upsertProvider({
+        ...existing,
+        name: parsed.data.name ?? existing.name,
+        baseUrl,
+        wireApi: parsed.data.wireApi === undefined ? existing.wireApi : parsed.data.wireApi,
+        isEnabled: parsed.data.isEnabled ?? existing.isEnabled,
+      });
+      if (parsed.data.apiKey) {
+        saveProviderCredential(saved, parsed.data.apiKey);
+      }
+      sendJson(res, 200, toProviderPayload(saved, providerHasCredential(saved)));
+      return true;
+    }
+
+    if (req.method === "DELETE") {
+      // Model configs referencing the provider are preserved and detached.
+      const deleted = providerStore.deleteProvider(providerId);
+      sendJson(res, 200, { success: deleted });
+      return true;
+    }
+    return false;
+  }
+
+  return false;
+}
+
 
 function buildModelConfigPayload(
   modelId: string,
@@ -254,6 +413,7 @@ function buildModelConfigPayload(
     modelId: agentModelId,
     displayName,
     provider: input.provider ?? existing?.provider ?? "",
+    providerId: input.providerId === undefined ? (existing?.providerId ?? null) : (normalizeString(input.providerId) || null),
     isEnabled: input.isEnabled ?? existing?.isEnabled ?? true,
     isDefault: input.isDefault ?? existing?.isDefault ?? false,
     configJson: input.configJson === undefined ? (existing?.configJson ?? null) : input.configJson,
@@ -263,7 +423,10 @@ function buildModelConfigPayload(
 export async function handleModelRoutes(ctx: ApiRouteContext, deps: ModelRouteDeps = {}): Promise<boolean> {
   const { req, res, pathname } = ctx;
   const getModelStore = () => deps.modelStore ?? createGlobalModelConfigStore(getStateDatabase());
+  const getProviderStore = () => deps.providerStore ?? createModelProviderStore(getStateDatabase());
   const getUpstreamStore = () => deps.upstreamStore ?? createUpstreamCredentialStore(getStateDatabase());
+
+  if (await handleModelProviderRoutes(ctx, deps)) return true;
 
   if (req.method === "GET" && pathname === "/api/models/upstream/config") {
     res.setHeader("Cache-Control", "no-store");
@@ -345,6 +508,11 @@ export async function handleModelRoutes(ctx: ApiRouteContext, deps: ModelRouteDe
         sendJson(res, 400, { error: "Invalid model id" });
         return true;
       }
+      const providerIdRef = normalizeString(parsed.data.providerId);
+      if (providerIdRef && !getProviderStore().getProvider(providerIdRef)) {
+        sendJson(res, 400, { error: "Unknown provider" });
+        return true;
+      }
       const existing = modelStore.getModelConfigByAgentModelId(agentModelId);
       const saved = modelStore.upsertModelConfig(
         buildModelConfigPayload(existing?.id ?? createModelConfigId(), parsed.data, existing ?? undefined),
@@ -389,6 +557,11 @@ export async function handleModelRoutes(ctx: ApiRouteContext, deps: ModelRouteDe
           sendJson(res, 409, { error: "Model ID already exists" });
           return true;
         }
+      }
+      const providerIdRef = parsed.data.providerId === undefined ? null : normalizeString(parsed.data.providerId);
+      if (providerIdRef && !getProviderStore().getProvider(providerIdRef)) {
+        sendJson(res, 400, { error: "Unknown provider" });
+        return true;
       }
 
       const saved = modelStore.upsertModelConfig(buildModelConfigPayload(modelId, parsed.data, existing));
