@@ -3,6 +3,7 @@ export interface ModelConfig {
   modelId?: string | null;
   displayName: string;
   provider: string;
+  providerId?: string | null;
   isEnabled: boolean;
   isDefault: boolean;
   configJson?: Record<string, unknown> | null;

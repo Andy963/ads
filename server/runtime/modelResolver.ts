@@ -1,5 +1,6 @@
 import { resolveCodexConfig } from "../codexConfig.js";
 import { createGlobalModelConfigStore } from "../state/globalModelConfigStore.js";
+import { createModelProviderStore } from "../state/modelProviderStore.js";
 import {
   DEFAULT_REASONING_EFFORT,
   normalizeConfiguredReasoningEffort,
@@ -109,15 +110,29 @@ function resolveSavedModelConfig(
   }
 
   const config = overrideConfig ?? saved.configJson ?? null;
-  const profile = readString(config, "credentialProfile");
+  // A first-class provider attachment overrides the free-form credential
+  // profile and base URL carried by the model config.
+  const providerId = String(saved.providerId ?? "").trim();
+  const attachedProvider = providerId ? createModelProviderStore(db).getProvider(providerId) : null;
+  if (providerId && !attachedProvider) {
+    throw new Error(`Native runtime model "${saved.modelId ?? model}" references an unknown provider`);
+  }
+  if (attachedProvider && !attachedProvider.isEnabled) {
+    throw new Error(`Native runtime provider "${attachedProvider.name}" is disabled`);
+  }
+  const profile = attachedProvider
+    ? String(attachedProvider.credentialProfile ?? "").trim() || attachedProvider.id
+    : readString(config, "credentialProfile");
   const credentialStore = createUpstreamCredentialStore(db, { pepper: env.ADS_WEB_SESSION_PEPPER ?? "" });
   const credentials = credentialStore.getCredentials(owner, profile);
-  const configuredBaseUrl = readString(config, "baseUrl");
+  const configuredBaseUrl = attachedProvider?.baseUrl ?? readString(config, "baseUrl");
   const savedProvider = String(saved.provider ?? "").trim();
   let baseUrl: string;
   let apiKey: string;
   if (credentials) {
-    if (credentials.provider.trim().toLowerCase() !== savedProvider.toLowerCase()) {
+    const credentialProvider = credentials.provider.trim().toLowerCase();
+    const acceptedProviders = [savedProvider, attachedProvider?.name ?? "", attachedProvider?.id ?? ""].map((value) => value.trim().toLowerCase()).filter(Boolean);
+    if (acceptedProviders.length > 0 && !acceptedProviders.includes(credentialProvider)) {
       throw new Error("Native runtime credential profile does not match the model provider");
     }
     baseUrl = normalizeUpstreamBaseUrl(configuredBaseUrl ?? credentials.baseUrl);

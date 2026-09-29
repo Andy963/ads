@@ -351,6 +351,7 @@ describe("ModelManager", () => {
       modelId: "gpt-5.2",
       displayName: "gpt-5.2",
       provider: "openai",
+      providerId: null,
       isEnabled: true,
       isDefault: false,
       configJson: {
@@ -814,6 +815,7 @@ describe("ModelManager", () => {
       modelId: "claude-opus",
       displayName: "Claude Opus",
       provider: "anthropic",
+      providerId: null,
       isEnabled: true,
       isDefault: false,
       configJson: { allowedAgents: ["codex"] },
@@ -1002,6 +1004,7 @@ describe("ModelManager", () => {
       modelId: "gpt-5.2-copy-2",
       displayName: "GPT 5.2 (Copy)",
       provider: "openai",
+      providerId: null,
       isEnabled: true,
       isDefault: false,
       configJson: { reasoningEffort: "high", allowedAgents: ["codex"] },

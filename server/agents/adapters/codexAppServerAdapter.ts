@@ -19,6 +19,7 @@ import {
   getSharedDaemonRegistry,
   type DaemonOptions,
 } from "../../codex/appServer/daemonRegistry.js";
+import type { CodexProviderInjection } from "../../codex/appServer/providerInjection.js";
 import type { CodexAppServerClient } from "../../codex/appServer/rpcClient.js";
 import type { CommandExecutionRequestApprovalResponse } from "../../codex/appServer/protocol/v2/CommandExecutionRequestApprovalResponse.js";
 import { AsyncLock } from "../../utils/asyncLock.js";
@@ -74,6 +75,13 @@ export interface CodexAppServerAdapterOptions {
   metadata?: Partial<AgentMetadata>;
   /** Override the per-turn timeout (ms). 0 disables. */
   turnTimeoutMs?: number;
+  /**
+   * Resolve the selected conversation provider at call time. Decrypts the
+   * provider credential lazily so the secret only lives in the spawned
+   * daemon's environment, and a provider change yields fresh daemon options
+   * (the registry compares env and globalArgs).
+   */
+  providerInjection?: () => CodexProviderInjection | null;
 }
 
 interface UserInputPart {
@@ -244,6 +252,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
   private threadId: string | null;
   private developerInstructions?: string;
   private spawnEnv?: NodeJS.ProcessEnv;
+  private readonly providerInjection?: () => CodexProviderInjection | null;
   private readonly turnTimeoutMs: number;
   private autoCompactEnabled = true;
   private autoCompactThresholdPercent = DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT;
@@ -271,6 +280,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     this.threadId = options.resumeThreadId?.trim() || null;
     this.developerInstructions = options.developerInstructions;
     this.spawnEnv = options.env;
+    this.providerInjection = options.providerInjection;
     this.turnTimeoutMs = options.turnTimeoutMs ?? 0;
     this.metadata = {
       ...DEFAULT_METADATA,
@@ -362,16 +372,32 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 
   /**
+   * Compose daemon spawn options for the current provider selection. The
+   * provider injection is resolved on every call so the decrypted credential
+   * never outlives a single spawn decision and a provider change produces a
+   * different options object (forcing a fresh daemon).
+   */
+  private buildDaemonOptions(extraEnv?: NodeJS.ProcessEnv): DaemonOptions {
+    const injection = this.providerInjection?.() ?? null;
+    let env: NodeJS.ProcessEnv | undefined;
+    for (const layer of [this.spawnEnv, injection?.env, extraEnv]) {
+      if (!layer) continue;
+      env = { ...(env ?? {}), ...layer };
+    }
+    return {
+      binary: this.binary,
+      workingDirectory: this.workingDirectory,
+      env,
+      globalArgs: injection?.globalArgs,
+    };
+  }
+
+  /**
    * Ensure the underlying daemon is running and goal notification handlers are
    * subscribed. Safe to call multiple times.
    */
   private async ensureGoalSubscriptions(): Promise<CodexAppServerClient> {
-    const daemonOptions: DaemonOptions = {
-      binary: this.binary,
-      workingDirectory: this.workingDirectory,
-      env: this.spawnEnv,
-    };
-    const client = await this.registry.getOrStart(this.projectId, daemonOptions);
+    const client = await this.registry.getOrStart(this.projectId, this.buildDaemonOptions());
     if (this.goalSubscriptionsAttached) {
       return client;
     }
@@ -529,13 +555,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       throw new Error("Prompt 不能为空");
     }
 
-    const daemonOptions: DaemonOptions = {
-      binary: this.binary,
-      workingDirectory: this.workingDirectory,
-      env: options?.env
-        ? { ...this.spawnEnv, ...options.env }
-        : this.spawnEnv,
-    };
+    const daemonOptions = this.buildDaemonOptions(options?.env);
     const client = await this.registry.getOrStart(this.projectId, daemonOptions);
     const savedThreadId = this.threadId;
     let missingThreadRecovered = false;

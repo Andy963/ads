@@ -1,12 +1,23 @@
 type ModelConfigLike = {
   modelId?: string | null;
   provider?: string | null;
+  providerId?: string | null;
   configJson?: unknown;
 };
 
-/** All configured models share one Codex runtime and one default scope. */
-export function modelConfigScopes(_config: ModelConfigLike): string[] {
-  return ["codex"];
+/**
+ * Every model still shares the single Codex conversation scope (one default
+ * model across the chat runtime); models attached to a first-class provider
+ * additionally classify under that provider's scope so multi-provider configs
+ * can be told apart.
+ */
+export function modelConfigScopes(config: ModelConfigLike): string[] {
+  const scopes = ["codex"];
+  const providerId = String(config.providerId ?? "").trim();
+  if (providerId) {
+    scopes.push(`provider:${providerId}`);
+  }
+  return scopes;
 }
 
 export function modelConfigScopesOverlap(left: ModelConfigLike, right: ModelConfigLike): boolean {

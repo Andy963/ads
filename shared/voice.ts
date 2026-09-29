@@ -6,16 +6,18 @@ export const DEFAULT_CORRECTION_SYSTEM_PROMPT = `请纠正语音转写中的识�
 export interface VoiceConfig {
   enabled: boolean;
   transcription: {
-    provider: "groq";
+    provider: string;
+    providerId?: string | null;
     baseUrl: string;
-    model: "whisper-large-v3" | "whisper-large-v3-turbo";
+    model: string;
     language: string;
     prompt: string;
     timeoutMs: number;
   };
   correction: {
     enabled: boolean;
-    provider: "openai";
+    provider: string;
+    providerId?: string | null;
     baseUrl: string;
     model: string;
     systemPrompt: string;

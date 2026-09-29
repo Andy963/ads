@@ -4,7 +4,7 @@ import { Close, CopyDocument, EditPen, Plus, Refresh, StarFilled } from "@elemen
 
 import VoiceSettings from "./VoiceSettings.vue";
 import type { ApiClient } from "../api/client";
-import type { LaneName, LanePromptSnapshot, ModelConfig, StoredRoleProfileValue } from "../api/types";
+import type { LaneName, LanePromptSnapshot, ModelConfig, ModelProvider, StoredRoleProfileValue } from "../api/types";
 import { STORED_ROLE_PROFILE_VALUES } from "../../../shared/terminology.js";
 import { isTextInputElement } from "../lib/dom";
 
@@ -13,9 +13,19 @@ type ModelForm = {
   modelId: string;
   displayName: string;
   provider: string;
+  providerId: string;
   isEnabled: boolean;
   isDefault: boolean;
   configJsonText: string;
+};
+
+type ProviderForm = {
+  id: string;
+  name: string;
+  baseUrl: string;
+  wireApi: string;
+  apiKey: string;
+  isEnabled: boolean;
 };
 
 type SettingsTab = "roles" | "models" | "lane-prompts";
@@ -68,6 +78,7 @@ const emit = defineEmits<{
 }>();
 
 const modelConfigs = ref<ModelConfig[]>([]);
+const providers = ref<ModelProvider[]>([]);
 const loading = ref(false);
 const saving = ref(false);
 const busyRowId = ref<string | null>(null);
@@ -77,7 +88,7 @@ const editingId = ref<string | null>(null);
 const dialogOpen = ref(false);
 const selectedModelId = ref<string | null>(null);
 const activeTab = ref<SettingsTab>(props.initialTab);
-const modelSection = ref<"conversation" | "voice" | "correction">("conversation");
+const modelSection = ref<"conversation" | "voice" | "correction" | "providers">("conversation");
 const selectedRole = ref<StoredRoleProfileValue>("acopilot");
 const roleProfiles = ref<RoleProfile[]>([]);
 const roleProfileBaselines = reactive<Record<StoredRoleProfileValue, RoleProfileBaseline | null>>({
@@ -223,6 +234,7 @@ const emptyForm = (): ModelForm => ({
   modelId: "",
   displayName: "",
   provider: "openai",
+  providerId: "",
   isEnabled: true,
   isDefault: false,
   configJsonText: "{}",
@@ -230,11 +242,124 @@ const emptyForm = (): ModelForm => ({
 
 const form = reactive<ModelForm>(emptyForm());
 
+const emptyProviderForm = (): ProviderForm => ({
+  id: "",
+  name: "",
+  baseUrl: "",
+  wireApi: "",
+  apiKey: "",
+  isEnabled: true,
+});
+
+const providerDialogOpen = ref(false);
+const editingProviderId = ref<string | null>(null);
+const providerForm = reactive<ProviderForm>(emptyProviderForm());
+const providerSaving = ref(false);
+const providerError = ref<string | null>(null);
+
+function assignProviderForm(next: ProviderForm): void {
+  providerForm.id = next.id;
+  providerForm.name = next.name;
+  providerForm.baseUrl = next.baseUrl;
+  providerForm.wireApi = next.wireApi;
+  providerForm.apiKey = next.apiKey;
+  providerForm.isEnabled = next.isEnabled;
+}
+
+function providerLabel(providerId: string | null | undefined): string {
+  if (!providerId) return "";
+  const provider = providers.value.find((item) => item.id === providerId);
+  return provider ? provider.name : "";
+}
+
+async function loadProviders(): Promise<void> {
+  try {
+    providers.value = await props.api.get<ModelProvider[]>("/api/model-providers");
+  } catch {
+    providers.value = [];
+  }
+}
+
+function startCreateProvider(): void {
+  editingProviderId.value = null;
+  providerDialogOpen.value = true;
+  assignProviderForm(emptyProviderForm());
+  providerError.value = null;
+}
+
+function editProvider(provider: ModelProvider): void {
+  editingProviderId.value = provider.id;
+  providerDialogOpen.value = true;
+  assignProviderForm({
+    id: provider.id,
+    name: provider.name,
+    baseUrl: provider.baseUrl,
+    wireApi: provider.wireApi ?? "",
+    apiKey: "",
+    isEnabled: provider.isEnabled,
+  });
+  providerError.value = null;
+}
+
+function closeProviderDialog(): void {
+  editingProviderId.value = null;
+  providerDialogOpen.value = false;
+  assignProviderForm(emptyProviderForm());
+  providerError.value = null;
+}
+
+async function saveProvider(): Promise<void> {
+  if (providerSaving.value) return;
+  providerSaving.value = true;
+  providerError.value = null;
+  try {
+    const payload: Record<string, unknown> = {
+      name: providerForm.name.trim(),
+      baseUrl: providerForm.baseUrl.trim(),
+      wireApi: providerForm.wireApi.trim() || null,
+      isEnabled: providerForm.isEnabled,
+    };
+    if (providerForm.apiKey.trim()) payload.apiKey = providerForm.apiKey.trim();
+    if (editingProviderId.value) {
+      await props.api.patch<ModelProvider>(`/api/model-providers/${encodeURIComponent(editingProviderId.value)}`, payload);
+    } else {
+      await props.api.post<ModelProvider>("/api/model-providers", payload);
+    }
+    await loadProviders();
+    const wasEditing = Boolean(editingProviderId.value);
+    closeProviderDialog();
+    statusMessage.value = wasEditing ? "服务商已保存" : "服务商已添加";
+    emit("changed");
+  } catch (err) {
+    providerError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    providerSaving.value = false;
+  }
+}
+
+async function deleteProvider(provider: ModelProvider): Promise<void> {
+  if (busy.value) return;
+  busyRowId.value = provider.id;
+  error.value = null;
+  statusMessage.value = null;
+  try {
+    await props.api.delete<{ success: boolean }>(`/api/model-providers/${encodeURIComponent(provider.id)}`);
+    await Promise.all([loadProviders(), loadModelConfigs()]);
+    statusMessage.value = "服务商已删除，关联模型已改为手动配置";
+    emit("changed");
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    busyRowId.value = null;
+  }
+}
+
 function assignForm(next: ModelForm): void {
   form.id = next.id;
   form.modelId = next.modelId;
   form.displayName = next.displayName;
   form.provider = next.provider;
+  form.providerId = next.providerId;
   form.isEnabled = next.isEnabled;
   form.isDefault = next.isDefault;
   form.configJsonText = next.configJsonText;
@@ -576,7 +701,12 @@ async function loadModelConfigs(): Promise<void> {
   selectedModelId.value = null;
   closeModelSwipe();
   try {
-    modelConfigs.value = await props.api.get<ModelConfig[]>("/api/model-configs");
+    const [configs, providerList] = await Promise.all([
+      props.api.get<ModelConfig[]>("/api/model-configs"),
+      props.api.get<ModelProvider[]>("/api/model-providers").catch(() => []),
+    ]);
+    modelConfigs.value = configs;
+    providers.value = providerList;
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
   } finally {
@@ -956,6 +1086,7 @@ function editModel(model: ModelConfig): void {
     modelId: model.modelId || model.id,
     displayName: model.displayName,
     provider: model.provider || "openai",
+    providerId: model.providerId ?? "",
     isEnabled: model.isEnabled,
     isDefault: model.isDefault,
     configJsonText: stringifyConfigJson(model.configJson),
@@ -974,6 +1105,7 @@ function duplicateModel(model: ModelConfig): void {
     modelId: getDuplicateModelId(model),
     displayName: `${sourceLabel} (Copy)`,
     provider: model.provider || "openai",
+    providerId: model.providerId ?? "",
     isEnabled: model.isEnabled,
     isDefault: false,
     configJsonText: stringifyConfigJson(model.configJson),
@@ -992,7 +1124,10 @@ function buildPayload(): Omit<ModelConfig, "id"> & { id?: string } {
   return {
     modelId: form.modelId.trim(),
     displayName: form.displayName.trim() || form.modelId.trim(),
-    provider: form.provider.trim() || "openai",
+    provider: form.providerId
+      ? (providerLabel(form.providerId) || form.provider.trim() || "openai")
+      : form.provider.trim() || "openai",
+    providerId: form.providerId || null,
     isEnabled: form.isEnabled,
     isDefault: form.isDefault,
     configJson,
@@ -1176,10 +1311,11 @@ defineExpose({
 
     <nav v-if="activeTab === 'models'" class="settingsTabs settingsTabsSub" aria-label="模型配置分区">
       <button type="button" class="settingsTab" :class="{ active: modelSection === 'conversation' }" :aria-pressed="modelSection === 'conversation'" @click="modelSection = 'conversation'">对话模型</button>
+      <button type="button" class="settingsTab" :class="{ active: modelSection === 'providers' }" :aria-pressed="modelSection === 'providers'" data-testid="provider-settings-tab" @click="modelSection = 'providers'">服务商</button>
       <button type="button" class="settingsTab" :class="{ active: modelSection === 'voice' }" :aria-pressed="modelSection === 'voice'" data-testid="voice-settings-tab" @click="modelSection = 'voice'">语音转写</button>
       <button type="button" class="settingsTab" :class="{ active: modelSection === 'correction' }" :aria-pressed="modelSection === 'correction'" data-testid="correction-settings-tab" @click="modelSection = 'correction'">文本纠错</button>
     </nav>
-    <VoiceSettings v-if="activeTab === 'models' && modelSection !== 'conversation'" :key="modelSection" :api="api" :section="modelSection === 'voice' ? 'transcription' : 'correction'" />
+    <VoiceSettings v-if="activeTab === 'models' && (modelSection === 'voice' || modelSection === 'correction')" :key="modelSection" :api="api" :section="modelSection === 'voice' ? 'transcription' : 'correction'" />
 
     <div
       v-if="error && !dialogOpen && activeTab === 'models'"
@@ -1378,6 +1514,71 @@ defineExpose({
         </div>
 
       <p class="listFoot">未设置默认模型时优先使用列表中的第一个已启用模型。</p>
+    </div>
+
+    <div
+      v-else-if="activeTab === 'models' && modelSection === 'providers'"
+      class="cliList"
+      data-testid="settings-providers-panel"
+    >
+      <div class="modelListHeader">
+        <span class="modelListCount">共 {{ providers.length }} 个服务商</span>
+        <button
+          type="button"
+          class="addBtn"
+          :disabled="busy"
+          data-testid="provider-add"
+          @click="startCreateProvider"
+        >
+          <el-icon :size="13" aria-hidden="true"><Plus /></el-icon>
+          <span>新增服务商</span>
+        </button>
+      </div>
+      <div class="cliModels">
+        <p v-if="providers.length === 0" class="cliEmpty">
+          还没有服务商，点击右上角新增服务商。
+        </p>
+        <article
+          v-for="provider in providers"
+          :key="provider.id"
+          class="modelRow"
+          :class="{ off: !provider.isEnabled }"
+          :data-testid="`provider-row-${provider.id}`"
+        >
+          <div class="modelRowTop">
+            <div class="modelRowHeader">
+              <span class="modelRowText">{{ provider.name }}</span>
+              <span v-if="provider.hasCredential" class="modelPill default">已存密钥</span>
+            </div>
+            <div class="modelRowActions">
+              <button
+                type="button"
+                class="rowAction icon"
+                title="编辑"
+                :disabled="busy"
+                :data-testid="`provider-edit-${provider.id}`"
+                @click="editProvider(provider)"
+              >
+                <el-icon :size="15" aria-hidden="true"><EditPen /></el-icon>
+              </button>
+              <button
+                type="button"
+                class="rowAction icon danger"
+                title="删除"
+                :disabled="busy"
+                :data-testid="`provider-delete-${provider.id}`"
+                @click="deleteProvider(provider)"
+              >
+                <el-icon :size="15" aria-hidden="true"><Close /></el-icon>
+              </button>
+            </div>
+          </div>
+          <div class="modelRowBottom">
+            <span class="modelRowId modelRowSubtitle">{{ provider.baseUrl }}</span>
+          </div>
+        </article>
+      </div>
+      <p class="listFoot">服务商密钥仅在服务端加密保存；切换对话模型的服务商会在下一次请求时生效。</p>
     </div>
 
     <div
@@ -1658,6 +1859,95 @@ defineExpose({
       </form>
     </div>
 
+    <div v-if="providerDialogOpen" class="dialogMask" @click.self="closeProviderDialog">
+      <form class="dialogCard" role="dialog" aria-modal="true" data-testid="provider-dialog" @submit.prevent="saveProvider">
+        <header class="dialogHeader">
+          <div class="dialogHeading">
+            <div class="dialogTitle">{{ editingProviderId ? "编辑服务商" : "新增服务商" }}</div>
+            <div class="dialogSubtitle">
+              <span class="dialogHint">密钥仅保存在服务端加密存储中</span>
+            </div>
+          </div>
+        </header>
+
+        <div class="dialogBody">
+          <div v-if="providerError" class="modelBanner error dialogError" data-testid="provider-dialog-error">
+            {{ providerError }}
+          </div>
+
+          <label class="modelField">
+            <span class="modelLabel">名称<span class="required">必填</span></span>
+            <input
+              v-model="providerForm.name"
+              class="modelInput"
+              placeholder="openrouter"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              data-testid="provider-name"
+            />
+          </label>
+
+          <label class="modelField">
+            <span class="modelLabel">Base URL<span class="required">必填</span></span>
+            <input
+              v-model="providerForm.baseUrl"
+              class="modelInput"
+              placeholder="https://openrouter.ai/api/v1"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              data-testid="provider-base-url"
+            />
+          </label>
+
+          <label class="modelField">
+            <span class="modelLabel">API Key</span>
+            <input
+              v-model="providerForm.apiKey"
+              class="modelInput"
+              type="password"
+              :placeholder="editingProviderId ? '留空保留已保存的密钥' : '输入该服务商的 API Key'"
+              autocomplete="new-password"
+              autocapitalize="off"
+              spellcheck="false"
+              data-testid="provider-api-key"
+            />
+            <span class="modelHelp">更换服务地址时必须重新填写密钥；密钥绑定到对应的服务地址。</span>
+          </label>
+
+          <label class="modelField">
+            <span class="modelLabel">Wire API</span>
+            <select v-model="providerForm.wireApi" class="modelInput" data-testid="provider-wire-api">
+              <option value="">默认（responses）</option>
+              <option value="responses">responses</option>
+            </select>
+          </label>
+
+          <div class="modelToggleGrid">
+            <label class="modelToggle">
+              <input v-model="providerForm.isEnabled" type="checkbox" data-testid="provider-enabled" />
+              <span>
+                <strong>启用服务商</strong>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <footer class="dialogActions">
+          <button type="button" class="btnSecondary" :disabled="providerSaving" @click="closeProviderDialog">取消</button>
+          <button
+            type="submit"
+            class="btnPrimary"
+            :disabled="providerSaving || !providerForm.name.trim() || !providerForm.baseUrl.trim()"
+            data-testid="provider-save"
+          >
+            {{ providerSaving ? "保存中" : "保存服务商" }}
+          </button>
+        </footer>
+      </form>
+    </div>
+
     <div v-if="dialogOpen" class="dialogMask" @click.self="closeDialog">
       <form class="dialogCard" role="dialog" aria-modal="true" data-testid="model-manager-dialog" @submit.prevent="saveModel">
         <header class="dialogHeader">
@@ -1696,6 +1986,17 @@ defineExpose({
               autocomplete="off"
               data-testid="model-manager-display-name"
             />
+          </label>
+
+          <label class="modelField">
+            <span class="modelLabel">服务商</span>
+            <select v-model="form.providerId" class="modelInput" data-testid="model-manager-provider">
+              <option value="">手动配置（{{ form.provider.trim() || "openai" }}）</option>
+              <option v-for="provider in providers" :key="provider.id" :value="provider.id">
+                {{ provider.name }}（{{ provider.baseUrl }}）
+              </option>
+            </select>
+            <span class="modelHelp">选择服务商后，请求将发往该服务商的服务地址并使用其密钥。</span>
           </label>
 
           <div class="modelToggleGrid">

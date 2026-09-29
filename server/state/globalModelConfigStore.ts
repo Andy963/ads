@@ -30,6 +30,7 @@ function toModelConfig(row: Record<string, unknown>): ModelConfig {
     modelId,
     displayName: String(row.display_name ?? ""),
     provider: String(row.provider ?? ""),
+    providerId: String(row.provider_id ?? "").trim() || null,
     isEnabled: Boolean(row.is_enabled),
     isDefault: Boolean(row.is_default),
     configJson: parseJson(row.config_json),
@@ -55,18 +56,24 @@ export function createGlobalModelConfigStore(db: DatabaseType) {
     db.exec("ALTER TABLE model_configs ADD COLUMN model_id TEXT");
     db.exec("UPDATE model_configs SET model_id = id WHERE model_id IS NULL OR trim(model_id) = ''");
   }
+  // Non-destructive multi-provider migration: existing rows keep their
+  // free-form provider string and are preserved with a null provider reference.
+  if (!columns.some((column) => column.name === "provider_id")) {
+    db.exec("ALTER TABLE model_configs ADD COLUMN provider_id TEXT");
+  }
 
   const listStmt = db.prepare("SELECT * FROM model_configs ORDER BY is_default DESC, updated_at DESC, display_name ASC");
   const getStmt = db.prepare("SELECT * FROM model_configs WHERE id = ? LIMIT 1");
   const getByModelIdStmt = db.prepare("SELECT * FROM model_configs WHERE model_id = ? LIMIT 1");
   const clearDefaultStmt = db.prepare("UPDATE model_configs SET is_default = 0 WHERE id = ?");
   const upsertStmt = db.prepare(`
-    INSERT INTO model_configs (id, model_id, display_name, provider, is_enabled, is_default, config_json, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO model_configs (id, model_id, display_name, provider, provider_id, is_enabled, is_default, config_json, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       model_id = excluded.model_id,
       display_name = excluded.display_name,
       provider = excluded.provider,
+      provider_id = excluded.provider_id,
       is_enabled = excluded.is_enabled,
       is_default = excluded.is_default,
       config_json = excluded.config_json,
@@ -105,11 +112,12 @@ export function createGlobalModelConfigStore(db: DatabaseType) {
 
     const tx = db.transaction(() => {
       if (config.isDefault) {
-        const defaults = db.prepare("SELECT id, model_id, provider, config_json FROM model_configs WHERE is_default <> 0").all() as Array<Record<string, unknown>>;
+        const defaults = db.prepare("SELECT id, model_id, provider, provider_id, config_json FROM model_configs WHERE is_default <> 0").all() as Array<Record<string, unknown>>;
         for (const row of defaults) {
           if (modelConfigScopesOverlap(config, {
             modelId: String(row.model_id ?? row.id ?? ""),
             provider: String(row.provider ?? ""),
+            providerId: String(row.provider_id ?? "").trim() || null,
             configJson: parseJson(row.config_json),
           })) {
             clearDefaultStmt.run(String(row.id ?? ""));
@@ -121,6 +129,7 @@ export function createGlobalModelConfigStore(db: DatabaseType) {
         modelId,
         displayName,
         provider,
+        String(config.providerId ?? "").trim() || null,
         config.isEnabled ? 1 : 0,
         config.isDefault ? 1 : 0,
         configJson ? JSON.stringify(configJson) : null,
