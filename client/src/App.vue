@@ -641,7 +641,11 @@ function sendActionsPrompt(content: string): void {
 }
 
 function retryActionsMessage(message: Parameters<typeof retryPrompt>[0]): void {
-  if (!loggedIn.value || actionsJobExecutionActive.value) return;
+  if (!loggedIn.value) return;
+  if (actionsJobExecutionActive.value) {
+    showActionNotice("任务正在执行中，请先等待任务完成或取消任务。");
+    return;
+  }
   retryPrompt(message);
 }
 

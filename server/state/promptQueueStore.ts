@@ -339,10 +339,10 @@ export function createPromptQueueStore(db: DatabaseType) {
   `);
   const retryFailedStmt = db.prepare(`
     UPDATE prompt_queue
-    SET status = 'queued', payload_json = ?, payload_hash = ?,
+    SET status = 'queued', payload_json = ?, payload_hash = ?, attempts = 0,
         last_error = NULL, created_at = ?, updated_at = ?, started_at = NULL, completed_at = NULL,
         lease_owner = NULL, lease_expires_at = NULL
-    WHERE id = ? AND status = 'failed' AND attempts = 0
+    WHERE id = ? AND status = 'failed'
   `);
   const completeInterruptedStmt = db.prepare(`
     UPDATE prompt_queue
@@ -449,7 +449,12 @@ export function createPromptQueueStore(db: DatabaseType) {
       if (existing.payloadHash && existing.payloadHash !== payloadHash) {
         throw new Error("clientMessageId is already associated with a different prompt payload");
       }
-      if (existing.status === "failed" && existing.attempts === 0 && input.retryFailed) {
+      // An explicit retry (retryFailed) re-queues a failed row even when the
+      // original attempt was claimed: the row is terminal, so re-running it
+      // cannot double-execute, and resetting attempts keeps the identity
+      // pending again for reconciliation. Completed and cancelled identities
+      // stay terminal and never reach this branch.
+      if (existing.status === "failed" && input.retryFailed) {
         const now = Date.now();
         const changed = retryFailedStmt.run(JSON.stringify(input.payload), payloadHash, now, now, existing.id).changes;
         if (changed === 1) {

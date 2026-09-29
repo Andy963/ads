@@ -17,6 +17,7 @@ import {
   type PersistedPrompt,
 } from "./outbox";
 import { RETIRED_ACOPILOT_WIRE_SESSION_IDS, WIRE_ACOPILOT_SESSION_ID } from "../lib/laneWire";
+import { TURN_FAILURE_CARD_PREFIX } from "../lib/turnFailure";
 
 type UploadedImageAttachment = {
   id: string;
@@ -987,8 +988,10 @@ export function createChatActions(ctx: AppContext) {
     const prompt = state.queuedPrompts.value.find((entry) => entry.id === target);
     if (!prompt || prompt.deliveryStatus !== "failed") return;
     ensureOutboxBinding(state);
-    // Claimed identities are terminal even after failure. Only an unclaimed
-    // failure in the current generation can reuse its identity.
+    // A queue-card retry of a claimed or stale-generation row uses a fresh
+    // identity; only an unclaimed failure in the current generation reuses
+    // its identity. (The turn failure card retry is the deliberate exception:
+    // it replays the original identity with `replay_incomplete`.)
     const rowGeneration = Number(prompt.queueLaneGeneration ?? 0);
     const laneGeneration = Number(state.laneGeneration ?? 0);
     const generationMoved = rowGeneration > 0 && laneGeneration > 0 && rowGeneration !== laneGeneration;
@@ -1059,23 +1062,42 @@ export function createChatActions(ctx: AppContext) {
     if (message.kind !== "error") return;
     const existing = state.messages.value;
     const cardIndex = existing.findIndex((item) => item.id === message.id);
-    if (cardIndex < 0) return;
-    let userIndex = -1;
-    for (let index = cardIndex - 1; index >= 0; index -= 1) {
-      if (existing[index]!.role === "user") {
-        userIndex = index;
-        break;
+    if (cardIndex < 0) {
+      state.laneStatus.value = { kind: "error", message: "无法重试：该失败记录已不在当前会话中，请重新发送消息。" };
+      return;
+    }
+    // The failure card id embeds its user message id, so the retry targets the
+    // turn that failed even when newer messages sit between them. The backward
+    // scan stays as a fallback for cards without an embedded anchor.
+    const anchoredUserId = message.id.startsWith(TURN_FAILURE_CARD_PREFIX)
+      ? message.id.slice(TURN_FAILURE_CARD_PREFIX.length)
+      : "";
+    let userItem = anchoredUserId
+      ? existing.find((item) => item.role === "user" && item.id === anchoredUserId)
+      : undefined;
+    if (!userItem) {
+      for (let index = cardIndex - 1; index >= 0; index -= 1) {
+        if (existing[index]!.role === "user") {
+          userItem = existing[index]!;
+          break;
+        }
       }
     }
-    if (userIndex < 0) return;
-    const userItem = existing[userIndex]!;
-    const text = String(userItem.content ?? "").trim();
-    if (!text) return;
+    const text = String(userItem?.content ?? "").trim();
+    if (!userItem || !text) {
+      state.laneStatus.value = { kind: "error", message: "无法重试：找不到该轮对应的原始消息，请重新发送。" };
+      return;
+    }
     // Clear the failure state before re-dispatching; a new failure anchors a
     // fresh card to the retried turn instead.
     setMessages(existing.filter((item) => item.id !== message.id), state);
     state.ignoreNextHistory = false;
     state.ignoreNextHistoryGeneration = undefined;
+    // The failed turn left its identity marked terminal (consumed once the
+    // server claimed it, dismissed if its queue card was removed). An explicit
+    // retry re-activates that identity, so drop those marks before re-sending.
+    state.consumedPromptIds?.delete(userItem.id);
+    state.dismissedPromptIds?.delete(userItem.id);
     ensureOutboxBinding(state);
     const execution = userItem.execution ?? {};
     const agentId = String(execution.agentId ?? "").trim() || String(state.activeAgentId.value ?? "").trim();

@@ -203,6 +203,150 @@ describe("web/ws/preflight", () => {
     }
   });
 
+  it("enqueues an authorized replay of a turn that failed after persisting assistant output (issue #478)", () => {
+    const historyStore = new HistoryStore({ namespace: "test-preflight-partial-output-replay", maxEntriesPerSession: 20 });
+    const historyKey = "history-partial-output-replay";
+    const clientMessageId = "p-partial-replay";
+    const sent: unknown[] = [];
+    let persistCalls = 0;
+    historyStore.add(historyKey, { role: "user", text: "retry me", ts: 1, kind: `client_message_id:${clientMessageId}` });
+    historyStore.add(historyKey, { role: "ai", text: "partial answer", ts: 2 });
+    historyStore.add(historyKey, { role: "status", text: "[server_overloaded] try again", ts: 3, kind: "error" });
+
+    try {
+      const result = preflightPersistAndAck({
+        parsed: {
+          type: "prompt",
+          payload: { text: "retry me", replay_incomplete: true },
+          client_message_id: clientMessageId,
+        },
+        requestId: "req-partial-replay",
+        clientMessageId,
+        receivedAt: 4,
+        historyStore,
+        historyKey,
+        sanitizeInput: (payload) => typeof payload === "string" ? payload : String((payload as { text?: unknown })?.text ?? ""),
+        sendJson: (payload) => sent.push(payload),
+        traceWsDuplication: false,
+        warn: () => {},
+        sessionId: "session-1",
+        userId: 7,
+        persistPromptQueue: () => {
+          persistCalls += 1;
+          return { ok: true, duplicate: false, status: "queued", position: 1, attempts: 0 };
+        },
+      });
+
+      assert.deepEqual(result, { enqueue: false });
+      assert.equal(persistCalls, 1);
+      assert.deepEqual(sent, [{
+        type: "ack",
+        client_message_id: clientMessageId,
+        duplicate: false,
+        queue_status: "queued",
+        queue_position: 1,
+        queue_attempts: 0,
+      }]);
+    } finally {
+      historyStore.clear(historyKey);
+    }
+  });
+
+  it("enqueues an authorized replay of a turn that failed before any assistant output (issue #478)", () => {
+    const historyStore = new HistoryStore({ namespace: "test-preflight-no-output-replay", maxEntriesPerSession: 20 });
+    const historyKey = "history-no-output-replay";
+    const clientMessageId = "p-no-output-replay";
+    const sent: unknown[] = [];
+    let persistCalls = 0;
+    historyStore.add(historyKey, { role: "user", text: "retry me", ts: 1, kind: `client_message_id:${clientMessageId}` });
+    historyStore.add(historyKey, { role: "status", text: "[server_overloaded] try again", ts: 2, kind: "error" });
+
+    try {
+      const result = preflightPersistAndAck({
+        parsed: {
+          type: "prompt",
+          payload: { text: "retry me", replay_incomplete: true },
+          client_message_id: clientMessageId,
+        },
+        requestId: "req-no-output-replay",
+        clientMessageId,
+        receivedAt: 3,
+        historyStore,
+        historyKey,
+        sanitizeInput: (payload) => typeof payload === "string" ? payload : String((payload as { text?: unknown })?.text ?? ""),
+        sendJson: (payload) => sent.push(payload),
+        traceWsDuplication: false,
+        warn: () => {},
+        sessionId: "session-1",
+        userId: 7,
+        persistPromptQueue: () => {
+          persistCalls += 1;
+          return { ok: true, duplicate: false, status: "queued", position: 1, attempts: 0 };
+        },
+      });
+
+      assert.deepEqual(result, { enqueue: false });
+      assert.equal(persistCalls, 1);
+      assert.deepEqual(sent, [{
+        type: "ack",
+        client_message_id: clientMessageId,
+        duplicate: false,
+        queue_status: "queued",
+        queue_position: 1,
+        queue_attempts: 0,
+      }]);
+    } finally {
+      historyStore.clear(historyKey);
+    }
+  });
+
+  it("rejects a replay of a genuinely completed turn with an explanatory ack (issue #478)", () => {
+    const historyStore = new HistoryStore({ namespace: "test-preflight-completed-replay", maxEntriesPerSession: 20 });
+    const historyKey = "history-completed-replay";
+    const clientMessageId = "p-completed-replay";
+    const sent: unknown[] = [];
+    let persistCalls = 0;
+    historyStore.add(historyKey, { role: "user", text: "done turn", ts: 1, kind: `client_message_id:${clientMessageId}` });
+    historyStore.add(historyKey, { role: "ai", text: "full answer", ts: 2 });
+
+    try {
+      const result = preflightPersistAndAck({
+        parsed: {
+          type: "prompt",
+          payload: { text: "done turn", replay_incomplete: true },
+          client_message_id: clientMessageId,
+        },
+        requestId: "req-completed-replay",
+        clientMessageId,
+        receivedAt: 3,
+        historyStore,
+        historyKey,
+        sanitizeInput: (payload) => typeof payload === "string" ? payload : String((payload as { text?: unknown })?.text ?? ""),
+        sendJson: (payload) => sent.push(payload),
+        traceWsDuplication: false,
+        warn: () => {},
+        sessionId: "session-1",
+        userId: 7,
+        persistPromptQueue: () => {
+          persistCalls += 1;
+          return { ok: true, duplicate: false, status: "queued" };
+        },
+      });
+
+      assert.deepEqual(result, { enqueue: false });
+      assert.equal(persistCalls, 0);
+      assert.deepEqual(sent, [{
+        type: "ack",
+        client_message_id: clientMessageId,
+        duplicate: true,
+        queue_status: "completed",
+        reason: "turn_already_completed",
+      }]);
+    } finally {
+      historyStore.clear(historyKey);
+    }
+  });
+
   it("re-enqueues only explicitly recovered duplicate prompts that have no terminal result", () => {
     const historyStore = new HistoryStore({ namespace: "test-preflight-recovery", maxEntriesPerSession: 20 });
     const base = {

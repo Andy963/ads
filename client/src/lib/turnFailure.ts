@@ -26,13 +26,29 @@ export function findLastUserMessageIndex(items: ChatItem[]): number {
 }
 
 /**
- * Anchor a persistent failure record to the newest user turn. The record id
+ * Anchor a persistent failure record to the turn that failed. The record id
  * is derived from the user message id so repeated failures of the same turn
  * replace the previous record instead of stacking duplicates, and so live
  * errors and history replay converge on the same retry target.
+ *
+ * The anchor is the failed turn's own user message when its id is known (the
+ * turn that was awaiting ack when the error arrived); otherwise it falls back
+ * to the newest user message, which during sequential history replay is the
+ * turn the error entry belongs to.
  */
-export function upsertTurnFailureCard(items: ChatItem[], content: string, ts?: number): ChatItem[] {
-  const userIndex = findLastUserMessageIndex(items);
+export function upsertTurnFailureCard(
+  items: ChatItem[],
+  content: string,
+  ts?: number,
+  anchorUserMessageId?: string,
+): ChatItem[] {
+  const anchorId = String(anchorUserMessageId ?? "").trim();
+  const anchored = anchorId
+    ? items.find((item) => item.role === "user" && item.id === anchorId)
+    : undefined;
+  const userIndex = anchored
+    ? items.indexOf(anchored)
+    : findLastUserMessageIndex(items);
   if (userIndex < 0) return items;
   const userItem = items[userIndex]!;
   const cardId = turnFailureCardId(userItem.id);

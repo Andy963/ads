@@ -383,7 +383,7 @@ describe("web/server/ws/preflight-persistence", () => {
     }
   });
 
-  it("rejects consumed identity replay and executes a fresh retry identity", async () => {
+  it("rejects a plain resend of a failed identity but re-executes its explicit replay", async () => {
     const url = `ws://127.0.0.1:${port}`;
     const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
     const client = new WebSocket(url, protocols, { origin: "http://localhost" });
@@ -406,22 +406,52 @@ describe("web/server/ws/preflight-persistence", () => {
         assert.ok(Date.now() < failedDeadline, "failed prompt should reach durable failed state");
         await delay(5);
       }
+      assert.equal(agentRequestCount, 1);
 
+      // A plain resend without an explicit replay marker is still suppressed
+      // as a duplicate and must not requeue the failed row.
+      client.send(JSON.stringify({
+        type: "prompt",
+        payload: { text: "retry me" },
+        client_message_id: "retry-1",
+      }));
+      const plainResendAck = await waitForWsMessage(
+        client,
+        (msg) => msg.type === "ack" && msg.client_message_id === "retry-1" && msg.duplicate === true,
+        2000,
+      );
+      assert.equal(plainResendAck.queue_status, "failed");
+      assert.equal(promptQueueStore.getByClientMessageId("retry-1")?.status, "failed");
+      assert.equal(promptQueueStore.getByClientMessageId("retry-1")?.attempts, 1);
+
+      // The explicit replay requeues the failed row under the same identity
+      // and the turn runs again.
       failAgentRequests = false;
       client.send(JSON.stringify({
         type: "prompt",
         payload: { text: "retry me", replay_incomplete: true },
         client_message_id: "retry-1",
       }));
-      const duplicateAck = await waitForWsMessage(
+      const replayAck = await waitForWsMessage(
         client,
-        (msg) => msg.type === "ack" && msg.client_message_id === "retry-1",
+        (msg) => msg.type === "ack" && msg.client_message_id === "retry-1" && msg.duplicate === false,
         2000,
       );
-      assert.equal(duplicateAck.duplicate, true);
-      assert.equal(duplicateAck.queue_status, "failed");
-      assert.equal(promptQueueStore.getByClientMessageId("retry-1")?.attempts, 1);
+      assert.equal(replayAck.queue_status, "queued");
+      const completedDeadline = Date.now() + 3000;
+      while (promptQueueStore.getByClientMessageId("retry-1")?.status !== "completed") {
+        assert.ok(Date.now() < completedDeadline, "explicit replay should re-execute and complete");
+        await delay(5);
+      }
+      assert.equal(agentRequestCount, 2);
 
+      // The replay reuses the persisted prompt entry instead of duplicating it.
+      const history = historyStore.get("test::test::main").filter(
+        (entry) => String(entry.kind ?? "").startsWith("client_message_id:retry-1"),
+      );
+      assert.equal(history.length, 1);
+
+      // A fresh identity still works as a plain new prompt.
       client.send(JSON.stringify({
         type: "prompt",
         payload: { text: "retry me" },
@@ -434,24 +464,14 @@ describe("web/server/ws/preflight-persistence", () => {
       );
       assert.equal(retryAck.duplicate, false);
       assert.equal(retryAck.queue_status, "queued");
-      const completedDeadline = Date.now() + 3000;
+      const freshDeadline = Date.now() + 3000;
       while (promptQueueStore.getByClientMessageId("retry-2")?.status !== "completed") {
-        assert.ok(Date.now() < completedDeadline, "explicit retry should complete");
+        assert.ok(Date.now() < freshDeadline, "fresh retry should complete");
         await delay(5);
       }
       const entry = promptQueueStore.getByClientMessageId("retry-2");
       assert.equal(entry?.attempts, 1);
       assert.deepEqual(entry?.payload, {});
-
-      const replay = syncEventStore.readAfter({
-        namespace: resolveSyncNamespace("main"),
-        laneKey: "test::test::main",
-      });
-      const lifecycle = replay.events.filter((event) => event.type === "prompt_queue");
-      assert.equal(lifecycle.length, 2);
-      assert.equal(lifecycle[0]?.payload.entry.status, "failed");
-      assert.equal(lifecycle[1]?.payload.entry.status, "completed");
-      assert.ok(Number(lifecycle[0]?.seq) > 0);
     } finally {
       client.terminate();
     }

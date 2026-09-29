@@ -558,15 +558,16 @@ function isTurnFailureCard(m: RenderMessage): boolean {
   return m.role === "system" && m.kind === "error" && m.id.startsWith(TURN_FAILURE_CARD_PREFIX);
 }
 
-function getTurnFailureForUser(message: RenderMessage, index: number): RenderMessage | null {
+function getTurnFailureForUser(message: RenderMessage): RenderMessage | null {
   if (message.role !== "user") return null;
-  const failure = loadedMessages.value[index + 1];
-  if (!failure || !isTurnFailureCard(failure)) return null;
-  return failure.id === turnFailureCardId(message.id) ? failure : null;
+  // The card id embeds its user message id, so the retry control follows the
+  // turn that failed no matter where the card sits in the loaded window.
+  const failure = loadedMessages.value.find((m) => m.id === turnFailureCardId(message.id));
+  return failure && isTurnFailureCard(failure) ? failure : null;
 }
 
-function retryUserTurn(message: RenderMessage, index: number): void {
-  const failure = getTurnFailureForUser(message, index);
+function retryUserTurn(message: RenderMessage): void {
+  const failure = getTurnFailureForUser(message);
   if (failure) emit("retryMessage", failure);
 }
 </script>
@@ -751,13 +752,13 @@ function retryUserTurn(message: RenderMessage, index: number): void {
           <div v-if="shouldShowMsgActions(m)" class="msgActions">
           <span v-if="m.role === 'user' && m.ts" class="msgTime">{{ formatMessageTs(m.ts) }}</span>
           <button
-            v-if="m.role === 'user' && getTurnFailureForUser(m, messageIndex)"
+            v-if="m.role === 'user' && getTurnFailureForUser(m)"
             class="turnFailureRetryBtn"
             type="button"
             data-testid="inline-turn-retry"
             aria-label="Retry message"
             title="Retry"
-            @click="retryUserTurn(m, messageIndex)"
+            @click="retryUserTurn(m)"
           >
             <svg
               width="14"

@@ -507,4 +507,77 @@ describe("web/promptQueueService", () => {
     db.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
+
+  it("re-executes a turn that failed after partial assistant output when the user retries (issue #478)", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-prompt-queue-retry-"));
+    const dbPath = path.join(tempDir, "state.db");
+    const db = new DatabaseConstructor(dbPath);
+    const store = createPromptQueueStore(db);
+    const history = new HistoryStore({ storagePath: dbPath, namespace: "test-retry" });
+    const lane = {
+      authUserId: "auth-1",
+      userId: 7,
+      sessionId: "session-1",
+      chatSessionId: "main",
+      historyKey: "auth-1::session-1::main:generation:1",
+      logicalHistoryKey: "auth-1::session-1::main",
+      laneNamespace: "auth-1::session-1",
+      laneGeneration: 1,
+      workspaceRoot: "/workspace/project",
+    };
+    const kind = buildClientMessageHistoryKind({ clientMessageId: "client-1" });
+    let executions = 0;
+    const service = new PromptQueueService({
+      store,
+      workerId: "worker-1",
+      ownerPid: 2222,
+      resolveCurrentGeneration: () => 1,
+      reconcileBeforeRun: async (entry) => {
+        const outcome = getPromptQueueHistoryOutcome(
+          history.get(entry.historyKey),
+          entry.clientMessageId,
+          entry.payload.replay_incomplete === true,
+        );
+        if (outcome === "completed") return { ok: true };
+        if (outcome === "failed") return { ok: false, error: "Prompt execution failed before queue completion" };
+        return null;
+      },
+      runPrompt: async (entry) => {
+        executions += 1;
+        if (executions === 1) {
+          // The first attempt persists partial assistant output and then fails.
+          history.add(entry.historyKey, { role: "user", text: "retry me", ts: 1000, kind });
+          history.add(entry.historyKey, { role: "ai", text: "partial answer", ts: 1001 });
+          history.add(entry.historyKey, { role: "status", text: "[server_overloaded] try again", ts: 1002, kind: "error" });
+          return { ok: false, error: "server overloaded" };
+        }
+        history.add(entry.historyKey, { role: "ai", text: "full answer", ts: 1003 });
+        return { ok: true };
+      },
+      emitSnapshot: () => undefined,
+    });
+    await service.start();
+    service.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "retry me" } });
+    while (store.getByClientMessageId("client-1")?.status !== "failed") {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(executions, 1);
+
+    // The retry replays the original identity with an explicit retry marker.
+    const retried = service.enqueue({
+      ...lane,
+      clientMessageId: "client-1",
+      payload: { text: "retry me", replay_incomplete: true },
+      retryFailed: true,
+    });
+    assert.equal(retried.duplicate, false);
+    while (store.getByClientMessageId("client-1")?.status !== "completed") {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(executions, 2);
+
+    await service.stop();
+    db.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
 });

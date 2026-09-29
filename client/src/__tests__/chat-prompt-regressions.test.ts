@@ -9,6 +9,7 @@ import { createAppContext, type AppContext } from "../app/controller";
 import { createChatActions } from "../app/chat";
 import { createWsMessageHandler } from "../app/projectsWs/wsMessage";
 import { createOutboxStore, OUTBOX_CHANNEL_NAME } from "../app/outbox";
+import { turnFailureCardId } from "../lib/turnFailure";
 import type { ProjectRuntime } from "../app/controller";
 
 // ---------------------------------------------------------------------------
@@ -435,6 +436,191 @@ describe("issue-221: failed turn retry button", () => {
     await settleUi(wrapper);
 
     expect(wrapper.find(".turnFailureRetryBtn").exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+});
+
+describe("issue-478: turn failure retry", () => {
+  it("anchors the failure card to the turn that failed even when a newer user message exists", async () => {
+    const wrapper = await mountApp();
+
+    wrapper.vm.sendMainPrompt("first");
+    wrapper.vm.sendMainPrompt("second");
+    await settleUi(wrapper);
+    const firstClientMessageId = String(lastWs!.sendPrompt.mock.calls[0]?.[1] ?? "");
+    const secondClientMessageId = String(lastWs!.sendPrompt.mock.calls[1]?.[1] ?? "");
+    expect(firstClientMessageId).toBeTruthy();
+    expect(secondClientMessageId).toBeTruthy();
+
+    // The second turn commits (its bubble appears) before the first turn's
+    // failure arrives: the card must still anchor to the first turn.
+    lastWs!.onMessage?.({ type: "user", clientMessageId: secondClientMessageId, text: "second" });
+    await settleUi(wrapper);
+    lastWs!.onMessage?.({ type: "error", message: "first failed", clientMessageId: firstClientMessageId });
+    await settleUi(wrapper);
+
+    const messages = wrapper.vm.messages as Array<any>;
+    const cards = messages.filter((m) => m.role === "system" && m.kind === "error");
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.id).toBe(turnFailureCardId(firstClientMessageId));
+
+    wrapper.unmount();
+  });
+
+  it("discovers the retry control on the failed turn even when the card is not adjacent", async () => {
+    const failureCard = {
+      id: turnFailureCardId("u-1"),
+      role: "system" as const,
+      kind: "error" as const,
+      content: "[server_overloaded] 服务过载",
+      ts: 3,
+    };
+    const wrapper = mount(MainChatMessageList, {
+      props: {
+        messages: [
+          { id: "u-1", role: "user" as const, kind: "text" as const, content: "failed prompt", ts: 1 },
+          { id: "u-2", role: "user" as const, kind: "text" as const, content: "newer prompt", ts: 2 },
+          failureCard,
+        ],
+        copiedMessageId: null,
+        formatMessageTs: () => "",
+        liveStepExpanded: false,
+        liveStepHasOverflow: false,
+        liveStepCanToggleExpanded: false,
+        liveStepOutlineItems: [],
+        liveStepOutlineHiddenCount: 0,
+        liveStepCollapsedTrivialOutline: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+          ChatFilePreviewModal: true,
+        },
+      },
+      attachTo: document.body,
+    });
+    await settleUi(wrapper);
+
+    const firstRow = wrapper.get('[data-id="u-1"]');
+    const retryButton = firstRow.get(".turnFailureRetryBtn");
+    expect(wrapper.find('[data-id="u-2"] .turnFailureRetryBtn').exists()).toBe(false);
+    await retryButton.trigger("click");
+    expect(wrapper.emitted("retryMessage")).toHaveLength(1);
+    expect(wrapper.emitted("retryMessage")![0]).toEqual([failureCard]);
+
+    wrapper.unmount();
+  });
+
+  it("explains the retry instead of doing nothing when the failure card is stale", async () => {
+    const { chat, rt } = mountHarness();
+    const sendPrompt = vi.fn().mockReturnValue(true);
+    rt.ws = { sendPrompt, clearHistory: vi.fn() } as unknown as typeof rt.ws;
+
+    chat.retryPrompt(
+      { id: turnFailureCardId("u-gone"), role: "system", kind: "error", content: "stale failure", ts: 1 },
+      rt,
+    );
+    await settle();
+
+    expect(rt.laneStatus.value?.kind).toBe("error");
+    expect(String(rt.laneStatus.value?.message ?? "")).toContain("无法重试");
+    expect(rt.queuedPrompts.value).toHaveLength(0);
+    expect(sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("explains the retry instead of doing nothing when the failed turn has no user message", async () => {
+    const { chat, rt } = mountHarness();
+    const sendPrompt = vi.fn().mockReturnValue(true);
+    rt.ws = { sendPrompt, clearHistory: vi.fn() } as unknown as typeof rt.ws;
+    rt.messages.value = [
+      { id: turnFailureCardId("u-missing"), role: "system", kind: "error", content: "orphaned failure", ts: 2 },
+    ];
+
+    chat.retryPrompt(rt.messages.value[0]!, rt);
+    await settle();
+
+    expect(rt.laneStatus.value?.kind).toBe("error");
+    expect(String(rt.laneStatus.value?.message ?? "")).toContain("无法重试");
+    expect(rt.queuedPrompts.value).toHaveLength(0);
+    expect(sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it("re-activates a consumed identity on explicit retry and surfaces a rejected replay ack", async () => {
+    const { chat, rt, handler } = mountHarness();
+    const sendPrompt = vi.fn().mockReturnValue(true);
+    rt.ws = { sendPrompt, clearHistory: vi.fn() } as unknown as typeof rt.ws;
+    rt.consumedPromptIds = new Set(["u-1"]);
+    rt.messages.value = [
+      { id: "u-1", role: "user", kind: "text", content: "retry me", ts: 1 },
+      { id: turnFailureCardId("u-1"), role: "system", kind: "error", content: "boom", ts: 2 },
+    ];
+
+    chat.retryPrompt(rt.messages.value[1]!, rt);
+    await settle();
+
+    // The retry re-sends the original identity and clears its terminal mark so
+    // the requeued card survives outbox filtering.
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(sendPrompt.mock.calls[0]?.[1]).toBe("u-1");
+    expect((sendPrompt.mock.calls[0]?.[0] as Record<string, unknown>).replay_incomplete).toBe(true);
+    expect(rt.consumedPromptIds?.has("u-1")).toBe(false);
+
+    // A rejected replay comes back as a duplicate ack with a reason; the lane
+    // status must explain it instead of dropping the retry silently.
+    handler({
+      type: "ack",
+      client_message_id: "u-1",
+      duplicate: true,
+      queue_status: "completed",
+      reason: "turn_already_completed",
+    } as never);
+    await settle();
+
+    expect(rt.laneStatus.value?.kind).toBe("info");
+    expect(String(rt.laneStatus.value?.message ?? "")).toContain("无需重试");
+  });
+
+  it("shows a notice instead of silently ignoring the retry while an action job holds the lane", async () => {
+    getImpl = async (url: string) => {
+      if (url === "/api/models") return [] satisfies ModelConfig[];
+      if (url.startsWith("/api/paths/validate")) return { ok: false };
+      if (url.startsWith("/api/actions/jobs")) {
+        return [{
+          id: "job-1",
+          project_id: "/home/andy/repos/ads",
+          issue_id: 478,
+          issue_title: "Running job",
+          status: "running",
+          created_at: 1000,
+          updated_at: 1000,
+        }];
+      }
+      return {};
+    };
+    localStorage.setItem("ads.app_state", JSON.stringify({
+      version: 1,
+      updatedAt: Date.now(),
+      projects: [{ id: "p-1", sessionId: "p-1", path: "/home/andy/repos/ads", name: "ads", chatSessionId: "main", initialized: true }],
+      activeProject: "p-1",
+    }));
+
+    const wrapper = await mountApp();
+    wrapper.vm.sendMainPrompt("please retry me");
+    await settleUi(wrapper);
+    lastWs!.onMessage?.({ type: "error", message: "boom" });
+    await settleUi(wrapper);
+    const card = (wrapper.vm.messages as Array<any>).find((m) => m.role === "system" && m.kind === "error");
+    expect(card).toBeTruthy();
+
+    const sendCallsBefore = lastWs!.sendPrompt.mock.calls.length;
+    wrapper.vm.retryActionsMessage(card);
+    await settleUi(wrapper);
+
+    expect(lastWs!.sendPrompt.mock.calls.length).toBe(sendCallsBefore);
+    expect(String(wrapper.vm.apiNotice ?? "")).toContain("任务正在执行中");
+    // The failure card stays in place so the retry remains available.
+    expect((wrapper.vm.messages as Array<any>).some((m) => m.id === card.id)).toBe(true);
 
     wrapper.unmount();
   });

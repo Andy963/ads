@@ -1047,12 +1047,25 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const id = String(msg.client_message_id ?? "").trim();
       const rawStatus = String(msg.queue_status ?? "queued");
       const rawError = String(msg.error ?? "");
+      // Read the acknowledged prompt before any terminal mark: consumption
+      // rewrites the outbox and would erase the replay evidence below.
+      const acknowledged = id ? clearPendingPrompt(rt, id) : null;
+      // A replay the server refused arrives as a duplicate ack: explain the
+      // rejection instead of letting the retried turn vanish silently.
+      if (id && msg.duplicate === true && acknowledged?.replayIncomplete) {
+        const reason = String(msg.reason ?? "").trim();
+        rt.laneStatus.value = {
+          kind: "info",
+          message: reason === "turn_already_completed"
+            ? "该轮已完成，无需重试。"
+            : "该轮正在执行或排队中，无需重复重试。",
+        };
+      }
       if (id && (rawStatus === "running" || rawStatus === "completed" || rawStatus === "consumed" || Number(msg.queue_attempts) > 0)) {
         markPromptConsumed(rt, id);
       } else if (id && rawStatus === "cancelled") {
         markPromptCancelled(rt, id);
       }
-      const acknowledged = id ? clearPendingPrompt(rt, id) : null;
       const existing = id
         ? rt.queuedPrompts.value.find((prompt) => prompt.clientMessageId === id)
         : undefined;
@@ -2246,10 +2259,16 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       // hint`) so replay and live events converge on one retry target.
       if (!isUserAbort) {
         const failureCardContent = errorInfo?.code ? `[${errorInfo.code}] ${userMessage}` : userMessage;
+        const failedTurnId = firstWireText(
+          (msg as { clientMessageId?: unknown }).clientMessageId,
+          (msg as { client_message_id?: unknown }).client_message_id,
+          terminalPromptId,
+        ).trim();
         rt.messages.value = upsertTurnFailureCard(
           rt.messages.value,
           failureCardContent,
           finiteTimestamp((msg as { ts?: unknown }).ts),
+          failedTurnId || undefined,
         );
       }
       if (isUserAbort) discardAbortedPromptCard(rt, removeQueuedPrompt);

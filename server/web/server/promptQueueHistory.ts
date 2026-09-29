@@ -12,21 +12,22 @@ export function getPromptQueueHistoryOutcome(
     (entry) => entry.role === "user" && getHistoryClientMessageId(entry.kind) === clientMessageId,
   );
   if (!persisted) return "missing";
-  let awaitingTerminal = false;
-  let failed = false;
+  // The last terminal entry of the turn decides its outcome: partial assistant
+  // output followed by an error means the turn failed, so an authorized replay
+  // must run again instead of being reconciled as completed.
+  let inTurn = false;
+  let lastTerminal: "completed" | "failed" | null = null;
   for (const entry of entries) {
     if (entry.role === "user") {
-      awaitingTerminal = getHistoryClientMessageId(entry.kind) === clientMessageId;
-      failed = false;
+      inTurn = getHistoryClientMessageId(entry.kind) === clientMessageId;
+      if (inTurn) lastTerminal = null;
       continue;
     }
-    if (!awaitingTerminal) continue;
-    if (entry.role === "ai") {
-      return "completed";
-    }
-    if (!allowErrorReplay && entry.role === "status" && entry.kind === "error") {
-      failed = true;
-    }
+    if (!inTurn) continue;
+    if (entry.role === "ai") lastTerminal = "completed";
+    else if (entry.role === "status" && entry.kind === "error") lastTerminal = "failed";
   }
-  return failed ? "failed" : "pending";
+  if (lastTerminal === "completed") return "completed";
+  if (lastTerminal === "failed") return allowErrorReplay ? "pending" : "failed";
+  return "pending";
 }

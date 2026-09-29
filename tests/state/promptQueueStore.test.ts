@@ -103,7 +103,7 @@ describe("state/promptQueueStore", () => {
     assert.deepEqual(store.listRecoverable(), []);
   });
 
-  it("fences stale workers and rejects replay of a consumed identity", () => {
+  it("fences stale workers and requeues a failed row only on explicit retry", () => {
     db = new DatabaseConstructor(":memory:");
     const store = createPromptQueueStore(db);
     assert.equal(store.claimOwnership("old-worker", 101, 900, 60_000, () => false).claimed, true);
@@ -117,25 +117,26 @@ describe("state/promptQueueStore", () => {
     assert.equal(failed?.status, "failed");
     assert.equal(failed?.payload.text, "one");
 
+    // A plain resend of the claimed identity is still a duplicate: only an
+    // authorized replay may requeue the failed row.
+    const plainResend = store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
+    assert.equal(plainResend.duplicate, true);
+    assert.equal(plainResend.entry.status, "failed");
+
     const retried = store.enqueue({
       ...lane,
       clientMessageId: "client-1",
       payload: { text: "one", replay_incomplete: true },
       retryFailed: true,
     });
-    assert.equal(retried.duplicate, true);
-    assert.equal(retried.entry.status, "failed");
-    assert.equal(retried.entry.attempts, 1);
-    assert.equal(retried.entry.lastError, "interrupted");
-    assert.equal(store.markRunning(first.entry.id, "new-worker", 1300), false);
-
-    const fresh = store.enqueue({
-      ...lane,
-      clientMessageId: "client-new-attempt",
-      payload: { text: "one" },
-    });
-    assert.equal(fresh.duplicate, false);
-    assert.equal(store.markRunning(fresh.entry.id, "new-worker", 1400), true);
+    assert.equal(retried.duplicate, false);
+    assert.equal(retried.entry.status, "queued");
+    // The requeued row is a fresh attempt: it reconciles as pending again and
+    // the current worker can claim it.
+    assert.equal(retried.entry.attempts, 0);
+    assert.equal(retried.entry.lastError, null);
+    assert.equal(store.markRunning(first.entry.id, "new-worker", 1300), true);
+    assert.equal(store.markCompleted(first.entry.id, "new-worker", 1400), true);
   });
 
   it("scrubs completed payloads while retaining conflict detection", () => {
@@ -149,6 +150,15 @@ describe("state/promptQueueStore", () => {
 
     const duplicate = store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "private" } });
     assert.equal(duplicate.duplicate, true);
+    // A completed identity stays terminal even when a replay is declared.
+    const replayCompleted = store.enqueue({
+      ...lane,
+      clientMessageId: "client-1",
+      payload: { text: "private", replay_incomplete: true },
+      retryFailed: true,
+    });
+    assert.equal(replayCompleted.duplicate, true);
+    assert.equal(store.getByClientMessageId("client-1")?.status, "completed");
     assert.throws(
       () => store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "different" } }),
       /different prompt payload/,
