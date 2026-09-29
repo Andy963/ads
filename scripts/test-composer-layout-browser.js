@@ -393,6 +393,202 @@ try {
         fiveRows: geometry.fiveRows,
         expected: geometry.expected,
       });
+      // --- Queued prompt card first-line flow (issue-455) -------------------
+      // A WebSocket stub that never opens keeps the client offline, so every
+      // submitted prompt stays in the local queue and renders as a queue card.
+      const queueContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, serviceWorkers: "block" });
+      await queueContext.route("**/*", async (route) => {
+        const url = new URL(route.request().url());
+        if (url.origin !== origin) return route.fulfill({
+          contentType: route.request().resourceType() === "stylesheet" ? "text/css" : "text/plain",
+          body: "",
+        });
+        if (!url.pathname.startsWith("/api/")) return route.continue();
+        const fixtures = {
+          "/api/auth/status": { initialized: true },
+          "/api/auth/me": { id: "layout-fixture", username: "Fixture" },
+          "/api/models": [],
+          "/api/projects": { projects: [], activeProjectId: null },
+        };
+        return route.fulfill({ contentType: "application/json", body: JSON.stringify(fixtures[url.pathname] ?? {}) });
+      });
+      await queueContext.addInitScript(() => {
+        window.WebSocket = class extends EventTarget {
+          static OPEN = 1;
+          static CONNECTING = 0;
+          static CLOSED = 3;
+          readyState = 0;
+          send() {}
+          close() { this.readyState = 3; }
+        };
+      });
+      const queuePage = await queueContext.newPage();
+      queuePage.setDefaultTimeout(15000);
+      queuePage.on("pageerror", (error) => result.errors.push(`queue: ${error.message}`));
+      queuePage.on("console", (message) => { if (message.type() === "error") result.errors.push(`queue: ${message.text()}`); });
+      await queuePage.goto(origin);
+      const queueInput = queuePage.locator(".lanePanel:not(.lanePanel--inactive) textarea.composer-input:visible");
+      await queueInput.waitFor();
+      const queueSend = queuePage.locator(".lanePanel:not(.lanePanel--inactive) [data-testid='composer-send-btn']:visible");
+      const queueItems = queuePage.locator(".lanePanel:not(.lanePanel--inactive) .queue-item");
+      const queueSettle = () => queuePage.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const enqueue = async (text) => {
+        await queueInput.fill(text);
+        await queueSend.click();
+      };
+      const queueFixtures = [
+        {
+          key: "explicit-newlines",
+          text: [
+            "First line flows between the ordinal badge and the close control without reserved side columns",
+            // Short filler words keep the wrap gap small, so a full line ends
+            // within ~13px of the right inset at every viewport width.
+            `Second line reclaims the full card width below the close control ${"an ".repeat(60).trim()}`,
+            "Third line does exactly the same",
+            "Fourth line stays reachable by scrolling inside the card",
+          ].join("\n"),
+        },
+        // No hyphens: anywhere-breaking fills each line to within ~7px of the
+        // right inset instead of breaking early at a hyphen opportunity.
+        { key: "natural-wrap-url", text: `Wrapped prompt with a long unbroken URL https://example.com/${"a".repeat(220)} and some trailing words` },
+        { key: "cjk-mixed", text: "排队消息混排 CJK 与 Latin 字符，验证换行几何在两种文字下都成立。".repeat(6) },
+        { key: "one-line", text: "Short queued prompt" },
+      ];
+      for (const fixture of queueFixtures) await enqueue(fixture.text);
+      // Wider ordinal badges: pad the queue up to #10, then to #100.
+      for (let index = queueFixtures.length + 1; index <= 10; index += 1) await enqueue(`Filler queued prompt ${index}`);
+      const badgeTen = 9;
+      for (let index = 11; index <= 100; index += 1) await enqueue(`Filler queued prompt ${index}`);
+      await queueSettle();
+      assert.equal(await queueItems.count(), 100, "All queued prompts must render as cards");
+
+      const measureQueues = () => queuePage.evaluate(() => {
+        const panel = document.querySelector(".lanePanel:not(.lanePanel--inactive)");
+        return [...panel.querySelectorAll(".queue-item")].map((item, index) => {
+          const itemStyle = getComputedStyle(item);
+          const itemRect = item.getBoundingClientRect();
+          const badgeRect = item.querySelector(".queue-badge").getBoundingClientRect();
+          // Pre-fix cards have no controls cluster; fall back to the remove
+          // button so the geometry assertions report a clean failure.
+          const controlsRect = (item.querySelector(".queue-controls") ?? item.querySelector(".queue-action--remove")).getBoundingClientRect();
+          const textElement = item.querySelector(".queue-text");
+          const range = document.createRange();
+          range.selectNodeContents(textElement);
+          // getClientRects splits one visual line into a main rect plus tiny
+          // trailing fragments (whitespace/newline runs); merge fragments that
+          // share a line band into one geometry per rendered line.
+          const fragments = [...range.getClientRects()].filter((rect) => rect.height > 0.5 && rect.width > 0.5);
+          const bands = [];
+          for (const fragment of fragments) {
+            const band = bands.find((entry) => entry.top < fragment.bottom - 0.5 && entry.bottom > fragment.top + 0.5);
+            if (band) {
+              band.left = Math.min(band.left, fragment.left);
+              band.right = Math.max(band.right, fragment.right);
+              band.top = Math.min(band.top, fragment.top);
+              band.bottom = Math.max(band.bottom, fragment.bottom);
+            } else {
+              bands.push({ left: fragment.left, right: fragment.right, top: fragment.top, bottom: fragment.bottom });
+            }
+          }
+          const lines = bands.sort((a, b) => a.top - b.top);
+          const pick = (rect) => ({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom });
+          return {
+            index,
+            badgeText: item.querySelector(".queue-badge").textContent,
+            contentLeft: itemRect.left + parseFloat(itemStyle.borderLeftWidth) + parseFloat(itemStyle.paddingLeft),
+            contentRight: itemRect.right - parseFloat(itemStyle.borderRightWidth) - parseFloat(itemStyle.paddingRight),
+            lineHeight: parseFloat(getComputedStyle(textElement).lineHeight),
+            badge: pick(badgeRect),
+            controls: pick(controlsRect),
+            lines,
+            clientHeight: item.clientHeight,
+            scrollHeight: item.scrollHeight,
+          };
+        });
+      });
+      const intersects = (a, b, tolerance = 0.5) =>
+        a.left < b.right - tolerance && a.right > b.left + tolerance && a.top < b.bottom - tolerance && a.bottom > b.top + tolerance;
+
+      for (const width of [320, 375, 390, 430, 1280]) {
+        await queuePage.setViewportSize({ width, height: 844 });
+        await queueSettle();
+        const measured = await measureQueues();
+        assert.equal(measured.length, 100);
+        const tolerance = 1.5;
+        for (const card of measured) {
+          const label = `card #${card.index + 1} @${width}px`;
+          assert.ok(card.lines.length >= 1, `${label} must render at least one text line`);
+          const [first] = card.lines;
+          // The ordinal badge excludes text only on the first line.
+          assert.ok(
+            first.left >= card.badge.right - tolerance,
+            `${label} first line must start after the badge; got left ${first.left} vs badge right ${card.badge.right}`,
+          );
+          // The close control shares the first line; text must not cross it.
+          const controlsOnFirstLine = card.controls.top < first.bottom - tolerance;
+          if (controlsOnFirstLine) {
+            assert.ok(
+              first.right <= card.controls.left + tolerance,
+              `${label} first line must stop before the controls; got right ${first.right} vs controls left ${card.controls.left}`,
+            );
+          }
+          for (const line of card.lines) {
+            assert.ok(!intersects(line, card.badge), `${label} text must not intersect the badge hit area`);
+            assert.ok(!intersects(line, card.controls), `${label} text must not intersect the control hit area`);
+          }
+          // Later lines reclaim the left inset: no permanent side column below
+          // the badge. (A line can still END early — explicit newlines and
+          // unbroken tokens prefer the last normal break opportunity — so the
+          // right-edge reclaim is asserted per fixture below with texts whose
+          // wrap gap is smaller than the control strip.)
+          for (const line of card.lines.slice(1)) {
+            assert.ok(
+              line.left <= card.contentLeft + tolerance,
+              `${label} later lines must start at the card left inset; got ${line.left} vs ${card.contentLeft}`,
+            );
+          }
+        }
+        // Multi-line fixtures keep a three-line viewport, scroll the rest, and
+        // run at least one later line through the horizontal space below the
+        // controls — impossible while a full-height side column reserves it.
+        for (const fixtureIndex of [0, 1, 2]) {
+          const card = measured[fixtureIndex];
+          const label = `fixture ${queueFixtures[fixtureIndex].key} @${width}px`;
+          const laterLines = card.lines.slice(1);
+          assert.ok(laterLines.length >= 2, `${label} must wrap to at least three lines; got ${card.lines.length}`);
+          assert.ok(
+            laterLines.some((line) => line.right > card.controls.left + tolerance),
+            `${label} later lines must extend through the space below the controls; rights ${laterLines.map((line) => line.right.toFixed(1)).join(",")} vs controls left ${card.controls.left}`,
+          );
+          const viewportCap = Math.ceil(card.lineHeight * 3 + 16) + 2;
+          assert.ok(
+            card.clientHeight <= viewportCap,
+            `${label} must clip to the three-line viewport; got ${card.clientHeight} > ${viewportCap}`,
+          );
+          assert.ok(
+            card.scrollHeight > card.clientHeight + 1,
+            `${label} must keep longer content scrollable inside the card`,
+          );
+        }
+        assert.equal(measured[3].lines.length, 1, `one-line fixture @${width}px must stay on a single line`);
+        assert.equal(measured[badgeTen].badgeText, "#10", `tenth card @${width}px must carry the #10 badge`);
+        assert.equal(measured[99].badgeText, "#100", `hundredth card @${width}px must carry the #100 badge`);
+        result.checks.push({ kind: "queue-first-line-flow", width });
+      }
+
+      // Cards scroll their own overflow without moving the composer.
+      const scrollProbe = await queuePage.evaluate(() => {
+        const item = document.querySelector(".lanePanel:not(.lanePanel--inactive) .queue-item");
+        const composer = item.closest(".composer");
+        const before = composer.getBoundingClientRect().top;
+        item.scrollTop = 40;
+        return { scrolled: item.scrollTop > 0, composerShift: Math.abs(composer.getBoundingClientRect().top - before) };
+      });
+      assert.ok(scrollProbe.scrolled, "Queue card must scroll its overflow internally");
+      assert.equal(scrollProbe.composerShift, 0, "Scrolling a queue card must not move the composer");
+      result.checks.push({ kind: "queue-card-internal-scroll" });
+      await queueContext.close();
+
       result.runtimeDiagnostics = await page.evaluate(() => window.__ADS_RUNTIME_DIAGNOSTICS__ ?? []);
       assert.deepEqual(result.errors, []);
       assert.deepEqual(result.runtimeDiagnostics, []);

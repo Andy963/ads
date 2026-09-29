@@ -745,6 +745,37 @@ describe("issue-328 queued prompt bubbles", () => {
     expect(wrapper.emitted("retryQueued")).toEqual([["q-failed"]]);
     expect(wrapper.emitted("removeQueued")).toEqual([["q-failed"]]);
   });
+
+  it("orders badge and controls before the text so floats exclude only the first line (issue-455)", () => {
+    const wrapper = mount(MainChatComposerPanel, {
+      props: {
+        draft: "",
+        queuedPrompts: [{
+          id: "q-flow",
+          text: "Line one\nline two\nline three\nline four",
+          imagesCount: 1,
+          deliveryStatus: "offline",
+        }],
+        pendingImages: [],
+        connected: false,
+        busy: false,
+      },
+    });
+
+    const item = wrapper.get(".queue-item");
+    // Float layout prerequisite: the badge and the control cluster must precede
+    // the text node, or they cannot share the first text line.
+    const classOrder = item.element.children
+      ? [...item.element.children].map((child) => [...child.classList].find((name) => name.startsWith("queue-")))
+      : [];
+    expect(classOrder).toEqual(["queue-badge", "queue-controls", "queue-text"]);
+
+    const controls = item.get(".queue-controls");
+    expect(controls.get(".queue-status").text()).toBe("Waiting for connection");
+    expect(controls.get(".queue-action--remove").attributes("aria-label")).toBe("移除排队消息");
+    expect(item.get(".queue-text").text()).toContain("Line one");
+    expect(item.get(".queue-text").text()).toContain("图片 x1");
+  });
 });
 
 // --- Every queued card offers an exit (composer panel) -----------------------
