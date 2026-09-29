@@ -471,6 +471,28 @@ describe("project status spinner", () => {
     expect(workerDot).toMatch(/animation:\s*laneDotPulse 1\.6s ease-in-out infinite\s*;/);
 
     expect(css).toMatch(/@keyframes\s+laneDotPulse\s*\{/);
+
+    // Perceptibility floors (issue #480): the old 7px dot scaling to 1.2 with
+    // a 0.2-alpha ring was below the visibility threshold on high-DPI phones,
+    // and the regex assertions above passed anyway. Assert the amplitude
+    // itself, not just the declaration strings.
+    const baseDot = css.match(/\.laneTabStatusDot\s*\{[^}]*\}/)?.[0] ?? "";
+    const dotSize = Number(baseDot.match(/width:\s*(\d+(?:\.\d+)?)px/)?.[1]);
+    expect(dotSize).toBeGreaterThanOrEqual(8);
+
+    const keyframes = css.match(/@keyframes\s+laneDotPulse\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
+    const peakScale = Math.max(...[...keyframes.matchAll(/scale\((\d+(?:\.\d+)?)\)/g)].map((match) => Number(match[1])));
+    expect(peakScale).toBeGreaterThanOrEqual(1.4);
+    const rings = [...keyframes.matchAll(/0 0 0 (\d+(?:\.\d+)?)px rgba\(var\(--lane-pulse-color\),\s*(\d+(?:\.\d+)?)\)/g)]
+      .map((match) => ({ spread: Number(match[1]), alpha: Number(match[2]) }));
+    expect(rings.some((ring) => ring.spread >= 5 && ring.alpha >= 0.4)).toBe(true);
+
+    // The global reduced-motion override zeroes all animation; the busy dot
+    // must be exempted there or a busy lane silently loses its indicator.
+    const globalCss = await readClientFile("../global.css");
+    expect(globalCss).toMatch(
+      /prefers-reduced-motion:\s*reduce[\s\S]*\.laneTabStatusDot--busy-acopilot[\s\S]*?animation:\s*none\s*!important[\s\S]*?box-shadow:/,
+    );
   });
 });
 

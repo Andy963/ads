@@ -89,6 +89,16 @@ pre {
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
+
+  /* The busy lane dot carries state, not decoration: without the exemption
+     above the pulse would collapse to nothing, so degrade it to a steady,
+     enlarged ring instead. */
+  .laneTabStatusDot--busy-acopilot,
+  .laneTabStatusDot--busy-actions {
+    animation: none !important;
+    transform: scale(1.3) !important;
+    box-shadow: 0 0 0 3px rgba(var(--lane-pulse-color), 0.6) !important;
+  }
 }
 
 /* Failed lazy chunk load (see lib/asyncComponent.ts) */

@@ -494,10 +494,18 @@ function selectReasoningEffort(effort: string): void {
   line-height: 18px;
   cursor: pointer;
   width: 100%;
-  max-width: 220px;
   min-width: 0;
   transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
   white-space: nowrap;
+}
+
+/* Cap the model segment to roughly one lane tab on wide viewports. The label
+   is a user-editable alias, so the cap is a fixed length, never derived from
+   the text; on narrow viewports the pill splits the space naturally. */
+@media (min-width: 901px) {
+  .modelCapsule {
+    max-width: 140px;
+  }
 }
 
 .modelCapsule:hover:not(:disabled) {
