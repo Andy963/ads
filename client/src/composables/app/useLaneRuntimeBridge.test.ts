@@ -265,4 +265,46 @@ describe("useLaneRuntimeBridge", () => {
     expect(startNewAcopilotSession).toHaveBeenCalledTimes(1);
     expect(clearAcopilotChat).not.toHaveBeenCalled();
   });
+
+  it("preserves queue delivery state for both lanes", () => {
+    const failedPrompt = {
+      id: "q-1",
+      clientMessageId: "c-1",
+      text: "First prompt",
+      images: [{ data: "x" }],
+      createdAt: 1,
+      deliveryStatus: "failed" as const,
+      queueError: "Lane generation changed before execution",
+      queueAttempts: 0,
+      queueLaneGeneration: 3,
+    };
+    const acopilotRuntime = createRuntime();
+    acopilotRuntime.queuedPrompts = ref([failedPrompt]);
+
+    const bridge = useLaneRuntimeBridge({
+      activeProjectId: ref("p1"),
+      activeProject: ref({ chatSessionId: "main" }),
+      activeRuntime: shallowRef(createRuntime()),
+      activeAcopilotRuntime: shallowRef(acopilotRuntime),
+      queuedPrompts: ref([{ ...failedPrompt, id: "q-2", clientMessageId: "c-2" }]),
+      pendingImages: ref([]),
+      agentBusy: ref(false),
+      clearAcopilotChat: () => {},
+      startNewChatSession: () => {},
+      resumeAcopilotThread: () => {},
+      resumeTaskThread: () => {},
+    });
+
+    // The failed state gates the card's status label, error tooltip, and the
+    // retry control, so it must survive the projection onto both lanes.
+    for (const queued of [bridge.acopilotQueuedPrompts.value[0], bridge.actionsQueuedPrompts.value[0]]) {
+      expect(queued.deliveryStatus).toBe("failed");
+      expect(queued.queueError).toBe("Lane generation changed before execution");
+      expect(queued.queueAttempts).toBe(0);
+      expect(queued.queueLaneGeneration).toBe(3);
+      expect(queued.clientMessageId).toBeTruthy();
+      expect(queued.imagesCount).toBe(1);
+      expect(queued).not.toHaveProperty("images");
+    }
+  });
 });

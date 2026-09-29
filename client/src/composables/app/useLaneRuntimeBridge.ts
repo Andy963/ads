@@ -4,17 +4,20 @@ import { computed, onBeforeUnmount, ref, watch, type Ref } from "vue";
 // needs four parent hops to reach the repo root. A type-only import is erased
 // at build time, so a wrong depth here would not fail build or vitest.
 import type { CanonicalLaneId } from "../../../../shared/terminology.js";
+import type { QueuedPrompt } from "../../app/controllerTypes.js";
 
 export type ChatLane = CanonicalLaneId;
 
-type RuntimePrompt = { id: string; text: string; images: unknown[] };
+/** Queue card view model: the runtime prompt minus its raw image payloads. */
+type QueuedPromptView = Omit<QueuedPrompt, "images"> & { imagesCount: number };
+
 type AgentOption = { id: string; name: string; ready: boolean; error?: string };
 type LaneStatus = { kind: "info" | "progress" | "disconnected" | "error"; message: string };
 type ResumableSessionShape = { sessionId: string; updatedAt: number };
 type ResumableSessionsHiddenShape = { singleTurn: number; duplicates: number; forks: number };
 type RuntimeShape = {
   messages: Ref<unknown[]>;
-  queuedPrompts: Ref<RuntimePrompt[]>;
+  queuedPrompts: Ref<QueuedPrompt[]>;
   pendingImages: Ref<unknown[]>;
   connected: Ref<boolean>;
   busy: Ref<boolean>;
@@ -41,13 +44,13 @@ function asAcopilotRuntimeShape(value: unknown): AcopilotRuntimeShape {
   return value as AcopilotRuntimeShape;
 }
 
-function mapQueuedPrompts(
-  items: Array<{ id: string; text: string; images: unknown[] }>,
-): Array<{ id: string; text: string; imagesCount: number }> {
-  return items.map((item) => ({
-    id: item.id,
-    text: item.text,
-    imagesCount: item.images.length,
+// Delivery state has to survive this projection: the card gates its status
+// label, error tooltip, and retry control on the lifecycle fields the queue
+// service maintains.
+function mapQueuedPrompts(items: QueuedPrompt[]): QueuedPromptView[] {
+  return items.map(({ images, ...rest }) => ({
+    ...rest,
+    imagesCount: images.length,
   }));
 }
 
@@ -56,7 +59,7 @@ export function useLaneRuntimeBridge(params: {
   activeProject: Ref<{ chatSessionId?: string } | null>;
   activeRuntime: Ref<unknown>;
   activeAcopilotRuntime: Ref<unknown>;
-  queuedPrompts: Ref<Array<{ id: string; text: string; images: unknown[] }>>;
+  queuedPrompts: Ref<QueuedPrompt[]>;
   pendingImages: Ref<unknown[]>;
   agentBusy: Ref<boolean>;
   clearActiveChat?: () => void;
