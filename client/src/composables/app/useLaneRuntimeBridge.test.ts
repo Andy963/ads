@@ -265,4 +265,44 @@ describe("useLaneRuntimeBridge", () => {
     expect(startNewAcopilotSession).toHaveBeenCalledTimes(1);
     expect(clearAcopilotChat).not.toHaveBeenCalled();
   });
+
+  it("preserves every delivery state through both lane projections", () => {
+    const statuses = ["offline", "awaiting_ack", "queued", "running", "failed"] as const;
+    const queued = statuses.map((deliveryStatus, index) => ({
+      id: `q-${index}`,
+      clientMessageId: `c-${index}`,
+      text: "First prompt",
+      images: index === 0 ? [] : [{ data: "x" }],
+      createdAt: index,
+      deliveryStatus,
+      queueError: deliveryStatus === "failed" ? "Lane generation changed before execution" : undefined,
+      queueAttempts: 0,
+      queueLaneGeneration: 3,
+    }));
+
+    const bridge = useLaneRuntimeBridge({
+      activeProjectId: ref("p1"),
+      activeProject: ref({ chatSessionId: "main" }),
+      activeRuntime: shallowRef(createRuntime()),
+      activeAcopilotRuntime: shallowRef({ ...createRuntime(), queuedPrompts: ref(queued) }),
+      queuedPrompts: ref(queued),
+      pendingImages: ref([]),
+      agentBusy: ref(false),
+      clearAcopilotChat: () => {},
+      startNewChatSession: () => {},
+      resumeAcopilotThread: () => {},
+      resumeTaskThread: () => {},
+    });
+
+    // The delivery state gates the card's status label, error tooltip, and the
+    // retry control, so no lane may narrow it back to the offline fallback.
+    for (const lane of [bridge.acopilotQueuedPrompts.value, bridge.actionsQueuedPrompts.value]) {
+      expect(lane.map((prompt) => prompt.deliveryStatus)).toEqual([...statuses]);
+      expect(lane.map((prompt) => prompt.imagesCount)).toEqual([0, 1, 1, 1, 1]);
+      expect(lane.map((prompt) => prompt.clientMessageId)).toEqual(["c-0", "c-1", "c-2", "c-3", "c-4"]);
+      expect(lane.map((prompt) => prompt.queueLaneGeneration)).toEqual([3, 3, 3, 3, 3]);
+      expect(lane[4].queueError).toBe("Lane generation changed before execution");
+      expect(lane.every((prompt) => !("images" in prompt))).toBe(true);
+    }
+  });
 });
