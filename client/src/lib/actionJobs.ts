@@ -9,6 +9,25 @@ export type ActionJobStatus =
   | "blocked"
   | "cancelled";
 
+/** Queue-eligible job row as rendered by the Actions lane stack. */
+export type ActionJobQueueItem = {
+  id: string;
+  project_id: string;
+  issue_id: number | null;
+  issue_title: string;
+  status: ActionJobStatus;
+  current_step: string | null;
+  steps_json?: string;
+  attempts_json?: string;
+  pr_number: number | null;
+  pr_url: string | null;
+  error_message: string | null;
+  rework_count: number;
+  blocked_at?: number | null;
+  created_at?: number;
+  updated_at?: number;
+};
+
 /**
  * While a job occupies the shared Actions session, user input would fire abort
  * signals into the running Developer turn, so the composer stays locked until

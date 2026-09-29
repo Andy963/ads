@@ -176,7 +176,7 @@ describe("Actions lane queue visibility and manual start button", () => {
     vi.clearAllMocks();
   });
 
-  it("renders one compact line per queued task with the start button inline, and triggers /api/actions/queue/start on click", async () => {
+  it("renders a bounded card stack with the start button on the front card, and triggers /api/actions/queue/start on click", async () => {
     const mockJobs = [
       {
         id: "job-1",
@@ -184,7 +184,7 @@ describe("Actions lane queue visibility and manual start button", () => {
         issue_id: 341,
         issue_title: "Implement manual start button",
         status: "queued",
-        current_step: "Developer step is visible in the queue",
+        current_step: "Developer step stays in the Actions history",
         created_at: Date.now(),
         updated_at: Date.now(),
       },
@@ -210,30 +210,33 @@ describe("Actions lane queue visibility and manual start button", () => {
     }));
 
     const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false, ActionsQueueStack: false } } });
     await settleUi(wrapper);
 
-    // Verify banner and badges exist
+    // Exactly one fully visible front card; the second job is an occluded edge.
     const banner = wrapper.find('[data-testid="actions-job-banner"]');
     expect(banner.exists()).toBe(true);
-    expect(banner.findAll('[data-testid="actions-queue-row"]')).toHaveLength(2);
-    expect(banner.text()).toContain("Implement manual start button");
-    expect(banner.text()).toContain("Second queued task");
-    expect(banner.text()).toContain("Developer step is visible in the queue");
+    const front = wrapper.find('[data-testid="actions-queue-front"]');
+    expect(front.exists()).toBe(true);
+    expect(front.text()).toContain("Implement manual start button");
+    const peeks = wrapper.findAll('[data-testid="actions-queue-peek"]');
+    expect(peeks).toHaveLength(1);
+    expect(peeks[0].attributes("aria-hidden")).toBe("true");
+    expect(peeks[0].find("button").exists()).toBe(false);
+    // The stack is metadata-only: developer steps and failure detail stay in
+    // the Actions conversation below.
+    expect(banner.text()).not.toContain("Developer step stays in the Actions history");
     expect(banner.text()).not.toContain("queued details stay in history");
 
-    // The queue depth badge and the "Actions 队列" heading were removed: they
-    // are chrome, and the banner is now one line per task.
+    // No queue-count badge and no header row.
     expect(banner.find('[data-testid="actions-queue-count-badge"]').exists()).toBe(false);
     expect(banner.text()).not.toContain("Actions 队列");
     expect(banner.text()).not.toContain("个任务");
 
-    const rows = banner.findAll('[data-testid="actions-queue-row"]');
-    const startBtn = rows[0].find('[data-testid="btn-action-start"]');
+    // Only the front card carries controls; the occluded card is inert.
+    const startBtn = front.find('[data-testid="btn-action-start"]');
     expect(startBtn.exists()).toBe(true);
     expect(startBtn.text()).toContain("启动执行");
-    // Only the active job carries the controls; the other job stays text-only.
-    expect(rows[1].find('[data-testid="btn-action-start"]').exists()).toBe(false);
 
     // Click start button and verify API invocation
     await startBtn.trigger("click");
@@ -245,6 +248,52 @@ describe("Actions lane queue visibility and manual start button", () => {
     }));
 
     wrapper.unmount();
+  });
+
+  it("does not run the 2s poll while connected, and stops the degraded fallback after a reconnect resync", async () => {
+    vi.useFakeTimers();
+    try {
+      getSpy.mockResolvedValue([
+        {
+          id: "job-live",
+          project_id: "/home/andy/repos/ads",
+          issue_id: 347,
+          issue_title: "Live queued task",
+          status: "queued",
+          created_at: 1000,
+          updated_at: 1000,
+        },
+      ]);
+      localStorage.setItem("ads.app_state", JSON.stringify({
+        version: 1,
+        updatedAt: Date.now(),
+        projects: [{ id: "p-1", sessionId: "p-1", path: "/home/andy/repos/ads", name: "ads", chatSessionId: "main", initialized: true }],
+        activeProject: "p-1",
+      }));
+
+      const App = (await import("../App.vue")).default;
+      const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false, ActionsQueueStack: false } } });
+      await settleUi(wrapper);
+
+      // The mocked WebSocket never opens, so the lane is disconnected: the
+      // degraded fallback poll is allowed to run.
+      const callsAfterMount = getSpy.mock.calls.length;
+      expect(callsAfterMount).toBeGreaterThan(0);
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(getSpy.mock.calls.length).toBeGreaterThan(callsAfterMount);
+
+      // Once the event stream is back, the snapshot resyncs once and the poll stops.
+      (wrapper.vm as any).connected = true;
+      await settleUi(wrapper);
+      const callsAfterResync = getSpy.mock.calls.length;
+      expect(callsAfterResync).toBeGreaterThan(callsAfterMount);
+      await vi.advanceTimersByTimeAsync(6500);
+      expect(getSpy.mock.calls.length).toBe(callsAfterResync);
+
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refreshes the queue when a queued job event arrives after a failed job", async () => {
@@ -267,7 +316,7 @@ describe("Actions lane queue visibility and manual start button", () => {
     }));
 
     const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false, ActionsQueueStack: false } } });
     await settleUi(wrapper);
     expect(wrapper.find('[data-testid="actions-queue-count-badge"]').exists()).toBe(false);
 
@@ -293,7 +342,8 @@ describe("Actions lane queue visibility and manual start button", () => {
 
     onJobUpdate({ type: "action_job_updated", jobId: "job-new", issueId: 345, status: "queued" });
     await settleUi(wrapper);
-    expect(wrapper.findAll('[data-testid="actions-queue-row"]')).toHaveLength(1);
+    expect(wrapper.findAll('[data-testid="actions-queue-front"]')).toHaveLength(1);
+    expect(wrapper.findAll('[data-testid="actions-queue-peek"]')).toHaveLength(0);
     expect(wrapper.find('[data-testid="actions-queue-count-badge"]').exists()).toBe(false);
 
     wrapper.unmount();
@@ -322,7 +372,7 @@ describe("Actions lane queue visibility and manual start button", () => {
     }));
 
     const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false, ActionsQueueStack: false } } });
     await settleUi(wrapper);
 
     expect(wrapper.find('[data-testid="actions-job-banner"]').exists()).toBe(true);
@@ -365,19 +415,23 @@ describe("Actions lane queue visibility and manual start button", () => {
     }));
 
     const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false, ActionsQueueStack: false } } });
     await settleUi(wrapper);
 
     const banner = wrapper.find('[data-testid="actions-job-banner"]');
     expect(banner.exists()).toBe(true);
-    const rows = banner.findAll('[data-testid="actions-queue-row"]');
-    expect(rows).toHaveLength(2);
-    expect(rows[0].text()).toContain("RUNNING");
-    expect(rows[0].text()).toContain("Older Running Task");
-    expect(rows[1].text()).toContain("QUEUED");
-    expect(rows[1].text()).toContain("Newer Queued Task");
-    expect(banner.text()).toContain("Developer executing implementation on feature branch");
-    expect(rows[0].find(`[data-testid="actions-job-step-job-1"]`).exists()).toBe(true);
+    // The active execution job is the default front card; the newer queued job
+    // is an occluded edge behind it.
+    const front = wrapper.find('[data-testid="actions-queue-front"]');
+    expect(front.attributes("data-job-id")).toBe("job-1");
+    expect(front.text()).toContain("RUNNING");
+    expect(front.text()).toContain("Older Running Task");
+    const peeks = wrapper.findAll('[data-testid="actions-queue-peek"]');
+    expect(peeks).toHaveLength(1);
+    expect(peeks[0].text()).toContain("Newer Queued Task");
+    // Developer steps stay in the Actions history, not in the stack.
+    expect(banner.text()).not.toContain("Developer executing implementation on feature branch");
+    expect(front.find(`[data-testid="actions-job-step-job-1"]`).exists()).toBe(false);
 
     wrapper.unmount();
   });
@@ -404,7 +458,7 @@ describe("Actions lane queue visibility and manual start button", () => {
     }));
 
     const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false, ActionsQueueStack: false } } });
     await settleUi(wrapper);
 
     // Call triggerStartActionQueue on the component instance
@@ -454,24 +508,24 @@ describe("Actions lane queue visibility and manual start button", () => {
     }));
 
     const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false, ActionsQueueStack: false } } });
     await settleUi(wrapper);
 
     const banner = wrapper.find('[data-testid="actions-job-banner"]');
-    const rows = banner.findAll('[data-testid="actions-queue-row"]');
-    expect(rows).toHaveLength(2);
-    expect(rows[0].text()).toContain("BLOCKED");
-    expect(rows[0].text()).toContain("Recover Actions reliability");
-    expect(rows[1].text()).toContain("QUEUED");
-    expect(rows[1].text()).toContain("Queued behind blocked job");
-    // The failure text lives in the lane conversation, so the banner keeps only
+    const front = wrapper.find('[data-testid="actions-queue-front"]');
+    const peeks = wrapper.findAll('[data-testid="actions-queue-peek"]');
+    expect(peeks).toHaveLength(1);
+    expect(front.text()).toContain("BLOCKED");
+    expect(front.text()).toContain("Recover Actions reliability");
+    expect(peeks[0].text()).toContain("Queued behind blocked job");
+    // The failure text lives in the lane conversation, so the stack keeps only
     // the title and the blocked duration.
     expect(banner.text()).not.toContain("Human attention required after 2 rework attempts.");
     expect(banner.text()).not.toContain("Attempt 1");
     expect(banner.text()).not.toContain("Defect 1");
     expect(banner.text()).not.toContain("PR creation failed twice");
-    expect(rows[0].find('[data-testid="actions-job-step-job-blocked"]').exists()).toBe(false);
-    expect(rows[0].text()).toContain("Blocked for");
+    expect(front.find('[data-testid="actions-job-step-job-blocked"]').exists()).toBe(false);
+    expect(front.text()).toContain("Blocked for");
 
     await (wrapper.vm as any).triggerStartActionQueue();
     await settleUi(wrapper);
