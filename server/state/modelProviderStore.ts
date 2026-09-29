@@ -113,7 +113,7 @@ export function createModelProviderStore(db: DatabaseType) {
     return deleted;
   };
 
-  return { listProviders, getProvider, upsertProvider, deleteProvider };
+  return { db, listProviders, getProvider, upsertProvider, deleteProvider };
 }
 
 export type ModelProviderStore = ReturnType<typeof createModelProviderStore>;

@@ -34,7 +34,7 @@ function domOrder(row: Element, selectors: string[]): number[] {
   });
 }
 
-describe("user message action row order", () => {
+describe("message action row order", () => {
   it("renders the timestamp before the copy button", () => {
     const wrapper = mountMessageList([
       { id: "u-1", role: "user", kind: "text", content: "hello", ts: 1 },
@@ -69,14 +69,14 @@ describe("user message action row order", () => {
     wrapper.unmount();
   });
 
-  it("leaves the assistant action row order unchanged", () => {
+  it("renders the assistant timestamp before the copy button", () => {
     const wrapper = mountMessageList([
       { id: "a-1", role: "assistant", kind: "text", content: "answer", ts: 1 },
     ]);
 
     const row = wrapper.get('.msg[data-role="assistant"] .msgActions').element;
-    const [copyIndex, timeIndex] = domOrder(row, [".msgCopyBtn", ".msgTime"]);
-    expect(copyIndex).toBeLessThan(timeIndex);
+    const [timeIndex, copyIndex] = domOrder(row, [".msgTime", ".msgCopyBtn"]);
+    expect(timeIndex).toBeLessThan(copyIndex);
 
     wrapper.unmount();
   });

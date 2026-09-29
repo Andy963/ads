@@ -29,6 +29,32 @@ function resolver(): NativeModelResolver {
 }
 
 describe("Native provider retry and recovery", () => {
+  it("releases upstream response bodies on HTTP errors, malformed streams, and completed streams", async () => {
+    for (const scenario of ["http-error", "wrong-content-type", "malformed", "done"]) {
+      let cancelled = false;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const data = scenario === "done"
+            ? 'data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+            : "data: invalid-json\n\n";
+          controller.enqueue(new TextEncoder().encode(data));
+        },
+        cancel() { cancelled = true; },
+      });
+      const request = completeNativeChat({
+        baseUrl: "https://provider.test/v1", apiKey: "test-key", model: "test-model", messages: [], tools: [],
+        fetchImpl: async () => new Response(body, {
+          status: scenario === "http-error" ? 503 : 200,
+          headers: { "content-type": scenario === "wrong-content-type" ? "application/json" : "text/event-stream" },
+        }),
+      });
+      if (scenario === "done") assert.equal((await request).text, "done");
+      else await assert.rejects(request, NativeProviderError);
+      assert.equal(cancelled, true, `${scenario} must release the upstream body before retry or completion`);
+      assert.equal(body.locked, false);
+    }
+  });
+
   it("retries a transient provider response and publishes a retry event", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-"));
     try {

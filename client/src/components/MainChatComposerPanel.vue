@@ -460,9 +460,9 @@ onBeforeUnmount(() => {
           <span
             class="queue-status"
             :data-status="q.deliveryStatus ?? 'offline'"
-            :title="q.queueError || undefined"
+            :title="q.queueError || (q.deliveryStatus === 'offline' ? 'Waiting for connection' : undefined)"
           >
-            <template v-if="q.deliveryStatus === 'offline'">Waiting for connection</template>
+            <template v-if="q.deliveryStatus === 'offline'">Offline</template>
             <template v-else-if="q.deliveryStatus === 'awaiting_ack'">Sending</template>
             <template v-else-if="q.deliveryStatus === 'queued'">Queued on server</template>
             <template v-else-if="q.deliveryStatus === 'running'">Running</template>
@@ -867,10 +867,10 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
-  padding-right: 2px;
 }
 
 .queue-item {
+  flex: 0 0 auto;
   /* Float-based first-line flow: the badge and control cluster occupy only the
      first text line; later lines reclaim the full card content width. The card
      itself is the three-line scroll viewport so floats stay contained per card. */
@@ -881,13 +881,11 @@ onBeforeUnmount(() => {
   overflow-x: hidden;
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  scrollbar-color: rgba(148, 163, 184, 0.5) transparent;
+  scrollbar-color: var(--muted-2) transparent;
   padding: 8px 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  background: rgba(255, 255, 255, 0.95);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.03);
-  backdrop-filter: blur(8px);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
 }
 
 .queue-item::-webkit-scrollbar {
@@ -895,7 +893,7 @@ onBeforeUnmount(() => {
 }
 
 .queue-item::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.5);
+  background: var(--muted-2);
   border-radius: 999px;
 }
 
@@ -906,8 +904,8 @@ onBeforeUnmount(() => {
   justify-content: center;
   padding: 1px 6px;
   border-radius: 999px;
-  background: rgba(37, 99, 235, 0.1);
-  color: #2563eb;
+  background: var(--selection-bg);
+  color: var(--accent);
   font-size: 11px;
   font-weight: 700;
   font-family: var(--font-mono, monospace);
@@ -927,15 +925,15 @@ onBeforeUnmount(() => {
 }
 
 .queue-text {
-  color: #0f172a;
-  font-weight: 500;
+  color: var(--text);
+  font-weight: 400;
   word-break: break-word;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
 .queue-sub {
-  color: #64748b;
+  color: var(--muted);
   font-weight: 600;
   font-size: 11.5px;
 }
@@ -943,12 +941,12 @@ onBeforeUnmount(() => {
 .queue-status {
   font-size: 10.5px;
   font-weight: 600;
-  color: #64748b;
+  color: var(--muted);
   white-space: nowrap;
 }
 
 .queue-status[data-status="queued"] {
-  color: #2563eb;
+  color: var(--accent);
 }
 
 .queue-status[data-status="running"] {
@@ -956,7 +954,7 @@ onBeforeUnmount(() => {
 }
 
 .queue-status[data-status="failed"] {
-  color: #dc2626;
+  color: var(--danger);
 }
 
 .queue-action {
@@ -965,7 +963,7 @@ onBeforeUnmount(() => {
   border-radius: 6px;
   border: none;
   background: transparent;
-  color: #94a3b8;
+  color: var(--muted);
   cursor: pointer;
   display: grid;
   place-items: center;
@@ -974,33 +972,33 @@ onBeforeUnmount(() => {
 }
 
 .queue-action:hover {
-  color: #ef4444;
-  background: rgba(239, 68, 68, 0.08);
+  color: var(--danger);
+  background: var(--hover-bg);
 }
 
 .queue-action--retry:hover {
-  color: #2563eb;
-  background: rgba(37, 99, 235, 0.08);
+  color: var(--accent);
+  background: var(--selection-bg);
 }
 
 .inputWrap {
-  --composer-radius: 24px;
+  --composer-radius: var(--radius);
   --composer-border-width: 1px;
   width: 100%;
   box-sizing: border-box;
   position: relative;
   border-radius: var(--composer-radius);
-  border: var(--composer-border-width) solid rgba(15, 23, 42, 0.1);
-  background: #ffffff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 8px 24px rgba(15, 23, 42, 0.06);
+  border: var(--composer-border-width) solid var(--border);
+  background: var(--surface);
+  box-shadow: none;
   display: flex;
   flex-direction: column;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .inputWrap:focus-within {
-  border-color: rgba(37, 99, 235, 0.55);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 8px 24px rgba(15, 23, 42, 0.08), 0 0 0 3px rgba(37, 99, 235, 0.12);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--focus-ring);
 }
 
 .hiddenFileInput {
@@ -1210,7 +1208,7 @@ onBeforeUnmount(() => {
 .stopIcon:focus-visible,
 .actionSheetItem:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 .actionSheet {
@@ -1218,13 +1216,13 @@ onBeforeUnmount(() => {
   z-index: 200;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 6px;
+  padding: 0;
   display: grid;
   grid-auto-rows: max-content;
-  gap: 2px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.98);
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
   box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16);
 }
 
@@ -1233,22 +1231,23 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 40px;
-  padding: 8px 10px;
+  min-height: 44px;
+  padding: 10px 12px;
   border: none;
-  border-radius: 9px;
+  border-radius: 0;
   background: transparent;
-  color: #334155;
+  color: var(--text);
   text-align: left;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 400;
   cursor: pointer;
 }
 
 .actionSheetItem:hover:not(:disabled) {
-  background: rgba(37, 99, 235, 0.08);
-  color: #1d4ed8;
+  background: var(--hover-bg);
+  color: var(--accent);
 }
+.actionSheetItem + .actionSheetItem { border-top: .5px solid var(--border); }
 
 .actionSheetItem:disabled {
   color: #94a3b8;
@@ -1470,7 +1469,7 @@ onBeforeUnmount(() => {
   font-size: 16px;
   line-height: 1.5;
   background: transparent;
-  color: #0f172a;
+  color: var(--text);
   box-sizing: border-box;
 }
 
@@ -1527,24 +1526,24 @@ onBeforeUnmount(() => {
   height: 34px;
   border-radius: 50%;
   border: none;
-  background: #2563eb;
+  background: var(--accent);
   color: #ffffff;
   display: grid;
   place-items: center;
   cursor: pointer;
-  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35);
+  box-shadow: none;
   transition: background-color 0.15s, box-shadow 0.15s, transform 0.1s;
 }
 
 .sendIcon:disabled {
-  background: #e2e8f0;
-  color: #94a3b8;
+  background: var(--hover-bg);
+  color: var(--muted-2);
   box-shadow: none;
   cursor: not-allowed;
 }
 
 .sendIcon:hover:not(:disabled) {
-  background: #1d4ed8;
+  background: var(--accent-2);
 }
 
 .sendIcon:active:not(:disabled) {

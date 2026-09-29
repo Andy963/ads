@@ -1,0 +1,53 @@
+.iosSettings {
+  --settings-background: var(--app-bg);
+  --settings-surface: var(--surface);
+  --settings-text: var(--text);
+  --settings-secondary: var(--muted);
+  --settings-separator: var(--border);
+  --settings-tint: var(--accent);
+  --settings-danger: var(--danger);
+  color: var(--settings-text);
+  font-family: var(--font-sans);
+  font-size: 17px;
+  line-height: 1.35;
+  -webkit-text-size-adjust: 100%;
+}
+.iosSettings button, .iosSettings input, .iosSettings select, .iosSettings textarea { font-family: inherit; }
+.iosSettings button { cursor: pointer; touch-action: manipulation; }
+.iosSettings button:disabled { opacity: .45; cursor: default; }
+.iosSettings .settingsBlock { margin: 24px 0; min-width: 0; }
+.iosSettings .settingsBlockTitle { margin: 0 16px 7px; color: var(--settings-secondary); font-size: 13px; font-weight: 400; text-transform: uppercase; letter-spacing: .02em; }
+.iosSettings .settingsList { border-radius: var(--radius); background: var(--settings-surface); overflow: hidden; min-width: 0; }
+.iosSettings .settingsRow { position: relative; display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; margin: 0; padding: 12px 16px; border: 0; border-radius: 0; background: var(--settings-surface); color: inherit; text-align: left; font-size: 17px; box-sizing: border-box; }
+.iosSettings .settingsRow + .settingsRow::before { content: ""; position: absolute; height: .5px; background: var(--settings-separator); left: 16px; right: 0; top: 0; }
+.iosSettings button.settingsRow:active { background: var(--hover-bg); }
+.iosSettings .settingsRowContent { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.iosSettings .settingsRowContent > span { display: block; }
+.iosSettings .settingsDetail { display: block; color: var(--settings-secondary); font-size: 13px; line-height: 1.4; margin-top: 3px; overflow-wrap: anywhere; }
+.iosSettings .settingsChevron { flex: 0 0 auto; color: #c4c4c6; font-size: 26px; font-weight: 300; line-height: 1; }
+.iosSettings .settingsNote { margin: 8px 16px; color: var(--settings-secondary); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.iosSettings .settingsFeedback { margin: 12px 0; color: var(--settings-secondary); font-size: 14px; overflow-wrap: anywhere; }
+.iosSettings [role="alert"], .iosSettings .destructive { color: var(--settings-danger); }
+.iosSettings .tinted { color: var(--settings-tint); }
+.iosSettings .centered { justify-content: center; text-align: center; }
+.iosSettings .settingsIconButton { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; flex: 0 0 44px; padding: 0; border: 0; background: none; color: var(--settings-tint); border-radius: 10px; }
+.iosSettings .settingsIconButton svg { width: 23px; height: 23px; }
+.iosSettings input.settingsSwitch { -webkit-appearance: none; appearance: none; position: relative; width: 51px; min-width: 51px; height: 31px; padding: 0; margin: 0; border: 0; border-radius: 20px; background: #e9e9eb; cursor: pointer; flex: 0 0 51px; transition: background .18s; }
+.iosSettings input.settingsSwitch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: white; box-shadow: 0 1px 3px #0003; transition: transform .18s; }
+.iosSettings input.settingsSwitch:checked { background: #34c759; }
+.iosSettings input.settingsSwitch:checked::after { transform: translateX(20px); }
+.iosSettings input.settingsSwitch:disabled { opacity: .5; }
+.iosSettings .settingsField { display: block; padding: 12px 16px; }
+.iosSettings .settingsField + .settingsField { border-top: .5px solid var(--settings-separator); }
+.iosSettings .settingsField > span { display: block; margin-bottom: 8px; font-size: 13px; color: var(--settings-secondary); }
+.iosSettings .settingsField input, .iosSettings .settingsField select, .iosSettings .settingsField textarea { display: block; width: 100%; max-width: 100%; min-width: 0; min-height: 32px; margin: 0; padding: 0; border: 0; border-radius: 0; color: var(--settings-text); background: transparent; font-size: 17px; line-height: 1.4; }
+.iosSettings .settingsField textarea { min-height: 140px; resize: vertical; }
+.iosSettings .settingsField input::placeholder { color: #8e8e93; }
+.iosSettings .settingsField select { -webkit-appearance: none; appearance: none; min-height: 36px; padding-right: 26px; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%238e8e93' stroke-width='1.5'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E") no-repeat right center; }
+.iosSettings .settingsField input:focus, .iosSettings .settingsField textarea:focus { outline: none; }
+.iosSettings .settingsField:focus-within { box-shadow: inset 3px 0 var(--settings-tint); }
+.iosSettings fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+.iosSettings .settingsCheckmark { color: var(--settings-tint); flex: 0 0 24px; text-align: center; font-size: 22px; }
+.iosSettings .settingsPrimary { min-height: 50px; padding: 12px 20px; width: 100%; border: 0; border-radius: 12px; background: var(--settings-tint); color: white; font-size: 17px; font-weight: 600; }
+.iosSettings .settingsRadio { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.iosSettings .settingsRow:has(.settingsRadio:focus-visible) { outline: 2px solid var(--settings-tint); outline-offset: -3px; }

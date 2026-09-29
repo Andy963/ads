@@ -2,8 +2,30 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { ensureWsSessionLogger, handleWsControlMessage } from "../../server/web/server/ws/messageControl.js";
+import { getStateDatabase } from "../../server/state/database.js";
+import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
+import { createModelServiceStore } from "../../server/state/modelServiceStore.js";
 
 describe("web/ws/messageControl", () => {
+  it("reports the model alias while retaining its catalog ID in effective state", async () => {
+    const db = getStateDatabase();
+    const model = createGlobalModelConfigStore(db).upsertModelConfig({ id: "catalog-9d631a", modelId: "upstream-name", displayName: "My model alias", provider: "openai", isEnabled: true, isDefault: false });
+    createModelServiceStore(db).save("conversation", [model.id], model.id);
+    const sent: any[] = [];
+    let selected: string | undefined;
+    await handleWsControlMessage({
+      parsed: { type: "model_override", payload: { model: model.id } },
+      chatSessionId: "acopilot", userId: 7, historyKey: "h", currentCwd: "/tmp",
+      sessionManager: { setUserModel: (_user: number, id: string) => { selected = id; }, getEffectiveState: () => ({ model: selected, modelReasoningEffort: "high" }) } as any,
+      orchestrator: {} as any, getWorkspaceLock: (() => null) as any, historyStore: {} as any,
+      sendJson: payload => sent.push(payload), logger: { info: () => {}, warn: () => {} },
+    });
+    assert.equal(sent[0].model, model.id);
+    assert.equal(sent[0].model_display_name, "My model alias");
+    assert.match(sent[0].output, /My model alias/);
+    assert.doesNotMatch(sent[0].output, /catalog-9d631a/);
+  });
+
   it("returns null and warns when session logger initialization fails", () => {
     const warnings: string[] = [];
     const logger = ensureWsSessionLogger({

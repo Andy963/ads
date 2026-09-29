@@ -332,6 +332,16 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
     );
   }
 
+  try {
+    return await parseNativeCompletion(response, request);
+  } finally {
+    // Early protocol failures and [DONE] may leave the HTTP body open. Release
+    // it before another attempt so retries cannot exhaust upstream connections.
+    await response.body?.cancel().catch(() => {});
+  }
+}
+
+async function parseNativeCompletion(response: Response, request: NativeCompletionRequest): Promise<NativeCompletionResult> {
   if (!response.ok) {
     const retryable = new Set([408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]).has(response.status);
     throw new NativeProviderError(

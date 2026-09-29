@@ -5,6 +5,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import { ensureLanePromptTables } from "./lanePromptStore.js";
 import { sanitizeModelConfigJson } from "./modelConfigTypes.js";
 import { ensurePromptQueueTables } from "./promptQueueStore.js";
+import { ensureRoleProfiles } from "./roleProfileStore.js";
 
 export interface StateSchemaMigration {
   version: number;
@@ -794,6 +795,39 @@ Core reviewing rules:
       db.exec(`
         DROP INDEX IF EXISTS idx_role_settings_history_role;
         DROP TABLE IF EXISTS role_settings_history;
+      `);
+    },
+  },
+  {
+    version: 31,
+    description: "Use one current role profile as the only prompt authority",
+    up: (db) => {
+      ensureRoleProfiles(db);
+      // The editor displayed the active lane prompt, which is the approved
+      // migration authority when the two old stores disagree.
+      const hasVersions = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lane_system_prompt_versions'").get();
+      const hasState = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lane_system_prompt_state'").get();
+      if (hasVersions && hasState) {
+        db.exec(`
+          UPDATE role_profiles SET system_prompt = (
+            SELECT v.prompt FROM lane_system_prompt_state s
+            JOIN lane_system_prompt_versions v ON v.lane = s.lane AND v.version = s.current_version
+            WHERE s.lane = CASE role_profiles.role WHEN 'developer' THEN 'actions' ELSE role_profiles.role END
+          ) WHERE role IN ('acopilot', 'developer') AND EXISTS (
+            SELECT 1 FROM lane_system_prompt_state s
+            JOIN lane_system_prompt_versions v ON v.lane = s.lane AND v.version = s.current_version
+            WHERE s.lane = CASE role_profiles.role WHEN 'developer' THEN 'actions' ELSE role_profiles.role END
+          );
+        `);
+      }
+      // Keep the same profile the UI selected (default first, newest second).
+      db.exec(`
+        DELETE FROM role_profiles WHERE id NOT IN (
+          SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY role ORDER BY is_default DESC, updated_at DESC, id) AS rank FROM role_profiles) WHERE rank = 1
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_role_profile_single ON role_profiles(role);
+        DROP TABLE IF EXISTS lane_system_prompt_state;
+        DROP TABLE IF EXISTS lane_system_prompt_versions;
       `);
     },
   },

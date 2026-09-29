@@ -32,7 +32,7 @@ describe("Role prompt keyboard layout", () => {
     wrapper = mount(ModelManager, {
       attachTo: document.body,
       props: {
-        api: { get: vi.fn().mockResolvedValue([]) } as any,
+        api: { get: vi.fn(async (url: string) => url === "/api/role-profiles" ? [{ id: "p", role: "acopilot", model_id: "", reasoning_effort: "high", system_prompt: "Current prompt" }] : []) } as any,
         initialTab: "lane-prompts",
         showHeader: false,
       },
@@ -141,19 +141,20 @@ describe("Role prompt keyboard layout", () => {
     expect(wrapper!.get('[data-testid="lane-prompt-panel"]').classes()).not.toContain("lanePromptPanel--keyboard-open");
     expect(cancel).toHaveBeenCalledWith(revealTimer);
 
+    await flushPromises();
     wrapper!.get<HTMLTextAreaElement>('[data-testid="lane-prompt-editor"]').element.focus();
     await resize(470);
     const nextRevealTimer = schedule.mock.results.at(-1)!.value;
     wrapper!.unmount();
     wrapper = undefined;
     expect(cancel).toHaveBeenCalledWith(nextRevealTimer);
-    expect(removeListener.mock.calls.map(([event]) => event).sort()).toEqual(["resize", "scroll"]);
+    expect(removeListener.mock.calls.map(([event]) => event).sort()).toEqual(["resize", "resize", "scroll", "scroll"]);
     viewport.dispatchEvent(new Event("resize"));
     expect(panel.element.scrollTop).toBe(0);
   });
 
   it("scopes shrinkable editor and non-overlapping actions to the mobile keyboard state", async () => {
-    const css = await readSfc("../components/ModelManager.vue", import.meta.url);
+    const css = await readSfc("../components/RoleSettings.vue", import.meta.url);
     const mobileCss = css.slice(css.indexOf("@media (max-width: 900px)"));
     expect(mobileCss).toMatch(/\.lanePromptPanel--keyboard-open \.lanePromptTextarea\s*\{\s*flex: 1 1 auto;\s*min-height: 0;/);
     expect(mobileCss).toMatch(/\.lanePromptPanel--keyboard-open \.lanePromptActions\s*\{\s*bottom: 0;\s*margin: 6px 0 0;/);

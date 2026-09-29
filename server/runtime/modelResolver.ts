@@ -1,5 +1,6 @@
 import { resolveCodexConfig } from "../codexConfig.js";
 import { createGlobalModelConfigStore } from "../state/globalModelConfigStore.js";
+import { createModelServiceStore } from "../state/modelServiceStore.js";
 import { createModelProviderStore } from "../state/modelProviderStore.js";
 import {
   DEFAULT_REASONING_EFFORT,
@@ -103,7 +104,7 @@ function resolveSavedModelConfig(
 ): NativeModelConfig | null {
   const db = getStateDatabase(stateDbPath);
   const modelStore = createGlobalModelConfigStore(db);
-  const saved = modelStore.getModelConfigByAgentModelId(model) ?? modelStore.getModelConfig(model);
+  const saved = modelStore.getModelConfig(model) ?? modelStore.getModelConfigByAgentModelId(model);
   if (!saved) return null;
   if (!saved.isEnabled) {
     throw new Error(`Native runtime model "${saved.modelId ?? model}" is disabled`);
@@ -120,6 +121,11 @@ function resolveSavedModelConfig(
   if (attachedProvider && !attachedProvider.isEnabled) {
     throw new Error(`Native runtime provider "${attachedProvider.name}" is disabled`);
   }
+  const wireApi = String(attachedProvider?.wireApi ?? "").trim();
+  if (wireApi && wireApi !== "chat") {
+    throw new Error("Native runtime supports only Chat Completions; select Chat completions in the provider API format.");
+  }
+  createModelServiceStore(db).resolveConversation(saved.id);
   const profile = attachedProvider
     ? String(attachedProvider.credentialProfile ?? "").trim() || attachedProvider.id
     : readString(config, "credentialProfile");

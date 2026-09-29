@@ -1116,6 +1116,12 @@ export function createChatActions(ctx: AppContext) {
         deliveryStatus: state.connected.value ? "awaiting_ack" : "offline",
       },
     ];
+    state.laneStatus.value = {
+      kind: "progress",
+      message: state.connected.value && state.ws
+        ? "Retry queued. Waiting to send…"
+        : "Retry queued. Waiting for the connection…",
+    };
     void flushQueuedPrompts(state);
   };
 
@@ -1230,6 +1236,8 @@ export function createChatActions(ctx: AppContext) {
       if (next.restoredFromStorage) {
         state.inputLocked.value = true;
         state.laneStatus.value = { kind: "progress", message: "请求已重新发送，正在等待后端结果…" };
+      } else if (next.replayIncomplete) {
+        state.laneStatus.value = { kind: "progress", message: "Retry sent. Waiting for the response…" };
       }
       state.queuedPrompts.value = state.queuedPrompts.value.filter(
         (prompt) => prompt.clientMessageId !== next.clientMessageId,
@@ -1250,7 +1258,7 @@ export function createChatActions(ctx: AppContext) {
       }
       if (!sendAccepted) {
         state.connected.value = false;
-        if (!options?.preserveErrorStatus && !state.laneStatus.value) {
+        if (next.replayIncomplete || (!options?.preserveErrorStatus && !state.laneStatus.value)) {
           state.laneStatus.value = { kind: "error", message: "Failed to send prompt: connection lost or prompt rejected." };
         }
       }

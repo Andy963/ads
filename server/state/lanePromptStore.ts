@@ -2,6 +2,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 
 import { normalizeLaneId } from "../../shared/terminology.js";
 import { BASE_LANE_PROMPTS, LANE_NAMES, type LaneName } from "./lanePromptDefaults.js";
+import { ensureRoleProfiles, getDefaultRoleProfile, saveRoleProfile } from "./roleProfileStore.js";
 
 export const MAX_LANE_PROMPT_LENGTH = 100_000;
 
@@ -54,16 +55,6 @@ function validatePrompt(value: unknown): string {
   return prompt;
 }
 
-function toVersion(row: Record<string, unknown>): LanePromptVersion {
-  return {
-    lane: validateLane(row.lane),
-    version: Number(row.version),
-    prompt: String(row.prompt ?? ""),
-    isBase: Number(row.is_base) === 1,
-    createdAt: Number(row.created_at),
-  };
-}
-
 export function ensureLanePromptTables(db: DatabaseType, now = Date.now()): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS lane_system_prompt_versions (
@@ -110,57 +101,17 @@ export function ensureLanePromptTables(db: DatabaseType, now = Date.now()): void
 }
 
 export function createLanePromptStore(db: DatabaseType) {
-  ensureLanePromptTables(db);
-
-  const listVersionsStmt = db.prepare(`
-    SELECT lane, version, prompt, is_base, created_at
-    FROM lane_system_prompt_versions
-    WHERE lane = ?
-    ORDER BY version DESC
-  `);
-  const getCurrentVersionStmt = db.prepare(`
-    SELECT v.lane, v.version, v.prompt, v.is_base, v.created_at, s.updated_at
-    FROM lane_system_prompt_state s
-    JOIN lane_system_prompt_versions v
-      ON v.lane = s.lane AND v.version = s.current_version
-    WHERE s.lane = ?
-    LIMIT 1
-  `);
-  const getBaseVersionStmt = db.prepare(`
-    SELECT lane, version, prompt, is_base, created_at
-    FROM lane_system_prompt_versions
-    WHERE lane = ? AND is_base = 1
-    LIMIT 1
-  `);
-  const getMaxVersionStmt = db.prepare(`
-    SELECT COALESCE(MAX(version), 0) AS max_version
-    FROM lane_system_prompt_versions
-    WHERE lane = ?
-  `);
-  const insertVersionStmt = db.prepare(`
-    INSERT INTO lane_system_prompt_versions
-      (lane, version, prompt, is_base, created_at)
-    VALUES (?, ?, ?, 0, ?)
-  `);
-  const updateCurrentStmt = db.prepare(`
-    UPDATE lane_system_prompt_state
-    SET current_version = ?, updated_at = ?
-    WHERE lane = ?
-  `);
-
+  ensureRoleProfiles(db);
+  // Compatibility facade for existing prompt consumers. It never persists
+  // snapshots: both the editor and runtime read the same role profile.
   const getSnapshot = (rawLane: unknown): LanePromptSnapshot => {
     const lane = validateLane(rawLane);
-    const currentRow = getCurrentVersionStmt.get(lane) as Record<string, unknown> | undefined;
-    const baseRow = getBaseVersionStmt.get(lane) as Record<string, unknown> | undefined;
-    if (!currentRow || !baseRow) {
-      throw new Error(`Lane prompt is not initialized: ${lane}`);
-    }
+    const profile = getDefaultRoleProfile(db, lane === "actions" ? "developer" : "acopilot");
+    if (!profile) throw new Error(`Role prompt is not initialized: ${lane}`);
+    const current = { lane, version: profile.version, prompt: profile.system_prompt, isBase: profile.system_prompt === BASE_LANE_PROMPTS[lane], createdAt: profile.updated_at };
     return {
-      lane,
-      current: toVersion(currentRow),
-      base: toVersion(baseRow),
-      versions: (listVersionsStmt.all(lane) as Record<string, unknown>[]).map(toVersion),
-      updatedAt: Number(currentRow.updated_at ?? 0),
+      lane, current, base: { lane, version: 0, prompt: BASE_LANE_PROMPTS[lane], isBase: true, createdAt: 0 },
+      versions: [current], updatedAt: profile.updated_at,
     };
   };
 
@@ -180,30 +131,15 @@ export function createLanePromptStore(db: DatabaseType) {
   const setLanePrompt = (rawLane: unknown, rawPrompt: unknown, now = Date.now()): LanePromptSnapshot => {
     const lane = validateLane(rawLane);
     const prompt = validatePrompt(rawPrompt);
-    const tx = db.transaction(() => {
-      const row = getMaxVersionStmt.get(lane) as { max_version?: unknown } | undefined;
-      const nextVersion = Number(row?.max_version ?? 0) + 1;
-      insertVersionStmt.run(lane, nextVersion, prompt, now);
-      const updated = updateCurrentStmt.run(nextVersion, now, lane) as { changes?: number };
-      if (Number(updated.changes ?? 0) !== 1) {
-        throw new Error(`Lane prompt state is not initialized: ${lane}`);
-      }
-    });
-    tx();
+    const profile = getDefaultRoleProfile(db, lane === "actions" ? "developer" : "acopilot");
+    if (!profile) throw new Error(`Role prompt is not initialized: ${lane}`);
+    saveRoleProfile(db, { ...profile, system_prompt: prompt, is_enabled: Boolean(profile.is_enabled), is_default: Boolean(profile.is_default) }, now);
     return getSnapshot(lane);
   };
 
   const resetLanePrompt = (rawLane: unknown): LanePromptSnapshot => {
     const lane = validateLane(rawLane);
-    const base = getBaseVersionStmt.get(lane) as Record<string, unknown> | undefined;
-    if (!base) {
-      throw new Error(`Lane prompt base version is not initialized: ${lane}`);
-    }
-    const tx = db.transaction(() => {
-      updateCurrentStmt.run(Number(base.version), Date.now(), lane);
-    });
-    tx();
-    return getSnapshot(lane);
+    return setLanePrompt(lane, BASE_LANE_PROMPTS[lane]);
   };
 
   return { getLanePrompt, listLanePrompts, getActiveLanePrompt, setLanePrompt, resetLanePrompt };

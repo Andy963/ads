@@ -28,6 +28,7 @@ const SECRET = "provider-injection-test-secret";
 interface FakeDaemon {
   client: CodexAppServerClient;
   notify: (method: string, params: Record<string, unknown>) => void;
+  requests: Array<{ method: string; params: Record<string, unknown> }>;
 }
 
 function buildFakeDaemon(): FakeDaemon {
@@ -36,6 +37,7 @@ function buildFakeDaemon(): FakeDaemon {
   const stderr = new PassThrough();
   const client = new CodexAppServerClient();
   client.attach({ stdin, stdout, stderr, waitClose: async () => null });
+  const requests: FakeDaemon["requests"] = [];
   let buffer = "";
   stdin.on("data", (chunk: Buffer | string) => {
     buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -45,6 +47,7 @@ function buildFakeDaemon(): FakeDaemon {
       buffer = buffer.slice(idx + 1);
       if (!line.trim()) continue;
       const msg = JSON.parse(line) as { id?: number | string; method?: string; params?: { threadId?: string } };
+      if (msg.method) requests.push({ method: msg.method, params: msg.params ?? {} });
       if (msg.method === "initialize") {
         stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} })}\n`);
       } else if (msg.method === "thread/start") {
@@ -58,6 +61,7 @@ function buildFakeDaemon(): FakeDaemon {
   });
   return {
     client,
+    requests,
     notify: (method, params) => {
       stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
     },
@@ -175,6 +179,16 @@ describe("codex provider injection", () => {
     );
   });
 
+  it("does not send an account's old key to a changed provider endpoint", () => {
+    seedProvider();
+    const providers = createModelProviderStore(db);
+    providers.upsertProvider({ ...providers.getProvider("provider-openrouter")!, baseUrl: "https://replacement.invalid/v1" });
+    assert.throws(
+      () => resolveCodexProviderInjection({ db, owner: "alice", model: "model-1" }),
+      /endpoint does not match/,
+    );
+  });
+
   it("returns null for models without a provider attachment", () => {
     createGlobalModelConfigStore(db).upsertModelConfig({
       id: "model-legacy",
@@ -222,6 +236,38 @@ describe("codex provider injection", () => {
 });
 
 describe("CodexAppServerAdapter provider injection", () => {
+  it("sends upstream model names, not catalog IDs, for new and resumed threads", async () => {
+    for (const resumeThreadId of [undefined, "saved-thread"]) {
+      const daemons: FakeDaemon[] = [];
+      const registry = new CodexAppServerDaemonRegistry({
+        factory: () => {
+          const daemon = buildFakeDaemon();
+          daemons.push(daemon);
+          return daemon.client;
+        },
+      });
+      const adapter = new CodexAppServerAdapter({
+        projectId: "model-reference-test",
+        registry,
+        model: "catalog-provider-two-model",
+        resumeThreadId,
+        resolveModel: (reference) => {
+          assert.equal(reference, "catalog-provider-two-model");
+          return "shared-upstream-name";
+        },
+      });
+      const pending = adapter.send("hello");
+      const daemon = await waitForDaemon(daemons, 0);
+      await completeTurn(daemon, resumeThreadId ?? "thread-1");
+      await pending;
+      const start = daemon.requests.find((request) => request.method === (resumeThreadId ? "thread/resume" : "thread/start"));
+      const turn = daemon.requests.find((request) => request.method === "turn/start");
+      assert.equal(start?.params.model, "shared-upstream-name");
+      assert.equal(turn?.params.model, "shared-upstream-name");
+      assert.equal(turn?.params.effort, "high");
+    }
+  });
+
   it("spawns the daemon with provider overrides and respawns on provider change", async () => {
     const spawnedOptions: DaemonOptions[] = [];
     const daemons: FakeDaemon[] = [];

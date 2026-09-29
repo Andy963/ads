@@ -126,11 +126,11 @@ async function ensureWsConnected(wrapper: any): Promise<void> {
   await settleUi(wrapper);
 }
 
-type AppWrapper = { vm: any; unmount: () => void };
+type AppWrapper = ReturnType<typeof shallowMount> & { vm: any };
 
-async function mountApp(): Promise<AppWrapper> {
+async function mountApp(stubs: Record<string, boolean> = {}): Promise<AppWrapper> {
   const App = (await import("../App.vue")).default;
-  const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+  const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false, ...stubs } } });
   await settleUi(wrapper);
   await ensureWsConnected(wrapper);
   return wrapper as unknown as AppWrapper;
@@ -442,6 +442,128 @@ describe("issue-221: failed turn retry button", () => {
 });
 
 describe("issue-478: turn failure retry", () => {
+  it.each([
+    ["acopilot", true],
+    ["actions", true],
+    ["acopilot", false],
+    ["actions", false],
+  ] as const)("retries through the actual %s message button with connected=%s and visible feedback", async (lane, connected) => {
+    const wrapper = await mountApp({ MainChatView: false, MainChatMessageList: false, MainChatComposerPanel: false });
+    try {
+      const rt: ProjectRuntime = lane === "acopilot"
+        ? wrapper.vm.getAcopilotRuntime(wrapper.vm.activeProjectId)
+        : wrapper.vm.getRuntime(wrapper.vm.activeProjectId);
+      const other: ProjectRuntime = lane === "acopilot"
+        ? wrapper.vm.getRuntime(wrapper.vm.activeProjectId)
+        : wrapper.vm.getAcopilotRuntime(wrapper.vm.activeProjectId);
+      const sendPrompt = vi.fn().mockReturnValue(true);
+      const otherSend = vi.fn().mockReturnValue(true);
+      rt.ws = { sendPrompt, close: vi.fn() } as unknown as typeof rt.ws;
+      other.ws = { sendPrompt: otherSend, close: vi.fn() } as unknown as typeof other.ws;
+      rt.connected.value = connected;
+      rt.inputLocked.value = false;
+      rt.syncInProgress = false;
+      rt.awaitingBootstrapHistory = false;
+      rt.promptReconciliationPending = false;
+      rt.messages.value = [
+        { id: "u-retry", role: "user", kind: "text", content: "Retry the original turn", ts: 1,
+          execution: { agentId: "codex", model: "original-model", modelReasoningEffort: "medium" } },
+        { id: turnFailureCardId("u-retry"), role: "system", kind: "error", content: "Provider unavailable", ts: 2 },
+      ];
+      rt.laneStatus.value = { kind: "error", message: "Provider unavailable" };
+      await settleUi(wrapper);
+
+      const panel = wrapper.get(`[data-testid="lane-panel-${lane}"]`);
+      await panel.get('[data-testid="inline-turn-retry"]').trigger("click");
+      await settleUi(wrapper);
+
+      expect(panel.find('[data-testid="inline-turn-retry"]').exists()).toBe(false);
+      expect(panel.get('[data-testid="lane-connection-status"]').text()).toContain(
+        connected ? "Retry sent" : "Retry queued",
+      );
+      expect(otherSend).not.toHaveBeenCalled();
+      if (!connected) {
+        expect(sendPrompt).not.toHaveBeenCalled();
+        expect(rt.queuedPrompts.value).toHaveLength(1);
+        expect(panel.find(".queue-item").exists()).toBe(true);
+        expect(rt.queuedPrompts.value[0]).toMatchObject({
+          clientMessageId: "u-retry", replayIncomplete: true, model: "original-model", modelReasoningEffort: "medium",
+        });
+        expect(other.messages.value).toHaveLength(0);
+        return;
+      }
+      expect(sendPrompt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        text: "Retry the original turn", agentId: "codex", model: "original-model",
+        model_reasoning_effort: "medium", replay_incomplete: true,
+      }), "u-retry");
+      expect(rt.messages.value.filter(message => message.role === "user")).toHaveLength(1);
+      expect(other.messages.value).toHaveLength(0);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
+  it.each(["offline", "sync", "locked"])("queues a retry with feedback while %s and sends it once when ready", async (gate) => {
+    const { chat, rt } = mountHarness();
+    const sendPrompt = vi.fn().mockReturnValue(true);
+    rt.ws = { sendPrompt } as unknown as typeof rt.ws;
+    rt.connected.value = gate !== "offline";
+    rt.syncInProgress = gate === "sync";
+    rt.inputLocked.value = gate === "locked";
+    rt.messages.value = [
+      { id: "u-retry", role: "user", kind: "text", content: "Retry me", ts: 1 },
+      { id: turnFailureCardId("u-retry"), role: "system", kind: "error", content: "Provider unavailable", ts: 2 },
+    ];
+
+    chat.retryPrompt(rt.messages.value[1]!, rt);
+    await settle();
+    expect(sendPrompt).not.toHaveBeenCalled();
+    expect(rt.laneStatus.value).toMatchObject({ kind: "progress", message: expect.stringContaining("Retry queued") });
+    rt.connected.value = true;
+    rt.syncInProgress = false;
+    rt.inputLocked.value = false;
+    await chat.flushQueuedPrompts(rt);
+    await chat.flushQueuedPrompts(rt);
+    expect(sendPrompt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ replay_incomplete: true }), "u-retry");
+    expect(rt.laneStatus.value).toMatchObject({ kind: "progress", message: expect.stringContaining("Retry sent") });
+    expect(rt.messages.value.filter(message => message.role === "user")).toHaveLength(1);
+  });
+
+  it("reports a failed retry send and keeps it queued for reconnect", async () => {
+    const { chat, rt } = mountHarness();
+    rt.ws = { sendPrompt: vi.fn().mockReturnValue(false) } as unknown as typeof rt.ws;
+    rt.messages.value = [
+      { id: "u-retry", role: "user", kind: "text", content: "Retry me", ts: 1 },
+      { id: turnFailureCardId("u-retry"), role: "system", kind: "error", content: "Provider unavailable", ts: 2 },
+    ];
+    rt.laneStatus.value = { kind: "error", message: "Provider unavailable" };
+    chat.retryPrompt(rt.messages.value[1]!, rt);
+    await settle();
+
+    expect(rt.laneStatus.value?.kind).toBe("error");
+    expect(rt.laneStatus.value?.message).toContain("Failed to send prompt");
+    expect(rt.queuedPrompts.value).toMatchObject([{ clientMessageId: "u-retry", deliveryStatus: "offline" }]);
+    expect(rt.messages.value.filter(message => message.role === "user")).toHaveLength(1);
+  });
+
+  it("removes the acknowledged replay card on its matching successful result", async () => {
+    const { chat, rt, handler } = mountHarness();
+    rt.messages.value = [
+      { id: "u-retry", role: "user", kind: "text", content: "Retry me", ts: 1 },
+      { id: turnFailureCardId("u-retry"), role: "system", kind: "error", content: "Provider unavailable", ts: 2 },
+    ];
+    chat.retryPrompt(rt.messages.value[1]!, rt);
+    handler(ackFrame("u-retry") as never);
+    expect(cardsFor(rt, "u-retry")).toHaveLength(1);
+    rt.queuedPrompts.value.push({ id: "later", clientMessageId: "u-later", text: "Later prompt", images: [],
+      createdAt: 3, deliveryStatus: "queued", serverQueueTracked: true });
+    handler({ type: "result", ok: true, clientMessageId: "u-retry", output: "Recovered" } as never);
+    await settle();
+    expect(cardsFor(rt, "u-retry")).toHaveLength(0);
+    expect(cardsFor(rt, "u-later")).toHaveLength(1);
+    expect(rt.consumedPromptIds?.has("u-retry")).toBe(true);
+  });
+
   it("anchors the failure card to the turn that failed even when a newer user message exists", async () => {
     const wrapper = await mountApp();
 

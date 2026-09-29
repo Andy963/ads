@@ -1,7 +1,7 @@
 import type { SessionManager } from "../../../sessions/sessionManager.js";
 
 import { getStateDatabase } from "../../../state/database.js";
-import { createGlobalModelConfigStore } from "../../../state/globalModelConfigStore.js";
+import { createModelServiceStore } from "../../../state/modelServiceStore.js";
 import {
   parseAgentIdFromPayload,
   parseModelFromPayload,
@@ -27,14 +27,12 @@ export function applySessionOverrides(args: {
   const modelOverride = parseModelFromPayload(payload);
   if (modelOverride.present && modelOverride.model) {
     const previousModel = sessionManager.getUserModel(userId);
-    const modelStore = createGlobalModelConfigStore(getStateDatabase());
-    const modelConfig =
-      modelStore.getModelConfigByAgentModelId(modelOverride.model) ?? modelStore.getModelConfig(modelOverride.model);
+    const modelConfig = createModelServiceStore(getStateDatabase()).resolveConversation(modelOverride.model);
     const orchestrator = typeof sessionManager.getOrCreate === "function"
       ? sessionManager.getOrCreate(userId, undefined, true, { authUserId })
       : null;
-    if (previousModel !== modelOverride.model) {
-      sessionManager.setUserModel(userId, modelOverride.model);
+    if (previousModel !== modelConfig.id) {
+      sessionManager.setUserModel(userId, modelConfig.id);
     }
     orchestrator?.setModelConfig?.(modelConfig?.configJson ?? null);
   }

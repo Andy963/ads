@@ -93,7 +93,7 @@ describe("web/lane-prompt routes", () => {
     await handleLanePromptRoutes(routeContext(createReq("POST"), resetRes, "/api/lane-prompts/worker/reset"), { lanePromptStore: store });
     assert.equal(resetRes.statusCode, 200);
     const reset = parseJson<{ current: { version: number }; base: { version: number } }>(resetRes.body);
-    assert.equal(reset.current.version, reset.base.version);
+    assert.ok(reset.current.version > reset.base.version);
   });
 
   it("accepts legacy lane ids and always reports canonical ones", async () => {

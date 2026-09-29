@@ -216,10 +216,10 @@ describe("state/database", () => {
         };
       }),
       [
-        { modelId: "test-empty", reasoningEfforts: ["high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
-        { modelId: "test-invalid", reasoningEfforts: ["high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
+        { modelId: "test-empty", reasoningEfforts: ["medium", "high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
+        { modelId: "test-invalid", reasoningEfforts: ["medium", "high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
         { modelId: "test-mixed", reasoningEfforts: ["high", "xhigh"], defaultReasoningEffort: "xhigh", reasoningEffort: "max" },
-        { modelId: "test-unconfigured", reasoningEfforts: ["high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
+        { modelId: "test-unconfigured", reasoningEfforts: ["medium", "high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
         { modelId: "test-valid", reasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium", reasoningEffort: undefined },
       ],
     );
@@ -248,7 +248,7 @@ describe("state/database", () => {
     const seedDb = getStateDatabase();
     seedDb
       .prepare("UPDATE model_configs SET config_json = ? WHERE model_id = 'gpt-5.6-luna'")
-      .run(JSON.stringify({ allowedAgents: ["codex"], reasoningEfforts: ["high"], defaultReasoningEffort: "high" }));
+      .run(JSON.stringify({ allowedAgents: ["codex"], reasoningEfforts: ["medium", "high"], defaultReasoningEffort: "high" }));
     seedDb.exec("UPDATE schema_version SET version = 15 WHERE id = 1");
 
     resetStateDatabaseForTests();
@@ -488,25 +488,25 @@ describe("state/database", () => {
       }
     });
 
-    it("appends versions and reset points to the immutable base version", () => {
+    it("overwrites the current prompt and resets without retaining versions", () => {
       laneDb = new DatabaseConstructor(":memory:");
       const store = createLanePromptStore(laneDb);
 
       const saved = store.setLanePrompt("advisor", "Custom advisor prompt", 1000);
       assert.equal(saved.current.version, 2);
       assert.equal(saved.current.prompt, "Custom advisor prompt");
-      assert.equal(saved.base.version, 1);
-      assert.equal(saved.versions.length, 2);
+      assert.equal(saved.base.version, 0);
+      assert.equal(saved.versions.length, 1);
       assert.equal(saved.updatedAt, 1000);
 
       const second = store.setLanePrompt("advisor", "Second advisor prompt", 2000);
       assert.equal(second.current.version, 3);
-      assert.deepEqual(second.versions.map((version) => version.version), [3, 2, 1]);
+      assert.deepEqual(second.versions.map((version) => version.version), [3]);
 
       const reset = store.resetLanePrompt("advisor");
-      assert.equal(reset.current.version, 1);
+      assert.equal(reset.current.version, 4);
       assert.equal(reset.current.prompt, reset.base.prompt);
-      assert.equal(reset.versions.length, 3);
+      assert.equal(reset.versions.length, 1);
     });
 
     it("rejects invalid lanes and empty prompts", () => {
@@ -566,7 +566,7 @@ describe("state/database", () => {
       // reset is scoped by role, which is what keeps the detached Reviewer
       // context from being merged into the Developer one.
       const promoted = saveRoleProfile(db, {
-        id: "profile-developer-alt",
+        id: "profile-default-developer",
         role: "developer",
         name: "Developer Alternate",
         model_id: "gpt-5.6",
@@ -575,7 +575,7 @@ describe("state/database", () => {
       });
       assert.strictEqual(promoted.role, "developer");
 
-      assert.strictEqual(getDefaultRoleProfile(db, "developer")?.id, "profile-developer-alt");
+      assert.strictEqual(getDefaultRoleProfile(db, "developer")?.id, "profile-default-developer");
 
       // Assert the is_default flag itself rather than the returned id:
       // getDefaultRoleProfile falls back to any row for the role when no default
@@ -601,7 +601,7 @@ describe("state/database", () => {
     it("saves a new role profile and updates default status", () => {
       const db = getStateDatabase();
       const newProfile = saveRoleProfile(db, {
-        id: "profile-acopilot-gemini",
+        id: "profile-default-acopilot",
         role: "acopilot",
         name: "Acopilot Gemini Pro",
         model_id: "gemini-2.5-pro",
@@ -610,13 +610,13 @@ describe("state/database", () => {
         is_default: true,
       });
 
-      assert.strictEqual(newProfile.id, "profile-acopilot-gemini");
-      assert.strictEqual(newProfile.version, 1);
+      assert.strictEqual(newProfile.id, "profile-default-acopilot");
+      assert.strictEqual(newProfile.version, 2);
       assert.strictEqual(newProfile.is_default, 1);
 
       const defaultProfile = getDefaultRoleProfile(db, "acopilot");
       assert.ok(defaultProfile);
-      assert.strictEqual(defaultProfile.id, "profile-acopilot-gemini");
+      assert.strictEqual(defaultProfile.id, "profile-default-acopilot");
       assert.strictEqual(defaultProfile.model_id, "gemini-2.5-pro");
     });
 
@@ -624,7 +624,7 @@ describe("state/database", () => {
       const db = getStateDatabase();
       for (let i = 0; i < 5; i += 1) {
         saveRoleProfile(db, {
-          id: "profile-acopilot-repeat",
+          id: "profile-default-acopilot",
           role: "acopilot",
           name: "Acopilot Repeat",
           model_id: `model-${i}`,
@@ -634,10 +634,10 @@ describe("state/database", () => {
 
       const saved = db
         .prepare("SELECT model_id, version FROM role_profiles WHERE id = ?")
-        .get("profile-acopilot-repeat") as { model_id: string; version: number } | undefined;
+        .get("profile-default-acopilot") as { model_id: string; version: number } | undefined;
       assert.ok(saved);
       assert.strictEqual(saved.model_id, "model-4");
-      assert.strictEqual(saved.version, 5);
+      assert.strictEqual(saved.version, 6);
 
       const historyTable = db
         .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'role_settings_history'")

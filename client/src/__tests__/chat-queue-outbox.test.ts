@@ -771,7 +771,8 @@ describe("issue-328 queued prompt bubbles", () => {
     expect(classOrder).toEqual(["queue-badge", "queue-controls", "queue-text"]);
 
     const controls = item.get(".queue-controls");
-    expect(controls.get(".queue-status").text()).toBe("Waiting for connection");
+    expect(controls.get(".queue-status").text()).toBe("Offline");
+    expect(controls.get(".queue-status").attributes("title")).toBe("Waiting for connection");
     expect(controls.get(".queue-action--remove").attributes("aria-label")).toBe("移除排队消息");
     expect(item.get(".queue-text").text()).toContain("Line one");
     expect(item.get(".queue-text").text()).toContain("图片 x1");

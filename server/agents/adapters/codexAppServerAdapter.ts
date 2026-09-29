@@ -82,6 +82,7 @@ export interface CodexAppServerAdapterOptions {
    * (the registry compares env and globalArgs).
    */
   providerInjection?: () => CodexProviderInjection | null;
+  resolveModel?: (reference: string) => string;
 }
 
 interface UserInputPart {
@@ -253,6 +254,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
   private developerInstructions?: string;
   private spawnEnv?: NodeJS.ProcessEnv;
   private readonly providerInjection?: () => CodexProviderInjection | null;
+  private readonly resolveModel?: (reference: string) => string;
   private readonly turnTimeoutMs: number;
   private autoCompactEnabled = true;
   private autoCompactThresholdPercent = DEFAULT_AUTO_COMPACT_THRESHOLD_PERCENT;
@@ -281,6 +283,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     this.developerInstructions = options.developerInstructions;
     this.spawnEnv = options.env;
     this.providerInjection = options.providerInjection;
+    this.resolveModel = options.resolveModel;
     this.turnTimeoutMs = options.turnTimeoutMs ?? 0;
     this.metadata = {
       ...DEFAULT_METADATA,
@@ -1224,7 +1227,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       approvalPolicy: "untrusted",
     };
     if (this.workingDirectory) params.cwd = this.workingDirectory;
-    if (this.model) params.model = this.model;
+    if (this.model) params.model = this.resolveModel?.(this.model) ?? this.model;
     if (this.developerInstructions) params.developerInstructions = this.developerInstructions;
     if (this.sandboxMode === "read-only") {
       params.sandbox = "read-only";
@@ -1243,7 +1246,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       approvalPolicy: "untrusted",
     };
     if (this.workingDirectory) params.cwd = this.workingDirectory;
-    if (this.model) params.model = this.model;
+    if (this.model) params.model = this.resolveModel?.(this.model) ?? this.model;
     if (this.developerInstructions) params.developerInstructions = this.developerInstructions;
     if (this.sandboxMode === "read-only") {
       params.sandbox = "read-only";
@@ -1273,8 +1276,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
       threadId,
       input,
     };
-    if (this.model) params.model = this.model;
-    if (this.modelReasoningEffort) params.effort = this.modelReasoningEffort;
+    if (this.model) params.model = this.resolveModel?.(this.model) ?? this.model;
+    params.effort = this.modelReasoningEffort || "high";
     if (this.workingDirectory) params.cwd = this.workingDirectory;
     return params;
   }

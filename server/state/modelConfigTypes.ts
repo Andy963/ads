@@ -51,7 +51,7 @@ export function sanitizeModelConfigJson(
     ];
 
     if (efforts.length === 0) {
-      config.reasoningEfforts = [DEFAULT_REASONING_EFFORT];
+      config.reasoningEfforts = ["medium", DEFAULT_REASONING_EFFORT];
       config.defaultReasoningEffort = DEFAULT_REASONING_EFFORT;
     } else {
       config.reasoningEfforts = efforts;

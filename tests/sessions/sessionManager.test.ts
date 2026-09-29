@@ -8,6 +8,9 @@ import { SessionManager } from "../../server/sessions/sessionManager.js";
 import { getStateDatabase } from "../../server/state/database.js";
 import { resetStateDatabaseForTests } from "../../server/state/database.js";
 import { ThreadStorage } from "../../server/sessions/threadStorage.js";
+import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
+import { createModelServiceStore } from "../../server/state/modelServiceStore.js";
+import { getDefaultRoleProfile, saveRoleProfile } from "../../server/state/roleProfileStore.js";
 
 type FakeSession = {
   readonly id: number;
@@ -142,6 +145,35 @@ describe("SessionManager", () => {
     assert.equal(session1, session2);
     assert.equal(manager.getUserCwd(123456), "/tmp/a");
     assert.equal(manager.getContextRestoreMode(123456), "fresh");
+  });
+
+  it("uses each lane's role model and effort until the session explicitly overrides them", () => {
+    const db = getStateDatabase();
+    const models = createGlobalModelConfigStore(db);
+    const services = createModelServiceStore(db);
+    for (const id of ["role-chat", "role-actions", "explicit-choice"]) {
+      models.upsertModelConfig({ id, modelId: "upstream-" + id, displayName: id, provider: "openai", isEnabled: true, isDefault: false });
+    }
+    services.save("conversation", ["role-chat", "role-actions", "explicit-choice"], "explicit-choice");
+    for (const [lane, role, model] of [["acopilot", "acopilot", "role-chat"], ["actions", "developer", "role-actions"]] as const) {
+      const profile = getDefaultRoleProfile(db, role)!;
+      saveRoleProfile(db, { ...profile, model_id: model, reasoning_effort: "medium", is_default: true, is_enabled: true });
+      const sessions = createFakeSessionFactory();
+      manager.destroy();
+      manager = new SessionManager(1000, 500, "workspace-write", undefined, undefined, undefined, {
+        createSession: sessions.factory as never,
+        lane,
+      });
+      assert.equal(manager.getEffectiveState(123456).model, model);
+      assert.equal(manager.getEffectiveState(123456).modelReasoningEffort, "medium");
+      manager.getOrCreate(123456, "/tmp/a");
+      assert.equal(sessions.created[0].model, model);
+      assert.equal(sessions.created[0].modelReasoningEffort, "medium");
+      manager.setUserModel(123456, "explicit-choice");
+      manager.setUserModelReasoningEffort(123456, "high");
+      assert.equal(manager.getUserModel(123456), "explicit-choice");
+      assert.equal(manager.getUserModelReasoningEffort(123456), "high");
+    }
   });
 
   it("evicts idle sessions, resets heavy state, and recreates them on demand", async () => {

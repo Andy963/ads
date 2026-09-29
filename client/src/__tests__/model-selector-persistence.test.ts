@@ -414,7 +414,7 @@ describe("Model selector persistence", () => {
   );
 
   it(
-    "preserves an unknown stored model instead of replacing it with a fallback",
+    "replaces an unavailable stored model with the enabled service default",
     async () => {
       localStorage.setItem("ads.modelId.default.main", "not-a-real-model");
 
@@ -429,8 +429,8 @@ describe("Model selector persistence", () => {
       await settleUi(wrapper);
 
       expect(lastSendPromptPayload).toBeTruthy();
-      expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "not-a-real-model" });
-      expect(readStoredModelId("default", "main")).toBe("not-a-real-model");
+      expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "gpt-4.1" });
+      expect(readStoredModelId("default", "main")).toBe("gpt-4.1");
 
       wrapper.unmount();
     },

@@ -6,6 +6,9 @@ import path from "node:path";
 
 import { handleCommandMessage } from "../../server/web/server/ws/handleCommand.js";
 import { handlePromptMessage } from "../../server/web/server/ws/handlePrompt.js";
+import { getStateDatabase } from "../../server/state/database.js";
+import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
+import { createModelServiceStore } from "../../server/state/modelServiceStore.js";
 
 type HistoryEntry = { role: string; text: string; ts: number; kind?: string };
 
@@ -453,6 +456,10 @@ describe("web slash commands", () => {
       const orchestrator = new FakeOrchestrator();
       const historyStore = new MemoryHistoryStore();
       let currentModel = "gpt-4.1";
+      const db = getStateDatabase();
+      createGlobalModelConfigStore(db).upsertModelConfig({ id: "gpt-4o", modelId: "gpt-4o", displayName: "GPT-4o", provider: "openai", isEnabled: true, isDefault: false });
+      const services = createModelServiceStore(db);
+      services.save("conversation", ["gpt-4o"], "gpt-4o");
 
       await handlePromptMessage(
         createPromptDeps({

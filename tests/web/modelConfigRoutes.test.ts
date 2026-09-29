@@ -204,7 +204,7 @@ describe("web/model-config routes", () => {
     assert.equal(res.statusCode, 200);
     const created = parseJson<{ configJson: Record<string, unknown> }>(res.body);
     assert.deepEqual(created.configJson, {
-      reasoningEfforts: ["high"],
+      reasoningEfforts: ["medium", "high"],
       defaultReasoningEffort: "high",
     });
   });

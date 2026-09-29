@@ -2092,12 +2092,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
               msg.effectiveModelReasoningEffort ?? msg.model_reasoning_effort,
           };
           applyEffectiveState(effectivePayload);
-          const model = normalizeModelId(effectivePayload.effectiveModel);
+          const modelLabel = normalizeWireText(msg.model_display_name).trim();
           const effort = normalizeReasoningEffort(effectivePayload.effectiveModelReasoningEffort);
           rt.laneStatus.value = {
             kind: "info",
-            message: model !== "auto"
-              ? `Model switched to: ${model}${effort ? ` (${effort})` : ""}`
+            message: modelLabel
+              ? `Model switched to: ${modelLabel}${effort ? ` (${effort})` : ""}`
               : output || "Model switched.",
           };
         } else {
@@ -2106,6 +2106,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         return;
       }
       markTurnTerminal(msg as Record<string, unknown>);
+      if (msg.ok === true) {
+        const completedId = String(msg.clientMessageId ?? msg.client_message_id ?? "").trim();
+        if (completedId) reconcilePendingPromptsByClientMessageIds(new Set([completedId]));
+      }
       annotatePendingUserMessageExecution(msg as Record<string, unknown>);
       recoveredBackendActivitySeen = false;
       clearTransientRetryNotice();

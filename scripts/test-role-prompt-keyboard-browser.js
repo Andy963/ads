@@ -17,7 +17,7 @@ const report = {
   cases: [],
 };
 const prompt = Array.from({ length: 40 }, (_, index) => `Instruction line ${index + 1}`).join("\n");
-const version = { lane: "acopilot", version: 1, prompt, isBase: true, createdAt: 1 };
+const profile = { id: "acopilot", role: "acopilot", system_prompt: prompt, model_id: "browser-model", reasoning_effort: "high" };
 
 function readEditorLayout(panel) {
   return panel.evaluate((element) => {
@@ -56,18 +56,17 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
         await page.route("**/*", async (route) => {
           const url = new URL(route.request().url());
           if (url.origin !== fixture.origin) return route.fulfill({ body: "" });
-          if (url.pathname === "/api/lane-prompts/acopilot" && route.request().method() === "PUT") {
-            const { prompt: savedPrompt } = route.request().postDataJSON();
+          if (url.pathname === "/api/role-profiles/acopilot" && route.request().method() === "PUT") {
+            const { system_prompt: savedPrompt } = route.request().postDataJSON();
+            assert.deepEqual(Object.keys(route.request().postDataJSON()), ["system_prompt"], "Instruction saves must not resubmit model or effort");
             savedPrompts.push(savedPrompt);
-            const current = { ...version, version: 2, prompt: savedPrompt, isBase: false };
-            return route.fulfill({ contentType: "application/json", body: JSON.stringify({
-              lane: "acopilot", current, base: version, versions: [current, version], updatedAt: 2,
-            }) });
+            return route.fulfill({ contentType: "application/json", body: JSON.stringify({ ...profile, ...route.request().postDataJSON() }) });
           }
           const fixtures = {
             "/api/model-configs": [],
-            "/api/role-profiles": [],
-            "/api/lane-prompts": [{ lane: "acopilot", current: version, base: version, versions: [version], updatedAt: 1 }],
+            "/api/models": [{ id: "m1", modelId: "browser-model", displayName: "Browser model", provider: "openai", isEnabled: true, isDefault: true }],
+            "/api/model-providers": [],
+            "/api/role-profiles": [profile],
           };
           if (!(url.pathname in fixtures)) return route.continue();
           return route.fulfill({ contentType: "application/json", body: JSON.stringify(fixtures[url.pathname]) });
@@ -85,6 +84,9 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
           };
         });
         await page.goto(fixture.origin);
+        // The mobile layout viewport is wider until the document's viewport
+        // meta tag loads. Initialize the synthetic viewport from the ready page.
+        await page.evaluate(() => window.setKeyboardViewport(window.innerHeight));
         if (mobile) {
           await page.locator('[data-testid="mobile-drawer-toggle"]').tap();
           await page.locator('[data-testid="mobile-drawer-section-prompts"]').tap();
@@ -100,12 +102,13 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
         const panel = page.locator('[data-testid="lane-prompt-panel"]');
         const editor = panel.locator("textarea");
         await editor.waitFor();
-        const auxiliary = [".roleControlsBar", ".lanePromptEditorHeader", ".modelHelp", ".lanePromptHistory"];
+        const auxiliary = [".roleControlsBar"];
         for (const selector of auxiliary) assert.equal(await panel.locator(selector).isVisible(), true, selector);
         const baseline = await editor.evaluate((element) => ({
           minHeight: getComputedStyle(element).minHeight, height: element.getBoundingClientRect().height,
         }));
         result.baseline = baseline;
+        assert.ok(baseline.height <= 844, "The editor must fit the initial viewport");
         await editor.focus();
         if (mobile) {
           await page.evaluate(() => window.setKeyboardViewport(422, 0, 2));
@@ -138,7 +141,7 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
           assert.equal((await editor.inputValue()).endsWith("40x"), true, "The last line must remain editable");
           await page.screenshot({ path: path.join(artifacts, `${engine}-keyboard.png`) });
 
-          const saveRequest = page.waitForRequest((request) => request.url().endsWith("/api/lane-prompts/acopilot") && request.method() === "PUT");
+          const saveRequest = page.waitForRequest((request) => request.url().endsWith("/api/role-profiles/acopilot") && request.method() === "PUT");
           await panel.locator('[data-testid="lane-prompt-save"]').tap();
           await saveRequest;
           await panel.locator('[data-testid="lane-prompt-status"]').waitFor();
@@ -172,7 +175,7 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
           await page.evaluate(() => window.setKeyboardViewport(844));
           await page.locator('[data-testid="mobile-drawer-toggle"]').tap();
           await page.locator('[data-testid="mobile-drawer-section-models"]').tap();
-          assert.equal(await page.locator('[data-testid="settings-models-panel"]').isVisible(), true);
+          await page.locator('[data-testid="settings-providers-panel"]').waitFor();
           assert.equal(await page.locator(".lanePromptPanel--keyboard-open").count(), 0);
         } else {
           assert.equal(await page.locator(".lanePromptPanel--keyboard-open").count(), 0);

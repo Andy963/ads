@@ -750,7 +750,7 @@ function retryUserTurn(message: RenderMessage): void {
             </div>
           </div>
           <div v-if="shouldShowMsgActions(m)" class="msgActions">
-          <span v-if="m.role === 'user' && m.ts" class="msgTime">{{ formatMessageTs(m.ts) }}</span>
+          <span v-if="m.ts" class="msgTime">{{ formatMessageTs(m.ts) }}</span>
           <button
             v-if="m.role === 'user' && getTurnFailureForUser(m)"
             class="turnFailureRetryBtn"
@@ -806,7 +806,6 @@ function retryUserTurn(message: RenderMessage): void {
               <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
             </svg>
           </button>
-          <span v-if="m.role !== 'user' && m.ts" class="msgTime">{{ formatMessageTs(m.ts) }}</span>
           </div>
         </div>
       </div>

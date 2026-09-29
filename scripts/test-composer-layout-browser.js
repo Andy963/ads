@@ -512,11 +512,18 @@ try {
       for (const width of [320, 375, 390, 430, 1280]) {
         await queuePage.setViewportSize({ width, height: 844 });
         await queueSettle();
+        const queueStyle = await queueItems.first().evaluate(element => {
+          const style = getComputedStyle(element);
+          return { radius: style.borderRadius, shadow: style.boxShadow, background: style.backgroundColor };
+        });
+        assert.deepEqual(queueStyle, { radius: "12px", shadow: "none", background: "rgb(255, 255, 255)" });
+        if (width === 390) await queuePage.screenshot({ path: path.join(artifacts, `${engine}-queue-messages.png`) });
         const measured = await measureQueues();
         assert.equal(measured.length, 100);
         const tolerance = 1.5;
         for (const card of measured) {
           const label = `card #${card.index + 1} @${width}px`;
+          assert.ok(card.clientHeight >= card.lineHeight + 16 - 1, `${label} must not shrink below one readable line`);
           assert.ok(card.lines.length >= 1, `${label} must render at least one text line`);
           const [first] = card.lines;
           // The ordinal badge excludes text only on the first line.

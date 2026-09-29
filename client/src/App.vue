@@ -640,6 +640,11 @@ function sendActionsPrompt(content: string): void {
   sendMainPrompt(content);
 }
 
+function retryAcopilotMessage(message: Parameters<typeof retryPrompt>[0]): void {
+  if (!loggedIn.value) return;
+  retryPrompt(message, activeAcopilotRuntime.value);
+}
+
 function retryActionsMessage(message: Parameters<typeof retryPrompt>[0]): void {
   if (!loggedIn.value) return;
   if (actionsJobExecutionActive.value) {
@@ -1940,6 +1945,7 @@ const acopilotConnectionStatus = computed(() => {
                 :connection-status-message="acopilotConnectionStatus?.message ?? null"
                 :thread-warning="acopilotThreadWarning"
                 @send="sendAcopilotPrompt"
+                @retry-message="retryAcopilotMessage($event)"
                 @update:draft="acopilotComposerDraft = $event"
                 @update:viewport-scope="handleAcopilotViewportScope"
                 @update:viewport="handleAcopilotViewport"

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { getStateDatabase } from "../../../../state/database.js";
+import { createModelServiceStore } from "../../../../state/modelServiceStore.js";
 import {
   getRoleProfiles,
   saveRoleProfile,
@@ -13,7 +14,7 @@ const updateProfileSchema = z.object({
   name: z.string().optional(),
   model_id: z.string().optional(),
   reasoning_effort: z.enum(["low", "medium", "high"]).optional(),
-  system_prompt: z.string().optional(),
+  system_prompt: z.string().trim().min(1).max(100000).optional(),
   is_enabled: z.boolean().optional(),
   is_default: z.boolean().optional(),
 }).passthrough();
@@ -51,11 +52,16 @@ export async function handleRoleProfileRoutes(ctx: ApiRouteContext): Promise<boo
       return true;
     }
 
+    let modelId = existing.model_id;
+    if (parsed.data.model_id !== undefined) {
+      try { modelId = createModelServiceStore(db).resolveConversation(parsed.data.model_id).id; }
+      catch (error) { sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid model" }); return true; }
+    }
     const updated = saveRoleProfile(db, {
       id: existing.id,
       role: existing.role,
       name: parsed.data.name ?? existing.name,
-      model_id: parsed.data.model_id ?? existing.model_id,
+      model_id: modelId,
       reasoning_effort: (parsed.data.reasoning_effort as ReasoningEffortLevel) ?? existing.reasoning_effort,
       system_prompt: parsed.data.system_prompt ?? existing.system_prompt,
       is_enabled: parsed.data.is_enabled ?? Boolean(existing.is_enabled),
@@ -68,4 +74,3 @@ export async function handleRoleProfileRoutes(ctx: ApiRouteContext): Promise<boo
 
   return false;
 }
-

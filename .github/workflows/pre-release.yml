@@ -51,6 +51,12 @@ jobs:
       - name: Run chat browser regressions
         run: npm run test:chat-browser
 
+      - name: Run model and retry browser regressions
+        run: |
+          npm run test:model-settings-browser
+          npm run test:model-selection-browser
+          npm run test:message-retry-browser
+
       - name: Resolve pre-release version and tag
         if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
         id: vars

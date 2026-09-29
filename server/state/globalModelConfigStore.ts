@@ -61,10 +61,11 @@ export function createGlobalModelConfigStore(db: DatabaseType) {
   if (!columns.some((column) => column.name === "provider_id")) {
     db.exec("ALTER TABLE model_configs ADD COLUMN provider_id TEXT");
   }
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_model_identity ON model_configs(provider_id, model_id) WHERE provider_id IS NOT NULL");
 
   const listStmt = db.prepare("SELECT * FROM model_configs ORDER BY is_default DESC, updated_at DESC, display_name ASC");
   const getStmt = db.prepare("SELECT * FROM model_configs WHERE id = ? LIMIT 1");
-  const getByModelIdStmt = db.prepare("SELECT * FROM model_configs WHERE model_id = ? LIMIT 1");
+  const getByModelIdStmt = db.prepare("SELECT * FROM model_configs WHERE model_id = ?");
   const clearDefaultStmt = db.prepare("UPDATE model_configs SET is_default = 0 WHERE id = ?");
   const upsertStmt = db.prepare(`
     INSERT INTO model_configs (id, model_id, display_name, provider, provider_id, is_enabled, is_default, config_json, updated_at)
@@ -93,11 +94,13 @@ export function createGlobalModelConfigStore(db: DatabaseType) {
     return row ? toModelConfig(row) : null;
   };
 
-  const getModelConfigByAgentModelId = (agentModelId: string): ModelConfig | null => {
+  const getModelConfigByAgentModelId = (agentModelId: string, providerId?: string | null): ModelConfig | null => {
     const modelId = String(agentModelId ?? "").trim();
     if (!modelId) return null;
-    const row = getByModelIdStmt.get(modelId) as Record<string, unknown> | undefined;
-    return row ? toModelConfig(row) : null;
+    const rows = (getByModelIdStmt.all(modelId) as Record<string, unknown>[])
+      .filter((row) => providerId === undefined || (String(row.provider_id ?? "").trim() || null) === providerId);
+    if (rows.length > 1) throw new Error("Ambiguous model name; select a provider-specific model configuration.");
+    return rows[0] ? toModelConfig(rows[0]) : null;
   };
 
   const upsertModelConfig = (config: ModelConfig, now = Date.now()): ModelConfig => {
@@ -150,7 +153,7 @@ export function createGlobalModelConfigStore(db: DatabaseType) {
     return Number(res.changes ?? 0) > 0;
   };
 
-  return { listModelConfigs, getModelConfig, getModelConfigByAgentModelId, upsertModelConfig, deleteModelConfig };
+  return { db, listModelConfigs, getModelConfig, getModelConfigByAgentModelId, upsertModelConfig, deleteModelConfig };
 }
 
 export type GlobalModelConfigStore = ReturnType<typeof createGlobalModelConfigStore>;

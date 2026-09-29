@@ -45,7 +45,7 @@ export async function transcribeAudioBuffer(args: {
     validateAudio(args.audio, args.contentType ?? "");
     let settings;
     try { settings = (args.settingsStore ?? createVoiceSettingsStore(getStateDatabase())).resolve(args.owner); }
-    catch { throw new AudioError("语音配置不可用，请在「模型配置 → 语音转写」中保存有效的服务地址和密钥。", 409); }
+    catch { throw new AudioError("Voice configuration unavailable. Configure provider credentials and select a default transcription model in Model configuration.", 409); }
     const { config } = settings;
     providerName = config.transcription.provider;
     correctionStatus = config.correction.enabled ? "not_started" : "disabled";
