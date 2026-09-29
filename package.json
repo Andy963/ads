@@ -34,6 +34,7 @@
     "test:chat-browser": "node scripts/test-chat-browser.js",
     "test:execute-marquee-browser": "node scripts/test-execute-marquee-browser.js",
     "test:role-prompt-keyboard-browser": "node scripts/test-role-prompt-keyboard-browser.js",
+    "test:login-keyboard-browser": "node scripts/test-login-keyboard-browser.js",
     "postbuild": "node scripts/chmod-bins.js",
     "bundle": "npm run build && node scripts/bundle.js",
     "deploy": "node scripts/deploy-local.js",

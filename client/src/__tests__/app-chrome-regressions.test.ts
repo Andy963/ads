@@ -15,7 +15,7 @@ let postImpl: PostImpl | null = null;
 const wsSessionIds: string[] = [];
 
 // Most suites stub LoginGate with an auto-login component; the LoginGate
-// keyboard suite flips this to "real" so the actual component is rendered.
+// suite flips this to "real" so the actual component is rendered.
 let loginGateMode: "auto-login" | "real" = "auto-login";
 // The source suites disagreed on emit timing: composer draft isolation needs a
 // synchronous logged-in emit during mount, the others expect a microtask.
@@ -606,7 +606,7 @@ describe("PWA manifest navigation", () => {
   });
 });
 
-describe("LoginGate keyboard-open class", () => {
+describe("LoginGate", () => {
   beforeEach(() => {
     loginGateMode = "real";
     getImpl = async (url: string) => {
@@ -620,54 +620,16 @@ describe("LoginGate keyboard-open class", () => {
     };
   });
 
-  it("adds and removes keyboard-open on focus changes", async () => {
-    const wrapper = mount(LoginGate, { attachTo: document.body });
-    try {
-      await waitForLoginInputs(wrapper);
+  it("sizes the gate from the visual viewport height with a 100dvh fallback (Issue #476)", async () => {
+    const source = await readClientFile("../components/LoginGate.vue");
+    const gateRule = source.match(/\.gate\s*\{[^}]*\}/)?.[0];
 
-      const inputs = wrapper.findAll("input");
-      expect(wrapper.classes()).toContain("gate");
-      expect(wrapper.classes()).not.toContain("keyboard-open");
-
-      (inputs[0].element as HTMLInputElement).focus();
-      await inputs[0].trigger("focusin");
-      await wrapper.vm.$nextTick();
-      expect(wrapper.classes()).toContain("keyboard-open");
-
-      (inputs[0].element as HTMLInputElement).blur();
-      await inputs[0].trigger("focusout");
-      await nextTickDelay();
-      await wrapper.vm.$nextTick();
-      expect(wrapper.classes()).not.toContain("keyboard-open");
-    } finally {
-      wrapper.unmount();
-    }
-  });
-
-  it("keeps keyboard-open when switching focus between inputs", async () => {
-    const wrapper = mount(LoginGate, { attachTo: document.body });
-    try {
-      await waitForLoginInputs(wrapper);
-
-      const inputs = wrapper.findAll("input");
-      (inputs[0].element as HTMLInputElement).focus();
-      await inputs[0].trigger("focusin");
-      await wrapper.vm.$nextTick();
-      expect(wrapper.classes()).toContain("keyboard-open");
-
-      (inputs[1].element as HTMLInputElement).focus();
-      await inputs[1].trigger("focusin");
-      await wrapper.vm.$nextTick();
-      expect(wrapper.classes()).toContain("keyboard-open");
-
-      (inputs[1].element as HTMLInputElement).blur();
-      await inputs[1].trigger("focusout");
-      await nextTickDelay();
-      await wrapper.vm.$nextTick();
-      expect(wrapper.classes()).not.toContain("keyboard-open");
-    } finally {
-      wrapper.unmount();
-    }
+    expect(gateRule).toBeDefined();
+    expect(gateRule).toContain("min-height: var(--ads-visual-viewport-height, 100dvh);");
+    expect(gateRule).toContain("height: var(--ads-visual-viewport-height, 100dvh);");
+    // The inert keyboard-open state was removed; viewport metrics come from
+    // the global installViewportCssVars() layer only.
+    expect(source).not.toContain("keyboard-open");
   });
 
   it("does not unmount inputs or show skeleton on background visibility refresh when already initialized", async () => {

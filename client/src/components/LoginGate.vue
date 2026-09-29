@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient } from "../api/client";
 import type { AuthMe, AuthStatus } from "../api/types";
-import { isTextInputElement } from "../lib/dom";
 
 const emit = defineEmits<{
   (e: "logged-in", me: AuthMe): void;
@@ -19,30 +18,11 @@ const password = ref("");
 const showPassword = ref(false);
 const error = ref<string | null>(null);
 const busy = ref(false);
-const keyboardOpen = ref(false);
-let focusOutTimer: number | null = null;
 let refreshing = false;
 let refreshRequested = false;
 let disposed = false;
 
 const canSubmit = computed(() => Boolean(username.value.trim()) && Boolean(password.value));
-
-function updateKeyboardOpenFromActiveElement(): void {
-  keyboardOpen.value = isTextInputElement(document.activeElement);
-}
-
-function handleFocusIn(): void {
-  updateKeyboardOpenFromActiveElement();
-}
-
-function handleFocusOut(): void {
-  // Let the browser update `document.activeElement` before we compute state.
-  if (focusOutTimer !== null) window.clearTimeout(focusOutTimer);
-  focusOutTimer = window.setTimeout(() => {
-    focusOutTimer = null;
-    updateKeyboardOpenFromActiveElement();
-  }, 0);
-}
 
 async function refresh(): Promise<void> {
   if (disposed) return;
@@ -102,7 +82,6 @@ function togglePassword(): void {
 }
 
 onMounted(() => {
-  updateKeyboardOpenFromActiveElement();
   void refresh();
   window.addEventListener("online", refresh);
   document.addEventListener("visibilitychange", refreshWhenVisible);
@@ -116,13 +95,11 @@ onBeforeUnmount(() => {
   disposed = true;
   window.removeEventListener("online", refresh);
   document.removeEventListener("visibilitychange", refreshWhenVisible);
-  // Prevent stray timers if the component is torn down while a blur is pending.
-  if (focusOutTimer !== null) window.clearTimeout(focusOutTimer);
 });
 </script>
 
 <template>
-  <div class="gate" :class="{ 'keyboard-open': keyboardOpen }" @focusin="handleFocusIn" @focusout="handleFocusOut">
+  <div class="gate">
     <div class="card">
       <div class="logo">
         <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -213,8 +190,12 @@ onBeforeUnmount(() => {
 .gate {
   min-height: 100vh;
   min-height: 100dvh;
+  min-height: var(--ads-visual-viewport-height, 100dvh);
+  height: var(--ads-visual-viewport-height, 100dvh);
   display: flex;
   flex-direction: column;
+  justify-content: center;
+  justify-content: safe center;
   box-sizing: border-box;
   padding: calc(24px + env(safe-area-inset-top, 0px)) 24px calc(24px + env(safe-area-inset-bottom, 0px));
   overflow-y: auto;
@@ -227,7 +208,7 @@ onBeforeUnmount(() => {
   color: var(--text);
 }
 .card {
-  margin: auto;
+  margin: 0 auto;
   width: min(400px, 100%);
   border: 1px solid var(--border);
   border-radius: var(--radius);
