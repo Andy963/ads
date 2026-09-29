@@ -1312,7 +1312,51 @@ describe("consumed failure reconciliation", () => {
     expect(rt.consumedPromptIds?.has(clientMessageId)).toBe(true);
     expect(rt.queuedPrompts.value).toEqual([]);
     expect(sentFrames).toEqual([]);
+    expect(rt.messages.value).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: clientMessageId, role: "user", content: "old prompt" }),
+    ]));
     expect(createOutboxStore().read(ISSUE_379_OUTBOX_KEY).pending).toBeNull();
+  });
+
+  it("preserves a server-pending prompt and its text after reconciliation", async () => {
+    const { chat, rt, handler, sentFrames } = mountRetryHarness();
+    const clientMessageId = "server-pending-old-outbox";
+    createOutboxStore().write(ISSUE_379_OUTBOX_KEY, {
+      pending: outboxPrompt(clientMessageId, "still pending"),
+      sent: [],
+      queued: [],
+      dismissed: [],
+      consumed: [],
+    });
+    const sentControlFrames: Array<{ type: string; payload?: unknown }> = [];
+    const promptSocket = rt.ws as NonNullable<typeof rt.ws> & {
+      send: (type: string, payload?: unknown) => boolean;
+    };
+    rt.ws = {
+      ...promptSocket,
+      send: (type: string, payload?: unknown) => {
+        sentControlFrames.push({ type, payload });
+        return true;
+      },
+    } as never;
+
+    chat.reconcilePromptOutbox(rt, rt.ws as never);
+    handler({
+      type: "prompt_reconcile_result",
+      identities: [{ clientMessageId, disposition: "pending" }],
+    });
+    await settle();
+
+    expect(sentControlFrames).toHaveLength(1);
+    expect(rt.messages.value).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: clientMessageId, role: "user", content: "still pending" }),
+    ]));
+    expect(sentFrames).toHaveLength(1);
+    expect(sentFrames[0]?.clientMessageId).toBe(clientMessageId);
+    const stored = createOutboxStore().read(ISSUE_379_OUTBOX_KEY);
+    expect([...stored.sent, ...stored.queued, ...(stored.pending ? [stored.pending] : [])]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ clientMessageId, text: "still pending" }),
+    ]));
   });
 
   it("keeps queued work gated on incomplete reconciliation and resumes unknown work", async () => {

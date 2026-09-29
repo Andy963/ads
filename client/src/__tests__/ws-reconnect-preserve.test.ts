@@ -9,6 +9,7 @@ import {
 } from "../app/projectsWs/reconnectNotice";
 import { STREAM_DISCONNECT_NOTICE } from "../lib/chat_sync";
 import { readLaneGenerationPreference } from "../lib/preferencesStore";
+import { legacyPendingPromptStorageKey } from "../app/outbox";
 
 const PENDING_PROMPT_REPLAY_NOTICE = "已恢复断线前未确认发送的请求，并重新发送。";
 
@@ -90,6 +91,30 @@ async function mountReconnectHarness() {
 /** Seed the durable outbox the way a previous tab would have left it. */
 function seedOutboxPending(chatSessionId: string, pending: Record<string, unknown>): void {
   localStorage.setItem(`ads.outbox.default.${chatSessionId}`, JSON.stringify({ pending, queued: [] }));
+}
+
+const OUTBOX_FORMATS = ["pending-only", "sent-only", "queued-only", "legacy-session-storage"] as const;
+const HISTORY_SNAPSHOT_ORDERS = ["history-before-snapshot", "snapshot-before-history"] as const;
+
+function seedPromptOutboxFormat(
+  format: typeof OUTBOX_FORMATS[number],
+  prompt: { clientMessageId: string; text: string; createdAt: number },
+): void {
+  if (format === "legacy-session-storage") {
+    sessionStorage.setItem(
+      legacyPendingPromptStorageKey("default", "main"),
+      JSON.stringify(prompt),
+    );
+    return;
+  }
+
+  localStorage.setItem("ads.outbox.default.main", JSON.stringify({
+    pending: format === "pending-only" ? prompt : null,
+    sent: format === "sent-only" ? [prompt] : [],
+    queued: format === "queued-only" ? [prompt] : [],
+    dismissed: [],
+    consumed: [],
+  }));
 }
 
 function seedPendingReplayState(rt: any, chatSessionId: string, clientMessageId: string): void {
@@ -1326,6 +1351,61 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(JSON.parse(localStorage.getItem("ads.outbox.default.main") ?? "{}").consumed).toContain(clientMessageId);
     wrapper.unmount();
   });
+
+  const historySnapshotScenarios = OUTBOX_FORMATS.flatMap((format) =>
+    HISTORY_SNAPSHOT_ORDERS.map((order) => [format, order] as const),
+  );
+
+  it.each(historySnapshotScenarios)(
+    "keeps a completed prompt consumed for %s outbox with %s ordering",
+    async (format, order) => {
+      const clientMessageId = `history-snapshot-${format}-${order}`;
+      const prompt = { clientMessageId, text: "completed fixture", createdAt: 1 };
+      seedPromptOutboxFormat(format, prompt);
+
+      const { wrapper, rt } = await mountReconnectHarness();
+      lastWs!.onOpen?.();
+      await settleUi(wrapper);
+      expect(rt.queuedPrompts.value.map((entry) => entry.clientMessageId)).toContain(clientMessageId);
+
+      rt.resumeReplacePending = true;
+      const history = {
+        type: "history",
+        items: [
+          { role: "user", text: prompt.text, kind: `client_message_id:${clientMessageId}`, ts: 1 },
+          { role: "ai", text: "done", ts: 2 },
+        ],
+      };
+      const snapshot = {
+        type: "prompt_queue_snapshot",
+        entries: [{
+          clientMessageId,
+          text: prompt.text,
+          status: "queued",
+          position: 1,
+          attempts: 0,
+          createdAt: 1,
+          updatedAt: 2,
+        }],
+      };
+      const messages = order === "history-before-snapshot" ? [history, snapshot] : [snapshot, history];
+      for (const message of messages) {
+        lastWs!.onMessage?.(message);
+        await settleUi(wrapper);
+      }
+
+      expect(rt.queuedPrompts.value.map((entry) => entry.clientMessageId)).not.toContain(clientMessageId);
+      const outbox = JSON.parse(localStorage.getItem("ads.outbox.default.main") ?? "{}");
+      expect(outbox.consumed).toContain(clientMessageId);
+      expect(outbox.pending).toBeNull();
+      expect(outbox.sent).toEqual([]);
+      expect(outbox.queued).toEqual([]);
+      if (format === "legacy-session-storage") {
+        expect(sessionStorage.getItem(legacyPendingPromptStorageKey("default", "main"))).toBeNull();
+      }
+      wrapper.unmount();
+    },
+  );
 
   it("reconciles an unacked prompt before preserving a fresh in-flight run", async () => {
     const { wrapper, rt } = await mountReconnectHarness();

@@ -694,7 +694,12 @@ export function createPromptQueueStore(db: DatabaseType) {
           laneGeneration: Number(cancellation.lane_generation),
         };
         if (samePromptScope(cancelledScope, lane)) {
-          return { clientMessageId, disposition: "cancelled" };
+          return {
+            clientMessageId,
+            disposition: Number(cancellation.lane_generation) === Number(lane.laneGeneration)
+              ? "cancelled"
+              : "obsolete",
+          };
         }
       }
 

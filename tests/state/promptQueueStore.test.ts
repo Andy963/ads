@@ -249,7 +249,7 @@ describe("state/promptQueueStore", () => {
     assert.deepEqual(Object.fromEntries(identities.map(({ clientMessageId, disposition }) => [clientMessageId, disposition])), {
       pending: "obsolete",
       consumed: "consumed",
-      cancelled: "cancelled",
+      cancelled: "obsolete",
       obsolete: "obsolete",
       private: "unknown",
       unknown: "unknown",

@@ -14,10 +14,10 @@ On WebSocket connection, the client sends the prompt identities held in its outb
 - `pending`: the current-generation row has not been claimed and remains eligible.
 - `consumed`: the row was claimed or reached a terminal execution state.
 - `cancelled`: a durable cancellation tombstone exists.
-- `obsolete`: the row belongs to an older lane generation and cannot be replayed there.
+- `obsolete`: the identity belongs to an older lane generation and cannot be replayed in this generation.
 - `unknown`: the server has no record in this scope; the client may preserve it as genuinely unsent work.
 
-The browser does not restore or dispatch held outbox entries until this response arrives. Consumed, cancelled, and obsolete decisions are monotonic across browser storage and tabs. Cancellation intents are reconciled before any old prompt identity can be replayed.
+The browser does not restore or dispatch held outbox entries until this response arrives. `pending` is not a terminal decision: its outbox record and prompt text remain available for recovery. When a consumed decision arrives before the matching history frame, the client keeps the locally recovered user message until history catches up. Consumed, cancelled, and obsolete decisions are monotonic across browser storage and tabs. Cancellation intents are reconciled before any old prompt identity can be replayed.
 
 The durable queue row is the source of consumed identity history; completed payloads remain scrubbed. Cancellation tombstones are retained independently of queue rows. Queue claim and cancellation remain mutually exclusive: cancellation may retire unclaimed work, while a running/claimed prompt is consumed and cannot be stopped through the queue-delete action. A deliberate retry after consumption uses a fresh request identity. `replay_incomplete: true` only permits retrying an unclaimed identity and never overrides a consumed or cancelled decision.
 

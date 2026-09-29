@@ -554,6 +554,29 @@ export function createChatActions(ctx: AppContext) {
     }
   };
 
+  const preservePromptMessage = (
+    rt: ProjectRuntime,
+    clientMessageId: string,
+    snapshot: OutboxSnapshot,
+  ): void => {
+    if (rt.messages.value.some((message) => message.id === clientMessageId && message.role === "user")) return;
+    const prompt = rt.queuedPrompts.value.find((entry) => entry.clientMessageId === clientMessageId)
+      ?? (snapshot.pending?.clientMessageId === clientMessageId ? snapshot.pending : null)
+      ?? snapshot.sent.find((entry) => entry.clientMessageId === clientMessageId)
+      ?? snapshot.queued.find((entry) => entry.clientMessageId === clientMessageId)
+      ?? null;
+    const content = String(prompt?.text ?? "");
+    if (!content.trim()) return;
+    const createdAt = Number(prompt?.createdAt);
+    pushMessageBeforeLive({
+      id: clientMessageId,
+      role: "user",
+      kind: "text",
+      content,
+      ...(Number.isFinite(createdAt) && createdAt > 0 ? { ts: Math.floor(createdAt) } : {}),
+    }, rt);
+  };
+
   const applyPromptReconciliation = (
     rt: ProjectRuntime,
     identities: Array<{ clientMessageId: string; disposition: string }>,
@@ -566,13 +589,15 @@ export function createChatActions(ctx: AppContext) {
     }
     const settledIds = new Set<string>();
     const terminalIds = new Set<string>();
+    const current = readOutboxFor(rt);
     for (const identity of identities) {
       const id = String(identity.clientMessageId ?? "").trim();
       if (!id) continue;
-      if (["pending", "consumed", "cancelled", "obsolete"].includes(identity.disposition)) {
+      if (["consumed", "cancelled", "obsolete"].includes(identity.disposition)) {
         settledIds.add(id);
       }
       if (identity.disposition === "consumed") {
+        preservePromptMessage(rt, id, current);
         (rt.consumedPromptIds ??= new Set()).add(id);
         rt.cancelledPromptIds?.delete(id);
         rt.retiredPromptIds?.delete(id);
@@ -599,7 +624,6 @@ export function createChatActions(ctx: AppContext) {
     rt.promptReconciliationPending = false;
     rt.promptReconciliationIds = undefined;
     ensureOutboxBinding(rt);
-    const current = readOutboxFor(rt);
     persistOutbox(
       rt,
       current.pending && !settledIds.has(current.pending.clientMessageId) ? current.pending : null,
