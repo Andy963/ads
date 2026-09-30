@@ -21,6 +21,123 @@ function sse(events: string[]): Response {
 }
 
 describe("NativeAgentAdapter", () => {
+  it("serializes overlapping user sends after the preceding assistant response", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-overlapping-turns-"));
+    let releaseReply!: () => void;
+    const replyReady = new Promise<void>(resolve => { releaseReply = resolve; });
+    let markStarted!: () => void;
+    const started = new Promise<void>(resolve => { markStarted = resolve; });
+    const requests: NativeChatMessage[][] = [];
+    try {
+      const adapter = new NativeAgentAdapter({
+        credentialOwner: "test-owner", workspaceRoot: workspace,
+        modelResolver: { resolve: () => ({
+          model: "test-model", baseUrl: "https://provider.test/v1", apiKey: "test-key", provider: "test",
+        }) },
+        fetchImpl: async (_input, init) => {
+          requests.push((JSON.parse(String(init?.body)) as { messages: NativeChatMessage[] }).messages);
+          if (requests.length === 1) {
+            markStarted();
+            await replyReady;
+          }
+          return sse([JSON.stringify({ choices: [{
+            delta: { content: "Reply", tool_calls: null }, finish_reason: "stop",
+          }] })]);
+        },
+      });
+      const first = adapter.send("First request");
+      await started;
+      const second = adapter.send("Second request");
+      await Promise.resolve();
+      assert.equal(requests.length, 1);
+      releaseReply();
+      await Promise.all([first, second]);
+      assert.deepEqual(requests.map(messages => messages.map(message => message.role)), [
+        ["user"], ["user", "assistant", "user"],
+      ]);
+      assert.equal(requests[1]?.[0]?.content, "First request");
+      assert.equal(requests[1]?.[2]?.content, "Second request");
+    } finally {
+      releaseReply();
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps request turns paired across nullable deltas, failed turns, and durable restore", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-nullable-turns-"));
+    const dbPath = path.join(workspace, "state.db");
+    try {
+      fs.writeFileSync(path.join(workspace, "hello.txt"), "hello", "utf8");
+      const store = new NativeTranscriptStore(getStateDatabase(dbPath));
+      const requests: NativeChatMessage[][] = [];
+      let failNext = false;
+      let callNumber = 0;
+      const createAdapter = () => new NativeAgentAdapter({
+        credentialOwner: "test-owner",
+        workspaceRoot: workspace,
+        transcriptId: "nullable-turns",
+        transcriptStore: store,
+        modelResolver: { resolve: () => ({
+          model: "test-model", baseUrl: "https://provider.test/v1", apiKey: "test-key", provider: "test",
+        }) },
+        fetchImpl: async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as { messages: NativeChatMessage[] };
+          requests.push(body.messages);
+          if (failNext) {
+            failNext = false;
+            return sse([JSON.stringify({ choices: [{ delta: { tool_calls: {} } }] })]);
+          }
+          if (body.messages.at(-1)?.role === "user") {
+            return sse([
+              JSON.stringify({ choices: [{ delta: { role: "assistant", tool_calls: null } }] }),
+              JSON.stringify({ choices: [{ delta: { tool_calls: [{
+                index: 0, type: "function", id: `read-${++callNumber}`,
+                function: { name: "read_file", arguments: '{"file":"hello.txt"}' },
+              }] } }] }),
+              JSON.stringify({ choices: [{ delta: { tool_calls: null }, finish_reason: "tool_calls" }] }),
+            ]);
+          }
+          return sse([JSON.stringify({ choices: [{
+            delta: { content: "Done", tool_calls: null, function_call: null }, finish_reason: "stop",
+          }] })]);
+        },
+      });
+      const first = createAdapter();
+      first.setDeveloperInstructions("Test instructions");
+      await first.send("First request");
+      failNext = true;
+      await assert.rejects(first.send("Retry this request"), /malformed SSE tool calls/);
+      await first.send("Retry this request");
+      const restored = createAdapter();
+      restored.setDeveloperInstructions("Test instructions");
+      await restored.send("After restore");
+
+      const roles = requests.map(messages => messages.map(message => message.role));
+      const completed = ["user", "assistant", "tool", "assistant"];
+      assert.deepEqual(roles, [
+        ["system", "user"],
+        ["system", "user", "assistant", "tool"],
+        ["system", ...completed, "user"],
+        ["system", ...completed, "user"],
+        ["system", ...completed, "user", "assistant", "tool"],
+        ["system", ...completed, ...completed, "user"],
+        ["system", ...completed, ...completed, "user", "assistant", "tool"],
+      ]);
+      for (const messages of requests) {
+        for (let index = 0; index < messages.length; index += 1) {
+          const message = messages[index]!;
+          if (message.role === "tool") {
+            assert.equal(message.tool_call_id, messages[index - 1]?.tool_calls?.[0]?.id);
+          }
+        }
+      }
+      assert.deepEqual(store.listTurns("nullable-turns").map(turn => turn.status), ["completed", "failed", "completed", "completed"]);
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("streams a text response and completes a read_file tool round", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-"));
     try {
@@ -355,18 +472,18 @@ describe("NativeAgentAdapter", () => {
     }
   });
 
-  it("continues through many tool rounds when no explicit limit is configured", async () => {
+  it("allows more than the default budget only when unlimited rounds are explicit", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-unlimited-"));
     try {
       fs.writeFileSync(path.join(workspace, "hello.txt"), "hello\n", "utf8");
-      const toolRounds = 20;
+      const toolRounds = 40;
       let requestNumber = 0;
       const adapter = new NativeAgentAdapter({
         credentialOwner: "test-owner",
         workspaceRoot: workspace,
         workingDirectory: workspace,
         env: {
-          ADS_AGENT_MAX_TOOL_ROUNDS: undefined,
+          ADS_AGENT_MAX_TOOL_ROUNDS: "0",
           ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS: undefined,
         },
         modelResolver: {
@@ -411,6 +528,46 @@ describe("NativeAgentAdapter", () => {
     }
   });
 
+  for (const configured of [undefined, "", "  ", "invalid", "-1", "1.5"]) {
+    it(`caps tool rounds at 32 for an unset or invalid budget (${JSON.stringify(configured)})`, async () => {
+      const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-default-limit-"));
+      try {
+        fs.writeFileSync(path.join(workspace, "hello.txt"), "hello\n", "utf8");
+        let requestNumber = 0;
+        const adapter = new NativeAgentAdapter({
+          credentialOwner: "test-owner", workspaceRoot: workspace,
+          env: { ADS_AGENT_MAX_TOOL_ROUNDS: configured },
+          modelResolver: { resolve: () => ({
+            model: "test-model", baseUrl: "https://provider.test/v1", apiKey: "test-key", provider: "test",
+          }) },
+          fetchImpl: async () => {
+            requestNumber += 1;
+            // Bound the fixture itself so a regression to unlimited cannot hang.
+            if (requestNumber > 32) {
+              return sse([JSON.stringify({ choices: [{ delta: { content: "Exceeded budget" }, finish_reason: "stop" }] })]);
+            }
+            return sse([JSON.stringify({ choices: [{
+              delta: { tool_calls: [{ index: 0, type: "function", id: `read-${requestNumber}`,
+                function: { name: "read_file", arguments: '{"file":"hello.txt"}' },
+              }] }, finish_reason: "tool_calls",
+            }] })]);
+          },
+        });
+        const result = await adapter.send("Keep inspecting the file");
+        assert.equal(requestNumber, 32);
+        assert.match(result.response, /tool-round limit/);
+        if (configured === undefined) {
+          requestNumber = 0;
+          const next = await adapter.send("Continue inspecting");
+          assert.equal(requestNumber, 32, "Each user turn must receive a fresh budget");
+          assert.match(next.response, /tool-round limit/);
+        }
+      } finally {
+        fs.rmSync(workspace, { recursive: true, force: true });
+      }
+    });
+  }
+
   it("accepts both native runtime round-limit environment variables", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-env-limit-"));
     try {
@@ -454,6 +611,8 @@ describe("NativeAgentAdapter", () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-limit-"));
     try {
       let requestNumber = 0;
+      const requests: NativeChatMessage[][] = [];
+      const store = new NativeTranscriptStore(getStateDatabase(path.join(workspace, "state.db")));
       const resolver: NativeModelResolver = {
         resolve: () => ({
           model: "test-model",
@@ -468,8 +627,14 @@ describe("NativeAgentAdapter", () => {
         workingDirectory: workspace,
         modelResolver: resolver,
         maxToolRounds: 1,
-        fetchImpl: async () => {
+        transcriptId: "tool-limit",
+        transcriptStore: store,
+        fetchImpl: async (_input, init) => {
+          requests.push((JSON.parse(String(init?.body)) as { messages: NativeChatMessage[] }).messages);
           requestNumber += 1;
+          if (requestNumber > 1) {
+            return sse([JSON.stringify({ choices: [{ delta: { content: "Continued" }, finish_reason: "stop" }] })]);
+          }
           return sse([
             JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, type: "function", id: "limit-1", function: { name: "read_file", arguments: '{"file":"missing.txt"}' } }] } }] }),
             JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
@@ -485,7 +650,25 @@ describe("NativeAgentAdapter", () => {
       assert.equal(requestNumber, 1);
       assert.equal(rawEvents.includes("turn.completed"), true);
       assert.equal(rawEvents.includes("turn.failed"), false);
+      const cappedTurn = store.listTurns("tool-limit")[0]!;
+      assert.deepEqual(cappedTurn.messages.map(message => message.role), ["user", "assistant", "tool", "assistant"]);
+      assert.equal(cappedTurn.messages.at(-1)?.content, result.response);
+      assert.deepEqual(cappedTurn.entries.at(-1), { kind: "message", message: cappedTurn.messages.at(-1) });
+
+      await adapter.send("Continue now");
+      assert.deepEqual(requests[1]?.map(message => message.role), ["user", "assistant", "tool", "assistant", "user"]);
+      const restored = new NativeAgentAdapter({
+        credentialOwner: "test-owner", workspaceRoot: workspace, modelResolver: resolver,
+        transcriptId: "tool-limit", transcriptStore: store,
+        fetchImpl: async (_input, init) => {
+          requests.push((JSON.parse(String(init?.body)) as { messages: NativeChatMessage[] }).messages);
+          return sse([JSON.stringify({ choices: [{ delta: { content: "Restored" }, finish_reason: "stop" }] })]);
+        },
+      });
+      await restored.send("Continue after restore");
+      assert.deepEqual(requests[2]?.map(message => message.role), ["user", "assistant", "tool", "assistant", "user", "assistant", "user"]);
     } finally {
+      resetStateDatabaseForTests();
       fs.rmSync(workspace, { recursive: true, force: true });
     }
   });

@@ -148,6 +148,11 @@ function groupMessages(messages: NativeChatMessage[]): {
       continue;
     }
     if (message.role === "user") {
+      if (current?.length === 1) {
+        throw new NativeContextLimitError(
+          "Invalid Native message sequence: previous user turn has no assistant response.",
+        );
+      }
       finishTurn();
       current = [cloneMessage(message)];
       continue;

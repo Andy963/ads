@@ -127,4 +127,12 @@ describe("native context projection", () => {
       /tool results are missing/i,
     );
   });
+
+  it("rejects an unanswered historical user turn before the next user message", () => {
+    assert.throws(
+      () => projectNativeContext([user("unanswered"), user("next request")]),
+      /previous user turn has no assistant response/i,
+    );
+    assert.deepEqual(projectNativeContext([user("current request")]).messages, [user("current request")]);
+  });
 });

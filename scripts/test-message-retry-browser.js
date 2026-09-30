@@ -5,6 +5,7 @@ import path from "node:path";
 import { chromium, webkit } from "playwright";
 
 import { startChatBrowserServer } from "./lib/chat-browser-server.js";
+import { readLaneLayout, waitForLaneAlignment, verifyLaneScrollIsolation } from "./lib/chat-browser-lane-layout.js";
 
 const artifacts = await mkdtemp(path.join(tmpdir(), "ads-message-retry-"));
 const report = { environment: "Real WebSocket/history routes and temporary SQLite; task list uses an HTTP fixture", cases: [] };
@@ -22,7 +23,7 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
       const fixture = await startChatBrowserServer(path.resolve("dist/client"), { settingsApi: true, durableQueue });
       const page = await browser.newPage({ viewport: { width, height: 844 }, isMobile: width < 900, hasTouch: width < 900, serviceWorkers: "block" });
       page.setDefaultTimeout(15000);
-      const result = { engine, width, lanes: [] };
+      const result = { engine, width, lanes: [], laneSelections: [] };
       report.cases.push(result);
       const errors = [];
       const prompts = [];
@@ -43,12 +44,11 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
       });
       const activate = async locator => width < 900 ? locator.tap() : locator.click();
       const chooseLane = async lane => {
+        const selection = { lane, before: await readLaneLayout(page) };
+        result.laneSelections.push(selection);
         await activate(page.locator(`[data-testid="lane-tab-${lane}"]`));
-        await page.waitForFunction(lane => {
-          const panel = document.querySelector(`[data-testid="lane-panel-${lane}"]`);
-          if (!panel || panel.hasAttribute("aria-hidden")) return false;
-          return Math.abs(panel.getBoundingClientRect().left - document.querySelector(".lanePanels").getBoundingClientRect().left) < 1;
-        }, lane);
+        await waitForLaneAlignment(page, lane);
+        selection.after = await readLaneLayout(page);
         return page.locator(`[data-testid="lane-panel-${lane}"]`);
       };
       try {
@@ -131,6 +131,11 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
           result.lanes.push(lane);
         }
 
+        if (width < 900) {
+          await chooseLane("acopilot");
+          result.scrollIsolation = [];
+          await verifyLaneScrollIsolation(page, result.scrollIsolation);
+        }
         const actions = await chooseLane("actions");
         const blockedMarker = "browser-worker-blocked-retry";
         fixture.failReplyOnce(blockedMarker);
@@ -185,6 +190,7 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
       } catch (error) {
         result.status = "failed";
         result.error = String(error.stack ?? error);
+        result.layout = await readLaneLayout(page).catch(() => null);
         result.events = events;
         result.visibleStatus = await page.locator('.lanePanel:not([aria-hidden])').innerText().catch(() => "");
         await page.screenshot({ path: path.join(artifacts, `${engine}-${width}-failure.png`) }).catch(() => {});
@@ -197,4 +203,6 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
     }
   } finally { await browser.close(); }
 }
-console.log(JSON.stringify({ artifacts, ...report }, null, 2));
+console.log(JSON.stringify({ artifacts, ...report, cases: report.cases.map(result => result.status === "passed"
+  ? { engine: result.engine, width: result.width, lanes: result.lanes, status: result.status }
+  : result) }, null, 2));

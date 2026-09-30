@@ -46,10 +46,21 @@ jobs:
         run: npm run test:chat-browser
 
       - name: Run model and retry browser regressions
+        env:
+          TMPDIR: ${{ runner.temp }}
         run: |
           npm run test:model-settings-browser
           npm run test:model-selection-browser
           npm run test:message-retry-browser
+
+      - name: Upload retry browser failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: message-retry-browser-failure
+          path: ${{ runner.temp }}/ads-message-retry-*/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Resolve release version and tag
         id: vars
