@@ -9,7 +9,7 @@ import { attachWorkerPromptHandler } from "../../server/web/server/ws/workerProm
 
 export const commandActivityCases: Array<{ cmd: string; args: string[]; category: ExploredCategory }> = [
   { cmd: "ls", args: ["fixture.txt"], category: "List" },
-  { cmd: "rg", args: ["needle", "fixture.txt"], category: "Search" },
+  { cmd: "grep", args: ["needle", "fixture.txt"], category: "Search" },
   { cmd: "cat", args: ["fixture.txt"], category: "Read" },
   { cmd: "sed", args: ["-n", "1p", "fixture.txt"], category: "Read" },
   { cmd: "touch", args: ["created.txt"], category: "Write" },
