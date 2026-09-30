@@ -16,6 +16,8 @@ export interface NativeContextProjectionOptions {
   reservedTokens?: number;
   maxOutputTokens?: number;
   tools?: NativeToolDefinition[];
+  /** Keep stopped task turns together with the next user request. */
+  requiredRecentTurns?: number;
 }
 
 export interface NativeContextProjectionDiagnostic {
@@ -220,7 +222,7 @@ function truncateToolContent(content: string, tokenBudget: number): string {
 
 function fitToolTurn(turn: ContextTurn, tokenBudget: number): { turn: ContextTurn; truncated: number } {
   const toolIndexes = turn.messages
-    .map((message, index) => message.role === "tool" ? index : -1)
+    .map((message, index) => message.role === "tool" && message.nativeToolOutcome !== "unknown" ? index : -1)
     .filter((index) => index >= 0);
   if (toolIndexes.length === 0) {
     throw new NativeContextLimitError(
@@ -228,7 +230,7 @@ function fitToolTurn(turn: ContextTurn, tokenBudget: number): { turn: ContextTur
     );
   }
 
-  const fixedMessages = turn.messages.map((message) => message.role === "tool"
+  const fixedMessages = turn.messages.map((message) => message.role === "tool" && message.nativeToolOutcome !== "unknown"
     ? { ...cloneMessage(message), content: "" }
     : cloneMessage(message));
   let remaining = tokenBudget - estimateMessagesTokens(fixedMessages);
@@ -289,6 +291,11 @@ export function projectNativeContext(
   }
 
   const grouped = groupMessages(messages);
+  const requiredRecentTurns = Math.min(grouped.turns.length, Math.max(1, Math.floor(options.requiredRecentTurns ?? 1)));
+  if (requiredRecentTurns > 1) {
+    const required = grouped.turns.splice(grouped.turns.length - requiredRecentTurns);
+    grouped.turns.push({ messages: required.flatMap(turn => turn.messages) });
+  }
   const toolDefinitionTokens = estimateToolDefinitionTokens(options.tools);
   const systemTokens = estimateMessagesTokens(grouped.system);
   if (systemTokens + toolDefinitionTokens > inputBudget) {

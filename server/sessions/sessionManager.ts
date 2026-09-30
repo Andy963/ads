@@ -217,7 +217,7 @@ export class SessionManager {
     const nativeTranscriptAvailable = nativeTranscriptCompatible
       && nativeTranscriptId
       ? new NativeTranscriptStore(getStateDatabase(this.options.stateDbPath))
-          .hasCompletedMessages(nativeTranscriptId)
+          .hasContinuationMessages(nativeTranscriptId)
       : false;
 
     let activeAgentId: AgentIdentifier | undefined = savedState?.activeAgentId;

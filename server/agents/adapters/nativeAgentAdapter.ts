@@ -28,9 +28,11 @@ import {
 } from "./transientModelRetry.js";
 import { createNativeModelResolver, type NativeModelResolver } from "../../runtime/modelResolver.js";
 import { NativeImageStore } from "../../runtime/nativeImages.js";
+import { projectNativeContinuationTurn } from "../../runtime/nativeContinuation.js";
 import {
   DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS,
   DEFAULT_NATIVE_CONTEXT_WINDOW,
+  NativeContextLimitError,
   formatNativeContextDiagnostic,
   projectNativeContext,
 } from "../../runtime/nativeContextProjection.js";
@@ -192,6 +194,7 @@ export class NativeAgentAdapter implements AgentAdapter {
   private readonly secretValues: string[];
   private readonly images: NativeImageStore;
   private conversation: NativeChatMessage[] = [];
+  private pendingContinuationTurns = 0;
   private workingDirectory?: string;
   private model?: string;
   private modelReasoningEffort?: string;
@@ -241,8 +244,8 @@ export class NativeAgentAdapter implements AgentAdapter {
     this.workingDirectory = options.workingDirectory;
     this.model = String(options.model ?? "").trim() || undefined;
     this.modelReasoningEffort = String(options.modelReasoningEffort ?? "").trim() || undefined;
-    // Native conversation state is intentionally process-local in phase one.
-    // Never treat a persisted Codex/app-server id as a native resumable thread.
+    // Native execution identity is process-local, independently of its durable
+    // transcript. Never resume it using a Codex/app-server thread id.
     this.threadId = `native-${randomUUID()}`;
     this.turnTimeoutMs = readNonNegativeInteger(
       options.turnTimeoutMs ?? this.env.ADS_NATIVE_RUNTIME_TURN_TIMEOUT_MS,
@@ -273,9 +276,10 @@ export class NativeAgentAdapter implements AgentAdapter {
       if (transcriptMode === "replace") {
         this.transcriptStore.clear(this.transcriptId, this.transcriptWriterId);
       } else {
-        const restoredMessages = this.transcriptStore.loadCompletedMessages(this.transcriptId, this.transcriptWriterId);
-        this.nativeTranscriptRestored = restoredMessages.length > 0;
-        this.appendConversation(restoredMessages);
+        const restored = this.transcriptStore.loadContinuation(this.transcriptId, this.transcriptWriterId);
+        this.nativeTranscriptRestored = restored.messages.length > 0;
+        this.conversation = restored.messages;
+        this.pendingContinuationTurns = restored.pendingTurns;
       }
     }
     this.metadata = {
@@ -331,6 +335,7 @@ export class NativeAgentAdapter implements AgentAdapter {
       this.transcriptStore.clear(this.transcriptId, this.transcriptWriterId);
     }
     this.conversation = [];
+    this.pendingContinuationTurns = 0;
     this.images.clearMemory();
     this.threadId = `native-${randomUUID()}`;
     this.threadStartedEmitted = false;
@@ -359,6 +364,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     this.transcriptId = nextTranscriptId;
     this.activeTranscriptTurns.clear();
     this.conversation = [];
+    this.pendingContinuationTurns = 0;
     this.images.clearMemory();
     this.threadId = `native-${randomUUID()}`;
     this.threadStartedEmitted = false;
@@ -550,10 +556,6 @@ export class NativeAgentAdapter implements AgentAdapter {
     return messages;
   }
 
-  private appendConversation(messages: NativeChatMessage[]): void {
-    this.conversation.push(...messages);
-  }
-
   private checkpointTurn(input: {
     turnId: string;
     resetGeneration: number;
@@ -575,10 +577,24 @@ export class NativeAgentAdapter implements AgentAdapter {
         provider: input.provider,
       };
     }
-    if (!this.transcriptId || !this.transcriptStore) return;
+    if (this.transcriptId && this.transcriptStore) {
+      this.persistTurnCheckpoint(input);
+    }
+    if (input.status !== "running") {
+      const messages = projectNativeContinuationTurn(input);
+      this.conversation.push(...messages);
+      this.pendingContinuationTurns = input.status === "completed" ? 0 : this.pendingContinuationTurns + 1;
+      this.activeTranscriptTurns.delete(input.turnId);
+      if (this.activeTurnCheckpoint?.turnId === input.turnId) this.activeTurnCheckpoint = undefined;
+    }
+  }
+
+  private persistTurnCheckpoint(input: Parameters<NativeAgentAdapter["checkpointTurn"]>[0]): void {
+    const transcriptId = this.transcriptId!;
+    const store = this.transcriptStore!;
     if (input.status === "running" && !this.activeTranscriptTurns.has(input.turnId)) {
-      this.transcriptStore.beginTurn({
-        transcriptId: this.transcriptId,
+      store.beginTurn({
+        transcriptId,
         turnId: input.turnId,
         messages: input.messages,
         entries: input.entries,
@@ -588,8 +604,8 @@ export class NativeAgentAdapter implements AgentAdapter {
       this.activeTranscriptTurns.add(input.turnId);
       return;
     }
-    this.transcriptStore.updateTurn({
-      transcriptId: this.transcriptId,
+    store.updateTurn({
+      transcriptId,
       turnId: input.turnId,
       status: input.status,
       messages: input.messages,
@@ -598,10 +614,6 @@ export class NativeAgentAdapter implements AgentAdapter {
       errorMessage: input.errorMessage,
       writerId: this.transcriptWriterId,
     });
-    if (input.status !== "running") {
-      this.activeTranscriptTurns.delete(input.turnId);
-      if (this.activeTurnCheckpoint?.turnId === input.turnId) this.activeTurnCheckpoint = undefined;
-    }
   }
 
   private assertResetGeneration(expected: number): void {
@@ -751,6 +763,7 @@ export class NativeAgentAdapter implements AgentAdapter {
         let completion: NativeCompletionResult;
         try {
           const contextProjection = projectNativeContext(roundMessages, {
+            requiredRecentTurns: this.pendingContinuationTurns + 1,
             contextWindow: model.contextWindow
               ?? readNonNegativeInteger(this.env.ADS_NATIVE_CONTEXT_WINDOW, DEFAULT_NATIVE_CONTEXT_WINDOW),
             reservedTokens: model.options?.maxTokens
@@ -791,7 +804,7 @@ export class NativeAgentAdapter implements AgentAdapter {
             outputSchema: options.outputSchema,
           });
         } catch (error) {
-          if (!finalRound) throw error;
+          if (!finalRound || error instanceof NativeContextLimitError) throw error;
           // Summary failure must not replay completed tools. Cancellation and
           // reset still propagate through the normal interrupted-turn path.
           assertTurnActive();
@@ -836,7 +849,6 @@ export class NativeAgentAdapter implements AgentAdapter {
             usage,
             provider: providerMetadata,
           });
-          this.appendConversation(turnMessages);
           emitTurnEvent({ type: "turn.completed", usage: usage ?? undefined });
           this.pendingRetryCheckpoint = undefined;
           return { response: responseText.trim(), usage, agentId: this.id };

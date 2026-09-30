@@ -114,14 +114,15 @@ describe("NativeAgentAdapter", () => {
 
       const roles = requests.map(messages => messages.map(message => message.role));
       const completed = ["user", "assistant", "tool", "assistant"];
+      const failed = ["user", "assistant"];
       assert.deepEqual(roles, [
         ["system", "user"],
         ["system", "user", "assistant", "tool"],
         ["system", ...completed, "user"],
-        ["system", ...completed, "user"],
-        ["system", ...completed, "user", "assistant", "tool"],
-        ["system", ...completed, ...completed, "user"],
-        ["system", ...completed, ...completed, "user", "assistant", "tool"],
+        ["system", ...completed, ...failed, "user"],
+        ["system", ...completed, ...failed, "user", "assistant", "tool"],
+        ["system", ...completed, ...failed, ...completed, "user"],
+        ["system", ...completed, ...failed, ...completed, "user", "assistant", "tool"],
       ]);
       for (const messages of requests) {
         for (let index = 0; index < messages.length; index += 1) {
@@ -1298,7 +1299,7 @@ describe("NativeAgentAdapter", () => {
     }
   });
 
-  it("does not restore failed or cancelled turns as successful context", async () => {
+  it("restores failed task evidence without treating it as a successful turn", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-failure-"));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-failure-state-"));
     const dbPath = path.join(stateDir, "state.db");
@@ -1359,7 +1360,7 @@ describe("NativeAgentAdapter", () => {
       );
       assert.equal(store.listTurns(`${transcriptId}-cancelled`)[0]?.status, "cancelled");
 
-      let restoredMessages: Array<{ role: string }> = [];
+      let restoredMessages: NativeChatMessage[] = [];
       const restoredAdapter = new NativeAgentAdapter({
         credentialOwner: "test-owner",
         workspaceRoot: workspace,
@@ -1368,13 +1369,16 @@ describe("NativeAgentAdapter", () => {
         transcriptId,
         transcriptStore: store,
         fetchImpl: async (_input, init) => {
-          const body = JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ role: string }> };
+          const body = JSON.parse(String(init?.body ?? "{}")) as { messages?: NativeChatMessage[] };
           restoredMessages = body.messages ?? [];
           return sse([JSON.stringify({ choices: [{ delta: { content: "recovered" }, finish_reason: "stop" }] })]);
         },
       });
       await restoredAdapter.send("recover");
-      assert.deepEqual(restoredMessages.map((message) => message.role), ["user"]);
+      assert.deepEqual(restoredMessages.map((message) => message.role), ["user", "assistant", "tool", "assistant", "user"]);
+      assert.equal(restoredMessages[0]?.content, "failed turn");
+      assert.match(String(restoredMessages.at(-2)?.content), /turn was failed, not completed/);
+      assert.equal(store.listTurns(transcriptId)[0]?.status, "failed");
     } finally {
       resetStateDatabaseForTests();
       fs.rmSync(workspace, { recursive: true, force: true });

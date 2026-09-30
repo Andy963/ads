@@ -27,6 +27,9 @@ transcript 已经可以长期保存，但发送给 provider 的派生上下文�
 5. 每次发生 compaction 时发出结构化 `context` item，包含预算、丢弃消息数和截断
    tool output 数等诊断信息。该事件不等同于 transcript 状态，也不触发 Codex
    thread compaction。
+6. [ADR 0036](0036-preserve-native-interrupted-context.md) 定义的连续未完成轮次与下一条
+   user request 作为必保留组一起预算。组内工具结果可按上述规则截断；任务本身
+   无法容纳时明确失败，不能只留下“继续”而丢掉其所指的原始任务。
 
 ## Consequences
 
