@@ -21,6 +21,46 @@ function sse(events: string[]): Response {
 }
 
 describe("NativeAgentAdapter", () => {
+  for (const source of ["option", "environment"] as const) {
+    for (const configured of [1_800_000, 3_600_000]) {
+      it(`keeps the 30-minute turn deadline and clamps larger values (${source}: ${configured})`, async (t) => {
+        t.mock.timers.enable({ apis: ["setTimeout"] });
+        const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-turn-deadline-"));
+        const entered = Promise.withResolvers<AbortSignal>();
+        try {
+          const adapter = new NativeAgentAdapter({
+            credentialOwner: "test-owner", workspaceRoot: workspace,
+            ...(source === "option" ? { turnTimeoutMs: configured } : {}),
+            env: { ADS_NATIVE_RUNTIME_TURN_TIMEOUT_MS: String(source === "environment" ? configured : 1) },
+            modelResolver: { resolve: () => ({
+              model: "test-model", baseUrl: "https://provider.test/v1", apiKey: "test-key", provider: "test",
+            }) },
+            fetchImpl: async (_input, init) => {
+              assert.ok(init?.signal);
+              const signal = init.signal;
+              entered.resolve(signal);
+              return new Promise<never>((_resolve, reject) => {
+                signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+              });
+            },
+          });
+          const failed = assert.rejects(adapter.send("Wait for the configured deadline"));
+          const signal = await entered.promise;
+          t.mock.timers.tick(600_000);
+          assert.equal(signal.aborted, false, "The old 10-minute ceiling must not abort the turn");
+          t.mock.timers.tick(1_199_999);
+          assert.equal(signal.aborted, false);
+          t.mock.timers.tick(1);
+          assert.equal(signal.aborted, true);
+          assert.match(String(signal.reason), /timed out/);
+          await failed;
+        } finally {
+          fs.rmSync(workspace, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+
   it("serializes overlapping user sends after the preceding assistant response", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-overlapping-turns-"));
     let releaseReply!: () => void;

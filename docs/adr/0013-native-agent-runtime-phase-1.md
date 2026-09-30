@@ -18,7 +18,7 @@ provider 请求采用 OpenAI-compatible `/chat/completions` SSE。每个 turn �
 
 本阶段提供四个受限工具：`exec_command`、`read_file`、`search` 和 `apply_patch`。文件工具限制在 workspace 及其真实路径内，命令工具在 native runtime 中直接于宿主机执行（`shell: false` 走 direct executable 加参数数组，`shell: true` 走 `/bin/sh -c`），并保留超时、输出上限、allowlist 和现有 middleware 安全规则；命令直接继承宿主环境变量与 `$HOME`。patch 在写入前完成全部 context 校验，并在写入失败时尝试回滚。
 
-native 事件桥接为现有 `AgentEvent`：文本使用累计 snapshot，工具、命令、文件变更、turn completion 和错误使用现有 thread item 形状。工具执行器把参数校验、路径解析、命令退出失败和 patch context 失败编码为 tool result，交还模型进行下一轮自愈；上游传输、取消和 runtime 构造失败仍然结束 turn。工具循环默认限制为每条用户消息 64 轮，每批工具调用计一轮，防止模型反复调用工具而无限执行；显式配置正整数 `ADS_AGENT_MAX_TOOL_ROUNDS` 或兼容的 `ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS` 可覆盖预算，显式 `0` 保留不限轮数的兼容行为，空值或非法值使用默认值。
+native 事件桥接为现有 `AgentEvent`：文本使用累计 snapshot，工具、命令、文件变更、turn completion 和错误使用现有 thread item 形状。工具执行器把参数校验、路径解析、命令退出失败和 patch context 失败编码为 tool result，交还模型进行下一轮自愈；上游传输、取消和 runtime 构造失败仍然结束 turn。工具循环默认限制为每条用户消息 128 轮（Issue #496 将原默认值 64 调整为 128），每批工具调用计一轮，防止模型反复调用工具而无限执行；显式配置正整数 `ADS_AGENT_MAX_TOOL_ROUNDS` 或兼容的 `ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS` 可覆盖预算，显式 `0` 保留不限轮数的兼容行为，空值或非法值使用默认值。
 
 达到有限预算后额外允许一次不带工具定义、显式 `tool_choice: none` 的收尾请求，使用最后一轮工具结果说明已完成与未完成事项，不自动续跑。收尾指令只存在于本次请求的 system 消息中，不伪造用户消息，也不写入后续会话。收尾响应先缓冲校验；模型仍请求工具、返回空内容或请求失败时，丢弃该响应并返回固定的 continuation notice，不重试收尾、不再次执行工具。有效总结或回退提示以正常 assistant 消息同步写入上下文与持久化历史；用户取消、重置及持久化失败仍遵守原有边界。下一条用户消息获得新的轮次预算。
 
