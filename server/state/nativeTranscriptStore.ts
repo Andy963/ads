@@ -279,8 +279,8 @@ export class NativeTranscriptStore {
       `).run(
         input.transcriptId,
         input.turnId,
-        this.stringify(input.messages),
-        this.stringify(input.entries),
+        this.stringifyMessages(input.messages),
+        this.stringifyEntries(input.entries),
         this.stringify(input.provider),
         writerId,
         now,
@@ -315,8 +315,8 @@ export class NativeTranscriptStore {
         )
     `).run(
       input.status,
-      this.stringify(input.messages),
-      this.stringify(input.entries),
+      this.stringifyMessages(input.messages),
+      this.stringifyEntries(input.entries),
       input.usage ? this.stringify(input.usage) : null,
       input.errorMessage
         ? redactNativeTranscriptText(input.errorMessage, this.redactions).slice(0, MAX_TRANSCRIPT_ERROR_LENGTH)
@@ -435,5 +435,31 @@ export class NativeTranscriptStore {
 
   private stringify(value: unknown): string {
     return JSON.stringify(sanitizeTranscriptValue(value, this.redactions));
+  }
+
+  private sanitizeMessage(message: NativeChatMessage): NativeChatMessage {
+    const sanitized = sanitizeTranscriptValue(message, this.redactions) as NativeChatMessage;
+    if (message.role !== "assistant" || !message.nativeResponses || !sanitized.nativeResponses) return sanitized;
+    message.nativeResponses.output.forEach((item, index) => {
+      if (item.type !== "reasoning" || typeof item.encrypted_content !== "string") return;
+      const cipher = item.encrypted_content;
+      // Ciphertext can coincidentally contain credential-shaped substrings. Only
+      // this dedicated protocol field bypasses heuristic text redaction;
+      // known credential values and every human-readable field remain redacted.
+      if (this.redactions.some(secret => cipher.includes(secret))) return;
+      const target = sanitized.nativeResponses?.output[index];
+      if (target?.type === "reasoning") target.encrypted_content = cipher;
+    });
+    return sanitized;
+  }
+
+  private stringifyMessages(messages: NativeChatMessage[]): string {
+    return JSON.stringify(messages.map(message => this.sanitizeMessage(message)));
+  }
+
+  private stringifyEntries(entries: NativeTranscriptEntry[]): string {
+    return JSON.stringify(entries.map(entry => entry.kind === "message"
+      ? { kind: "message", message: this.sanitizeMessage(entry.message) }
+      : sanitizeTranscriptValue(entry, this.redactions)));
   }
 }

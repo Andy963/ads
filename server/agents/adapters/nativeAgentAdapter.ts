@@ -14,12 +14,13 @@ import { AsyncLock } from "../../utils/asyncLock.js";
 import { createAbortError, isAbortError } from "../../utils/abort.js";
 import { createLogger } from "../../utils/logger.js";
 import {
-  completeNativeChat,
   NativeProviderError,
   type NativeChatMessage,
   type NativeChatToolCall,
   type NativeCompletionResult,
 } from "../../runtime/openAiCompatibleClient.js";
+import { completeNativeModel } from "../../runtime/nativeCompletion.js";
+import { getNativeResponsesScope } from "../../runtime/openAiResponsesClient.js";
 import {
   createTransientModelRetryEvent,
   isRetryableNativeProviderError,
@@ -739,7 +740,12 @@ export class NativeAgentAdapter implements AgentAdapter {
     }
     if (retryState.attempt === 1) emitTurnEvent({ type: "turn.started" });
 
-    let currentMessages = this.buildMessages(userMessage);
+    const responsesScope = model.wireApi === "responses" ? getNativeResponsesScope(model) : undefined;
+    let currentMessages = this.buildMessages(userMessage).map(message => {
+      if (!message.nativeResponses || message.nativeResponses.scope === responsesScope) return message;
+      const { nativeResponses: _context, ...canonical } = message;
+      return canonical;
+    });
     const turnMessages: NativeChatMessage[] = [userMessage];
     const turnEntries: NativeTranscriptEntry[] = [{ kind: "message", message: userMessage }];
     const providerMetadata: NativeTranscriptProviderMetadata = {
@@ -789,7 +795,8 @@ export class NativeAgentAdapter implements AgentAdapter {
               },
             });
           }
-          completion = await completeNativeChat({
+          completion = await completeNativeModel({
+            wireApi: model.wireApi,
             baseUrl: model.baseUrl,
             apiKey: model.apiKey,
             model: model.model,
@@ -827,9 +834,11 @@ export class NativeAgentAdapter implements AgentAdapter {
         if (finalRound) {
           // Validate the buffered response before exposing it or persisting it.
           // A provider ignoring tool_choice=none never gets another tool turn.
+          const validSummary = completion.toolCalls.length === 0 && Boolean(completion.text.trim());
           completion = {
             ...completion,
-            text: completion.toolCalls.length === 0 && completion.text.trim()
+            nativeResponses: validSummary ? completion.nativeResponses : undefined,
+            text: validSummary
               ? completion.text
               : TOOL_ROUND_LIMIT_MESSAGE,
             toolCalls: [],
@@ -848,6 +857,7 @@ export class NativeAgentAdapter implements AgentAdapter {
           role: "assistant",
           content: completion.text || null,
           ...(completion.toolCalls.length > 0 ? { tool_calls: completion.toolCalls } : {}),
+          ...(completion.nativeResponses ? { nativeResponses: completion.nativeResponses } : {}),
         };
         if (completion.toolCalls.length === 0) {
           emitTurnEvent({ type: "item.completed", item: { type: "agent_message", id: itemId, text: completion.text } });

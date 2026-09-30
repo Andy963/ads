@@ -1,5 +1,6 @@
 import { buildChatCompletionsEndpoint } from "./upstreamEndpoint.js";
 import { MAX_NATIVE_REQUEST_IMAGE_BYTES, NativeImageInputError } from "./nativeImages.js";
+import type { NativeResponsesContext } from "./nativeResponsesTypes.js";
 
 export type NativeChatRole = "system" | "user" | "assistant" | "tool";
 
@@ -33,6 +34,7 @@ export interface NativeChatMessage {
   tool_calls?: NativeChatToolCall[];
   /** Projection-only: an unknown outcome must never lose its uncertainty warning. */
   nativeToolOutcome?: "unknown";
+  nativeResponses?: NativeResponsesContext;
 }
 
 export interface NativeToolDefinition {
@@ -45,6 +47,7 @@ export interface NativeToolDefinition {
 }
 
 export interface NativeCompletionRequest {
+  wireApi?: "chat" | "responses";
   baseUrl: string;
   apiKey: string;
   model: string;
@@ -67,6 +70,7 @@ export interface NativeCompletionRequest {
 }
 
 export interface NativeCompletionResult {
+  nativeResponses?: NativeResponsesContext;
   text: string;
   toolCalls: NativeChatToolCall[];
   finishReason?: string;
@@ -125,6 +129,7 @@ async function buildRequestBody(request: NativeCompletionRequest): Promise<JsonR
   for (const sourceMessage of request.messages) {
     const message = { ...sourceMessage };
     delete message.nativeToolOutcome;
+    delete message.nativeResponses;
     if (!Array.isArray(message.content)) {
       messages.push(message);
       continue;
@@ -176,7 +181,7 @@ async function buildRequestBody(request: NativeCompletionRequest): Promise<JsonR
   return body;
 }
 
-async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+export async function* readSseData(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";

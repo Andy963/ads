@@ -64,6 +64,7 @@ interface ContextTurn {
 function cloneMessage(message: NativeChatMessage): NativeChatMessage {
   return {
     ...message,
+    ...(message.nativeResponses ? { nativeResponses: structuredClone(message.nativeResponses) } : {}),
     ...(Array.isArray(message.content) ? {
       content: message.content.map(part => part.type === "image_url"
         ? { ...part, image_url: { ...part.image_url } }
@@ -94,7 +95,11 @@ export function estimateNativeMessageTokens(message: NativeChatMessage): number 
   const contentTokens = Array.isArray(message.content)
     ? message.content.reduce((total, part) => total + (part.type === "text" ? textTokens(part.text) : 4_096), 0)
     : textTokens(message.content);
-  return MESSAGE_OVERHEAD_TOKENS + contentTokens + textTokens(message.name) + toolCallTokens;
+  // Visible messages/calls are already counted above; include opaque reasoning
+  // in the fixed budget without making it display text or a truncatable tool result.
+  const reasoningTokens = message.nativeResponses?.output.reduce((total, item) => total
+    + (item.type === "reasoning" ? MESSAGE_OVERHEAD_TOKENS + textTokens(JSON.stringify(item)) : 0), 0) ?? 0;
+  return MESSAGE_OVERHEAD_TOKENS + contentTokens + textTokens(message.name) + toolCallTokens + reasoningTokens;
 }
 
 function estimateNativeToolCallTokens(call: NativeChatToolCall): number {

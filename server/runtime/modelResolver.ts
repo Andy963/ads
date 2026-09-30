@@ -32,6 +32,7 @@ export interface NativeModelConfig {
   baseUrl: string;
   apiKey: string;
   provider: string;
+  wireApi?: "chat" | "responses";
   contextWindow?: number;
   capabilities?: Partial<NativeProviderCapabilities>;
   options?: NativeModelRequestOptions;
@@ -115,9 +116,11 @@ function resolveSavedModelConfig(
     throw new Error(`Native runtime provider "${attachedProvider.name}" is disabled`);
   }
   const wireApi = String(attachedProvider?.wireApi ?? "").trim();
-  if (wireApi && wireApi !== "chat") {
-    throw new Error("Native runtime supports only Chat Completions; select Chat completions in the provider API format.");
+  if (wireApi && wireApi !== "chat" && wireApi !== "responses") {
+    throw new Error("Native runtime supports Chat Completions and Responses; select a supported provider API format.");
   }
+  const protocol: Pick<NativeModelConfig, "wireApi"> = wireApi === "responses"
+    ? { wireApi: "responses" } : wireApi === "chat" ? { wireApi: "chat" } : {};
   createModelServiceStore(db).resolveConversation(saved.id);
   const profile = attachedProvider
     ? String(attachedProvider.credentialProfile ?? "").trim() || attachedProvider.id
@@ -184,6 +187,7 @@ function resolveSavedModelConfig(
     baseUrl,
     apiKey,
     provider: savedProvider || (credentials?.provider ?? "openai"),
+    ...protocol,
     options: requestOptions(config),
     ...(resolvedContextWindow ? { contextWindow: resolvedContextWindow } : {}),
     ...(hasExplicitCapabilities ? { capabilities } : {}),

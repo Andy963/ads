@@ -150,12 +150,13 @@ describe("native model resolver", () => {
       baseUrl: provider.baseUrl, provider: provider.id, apiKey: "wire-secret",
     }, provider.id);
     const resolver = createNativeModelResolver({ owner: "owner", stateDbPath: dbPath, env: { ADS_WEB_SESSION_PEPPER: "test-pepper" } });
-    assert.throws(() => resolver.resolve("wire-model"), /Native runtime supports only Chat Completions/i);
+    assert.equal(resolver.resolve("wire-model").wireApi, "responses");
     providers.upsertProvider({ ...provider, wireApi: "unknown" });
-    assert.throws(() => resolver.resolve("wire-model"), /Native runtime supports only Chat Completions/i);
+    assert.throws(() => resolver.resolve("wire-model"), /select a supported provider API format/i);
     for (const wireApi of ["chat", null]) {
       providers.upsertProvider({ ...provider, wireApi, name: "Renamed provider" });
       assert.equal(resolver.resolve("wire-model").apiKey, "wire-secret");
+      assert.equal(resolver.resolve("wire-model").wireApi, wireApi ?? undefined);
     }
   });
 

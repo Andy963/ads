@@ -1,4 +1,5 @@
-import { completeNativeChat, type NativeChatMessage } from "../runtime/openAiCompatibleClient.js";
+import { type NativeChatMessage } from "../runtime/openAiCompatibleClient.js";
+import { completeNativeModel } from "../runtime/nativeCompletion.js";
 import type { NativeModelConfig } from "../runtime/modelResolver.js";
 import { ReviewerInspectionTools, REVIEWER_TOOLS } from "./inspectionTools.js";
 import { parseReviewVerdict, ReviewerProtocolError } from "./verdictParser.js";
@@ -13,7 +14,7 @@ export async function runReviewerInspection(options: {
   profileId: string;
   signal: AbortSignal;
   toolTurnBudget?: number;
-  complete?: typeof completeNativeChat;
+  complete?: typeof completeNativeModel;
 }): Promise<ReviewVerdict> {
   const budget = options.toolTurnBudget ?? 5;
   if (!Number.isInteger(budget) || budget < 0 || budget > 10) throw new Error("Reviewer tool turn budget must be an integer from 0 to 10.");
@@ -28,7 +29,8 @@ export async function runReviewerInspection(options: {
       options.signal.throwIfAborted();
       const final = turn === budget || outputBudget <= 0;
       if (final) messages.push({ role: "user", content: "Inspection budget exhausted. Do not request tools. Return the final structured PASS/REJECT JSON now using gathered evidence; reject if evidence is insufficient." });
-      const result = await (options.complete ?? completeNativeChat)({
+      const result = await (options.complete ?? completeNativeModel)({
+        wireApi: options.model.wireApi,
         baseUrl: options.model.baseUrl, apiKey: options.model.apiKey, model: options.model.model,
         options: { ...options.model.options, maxTokens: options.model.options?.maxTokens ?? 4096 },
         messages, tools: final ? [] : REVIEWER_TOOLS, streaming: false, signal: options.signal,
@@ -45,7 +47,8 @@ export async function runReviewerInspection(options: {
       if (result.text.length > 8000 || maxArgumentChars > 4096) {
         throw new ReviewerProtocolError(`Reviewer tool response exceeded the text or argument size limit (text_chars=${result.text.length}, max_argument_chars=${maxArgumentChars}).`);
       }
-      messages.push({ role: "assistant", content: result.text, tool_calls: result.toolCalls });
+      messages.push({ role: "assistant", content: result.text, tool_calls: result.toolCalls,
+        ...(result.nativeResponses ? { nativeResponses: result.nativeResponses } : {}) });
       for (const call of result.toolCalls) {
         options.signal.throwIfAborted();
         let output = "Inspection output budget exhausted; this tool was not executed.";

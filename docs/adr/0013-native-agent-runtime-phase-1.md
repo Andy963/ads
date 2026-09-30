@@ -16,6 +16,9 @@ ADS 当前默认通过 Codex app-server daemon 执行 agent turn。这个路径�
 
 provider 请求采用 OpenAI-compatible `/chat/completions` SSE。每个 turn 根据模型配置和认证用户解析 endpoint、model、provider 与加密 credential profile；model JSON 只允许保存 `credentialProfile` 和受限请求参数。endpoint 必须与加密 profile 的规范化 endpoint 一致，避免把一个 provider 的 key 发送到另一个 endpoint。
 
+后续 [ADR 0037](0037-native-responses-protocol.md) 扩展为按服务商配置同时支持 Responses 与
+Chat Completions；上述 Chat-only 选择仅描述本阶段初始实现，不再是 Native 的当前限制。
+
 本阶段提供四个受限工具：`exec_command`、`read_file`、`search` 和 `apply_patch`。文件工具限制在 workspace 及其真实路径内，命令工具在 native runtime 中直接于宿主机执行（`shell: false` 走 direct executable 加参数数组，`shell: true` 走 `/bin/sh -c`），并保留超时、输出上限、allowlist 和现有 middleware 安全规则；命令直接继承宿主环境变量与 `$HOME`。patch 在写入前完成全部 context 校验，并在写入失败时尝试回滚。
 
 native 事件桥接为现有 `AgentEvent`：文本使用累计 snapshot，工具、命令、文件变更、turn completion 和错误使用现有 thread item 形状。工具执行器把参数校验、路径解析、命令退出失败和 patch context 失败编码为 tool result，交还模型进行下一轮自愈；上游传输、取消和 runtime 构造失败仍然结束 turn。工具循环默认限制为每条用户消息 128 轮（Issue #496 将原默认值 64 调整为 128），每批工具调用计一轮，防止模型反复调用工具而无限执行；显式配置正整数 `ADS_AGENT_MAX_TOOL_ROUNDS` 或兼容的 `ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS` 可覆盖预算，显式 `0` 保留不限轮数的兼容行为，空值或非法值使用默认值。
