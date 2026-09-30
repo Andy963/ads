@@ -41,6 +41,7 @@ describe("provider-first model management", () => {
     expect(wrapper.get('[data-testid="provider-row-p1"]').find('[data-testid="model-row-m1"]').exists()).toBe(true);
     expect(wrapper.get('[data-testid="provider-row-p1"]').find('[data-testid="model-row-m2"]').exists()).toBe(false);
     expect(wrapper.get('[data-testid="provider-row-p2"]').find('[data-testid="model-row-m2"]').exists()).toBe(true);
+    expect(wrapper.get(".settingsBody").classes()).toContain("settingsScrollArea");
     wrapper.unmount();
   });
 
@@ -49,6 +50,8 @@ describe("provider-first model management", () => {
     const wrapper = mount(ModelManager, { props: { api: api as any } });
     await flushPromises();
     await wrapper.get('[data-testid="provider-edit-p1"]').trigger("click");
+    expect(wrapper.get('[data-testid="provider-dialog"] .sheetBody').classes()).toContain("settingsScrollArea");
+    expect(wrapper.get('[data-testid="provider-dialog"]').text()).toContain("Native runtime uses the selected API format: Responses or Chat completions.");
     expect((wrapper.get('[data-testid="provider-base-url"]').element as HTMLInputElement).value).toBe("https://one.invalid/v1");
     expect((wrapper.get('[data-testid="provider-api-key"]').element as HTMLInputElement).value).toBe("");
     expect(wrapper.get('[data-testid="provider-api-key"]').attributes("placeholder")).toBe("Leave blank to keep saved key");

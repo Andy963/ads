@@ -51,3 +51,15 @@
 .iosSettings .settingsPrimary { min-height: 50px; padding: 12px 20px; width: 100%; border: 0; border-radius: 12px; background: var(--settings-tint); color: white; font-size: 17px; font-weight: 600; }
 .iosSettings .settingsRadio { position: absolute; opacity: 0; width: 1px; height: 1px; }
 .iosSettings .settingsRow:has(.settingsRadio:focus-visible) { outline: 2px solid var(--settings-tint); outline-offset: -3px; }
+
+/* Keep native touch scrolling on mobile; make desktop overflow discoverable. */
+@media (min-width: 901px) {
+  .iosSettings .settingsScrollArea {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.75) rgba(148, 163, 184, 0.12);
+    scrollbar-gutter: stable;
+  }
+  .iosSettings .settingsScrollArea::-webkit-scrollbar { width: 8px; }
+  .iosSettings .settingsScrollArea::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.75); border-radius: 999px; }
+  .iosSettings .settingsScrollArea::-webkit-scrollbar-track { background: rgba(148, 163, 184, 0.12); }
+}

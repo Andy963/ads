@@ -309,6 +309,9 @@ onBeforeUnmount(() => {
 }
 
 .draggableCard.large {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   width: min(900px, 100%);
   max-height: 88vh;
   overflow: hidden;
