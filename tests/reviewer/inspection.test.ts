@@ -6,12 +6,26 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { ReviewerInspectionTools } from "../../server/reviewer/inspectionTools.js";
 import { runReviewerInspection } from "../../server/reviewer/inspectionRunner.js";
-import type { NativeChatToolCall } from "../../server/runtime/openAiCompatibleClient.js";
+import { ReviewerProtocolError } from "../../server/reviewer/verdictParser.js";
+import type { NativeChatMessage, NativeChatToolCall, NativeCompletionResult } from "../../server/runtime/openAiCompatibleClient.js";
 
 function call(name: string, args: unknown, id = "tool-1"): NativeChatToolCall {
   return { id, type: "function", function: { name, arguments: JSON.stringify(args) } };
 }
 const verdict = { text: JSON.stringify({ status: "PASS", summary: "checked", defects: [] }), toolCalls: [], usage: null };
+const privateMarker = "PRIVATE_MODEL_OUTPUT";
+
+function protocolError(reason: RegExp) {
+  return (error: unknown): boolean => {
+    assert.ok(error instanceof ReviewerProtocolError);
+    assert.equal(error.name, "ReviewerProtocolError");
+    assert.equal(error.code, "REVIEWER_PROTOCOL_ERROR");
+    assert.match(error.message, reason);
+    assert.doesNotMatch(`${error.message}\n${error.stack}\n${JSON.stringify(error)}`, /PRIVATE_MODEL_OUTPUT/);
+    assert.equal(error.cause, undefined);
+    return true;
+  };
+}
 
 describe("isolated Reviewer inspection", () => {
   let directory: string;
@@ -100,15 +114,252 @@ describe("isolated Reviewer inspection", () => {
     } });
     assert.equal(turns, 6);
     assert.equal(result.status, "PASS");
-    const invalid = await runReviewerInspection({ ...options(), toolTurnBudget: 0, complete: async () => ({ ...verdict, toolCalls: [call("exec", {})] }) });
-    assert.equal(invalid.status, "REJECT");
   });
 
-  it("rejects excessive tool fan-out and releases context after transport failure", async () => {
-    let messages: unknown[] = [];
-    const overLimit = await runReviewerInspection({ ...options(), complete: async () => ({ ...verdict, toolCalls: Array.from({ length: 5 }, (_, i) => call("list_dir", { path: "." }, String(i))) }) });
-    assert.equal(overLimit.status, "REJECT");
-    await assert.rejects(runReviewerInspection({ ...options(), complete: async (request) => { messages = request.messages; throw new Error("transport failed"); } }), /transport failed/);
+  for (const count of [6, 8]) {
+    it(`executes all ${count} calls serially before accepting a final verdict`, async (t) => {
+      const calls = Array.from({ length: count }, (_, i) => call("read_file_range", {
+        path: "src/file.ts", start_line: i + 1, end_line: i + 1,
+      }, `read-${i}`));
+      const execute = ReviewerInspectionTools.prototype.execute;
+      const executed: string[] = [];
+      let active = 0;
+      t.mock.method(ReviewerInspectionTools.prototype, "execute", async function (this: ReviewerInspectionTools, toolCall: NativeChatToolCall) {
+        active++;
+        assert.equal(active, 1, "Tool executions must not overlap");
+        executed.push(toolCall.id);
+        try {
+          return await execute.call(this, toolCall);
+        } finally {
+          active--;
+        }
+      });
+      const dispose = t.mock.method(ReviewerInspectionTools.prototype, "dispose");
+      let turns = 0;
+      let messages: NativeChatMessage[] = [];
+      fs.writeFileSync(path.join(directory, "src/file.ts"), "mutable working-tree content");
+      const result = await runReviewerInspection({ ...options(), complete: async (request) => {
+        messages = request.messages;
+        turns++;
+        if (turns === 1) return { ...verdict, text: "", toolCalls: calls };
+        assert.equal(turns, 2);
+        assert.ok(request.tools.length > 0, "A large batch alone must not exhaust the inspection budget");
+        assert.deepEqual(executed, calls.map((entry) => entry.id));
+        const responses = request.messages.filter((entry) => entry.role === "tool");
+        assert.deepEqual(responses.map((entry) => entry.tool_call_id), executed);
+        assert.deepEqual(request.messages.find((entry) => entry.role === "assistant")?.tool_calls, calls);
+        for (const [index, response] of responses.entries()) {
+          assert.equal(response.content, `${index + 1}: const value${index} = "literal.*";`);
+        }
+        return verdict;
+      } });
+      assert.equal(result.status, "PASS");
+      assert.equal(result.reviewerProfileId, "profile");
+      assert.equal(turns, 2);
+      assert.equal(active, 0);
+      assert.equal(dispose.mock.callCount(), 1);
+      assert.equal(messages.length, 0);
+    });
+  }
+
+  for (const firstOutputSize of [5000, 5001]) {
+    it(`retains at most 40000 output characters across rounds and answers every call (${firstOutputSize})`, async (t) => {
+      const firstCall = call("list_dir", { path: "." }, "first-round");
+      const batch = Array.from({ length: 8 }, (_, i) => call("list_dir", { path: "." }, `second-${i}`));
+      const executed: string[] = [];
+      t.mock.method(ReviewerInspectionTools.prototype, "execute", async (toolCall: NativeChatToolCall) => {
+        executed.push(toolCall.id);
+        return "X".repeat(toolCall.id === firstCall.id ? firstOutputSize : 7000);
+      });
+      const dispose = t.mock.method(ReviewerInspectionTools.prototype, "dispose");
+      let turns = 0;
+      let messages: NativeChatMessage[] = [];
+      const result = await runReviewerInspection({ ...options(), complete: async (request) => {
+        messages = request.messages;
+        turns++;
+        if (turns === 1) return { ...verdict, text: "", toolCalls: [firstCall] };
+        if (turns === 2) {
+          assert.ok(request.tools.length > 0);
+          return { ...verdict, text: "", toolCalls: batch };
+        }
+        assert.equal(turns, 3);
+        assert.deepEqual(request.tools, []);
+        assert.match(String(request.messages.at(-1)?.content), /budget exhausted/);
+        const responses = request.messages.filter((entry) => entry.role === "tool");
+        assert.deepEqual(responses.map((entry) => entry.tool_call_id), [firstCall, ...batch].map((entry) => entry.id));
+        assert.deepEqual(executed, [firstCall, ...batch.slice(0, 5)].map((entry) => entry.id));
+        const contents = responses.map((entry) => {
+          assert.equal(typeof entry.content, "string");
+          return entry.content as string;
+        });
+        assert.equal(contents.reduce((total, content) => total + (content.match(/X/g)?.length ?? 0), 0), 40_000);
+        assert.equal(contents[0], "X".repeat(firstOutputSize));
+        for (const content of contents.slice(1, 5)) assert.equal(content, "X".repeat(7000));
+        if (firstOutputSize === 5000) {
+          assert.equal(contents[5], "X".repeat(7000));
+        } else {
+          assert.ok(contents[5]!.startsWith("X".repeat(6999)));
+          assert.match(contents[5]!, /truncated.*budget exhausted/);
+        }
+        for (const content of contents.slice(6)) {
+          assert.match(content, /budget exhausted.*not executed/);
+          assert.doesNotMatch(content, /X/);
+        }
+        return verdict;
+      } });
+      assert.equal(result.status, "PASS");
+      assert.equal(turns, 3);
+      assert.equal(dispose.mock.callCount(), 1);
+      assert.equal(messages.length, 0);
+    });
+  }
+
+  const oversizedArguments = call("list_dir", { path: "." }, "oversized");
+  oversizedArguments.function.arguments = privateMarker.padEnd(4097, "x");
+  const protocolCases: Array<{
+    name: string;
+    response: NativeCompletionResult;
+    reason: RegExp;
+    toolTurnBudget?: number;
+  }> = [
+    { name: "malformed JSON", response: { ...verdict, text: privateMarker }, reason: /invalid verdict JSON/ },
+    { name: "truncated JSON", response: { ...verdict, text: `{"status":"PASS","summary":"${privateMarker}` }, reason: /invalid verdict JSON/ },
+    { name: "invalid verdict schema", response: { ...verdict, text: JSON.stringify({ status: "PASS", summary: { privateMarker } }) }, reason: /required PASS\/REJECT schema/ },
+    { name: "tools in the final tool-free round", response: { ...verdict, text: privateMarker, toolCalls: [call("list_dir", { path: "." })] }, reason: /final verdict was required/, toolTurnBudget: 0 },
+    { name: "8001 text characters with tools", response: { ...verdict, text: privateMarker.padEnd(8001, "x"), toolCalls: [call("list_dir", { path: "." })] }, reason: /text or argument size limit/ },
+    { name: "4097 argument characters late in a batch", response: { ...verdict, text: "", toolCalls: [...Array.from({ length: 5 }, (_, i) => call("list_dir", { path: "." }, `valid-${i}`)), oversizedArguments] }, reason: /text or argument size limit/ },
+  ];
+  for (const finishReason of ["length", "content_filter"]) {
+    for (const withTools of [false, true]) {
+      protocolCases.push({
+        name: `${finishReason} finish reason ${withTools ? "with tools" : "despite valid JSON"}`,
+        response: {
+          ...verdict,
+          text: JSON.stringify({ status: "PASS", summary: privateMarker, defects: [] }),
+          finishReason,
+          toolCalls: withTools ? [call("list_dir", { path: "." })] : [],
+        },
+        reason: new RegExp(`finish_reason=${finishReason}`),
+      });
+    }
+  }
+  for (const { name, response, reason, toolTurnBudget } of protocolCases) {
+    it(`throws a safe protocol error for ${name} and disposes the inspection`, async (t) => {
+      const execute = t.mock.method(ReviewerInspectionTools.prototype, "execute");
+      const dispose = t.mock.method(ReviewerInspectionTools.prototype, "dispose");
+      let messages: NativeChatMessage[] = [];
+      let turns = 0;
+      await assert.rejects(runReviewerInspection({ ...options(), toolTurnBudget, complete: async (request) => {
+        messages = request.messages;
+        turns++;
+        if (toolTurnBudget === 0) assert.deepEqual(request.tools, []);
+        return response;
+      } }), protocolError(reason));
+      assert.equal(turns, 1);
+      assert.equal(execute.mock.callCount(), 0);
+      assert.equal(dispose.mock.callCount(), 1);
+      assert.equal(messages.length, 0);
+    });
+  }
+
+  it("accepts exactly 8000 text and 4096 argument characters in a tool response", async () => {
+    const toolCall = call("list_dir", { path: "." });
+    toolCall.function.arguments = toolCall.function.arguments.padEnd(4096, " ");
+    let turns = 0;
+    const result = await runReviewerInspection({ ...options(), complete: async (request) => {
+      turns++;
+      if (turns === 1) return { ...verdict, text: "x".repeat(8000), toolCalls: [toolCall] };
+      assert.equal(turns, 2);
+      assert.deepEqual(JSON.parse(String(request.messages.at(-1)?.content)).entries, ["src/"]);
+      return verdict;
+    } });
+    assert.equal(result.status, "PASS");
+    assert.equal(turns, 2);
+  });
+
+  it("does not apply the tool response text bound to a valid tool-free verdict", async () => {
+    const summary = "x".repeat(8001);
+    const result = await runReviewerInspection({ ...options(), complete: async () => ({
+      ...verdict, text: JSON.stringify({ status: "PASS", summary, defects: [] }),
+    }) });
+    assert.equal(result.status, "PASS");
+    assert.equal(result.summary, summary);
+  });
+
+  it("preserves a real REJECT after unavailable inspection evidence", async (t) => {
+    const dispose = t.mock.method(ReviewerInspectionTools.prototype, "dispose");
+    const rejected = { status: "REJECT", summary: "Required evidence unavailable", defects: [
+      { file: "missing.ts", line: 1, severity: "blocker", description: "Cannot verify the required declaration." },
+    ] };
+    let turns = 0;
+    let messages: NativeChatMessage[] = [];
+    const result = await runReviewerInspection({ ...options(), complete: async (request) => {
+      messages = request.messages;
+      turns++;
+      if (turns === 1) return { ...verdict, text: "", toolCalls: [call("read_file_range", { path: "missing.ts", start_line: 1, end_line: 1 })] };
+      assert.match(String(request.messages.at(-1)?.content), /Inspection unavailable/);
+      return { ...verdict, text: JSON.stringify(rejected) };
+    } });
+    assert.equal(turns, 2);
+    assert.equal(result.status, "REJECT");
+    assert.equal(result.summary, rejected.summary);
+    assert.deepEqual(result.defects, rejected.defects);
+    assert.equal(result.reviewerProfileId, "profile");
+    assert.equal(dispose.mock.callCount(), 1);
     assert.equal(messages.length, 0);
   });
+
+  for (const toolTurnBudget of [-1, 1.5, 11, Number.NaN]) {
+    it(`rejects invalid tool round budget ${toolTurnBudget} before model invocation`, async () => {
+      await assert.rejects(runReviewerInspection({ ...options(), toolTurnBudget, complete: async () => {
+        assert.fail("Invalid budgets must not invoke the model");
+      } }), /tool turn budget must be an integer from 0 to 10/);
+    });
+  }
+
+  for (const stage of ["before inspection", "model completion", "tool execution"]) {
+    for (const name of ["AbortError", "TimeoutError"]) {
+      it(`preserves ${name} during ${stage}, stops the batch and disposes context`, async (t) => {
+        const controller = new AbortController();
+        const cancellation = new DOMException("Inspection interrupted", name);
+        const execute = t.mock.method(ReviewerInspectionTools.prototype, "execute", async () => {
+          controller.abort(cancellation);
+          return "Evidence returned after cancellation";
+        });
+        const dispose = t.mock.method(ReviewerInspectionTools.prototype, "dispose");
+        const calls = Array.from({ length: 8 }, (_, i) => call("list_dir", { path: "." }, `cancel-${i}`));
+        let turns = 0;
+        let messages: NativeChatMessage[] = [];
+        if (stage === "before inspection") controller.abort(cancellation);
+        await assert.rejects(runReviewerInspection({ ...options(), signal: controller.signal, complete: async (request) => {
+          turns++;
+          messages = request.messages;
+          assert.equal(request.signal, controller.signal);
+          if (stage === "model completion") controller.abort(cancellation);
+          return { ...verdict, text: "", toolCalls: calls };
+        } }), (error: unknown) => error === cancellation);
+        assert.equal(turns, stage === "before inspection" ? 0 : 1);
+        assert.equal(execute.mock.callCount(), stage === "tool execution" ? 1 : 0);
+        assert.equal(dispose.mock.callCount(), 1);
+        assert.equal(messages.length, 0);
+      });
+    }
+  }
+
+  for (const stage of ["transport", "tool"]) {
+    it(`preserves ${stage} failures and releases inspection context`, async (t) => {
+      const failure = new Error(`${stage} failed`);
+      const execute = t.mock.method(ReviewerInspectionTools.prototype, "execute", async () => { throw failure; });
+      const dispose = t.mock.method(ReviewerInspectionTools.prototype, "dispose");
+      let messages: NativeChatMessage[] = [];
+      await assert.rejects(runReviewerInspection({ ...options(), complete: async (request) => {
+        messages = request.messages;
+        if (stage === "transport") throw failure;
+        return { ...verdict, text: "", toolCalls: [call("list_dir", { path: "." })] };
+      } }), (error: unknown) => error === failure);
+      assert.equal(execute.mock.callCount(), stage === "tool" ? 1 : 0);
+      assert.equal(dispose.mock.callCount(), 1);
+      assert.equal(messages.length, 0);
+    });
+  }
 });
