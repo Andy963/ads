@@ -530,7 +530,7 @@ describe("NativeAgentAdapter", () => {
   });
 
   for (const configured of [undefined, "", "  ", "invalid", "-1", "1.5"]) {
-    it(`caps tool rounds at 64 plus one final response for an unset or invalid budget (${JSON.stringify(configured)})`, async () => {
+    it(`caps tool rounds at 128 plus one final response for an unset or invalid budget (${JSON.stringify(configured)})`, async () => {
       const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-default-limit-"));
       try {
         fs.writeFileSync(path.join(workspace, "hello.txt"), "hello\n", "utf8");
@@ -545,7 +545,7 @@ describe("NativeAgentAdapter", () => {
             const body = JSON.parse(String(init?.body));
             requestNumber += 1;
             // Bound the fixture itself so a regression to unlimited cannot hang.
-            if (requestNumber > 64) {
+            if (requestNumber > 128) {
               assert.equal(body.tool_choice, "none");
               assert.equal(body.tools, undefined);
               return sse([JSON.stringify({ choices: [{ delta: { content: "Final budget summary" }, finish_reason: "stop" }] })]);
@@ -559,12 +559,12 @@ describe("NativeAgentAdapter", () => {
           },
         });
         const result = await adapter.send("Keep inspecting the file");
-        assert.equal(requestNumber, 65);
+        assert.equal(requestNumber, 129);
         assert.equal(result.response, "Final budget summary");
         if (configured === undefined) {
           requestNumber = 0;
           const next = await adapter.send("Continue inspecting");
-          assert.equal(requestNumber, 65, "Each user turn must receive a fresh budget");
+          assert.equal(requestNumber, 129, "Each user turn must receive a fresh budget");
           assert.equal(next.response, "Final budget summary");
         }
       } finally {

@@ -57,8 +57,8 @@ import {
 const logger = createLogger("NativeAgentAdapter");
 const NATIVE_ADAPTER_ID = "codex";
 const DEFAULT_TURN_TIMEOUT_MS = 0;
-const MAX_TURN_TIMEOUT_MS = 600_000;
-const DEFAULT_MAX_TOOL_ROUNDS = 64;
+const MAX_TURN_TIMEOUT_MS = 1_800_000;
+const DEFAULT_MAX_TOOL_ROUNDS = 128;
 const TOOL_ROUND_LIMIT_MESSAGE =
   "Native runtime reached the configured tool-round limit and could not produce a final summary. Completed tool results have been preserved; send another prompt to continue.";
 const TOOL_ROUND_FINAL_INSTRUCTION =

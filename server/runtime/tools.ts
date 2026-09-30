@@ -12,10 +12,10 @@ import { redactNativeTranscriptText } from "../state/nativeTranscriptStore.js";
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_PATCH_BYTES = 512 * 1024;
 const MAX_TOOL_OUTPUT_CHARS = 64 * 1024;
-const DEFAULT_READ_LINES = 400;
+const DEFAULT_READ_LINES = 1_000;
 const MAX_READ_LINES = 2_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
-const MAX_COMMAND_TIMEOUT_MS = 120_000;
+const MAX_COMMAND_TIMEOUT_MS = 600_000;
 const MAX_SEARCH_RESULTS = 500;
 
 export const NATIVE_TOOL_DEFINITIONS: NativeToolDefinition[] = [
