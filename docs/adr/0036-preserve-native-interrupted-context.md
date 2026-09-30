@@ -21,12 +21,16 @@ Native runtime 原先只把 `completed` 轮次加入下一次请求。`cancelled
 3. 尚无结果的 tool call 在请求投影中补上 `status: unknown` 的 tool result，明确说明
    可能未执行，也可能已经产生副作用，应先检查实际状态。补充项只用于协议配对；
    不声称工具成功或完全未执行，不自动重放工具。
+   这些未知结果带仅用于投影的内部标记，不允许截断；若连未知状态声明也无法容纳，
+   请求必须失败。内部标记在 provider 序列化前移除，不写入原始 transcript。
 4. 只有逻辑 turn 进入终态后才加入上下文。自动 retry 的各次 attempt 不重复加入；
    取消 retry backoff、超时、错误和进程重建均遵守相同规则。显式 reset 仍清空上下文，
    transcript、owner、project 和 lifecycle 的隔离不变。
 5. 连续未完成轮次和下一条 user request 组成一个必须保留的 context group。预算不足时
    沿用 ADR 0023 的工具输出截断；无法容纳任务本身时明确失败，不静默删除原始任务。
    后续成功轮次结束这个必保留边界；本变更不实现无限上下文或语义摘要。
+   无工具收尾阶段同样传播 context-limit 错误，不能通过总结回退把超限标为成功，
+   从而提前清除任务的必保留边界。
 6. SessionManager 的只读可恢复性探测不再只检查 completed 轮次。原始 running
    checkpoint 的失效仍由新 writer claim 完成；探测本身不抢占或中断旧 writer。
 

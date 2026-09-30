@@ -32,6 +32,7 @@ import { projectNativeContinuationTurn } from "../../runtime/nativeContinuation.
 import {
   DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS,
   DEFAULT_NATIVE_CONTEXT_WINDOW,
+  NativeContextLimitError,
   formatNativeContextDiagnostic,
   projectNativeContext,
 } from "../../runtime/nativeContextProjection.js";
@@ -803,7 +804,7 @@ export class NativeAgentAdapter implements AgentAdapter {
             outputSchema: options.outputSchema,
           });
         } catch (error) {
-          if (!finalRound) throw error;
+          if (!finalRound || error instanceof NativeContextLimitError) throw error;
           // Summary failure must not replay completed tools. Cancellation and
           // reset still propagate through the normal interrupted-turn path.
           assertTurnActive();

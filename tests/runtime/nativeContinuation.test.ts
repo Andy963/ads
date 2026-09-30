@@ -7,8 +7,9 @@ import path from "node:path";
 
 import { NativeAgentAdapter } from "../../server/agents/adapters/nativeAgentAdapter.js";
 import { projectNativeContinuation, projectNativeContinuationTurn } from "../../server/runtime/nativeContinuation.js";
-import { projectNativeContext } from "../../server/runtime/nativeContextProjection.js";
-import type { NativeChatMessage, NativeChatToolCall } from "../../server/runtime/openAiCompatibleClient.js";
+import { NativeContextLimitError, projectNativeContext } from "../../server/runtime/nativeContextProjection.js";
+import { completeNativeChat, type NativeChatMessage, type NativeChatToolCall } from "../../server/runtime/openAiCompatibleClient.js";
+import { NATIVE_TOOL_DEFINITIONS } from "../../server/runtime/tools.js";
 import { getStateDatabase, closeAllStateDatabases } from "../../server/state/database.js";
 import { NativeTranscriptStore } from "../../server/state/nativeTranscriptStore.js";
 
@@ -102,6 +103,7 @@ describe("native stopped-turn continuation", () => {
         if (restored) assert.equal(second.hasRestoredTranscript(), true);
         await second.send(nextPrompt);
         const context = requests.at(-1)!;
+        assert.ok(!JSON.stringify(context).includes("nativeToolOutcome"), "Internal projection metadata must not reach the provider");
         assertTaskContext(context);
         for (const message of before[0]!.messages.filter(message => message.role === "tool")) {
           assert.deepEqual(context.find(candidate => candidate.tool_call_id === message.tool_call_id), message);
@@ -211,5 +213,75 @@ describe("native stopped-turn continuation", () => {
     assert.equal(projection.diagnostic.truncatedToolOutputs, 1);
     assert.deepEqual(turns, original);
     assert.deepEqual(projectNativeContinuationTurn({ status: "running", messages: turns[0].messages }), []);
+  });
+
+  for (const restored of [false, true]) {
+    it(`propagates context limits in tool-free finalization without clearing task anchors, restored=${restored}`, async t => {
+      const { workspace, store } = fixture(t);
+      fs.writeFileSync(path.join(workspace, "note.txt"), "confirmed result");
+      const controller = new AbortController();
+      const requests: NativeChatMessage[][] = [];
+      let stage: "stop" | "grow" | "recover" = "stop";
+      let contextWindow = 4_096;
+      const create = () => new NativeAgentAdapter({
+        credentialOwner: "test-owner", workspaceRoot: workspace, maxToolRounds: 1,
+        transcriptId: "final-context", transcriptStore: store,
+        modelResolver: { resolve: () => ({ ...model, contextWindow }) },
+        fetchImpl: async (_url, init) => {
+          requests.push(JSON.parse(String(init?.body)).messages);
+          if (stage === "stop") {
+            controller.abort();
+            throw Object.assign(new Error("Stopped"), { name: "AbortError" });
+          }
+          if (stage === "grow") return reply("Reading.", [{ id: "large-call", type: "function", function: {
+            name: "read_file", arguments: JSON.stringify({ file: "note.txt", note: "x".repeat(20_000) }),
+          } }]);
+          return reply("Recovered with the original task.");
+        },
+      });
+      const first = create();
+      await assert.rejects(first.send(task, { signal: controller.signal }));
+      stage = "grow";
+      const next = restored ? create() : first;
+      await assert.rejects(next.send(nextPrompt), error => error instanceof NativeContextLimitError);
+      assert.equal(requests.length, 2, "An over-budget summary must not reach the provider");
+      assert.deepEqual(store.listTurns("final-context").map(turn => turn.status), ["cancelled", "failed"]);
+      stage = "recover";
+      contextWindow = 32_768;
+      const recovered = restored ? create() : next;
+      await recovered.send("Continue after increasing the context budget.");
+      assert.equal(requests.at(-1)?.filter(message => message.role === "user" && message.content === task).length, 1);
+      assert.equal(requests.at(-1)?.filter(message => message.role === "tool").length, 1);
+      assert.deepEqual(store.listTurns("final-context").map(turn => turn.status), ["cancelled", "failed", "completed"]);
+    });
+  }
+
+  it("never truncates unknown tool outcomes, even when other tool results must be trimmed", async () => {
+    const turn = { status: "cancelled" as const, messages: [
+      { role: "user" as const, content: task },
+      { role: "assistant" as const, content: null, tool_calls: ["confirmed", "pending"].map(id => ({
+        id, type: "function" as const, function: { name: "read_file", arguments: "{}" },
+      })) },
+      { role: "tool" as const, content: "x".repeat(20_000), tool_call_id: "confirmed" },
+    ] };
+    const context = projectNativeContinuation([turn]);
+    const unknown = context.messages.find(message => message.tool_call_id === "pending")!;
+    const messages = [...context.messages, { role: "user" as const, content: nextPrompt }];
+    const fixed = messages.map(message => message.role === "tool" && message.nativeToolOutcome !== "unknown"
+      ? { ...message, content: "" } : message);
+    const minimum = projectNativeContext(fixed, { contextWindow: 100_000, reservedTokens: 64, tools: NATIVE_TOOL_DEFINITIONS }).diagnostic.estimatedTokens;
+    const options = { reservedTokens: 64, requiredRecentTurns: 2, tools: NATIVE_TOOL_DEFINITIONS };
+    assert.throws(() => projectNativeContext(messages, { ...options, contextWindow: minimum + 63 }), NativeContextLimitError);
+    const fitted = projectNativeContext(messages, { ...options, contextWindow: minimum + 164 });
+    assert.equal(fitted.diagnostic.truncatedToolOutputs, 1);
+    assert.deepEqual(fitted.messages.find(message => message.tool_call_id === "pending"), unknown);
+    let body: { messages: NativeChatMessage[] } | undefined;
+    await completeNativeChat({
+      ...model, messages: fitted.messages, tools: NATIVE_TOOL_DEFINITIONS,
+      fetchImpl: async (_url, init) => { body = JSON.parse(String(init?.body)); return reply(); },
+    });
+    assert.ok(!JSON.stringify(body).includes("nativeToolOutcome"));
+    assert.equal(body?.messages.find(message => message.tool_call_id === "pending")?.content, unknown.content);
+    assert.equal(turn.messages.length, 3, "Synthetic unknown results must not mutate raw evidence");
   });
 });

@@ -31,6 +31,8 @@ export interface NativeChatMessage {
   name?: string;
   tool_call_id?: string;
   tool_calls?: NativeChatToolCall[];
+  /** Projection-only: an unknown outcome must never lose its uncertainty warning. */
+  nativeToolOutcome?: "unknown";
 }
 
 export interface NativeToolDefinition {
@@ -120,7 +122,9 @@ async function buildRequestBody(request: NativeCompletionRequest): Promise<JsonR
   const options = request.options;
   const messages: NativeChatMessage[] = [];
   let imageBytes = 0;
-  for (const message of request.messages) {
+  for (const sourceMessage of request.messages) {
+    const message = { ...sourceMessage };
+    delete message.nativeToolOutcome;
     if (!Array.isArray(message.content)) {
       messages.push(message);
       continue;

@@ -28,6 +28,7 @@ export function projectNativeContinuationTurn(turn: NativeContinuationTurn): Nat
     messages.push({
       role: "tool",
       tool_call_id: id,
+      nativeToolOutcome: "unknown",
       content: JSON.stringify({
         status: "unknown",
         turn_status: turn.status,

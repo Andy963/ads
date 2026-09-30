@@ -222,7 +222,7 @@ function truncateToolContent(content: string, tokenBudget: number): string {
 
 function fitToolTurn(turn: ContextTurn, tokenBudget: number): { turn: ContextTurn; truncated: number } {
   const toolIndexes = turn.messages
-    .map((message, index) => message.role === "tool" ? index : -1)
+    .map((message, index) => message.role === "tool" && message.nativeToolOutcome !== "unknown" ? index : -1)
     .filter((index) => index >= 0);
   if (toolIndexes.length === 0) {
     throw new NativeContextLimitError(
@@ -230,7 +230,7 @@ function fitToolTurn(turn: ContextTurn, tokenBudget: number): { turn: ContextTur
     );
   }
 
-  const fixedMessages = turn.messages.map((message) => message.role === "tool"
+  const fixedMessages = turn.messages.map((message) => message.role === "tool" && message.nativeToolOutcome !== "unknown"
     ? { ...cloneMessage(message), content: "" }
     : cloneMessage(message));
   let remaining = tokenBudget - estimateMessagesTokens(fixedMessages);
