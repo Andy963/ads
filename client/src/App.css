@@ -1135,6 +1135,9 @@
   /* Mobile lane carousel: both panels stay mounted side by side, each one
      viewport wide; the track slides between them with no unmount gap. */
   .lanePanels {
+    /* Only the track transform owns horizontal positioning. Unlike hidden,
+       clip prevents focus/reveal scrolling from leaving a second offset. */
+    overflow: clip;
     touch-action: pan-y;
   }
   .lanePanelsTrack {

@@ -55,7 +55,7 @@ const logger = createLogger("NativeAgentAdapter");
 const NATIVE_ADAPTER_ID = "codex";
 const DEFAULT_TURN_TIMEOUT_MS = 0;
 const MAX_TURN_TIMEOUT_MS = 600_000;
-const DEFAULT_MAX_TOOL_ROUNDS = 0;
+const DEFAULT_MAX_TOOL_ROUNDS = 32;
 const TOOL_ROUND_LIMIT_MESSAGE =
   "Native runtime reached the configured tool-round limit. The completed tool results are available above; continue with the next prompt if you want to proceed.";
 
@@ -115,6 +115,7 @@ function textFromInput(input: Input): string {
 }
 
 function readNonNegativeInteger(value: unknown, fallback: number, max?: number): number {
+  if (typeof value === "string" && !value.trim()) return fallback;
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) return fallback;
   return max === undefined ? parsed : Math.min(parsed, max);
@@ -862,6 +863,11 @@ export class NativeAgentAdapter implements AgentAdapter {
             type: "item.completed",
             item: { type: "agent_message", id: limitItemId, text: TOOL_ROUND_LIMIT_MESSAGE },
           });
+          // Persist the same terminal response shown in chat so the next user
+          // turn never follows an unfinished tool-response turn.
+          const limitMessage: NativeChatMessage = { role: "assistant", content: TOOL_ROUND_LIMIT_MESSAGE };
+          turnMessages.push(limitMessage);
+          turnEntries.push({ kind: "message", message: limitMessage });
           this.checkpointTurn({
             turnId,
             resetGeneration,

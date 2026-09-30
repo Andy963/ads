@@ -259,12 +259,12 @@ function parseNonStreamingResult(body: unknown): NativeCompletionResult {
     });
   }
   const text = readText(message?.content);
-  if (message?.function_call !== undefined) {
+  if (message.function_call !== undefined && message.function_call !== null) {
     throw new NativeProviderError("Native upstream returned an unsupported legacy function_call", {
       kind: "malformed",
     });
   }
-  if (message?.tool_calls !== undefined && !Array.isArray(message.tool_calls)) {
+  if (message.tool_calls !== undefined && message.tool_calls !== null && !Array.isArray(message.tool_calls)) {
     throw new NativeProviderError("Native upstream returned invalid non-streaming tool calls", {
       kind: "malformed",
     });
@@ -438,10 +438,12 @@ async function parseNativeCompletion(response: Response, request: NativeCompleti
       if (choice?.delta !== undefined && !delta) {
         throw new NativeProviderError("Native upstream returned a malformed SSE delta", { kind: "malformed" });
       }
-      if (delta?.function_call !== undefined) {
+      if (delta?.function_call !== undefined && delta.function_call !== null) {
         throw new NativeProviderError("Native upstream returned an unsupported legacy function_call", { kind: "malformed" });
       }
-      if (delta?.tool_calls !== undefined && !Array.isArray(delta.tool_calls)) {
+      // Compatible providers can serialize absent optional fields as null,
+      // including on text-only chunks and the terminal delta.
+      if (delta?.tool_calls !== undefined && delta.tool_calls !== null && !Array.isArray(delta.tool_calls)) {
         throw new NativeProviderError("Native upstream returned malformed SSE tool calls", { kind: "malformed" });
       }
       if (delta?.content !== undefined && delta.content !== null && typeof delta.content !== "string") {
