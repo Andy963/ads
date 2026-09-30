@@ -251,6 +251,41 @@ describe("SessionManager agent allowlists", () => {
     }
   });
 
+  it("restores an interrupted first task without history fallback or cross-project leakage", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-session-interrupted-"));
+    const dbPath = path.join(directory, "state.db");
+    const owner = "interrupted-owner";
+    const userId = 123499;
+    const projectId = "interrupted-project";
+    const transcriptId = buildNativeTranscriptId({ owner, sessionKey: String(userId), projectId });
+    const store = new NativeTranscriptStore(getStateDatabase(dbPath));
+    store.beginTurn({ transcriptId, turnId: "stopped-task", messages: [{ role: "user", content: "Original task" }], entries: [], provider: {} });
+    store.updateTurn({ transcriptId, turnId: "stopped-task", status: "cancelled",
+      messages: [{ role: "user", content: "Original task" }], entries: [], usage: null });
+    const manager = new SessionManager(0, 0, "workspace-write", undefined, undefined,
+      { ADS_AGENT_RUNTIME: "native", ADS_WEB_SESSION_PEPPER: "test-only-pepper" },
+      { stateDbPath: dbPath, lane: "worker" });
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const session = manager.getOrCreate(userId, directory, true, { authUserId: owner, projectId });
+        const adapter = session.getAdapter("codex");
+        assert(adapter instanceof NativeAgentAdapter);
+        assert.equal(adapter.hasRestoredTranscript(), true);
+        assert.equal(manager.getContextRestoreMode(userId), "thread_resumed");
+        assert.equal(manager.needsHistoryInjection(userId), false);
+        manager.dropSession(userId);
+      }
+      const unrelated = manager.getOrCreate(userId, directory, true, { authUserId: owner, projectId: "other-project" }).getAdapter("codex");
+      assert(unrelated instanceof NativeAgentAdapter);
+      assert.equal(unrelated.hasRestoredTranscript(), false);
+      assert.equal(store.listTurns(transcriptId)[0]?.status, "cancelled");
+    } finally {
+      manager.destroy();
+      closeAllStateDatabases();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("replaces a Native transcript when the saved CWD is no longer compatible", () => {
     const firstDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-session-cwd-a-"));
     const secondDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-session-cwd-b-"));

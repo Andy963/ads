@@ -2,6 +2,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 
 import type { Usage } from "../agents/protocol/types.js";
 import type { NativeChatMessage } from "../runtime/openAiCompatibleClient.js";
+import { projectNativeContinuation, type NativeContinuationContext } from "../runtime/nativeContinuation.js";
 
 export type NativeTranscriptTurnStatus =
   | "running"
@@ -366,6 +367,21 @@ export class NativeTranscriptStore {
     return this.listTurns(transcriptId, writerId)
       .filter((turn) => turn.status === "completed")
       .flatMap((turn) => turn.messages);
+  }
+
+  loadContinuation(transcriptId: string, writerId: string): NativeContinuationContext {
+    return projectNativeContinuation(this.listTurns(transcriptId, writerId));
+  }
+
+  hasContinuationMessages(transcriptId: string): boolean {
+    // A running turn will be marked interrupted only when the new writer claims
+    // the transcript. This availability probe must not mutate a live writer.
+    const row = this.db.prepare(`
+      SELECT 1 AS present FROM native_transcript_turns
+      WHERE transcript_id = ? AND json_array_length(messages_json) > 0
+      LIMIT 1
+    `).get(transcriptId);
+    return Boolean(row);
   }
 
   hasCompletedMessages(transcriptId: string): boolean {

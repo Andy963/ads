@@ -22,11 +22,11 @@ Native execution ID 混用，Native transcript 也不能被当成 Codex rollout 
 2. 每个 turn 显式记录 `running`、`completed`、`failed`、`cancelled` 或
    `interrupted`。user message、assistant message、tool call/result、command 和
    file change 按发生顺序 checkpoint，任一进程崩溃都留下可审计边界。
-3. 恢复只加载 `completed` turns。遗留 `running` turn 会转换为 `interrupted`；
-   failed、cancelled、interrupted turns 保留审计记录，但不会进入下一次模型上下文，
-   中断的工具调用也不会自动重放。
-4. durable Native session 优先恢复 transcript，存在 completed transcript 时不再
-   叠加 ADS history injection。没有 completed transcript 时才使用既有 history
+3. 按 [ADR 0036](0036-preserve-native-interrupted-context.md) 恢复所有终态轮次的上下文。
+   遗留 `running` turn 会转换为 `interrupted`；failed、cancelled、interrupted turns
+   保留任务与确认结果，并在派生请求中明确标注未完成，不自动重放工具。
+4. durable Native session 优先恢复 transcript，存在可恢复 transcript 时不再
+   叠加 ADS history injection。没有可恢复 transcript 时才使用既有 history
    fallback。显式新会话清空当前 transcript；ephemeral session 不持久化。
 5. transcript 只保存 provider-neutral 的 provider/model 名称、usage、消息和结构化
    执行结果。写入前移除模型密钥、secret-shaped 环境变量值、Bearer token、常见
@@ -42,5 +42,5 @@ Native execution ID 混用，Native transcript 也不能被当成 Codex rollout 
 - state store 增加按 turn checkpoint 的 SQLite 写入；turn 越长，写入次数越多，
   但崩溃窗口显著缩小。
 - transcript 恢复与 ADS history fallback 互斥，避免重复上下文。
-- 后续 token-aware projection 可以读取 completed turn messages，而无需改变持久化
+- 后续 token-aware projection 可以读取派生的 continuation messages，而无需改变持久化
   边界；本 ADR 不实现 compaction。

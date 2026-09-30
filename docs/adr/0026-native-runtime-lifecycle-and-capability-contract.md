@@ -27,7 +27,7 @@ provider capability negotiation 和 bounded recovery。这些契约需要一个�
 | Runtime backend | ADS 进程选择的 `codex-app-server` 或 `native` | 进程级配置；session 内不可切换 |
 | Execution session | 一个 user、project 和 lifecycle 对应的内存 adapter/orchestrator 生命周期 | disposal 时释放；不是 provider thread |
 | Provider session | Codex provider thread 或 Native request sequence | Codex thread ID 由 provider 持有；Native execution ID 仅存在于进程内 |
-| ADS transcript | 按顺序保存的 provider-neutral Native message 和执行 artifact | durable session 会 checkpoint 所有 turn 状态；只有 completed turn 可恢复；绝不导入为 Codex rollout |
+| ADS transcript | 按顺序保存的 provider-neutral Native message 和执行 artifact | durable session 会 checkpoint 所有 turn 状态；终态轮次按 ADR 0036 恢复上下文；绝不导入为 Codex rollout |
 
 `ADS_AGENT_RUNTIME` 在进程启动时解析完成。session 在整个生命周期内绑定该 backend。
 持久化 backend 不匹配时必须显式失败；ADS 绝不跨 backend 迁移、恢复或静默注入上下文。
@@ -37,10 +37,11 @@ request。
 ### Lifecycle and recovery
 
 普通 Web 和 Actions Developer session 使用 `durable` lifecycle。Native durable session
-在 ADS state store 中按顺序 checkpoint message 和 tool artifact。只有 `completed` turn
-可以恢复。进程中断时，残留的 `running` turn 会标记为 `interrupted`；failed、cancelled
-和 interrupted turn 保留审计记录，但不会作为成功上下文重放。普通重建 durable session
-不会自动清除 completed transcript；只有显式 reset/fresh 或不兼容的替换路径才会清除
+在 ADS state store 中按顺序 checkpoint message 和 tool artifact。终态轮次依据
+[ADR 0036](0036-preserve-native-interrupted-context.md) 恢复原始任务和确认结果。
+进程中断时，残留的 `running` turn 会标记为 `interrupted`；failed、cancelled
+和 interrupted turn 显式标注未完成，不会被当作成功或自动重放工具。普通重建 durable session
+不会自动清除 transcript；只有显式 reset/fresh 或不兼容的替换路径才会清除
 历史。transcript 不可用时才回退到有界的 ADS history projection。
 
 `ephemeral` session 是全新且不持久化的 session。独立 Actions Reviewer session 使用此
@@ -79,7 +80,7 @@ sandbox 的等价模式。
 
 - 运维无需混淆 logical agent、provider identity 和 transcript identity，即可识别当前
   backend 及其恢复语义。
-- durable Native session 恢复 completed turn，ephemeral session 保持隔离且可丢弃。
+- durable Native session 恢复终态轮次的 continuation context，ephemeral session 保持隔离且可丢弃。
 - capability failure 显式且可操作，不会被静默忽略或伪装成成功执行。
 - Native 直接宿主机执行仍是有明确风险的安全取舍，不应被描述为 Codex app-server
   sandbox 的等价物。

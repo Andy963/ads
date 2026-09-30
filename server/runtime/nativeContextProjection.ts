@@ -16,6 +16,8 @@ export interface NativeContextProjectionOptions {
   reservedTokens?: number;
   maxOutputTokens?: number;
   tools?: NativeToolDefinition[];
+  /** Keep stopped task turns together with the next user request. */
+  requiredRecentTurns?: number;
 }
 
 export interface NativeContextProjectionDiagnostic {
@@ -289,6 +291,11 @@ export function projectNativeContext(
   }
 
   const grouped = groupMessages(messages);
+  const requiredRecentTurns = Math.min(grouped.turns.length, Math.max(1, Math.floor(options.requiredRecentTurns ?? 1)));
+  if (requiredRecentTurns > 1) {
+    const required = grouped.turns.splice(grouped.turns.length - requiredRecentTurns);
+    grouped.turns.push({ messages: required.flatMap(turn => turn.messages) });
+  }
   const toolDefinitionTokens = estimateToolDefinitionTokens(options.tools);
   const systemTokens = estimateMessagesTokens(grouped.system);
   if (systemTokens + toolDefinitionTokens > inputBudget) {
