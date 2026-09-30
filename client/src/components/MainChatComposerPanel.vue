@@ -457,22 +457,11 @@ onBeforeUnmount(() => {
       <div v-for="(q, idx) in queuedPrompts" :key="q.id" class="queue-item">
         <span class="queue-badge" :title="`第 ${idx + 1} 条排队消息`">#{{ idx + 1 }}</span>
         <span class="queue-controls">
-          <span
-            class="queue-status"
-            :data-status="q.deliveryStatus ?? 'offline'"
-            :title="q.queueError || (q.deliveryStatus === 'offline' ? 'Waiting for connection' : undefined)"
-          >
-            <template v-if="q.deliveryStatus === 'offline'">Offline</template>
-            <template v-else-if="q.deliveryStatus === 'awaiting_ack'">Sending</template>
-            <template v-else-if="q.deliveryStatus === 'queued'">Queued on server</template>
-            <template v-else-if="q.deliveryStatus === 'running'">Running</template>
-            <template v-else-if="q.deliveryStatus === 'failed'">Failed</template>
-          </span>
           <button
             v-if="q.deliveryStatus === 'failed'"
             class="queue-action queue-action--retry"
             type="button"
-            title="重试"
+            :title="q.queueError || '重试'"
             aria-label="重试排队消息"
             @click="emit('retryQueued', q.id)"
           >
@@ -936,25 +925,6 @@ onBeforeUnmount(() => {
   color: var(--muted);
   font-weight: 600;
   font-size: 11.5px;
-}
-
-.queue-status {
-  font-size: 10.5px;
-  font-weight: 600;
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-.queue-status[data-status="queued"] {
-  color: var(--accent);
-}
-
-.queue-status[data-status="running"] {
-  color: #15803d;
-}
-
-.queue-status[data-status="failed"] {
-  color: var(--danger);
 }
 
 .queue-action {

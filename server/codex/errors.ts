@@ -39,6 +39,20 @@ const ERROR_PATTERNS: Array<{
   needsReset: boolean;
 }> = [
   {
+    pattern: /native provider capability "imageinput" is unavailable/i,
+    code: "model_not_supported",
+    userHint: "Image input is disabled for this model. Select an image-capable model or remove the images; resetting the session will not enable image support.",
+    retryable: false,
+    needsReset: false,
+  },
+  {
+    pattern: /^native image input:/i,
+    code: "bad_request",
+    userHint: "The image could not be loaded. Attach a valid PNG, JPEG, WebP, or GIF (up to 25 MiB each, 50 MiB combined) and send again.",
+    retryable: false,
+    needsReset: false,
+  },
+  {
     // 注意不要用宽松的 "different model"：容量类错误（"try a different
     // model"）曾被误判成模型不匹配并给出错误提示。
     pattern: /cannot resume thread with a different model/i,

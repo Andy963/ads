@@ -173,6 +173,7 @@ export function createChatActions(ctx: AppContext) {
       ...(prompt.model ? { model: prompt.model } : {}),
       ...(prompt.modelReasoningEffort ? { modelReasoningEffort: prompt.modelReasoningEffort } : {}),
       ...(prompt.replayIncomplete ? { replayIncomplete: true } : {}),
+      ...(prompt.retryOriginal ? { retryOriginal: true } : {}),
     };
   };
 
@@ -316,6 +317,7 @@ export function createChatActions(ctx: AppContext) {
         model: String(prompt.model ?? ""),
         modelReasoningEffort: String(prompt.modelReasoningEffort ?? prompt.model_reasoning_effort ?? ""),
         ...(prompt.replayIncomplete ? { replayIncomplete: true } : {}),
+        ...(prompt.retryOriginal ? { retryOriginal: true } : {}),
         ...(prompt.sentAwaitingAck ? { replayIncomplete: true, restoredFromStorage: true } : {}),
       } satisfies QueuedPrompt);
       });
@@ -478,6 +480,7 @@ export function createChatActions(ctx: AppContext) {
           model: String(stored.model ?? "").trim(),
           modelReasoningEffort: String(stored.modelReasoningEffort ?? stored.model_reasoning_effort ?? "").trim(),
           restoredFromStorage: true,
+          ...(stored.retryOriginal ? { retryOriginal: true } : {}),
         });
       }
     }
@@ -501,6 +504,7 @@ export function createChatActions(ctx: AppContext) {
         model: String(queued.model ?? "").trim(),
         modelReasoningEffort: String(queued.modelReasoningEffort ?? queued.model_reasoning_effort ?? "").trim(),
         ...(queued.replayIncomplete || queued.sentAwaitingAck ? { replayIncomplete: true } : {}),
+        ...(queued.retryOriginal ? { retryOriginal: true } : {}),
         ...(queued.sentAwaitingAck ? { restoredFromStorage: true } : {}),
       });
     }
@@ -1031,6 +1035,7 @@ export function createChatActions(ctx: AppContext) {
           ...entry,
           clientMessageId,
           replayIncomplete: true,
+          retryOriginal: !needsNewIdentity && prompt.serverQueueTracked === true,
           restoredFromStorage: true,
           deliveryStatus: state.connected.value ? "awaiting_ack" : "offline",
           serverQueueTracked: false,
@@ -1131,6 +1136,7 @@ export function createChatActions(ctx: AppContext) {
         ...(execution.model ? { model: execution.model } : {}),
         ...(execution.modelReasoningEffort ? { modelReasoningEffort: execution.modelReasoningEffort } : {}),
         replayIncomplete: true,
+        retryOriginal: true,
         deliveryStatus: state.connected.value ? "awaiting_ack" : "offline",
       },
     ];
@@ -1179,10 +1185,10 @@ export function createChatActions(ctx: AppContext) {
     let sendAccepted = false;
 
     try {
-      let display = "";
-      let promptText = next.text;
+      let display = next.preparedPayload?.text ?? "";
+      let promptText = next.preparedPayload?.text ?? next.text;
 
-      if (next.images.length > 0) {
+      if (next.images.length > 0 && !next.preparedPayload) {
         try {
           const attachments = await uploadPromptImages({ workspaceRoot: state.workspacePath.value, images: next.images });
           if (attachments.length > 0) {
@@ -1206,18 +1212,23 @@ export function createChatActions(ctx: AppContext) {
       if (!isCurrentAccount()) return;
       finalizeCommandBlock(state);
       clearStepLive(state);
-      state.queuedPrompts.value = state.queuedPrompts.value.map((prompt) =>
-        prompt.clientMessageId === next.clientMessageId
-          ? { ...prompt, deliveryStatus: "queued" }
-          : prompt,
-      );
       const queuedEffort = String(next.modelReasoningEffort ?? "").trim();
-      const effort = queuedEffort || String(state.modelReasoningEffort.value ?? "").trim() || "high";
+      const effort = next.preparedPayload?.model_reasoning_effort
+        ?? (queuedEffort || String(state.modelReasoningEffort.value ?? "").trim() || "high");
       const queuedModel = String(next.model ?? "").trim();
-      const model = queuedModel || String(state.modelId.value ?? "").trim() || "auto";
+      const model = next.preparedPayload?.model ?? (queuedModel || String(state.modelId.value ?? "").trim() || "auto");
       const queuedAgentId = String(next.agentId ?? "").trim();
       const activeAgentId = String(state.activeAgentId.value ?? "").trim();
-      const agentId = queuedAgentId || activeAgentId;
+      const agentId = next.preparedPayload?.agentId ?? (queuedAgentId || activeAgentId);
+      const preparedPayload = next.preparedPayload ?? {
+        text: promptText, model_reasoning_effort: effort, model, agentId,
+        ...(next.images.length > 0 ? { images: next.images.map(image => ({ ...image })) } : {}),
+      };
+      // Freeze the first wire payload before handing it to WebSocket. A failed
+      // send must not re-upload images or pick up changed model controls.
+      state.queuedPrompts.value = state.queuedPrompts.value.map(prompt => prompt.clientMessageId === next.clientMessageId
+        ? { ...prompt, preparedPayload, agentId, model, modelReasoningEffort: effort }
+        : prompt);
       const execution = {
         ...(agentId ? { agentId } : {}),
         ...(model ? { model } : {}),
@@ -1239,15 +1250,12 @@ export function createChatActions(ctx: AppContext) {
         state.pendingAckClientMessageId = next.clientMessageId;
       }
       const recovery = next.restoredFromStorage || next.replayIncomplete ? { replay_incomplete: true } : {};
-      const payload =
-        next.images.length > 0
-          ? { text: promptText, images: next.images, model_reasoning_effort: effort, model, agentId, ...recovery }
-          : { text: promptText, model_reasoning_effort: effort, model, agentId, ...recovery };
+      const payload = { ...preparedPayload, ...recovery, ...(next.retryOriginal ? { retry_original: true } : {}) };
       sendAccepted = state.ws.sendPrompt(payload, next.clientMessageId) !== false;
       if (!sendAccepted) {
         throw new Error("WebSocket prompt send was not accepted");
       }
-      saveSentPrompt(state, { ...next, agentId, model, modelReasoningEffort: effort });
+      saveSentPrompt(state, { ...next, text: promptText, agentId, model, modelReasoningEffort: effort });
       if (!options?.preserveErrorStatus || state.laneStatus.value?.kind !== "error") {
         state.laneStatus.value = null;
       }

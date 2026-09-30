@@ -741,6 +741,24 @@ describe("outbox store", () => {
 // --- Queued prompt bubbles (issue-328, composer panel) -----------------------
 
 describe("issue-328 queued prompt bubbles", () => {
+  it.each([
+    undefined, "offline", "awaiting_ack", "queued", "running", "failed",
+  ] as const)("keeps delivery status text out of user messages for %s", (deliveryStatus) => {
+    const wrapper = mount(MainChatComposerPanel, {
+      props: {
+        draft: "",
+        queuedPrompts: [{ id: "q-status", text: "Queued message", imagesCount: 0, deliveryStatus }],
+        pendingImages: [], connected: true, busy: false,
+      },
+    });
+    expect(wrapper.find(".queue-status").exists()).toBe(false);
+    expect(wrapper.get(".queue-controls").text()).toBe("");
+    expect(wrapper.get(".queue-text").text()).toBe("Queued message");
+    expect(wrapper.find(".queue-action--remove").exists()).toBe(true);
+    expect(wrapper.find(".queue-action--retry").exists()).toBe(deliveryStatus === "failed");
+    wrapper.unmount();
+  });
+
   it("renders queued prompts with order badges and emits removeQueued on click", async () => {
     const wrapper = mount(MainChatComposerPanel, {
       props: {
@@ -793,7 +811,8 @@ describe("issue-328 queued prompt bubbles", () => {
     });
 
     const item = wrapper.get(".queue-item");
-    expect(item.get(".queue-status").attributes("title")).toBe("Prompt execution was interrupted");
+    expect(item.find(".queue-status").exists()).toBe(false);
+    expect(item.get(".queue-action--retry").attributes("title")).toBe("Prompt execution was interrupted");
     await item.get(".queue-action--retry").trigger("click");
     await item.get(".queue-action--remove").trigger("click");
     expect(wrapper.emitted("retryQueued")).toEqual([["q-failed"]]);
@@ -825,11 +844,42 @@ describe("issue-328 queued prompt bubbles", () => {
     expect(classOrder).toEqual(["queue-badge", "queue-controls", "queue-text"]);
 
     const controls = item.get(".queue-controls");
-    expect(controls.get(".queue-status").text()).toBe("Offline");
-    expect(controls.get(".queue-status").attributes("title")).toBe("Waiting for connection");
+    expect(controls.text()).toBe("");
     expect(controls.get(".queue-action--remove").attributes("aria-label")).toBe("移除排队消息");
     expect(item.get(".queue-text").text()).toContain("Line one");
     expect(item.get(".queue-text").text()).toContain("图片 x1");
+  });
+});
+
+describe("queued prompt delivery feedback", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  it.each([true, false])("never reports a local send as server-queued with accepted=%s", async (accepted) => {
+    const { chat, rt, handler } = mountChatHarness({ sessionId: "queue-delivery-feedback" });
+    rt.busy.value = true;
+    const statusesAtSend: Array<QueuedPrompt["deliveryStatus"]> = [];
+    const sendPrompt = vi.fn((_payload: unknown, clientMessageId?: string) => {
+      statusesAtSend.push(rt.queuedPrompts.value.find(prompt => prompt.clientMessageId === clientMessageId)?.deliveryStatus);
+      return accepted;
+    });
+    rt.ws = { ...rt.ws, sendPrompt } as never;
+    chat.enqueuePrompt("Wait behind the active turn", [], rt);
+    await settle();
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(statusesAtSend).toEqual(["awaiting_ack"]);
+    expect(rt.queuedPrompts.value.some(prompt => prompt.deliveryStatus === "queued")).toBe(false);
+    if (accepted) {
+      const clientMessageId = sendPrompt.mock.calls[0]![1];
+      handler({ type: "ack", client_message_id: clientMessageId, queue_status: "queued" });
+      expect(rt.queuedPrompts.value).toEqual([expect.objectContaining({
+        clientMessageId, deliveryStatus: "queued", serverQueueTracked: true,
+      })]);
+    } else {
+      expect(rt.queuedPrompts.value).toEqual([expect.objectContaining({ deliveryStatus: "offline" })]);
+    }
   });
 });
 
@@ -1353,7 +1403,7 @@ describe("consumed failure reconciliation", () => {
     first.chat.retryPrompt(failure, first.rt);
     expect(store.read(key).consumed).not.toContain("failed-turn");
     expect(store.read(key).queued).toEqual([expect.objectContaining({
-      clientMessageId: "failed-turn", replayIncomplete: true, model: "original-model", modelReasoningEffort: "medium",
+      clientMessageId: "failed-turn", replayIncomplete: true, retryOriginal: true, model: "original-model", modelReasoningEffort: "medium",
     })]);
 
     const cold = mountRetryHarness({ laneGeneration: 1, chatSessionId: lane });
@@ -1369,7 +1419,7 @@ describe("consumed failure reconciliation", () => {
     await settle();
     expect(cold.sentFrames).toEqual([expect.objectContaining({
       clientMessageId: "failed-turn", payload: expect.objectContaining({
-        replay_incomplete: true, model: "original-model", model_reasoning_effort: "medium",
+        replay_incomplete: true, retry_original: true, model: "original-model", model_reasoning_effort: "medium",
       }),
     })]);
     store.close();

@@ -89,13 +89,14 @@ export function preflightPersistAndAck(args: {
     return { enqueue: true };
   }
   if (args.parsed.type === "prompt") {
-    const textResult = buildPromptHistoryText(args.parsed.payload, args.sanitizeInput);
-    if (!textResult.ok) {
-      return { enqueue: true };
-    }
     const payload = args.parsed.payload && typeof args.parsed.payload === "object" && !Array.isArray(args.parsed.payload)
       ? (args.parsed.payload as Record<string, unknown>)
       : {};
+    const textResult = buildPromptHistoryText(args.parsed.payload, args.sanitizeInput);
+    const retriesOriginal = args.persistPromptQueue && payload.retry_original === true && payload.replay_incomplete === true;
+    if (!textResult.ok && !retriesOriginal) {
+      return { enqueue: true };
+    }
     if (args.persistPromptQueue) {
       const historyStatus = promptHistoryStatus(args.historyStore.get(args.historyKey), args.clientMessageId);
       const allowsExplicitReplay = payload.replay_incomplete === true;

@@ -13,6 +13,7 @@ const selectedEngine = process.argv.find(arg => arg.startsWith("--engine="))?.sp
 const selectedWidth = Number(process.argv.find(arg => arg.startsWith("--width="))?.split("=")[1]);
 const durableQueue = !process.argv.includes("--compat-queue");
 report.durableQueue = durableQueue;
+const imageBytes = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aC2kAAAAASUVORK5CYII=", "base64");
 
 for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]) {
   if (selectedEngine && selectedEngine !== engine) continue;
@@ -76,6 +77,7 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
             assert.equal(attempts[1].client_message_id, first[0].client_message_id);
             assert.equal(attempts[1].socket, first[0].socket);
             assert.equal(attempts[1].payload.replay_incomplete, true);
+            assert.equal(attempts[1].payload.retry_original, true);
             assert.equal(attempts[1].payload.model, first[0].payload.model);
             assert.equal(attempts[1].payload.model_reasoning_effort, first[0].payload.model_reasoning_effort);
             assert.equal(await panel.locator('.msg[data-role="user"]').count(), 1);
@@ -101,6 +103,8 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
             await page.locator(`[data-testid="lane-tab-status-${lane}"].laneTabStatusDot--disconnected`).waitFor();
             await activate(retry);
             await panel.locator(".queue-item").waitFor();
+            assert.equal(await panel.locator(".queue-status").count(), 0);
+            assert.equal((await panel.locator(".queue-controls").textContent()).trim(), "");
             assert.equal(prompts.filter(prompt => prompt.payload.text === offlineMarker).length, 1);
             assert.equal(await page.evaluate(id => Object.keys(localStorage)
               .filter(key => key.startsWith("ads.outbox."))
@@ -127,6 +131,48 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
             assert.ok(events.some(event => event.identities?.some(identity =>
               identity.clientMessageId === original.client_message_id && identity.retryable === true)),
             "The offline retry must survive the real durable reconciliation response");
+
+            const imageMarker = `browser-${runtime.toLowerCase()}-image-retry-${width}`;
+            const imagePath = `/api/attachments/browser-${lane}-${width}/raw`;
+            let uploads = 0;
+            await page.route("**/api/attachments/images?*", route => {
+              uploads += 1;
+              return route.fulfill({ contentType: "application/json", body: JSON.stringify({
+                id: `browser-${lane}-${width}`, url: imagePath,
+                contentType: "image/png", width: 1, height: 1, sizeBytes: imageBytes.length,
+              }) });
+            });
+            await page.route(`**${imagePath}`, route => route.fulfill({ contentType: "image/png", body: imageBytes }));
+            fixture.failReplyOnce(imageMarker);
+            await panel.locator('input[type="file"]').setInputFiles({ name: "retry.png", mimeType: "image/png", buffer: imageBytes });
+            await panel.locator('[data-testid="attachment-item-0"]').waitFor();
+            await panel.locator("textarea.composer-input").fill(imageMarker);
+            await activate(panel.locator('[data-testid="composer-send-btn"]'));
+            await retry.waitFor();
+            const imageOriginal = prompts.find(prompt => prompt.payload.text?.includes(imageMarker));
+            assert.ok(imageOriginal);
+            assert.equal(imageOriginal.payload.images.length, 1);
+            assert.ok(imageOriginal.payload.text.includes(imagePath));
+            assert.equal(uploads, 1);
+            // Drop all warm client state. The retry must use the server's saved
+            // image request, not reconstruct it from the reloaded chat bubble.
+            await page.reload();
+            await page.locator('[data-testid="chat-model-capsule"]:not(:disabled)').waitFor();
+            await chooseLane(lane);
+            await retry.waitFor();
+            await activate(retry);
+            await panel.locator('.msg[data-role="assistant"]').filter({ hasText: `${runtime} reply: ${imageMarker}` }).waitFor();
+            await panel.locator(".queue-item").waitFor({ state: "detached" });
+            const imageAttempts = prompts.filter(prompt => prompt.client_message_id === imageOriginal.client_message_id);
+            assert.equal(imageAttempts.length, 2);
+            assert.equal(imageAttempts[1].payload.retry_original, true);
+            assert.equal(imageAttempts[1].payload.images, undefined, "The client must not persist or resend a second image copy");
+            assert.equal(uploads, 1, "Retry must not upload the attachment again");
+            assert.deepEqual(fixture.received.filter(item => item.marker === imageMarker && item.lane === runtime)
+              .map(item => item.imageCount), [1, 1], "Both provider attempts must receive the original image");
+            assert.equal(await panel.locator('.msg[data-role="user"]').filter({ hasText: imageMarker }).count(), 1);
+            assert.ok(!events.some(event => String(event.message ?? "").includes("different prompt payload")));
+            await page.unroute("**/api/attachments/images?*");
           }
           result.lanes.push(lane);
         }

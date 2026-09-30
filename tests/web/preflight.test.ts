@@ -10,6 +10,28 @@ import { HistoryStore } from "../../server/utils/historyStore.js";
 import { preflightPersistAndAck, shouldPersistCommandMessage } from "../../server/web/server/ws/preflight.js";
 
 describe("web/ws/preflight", () => {
+  it("passes an identity-only retry through durable queue checks without manufacturing prompt text", () => {
+    const historyStore = new HistoryStore({ namespace: "identity-only-retry", maxEntriesPerSession: 20 });
+    let persisted = 0;
+    const sent: unknown[] = [];
+    try {
+      const outcome = preflightPersistAndAck({
+        parsed: { type: "prompt", payload: { replay_incomplete: true, retry_original: true } },
+        requestId: "req-retry", clientMessageId: "original-id", receivedAt: 1,
+        historyStore, historyKey: "retry-lane", sanitizeInput: () => "",
+        sendJson: payload => sent.push(payload), traceWsDuplication: false, warn: () => {},
+        sessionId: "session", userId: 1,
+        persistPromptQueue: () => { persisted += 1; return { ok: true, duplicate: false, status: "queued" }; },
+      });
+      assert.equal(persisted, 1);
+      assert.deepEqual(outcome, { enqueue: false });
+      assert.deepEqual(sent, [{ type: "ack", client_message_id: "original-id", duplicate: false, queue_status: "queued" }]);
+      assert.deepEqual(historyStore.get("retry-lane"), []);
+    } finally {
+      historyStore.clear("retry-lane");
+    }
+  });
+
   it("skips persistence for silent or cd commands", () => {
     assert.deepEqual(
       shouldPersistCommandMessage({

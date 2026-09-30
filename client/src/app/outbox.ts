@@ -24,6 +24,7 @@ export type PersistedPrompt = {
   model?: string;
   modelReasoningEffort?: string;
   replayIncomplete?: boolean;
+  retryOriginal?: boolean;
   /** The frame was handed to WebSocket, but no authoritative ACK arrived yet. */
   sentAwaitingAck?: boolean;
   /** Legacy key kept for entries written before the rename. */
@@ -121,6 +122,7 @@ function normalizePrompt(value: unknown): PersistedPrompt | null {
   if (model) prompt.model = model;
   if (effort) prompt.modelReasoningEffort = effort;
   if (replayIncomplete) prompt.replayIncomplete = true;
+  if (record.retryOriginal === true) prompt.retryOriginal = true;
   if (sentAwaitingAck) prompt.sentAwaitingAck = true;
   return prompt;
 }

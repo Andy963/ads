@@ -243,6 +243,7 @@ describe("issue-221: failed turn preservation and in-place retry", () => {
     expect(lastWs!.sendPrompt.mock.calls.at(-1)?.[1]).toBe(originalClientMessageId);
     expect(String(retriedPayload.text ?? "")).toContain("please retry me");
     expect(retriedPayload.replay_incomplete).toBe(true);
+    expect(retriedPayload.retry_original).toBe(true);
     expect(afterRetry.some((m) => m.role === "assistant" && m.streaming)).toBe(true);
 
     lastWs!.onMessage?.({ type: "error", message: "second failure" });
@@ -442,6 +443,36 @@ describe("issue-221: failed turn retry button", () => {
 });
 
 describe("issue-478: turn failure retry", () => {
+  it("freezes image text, bytes, and model controls across a failed socket send", async () => {
+    const { chat, rt } = mountHarness();
+    const images = [{ name: "original.png", mime: "image/png", data: "data:image/png;base64,original" }];
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, blob: async () => new Blob(["image"], { type: "image/png" }) })
+      .mockResolvedValueOnce({ ok: true, text: async () => JSON.stringify({ id: "attachment-1", url: "/original.png" }) });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const sendPrompt = vi.fn().mockReturnValueOnce(false).mockReturnValue(true);
+      rt.ws = { sendPrompt } as never;
+      rt.modelId.value = "first-model";
+      rt.modelReasoningEffort.value = "medium";
+      chat.enqueuePrompt("Describe it", images, rt);
+      await settle();
+      expect(sendPrompt).toHaveBeenCalledTimes(1);
+      expect(rt.queuedPrompts.value[0]?.preparedPayload?.text).toContain("/original.png");
+      rt.modelId.value = "changed-model";
+      rt.modelReasoningEffort.value = "high";
+      images[0]!.data = "data:image/png;base64,changed";
+      rt.connected.value = true;
+      await chat.flushQueuedPrompts(rt);
+      expect(sendPrompt).toHaveBeenCalledTimes(2);
+      expect(sendPrompt.mock.calls[1]).toEqual(sendPrompt.mock.calls[0]);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect((sendPrompt.mock.calls[1]?.[0] as any).images[0].data).toBe("data:image/png;base64,original");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it.each([
     ["acopilot", true],
     ["actions", true],
@@ -487,7 +518,7 @@ describe("issue-478: turn failure retry", () => {
         expect(rt.queuedPrompts.value).toHaveLength(1);
         expect(panel.find(".queue-item").exists()).toBe(true);
         expect(rt.queuedPrompts.value[0]).toMatchObject({
-          clientMessageId: "u-retry", replayIncomplete: true, model: "original-model", modelReasoningEffort: "medium",
+          clientMessageId: "u-retry", replayIncomplete: true, retryOriginal: true, model: "original-model", modelReasoningEffort: "medium",
         });
         expect(other.messages.value).toHaveLength(0);
         return;
@@ -495,6 +526,7 @@ describe("issue-478: turn failure retry", () => {
       expect(sendPrompt).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
         text: "Retry the original turn", agentId: "codex", model: "original-model",
         model_reasoning_effort: "medium", replay_incomplete: true,
+        retry_original: true,
       }), "u-retry");
       expect(rt.messages.value.filter(message => message.role === "user")).toHaveLength(1);
       expect(other.messages.value).toHaveLength(0);

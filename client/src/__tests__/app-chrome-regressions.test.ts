@@ -405,10 +405,16 @@ describe("project row mobile layout", () => {
     // Redundant title hidden and header aligned compactly
     expect(mobileCss).toMatch(/\.projectTreeTitle\s*\{[^}]*display:\s*none\s*;/);
     expect(mobileCss).toMatch(/\.projectTreeHeader\s*\{[^}]*justify-content:\s*flex-end\s*;/);
+  });
 
-    // Short display (iPhone SE) navigation spacing
-    expect(css).toMatch(/@media\s*\(max-height:\s*600px\)[\s\S]*?\.mobileDrawerNavItem\s*\{[^}]*min-height:\s*38px\s*;/);
-    expect(css).toMatch(/@media\s*\(max-height:\s*600px\)[\s\S]*?\.mobileDrawerNavItem\s*\{[^}]*padding:\s*6px 10px\s*;/);
+  it("keeps primary drawer navigation comfortable on normal and short displays", async () => {
+    const css = await readClientFile("../App.css");
+
+    expect(css).toMatch(/\.mobileDrawerNavItem\s*\{[^}]*min-height:\s*56px\s*;/);
+    expect(css).toMatch(/\.mobileDrawerNavItem\s*\{[^}]*padding:\s*14px 12px\s*;/);
+    expect(css).toMatch(/\.mobileDrawerNavItem\s*\{[^}]*line-height:\s*22px\s*;/);
+    expect(css).toMatch(/@media\s*\(max-height:\s*600px\)[\s\S]*?\.mobileDrawerNavItem\s*\{[^}]*min-height:\s*48px\s*;/);
+    expect(css).toMatch(/@media\s*\(max-height:\s*600px\)[\s\S]*?\.mobileDrawerNavItem\s*\{[^}]*padding:\s*10px 12px\s*;/);
   });
 });
 

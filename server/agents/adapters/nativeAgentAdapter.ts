@@ -27,6 +27,7 @@ import {
   type RetryAttemptState,
 } from "./transientModelRetry.js";
 import { createNativeModelResolver, type NativeModelResolver } from "../../runtime/modelResolver.js";
+import { NativeImageStore } from "../../runtime/nativeImages.js";
 import {
   DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS,
   DEFAULT_NATIVE_CONTEXT_WINDOW,
@@ -55,9 +56,11 @@ const logger = createLogger("NativeAgentAdapter");
 const NATIVE_ADAPTER_ID = "codex";
 const DEFAULT_TURN_TIMEOUT_MS = 0;
 const MAX_TURN_TIMEOUT_MS = 600_000;
-const DEFAULT_MAX_TOOL_ROUNDS = 32;
+const DEFAULT_MAX_TOOL_ROUNDS = 64;
 const TOOL_ROUND_LIMIT_MESSAGE =
-  "Native runtime reached the configured tool-round limit. The completed tool results are available above; continue with the next prompt if you want to proceed.";
+  "Native runtime reached the configured tool-round limit and could not produce a final summary. Completed tool results have been preserved; send another prompt to continue.";
+const TOOL_ROUND_FINAL_INSTRUCTION =
+  "The tool-round budget for this user request is exhausted. Tools are disabled. Give a concise final response using the tool results already available: summarize completed work, verified results, and any remaining work. Do not claim unfinished work is complete. If further work is needed, explain that another user prompt is required. Do not request more tools or continue execution.";
 
 class NativeTurnResetError extends Error {
   constructor() {
@@ -106,8 +109,6 @@ function collectSecretValues(env: NodeJS.ProcessEnv): string[] {
 function textFromInput(input: Input): string {
   if (typeof input === "string") return input;
   if (!Array.isArray(input)) return String(input ?? "");
-  const localImage = input.find((part) => part.type === "local_image");
-  if (localImage) throw new NativeCapabilityError("imageInput");
   return input
     .filter((part): part is { type: "text"; text: string } => part.type === "text")
     .map((part) => part.text)
@@ -189,6 +190,7 @@ export class NativeAgentAdapter implements AgentAdapter {
   private readonly retryBackoffMs?: readonly number[];
   private readonly turnTimeoutMs: number;
   private readonly secretValues: string[];
+  private readonly images: NativeImageStore;
   private conversation: NativeChatMessage[] = [];
   private workingDirectory?: string;
   private model?: string;
@@ -264,6 +266,7 @@ export class NativeAgentAdapter implements AgentAdapter {
           redactions: this.secretValues,
         })
       : undefined;
+    this.images = new NativeImageStore(this.workspaceRoot, Boolean(this.transcriptStore));
     if (this.transcriptId && this.transcriptStore) {
       this.transcriptStore.claimTranscript(this.transcriptId, this.transcriptWriterId);
       this.transcriptStore.addRedactions(this.secretValues);
@@ -328,6 +331,7 @@ export class NativeAgentAdapter implements AgentAdapter {
       this.transcriptStore.clear(this.transcriptId, this.transcriptWriterId);
     }
     this.conversation = [];
+    this.images.clearMemory();
     this.threadId = `native-${randomUUID()}`;
     this.threadStartedEmitted = false;
     if (options?.clearPersistedState) this.pendingRetryCheckpoint = undefined;
@@ -355,6 +359,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     this.transcriptId = nextTranscriptId;
     this.activeTranscriptTurns.clear();
     this.conversation = [];
+    this.images.clearMemory();
     this.threadId = `native-${randomUUID()}`;
     this.threadStartedEmitted = false;
     this.pendingRetryCheckpoint = undefined;
@@ -417,7 +422,7 @@ export class NativeAgentAdapter implements AgentAdapter {
               ),
             },
             (retryState) => this.runTurn(input, options, retryState, turnId, turn.signal, resetGeneration),
-          );
+          ).finally(() => this.images.retain(this.conversation));
         },
         turn.signal,
       );
@@ -536,12 +541,12 @@ export class NativeAgentAdapter implements AgentAdapter {
     }
   }
 
-  private buildMessages(userText: string): NativeChatMessage[] {
+  private buildMessages(userMessage: NativeChatMessage): NativeChatMessage[] {
     const messages: NativeChatMessage[] = [];
     if (this.developerInstructions) {
       messages.push({ role: "system", content: this.developerInstructions });
     }
-    messages.push(...this.conversation, { role: "user", content: userText });
+    messages.push(...this.conversation, userMessage);
     return messages;
   }
 
@@ -653,6 +658,12 @@ export class NativeAgentAdapter implements AgentAdapter {
     const userText = textFromInput(input);
     const model = this.resolver.resolve(this.model, this.modelConfig);
     const capabilities = resolveNativeProviderCapabilities(model.capabilities);
+    const hasImages = (Array.isArray(input) && input.some(part => part.type === "local_image"))
+      || this.conversation.some(message => Array.isArray(message.content)
+        && message.content.some(part => part.type !== "text"));
+    if (hasImages && capabilities.imageInput !== "supported") {
+      throw new NativeCapabilityError("imageInput", "select an image-capable model or remove the images");
+    }
     const streaming = options.streaming !== false;
     if (!streaming && capabilities.nonStreaming !== "supported") {
       throw new NativeCapabilityError("nonStreaming");
@@ -679,8 +690,12 @@ export class NativeAgentAdapter implements AgentAdapter {
       parallelToolCalls: capabilities.parallelToolCalls === "unsupported" ? false : undefined,
       includeUsage: capabilities.usage === "supported",
     };
-    const userMessage: NativeChatMessage = { role: "user", content: userText };
     const workingDirectory = this.workingDirectory ?? this.workspaceRoot;
+    const userMessage: NativeChatMessage = {
+      role: "user",
+      content: await this.images.prepare(input, workingDirectory, signal),
+    };
+    assertTurnActive();
     const toolExecutor = new NativeToolExecutor({
       workspaceRoot: this.workspaceRoot,
       workingDirectory,
@@ -703,7 +718,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     }
     if (retryState.attempt === 1) emitTurnEvent({ type: "turn.started" });
 
-    let currentMessages = this.buildMessages(userText);
+    let currentMessages = this.buildMessages(userMessage);
     const turnMessages: NativeChatMessage[] = [userMessage];
     const turnEntries: NativeTranscriptEntry[] = [{ kind: "message", message: userMessage }];
     const providerMetadata: NativeTranscriptProviderMetadata = {
@@ -726,50 +741,75 @@ export class NativeAgentAdapter implements AgentAdapter {
         provider: providerMetadata,
       });
       if (retryState.attempt > 1) this.pendingRetryCheckpoint = undefined;
-      for (let round = 0; this.maxToolRounds === 0 || round < this.maxToolRounds; round += 1) {
+      for (let round = 0; this.maxToolRounds === 0 || round <= this.maxToolRounds; round += 1) {
+        const finalRound = this.maxToolRounds > 0 && round === this.maxToolRounds;
+        const roundTools = finalRound ? [] : NATIVE_TOOL_DEFINITIONS;
+        const roundMessages: NativeChatMessage[] = finalRound
+          ? [{ role: "system", content: TOOL_ROUND_FINAL_INSTRUCTION }, ...currentMessages]
+          : currentMessages;
         const itemId = `${turnId}-message-${round}`;
-        let roundText = "";
-        const contextProjection = projectNativeContext(currentMessages, {
-          contextWindow: model.contextWindow
-            ?? readNonNegativeInteger(this.env.ADS_NATIVE_CONTEXT_WINDOW, DEFAULT_NATIVE_CONTEXT_WINDOW),
-          reservedTokens: model.options?.maxTokens
-            ?? readNonNegativeInteger(
-              this.env.ADS_NATIVE_CONTEXT_RESERVED_TOKENS,
-              DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS,
-            ),
-          tools: NATIVE_TOOL_DEFINITIONS,
-        });
-        if (contextProjection.diagnostic.compacted) {
-          emitTurnEvent({
-            type: "item.completed",
-            item: {
-              type: "context",
-              id: `${turnId}-context-projection`,
-              text: formatNativeContextDiagnostic(contextProjection.diagnostic),
-            },
+        let completion: NativeCompletionResult;
+        try {
+          const contextProjection = projectNativeContext(roundMessages, {
+            contextWindow: model.contextWindow
+              ?? readNonNegativeInteger(this.env.ADS_NATIVE_CONTEXT_WINDOW, DEFAULT_NATIVE_CONTEXT_WINDOW),
+            reservedTokens: model.options?.maxTokens
+              ?? readNonNegativeInteger(
+                this.env.ADS_NATIVE_CONTEXT_RESERVED_TOKENS,
+                DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS,
+              ),
+            tools: roundTools,
           });
+          if (contextProjection.diagnostic.compacted) {
+            emitTurnEvent({
+              type: "item.completed",
+              item: {
+                type: "context",
+                id: `${turnId}-context-projection`,
+                text: formatNativeContextDiagnostic(contextProjection.diagnostic),
+              },
+            });
+          }
+          completion = await completeNativeChat({
+            baseUrl: model.baseUrl,
+            apiKey: model.apiKey,
+            model: model.model,
+            messages: contextProjection.messages,
+            tools: roundTools,
+            options: requestOptions,
+            signal,
+            fetchImpl: this.fetchImpl,
+            readImage: image => this.images.read(image, signal),
+            ...(streaming && !finalRound
+              ? {
+                  onTextDelta: (snapshot: string) => {
+                    this.emitResponseSnapshot(assertTurnActive, itemId, snapshot);
+                  },
+                }
+              : {}),
+            streaming,
+            outputSchema: options.outputSchema,
+          });
+        } catch (error) {
+          if (!finalRound) throw error;
+          // Summary failure must not replay completed tools. Cancellation and
+          // reset still propagate through the normal interrupted-turn path.
+          assertTurnActive();
+          completion = { text: TOOL_ROUND_LIMIT_MESSAGE, toolCalls: [], usage: null };
         }
-        const completion = await completeNativeChat({
-          baseUrl: model.baseUrl,
-          apiKey: model.apiKey,
-          model: model.model,
-          messages: contextProjection.messages,
-          tools: NATIVE_TOOL_DEFINITIONS,
-          options: requestOptions,
-          signal,
-          fetchImpl: this.fetchImpl,
-          ...(streaming
-            ? {
-                onTextDelta: (snapshot: string) => {
-                  roundText = snapshot;
-                  this.emitResponseSnapshot(assertTurnActive, itemId, roundText);
-                },
-              }
-            : {}),
-          streaming,
-          outputSchema: options.outputSchema,
-        });
         assertTurnActive();
+        if (finalRound) {
+          // Validate the buffered response before exposing it or persisting it.
+          // A provider ignoring tool_choice=none never gets another tool turn.
+          completion = {
+            ...completion,
+            text: completion.toolCalls.length === 0 && completion.text.trim()
+              ? completion.text
+              : TOOL_ROUND_LIMIT_MESSAGE,
+            toolCalls: [],
+          };
+          this.emitResponseSnapshot(assertTurnActive, itemId, completion.text);
+        }
         if (capabilities.parallelToolCalls !== "supported" && completion.toolCalls.length > 1) {
           throw new NativeCapabilityError(
             "parallelToolCalls",
@@ -777,7 +817,7 @@ export class NativeAgentAdapter implements AgentAdapter {
           );
         }
         usage = addUsage(usage, completion.usage);
-        responseText += completion.text;
+        responseText += finalRound && responseText.trim() ? `\n\n${completion.text}` : completion.text;
         const assistantMessage: NativeChatMessage = {
           role: "assistant",
           content: completion.text || null,
@@ -852,35 +892,6 @@ export class NativeAgentAdapter implements AgentAdapter {
           });
           this.emitToolCompletionEvents(assertTurnActive, call.id, result);
           assertTurnActive();
-        }
-
-        if (this.maxToolRounds > 0 && round + 1 >= this.maxToolRounds) {
-          const limitItemId = `${turnId}-tool-limit`;
-          const limitText = responseText.trim()
-            ? `${responseText.trim()}\n\n${TOOL_ROUND_LIMIT_MESSAGE}`
-            : TOOL_ROUND_LIMIT_MESSAGE;
-          emitTurnEvent({
-            type: "item.completed",
-            item: { type: "agent_message", id: limitItemId, text: TOOL_ROUND_LIMIT_MESSAGE },
-          });
-          // Persist the same terminal response shown in chat so the next user
-          // turn never follows an unfinished tool-response turn.
-          const limitMessage: NativeChatMessage = { role: "assistant", content: TOOL_ROUND_LIMIT_MESSAGE };
-          turnMessages.push(limitMessage);
-          turnEntries.push({ kind: "message", message: limitMessage });
-          this.checkpointTurn({
-            turnId,
-            resetGeneration,
-            status: "completed",
-            messages: turnMessages,
-            entries: turnEntries,
-            usage,
-            provider: providerMetadata,
-          });
-          this.appendConversation([...turnMessages]);
-          emitTurnEvent({ type: "turn.completed", usage: usage ?? undefined });
-          this.pendingRetryCheckpoint = undefined;
-          return { response: limitText, usage, agentId: this.id };
         }
       }
     } catch (error) {

@@ -23,6 +23,21 @@ The durable queue row is the source of consumed identity history; completed payl
 
 Terminal identity history has no time- or count-based eviction. Any future compaction must preserve equivalent durable deduplication and cancellation guarantees before old rows or tombstones can be removed.
 
+### Original-payload retry
+
+失败消息的聊天气泡只是展示文本，可能包含附件 Markdown、图片占位符，或者缺少原请求
+的模型参数，不能用于重建同一消息 ID 的执行 payload。客户端显式重试增加
+`retry_original: true`，与 `replay_incomplete: true` 一起声明“重试服务端保存的原请求”。
+后端先验证账户、用户、session、lane generation 和 workspace，再从 failed row 读取
+原始文本、图片与模型参数；不采用客户端重建的替代内容，不更换身份，也不放宽普通
+重复发送的 payload hash 检查。queued/running/completed 保持幂等，cancelled、跨作用域
+和缺失原记录明确失败；completed payload 仍保持清空。
+
+客户端在首次交给 WebSocket 前固定完整发送内容，连接失败后沿用相同文本、图片和
+模型设置，不重新上传图片或读取变更后的模型控件。离线重试沿用现有 outbox 文本与
+执行元数据，仅增加原请求重试标记，不把图片 Base64 复制到浏览器 outbox；图片由
+已有服务端请求恢复。
+
 ## Consequences
 Reconnects take one server round trip before old outbox cards become visible or eligible for dispatch. Truly unsent work remains recoverable, while consumed and cancelled work cannot be resurrected by stale tabs, snapshots, or ACKs. Scope checks prevent one authenticated user or lane from learning another lane's identity disposition.
 

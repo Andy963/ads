@@ -63,8 +63,9 @@ chain 保持原子性；过大的 tool output 只在 projection 中截断，并�
 ### Capability contract
 
 Provider capability 使用 `supported`、`unsupported`、`unknown` 三态。Native adapter 默认
-支持 streaming、non-streaming、tool call、parallel tool call、usage 和 context metadata；
-不支持 image input。除非 model/provider 配置明确声明支持，否则 structured output、
+支持 streaming、non-streaming、tool call、parallel tool call、image input、usage 和 context metadata。
+图片按 [ADR 0024](0024-native-provider-capability-contract.md) 的引用与附件契约发送和恢复。
+除非 model/provider 配置明确声明支持，否则 structured output、
 reasoning effort 和 provider-specific options 都是 unknown。请求 unknown 或 unsupported
 能力时，在 provider request 前以 `NATIVE_CAPABILITY_UNSUPPORTED` 失败；ADS 不做静默降级。
 

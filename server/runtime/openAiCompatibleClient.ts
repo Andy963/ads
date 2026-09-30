@@ -1,4 +1,5 @@
 import { buildChatCompletionsEndpoint } from "./upstreamEndpoint.js";
+import { MAX_NATIVE_REQUEST_IMAGE_BYTES, NativeImageInputError } from "./nativeImages.js";
 
 export type NativeChatRole = "system" | "user" | "assistant" | "tool";
 
@@ -11,9 +12,22 @@ export interface NativeChatToolCall {
   };
 }
 
+export interface NativeImageReference {
+  type: "image_ref";
+  sha256: string;
+  mediaType: string;
+  width: number;
+  height: number;
+}
+
+export type NativeChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+  | NativeImageReference;
+
 export interface NativeChatMessage {
   role: NativeChatRole;
-  content: string | null;
+  content: string | NativeChatContentPart[] | null;
   name?: string;
   tool_call_id?: string;
   tool_calls?: NativeChatToolCall[];
@@ -47,6 +61,7 @@ export interface NativeCompletionRequest {
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
   onTextDelta?: (text: string) => void;
+  readImage?: (image: NativeImageReference) => Promise<Buffer>;
 }
 
 export interface NativeCompletionResult {
@@ -100,14 +115,37 @@ function parseUsage(value: unknown): NativeCompletionResult["usage"] {
     : null;
 }
 
-function buildRequestBody(request: NativeCompletionRequest): JsonRecord {
+async function buildRequestBody(request: NativeCompletionRequest): Promise<JsonRecord> {
   const streaming = request.streaming !== false;
   const options = request.options;
+  const messages: NativeChatMessage[] = [];
+  let imageBytes = 0;
+  for (const message of request.messages) {
+    if (!Array.isArray(message.content)) {
+      messages.push(message);
+      continue;
+    }
+    const content: NativeChatContentPart[] = [];
+    for (const part of message.content) {
+      request.signal?.throwIfAborted();
+      if (part.type !== "image_ref") {
+        content.push(part);
+        continue;
+      }
+      if (!request.readImage) throw new NativeImageInputError("no image reader is available.");
+      const bytes = await request.readImage(part);
+      imageBytes += bytes.length;
+      if (imageBytes > MAX_NATIVE_REQUEST_IMAGE_BYTES) {
+        throw new NativeImageInputError("the request images exceed 50 MiB; use fewer or smaller images in a new conversation.");
+      }
+      content.push({ type: "image_url", image_url: { url: `data:${part.mediaType};base64,${bytes.toString("base64")}` } });
+    }
+    messages.push({ ...message, content });
+  }
   const body: JsonRecord = {
     model: request.model,
-    messages: request.messages,
-    tools: request.tools,
-    tool_choice: "auto",
+    messages,
+    ...(request.tools.length > 0 ? { tools: request.tools, tool_choice: "auto" } : { tool_choice: "none" }),
     stream: streaming,
   };
   if (streaming && options?.includeUsage !== false) body.stream_options = { include_usage: true };
@@ -117,7 +155,7 @@ function buildRequestBody(request: NativeCompletionRequest): JsonRecord {
   if (options?.reasoningEffort) {
     body.reasoning_effort = options.reasoningEffort;
   }
-  if (options?.parallelToolCalls !== undefined) body.parallel_tool_calls = options.parallelToolCalls;
+  if (request.tools.length > 0 && options?.parallelToolCalls !== undefined) body.parallel_tool_calls = options.parallelToolCalls;
   if (request.outputSchema !== undefined && request.outputSchema !== null) {
     const schema = asRecord(request.outputSchema);
     body.response_format = schema && (schema.type === "json_schema" || schema.type === "json_object")
@@ -311,6 +349,9 @@ function parseNonStreamingResult(body: unknown): NativeCompletionResult {
 
 export async function completeNativeChat(request: NativeCompletionRequest): Promise<NativeCompletionResult> {
   const fetchImpl = request.fetchImpl ?? fetch;
+  // Local image failures are input errors, never transient upstream failures.
+  const body = JSON.stringify(await buildRequestBody(request));
+  request.signal?.throwIfAborted();
   let response: Response;
   try {
     response = await fetchImpl(buildChatCompletionsEndpoint(request.baseUrl), {
@@ -320,7 +361,7 @@ export async function completeNativeChat(request: NativeCompletionRequest): Prom
         Authorization: `Bearer ${request.apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(buildRequestBody(request)),
+      body,
       signal: request.signal,
       redirect: "error",
     });

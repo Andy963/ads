@@ -17,7 +17,7 @@ export const DEFAULT_NATIVE_PROVIDER_CAPABILITIES: Readonly<NativeProviderCapabi
   nonStreaming: "supported",
   toolCalls: "supported",
   parallelToolCalls: "supported",
-  imageInput: "unsupported",
+  imageInput: "supported",
   structuredOutput: "unknown",
   usage: "supported",
   contextMetadata: "supported",
@@ -64,7 +64,7 @@ export function resolveNativeProviderCapabilities(
   result.structuredOutput = status(record.structuredOutput)
     ?? booleanStatus(record.supportsStructuredOutput)
     ?? result.structuredOutput;
-  result.imageInput = status(record.imageInput)
+  result.imageInput = read("imageInput")
     ?? booleanStatus(record.supportsImageInput)
     ?? result.imageInput;
   result.providerOptions = status(record.providerOptions)

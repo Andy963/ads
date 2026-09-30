@@ -30,6 +30,10 @@ describe("native provider capabilities", () => {
     assert.equal(capabilities.nonStreaming, DEFAULT_NATIVE_PROVIDER_CAPABILITIES.nonStreaming);
     assert.equal(capabilities.structuredOutput, "supported");
     assert.equal(capabilities.imageInput, "supported");
+    assert.equal(resolveNativeProviderCapabilities(undefined).imageInput, "supported");
+    assert.equal(resolveNativeProviderCapabilities({ capabilities: { imageInput: false } }).imageInput, "unsupported");
+    assert.equal(resolveNativeProviderCapabilities({ supportsImageInput: false }).imageInput, "unsupported");
+    assert.equal(resolveNativeProviderCapabilities({ imageInput: false, supportsImageInput: true }).imageInput, "unsupported");
   });
 
   it("sends non-streaming requests without delta callbacks", async () => {
@@ -149,6 +153,7 @@ describe("native provider capabilities", () => {
             baseUrl: "https://provider.test/v1",
             apiKey: "test-key",
             provider: "test",
+            capabilities: { imageInput: "unsupported" },
           }),
         },
         fetchImpl: async () => {

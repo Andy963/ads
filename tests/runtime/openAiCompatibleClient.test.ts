@@ -18,6 +18,20 @@ function sse(deltas: Array<{ delta: unknown; finish_reason?: string | null }>): 
 }
 
 describe("Native optional tool-call fields", () => {
+  it("disables tool choice and omits tool-only fields for a tool-free request", async () => {
+    let body: Record<string, unknown> | undefined;
+    await completeNativeChat({
+      ...request, options: { parallelToolCalls: false },
+      fetchImpl: async (_url, init) => {
+        body = JSON.parse(String(init?.body));
+        return sse([{ delta: { content: "Summary" }, finish_reason: "stop" }]);
+      },
+    });
+    assert.equal(body?.tool_choice, "none");
+    assert.equal(body?.tools, undefined);
+    assert.equal(body?.parallel_tool_calls, undefined);
+  });
+
   for (const empty of [undefined, null, []]) {
     it(`accepts ${JSON.stringify(empty)} tool_calls in text SSE frames`, async () => {
       const snapshots: string[] = [];

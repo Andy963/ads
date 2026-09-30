@@ -7,6 +7,20 @@ describe("classifyError", () => {
   // Each sample is a real message seen surfacing as `unknown` in production logs.
   const cases: Array<{ name: string; input: string; code: string; retryable: boolean; needsReset: boolean }> = [
     {
+      name: "native image capability",
+      input: 'Native provider capability "imageInput" is unavailable.',
+      code: "model_not_supported",
+      retryable: false,
+      needsReset: false,
+    },
+    {
+      name: "invalid native image input",
+      input: "Native image input: the image file is unavailable; attach it again.",
+      code: "bad_request",
+      retryable: false,
+      needsReset: false,
+    },
+    {
       name: "server overload / high demand",
       input: "We're currently experiencing high demand, which may cause temporary errors.",
       code: "server_overloaded",

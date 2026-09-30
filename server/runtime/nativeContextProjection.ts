@@ -48,6 +48,11 @@ interface ContextTurn {
 function cloneMessage(message: NativeChatMessage): NativeChatMessage {
   return {
     ...message,
+    ...(Array.isArray(message.content) ? {
+      content: message.content.map(part => part.type === "image_url"
+        ? { ...part, image_url: { ...part.image_url } }
+        : { ...part }),
+    } : {}),
     ...(message.tool_calls
       ? {
           tool_calls: message.tool_calls.map((call) => ({
@@ -68,7 +73,12 @@ export function estimateNativeMessageTokens(message: NativeChatMessage): number 
     (total, call) => total + estimateNativeToolCallTokens(call),
     0,
   ) ?? 0;
-  return MESSAGE_OVERHEAD_TOKENS + textTokens(message.content) + textTokens(message.name) + toolCallTokens;
+  // Image tokenization is provider-specific. Reserve a conservative budget per
+  // image rather than counting base64 characters or treating it as empty text.
+  const contentTokens = Array.isArray(message.content)
+    ? message.content.reduce((total, part) => total + (part.type === "text" ? textTokens(part.text) : 4_096), 0)
+    : textTokens(message.content);
+  return MESSAGE_OVERHEAD_TOKENS + contentTokens + textTokens(message.name) + toolCallTokens;
 }
 
 function estimateNativeToolCallTokens(call: NativeChatToolCall): number {

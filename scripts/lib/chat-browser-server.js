@@ -185,10 +185,12 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
       initialModel: "browser-model",
       adapters: [{
         id: "codex",
-        metadata: { id: "codex", name: "Browser fixture", capabilities: ["text"] },
+        metadata: { id: "codex", name: "Browser fixture", capabilities: ["text", "images"] },
         send: async (input) => {
-          const marker = String(input).match(/browser-(?:advisor|worker)-[a-z0-9-]+/g)?.at(-1) ?? "unrecognized";
-          received.push({ lane, marker });
+          const text = Array.isArray(input) ? input.filter(part => part.type === "text").map(part => part.text).join("\n") : String(input);
+          const imageCount = Array.isArray(input) ? input.filter(part => part.type === "local_image").length : 0;
+          const marker = text.match(/browser-(?:advisor|worker)-[a-z0-9-]+/g)?.at(-1) ?? "unrecognized";
+          received.push({ lane, marker, ...(imageCount > 0 ? { imageCount } : {}) });
           if (failedReplies.delete(marker)) throw new Error("Browser fixture provider failure");
           await (heldReplies.get(marker)?.ready ?? new Promise((resolve) => setTimeout(resolve, 200)));
 

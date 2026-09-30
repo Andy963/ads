@@ -1377,6 +1377,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
                     workspaceRoot: lane.currentCwd,
                     payload,
                     retryFailed: payload.replay_incomplete === true,
+                    retryOriginal: payload.retry_original === true,
                     createdAt: receivedAt,
                   });
                   promptQueued = true;

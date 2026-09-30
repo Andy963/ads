@@ -476,7 +476,7 @@ describe("NativeAgentAdapter", () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-unlimited-"));
     try {
       fs.writeFileSync(path.join(workspace, "hello.txt"), "hello\n", "utf8");
-      const toolRounds = 40;
+      const toolRounds = 70;
       let requestNumber = 0;
       const adapter = new NativeAgentAdapter({
         credentialOwner: "test-owner",
@@ -529,23 +529,27 @@ describe("NativeAgentAdapter", () => {
   });
 
   for (const configured of [undefined, "", "  ", "invalid", "-1", "1.5"]) {
-    it(`caps tool rounds at 32 for an unset or invalid budget (${JSON.stringify(configured)})`, async () => {
+    it(`caps tool rounds at 64 plus one final response for an unset or invalid budget (${JSON.stringify(configured)})`, async () => {
       const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-default-limit-"));
       try {
         fs.writeFileSync(path.join(workspace, "hello.txt"), "hello\n", "utf8");
         let requestNumber = 0;
         const adapter = new NativeAgentAdapter({
           credentialOwner: "test-owner", workspaceRoot: workspace,
-          env: { ADS_AGENT_MAX_TOOL_ROUNDS: configured },
+          env: { ADS_AGENT_MAX_TOOL_ROUNDS: configured, ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS: undefined },
           modelResolver: { resolve: () => ({
             model: "test-model", baseUrl: "https://provider.test/v1", apiKey: "test-key", provider: "test",
           }) },
-          fetchImpl: async () => {
+          fetchImpl: async (_input, init) => {
+            const body = JSON.parse(String(init?.body));
             requestNumber += 1;
             // Bound the fixture itself so a regression to unlimited cannot hang.
-            if (requestNumber > 32) {
-              return sse([JSON.stringify({ choices: [{ delta: { content: "Exceeded budget" }, finish_reason: "stop" }] })]);
+            if (requestNumber > 64) {
+              assert.equal(body.tool_choice, "none");
+              assert.equal(body.tools, undefined);
+              return sse([JSON.stringify({ choices: [{ delta: { content: "Final budget summary" }, finish_reason: "stop" }] })]);
             }
+            assert.ok(body.tools.length > 0);
             return sse([JSON.stringify({ choices: [{
               delta: { tool_calls: [{ index: 0, type: "function", id: `read-${requestNumber}`,
                 function: { name: "read_file", arguments: '{"file":"hello.txt"}' },
@@ -554,13 +558,13 @@ describe("NativeAgentAdapter", () => {
           },
         });
         const result = await adapter.send("Keep inspecting the file");
-        assert.equal(requestNumber, 32);
-        assert.match(result.response, /tool-round limit/);
+        assert.equal(requestNumber, 65);
+        assert.equal(result.response, "Final budget summary");
         if (configured === undefined) {
           requestNumber = 0;
           const next = await adapter.send("Continue inspecting");
-          assert.equal(requestNumber, 32, "Each user turn must receive a fresh budget");
-          assert.match(next.response, /tool-round limit/);
+          assert.equal(requestNumber, 65, "Each user turn must receive a fresh budget");
+          assert.equal(next.response, "Final budget summary");
         }
       } finally {
         fs.rmSync(workspace, { recursive: true, force: true });
@@ -600,14 +604,14 @@ describe("NativeAgentAdapter", () => {
         const result = await adapter.send("Inspect the missing file");
 
         assert.match(result.response, /tool-round limit/);
-        assert.equal(requestNumber, 1);
+        assert.equal(requestNumber, 2);
       }
     } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
   });
 
-  it("completes with a continuation notice at the tool-round limit", async () => {
+  it("summarizes the last tool result at the limit and preserves balanced durable continuation", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-limit-"));
     try {
       let requestNumber = 0;
@@ -630,8 +634,19 @@ describe("NativeAgentAdapter", () => {
         transcriptId: "tool-limit",
         transcriptStore: store,
         fetchImpl: async (_input, init) => {
-          requests.push((JSON.parse(String(init?.body)) as { messages: NativeChatMessage[] }).messages);
+          const body = JSON.parse(String(init?.body)) as { messages: NativeChatMessage[]; tool_choice: string; tools?: unknown[] };
+          requests.push(body.messages);
           requestNumber += 1;
+          if (requestNumber === 2) {
+            assert.equal(body.tool_choice, "none");
+            assert.equal(body.tools, undefined);
+            assert.equal(body.messages.at(-1)?.role, "tool");
+            assert.deepEqual(body.messages.map(message => message.role), ["system", "user", "assistant", "tool"]);
+            assert.match(String(body.messages[0]?.content), /budget.*exhausted/);
+            return sse([JSON.stringify({ choices: [{ delta: { content: "The file is missing; further inspection requires another prompt." }, finish_reason: "stop" }],
+              usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
+            })]);
+          }
           if (requestNumber > 1) {
             return sse([JSON.stringify({ choices: [{ delta: { content: "Continued" }, finish_reason: "stop" }] })]);
           }
@@ -646,8 +661,9 @@ describe("NativeAgentAdapter", () => {
 
       const result = await adapter.send("Inspect the missing file");
 
-      assert.match(result.response, /tool-round limit/);
-      assert.equal(requestNumber, 1);
+      assert.equal(result.response, "The file is missing; further inspection requires another prompt.");
+      assert.equal(requestNumber, 2);
+      assert.deepEqual(result.usage, { input_tokens: 7, output_tokens: 3, total_tokens: 10 });
       assert.equal(rawEvents.includes("turn.completed"), true);
       assert.equal(rawEvents.includes("turn.failed"), false);
       const cappedTurn = store.listTurns("tool-limit")[0]!;
@@ -656,7 +672,7 @@ describe("NativeAgentAdapter", () => {
       assert.deepEqual(cappedTurn.entries.at(-1), { kind: "message", message: cappedTurn.messages.at(-1) });
 
       await adapter.send("Continue now");
-      assert.deepEqual(requests[1]?.map(message => message.role), ["user", "assistant", "tool", "assistant", "user"]);
+      assert.deepEqual(requests[2]?.map(message => message.role), ["user", "assistant", "tool", "assistant", "user"]);
       const restored = new NativeAgentAdapter({
         credentialOwner: "test-owner", workspaceRoot: workspace, modelResolver: resolver,
         transcriptId: "tool-limit", transcriptStore: store,
@@ -666,7 +682,7 @@ describe("NativeAgentAdapter", () => {
         },
       });
       await restored.send("Continue after restore");
-      assert.deepEqual(requests[2]?.map(message => message.role), ["user", "assistant", "tool", "assistant", "user", "assistant", "user"]);
+      assert.deepEqual(requests[3]?.map(message => message.role), ["user", "assistant", "tool", "assistant", "user", "assistant", "user"]);
     } finally {
       resetStateDatabaseForTests();
       fs.rmSync(workspace, { recursive: true, force: true });

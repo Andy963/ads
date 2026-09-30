@@ -68,6 +68,7 @@ export type EnqueuePromptInput = PromptQueueLane & {
   workspaceRoot: string;
   payload: Record<string, unknown>;
   retryFailed?: boolean;
+  retryOriginal?: boolean;
   createdAt?: number;
 };
 
@@ -418,7 +419,11 @@ export function createPromptQueueStore(db: DatabaseType) {
 
   const enqueue = (input: EnqueuePromptInput): { entry: PromptQueueEntry; duplicate: boolean } => {
     const clientMessageId = requiredText(input.clientMessageId, "clientMessageId");
-    const payloadHash = hashPayload(input.payload);
+    let payload = input.payload;
+    let payloadHash = hashPayload(payload);
+    if (input.retryOriginal && !input.retryFailed) {
+      throw new Error("Retrying the original prompt requires an explicit replay request");
+    }
     const scope = {
       authUserId: requiredText(input.authUserId, "authUserId"),
       userId: Math.floor(Number(input.userId)),
@@ -447,6 +452,14 @@ export function createPromptQueueStore(db: DatabaseType) {
       if (!sameScope) {
         throw new Error("clientMessageId is already associated with a different prompt scope");
       }
+      if (input.retryOriginal) {
+        // An identity-only retry refers to the saved request, not to the chat
+        // bubble's display text or the model currently selected in the client.
+        // Completed rows have already scrubbed their payload and stay terminal.
+        if (existing.status !== "failed") return { entry: existing, duplicate: true };
+        payload = { ...existing.payload, replay_incomplete: true };
+        payloadHash = hashPayload(payload);
+      }
       if (existing.payloadHash && existing.payloadHash !== payloadHash) {
         throw new Error("clientMessageId is already associated with a different prompt payload");
       }
@@ -457,7 +470,7 @@ export function createPromptQueueStore(db: DatabaseType) {
       // stay terminal and never reach this branch.
       if (existing.status === "failed" && input.retryFailed) {
         const now = Date.now();
-        const changed = retryFailedStmt.run(JSON.stringify(input.payload), payloadHash, now, now, existing.id).changes;
+        const changed = retryFailedStmt.run(JSON.stringify(payload), payloadHash, now, now, existing.id).changes;
         if (changed === 1) {
           return {
             entry: getByClientMessageId(clientMessageId) ?? { ...existing, status: "queued" },
@@ -466,6 +479,9 @@ export function createPromptQueueStore(db: DatabaseType) {
         }
       }
       return { entry: existing, duplicate: true };
+    }
+    if (input.retryOriginal) {
+      throw new Error("The original prompt is no longer available. Please send a new message with its attachments.");
     }
     const now = Number.isFinite(input.createdAt) ? Math.floor(Number(input.createdAt)) : Date.now();
     const result = insertStmt.run(
@@ -479,7 +495,7 @@ export function createPromptQueueStore(db: DatabaseType) {
       scope.laneNamespace,
       scope.laneGeneration,
       scope.workspaceRoot,
-      JSON.stringify(input.payload),
+      JSON.stringify(payload),
       payloadHash,
       now,
       now,

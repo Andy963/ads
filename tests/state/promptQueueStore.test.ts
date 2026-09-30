@@ -82,6 +82,52 @@ describe("state/promptQueueStore", () => {
     assert.deepEqual(store.listRecoverable().map((entry) => entry.clientMessageId), ["client-2"]);
   });
 
+  it("retries the saved image payload without using reconstructed display text or changed model controls", () => {
+    db = new DatabaseConstructor(":memory:");
+    const store = createPromptQueueStore(db);
+    store.claimOwnership("worker-1", 101, 1000, 60_000, () => false);
+    const payload = {
+      text: "Inspect this image\n\n![attachment 1](/original.png)",
+      images: [{ name: "image.png", mime: "image/png", data: "original-image-bytes" }],
+      agentId: "codex", model: "original-model", model_reasoning_effort: "medium",
+    };
+    const first = store.enqueue({ ...lane, clientMessageId: "image-1", payload });
+    assert.equal(store.markRunning(first.entry.id, "worker-1", 2000), true);
+    assert.equal(store.markFailed(first.entry.id, "Provider failed", "worker-1", 3000), true);
+    const reconstructed = { text: "Inspect this image\n\n[image x1]", model: "new-model", model_reasoning_effort: "high", replay_incomplete: true };
+    assert.throws(() => store.enqueue({ ...lane, clientMessageId: "image-1", payload: reconstructed, retryFailed: true }), /different prompt payload/);
+    const retry = store.enqueue({ ...lane, clientMessageId: "image-1", payload: reconstructed, retryFailed: true, retryOriginal: true });
+    assert.equal(retry.duplicate, false);
+    assert.equal(retry.entry.id, first.entry.id);
+    assert.equal(retry.entry.payloadHash, first.entry.payloadHash);
+    assert.deepEqual(retry.entry.payload, { ...payload, replay_incomplete: true });
+    assert.equal(store.enqueue({ ...lane, clientMessageId: "image-1", payload: {}, retryFailed: true, retryOriginal: true }).duplicate, true);
+    assert.equal(store.listLane(lane).length, 1);
+    assert.equal(store.markRunning(first.entry.id, "worker-1", 4000), true);
+    assert.equal(store.enqueue({ ...lane, clientMessageId: "image-1", payload: {}, retryFailed: true, retryOriginal: true }).duplicate, true);
+    assert.equal(store.markCompleted(first.entry.id, "worker-1", 5000), true);
+    assert.equal(store.enqueue({ ...lane, clientMessageId: "image-1", payload: {}, retryFailed: true, retryOriginal: true }).duplicate, true);
+    assert.deepEqual(store.getByClientMessageId("image-1")?.payload, {});
+  });
+
+  it("never restores another scope, a cancelled prompt, or a missing original", () => {
+    db = new DatabaseConstructor(":memory:");
+    const store = createPromptQueueStore(db);
+    const first = store.enqueue({ ...lane, clientMessageId: "retry-1", payload: { text: "Original" } });
+    const retry = { ...lane, clientMessageId: "retry-1", payload: { text: "Changed" }, retryFailed: true, retryOriginal: true };
+    for (const changedScope of [
+      { authUserId: "other" }, { userId: 8 }, { sessionId: "other" }, { chatSessionId: "other" },
+      { historyKey: "other" }, { logicalHistoryKey: "other" }, { laneNamespace: "other" },
+      { laneGeneration: 2 }, { workspaceRoot: "/other" },
+    ]) assert.throws(() => store.enqueue({ ...retry, ...changedScope }), /different prompt scope/);
+    assert.throws(() => store.enqueue({ ...retry, retryFailed: false }), /explicit replay/);
+    assert.throws(() => store.enqueue({ ...retry, clientMessageId: "missing" }), /original prompt is no longer available/);
+    assert.equal(store.getByClientMessageId("missing"), null);
+    assert.equal(store.getByClientMessageId("retry-1")?.id, first.entry.id);
+    store.cancel({ ...lane, clientMessageId: "retry-1" });
+    assert.throws(() => store.enqueue(retry), /was cancelled/);
+  });
+
   it("marks interrupted running work failed instead of replaying it automatically", () => {
     db = new DatabaseConstructor(":memory:");
     const store = createPromptQueueStore(db);

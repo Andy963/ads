@@ -20,6 +20,14 @@ export type ProjectTab = {
 
 export type IncomingImage = { name?: string; mime?: string; data: string };
 
+export type PreparedPromptPayload = {
+  text: string;
+  images?: IncomingImage[];
+  agentId: string;
+  model: string;
+  model_reasoning_effort: string;
+};
+
 export type QueuedPrompt = {
   id: string;
   clientMessageId: string;
@@ -30,6 +38,8 @@ export type QueuedPrompt = {
   model?: string;
   modelReasoningEffort?: string;
   replayIncomplete?: boolean;
+  retryOriginal?: boolean;
+  preparedPayload?: PreparedPromptPayload;
   restoredFromStorage?: boolean;
   deliveryStatus?: "offline" | "awaiting_ack" | "queued" | "running" | "failed";
   queuePosition?: number;

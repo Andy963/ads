@@ -101,6 +101,31 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
           });
           assert.equal(await drawer.evaluate(element => getComputedStyle(element).backgroundColor), "rgb(242, 242, 247)");
           assert.equal(await drawer.locator(".mobileDrawerNav").evaluate(element => getComputedStyle(element).borderRadius), "12px");
+          result.drawerNavigation = [];
+          for (const height of [844, 568]) {
+            await page.setViewportSize({ width, height });
+            const rows = await drawer.locator(".mobileDrawerNavItem").evaluateAll(elements => elements.map(element => {
+              const box = element.getBoundingClientRect();
+              const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+              return {
+                height: box.height,
+                top: box.top,
+                bottom: box.bottom,
+                reachable: element === hit || element.contains(hit),
+                fits: element.scrollWidth <= element.clientWidth,
+              };
+            }));
+            assert.equal(rows.length, 3);
+            for (const [index, row] of rows.entries()) {
+              assert.ok(row.height >= (height > 600 ? 56 : 48), "Primary navigation needs comfortable row heights, including on short screens");
+              assert.ok(row.reachable && row.fits, "Every navigation row must remain reachable without horizontal overflow");
+              assert.ok(row.top >= 0 && row.bottom <= height, "All navigation rows must fit in the viewport");
+              if (index > 0) assert.ok(row.top >= rows[index - 1].bottom, "Navigation rows must not overlap");
+            }
+            result.drawerNavigation.push({ viewportHeight: height, rows });
+            await page.screenshot({ path: path.join(artifacts, `${engine}-${width}-${height}-drawer.png`) });
+          }
+          await page.setViewportSize({ width, height: 844 });
           await page.screenshot({ path: path.join(artifacts, `${engine}-${width}-drawer.png`) });
           await page.locator('[data-testid="mobile-drawer-section-prompts"]').click();
         } else await page.locator('[data-testid="settings-open"]').click();
