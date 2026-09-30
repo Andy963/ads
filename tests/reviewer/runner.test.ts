@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 
 import { filterDiff, shouldExcludeFileFromDiff } from "../../server/reviewer/diffFilter.js";
-import { parseReviewVerdict } from "../../server/reviewer/verdictParser.js";
+import { parseReviewVerdict, ReviewerProtocolError } from "../../server/reviewer/verdictParser.js";
 import {
   buildReviewPrompt,
   runDetachedReview,
@@ -10,6 +10,18 @@ import {
   DEFAULT_REVIEWER_SYSTEM_PROMPT,
 } from "../../server/reviewer/runner.js";
 import type { ReviewPayload } from "../../server/reviewer/types.js";
+
+function protocolError(reason: RegExp) {
+  return (error: unknown): boolean => {
+    assert.ok(error instanceof ReviewerProtocolError);
+    assert.strictEqual(error.name, "ReviewerProtocolError");
+    assert.strictEqual(error.code, "REVIEWER_PROTOCOL_ERROR");
+    assert.match(error.message, reason);
+    assert.doesNotMatch(`${error.message}\n${error.stack}\n${JSON.stringify(error)}`, /secret_internal_protocol/);
+    assert.strictEqual(error.cause, undefined);
+    return true;
+  };
+}
 
 describe("reviewer subsystem", () => {
   it("excludes lockfiles and build outputs from review diffs", () => {
@@ -155,13 +167,52 @@ describe("reviewer subsystem", () => {
     assert.strictEqual(verdict.defects[0]?.severity, "blocker");
   });
 
-  it("falls back to safe REJECT verdict on malformed model output", () => {
-    const raw = '{"status":"PASS","secret_internal_protocol":true}';
-    const verdict = parseReviewVerdict(raw);
-    assert.strictEqual(verdict.status, "REJECT");
-    assert.ok(verdict.summary.includes("Failed to parse"));
-    assert.strictEqual(verdict.defects[0]?.severity, "blocker");
-    assert.doesNotMatch(JSON.stringify(verdict), /secret_internal_protocol/);
+  it("preserves fenced JSON and optional defect defaults for valid verdicts", () => {
+    const verdict = parseReviewVerdict('```json\n{"status":"PASS","summary":"ok"}\n```', "prof-1");
+    assert.strictEqual(verdict.status, "PASS");
+    assert.strictEqual(verdict.summary, "ok");
+    assert.deepStrictEqual(verdict.defects, []);
+    assert.strictEqual(verdict.reviewerProfileId, "prof-1");
+    const rejected = parseReviewVerdict(JSON.stringify({ status: "REJECT", summary: "Check evidence", defects: [
+      { file: "src/file.ts", description: "Required type could not be verified." },
+    ] }));
+    assert.strictEqual(rejected.status, "REJECT");
+    assert.strictEqual(rejected.defects[0]?.severity, "warning");
+  });
+
+  const invalidVerdicts = [
+    { name: "empty output", raw: "", reason: /invalid verdict JSON/ },
+    { name: "non-JSON text", raw: "secret_internal_protocol", reason: /invalid verdict JSON/ },
+    { name: "truncated JSON", raw: '{"status":"PASS","summary":"secret_internal_protocol', reason: /invalid verdict JSON/ },
+    { name: "missing summary", raw: '{"status":"PASS","secret_internal_protocol":true}', reason: /required PASS\/REJECT schema/ },
+    { name: "null verdict", raw: "null", reason: /required PASS\/REJECT schema/ },
+    { name: "array verdict", raw: '["secret_internal_protocol"]', reason: /required PASS\/REJECT schema/ },
+    { name: "unknown status", raw: '{"status":"secret_internal_protocol","summary":"ok"}', reason: /required PASS\/REJECT schema/ },
+    { name: "non-string summary", raw: '{"status":"PASS","summary":{"secret_internal_protocol":true}}', reason: /required PASS\/REJECT schema/ },
+    { name: "non-array defects", raw: '{"status":"REJECT","summary":"secret_internal_protocol","defects":{}}', reason: /required PASS\/REJECT schema/ },
+    { name: "invalid defect severity", raw: '{"status":"REJECT","summary":"ok","defects":[{"file":"x.ts","severity":"secret_internal_protocol","description":"check"}]}', reason: /required PASS\/REJECT schema/ },
+    { name: "missing defect fields", raw: '{"status":"REJECT","summary":"secret_internal_protocol","defects":[{}]}', reason: /required PASS\/REJECT schema/ },
+  ];
+  for (const { name, raw, reason } of invalidVerdicts) {
+    it(`throws a sanitized ReviewerProtocolError for ${name} instead of a synthetic REJECT`, () => {
+      assert.throws(() => parseReviewVerdict(raw, "prof-invalid"), protocolError(reason));
+    });
+  }
+
+  for (const raw of ["secret_internal_protocol", '{"status":"PASS","secret_internal_protocol":true}']) {
+    it(`propagates detached review ${raw.startsWith("{") ? "schema" : "JSON"} errors`, async () => {
+      await assert.rejects(runDetachedReview({ issue: { title: "Protocol failure" }, diff: "+ const a = 1;\n" }, {
+        reviewerProfileId: "prof-invalid",
+        callModel: async () => raw,
+      }), protocolError(/invalid verdict JSON|required PASS\/REJECT schema/));
+    });
+  }
+
+  it("propagates an ensemble protocol error instead of manufacturing a reviewer rejection", async () => {
+    await assert.rejects(runEnsembleReviews({ issue: { title: "Ensemble protocol failure" }, diff: "+ const a = 1;" }, [
+      { profileId: "valid", callModel: async () => JSON.stringify({ status: "PASS", summary: "ok", defects: [] }) },
+      { profileId: "invalid", callModel: async () => "secret_internal_protocol" },
+    ]), protocolError(/invalid verdict JSON/));
   });
 
   it("runs detached review with mock model caller", async () => {

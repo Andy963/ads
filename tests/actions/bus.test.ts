@@ -1414,7 +1414,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.equal(active, 0);
   });
 
-  it("routes Reviewer transport failures into bounded rework", async () => {
+  it("blocks Reviewer transport failures without spending Developer rework", async () => {
     const db = getStateDatabase();
     let developerCalls = 0;
     let reviewerCalls = 0;
@@ -1430,20 +1430,28 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     const job = bus.dispatchJob({ projectId: repoDir, issueId: 351, issueTitle: "Reviewer failure recovery", issueDescription: "Complete issue description", acceptanceCriteria: ["Verify reviewer recovery"] });
     await bus.evaluateQueue(repoDir, repoDir);
     await waitFor(() => bus.getJob(job.jobId)?.status === "blocked");
-    assert.equal(bus.getJob(job.jobId)?.rework_count, 2);
-    assert.equal(developerCalls, 2);
-    assert.equal(reviewerCalls, 2);
+    assert.equal(bus.getJob(job.jobId)?.rework_count, 0);
+    assert.equal(bus.getJob(job.jobId)?.attempts_json, "[]");
+    assert.equal(bus.getJob(job.jobId)?.review_verdicts_json, "[]");
+    assert.equal(developerCalls, 1);
+    assert.equal(reviewerCalls, 1);
     assert.match(bus.getJob(job.jobId)?.error_message ?? "", /Reviewer execution failed/);
+    assert.match(bus.getJob(job.jobId)?.current_step ?? "", /no rework attempt was spent/);
   });
 
-  it("routes malformed Reviewer verdicts into bounded rework", async () => {
+  it("blocks malformed Reviewer verdicts without fabricating a code review or spending rework", async () => {
     const db = getStateDatabase();
+    let developerCalls = 0;
+    let reviewerCalls = 0;
+    const historyKinds: Array<string | undefined> = [];
     const malformedBus = new LaneDispatchBus(db, {
       developerRunner: async () => {
+        developerCalls++;
         commitImplementation("malformed-reviewer");
         return { exitCode: 0 };
       },
-      reviewerRunner: async () => "not-json",
+      reviewerRunner: async () => { reviewerCalls++; return "not-json"; },
+      historyStore: { add: (_key, entry) => { historyKinds.push(entry.kind); } },
       testCommand: "git status",
     });
     const malformedJob = malformedBus.dispatchJob({
@@ -1455,8 +1463,78 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     });
     await malformedBus.evaluateQueue(repoDir, repoDir);
     await waitFor(() => malformedBus.getJob(malformedJob.jobId)?.status === "blocked");
-    assert.match(malformedBus.getJob(malformedJob.jobId)?.review_verdicts_json ?? "", /Failed to parse structured review verdict/);
-    assert.doesNotMatch(malformedBus.getJob(malformedJob.jobId)?.review_verdicts_json ?? "", /not-json/);
+    const blocked = malformedBus.getJob(malformedJob.jobId)!;
+    assert.equal(developerCalls, 1);
+    assert.equal(reviewerCalls, 1);
+    assert.equal(blocked.rework_count, 0);
+    assert.equal(blocked.attempts_json, "[]");
+    assert.equal(blocked.review_verdicts_json, "[]");
+    assert.match(blocked.error_message ?? "", /invalid verdict JSON/);
+    assert.doesNotMatch(blocked.error_message ?? "", /not-json/);
+    assert.ok(historyKinds.includes("action_blocked"));
+    assert.ok(!historyKinds.includes("review_verdict"));
+    assert.ok(!historyKinds.includes("action_rework"));
+  });
+
+  it("completes a native Reviewer batch larger than four calls without Developer rework", async () => {
+    let developerCalls = 0;
+    let reviewerCalls = 0;
+    const toolCalls = Array.from({ length: 6 }, (_, i) => ({
+      id: `read-${i}`, type: "function" as const,
+      function: { name: "list_dir", arguments: JSON.stringify({ path: "." }) },
+    }));
+    const bus = new LaneDispatchBus(getStateDatabase(), {
+      developerRunner: async () => {
+        developerCalls++;
+        commitImplementation("reviewer-batch");
+        return { exitCode: 0 };
+      },
+      ...reviewerOptions(async (request) => {
+        reviewerCalls++;
+        if (reviewerCalls === 1) return { text: "", toolCalls, finishReason: "tool_calls", usage: null };
+        const results = request.messages.filter((message) => message.role === "tool");
+        assert.deepEqual(results.map((message) => message.tool_call_id), toolCalls.map((call) => call.id));
+        assert.ok(results.every((message) => String(message.content).includes("README.md")));
+        return { text: JSON.stringify({ status: "PASS", summary: "Inspected all requested evidence", defects: [] }), toolCalls: [], finishReason: "stop", usage: null };
+      }),
+      mergePipeline: () => ({ success: true }),
+      testCommand: "git status",
+    });
+    const job = bus.dispatchJob({ projectId: repoDir, issueId: 3512, issueTitle: "Reviewer batch regression", issueDescription: "Inspect six independent paths", acceptanceCriteria: ["Complete all six calls"] });
+    await bus.evaluateQueue(repoDir, repoDir);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "completed");
+    const completed = bus.getJob(job.jobId)!;
+    assert.equal(developerCalls, 1);
+    assert.equal(reviewerCalls, 2);
+    assert.equal(completed.rework_count, 0);
+    assert.equal(completed.attempts_json, "[]");
+    assert.equal(JSON.parse(completed.review_verdicts_json)[0].status, "PASS");
+  });
+
+  it("blocks a truncated native Reviewer response even when its text is valid PASS JSON", async () => {
+    let developerCalls = 0;
+    const bus = new LaneDispatchBus(getStateDatabase(), {
+      developerRunner: async () => {
+        developerCalls++;
+        commitImplementation("truncated-reviewer");
+        return { exitCode: 0 };
+      },
+      ...reviewerOptions(async () => ({
+        text: JSON.stringify({ status: "PASS", summary: "incomplete-response-marker", defects: [] }),
+        toolCalls: [], finishReason: "length", usage: null,
+      })),
+      testCommand: "git status",
+    });
+    const job = bus.dispatchJob({ projectId: repoDir, issueId: 3513, issueTitle: "Truncated reviewer output", issueDescription: "Do not accept truncated review output", acceptanceCriteria: ["Preserve rework budget"] });
+    await bus.evaluateQueue(repoDir, repoDir);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "blocked");
+    const blocked = bus.getJob(job.jobId)!;
+    assert.equal(developerCalls, 1);
+    assert.equal(blocked.rework_count, 0);
+    assert.equal(blocked.attempts_json, "[]");
+    assert.equal(blocked.review_verdicts_json, "[]");
+    assert.match(blocked.error_message ?? "", /finish_reason=length/);
+    assert.doesNotMatch(blocked.error_message ?? "", /incomplete-response-marker/);
   });
 
   it("blocks confirmation-only Developer turns that produce no committed diff", async () => {

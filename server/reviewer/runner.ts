@@ -112,7 +112,7 @@ export function buildReviewPrompt(payload: ReviewPayload): string {
   parts.push("\n## Review Instructions:");
   parts.push(
     `Inspect the diff and verify whether the implementation satisfies the Issue specification and does not violate ADR decisions or introduce defects.
-Respond ONLY with a valid JSON object matching the following schema:
+Your final response must contain ONLY a valid JSON object matching the following schema. When read-only inspection tools are provided, you may call them before returning this final response:
 {
   "status": "PASS" | "REJECT",
   "summary": "Concise summary of your review evaluation",

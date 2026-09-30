@@ -14,6 +14,15 @@ const verdictSchema = z.object({
   defects: z.array(defectSchema).default([]),
 });
 
+export class ReviewerProtocolError extends Error {
+  readonly code = "REVIEWER_PROTOCOL_ERROR";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "ReviewerProtocolError";
+  }
+}
+
 export function parseReviewVerdict(rawText: string, reviewerProfileId?: string): ReviewVerdict {
   let cleaned = rawText.trim();
 
@@ -23,29 +32,22 @@ export function parseReviewVerdict(rawText: string, reviewerProfileId?: string):
     cleaned = jsonMatch[1].trim();
   }
 
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(cleaned);
-    const validated = verdictSchema.parse(parsed);
-    return {
-      status: validated.status,
-      summary: validated.summary,
-      defects: validated.defects as ReviewDefect[],
-      reviewerProfileId,
-      reviewedAt: Date.now(),
-    };
+    parsed = JSON.parse(cleaned);
   } catch {
-    return {
-      status: "REJECT",
-      summary: "Failed to parse structured review verdict.",
-      defects: [
-        {
-          file: "unknown",
-          severity: "blocker",
-          description: "Reviewer output did not match the required structured verdict JSON.",
-        },
-      ],
-      reviewerProfileId,
-      reviewedAt: Date.now(),
-    };
+    // Parser diagnostics can contain model output; expose only a fixed reason.
+    throw new ReviewerProtocolError("Reviewer returned invalid verdict JSON.");
   }
+  const validated = verdictSchema.safeParse(parsed);
+  if (!validated.success) {
+    throw new ReviewerProtocolError("Reviewer verdict JSON does not match the required PASS/REJECT schema.");
+  }
+  return {
+    status: validated.data.status,
+    summary: validated.data.summary,
+    defects: validated.data.defects as ReviewDefect[],
+    reviewerProfileId,
+    reviewedAt: Date.now(),
+  };
 }
