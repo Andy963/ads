@@ -330,6 +330,9 @@ export function attachWorkerPromptHandler(args: {
 
   const handleExploredEntry = (entry: ExploredEntry) => {
     if (!isActive()) return;
+    // Command-origin activity already has a structured execution channel.
+    // Filter by origin, not category: genuine Read/Search/Write activity stays visible.
+    if (typeof entry.meta?.command === "string") return;
     args.sendToChat({
       type: "explored",
       header: !exploredHeaderSent,
