@@ -21,6 +21,46 @@ function sse(events: string[]): Response {
 }
 
 describe("NativeAgentAdapter", () => {
+  for (const source of ["option", "environment"] as const) {
+    for (const configured of [1_800_000, 3_600_000]) {
+      it(`keeps the 30-minute turn deadline and clamps larger values (${source}: ${configured})`, async (t) => {
+        t.mock.timers.enable({ apis: ["setTimeout"] });
+        const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-turn-deadline-"));
+        const entered = Promise.withResolvers<AbortSignal>();
+        try {
+          const adapter = new NativeAgentAdapter({
+            credentialOwner: "test-owner", workspaceRoot: workspace,
+            ...(source === "option" ? { turnTimeoutMs: configured } : {}),
+            env: { ADS_NATIVE_RUNTIME_TURN_TIMEOUT_MS: String(source === "environment" ? configured : 1) },
+            modelResolver: { resolve: () => ({
+              model: "test-model", baseUrl: "https://provider.test/v1", apiKey: "test-key", provider: "test",
+            }) },
+            fetchImpl: async (_input, init) => {
+              assert.ok(init?.signal);
+              const signal = init.signal;
+              entered.resolve(signal);
+              return new Promise<never>((_resolve, reject) => {
+                signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+              });
+            },
+          });
+          const failed = assert.rejects(adapter.send("Wait for the configured deadline"));
+          const signal = await entered.promise;
+          t.mock.timers.tick(600_000);
+          assert.equal(signal.aborted, false, "The old 10-minute ceiling must not abort the turn");
+          t.mock.timers.tick(1_199_999);
+          assert.equal(signal.aborted, false);
+          t.mock.timers.tick(1);
+          assert.equal(signal.aborted, true);
+          assert.match(String(signal.reason), /timed out/);
+          await failed;
+        } finally {
+          fs.rmSync(workspace, { recursive: true, force: true });
+        }
+      });
+    }
+  }
+
   it("serializes overlapping user sends after the preceding assistant response", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-overlapping-turns-"));
     let releaseReply!: () => void;
@@ -530,7 +570,7 @@ describe("NativeAgentAdapter", () => {
   });
 
   for (const configured of [undefined, "", "  ", "invalid", "-1", "1.5"]) {
-    it(`caps tool rounds at 64 plus one final response for an unset or invalid budget (${JSON.stringify(configured)})`, async () => {
+    it(`caps tool rounds at 128 plus one final response for an unset or invalid budget (${JSON.stringify(configured)})`, async () => {
       const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-default-limit-"));
       try {
         fs.writeFileSync(path.join(workspace, "hello.txt"), "hello\n", "utf8");
@@ -545,7 +585,7 @@ describe("NativeAgentAdapter", () => {
             const body = JSON.parse(String(init?.body));
             requestNumber += 1;
             // Bound the fixture itself so a regression to unlimited cannot hang.
-            if (requestNumber > 64) {
+            if (requestNumber > 128) {
               assert.equal(body.tool_choice, "none");
               assert.equal(body.tools, undefined);
               return sse([JSON.stringify({ choices: [{ delta: { content: "Final budget summary" }, finish_reason: "stop" }] })]);
@@ -559,12 +599,12 @@ describe("NativeAgentAdapter", () => {
           },
         });
         const result = await adapter.send("Keep inspecting the file");
-        assert.equal(requestNumber, 65);
+        assert.equal(requestNumber, 129);
         assert.equal(result.response, "Final budget summary");
         if (configured === undefined) {
           requestNumber = 0;
           const next = await adapter.send("Continue inspecting");
-          assert.equal(requestNumber, 65, "Each user turn must receive a fresh budget");
+          assert.equal(requestNumber, 129, "Each user turn must receive a fresh budget");
           assert.equal(next.response, "Final budget summary");
         }
       } finally {

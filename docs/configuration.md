@@ -65,8 +65,10 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
-| `ADS_AGENT_MAX_TOOL_ROUNDS` | `64` | 每条用户消息最多进行 64 轮模型-工具循环，每批工具调用计一轮；正整数覆盖默认值，显式 `0` 表示不限轮数，空值或非法值使用默认值。达到上限后额外允许一次禁用工具的收尾请求，不自动续跑；收尾失败时保留工具结果并返回继续提示，下一条用户消息重新计数（兼容旧名 `ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS`） |
-| `ADS_NATIVE_RUNTIME_TURN_TIMEOUT_MS` | `0`（不限制） | 原生 turn 的总 wall-clock 超时（毫秒），上限 `600000`；`0` 或未设置时 turn 仅受用户取消与各工具自身超时约束 |
+| `ADS_AGENT_MAX_TOOL_ROUNDS` | `128` | 每条用户消息最多进行 128 轮模型-工具循环，每批工具调用计一轮；正整数覆盖默认值，显式 `0` 表示不限轮数，空值或非法值使用默认值。达到上限后额外允许一次禁用工具的收尾请求，不自动续跑；收尾失败时保留工具结果并返回继续提示，下一条用户消息重新计数（兼容旧名 `ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS`） |
+| `ADS_NATIVE_RUNTIME_TURN_TIMEOUT_MS` | `0`（不限制） | 原生 turn 的总 wall-clock 超时（毫秒），上限 `1800000`（30 分钟）；`0` 或未设置时 turn 仅受用户取消与各工具自身超时约束 |
+
+内置 `exec_command` 的 `timeout_ms` 默认仍为 30 秒，最大允许 600,000 毫秒（10 分钟）；`read_file` 未指定 `line_count` 时默认读取 1,000 行，显式上限仍为 2,000 行。
 
 ### Native lifecycle 与 capability 边界
 

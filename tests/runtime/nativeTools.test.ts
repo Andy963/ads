@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { NativeToolExecutor } from "../../server/runtime/tools.js";
+import { NATIVE_TOOL_DEFINITIONS, NativeToolExecutor } from "../../server/runtime/tools.js";
 import type { NativeChatToolCall } from "../../server/runtime/openAiCompatibleClient.js";
 
 function call(name: string, args: Record<string, unknown>): NativeChatToolCall {
@@ -33,6 +33,34 @@ describe("NativeToolExecutor", () => {
     const result = await executor.execute(call("read_file", { file: "notes.txt", start_line: 2, line_count: 1 }));
 
     assert.match(result.output, /"content":"2: beta"/);
+  });
+
+  it("reads up to 1,000 lines by default", async () => {
+    const lines = Array.from({ length: 1_001 }, (_, index) => `line-${index + 1}`);
+    fs.writeFileSync(path.join(workspace, "long.txt"), `${lines.join("\n")}\n`, "utf8");
+    const executor = new NativeToolExecutor({ workspaceRoot: workspace });
+
+    const result = await executor.execute(call("read_file", { file: "long.txt" }));
+    const payload = JSON.parse(result.output) as { line_count: number; content: string };
+
+    assert.equal(payload.line_count, 1_000);
+    assert.match(payload.content, /1000: line-1000/);
+    assert.doesNotMatch(payload.content, /1001: line-1001/);
+  });
+
+  it("accepts the 10-minute command timeout ceiling", async () => {
+    const executor = new NativeToolExecutor({ workspaceRoot: workspace });
+    const pending = executor.execute(call("exec_command", {
+      cmd: process.execPath,
+      args: ["-e", "process.stdout.write('ok')"],
+      timeout_ms: 600_000,
+    }));
+    const result = await pending;
+
+    assert.equal(JSON.parse(result.output).timed_out, false);
+    const definition = NATIVE_TOOL_DEFINITIONS.find(item => item.function.name === "exec_command");
+    const timeoutSchema = definition?.function.parameters.properties?.timeout_ms as { maximum?: number } | undefined;
+    assert.equal(timeoutSchema?.maximum, 600_000);
   });
 
   it("rejects symlink escapes and blocked commands", async () => {
@@ -194,7 +222,7 @@ describe("NativeToolExecutor", () => {
     const pending = executor.execute(call("exec_command", {
       cmd: process.execPath,
       args: ["-e", "setTimeout(() => {}, 10000)"],
-      timeout_ms: 120_000,
+      timeout_ms: 600_000,
     }));
     setTimeout(() => controller.abort(), 50);
 
