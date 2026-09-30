@@ -193,7 +193,7 @@ onBeforeUnmount(() => { providerForm.apiKey = ""; });
           <span>{{ tab.label }}</span>
         </button>
       </nav>
-      <div class="settingsBody">
+      <div class="settingsBody settingsScrollArea">
         <header class="destinationHeader">
           <h1>{{ sectionTitle }}</h1>
           <button v-if="section === 'providers'" type="button" class="settingsIconButton" aria-label="Add provider" data-testid="provider-add" :disabled="busy" @click="editProvider()">
@@ -249,7 +249,7 @@ onBeforeUnmount(() => { providerForm.apiKey = ""; });
           </div><p class="settingsNote">Keys are encrypted on the server. A new address requires a matching key.</p></div>
           <div class="settingsBlock"><div class="settingsList">
             <label class="settingsField"><span>API format</span><select v-model="providerForm.wireApi" data-testid="provider-wire-api"><option value="responses">Responses</option><option value="chat">Chat completions</option></select></label>
-            <p class="settingsNote">Native runtime supports Chat completions only.</p>
+            <p class="settingsNote">Native runtime uses the selected API format: Responses or Chat completions.</p>
             <label class="settingsRow"><span class="settingsRowContent">Enabled</span><input v-model="providerForm.isEnabled" class="settingsSwitch" type="checkbox" role="switch" data-testid="provider-enabled" /></label>
           </div></div>
           <div v-if="providerForm.id" class="settingsBlock settingsList"><button type="button" class="settingsRow destructive centered" @click="deleteProvider(providers.find(p => p.id === providerForm.id)!)">Delete provider</button></div>

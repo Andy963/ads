@@ -7,15 +7,68 @@ import { startChatBrowserServer } from "./lib/chat-browser-server.js";
 
 const artifacts = await mkdtemp(path.join(tmpdir(), "ads-model-settings-"));
 const report = [];
+
+async function assertInsideScrollport(scroller, target) {
+  const bounds = await scroller.boundingBox();
+  const rect = await target.boundingBox();
+  assert.ok(bounds && rect);
+  assert.ok(rect.y >= bounds.y - 1 && rect.y + rect.height <= bounds.y + bounds.height + 1,
+    "The target must be visible inside the scrollport, not just present in the DOM");
+  const viewport = scroller.page().viewportSize();
+  assert.ok(rect.y >= 0 && rect.y + rect.height <= viewport.height + 1, "Content must not be clipped by the viewport");
+}
+
+async function assertScrollable(scroller, lastControl, desktop) {
+  const metrics = await scroller.evaluate(element => {
+    const style = getComputedStyle(element);
+    return { height: element.clientHeight, content: element.scrollHeight,
+      gutter: element.offsetWidth - element.clientWidth, overflow: style.overflowY,
+      overscroll: style.overscrollBehaviorY, width: style.scrollbarWidth,
+      color: style.scrollbarColor, stable: style.scrollbarGutter,
+      fallbackWidth: getComputedStyle(element, "::-webkit-scrollbar").width,
+      thumb: getComputedStyle(element, "::-webkit-scrollbar-thumb").backgroundColor,
+      track: getComputedStyle(element, "::-webkit-scrollbar-track").backgroundColor };
+  });
+  assert.ok(metrics.height > 0 && metrics.content > metrics.height, "Fixture must overflow a bounded scrollport");
+  assert.equal(metrics.overflow, "auto");
+  assert.equal(metrics.overscroll, "contain");
+  if (desktop) {
+    assert.equal(metrics.width, "thin");
+    assert.equal(metrics.stable, "stable");
+    assert.equal(metrics.color, "rgba(148, 163, 184, 0.75) rgba(148, 163, 184, 0.12)");
+    assert.equal(metrics.fallbackWidth, "8px");
+    assert.equal(metrics.thumb, "rgba(148, 163, 184, 0.75)");
+    assert.equal(metrics.track, "rgba(148, 163, 184, 0.12)");
+    // Headless WebKit uses overlay scrollbars even with a stable gutter.
+    if (scroller.page().context().browser().browserType().name() === "chromium") {
+      assert.ok(metrics.gutter > 0, "Classic desktop scrollbars must reserve visible space");
+    }
+    await scroller.evaluate(element => { element.scrollTop = 0; });
+    const bounds = await scroller.boundingBox();
+    await scroller.page().mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await scroller.page().mouse.wheel(0, 180);
+    await scroller.page().waitForFunction(element => element.scrollTop > 0, await scroller.elementHandle());
+  } else {
+    assert.equal(metrics.width, "auto", "Mobile must retain native scrollbar styling");
+    assert.equal(metrics.stable, "auto");
+  }
+  await scroller.evaluate(element => { element.scrollTop = element.scrollHeight; });
+  const remaining = await scroller.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop);
+  assert.ok(Math.abs(remaining) <= 1, "The scrollport must reach its real bottom");
+  await assertInsideScrollport(scroller, lastControl);
+  return metrics;
+}
+
 for (const [engine, type] of [["chromium", chromium], ["webkit", webkit]]) {
   const fixture = await startChatBrowserServer(path.resolve("dist/client"));
-  const browser = await type.launch();
+  // Chromium otherwise hides scrollbar painting in headless screenshots.
+  const browser = await type.launch(engine === "chromium" ? { ignoreDefaultArgs: ["--hide-scrollbars"] } : {});
   try {
-    for (const width of [320, 390, 1280]) {
-      const page = await browser.newPage({ viewport: { width, height: 844 }, isMobile: width < 900, hasTouch: width < 900, serviceWorkers: "block" });
+    for (const [width, height] of [[320, 844], [390, 844], [1280, 844], [1280, 560]]) {
+      const page = await browser.newPage({ viewport: { width, height }, isMobile: width < 900, hasTouch: width < 900, serviceWorkers: "block" });
       page.setDefaultTimeout(10000);
       const provider = { id: "p1", name: "Fixture Provider", baseUrl: "https://fixture.invalid/v1", isEnabled: true, hasCredential: true };
-      const models = [1, 2].map(index => ({ id: "m" + index, modelId: "browser-model" + index, providerId: "p1", provider: provider.name,
+      const models = Array.from({ length: 32 }, (_, i) => i + 1).map(index => ({ id: "m" + index, modelId: "browser-model" + index, providerId: "p1", provider: provider.name,
         displayName: "Fixture model " + index, isEnabled: true, isDefault: index === 1 }));
       models.push({ id: "legacy-model", modelId: "legacy-upstream", providerId: null, provider: "openai", displayName: "Legacy model", isEnabled: true, isDefault: false });
       const selections = ["conversation", "transcription", "correction"].map(service => ({ service, modelIds: ["m1", "m2"], defaultModelId: "m1" }));
@@ -50,7 +103,8 @@ for (const [engine, type] of [["chromium", chromium], ["webkit", webkit]]) {
         } });
         return route.continue();
       });
-      const result = { engine, width };
+      const result = { engine, width, height };
+      const screenshotPrefix = engine + "-" + width + "x" + height;
       report.push(result);
       try {
         await page.goto(fixture.origin);
@@ -70,6 +124,7 @@ for (const [engine, type] of [["chromium", chromium], ["webkit", webkit]]) {
         }
         const edit = page.locator('[data-testid="provider-edit-p1"]');
         await edit.waitFor();
+        result.managerScroll = await assertScrollable(page.locator(".settingsBody"), page.locator('[data-testid="model-row-legacy-model"]'), width > 900);
         if (width < 900) {
           result.density = await page.locator(".settingsBody").evaluate(element => ({
             titleSize: parseFloat(getComputedStyle(element.querySelector("h1")).fontSize),
@@ -84,11 +139,14 @@ for (const [engine, type] of [["chromium", chromium], ["webkit", webkit]]) {
         assert.equal(await edit.isVisible(), true);
         await edit.click();
         const sheet = page.locator('[data-testid="provider-dialog"]');
+        if (height === 560) {
+          result.providerScroll = await assertScrollable(sheet.locator(".sheetBody"), sheet.getByRole("button", { name: "Delete provider", exact: true }), true);
+        }
         assert.equal(await sheet.evaluate(element => element.matches(":modal")), true, "Editor must be a modal dialog, not a div under the app toolbar");
         assert.equal(await page.locator('[data-testid="provider-base-url"]').inputValue(), provider.baseUrl);
         assert.equal(await page.locator('[data-testid="provider-api-key"]').inputValue(), "");
         assert.equal(await page.locator('[data-testid="provider-name"]').evaluate(element => document.activeElement === element), false, "Opening the editor must not force the keyboard open");
-        await page.screenshot({ path: path.join(artifacts, engine + "-" + width + "-editor.png") });
+        await page.screenshot({ path: path.join(artifacts, screenshotPrefix + "-editor.png") });
         await page.locator('[data-testid="provider-name"]').fill("Unsaved provider");
         await sheet.press("Escape");
         assert.equal(await sheet.locator('[data-testid="sheet-discard"]').isVisible(), true);
@@ -107,7 +165,8 @@ for (const [engine, type] of [["chromium", chromium], ["webkit", webkit]]) {
           const nav = await sheet.locator(".sheetNavigation").boundingBox();
           assert.ok(nav.y >= 20 && nav.y + nav.height <= 450, "Done and Cancel must remain above the keyboard");
           assert.ok(await page.locator('[data-testid="provider-name"]').evaluate(element => parseFloat(getComputedStyle(element).fontSize)) >= 16);
-          await page.screenshot({ path: path.join(artifacts, engine + "-" + width + "-keyboard.png") });
+          result.keyboardScroll = await assertScrollable(sheet.locator(".sheetBody"), sheet.getByRole("button", { name: "Delete provider", exact: true }), false);
+          await page.screenshot({ path: path.join(artifacts, screenshotPrefix + "-keyboard.png") });
           await page.evaluate(() => window.setKeyboardViewport(844));
         }
         await page.locator('[data-testid="provider-save"]').click();
@@ -117,7 +176,7 @@ for (const [engine, type] of [["chromium", chromium], ["webkit", webkit]]) {
         await page.locator('[data-testid="provider-sync-p1"]').click();
         await page.waitForFunction(() => document.querySelector('[data-testid="model-manager"] [role="status"]')?.textContent.includes("synchronized"));
         assert.ok(calls.some(call => call.path === "/api/model-providers/p1/models/sync"));
-        await page.screenshot({ path: path.join(artifacts, engine + "-" + width + "-providers.png") });
+        await page.screenshot({ path: path.join(artifacts, screenshotPrefix + "-providers.png") });
         await page.locator('[data-testid="model-row-legacy-model"]').click();
         await page.getByRole("button", { name: "Delete model", exact: true }).click();
         const deletion = page.locator('[data-testid="settings-delete-confirm"]');
@@ -125,6 +184,28 @@ for (const [engine, type] of [["chromium", chromium], ["webkit", webkit]]) {
         await deletion.getByRole("button", { name: "Delete", exact: true }).click();
         await page.locator('[data-testid="model-row-legacy-model"]').waitFor({ state: "hidden" });
         assert.ok(calls.some(call => call.method === "DELETE" && call.query === "?removeReferences=true"));
+        for (const [mode, selector] of [["edit", "model-row-m1"], ["add", "provider-add-model-p1"]]) {
+          await page.locator('[data-testid="' + selector + '"]').click();
+          const modelSheet = page.locator('[data-testid="model-manager-dialog"]');
+          await modelSheet.locator(".modelAdvanced summary").click();
+          const body = modelSheet.locator(".sheetBody");
+          const lastControl = mode === "edit" ? modelSheet.getByRole("button", { name: "Delete model", exact: true }) : modelSheet.locator('[data-testid="model-manager-config-json"]');
+          result[mode + "ModelScroll"] = await assertScrollable(body, lastControl, width > 900);
+          for (const id of ["max-input-tokens", "max-output-tokens", "config-json"]) {
+            const field = modelSheet.locator('[data-testid="model-manager-' + id + '"]');
+            await field.scrollIntoViewIfNeeded();
+            await assertInsideScrollport(body, field);
+          }
+          await page.screenshot({ path: path.join(artifacts, screenshotPrefix + "-" + mode + "-model.png") });
+          await modelSheet.locator('[data-testid="sheet-cancel"]').click();
+          await modelSheet.waitFor({ state: "hidden" });
+        }
+        await page.locator('[data-testid="provider-add"]').click();
+        if (height === 560) {
+          result.addProviderScroll = await assertScrollable(sheet.locator(".sheetBody"), sheet.locator('[data-testid="provider-enabled"]'), true);
+        }
+        await sheet.locator('[data-testid="sheet-cancel"]').click();
+        await sheet.waitFor({ state: "hidden" });
         for (const [tab, service] of [["conversation", "conversation"], ["voice", "transcription"], ["correction", "correction"]]) {
           await page.locator('[data-testid="' + tab + '-settings-tab"]').click();
           const picker = page.locator('[data-testid="service-models-' + service + '"]');
@@ -137,7 +218,7 @@ for (const [engine, type] of [["chromium", chromium], ["webkit", webkit]]) {
           assert.equal(await picker.locator('[data-testid="service-models-save"]').count(), 0, "Switches save automatically");
           assert.equal(await page.locator('input[type="password"]').count(), 0);
         }
-        await page.screenshot({ path: path.join(artifacts, engine + "-" + width + "-service.png") });
+        await page.screenshot({ path: path.join(artifacts, screenshotPrefix + "-service.png") });
         await page.locator('[data-testid="voice-options-open"]').click();
         await page.locator('[data-testid="correction-system-prompt"]').fill("An unsaved correction draft");
         const options = page.locator('[data-testid="voice-options-sheet"]');
@@ -156,7 +237,7 @@ for (const [engine, type] of [["chromium", chromium], ["webkit", webkit]]) {
       } catch (error) {
         result.status = "failed";
         result.error = String(error.stack || error);
-        await page.screenshot({ path: path.join(artifacts, engine + "-" + width + "-failure.png") });
+        await page.screenshot({ path: path.join(artifacts, screenshotPrefix + "-failure.png") });
         process.exitCode = 1;
       } finally { await page.close(); }
     }

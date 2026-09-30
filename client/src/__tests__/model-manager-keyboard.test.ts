@@ -160,3 +160,36 @@ describe("Role prompt keyboard layout", () => {
     expect(mobileCss).toMatch(/\.lanePromptPanel--keyboard-open \.lanePromptActions\s*\{\s*bottom: 0;\s*margin: 6px 0 0;/);
   });
 });
+
+describe("model settings scroll layout", () => {
+  it("bounds large modal children with a shrinkable flex column", async () => {
+    const sfc = await readSfc("../components/DraggableModal.vue", import.meta.url);
+    const largeCard = sfc.match(/\.draggableCard\.large\s*\{([^}]+)\}/)?.[1];
+    expect(largeCard).toContain("display: flex;");
+    expect(largeCard).toContain("flex-direction: column;");
+    expect(largeCard).toContain("min-height: 0;");
+    expect(largeCard).toContain("max-height: 88vh;");
+  });
+
+  it("keeps contained touch scrolling and scopes shared scrollbar styling to desktop", async () => {
+    for (const [file, selector] of [["ModelManager.vue", "settingsBody"], ["SettingsSheet.vue", "sheetBody"]]) {
+      const sfc = await readSfc("../components/" + file, import.meta.url);
+      const body = sfc.match(new RegExp("\\." + selector + "\\s*\\{([^}]+)\\}"))?.[1];
+      expect(body).toContain("min-height: 0;");
+      expect(body).toContain("overflow-y: auto;");
+      expect(body).toContain("overscroll-behavior: contain;");
+      expect(sfc).toContain('class="' + selector + ' settingsScrollArea"');
+    }
+    const css = await readSfc("../components/modelSettings.css", import.meta.url);
+    const desktopIndex = css.indexOf("@media (min-width: 901px)");
+    expect(desktopIndex).toBeGreaterThan(-1);
+    expect(css.slice(0, desktopIndex)).not.toContain("scrollbar-");
+    const desktop = css.slice(desktopIndex);
+    expect(desktop).toContain("scrollbar-width: thin;");
+    expect(desktop).toContain("scrollbar-gutter: stable;");
+    expect(desktop).toContain("scrollbar-color:");
+    for (const pseudo of ["::-webkit-scrollbar", "::-webkit-scrollbar-thumb", "::-webkit-scrollbar-track"]) {
+      expect(desktop).toContain(".iosSettings .settingsScrollArea" + pseudo);
+    }
+  });
+});

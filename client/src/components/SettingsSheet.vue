@@ -60,7 +60,7 @@ onBeforeUnmount(() => {
           <button v-if="actionLabel && !discard" type="button" class="sheetNavigationButton sheetDone" :class="{ destructive }" :disabled="busy || actionDisabled" :data-testid="actionTestId" @click="emit('submit')">{{ busy ? 'Saving…' : actionLabel }}</button>
           <span v-else />
         </header>
-        <div class="sheetBody">
+        <div class="sheetBody settingsScrollArea">
           <div v-if="discard" class="settingsBlock">
             <p class="settingsNote">Your changes have not been saved.</p>
             <div class="settingsList"><button type="button" class="settingsRow destructive centered" data-testid="sheet-discard" @click="emit('close')">Discard changes</button></div>
