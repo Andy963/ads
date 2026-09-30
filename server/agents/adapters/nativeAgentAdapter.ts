@@ -30,12 +30,14 @@ import { createNativeModelResolver, type NativeModelResolver } from "../../runti
 import { NativeImageStore } from "../../runtime/nativeImages.js";
 import { projectNativeContinuationTurn } from "../../runtime/nativeContinuation.js";
 import {
-  DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS,
-  DEFAULT_NATIVE_CONTEXT_WINDOW,
   NativeContextLimitError,
+  estimateNativeRequestTokens,
   formatNativeContextDiagnostic,
   projectNativeContext,
+  resolveNativeContextBudget,
+  type NativeTokenCalibration,
 } from "../../runtime/nativeContextProjection.js";
+import { MIN_MODEL_CONTEXT_WINDOW, normalizeModelTokenLimit } from "../../../shared/modelTokenBudget.js";
 import {
   NativeCapabilityError,
   resolveNativeProviderCapabilities,
@@ -696,8 +698,15 @@ export class NativeAgentAdapter implements AgentAdapter {
       ?? model.options?.reasoningEffort
       ?? DEFAULT_REASONING_EFFORT;
     this.transcriptStore?.addRedactions([model.apiKey]);
+    const contextBudget = resolveNativeContextBudget({
+      contextWindow: model.contextWindow
+        ?? normalizeModelTokenLimit(this.env.ADS_NATIVE_CONTEXT_WINDOW, MIN_MODEL_CONTEXT_WINDOW),
+      reservedTokens: model.options?.maxTokens
+        ?? normalizeModelTokenLimit(this.env.ADS_NATIVE_CONTEXT_RESERVED_TOKENS),
+    });
     const requestOptions = {
       ...model.options,
+      maxTokens: contextBudget.reservedTokens,
       reasoningEffort: requestedReasoningEffort,
       parallelToolCalls: capabilities.parallelToolCalls === "unsupported" ? false : undefined,
       includeUsage: capabilities.usage === "supported",
@@ -741,6 +750,8 @@ export class NativeAgentAdapter implements AgentAdapter {
 
     let responseText = "";
     let usage: Usage | null = null;
+    // Request-local evidence must not leak across turns, model switches or retries.
+    let tokenCalibration: NativeTokenCalibration | undefined;
 
     try {
       this.checkpointTurn({
@@ -764,14 +775,9 @@ export class NativeAgentAdapter implements AgentAdapter {
         try {
           const contextProjection = projectNativeContext(roundMessages, {
             requiredRecentTurns: this.pendingContinuationTurns + 1,
-            contextWindow: model.contextWindow
-              ?? readNonNegativeInteger(this.env.ADS_NATIVE_CONTEXT_WINDOW, DEFAULT_NATIVE_CONTEXT_WINDOW),
-            reservedTokens: model.options?.maxTokens
-              ?? readNonNegativeInteger(
-                this.env.ADS_NATIVE_CONTEXT_RESERVED_TOKENS,
-                DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS,
-              ),
+            ...contextBudget,
             tools: roundTools,
+            tokenCalibration,
           });
           if (contextProjection.diagnostic.compacted) {
             emitTurnEvent({
@@ -803,6 +809,13 @@ export class NativeAgentAdapter implements AgentAdapter {
             streaming,
             outputSchema: options.outputSchema,
           });
+          const inputTokens = completion.usage?.input_tokens;
+          if (inputTokens !== undefined && Number.isSafeInteger(inputTokens) && inputTokens > 0) {
+            tokenCalibration = {
+              actualInputTokens: inputTokens,
+              estimatedInputTokens: estimateNativeRequestTokens(contextProjection.messages, roundTools),
+            };
+          }
         } catch (error) {
           if (!finalRound || error instanceof NativeContextLimitError) throw error;
           // Summary failure must not replay completed tools. Cancellation and

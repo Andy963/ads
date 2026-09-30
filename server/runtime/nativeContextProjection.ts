@@ -3,13 +3,26 @@ import type {
   NativeChatToolCall,
   NativeToolDefinition,
 } from "./openAiCompatibleClient.js";
+import {
+  DEFAULT_MODEL_CONTEXT_WINDOW,
+  DEFAULT_MODEL_OUTPUT_TOKENS,
+  MIN_MODEL_CONTEXT_WINDOW,
+  defaultModelOutputTokens,
+  normalizeModelTokenLimit,
+} from "../../shared/modelTokenBudget.js";
 
-export const DEFAULT_NATIVE_CONTEXT_WINDOW = 32_768;
-export const DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS = 4_096;
+export const DEFAULT_NATIVE_CONTEXT_WINDOW = DEFAULT_MODEL_CONTEXT_WINDOW;
+export const DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS = DEFAULT_MODEL_OUTPUT_TOKENS;
 
-const MIN_CONTEXT_WINDOW = 256;
 const MESSAGE_OVERHEAD_TOKENS = 8;
 const TOOL_OUTPUT_TRUNCATION_MARKER = "[Native context truncated: tool output omitted]";
+
+export interface NativeTokenCalibration {
+  /** Raw heuristic estimate of the exact projected request sent upstream. */
+  estimatedInputTokens: number;
+  /** Prompt usage for that request, never accumulated billing usage. */
+  actualInputTokens: number;
+}
 
 export interface NativeContextProjectionOptions {
   contextWindow?: number;
@@ -18,6 +31,7 @@ export interface NativeContextProjectionOptions {
   tools?: NativeToolDefinition[];
   /** Keep stopped task turns together with the next user request. */
   requiredRecentTurns?: number;
+  tokenCalibration?: NativeTokenCalibration;
 }
 
 export interface NativeContextProjectionDiagnostic {
@@ -102,17 +116,33 @@ function estimateToolDefinitionTokens(tools: NativeToolDefinition[] | undefined)
   );
 }
 
-function normalizeContextWindow(value: number | undefined): number {
-  if (value === undefined || !Number.isFinite(value)) return DEFAULT_NATIVE_CONTEXT_WINDOW;
-  return Math.max(MIN_CONTEXT_WINDOW, Math.floor(value));
+export function estimateNativeRequestTokens(
+  messages: NativeChatMessage[],
+  tools?: NativeToolDefinition[],
+): number {
+  return estimateMessagesTokens(messages) + estimateToolDefinitionTokens(tools);
 }
 
-function normalizeReservedTokens(value: number | undefined, contextWindow: number): number {
-  const requested = value === undefined || !Number.isFinite(value)
-    ? DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS
-    : Math.floor(value);
-  const conservativeCap = Math.max(64, Math.floor(contextWindow * 0.25));
-  return Math.max(64, Math.min(requested, conservativeCap, contextWindow - 64));
+export function resolveNativeContextBudget(options: NativeContextProjectionOptions = {}): {
+  contextWindow: number;
+  reservedTokens: number;
+} {
+  const contextWindow = normalizeModelTokenLimit(options.contextWindow, MIN_MODEL_CONTEXT_WINDOW)
+    ?? DEFAULT_NATIVE_CONTEXT_WINDOW;
+  const requested = normalizeModelTokenLimit(options.reservedTokens ?? options.maxOutputTokens)
+    ?? defaultModelOutputTokens(contextWindow);
+  // Keep a minimal input budget, and use this same effective cap on the wire.
+  return { contextWindow, reservedTokens: Math.min(requested, contextWindow - 64) };
+}
+
+function calibrationScale(calibration: NativeTokenCalibration | undefined): number {
+  if (!calibration
+    || !Number.isSafeInteger(calibration.actualInputTokens) || calibration.actualInputTokens <= 0
+    || !Number.isSafeInteger(calibration.estimatedInputTokens) || calibration.estimatedInputTokens <= 0) {
+    return 1;
+  }
+  // Do not extrapolate a cheap previous prompt into optimistic future budgets.
+  return Math.max(1, calibration.actualInputTokens / calibration.estimatedInputTokens);
 }
 
 function assertToolCall(call: NativeChatToolCall, index: number): void {
@@ -278,15 +308,14 @@ export function projectNativeContext(
   messages: NativeChatMessage[],
   options: NativeContextProjectionOptions = {},
 ): NativeContextProjection {
-  const contextWindow = normalizeContextWindow(options.contextWindow);
-  const reservedTokens = normalizeReservedTokens(
-    options.reservedTokens ?? options.maxOutputTokens,
-    contextWindow,
-  );
-  const inputBudget = contextWindow - reservedTokens;
+  const { contextWindow, reservedTokens } = resolveNativeContextBudget(options);
+  const tokenScale = calibrationScale(options.tokenCalibration);
+  // Fit in heuristic units so truncation, tool schemas, images and fixed
+  // overhead all obey the same calibrated budget without rounding per item.
+  const inputBudget = Math.floor((contextWindow - reservedTokens) / tokenScale);
   if (inputBudget <= 0) {
     throw new NativeContextLimitError(
-      `Native context limit exceeded: context window ${contextWindow} leaves no input budget after reserving ${reservedTokens} tokens.`,
+      `Native context limit exceeded: context window ${contextWindow} leaves no input budget after reserving ${reservedTokens} tokens and applying usage calibration.`,
     );
   }
 
@@ -347,7 +376,7 @@ export function projectNativeContext(
       compacted,
       contextWindow,
       reservedTokens,
-      estimatedTokens: estimateMessagesTokens(projectedMessages) + toolDefinitionTokens,
+      estimatedTokens: Math.ceil(estimateNativeRequestTokens(projectedMessages, options.tools) * tokenScale),
       droppedMessages,
       truncatedToolOutputs,
     },

@@ -1,3 +1,5 @@
+import { MIN_MODEL_CONTEXT_WINDOW, normalizeModelTokenLimit } from "../../shared/modelTokenBudget.js";
+
 export interface ModelConfig {
   id: string;
   modelId?: string | null;
@@ -39,6 +41,19 @@ export function sanitizeModelConfigJson(
   if (!configJson || typeof configJson !== "object" || Array.isArray(configJson)) return null;
 
   const config = { ...configJson };
+  for (const [key, minimum] of [
+    ["max_input_tokens", MIN_MODEL_CONTEXT_WINDOW],
+    ["max_output_tokens", 1],
+  ] as const) {
+    if (!Object.prototype.hasOwnProperty.call(config, key)) continue;
+    const tokens = normalizeModelTokenLimit(config[key], minimum);
+    if (tokens === undefined) {
+      delete config[key];
+    } else {
+      config[key] = tokens;
+    }
+  }
+
   const hasReasoningEfforts = Object.prototype.hasOwnProperty.call(config, "reasoningEfforts");
   if (hasReasoningEfforts || options.defaultUnconfigured) {
     const rawEfforts = Array.isArray(config.reasoningEfforts) ? config.reasoningEfforts : [];

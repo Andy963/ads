@@ -1447,6 +1447,7 @@ describe("NativeAgentAdapter", () => {
             apiKey: "test-api-key",
             provider: "test",
             contextWindow: 1_000,
+            options: { maxTokens: 250 },
           }),
         },
         transcriptId,
