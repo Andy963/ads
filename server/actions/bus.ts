@@ -1341,6 +1341,7 @@ export class LaneDispatchBus {
         stage: "Reviewer execution",
         feedback: error instanceof Error ? error.message : String(error),
         reworkCount: options.reworkCount,
+        failureClass: "infrastructure",
       });
       return;
     } finally {
