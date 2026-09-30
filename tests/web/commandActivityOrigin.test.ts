@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { ActivityTracker } from "../../server/utils/activityTracker.js";
+import { ActivityTracker, type ExploredEntry } from "../../server/utils/activityTracker.js";
 import { attachWorkerPromptHandler } from "../../server/web/server/ws/workerPromptHandler.js";
 import { collectCommandActivityFrames, commandActivityCases, commandCommentary, commandFinalReply } from "./commandActivityHarness.js";
 
@@ -36,6 +36,7 @@ describe("worker prompt command activity origin", () => {
 
   it("suppresses tool-hook command origins without filtering by category or consuming the header", () => {
     const frames: unknown[] = [];
+    const entries: ExploredEntry[] = [];
     const bridge = attachWorkerPromptHandler({
       orchestrator: { onEvent: () => () => {} },
       turnCwd: "/tmp/project",
@@ -43,10 +44,17 @@ describe("worker prompt command activity origin", () => {
       logger: { info: () => {}, debug: () => {} },
       sessionLogger: null,
     });
-    const tracker = new ActivityTracker(bridge.handleExploredEntry);
+    const tracker = new ActivityTracker((entry) => {
+      entries.push(entry);
+      bridge.handleExploredEntry(entry);
+    });
     for (const { cmd, args } of commandActivityCases) {
       tracker.ingestToolInvoke("exec", JSON.stringify({ cmd, args }));
     }
+    // Cover ripgrep classification without requiring its optional executable.
+    tracker.ingestToolInvoke("exec", JSON.stringify({ cmd: "rg", args: ["needle", "fixture.txt"] }));
+    assert.equal(entries.at(-1)?.category, "Search");
+    assert.equal(entries.at(-1)?.meta?.command, "rg needle fixture.txt");
     assert.deepEqual(frames, []);
     bridge.handleExploredEntry({ category: "Execute", summary: "Non-command activity", source: "tool_hook", ts: 1 });
     assert.deepEqual(frames, [{ type: "explored", header: true, entry: { category: "Execute", summary: "Non-command activity" } }]);
