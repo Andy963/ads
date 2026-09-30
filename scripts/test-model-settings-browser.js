@@ -54,9 +54,15 @@ for (const [engine, type] of [["chromium", chromium], ["webkit", webkit]]) {
       report.push(result);
       try {
         await page.goto(fixture.origin);
+        // Account initialization closes transient navigation; wait for it before opening settings.
+        await page.locator('[data-testid="chat-model-capsule"]:not(:disabled)').waitFor();
         await page.evaluate(() => window.setKeyboardViewport(window.innerHeight));
         if (width < 900) {
           await page.locator('[data-testid="mobile-drawer-toggle"]').tap();
+          await page.waitForFunction(() => {
+            const drawer = document.querySelector('[data-testid="mobile-drawer"]');
+            return drawer && Math.abs(drawer.getBoundingClientRect().left) < 1;
+          });
           await page.locator('[data-testid="mobile-drawer-section-models"]').tap();
         } else {
           await page.locator('[data-testid="settings-open"]').click();
