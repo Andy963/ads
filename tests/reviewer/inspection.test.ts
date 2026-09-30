@@ -103,6 +103,23 @@ describe("isolated Reviewer inspection", () => {
     assert.equal(messages.length, 0);
   });
 
+  it("preserves the selected Responses protocol and opaque output between inspection rounds", async () => {
+    let turns = 0;
+    const nativeResponses = { scope: "review-scope", output: [{ type: "reasoning" as const, id: "rs-review",
+      summary: [], encrypted_content: "opaque-review-reasoning" }] };
+    const base = options();
+    const result = await runReviewerInspection({ ...base, model: { ...base.model, wireApi: "responses" },
+      complete: async request => {
+        assert.equal(request.wireApi, "responses");
+        if (++turns === 1) return { ...verdict, text: "", toolCalls: [call("list_dir", { path: "." })], nativeResponses };
+        assert.deepEqual(request.messages.find(message => message.role === "assistant")?.nativeResponses, nativeResponses);
+        return verdict;
+      },
+    });
+    assert.equal(result.status, "PASS");
+    assert.equal(turns, 2);
+  });
+
   it("caps five tool turns by default and forces a final tool-free verdict request", async () => {
     let turns = 0;
     const result = await runReviewerInspection({ ...options(), complete: async (request) => {

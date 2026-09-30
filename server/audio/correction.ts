@@ -1,4 +1,4 @@
-import { completeNativeChat } from "../runtime/openAiCompatibleClient.js";
+import { completeNativeModel } from "../runtime/nativeCompletion.js";
 import type { NativeModelConfig } from "../runtime/modelResolver.js";
 import { DEFAULT_REASONING_EFFORT } from "../state/modelConfigTypes.js";
 
@@ -7,10 +7,11 @@ export async function correctDictationText(options: {
   systemPrompt: string;
   connection: NativeModelConfig;
   signal: AbortSignal;
-  completeImpl?: typeof completeNativeChat;
+  completeImpl?: typeof completeNativeModel;
 }): Promise<string> {
   const { connection } = options;
-  const result = await (options.completeImpl ?? completeNativeChat)({
+  const result = await (options.completeImpl ?? completeNativeModel)({
+    wireApi: connection.wireApi,
     baseUrl: connection.baseUrl, apiKey: connection.apiKey, model: connection.model,
     messages: [{ role: "system", content: options.systemPrompt }, { role: "user", content: options.rawText }],
     tools: [], streaming: false, signal: options.signal,

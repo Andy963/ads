@@ -47,4 +47,5 @@
 - 0034 - [ADR 0034: Reconcile Prompt Identities Against Durable Server State](0034-reconcile-prompt-identities.md)
 - 0035 - [ADR 0035: 服务商模型目录、服务选择与单份角色配置](0035-provider-catalog-service-selection-and-single-role-state.md)
 - 0036 - [ADR 0036: Preserve Native Task Context Across Interrupted Turns](0036-preserve-native-interrupted-context.md)
+- 0037 - [ADR 0037: Native Runtime 同时支持 Responses 与 Chat Completions](0037-native-responses-protocol.md)
 <!-- ADS:ADR_INDEX_END -->

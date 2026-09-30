@@ -33,6 +33,26 @@ function createStore(redactions: string[] = []): {
 }
 
 describe("NativeTranscriptStore", () => {
+  it("preserves opaque Responses ciphertext without exempting visible text or known credentials", () => {
+    const { store } = createStore(["known-private-key"]);
+    const cipher = "prefix-sk-AbCdEfGhIjKlMnOpQrStUvWxYz-suffix";
+    const message = {
+      role: "assistant" as const, content: "token=known-private-key",
+      nativeResponses: { scope: "scope", output: [{ type: "reasoning" as const, id: "rs-first",
+        summary: [{ type: "summary_text" as const, text: "token=known-private-key" }], encrypted_content: cipher },
+      { type: "reasoning" as const, id: "rs-known", summary: [], encrypted_content: "known-private-key" }] },
+    };
+    store.beginTurn({ transcriptId: "opaque", turnId: "turn", messages: [message], entries: [{ kind: "message", message }], provider: {} });
+    store.updateTurn({ transcriptId: "opaque", turnId: "turn", status: "completed", messages: [message],
+      entries: [{ kind: "message", message }], usage: null });
+    const turn = store.listTurns("opaque")[0]!;
+    const saved = turn.messages[0]!.nativeResponses!.output[0]!;
+    assert.equal(saved.type === "reasoning" && saved.encrypted_content, cipher);
+    assert.doesNotMatch(JSON.stringify(turn), /known-private-key/);
+    assert.equal(turn.entries[0]?.kind === "message" && turn.entries[0].message.nativeResponses?.output[0]?.type, "reasoning");
+    assert.equal(message.nativeResponses.output[0]?.encrypted_content, cipher);
+  });
+
   it("persists ordered messages and tool artifacts while redacting secrets", () => {
     const { dbPath, store } = createStore(["secret-api-key", "environment-secret"]);
     const transcriptId = "transcript-complete";

@@ -159,7 +159,8 @@ Telegram variables belong to the standalone `connectors/telegram` package and ar
 每个服务商下面列出其模型，可以同步上游目录，也可以手动添加、编辑名称和模型选项。同步只新增模型，不覆盖已有别名、选项或推理强度，也不自动启用新模型。不同服务商的同名模型以配置 ID 区分。旧的未关联模型保留在待关联分组中，需要手动指定服务商。
 
 - `codex-app-server` 运行时通过 `-c model_providers.*` 覆盖把服务商注入 `codex app-server` 进程，密钥只出现在该进程的环境变量中（`env_key` 引用），从不出现在命令行参数里；切换服务商会在下一次请求时启动新的 daemon。
-- `native` 运行时经保存的模型配置解析服务商的服务地址与加密密钥，仅支持 Chat completions；显式配置 Responses 或其他格式会在请求前报错，不会静默发送到另一种协议端点。
+- `native` 运行时经保存的模型配置解析服务商地址、加密密钥及 API format。`responses` 使用 `/responses`，`chat` 使用 `/chat/completions`；未设置格式的旧服务商仍走 Chat。未知格式会在请求前报错，不会静默切换协议端点。
+- Native Responses 支持流式/非流式文本、图片、函数工具及结构化输出（仍需启用对应 capability）。输出上限映射为 `max_output_tokens`，effort 映射为 `reasoning.effort`。它使用 `store: false`、完整本地投影和 scoped output replay，不依赖 provider conversation；encrypted reasoning 不显示在 UI，也不作为日志内容输出。模型、端点、凭据或协议变更后不跨连接回放 opaque metadata，保留通用对话与工具证据。详见 [ADR 0037](adr/0037-native-responses-protocol.md)。
 - 删除模型（包括旧的未关联模型）前会明确确认同时移除服务引用；删除默认模型时选择剩余候选，没有候选则清空默认。引用该模型的角色改用剩余的对话默认模型。引用调整与删除在同一事务中执行，失败时全部回滚。删除服务商仍需先移除其服务引用；删除服务商不会删除关联模型，模型保留为待关联。
 
 ### 服务启用与默认模型
