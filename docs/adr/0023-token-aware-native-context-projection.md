@@ -30,13 +30,22 @@ transcript 已经可以长期保存，但发送给 provider 的派生上下文�
 6. [ADR 0036](0036-preserve-native-interrupted-context.md) 定义的连续未完成轮次与下一条
    user request 作为必保留组一起预算。组内工具结果可按上述规则截断；任务本身
    无法容纳时明确失败，不能只留下“继续”而丢掉其所指的原始任务。
+7. 模型预算优先读取 `max_input_tokens` 和 `max_output_tokens`，其次兼容旧字段及
+   环境变量。262144 上下文和 131072 输出预留仅作为 fallback，不能将前者当成硬下限。
+   未配置输出且窗口较小时，预留最多为窗口一半；显式输出不受原有 25% 比例限制，
+   但须至少留下 64 token 输入空间。上游 `max_tokens` 与 projection 使用同一个有效预留。
+8. 同一工具循环内，使用最近一次有效 provider 输入 usage 与对应**实际发送投影**的
+   原始字符估算值计算比例，至少为 1，再统一校准消息、工具定义与截断预算。分母不能
+   使用已经校准过的 diagnostic，也不能使用压缩前的完整历史，避免比例复合或低估。
+   缺失 usage 时沿用该循环最近的有效比例；新 turn、重试及重新解析模型时清空。
+   累计 billing usage 保持现有语义，不能作为当前上下文占用量。
 
 ## Consequences
 
 - Native provider 请求不会因为历史消息数量固定而失控，也不会生成孤立的 tool
   result；长对话和 tool-heavy turn 可以在固定预算内继续运行。
-- 字符/token estimator 是 provider 无关的保守近似，不能保证所有模型的真实
-  tokenizer 计数完全一致；后续可以在不改变 projection 契约的前提下替换为
-  provider-specific estimator。
+- 字符/token estimator 加上实际输入 usage 校准仍是 provider 无关的近似，不能保证
+  内容分布变化时与真实 tokenizer 一致；输出或 reasoning usage 不作为下一请求的输入
+  token 总量使用。后续可在不改变 projection 契约的前提下替换为 provider-specific estimator。
 - 超大 tool output 的持久化内容仍完整保留，只有发送给 provider 的派生副本会被
   截断，因此诊断和恢复不会丢失原始执行结果。

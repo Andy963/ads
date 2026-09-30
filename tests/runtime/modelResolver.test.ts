@@ -10,6 +10,7 @@ import { createModelProviderStore } from "../../server/state/modelProviderStore.
 import { createModelServiceStore } from "../../server/state/modelServiceStore.js";
 import { createUpstreamCredentialStore } from "../../server/state/upstreamCredentialStore.js";
 import { createNativeModelResolver } from "../../server/runtime/modelResolver.js";
+import { completeNativeChat } from "../../server/runtime/openAiCompatibleClient.js";
 import { DEFAULT_REASONING_EFFORT } from "../../server/state/modelConfigTypes.js";
 
 describe("native model resolver", () => {
@@ -272,5 +273,161 @@ describe("native model resolver", () => {
       }).resolve("openai-model"),
       /does not match|credentials are not configured/i,
     );
+  });
+
+  function createTokenResolver() {
+    const models = createGlobalModelConfigStore(getStateDatabase(dbPath));
+    models.upsertModelConfig({
+      id: "token-model", modelId: "token-model", displayName: "Token model", provider: "openai",
+      isEnabled: true, isDefault: false,
+      configJson: { max_input_tokens: "262144", max_output_tokens: "131072" },
+    });
+    return createNativeModelResolver({
+      owner: "token-owner",
+      stateDbPath: dbPath,
+      env: {
+        OPENAI_API_KEY: "environment-secret",
+        OPENAI_BASE_URL: "https://env.test/v1",
+        ADS_NATIVE_CONTEXT_WINDOW: "8192",
+        ADS_NATIVE_CONTEXT_RESERVED_TOKENS: "2048",
+      },
+    });
+  }
+
+  it("resolves saved canonical token limits and prefers them over legacy overrides", () => {
+    const resolver = createTokenResolver();
+    const saved = resolver.resolve("token-model");
+    assert.equal(saved.contextWindow, 262_144);
+    assert.equal(saved.options?.maxTokens, 131_072);
+
+    const overridden = resolver.resolve("token-model", {
+      max_input_tokens: "1048576", contextWindow: 8192,
+      max_output_tokens: "2000000", maxTokens: 4096,
+    });
+    assert.equal(overridden.contextWindow, 1_048_576);
+    assert.equal(overridden.options?.maxTokens, 2_000_000);
+    assert.equal(overridden.apiKey, saved.apiKey);
+    assert.equal(overridden.baseUrl, saved.baseUrl);
+    assert.equal(overridden.provider, saved.provider);
+  });
+
+  for (const model of ["token-model", "unsaved-token-model"]) {
+    it(`supports numeric boundaries and strings for ${model}`, () => {
+      const resolver = createTokenResolver();
+      for (const context of [256, 512, 8192, 1_048_576, 100_000_000]) {
+        for (const output of [1, 131_072, 2_000_000, 100_000_000]) {
+          for (const asString of [false, true]) {
+            const resolved = resolver.resolve(model, {
+              max_input_tokens: asString ? ` ${context} ` : context,
+              max_output_tokens: asString ? ` ${output} ` : output,
+            });
+            assert.equal(resolved.contextWindow, context);
+            assert.equal(resolved.options?.maxTokens, output);
+          }
+        }
+      }
+    });
+
+    it(`falls back to valid legacy limits and rejects malformed numbers for ${model}`, () => {
+      const resolver = createTokenResolver();
+      const invalid = [
+        undefined, null, true, false, "", " ", "bad", 0, -1, 256.5, "256.5",
+        NaN, Infinity, -Infinity, "Infinity", 100_000_001, "100000001", Number.MAX_SAFE_INTEGER,
+        [], [512], {},
+      ];
+      for (const value of invalid) {
+        const resolved = resolver.resolve(model, {
+          max_input_tokens: value, contextWindow: "1048576",
+          max_output_tokens: value, maxTokens: "2000000",
+        });
+        assert.equal(resolved.contextWindow, 1_048_576);
+        assert.equal(resolved.options?.maxTokens, 2_000_000);
+        for (const config of [
+          { max_input_tokens: value, max_output_tokens: value },
+          { contextWindow: value, maxTokens: value },
+        ]) {
+          const rejected = resolver.resolve(model, config);
+          assert.equal(rejected.contextWindow, undefined);
+          assert.equal(rejected.options?.maxTokens, undefined);
+        }
+      }
+      const tooSmall = resolver.resolve(model, { max_input_tokens: 255, contextWindow: 512 });
+      assert.equal(tooSmall.contextWindow, 512);
+      assert.equal(resolver.resolve(model, { max_input_tokens: 255 }).contextWindow, undefined);
+    });
+
+    it(`preserves legacy context aliases and their precedence for ${model}`, () => {
+      const resolver = createTokenResolver();
+      const aliases = [
+        "contextWindow", "context_window", "modelContextWindow", "model_context_window",
+        "maxContextTokens", "max_context_tokens",
+      ];
+      for (const [index, key] of aliases.entries()) {
+        const config: Record<string, unknown> = Object.fromEntries(aliases.slice(0, index).map(alias => [alias, false]));
+        config[key] = "1048576";
+        const resolved = resolver.resolve(model, { ...config, max_input_tokens: null, maxTokens: "100000000" });
+        assert.equal(resolved.contextWindow, 1_048_576);
+        assert.equal(resolved.options?.maxTokens, 100_000_000);
+      }
+      assert.equal(resolver.resolve(model, { contextWindow: 512, context_window: 1024 }).contextWindow, 512);
+    });
+
+    it(`does not inject token defaults or environment limits for ${model}`, () => {
+      const resolver = createTokenResolver();
+      const resolved = resolver.resolve(model, {});
+      assert.equal(resolved.contextWindow, undefined);
+      assert.equal(resolved.options?.maxTokens, undefined);
+      assert.equal(Object.hasOwn(resolved, "contextWindow"), false);
+      assert.equal(Object.hasOwn(resolved.options ?? {}, "maxTokens"), false);
+    });
+
+    for (const streaming of [true, false]) {
+      it(`forwards resolved output limits as max_tokens for ${model} (streaming=${streaming})`, async () => {
+        const resolver = createTokenResolver();
+        const resolved = resolver.resolve(model, { max_input_tokens: "1048576", max_output_tokens: "2000000" });
+        let body: Record<string, unknown> | undefined;
+        await completeNativeChat({
+          ...resolved,
+          messages: [{ role: "user", content: "Hello" }],
+          tools: [],
+          streaming,
+          fetchImpl: async (url, init) => {
+            assert.equal(String(url), "https://env.test/v1/chat/completions");
+            assert.equal(new Headers(init?.headers).get("authorization"), "Bearer environment-secret");
+            body = JSON.parse(String(init?.body));
+            return streaming
+              ? new Response('data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n', {
+                headers: { "content-type": "text/event-stream" },
+              })
+              : Response.json({ choices: [{ message: { content: "Hello" }, finish_reason: "stop" }] });
+          },
+        });
+        assert.equal(body?.max_tokens, 2_000_000);
+        assert.equal(body?.max_output_tokens, undefined);
+        assert.equal(body?.max_input_tokens, undefined);
+        assert.equal(body?.contextWindow, undefined);
+      });
+    }
+  }
+
+  it("honors unsaved token overrides without adopting credential, endpoint or reasoning overrides", () => {
+    const resolver = createTokenResolver();
+    const original = resolver.resolve("unsaved-token-model");
+    const overridden = resolver.resolve("unsaved-token-model", {
+      max_input_tokens: 512, max_output_tokens: 128,
+      baseUrl: "https://other.test/v1", apiKey: "override-secret", credentialProfile: "other-profile",
+      provider: "other-provider", owner: "other-owner", reasoningEffort: "off",
+    });
+    assert.deepEqual(overridden, {
+      ...original,
+      contextWindow: 512,
+      options: { ...original.options, maxTokens: 128 },
+    });
+    assert.equal(original.contextWindow, undefined);
+    assert.equal(original.options?.maxTokens, undefined);
+    assert.throws(() => createNativeModelResolver({
+      owner: "token-owner", stateDbPath: dbPath, requireOwnerCredentials: true,
+      env: { OPENAI_API_KEY: "environment-secret", OPENAI_BASE_URL: "https://env.test/v1" },
+    }).resolve("unsaved-token-model", { max_input_tokens: 512, max_output_tokens: 128 }), /saved model/);
   });
 });

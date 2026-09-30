@@ -1,3 +1,9 @@
+import {
+  MIN_MODEL_CONTEXT_WINDOW,
+  MODEL_CONTEXT_KEYS,
+  MODEL_OUTPUT_KEYS,
+  readModelTokenLimit,
+} from "../../shared/modelTokenBudget.js";
 import { resolveCodexConfig } from "../codexConfig.js";
 import { createGlobalModelConfigStore } from "../state/globalModelConfigStore.js";
 import { createModelServiceStore } from "../state/modelServiceStore.js";
@@ -65,7 +71,7 @@ function readFiniteNumber(
 function requestOptions(config: Record<string, unknown> | null | undefined): NativeModelRequestOptions | undefined {
   const temperature = readFiniteNumber(config, "temperature", { min: 0, max: 2 });
   const topP = readFiniteNumber(config, "topP", { min: 0, max: 1 });
-  const maxTokens = readFiniteNumber(config, "maxTokens", { min: 1, max: 1_000_000, integer: true });
+  const maxTokens = readModelTokenLimit(config, MODEL_OUTPUT_KEYS);
   const reasoningEffort = normalizeConfiguredReasoningEffort(config?.reasoningEffort) ?? DEFAULT_REASONING_EFFORT;
   if (temperature === undefined && topP === undefined && maxTokens === undefined) {
     return { reasoningEffort };
@@ -78,20 +84,7 @@ function requestOptions(config: Record<string, unknown> | null | undefined): Nat
 }
 
 function contextWindow(config: Record<string, unknown> | null | undefined): number | undefined {
-  for (const key of [
-    "contextWindow",
-    "context_window",
-    "modelContextWindow",
-    "model_context_window",
-    "maxContextTokens",
-    "max_context_tokens",
-  ]) {
-    const value = Number(config?.[key]);
-    if (Number.isSafeInteger(value) && value >= 256 && value <= 100_000_000) {
-      return value;
-    }
-  }
-  return undefined;
+  return readModelTokenLimit(config, MODEL_CONTEXT_KEYS, MIN_MODEL_CONTEXT_WINDOW);
 }
 
 function resolveSavedModelConfig(
@@ -213,6 +206,8 @@ export function createNativeModelResolver(options: ResolverOptions): NativeModel
       if (!fallback.apiKey || !fallback.baseUrl) {
         throw new Error("Native runtime requires an API key and HTTP base URL");
       }
+      const resolvedContextWindow = contextWindow(overrideConfig);
+      const maxTokens = readModelTokenLimit(overrideConfig, MODEL_OUTPUT_KEYS);
       return {
         model: modelId,
         baseUrl: normalizeUpstreamBaseUrl(fallback.baseUrl),
@@ -220,7 +215,9 @@ export function createNativeModelResolver(options: ResolverOptions): NativeModel
         provider: "openai",
         options: {
           reasoningEffort: fallback.modelReasoningEffort ?? DEFAULT_REASONING_EFFORT,
+          ...(maxTokens !== undefined ? { maxTokens } : {}),
         },
+        ...(resolvedContextWindow !== undefined ? { contextWindow: resolvedContextWindow } : {}),
       };
     },
   };

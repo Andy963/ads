@@ -17,6 +17,31 @@ function sse(deltas: Array<{ delta: unknown; finish_reason?: string | null }>): 
   });
 }
 
+describe("Native output token wire format", () => {
+  for (const maxTokens of [undefined, 1, 131_072, 2_000_000, 100_000_000]) {
+    for (const streaming of [true, false]) {
+      it(`sends only configured max_tokens=${maxTokens} (streaming=${streaming})`, async () => {
+        let body: Record<string, unknown> | undefined;
+        await completeNativeChat({
+          ...request,
+          options: maxTokens === undefined ? undefined : { maxTokens },
+          streaming,
+          fetchImpl: async (_url, init) => {
+            body = JSON.parse(String(init?.body));
+            return streaming
+              ? sse([{ delta: { content: "Hello" }, finish_reason: "stop" }])
+              : Response.json({ choices: [{ message: { content: "Hello" }, finish_reason: "stop" }] });
+          },
+        });
+        assert.equal(body?.max_tokens, maxTokens);
+        assert.equal(Object.hasOwn(body ?? {}, "max_tokens"), maxTokens !== undefined);
+        assert.equal(body?.max_output_tokens, undefined);
+        assert.equal(body?.maxTokens, undefined);
+      });
+    }
+  }
+});
+
 describe("Native optional tool-call fields", () => {
   it("disables tool choice and omits tool-only fields for a tool-free request", async () => {
     let body: Record<string, unknown> | undefined;

@@ -2,6 +2,16 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import type { ApiClient } from "../api/client";
 import type { ModelConfig, ModelProvider } from "../api/types";
+import {
+  DEFAULT_MODEL_CONTEXT_WINDOW,
+  MAX_MODEL_TOKEN_LIMIT,
+  MIN_MODEL_CONTEXT_WINDOW,
+  MODEL_CONTEXT_KEYS,
+  MODEL_OUTPUT_KEYS,
+  defaultModelOutputTokens,
+  normalizeModelTokenLimit,
+  readModelTokenLimit,
+} from "../../../shared/modelTokenBudget";
 import ModelServicePicker from "./ModelServicePicker.vue";
 import RoleSettings from "./RoleSettings.vue";
 import VoiceSettings from "./VoiceSettings.vue";
@@ -35,7 +45,47 @@ const modelEditor = ref<HTMLFormElement | null>(null);
 const providerActions = ref<ModelProvider | null>(null);
 const deleteTarget = ref<{ kind: "provider" | "model"; id: string; name: string } | null>(null);
 const providerForm = reactive({ id: "", name: "", baseUrl: "", apiKey: "", hasCredential: false, wireApi: "responses", isEnabled: true });
-const modelForm = reactive({ id: "", providerId: "", modelId: "", displayName: "", config: "{}" });
+const modelForm = reactive({ id: "", providerId: "", modelId: "", displayName: "", config: "{}", maxInputTokens: "", maxOutputTokens: "" });
+const parsedModelConfig = computed<Record<string, unknown> | null>(() => {
+  try {
+    const config: unknown = JSON.parse(modelForm.config);
+    return config && typeof config === "object" && !Array.isArray(config) ? config as Record<string, unknown> : null;
+  } catch { return null; }
+});
+const configuredContextWindow = computed(() => readModelTokenLimit(parsedModelConfig.value, MODEL_CONTEXT_KEYS, MIN_MODEL_CONTEXT_WINDOW));
+const fallbackOutputTokens = computed(() => defaultModelOutputTokens(configuredContextWindow.value ?? DEFAULT_MODEL_CONTEXT_WINDOW));
+const configuredOutputTokens = computed(() => readModelTokenLimit(parsedModelConfig.value, MODEL_OUTPUT_KEYS));
+const tokenFields = {
+  maxInputTokens: { keys: MODEL_CONTEXT_KEYS, minimum: MIN_MODEL_CONTEXT_WINDOW },
+  maxOutputTokens: { keys: MODEL_OUTPUT_KEYS, minimum: 1 },
+} as const;
+function tokenFieldError(field: keyof typeof tokenFields): string {
+  const { keys, minimum } = tokenFields[field];
+  return modelForm[field].trim() && normalizeModelTokenLimit(modelForm[field], minimum) === undefined
+    ? `${keys[0]} must be an integer between ${minimum} and ${MAX_MODEL_TOKEN_LIMIT}.`
+    : "";
+}
+function syncTokenFields(): void {
+  const config = parsedModelConfig.value;
+  if (!config) return;
+  modelForm.maxInputTokens = String(readModelTokenLimit(config, MODEL_CONTEXT_KEYS, MIN_MODEL_CONTEXT_WINDOW) ?? "");
+  modelForm.maxOutputTokens = String(readModelTokenLimit(config, MODEL_OUTPUT_KEYS) ?? "");
+}
+function updateModelConfig(value: string): void {
+  modelForm.config = value;
+  syncTokenFields();
+}
+function updateTokenField(field: keyof typeof tokenFields, value: string): void {
+  modelForm[field] = value;
+  const config = parsedModelConfig.value;
+  const { keys, minimum } = tokenFields[field];
+  if (!config || tokenFieldError(field)) return;
+  const nextConfig = { ...config };
+  // Only an explicit field edit rewrites token keys; untouched legacy JSON stays intact.
+  for (const key of keys) delete nextConfig[key];
+  if (value.trim()) nextConfig[keys[0]] = normalizeModelTokenLimit(value, minimum);
+  modelForm.config = JSON.stringify(nextConfig, null, 2);
+}
 const groups = computed(() => [
   ...providers.value.map((provider) => ({ id: provider.id, provider, models: models.value.filter((model) => model.providerId === provider.id) })),
   ...(models.value.some((model) => !model.providerId) ? [{ id: "unassigned", provider: null, models: models.value.filter((model) => !model.providerId) }] : []),
@@ -84,11 +134,14 @@ async function deleteProvider(provider: ModelProvider): Promise<void> {
 }
 function editModel(providerId: string, model?: ModelConfig): void {
   Object.assign(modelForm, { id: model?.id ?? "", providerId, modelId: model?.modelId ?? "", displayName: model?.displayName ?? "", config: JSON.stringify(model?.configJson ?? { reasoningEfforts: ["medium", "high"], defaultReasoningEffort: "high" }, null, 2) });
+  syncTokenFields();
   modelDialog.value = true;
   modelBaseline.value = JSON.stringify(modelForm);
   error.value = "";
 }
 async function saveModel(): Promise<void> {
+  const tokenError = tokenFieldError("maxInputTokens") || tokenFieldError("maxOutputTokens");
+  if (tokenError) { error.value = tokenError; return; }
   if (modelEditor.value && !modelEditor.value.reportValidity()) return;
   await perform(async () => {
     const configJson: unknown = JSON.parse(modelForm.config);
@@ -214,8 +267,14 @@ onBeforeUnmount(() => { providerForm.apiKey = ""; });
             <label class="settingsField"><span>Model ID</span><input v-model="modelForm.modelId" required autocapitalize="none" spellcheck="false" data-testid="model-manager-model-id" placeholder="Upstream model identifier" /></label>
             <label class="settingsField"><span>Display name</span><input v-model="modelForm.displayName" data-testid="model-manager-display-name" placeholder="Optional alias" /></label>
           </div>
+          <div class="settingsBlock"><h3 class="settingsBlockTitle">Token limits</h3><div class="settingsList">
+            <label class="settingsField"><span>Context window (max_input_tokens)</span><input :value="modelForm.maxInputTokens" type="text" inputmode="numeric" :disabled="!parsedModelConfig" :aria-invalid="!!tokenFieldError('maxInputTokens')" aria-describedby="model-token-defaults" data-testid="model-manager-max-input-tokens" :placeholder="String(DEFAULT_MODEL_CONTEXT_WINDOW)" @input="updateTokenField('maxInputTokens', ($event.target as HTMLInputElement).value)" /></label>
+            <label class="settingsField"><span>Output limit (max_output_tokens)</span><input :value="modelForm.maxOutputTokens" type="text" inputmode="numeric" :disabled="!parsedModelConfig" :aria-invalid="!!tokenFieldError('maxOutputTokens')" aria-describedby="model-token-defaults" data-testid="model-manager-max-output-tokens" :placeholder="String(fallbackOutputTokens)" @input="updateTokenField('maxOutputTokens', ($event.target as HTMLInputElement).value)" /></label>
+          </div><p id="model-token-defaults" class="settingsNote" data-testid="model-manager-token-defaults">Default context: {{ DEFAULT_MODEL_CONTEXT_WINDOW }}; default output: {{ fallbackOutputTokens }} (at most half the context window). Defaults may be overridden by server configuration. Leave blank to use server fallbacks; clearing a field also removes its legacy aliases.</p>
+          <p class="settingsNote" data-testid="model-manager-token-configured">Configured limits: context {{ configuredContextWindow ?? 'not set' }}; output {{ configuredOutputTokens ?? 'not set' }}. Runtime may cap output to fit the context window.</p>
+          <p v-if="!parsedModelConfig" class="settingsNote">Enter a valid JSON object in Advanced options to edit token limits.</p></div>
           <details class="settingsBlock modelAdvanced"><summary>Advanced options</summary><div class="settingsList">
-            <label class="settingsField"><span>Model configuration (JSON)</span><textarea v-model="modelForm.config" rows="7" autocapitalize="none" spellcheck="false" data-testid="model-manager-config-json" /></label>
+            <label class="settingsField"><span>Model configuration (JSON)</span><textarea :value="modelForm.config" rows="7" autocapitalize="none" spellcheck="false" data-testid="model-manager-config-json" @input="updateModelConfig(($event.target as HTMLTextAreaElement).value)" /></label>
           </div><p class="settingsNote">Includes effort tiers and provider-specific options. Existing values are preserved.</p></details>
           <div v-if="modelForm.id" class="settingsBlock settingsList"><button type="button" class="settingsRow destructive centered" @click="deleteModel(models.find(m => m.id === modelForm.id)!)">Delete model</button></div>
         </fieldset>

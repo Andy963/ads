@@ -67,8 +67,33 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 |---|---|---|
 | `ADS_AGENT_MAX_TOOL_ROUNDS` | `128` | 每条用户消息最多进行 128 轮模型-工具循环，每批工具调用计一轮；正整数覆盖默认值，显式 `0` 表示不限轮数，空值或非法值使用默认值。达到上限后额外允许一次禁用工具的收尾请求，不自动续跑；收尾失败时保留工具结果并返回继续提示，下一条用户消息重新计数（兼容旧名 `ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS`） |
 | `ADS_NATIVE_RUNTIME_TURN_TIMEOUT_MS` | `0`（不限制） | 原生 turn 的总 wall-clock 超时（毫秒），上限 `1800000`（30 分钟）；`0` 或未设置时 turn 仅受用户取消与各工具自身超时约束 |
+| `ADS_NATIVE_CONTEXT_WINDOW` | `262144` | 模型未配置上下文窗口时的 fallback；不是硬下限，支持显式小窗口及 1M 以上窗口 |
+| `ADS_NATIVE_CONTEXT_RESERVED_TOKENS` | `131072` | 模型未配置输出上限时的预留；未配置该变量时，小窗口默认最多预留窗口一半 |
 
 内置 `exec_command` 的 `timeout_ms` 默认仍为 30 秒，最大允许 600,000 毫秒（10 分钟）；`read_file` 未指定 `line_count` 时默认读取 1,000 行，显式上限仍为 2,000 行。
+
+### 模型 Token 预算
+
+模型编辑器可设置 `max_input_tokens`（总上下文窗口）和 `max_output_tokens`（输出上限），
+也可通过高级 JSON 编辑。有效配置按以下顺序解析：
+
+1. 模型 canonical 字段 `max_input_tokens` / `max_output_tokens`。
+2. 兼容旧字段：输入侧依次为 `contextWindow`、`context_window`、`modelContextWindow`、
+   `model_context_window`、`maxContextTokens`、`max_context_tokens`；输出侧为 `maxTokens`。
+3. 上述环境变量，最后才是默认值。
+
+输入窗口允许 256–100,000,000，输出上限允许 1–100,000,000，均为整数；非法值不生效。
+未配置输出时使用 `min(131072, contextWindow / 2)`（向下取整），不再按 25% 限制显式值。
+为避免没有输入空间，有效输出最多为 `contextWindow - 64`；projection 预留和上游
+Chat Completions 的 `max_tokens` 使用同一个有效上限。输入预算等于上下文窗口减去输出预留，
+系统提示与工具定义也计入输入预算。64 token 只是最低保留，不保证足以容纳工具与任务；
+不可拆分的请求仍超预算时会在调用前明确报错。
+
+工具循环中，上一成功请求的实际 `input_tokens` 与该请求**实际投影内容**的原始估算值
+用于校准下一请求（比例至少为 1）；新增工具输出、工具定义及收尾请求均按同一比例预算。
+不使用累计费用、`output_tokens` 或 `total_tokens` 作为上下文占用。usage 缺失时保留本轮
+最近的有效校准；尚无有效 usage 时使用字符估算。校准不跨用户 turn、重试或模型选择保留，
+也不写回 transcript。它仍是近似值，不能替代模型 tokenizer 或保证内容分布突变时完全精确。
 
 ### Native lifecycle 与 capability 边界
 
