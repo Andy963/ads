@@ -512,3 +512,75 @@ describe("NativeTranscriptStore", () => {
     assert.match(ordinaryRaw, /Andy/);
   });
 });
+
+describe("incremental Native evidence", () => {
+  it("keeps full sanitized evidence separate from projection and fences every new mutation", () => {
+    const { store, dbPath } = createStore(["private-api-value"]);
+    store.claimTranscript("long", "writer-1");
+    const user = { role: "user" as const, content: "Keep the task" };
+    store.beginTurn({ transcriptId: "long", turnId: "turn", writerId: "writer-1", incremental: true,
+      messages: [user], entries: [{ kind: "message", message: user }], provider: {} });
+    const call = { role: "assistant" as const, content: "token=private-api-value", tool_calls: [{ id: "call", type: "function" as const,
+      function: { name: "read_file", arguments: '{"file":"a"}' } }], nativeResponses: { scope: "scope", output: [
+        { type: "reasoning" as const, id: "opaque", summary: [], encrypted_content: "sk-AbCdEfGhIjKlMnOpQrStUvWxYz" },
+      ] } };
+    const tool = { role: "tool" as const, content: "result", tool_call_id: "call" };
+    const input = { transcriptId: "long", turnId: "turn", writerId: "writer-1", status: "running" as const, usage: null };
+    store.appendTurn({ ...input, messages: [call, tool], entries: [{ kind: "message", message: call }, { kind: "message", message: tool }] });
+    const projection = [user, { role: "assistant" as const, content: "Summary" }];
+    store.saveProjection("long", "turn", "writer-1", projection);
+    const db = getStateDatabase(dbPath);
+    const archived = JSON.stringify(db.prepare("SELECT * FROM native_transcript_chunks").all());
+    assert.doesNotMatch(archived, /private-api-value/);
+    assert.match(archived, /sk-AbCdEfGhIjKlMnOpQrStUvWxYz/);
+    const firstPage = JSON.parse(store.readHistory("long"));
+    const secondPage = store.readHistory("long", firstPage.next.after, firstPage.next.offset);
+    assert.doesNotMatch(secondPage, /sk-AbCd|encrypted_content/);
+    store.claimTranscript("long", "writer-2");
+    assert.throws(() => store.appendTurn({ ...input, messages: [], entries: [] }), /superseded/);
+    assert.throws(() => store.saveProjection("long", "turn", "writer-1", []), /superseded/);
+    const continuation = store.loadContinuation("long", "writer-2");
+    assert.equal(continuation.messages[0]?.content, "Keep the task");
+    assert.equal(continuation.messages[1]?.content, "Summary");
+    const turns = store.listTurns("long", "writer-2");
+    assert.equal(turns[0]?.messages.length, 3);
+    assert.equal(turns[0]?.messages[1]?.nativeResponses?.scope, "scope");
+    store.clear("long", "writer-1");
+    assert.ok(store.listTurns("long", "writer-2").length);
+    store.clear("long", "writer-2");
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM native_transcript_chunks").get() as { count: number }).count, 0);
+  });
+
+  it("restores an unknown pending outcome after an incremental crash without replay", () => {
+    const { store } = createStore();
+    store.claimTranscript("crash", "old");
+    store.beginTurn({ transcriptId: "crash", turnId: "turn", writerId: "old", incremental: true,
+      messages: [{ role: "user", content: "Change the file" }], entries: [], provider: {} });
+    store.appendTurn({ transcriptId: "crash", turnId: "turn", writerId: "old", status: "running", usage: null,
+      messages: [{ role: "assistant", content: null, tool_calls: [{ id: "pending", type: "function", function: { name: "apply_patch", arguments: "{}" } }] }], entries: [] });
+    store.claimTranscript("crash", "new");
+    const restored = store.loadContinuation("crash", "new");
+    assert.equal(restored.messages.find(message => message.role === "tool")?.nativeToolOutcome, "unknown");
+    assert.match(JSON.stringify(restored), /No tools have been replayed/);
+  });
+});
+
+it("migrates legacy evidence idempotently without moving an existing projection cursor", async () => {
+  const { stateSchemaMigrations } = await import("../../server/state/schemaMigrations.js");
+  const { store, dbPath } = createStore();
+  store.claimTranscript("legacy", "writer");
+  const input = { transcriptId: "legacy", turnId: "turn", writerId: "writer" };
+  const user = { role: "user" as const, content: "Legacy task" };
+  store.beginTurn({ ...input, messages: [user], entries: [{ kind: "message", message: user }], provider: {} });
+  const db = getStateDatabase(dbPath);
+  const migration = stateSchemaMigrations.find(item => item.version === 32)!;
+  migration.up(db);
+  store.appendTurn({ ...input, status: "running", usage: null, messages: [{ role: "assistant", content: "New evidence" }], entries: [] });
+  const cursor = db.prepare("SELECT projection_seq FROM native_transcript_turns").get();
+  migration.up(db);
+  assert.deepEqual(db.prepare("SELECT projection_seq FROM native_transcript_turns").get(), cursor);
+  assert.equal((db.prepare("SELECT COUNT(*) AS count FROM native_transcript_chunks").get() as { count: number }).count, 2);
+  store.claimTranscript("legacy", "new-writer");
+  assert.deepEqual(store.listTurns("legacy", "new-writer")[0]?.messages.map(message => message.content), ["Legacy task", "New evidence"]);
+  assert.deepEqual(store.loadContinuation("legacy", "new-writer").messages.slice(0, 2).map(message => message.content), ["Legacy task", "New evidence"]);
+});

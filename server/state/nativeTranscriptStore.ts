@@ -1,5 +1,6 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
+import type { ToolLoopGuardState } from "../runtime/toolLoopGuard.js";
 import type { Usage } from "../agents/protocol/types.js";
 import type { NativeChatMessage } from "../runtime/openAiCompatibleClient.js";
 import { projectNativeContinuation, type NativeContinuationContext } from "../runtime/nativeContinuation.js";
@@ -63,6 +64,8 @@ export class NativeTranscriptWriterSupersededError extends Error {
 }
 
 type StoredTurnRow = {
+  id: number;
+  projection_seq: number;
   turn_id: string;
   status: NativeTranscriptTurnStatus;
   messages_json: string;
@@ -261,6 +264,7 @@ export class NativeTranscriptStore {
     entries: NativeTranscriptEntry[];
     provider: NativeTranscriptProviderMetadata;
     writerId?: string;
+    incremental?: boolean;
   }): void {
     const writerId = String(input.writerId ?? "");
     this.db.transaction(() => {
@@ -286,6 +290,14 @@ export class NativeTranscriptStore {
         now,
         now,
       );
+      if (input.incremental) {
+        const row = this.db.prepare("SELECT id FROM native_transcript_turns WHERE transcript_id = ? AND turn_id = ?")
+          .get(input.transcriptId, input.turnId) as { id: number };
+        const chunk = this.db.prepare("INSERT INTO native_transcript_chunks (turn_row_id, messages_json, entries_json) VALUES (?, ?, ?)")
+          .run(row.id, this.stringifyMessages(input.messages), this.stringifyEntries(input.entries));
+        this.db.prepare("UPDATE native_transcript_turns SET projection_seq = ?, entries_json = '[]' WHERE id = ?")
+          .run(chunk.lastInsertRowid, row.id);
+      }
     })();
   }
 
@@ -299,68 +311,138 @@ export class NativeTranscriptStore {
     errorMessage?: string | null;
     writerId?: string;
   }): void {
-    const result = this.db.prepare(`
-      UPDATE native_transcript_turns
-      SET status = ?, messages_json = ?, entries_json = ?, usage_json = ?, error_message = ?, updated_at = ?
-      WHERE transcript_id = ? AND turn_id = ? AND status = 'running' AND writer_id = ?
-        AND (
-          NOT EXISTS (
-            SELECT 1 FROM native_transcript_leases
-            WHERE transcript_id = ?
+    this.db.transaction(() => {
+      const result = this.db.prepare(`
+        UPDATE native_transcript_turns
+        SET status = ?, messages_json = ?, entries_json = ?, usage_json = ?, error_message = ?, updated_at = ?
+        WHERE transcript_id = ? AND turn_id = ? AND status = 'running' AND writer_id = ?
+          AND (
+            NOT EXISTS (
+              SELECT 1 FROM native_transcript_leases
+              WHERE transcript_id = ?
+            )
+            OR EXISTS (
+              SELECT 1 FROM native_transcript_leases
+              WHERE transcript_id = ? AND writer_id = ?
+            )
           )
-          OR EXISTS (
-            SELECT 1 FROM native_transcript_leases
-            WHERE transcript_id = ? AND writer_id = ?
-          )
-        )
-    `).run(
-      input.status,
-      this.stringifyMessages(input.messages),
-      this.stringifyEntries(input.entries),
-      input.usage ? this.stringify(input.usage) : null,
-      input.errorMessage
-        ? redactNativeTranscriptText(input.errorMessage, this.redactions).slice(0, MAX_TRANSCRIPT_ERROR_LENGTH)
-        : null,
-      Date.now(),
-      input.transcriptId,
-      input.turnId,
-      String(input.writerId ?? ""),
-      input.transcriptId,
-      input.transcriptId,
-      String(input.writerId ?? ""),
-    );
-    if (result.changes !== 1) {
-      const lease = this.db.prepare(`
-        SELECT writer_id FROM native_transcript_leases WHERE transcript_id = ?
-      `).get(input.transcriptId) as { writer_id?: string } | undefined;
-      if (lease && lease.writer_id !== String(input.writerId ?? "")) {
-        throw new NativeTranscriptWriterSupersededError();
+      `).run(
+        input.status,
+        this.stringifyMessages(input.messages),
+        this.stringifyEntries(input.entries),
+        input.usage ? this.stringify(input.usage) : null,
+        input.errorMessage
+          ? redactNativeTranscriptText(input.errorMessage, this.redactions).slice(0, MAX_TRANSCRIPT_ERROR_LENGTH)
+          : null,
+        Date.now(),
+        input.transcriptId,
+        input.turnId,
+        String(input.writerId ?? ""),
+        input.transcriptId,
+        input.transcriptId,
+        String(input.writerId ?? ""),
+      );
+      if (result.changes !== 1) {
+        const lease = this.db.prepare(`
+          SELECT writer_id FROM native_transcript_leases WHERE transcript_id = ?
+        `).get(input.transcriptId) as { writer_id?: string } | undefined;
+        if (lease && lease.writer_id !== String(input.writerId ?? "")) {
+          throw new NativeTranscriptWriterSupersededError();
+        }
+        throw new Error(`Native transcript turn not found: ${input.turnId}`);
       }
-      throw new Error(`Native transcript turn not found: ${input.turnId}`);
-    }
+      this.db.prepare(`DELETE FROM native_transcript_chunks WHERE turn_row_id IN
+        (SELECT id FROM native_transcript_turns WHERE transcript_id = ? AND turn_id = ?)`)
+        .run(input.transcriptId, input.turnId);
+      this.db.prepare("UPDATE native_transcript_turns SET projection_seq = 0 WHERE transcript_id = ? AND turn_id = ?")
+        .run(input.transcriptId, input.turnId);
+    })();
   }
 
-  listTurns(transcriptId: string, writerId?: string): NativeTranscriptTurnRecord[] {
+  /** Append only new evidence; model projections are replaced only during compaction. */
+  appendTurn(input: {
+    transcriptId: string; turnId: string; writerId: string;
+    status: NativeTranscriptTurnStatus; messages: NativeChatMessage[]; entries: NativeTranscriptEntry[];
+    usage: Usage | null; errorMessage?: string | null; loopGuard?: ToolLoopGuardState;
+  }): void {
+    this.db.transaction(() => {
+      const row = this.runningRow(input.transcriptId, input.turnId, input.writerId);
+      if (input.messages.length || input.entries.length) {
+        this.db.prepare("INSERT INTO native_transcript_chunks (turn_row_id, messages_json, entries_json) VALUES (?, ?, ?)")
+          .run(row.id, this.stringifyMessages(input.messages), this.stringifyEntries(input.entries));
+      }
+      this.db.prepare(`UPDATE native_transcript_turns SET status = ?, usage_json = ?, error_message = ?, loop_guard_json = ?, updated_at = ? WHERE id = ?`)
+        .run(input.status, input.usage ? this.stringify(input.usage) : null,
+          input.errorMessage ? redactNativeTranscriptText(input.errorMessage, this.redactions).slice(0, MAX_TRANSCRIPT_ERROR_LENGTH) : null,
+          input.loopGuard ? JSON.stringify(input.loopGuard) : null, Date.now(), row.id);
+    })();
+  }
+
+  saveProjection(transcriptId: string, turnId: string, writerId: string, messages: NativeChatMessage[]): void {
+    this.db.transaction(() => {
+      const row = this.runningRow(transcriptId, turnId, writerId);
+      this.db.prepare(`UPDATE native_transcript_turns SET messages_json = ?, projection_seq =
+        (SELECT COALESCE(MAX(id), 0) FROM native_transcript_chunks WHERE turn_row_id = ?) WHERE id = ?`)
+        .run(this.stringifyMessages(messages), row.id, row.id);
+    })();
+  }
+
+  private runningRow(transcriptId: string, turnId: string, writerId: string): { id: number } {
+    const lease = this.db.prepare("SELECT writer_id FROM native_transcript_leases WHERE transcript_id = ?").get(transcriptId) as { writer_id: string } | undefined;
+    if (lease && lease.writer_id !== writerId) throw new NativeTranscriptWriterSupersededError();
+    const row = this.db.prepare("SELECT id FROM native_transcript_turns WHERE transcript_id = ? AND turn_id = ? AND writer_id = ? AND status = 'running'")
+      .get(transcriptId, turnId, writerId) as { id: number } | undefined;
+    if (!row) throw new Error(`Native transcript turn not found: ${turnId}`);
+    return row;
+  }
+
+  loadLoopGuard(transcriptId: string): ToolLoopGuardState | null {
+    const row = this.db.prepare("SELECT CASE WHEN status = 'completed' THEN NULL ELSE loop_guard_json END AS loop_guard_json FROM native_transcript_turns WHERE transcript_id = ? ORDER BY id DESC LIMIT 1")
+      .get(transcriptId) as { loop_guard_json: string | null } | undefined;
+    return parseJson(row?.loop_guard_json ?? null, null);
+  }
+
+  /** A transcript-scoped, character-paged view of sanitized evidence. No status mutation. */
+  readHistory(transcriptId: string, after = 0, offset = 0): string {
+    const row = this.db.prepare(`SELECT c.id, t.turn_id, c.messages_json, c.entries_json FROM native_transcript_chunks c
+      JOIN native_transcript_turns t ON t.id = c.turn_row_id WHERE t.transcript_id = ? AND c.id > ? ORDER BY c.id LIMIT 1`)
+      .get(transcriptId, after) as { id: number; turn_id: string; messages_json: string; entries_json: string } | undefined;
+    if (!row) return JSON.stringify({ done: true });
+    // Do not expose opaque reasoning blobs as tool output.
+    const visible = parseJson<NativeChatMessage[]>(row.messages_json, []).map(({ nativeResponses: _opaque, ...message }) => message);
+    const entries = parseJson<NativeTranscriptEntry[]>(row.entries_json, []).filter(entry => entry.kind !== "message");
+    const content = JSON.stringify({ messages: visible, entries });
+    const end = Math.min(content.length, offset + 12_000);
+    return JSON.stringify({ turn_id: row.turn_id, chunk_id: row.id, content: content.slice(offset, end),
+      next: end < content.length ? { after, offset: end } : { after: row.id, offset: 0 } });
+  }
+
+  listTurns(transcriptId: string, writerId?: string, projection = false): NativeTranscriptTurnRecord[] {
     this.markRunningTurnsInterrupted(transcriptId, writerId);
     const rows = this.db.prepare(`
-      SELECT turn_id, status, messages_json, entries_json, usage_json,
+      SELECT id, projection_seq, turn_id, status, messages_json, entries_json, usage_json,
              provider_json, error_message, created_at, updated_at
       FROM native_transcript_turns
       WHERE transcript_id = ?
       ORDER BY id ASC
     `).all(transcriptId) as StoredTurnRow[];
 
-    return rows.map((row) => ({
-      turnId: row.turn_id,
-      status: row.status,
-      messages: parseJson<NativeChatMessage[]>(row.messages_json, []),
-      entries: parseJson<NativeTranscriptEntry[]>(row.entries_json, []),
-      usage: normalizeUsage(parseJson<unknown>(row.usage_json, null)),
-      provider: parseJson<NativeTranscriptProviderMetadata | null>(row.provider_json, null),
-      errorMessage: row.error_message,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    }));
+    return rows.map((row) => {
+      const chunks = this.db.prepare(`SELECT messages_json, entries_json FROM native_transcript_chunks
+        WHERE turn_row_id = ? AND id > ? ORDER BY id`).all(row.id, projection ? row.projection_seq : 0) as Array<{ messages_json: string; entries_json: string }>;
+      return {
+        turnId: row.turn_id,
+        status: row.status,
+        messages: [...(projection || !chunks.length ? parseJson<NativeChatMessage[]>(row.messages_json, []) : []),
+          ...chunks.flatMap(chunk => parseJson<NativeChatMessage[]>(chunk.messages_json, []))],
+        entries: projection ? [] : chunks.length ? chunks.flatMap(chunk => parseJson<NativeTranscriptEntry[]>(chunk.entries_json, [])) : parseJson<NativeTranscriptEntry[]>(row.entries_json, []),
+        usage: normalizeUsage(parseJson<unknown>(row.usage_json, null)),
+        provider: parseJson<NativeTranscriptProviderMetadata | null>(row.provider_json, null),
+        errorMessage: row.error_message,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      };
+    });
   }
 
   loadCompletedMessages(transcriptId: string, writerId?: string): NativeChatMessage[] {
@@ -370,7 +452,7 @@ export class NativeTranscriptStore {
   }
 
   loadContinuation(transcriptId: string, writerId: string): NativeContinuationContext {
-    return projectNativeContinuation(this.listTurns(transcriptId, writerId));
+    return projectNativeContinuation(this.listTurns(transcriptId, writerId, true));
   }
 
   hasContinuationMessages(transcriptId: string): boolean {

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { ToolLoopGuard, ToolLoopPausedError } from "../../runtime/toolLoopGuard.js";
+import { compactExecution } from "../../runtime/executionCompaction.js";
 
 import type { Input, ThreadEvent, ThreadItem, Usage } from "../protocol/types.js";
 import type {
@@ -61,11 +63,6 @@ const logger = createLogger("NativeAgentAdapter");
 const NATIVE_ADAPTER_ID = "codex";
 const DEFAULT_TURN_TIMEOUT_MS = 0;
 const MAX_TURN_TIMEOUT_MS = 1_800_000;
-const DEFAULT_MAX_TOOL_ROUNDS = 128;
-const TOOL_ROUND_LIMIT_MESSAGE =
-  "Native runtime reached the configured tool-round limit and could not produce a final summary. Completed tool results have been preserved; send another prompt to continue.";
-const TOOL_ROUND_FINAL_INSTRUCTION =
-  "The tool-round budget for this user request is exhausted. Tools are disabled. Give a concise final response using the tool results already available: summarize completed work, verified results, and any remaining work. Do not claim unfinished work is complete. If further work is needed, explain that another user prompt is required. Do not request more tools or continue execution.";
 
 class NativeTurnResetError extends Error {
   constructor() {
@@ -95,6 +92,7 @@ export interface NativeAgentAdapterOptions {
   modelResolver?: NativeModelResolver;
   fetchImpl?: typeof fetch;
   turnTimeoutMs?: number;
+  /** @deprecated Tool totals no longer terminate execution. */
   maxToolRounds?: number;
   retryBackoffMs?: readonly number[];
   transcriptId?: string;
@@ -191,7 +189,8 @@ export class NativeAgentAdapter implements AgentAdapter {
   private readonly fetchImpl?: typeof fetch;
   private readonly sendLock = new AsyncLock();
   private readonly listeners = new Set<(event: AgentEvent) => void>();
-  private readonly maxToolRounds: number;
+  private loopGuard = new ToolLoopGuard();
+  private readonly checkpointCursors = new Map<string, { messages: number; entries: number }>();
   private readonly retryBackoffMs?: readonly number[];
   private readonly turnTimeoutMs: number;
   private readonly secretValues: string[];
@@ -255,12 +254,6 @@ export class NativeAgentAdapter implements AgentAdapter {
       DEFAULT_TURN_TIMEOUT_MS,
       MAX_TURN_TIMEOUT_MS,
     );
-    this.maxToolRounds = readNonNegativeInteger(
-      options.maxToolRounds
-        ?? this.env.ADS_AGENT_MAX_TOOL_ROUNDS
-        ?? this.env.ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS,
-      DEFAULT_MAX_TOOL_ROUNDS,
-    );
     this.retryBackoffMs = options.retryBackoffMs;
     this.transcriptId = String(options.transcriptId ?? "").trim() || undefined;
     const transcriptMode = options.transcriptMode ?? "restore";
@@ -283,6 +276,7 @@ export class NativeAgentAdapter implements AgentAdapter {
         this.nativeTranscriptRestored = restored.messages.length > 0;
         this.conversation = restored.messages;
         this.pendingContinuationTurns = restored.pendingTurns;
+        this.loopGuard = new ToolLoopGuard(this.transcriptStore.loadLoopGuard(this.transcriptId));
       }
     }
     this.metadata = {
@@ -332,6 +326,8 @@ export class NativeAgentAdapter implements AgentAdapter {
     if (options?.clearPersistedState) {
       this.activeTurnAbort?.(createAbortError("Native runtime session reset"));
       this.resetGeneration += 1;
+      this.loopGuard = new ToolLoopGuard();
+      this.checkpointCursors.clear();
       this.activeTranscriptTurns.clear();
     }
     if (options?.clearPersistedState && this.transcriptId && this.transcriptStore) {
@@ -364,6 +360,8 @@ export class NativeAgentAdapter implements AgentAdapter {
     }
     this.transcriptStore?.claimTranscriptAndClear(nextTranscriptId, this.transcriptWriterId);
     this.resetGeneration += 1;
+    this.loopGuard = new ToolLoopGuard();
+    this.checkpointCursors.clear();
     this.transcriptId = nextTranscriptId;
     this.activeTranscriptTurns.clear();
     this.conversation = [];
@@ -517,7 +515,7 @@ export class NativeAgentAdapter implements AgentAdapter {
 
   private emitToolEvent(
     assertTurnActive: () => void,
-    type: "item.started" | "item.completed",
+    type: "item.started" | "item.updated" | "item.completed",
     item: ThreadItem,
   ): void {
     assertTurnActive();
@@ -530,7 +528,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     result: NativeToolExecutionResult,
   ): void {
     if (result.command) {
-      this.emitToolEvent(assertTurnActive, "item.completed", {
+      this.emitToolEvent(assertTurnActive, result.command.status === "in_progress" ? "item.updated" : "item.completed", {
         type: "command_execution",
         id: result.command.id,
         command: result.command.command,
@@ -582,12 +580,14 @@ export class NativeAgentAdapter implements AgentAdapter {
     }
     if (this.transcriptId && this.transcriptStore) {
       this.persistTurnCheckpoint(input);
+      this.assertResetGeneration(input.resetGeneration);
     }
     if (input.status !== "running") {
       const messages = projectNativeContinuationTurn(input);
       this.conversation.push(...messages);
       this.pendingContinuationTurns = input.status === "completed" ? 0 : this.pendingContinuationTurns + 1;
       this.activeTranscriptTurns.delete(input.turnId);
+      this.checkpointCursors.delete(input.turnId);
       if (this.activeTurnCheckpoint?.turnId === input.turnId) this.activeTurnCheckpoint = undefined;
     }
   }
@@ -603,20 +603,27 @@ export class NativeAgentAdapter implements AgentAdapter {
         entries: input.entries,
         provider: input.provider,
         writerId: this.transcriptWriterId,
+        incremental: true,
       });
+      this.assertResetGeneration(input.resetGeneration);
+      this.checkpointCursors.set(input.turnId, { messages: input.messages.length, entries: input.entries.length });
       this.activeTranscriptTurns.add(input.turnId);
       return;
     }
-    store.updateTurn({
+    const cursor = this.checkpointCursors.get(input.turnId) ?? { messages: 0, entries: 0 };
+    store.appendTurn({
       transcriptId,
       turnId: input.turnId,
       status: input.status,
-      messages: input.messages,
-      entries: input.entries,
+      messages: input.messages.slice(cursor.messages),
+      entries: input.entries.slice(cursor.entries),
       usage: input.usage,
       errorMessage: input.errorMessage,
       writerId: this.transcriptWriterId,
+      loopGuard: this.loopGuard.snapshot(),
     });
+    this.assertResetGeneration(input.resetGeneration);
+    this.checkpointCursors.set(input.turnId, { messages: input.messages.length, entries: input.entries.length });
   }
 
   private assertResetGeneration(expected: number): void {
@@ -720,6 +727,8 @@ export class NativeAgentAdapter implements AgentAdapter {
     assertTurnActive();
     const toolExecutor = new NativeToolExecutor({
       workspaceRoot: this.workspaceRoot,
+      readHistory: this.transcriptStore && this.transcriptId
+        ? (after, offset) => this.transcriptStore!.readHistory(this.transcriptId!, after, offset) : undefined,
       workingDirectory,
       env: this.env,
       middleware: options.middleware,
@@ -770,81 +779,63 @@ export class NativeAgentAdapter implements AgentAdapter {
         provider: providerMetadata,
       });
       if (retryState.attempt > 1) this.pendingRetryCheckpoint = undefined;
-      for (let round = 0; this.maxToolRounds === 0 || round <= this.maxToolRounds; round += 1) {
-        const finalRound = this.maxToolRounds > 0 && round === this.maxToolRounds;
-        const roundTools = finalRound ? [] : NATIVE_TOOL_DEFINITIONS;
-        const roundMessages: NativeChatMessage[] = finalRound
-          ? [{ role: "system", content: TOOL_ROUND_FINAL_INSTRUCTION }, ...currentMessages]
-          : currentMessages;
+      for (let round = 0; ; round += 1) {
+        assertTurnActive();
+        const roundTools = NATIVE_TOOL_DEFINITIONS;
+        const roundMessages = currentMessages;
         const itemId = `${turnId}-message-${round}`;
-        let completion: NativeCompletionResult;
-        try {
-          const contextProjection = projectNativeContext(roundMessages, {
-            requiredRecentTurns: this.pendingContinuationTurns + 1,
-            ...contextBudget,
-            tools: roundTools,
-            tokenCalibration,
+        const contextProjection = projectNativeContext(roundMessages, {
+          requiredRecentTurns: this.pendingContinuationTurns + 1,
+          ...contextBudget,
+          tools: roundTools,
+          tokenCalibration,
+        });
+        currentMessages = contextProjection.messages;
+        this.conversation = currentMessages.slice(0, Math.max(0, currentMessages.length - turnMessages.length))
+          .filter(message => message.role !== "system");
+        if (contextProjection.diagnostic.compacted) {
+          emitTurnEvent({
+            type: "item.completed",
+            item: {
+              type: "context",
+              id: `${turnId}-context-projection`,
+              text: formatNativeContextDiagnostic(contextProjection.diagnostic),
+            },
           });
-          if (contextProjection.diagnostic.compacted) {
-            emitTurnEvent({
-              type: "item.completed",
-              item: {
-                type: "context",
-                id: `${turnId}-context-projection`,
-                text: formatNativeContextDiagnostic(contextProjection.diagnostic),
-              },
-            });
-          }
-          completion = await completeNativeModel({
-            wireApi: model.wireApi,
-            baseUrl: model.baseUrl,
-            apiKey: model.apiKey,
-            model: model.model,
-            messages: contextProjection.messages,
-            tools: roundTools,
-            options: requestOptions,
-            signal,
-            fetchImpl: this.fetchImpl,
-            readImage: image => this.images.read(image, signal),
-            ...(streaming && !finalRound
-              ? {
-                  onTextDelta: (snapshot: string) => {
+        }
+        const completion = await completeNativeModel({
+          wireApi: model.wireApi,
+          baseUrl: model.baseUrl,
+          apiKey: model.apiKey,
+          model: model.model,
+          messages: contextProjection.messages,
+          tools: roundTools,
+          options: requestOptions,
+          signal,
+          fetchImpl: this.fetchImpl,
+          readImage: image => this.images.read(image, signal),
+          ...(streaming
+            ? {
+                onTextDelta: (snapshot: string) => {
+                  // Pending exits may invalidate a streamed claim of success. Publish this
+                  // response only after deciding whether another wait is required.
+                  if (toolExecutor.pendingCommandIds().length === 0) {
                     this.emitResponseSnapshot(assertTurnActive, itemId, snapshot);
-                  },
-                }
-              : {}),
-            streaming,
-            outputSchema: options.outputSchema,
-          });
-          const inputTokens = completion.usage?.input_tokens;
-          if (inputTokens !== undefined && Number.isSafeInteger(inputTokens) && inputTokens > 0) {
-            tokenCalibration = {
-              actualInputTokens: inputTokens,
-              estimatedInputTokens: estimateNativeRequestTokens(contextProjection.messages, roundTools),
-            };
-          }
-        } catch (error) {
-          if (!finalRound || error instanceof NativeContextLimitError) throw error;
-          // Summary failure must not replay completed tools. Cancellation and
-          // reset still propagate through the normal interrupted-turn path.
-          assertTurnActive();
-          completion = { text: TOOL_ROUND_LIMIT_MESSAGE, toolCalls: [], usage: null };
+                  }
+                },
+              }
+            : {}),
+          streaming,
+          outputSchema: options.outputSchema,
+        });
+        const inputTokens = completion.usage?.input_tokens;
+        if (inputTokens !== undefined && Number.isSafeInteger(inputTokens) && inputTokens > 0) {
+          tokenCalibration = {
+            actualInputTokens: inputTokens,
+            estimatedInputTokens: estimateNativeRequestTokens(contextProjection.messages, roundTools),
+          };
         }
         assertTurnActive();
-        if (finalRound) {
-          // Validate the buffered response before exposing it or persisting it.
-          // A provider ignoring tool_choice=none never gets another tool turn.
-          const validSummary = completion.toolCalls.length === 0 && Boolean(completion.text.trim());
-          completion = {
-            ...completion,
-            nativeResponses: validSummary ? completion.nativeResponses : undefined,
-            text: validSummary
-              ? completion.text
-              : TOOL_ROUND_LIMIT_MESSAGE,
-            toolCalls: [],
-          };
-          this.emitResponseSnapshot(assertTurnActive, itemId, completion.text);
-        }
         if (capabilities.parallelToolCalls !== "supported" && completion.toolCalls.length > 1) {
           throw new NativeCapabilityError(
             "parallelToolCalls",
@@ -852,7 +843,18 @@ export class NativeAgentAdapter implements AgentAdapter {
           );
         }
         usage = addUsage(usage, completion.usage);
-        responseText += finalRound && responseText.trim() ? `\n\n${completion.text}` : completion.text;
+        const pendingCommand = toolExecutor.pendingCommandIds()[0];
+        if (completion.toolCalls.length === 0 && pendingCommand) {
+          // A final answer is not evidence of process completion. Collect the real exit status,
+          // then let the model interpret it. Synthetic calls must not reuse provider opaque items.
+          completion.text = "";
+          completion.nativeResponses = undefined;
+          completion.toolCalls = [{
+            id: `wait-${randomUUID()}`, type: "function",
+            function: { name: "wait_command", arguments: JSON.stringify({ session_id: pendingCommand }) },
+          }];
+        }
+        responseText = (responseText + completion.text).slice(-128_000);
         const assistantMessage: NativeChatMessage = {
           role: "assistant",
           content: completion.text || null,
@@ -874,6 +876,7 @@ export class NativeAgentAdapter implements AgentAdapter {
           });
           emitTurnEvent({ type: "turn.completed", usage: usage ?? undefined });
           this.pendingRetryCheckpoint = undefined;
+          this.loopGuard = new ToolLoopGuard();
           return { response: responseText.trim(), usage, agentId: this.id };
         }
 
@@ -890,18 +893,27 @@ export class NativeAgentAdapter implements AgentAdapter {
           usage,
           provider: providerMetadata,
         });
+        let loopPause: string | undefined;
+        const loopWarnings: string[] = [];
         for (const call of completion.toolCalls) {
           assertTurnActive();
-          retryState.markSideEffect({ type: "tool_call", id: call.id, name: call.function.name });
-          const result = await this.executeTool(call, toolExecutor, model.apiKey, assertTurnActive);
+          if (!loopPause) retryState.markSideEffect({ type: "tool_call", id: call.id, name: call.function.name });
+          const result: NativeToolExecutionResult = loopPause
+            ? { output: JSON.stringify({ status: "not_executed", reason: "Execution paused by loop detection before this call started." }), failed: true }
+            : await this.executeTool(call, toolExecutor, model.apiKey, assertTurnActive);
           assertTurnActive();
+          const decision = loopPause ? { action: "allow" as const, reason: undefined } : this.loopGuard.observe({ name: call.function.name, arguments: call.function.arguments,
+            result: result.loopResult ?? result.output, failed: result.failed, stateVersion: result.stateVersion, poll: result.poll });
+          if (decision.action === "warn") loopWarnings.push(decision.reason!);
+          // A warning generated in this batch must reach the model before it can be penalized for ignoring it.
+          if (decision.action === "pause" && loopWarnings.length === 0) loopPause = decision.reason;
           const toolMessage: NativeChatMessage = { role: "tool", content: result.output, tool_call_id: call.id };
           currentMessages.push(toolMessage);
           turnMessages.push(toolMessage);
-          if (result.command) {
+          if (result.command && result.command.status !== "in_progress") {
             turnEntries.push({
               kind: "command",
-              toolCallId: call.id,
+              toolCallId: result.command.id,
               command: result.command.command,
               status: result.command.status === "failed" ? "failed" : "completed",
               ...(typeof result.command.exit_code === "number" ? { exitCode: result.command.exit_code } : {}),
@@ -927,6 +939,43 @@ export class NativeAgentAdapter implements AgentAdapter {
           });
           this.emitToolCompletionEvents(assertTurnActive, call.id, result);
           assertTurnActive();
+        }
+        if (loopPause) throw new ToolLoopPausedError(loopPause);
+        if (loopWarnings.length) {
+          const warning: NativeChatMessage = { role: "assistant", content: `[Runtime warning] ${loopWarnings.join(" ")}` };
+          currentMessages.push(warning);
+          turnMessages.push(warning);
+          turnEntries.push({ kind: "message", message: warning });
+          emitTurnEvent({ type: "item.completed", item: { type: "context", id: `${turnId}-loop-${round}`, text: warning.content as string } });
+        }
+        const compacted = await compactExecution({
+          messages: turnMessages, budget: { ...contextBudget, tools: roundTools, tokenCalibration },
+          historyHint: this.transcriptStore ? "Earlier evidence is available through read_execution_history from after=0, offset=0. Never replay tools to recover history." : "Durable history is unavailable; verify state before repeating an operation.",
+          summarize: async messages => {
+            const summary = await completeNativeModel({
+              wireApi: model.wireApi, baseUrl: model.baseUrl, apiKey: model.apiKey, model: model.model,
+              messages, tools: [], options: { ...requestOptions, maxTokens: Math.min(4096, contextBudget.reservedTokens) },
+              signal, fetchImpl: this.fetchImpl, streaming: capabilities.nonStreaming !== "supported",
+              readImage: image => this.images.read(image, signal),
+            });
+            usage = addUsage(usage, summary.usage);
+            assertTurnActive();
+            return summary;
+          },
+        });
+        // Save the last warning before replacing the projection, then release old in-memory evidence.
+        this.checkpointTurn({ turnId, resetGeneration, status: "running", messages: turnMessages,
+          entries: turnEntries, usage, provider: providerMetadata });
+        if (compacted) {
+          this.transcriptStore?.saveProjection(this.transcriptId!, turnId, this.transcriptWriterId, compacted);
+          const precedingMessages = currentMessages.slice(0, currentMessages.length - turnMessages.length);
+          turnMessages.splice(0, turnMessages.length, ...compacted);
+          currentMessages = [...precedingMessages, ...compacted];
+          turnEntries.length = 0;
+          this.checkpointCursors.set(turnId, { messages: turnMessages.length, entries: 0 });
+          this.checkpointTurn({ turnId, resetGeneration, status: "running", messages: turnMessages,
+            entries: turnEntries, usage, provider: providerMetadata });
+          emitTurnEvent({ type: "item.completed", item: { type: "context", id: `${turnId}-compact-${round}`, text: this.transcriptStore ? "Execution context summarized; completed tool evidence was preserved without replay." : "Execution context summarized in memory; this session has no durable history." } });
         }
       }
     } catch (error) {
@@ -959,7 +1008,7 @@ export class NativeAgentAdapter implements AgentAdapter {
       }
       const status = options.signal?.aborted
         ? "cancelled"
-        : isAbortError(normalized)
+        : isAbortError(normalized) || normalized instanceof ToolLoopPausedError || normalized instanceof NativeContextLimitError
           ? "interrupted"
           : "failed";
       let persistenceError: unknown;
@@ -990,8 +1039,11 @@ export class NativeAgentAdapter implements AgentAdapter {
       }
       this.pendingRetryCheckpoint = undefined;
       throw normalized;
+    } finally {
+      // Includes provider failure, cancellation, destructive reset and superseded writers.
+      // Restored transcripts contain evidence, never live/replayable process handles.
+      await toolExecutor.dispose();
     }
-    throw new Error("Native runtime turn ended without a result");
   }
 
   private async executeTool(
@@ -1037,6 +1089,7 @@ export class NativeAgentAdapter implements AgentAdapter {
       result = {
         output: JSON.stringify({ error: message }),
         failed: true,
+        ...(call.function.name === "read_file" ? { stateVersion: "read-unavailable" } : {}),
         command: command
           ? { ...command, status: "failed", aggregated_output: message }
           : undefined,

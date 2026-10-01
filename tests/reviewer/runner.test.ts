@@ -1,3 +1,4 @@
+import { ReviewerIncompleteError } from "../../server/reviewer/incomplete.js";
 import { describe, it } from "node:test";
 import assert from "node:assert";
 
@@ -246,15 +247,12 @@ describe("reviewer subsystem", () => {
     };
     let called = false;
 
-    const verdict = await runDetachedReview(payload, {
+    await assert.rejects(runDetachedReview(payload, {
       callModel: async () => {
         called = true;
         return JSON.stringify({ status: "PASS", summary: "unsafe", defects: [] });
       },
-    });
-
-    assert.strictEqual(verdict.status, "REJECT");
-    assert.strictEqual(verdict.defects[0]?.severity, "blocker");
+    }), ReviewerIncompleteError);
     assert.strictEqual(called, false);
   });
 
@@ -272,7 +270,7 @@ describe("reviewer subsystem", () => {
 
   it("rejects failed diff evidence capture without calling the model", async () => {
     let called = false;
-    const verdict = await runDetachedReview({
+    await assert.rejects(runDetachedReview({
       issue: { title: "Evidence failure" },
       diff: "",
       diffCaptureError: "git diff exited with status 128",
@@ -281,10 +279,7 @@ describe("reviewer subsystem", () => {
         called = true;
         return JSON.stringify({ status: "PASS", summary: "unsafe", defects: [] });
       },
-    });
-
-    assert.strictEqual(verdict.status, "REJECT");
-    assert.match(verdict.defects[0]?.description ?? "", /git diff exited with status 128/);
+    }), ReviewerIncompleteError);
     assert.strictEqual(called, false);
   });
 

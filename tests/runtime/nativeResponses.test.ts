@@ -169,7 +169,7 @@ describe("Native Responses integration", () => {
     assert.throws(() => projectNativeContext(large, { contextWindow: 512, reservedTokens: 64 }), NativeContextLimitError);
   });
 
-  it("drops provider replay data when a tool-free final response violates the tool limit", async t => {
+  it("continues Responses calls beyond the deprecated total tool quota", async t => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-responses-final-"));
     t.after(() => { resetStateDatabaseForTests(); fs.rmSync(workspace, { recursive: true, force: true }); });
     fs.writeFileSync(path.join(workspace, "note.txt"), "confirmed content");
@@ -182,20 +182,20 @@ describe("Native Responses integration", () => {
       fetchImpl: async (_url, init) => {
         calls++;
         const body = JSON.parse(String(init?.body));
-        if (calls === 2) assert.equal(body.tool_choice, "none");
-        if (calls > 2) assert.doesNotMatch(JSON.stringify(body.input), /call-forbidden/);
+        if (calls === 2) assert.equal(body.tool_choice, "auto");
+        if (calls > 2) assert.match(JSON.stringify(body.input), /call-forbidden/);
         return Response.json({ id: `resp-${calls}`, status: "completed", output: calls === 1
           ? [reasoning, toolCall] : calls === 2
             ? [{ ...toolCall, call_id: "call-forbidden", id: "fc-forbidden" }] : [outputMessage("Done.")] });
       },
     });
     const result = await adapter.send("Read the note.", { streaming: false });
-    assert.match(result.response, /tool-round limit/);
+    assert.equal(result.response, "Done.");
     const messages = store.listTurns("final")[0]!.messages;
-    assert.equal(messages.at(-1)?.nativeResponses, undefined);
-    assert.equal(messages.filter(message => message.role === "tool").length, 1);
+    assert.ok(messages.at(-1)?.nativeResponses);
+    assert.equal(messages.filter(message => message.role === "tool").length, 2);
     await adapter.send("Continue.", { streaming: false });
-    assert.equal(calls, 3);
+    assert.equal(calls, 4);
   });
 
   it("never falls back to Chat when the Responses endpoint rejects a request", async () => {

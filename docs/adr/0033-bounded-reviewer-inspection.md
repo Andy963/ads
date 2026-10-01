@@ -3,6 +3,8 @@
 ## Status
 Accepted
 
+工具总轮数和累计探索配额已由 [ADR 0038](0038-progress-based-execution.md) 替代；本文的权限与隔离约束保持不变。
+
 ## Context
 Reviewer 需要主动检查关联源码，但通用 Agent 会话可能暴露 shell、写入或其他工具，不能仅靠提示词保证只读。
 

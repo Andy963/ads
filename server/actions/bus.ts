@@ -9,16 +9,14 @@ import { buildWsConnectionIdentity } from "../web/server/ws/connectionIdentity.j
 import type { AsyncLock } from "../utils/asyncLock.js";
 import {
   buildReviewPrompt,
-  createDiffCaptureFailureVerdict,
-  createIncompleteDiffVerdict,
   runDetachedReview,
 } from "../reviewer/runner.js";
 import { filterDiff, REVIEW_DIFF_MAX_LINES } from "../reviewer/diffFilter.js";
 import { extractRelatedContexts } from "../reviewer/contextExtractor.js";
+import { ReviewerIncompleteError } from "../reviewer/incomplete.js";
 import { runReviewerInspection } from "../reviewer/inspectionRunner.js";
 import { createNativeModelResolver, type NativeModelConfig } from "../runtime/modelResolver.js";
 import type { completeNativeChat } from "../runtime/openAiCompatibleClient.js";
-import { parseReviewVerdict } from "../reviewer/verdictParser.js";
 import type { ReviewPayload, ReviewVerdict } from "../reviewer/types.js";
 import { getDefaultRoleProfile, getRoleProfileById } from "../state/roleProfileStore.js";
 import {
@@ -1118,11 +1116,7 @@ export class LaneDispatchBus {
     signal?: AbortSignal,
   ): Promise<ReviewVerdict> {
     if (payload.diffCaptureError) {
-      return createDiffCaptureFailureVerdict(payload.diffCaptureError, reviewerProfileId);
-    }
-    const { truncated } = filterDiff(payload.diff, REVIEW_DIFF_MAX_LINES, payload.diffStat);
-    if (truncated) {
-      return createIncompleteDiffVerdict(reviewerProfileId);
+      throw new ReviewerIncompleteError("Reviewer evidence capture failed; no authoritative verdict is available.");
     }
     const profile = reviewerProfileId ? getRoleProfileById(this.db, reviewerProfileId) : getDefaultRoleProfile(this.db, "reviewer");
     if (!profile || profile.role !== "reviewer" || !profile.is_enabled || !profile.model_id.trim() || !profile.system_prompt.trim()) {
@@ -1136,8 +1130,9 @@ export class LaneDispatchBus {
       reviewerSignal.throwIfAborted();
       const prompt = buildReviewPrompt(payload);
       if (this.options.reviewerRunner) {
-        const response = await raceReviewerAbort(this.options.reviewerRunner(prompt, profile.system_prompt), reviewerSignal);
-        return parseReviewVerdict(response, profile.id);
+        return await raceReviewerAbort(runDetachedReview(payload, {
+          callModel: this.options.reviewerRunner, systemPrompt: profile.system_prompt, reviewerProfileId: profile.id,
+        }), reviewerSignal);
       }
       const commit = payload.diffRange?.headCommit;
       if (!commit) throw new Error("Reviewer inspection requires captured head commit evidence.");
@@ -1149,12 +1144,14 @@ export class LaneDispatchBus {
         workspace: repoPath, commit, prompt, systemPrompt: profile.system_prompt,
         model: { ...model, options: { ...model.options, reasoningEffort: profile.reasoning_effort } },
         profileId: profile.id, signal: reviewerSignal,
-        toolTurnBudget: this.options.reviewerToolTurnBudget ?? Number(process.env.ADS_REVIEWER_TOOL_TURNS ?? 5),
+        toolTurnBudget: this.options.reviewerToolTurnBudget ?? (process.env.ADS_REVIEWER_TOOL_TURNS === "0" ? 0 : undefined),
+        diff: payload.diff,
         complete: this.options.reviewerComplete,
       });
       reviewerSignal.throwIfAborted();
       return result;
     } catch (error) {
+      if (error instanceof ReviewerIncompleteError) throw error;
       throw new Error(`Reviewer execution failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       clearTimeout(timer);

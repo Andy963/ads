@@ -558,9 +558,9 @@ describe("Native provider retry and recovery", () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-persist-failure-"));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-retry-persist-failure-db-"));
     class FailingTerminalStore extends NativeTranscriptStore {
-      override updateTurn(input: Parameters<NativeTranscriptStore["updateTurn"]>[0]): void {
+      override appendTurn(input: Parameters<NativeTranscriptStore["appendTurn"]>[0]): void {
         if (input.status === "cancelled") throw new Error("terminal checkpoint failed");
-        super.updateTurn(input);
+        super.appendTurn(input);
       }
     }
     const store = new FailingTerminalStore(getStateDatabase(path.join(stateDir, "state.db")));
