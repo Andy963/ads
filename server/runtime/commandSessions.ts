@@ -7,10 +7,53 @@ import { assertCommandAllowed, assertShellCommandAllowed } from "../utils/comman
 
 const MAX_SESSIONS = 16;
 const KILL_GRACE_MS = 1200;
+const PRIVATE_KEY_LABELS = ["PRIVATE KEY", "RSA PRIVATE KEY", "DSA PRIVATE KEY", "EC PRIVATE KEY",
+  "OPENSSH PRIVATE KEY", "ENCRYPTED PRIVATE KEY", "PGP PRIVATE KEY BLOCK"];
+
+/** Stateful suppression runs before line truncation, so dropped headers cannot expose later key lines. */
+class PrivateKeyRedactor {
+  private label: string | undefined;
+  private pending = "";
+
+  write(value: string, final = false): string {
+    let input = this.pending + value;
+    this.pending = "";
+    let output = "";
+    while (input) {
+      const labels = this.label ? [this.label] : PRIVATE_KEY_LABELS;
+      const markers = labels.map(label => `-----${this.label ? "END" : "BEGIN"} ${label}-----`);
+      let found = -1;
+      let position = input.length;
+      for (let i = 0; i < markers.length; i++) {
+        const index = input.indexOf(markers[i]);
+        if (index >= 0 && index < position) { found = i; position = index; }
+      }
+      if (found >= 0) {
+        if (!this.label) output += input.slice(0, position) + "[redacted]";
+        input = input.slice(position + markers[found].length);
+        this.label = this.label ? undefined : labels[found];
+        continue;
+      }
+      let retained = 0;
+      if (!final) {
+        for (const marker of markers) {
+          for (let size = 1; size < marker.length && size <= input.length; size++) {
+            if (size > retained && input.endsWith(marker.slice(0, size))) retained = size;
+          }
+        }
+      }
+      if (!this.label) output += input.slice(0, input.length - retained);
+      this.pending = retained ? input.slice(-retained) : "";
+      break;
+    }
+    return output;
+  }
+}
 
 /** Drain complete lines so a credential split between writes is never exposed by polling. */
 class OutputBuffer {
   private readonly decoder = new StringDecoder("utf8");
+  private readonly privateKeys = new PrivateKeyRedactor();
   private partial = "";
   private droppingLine = false;
   private text = "";
@@ -18,10 +61,10 @@ class OutputBuffer {
 
   constructor(private readonly limit: number, private readonly sanitize: (text: string) => string) {}
 
-  append(chunk: Buffer): void { this.accept(this.decoder.write(chunk)); }
+  append(chunk: Buffer): void { this.accept(this.privateKeys.write(this.decoder.write(chunk))); }
 
   finish(): void {
-    this.accept(this.decoder.end());
+    this.accept(this.privateKeys.write(this.decoder.end(), true));
     if (!this.droppingLine) this.store(this.partial);
     this.partial = "";
   }

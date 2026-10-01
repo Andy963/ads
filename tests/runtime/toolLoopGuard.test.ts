@@ -44,6 +44,19 @@ describe("progress based loop guard", () => {
     for (let i = 0; i < 4; i++) unchanged.observe(read);
     assert.equal(unchanged.observe(read).action, "pause");
   });
+  for (const period of [2, 3, 4]) {
+    it(`allows a verified running wait mixed into a ${period}-operation polling cycle`, () => {
+      let guard = new ToolLoopGuard();
+      for (let i = 0; i < period * 20; i++) {
+        if (i === period * 10) guard = new ToolLoopGuard(guard.snapshot());
+        const poll = i % period === 0;
+        assert.equal(guard.observe({ ...read, name: poll ? "wait_command" : `read-log-${i % period}`,
+          poll }).action, "allow");
+      }
+      for (let i = 0; i < 4; i++) guard.observe(read);
+      assert.equal(guard.observe(read).action, "pause");
+    });
+  }
   it("ignores corrupt snapshots without throwing", () => {
     const snapshot = new ToolLoopGuard().snapshot();
     snapshot.history.push(null as never);

@@ -56,6 +56,7 @@ describe("Native command sessions", () => {
     assert.equal(first.failed, false);
     assert.equal(JSON.parse(first.output).exit_code, null);
     await until(() => fs.existsSync(path.join(workspace, "starts")));
+    fs.writeFileSync(path.join(workspace, "progress.log"), "waiting\n");
     const guard = new ToolLoopGuard();
     for (let i = 0; i < 8; i++) {
       const request = call("wait_command", { session_id: id, yield_time_ms: 1 });
@@ -64,6 +65,10 @@ describe("Native command sessions", () => {
       assert.equal(JSON.parse(result.output).running, true);
       assert.equal(guard.observe({ name: request.function.name, arguments: request.function.arguments,
         result: result.loopResult!, poll: result.poll }).action, "allow");
+      const read = call("read_file", { file: "progress.log" });
+      const log = await tool.execute(read);
+      assert.equal(guard.observe({ name: read.function.name, arguments: read.function.arguments,
+        result: log.output, stateVersion: log.stateVersion }).action, "allow");
     }
     release();
     const result = await tool.execute(call("wait_command", { session_id: id }));
@@ -148,6 +153,38 @@ describe("Native command sessions", () => {
     assert.doesNotMatch(result.output, /private-(first|second)-line/);
     assert.equal(JSON.parse(result.output).stdout, "[redacted]\n[redacted]");
   });
+
+  for (const stream of ["stdout", "stderr"]) {
+    for (const terminated of [true, false]) {
+      it(`suppresses unknown PEM keys across ${stream} polls and truncation (terminated=${terminated})`, async () => {
+        const tool = executor();
+        const body = "UNCONFIGURED_PRIVATE_KEY_MATERIAL";
+        const parts = [
+          `before\n${"prefix".repeat(300)}-----BE`,
+          "GIN RSA PRIVATE KEY-----\n",
+          `${body.repeat(100)}\n`,
+          ...(terminated ? ["-----END RSA PRI", "VATE KEY-----\nafter\n"] : []),
+        ];
+        fs.writeFileSync(path.join(workspace, "parts.json"), JSON.stringify(parts));
+        const first = await start(tool, `const fs=require('fs');const parts=JSON.parse(fs.readFileSync('parts.json','utf8'));let i=0;const timer=setInterval(()=>{if(i<parts.length&&fs.existsSync('step-'+i)){process.${stream}.write(parts[i]);fs.writeFileSync('sent-'+i,'');i++;}if(fs.existsSync('release'))clearInterval(timer);},5);`, { max_output_bytes: 1024 });
+        const id = JSON.parse(first.output).session_id;
+        let visible = "";
+        for (let i = 0; i < parts.length; i++) {
+          fs.writeFileSync(path.join(workspace, `step-${i}`), "");
+          await until(() => fs.existsSync(path.join(workspace, `sent-${i}`)));
+          const result = await tool.execute(call("wait_command", { session_id: id, yield_time_ms: 20 }));
+          assert.doesNotMatch(result.output + result.command!.aggregated_output, /UNCONFIGURED_PRIVATE_KEY_MATERIAL/);
+          visible += JSON.parse(result.output)[stream];
+        }
+        release();
+        const last = await tool.execute(call("wait_command", { session_id: id }));
+        assert.doesNotMatch(last.output + last.command!.aggregated_output, /UNCONFIGURED_PRIVATE_KEY_MATERIAL/);
+        visible += JSON.parse(last.output)[stream];
+        assert.match(visible, /before/);
+        if (terminated) assert.match(visible, /after/);
+      });
+    }
+  }
 
   it("preserves the terminal failure of a nonzero test command after yielding", async () => {
     const tool = executor();

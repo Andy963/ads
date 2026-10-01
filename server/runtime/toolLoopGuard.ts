@@ -59,9 +59,11 @@ export class ToolLoopGuard {
       }
       if (laps < 3) continue;
       const cycle = history.slice(-period);
-      if (cycle.every(item => item.poll)) continue;
+      // A live process can legitimately alternate waiting and reading an unchanged progress log.
+      // Such a cycle does not establish unchanged execution state, even if its reads are immutable.
+      if (cycle.some(item => item.poll)) continue;
       const reason = `Repeated ${period === 1 ? "an identical operation" : `a ${period}-operation cycle`} ${laps} times with unchanged results. Change the approach or verify the relevant state before repeating it.`;
-      if (laps >= 5 && cycle.every(item => item.verifiable || item.poll)) return { action: "pause", reason };
+      if (laps >= 5 && cycle.every(item => item.verifiable)) return { action: "pause", reason };
       const key = cycle.map(item => item.fingerprint).join(":");
       if (!this.state.warned.includes(key)) {
         this.state.warned = [...this.state.warned.slice(-15), key];
