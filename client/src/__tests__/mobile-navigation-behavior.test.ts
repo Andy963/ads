@@ -347,9 +347,10 @@ describe("mobile navigation behavior", () => {
   }, 40_000);
 
   describe("horizontal lane swipe (Issue #292, carousel in #309)", () => {
-    async function mountMobileChat() {
+    async function mountMobileChat(options?: { attachToDocument?: boolean }) {
       const App = (await import("../App.vue")).default;
       const wrapper = shallowMount(App, {
+        ...(options?.attachToDocument ? { attachTo: document.body } : {}),
         global: {
           stubs: {
             LoginGate: false,
@@ -572,6 +573,109 @@ describe("mobile navigation behavior", () => {
       expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
       expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
       pre.remove();
+      wrapper.unmount();
+    });
+
+    function selectTextIn(el: Element): void {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+
+    function clearTextSelection(): void {
+      window.getSelection()?.removeAllRanges();
+    }
+
+    it("ignores swipe gestures while a text selection is active (Issue #504)", async () => {
+      const wrapper = await mountMobileChat({ attachToDocument: true });
+      const panelsEl = wrapper.get(".lanePanels").element;
+      // Simulate message text the user has selected before dragging a handle.
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.textContent = "selected message text";
+      panelsEl.appendChild(bubble);
+      selectTextIn(bubble);
+      expect(window.getSelection()?.isCollapsed).toBe(false);
+
+      dispatchTouch(panelsEl, "touchstart", { clientX: 220, clientY: 320 }, 1000);
+      dispatchTouch(panelsEl, "touchmove", { clientX: 60, clientY: 320 }, 1040);
+      await settleUi(wrapper);
+
+      const track = wrapper.get(".lanePanelsTrack");
+      expect(track.classes()).not.toContain("lanePanelsTrack--dragging");
+      expect((track.element as HTMLElement).style.transform).toBe("");
+      expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");
+
+      dispatchTouch(panelsEl, "touchend", null, 1050);
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
+
+      clearTextSelection();
+      bubble.remove();
+      wrapper.unmount();
+    });
+
+    it("cancels an in-flight swipe when a text selection appears mid-gesture (Issue #504)", async () => {
+      const wrapper = await mountMobileChat({ attachToDocument: true });
+      const panelsEl = wrapper.get(".lanePanels").element;
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.textContent = "message text selected mid-drag";
+      panelsEl.appendChild(bubble);
+
+      dispatchTouch(panelsEl, "touchstart", { clientX: 220, clientY: 320 }, 1000);
+      dispatchTouch(panelsEl, "touchmove", { clientX: 215, clientY: 320 }, 1010);
+      // The long-press selection lands after the gesture has started.
+      selectTextIn(bubble);
+      dispatchTouch(panelsEl, "touchmove", { clientX: 60, clientY: 320 }, 1040);
+      await settleUi(wrapper);
+
+      const track = wrapper.get(".lanePanelsTrack");
+      expect(track.classes()).not.toContain("lanePanelsTrack--dragging");
+      expect((track.element as HTMLElement).style.transform).toBe("");
+
+      // The cancelled gesture must not pick up again on later move events.
+      dispatchTouch(panelsEl, "touchmove", { clientX: 30, clientY: 320 }, 1060);
+      await settleUi(wrapper);
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
+
+      dispatchTouch(panelsEl, "touchend", null, 1070);
+      await settleUi(wrapper);
+      expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
+
+      clearTextSelection();
+      bubble.remove();
+      wrapper.unmount();
+    });
+
+    it("still tracks a normal swipe once the selection is cleared (Issue #504)", async () => {
+      const wrapper = await mountMobileChat({ attachToDocument: true });
+      const panelsEl = wrapper.get(".lanePanels").element;
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.textContent = "cleared selection text";
+      panelsEl.appendChild(bubble);
+      selectTextIn(bubble);
+      clearTextSelection();
+
+      dispatchTouch(panelsEl, "touchstart", { clientX: 220, clientY: 320 }, 1000);
+      dispatchTouch(panelsEl, "touchmove", { clientX: 150, clientY: 320 }, 1020);
+      await settleUi(wrapper);
+
+      const track = wrapper.get(".lanePanelsTrack");
+      expect(track.classes()).toContain("lanePanelsTrack--dragging");
+      expect((track.element as HTMLElement).style.transform).toBe("translate3d(-70px, 0, 0)");
+
+      dispatchTouch(panelsEl, "touchend", null, 1030);
+      await waitForSnap();
+      await settleUi(wrapper);
+
+      clearTextSelection();
+      bubble.remove();
       wrapper.unmount();
     });
   });
