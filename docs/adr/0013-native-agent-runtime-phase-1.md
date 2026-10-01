@@ -4,6 +4,8 @@
 
 Accepted
 
+工具总轮数和累计探索配额已由 [ADR 0038](0038-progress-based-execution.md) 替代；本文的权限与隔离约束保持不变。
+
 ## Context
 
 ADS 当前默认通过 Codex app-server daemon 执行 agent turn。这个路径继续承担现有生产行为，但它把 provider endpoint、模型切换和工具执行绑定在外部 daemon 协议上，无法验证原生 TypeScript runtime。

@@ -145,7 +145,7 @@ describe("Actions runtime backend contracts", () => {
         reviewerModelResolver: () => ({ model: "test-model", baseUrl: "https://provider.test/v1", apiKey: "test-key", provider: "test" }),
         reviewerComplete: async (request) => {
           requests++;
-          assert.deepEqual(request.tools?.map((tool) => tool.function.name), ["read_file_range", "search_code", "list_dir"]);
+          assert.deepEqual(request.tools?.map((tool) => tool.function.name), ["read_diff", "read_file_range", "search_code", "list_dir"]);
           return { text: JSON.stringify({ status: "PASS", summary: "isolated review", defects: [] }), toolCalls: [] };
         },
       });

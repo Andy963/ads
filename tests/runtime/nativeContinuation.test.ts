@@ -245,14 +245,14 @@ describe("native stopped-turn continuation", () => {
       const next = restored ? create() : first;
       await assert.rejects(next.send(nextPrompt), error => error instanceof NativeContextLimitError);
       assert.equal(requests.length, 2, "An over-budget summary must not reach the provider");
-      assert.deepEqual(store.listTurns("final-context").map(turn => turn.status), ["cancelled", "failed"]);
+      assert.deepEqual(store.listTurns("final-context").map(turn => turn.status), ["cancelled", "interrupted"]);
       stage = "recover";
       contextWindow = 32_768;
       const recovered = restored ? create() : next;
       await recovered.send("Continue after increasing the context budget.");
       assert.equal(requests.at(-1)?.filter(message => message.role === "user" && message.content === task).length, 1);
       assert.equal(requests.at(-1)?.filter(message => message.role === "tool").length, 1);
-      assert.deepEqual(store.listTurns("final-context").map(turn => turn.status), ["cancelled", "failed", "completed"]);
+      assert.deepEqual(store.listTurns("final-context").map(turn => turn.status), ["cancelled", "interrupted", "completed"]);
     });
   }
 

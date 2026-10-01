@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { getBus } from "../web/server/api/routes/actions.js";
@@ -8,22 +9,34 @@ import { getExecAllowlistFromEnv, hasShellSyntax, runCommand, tokenizeCommandLin
 import type { ThreadItem } from "../agents/protocol/types.js";
 import type { NativeChatToolCall, NativeToolDefinition } from "./openAiCompatibleClient.js";
 import { redactNativeTranscriptText } from "../state/nativeTranscriptStore.js";
+import { CommandSessions, type CommandSessionResult } from "./commandSessions.js";
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_PATCH_BYTES = 512 * 1024;
 const MAX_TOOL_OUTPUT_CHARS = 64 * 1024;
 const DEFAULT_READ_LINES = 1_000;
 const MAX_READ_LINES = 2_000;
-const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
-const MAX_COMMAND_TIMEOUT_MS = 600_000;
+const SEARCH_TIMEOUT_MS = 30_000;
+const DEFAULT_COMMAND_YIELD_MS = 10_000;
+const MAX_COMMAND_YIELD_MS = 30_000;
+const MAX_TIMER_MS = 2_147_483_647;
 const MAX_SEARCH_RESULTS = 500;
 
 export const NATIVE_TOOL_DEFINITIONS: NativeToolDefinition[] = [
   {
+    type: "function", function: {
+      name: "read_execution_history",
+      description: "Read sanitized execution evidence from this session only. Follow the returned next cursor; starts at after=0, offset=0. This never replays tools.",
+      parameters: { type: "object", additionalProperties: false, properties: {
+        after: { type: "integer", minimum: 0 }, offset: { type: "integer", minimum: 0 },
+      } },
+    },
+  },
+  {
     type: "function",
     function: {
       name: "exec_command",
-      description: "Run a workspace command. Use an argument array for simple commands; pipelines and compound commands may use standard shell syntax.",
+      description: "Start a workspace command and wait briefly. A running result is not completion: use wait_command with its session_id until it exits, never rerun it to fetch output. No default execution deadline. Sessions belong to this turn and are cancelled on turn failure/reset. Use an argument array for simple commands; pipelines may use shell syntax.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -31,11 +44,31 @@ export const NATIVE_TOOL_DEFINITIONS: NativeToolDefinition[] = [
           cmd: { type: "string", maxLength: 32768, description: "Executable name or complete shell command, for example npm or git log -n 5 | head -n 2." },
           args: { type: "array", items: { type: "string" }, maxItems: 128 },
           cwd: { type: "string", description: "Optional workspace-relative working directory." },
-          timeout_ms: { type: "integer", minimum: 1, maximum: MAX_COMMAND_TIMEOUT_MS },
+          yield_time_ms: { type: "integer", minimum: 1, maximum: MAX_COMMAND_YIELD_MS, description: "How long to wait before returning a live session (default 10000). Never kills the command." },
+          max_runtime_ms: { type: "integer", minimum: 1, maximum: MAX_TIMER_MS, description: "Optional hard execution deadline. Set only when explicitly requested by the user or execution policy; omit for normal builds/tests. Expiry terminates the process group." },
           max_output_bytes: { type: "integer", minimum: 1024, maximum: 262144 },
         },
         required: ["cmd"],
       },
+    },
+  },
+  {
+    type: "function", function: {
+      name: "wait_command",
+      description: "Wait for an existing command session without rerunning it. Returns new complete output lines and terminal status, or running=true. Quiet running commands are not failures. Collect every command's exit status before finishing the turn.",
+      parameters: { type: "object", additionalProperties: false, properties: {
+        session_id: { type: "string" },
+        yield_time_ms: { type: "integer", minimum: 1, maximum: MAX_COMMAND_YIELD_MS },
+      }, required: ["session_id"] },
+    },
+  },
+  {
+    type: "function", function: {
+      name: "cancel_command",
+      description: "Explicitly cancel a command session and its process group, collecting its remaining output. Do not cancel solely because a build/test is quiet or still running.",
+      parameters: { type: "object", additionalProperties: false, properties: {
+        session_id: { type: "string" },
+      }, required: ["session_id"] },
     },
   },
   {
@@ -112,6 +145,9 @@ export const NATIVE_TOOL_DEFINITIONS: NativeToolDefinition[] = [
 export interface NativeToolExecutionResult {
   output: string;
   failed?: boolean;
+  stateVersion?: string;
+  loopResult?: string;
+  poll?: boolean;
   changedFiles?: Array<{ kind: string; path: string }>;
   command?: {
     id: string;
@@ -123,6 +159,7 @@ export interface NativeToolExecutionResult {
 }
 
 export interface NativeToolExecutorOptions {
+  readHistory?: (after: number, offset: number) => string;
   workspaceRoot: string;
   workingDirectory?: string;
   env?: NodeJS.ProcessEnv;
@@ -334,6 +371,7 @@ function applyOperation(original: string | null, operation: PatchOperation): str
 }
 
 export class NativeToolExecutor {
+  private readonly readHistory?: (after: number, offset: number) => string;
   private readonly workspaceRoot: string;
   private readonly workingDirectory: string;
   private readonly env: NodeJS.ProcessEnv;
@@ -341,8 +379,11 @@ export class NativeToolExecutor {
   private readonly middlewareContext?: TurnContext;
   private readonly redactions: string[];
   private readonly signal?: AbortSignal;
+  private readonly commands: CommandSessions;
+  private readonly commandOutput = new Map<string, string>();
 
   constructor(options: NativeToolExecutorOptions) {
+    this.readHistory = options.readHistory;
     this.workspaceRoot = fs.realpathSync(path.resolve(options.workspaceRoot));
     const workingDirectory = path.resolve(options.workingDirectory ?? this.workspaceRoot);
     if (!isWithinRoot(this.workspaceRoot, workingDirectory)) {
@@ -352,16 +393,37 @@ export class NativeToolExecutor {
     this.env = options.env ?? process.env;
     this.middleware = options.middleware;
     this.middlewareContext = options.middlewareContext;
-    this.redactions = (options.redactions ?? []).filter(Boolean);
+    this.redactions = [...new Set((options.redactions ?? []).filter(Boolean)
+      .flatMap(secret => [secret, ...secret.split(/\r?\n/).filter(Boolean)]))];
     this.signal = options.signal;
+    this.commands = new CommandSessions(text => redactNativeTranscriptText(text, this.redactions), this.signal);
+  }
+
+  pendingCommandIds(): string[] { return this.commands.pendingIds(); }
+
+  async dispose(): Promise<void> {
+    await this.commands.dispose();
+    this.commandOutput.clear();
   }
 
   async execute(call: NativeChatToolCall): Promise<NativeToolExecutionResult> {
     this.throwIfAborted();
     const args = parseArguments(call);
     switch (call.function.name) {
+      case "read_execution_history": {
+        if (!this.readHistory) throw new Error("Durable execution history is unavailable in this session.");
+        const after = integerArgument(args, "after", 0, 0, Number.MAX_SAFE_INTEGER);
+        const offset = integerArgument(args, "offset", 0, 0, Number.MAX_SAFE_INTEGER);
+        return { output: this.readHistory(after, offset), stateVersion: "archived-evidence" };
+      }
       case "exec_command":
         return await this.execCommand(call.id, args);
+      case "wait_command":
+      case "cancel_command": {
+        const sessionId = stringArgument(args, "session_id");
+        const result = await this.commands.read(sessionId, this.commandYieldMs(args), call.function.name === "cancel_command");
+        return await this.commandResult(result, call.function.name === "wait_command");
+      }
       case "read_file":
         return this.readFile(args);
       case "search":
@@ -470,50 +532,85 @@ export class NativeToolExecutor {
     const item: ThreadItem = { type: "command_execution", id: callId, command: commandLine, status: "in_progress" };
     await this.runMiddlewareStart(item);
     const cwd = this.resolvePath(stringArgument(args, "cwd", false) || path.relative(this.workspaceRoot, this.workingDirectory), false);
-    const timeoutMs = integerArgument(args, "timeout_ms", DEFAULT_COMMAND_TIMEOUT_MS, 1, MAX_COMMAND_TIMEOUT_MS);
+    const yieldMs = this.commandYieldMs(args);
+    const maxRuntimeMs = args.max_runtime_ms === undefined ? undefined
+      : integerArgument(args, "max_runtime_ms", 0, 1, MAX_TIMER_MS);
     const maxOutputBytes = integerArgument(args, "max_output_bytes", 64 * 1024, 1024, 262_144);
-    const result = await runCommand({
+    const sessionId = this.commands.start({
+      callId,
       cmd,
       args: commandArgs,
       shell: useShell,
       cwd,
-      timeoutMs,
+      maxRuntimeMs,
       env: this.env,
       maxOutputBytes,
       allowlist: getExecAllowlistFromEnv(this.env),
-      signal: this.signal,
     });
+    return await this.commandResult(await this.commands.read(sessionId, yieldMs), false);
+  }
+
+  private commandYieldMs(args: JsonRecord): number {
+    // Legacy calls must not resurrect the old three-minute kill switch.
+    if (args.yield_time_ms === undefined && args.timeout_ms !== undefined) {
+      return Math.min(MAX_COMMAND_YIELD_MS, integerArgument(args, "timeout_ms", DEFAULT_COMMAND_YIELD_MS, 1, MAX_TIMER_MS));
+    }
+    return integerArgument(args, "yield_time_ms", DEFAULT_COMMAND_YIELD_MS, 1, MAX_COMMAND_YIELD_MS);
+  }
+
+  private async commandResult(result: CommandSessionResult, poll: boolean): Promise<NativeToolExecutionResult> {
+    const delta = [result.stdout, result.stderr ? `stderr:\n${result.stderr}` : ""].filter(Boolean).join("\n");
     const aggregatedOutput = trimOutput(
-      [result.stdout, result.stderr ? `stderr:\n${result.stderr}` : ""].filter(Boolean).join("\n"),
+      ((this.commandOutput.get(result.sessionId) ?? "") + delta).slice(-MAX_TOOL_OUTPUT_CHARS),
     );
-    const status = result.timedOut || result.exitCode !== 0 ? "failed" : "completed";
+    if (result.running) this.commandOutput.set(result.sessionId, aggregatedOutput);
+    else this.commandOutput.delete(result.sessionId);
+    const status = result.running ? "in_progress"
+      : result.cancelled || result.timedOut || result.exitCode !== 0 ? "failed" : "completed";
     const completedItem: ThreadItem = {
       type: "command_execution",
-      id: callId,
-      command: commandLine,
+      id: result.callId,
+      command: result.command,
       status,
       ...(result.exitCode === null ? {} : { exit_code: result.exitCode }),
-      aggregated_output: aggregatedOutput,
+      aggregated_output: aggregatedOutput.trimEnd(),
     };
-    const output = await this.runMiddlewareEnd(completedItem, JSON.stringify({
-      command: result.commandLine,
+    const payload = {
+      command: redactNativeTranscriptText(result.command, this.redactions).slice(0, 8192),
+      session_id: result.running ? result.sessionId : null,
+      running: result.running,
       exit_code: result.exitCode,
       signal: result.signal,
       elapsed_ms: result.elapsedMs,
       timed_out: result.timedOut,
-      stdout: trimOutput(result.stdout),
-      stderr: trimOutput(result.stderr),
+      cancelled: result.cancelled,
+      stdout: result.stdout.trimEnd(),
+      stderr: result.stderr.trimEnd(),
       truncated_stdout: result.truncatedStdout,
       truncated_stderr: result.truncatedStderr,
-    }));
+    };
+    // Truncate fields, not serialized JSON: providers must always receive a parseable status.
+    while (JSON.stringify(payload).length > MAX_TOOL_OUTPUT_CHARS) {
+      if (payload.stdout.length >= payload.stderr.length) {
+        payload.stdout = payload.stdout.slice(0, Math.floor(payload.stdout.length / 2));
+        payload.truncated_stdout = true;
+      } else {
+        payload.stderr = payload.stderr.slice(0, Math.floor(payload.stderr.length / 2));
+        payload.truncated_stderr = true;
+      }
+    }
+    const output = result.running ? JSON.stringify(payload) : await this.runMiddlewareEnd(completedItem, JSON.stringify(payload));
     return {
       output: redact(output, this.redactions),
+      failed: status === "failed",
+      poll: poll && result.running,
+      loopResult: redact(JSON.stringify({ exit_code: result.exitCode, timed_out: result.timedOut, stdout: result.stdout, stderr: result.stderr }), this.redactions),
       command: {
-        id: callId,
-        command: commandLine,
+        id: result.callId,
+        command: redact(result.command, this.redactions),
         status,
         exit_code: result.exitCode,
-        aggregated_output: redact(aggregatedOutput, this.redactions),
+        aggregated_output: redact(aggregatedOutput.trimEnd(), this.redactions),
       },
     };
   }
@@ -526,10 +623,12 @@ export class NativeToolExecutor {
     if (stat.size > MAX_FILE_BYTES) throw new Error("File is too large; request a narrower file or use search");
     const startLine = integerArgument(args, "start_line", 1, 1, Number.MAX_SAFE_INTEGER);
     const lineCount = integerArgument(args, "line_count", DEFAULT_READ_LINES, 1, MAX_READ_LINES);
-    const lines = fs.readFileSync(filePath, "utf8").replace(/\r\n/g, "\n").split("\n");
+    const content = fs.readFileSync(filePath, "utf8");
+    const stateVersion = createHash("sha256").update(content).update(String(stat.mtimeMs)).digest("hex");
+    const lines = content.replace(/\r\n/g, "\n").split("\n");
     const selected = lines.slice(startLine - 1, startLine - 1 + lineCount);
     const numbered = selected.map((line, index) => `${startLine + index}: ${line}`).join("\n");
-    return { output: redact(JSON.stringify({ file, start_line: startLine, line_count: selected.length, content: numbered }), this.redactions) };
+    return { stateVersion, output: redact(JSON.stringify({ file, start_line: startLine, line_count: selected.length, content: numbered }), this.redactions) };
   }
 
   private async search(args: JsonRecord): Promise<NativeToolExecutionResult> {
@@ -546,7 +645,7 @@ export class NativeToolExecutor {
       cmd: "rg",
       args: commandArgs,
       cwd: this.workspaceRoot,
-      timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
+      timeoutMs: SEARCH_TIMEOUT_MS,
       env: this.env,
       maxOutputBytes: 128 * 1024,
       allowlist: getExecAllowlistFromEnv(this.env),
@@ -556,7 +655,10 @@ export class NativeToolExecutor {
       throw new Error(redact(result.stderr || `ripgrep exited with ${result.exitCode}`, this.redactions));
     }
     const output = result.stdout.split(/\r?\n/).slice(0, maxResults).join("\n");
-    return { output: redact(JSON.stringify({ pattern, path: target || ".", results: output }), this.redactions) };
+    return {
+      output: redact(JSON.stringify({ pattern, path: target || ".", results: output }), this.redactions),
+      ...(!result.truncatedStdout ? { stateVersion: createHash("sha256").update(result.stdout).digest("hex") } : {}),
+    };
   }
 
   private applyPatch(args: JsonRecord): NativeToolExecutionResult {

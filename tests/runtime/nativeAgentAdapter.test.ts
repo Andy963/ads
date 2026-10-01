@@ -13,6 +13,8 @@ import {
 } from "../../server/state/database.js";
 import { NativeTranscriptStore } from "../../server/state/nativeTranscriptStore.js";
 import { ActivityTracker } from "../../server/utils/activityTracker.js";
+import { estimateNativeRequestTokens } from "../../server/runtime/nativeContextProjection.js";
+import { NATIVE_TOOL_DEFINITIONS } from "../../server/runtime/tools.js";
 
 function sse(events: string[]): Response {
   return new Response(`${events.map((event) => `data: ${event}\n\n`).join("")}data: [DONE]\n\n`, {
@@ -513,146 +515,32 @@ describe("NativeAgentAdapter", () => {
     }
   });
 
-  it("allows more than the default budget only when unlimited rounds are explicit", async () => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-unlimited-"));
-    try {
-      fs.writeFileSync(path.join(workspace, "hello.txt"), "hello\n", "utf8");
-      const toolRounds = 70;
-      let requestNumber = 0;
-      const adapter = new NativeAgentAdapter({
-        credentialOwner: "test-owner",
-        workspaceRoot: workspace,
-        workingDirectory: workspace,
-        env: {
-          ADS_AGENT_MAX_TOOL_ROUNDS: "0",
-          ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS: undefined,
-        },
-        modelResolver: {
-          resolve: () => ({
-            model: "test-model",
-            baseUrl: "https://provider.test/v1",
-            apiKey: "test-api-key",
-            provider: "test",
-          }),
-        },
-        fetchImpl: async () => {
-          requestNumber += 1;
-          if (requestNumber <= toolRounds) {
-            return sse([
-              JSON.stringify({
-                choices: [{
-                  delta: {
-                    tool_calls: [{
-                      index: 0,
-                      type: "function",
-                      id: `read-${requestNumber}`,
-                      function: { name: "read_file", arguments: '{"file":"hello.txt"}' },
-                    }],
-                  },
-                }],
-              }),
-              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
-            ]);
-          }
-          return sse([
-            JSON.stringify({ choices: [{ delta: { content: "Completed after many rounds" }, finish_reason: "stop" }] }),
-          ]);
-        },
-      });
-
-      const result = await adapter.send("Inspect the file repeatedly");
-
-      assert.equal(result.response, "Completed after many rounds");
-      assert.equal(requestNumber, toolRounds + 1);
-    } finally {
-      fs.rmSync(workspace, { recursive: true, force: true });
-    }
-  });
-
-  for (const configured of [undefined, "", "  ", "invalid", "-1", "1.5"]) {
-    it(`caps tool rounds at 128 plus one final response for an unset or invalid budget (${JSON.stringify(configured)})`, async () => {
-      const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-default-limit-"));
+  for (const configured of [undefined, "", "invalid", "-1", "1.5", "1", "64", "0"]) {
+    it(`ignores the retired total tool quota (${JSON.stringify(configured)})`, async () => {
+      const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-unlimited-"));
       try {
-        fs.writeFileSync(path.join(workspace, "hello.txt"), "hello\n", "utf8");
-        let requestNumber = 0;
-        const adapter = new NativeAgentAdapter({
-          credentialOwner: "test-owner", workspaceRoot: workspace,
-          env: { ADS_AGENT_MAX_TOOL_ROUNDS: configured, ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS: undefined },
-          modelResolver: { resolve: () => ({
-            model: "test-model", baseUrl: "https://provider.test/v1", apiKey: "test-key", provider: "test",
-          }) },
-          fetchImpl: async (_input, init) => {
+        fs.writeFileSync(path.join(workspace, "hello.txt"), "hello\n");
+        let requests = 0;
+        const adapter = new NativeAgentAdapter({ credentialOwner: "test-owner", workspaceRoot: workspace,
+          maxToolRounds: 1, env: { ADS_AGENT_MAX_TOOL_ROUNDS: configured, ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS: "1" },
+          modelResolver: { resolve: () => ({ model: "model", baseUrl: "https://provider.test/v1", apiKey: "key", provider: "test" }) },
+          fetchImpl: async (_url, init) => {
             const body = JSON.parse(String(init?.body));
-            requestNumber += 1;
-            // Bound the fixture itself so a regression to unlimited cannot hang.
-            if (requestNumber > 128) {
-              assert.equal(body.tool_choice, "none");
-              assert.equal(body.tools, undefined);
-              return sse([JSON.stringify({ choices: [{ delta: { content: "Final budget summary" }, finish_reason: "stop" }] })]);
-            }
             assert.ok(body.tools.length > 0);
-            return sse([JSON.stringify({ choices: [{
-              delta: { tool_calls: [{ index: 0, type: "function", id: `read-${requestNumber}`,
-                function: { name: "read_file", arguments: '{"file":"hello.txt"}' },
-              }] }, finish_reason: "tool_calls",
-            }] })]);
+            requests++;
+            if (requests > 12) return sse([JSON.stringify({ choices: [{ delta: { content: "Done" }, finish_reason: "stop" }] })]);
+            return sse([JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, type: "function", id: `read-${requests}`,
+              function: { name: "read_file", arguments: JSON.stringify({ file: "hello.txt", start_line: requests }) },
+            }] }, finish_reason: "tool_calls" }] })]);
           },
         });
-        const result = await adapter.send("Keep inspecting the file");
-        assert.equal(requestNumber, 129);
-        assert.equal(result.response, "Final budget summary");
-        if (configured === undefined) {
-          requestNumber = 0;
-          const next = await adapter.send("Continue inspecting");
-          assert.equal(requestNumber, 129, "Each user turn must receive a fresh budget");
-          assert.equal(next.response, "Final budget summary");
-        }
-      } finally {
-        fs.rmSync(workspace, { recursive: true, force: true });
-      }
+        assert.equal((await adapter.send("Inspect successive lines")).response, "Done");
+        assert.equal(requests, 13);
+      } finally { fs.rmSync(workspace, { recursive: true, force: true }); }
     });
   }
 
-  it("accepts both native runtime round-limit environment variables", async () => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-env-limit-"));
-    try {
-      for (const env of [
-        { ADS_AGENT_MAX_TOOL_ROUNDS: "1", ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS: undefined },
-        { ADS_AGENT_MAX_TOOL_ROUNDS: undefined, ADS_NATIVE_RUNTIME_MAX_TOOL_ROUNDS: "1" },
-      ]) {
-        let requestNumber = 0;
-        const adapter = new NativeAgentAdapter({
-          credentialOwner: "test-owner",
-          workspaceRoot: workspace,
-          env,
-          modelResolver: {
-            resolve: () => ({
-              model: "test-model",
-              baseUrl: "https://provider.test/v1",
-              apiKey: "test-api-key",
-              provider: "test",
-            }),
-          },
-          fetchImpl: async () => {
-            requestNumber += 1;
-            return sse([
-            JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, type: "function", id: "env-limit-1", function: { name: "read_file", arguments: '{"file":"missing.txt"}' } }] } }] }),
-              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
-            ]);
-          },
-        });
-
-        const result = await adapter.send("Inspect the missing file");
-
-        assert.match(result.response, /tool-round limit/);
-        assert.equal(requestNumber, 2);
-      }
-    } finally {
-      fs.rmSync(workspace, { recursive: true, force: true });
-    }
-  });
-
-  it("summarizes the last tool result at the limit and preserves balanced durable continuation", async () => {
+  it("finishes naturally after a tool result and preserves balanced durable continuation", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-limit-"));
     try {
       let requestNumber = 0;
@@ -679,11 +567,10 @@ describe("NativeAgentAdapter", () => {
           requests.push(body.messages);
           requestNumber += 1;
           if (requestNumber === 2) {
-            assert.equal(body.tool_choice, "none");
-            assert.equal(body.tools, undefined);
+            assert.equal(body.tool_choice, "auto");
+            assert.ok(body.tools?.length);
             assert.equal(body.messages.at(-1)?.role, "tool");
-            assert.deepEqual(body.messages.map(message => message.role), ["system", "user", "assistant", "tool"]);
-            assert.match(String(body.messages[0]?.content), /budget.*exhausted/);
+            assert.deepEqual(body.messages.map(message => message.role), ["user", "assistant", "tool"]);
             return sse([JSON.stringify({ choices: [{ delta: { content: "The file is missing; further inspection requires another prompt." }, finish_reason: "stop" }],
               usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 },
             })]);
@@ -888,7 +775,7 @@ describe("NativeAgentAdapter", () => {
       await adapter.send("short secret");
       const raw = JSON.stringify(
         getStateDatabase(dbPath)
-          .prepare("SELECT messages_json, entries_json FROM native_transcript_turns")
+          .prepare("SELECT messages_json, entries_json FROM native_transcript_turns UNION ALL SELECT messages_json, entries_json FROM native_transcript_chunks")
           .all(),
       );
       assert.doesNotMatch(raw, /SHORT_SECRET=q/);
@@ -1090,8 +977,8 @@ describe("NativeAgentAdapter", () => {
       onRunningCheckpoint: (() => void) | undefined;
       private triggered = false;
 
-      override updateTurn(input: Parameters<NativeTranscriptStore["updateTurn"]>[0]): void {
-        super.updateTurn(input);
+      override appendTurn(input: Parameters<NativeTranscriptStore["appendTurn"]>[0]): void {
+        super.appendTurn(input);
         if (input.status === "running" && !this.triggered) {
           this.triggered = true;
           this.onRunningCheckpoint?.();
@@ -1165,8 +1052,8 @@ describe("NativeAgentAdapter", () => {
       onRunningCheckpoint: (() => void) | undefined;
       private triggered = false;
 
-      override updateTurn(input: Parameters<NativeTranscriptStore["updateTurn"]>[0]): void {
-        super.updateTurn(input);
+      override appendTurn(input: Parameters<NativeTranscriptStore["appendTurn"]>[0]): void {
+        super.appendTurn(input);
         if (input.status === "running" && !this.triggered) {
           this.triggered = true;
           this.onRunningCheckpoint?.();
@@ -1446,7 +1333,7 @@ describe("NativeAgentAdapter", () => {
             baseUrl: "https://provider.test/v1",
             apiKey: "test-api-key",
             provider: "test",
-            contextWindow: 1_000,
+            contextWindow: estimateNativeRequestTokens([], NATIVE_TOOL_DEFINITIONS) + 450,
             options: { maxTokens: 250 },
           }),
         },

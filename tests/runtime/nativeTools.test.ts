@@ -48,7 +48,7 @@ describe("NativeToolExecutor", () => {
     assert.doesNotMatch(payload.content, /1001: line-1001/);
   });
 
-  it("accepts the 10-minute command timeout ceiling", async () => {
+  it("separates command waiting from optional execution deadlines", async () => {
     const executor = new NativeToolExecutor({ workspaceRoot: workspace });
     const pending = executor.execute(call("exec_command", {
       cmd: process.execPath,
@@ -59,8 +59,9 @@ describe("NativeToolExecutor", () => {
 
     assert.equal(JSON.parse(result.output).timed_out, false);
     const definition = NATIVE_TOOL_DEFINITIONS.find(item => item.function.name === "exec_command");
-    const timeoutSchema = definition?.function.parameters.properties?.timeout_ms as { maximum?: number } | undefined;
-    assert.equal(timeoutSchema?.maximum, 600_000);
+    assert.equal(definition?.function.parameters.properties?.timeout_ms, undefined);
+    const deadlineSchema = definition?.function.parameters.properties?.max_runtime_ms as { maximum?: number } | undefined;
+    assert.ok(deadlineSchema?.maximum && deadlineSchema.maximum > 600_000);
   });
 
   it("rejects symlink escapes and blocked commands", async () => {

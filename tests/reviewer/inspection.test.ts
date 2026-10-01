@@ -1,3 +1,4 @@
+import { buildReviewPrompt } from "../../server/reviewer/runner.js";
 import { beforeEach, afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -6,6 +7,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { ReviewerInspectionTools } from "../../server/reviewer/inspectionTools.js";
 import { runReviewerInspection } from "../../server/reviewer/inspectionRunner.js";
+import { ReviewerIncompleteError } from "../../server/reviewer/incomplete.js";
 import { ReviewerProtocolError } from "../../server/reviewer/verdictParser.js";
 import type { NativeChatMessage, NativeChatToolCall, NativeCompletionResult } from "../../server/runtime/openAiCompatibleClient.js";
 
@@ -120,17 +122,88 @@ describe("isolated Reviewer inspection", () => {
     assert.equal(turns, 2);
   });
 
-  it("caps five tool turns by default and forces a final tool-free verdict request", async () => {
+  it("allows more than ten productive inspection rounds regardless of the old quota", async () => {
     let turns = 0;
-    const result = await runReviewerInspection({ ...options(), complete: async (request) => {
-      turns++;
-      if (turns <= 5) return { ...verdict, text: "", toolCalls: [call("list_dir", { path: "." }, `call-${turns}`)] };
-      assert.deepEqual(request.tools, []);
-      assert.match(request.messages.at(-1)!.content!, /budget exhausted/);
+    const result = await runReviewerInspection({ ...options(), toolTurnBudget: 1, complete: async request => {
+      assert.ok(request.tools.length > 0);
+      if (++turns <= 20) return { ...verdict, text: "", toolCalls: [call("read_file_range", { path: "src/file.ts", start_line: turns, end_line: turns }, `read-${turns}`)] };
       return verdict;
     } });
-    assert.equal(turns, 6);
+    assert.equal(turns, 21);
     assert.equal(result.status, "PASS");
+  });
+
+  it("pauses unchanged inspection loops instead of inventing a code rejection", async () => {
+    let turns = 0;
+    await assert.rejects(runReviewerInspection({ ...options(), complete: async () => {
+      assert.ok(++turns <= 5);
+      return { ...verdict, text: "", toolCalls: [call("list_dir", { path: "." }, `call-${turns}`)] };
+    } }), ReviewerIncompleteError);
+    assert.equal(turns, 5);
+  });
+
+  it("delivers a warning before stopping repeated calls from a later model response", async () => {
+    let rounds = 0;
+    await assert.rejects(runReviewerInspection({ ...options(), complete: async request => {
+      rounds++;
+      if (rounds === 2) assert.match(String(request.messages.at(-1)?.content), /Inspection warning/);
+      assert.ok(rounds <= 2);
+      return { ...verdict, text: "", toolCalls: Array.from({ length: 6 }, (_, i) => call("list_dir", { path: "." }, `read-${rounds}-${i}`)) };
+    } }), ReviewerIncompleteError);
+    assert.equal(rounds, 2);
+  });
+
+  it("compacts a long paged review without changing the exact diff coverage", async () => {
+    const diff = ["diff --git a/file.ts b/file.ts", ...Array.from({ length: 5000 }, (_, i) => `+const n${i} = ${i};`)].join("\n");
+    let rounds = 0;
+    let summaries = 0;
+    let maxMessages = 0;
+    const result = await runReviewerInspection({ ...options(), model: { ...options().model, contextWindow: 16_384 }, diff, complete: async request => {
+      maxMessages = Math.max(maxMessages, request.messages.length);
+      if (!request.tools.length) {
+        summaries++;
+        return { ...verdict, text: "Reviewed previous diff pages; continue at the last returned next_offset." };
+      }
+      rounds++;
+      const last = request.messages.at(-1);
+      const page = last?.role === "tool" ? JSON.parse(String(last.content)) : undefined;
+      if (page?.done) return verdict;
+      return { ...verdict, text: "", toolCalls: [call("read_diff", { offset: page?.next_offset ?? 0 }, `page-${rounds}`)] };
+    } });
+    assert.equal(result.status, "PASS");
+    assert.ok(summaries > 0);
+    assert.ok(maxMessages < 140);
+  });
+
+  it("pages oversized single lines instead of overflowing the initial review prompt", async () => {
+    const diff = "diff --git a/line.ts b/line.ts\n+" + "x".repeat(50_000);
+    const prompt = buildReviewPrompt({ issue: { title: "Long line" }, diff });
+    assert.ok(prompt.length < diff.length);
+    let rounds = 0;
+    const result = await runReviewerInspection({ ...options(), diff, prompt, complete: async request => {
+      const last = request.messages.at(-1);
+      const page = last?.role === "tool" ? JSON.parse(String(last.content)) : undefined;
+      if (page?.done) return verdict;
+      return { ...verdict, text: "", toolCalls: [call("read_diff", { offset: page?.next_offset ?? 0 }, `page-${++rounds}`)] };
+    } });
+    assert.equal(result.status, "PASS");
+    assert.ok(rounds > 10);
+    await assert.rejects(runReviewerInspection({ ...options(), diff, prompt, complete: async () => verdict }), /complete paged diff/);
+  });
+
+  it("pages all evidence of a diff larger than 1500 lines", async () => {
+    const diff = ["diff --git a/file.ts b/file.ts", ...Array.from({ length: 1600 }, (_, i) => `+const n${i} = ${i};`)].join("\n");
+    let rounds = 0;
+    const result = await runReviewerInspection({ ...options(), diff, complete: async request => {
+      rounds++;
+      const last = request.messages.at(-1);
+      const page = last?.role === "tool" ? JSON.parse(String(last.content)) : undefined;
+      if (page?.done) return verdict;
+      return { ...verdict, text: "", toolCalls: [call("read_diff", { offset: page?.next_offset ?? 0 }, `page-${rounds}`)] };
+    } });
+    assert.equal(result.status, "PASS");
+    assert.ok(rounds > 10);
+    await assert.rejects(runReviewerInspection({ ...options(), diff, complete: async () => verdict }), /complete paged diff/);
   });
 
   for (const count of [6, 8]) {
@@ -179,57 +252,17 @@ describe("isolated Reviewer inspection", () => {
     });
   }
 
-  for (const firstOutputSize of [5000, 5001]) {
-    it(`retains at most 40000 output characters across rounds and answers every call (${firstOutputSize})`, async (t) => {
-      const firstCall = call("list_dir", { path: "." }, "first-round");
-      const batch = Array.from({ length: 8 }, (_, i) => call("list_dir", { path: "." }, `second-${i}`));
-      const executed: string[] = [];
-      t.mock.method(ReviewerInspectionTools.prototype, "execute", async (toolCall: NativeChatToolCall) => {
-        executed.push(toolCall.id);
-        return "X".repeat(toolCall.id === firstCall.id ? firstOutputSize : 7000);
-      });
-      const dispose = t.mock.method(ReviewerInspectionTools.prototype, "dispose");
-      let turns = 0;
-      let messages: NativeChatMessage[] = [];
-      const result = await runReviewerInspection({ ...options(), complete: async (request) => {
-        messages = request.messages;
-        turns++;
-        if (turns === 1) return { ...verdict, text: "", toolCalls: [firstCall] };
-        if (turns === 2) {
-          assert.ok(request.tools.length > 0);
-          return { ...verdict, text: "", toolCalls: batch };
-        }
-        assert.equal(turns, 3);
-        assert.deepEqual(request.tools, []);
-        assert.match(String(request.messages.at(-1)?.content), /budget exhausted/);
-        const responses = request.messages.filter((entry) => entry.role === "tool");
-        assert.deepEqual(responses.map((entry) => entry.tool_call_id), [firstCall, ...batch].map((entry) => entry.id));
-        assert.deepEqual(executed, [firstCall, ...batch.slice(0, 5)].map((entry) => entry.id));
-        const contents = responses.map((entry) => {
-          assert.equal(typeof entry.content, "string");
-          return entry.content as string;
-        });
-        assert.equal(contents.reduce((total, content) => total + (content.match(/X/g)?.length ?? 0), 0), 40_000);
-        assert.equal(contents[0], "X".repeat(firstOutputSize));
-        for (const content of contents.slice(1, 5)) assert.equal(content, "X".repeat(7000));
-        if (firstOutputSize === 5000) {
-          assert.equal(contents[5], "X".repeat(7000));
-        } else {
-          assert.ok(contents[5]!.startsWith("X".repeat(6999)));
-          assert.match(contents[5]!, /truncated.*budget exhausted/);
-        }
-        for (const content of contents.slice(6)) {
-          assert.match(content, /budget exhausted.*not executed/);
-          assert.doesNotMatch(content, /X/);
-        }
-        return verdict;
-      } });
-      assert.equal(result.status, "PASS");
-      assert.equal(turns, 3);
-      assert.equal(dispose.mock.callCount(), 1);
-      assert.equal(messages.length, 0);
-    });
-  }
+  it("does not stop after 40000 characters of useful evidence", async t => {
+    t.mock.method(ReviewerInspectionTools.prototype, "execute", async (toolCall: NativeChatToolCall) => `${toolCall.id}: ${"X".repeat(7000)}`);
+    let turns = 0;
+    const result = await runReviewerInspection({ ...options(), complete: async request => {
+      if (++turns <= 8) return { ...verdict, text: "", toolCalls: [call("read_file_range", { path: "src/file.ts", start_line: turns, end_line: turns }, `read-${turns}`)] };
+      assert.ok(request.tools.length > 0);
+      assert.ok(request.messages.filter(message => message.role === "tool").reduce((n, message) => n + String(message.content).length, 0) > 40000);
+      return verdict;
+    } });
+    assert.equal(result.status, "PASS");
+  });
 
   const oversizedArguments = call("list_dir", { path: "." }, "oversized");
   oversizedArguments.function.arguments = privateMarker.padEnd(4097, "x");
@@ -303,34 +336,30 @@ describe("isolated Reviewer inspection", () => {
     assert.equal(result.summary, summary);
   });
 
-  it("preserves a real REJECT after unavailable inspection evidence", async (t) => {
+  it("classifies unavailable inspection evidence separately from code REJECT", async (t) => {
     const dispose = t.mock.method(ReviewerInspectionTools.prototype, "dispose");
     const rejected = { status: "REJECT", summary: "Required evidence unavailable", defects: [
       { file: "missing.ts", line: 1, severity: "blocker", description: "Cannot verify the required declaration." },
     ] };
     let turns = 0;
     let messages: NativeChatMessage[] = [];
-    const result = await runReviewerInspection({ ...options(), complete: async (request) => {
+    await assert.rejects(runReviewerInspection({ ...options(), complete: async (request) => {
       messages = request.messages;
       turns++;
       if (turns === 1) return { ...verdict, text: "", toolCalls: [call("read_file_range", { path: "missing.ts", start_line: 1, end_line: 1 })] };
       assert.match(String(request.messages.at(-1)?.content), /Inspection unavailable/);
       return { ...verdict, text: JSON.stringify(rejected) };
-    } });
+    } }), ReviewerIncompleteError);
     assert.equal(turns, 2);
-    assert.equal(result.status, "REJECT");
-    assert.equal(result.summary, rejected.summary);
-    assert.deepEqual(result.defects, rejected.defects);
-    assert.equal(result.reviewerProfileId, "profile");
     assert.equal(dispose.mock.callCount(), 1);
     assert.equal(messages.length, 0);
   });
 
-  for (const toolTurnBudget of [-1, 1.5, 11, Number.NaN]) {
+  for (const toolTurnBudget of [-1, 1.5, Number.NaN]) {
     it(`rejects invalid tool round budget ${toolTurnBudget} before model invocation`, async () => {
       await assert.rejects(runReviewerInspection({ ...options(), toolTurnBudget, complete: async () => {
         assert.fail("Invalid budgets must not invoke the model");
-      } }), /tool turn budget must be an integer from 0 to 10/);
+      } }), /tool turn budget must be a non-negative integer/);
     });
   }
 

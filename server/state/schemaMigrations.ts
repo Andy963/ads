@@ -831,6 +831,31 @@ Core reviewing rules:
       `);
     },
   },
+  {
+    version: 32,
+    description: "Append native execution evidence separately from compacted model context",
+    up: (db) => {
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'native_transcript_turns'").get()) return;
+      addColumnIfMissing(db, "native_transcript_turns", "projection_seq", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "native_transcript_turns", "loop_guard_json", "TEXT");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS native_transcript_chunks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          turn_row_id INTEGER NOT NULL REFERENCES native_transcript_turns(id) ON DELETE CASCADE,
+          messages_json TEXT NOT NULL,
+          entries_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_native_chunks_turn ON native_transcript_chunks(turn_row_id, id);
+        INSERT INTO native_transcript_chunks (turn_row_id, messages_json, entries_json)
+          SELECT id, messages_json, entries_json FROM native_transcript_turns
+          WHERE NOT EXISTS (SELECT 1 FROM native_transcript_chunks WHERE turn_row_id = native_transcript_turns.id)
+          ORDER BY id;
+        UPDATE native_transcript_turns SET projection_seq =
+          (SELECT MAX(id) FROM native_transcript_chunks WHERE turn_row_id = native_transcript_turns.id)
+          WHERE projection_seq = 0;
+      `);
+    },
+  },
 ];
 
 /**

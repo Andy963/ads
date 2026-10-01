@@ -5,6 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 
+import { ReviewerIncompleteError } from "../../server/reviewer/incomplete.js";
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
 import {
   classifyActionsFailure,
@@ -1331,7 +1332,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(interruptControllers.size, 0);
   });
 
-  it("enforces the diff gate before either Reviewer transport", async () => {
+  it("keeps oversized diffs incomplete until paging has supplied the evidence", async () => {
     const db = getStateDatabase();
     const diff = ["diff --git a/large.ts b/large.ts", ...Array.from({ length: 1499 }, (_, i) => `+ line ${i}`)].join("\n");
     const response = JSON.stringify({ status: "PASS", summary: "Complete evidence", defects: [] });
@@ -1341,8 +1342,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       const bus = new LaneDispatchBus(db, useNative ? reviewerOptions(async (request) => ({ text: await review(request.messages[1]!.content!), toolCalls: [], usage: null })) : { reviewerRunner: review });
       const payload = { ...reviewerPayload(), diff };
       assert.equal((await bus.executeReviewer(payload, repoDir)).status, "PASS");
-      assert.equal((await bus.executeReviewer({ ...payload, diff: `${diff}\n+ overflow` }, repoDir)).status, "REJECT");
-      assert.equal(calls, 1);
+      await assert.rejects(bus.executeReviewer({ ...payload, diff: `${diff}\n+ overflow` }, repoDir), ReviewerIncompleteError);
+      assert.equal(calls, useNative ? 2 : 1);
     }
   });
 
@@ -1359,7 +1360,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
         assert.equal(request.model, "review-only-model");
         assert.equal(request.options?.reasoningEffort, "low");
         assert.equal(request.messages[0]?.content, "Custom review instructions");
-        assert.deepEqual(request.tools.map((tool) => tool.function.name), ["read_file_range", "search_code", "list_dir"]);
+        assert.deepEqual(request.tools.map((tool) => tool.function.name), ["read_diff", "read_file_range", "search_code", "list_dir"]);
         assert.equal(request.messages.length, 2);
         return { text: JSON.stringify({ status: "PASS", summary: "Approved", defects: [] }), toolCalls: [], usage: null };
       }),
@@ -1481,7 +1482,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     let reviewerCalls = 0;
     const toolCalls = Array.from({ length: 6 }, (_, i) => ({
       id: `read-${i}`, type: "function" as const,
-      function: { name: "list_dir", arguments: JSON.stringify({ path: "." }) },
+      function: { name: "read_file_range", arguments: JSON.stringify({ path: "README.md", start_line: i + 1, end_line: i + 1 }) },
     }));
     const bus = new LaneDispatchBus(getStateDatabase(), {
       developerRunner: async () => {
@@ -1494,7 +1495,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
         if (reviewerCalls === 1) return { text: "", toolCalls, finishReason: "tool_calls", usage: null };
         const results = request.messages.filter((message) => message.role === "tool");
         assert.deepEqual(results.map((message) => message.tool_call_id), toolCalls.map((call) => call.id));
-        assert.ok(results.every((message) => String(message.content).includes("README.md")));
+        const lines = fs.readFileSync(path.join(repoDir, "README.md"), "utf8").split("\n");
+        assert.deepEqual(results.map(message => message.content), toolCalls.map((_, i) => lines[i] === undefined ? "" : `${i + 1}: ${lines[i]}`));
         return { text: JSON.stringify({ status: "PASS", summary: "Inspected all requested evidence", defects: [] }), toolCalls: [], finishReason: "stop", usage: null };
       }),
       mergePipeline: () => ({ success: true }),
@@ -1510,6 +1512,32 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.equal(completed.attempts_json, "[]");
     assert.equal(JSON.parse(completed.review_verdicts_json)[0].status, "PASS");
   });
+
+  for (const reason of ["incomplete", "loop"] as const) {
+    it(`blocks Reviewer ${reason} without consuming developer rework`, async () => {
+      let developerCalls = 0;
+      let reviewerCalls = 0;
+      const bus = new LaneDispatchBus(getStateDatabase(), {
+        developerRunner: async () => { developerCalls++; commitImplementation("incomplete-review"); return { exitCode: 0 }; },
+        ...reviewerOptions(async () => {
+          reviewerCalls++;
+          if (reason === "incomplete") return { text: JSON.stringify({ status: "INCOMPLETE", summary: "Missing evidence" }), toolCalls: [], usage: null };
+          assert.ok(reviewerCalls <= 5);
+          return { text: "", toolCalls: [{ id: `repeat-${reviewerCalls}`, type: "function", function: { name: "list_dir", arguments: '{"path":"."}' } }], usage: null };
+        }),
+        testCommand: "git status",
+      });
+      const job = bus.dispatchJob({ projectId: repoDir, issueId: 3514, issueTitle: "Incomplete review", issueDescription: "Keep review evidence gaps separate", acceptanceCriteria: ["No developer rework"] });
+      await bus.evaluateQueue(repoDir, repoDir);
+      await waitFor(() => bus.getJob(job.jobId)?.status === "blocked");
+      const blocked = bus.getJob(job.jobId)!;
+      assert.equal(developerCalls, 1);
+      assert.equal(blocked.rework_count, 0);
+      assert.equal(blocked.attempts_json, "[]");
+      assert.equal(blocked.review_verdicts_json, "[]");
+      assert.match(blocked.error_message ?? "", /insufficient evidence|paused/);
+    });
+  }
 
   it("blocks a truncated native Reviewer response even when its text is valid PASS JSON", async () => {
     let developerCalls = 0;

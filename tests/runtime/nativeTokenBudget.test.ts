@@ -71,11 +71,12 @@ describe("Native runtime token budgets", () => {
         modelResolver: { resolve: () => ({ ...model, contextWindow: 8_000, options: { maxTokens: 1_000 } }) },
         fetchImpl: async (_url, init) => {
           const body: RequestBody = JSON.parse(String(init?.body));
+          if (!(body.tools?.length)) return reply({ choices: [{ message: { content: "Read source evidence; full results remain in execution history." }, finish_reason: "stop" }] });
           requests.push(body);
           const index = requests.length;
           assert.equal(body.max_tokens, 1_000);
           const promptTokens = estimateNativeRequestTokens(body.messages, body.tools) * 3;
-          if (index > 1 && index <= 4 && mode !== "output-only") {
+          if (index > 1 && index <= 3 && mode !== "output-only") {
             assert.ok(promptTokens <= 7_000, `Request ${index} must fit the calibrated budget`);
             assert.ok(promptTokens > 6_700, `Request ${index} must not compound the ratio or use cumulative billing`);
           }
@@ -94,7 +95,7 @@ describe("Native runtime token budgets", () => {
       const result = await adapter.send("Read the source file.", { streaming: false });
       assert.equal(result.response, "done", "Final-summary assertion failures must not be hidden by fallback handling");
       assert.equal(requests.length, 4);
-      assert.equal(requests[3]?.tools?.length ?? 0, 0, "The final summary uses the changed tool schema budget");
+      assert.ok(requests[3]?.tools?.length, "Tools remain available until natural completion");
       const secondTool = String(requests[1]?.messages.find(message => message.role === "tool")?.content);
       if (mode === "output-only") assert.ok(secondTool.includes(fileContent));
       else assert.match(secondTool, /Native context truncated/);

@@ -9,12 +9,13 @@ const EXCLUDED_PATTERNS = [
 ];
 
 export const REVIEW_DIFF_MAX_LINES = 1500;
+export const REVIEW_DIFF_MAX_CHARS = 40_000;
 
 export function shouldExcludeFileFromDiff(filePath: string): boolean {
   return EXCLUDED_PATTERNS.some((pattern) => pattern.test(filePath));
 }
 
-export function filterDiff(rawDiff: string, maxLines = REVIEW_DIFF_MAX_LINES, diffStat?: string): { diff: string; truncated: boolean } {
+export function filterDiff(rawDiff: string, maxLines = REVIEW_DIFF_MAX_LINES, diffStat?: string, maxChars = REVIEW_DIFF_MAX_CHARS): { diff: string; truncated: boolean } {
   const lines = rawDiff.split("\n");
   const filteredLines: string[] = [];
   let skippingCurrentFile = false;
@@ -33,20 +34,21 @@ export function filterDiff(rawDiff: string, maxLines = REVIEW_DIFF_MAX_LINES, di
     }
   }
 
-  if (filteredLines.length > maxLines) {
+  const fullDiff = filteredLines.join("\n");
+  if (filteredLines.length > maxLines || fullDiff.length > maxChars) {
     const header = [
-      `=== DIFF SUMMARY (TRUNCATED DUE TO SIZE > ${maxLines} LINES) ===`,
+      `=== DIFF SUMMARY (TRUNCATED DUE TO SIZE > ${maxLines} LINES OR ${maxChars} CHARACTERS) ===`,
       diffStat ? `Diff Stats:\n${diffStat}\n` : "",
-      `Showing first ${maxLines} lines out of ${filteredLines.length}:\n`,
+      `Showing at most ${maxLines} lines / ${maxChars} characters out of ${filteredLines.length} lines:\n`,
     ].filter(Boolean).join("\n");
     return {
-      diff: `${header}\n${filteredLines.slice(0, maxLines).join("\n")}\n... [TRUNCATED]`,
+      diff: `${header}\n${filteredLines.slice(0, maxLines).join("\n").slice(0, maxChars)}\n... [TRUNCATED]`,
       truncated: true,
     };
   }
 
   return {
-    diff: filteredLines.join("\n"),
+    diff: fullDiff,
     truncated: false,
   };
 }
