@@ -25,7 +25,7 @@ Start the two processes independently:
 
 ```bash
 # Start ADS Core
-node dist/server/cli.js web
+node dist/server/cli.js
 
 # Start the Telegram Connector
 node connectors/telegram/bin/ads-telegram.js start

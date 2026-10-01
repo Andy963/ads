@@ -4,13 +4,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-type AdsTopLevelCommand = "web" | "help" | "version";
-type AdsService = "web";
-
 export type ParsedAdsCli =
-  | { type: "help"; scope: "root" | AdsService }
+  | { type: "help" }
   | { type: "version" }
-  | { type: "start"; service: AdsService }
+  | { type: "start" }
   | { type: "error"; message: string; exitCode: number };
 
 function writeStdout(text: string): void {
@@ -29,53 +26,19 @@ function isVersionFlag(value: string): boolean {
   return value === "version" || value === "--version" || value === "-v";
 }
 
-function isTopLevelCommand(value: string): value is AdsTopLevelCommand {
-  return value === "web" || value === "help" || value === "version";
-}
-
-function normalizeInvokedAs(invokedAs: string): string {
-  return path.basename(invokedAs) || "ads";
-}
-
-export function parseAdsCli(args: string[], _invokedAs: string): ParsedAdsCli {
+export function parseAdsCli(args: string[]): ParsedAdsCli {
   const token = (args[0] ?? "").trim();
-  const sub = (args[1] ?? "").trim();
 
   if (!token) {
-    return { type: "help", scope: "root" };
+    return { type: "start" };
   }
 
   if (isHelpFlag(token)) {
-    return { type: "help", scope: "root" };
+    return { type: "help" };
   }
 
   if (isVersionFlag(token)) {
     return { type: "version" };
-  }
-
-  if (isTopLevelCommand(token)) {
-    if (token === "help") {
-      return { type: "help", scope: "root" };
-    }
-    if (token === "version") {
-      return { type: "version" };
-    }
-
-    const service: AdsService = token;
-    if (!sub || sub === "start" || sub === "run") {
-      return { type: "start", service };
-    }
-    if (isHelpFlag(sub)) {
-      return { type: "help", scope: service };
-    }
-    if (isVersionFlag(sub)) {
-      return { type: "version" };
-    }
-    return {
-      type: "error",
-      exitCode: 2,
-      message: `❌ Unknown command: ${token} ${sub}`,
-    };
   }
 
   return {
@@ -118,26 +81,18 @@ function readPackageVersion(): string | null {
   }
 }
 
-function printRootHelp(): void {
-  writeStdout(`
-ADS CLI
-
-Usage:
-  ads <command>
-
-Commands:
-  web [start]          Start the Web Console
-  help                 Show this help message
-  version              Show version information
-`);
-}
-
-function printWebHelp(): void {
+function printHelp(): void {
   writeStdout(`
 ADS Web Console
 
 Usage:
-  ads web [start]
+  ads [options]
+
+With no options, starts the ADS web server.
+
+Options:
+  --help, -h       Show this help message
+  --version, -v    Show version information
 
 Environment:
   ADS_WEB_HOST / ADS_WEB_PORT   Configure web server binding.
@@ -146,7 +101,7 @@ Environment:
 `);
 }
 
-async function printVersion(_invokedAs: string): Promise<void> {
+function printVersion(): void {
   const version = readPackageVersion();
   writeStdout(`ADS v${version ?? "unknown"}`);
 }
@@ -165,30 +120,20 @@ function isMainModule(): boolean {
   }
 }
 
-export async function runAdsFromCli(args: string[], invokedAs: string): Promise<number> {
-  const parsed = parseAdsCli(args, invokedAs);
+export async function runAdsFromCli(args: string[]): Promise<number> {
+  const parsed = parseAdsCli(args);
 
   switch (parsed.type) {
     case "help": {
-      if (parsed.scope === "root") {
-        printRootHelp();
-        return 0;
-      }
-      if (parsed.scope === "web") {
-        printWebHelp();
-        return 0;
-      }
+      printHelp();
       return 0;
     }
     case "version": {
-      await printVersion(invokedAs);
+      printVersion();
       return 0;
     }
     case "start": {
-      if (parsed.service === "web") {
-        await import("./web/server.js");
-        return 0;
-      }
+      await import("./web/server.js");
       return 0;
     }
     case "error": {
@@ -201,9 +146,8 @@ export async function runAdsFromCli(args: string[], invokedAs: string): Promise<
 }
 
 if (isMainModule()) {
-  const invokedAs = normalizeInvokedAs(process.argv[1] ?? "ads");
   try {
-    const exitCode = await runAdsFromCli(process.argv.slice(2), invokedAs);
+    const exitCode = await runAdsFromCli(process.argv.slice(2));
     process.exitCode = exitCode;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

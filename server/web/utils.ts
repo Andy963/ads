@@ -180,6 +180,8 @@ export function isLikelyWebProcess(pid: number): boolean {
   const cmdline = readCmdline(pid);
   if (!cmdline) return false;
   return (
+    cmdline.includes("dist/server/cli.js") ||
+    cmdline.includes("server/cli.ts") ||
     cmdline.includes("dist/server/web/server.js") ||
     cmdline.includes("server/web/server.ts") ||
     cmdline.includes("ads web") ||

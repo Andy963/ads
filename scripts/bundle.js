@@ -77,7 +77,7 @@ const distPkg = {
   version: JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version,
   type: "module",
   scripts: {
-    start: "node server/cli.js web",
+    start: "node server/cli.js",
   },
   engines: {
     node: ">=20",
@@ -98,4 +98,4 @@ for (const f of [".ads", "ads.db", "ads.db-shm", "ads.db-wal"]) {
 
 console.log("[bundle] Done! dist/ is now self-contained.");
 console.log("[bundle] To deploy: copy dist/ to target machine and run:");
-console.log("[bundle]   cd dist && node server/cli.js web");
+console.log("[bundle]   cd dist && node server/cli.js");
