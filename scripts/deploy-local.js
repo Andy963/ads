@@ -189,7 +189,7 @@ Environment=ADS_ENV_PATH=${envPath}
 Environment=ADS_STATE_DIR=${stateDir}
 Environment=ALLOWED_DIRS=${allowedDirs}
 Environment=PATH=${servicePathValue}
-${environmentFile}ExecStart=${nodeBin} ${options.entrypoint} ${options.command}
+${environmentFile}ExecStart=${nodeBin} ${options.entrypoint}${options.command ? ` ${options.command}` : ""}
 Restart=on-failure
 RestartSec=5s
 
@@ -202,7 +202,6 @@ function buildWebServiceUnit() {
   return buildServiceUnit({
     description: "ADS Web Console",
     entrypoint: path.join(currentLink, "dist", "server", "cli.js"),
-    command: "web",
   });
 }
 
