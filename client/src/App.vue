@@ -940,6 +940,13 @@ const LANE_SNAP_SETTLE_MS = 380;
 // their native behavior instead of switching lanes.
 const LANE_SWIPE_IGNORE_SELECTOR = "pre, code, table, input, textarea, select, button, a, [contenteditable]";
 
+// Dragging a selection handle horizontally must not read as a lane swipe.
+function hasActiveTextSelection(): boolean {
+  if (typeof window === "undefined" || typeof window.getSelection !== "function") return false;
+  const selection = window.getSelection();
+  return Boolean(selection && selection.rangeCount > 0 && !selection.isCollapsed);
+}
+
 type TouchSample = { x: number; time: number };
 
 type LaneGesture = {
@@ -1033,6 +1040,9 @@ function onLaneSwipeTouchStart(ev: TouchEvent): void {
   // An in-flight drawer gesture owns the touch sequence.
   if (drawerDragProgress.value !== null || drawerSnapSettling.value) return;
   if (ev.target instanceof Element && ev.target.closest(LANE_SWIPE_IGNORE_SELECTOR)) return;
+  // An active text selection means the touch is adjusting the selection
+  // bounds, not navigating lanes.
+  if (hasActiveTextSelection()) return;
   const touch = readSwipeTouch(ev);
   // The left edge stays reserved for the drawer edge swipe.
   if (!touch || touch.x <= DRAWER_SWIPE_EDGE_PX) return;
@@ -1052,6 +1062,14 @@ function onLaneSwipeTouchStart(ev: TouchEvent): void {
 function onLaneSwipeTouchMove(ev: TouchEvent): void {
   const gesture = laneGesture;
   if (!gesture) return;
+  // A selection handle drag can appear mid-gesture (long-press selects, then
+  // the handle moves horizontally); cancel instead of translating the track.
+  if (hasActiveTextSelection()) {
+    laneGesture = null;
+    laneDragTracking.value = false;
+    laneTrackOffset.value = null;
+    return;
+  }
   const touch = readSwipeTouch(ev);
   if (!touch) return;
   const dx = touch.x - gesture.startX;
