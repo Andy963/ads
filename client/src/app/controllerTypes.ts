@@ -128,6 +128,10 @@ export type ChatPlan = {
 };
 
 export type ChatItem = {
+  assistantTurnId?: string;
+  assistantAggregate?: boolean;
+  assistantCompleted?: boolean;
+  providerCommandId?: string;
   id: string;
   role: "user" | "assistant" | "system";
   kind: "text" | "command" | "execute" | "patch" | "error" | "plan" | "thought" | "divider";

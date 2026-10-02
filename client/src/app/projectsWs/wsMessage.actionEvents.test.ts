@@ -1,3 +1,4 @@
+import { finalizeStreamingOnDisconnect } from "../../lib/chat_sync";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createChatActions } from "../chat";
@@ -26,6 +27,7 @@ function setup(): { rt: ProjectRuntime; handler: (message: unknown) => void } {
     clearStepLive: chat.clearStepLive,
     commandKeyForWsEvent: chat.commandKeyForWsEvent,
     finalizeAssistant: chat.finalizeAssistant,
+    sealActiveStreamingAssistant: chat.sealActiveStreamingAssistant,
     finalizeCommandBlock: chat.finalizeCommandBlock,
     flushQueuedPrompts: chat.flushQueuedPrompts,
     ingestCommand: chat.ingestCommand,
@@ -139,5 +141,119 @@ describe("Actions WebSocket event contract", () => {
       && message.patch?.files.some((file) => file.path === "server/example.ts")
     ))).toBe(true);
     expect(rt.messages.value.some((message) => message.role === "assistant" && message.content === "Implementation complete")).toBe(true);
+  });
+});
+
+describe("assistant item completion reconciliation", () => {
+  it("preserves progress and commands without appending the aggregate twice", () => {
+    const { rt, handler } = setup();
+    rt.messages.value = [{ id: "turn", role: "user", kind: "text", content: "Inspect" }];
+    const items = [{ id: "a", text: "Checking." }, { id: "b", text: "Reading." }, { id: "c", text: "Done." }];
+    for (const item of items) {
+      handler({ type: "delta", clientMessageId: "turn", assistantItemId: item.id, assistantItemText: item.text, delta: item.text });
+      handler({ type: "assistant_item", clientMessageId: "turn", assistantItemId: item.id, assistantItemText: item.text });
+      handler({ type: "phase_complete", phase: "assistant" });
+      if (item.id !== "c") rt.messages.value.push({ id: "cmd-" + item.id, role: "system", kind: "execute", content: "tool" });
+    }
+    const result = { type: "result", ok: true, clientMessageId: "turn", output: "Checking.Reading.Done.", assistantItems: items };
+    handler(result);
+    handler(result);
+    expect(rt.messages.value.map(message => message.content)).toEqual(["Inspect", "Checking.", "tool", "Reading.", "tool", "Done."]);
+    expect(rt.messages.value.some(message => message.streaming)).toBe(false);
+  });
+
+  it("does not deduplicate equal text across items or turns, including non-streaming delivery", () => {
+    const { rt, handler } = setup();
+    for (const turn of ["one", "two"]) {
+      rt.messages.value.push({ id: turn, role: "user", kind: "text", content: "Go" });
+      handler({ type: "result", ok: true, clientMessageId: turn, output: "OKOK",
+        assistantItems: [{ id: "a", text: "OK" }, { id: "b", text: "OK" }] });
+    }
+    expect(rt.messages.value.filter(message => message.role === "assistant").map(message => message.content))
+      .toEqual(["OK", "OK", "OK", "OK"]);
+  });
+
+  it("reconciles a restored aggregate only within its original turn", () => {
+    const { rt, handler } = setup();
+    rt.messages.value = [
+      { id: "one", role: "user", kind: "text", content: "Go" },
+      { id: "history-answer", assistantAggregate: true, role: "assistant", kind: "text", content: "AB" },
+      { id: "two", role: "user", kind: "text", content: "Next" },
+      { id: "new-stream", role: "assistant", kind: "text", content: "Untouched", streaming: true },
+    ];
+    const result = { type: "result", ok: true, clientMessageId: "one", output: "ABC",
+      assistantItems: [{ id: "a", text: "A" }, { id: "b", text: "B" }, { id: "c", text: "C" }] };
+    handler(result);
+    handler(result);
+    expect(rt.messages.value.filter(message => message.role === "assistant").map(message => message.content))
+      .toEqual(["ABC", "Untouched"]);
+  });
+
+  it("keeps tool-only items empty and accepts a completion without deltas", () => {
+    const { rt, handler } = setup();
+    rt.messages.value = [{ id: "turn", role: "user", kind: "text", content: "Go" }];
+    handler({ type: "assistant_item", clientMessageId: "turn", assistantItemId: "tool", assistantItemText: "" });
+    handler({ type: "assistant_item", clientMessageId: "turn", assistantItemId: "final", assistantItemText: "OK" });
+    handler({ type: "result", ok: true, clientMessageId: "turn", output: "OK", assistantItems: [{ id: "final", text: "OK" }] });
+    expect(rt.messages.value.filter(message => message.role === "assistant").map(message => message.content)).toEqual(["OK"]);
+  });
+});
+
+describe("identified assistant reconnect snapshots", () => {
+  it("continues a restored phase live and preserves tool boundaries at completion", () => {
+    const { rt, handler } = setup();
+    rt.messages.value = [{ id: "turn", role: "user", kind: "text", content: "Go" }];
+    handler({ type: "delta_snapshot", clientMessageId: "turn", assistantItemId: "a",
+      streamId: "s-a", text: "A", startOffset: 0, endOffset: 1, revision: 1, active: true });
+    handler({ type: "delta", clientMessageId: "turn", assistantItemId: "a",
+      streamId: "s-a", delta: "B", startOffset: 1, endOffset: 2 });
+    expect(rt.messages.value.at(-1)?.content).toBe("AB");
+    handler({ type: "assistant_item", clientMessageId: "turn", assistantItemId: "a", assistantItemText: "AB" });
+    rt.messages.value.push({ id: "cmd", role: "system", kind: "execute", content: "tool" });
+    handler({ type: "delta_snapshot", clientMessageId: "turn", assistantItemId: "b",
+      streamId: "s-b", text: "C", startOffset: 0, endOffset: 1, revision: 1, active: false });
+    handler({ type: "result", ok: true, clientMessageId: "turn", output: "ABC",
+      assistantItems: [{ id: "a", text: "AB" }, { id: "b", text: "C" }] });
+    expect(rt.messages.value.map(message => message.content)).toEqual(["Go", "AB", "tool", "C"]);
+  });
+
+  it("restores missing item identities in provider order", () => {
+    const { rt, handler } = setup();
+    rt.messages.value = [{ id: "turn", role: "user", kind: "text", content: "Go" }];
+    for (const id of ["b", "d"]) handler({ type: "assistant_item", clientMessageId: "turn",
+      assistantItemId: id, assistantItemText: id.toUpperCase() });
+    handler({ type: "result", ok: true, clientMessageId: "turn", output: "ABCD",
+      assistantItems: ["a", "b", "c", "d"].map(id => ({ id, text: id.toUpperCase() })) });
+    expect(rt.messages.value.map(message => message.content)).toEqual(["Go", "A", "B", "C", "D"]);
+  });
+});
+
+describe("disconnect and command anchors", () => {
+  it("resumes an identified item after the real disconnect cleanup seals its UI bubble", () => {
+    const { rt, handler } = setup();
+    rt.messages.value = [{ id: "turn", role: "user", kind: "text", content: "Go" }];
+    handler({ type: "delta", clientMessageId: "turn", assistantItemId: "a", streamId: "s",
+      delta: "A", startOffset: 0, endOffset: 1 });
+    rt.messages.value = finalizeStreamingOnDisconnect(rt.messages.value, "live-step");
+    expect(rt.messages.value.at(-1)?.streaming).toBe(false);
+    handler({ type: "delta_snapshot", clientMessageId: "turn", assistantItemId: "a", streamId: "s",
+      text: "AB", startOffset: 0, endOffset: 2, revision: 2, active: true });
+    handler({ type: "delta", clientMessageId: "turn", assistantItemId: "a", streamId: "s",
+      delta: "C", startOffset: 2, endOffset: 3 });
+    expect(rt.messages.value.at(-1)?.content).toBe("ABC");
+    expect(rt.messages.value.at(-1)?.streaming).toBe(true);
+  });
+
+  it("inserts missing progress before its command, not merely before the next answer", () => {
+    const { rt, handler } = setup();
+    rt.messages.value = [{ id: "turn", role: "user", kind: "text", content: "Go" }];
+    handler({ type: "command", clientMessageId: "turn",
+      command: { id: "tool", command: "echo test", status: "completed", outputDelta: "test", exit_code: 0 } });
+    handler({ type: "assistant_item", clientMessageId: "turn", assistantItemId: "b", assistantItemText: "B" });
+    handler({ type: "result", ok: true, clientMessageId: "turn", output: "AB",
+      assistantItems: [{ id: "a", text: "A", beforeCommandIds: ["tool"] }, { id: "b", text: "B" }] });
+    const visible = rt.messages.value.filter(message => message.role === "assistant" || message.kind === "execute");
+    expect(visible.map(message => message.kind)).toEqual(["text", "execute", "text"]);
+    expect(visible.filter(message => message.role === "assistant").map(message => message.content)).toEqual(["A", "B"]);
   });
 });

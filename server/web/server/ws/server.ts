@@ -786,7 +786,10 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
         if (eventType === "delta") {
           const source = String(payloadRecord.source ?? "").trim();
           const position = !source && lane.deltaCoalescer
-            ? lane.deltaCoalescer.appendDelta(String(payloadRecord.delta ?? ""), Number(payloadRecord.ts))
+            ? lane.deltaCoalescer.appendDelta(String(payloadRecord.delta ?? ""), Number(payloadRecord.ts), {
+                clientMessageId: typeof payloadRecord.clientMessageId === "string" ? payloadRecord.clientMessageId : undefined,
+                assistantItemId: typeof payloadRecord.assistantItemId === "string" ? payloadRecord.assistantItemId : undefined,
+              })
             : null;
           return {
             ok: true,
