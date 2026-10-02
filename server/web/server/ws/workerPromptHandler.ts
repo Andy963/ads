@@ -106,7 +106,11 @@ export function attachWorkerPromptHandler(args: {
 }): {
   unsubscribe: () => void;
   handleExploredEntry: (entry: ExploredEntry) => void;
+  getAssistantItems: (output: string) => { id: string; text: string; beforeCommandIds?: string[] }[] | undefined;
 } {
+  const assistantItems = new Map<string, string>();
+  const followingCommands = new Map<string, string[]>();
+  let latestAssistantItemId: string | undefined;
   const lastRespondingTextByItemId = new Map<string, string>();
   let activeRespondingItemId: string | null = null;
   const completedRespondingItemIds = new Set<string>();
@@ -167,6 +171,9 @@ export function attachWorkerPromptHandler(args: {
       : Date.now();
     if (raw.type === "turn.started") {
       lastRespondingTextByItemId.clear();
+      assistantItems.clear();
+      followingCommands.clear();
+      latestAssistantItemId = undefined;
       activeRespondingItemId = null;
       completedRespondingItemIds.clear();
       announcedCommandKeys.clear();
@@ -233,13 +240,17 @@ export function attachWorkerPromptHandler(args: {
       const delta = previous ? next.slice(previous.length) : next;
       lastRespondingTextByItemId.set(itemId, next);
       if (delta) {
-        args.sendToChat({ type: "delta", delta, ts: eventTimestamp });
+        args.sendToChat({ type: "delta", delta, assistantItemId: itemId, ts: eventTimestamp });
       }
       return;
     }
     if (raw.type === "item.completed" && rawItemType === "agent_message") {
       const itemId = rawItem && typeof rawItem === "object" ? String((rawItem as { id?: unknown }).id ?? "").trim() : "";
       if (itemId) {
+        const text = String((rawItem as { text?: unknown }).text ?? "");
+        assistantItems.set(itemId, text);
+        if (text.trim()) latestAssistantItemId = itemId;
+        args.sendToChat({ type: "assistant_item", assistantItemId: itemId, assistantItemText: text, ts: eventTimestamp });
         if (!completedRespondingItemIds.has(itemId)) {
           completedRespondingItemIds.add(itemId);
           if (activeRespondingItemId === itemId) {
@@ -295,6 +306,11 @@ export function attachWorkerPromptHandler(args: {
 
       if (isNewCommand) {
         announcedCommandKeys.add(commandKey);
+        if (latestAssistantItemId && commandPayload.id) {
+          const ids = followingCommands.get(latestAssistantItemId) ?? [];
+          ids.push(commandPayload.id);
+          followingCommands.set(latestAssistantItemId, ids);
+        }
         evaluateCommandSafety(commandLine);
       }
 
@@ -344,5 +360,13 @@ export function attachWorkerPromptHandler(args: {
   return {
     unsubscribe,
     handleExploredEntry,
+    getAssistantItems: (output) => {
+      const items = [...assistantItems].map(([id, text]) => ({
+        id, text, ...(followingCommands.has(id) ? { beforeCommandIds: followingCommands.get(id) } : {}),
+      })).filter(item => item.text.trim());
+      // This is an aggregate-result contract, not a text-based identity lookup.
+      // Other adapters may return only their final item or transform the output.
+      return items.length && items.map(item => item.text).join("").trim() === output.trim() ? items : undefined;
+    },
   };
 }

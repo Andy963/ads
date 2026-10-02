@@ -334,6 +334,26 @@ describe("web sync events", () => {
     ]);
   });
 
+  it("preserves assistant ownership through persisted snapshots, hydration and phase changes", () => {
+    const store = new SyncEventStore({ stateDbPath });
+    const options = { store, namespace: WEB_ACTIONS_NAMESPACE, laneKey: "identity-reconnect", flushIntervalMs: 0 };
+    const coalescer = createDeltaStreamCoalescer(options);
+    coalescer.appendDelta("A", 1000, { clientMessageId: "turn", assistantItemId: "a" });
+    const restored = createDeltaStreamCoalescer({ ...options, hydrate: true });
+    assert.equal(restored.getSnapshot()?.clientMessageId, "turn");
+    assert.equal(restored.getSnapshot()?.assistantItemId, "a");
+    restored.appendDelta("B");
+    assert.equal(restored.getSnapshot()?.text, "AB");
+    restored.finishPhase();
+    restored.appendDelta("C", 1001, { clientMessageId: "turn", assistantItemId: "b" });
+    const rows = store.readAfter({ namespace: WEB_ACTIONS_NAMESPACE, laneKey: options.laneKey, afterSeq: 0 });
+    assert.deepEqual(rows.events.map(row => [row.payload.clientMessageId, row.payload.assistantItemId, row.payload.text]),
+      [["turn", "a", "AB"], ["turn", "b", "C"]]);
+    restored.finish();
+    restored.appendDelta("Legacy");
+    assert.equal(restored.getSnapshot()?.assistantItemId, undefined);
+  });
+
   it("deltaStreamPhase: yields independently replayable snapshots and preserves append/replay sequence in SQLite", () => {
     const store = new SyncEventStore({ stateDbPath });
     const laneKey = "lane-phase-test";

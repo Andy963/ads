@@ -196,7 +196,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         .map((part) => part.text)
         .join("\n");
 
-    const { unsubscribe, handleExploredEntry } = attachWorkerPromptHandler({
+    const { unsubscribe, handleExploredEntry, getAssistantItems } = attachWorkerPromptHandler({
       orchestrator,
       turnCwd,
       historyKey: deps.context.historyKey,
@@ -366,6 +366,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         type: "result",
         ok: true,
         output: outputForChat,
+        assistantItems: getAssistantItems(outputForChat),
         threadId,
         expectedThreadId,
         threadReset,

@@ -25,6 +25,8 @@ export type DeltaStreamSnapshot = {
   revision: number;
   active: boolean;
   afterSeq: number;
+  clientMessageId?: string;
+  assistantItemId?: string;
   streamId: string;
   text: string;
   startOffset: number;
@@ -83,6 +85,7 @@ export function createDeltaStreamCoalescer(args: {
 
   let currentPhase = Math.max(0, args.initialPhase ?? 0);
   let activeEventId = `stream:${args.laneKey}:${streamToken}:${currentPhase}`;
+  let identity: { clientMessageId?: string; assistantItemId?: string } = {};
   let text = "";
   let totalChars = 0;
   let revision = 0;
@@ -125,6 +128,7 @@ export function createDeltaStreamCoalescer(args: {
         text,
         revision,
         streamId: activeEventId,
+        ...identity,
         startOffset: Math.max(0, totalChars - text.length),
         endOffset: totalChars,
         ts: startedAt || lastFlushAt,
@@ -161,6 +165,8 @@ export function createDeltaStreamCoalescer(args: {
     const restoredEnd = Number(payload.endOffset);
     const restoredStart = Number(payload.startOffset);
     if (!restoredText && !Number.isFinite(restoredEnd)) return;
+    identity = { clientMessageId: typeof payload.clientMessageId === "string" ? payload.clientMessageId : undefined,
+      assistantItemId: typeof payload.assistantItemId === "string" ? payload.assistantItemId : undefined };
     text = restoredText.slice(-maxChars);
     totalChars = Number.isFinite(restoredEnd) && restoredEnd >= 0
       ? Math.floor(restoredEnd)
@@ -180,9 +186,10 @@ export function createDeltaStreamCoalescer(args: {
 
   return {
     /** Accumulate one live frame and return its absolute stream interval. */
-    appendDelta(delta: string, eventTs?: number): DeltaStreamPosition | null {
+    appendDelta(delta: string, eventTs?: number, itemIdentity?: { clientMessageId?: string; assistantItemId?: string }): DeltaStreamPosition | null {
       const chunk = String(delta ?? "");
       if (!chunk) return null;
+      if (itemIdentity) identity = itemIdentity;
       if (!startedAt) startedAt = normalizeTimestamp(eventTs, now);
       const startOffset = totalChars;
       totalChars += chunk.length;
@@ -218,6 +225,7 @@ export function createDeltaStreamCoalescer(args: {
           eventId: activeEventId,
         });
       }
+      identity = {};
       text = "";
       totalChars = 0;
       revision = 0;
@@ -234,6 +242,7 @@ export function createDeltaStreamCoalescer(args: {
       clearFlushTimer();
       const retiringEventId = activeEventId;
       const hadActive = Boolean(text) || revision > 0 || latestSnapshotSeq !== null;
+      identity = {};
       text = "";
       totalChars = 0;
       revision = 0;
@@ -256,6 +265,7 @@ export function createDeltaStreamCoalescer(args: {
     /** Reset in-memory state; durable rows are intentionally left untouched. */
     reset(): void {
       clearFlushTimer();
+      identity = {};
       text = "";
       totalChars = 0;
       revision = 0;
@@ -279,6 +289,7 @@ export function createDeltaStreamCoalescer(args: {
         active: true,
         afterSeq: latestSnapshotSeq ?? 0,
         streamId: activeEventId,
+        ...identity,
         text,
         startOffset: Math.max(0, totalChars - text.length),
         endOffset: totalChars,

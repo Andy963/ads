@@ -439,7 +439,7 @@ describe("ws workspace project sync", () => {
     expect(applyResumeHistory).toHaveBeenCalledWith(
       [
         { id: "h-u-0", role: "user", kind: "text", content: "hello", ts: 10 },
-        { id: "h-a-3", role: "assistant", kind: "text", content: "done", ts: 13 },
+        { id: "h-a-3", role: "assistant", kind: "text", assistantAggregate: true, content: "done", ts: 13 },
       ],
       rt,
     );

@@ -1,3 +1,4 @@
+import { mapThreadEventToAgentEvent } from "../../server/codex/events.js";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
@@ -712,4 +713,33 @@ describe("web/server/ws/workerPromptHandler", () => {
       assert.equal("getThoughtText" in handler, false);
     });
   });
+});
+
+it("carries stable assistant item identities through real event translation", () => {
+  const harness = createHarness();
+  const items = [{ id: "a", text: "Checking." }, { id: "b", text: "Reading." }, { id: "c", text: "Done." }];
+  for (const item of items) {
+    for (const type of ["item.updated", "item.completed"] as const) {
+      const event = mapThreadEventToAgentEvent({ type, item: { type: "agent_message", ...item } });
+      assert.ok(event);
+      harness.emit(event);
+    }
+  }
+  assert.deepEqual(harness.handler.getAssistantItems("Checking.Reading.Done."), items);
+  assert.equal(harness.handler.getAssistantItems("Different final-only output"), undefined);
+  assert.deepEqual(harness.sent.filter((frame: any) => frame.type === "assistant_item")
+    .map((frame: any) => ({ id: frame.assistantItemId, text: frame.assistantItemText })), items);
+  assert.deepEqual(harness.sent.filter((frame: any) => frame.type === "delta")
+    .map((frame: any) => frame.assistantItemId), ["a", "b", "c"]);
+});
+
+it("anchors missing assistant progress before the commands it introduced", () => {
+  const harness = createHarness();
+  harness.emit(mapThreadEventToAgentEvent({ type: "item.completed",
+    item: { type: "agent_message", id: "a", text: "A" } }));
+  harness.emit(commandEvent({ type: "item.started", id: "tool", command: "echo test", status: "in_progress" }));
+  harness.emit(mapThreadEventToAgentEvent({ type: "item.completed",
+    item: { type: "agent_message", id: "b", text: "B" } }));
+  assert.deepEqual(harness.handler.getAssistantItems("AB"),
+    [{ id: "a", text: "A", beforeCommandIds: ["tool"] }, { id: "b", text: "B" }]);
 });

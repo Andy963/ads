@@ -1,3 +1,5 @@
+import { stripStreamingDisconnectNotice } from "../../lib/chat_sync";
+import { assistantMessageId, applyAssistantItem, reconcileAssistantItems } from "../assistantItems";
 import type { ChatActions } from "../chat";
 import { isUnsentTurnRetry } from "../outbox";
 import type {
@@ -445,6 +447,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       if (!chunk) return;
     }
     const eventTs = finiteTimestamp(payload.ts);
+    const turnId = String(payload.clientMessageId ?? "").trim();
+    const itemId = typeof payload.assistantItemId === "string" ? payload.assistantItemId : "";
+    if (turnId && itemId) {
+      const current = rt.messages.value.find(message => message.id === assistantMessageId(turnId, itemId));
+      const next = applyAssistantItem(rt.messages.value, turnId,
+        { id: itemId, text: stripStreamingDisconnectNotice(current?.content ?? "") + chunk }, true, eventTs);
+      if (next) { rt.messages.value = next; return; }
+    }
     upsertStreamingDelta(
       chunk,
       rt,
@@ -455,7 +465,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
   const consumeAssistantSnapshot = (payload: Record<string, unknown>): void => {
     const text = normalizeWireText(payload.text);
-    if (!text || payload.active === false) return;
+    if (!text || (payload.active === false && !payload.assistantItemId)) return;
     if (isStaleRuntimePayload(payload)) return;
     const streamId = String(payload.streamId ?? payload.stream_id ?? "").trim();
     const revisionRaw = Number(payload.revision);
@@ -479,7 +489,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     rt.turnInFlight = true;
     clearRecoveredBackendStatus();
     const eventTs = finiteTimestamp(payload.ts);
-    replaceStreamingText(text, rt, eventTs);
+    const turnId = String(payload.clientMessageId ?? "").trim();
+    const itemId = typeof payload.assistantItemId === "string" ? payload.assistantItemId : "";
+    const identified = turnId && itemId
+      ? applyAssistantItem(rt.messages.value, turnId, { id: itemId, text }, payload.active !== false, eventTs) : null;
+    if (identified) rt.messages.value = identified;
+    else replaceStreamingText(text, rt, eventTs);
     // `startOffset` is consumed by the ordering/dedup checks above. Keeping
     // the read here makes malformed snapshots explicit without changing the
     // backwards-compatible wire shape.
@@ -1668,7 +1683,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           });
         } else if (role === "ai" || role === "assistant") {
           restoredHistoryStatus = null;
-          next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", content: historyText, ts: ts ?? undefined });
+          next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", assistantAggregate: true, content: historyText, ts: ts ?? undefined });
         }
       }
       dropReconnectBusyMessage();
@@ -1925,6 +1940,20 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
+    if (type === "assistant_item") {
+      if (isStaleRuntimePayload(msg as Record<string, unknown>)) return;
+      const turnId = String(msg.clientMessageId ?? "").trim();
+      if (turnId && typeof msg.assistantItemId === "string" && typeof msg.assistantItemText === "string") {
+        const next = applyAssistantItem(rt.messages.value, turnId,
+          { id: msg.assistantItemId, text: msg.assistantItemText }, false, Number(msg.ts) || undefined, true);
+        if (next) {
+          rt.messages.value = next;
+          return;
+        }
+      }
+      return;
+    }
+
     if (type === "delta") {
       if (isStaleRuntimePayload(msg as Record<string, unknown>)) return;
       markTurnActive(msg as Record<string, unknown>);
@@ -2088,6 +2117,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         eventId: String(msg.eventId ?? msg.seq ?? `snapshot:${identity}:${revision || 0}`).trim(),
         revision: Number.isFinite(revision) && revision > 0 ? Math.floor(revision) : undefined,
         sequence: Number.isFinite(snapshotSequence) && snapshotSequence >= 0 ? Math.floor(snapshotSequence) : undefined,
+        providerCommandId: typeof snapshot?.id === "string" ? snapshot.id : undefined,
         startOffset: finiteOffset(snapshot?.startOffset),
         endOffset: finiteOffset(snapshot?.endOffset),
         ts: eventTs,
@@ -2225,7 +2255,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       const resultTsRaw = Number((msg as { ts?: unknown }).ts);
       const resultTs = Number.isFinite(resultTsRaw) && resultTsRaw > 0 ? Math.floor(resultTsRaw) : undefined;
-      finalizeAssistant(output, rt, resultTs);
+      const reconciled = reconcileAssistantItems(rt.messages.value,
+        String(msg.clientMessageId ?? "").trim(), msg.assistantItems, output, resultTs);
+      if (reconciled) rt.messages.value = reconciled;
+      else finalizeAssistant(output, rt, resultTs);
       void flushQueuedPrompts(rt);
       return;
     }
@@ -2332,6 +2365,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       } else {
         upsertExecuteBlock(key, cmd, outputDelta, rt, {
           ts: eventTs,
+          providerCommandId: typeof payload?.id === "string" ? payload.id : undefined,
           eventId: eventId || undefined,
           sequence: Number.isFinite(seq) && seq >= 0 ? Math.floor(seq) : undefined,
           terminal,

@@ -27,6 +27,7 @@ function stripCommandHeader(outputDelta: string, command: string): string {
 }
 
 export type ExecuteBlockUpdate = {
+  providerCommandId?: string;
   ts?: number;
   sequence?: number;
   eventId?: string;
@@ -265,6 +266,7 @@ export function createExecuteActions(params: {
     const itemId = `exec:${normalizedKey}`;
     const nextItem: ChatItem = {
       id: itemId,
+      providerCommandId: existingItem?.providerCommandId ?? options.providerCommandId,
       role: "system",
       kind: "execute",
       content: preview.join("\n"),
