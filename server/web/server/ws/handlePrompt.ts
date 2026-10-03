@@ -366,7 +366,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         type: "result",
         ok: true,
         output: outputForChat,
-        assistantItems: getAssistantItems(outputForChat),
+        assistantItems: getAssistantItems(),
         threadId,
         expectedThreadId,
         threadReset,

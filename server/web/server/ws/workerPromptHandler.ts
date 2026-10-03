@@ -106,7 +106,7 @@ export function attachWorkerPromptHandler(args: {
 }): {
   unsubscribe: () => void;
   handleExploredEntry: (entry: ExploredEntry) => void;
-  getAssistantItems: (output: string) => { id: string; text: string; beforeCommandIds?: string[] }[] | undefined;
+  getAssistantItems: () => { id: string; text: string; beforeCommandIds?: string[] }[] | undefined;
 } {
   const assistantItems = new Map<string, string>();
   const followingCommands = new Map<string, string[]>();
@@ -360,13 +360,12 @@ export function attachWorkerPromptHandler(args: {
   return {
     unsubscribe,
     handleExploredEntry,
-    getAssistantItems: (output) => {
+    getAssistantItems: () => {
       const items = [...assistantItems].map(([id, text]) => ({
         id, text, ...(followingCommands.has(id) ? { beforeCommandIds: followingCommands.get(id) } : {}),
       })).filter(item => item.text.trim());
-      // This is an aggregate-result contract, not a text-based identity lookup.
-      // Other adapters may return only their final item or transform the output.
-      return items.length && items.map(item => item.text).join("").trim() === output.trim() ? items : undefined;
+      // Post-processing can change the output without changing provider item identity.
+      return items.length ? items : undefined;
     },
   };
 }

@@ -725,12 +725,23 @@ it("carries stable assistant item identities through real event translation", ()
       harness.emit(event);
     }
   }
-  assert.deepEqual(harness.handler.getAssistantItems("Checking.Reading.Done."), items);
-  assert.equal(harness.handler.getAssistantItems("Different final-only output"), undefined);
+  assert.deepEqual(harness.handler.getAssistantItems(), items);
   assert.deepEqual(harness.sent.filter((frame: any) => frame.type === "assistant_item")
     .map((frame: any) => ({ id: frame.assistantItemId, text: frame.assistantItemText })), items);
   assert.deepEqual(harness.sent.filter((frame: any) => frame.type === "delta")
     .map((frame: any) => frame.assistantItemId), ["a", "b", "c"]);
+});
+
+it("omits empty assistant items and clears identities between turns", () => {
+  const harness = createHarness();
+  assert.equal(harness.handler.getAssistantItems(), undefined);
+  for (const item of [{ id: "empty", text: " \n " }, { id: "answer", text: "Done." }]) {
+    harness.emit(mapThreadEventToAgentEvent({ type: "item.completed", item: { type: "agent_message", ...item } }));
+  }
+  assert.deepEqual(harness.handler.getAssistantItems(),
+    [{ id: "answer", text: "Done." }]);
+  harness.emit(mapThreadEventToAgentEvent({ type: "turn.started" }));
+  assert.equal(harness.handler.getAssistantItems(), undefined);
 });
 
 it("anchors missing assistant progress before the commands it introduced", () => {
@@ -740,6 +751,6 @@ it("anchors missing assistant progress before the commands it introduced", () =>
   harness.emit(commandEvent({ type: "item.started", id: "tool", command: "echo test", status: "in_progress" }));
   harness.emit(mapThreadEventToAgentEvent({ type: "item.completed",
     item: { type: "agent_message", id: "b", text: "B" } }));
-  assert.deepEqual(harness.handler.getAssistantItems("AB"),
+  assert.deepEqual(harness.handler.getAssistantItems(),
     [{ id: "a", text: "A", beforeCommandIds: ["tool"] }, { id: "b", text: "B" }]);
 });

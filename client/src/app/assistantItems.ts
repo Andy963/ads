@@ -20,6 +20,10 @@ export function applyAssistantItem(
   const range = turnRange(messages, turnId);
   if (!range) return null;
   const [start, end] = range;
+  // Restored history and terminal aggregates are authoritative, even when empty.
+  // Replayed provider items must not overwrite them or resurrect stripped content.
+  if (messages.slice(start, end).some(message =>
+    message.role === "assistant" && message.kind === "text" && message.assistantAggregate === true)) return messages;
   const id = assistantMessageId(turnId, item.id);
   const existing = messages.findIndex((message, index) => index >= start && index < end && message.id === id);
   const next = messages.slice();
@@ -31,11 +35,6 @@ export function applyAssistantItem(
     return next;
   }
   if (!item.text.trim()) return next;
-  const unowned = next.slice(start, end).some(message =>
-    message.role === "assistant" && message.kind === "text" && message.content.trim() && message.assistantAggregate === true);
-  // A restored aggregate has no provider item IDs. Keep it until the terminal
-  // result reconciles this turn, rather than duplicating its partial contents.
-  if (unowned) return next;
   let insertAt = end;
   while (insertAt > start && next[insertAt - 1]!.id.startsWith("live-")) insertAt--;
   next.splice(insertAt, 0, {
@@ -59,20 +58,7 @@ export function reconcileAssistantItems(
       && (!Array.isArray(entry.beforeCommandIds) || !entry.beforeCommandIds.every((id: unknown) => typeof id === "string"))) return null;
     items.push({ id: entry.id, text: entry.text, beforeCommandIds: entry.beforeCommandIds });
   }
-  if (new Set(items.map(item => item.id)).size !== items.length
-    || items.map(item => item.text).join("").trim() !== output.trim()) return null;
-  const [start, end] = range;
-  const owned = messages.slice(start, end).filter(message => message.role === "assistant" && message.kind === "text");
-  if (owned.some(message => message.content.trim() && message.assistantAggregate === true)) {
-    const ids = new Set(owned.map(message => message.id));
-    const first = messages.findIndex(message => ids.has(message.id));
-    const next = messages.filter(message => !ids.has(message.id));
-    next.splice(first < 0 ? start : first, 0, {
-      id: assistantMessageId(turnId, "aggregate"), role: "assistant", kind: "text",
-      content: output, streaming: false, assistantAggregate: true, ts,
-    });
-    return next;
-  }
+  if (new Set(items.map(item => item.id)).size !== items.length) return null;
   let next = messages;
   for (let index = items.length - 1; index >= 0; index--) {
     const item = items[index]!;
@@ -92,6 +78,21 @@ export function reconcileAssistantItems(
         next.splice(neighbor < 0 ? inserted : neighbor, 0, message!);
       }
     }
+  }
+  const [start, end] = turnRange(next, turnId)!;
+  const owned = next.slice(start, end).filter(message => message.role === "assistant" && message.kind === "text");
+  // Text equality selects the display shape, never the owning turn or item.
+  // Restore missing item/command anchors before collapsing transformed output.
+  if (items.map(item => item.text).join("").trim() !== output.trim()
+    || owned.some(message => message.assistantAggregate === true)) {
+    const ids = new Set(owned.map(message => message.id));
+    const first = next.findIndex((message, index) => index >= start && index < end && ids.has(message.id));
+    next = next.filter((message, index) => !(index >= start && index < end && ids.has(message.id)));
+    next.splice(first < 0 ? start : first, 0, {
+      id: assistantMessageId(turnId, "aggregate"), role: "assistant", kind: "text",
+      content: output, streaming: false, assistantAggregate: true,
+      assistantTurnId: turnId, assistantCompleted: true, ts,
+    });
   }
   return next;
 }
