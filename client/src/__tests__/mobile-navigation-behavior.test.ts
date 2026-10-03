@@ -324,7 +324,7 @@ describe("mobile navigation behavior", () => {
     wrapper.unmount();
   }, 40_000);
 
-  it("does not write mobile tab preferences from desktop lane navigation", async () => {
+  it("writes the tab preference from desktop lane navigation", async () => {
     Object.defineProperty(window, "innerWidth", { value: 1280, configurable: true });
 
     const App = (await import("../App.vue")).default;
@@ -341,9 +341,97 @@ describe("mobile navigation behavior", () => {
     await settleUi(wrapper);
 
     await wrapper.find('[data-testid="lane-tab-actions"]').trigger("click");
-    expect(localStorage.getItem("ads.mobileWorkspaceTab.default")).toBeNull();
+    expect(readStoredMobileTab("default")).toBe("actions");
 
     wrapper.unmount();
+  }, 40_000);
+
+  it("restores the last tab independently for each project on desktop", async () => {
+    Object.defineProperty(window, "innerWidth", { value: 1280, configurable: true });
+    projectsResponse = {
+      projects: [
+        { id: "p1", workspaceRoot: "/workspace/project-a", name: "Project A", chatSessionId: "main" },
+        { id: "p2", workspaceRoot: "/workspace/project-b", name: "Project B", chatSessionId: "main" },
+      ],
+      activeProjectId: "p1",
+    };
+    localStorage.setItem("ads.mobileWorkspaceTab.p1", "worker");
+    localStorage.setItem("ads.mobileWorkspaceTab.p2", "advisor");
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, {
+      global: {
+        stubs: {
+          LoginGate: false,
+          MainChatView: false,
+          ModelManager: ModelManagerStub,
+          DraggableModal: true,
+        },
+      },
+    });
+    await settleUi(wrapper);
+
+    expect(wrapper.find('[data-testid="lane-tab-actions"]').classes()).toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).not.toContain("active");
+
+    const projectB = wrapper.findAll("button.projectRow").find((row) => row.text().includes("Project B"));
+    expect(projectB).toBeDefined();
+    await projectB!.trigger("click");
+    await settleUi(wrapper);
+    expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");
+
+    const projectA = wrapper.findAll("button.projectRow").find((row) => row.text().includes("Project A"));
+    expect(projectA).toBeDefined();
+    await projectA!.trigger("click");
+    await settleUi(wrapper);
+    expect(wrapper.find('[data-testid="lane-tab-actions"]').classes()).toContain("active");
+    expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).not.toContain("active");
+
+    wrapper.unmount();
+  }, 40_000);
+
+  it("restores the last tab after a desktop reload", async () => {
+    Object.defineProperty(window, "innerWidth", { value: 1280, configurable: true });
+    projectsResponse = {
+      projects: [
+        { id: "p1", workspaceRoot: "/workspace/project-a", name: "Project A", chatSessionId: "main" },
+      ],
+      activeProjectId: "p1",
+    };
+
+    const App = (await import("../App.vue")).default;
+    const first = shallowMount(App, {
+      global: {
+        stubs: {
+          LoginGate: false,
+          MainChatView: false,
+          ModelManager: ModelManagerStub,
+          DraggableModal: true,
+        },
+      },
+    });
+    await settleUi(first);
+
+    await first.find('[data-testid="lane-tab-actions"]').trigger("click");
+    await settleUi(first);
+    expect(first.find('[data-testid="lane-tab-actions"]').classes()).toContain("active");
+    expect(readStoredMobileTab("p1")).toBe("actions");
+    first.unmount();
+
+    const second = shallowMount(App, {
+      global: {
+        stubs: {
+          LoginGate: false,
+          MainChatView: false,
+          ModelManager: ModelManagerStub,
+          DraggableModal: true,
+        },
+      },
+    });
+    await settleUi(second);
+    expect(second.find('[data-testid="lane-tab-actions"]').classes()).toContain("active");
+
+    second.unmount();
   }, 40_000);
 
   describe("horizontal lane swipe (Issue #292, carousel in #309)", () => {

@@ -23,11 +23,7 @@ import { useProjectSidebar } from "./composables/app/useProjectSidebar";
 import { createTapActivation } from "./lib/tapActivation";
 import { crumb } from "./lib/diagBreadcrumbs";
 import { errorRecoveryGeneration } from "./lib/errorRecovery";
-import {
-  readMobileWorkspaceTab,
-  writeMobileWorkspaceTab,
-  type MobileWorkspaceTab,
-} from "./lib/mobileWorkspacePreferences";
+import { readWorkspaceTab, writeWorkspaceTab } from "./lib/workspaceTabPreferences";
 import { purgeLatestPromptPreferences } from "./lib/preferencesStore";
 import type { TranscriptViewport } from "./app/transcriptCache";
 import {
@@ -425,15 +421,15 @@ function selectWorkspaceTab(tab: ChatLane): void {
   }
   setActiveChatLane(tab);
   crumb(`lane:${activeWorkspaceTab.value}->${tab}`);
-  if (isMobile.value) writeMobileWorkspaceTab(activeProjectId.value, tab);
+  writeWorkspaceTab(activeProjectId.value, tab);
   closeMobileContextMenu();
 }
 
 const laneActivation = createTapActivation(selectWorkspaceTab, { preserveFocus: true, name: "lane-tab" });
 
-function restoreMobileWorkspaceTab(): void {
+function restoreWorkspaceTab(): void {
   const projectId = activeProjectId.value.trim();
-  const tab = readMobileWorkspaceTab(projectId);
+  const tab = readWorkspaceTab(projectId);
   setActiveChatLane(tab);
 }
 
@@ -1184,21 +1180,15 @@ watch(mobileDrawerOpen, async (open) => {
 });
 
 watch(isMobile, (mobile) => {
-  if (mobile) {
-    if (activeProjectId.value.trim()) restoreMobileWorkspaceTab();
-    return;
-  }
+  if (activeProjectId.value.trim()) restoreWorkspaceTab();
+  if (mobile) return;
   closeMobileDrawer();
   cancelLaneGesture();
 }, { immediate: true });
 
 watch(activeProjectId, (projectId, previousProjectId) => {
   if (!projectId.trim() || projectId === previousProjectId) return;
-  if (isMobile.value) {
-    restoreMobileWorkspaceTab();
-    return;
-  }
-  if (previousProjectId?.trim()) setActiveChatLane("actions");
+  restoreWorkspaceTab();
 });
 
 watch(activeWorkspaceTab, (lane) => {

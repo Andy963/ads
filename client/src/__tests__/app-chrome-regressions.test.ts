@@ -570,7 +570,7 @@ describe("project and lane composer draft isolation (project-switch-clears-compo
     wrapper.unmount();
   }, 30_000);
 
-  it("returns to the worker lane on project switches so preserved worker context stays visible", async () => {
+  it("restores the remembered lane on project switches instead of resetting to actions", async () => {
     const wrapper = await mountApp({ MainChatView: false, MainChatComposerPanel: false });
 
     await switchLane(wrapper, "actions");
@@ -586,8 +586,10 @@ describe("project and lane composer draft isolation (project-switch-clears-compo
     await settleUi(wrapper);
 
     expect((wrapper.vm as any).activeProjectId).toBe("sess-b");
-    expect((wrapper.vm as any).activeChatLane).toBe("actions");
-    expect((getLaneTextarea(wrapper, "actions").element as HTMLTextAreaElement).value).toBe("");
+    // No remembered lane for project B: both viewports fall back to the
+    // documented default lane instead of the retired hardcoded actions reset.
+    expect((wrapper.vm as any).activeChatLane).toBe("acopilot");
+    expect((getLaneTextarea(wrapper, "acopilot").element as HTMLTextAreaElement).value).toBe("");
 
     const rowA = wrapper.findAll("button.projectRow").find((row) => row.text().includes("A")) ?? null;
     expect(rowA).toBeTruthy();
@@ -595,7 +597,11 @@ describe("project and lane composer draft isolation (project-switch-clears-compo
     await settleUi(wrapper);
 
     expect((wrapper.vm as any).activeProjectId).toBe("sess-a");
-    expect((wrapper.vm as any).activeChatLane).toBe("actions");
+    // Project A last had the acopilot lane selected, so that lane is restored...
+    expect((wrapper.vm as any).activeChatLane).toBe("acopilot");
+    expect((getLaneTextarea(wrapper, "acopilot").element as HTMLTextAreaElement).value).toBe("advisor draft A");
+    // ...and the preserved lane-local drafts are still intact.
+    await switchLane(wrapper, "actions");
     expect((getLaneTextarea(wrapper, "actions").element as HTMLTextAreaElement).value).toBe("worker context A");
 
     wrapper.unmount();
