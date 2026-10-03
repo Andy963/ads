@@ -66,8 +66,8 @@ const ALLOWED_LEGACY_TERMINOLOGY: Record<string, LegacyAllowance> = {
     reason: "compatibility: reads legacy lane spellings out of localStorage preferences",
     legacyLines: 14,
   },
-  "client/src/lib/mobileWorkspacePreferences.ts": {
-    reason: "compatibility: reads legacy lane spellings from mobile workspace preferences",
+  "client/src/lib/workspaceTabPreferences.ts": {
+    reason: "compatibility: reads legacy lane spellings from workspace tab preferences",
     legacyLines: 2,
   },
   "server/state/lanePromptStore.ts": {
