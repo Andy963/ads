@@ -2,6 +2,7 @@ import { finalizeStreamingOnDisconnect } from "../../lib/chat_sync";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createChatActions } from "../chat";
+import { reconcileAssistantItems } from "../assistantItems";
 import { createAppContext, type AppContext } from "../controller";
 import type { ProjectRuntime } from "../controllerTypes";
 
@@ -145,6 +146,80 @@ describe("Actions WebSocket event contract", () => {
 });
 
 describe("assistant item completion reconciliation", () => {
+  it.each([
+    { name: "missing items", items: undefined },
+    { name: "empty items", items: [] },
+    { name: "duplicate IDs", items: [{ id: "a", text: "A" }, { id: "a", text: "B" }] },
+    { name: "empty IDs", items: [{ id: "", text: "A" }] },
+    { name: "invalid text", items: [{ id: "a", text: 123 }] },
+    { name: "invalid command anchors", items: [{ id: "a", text: "A", beforeCommandIds: [123] }] },
+  ])("rejects $name without mutating the turn", ({ items }) => {
+    const { rt } = setup();
+    rt.messages.value = [{ id: "turn", role: "user", kind: "text", content: "Go" }];
+    const before = rt.messages.value.slice();
+    expect(reconcileAssistantItems(rt.messages.value, "turn", items, "Processed output")).toBeNull();
+    expect(rt.messages.value).toEqual(before);
+  });
+
+  it.each([
+    ["dispatch_action_job", "Queued.", "Queued.\n\ntool.dispatch_action_job: ok (job_id: test-job, status: queued)"],
+    ["memory.update", "Saved.", "Saved.\n\ntool.memory.update: ok (append)"],
+    ["session_search", "Searching.", "Searching.\n\ntool.session_search: no matches"],
+    ["ADR stripping", "Recorded.\n<<<adr\n{}\n>>>", "Recorded."],
+    ["ADR warning", "Recorded.", "Recorded.\n\n---\nADR warning: failed to record ADR (test failure)"],
+    ["schedule processing", "Scheduled.\n<<<schedule\n{}\n>>>", "Scheduled successfully."],
+    ["empty output", "Removed directive", ""],
+  ])("uses terminal output after %s without duplicating completed items", (_case, text, output) => {
+    const { rt, handler } = setup();
+    rt.messages.value = [{ id: "turn", role: "user", kind: "text", content: "Go" }];
+    const item = { id: "aggregate", text };
+    handler({ type: "assistant_item", clientMessageId: "turn", assistantItemId: item.id, assistantItemText: text });
+    const result = { type: "result", ok: true, clientMessageId: "turn", output, assistantItems: [item], ts: 1000 };
+    handler(result);
+    const completed = rt.messages.value.map(message => ({ ...message }));
+    expect(completed.filter(message => message.role === "assistant").map(message => message.content)).toEqual([output]);
+    handler(result);
+    handler({ type: "assistant_item", clientMessageId: "turn", assistantItemId: item.id, assistantItemText: text });
+    handler({ type: "delta", clientMessageId: "turn", assistantItemId: "late-item", assistantItemText: text, delta: text });
+    expect(rt.messages.value).toEqual(completed);
+    expect(rt.messages.value.some(message => message.streaming)).toBe(false);
+  });
+
+  it("collapses transformed items at their first command anchor without affecting another turn", () => {
+    const { rt, handler } = setup();
+    rt.messages.value = [
+      { id: "turn", role: "user", kind: "text", content: "Go" },
+      { id: "cmd-a", providerCommandId: "tool-a", role: "system", kind: "execute", content: "first tool" },
+      { id: "cmd-b", providerCommandId: "tool-b", role: "system", kind: "execute", content: "second tool" },
+    ];
+    handler({ type: "assistant_item", clientMessageId: "turn", assistantItemId: "b", assistantItemText: "B" });
+    rt.messages.value.push(
+      { id: "next", role: "user", kind: "text", content: "Next" },
+      { id: "next-answer", role: "assistant", kind: "text", content: "Untouched" },
+    );
+    const result = { type: "result", ok: true, clientMessageId: "turn", output: "AB\nProcessed.",
+      assistantItems: [{ id: "a", text: "A", beforeCommandIds: ["tool-a"] }, { id: "b", text: "B" }], ts: 1000 };
+    handler(result);
+    const completed = rt.messages.value.map(message => ({ ...message }));
+    expect(completed.map(message => message.content))
+      .toEqual(["Go", "AB\nProcessed.", "first tool", "second tool", "Next", "Untouched"]);
+    handler(result);
+    expect(rt.messages.value).toEqual(completed);
+  });
+
+  it("reconciles transformed non-streaming delivery and restored history to the same output", () => {
+    const output = "Done.\n\ntool.memory.update: ok (append)";
+    for (const restored of [false, true]) {
+      const { rt, handler } = setup();
+      rt.messages.value = [{ id: "turn", role: "user", kind: "text", content: "Go" }];
+      if (restored) rt.messages.value.push({ id: "history", role: "assistant", kind: "text", content: output, assistantAggregate: true });
+      const result = { type: "result", ok: true, clientMessageId: "turn", output, assistantItems: [{ id: "a", text: "Done." }] };
+      handler(result);
+      handler(result);
+      expect(rt.messages.value.filter(message => message.role === "assistant").map(message => message.content)).toEqual([output]);
+    }
+  });
+
   it("preserves progress and commands without appending the aggregate twice", () => {
     const { rt, handler } = setup();
     rt.messages.value = [{ id: "turn", role: "user", kind: "text", content: "Inspect" }];

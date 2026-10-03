@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 
+import { mapThreadEventToAgentEvent, type AgentEvent } from "../../server/codex/events.js";
 import { buildHistoryBootstrapPayload } from "../../server/web/server/ws/bootstrapReplay.js";
 import { abortInFlightHistory } from "../../server/web/server/ws/connectionRuntime.js";
 import { formatWriteExploredSummary, handlePromptMessage } from "../../server/web/server/ws/handlePrompt.js";
@@ -25,6 +26,7 @@ class MemoryHistoryStore {
 
 class SlowOrchestrator {
   workingDirectory = "";
+  private readonly eventHandlers = new Set<(event: AgentEvent) => void>();
   private resolveInvoke: ((value: { response: string; usage: null; agentId: string }) => void) | null = null;
   private readonly startedPromise: Promise<void>;
   private startedResolve: (() => void) | null = null;
@@ -59,8 +61,15 @@ class SlowOrchestrator {
     return agentId === "codex";
   }
 
-  onEvent(): () => void {
-    return () => undefined;
+  onEvent(handler: (event: AgentEvent) => void): () => void {
+    this.eventHandlers.add(handler);
+    return () => { this.eventHandlers.delete(handler); };
+  }
+
+  emitAssistantItem(text: string): void {
+    const event = mapThreadEventToAgentEvent({ type: "item.completed", item: { type: "agent_message", id: "answer", text } });
+    assert.ok(event);
+    for (const handler of this.eventHandlers) handler(event);
   }
 
   getThreadId(): string {
@@ -248,6 +257,54 @@ describe("web/server/ws handlePrompt cancellation", () => {
     );
     assert.equal(clientMessages.length, 0);
   });
+});
+
+describe("web/server/ws terminal assistant identity", () => {
+  for (const [name, rawOutput] of [
+    ["tool result", "Searching.\n<<<tool.session_search>>>\n\n>>>"],
+    ["ADR recording", 'Recorded.\n<<<adr\n{"title":"Test decision","decision":"Keep item identity"}\n>>>'],
+  ] as const) {
+    it(`preserves item identity and persists the post-processed ${name}`, async () => {
+      const fixture = createPromptFixture("ads-web-prompt-identity-");
+      try {
+        const orchestrator = new SlowOrchestrator("test-thread");
+        const args = fixture.buildArgs({
+          parsed: { type: "prompt", payload: "hello" },
+          orchestrator,
+          sessionManager: {
+            getOrCreate: () => orchestrator,
+            getSavedThreadId: () => undefined,
+            getEffectiveState: () => ({ model: "test-model", modelReasoningEffort: "high", activeAgentId: "codex" }),
+            needsHistoryInjection: () => false,
+            clearHistoryInjection: () => {},
+            saveThreadId: () => {},
+            setUserModel: () => {},
+            setUserModelReasoningEffort: () => {},
+          },
+        });
+        (args.request as { clientMessageId: string }).clientMessageId = "turn";
+        const pending = handlePromptMessage(args as any);
+        await orchestrator.waitForStart();
+        orchestrator.emitAssistantItem(rawOutput);
+        orchestrator.resolveLate(rawOutput);
+        await pending;
+
+        const results = fixture.chatMessages.filter((message: any) => message.type === "result") as Array<{
+          ok: boolean; output: string; clientMessageId: string; assistantItems: Array<{ id: string; text: string }>;
+        }>;
+        assert.equal(results.length, 1);
+        const result = results[0]!;
+        assert.equal(result.ok, true);
+        assert.equal(result.clientMessageId, "turn");
+        assert.notEqual(result.output, rawOutput);
+        assert.deepEqual(result.assistantItems, [{ id: "answer", text: rawOutput }]);
+        assert.deepEqual(fixture.historyStore.get("history-1").filter(entry => entry.role === "ai").map(entry => entry.text), [result.output]);
+        if (name === "tool result") assert.equal(result.output, "Searching.\n\ntool.session_search: no matches");
+      } finally {
+        fixture.cleanup();
+      }
+    });
+  }
 });
 
 describe("web/server/ws handlePrompt input errors", () => {
