@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import { BUILTIN_TOOL_DEFINITIONS, executeBuiltinTool, type BuiltinToolContext } from "../../tools/builtins.js";
 import type { DynamicToolCallParams } from "./protocol/v2/DynamicToolCallParams.js";
@@ -31,7 +31,7 @@ export function createBuiltinToolBridge(options: {
   matches: (params: unknown) => boolean;
   handle: (params: unknown) => DynamicToolCallResponse;
 } {
-  const completed = new Map<string, { fingerprint: string; response: DynamicToolCallResponse }>();
+  const completed = new Map<string, { tool: string; arguments: unknown; response: DynamicToolCallResponse }>();
   const matches = (params: unknown): boolean => {
     if (!params || typeof params !== "object" || options.context.signal?.aborted) return false;
     const request = params as Partial<DynamicToolCallParams>;
@@ -47,10 +47,10 @@ export function createBuiltinToolBridge(options: {
       if (typeof request.callId !== "string" || !request.callId.trim()) return failure("Built-in tool call requires a callId.");
       if (request.namespace != null) return failure("Unsupported ADS built-in tool namespace.");
       if (!BUILTIN_TOOL_DEFINITIONS.some(tool => tool.function.name === request.tool)) return failure("Unknown ADS built-in tool.");
-      const fingerprint = createHash("sha256").update(JSON.stringify({ tool: request.tool, arguments: request.arguments })).digest("hex");
       const previous = completed.get(request.callId);
       if (previous) {
-        return previous.fingerprint === fingerprint ? previous.response : failure("Built-in tool callId was reused with different arguments.");
+        return previous.tool === request.tool && isDeepStrictEqual(previous.arguments, request.arguments)
+          ? previous.response : failure("Built-in tool callId was reused with different arguments.");
       }
       let response: DynamicToolCallResponse;
       try {
@@ -61,7 +61,7 @@ export function createBuiltinToolBridge(options: {
       } catch (error) {
         response = failure(error instanceof Error ? error.message : "ADS built-in tool failed.");
       }
-      completed.set(request.callId, { fingerprint, response });
+      completed.set(request.callId, { tool: request.tool, arguments: structuredClone(request.arguments), response });
       return response;
     },
   };

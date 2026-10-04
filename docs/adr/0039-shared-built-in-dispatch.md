@@ -22,6 +22,8 @@ Accepted — Issue #516
 - daemon 可以在同一项目内复用，但回调必须匹配当前活动 thread 和 turn。每回合缓存
   call ID 的结果；同 ID 同参数返回原结果，参数冲突则拒绝。执行前标记副作用，避免
   provider 暂时故障导致整轮重试并重复入队。回合结束、取消及 reset 后不再执行旧请求。
+  native 缓存覆盖同一次 send 的所有工具轮次；Codex 用 reset 代次的取消信号绑定 send，
+  启动和恢复线程的迟到响应不能恢复旧线程，reset 前等待执行的 send 也失效。
 - 入队返回 `queued`，不承诺 Developer 已经开始执行。后续自动启动、干净 dev 工作区
   门禁及默认角色配置仍归 Actions 控制器管理。
 - Reviewer 的独立只读工具集不变；本决策不桥接 native shell 或文件写入工具。

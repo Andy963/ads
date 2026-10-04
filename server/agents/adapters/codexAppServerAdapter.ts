@@ -267,6 +267,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
   private autoCompactTimeoutMs = DEFAULT_AUTO_COMPACT_TIMEOUT_MS;
   private latestContextUsage: ContextUsage | null = null;
   private readonly sendLock = new AsyncLock();
+  private resetController = new AbortController();
   private readonly listeners = new Set<(event: AgentEvent) => void>();
   private readonly goalUpdateHandlers = new Set<(goal: ThreadGoal) => void>();
   private readonly goalClearedHandlers = new Set<() => void>();
@@ -314,6 +315,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 
   reset(_options?: { clearPersistedState?: boolean }): void {
+    // Each controller is a session generation, including sends waiting for the lock.
+    const previous = this.resetController;
+    this.resetController = new AbortController();
+    previous.abort();
     this.threadId = null;
     this.latestContextUsage = null;
     this.detachGoalSubscriptions();
@@ -537,6 +542,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 
   async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
+    const signal = options?.signal
+      ? AbortSignal.any([options.signal, this.resetController.signal])
+      : this.resetController.signal;
+    options = { ...options, signal };
     return await this.sendLock.runExclusive(async () => {
       if (options?.signal?.aborted) {
         throw createAbortError("用户中断了请求");
@@ -558,6 +567,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
     options: AgentSendOptions | undefined,
     retryState: RetryAttemptState,
   ): Promise<AgentRunResult> {
+    const assertActiveTurn = (): void => {
+      if (options?.signal?.aborted) throw createAbortError("Turn cancelled or session reset");
+    };
+    assertActiveTurn();
     const userInput = inputToUserInput(input);
     const promptCharCount = userInput
       .filter((p) => p.type === "text")
@@ -568,10 +581,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
     const daemonOptions = this.buildDaemonOptions(options?.env);
     const client = await this.registry.getOrStart(this.projectId, daemonOptions);
+    assertActiveTurn();
     const savedThreadId = this.threadId;
     let missingThreadRecovered = false;
 
     const recoverMissingThread = (error: unknown): boolean => {
+      assertActiveTurn();
       const message = error instanceof Error ? error.message : String(error);
       if (
         !savedThreadId ||
@@ -604,6 +619,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
         this.buildThreadResumeParams(id),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
       );
+      assertActiveTurn();
       const resumedId =
         typeof resumeResult?.thread?.id === "string" && resumeResult.thread.id.length > 0
           ? resumeResult.thread.id
@@ -626,6 +642,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     if (this.threadId) {
       try {
         await this.maybeCompactThread(client, this.threadId, options?.signal);
+        assertActiveTurn();
       } catch (error) {
         if (!recoverMissingThread(error)) {
           throw error;
@@ -681,6 +698,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     };
 
     const matchesCurrentTurnRequest = (params: unknown): boolean => {
+      if (options?.signal?.aborted) return false;
       const requestThreadId = extractThreadId(params);
       const requestTurnId = extractTurnId(params);
       const expectedThreadId = state.threadIdFromStarted ?? this.threadId;
@@ -703,6 +721,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
       turnDone = resolve;
       turnFail = reject;
     });
+    // Reset can reject completion while thread/start is still awaiting its response.
+    turnPromise.catch(() => {});
 
     cleanupFns.push(
       client.onServerRequest("item/commandExecution/requestApproval", (params) => {
@@ -742,6 +762,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     // they disagree; notifications without one stay visible (daemon-level
     // errors, older daemons that omit the field).
     const belongsToThisTurn = (params: unknown): boolean => {
+      if (options?.signal?.aborted) return false;
       const notificationTurnId = extractTurnId(params);
       if (notificationTurnId && state.turnId && notificationTurnId !== state.turnId) return false;
       const notificationThreadId = extractThreadId(params);
@@ -753,6 +774,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
     cleanupFns.push(
       client.onNotification("thread/started", (params) => {
+        if (options?.signal?.aborted) return;
         const threadId = extractThreadId(params);
         if (!threadId) return;
         // Another session starting a fresh thread must not hijack ours.
@@ -946,11 +968,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
     }
 
     const startThread = async (): Promise<string> => {
+      assertActiveTurn();
       const startResult = await client.request<Record<string, unknown>, { thread?: { id?: string } }>(
         "thread/start",
         this.buildThreadStartParams(),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
       );
+      assertActiveTurn();
      const newId = startResult?.thread?.id;
      if (typeof newId === "string" && newId.length > 0) {
        this.threadId = newId;
@@ -966,11 +990,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
     };
 
     const startTurn = async (threadId: string): Promise<void> => {
+      assertActiveTurn();
       await client.request(
         "turn/start",
         this.buildTurnStartParams(threadId, userInput),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
       );
+      assertActiveTurn();
     };
 
     try {
@@ -1009,6 +1035,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
         usage: state.usage,
         agentId: this.id,
       };
+    } catch (error) {
+      assertActiveTurn();
+      throw error;
     } finally {
       acceptingBuiltinCalls = false;
       for (const fn of cleanupFns) {

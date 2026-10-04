@@ -30,7 +30,7 @@ interface FakeServer {
 }
 
 function buildFakeServer(opts?: {
-  autoReplies?: Record<string, (msg: RpcLine) => Record<string, unknown>>;
+  autoReplies?: Record<string, (msg: RpcLine) => Record<string, unknown> | undefined>;
   autoErrors?: Record<string, (msg: RpcLine) => { code: number; message: string } | undefined>;
 }): FakeServer {
   const stdin = new PassThrough();
@@ -75,7 +75,7 @@ function buildFakeServer(opts?: {
       }
       if (replier) {
         const result = replier(msg);
-        stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: msg.id, result })}\n`);
+        if (result !== undefined) stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: msg.id, result })}\n`);
       }
     }
   });
@@ -116,6 +116,100 @@ async function callBuiltin(fake: FakeServer, params: Record<string, unknown>): P
 }
 
 describe("Codex built-in Actions dispatch", () => {
+  it("does not start a thread when reset invalidates pending daemon setup", async t => {
+    const dispatch = t.mock.method(LaneDispatchBus.prototype, "dispatchJob", () => ({ ok: true, jobId: "unused", status: "queued" as const }));
+    const fake = buildFakeServer();
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    t.after(() => registry.stopAll());
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let started!: () => void;
+    const setupStarted = new Promise<void>(resolve => { started = resolve; });
+    const getOrStart = registry.getOrStart.bind(registry);
+    t.mock.method(registry, "getOrStart", async (...args: Parameters<typeof getOrStart>) => {
+      started();
+      await gate;
+      return getOrStart(...args);
+    });
+    const adapter = new CodexAppServerAdapter({ projectId: "reset-daemon", registry });
+    const pending = adapter.send("Old task");
+    const rejected = assert.rejects(pending, { name: "AbortError" });
+    await setupStarted;
+    adapter.reset();
+    release();
+    await rejected;
+    assert.equal(adapter.getThreadId(), null);
+    assert.equal(dispatch.mock.callCount(), 0);
+    assert.equal(fake.requests.some(request => request.method === "thread/start" || request.method === "turn/start"), false);
+  });
+
+  for (const method of ["thread/start", "thread/resume"] as const) {
+    for (const lateError of [false, true]) {
+      it(`invalidates a delayed ${method} ${lateError ? "error" : "response"} on reset`, async t => {
+        const dispatch = t.mock.method(LaneDispatchBus.prototype, "dispatchJob", () => ({ ok: true, jobId: "new-job", status: "queued" as const }));
+        const replies: NonNullable<Parameters<typeof buildFakeServer>[0]>["autoReplies"] = {
+          "thread/start": () => ({ thread: { id: "new-thread" } }),
+          "turn/start": () => ({}),
+          [method]: () => undefined,
+        };
+        const fake = buildFakeServer({ autoReplies: replies });
+        const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+        t.after(() => registry.stopAll());
+        const adapter = new CodexAppServerAdapter({ projectId: "reset-setup", workspaceRoot: "/trusted/project", registry,
+          resumeThreadId: method === "thread/resume" ? "old-thread" : undefined });
+        const pending = adapter.send("Dispatch old task");
+        const rejected = assert.rejects(pending, { name: "AbortError" });
+        await waitForRequestCount(fake, method, 1);
+        const delayed = fake.requests.find(request => request.method === method)!;
+        adapter.reset();
+        fake.notify("thread/started", { thread: { id: "old-thread" } });
+        fake.notify("turn/started", { threadId: "old-thread", turn: { id: "old-turn" } });
+        const oldCall = { threadId: "old-thread", turnId: "old-turn", callId: "old-call", tool: "dispatch_action_job", arguments: dispatchArguments };
+        assert.equal((await callBuiltin(fake, oldCall)).error?.code, -32601);
+        const response = lateError
+          ? { error: { code: -32000, message: "no rollout found for thread id old-thread" } }
+          : { result: { thread: { id: "old-thread" } } };
+        fake.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: delayed.id, ...response })}\n`);
+        await rejected;
+        assert.equal(adapter.getThreadId(), null);
+        assert.equal(fake.requests.filter(request => request.method === "turn/start").length, 0);
+        assert.equal(dispatch.mock.callCount(), 0);
+
+        replies!["thread/start"] = () => ({ thread: { id: "new-thread" } });
+        const next = adapter.send("Dispatch new task");
+        await waitForRequestCount(fake, "turn/start", 1);
+        fake.notify("turn/started", { threadId: "new-thread", turn: { id: "new-turn" } });
+        assert.equal((await callBuiltin(fake, oldCall)).error?.code, -32601);
+        assert.equal((await callBuiltin(fake, { ...oldCall, threadId: "new-thread", turnId: "new-turn" })).result.success, true);
+        assert.equal(dispatch.mock.callCount(), 1);
+        assert.equal(adapter.getThreadId(), "new-thread");
+        fake.notify("turn/completed", { threadId: "new-thread", turn: { id: "new-turn" } });
+        await next;
+      });
+    }
+  }
+
+  it("invalidates active and queued sends on reset without accepting old tool calls", async t => {
+    const dispatch = t.mock.method(LaneDispatchBus.prototype, "dispatchJob", () => ({ ok: true, jobId: "unused", status: "queued" as const }));
+    const fake = buildFakeServer({ autoReplies: { "thread/start": () => ({ thread: { id: "old-thread" } }), "turn/start": () => ({}), "turn/interrupt": () => ({}) } });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    t.after(() => registry.stopAll());
+    const adapter = new CodexAppServerAdapter({ projectId: "reset-active", registry });
+    const active = adapter.send("Active task");
+    const activeRejected = assert.rejects(active, { name: "AbortError" });
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("turn/started", { threadId: "old-thread", turn: { id: "old-turn" } });
+    const queued = adapter.send("Queued before reset");
+    const queuedRejected = assert.rejects(queued, { name: "AbortError" });
+    adapter.reset();
+    assert.equal((await callBuiltin(fake, { threadId: "old-thread", turnId: "old-turn", callId: "late-call", tool: "dispatch_action_job", arguments: dispatchArguments })).error?.code, -32601);
+    await Promise.all([activeRejected, queuedRejected]);
+    assert.equal(adapter.getThreadId(), null);
+    assert.equal(dispatch.mock.callCount(), 0);
+    assert.equal(fake.requests.filter(request => request.method === "turn/start").length, 1);
+    assert.equal(fake.requests.filter(request => request.method === "turn/interrupt").length, 1);
+  });
+
   it("returns the shared queued result once per call ID, scoped to the trusted workspace and owner", async t => {
     const dispatch = t.mock.method(LaneDispatchBus.prototype, "dispatchJob", () => ({ ok: true, jobId: "job-516", status: "queued" as const }));
     const fake = buildFakeServer({ autoReplies: { "thread/start": () => ({ thread: { id: "dispatch-thread" } }), "turn/start": () => ({}) } });
@@ -135,6 +229,9 @@ describe("Codex built-in Actions dispatch", () => {
     assert.equal(JSON.parse(first.result.contentItems[0].text).job_id, "job-516");
     assert.equal(JSON.parse(first.result.contentItems[0].text).status, "queued");
     assert.deepEqual((await callBuiltin(fake, request)).result, first.result);
+    assert.deepEqual((await callBuiltin(fake, {
+      ...request, arguments: Object.fromEntries(Object.entries(dispatchArguments).reverse()),
+    })).result, first.result);
     assert.equal(dispatch.mock.callCount(), 1);
     const params = dispatch.mock.calls[0].arguments[0];
     assert.equal(params.projectId, "/trusted/project");

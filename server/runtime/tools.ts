@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { BUILTIN_TOOL_DEFINITIONS, executeBuiltinTool } from "../tools/builtins.js";
 import type { MiddlewarePipeline, TurnContext } from "../middleware/index.js";
@@ -168,6 +169,15 @@ function parseArguments(call: NativeChatToolCall): JsonRecord {
     return asRecord(JSON.parse(call.function.arguments || "{}"));
   } catch {
     throw new Error("Invalid JSON arguments for tool");
+  }
+}
+
+function sameArguments(left: string, right: string): boolean {
+  if (left === right) return true;
+  try {
+    return isDeepStrictEqual(JSON.parse(left || "{}"), JSON.parse(right || "{}"));
+  } catch {
+    return false;
   }
 }
 
@@ -365,6 +375,11 @@ export class NativeToolExecutor {
   private readonly signal?: AbortSignal;
   private readonly commands: CommandSessions;
   private readonly commandOutput = new Map<string, string>();
+  // One executor spans the model rounds of a turn attempt, never subsequent sends.
+  private readonly dispatchCalls = new Map<string, {
+    arguments: string;
+    result: Promise<NativeToolExecutionResult>;
+  }>();
 
   constructor(options: NativeToolExecutorOptions) {
     this.readHistory = options.readHistory;
@@ -389,10 +404,12 @@ export class NativeToolExecutor {
   async dispose(): Promise<void> {
     await this.commands.dispose();
     this.commandOutput.clear();
+    this.dispatchCalls.clear();
   }
 
   async execute(call: NativeChatToolCall): Promise<NativeToolExecutionResult> {
     this.throwIfAborted();
+    if (call.function.name === "dispatch_action_job") return this.dispatchActionJob(call);
     const args = parseArguments(call);
     switch (call.function.name) {
       case "read_execution_history": {
@@ -415,15 +432,29 @@ export class NativeToolExecutor {
         return await this.search(args);
       case "apply_patch":
         return this.applyPatch(args);
-      case "dispatch_action_job":
-        return { output: JSON.stringify(executeBuiltinTool(call.function.name, args, {
-          workspaceRoot: this.workspaceRoot,
-          authUserId: this.authUserId,
-          signal: this.signal,
-        })) };
       default:
         throw new Error("Unknown native tool");
     }
+  }
+
+  private dispatchActionJob(call: NativeChatToolCall): Promise<NativeToolExecutionResult> {
+    const cached = this.dispatchCalls.get(call.id);
+    if (cached) {
+      if (!sameArguments(cached.arguments, call.function.arguments)) {
+        throw new Error("Conflicting arguments for dispatch_action_job call ID");
+      }
+      return cached.result;
+    }
+    // Cache before execution, including rejections: a queue failure may follow persistence.
+    const result = Promise.resolve().then(() => ({
+      output: JSON.stringify(executeBuiltinTool(call.function.name, parseArguments(call), {
+        workspaceRoot: this.workspaceRoot,
+        authUserId: this.authUserId,
+        signal: this.signal,
+      })),
+    }));
+    this.dispatchCalls.set(call.id, { arguments: call.function.arguments, result });
+    return result;
   }
 
   private throwIfAborted(): void {
