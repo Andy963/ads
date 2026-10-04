@@ -15,6 +15,9 @@ import { NativeTranscriptStore } from "../../server/state/nativeTranscriptStore.
 import { ActivityTracker } from "../../server/utils/activityTracker.js";
 import { estimateNativeRequestTokens } from "../../server/runtime/nativeContextProjection.js";
 import { NATIVE_TOOL_DEFINITIONS } from "../../server/runtime/tools.js";
+import { BUILTIN_TOOL_DEFINITIONS } from "../../server/tools/builtins.js";
+import { LaneDispatchBus } from "../../server/actions/bus.js";
+import { getBus, setBusInstance } from "../../server/web/server/api/routes/actions.js";
 
 function sse(events: string[]): Response {
   return new Response(`${events.map((event) => `data: ${event}\n\n`).join("")}data: [DONE]\n\n`, {
@@ -362,63 +365,251 @@ describe("NativeAgentAdapter", () => {
     }
   });
 
-  it("dispatches action jobs without emitting a live step", async () => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-dispatch-"));
-    try {
-      let requestNumber = 0;
-      const adapter = new NativeAgentAdapter({
-        credentialOwner: "test-owner",
-        workspaceRoot: workspace,
-        workingDirectory: workspace,
-        modelResolver: {
-          resolve: () => ({
-            model: "test-model",
-            baseUrl: "https://provider.test/v1",
-            apiKey: "test-api-key",
-            provider: "test",
-          }),
-        },
-        fetchImpl: async () => {
-          requestNumber += 1;
-          if (requestNumber === 1) {
+  for (const failAfterDispatch of [false, true]) {
+    it(`dispatches with trusted ownership without live steps or replay (upstream failure: ${failAfterDispatch})`, async (t) => {
+      const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-dispatch-"));
+      const previousBus = getBus();
+      const bus = new LaneDispatchBus(getStateDatabase(path.join(workspace, "state.db")));
+      const evaluate = t.mock.method(bus, "evaluateQueue", async () => ({ allowed: false }));
+      const dispatch = t.mock.method(bus, "dispatchJob");
+      setBusInstance(bus);
+      try {
+        let requestNumber = 0;
+        let toolResult: Record<string, unknown> | undefined;
+        const adapter = new NativeAgentAdapter({
+          credentialOwner: "test-owner",
+          authUserId: "trusted-owner",
+          retryBackoffMs: [1, 1, 1],
+          workspaceRoot: workspace,
+          workingDirectory: workspace,
+          modelResolver: {
+            resolve: () => ({
+              model: "test-model",
+              baseUrl: "https://provider.test/v1",
+              apiKey: "test-api-key",
+              provider: "test",
+            }),
+          },
+          fetchImpl: async (_input, init) => {
+            requestNumber += 1;
+            const request = JSON.parse(String(init?.body ?? "{}"));
+            assert.deepEqual(request.tools.find((tool: { function: { name: string } }) => tool.function.name === "dispatch_action_job"), BUILTIN_TOOL_DEFINITIONS[0]);
+            if (requestNumber === 1) {
+              return sse([
+                JSON.stringify({
+                  choices: [{
+                    delta: {
+                      tool_calls: [{
+                        index: 0,
+                        type: "function",
+                        id: "dispatch-1",
+                        function: {
+                          name: "dispatch_action_job",
+                          arguments: JSON.stringify({ issue_id: 277, title: "Refactor dual lanes", description: "Share the built-in dispatch implementation", acceptance_criteria: ["Both runtimes dispatch jobs"] }),
+                        },
+                      }],
+                    },
+                  }],
+                }),
+                JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+              ]);
+            }
+            toolResult = JSON.parse(request.messages.find((message: NativeChatMessage) => message.role === "tool").content);
+            if (failAfterDispatch) return new Response("Upstream temporarily unavailable", { status: 503 });
             return sse([
-              JSON.stringify({
-                choices: [{
-                  delta: {
-                    tool_calls: [{
-                      index: 0,
-                      type: "function",
-                      id: "dispatch-1",
-                      function: {
-                        name: "dispatch_action_job",
-                        arguments: JSON.stringify({ issue_id: 277, title: "Refactor dual lanes" }),
-                      },
-                    }],
-                  },
-                }],
-              }),
-              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+              JSON.stringify({ choices: [{ delta: { content: "Job dispatched successfully." }, finish_reason: "stop" }] }),
             ]);
-          }
-          return sse([
-            JSON.stringify({ choices: [{ delta: { content: "Job dispatched successfully." }, finish_reason: "stop" }] }),
+          },
+        });
+
+        const liveSteps: string[] = [];
+        adapter.onEvent((event) => {
+          if (event.liveStep === true) liveSteps.push(String(event.delta ?? ""));
+        });
+
+        if (failAfterDispatch) {
+          await assert.rejects(adapter.send("Please dispatch issue 277 to Actions"));
+        } else {
+          const result = await adapter.send("Please dispatch issue 277 to Actions");
+          assert.equal(result.response, "Job dispatched successfully.");
+        }
+        assert.equal(requestNumber, 2);
+        assert.deepEqual(liveSteps, []);
+        assert.equal(dispatch.mock.callCount(), 1);
+        assert.equal(dispatch.mock.calls[0].arguments[0].authUserId, "trusted-owner");
+        assert.equal(dispatch.mock.calls[0].arguments[0].projectId, workspace);
+        assert.equal(dispatch.mock.calls[0].arguments[0].repoPath, workspace);
+        assert.deepEqual(toolResult, {
+          ok: true, job_id: dispatch.mock.calls[0].result!.jobId, status: "queued",
+          message: "Dispatched task to Actions queue with status 'queued'",
+        });
+        assert.equal(bus.getJob(String(toolResult?.job_id))?.status, "queued");
+        assert.equal(evaluate.mock.callCount(), 1);
+      } finally {
+        setBusInstance(previousBus);
+        resetStateDatabaseForTests();
+        fs.rmSync(workspace, { recursive: true, force: true });
+      }
+    });
+  }
+
+  for (const outcome of ["success", "bus-error", "validation-error", "invalid-json"] as const) {
+    for (const conflicting of [false, true]) {
+      it(`deduplicates dispatch IDs across model rounds (${outcome}, conflicting: ${conflicting})`, async (t) => {
+        const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-dispatch-cache-"));
+        const contract = {
+          issue_id: 516, title: "Shared dispatch", description: "Keep one dispatch per call ID",
+          acceptance_criteria: ["Preserve the trusted owner and workspace"],
+        };
+        const originalArgs = outcome === "validation-error" ? { ...contract, auth_user_id: "untrusted-owner" } : contract;
+        const originalJson = outcome === "invalid-json" ? "secret-invalid-json" : JSON.stringify(originalArgs);
+        const repeatedJson = outcome === "invalid-json" ? originalJson
+          : JSON.stringify(Object.fromEntries(Object.entries(originalArgs).reverse()), null, 2);
+        const calls = [originalJson, conflicting
+          ? JSON.stringify({ ...contract, description: "secret-conflicting-description" }) : repeatedJson, originalJson];
+        const originalResult = outcome === "success" ? {
+          ok: true, job_id: "fixture-dispatch-1", status: "queued",
+          message: "Dispatched task to Actions queue with status 'queued'",
+        } : { error: outcome === "bus-error" ? "Unable to dispatch Actions job"
+          : outcome === "validation-error" ? "dispatch_action_job does not accept additional arguments"
+          : "Invalid JSON arguments for tool" };
+        let attempts = 0;
+        const dispatch = t.mock.method(getBus(), "dispatchJob", (): ReturnType<LaneDispatchBus["dispatchJob"]> => {
+          attempts += 1;
+          // A failed queue operation may already have persisted a job. A replay must not retry it.
+          if (outcome === "bus-error" && attempts === 1) throw new Error("secret-bus-error");
+          return { ok: true, jobId: `fixture-dispatch-${attempts}`, status: "queued" };
+        });
+        try {
+          let requestNumber = 0;
+          let toolResults: NativeChatMessage[] = [];
+          const adapter = new NativeAgentAdapter({
+            credentialOwner: "test-owner", authUserId: "trusted-owner", workspaceRoot: workspace,
+            modelResolver: { resolve: () => ({
+              model: "test-model", baseUrl: "https://provider.test/v1", apiKey: "test-api-key", provider: "test",
+            }) },
+            fetchImpl: async (_input, init) => {
+              const request = JSON.parse(String(init?.body)) as { messages: NativeChatMessage[] };
+              toolResults = request.messages.filter(message => message.role === "tool");
+              const args = calls[requestNumber++];
+              if (args !== undefined) return sse([JSON.stringify({ choices: [{ delta: { tool_calls: [{
+                index: 0, id: "repeated-dispatch", type: "function",
+                function: { name: "dispatch_action_job", arguments: args },
+              }] }, finish_reason: "tool_calls" }] })]);
+              return sse([JSON.stringify({ choices: [{ delta: { content: "Done" }, finish_reason: "stop" }] })]);
+            },
+          });
+
+          assert.equal((await adapter.send("Dispatch the approved issue")).response, "Done");
+          assert.equal(requestNumber, 4);
+          assert.deepEqual(toolResults.map(message => JSON.parse(String(message.content))), [
+            originalResult,
+            conflicting ? { error: "Conflicting arguments for dispatch_action_job call ID" } : originalResult,
+            originalResult,
           ]);
-        },
+          assert.ok(toolResults.every(message => message.tool_call_id === "repeated-dispatch"));
+          assert.equal(toolResults[0].content, toolResults[2].content);
+          if (!conflicting) assert.equal(toolResults[0].content, toolResults[1].content);
+          assert.doesNotMatch(JSON.stringify(toolResults), /secret-|untrusted-owner/);
+          assert.equal(dispatch.mock.callCount(), outcome === "validation-error" || outcome === "invalid-json" ? 0 : 1);
+          for (const call of dispatch.mock.calls) {
+            assert.deepEqual(call.arguments[0], {
+              projectId: workspace, repoPath: workspace, authUserId: "trusted-owner", issueId: 516,
+              issueTitle: contract.title, issueDescription: contract.description,
+              acceptanceCriteria: contract.acceptance_criteria, jobKind: "github_issue",
+            });
+          }
+        } finally {
+          fs.rmSync(workspace, { recursive: true, force: true });
+        }
       });
-
-      const liveSteps: string[] = [];
-      adapter.onEvent((event) => {
-        if (event.liveStep === true) liveSteps.push(String(event.delta ?? ""));
-      });
-
-      const result = await adapter.send("Please dispatch issue 277 to Actions");
-
-      assert.equal(result.response, "Job dispatched successfully.");
-      assert.deepEqual(liveSteps, []);
-    } finally {
-      fs.rmSync(workspace, { recursive: true, force: true });
     }
-  });
+  }
+
+  for (const failFirst of [false, true]) {
+    it(`allows dispatch ID reuse in a new send after ${failFirst ? "an error" : "success"}`, async (t) => {
+      const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-dispatch-new-turn-"));
+      let attempts = 0;
+      const dispatch = t.mock.method(getBus(), "dispatchJob", (): ReturnType<LaneDispatchBus["dispatchJob"]> => {
+        attempts += 1;
+        if (failFirst && attempts === 1) throw new Error("secret-bus-error");
+        return { ok: true, jobId: `fixture-turn-${attempts}`, status: "queued" };
+      });
+      try {
+        let requestNumber = 0;
+        const results: Array<Record<string, unknown>> = [];
+        const adapter = new NativeAgentAdapter({
+          credentialOwner: "test-owner", authUserId: "trusted-owner", workspaceRoot: workspace,
+          modelResolver: { resolve: () => ({
+            model: "test-model", baseUrl: "https://provider.test/v1", apiKey: "test-api-key", provider: "test",
+          }) },
+          fetchImpl: async (_input, init) => {
+            requestNumber += 1;
+            if (requestNumber % 2 === 1) return sse([JSON.stringify({ choices: [{ delta: { tool_calls: [{
+              index: 0, id: "reused-dispatch", type: "function",
+              function: { name: "dispatch_action_job", arguments: JSON.stringify({
+                title: requestNumber < 5 ? "Same task" : "Different task", description: "Approved local task",
+                acceptance_criteria: [], kind: "local_prompt",
+              }) },
+            }] }, finish_reason: "tool_calls" }] })]);
+            const request = JSON.parse(String(init?.body)) as { messages: NativeChatMessage[] };
+            results.push(JSON.parse(String(request.messages.filter(message => message.role === "tool").at(-1)?.content)));
+            return sse([JSON.stringify({ choices: [{ delta: { content: "Done" }, finish_reason: "stop" }] })]);
+          },
+        });
+
+        for (let turn = 0; turn < 3; turn += 1) {
+          assert.equal((await adapter.send("Dispatch this approved task")).response, "Done");
+        }
+        assert.equal(requestNumber, 6);
+        assert.equal(dispatch.mock.callCount(), 3);
+        assert.deepEqual(results, [1, 2, 3].map(turn => failFirst && turn === 1
+          ? { error: "Unable to dispatch Actions job" }
+          : { ok: true, job_id: `fixture-turn-${turn}`, status: "queued",
+            message: "Dispatched task to Actions queue with status 'queued'" }));
+        assert.deepEqual(dispatch.mock.calls.map(call => call.arguments[0].issueTitle), ["Same task", "Same task", "Different task"]);
+      } finally {
+        fs.rmSync(workspace, { recursive: true, force: true });
+      }
+    });
+  }
+
+  for (const terminal of ["cancelled", "upstream-error"] as const) {
+    it(`does not replay cached dispatch when the turn ends with ${terminal}`, async (t) => {
+      const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-dispatch-terminal-"));
+      const controller = new AbortController();
+      const dispatch = t.mock.method(getBus(), "dispatchJob", (): ReturnType<LaneDispatchBus["dispatchJob"]> => ({
+        ok: true, jobId: "fixture-dispatch-terminal", status: "queued",
+      }));
+      try {
+        let requestNumber = 0;
+        const adapter = new NativeAgentAdapter({
+          credentialOwner: "test-owner", workspaceRoot: workspace, retryBackoffMs: [1, 1, 1],
+          modelResolver: { resolve: () => ({
+            model: "test-model", baseUrl: "https://provider.test/v1", apiKey: "test-api-key", provider: "test",
+          }) },
+          fetchImpl: async () => {
+            requestNumber += 1;
+            if (requestNumber <= 2) return sse([JSON.stringify({ choices: [{ delta: { tool_calls: [{
+              index: 0, id: "repeated-dispatch", type: "function",
+              function: { name: "dispatch_action_job", arguments: JSON.stringify({
+                title: "Approved task", description: "Do not replay after termination", acceptance_criteria: [], kind: "local_prompt",
+              }) },
+            }] }, finish_reason: "tool_calls" }] })]);
+            if (terminal === "cancelled") controller.abort(new Error("secret-abort-reason"));
+            return new Response("Upstream temporarily unavailable", { status: 503 });
+          },
+        });
+
+        await assert.rejects(adapter.send("Dispatch this approved task", { signal: controller.signal }),
+          (error: Error) => !error.message.includes("secret-") && (terminal !== "cancelled" || error.name === "AbortError"));
+        assert.equal(requestNumber, 3);
+        assert.equal(dispatch.mock.callCount(), 1);
+      } finally {
+        fs.rmSync(workspace, { recursive: true, force: true });
+      }
+    });
+  }
 
   it("keeps streamed text snapshots isolated across tool-call rounds", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-snapshots-"));

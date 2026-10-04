@@ -81,6 +81,7 @@ const DEFAULT_METADATA: AgentMetadata = {
 
 export interface NativeAgentAdapterOptions {
   credentialOwner: string;
+  authUserId?: string;
   stateDbPath?: string;
   workspaceRoot: string;
   workingDirectory?: string;
@@ -183,6 +184,7 @@ export class NativeAgentAdapter implements AgentAdapter {
   readonly metadata: AgentMetadata;
 
   private readonly credentialOwner: string;
+  private readonly authUserId?: string;
   private readonly workspaceRoot: string;
   private readonly env: NodeJS.ProcessEnv;
   private readonly resolver: NativeModelResolver;
@@ -235,6 +237,7 @@ export class NativeAgentAdapter implements AgentAdapter {
       throw new Error("NativeAgentAdapter does not accept provider thread resume ids");
     }
     this.workspaceRoot = options.workspaceRoot;
+    this.authUserId = options.authUserId;
     this.env = { ...process.env, ...(options.env ?? {}) };
     this.secretValues = collectSecretValues(this.env);
     this.resolver = options.modelResolver ?? createNativeModelResolver({
@@ -727,6 +730,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     assertTurnActive();
     const toolExecutor = new NativeToolExecutor({
       workspaceRoot: this.workspaceRoot,
+      authUserId: this.authUserId,
       readHistory: this.transcriptStore && this.transcriptId
         ? (after, offset) => this.transcriptStore!.readHistory(this.transcriptId!, after, offset) : undefined,
       workingDirectory,

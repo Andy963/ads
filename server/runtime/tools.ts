@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
-import { getBus } from "../web/server/api/routes/actions.js";
+import { BUILTIN_TOOL_DEFINITIONS, executeBuiltinTool } from "../tools/builtins.js";
 import type { MiddlewarePipeline, TurnContext } from "../middleware/index.js";
 import { findSecurityViolation } from "../middleware/builtin/globalRulesMiddleware.js";
 import { getExecAllowlistFromEnv, hasShellSyntax, runCommand, tokenizeCommandLine } from "../utils/commandRunner.js";
@@ -121,25 +122,7 @@ export const NATIVE_TOOL_DEFINITIONS: NativeToolDefinition[] = [
       },
     },
   },
-  {
-    type: "function",
-    function: {
-      name: "dispatch_action_job",
-      description: "Dispatch an approved GitHub Issue or task prompt to the background Actions execution queue.",
-      parameters: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          issue_id: { type: "integer", description: "GitHub Issue number if available." },
-          title: { type: "string", description: "Task or Issue title." },
-          description: { type: "string", description: "Complete Issue description or local task prompt." },
-          acceptance_criteria: { type: "array", items: { type: "string" }, description: "Immutable acceptance criteria snapshot." },
-          kind: { type: "string", enum: ["github_issue", "local_prompt"], description: "Kind of task." },
-        },
-        required: ["title", "description", "acceptance_criteria"],
-      },
-    },
-  },
+  ...BUILTIN_TOOL_DEFINITIONS,
 ];
 
 export interface NativeToolExecutionResult {
@@ -161,6 +144,7 @@ export interface NativeToolExecutionResult {
 export interface NativeToolExecutorOptions {
   readHistory?: (after: number, offset: number) => string;
   workspaceRoot: string;
+  authUserId?: string;
   workingDirectory?: string;
   env?: NodeJS.ProcessEnv;
   middleware?: MiddlewarePipeline;
@@ -184,7 +168,16 @@ function parseArguments(call: NativeChatToolCall): JsonRecord {
   try {
     return asRecord(JSON.parse(call.function.arguments || "{}"));
   } catch {
-    throw new Error(`Invalid JSON arguments for tool ${call.function.name}`);
+    throw new Error("Invalid JSON arguments for tool");
+  }
+}
+
+function sameArguments(left: string, right: string): boolean {
+  if (left === right) return true;
+  try {
+    return isDeepStrictEqual(JSON.parse(left || "{}"), JSON.parse(right || "{}"));
+  } catch {
+    return false;
   }
 }
 
@@ -373,6 +366,7 @@ function applyOperation(original: string | null, operation: PatchOperation): str
 export class NativeToolExecutor {
   private readonly readHistory?: (after: number, offset: number) => string;
   private readonly workspaceRoot: string;
+  private readonly authUserId?: string;
   private readonly workingDirectory: string;
   private readonly env: NodeJS.ProcessEnv;
   private readonly middleware?: MiddlewarePipeline;
@@ -381,10 +375,16 @@ export class NativeToolExecutor {
   private readonly signal?: AbortSignal;
   private readonly commands: CommandSessions;
   private readonly commandOutput = new Map<string, string>();
+  // One executor spans the model rounds of a turn attempt, never subsequent sends.
+  private readonly dispatchCalls = new Map<string, {
+    arguments: string;
+    result: Promise<NativeToolExecutionResult>;
+  }>();
 
   constructor(options: NativeToolExecutorOptions) {
     this.readHistory = options.readHistory;
     this.workspaceRoot = fs.realpathSync(path.resolve(options.workspaceRoot));
+    this.authUserId = options.authUserId;
     const workingDirectory = path.resolve(options.workingDirectory ?? this.workspaceRoot);
     if (!isWithinRoot(this.workspaceRoot, workingDirectory)) {
       throw new Error("Working directory must be inside the workspace root");
@@ -404,10 +404,12 @@ export class NativeToolExecutor {
   async dispose(): Promise<void> {
     await this.commands.dispose();
     this.commandOutput.clear();
+    this.dispatchCalls.clear();
   }
 
   async execute(call: NativeChatToolCall): Promise<NativeToolExecutionResult> {
     this.throwIfAborted();
+    if (call.function.name === "dispatch_action_job") return this.dispatchActionJob(call);
     const args = parseArguments(call);
     switch (call.function.name) {
       case "read_execution_history": {
@@ -430,53 +432,35 @@ export class NativeToolExecutor {
         return await this.search(args);
       case "apply_patch":
         return this.applyPatch(args);
-      case "dispatch_action_job":
-        return this.dispatchActionJob(args);
       default:
-        throw new Error(`Unknown native tool: ${call.function.name}`);
+        throw new Error("Unknown native tool");
     }
+  }
+
+  private dispatchActionJob(call: NativeChatToolCall): Promise<NativeToolExecutionResult> {
+    const cached = this.dispatchCalls.get(call.id);
+    if (cached) {
+      if (!sameArguments(cached.arguments, call.function.arguments)) {
+        throw new Error("Conflicting arguments for dispatch_action_job call ID");
+      }
+      return cached.result;
+    }
+    // Cache before execution, including rejections: a queue failure may follow persistence.
+    const result = Promise.resolve().then(() => ({
+      output: JSON.stringify(executeBuiltinTool(call.function.name, parseArguments(call), {
+        workspaceRoot: this.workspaceRoot,
+        authUserId: this.authUserId,
+        signal: this.signal,
+      })),
+    }));
+    this.dispatchCalls.set(call.id, { arguments: call.function.arguments, result });
+    return result;
   }
 
   private throwIfAborted(): void {
     if (this.signal?.aborted) {
       throw new DOMException("Aborted", "AbortError");
     }
-  }
-
-  private dispatchActionJob(args: JsonRecord): NativeToolExecutionResult {
-    this.throwIfAborted();
-    const title = stringArgument(args, "title");
-    const description = stringArgument(args, "description");
-    const kind = args.kind === "local_prompt" ? "local_prompt" : "github_issue";
-    if (!Array.isArray(args.acceptance_criteria)) {
-      throw new Error("dispatch_action_job requires acceptance_criteria");
-    }
-    const acceptanceCriteria = args.acceptance_criteria
-      .filter((value): value is string => typeof value === "string")
-      .map((value) => value.trim())
-      .filter(Boolean);
-    if (!description.trim() || (kind === "github_issue" && acceptanceCriteria.length === 0)) {
-      throw new Error("dispatch_action_job requires a complete description and acceptance criteria");
-    }
-    const issueId = args.issue_id !== undefined ? Number(args.issue_id) : null;
-    const bus = getBus();
-    const res = bus.dispatchJob({
-      projectId: this.workspaceRoot,
-      issueId: Number.isFinite(issueId) ? issueId : null,
-      issueTitle: title,
-      issueDescription: description,
-      acceptanceCriteria,
-      jobKind: kind,
-      repoPath: this.workspaceRoot,
-    });
-    return {
-      output: JSON.stringify({
-        ok: res.ok,
-        job_id: res.jobId,
-        status: res.status,
-        message: `Dispatched task to Actions queue with status '${res.status}'`,
-      }),
-    };
   }
 
   private resolvePath(value: string, allowMissing = false): string {

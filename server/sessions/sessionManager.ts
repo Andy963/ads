@@ -729,6 +729,7 @@ export class SessionManager {
       return [
         new NativeAgentAdapter({
           credentialOwner: owner,
+          authUserId: args.authUserId,
           stateDbPath: this.options.stateDbPath,
           workspaceRoot: args.workspaceRoot,
           workingDirectory: args.effectiveCwd,
@@ -758,6 +759,8 @@ export class SessionManager {
     return [
       new CodexAppServerAdapter({
         projectId,
+        workspaceRoot: args.workspaceRoot,
+        authUserId: args.authUserId,
         sandboxMode: this.sandboxMode,
         model: args.userModel,
         workingDirectory: args.effectiveCwd,

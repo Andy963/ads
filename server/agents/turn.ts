@@ -11,6 +11,7 @@ export interface AgentTurnOptions extends AgentSendOptions {
   cwd?: string;
   workspaceRoot?: string;
   historySessionId?: string;
+  authUserId?: string;
   onExploredEntry?: ExploredEntryCallback;
   middleware?: MiddlewarePipeline;
   middlewareContext?: AgentMiddlewareContext;
@@ -89,6 +90,8 @@ export async function runAgentTurn(
       text: result.response,
       workspaceRoot,
       sessionId: options.historySessionId,
+      authUserId: options.authUserId,
+      signal: options.signal,
     });
     const cleanedResponse = stripToolDirectives(result.response);
     if (options.middleware && middlewareContext) {

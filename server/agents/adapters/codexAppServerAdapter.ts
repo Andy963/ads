@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 
 import type { Input, ThreadEvent, ThreadItem, Usage } from "../protocol/types.js";
 import type {
@@ -21,6 +22,7 @@ import {
 } from "../../codex/appServer/daemonRegistry.js";
 import type { CodexProviderInjection } from "../../codex/appServer/providerInjection.js";
 import type { CodexAppServerClient } from "../../codex/appServer/rpcClient.js";
+import { builtinDynamicTools, createBuiltinToolBridge } from "../../codex/appServer/builtinTools.js";
 import type { CommandExecutionRequestApprovalResponse } from "../../codex/appServer/protocol/v2/CommandExecutionRequestApprovalResponse.js";
 import { AsyncLock } from "../../utils/asyncLock.js";
 import type { ThreadGoal } from "../../codex/appServer/protocol/v2/ThreadGoal.js";
@@ -62,6 +64,8 @@ const DEFAULT_METADATA: AgentMetadata = {
 export interface CodexAppServerAdapterOptions {
   /** Project identifier used by the daemon registry to keep one daemon per project. */
   projectId: string;
+  workspaceRoot?: string;
+  authUserId?: string;
   binary?: string;
   sandboxMode?: SandboxMode;
   workingDirectory?: string;
@@ -244,6 +248,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
   readonly metadata: AgentMetadata;
 
   private readonly projectId: string;
+  private readonly workspaceRoot: string;
+  private readonly authUserId?: string;
   private readonly registry: CodexAppServerDaemonRegistry;
   private readonly binary?: string;
   private readonly sandboxMode: SandboxMode;
@@ -261,6 +267,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
   private autoCompactTimeoutMs = DEFAULT_AUTO_COMPACT_TIMEOUT_MS;
   private latestContextUsage: ContextUsage | null = null;
   private readonly sendLock = new AsyncLock();
+  private resetController = new AbortController();
   private readonly listeners = new Set<(event: AgentEvent) => void>();
   private readonly goalUpdateHandlers = new Set<(goal: ThreadGoal) => void>();
   private readonly goalClearedHandlers = new Set<() => void>();
@@ -273,6 +280,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
       throw new Error("CodexAppServerAdapter requires a non-empty projectId");
     }
     this.projectId = options.projectId;
+    this.workspaceRoot = path.resolve(options.workspaceRoot ?? options.workingDirectory ?? process.cwd());
+    this.authUserId = options.authUserId;
     this.registry = options.registry ?? getSharedDaemonRegistry();
     this.binary = options.binary;
     this.sandboxMode = options.sandboxMode ?? "workspace-write";
@@ -306,6 +315,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 
   reset(_options?: { clearPersistedState?: boolean }): void {
+    // Each controller is a session generation, including sends waiting for the lock.
+    const previous = this.resetController;
+    this.resetController = new AbortController();
+    previous.abort();
     this.threadId = null;
     this.latestContextUsage = null;
     this.detachGoalSubscriptions();
@@ -529,6 +542,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 
   async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
+    const signal = options?.signal
+      ? AbortSignal.any([options.signal, this.resetController.signal])
+      : this.resetController.signal;
+    options = { ...options, signal };
     return await this.sendLock.runExclusive(async () => {
       if (options?.signal?.aborted) {
         throw createAbortError("用户中断了请求");
@@ -550,6 +567,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
     options: AgentSendOptions | undefined,
     retryState: RetryAttemptState,
   ): Promise<AgentRunResult> {
+    const assertActiveTurn = (): void => {
+      if (options?.signal?.aborted) throw createAbortError("Turn cancelled or session reset");
+    };
+    assertActiveTurn();
     const userInput = inputToUserInput(input);
     const promptCharCount = userInput
       .filter((p) => p.type === "text")
@@ -560,10 +581,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
     const daemonOptions = this.buildDaemonOptions(options?.env);
     const client = await this.registry.getOrStart(this.projectId, daemonOptions);
+    assertActiveTurn();
     const savedThreadId = this.threadId;
     let missingThreadRecovered = false;
 
     const recoverMissingThread = (error: unknown): boolean => {
+      assertActiveTurn();
       const message = error instanceof Error ? error.message : String(error);
       if (
         !savedThreadId ||
@@ -596,6 +619,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
         this.buildThreadResumeParams(id),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
       );
+      assertActiveTurn();
       const resumedId =
         typeof resumeResult?.thread?.id === "string" && resumeResult.thread.id.length > 0
           ? resumeResult.thread.id
@@ -618,6 +642,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     if (this.threadId) {
       try {
         await this.maybeCompactThread(client, this.threadId, options?.signal);
+        assertActiveTurn();
       } catch (error) {
         if (!recoverMissingThread(error)) {
           throw error;
@@ -637,7 +662,18 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const blockedCommandIds = new Set<string>();
     const blockedCommandReasons = new Map<string, string>();
     const emittedBlockedCommandIds = new Set<string>();
+    let acceptingBuiltinCalls = true;
     const cleanupFns: Array<() => void> = [];
+    const builtinTools = createBuiltinToolBridge({
+      context: { workspaceRoot: this.workspaceRoot, authUserId: this.authUserId, signal: options?.signal },
+      scope: () => ({
+        threadId: this.threadId,
+        turnId: state.turnId,
+        active: acceptingBuiltinCalls && !state.failed,
+      }),
+      markSideEffect: (callId) => retryState.markSideEffect({ type: "tool_call", id: callId, tool: "dispatch_action_job" }),
+    });
+    cleanupFns.push(client.onServerRequest("item/tool/call", builtinTools.handle, { matches: builtinTools.matches }));
     const emit = (event: ThreadEvent) => {
       const mapped = mapThreadEventToAgentEvent(event, Date.now());
       if (mapped) {
@@ -662,6 +698,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     };
 
     const matchesCurrentTurnRequest = (params: unknown): boolean => {
+      if (options?.signal?.aborted) return false;
       const requestThreadId = extractThreadId(params);
       const requestTurnId = extractTurnId(params);
       const expectedThreadId = state.threadIdFromStarted ?? this.threadId;
@@ -684,6 +721,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
       turnDone = resolve;
       turnFail = reject;
     });
+    // Reset can reject completion while thread/start is still awaiting its response.
+    turnPromise.catch(() => {});
 
     cleanupFns.push(
       client.onServerRequest("item/commandExecution/requestApproval", (params) => {
@@ -723,6 +762,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
     // they disagree; notifications without one stay visible (daemon-level
     // errors, older daemons that omit the field).
     const belongsToThisTurn = (params: unknown): boolean => {
+      if (options?.signal?.aborted) return false;
+      const notificationTurnId = extractTurnId(params);
+      if (notificationTurnId && state.turnId && notificationTurnId !== state.turnId) return false;
       const notificationThreadId = extractThreadId(params);
       if (!notificationThreadId) return true;
       const expected = state.threadIdFromStarted ?? this.threadId;
@@ -732,6 +774,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
     cleanupFns.push(
       client.onNotification("thread/started", (params) => {
+        if (options?.signal?.aborted) return;
         const threadId = extractThreadId(params);
         if (!threadId) return;
         // Another session starting a fresh thread must not hijack ours.
@@ -753,6 +796,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     cleanupFns.push(
       client.onNotification("turn/completed", (params) => {
         if (!belongsToThisTurn(params)) return;
+        acceptingBuiltinCalls = false;
         const usage = extractUsageFromTurnPayload(params);
         if (usage) {
           state.usage = usage;
@@ -902,6 +946,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     if (abortSignal) {
       abortListener = () => {
         aborted = true;
+        acceptingBuiltinCalls = false;
         const turnId = state.turnId;
         const threadId = state.threadIdFromStarted ?? this.threadId;
         if (turnId && threadId) {
@@ -923,11 +968,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
     }
 
     const startThread = async (): Promise<string> => {
+      assertActiveTurn();
       const startResult = await client.request<Record<string, unknown>, { thread?: { id?: string } }>(
         "thread/start",
         this.buildThreadStartParams(),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
       );
+      assertActiveTurn();
      const newId = startResult?.thread?.id;
      if (typeof newId === "string" && newId.length > 0) {
        this.threadId = newId;
@@ -943,11 +990,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
     };
 
     const startTurn = async (threadId: string): Promise<void> => {
+      assertActiveTurn();
       await client.request(
         "turn/start",
         this.buildTurnStartParams(threadId, userInput),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
       );
+      assertActiveTurn();
     };
 
     try {
@@ -986,7 +1035,11 @@ export class CodexAppServerAdapter implements AgentAdapter {
         usage: state.usage,
         agentId: this.id,
       };
+    } catch (error) {
+      assertActiveTurn();
+      throw error;
     } finally {
+      acceptingBuiltinCalls = false;
       for (const fn of cleanupFns) {
         try {
           fn();
@@ -1225,6 +1278,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       experimentalRawEvents: false,
       persistExtendedHistory: false,
       approvalPolicy: "untrusted",
+      dynamicTools: builtinDynamicTools(),
     };
     if (this.workingDirectory) params.cwd = this.workingDirectory;
     if (this.model) params.model = this.resolveModel?.(this.model) ?? this.model;

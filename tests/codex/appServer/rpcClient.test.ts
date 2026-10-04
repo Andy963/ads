@@ -71,8 +71,10 @@ describe("CodexAppServerClient", () => {
     client.attach({ stdin, stdout, stderr });
 
     let observed: JsonRpcLine | null = null;
+    let initialized = false;
     readLines(stdin, (msg) => {
       if (!observed) observed = msg;
+      if (msg.method === "initialized") initialized = true;
       if (msg.method === "initialize") {
         send(stdout, {
           jsonrpc: "2.0",
@@ -86,6 +88,8 @@ describe("CodexAppServerClient", () => {
     assert.equal(observed?.method, "initialize");
     assert.equal(observed?.jsonrpc, "2.0");
     assert.equal(typeof observed?.id, "number");
+    assert.deepEqual((observed?.params as { capabilities: unknown }).capabilities, { experimentalApi: true });
+    assert.equal(initialized, true);
     await client.close();
   });
 

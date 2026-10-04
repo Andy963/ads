@@ -65,6 +65,10 @@ Web 与独立 Channel Connector 通过 Core WebSocket 协议使用各自隔离�
     - **`NativeAgentAdapter`（可选，`ADS_AGENT_RUNTIME=native`）**：进程内直连 OpenAI 兼容 `/chat/completions` SSE，按模型配置与认证用户解析 endpoint、model 与加密凭据 profile；内置 `exec_command` / `read_file` / `search` / `apply_patch` 四个受限工具，文件工具限制在工作区内，命令（含 Shell 元字符的管道/复合命令）直接在宿主机执行并继承宿主环境与 `$HOME`。Native 是直接宿主机执行模式，不等同于 Codex app-server 的 sandbox policy。
   - Native durable conversation 使用 ADS state store 中的 provider-neutral transcript，按 completed turn 恢复；ephemeral session（例如 Actions Reviewer）不持久化。上下文发送前经过独立的 token-aware projection，不能把 Native transcript 当作 Codex rollout。
   - Native provider capability 按 `supported` / `unsupported` / `unknown` 协商；未知或不支持的能力在请求前以结构化错误拒绝，不静默降级。完整边界见 [ADR 0026](adr/0026-native-runtime-lifecycle-and-capability-contract.md)。
+- **共享业务内置工具**：`dispatch_action_job` 的定义、参数校验和入队逻辑统一在
+  `server/tools/builtins.ts`。Native 直接调用，Codex App Server 经动态工具回调调用；
+  文本指令仅保留为兼容入口。新建 Codex 线程注册工具，恢复时由 provider 保留；升级前的
+  旧线程不自动重置，仍可使用文本兼容入口。权限、去重及兼容边界见 [ADR 0039](adr/0039-shared-built-in-dispatch.md)。
 - **上游重试与自愈 (Upstream Retry & Healing)**：
   - 自动识别限流（429）、服务器高负载（503）、Cloudflare/网关超时（520–524）以及上游安全拦截。
   - 仅在未产生命令执行或文件写入等副作用前，自动指数退避重试，保障网络波动下的任务可靠性。
