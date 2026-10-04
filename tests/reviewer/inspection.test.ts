@@ -469,6 +469,44 @@ describe("isolated Reviewer inspection", () => {
     assert.equal(messages.length, 0);
   });
 
+  for (const status of ["PASS", "REJECT"] as const) {
+    for (const failure of ["NUL query", "argument limit"] as const) {
+      it(`accepts ${status} after recovering from a search ${failure}`, async () => {
+        const original = process.env.ADS_REVIEWER_TEST_OVERSIZED_ENV;
+        const restoreEnvironment = () => {
+          if (original === undefined) delete process.env.ADS_REVIEWER_TEST_OVERSIZED_ENV;
+          else process.env.ADS_REVIEWER_TEST_OVERSIZED_ENV = original;
+        };
+        const expected = { status, summary: "Recovered and read the source", defects: status === "PASS" ? [] : [
+          { file: "src/file.ts", line: 1, severity: "blocker", description: "Verified source defect." },
+        ] };
+        let rounds = 0;
+        try {
+          const result = await runReviewerInspection({ ...options(), complete: async request => {
+            rounds++;
+            if (rounds === 1) return { ...verdict, text: "", toolCalls: [call("list_dir", { path: "." })] };
+            if (rounds === 2) {
+              // Exceed Linux's single environment-string limit after the index is cached.
+              if (failure === "argument limit") process.env.ADS_REVIEWER_TEST_OVERSIZED_ENV = "x".repeat(256 * 1024);
+              return { ...verdict, text: "", toolCalls: [call("search_code", { query: failure === "NUL query" ? "literal\0" : "literal" })] };
+            }
+            if (rounds === 3) {
+              restoreEnvironment();
+              assert.match(String(request.messages.at(-1)?.content), failure === "NUL query" ? /request rejected.*NUL/ : /request rejected.*argument limit/);
+              return { ...verdict, text: "", toolCalls: [call("read_file_range", { path: "src/file.ts", start_line: 1, end_line: 1 })] };
+            }
+            assert.match(String(request.messages.at(-1)?.content), /1: const value0/);
+            return { ...verdict, text: JSON.stringify(expected) };
+          } });
+          assert.equal(rounds, 4);
+          assert.equal(result.status, status);
+        } finally {
+          restoreEnvironment();
+        }
+      });
+    }
+  }
+
   for (const toolTurnBudget of [-1, 1.5, Number.NaN]) {
     it(`rejects invalid tool round budget ${toolTurnBudget} before model invocation`, async () => {
       await assert.rejects(runReviewerInspection({ ...options(), toolTurnBudget, complete: async () => {

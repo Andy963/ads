@@ -15,7 +15,7 @@ const schemas = {
   read_diff: z.object({ offset: z.number().int().min(0).default(0) }).strict(),
   read_file_range: z.object({ path: pathSchema, start_line: z.number().int().min(1), end_line: z.number().int().min(1) }).strict()
     .refine((value) => value.end_line >= value.start_line, "end_line must be greater than or equal to start_line."),
-  search_code: z.object({ query: z.string().min(1).max(256), path_pattern: z.string().min(1).max(256).default("**/*"), offset: z.number().int().min(0).default(0) }).strict(),
+  search_code: z.object({ query: z.string().min(1).max(256).refine(value => !value.includes("\0"), "Search query must not contain NUL characters."), path_pattern: z.string().min(1).max(256).default("**/*"), offset: z.number().int().min(0).default(0) }).strict(),
   list_dir: z.object({ path: pathSchema }).strict(),
 };
 
@@ -86,14 +86,18 @@ export class ReviewerInspectionTools {
       });
       child.on("error", (error: NodeJS.ErrnoException) => {
         if (this.signal.aborted) reject(this.signal.reason);
-        else if (error.code === "E2BIG") reject(new InspectionRequestError("Search path list exceeds the process argument limit. Narrow path_pattern."));
-        else reject(new Error("Snapshot search could not start."));
+        else reject(error);
       });
       child.on("close", (code) => {
         if (this.signal.aborted) reject(this.signal.reason);
         else if (!child.killed && (code === 0 || code === 1)) resolve();
         else reject(new Error("Snapshot search failed or exceeded its time limit."));
       });
+    }).catch((error: NodeJS.ErrnoException) => {
+      this.signal.throwIfAborted();
+      // spawn may throw synchronously or emit an error before a child starts.
+      if (error.code === "E2BIG") throw new InspectionRequestError("Search exceeds the process argument limit. Narrow path_pattern.");
+      throw error;
     });
     return page(offset, content, total);
   }
