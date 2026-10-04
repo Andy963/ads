@@ -56,13 +56,14 @@ describe("isolated Reviewer inspection", () => {
     assert.match(text, /1: const value0/);
     assert.equal(text.split("\n").length, 100);
     for (const file of ["../outside", "/etc/passwd", "outside/passwd", ".env"]) {
-      assert.match(await inspector.execute(call("read_file_range", { path: file, start_line: 1, end_line: 2 })), /unavailable/);
+      assert.match(await inspector.execute(call("read_file_range", { path: file, start_line: 1, end_line: 2 })), /request rejected/);
     }
-    assert.match(await inspector.execute(call("read_file_range", { path: "src/file.ts", start_line: 1, end_line: 101 })), /unavailable/);
+    assert.equal((await inspector.execute(call("read_file_range", { path: "src/file.ts", start_line: 1, end_line: 101 }))).split("\n").length, 101);
     for (const tool of ["write", "apply_patch", "exec", "exec_command", "dispatch_action_job"]) {
       assert.match(await inspector.execute(call(tool, { cmd: "touch SENTINEL", path: "SENTINEL", content: "bad" })), /Tool denied/);
     }
     assert.equal(fs.existsSync(path.join(directory, "SENTINEL")), false);
+    assert.equal(inspector.hasUnavailableSnapshot(), false);
     assert.deepEqual(JSON.parse(await inspector.execute(call("list_dir", { path: "." }))).entries, ["src/"]);
     inspector.dispose();
   });
@@ -70,9 +71,11 @@ describe("isolated Reviewer inspection", () => {
   it("searches literal text with a bounded glob without shell or pathspec interpretation", async () => {
     const inspector = tools();
     assert.match(await inspector.execute(call("search_code", { query: "literal.*", path_pattern: "src/*.ts" })), /src\/file.ts:1:/);
-    assert.equal(await inspector.execute(call("search_code", { query: "literalZZ", path_pattern: "src/*.ts" })), "");
-    assert.match(await inspector.execute(call("search_code", { query: "private-secret", path_pattern: "../*" })), /unavailable/);
-    assert.equal(await inspector.execute(call("search_code", { query: "$(touch SENTINEL)", path_pattern: "src/*.ts" })), "");
+    assert.deepEqual(JSON.parse(await inspector.execute(call("search_code", { query: "literalZZ", path_pattern: "src/*.ts" }))),
+      { offset: 0, content: "", next_offset: 0, done: true, total_chars: 0 });
+    assert.match(await inspector.execute(call("search_code", { query: "private-secret", path_pattern: "../*" })), /request rejected/);
+    assert.equal(JSON.parse(await inspector.execute(call("search_code", { query: "$(touch SENTINEL)", path_pattern: "src/*.ts" }))).content, "");
+    assert.equal(JSON.parse(await inspector.execute(call("search_code", { query: "private-secret" }))).total_chars, 0);
     assert.equal(fs.existsSync(path.join(directory, "SENTINEL")), false);
   });
 
@@ -87,6 +90,112 @@ describe("isolated Reviewer inspection", () => {
     controller.abort(new Error("cancelled"));
     await assert.rejects(inspector.execute(call("list_dir", { path: "." })), /cancelled/);
   });
+
+  it("clamps file ranges to EOF and reports the actual request limits", async () => {
+    const inspector = tools();
+    const read = (start_line: number, end_line: number, file = "src/file.ts") => inspector.execute(call("read_file_range", { path: file, start_line, end_line }));
+    assert.equal((await read(100, 9999)).split("\n").length, 11);
+    assert.match(await read(111, 200), /request rejected.*110 lines/i);
+    assert.match(await read(1, 2, "src/fil.ts"), /request rejected.*not found/i);
+    fs.writeFileSync(path.join(directory, "long.ts"), Array.from({ length: 250 }, () => "line").join("\n"));
+    git("add", "."); git("commit", "-qm", "long file"); commit = git("rev-parse", "HEAD");
+    const current = tools();
+    assert.match(await current.execute(call("read_file_range", { path: "long.ts", start_line: 1, end_line: 201 })), /request rejected.*200 lines/i);
+    assert.equal((await current.execute(call("read_file_range", { path: "long.ts", start_line: 1, end_line: 200 }))).split("\n").length, 200);
+    assert.equal(current.hasUnavailableSnapshot(), false);
+  });
+
+  it("keeps malformed requests and invalid cursors separate from snapshot failures", async () => {
+    const inspector = new ReviewerInspectionTools(directory, commit, new AbortController().signal, "diff");
+    const malformed = call("list_dir", {});
+    malformed.function.arguments = "{";
+    const oversized = call("list_dir", {});
+    oversized.function.arguments = " ".repeat(4097);
+    for (const request of [malformed, oversized, call("list_dir", {}),
+      call("read_diff", { offset: 100 }), call("search_code", { query: "x".repeat(257) }),
+      call("read_file_range", { path: "src/file.ts", start_line: 2, end_line: 1 })]) {
+      assert.match(await inspector.execute(request), /Inspection request rejected/);
+      assert.equal(inspector.hasUnavailableSnapshot(), false);
+    }
+    assert.match(await inspector.execute(call("read_file_range", { path: "src/file.ts", start_line: 1, end_line: 1 })), /const value0/);
+  });
+
+  it("keeps search pages valid across UTF-8 stream chunks and JSON escaping", async () => {
+    fs.writeFileSync(path.join(directory, "unicode.ts"), `needle ${"\u0001\\\"\t\u{1f680}".repeat(15000)}\n`);
+    git("add", "."); git("commit", "-qm", "unicode search"); commit = git("rev-parse", "HEAD");
+    const expected = execFileSync("git", ["grep", "-I", "-n", "-F", "-e", "needle", commit], { cwd: directory, encoding: "utf8" });
+    const inspector = tools();
+    for (const offset of [0, 65535, expected.length - 333]) {
+      const raw = await inspector.execute(call("search_code", { query: "needle", offset }));
+      assert.ok(raw.length <= 8000);
+      const page = JSON.parse(raw);
+      assert.equal(page.content, expected.slice(offset, page.next_offset));
+      assert.equal(page.total_chars, expected.length);
+    }
+  });
+
+  it("pages large literal searches over 707 files without a buffer failure or omitted files", async () => {
+    fs.mkdirSync(path.join(directory, "bulk"));
+    for (let i = 0; i < 707; i++) {
+      fs.writeFileSync(path.join(directory, `bulk/file-${String(i).padStart(3, "0")}.ts`), `order flex width mobile import ${"x".repeat(150)}\n`);
+    }
+    git("add", "."); git("commit", "-qm", "search fixture"); commit = git("rev-parse", "HEAD");
+    const inspector = tools();
+    for (const query of ["order", "flex", "width", "mobile", "import"]) {
+      const expected = execFileSync("git", ["grep", "-I", "-n", "-F", "-e", query, commit, "--", "bulk/"], { cwd: directory, encoding: "utf8" });
+      assert.ok(expected.length > 64 * 1024);
+      const first = JSON.parse(await inspector.execute(call("search_code", { query })));
+      assert.equal(first.offset, 0);
+      assert.equal(first.content, expected.slice(0, first.next_offset));
+      assert.equal(first.total_chars, expected.length);
+      assert.equal(first.done, false);
+      for (const offset of [first.next_offset, expected.length - 500, expected.length]) {
+        const raw = await inspector.execute(call("search_code", { query, offset }));
+        assert.ok(raw.length <= 8000);
+        const page = JSON.parse(raw);
+        assert.equal(page.offset, offset);
+        assert.equal(page.content, expected.slice(offset, page.next_offset));
+        assert.equal(page.done, page.next_offset === expected.length);
+        assert.equal(page.total_chars, expected.length);
+        assert.equal(await inspector.execute(call("search_code", { query, offset })), raw);
+      }
+      const tail = JSON.parse(await inspector.execute(call("search_code", { query, offset: expected.length - 500 })));
+      assert.match(tail.content, /file-706\.ts/);
+      assert.match(await inspector.execute(call("search_code", { query, offset: expected.length + 1 })), /request rejected.*offset/i);
+    }
+  });
+
+  for (const failure of ["missing commit", "missing repository"] as const) {
+    it(`keeps a ${failure} blocking after a valid final verdict`, async () => {
+      let rounds = 0;
+      const opts = options();
+      if (failure === "missing commit") opts.commit = "f".repeat(40);
+      else opts.workspace = path.join(directory, "missing-repository");
+      await assert.rejects(runReviewerInspection({ ...opts, diff: "captured diff", complete: async request => {
+        if (++rounds === 1) return { ...verdict, text: "", toolCalls: [call("list_dir", { path: "." })] };
+        if (rounds === 2) {
+          assert.match(String(request.messages.at(-1)?.content), /snapshot unavailable/i);
+          return { ...verdict, text: "", toolCalls: [call("read_diff", { offset: 0 })] };
+        }
+        assert.match(String(request.messages.at(-1)?.content), /captured diff/);
+        return verdict;
+      } }), ReviewerIncompleteError);
+      assert.equal(rounds, 3);
+    });
+  }
+
+  for (const request of [call("search_code", { query: "literal" }),
+    call("read_file_range", { path: "src/file.ts", start_line: 1, end_line: 1 })]) {
+    it(`keeps ${request.function.name} snapshot failures blocking after the file index was cached`, async () => {
+      const inspector = new ReviewerInspectionTools(directory, commit, new AbortController().signal, "diff");
+      assert.match(await inspector.execute(call("list_dir", { path: "." })), /src/);
+      fs.renameSync(path.join(directory, ".git"), path.join(directory, "unavailable-git"));
+      assert.match(await inspector.execute(request), /snapshot unavailable/i);
+      assert.equal(inspector.hasUnavailableSnapshot(), true);
+      assert.equal(JSON.parse(await inspector.execute(call("read_diff", {}))).content, "diff");
+      assert.equal(inspector.hasUnavailableSnapshot(), true);
+    });
+  }
 
   it("executes a bounded tool round then returns the structured verdict with no durable transcript", async () => {
     let turns = 0;
@@ -336,21 +445,26 @@ describe("isolated Reviewer inspection", () => {
     assert.equal(result.summary, summary);
   });
 
-  it("classifies unavailable inspection evidence separately from code REJECT", async (t) => {
+  for (const status of ["PASS", "REJECT"] as const) it(`accepts ${status} after a missing path probe and a successful evidence read`, async (t) => {
     const dispose = t.mock.method(ReviewerInspectionTools.prototype, "dispose");
-    const rejected = { status: "REJECT", summary: "Required evidence unavailable", defects: [
-      { file: "missing.ts", line: 1, severity: "blocker", description: "Cannot verify the required declaration." },
+    const expected = { status, summary: "Inspected the correct source", defects: status === "PASS" ? [] : [
+      { file: "src/file.ts", line: 1, severity: "blocker", description: "The inspected declaration does not satisfy the requirement." },
     ] };
     let turns = 0;
     let messages: NativeChatMessage[] = [];
-    await assert.rejects(runReviewerInspection({ ...options(), complete: async (request) => {
+    const result = await runReviewerInspection({ ...options(), complete: async (request) => {
       messages = request.messages;
       turns++;
       if (turns === 1) return { ...verdict, text: "", toolCalls: [call("read_file_range", { path: "missing.ts", start_line: 1, end_line: 1 })] };
-      assert.match(String(request.messages.at(-1)?.content), /Inspection unavailable/);
-      return { ...verdict, text: JSON.stringify(rejected) };
-    } }), ReviewerIncompleteError);
-    assert.equal(turns, 2);
+      if (turns === 2) {
+        assert.match(String(request.messages.at(-1)?.content), /request rejected.*not found/i);
+        return { ...verdict, text: "", toolCalls: [call("read_file_range", { path: "src/file.ts", start_line: 1, end_line: 101 })] };
+      }
+      assert.match(String(request.messages.at(-1)?.content), /101: const value100/);
+      return { ...verdict, text: JSON.stringify(expected) };
+    } });
+    assert.equal(result.status, status);
+    assert.equal(turns, 3);
     assert.equal(dispose.mock.callCount(), 1);
     assert.equal(messages.length, 0);
   });

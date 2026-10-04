@@ -1487,6 +1487,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     const bus = new LaneDispatchBus(getStateDatabase(), {
       developerRunner: async () => {
         developerCalls++;
+        fs.writeFileSync(path.join(repoDir, "README.md"), Array.from({ length: 6 }, (_, i) => `Evidence line ${i + 1}`).join("\n"));
+        spawnSync("git", ["add", "README.md"], { cwd: repoDir });
         commitImplementation("reviewer-batch");
         return { exitCode: 0 };
       },
@@ -1513,15 +1515,54 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.equal(JSON.parse(completed.review_verdicts_json)[0].status, "PASS");
   });
 
-  for (const reason of ["incomplete", "loop"] as const) {
+  it("records a native Reviewer verdict after recovering from a nonexistent path", async () => {
+    let developerCalls = 0;
+    let reviewerCalls = 0;
+    const bus = new LaneDispatchBus(getStateDatabase(), {
+      developerRunner: async () => { developerCalls++; commitImplementation("reviewer-recovery"); return { exitCode: 0 }; },
+      ...reviewerOptions(async request => {
+        reviewerCalls++;
+        if (reviewerCalls < 3) {
+          if (reviewerCalls === 2) assert.match(String(request.messages.at(-1)?.content), /request rejected.*not found/i);
+          return { text: "", toolCalls: [{ id: `read-${reviewerCalls}`, type: "function", function: {
+            name: "read_file_range", arguments: JSON.stringify({ path: reviewerCalls === 1 ? "missing.ts" : "README.md", start_line: 1, end_line: 101 }),
+          } }], usage: null };
+        }
+        assert.match(String(request.messages.at(-1)?.content), /1: # Test Repo/);
+        return { text: JSON.stringify({ status: "PASS", summary: "Recovered and inspected evidence", defects: [] }), toolCalls: [], usage: null };
+      }),
+      mergePipeline: () => ({ success: true }),
+      testCommand: "git status",
+    });
+    const job = bus.dispatchJob({ projectId: repoDir, issueId: 513, issueTitle: "Recoverable inspection", issueDescription: "Correct a missing path", acceptanceCriteria: ["Record the verdict"] });
+    await bus.evaluateQueue(repoDir, repoDir);
+    await waitFor(() => bus.getJob(job.jobId)?.status === "completed");
+    const completed = bus.getJob(job.jobId)!;
+    assert.equal(developerCalls, 1);
+    assert.equal(reviewerCalls, 3);
+    assert.equal(completed.rework_count, 0);
+    assert.equal(completed.attempts_json, "[]");
+    assert.equal(JSON.parse(completed.review_verdicts_json)[0].status, "PASS");
+  });
+
+  for (const reason of ["incomplete", "loop", "snapshot"] as const) {
     it(`blocks Reviewer ${reason} without consuming developer rework`, async () => {
       let developerCalls = 0;
       let reviewerCalls = 0;
       const bus = new LaneDispatchBus(getStateDatabase(), {
         developerRunner: async () => { developerCalls++; commitImplementation("incomplete-review"); return { exitCode: 0 }; },
-        ...reviewerOptions(async () => {
+        ...reviewerOptions(async (request) => {
           reviewerCalls++;
           if (reason === "incomplete") return { text: JSON.stringify({ status: "INCOMPLETE", summary: "Missing evidence" }), toolCalls: [], usage: null };
+          if (reason === "snapshot") {
+            if (reviewerCalls === 1) {
+              // Evidence capture succeeded; the immutable repository becomes unreadable during inspection.
+              fs.renameSync(path.join(repoDir, ".git"), path.join(repoDir, "unavailable-git"));
+              return { text: "", toolCalls: [{ id: "inspect", type: "function", function: { name: "list_dir", arguments: '{"path":"."}' } }], usage: null };
+            }
+            assert.match(String(request.messages.at(-1)?.content), /snapshot unavailable/i);
+            return { text: JSON.stringify({ status: "PASS", summary: "Must not be accepted", defects: [] }), toolCalls: [], usage: null };
+          }
           assert.ok(reviewerCalls <= 5);
           return { text: "", toolCalls: [{ id: `repeat-${reviewerCalls}`, type: "function", function: { name: "list_dir", arguments: '{"path":"."}' } }], usage: null };
         }),
@@ -1535,7 +1576,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       assert.equal(blocked.rework_count, 0);
       assert.equal(blocked.attempts_json, "[]");
       assert.equal(blocked.review_verdicts_json, "[]");
-      assert.match(blocked.error_message ?? "", /insufficient evidence|paused/);
+      assert.match(blocked.error_message ?? "", /insufficient evidence|paused|snapshot is unavailable/);
     });
   }
 
