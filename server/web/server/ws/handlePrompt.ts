@@ -293,6 +293,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         cwd: turnCwd,
         workspaceRoot,
         historySessionId: deps.context.historyKey,
+        authUserId: deps.context.authUserId,
         middleware: pipeline,
         middlewareContext: {
           turnId: deps.request.clientMessageId ?? `turn-${Date.now()}`,

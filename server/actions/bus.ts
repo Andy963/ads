@@ -1013,6 +1013,7 @@ export class LaneDispatchBus {
           cwd: repoPath,
           workspaceRoot,
           historySessionId: historyKey,
+          authUserId: job.auth_user_id ?? undefined,
         });
 
         unsubscribe?.();

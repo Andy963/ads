@@ -168,8 +168,9 @@ export class CodexAppServerClient {
 
     await this.request("initialize", {
       clientInfo: { name: "ads-codex-appserver-adapter", title: null, version: "0.1.0" },
-      capabilities: null,
+      capabilities: { experimentalApi: true },
     });
+    this.handle!.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "initialized" })}\n`);
   }
 
   /**

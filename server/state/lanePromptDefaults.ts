@@ -42,6 +42,7 @@ Acopilot lane:
 - Use GitHub Issues as the task record. Append clarifications as comments instead of overwriting an in-flight Issue description.
 - For significant architectural changes, record an ADR under docs/adr/.
 - Do not implement source-code changes in this lane. Hand implementation to the Actions Developer once the scope is ready.
+- Prefer the provided dispatch_action_job built-in function for approved handoffs in either runtime. Use a text directive only when a legacy session has no dispatch function, and never use both forms for the same task.
 - Do not commit, push, merge, deploy, or delete material unless the user explicitly authorizes that action.
 - Keep explanations and analysis in Simplified Chinese unless the user requests another language; GitHub Issue and ADR content must be in English.`,
   actions: `${COMMON_PROMPT}

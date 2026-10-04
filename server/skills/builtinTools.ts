@@ -1,6 +1,6 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
-import { getBus } from "../web/server/api/routes/actions.js";
+import { executeBuiltinTool } from "../tools/builtins.js";
 import { getWorkspacesDatabase, resolveWorkspaceId } from "../storage/database.js";
 import { updateMemory } from "../memory/memory.js";
 import { createLogger } from "../utils/logger.js";
@@ -40,6 +40,8 @@ export function stripToolDirectives(text: string): string {
 export async function executeToolDirectives(args: {
   text: string;
   workspaceRoot: string;
+  authUserId?: string;
+  signal?: AbortSignal;
   sessionId?: string;
   db?: DatabaseType;
 }): Promise<string[]> {
@@ -60,36 +62,22 @@ export async function executeToolDirectives(args: {
         continue;
       }
       if (directive.name === "dispatch_action_job") {
-        const issueIdRaw = directive.attrs.issue_id || directive.attrs.issue;
-        const issueId = issueIdRaw ? Number(issueIdRaw) : null;
-        const issueTitle = directive.attrs.title || directive.attrs.issue_title || (issueId ? `Issue #${issueId}` : "Task");
-        const jobKind = directive.attrs.kind === "local_prompt" ? "local_prompt" : "github_issue";
-        const issueDescription = directive.body.trim();
-        if (!Object.hasOwn(directive.attrs, "acceptance_criteria")) {
-          throw new Error("dispatch_action_job requires an explicit acceptance_criteria field");
-        }
-        const acceptanceCriteria = (directive.attrs.acceptance_criteria ?? "")
-          .split("|")
-          .map((criterion) => criterion.trim())
-          .filter(Boolean);
-        if (!issueDescription || (jobKind === "github_issue" && acceptanceCriteria.length === 0)) {
-          throw new Error("dispatch_action_job requires a complete description and acceptance criteria");
-        }
-        const bus = getBus();
-        const res = bus.dispatchJob({
-          projectId: args.workspaceRoot,
-          issueId: Number.isFinite(issueId) ? issueId : null,
-          issueTitle,
-          issueDescription,
-          acceptanceCriteria,
-          jobKind,
-          repoPath: args.workspaceRoot,
-        });
-        results.push(`tool.dispatch_action_job: ok (job_id: ${res.jobId}, status: ${res.status})`);
+        const { issue, issue_title: issueTitle, ...attrs } = directive.attrs;
+        const issueId = attrs.issue_id ?? issue;
+        const res = executeBuiltinTool(directive.name, {
+          ...attrs,
+          ...(issueId !== undefined ? { issue_id: Number(issueId) } : {}),
+          title: attrs.title ?? issueTitle ?? (issueId ? `Issue #${Number(issueId)}` : "Task"),
+          description: directive.body,
+          ...(Object.hasOwn(attrs, "acceptance_criteria") ? {
+            acceptance_criteria: attrs.acceptance_criteria.split("|").map((criterion) => criterion.trim()).filter(Boolean),
+          } : {}),
+        }, { workspaceRoot: args.workspaceRoot, authUserId: args.authUserId, signal: args.signal });
+        results.push(`tool.dispatch_action_job: ok (job_id: ${res.job_id}, status: ${res.status})`);
         continue;
       }
-      logger.warn(`Rejected unknown tool directive: ${directive.name}`);
-      results.push(`tool.${directive.name}: rejected (unknown tool)`);
+      logger.warn("Rejected unknown tool directive");
+      results.push("tool.unknown: rejected (unknown tool)");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(`Tool directive failed: ${directive.name}: ${message}`);
@@ -138,7 +126,7 @@ function formatSessionSearchResult(matches: ReturnType<typeof searchSessionMessa
 }
 
 function parseAttrs(raw: string): Record<string, string> {
-  const attrs: Record<string, string> = {};
+  const attrs: Record<string, string> = Object.create(null);
   const pattern = /([a-zA-Z_][\w.-]*)="([^"]*)"/g;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(raw)) !== null) {

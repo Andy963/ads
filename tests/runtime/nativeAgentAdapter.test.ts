@@ -15,6 +15,9 @@ import { NativeTranscriptStore } from "../../server/state/nativeTranscriptStore.
 import { ActivityTracker } from "../../server/utils/activityTracker.js";
 import { estimateNativeRequestTokens } from "../../server/runtime/nativeContextProjection.js";
 import { NATIVE_TOOL_DEFINITIONS } from "../../server/runtime/tools.js";
+import { BUILTIN_TOOL_DEFINITIONS } from "../../server/tools/builtins.js";
+import { LaneDispatchBus } from "../../server/actions/bus.js";
+import { getBus, setBusInstance } from "../../server/web/server/api/routes/actions.js";
 
 function sse(events: string[]): Response {
   return new Response(`${events.map((event) => `data: ${event}\n\n`).join("")}data: [DONE]\n\n`, {
@@ -362,63 +365,93 @@ describe("NativeAgentAdapter", () => {
     }
   });
 
-  it("dispatches action jobs without emitting a live step", async () => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-dispatch-"));
-    try {
-      let requestNumber = 0;
-      const adapter = new NativeAgentAdapter({
-        credentialOwner: "test-owner",
-        workspaceRoot: workspace,
-        workingDirectory: workspace,
-        modelResolver: {
-          resolve: () => ({
-            model: "test-model",
-            baseUrl: "https://provider.test/v1",
-            apiKey: "test-api-key",
-            provider: "test",
-          }),
-        },
-        fetchImpl: async () => {
-          requestNumber += 1;
-          if (requestNumber === 1) {
+  for (const failAfterDispatch of [false, true]) {
+    it(`dispatches with trusted ownership without live steps or replay (upstream failure: ${failAfterDispatch})`, async (t) => {
+      const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-dispatch-"));
+      const previousBus = getBus();
+      const bus = new LaneDispatchBus(getStateDatabase(path.join(workspace, "state.db")));
+      const evaluate = t.mock.method(bus, "evaluateQueue", async () => ({ allowed: false }));
+      const dispatch = t.mock.method(bus, "dispatchJob");
+      setBusInstance(bus);
+      try {
+        let requestNumber = 0;
+        let toolResult: Record<string, unknown> | undefined;
+        const adapter = new NativeAgentAdapter({
+          credentialOwner: "test-owner",
+          authUserId: "trusted-owner",
+          retryBackoffMs: [1, 1, 1],
+          workspaceRoot: workspace,
+          workingDirectory: workspace,
+          modelResolver: {
+            resolve: () => ({
+              model: "test-model",
+              baseUrl: "https://provider.test/v1",
+              apiKey: "test-api-key",
+              provider: "test",
+            }),
+          },
+          fetchImpl: async (_input, init) => {
+            requestNumber += 1;
+            const request = JSON.parse(String(init?.body ?? "{}"));
+            assert.deepEqual(request.tools.find((tool: { function: { name: string } }) => tool.function.name === "dispatch_action_job"), BUILTIN_TOOL_DEFINITIONS[0]);
+            if (requestNumber === 1) {
+              return sse([
+                JSON.stringify({
+                  choices: [{
+                    delta: {
+                      tool_calls: [{
+                        index: 0,
+                        type: "function",
+                        id: "dispatch-1",
+                        function: {
+                          name: "dispatch_action_job",
+                          arguments: JSON.stringify({ issue_id: 277, title: "Refactor dual lanes", description: "Share the built-in dispatch implementation", acceptance_criteria: ["Both runtimes dispatch jobs"] }),
+                        },
+                      }],
+                    },
+                  }],
+                }),
+                JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+              ]);
+            }
+            toolResult = JSON.parse(request.messages.find((message: NativeChatMessage) => message.role === "tool").content);
+            if (failAfterDispatch) return new Response("Upstream temporarily unavailable", { status: 503 });
             return sse([
-              JSON.stringify({
-                choices: [{
-                  delta: {
-                    tool_calls: [{
-                      index: 0,
-                      type: "function",
-                      id: "dispatch-1",
-                      function: {
-                        name: "dispatch_action_job",
-                        arguments: JSON.stringify({ issue_id: 277, title: "Refactor dual lanes" }),
-                      },
-                    }],
-                  },
-                }],
-              }),
-              JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+              JSON.stringify({ choices: [{ delta: { content: "Job dispatched successfully." }, finish_reason: "stop" }] }),
             ]);
-          }
-          return sse([
-            JSON.stringify({ choices: [{ delta: { content: "Job dispatched successfully." }, finish_reason: "stop" }] }),
-          ]);
-        },
-      });
+          },
+        });
 
-      const liveSteps: string[] = [];
-      adapter.onEvent((event) => {
-        if (event.liveStep === true) liveSteps.push(String(event.delta ?? ""));
-      });
+        const liveSteps: string[] = [];
+        adapter.onEvent((event) => {
+          if (event.liveStep === true) liveSteps.push(String(event.delta ?? ""));
+        });
 
-      const result = await adapter.send("Please dispatch issue 277 to Actions");
-
-      assert.equal(result.response, "Job dispatched successfully.");
-      assert.deepEqual(liveSteps, []);
-    } finally {
-      fs.rmSync(workspace, { recursive: true, force: true });
-    }
-  });
+        if (failAfterDispatch) {
+          await assert.rejects(adapter.send("Please dispatch issue 277 to Actions"));
+        } else {
+          const result = await adapter.send("Please dispatch issue 277 to Actions");
+          assert.equal(result.response, "Job dispatched successfully.");
+        }
+        assert.equal(requestNumber, 2);
+        assert.deepEqual(liveSteps, []);
+        assert.equal(dispatch.mock.callCount(), 1);
+        assert.equal(dispatch.mock.calls[0].arguments[0].authUserId, "trusted-owner");
+        assert.equal(dispatch.mock.calls[0].arguments[0].projectId, workspace);
+        assert.equal(dispatch.mock.calls[0].arguments[0].repoPath, workspace);
+        assert.deepEqual(toolResult, {
+          ok: true, job_id: dispatch.mock.calls[0].result!.jobId, status: "queued",
+          message: "Dispatched task to Actions queue with status 'queued'",
+        });
+        assert.equal(bus.getJob(String(toolResult?.job_id))?.status, "queued");
+        assert.equal(evaluate.mock.callCount(), 1);
+      } finally {
+        setBusInstance(previousBus);
+        resetStateDatabaseForTests();
+        fs.rmSync(workspace, { recursive: true, force: true });
+      }
+    });
+  }
 
   it("keeps streamed text snapshots isolated across tool-call rounds", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-snapshots-"));
