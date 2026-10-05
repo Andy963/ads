@@ -14,6 +14,8 @@ import {
   parseOpenPullRequest,
   pushFeatureBranch,
   unsupportedPrMergeFlags,
+  deleteReviewedFeatureBranch,
+  mergeAndCleanupPipeline,
 } from "../../server/actions/pipeline.js";
 
 function git(cwd: string, ...args: string[]): void {
@@ -137,6 +139,40 @@ describe("Actions PR merge arguments", () => {
 });
 
 describe("Actions feature branch scope", () => {
+  it("preserves new local and remote commits after partial reviewed delivery", () => {
+    const cwd = initRepo();
+    const remote = fs.mkdtempSync(path.join(os.tmpdir(), "ads-reviewed-remote-"));
+    git(remote, "init", "--bare");
+    git(cwd, "remote", "add", "origin", remote);
+    git(cwd, "checkout", "-b", "feature");
+    commit(cwd, "reviewed");
+    const reviewed = revParse(cwd, "HEAD");
+    git(cwd, "push", "origin", "feature");
+    commit(cwd, "unreviewed");
+    const advanced = revParse(cwd, "HEAD");
+    git(cwd, "push", "origin", "feature");
+    git(cwd, "checkout", "dev");
+    assert.match(deleteReviewedFeatureBranch(cwd, "feature", reviewed, true)!, /preserved/);
+    assert.equal(revParse(cwd, "feature"), advanced);
+    assert.equal(revParse(remote, "feature"), advanced);
+    assert.equal(mergeAndCleanupPipeline({ cwd, branch: "feature", expectedHead: reviewed, prNumber: 42 }).success, false);
+    assert.equal(revParse(cwd, "feature"), advanced);
+  });
+
+  it("conditionally deletes reviewed refs and tolerates already absent refs", () => {
+    const cwd = initRepo();
+    const remote = fs.mkdtempSync(path.join(os.tmpdir(), "ads-reviewed-remote-"));
+    git(remote, "init", "--bare");
+    git(cwd, "remote", "add", "origin", remote);
+    git(cwd, "branch", "feature");
+    git(cwd, "push", "origin", "feature");
+    const head = revParse(cwd, "feature");
+    assert.equal(deleteReviewedFeatureBranch(cwd, "feature", head, true), null);
+    assert.equal(deleteReviewedFeatureBranch(cwd, "feature", head, true), null);
+    assert.notEqual(spawnSync("git", ["rev-parse", "--verify", "refs/heads/feature"], { cwd }).status, 0);
+    assert.notEqual(spawnSync("git", ["rev-parse", "--verify", "refs/heads/feature"], { cwd: remote }).status, 0);
+  });
+
   it("accepts a branch that stacks commits on the recorded base commit", () => {
     const cwd = initRepo();
     const anchor = revParse(cwd, "dev");

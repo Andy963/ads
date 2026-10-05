@@ -970,117 +970,122 @@ export class LaneDispatchBus {
       }
 
       let unsubscribe: (() => void) | null = null;
+      const detach = () => { unsubscribe?.(); unsubscribe = null; };
       try {
-        const orchestrator = sessionManager.getOrCreate(userId, repoPath, true, {
-          authUserId,
-          projectId,
-        });
+        const execute = async () => {
+          const orchestrator = sessionManager.getOrCreate(userId, repoPath, true, {
+            authUserId,
+            projectId,
+          });
 
-        // Fresh job threads register job tools even after a runtime upgrade.
-        orchestrator.reset?.();
+          // Fresh job threads register job tools even after a runtime upgrade.
+          orchestrator.reset?.();
 
-        // Inject developer instructions from database profile
-        if (typeof orchestrator.setDeveloperInstructions === "function") {
-          orchestrator.setDeveloperInstructions(systemPrompt);
-        }
-
-        // Attach event listener for real-time WebSocket streaming
-        unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
-          const payload = buildActionAgentEventPayload(event, job.id);
-          if (Object.keys(payload).length === 0) return;
-          if (this.options.broadcastToActionsLane) {
-            this.options.broadcastToActionsLane(
-              payload,
-              historyKey,
-              projectId,
-            );
+          // Inject developer instructions from database profile
+          if (typeof orchestrator.setDeveloperInstructions === "function") {
+            orchestrator.setDeveloperInstructions(systemPrompt);
           }
-          if (this.options.historyStore && payload.type === "command" && isTerminalCommandPayload(payload)) {
-            this.options.historyStore.add(historyKey, {
-              role: "status",
-              text: buildExecuteHistoryText(String(payload.command ?? ""), String(payload.output ?? "")),
-              ts: Date.now(),
-              kind: ACTION_EXECUTE_HISTORY_KIND,
-            });
-          }
-          if (this.options.historyStore && payload.type === "file_change" && payload.status === "completed") {
-            const changes = Array.isArray(payload.changes) ? payload.changes : [];
-            const text = changes
-              .map((change) => {
-                const entry = change && typeof change === "object" ? change as { kind?: unknown; path?: unknown } : {};
-                return `[${String(entry.kind ?? "modify")}] ${String(entry.path ?? "")}`.trim();
-              })
-              .filter(Boolean)
-              .join("\n");
-            if (text) {
+
+          // Attach event listener for real-time WebSocket streaming
+          unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
+            const payload = buildActionAgentEventPayload(event, job.id);
+            if (Object.keys(payload).length === 0) return;
+            if (this.options.broadcastToActionsLane) {
+              this.options.broadcastToActionsLane(
+                payload,
+                historyKey,
+                projectId,
+              );
+            }
+            if (this.options.historyStore && payload.type === "command" && isTerminalCommandPayload(payload)) {
               this.options.historyStore.add(historyKey, {
                 role: "status",
-                text: `[Files]\n${text}`,
+                text: buildExecuteHistoryText(String(payload.command ?? ""), String(payload.output ?? "")),
                 ts: Date.now(),
-                kind: "file_change",
+                kind: ACTION_EXECUTE_HISTORY_KIND,
               });
             }
-          }
-        });
+            if (this.options.historyStore && payload.type === "file_change" && payload.status === "completed") {
+              const changes = Array.isArray(payload.changes) ? payload.changes : [];
+              const text = changes
+                .map((change) => {
+                  const entry = change && typeof change === "object" ? change as { kind?: unknown; path?: unknown } : {};
+                  return `[${String(entry.kind ?? "modify")}] ${String(entry.path ?? "")}`.trim();
+                })
+                .filter(Boolean)
+                .join("\n");
+              if (text) {
+                this.options.historyStore.add(historyKey, {
+                  role: "status",
+                  text: `[Files]\n${text}`,
+                  ts: Date.now(),
+                  kind: "file_change",
+                });
+              }
+            }
+          });
 
-        const actionTools = this.superviseJob(job, repoPath, abortCtrl.signal);
-        const run = async () => {
-          try {
-            return await runAgentTurn(orchestrator, finalTaskPrompt, {
-              streaming: true,
-              signal: abortCtrl.signal,
-              cwd: repoPath,
-              workspaceRoot,
-              historySessionId: historyKey,
-              authUserId: job.auth_user_id ?? undefined,
-              actionTools,
+          const actionTools = this.superviseJob(job, repoPath, abortCtrl.signal);
+          const run = async () => {
+            try {
+              return await runAgentTurn(orchestrator, finalTaskPrompt, {
+                streaming: true,
+                signal: abortCtrl.signal,
+                cwd: repoPath,
+                workspaceRoot,
+                historySessionId: historyKey,
+                authUserId: job.auth_user_id ?? undefined,
+                actionTools,
+              });
+            } finally {
+              await actionTools.dispose();
+            }
+          };
+          const turnResult = await run();
+          abortCtrl.signal.throwIfAborted();
+
+          detach();
+          unsubscribe = null;
+
+          // Record assistant response in history
+          if (this.options.historyStore) {
+            this.options.historyStore.add(historyKey, {
+              role: "assistant",
+              text: turnResult.response,
+              ts: Date.now(),
             });
-          } finally {
-            await actionTools.dispose();
           }
+
+          // Broadcast turn completion
+          if (this.options.broadcastToActionsLane) {
+            this.options.broadcastToActionsLane({
+              type: "assistant_done",
+              text: turnResult.response,
+              jobId: job.id,
+              ts: Date.now(),
+            }, historyKey, projectId);
+          }
+
+          this.activeAbortControllers.delete(jobId);
+
+          if (getActionJobById(this.db, jobId)?.status !== "completed") {
+            this.activeAbortControllers.delete(jobId);
+            this.scheduleRework(jobId, repoPath, {
+              stage: "Developer supervision",
+              feedback: "Developer ended without reviewed delivery. " + turnResult.response.slice(-1500),
+              reworkCount,
+              failureClass: "infrastructure",
+            });
+            return;
+          }
+
         };
         const lock = this.options.getWorkspaceLock?.(repoPath);
-        const turnResult = lock ? await lock.runExclusive(run, abortCtrl.signal) : await run();
-        abortCtrl.signal.throwIfAborted();
-
-        unsubscribe?.();
-        unsubscribe = null;
-
-        // Record assistant response in history
-        if (this.options.historyStore) {
-          this.options.historyStore.add(historyKey, {
-            role: "assistant",
-            text: turnResult.response,
-            ts: Date.now(),
-          });
-        }
-
-        // Broadcast turn completion
-        if (this.options.broadcastToActionsLane) {
-          this.options.broadcastToActionsLane({
-            type: "assistant_done",
-            text: turnResult.response,
-            jobId: job.id,
-            ts: Date.now(),
-          }, historyKey, projectId);
-        }
-
-        this.activeAbortControllers.delete(jobId);
-
-        if (getActionJobById(this.db, jobId)?.status !== "completed") {
-          this.activeAbortControllers.delete(jobId);
-          this.scheduleRework(jobId, repoPath, {
-            stage: "Developer supervision",
-            feedback: "Developer ended without reviewed delivery. " + turnResult.response.slice(-1500),
-            reworkCount,
-            failureClass: "infrastructure",
-          });
-          return;
-        }
-
+        if (lock) await lock.runExclusive(execute, abortCtrl.signal);
+        else await execute();
       } catch (err) {
         if (getActionJobById(this.db, jobId)?.status === "completed") return;
-        unsubscribe?.();
+        detach();
         this.activeAbortControllers.delete(jobId);
 
         if (abortCtrl.signal.aborted) {
@@ -1099,7 +1104,7 @@ export class LaneDispatchBus {
           });
         }
       } finally {
-        unsubscribe?.();
+        detach();
         this.activeAbortControllers.delete(jobId);
         this.developerProjects.delete(projectId);
         if (getActionJobById(this.db, jobId)?.status === "completed") {
