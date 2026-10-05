@@ -49,4 +49,5 @@
 - 0036 - [ADR 0036: Preserve Native Task Context Across Interrupted Turns](0036-preserve-native-interrupted-context.md)
 - 0037 - [ADR 0037: Native Runtime 同时支持 Responses 与 Chat Completions](0037-native-responses-protocol.md)
 - 0039 - [ADR 0039: Share built-in Actions dispatch across runtimes](0039-shared-built-in-dispatch.md)
+- 0040 - [ADR 0040: 由 Developer 监督 Reviewer 子代理](0040-developer-supervised-reviewer.md)
 <!-- ADS:ADR_INDEX_END -->

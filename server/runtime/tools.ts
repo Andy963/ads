@@ -4,6 +4,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import { BUILTIN_TOOL_DEFINITIONS, executeBuiltinTool } from "../tools/builtins.js";
+import { executeActionTool, isActionTool, type ActionTools } from "../agents/actionTools.js";
 import type { MiddlewarePipeline, TurnContext } from "../middleware/index.js";
 import { findSecurityViolation } from "../middleware/builtin/globalRulesMiddleware.js";
 import { getExecAllowlistFromEnv, hasShellSyntax, runCommand, tokenizeCommandLine } from "../utils/commandRunner.js";
@@ -142,6 +143,7 @@ export interface NativeToolExecutionResult {
 }
 
 export interface NativeToolExecutorOptions {
+  actionTools?: ActionTools;
   readHistory?: (after: number, offset: number) => string;
   workspaceRoot: string;
   authUserId?: string;
@@ -364,6 +366,7 @@ function applyOperation(original: string | null, operation: PatchOperation): str
 }
 
 export class NativeToolExecutor {
+  private readonly actionTools?: ActionTools;
   private readonly readHistory?: (after: number, offset: number) => string;
   private readonly workspaceRoot: string;
   private readonly authUserId?: string;
@@ -377,11 +380,13 @@ export class NativeToolExecutor {
   private readonly commandOutput = new Map<string, string>();
   // One executor spans the model rounds of a turn attempt, never subsequent sends.
   private readonly dispatchCalls = new Map<string, {
+    name: string;
     arguments: string;
     result: Promise<NativeToolExecutionResult>;
   }>();
 
   constructor(options: NativeToolExecutorOptions) {
+    this.actionTools = options.actionTools;
     this.readHistory = options.readHistory;
     this.workspaceRoot = fs.realpathSync(path.resolve(options.workspaceRoot));
     this.authUserId = options.authUserId;
@@ -409,7 +414,7 @@ export class NativeToolExecutor {
 
   async execute(call: NativeChatToolCall): Promise<NativeToolExecutionResult> {
     this.throwIfAborted();
-    if (call.function.name === "dispatch_action_job") return this.dispatchActionJob(call);
+    if (call.function.name === "dispatch_action_job" || isActionTool(call.function.name)) return this.dispatchActionJob(call);
     const args = parseArguments(call);
     switch (call.function.name) {
       case "read_execution_history": {
@@ -440,20 +445,22 @@ export class NativeToolExecutor {
   private dispatchActionJob(call: NativeChatToolCall): Promise<NativeToolExecutionResult> {
     const cached = this.dispatchCalls.get(call.id);
     if (cached) {
-      if (!sameArguments(cached.arguments, call.function.arguments)) {
+      if (cached.name !== call.function.name || !sameArguments(cached.arguments, call.function.arguments)) {
         throw new Error("Conflicting arguments for dispatch_action_job call ID");
       }
       return cached.result;
     }
     // Cache before execution, including rejections: a queue failure may follow persistence.
-    const result = Promise.resolve().then(() => ({
-      output: JSON.stringify(executeBuiltinTool(call.function.name, parseArguments(call), {
+    const result = Promise.resolve().then(async () => ({
+      output: JSON.stringify(isActionTool(call.function.name)
+        ? await executeActionTool(call.function.name, parseArguments(call), this.actionTools)
+        : executeBuiltinTool(call.function.name, parseArguments(call), {
         workspaceRoot: this.workspaceRoot,
         authUserId: this.authUserId,
         signal: this.signal,
       })),
     }));
-    this.dispatchCalls.set(call.id, { arguments: call.function.arguments, result });
+    this.dispatchCalls.set(call.id, { name: call.function.name, arguments: call.function.arguments, result });
     return result;
   }
 

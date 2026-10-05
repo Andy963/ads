@@ -23,6 +23,7 @@ import {
 import type { CodexProviderInjection } from "../../codex/appServer/providerInjection.js";
 import type { CodexAppServerClient } from "../../codex/appServer/rpcClient.js";
 import { builtinDynamicTools, createBuiltinToolBridge } from "../../codex/appServer/builtinTools.js";
+import { createActionToolBridge } from "../../codex/appServer/actionTools.js";
 import type { CommandExecutionRequestApprovalResponse } from "../../codex/appServer/protocol/v2/CommandExecutionRequestApprovalResponse.js";
 import { AsyncLock } from "../../utils/asyncLock.js";
 import type { ThreadGoal } from "../../codex/appServer/protocol/v2/ThreadGoal.js";
@@ -674,6 +675,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
       markSideEffect: (callId) => retryState.markSideEffect({ type: "tool_call", id: callId, tool: "dispatch_action_job" }),
     });
     cleanupFns.push(client.onServerRequest("item/tool/call", builtinTools.handle, { matches: builtinTools.matches }));
+    const actionTools = createActionToolBridge({
+      tools: options?.actionTools,
+      signal: options?.signal,
+      scope: () => ({ threadId: this.threadId, turnId: state.turnId, active: acceptingBuiltinCalls && !state.failed }),
+      markSideEffect: (id) => retryState.markSideEffect({ type: "tool_call", id, tool: "actions" }),
+    });
+    cleanupFns.push(client.onServerRequest("item/tool/call", actionTools.handle, { matches: actionTools.matches }));
     const emit = (event: ThreadEvent) => {
       const mapped = mapThreadEventToAgentEvent(event, Date.now());
       if (mapped) {
@@ -971,7 +979,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       assertActiveTurn();
       const startResult = await client.request<Record<string, unknown>, { thread?: { id?: string } }>(
         "thread/start",
-        this.buildThreadStartParams(),
+        this.buildThreadStartParams(Boolean(options?.actionTools)),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
       );
       assertActiveTurn();
@@ -1273,12 +1281,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
     }
   }
 
-  private buildThreadStartParams(): Record<string, unknown> {
+  private buildThreadStartParams(includeActions = false): Record<string, unknown> {
     const params: Record<string, unknown> = {
       experimentalRawEvents: false,
       persistExtendedHistory: false,
       approvalPolicy: "untrusted",
-      dynamicTools: builtinDynamicTools(),
+      dynamicTools: builtinDynamicTools(includeActions),
     };
     if (this.workingDirectory) params.cwd = this.workingDirectory;
     if (this.model) params.model = this.resolveModel?.(this.model) ?? this.model;

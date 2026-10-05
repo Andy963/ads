@@ -76,6 +76,7 @@ export async function runAgentTurn(
     await options.middleware.executeTurnStart(middlewareContext);
   }
   const sendOptions: AgentSendOptions = {
+    actionTools: options.actionTools,
     streaming: options.streaming,
     outputSchema: activeAgentId === "codex" ? options.outputSchema : undefined,
     signal: options.signal,

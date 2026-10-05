@@ -2,6 +2,7 @@ import type { Input, Usage } from "./protocol/types.js";
 import type { AgentEvent } from "../codex/events.js";
 import type { IntakeClassification } from "../intake/types.js";
 import type { MiddlewarePipeline, TurnContext } from "../middleware/index.js";
+import type { ActionTools } from "./actionTools.js";
 
 export type AgentCapability = "text" | "images" | "files" | "commands";
 
@@ -28,6 +29,7 @@ export interface AgentStatus {
 }
 
 export interface AgentSendOptions {
+  actionTools?: ActionTools;
   streaming?: boolean;
   outputSchema?: unknown;
   signal?: AbortSignal;

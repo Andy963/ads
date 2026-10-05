@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { ACTION_TOOL_DEFINITIONS, isActionTool } from "../../agents/actionTools.js";
 
 import { BUILTIN_TOOL_DEFINITIONS, executeBuiltinTool, type BuiltinToolContext } from "../../tools/builtins.js";
 import type { DynamicToolCallParams } from "./protocol/v2/DynamicToolCallParams.js";
@@ -6,8 +7,8 @@ import type { DynamicToolCallResponse } from "./protocol/v2/DynamicToolCallRespo
 import type { DynamicToolSpec } from "./protocol/v2/DynamicToolSpec.js";
 import type { JsonValue } from "./protocol/serde_json/JsonValue.js";
 
-export function builtinDynamicTools(): DynamicToolSpec[] {
-  return BUILTIN_TOOL_DEFINITIONS.map(({ function: tool }) => ({
+export function builtinDynamicTools(includeActions = false): DynamicToolSpec[] {
+  return [...BUILTIN_TOOL_DEFINITIONS, ...(includeActions ? ACTION_TOOL_DEFINITIONS : [])].map(({ function: tool }) => ({
     type: "function",
     name: tool.name,
     description: tool.description,
@@ -36,7 +37,7 @@ export function createBuiltinToolBridge(options: {
     if (!params || typeof params !== "object" || options.context.signal?.aborted) return false;
     const request = params as Partial<DynamicToolCallParams>;
     const scope = options.scope();
-    return Boolean(scope.active && scope.threadId && scope.turnId
+    return Boolean(!isActionTool(String(request.tool)) && scope.active && scope.threadId && scope.turnId
       && request.threadId === scope.threadId && request.turnId === scope.turnId);
   };
   return {
