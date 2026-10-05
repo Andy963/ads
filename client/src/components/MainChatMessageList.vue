@@ -70,11 +70,15 @@ function openMessageImageViewer(attachments: Array<{ alt: string; url: string }>
 }
 const messageListEl = ref<HTMLElement | null>(null);
 const overflowingExecuteCommandIds = ref<Set<string>>(new Set());
+const executeMarqueeDurations = ref<Map<string, string>>(new Map());
 let executeCommandResizeObserver: ResizeObserver | null = null;
 
 const INITIAL_MESSAGE_WINDOW = 30;
 const EARLIER_MESSAGE_PAGE_SIZE = 20;
 const CHAT_TOP_THRESHOLD_PX = 240;
+const EXECUTE_MARQUEE_GAP_PX = 32;
+const EXECUTE_MARQUEE_SPEED_PX_PER_SECOND = 50;
+const EXECUTE_MARQUEE_MIN_DURATION_SECONDS = 8;
 
 const loadedStart = ref(0);
 const loadingEarlierMessages = ref(false);
@@ -323,11 +327,26 @@ function isExecuteCommandOverflowing(messageId: unknown): boolean {
   return Boolean(key && overflowingExecuteCommandIds.value.has(key));
 }
 
+function executeMarqueeDuration(textWidth: number): string {
+  const duration = Math.max(
+    EXECUTE_MARQUEE_MIN_DURATION_SECONDS,
+    (textWidth + EXECUTE_MARQUEE_GAP_PX) / EXECUTE_MARQUEE_SPEED_PX_PER_SECOND,
+  );
+  return `${duration}s`;
+}
+
+function executeCommandTrackStyle(messageId: unknown): Record<string, string> | undefined {
+  const key = String(messageId ?? "").trim();
+  const duration = executeMarqueeDurations.value.get(key);
+  return duration ? { "--execute-marquee-duration": duration } : undefined;
+}
+
 function updateExecuteCommandOverflow(): void {
   const root = messageListEl.value;
   if (!root) return;
 
   const next = new Set<string>();
+  const nextDurations = new Map<string, string>();
   root.querySelectorAll<HTMLElement>(".execute-block .execute-cmd").forEach((commandEl) => {
     const messageId = String(commandEl.dataset.messageId ?? "").trim();
     const textEl = commandEl.querySelector<HTMLElement>(".execute-cmd-copy");
@@ -337,12 +356,20 @@ function updateExecuteCommandOverflow(): void {
     const textWidth = Math.max(textEl.scrollWidth, textEl.getBoundingClientRect().width);
     if (containerWidth > 0 && textWidth > containerWidth + 0.5) {
       next.add(messageId);
+      nextDurations.set(messageId, executeMarqueeDuration(textWidth));
     }
   });
 
   const current = overflowingExecuteCommandIds.value;
-  if (current.size === next.size && [...current].every((id) => next.has(id))) return;
+  const currentDurations = executeMarqueeDurations.value;
+  if (
+    current.size === next.size &&
+    [...current].every((id) => next.has(id)) &&
+    currentDurations.size === nextDurations.size &&
+    [...currentDurations].every(([id, duration]) => nextDurations.get(id) === duration)
+  ) return;
   overflowingExecuteCommandIds.value = next;
+  executeMarqueeDurations.value = nextDurations;
 }
 
 function observeExecuteCommandSizes(): void {
@@ -636,7 +663,7 @@ function retryUserTurn(message: RenderMessage): void {
               :data-message-id="m.id"
               :title="m.command || ''"
             >
-              <div :key="m.command" class="execute-cmd-track">
+              <div :key="m.command" class="execute-cmd-track" :style="executeCommandTrackStyle(m.id)">
                 <span class="execute-cmd-copy">{{ m.command || "" }}</span>
                 <span v-if="isExecuteCommandOverflowing(m.id)" class="execute-cmd-copy" aria-hidden="true">{{ m.command || "" }}</span>
               </div>
@@ -926,7 +953,7 @@ function retryUserTurn(message: RenderMessage): void {
   display: inline-flex;
   width: max-content;
   gap: var(--execute-marquee-gap);
-  animation: execute-command-marquee 20s linear infinite;
+  animation: execute-command-marquee var(--execute-marquee-duration, 20s) linear infinite;
   will-change: transform;
 }
 
@@ -944,7 +971,7 @@ function retryUserTurn(message: RenderMessage): void {
    motion without changing the global reduced-motion policy for other UI. */
 @media (prefers-reduced-motion: reduce) {
   .execute-cmd--overflowing .execute-cmd-track {
-    animation-duration: 20s !important;
+    animation-duration: var(--execute-marquee-duration, 20s) !important;
     animation-iteration-count: infinite !important;
   }
 }

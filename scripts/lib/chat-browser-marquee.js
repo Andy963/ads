@@ -26,8 +26,11 @@ export async function verifyExecuteMarquee({ page, fixture, send, waitForReply, 
   const verifyMovement = async () => {
     const before = await measure();
     assert.equal(before.overflowing, true);
-    assert.equal(before.animationDuration, "20s", "The command must scroll at half the previous 10-second-cycle speed");
     assert.ok(before.textWidth > before.slotWidth);
+    const durationSeconds = Number.parseFloat(before.animationDuration);
+    const measuredSpeed = (before.textWidth + 32) / durationSeconds;
+    assert.ok(Number.isFinite(durationSeconds) && durationSeconds >= 8, "The command must have a readable marquee duration");
+    assert.ok(Math.abs(measuredSpeed - 50) < 0.5, `The command must scroll at a constant speed, got ${measuredSpeed}px/s`);
     assert.equal(before.pageOverflow, false);
     // Observe native animation frames; do not seek or accelerate the animation.
     try {
@@ -42,6 +45,8 @@ export async function verifyExecuteMarquee({ page, fixture, send, waitForReply, 
     return { before, after: await measure() };
   };
   const verifyTail = async () => {
+    const { animationDuration } = await measure();
+    const durationMs = Number.parseFloat(animationDuration) * 1000;
     await page.waitForFunction((selector) => {
       const slot = document.querySelector(selector);
       const text = slot?.querySelector(".execute-cmd-copy")?.firstChild;
@@ -52,11 +57,11 @@ export async function verifyExecuteMarquee({ page, fixture, send, waitForReply, 
       const tail = range.getBoundingClientRect();
       const viewport = slot.getBoundingClientRect();
       return tail.width > 0 && tail.left >= viewport.left && tail.right <= viewport.right;
-    }, commandSelector, { timeout: 22000, polling: "raf" });
+    }, commandSelector, { timeout: Math.ceil(durationMs) + 2000, polling: "raf" });
     return measure();
   };
   // Coverage map: the tail-reveal geometry (copy wider than the slot, one
-  // linear 20s cycle bringing the last characters into view) is independent
+  // linear cycle bringing the last characters into view) is independent
   // of the motion preference. Real-clock evidence that the tail arrives
   // within a single cycle comes from the no-preference block above; for
   // reduced motion we seek the same running animation and assert the
@@ -89,14 +94,14 @@ export async function verifyExecuteMarquee({ page, fixture, send, waitForReply, 
         animation.play();
       }
     }, commandSelector);
-    assert.ok(!reached.error, `Reduced-motion tail must be reachable within one 20s cycle: ${reached.error}`);
+    assert.ok(!reached.error, `Reduced-motion tail must be reachable within one animation cycle: ${reached.error}`);
     return measure();
   };
 
   try {
     for (const reducedMotion of ["no-preference", "reduce"]) {
       // no-preference keeps full real-clock waits (movement + both tail
-      // waits) as the 20-second-cycle evidence; reduced motion keeps the
+      // waits) as the duration-proportional evidence; reduced motion keeps the
       // real movement assertion (the animation must ignore the preference)
       // but seeks the animation for the two tail checks (see verifyTailSeeked).
       const verifyTailForPreference = reducedMotion === "reduce" ? verifyTailSeeked : verifyTail;
