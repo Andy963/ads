@@ -55,6 +55,7 @@ export function createChatActions(ctx: AppContext) {
   const uploadPromptImages = async (args: {
     workspaceRoot: string;
     images: IncomingImage[];
+    isCurrent: () => boolean;
   }): Promise<UploadedImageAttachment[]> => {
     const workspaceRoot = String(args.workspaceRoot ?? "").trim();
     const images = Array.isArray(args.images) ? args.images : [];
@@ -66,6 +67,7 @@ export function createChatActions(ctx: AppContext) {
     const results: UploadedImageAttachment[] = [];
 
     for (const img of images) {
+      if (!args.isCurrent()) return results;
       const dataUrl = String(img.data ?? "").trim();
       if (!dataUrl) {
         continue;
@@ -73,6 +75,7 @@ export function createChatActions(ctx: AppContext) {
       const blob = await fetch(dataUrl)
         .then((r) => (r.ok ? r.blob() : null))
         .catch(() => null);
+      if (!args.isCurrent()) return results;
       if (!blob || blob.size <= 0) {
         continue;
       }
@@ -116,24 +119,27 @@ export function createChatActions(ctx: AppContext) {
   };
 
   const outbox = createOutboxStore();
-  const boundOutboxRuntimes = new WeakSet<ProjectRuntime>();
+  type OutboxBinding = { key: string; stop: () => void };
+  const outboxBindings = new Map<ProjectRuntime, OutboxBinding>();
   const outboxGenerations = new WeakMap<ProjectRuntime, number>();
-  const outboxBindingStops = new Set<() => void>();
-  const runtimesByOutboxKey = new Map<string, Set<ProjectRuntime>>();
   const sendingQueuedPromptIds = new WeakMap<ProjectRuntime, Set<string>>();
+  let outboxDisposed = false;
   /** Set while a sibling tab's snapshot is being applied, so we don't echo it back. */
   let applyingRemoteOutbox = false;
 
   const disposeOutboxBindings = (): void => {
-    for (const stop of outboxBindingStops) stop();
-    outboxBindingStops.clear();
-    runtimesByOutboxKey.clear();
+    for (const binding of outboxBindings.values()) binding.stop();
+    outboxBindings.clear();
     outbox.close();
   };
   if (ctx.accountGeneration) watch(ctx.accountGeneration, disposeOutboxBindings, { flush: "sync" });
-  if (getCurrentScope()) onScopeDispose(disposeOutboxBindings);
+  if (getCurrentScope()) onScopeDispose(() => {
+    outboxDisposed = true;
+    disposeOutboxBindings();
+  });
 
   const outboxKeyFor = (rt: ProjectRuntime): string => {
+    if (outboxDisposed) return "";
     const generation = ctx.accountGeneration?.value ?? 0;
     if (!outboxGenerations.has(rt)) outboxGenerations.set(rt, generation);
     if (outboxGenerations.get(rt) !== generation) return "";
@@ -199,6 +205,8 @@ export function createChatActions(ctx: AppContext) {
     if (applyingRemoteOutbox) return;
     const key = outboxKeyFor(rt);
     if (!key) return;
+    const binding = outboxBindings.get(rt);
+    if (binding && binding.key !== key) return;
     const current = readOutboxFor(rt);
     const nextPending = pending === undefined ? current.pending : pending;
     const nextSent = sent === undefined ? current.sent : sent;
@@ -333,12 +341,7 @@ export function createChatActions(ctx: AppContext) {
       next.length === rt.queuedPrompts.value.length &&
       next.every((prompt, index) => prompt.clientMessageId === rt.queuedPrompts.value[index]?.clientMessageId);
     if (unchanged) return;
-    applyingRemoteOutbox = true;
-    try {
-      rt.queuedPrompts.value = next;
-    } finally {
-      applyingRemoteOutbox = false;
-    }
+    rt.queuedPrompts.value = next;
   };
 
   /**
@@ -349,8 +352,36 @@ export function createChatActions(ctx: AppContext) {
    */
   const ensureOutboxBinding = (rt: ProjectRuntime): void => {
     const key = outboxKeyFor(rt);
-    if (!key || boundOutboxRuntimes.has(rt)) return;
-    boundOutboxRuntimes.add(rt);
+    const previous = outboxBindings.get(rt);
+    if (previous?.key === key) return;
+    previous?.stop();
+    outboxBindings.delete(rt);
+    if (!key) return;
+    if (previous) {
+      // Runtime identities are plain fields, not Vue refs. Dispose the old
+      // watcher BEFORE clearing state and write only to its captured owner key.
+      const snapshot = outbox.read(previous.key);
+      const retired = new Set([
+        ...(snapshot.retired ?? []), ...(rt.retiredPromptIds ?? []),
+        snapshot.pending?.clientMessageId, rt.pendingAckClientMessageId,
+        ...snapshot.sent.map((prompt) => prompt.clientMessageId),
+        ...snapshot.queued.map((prompt) => prompt.clientMessageId),
+        ...rt.queuedPrompts.value.map((prompt) => prompt.clientMessageId),
+        ...(snapshot.cancelIntents ?? []),
+      ].filter((id): id is string => Boolean(id)));
+      outbox.write(previous.key, { ...snapshot, pending: null, sent: [], queued: [], retired: [...retired] });
+      rt.queuedPrompts.value = [];
+      rt.pendingAckClientMessageId = null;
+      rt.promptReconciliationPending = false;
+      rt.promptReconciliationIds = undefined;
+      rt.dismissedPromptIds = new Set();
+      rt.consumedPromptIds = new Set();
+      rt.cancelledPromptIds = new Set();
+      rt.retiredPromptIds = new Set();
+      sendingQueuedPromptIds.delete(rt);
+    }
+    const binding: OutboxBinding = { key, stop: () => {} };
+    outboxBindings.set(rt, binding);
     // The legacy pending key of the current wire id never existed for the
     // Acopilot lane: older releases wrote it under the retired spellings.
     const legacyPendingIds = rt.chatSessionId === WIRE_ACOPILOT_SESSION_ID
@@ -362,22 +393,28 @@ export function createChatActions(ctx: AppContext) {
         legacyKey: legacyPendingPromptStorageKey(rt.projectSessionId, legacyId),
       });
     }
-    let peers = runtimesByOutboxKey.get(key);
-    if (!peers) {
-      peers = new Set();
-      runtimesByOutboxKey.set(key, peers);
-      outbox.subscribe((changedKey, snapshot) => {
-        for (const peer of runtimesByOutboxKey.get(changedKey) ?? []) {
-          applyRemoteOutbox(peer, snapshot);
-        }
-      });
-    }
-    peers.add(rt);
     // Restoring has to re-filter too: a reload can render the queue before this
     // tab binds its outbox, and a suppressed card must stay gone.
     applyPersistedSuppressions(rt, readOutboxFor(rt));
     // `sync` so a queue change survives an immediate tab close.
-    outboxBindingStops.add(watch(rt.queuedPrompts, () => persistOutbox(rt), { flush: "sync" }));
+    const ownsKey = (): boolean => outboxBindings.get(rt) === binding && outboxKeyFor(rt) === key;
+    const stopQueue = watch(rt.queuedPrompts, () => {
+      if (!ownsKey()) return;
+      persistOutbox(rt);
+    }, { flush: "sync" });
+    const unsubscribe = outbox.subscribe((changedKey, snapshot) => {
+      if (changedKey !== key || !ownsKey()) return;
+      // Suppression updates also mutate the queue. Keep them inside the echo
+      // guard so a stale broadcast cannot overwrite the durable snapshot.
+      const wasApplying = applyingRemoteOutbox;
+      applyingRemoteOutbox = true;
+      try {
+        applyRemoteOutbox(rt, snapshot);
+      } finally {
+        applyingRemoteOutbox = wasApplying;
+      }
+    });
+    binding.stop = () => { stopQueue(); unsubscribe(); };
   };
 
   const savePendingPrompt = (rt: ProjectRuntime, prompt: QueuedPrompt): void => {
@@ -517,8 +554,8 @@ export function createChatActions(ctx: AppContext) {
     rt: ProjectRuntime,
     socket: { send: (type: string, payload?: unknown) => boolean | void } | null = rt.ws,
   ): void => {
-    rt.promptReconciliationPending = true;
     ensureOutboxBinding(rt);
+    rt.promptReconciliationPending = true;
     // Hydrate before bootstrap frames arrive, while the reconciliation gate
     // still prevents sending. Otherwise cold-start retries exist only on disk.
     restorePendingPrompt(rt, true);
@@ -1154,6 +1191,7 @@ export function createChatActions(ctx: AppContext) {
     options?: { preserveErrorStatus?: boolean },
   ): Promise<void> => {
     const state = runtimeOrActive(rt);
+    ensureOutboxBinding(state);
     if (state.promptReconciliationPending) return;
     if (state.syncInProgress || state.awaitingBootstrapHistory) return;
     if (state.inputLocked.value && !state.queuedPrompts.value[0]?.restoredFromStorage) return;
@@ -1162,7 +1200,18 @@ export function createChatActions(ctx: AppContext) {
     if (state.queuedPrompts.value.length === 0) return;
 
     const account = ctx.accountGeneration?.value;
-    const isCurrentAccount = (): boolean => ctx.accountGeneration?.value === account;
+    const binding = outboxBindings.get(state);
+    const projectSessionId = state.projectSessionId;
+    const chatSessionId = state.chatSessionId;
+    // A connected runtime may not have a durable project identity yet. Keep
+    // its in-memory send path, but fence it by the captured account/session
+    // just like a persistent binding instead of inventing a storage key.
+    const isCurrentScope = (): boolean =>
+      !outboxDisposed && ctx.accountGeneration?.value === account &&
+      outboxGenerations.get(state) === (account ?? 0) &&
+      state.projectSessionId === projectSessionId && state.chatSessionId === chatSessionId &&
+      outboxBindings.get(state) === binding && (!binding || outboxKeyFor(state) === binding.key);
+    if (!isCurrentScope()) return;
     let sending = sendingQueuedPromptIds.get(state);
     if (!sending) {
       sending = new Set<string>();
@@ -1190,7 +1239,9 @@ export function createChatActions(ctx: AppContext) {
 
       if (next.images.length > 0 && !next.preparedPayload) {
         try {
-          const attachments = await uploadPromptImages({ workspaceRoot: state.workspacePath.value, images: next.images });
+          const attachments = await uploadPromptImages({
+            workspaceRoot: state.workspacePath.value, images: next.images, isCurrent: isCurrentScope,
+          });
           if (attachments.length > 0) {
             promptText = formatPromptTextWithAttachments(next.text, attachments);
             display = promptText;
@@ -1209,7 +1260,7 @@ export function createChatActions(ctx: AppContext) {
               : `[图片 x${next.images.length}]`;
       }
 
-      if (!isCurrentAccount()) return;
+      if (!isCurrentScope() || !state.queuedPrompts.value.some((prompt) => prompt.clientMessageId === next.clientMessageId)) return;
       finalizeCommandBlock(state);
       clearStepLive(state);
       const queuedEffort = String(next.modelReasoningEffort ?? "").trim();
@@ -1251,7 +1302,9 @@ export function createChatActions(ctx: AppContext) {
       }
       const recovery = next.restoredFromStorage || next.replayIncomplete ? { replay_incomplete: true } : {};
       const payload = { ...preparedPayload, ...recovery, ...(next.retryOriginal ? { retry_original: true } : {}) };
+      if (!isCurrentScope()) return;
       sendAccepted = state.ws.sendPrompt(payload, next.clientMessageId) !== false;
+      if (!isCurrentScope()) return;
       if (!sendAccepted) {
         throw new Error("WebSocket prompt send was not accepted");
       }
@@ -1268,13 +1321,11 @@ export function createChatActions(ctx: AppContext) {
       state.queuedPrompts.value = state.queuedPrompts.value.filter(
         (prompt) => prompt.clientMessageId !== next.clientMessageId,
       );
-      sending.delete(next.clientMessageId);
       queueMicrotask(() => {
-        void flushQueuedPrompts(state, { preserveErrorStatus: true });
+        if (isCurrentScope()) void flushQueuedPrompts(state, { preserveErrorStatus: true });
       });
     } catch {
-      if (!isCurrentAccount()) return;
-      sending.delete(next.clientMessageId);
+      if (!isCurrentScope()) return;
       dropEmptyAssistantPlaceholder(state);
       state.busy.value = false;
       state.turnInFlight = false;
@@ -1293,6 +1344,8 @@ export function createChatActions(ctx: AppContext) {
           ? { ...prompt, deliveryStatus: "offline" }
           : prompt,
       );
+    } finally {
+      sending.delete(next.clientMessageId);
     }
   };
 
@@ -1351,6 +1404,7 @@ export function createChatActions(ctx: AppContext) {
   };
 
   return {
+    bindPromptOutbox: ensureOutboxBinding,
     isLiveMessageId,
     findFirstLiveIndex,
     findLastLiveIndex,

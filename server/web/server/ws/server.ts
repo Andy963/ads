@@ -7,7 +7,7 @@ import { getStateDatabase } from "../../../state/database.js";
 import { RuntimeBackendMismatchError } from "../../../sessions/sessionState.js";
 import { ensureWebAuthTables } from "../../auth/schema.js";
 import { ensureWebProjectTables } from "../../projects/schema.js";
-import { getWebProjectWorkspaceRoot } from "../../projects/store.js";
+import { getWebProjectRecord, getWebProjectWorkspaceRoot, onWebProjectSessionChange, updateWebProject } from "../../projects/store.js";
 import { getWorkspaceState } from "../../utils.js";
 import type { AttachWebSocketServerDeps, WsOrchestrator } from "./deps.js";
 import { dispatchWsMessage, type IncomingWsMessage } from "./messageDispatch.js";
@@ -120,6 +120,19 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       if (candidate.readyState === 1) {
         safeJsonSend(candidate, { type: "task_terminal", event });
       }
+    }
+  });
+  const projectDb = getStateDatabase();
+  ensureWebAuthTables(projectDb);
+  ensureWebProjectTables(projectDb);
+  const sessionSwitchHandlers = new Map<WebSocket, (chatSessionId: string) => void>();
+  const removeProjectSessionListener = onWebProjectSessionChange(projectDb, (event) => {
+    if (isAcopilotChatSessionId(event.chatSessionId)) return;
+    for (const [candidate, meta] of state.clientMetaByWs) {
+      if (candidate.readyState !== 1 || (candidate as AliveWebSocket).isConnector
+        || meta.authUserId !== event.userId || meta.sessionId !== event.projectId
+        || isAcopilotChatSessionId(meta.chatSessionId) || meta.chatSessionId === event.chatSessionId) continue;
+      sessionSwitchHandlers.get(candidate)?.(event.chatSessionId);
     }
   });
   const seenChatSessionIdsBySharedSession = new Map<string, Set<string>>();
@@ -605,6 +618,8 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       clearInterval(pingTimer);
     }
     removeTaskTerminalListener();
+    removeProjectSessionListener();
+    sessionSwitchHandlers.clear();
     void stopPromptQueue();
   });
 
@@ -629,7 +644,11 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
     }
 
     const sessionId = resolveWebSocketSessionId({ protocols: parsedProtocols, workspaceRoot: config.workspaceRoot });
-    let chatSessionId = resolveWebSocketChatSessionId({ protocols: parsedProtocols });
+    const requestedChatSessionId = resolveWebSocketChatSessionId({ protocols: parsedProtocols });
+    const selectedChatSessionId = getWebProjectRecord(projectDb, authResult.userId, sessionId)?.chatSessionId;
+    let chatSessionId = !authResult.connector && !isAcopilotChatSessionId(requestedChatSessionId)
+      && selectedChatSessionId && !isAcopilotChatSessionId(selectedChatSessionId)
+      ? selectedChatSessionId : requestedChatSessionId;
     let { sessionManager, historyStore, getWorkspaceLock } = resolveWsLaneResources({
       chatSessionId,
       sessions,
@@ -1246,6 +1265,24 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       }
     };
 
+    const sendPromptQueueSnapshot = (): void => {
+      if (promptQueueService) {
+        const entries = promptQueueService.getSnapshot({
+          authUserId: currentLane.authUserId,
+          sessionId: currentLane.sessionId,
+          chatSessionId: currentLane.chatSessionId,
+          historyKey: currentLane.historyKey,
+          logicalHistoryKey: currentLane.logicalHistoryKey,
+          laneNamespace: currentLane.laneNamespace,
+          laneGeneration: currentLane.laneGeneration,
+        });
+        safeJsonSend(ws, {
+          type: "prompt_queue_snapshot",
+          entries: entries.map(publicPromptQueueEntry),
+        });
+      }
+    };
+
     inBandResetHandlers.set(ws, rebindCurrentConnection);
 
     sendInitialBootstrapMessages({
@@ -1261,7 +1298,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       inFlight,
       historyStore: currentLane.historyStore,
       historyKey: currentLane.historyKey,
-      resume: parseTranscriptResume(req.url),
+      resume: chatSessionId === requestedChatSessionId ? parseTranscriptResume(req.url) : undefined,
       sync: state.syncEventStore ? {
         store: state.syncEventStore,
         namespace: currentLane.laneNamespace,
@@ -1271,26 +1308,23 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       laneGeneration: currentLane.laneGeneration,
       runtimeSnapshots: collectRuntimeSnapshots(currentLane, inFlight),
     });
-    if (promptQueueService) {
-      const entries = promptQueueService.getSnapshot({
-        authUserId: currentLane.authUserId,
-        sessionId: currentLane.sessionId,
-        chatSessionId: currentLane.chatSessionId,
-        historyKey: currentLane.historyKey,
-        logicalHistoryKey: currentLane.logicalHistoryKey,
-        laneNamespace: currentLane.laneNamespace,
-        laneGeneration: currentLane.laneGeneration,
-      });
-      safeJsonSend(ws, {
-        type: "prompt_queue_snapshot",
-        entries: entries.map(publicPromptQueueEntry),
-      });
-    }
+    sendPromptQueueSnapshot();
 
     let messageChain = Promise.resolve();
     const pendingResetBarrierTokens = new Set<ResetBarrierToken>();
     let pendingSwitchCount = 0;
     let lastReceivedAt = 0;
+
+    const rejectObsoleteInput = (lane: WsLaneSnapshot, parsed: WsMessage): boolean => {
+      if (parsed.type === "ping" || parsed.type === "pong" || parsed.type === "switch_chat_session"
+        || parsed.chat_session_id === undefined || normalizeLaneChatSessionId(parsed.chat_session_id) === lane.chatSessionId) return false;
+      safeJsonSend(ws, {
+        type: "error", code: "session_changed", clientMessageId: parsed.client_message_id,
+        chat_session_id: parsed.chat_session_id,
+        message: "This input belongs to a previous chat session and was not applied.",
+      });
+      return true;
+    };
 
     const handleImmediateForLane = (lane: WsLaneSnapshot, parsed: IncomingWsMessage["parsed"], receivedAt: number): boolean =>
       handleImmediateWsMessage({
@@ -1316,6 +1350,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       clientMessageId: string | null,
       receivedAt: number,
     ): ReturnType<typeof preflightPersistAndAck> => {
+      if (rejectObsoleteInput(lane, parsed)) return { enqueue: false };
       let promptQueued = false;
       const result = preflightPersistAndAck({
         parsed,
@@ -1413,6 +1448,143 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       return promptQueued ? { ...result, enqueue: false } : result;
     };
 
+    const switchCurrentChatSession = (nextChatSessionId: string, publishSelection: boolean): void => {
+      if (ws.readyState !== 1) return;
+      const previousLane = currentLane;
+
+      abortInFlightForHistoryKey(previousLane.historyKey);
+
+      const nextLaneRes = resolveWsLaneResources({ chatSessionId: nextChatSessionId, sessions, history });
+      const nextLogicalIdentity = buildWsConnectionIdentity({
+        authUserId,
+        sessionId,
+        chatSessionId: nextChatSessionId,
+        randomHex: () => "",
+      });
+      const nextLaneNamespace = resolveSyncNamespace(nextChatSessionId);
+      const nextLaneGeneration = getLaneGeneration(nextLaneNamespace, nextLogicalIdentity.historyKey);
+      const nextIdentity = buildWsConnectionIdentity({
+        authUserId,
+        sessionId,
+        chatSessionId: nextChatSessionId,
+        connectionId,
+        generation: nextLaneGeneration,
+      });
+
+      const nextOrchestrator = nextLaneRes.sessionManager.getOrCreate(nextIdentity.userId, currentCwd, true, { authUserId });
+      bindingVersion += 1;
+      chatSessionId = nextChatSessionId;
+      sessionManager = nextLaneRes.sessionManager;
+      historyStore = nextLaneRes.historyStore;
+      getWorkspaceLock = nextLaneRes.getWorkspaceLock;
+      const workspaceRoot = state.clientMetaByWs.get(ws)?.workspaceRoot;
+      userId = nextIdentity.userId;
+      historyKey = nextIdentity.historyKey;
+      cacheKey = nextIdentity.cacheKey;
+      logicalHistoryKey = nextLogicalIdentity.historyKey;
+      laneNamespace = nextLaneNamespace;
+      laneGeneration = nextLaneGeneration;
+      clientMeta = workspaceRoot
+        ? { ...nextIdentity.clientMeta, workspaceRoot }
+        : nextIdentity.clientMeta;
+      clientMeta.logicalHistoryKey = logicalHistoryKey;
+      state.clientMetaByWs.set(ws, clientMeta);
+      registerSeenChatSessionId(authUserId, sessionId, chatSessionId);
+
+      registerSessionCacheBinding();
+      orchestrator = nextOrchestrator;
+
+      if (
+        publishSelection && previousLane.historyKey !== nextIdentity.historyKey &&
+        nextLaneNamespace === WEB_ACTIONS_NAMESPACE
+      ) {
+        const prevEntries = previousLane.historyStore.get(previousLane.historyKey);
+        const nextExistingEntries = nextLaneRes.historyStore.get(nextIdentity.historyKey);
+        if (prevEntries.length > 0 && nextExistingEntries.length === 0) {
+          for (const entry of prevEntries) {
+            nextLaneRes.historyStore.add(nextIdentity.historyKey, entry);
+          }
+          if (prevEntries[prevEntries.length - 1]?.kind !== "session_divider") {
+            nextLaneRes.historyStore.add(nextIdentity.historyKey, {
+              role: "status",
+              kind: "session_divider",
+              text: "Previous messages above are retained for review only and are NOT injected into model prompt context.",
+              ts: Date.now(),
+            });
+          }
+        }
+      }
+
+      const nextSyncLaneKeys = resolveSyncLaneKeys({
+        authUserId,
+        sessionId,
+        chatSessionId,
+        generation: laneGeneration,
+      });
+      deltaCoalescer?.finish();
+      commandSnapshotCoalescer?.finish();
+      syncNamespace = nextLaneNamespace;
+      syncLaneKeys = nextSyncLaneKeys;
+      const nextInFlight = state.interruptControllers.has(historyKey);
+      const nextSyncRuntime = getLaneSyncRuntime(
+        syncNamespace,
+        historyKey,
+        nextInFlight,
+      );
+      deltaCoalescer = nextSyncRuntime?.deltaCoalescer ?? null;
+      commandSnapshotCoalescer = nextSyncRuntime?.commandSnapshotCoalescer ?? null;
+      currentLane = captureLane();
+
+      if (publishSelection && !authResult.connector && !isAcopilotChatSessionId(previousLane.chatSessionId)
+        && !isAcopilotChatSessionId(nextChatSessionId)) {
+        updateWebProject(projectDb, { userId: authUserId, projectId: sessionId, chatSessionId: nextChatSessionId });
+      }
+
+      sendInitialBootstrapMessages({
+        ws,
+        safeJsonSend,
+        sessionManager: currentLane.sessionManager,
+        orchestrator: currentLane.orchestrator,
+        userId: currentLane.userId,
+        agentAvailability: agents.agentAvailability,
+        sessionId,
+        chatSessionId: currentLane.chatSessionId,
+        workspace: getWorkspaceState(currentLane.currentCwd),
+        inFlight: nextInFlight,
+        historyStore: currentLane.historyStore,
+        historyKey: currentLane.historyKey,
+        latestSeq: state.syncEventStore?.getLatestSeqForLanes(currentLane.laneNamespace, currentLane.syncLaneKeys) ?? 0,
+        laneGeneration: currentLane.laneGeneration,
+        runtimeSnapshots: collectRuntimeSnapshots(currentLane, nextInFlight),
+      });
+
+      sendPromptQueueSnapshot();
+
+      logger.info(
+        "[WebSocket] in-band session switch conn=" + connectionId + " session=" + sessionId + " chat=" + chatSessionId + " user=" + userId + " history=" + historyKey,
+      );
+    };
+
+    let pendingPeerSwitchCount = 0;
+    sessionSwitchHandlers.set(ws, (targetChatSessionId) => {
+      pendingSwitchCount += 1;
+      pendingPeerSwitchCount += 1;
+      // Break a running turn before queuing the rebind behind its cleanup.
+      abortInFlightForHistoryKey(currentLane.historyKey);
+      messageChain = messageChain.then(() => {
+        const selected = getWebProjectRecord(projectDb, authUserId, sessionId)?.chatSessionId;
+        if (selected !== targetChatSessionId || currentLane.chatSessionId === selected) return;
+        switchCurrentChatSession(targetChatSessionId, false);
+      }).catch((error) => {
+        logger.warn(`[WebSocket] peer session switch failed conn=${connectionId}: ${String(error)}`);
+        // A reconnect resolves the canonical selection and obtains a fresh snapshot.
+        ws.close(1012, "session selection changed");
+      }).finally(() => {
+        pendingSwitchCount -= 1;
+        pendingPeerSwitchCount -= 1;
+      });
+    });
+
     ws.on("message", (data: RawData) => {
       const envelope = parseIncomingWsEnvelope({ data, lastReceivedAt });
       lastReceivedAt = envelope.nextReceivedAt;
@@ -1428,10 +1600,19 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
           ? `server-${crypto.randomUUID()}`
           : null);
 
+      if (pendingPeerSwitchCount > 0 && !["ping", "pong", "switch_chat_session"].includes(parsed.type)) {
+        safeJsonSend(ws, {
+          type: "error", code: "session_changed", clientMessageId,
+          chat_session_id: parsed.chat_session_id ?? currentLane.chatSessionId,
+          message: "The active chat session changed on another device. Wait for synchronization before sending again.",
+        });
+        return;
+      }
+
       if (parsed.type === "interrupt" && pendingSwitchCount > 0) {
         messageChain = messageChain
           .then(() => {
-            handleImmediateForLane(currentLane, parsed, receivedAt);
+            if (!rejectObsoleteInput(currentLane, parsed)) handleImmediateForLane(currentLane, parsed, receivedAt);
           })
           .catch((error) => {
             const message = error instanceof Error ? error.message : String(error);
@@ -1439,6 +1620,8 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
           });
         return;
       }
+
+      if (pendingSwitchCount === 0 && rejectObsoleteInput(currentLane, parsed)) return;
 
       const isResetMessage = parsed.type === "clear_history";
       const resetBarrierToken = isResetMessage
@@ -1471,128 +1654,17 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       }
 
       if (parsed.type === "switch_chat_session") {
+        const payload = parsed.payload;
+        const target = typeof payload === "object" && payload !== null && "chatSessionId" in payload
+          ? normalizeLaneChatSessionId(String(payload.chatSessionId ?? "")) : "";
         pendingSwitchCount += 1;
-        messageChain = messageChain
-          .then(async () => {
-            const previousLane = currentLane;
-            bindingVersion += 1;
-            const payload = parsed.payload;
-            const targetChatSessionId =
-              typeof payload === "object" && payload !== null && "chatSessionId" in payload
-                ? String((payload as { chatSessionId?: unknown }).chatSessionId ?? "").trim()
-                : "";
-            const nextChatSessionId = targetChatSessionId || crypto.randomUUID();
-
-            abortInFlightForHistoryKey(previousLane.historyKey);
-
-            const nextLaneRes = resolveWsLaneResources({ chatSessionId: nextChatSessionId, sessions, history });
-            const nextLogicalIdentity = buildWsConnectionIdentity({
-              authUserId,
-              sessionId,
-              chatSessionId: nextChatSessionId,
-              randomHex: () => "",
-            });
-            const nextLaneNamespace = resolveSyncNamespace(nextChatSessionId);
-            const nextLaneGeneration = getLaneGeneration(nextLaneNamespace, nextLogicalIdentity.historyKey);
-            const nextIdentity = buildWsConnectionIdentity({
-              authUserId,
-              sessionId,
-              chatSessionId: nextChatSessionId,
-              connectionId,
-              generation: nextLaneGeneration,
-            });
-
-            chatSessionId = nextChatSessionId;
-            sessionManager = nextLaneRes.sessionManager;
-            historyStore = nextLaneRes.historyStore;
-            getWorkspaceLock = nextLaneRes.getWorkspaceLock;
-            const workspaceRoot = state.clientMetaByWs.get(ws)?.workspaceRoot;
-            userId = nextIdentity.userId;
-            historyKey = nextIdentity.historyKey;
-            cacheKey = nextIdentity.cacheKey;
-            logicalHistoryKey = nextLogicalIdentity.historyKey;
-            laneNamespace = nextLaneNamespace;
-            laneGeneration = nextLaneGeneration;
-            clientMeta = workspaceRoot
-              ? { ...nextIdentity.clientMeta, workspaceRoot }
-              : nextIdentity.clientMeta;
-            state.clientMetaByWs.set(ws, clientMeta);
-            registerSeenChatSessionId(authUserId, sessionId, chatSessionId);
-
-            registerSessionCacheBinding();
-            orchestrator = sessionManager.getOrCreate(userId, currentCwd, true, { authUserId });
-
-            if (
-              previousLane.historyKey !== nextIdentity.historyKey &&
-              nextLaneNamespace === WEB_ACTIONS_NAMESPACE
-            ) {
-              const prevEntries = previousLane.historyStore.get(previousLane.historyKey);
-              const nextExistingEntries = nextLaneRes.historyStore.get(nextIdentity.historyKey);
-              if (prevEntries.length > 0 && nextExistingEntries.length === 0) {
-                for (const entry of prevEntries) {
-                  nextLaneRes.historyStore.add(nextIdentity.historyKey, entry);
-                }
-                if (prevEntries[prevEntries.length - 1]?.kind !== "session_divider") {
-                  nextLaneRes.historyStore.add(nextIdentity.historyKey, {
-                    role: "status",
-                    kind: "session_divider",
-                    text: "Previous messages above are retained for review only and are NOT injected into model prompt context.",
-                    ts: Date.now(),
-                  });
-                }
-              }
-            }
-
-            const nextSyncLaneKeys = resolveSyncLaneKeys({
-              authUserId,
-              sessionId,
-              chatSessionId,
-              generation: laneGeneration,
-            });
-            deltaCoalescer?.finish();
-            commandSnapshotCoalescer?.finish();
-            syncNamespace = nextLaneNamespace;
-            syncLaneKeys = nextSyncLaneKeys;
-            const nextInFlight = state.interruptControllers.has(historyKey);
-            const nextSyncRuntime = getLaneSyncRuntime(
-              syncNamespace,
-              historyKey,
-              nextInFlight,
-            );
-            deltaCoalescer = nextSyncRuntime?.deltaCoalescer ?? null;
-            commandSnapshotCoalescer = nextSyncRuntime?.commandSnapshotCoalescer ?? null;
-            currentLane = captureLane();
-
-            sendInitialBootstrapMessages({
-              ws,
-              safeJsonSend,
-              sessionManager: currentLane.sessionManager,
-              orchestrator: currentLane.orchestrator,
-              userId: currentLane.userId,
-              agentAvailability: agents.agentAvailability,
-              sessionId,
-              chatSessionId: currentLane.chatSessionId,
-              workspace: getWorkspaceState(currentLane.currentCwd),
-              inFlight: nextInFlight,
-              historyStore: currentLane.historyStore,
-              historyKey: currentLane.historyKey,
-              latestSeq: state.syncEventStore?.getLatestSeqForLanes(currentLane.laneNamespace, currentLane.syncLaneKeys) ?? 0,
-              laneGeneration: currentLane.laneGeneration,
-              runtimeSnapshots: collectRuntimeSnapshots(currentLane, nextInFlight),
-            });
-
-            logger.info(
-              "[WebSocket] in-band session switch conn=" + connectionId + " session=" + sessionId + " chat=" + chatSessionId + " user=" + userId + " history=" + historyKey,
-            );
-          })
-          .catch((error) => {
-            const message = error instanceof Error ? error.message : String(error);
-            logger.warn("[WebSocket] switch_chat_session failed conn=" + connectionId + " user=" + currentLane.userId + ": " + message);
-            safeJsonSend(ws, { type: "error", message: "Failed to switch chat session" });
-          })
-          .finally(() => {
-            pendingSwitchCount = Math.max(0, pendingSwitchCount - 1);
-          });
+        messageChain = messageChain.then(() => {
+          switchCurrentChatSession(target || crypto.randomUUID(), true);
+        }).catch((error) => {
+          logger.warn(`[WebSocket] switch_chat_session failed conn=${connectionId}: ${String(error)}`);
+          safeJsonSend(ws, { type: "error", message: "Failed to switch chat session" });
+          ws.close(1012, "session selection failed");
+        }).finally(() => { pendingSwitchCount -= 1; });
         return;
       }
 
@@ -1639,6 +1711,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
               getWorkspaceLock: lane.getWorkspaceLock,
               interruptControllers: state.interruptControllers,
               promptRunEpochs: state.promptRunEpochs,
+              isLaneCurrent: () => isLaneCurrent(lane) && pendingPeerSwitchCount === 0,
               historyStore: lane.historyStore,
               scheduler,
               commands,
@@ -1801,6 +1874,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       }
       pendingResetBarrierTokens.clear();
       inBandResetHandlers.delete(ws);
+      sessionSwitchHandlers.delete(ws);
       cleanupClosedConnection({
         ws,
         code,

@@ -20,6 +20,12 @@ import type { WsDeps } from "./types";
 import { isReconnectNotice, pickReconnectNotice } from "./reconnectNotice";
 import { createSyncEventSequencer } from "./syncSequencer";
 import { createWsMessageHandler } from "./wsMessage";
+import {
+  clearPreviousSessionInputs,
+  confirmChatSessionSwitch,
+  pendingChatSessionSwitch,
+  persistChatSessionSelection,
+} from "./chatSessionSelection";
 import { WIRE_ACOPILOT_SESSION_ID } from "../../lib/laneWire";
 import { ACOPILOT_LANE_ID } from "../../lib/laneIds";
 
@@ -470,6 +476,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     let snapshotBootstrapPending = false;
     let observedTerminalSeq = 0;
     let welcomeSeen = false;
+    let awaitingSessionSelection = false;
     let bootstrapHistoryWait: Promise<void> | null = null;
     let resolveBootstrapHistoryWait: (() => void) | null = null;
     let bootstrapHistoryWatchdogTimer: number | null = null;
@@ -488,6 +495,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.ws === wsInstance &&
       rt.syncGeneration === syncGeneration &&
       rt.connected.value &&
+      !pendingChatSessionSwitch(rt) &&
+      !awaitingSessionSelection &&
       expectedLaneEpoch === syncLaneEpoch;
 
     const clearSyncRetryTimer = (): void => {
@@ -556,6 +565,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     const applyIdleBootstrapHistory = (): void => {
       bootstrapHistoryApplyScheduled = false;
       if (rt.ws !== wsInstance || rt.syncGeneration !== syncGeneration) return;
+      if (pendingChatSessionSwitch(rt) || awaitingSessionSelection) return;
       if (!snapshotBootstrapPending && (sequencer.isBuffering() || rt.syncInProgress)) return;
       const history = selectBootstrapHistory();
       if (!history) return;
@@ -661,11 +671,13 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
       syncLaneEpoch += 1;
       ctx.transcriptCache.attach(rt, {
-        projectId,
+        projectId: pid,
         sessionId: project.sessionId,
         chatSessionId: nextChatSessionId,
         workspace: project.path,
       });
+      rt.chatSessionId = nextChatSessionId;
+      ctx.bindPromptOutbox(rt);
       rt.transcriptReady = false;
       rt.transcriptCursor = 0;
       snapshotBootstrapPending = false;
@@ -1093,7 +1105,12 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.reconnectAttempts = 0;
       rt.awaitingBootstrapHistory = false;
       clearReconnectTimer(rt);
-      reconcilePromptOutbox(rt, wsInstance);
+      if (pendingChatSessionSwitch(rt)) {
+        // Reconcile only after the requested session has been bootstrapped.
+        rt.syncInProgress = true;
+      } else {
+        reconcilePromptOutbox(rt, wsInstance);
+      }
     };
 
     wsInstance.onClose = (ev) => {
@@ -1125,7 +1142,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       scheduleReconnect(mode, pid, rt, "error");
     };
 
-    const handleMessage = createWsMessageHandler({
+    const createMessageHandler = () => createWsMessageHandler({
       projects,
       pid,
       rt,
@@ -1159,12 +1176,43 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       upsertStreamingDelta,
       replaceStreamingText,
     });
+    let handleMessage = createMessageHandler();
     handleWsPayload = handleMessage;
 
     wsInstance.onMessage = (msg) => {
       if (rt.ws !== wsInstance) return;
+      const intent = mode === "actions" ? pendingChatSessionSwitch(rt) : undefined;
+      if (intent) {
+        const rec = msg && typeof msg === "object" ? msg as Record<string, unknown> : null;
+        // Old bootstrap/live frames can already be in flight when the user
+        // requests a switch. They cannot unlock or replay the new outbox.
+        if (rec?.type !== "welcome") return;
+        if (String(rec.chatSessionId ?? "").trim() !== intent.chatSessionId) {
+          rt.syncInProgress = true;
+          if (intent.sentOn !== wsInstance) {
+            if (wsInstance.switchChatSession(intent.chatSessionId)) intent.sentOn = wsInstance;
+            else wsInstance.close();
+          }
+          return;
+        }
+      }
       if (msg && typeof msg === "object" && !Array.isArray(msg)) {
         const rec = msg as Record<string, unknown>;
+        if (mode === "actions" && rec.type === "error" && rec.code === "session_changed") {
+          const rejectedSession = String(rec.chat_session_id ?? "").trim();
+          const rejectedInput = String(rec.clientMessageId ?? rec.client_message_id ?? "").trim();
+          if (rejectedSession && rejectedSession !== syncChatSessionId) return;
+          if (!rejectedSession && rejectedInput && rt.retiredPromptIds?.has(rejectedInput)) return;
+          // This rejection is a selection barrier, not a terminal turn error
+          // (which would immediately flush the next queued old-session input).
+          clearPreviousSessionInputs(ctx, rt);
+          awaitingSessionSelection = true;
+          rt.syncInProgress = true;
+          rt.inputLocked.value = true;
+          rt.laneStatus.value = { kind: "info", message: String(rec.message ?? "Chat session changed; synchronizing.") };
+          return;
+        }
+        if (awaitingSessionSelection && rec.type !== "welcome") return;
         const seq = Number(rec.seq);
         if (rec.type === "session_reset") {
           // Reset is a control barrier, not a replay event. It must invalidate
@@ -1202,9 +1250,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         const latestSeq = Number(rec.latestSeq);
         if (rec.type === "welcome") {
           const serverChatSessionId = String(rec.chatSessionId ?? "").trim();
-          if (serverChatSessionId) {
-            switchSyncChatLane(serverChatSessionId);
-          }
           const serverLaneGeneration = Number(rec.laneGeneration);
           const hasServerLaneGeneration = Number.isFinite(serverLaneGeneration) && serverLaneGeneration >= 1;
           const welcomeChatSessionId = serverChatSessionId || syncChatSessionId;
@@ -1227,6 +1272,43 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             }
             return;
           }
+          const sessionChanged = Boolean(serverChatSessionId && serverChatSessionId !== rt.chatSessionId);
+          if (sessionChanged) {
+            clearPreviousSessionInputs(ctx, rt);
+            clearStepLive(rt);
+            finalizeCommandBlock(rt);
+            rt.recentCommands.value = [];
+            rt.seenCommandIds.clear();
+            rt.executePreviewByKey.clear();
+            rt.executeOrder = [];
+            rt.turnCommands = [];
+            rt.turnCommandCount = 0;
+            rt.streamEndOffsets?.clear();
+            rt.streamSnapshotRevisions?.clear();
+            rt.activeThreadId.value = null;
+            rt.threadWarning.value = null;
+            rt.ignoreNextHistory = false;
+            rt.ignoreNextHistoryGeneration = undefined;
+            rt.suppressNextClearHistoryResult = false;
+          }
+          if (serverChatSessionId && mode === "actions") {
+            // getRuntime() derives the transcript binding from this project.
+            // Persist locally before any reactive lookup can reattach the old
+            // identity; do not echo a server selection back through PATCH.
+            persistChatSessionSelection(projects, pid, serverChatSessionId, deps.persistProjects);
+          }
+          if (serverChatSessionId && switchSyncChatLane(serverChatSessionId)) {
+            // Command and terminal fences belong to one chat, even if its
+            // replacement happens to use the same lane generation number.
+            handleMessage = createMessageHandler();
+            handleWsPayload = handleMessage;
+          }
+          if (sessionChanged) setMessages([], rt);
+          if (intent) {
+            confirmChatSessionSwitch(rt);
+            rt.syncInProgress = false;
+          }
+          awaitingSessionSelection = false;
           welcomeSeen = true;
           const generationChanged =
             hasServerLaneGeneration &&
@@ -1278,6 +1360,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           // The message handler owns thread/model/session state updates for
           // welcome. Invoke it exactly once, outside the sequencer, after the
           // cursor boundary has been established.
+          if (intent || sessionChanged) reconcilePromptOutbox(rt, wsInstance);
           handleMessage(msg);
           if (rec.historyMode === "snapshot" && rec.bootstrapHistory !== true) {
             sequencer.replaceWithSnapshot(bootstrapBoundarySeq, () => applyAuthoritativeHistory({ type: "history", items: [] }));
