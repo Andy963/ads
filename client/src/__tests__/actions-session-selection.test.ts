@@ -247,6 +247,112 @@ describe("server-authoritative Actions chat selection", () => {
     expect(rt.inputLocked.value).toBe(false);
   });
 
+  it.each([
+    [true, "before-history"], [true, "after-history"],
+    [false, "before-history"], [false, "after-history"],
+  ] as const)("fences truncated HTTP catch-up across same-session snapshot (rejection=%s, response=%s)", async (rejection, responseOrder) => {
+    const { ctx, rt, socket } = await setup();
+    welcome(socket, "old-chat", 50);
+    await history(socket, "Original A transcript", 50);
+    let finish!: (value: unknown) => void;
+    const get = vi.mocked(ctx.api.get).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    get.mockClear();
+    socket.onMessage({
+      type: "welcome", chatSessionId: "old-chat", laneGeneration: 1,
+      latestSeq: 80, historyMode: "resume", bootstrapHistory: true, inFlight: false,
+    });
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get.mock.calls[0]?.[0]).toContain("afterSeq=50");
+    expect(rt.syncInProgress).toBe(true);
+
+    if (rejection) {
+      socket.onMessage({ type: "error", code: "session_changed", chat_session_id: "old-chat", message: "Selection changed" });
+    }
+    // Selection returned A -> B -> A without changing A's lane generation.
+    // A new snapshot is authoritative even if no local input was rejected.
+    welcome(socket, "old-chat", 100);
+    const staleResponse = {
+      events: [], latestSeq: 80, truncated: true, hasMore: false, laneGeneration: 1,
+      snapshot: { type: "history", items: [{ role: "ai", text: "Stale HTTP transcript at 80", ts: 1 }] },
+    };
+    if (responseOrder === "before-history") {
+      finish(staleResponse);
+      await nextTick();
+      await Promise.resolve();
+    }
+    await history(socket, "Authoritative A transcript at 100", 100);
+    if (responseOrder === "after-history") finish(staleResponse);
+    await nextTick();
+    await Promise.resolve();
+    await nextTick();
+
+    expect(rt.messages.value.map((message) => message.content)).toEqual(["Authoritative A transcript at 100"]);
+    expect(rt.transcriptCursor).toBe(100);
+    expect(rt.transcriptReady).toBe(true);
+    expect(rt.syncInProgress).toBe(false);
+    expect(rt.needsChatSync).toBe(false);
+    expect(rt.apiNotice.value).toBeNull();
+    expect(JSON.parse(sessionStorage.getItem("ads.syncCursor.p1.old-chat")!).lastSeq).toBe(100);
+    ctx.transcriptCache.flush();
+    expect(readCachedTranscript(transcriptCacheKey("user-521", {
+      projectId: "p1", sessionId: "p1", chatSessionId: "old-chat", workspace: "/workspace/project",
+    }))).toMatchObject({ cursor: 100, messages: [{ content: "Authoritative A transcript at 100" }] });
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(socket.close).not.toHaveBeenCalled();
+    socket.onMessage({ type: "result", seq: 101, ok: true, output: "Current reply after 100" });
+    expect(rt.transcriptCursor).toBe(101);
+    expect(rt.messages.value.some((message) => message.content === "Current reply after 100")).toBe(true);
+  });
+
+  it("preserves the cached cursor and transcript on a fresh normal resume welcome", async () => {
+    const { ctx, ws, rt, socket } = await setup();
+    welcome(socket, "old-chat", 50);
+    await history(socket, "Cached A transcript", 50);
+    const messages = rt.messages.value;
+    await ws.connectWs("p1");
+    const reconnect = rt.ws as TestSocket;
+    expect(reconnect.options.resume).toEqual({ afterSeq: 50, laneGeneration: 1 });
+    reconnect.onOpen();
+    reconnect.onMessage({
+      type: "welcome", chatSessionId: "old-chat", laneGeneration: 1,
+      latestSeq: 50, historyMode: "resume", bootstrapHistory: false, inFlight: false,
+    });
+    await nextTick();
+    expect(rt.messages.value).toBe(messages);
+    expect(rt.transcriptCursor).toBe(50);
+    expect(rt.transcriptReady).toBe(true);
+    expect(rt.syncInProgress).toBe(false);
+    expect(vi.mocked(ctx.api.get).mock.calls.filter(([path]) => path.startsWith("/api/sync/events"))).toEqual([]);
+  });
+
+  it.each([true, false])("discards buffered history/live frames before a same-session snapshot (rejection=%s)", async (rejection) => {
+    const { ctx, rt, socket } = await setup();
+    welcome(socket, "old-chat", 50);
+    await history(socket, "Original A transcript", 50);
+    let finish!: (value: unknown) => void;
+    vi.mocked(ctx.api.get).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    socket.onMessage({
+      type: "welcome", chatSessionId: "old-chat", laneGeneration: 1,
+      latestSeq: 80, historyMode: "resume", bootstrapHistory: true, inFlight: false,
+    });
+    socket.onMessage({ type: "history", afterSeq: 150, items: [{ role: "ai", text: "Buffered stale history", ts: 1 }] });
+    socket.onMessage({ type: "result", ok: true, output: "Buffered stale result" });
+    socket.onMessage({ type: "delta_snapshot", bootstrap: true, afterSeq: 150, text: "Buffered stale stream" });
+    if (rejection) {
+      socket.onMessage({ type: "error", code: "session_changed", chat_session_id: "old-chat", message: "Selection changed" });
+    }
+    welcome(socket, "old-chat", 100);
+    await history(socket, "Authoritative A transcript at 100", 100);
+    expect(rt.messages.value.map((message) => message.content)).toEqual(["Authoritative A transcript at 100"]);
+    expect(rt.transcriptCursor).toBe(100);
+    finish({ events: [], latestSeq: 80, truncated: false, hasMore: false, laneGeneration: 1 });
+    await nextTick();
+    await Promise.resolve();
+    expect(rt.messages.value.map((message) => message.content)).toEqual(["Authoritative A transcript at 100"]);
+    expect(rt.transcriptCursor).toBe(100);
+    expect(rt.needsChatSync).toBe(false);
+  });
+
   it.each(["peer", "source"])("rebinds the outbox on a %s switch and rejects unknown old-session broadcasts", async (origin) => {
     const channels: Array<{ onmessage?: (event: { data: unknown }) => void }> = [];
     vi.stubGlobal("BroadcastChannel", class {

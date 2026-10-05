@@ -595,7 +595,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     const scheduleIdleBootstrapHistory = (): void => {
       if (bootstrapHistoryApplyScheduled) return;
       bootstrapHistoryApplyScheduled = true;
-      Promise.resolve().then(applyIdleBootstrapHistory);
+      const scheduledLaneEpoch = syncLaneEpoch;
+      Promise.resolve().then(() => {
+        if (scheduledLaneEpoch !== syncLaneEpoch) return;
+        applyIdleBootstrapHistory();
+      });
     };
 
     const deferBootstrapHistory = (payload: Record<string, unknown>): void => {
@@ -670,6 +674,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       if (nextChatSessionId === syncChatSessionId) return false;
 
       syncLaneEpoch += 1;
+      bootstrapHistoryApplyScheduled = false;
       ctx.transcriptCache.attach(rt, {
         projectId: pid,
         sessionId: project.sessionId,
@@ -703,6 +708,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
     const resetChatSyncForGeneration = (options?: { invalidateConnection?: boolean }): void => {
       syncLaneEpoch += 1;
+      bootstrapHistoryApplyScheduled = false;
+      clearSyncRetryTimer();
+      syncRetryAttempts = 0;
       rt.transcriptCache?.invalidate();
       rt.transcriptReady = false;
       snapshotBootstrapPending = false;
@@ -1205,8 +1213,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           if (!rejectedSession && rejectedInput && rt.retiredPromptIds?.has(rejectedInput)) return;
           // This rejection is a selection barrier, not a terminal turn error
           // (which would immediately flush the next queued old-session input).
-          clearPreviousSessionInputs(ctx, rt);
           awaitingSessionSelection = true;
+          resetChatSyncForGeneration();
+          clearPreviousSessionInputs(ctx, rt);
           rt.syncInProgress = true;
           rt.inputLocked.value = true;
           rt.laneStatus.value = { kind: "info", message: String(rec.message ?? "Chat session changed; synchronizing.") };
@@ -1272,6 +1281,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             }
             return;
           }
+          const sameSessionSnapshot = welcomeSeen && rec.historyMode === "snapshot" && welcomeChatSessionId === syncChatSessionId;
           const sessionChanged = Boolean(serverChatSessionId && serverChatSessionId !== rt.chatSessionId);
           if (sessionChanged) {
             clearPreviousSessionInputs(ctx, rt);
@@ -1308,8 +1318,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             confirmChatSessionSwitch(rt);
             rt.syncInProgress = false;
           }
-          awaitingSessionSelection = false;
-          welcomeSeen = true;
           const generationChanged =
             hasServerLaneGeneration &&
             previousLaneGeneration !== null &&
@@ -1321,11 +1329,20 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           }
           if (generationChanged) {
             clearOutboxForGenerationChange(rt);
+          }
+          if (generationChanged || sameSessionSnapshot) {
+            // A snapshot is a new sync transaction even for A -> B -> A. Fence
+            // old HTTP operations before releasing the selection gate; a
+            // normal resume must keep its cached cursor and current epoch.
             resetChatSyncForGeneration();
+          }
+          if (generationChanged) {
             rt.lastConsumedResetGeneration = Math.floor(serverLaneGeneration);
             const welcomeRecord = rec as Record<string, unknown> & { reset?: boolean };
             welcomeRecord.reset = true;
           }
+          awaitingSessionSelection = false;
+          welcomeSeen = true;
           if (typeof rec.inFlight === "boolean") {
             bootstrapReportedInFlight = rec.inFlight;
           }
