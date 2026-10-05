@@ -214,12 +214,16 @@ export function createOutboxStore(options: { channelName?: string } = {}) {
     } catch {
       return null;
     }
+    const openedChannel = channel;
     channel.onmessage = (event: MessageEvent) => {
+      // A closed account's callback may already be queued when a fresh channel
+      // is opened. It must never dispatch into the new account's listeners.
+      if (channel !== openedChannel) return;
       const data = event?.data as { key?: unknown; snapshot?: unknown } | null;
       const key = String(data?.key ?? "").trim();
       if (!key) return;
       const snapshot = normalizeSnapshot(data?.snapshot);
-      for (const listener of listeners) {
+      for (const listener of [...listeners]) {
         try {
           listener(key, snapshot);
         } catch {

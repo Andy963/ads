@@ -9,6 +9,27 @@ export type WebProjectRecord = {
   updatedAt: number;
 };
 
+export type WebProjectSessionChange = { userId: string; projectId: string; chatSessionId: string };
+
+const sessionListeners = new WeakMap<DatabaseType, Set<(event: WebProjectSessionChange) => void>>();
+
+export function onWebProjectSessionChange(
+  db: DatabaseType,
+  listener: (event: WebProjectSessionChange) => void,
+): () => void {
+  let listeners = sessionListeners.get(db);
+  if (!listeners) {
+    listeners = new Set();
+    sessionListeners.set(db, listeners);
+  }
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
+function publishSessionChange(db: DatabaseType, event: WebProjectSessionChange): void {
+  for (const listener of sessionListeners.get(db) ?? []) listener(event);
+}
+
 function normalizeString(value: unknown): string {
   return String(value ?? "").trim();
 }
@@ -45,7 +66,7 @@ function toWebProjectRecord(row: Partial<WebProjectRecord> | null | undefined): 
   };
 }
 
-function getWebProjectRecord(db: DatabaseType, userId: string, projectId: string): WebProjectRecord | null {
+export function getWebProjectRecord(db: DatabaseType, userId: string, projectId: string): WebProjectRecord | null {
   const userKey = normalizeString(userId);
   const projectKey = normalizeString(projectId);
   if (!userKey || !projectKey) {
@@ -197,9 +218,9 @@ export function upsertWebProject(
 
   const existing = db
     .prepare(
-      `SELECT created_at AS createdAt, sort_order AS sortOrder FROM web_projects WHERE user_id = ? AND project_id = ? LIMIT 1`,
+      `SELECT created_at AS createdAt, sort_order AS sortOrder, chat_session_id AS chatSessionId FROM web_projects WHERE user_id = ? AND project_id = ? LIMIT 1`,
     )
-    .get(userId, projectId) as { createdAt?: unknown; sortOrder?: unknown } | undefined;
+    .get(userId, projectId) as { createdAt?: unknown; sortOrder?: unknown; chatSessionId?: unknown } | undefined;
   const createdAt = normalizeTimestamp(existing?.createdAt, now);
   const sortOrder =
     typeof existing?.sortOrder === "number" && Number.isFinite(existing.sortOrder) ? existing.sortOrder : getNextProjectSortOrder(db, userId);
@@ -216,6 +237,9 @@ export function upsertWebProject(
     `,
   ).run(userId, projectId, workspaceRoot, name, chatSessionId, sortOrder, createdAt, now);
 
+  if (existing?.chatSessionId !== chatSessionId) {
+    publishSessionChange(db, { userId, projectId, chatSessionId });
+  }
   return { id: projectId, workspaceRoot, name, chatSessionId, createdAt, updatedAt: now };
 }
 
@@ -260,6 +284,10 @@ export function updateWebProject(
       WHERE user_id = ? AND project_id = ?
     `,
   ).run(name, chatSessionId, now, userId, projectId);
+
+  if (current.chatSessionId !== chatSessionId) {
+    publishSessionChange(db, { userId, projectId, chatSessionId });
+  }
 
   return {
     id: current.id,

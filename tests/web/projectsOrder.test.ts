@@ -7,7 +7,7 @@ import path from "node:path";
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
 import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
 import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
-import { listWebProjects, setActiveWebProjectId, upsertWebProject } from "../../server/web/projects/store.js";
+import { listWebProjects, setActiveWebProjectId, upsertWebProject, updateWebProject, onWebProjectSessionChange, type WebProjectSessionChange } from "../../server/web/projects/store.js";
 import { handleProjectRoutes } from "../../server/web/server/api/routes/projects.js";
 
 type FakeReq = {
@@ -208,6 +208,8 @@ describe("web/projects ordering", () => {
       10,
     );
 
+    const changes: WebProjectSessionChange[] = [];
+    const unsubscribe = onWebProjectSessionChange(db, (event) => { changes.push(event); });
     const patchReq = createReq("PATCH", { name: "  Renamed Demo  ", chatSessionId: "  review-session  " });
     const patchRes = createRes();
     const handled = await handleProjectRoutes(
@@ -237,6 +239,12 @@ describe("web/projects ordering", () => {
     const listed = listWebProjects(db, "u");
     assert.equal(listed[0]?.name, "Renamed Demo");
     assert.equal(listed[0]?.chatSessionId, "review-session");
+    assert.deepEqual(changes, [{ userId: "u", projectId: "p1", chatSessionId: "review-session" }]);
+    updateWebProject(db, { userId: "u", projectId: "p1", name: "Rename only" });
+    assert.equal(changes.length, 1);
+    unsubscribe();
+    updateWebProject(db, { userId: "u", projectId: "p1", chatSessionId: "after-unsubscribe" });
+    assert.equal(changes.length, 1);
   });
 
   it("DELETE /api/projects/:id switches active project to the next real project before default", async () => {
