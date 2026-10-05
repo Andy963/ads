@@ -70,8 +70,8 @@ const GH_PR_MERGE_SUPPORTED_FLAGS = new Set([
   "--subject",
 ]);
 
-export function buildPrMergeArgs(prNumber: number): string[] {
-  return ["pr", "merge", String(prNumber), "--squash"];
+export function buildPrMergeArgs(prNumber: number, expectedHead?: string): string[] {
+  return ["pr", "merge", String(prNumber), "--squash", ...(expectedHead ? ["--match-head-commit", expectedHead] : [])];
 }
 
 export function unsupportedPrMergeFlags(args: string[]): string[] {
@@ -227,6 +227,7 @@ export function mergeAndCleanupPipeline(options: {
   issueId?: number | null;
   branch: string;
   baseBranch?: string;
+  expectedHead?: string;
 }): MergeResult {
   const base = options.baseBranch ?? ACTIONS_BASE_BRANCH;
   const hasRemote = spawnSync("git", ["remote", "get-url", "origin"], {
@@ -237,7 +238,11 @@ export function mergeAndCleanupPipeline(options: {
 
   // 1. Merge PR if prNumber is provided
   if (options.prNumber) {
-    const mergeRes = spawnSync("gh", buildPrMergeArgs(options.prNumber), {
+    const prior = options.expectedHead ? readPullRequestState({ cwd: options.cwd, prNumber: options.prNumber, includeHead: true }) : null;
+    if (prior && (prior.error || prior.headRefOid !== options.expectedHead || prior.baseRefName !== base)) {
+      return { success: false, error: "Pull request does not match the reviewed head and base." };
+    }
+    const mergeRes = prior?.merged ? { status: 0, stderr: "" } : spawnSync("gh", buildPrMergeArgs(options.prNumber, options.expectedHead), {
       cwd: options.cwd,
       encoding: "utf8",
     });
@@ -405,6 +410,7 @@ export interface PullRequestStateResult {
   merged: boolean;
   baseRefName: string | null;
   mergedAt: number | null;
+  headRefOid?: string | null;
   error?: string;
 }
 
@@ -416,18 +422,19 @@ export interface PullRequestStateResult {
 export function readPullRequestState(options: {
   cwd: string;
   prNumber: number;
+  includeHead?: boolean;
 }): PullRequestStateResult {
   const unknown: PullRequestStateResult = { state: null, merged: false, baseRefName: null, mergedAt: null };
   const res = spawnSync(
     "gh",
-    ["pr", "view", String(options.prNumber), "--json", "state,mergedAt,baseRefName"],
+    ["pr", "view", String(options.prNumber), "--json", options.includeHead ? "state,mergedAt,baseRefName,headRefOid" : "state,mergedAt,baseRefName"],
     { cwd: options.cwd, encoding: "utf8" },
   );
   if (res.status !== 0) {
     return { ...unknown, error: res.stderr?.trim() || "Failed to read pull request state" };
   }
 
-  let parsed: { state?: unknown; mergedAt?: unknown; baseRefName?: unknown };
+  let parsed: { state?: unknown; mergedAt?: unknown; baseRefName?: unknown; headRefOid?: unknown };
   try {
     parsed = JSON.parse(res.stdout || "{}") as typeof parsed;
   } catch (error) {
@@ -441,5 +448,6 @@ export function readPullRequestState(options: {
     merged: mergedAt.length > 0,
     baseRefName: typeof parsed.baseRefName === "string" ? parsed.baseRefName : null,
     mergedAt: mergedAt ? Date.parse(mergedAt) || null : null,
+    ...(options.includeHead ? { headRefOid: typeof parsed.headRefOid === "string" ? parsed.headRefOid : null } : {}),
   };
 }

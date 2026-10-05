@@ -300,8 +300,7 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
       return true;
     }
 
-    const result = bus.executeDeterministicMerge(jobId, resolved.repoPath);
-    sendJson(res, result.success ? 200 : 500, result);
+    sendJson(res, 409, { error: "Direct merge is retired. The active Developer must use reviewed delivery." });
     return true;
   }
 

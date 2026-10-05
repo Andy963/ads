@@ -13,6 +13,7 @@ export function checkThreePointGate(
   repoPath: string,
   projectId: string,
   targetBranch = "dev",
+  developerOwnsWorkspace = false,
 ): GateCheckResult {
   // 1. Terminal State Gate
   const activeJobs = db.prepare(
@@ -26,6 +27,9 @@ export function checkThreePointGate(
       reason: `Active job ${activeJobs.id} is currently in non-terminal status: ${activeJobs.status}`,
     };
   }
+
+  // The supervised Developer must be able to inspect and safely fix its checkout.
+  if (developerOwnsWorkspace) return { allowed: true };
 
   // 2. Working Tree Cleanliness Gate
   const branchRes = spawnSync("git", ["branch", "--show-current"], {

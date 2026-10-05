@@ -1,3 +1,4 @@
+import { createActionSupervision } from "./supervision.js";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import type { Database as DatabaseType } from "better-sqlite3";
@@ -423,6 +424,7 @@ export interface LaneDispatchBusOptions {
     issueId?: number | null;
     branch: string;
     baseBranch?: string;
+    expectedHead?: string;
   }) => MergeResult;
   pullRequestStateReader?: (options: { cwd: string; prNumber: number }) => PullRequestStateResult;
 }
@@ -430,6 +432,8 @@ export interface LaneDispatchBusOptions {
 export class LaneDispatchBus {
   private processingProjects = new Set<string>();
   private activeAbortControllers = new Map<string, AbortController>();
+  private developerProjects = new Set<string>();
+  private activeDeliveryHeads = new Map<string, string>();
 
   constructor(
     private db: DatabaseType,
@@ -728,7 +732,7 @@ export class LaneDispatchBus {
     migrateLegacyProjectJobs(this.db, canonicalProjectId, [projectId, repoPath]);
     const queueKey = `${canonicalProjectId}:${String(authUserId ?? "").trim() || "*"}`;
 
-    if (this.processingProjects.has(queueKey)) {
+    if (this.processingProjects.has(queueKey) || this.developerProjects.has(canonicalProjectId)) {
       return { allowed: false, reason: "Queue is already being evaluated" };
     }
 
@@ -750,7 +754,8 @@ export class LaneDispatchBus {
       }
 
       const nextJob = queuedJobs[0]!;
-      const gateResult = checkThreePointGate(this.db, repoPath, canonicalProjectId);
+      const supervised = Boolean(this.options.sessionManager && !this.options.developerRunner);
+      const gateResult = checkThreePointGate(this.db, repoPath, canonicalProjectId, "dev", supervised);
 
       if (!gateResult.allowed) {
         if (gateResult.gateBlocked === "cleanliness") {
@@ -808,7 +813,11 @@ export class LaneDispatchBus {
 
       // Gate passed: checkout feature branch and mark running
       let createdAnchor: string | null = null;
-      if (nextJob.branch) {
+      if (supervised) {
+        const anchor = spawnSync("git", ["rev-parse", "dev"], { cwd: repoPath, encoding: "utf8" });
+        createdAnchor = anchor.status === 0 ? anchor.stdout.trim() : null;
+      }
+      if (nextJob.branch && !supervised) {
         let checkoutOk = false;
         const branchCheck = spawnSync("git", ["checkout", "-b", nextJob.branch], {
           cwd: repoPath,
@@ -920,7 +929,10 @@ export class LaneDispatchBus {
 
     const finalTaskPrompt = [
       taskPrompt,
+      JSON.stringify(parseActionJobIssueSnapshot(job)),
       AUTOMATED_ACTION_INSTRUCTIONS,
+      "You own the whole job. Inspect the checkout first; safely prepare the assigned feature branch from dev. Preserve unrelated changes: never reset, clean, stash, or overwrite them. Never develop on dev/main/master. Handle routine environment problems yourself.",
+      "After committing, call review_action to invoke your isolated Reviewer subagent. Findings and operational errors return to you. Fix them and call again if needed (at most 3 calls). After PASS, call deliver_action (at most 3 calls). Repair delivery errors yourself; changing code or the base requires fresh review. Never merge outside deliver_action. After successful delivery stop all tools and report completion. If you cannot finish safely, explain the blocker; blocked jobs still offer dismiss only.",
       options.reworkFeedback
         ? `CRITICAL - REWORK INSTRUCTIONS:\n${options.reworkFeedback}\nAddress the failure, re-run tests, and commit the fixes on the same feature branch.`
         : "",
@@ -934,6 +946,7 @@ export class LaneDispatchBus {
       const { authUserId, userId, historyKey } = identity;
       const abortCtrl = new AbortController();
       this.activeAbortControllers.set(jobId, abortCtrl);
+      this.developerProjects.add(projectId);
 
       // Record user prompt in history
       if (this.options.historyStore) {
@@ -962,6 +975,9 @@ export class LaneDispatchBus {
           authUserId,
           projectId,
         });
+
+        // Fresh job threads register job tools even after a runtime upgrade.
+        orchestrator.reset?.();
 
         // Inject developer instructions from database profile
         if (typeof orchestrator.setDeveloperInstructions === "function") {
@@ -1007,27 +1023,28 @@ export class LaneDispatchBus {
           }
         });
 
-        const turnResult = await runAgentTurn(orchestrator, finalTaskPrompt, {
-          streaming: true,
-          signal: abortCtrl.signal,
-          cwd: repoPath,
-          workspaceRoot,
-          historySessionId: historyKey,
-          authUserId: job.auth_user_id ?? undefined,
-        });
+        const actionTools = this.superviseJob(job, repoPath, abortCtrl.signal);
+        const run = async () => {
+          try {
+            return await runAgentTurn(orchestrator, finalTaskPrompt, {
+              streaming: true,
+              signal: abortCtrl.signal,
+              cwd: repoPath,
+              workspaceRoot,
+              historySessionId: historyKey,
+              authUserId: job.auth_user_id ?? undefined,
+              actionTools,
+            });
+          } finally {
+            await actionTools.dispose();
+          }
+        };
+        const lock = this.options.getWorkspaceLock?.(repoPath);
+        const turnResult = lock ? await lock.runExclusive(run, abortCtrl.signal) : await run();
+        abortCtrl.signal.throwIfAborted();
 
         unsubscribe?.();
         unsubscribe = null;
-
-        if (!hasCommittedImplementationDiff(repoPath)) {
-          this.activeAbortControllers.delete(jobId);
-          this.scheduleRework(jobId, repoPath, {
-            stage: "Developer implementation",
-            feedback: "Developer produced no implementation diff",
-            reworkCount,
-          });
-          return;
-        }
 
         // Record assistant response in history
         if (this.options.historyStore) {
@@ -1050,11 +1067,19 @@ export class LaneDispatchBus {
 
         this.activeAbortControllers.delete(jobId);
 
-        // Proceed to verification & detached review
-        queueMicrotask(() => {
-          void this.runJobCycle(jobId, repoPath, { reworkCount });
-        });
+        if (getActionJobById(this.db, jobId)?.status !== "completed") {
+          this.activeAbortControllers.delete(jobId);
+          this.scheduleRework(jobId, repoPath, {
+            stage: "Developer supervision",
+            feedback: "Developer ended without reviewed delivery. " + turnResult.response.slice(-1500),
+            reworkCount,
+            failureClass: "infrastructure",
+          });
+          return;
+        }
+
       } catch (err) {
+        if (getActionJobById(this.db, jobId)?.status === "completed") return;
         unsubscribe?.();
         this.activeAbortControllers.delete(jobId);
 
@@ -1070,7 +1095,15 @@ export class LaneDispatchBus {
             stage: "Developer execution",
             feedback: err instanceof Error ? err.message : String(err),
             reworkCount,
+            failureClass: "infrastructure",
           });
+        }
+      } finally {
+        unsubscribe?.();
+        this.activeAbortControllers.delete(jobId);
+        this.developerProjects.delete(projectId);
+        if (getActionJobById(this.db, jobId)?.status === "completed") {
+          queueMicrotask(() => { void this.evaluateQueue(job.project_id, repoPath, job.auth_user_id ?? undefined); });
         }
       }
       return;
@@ -1104,6 +1137,60 @@ export class LaneDispatchBus {
       feedback: "No Actions session manager configured for task execution",
       reworkCount,
       failureClass: "infrastructure",
+    });
+  }
+
+  private superviseJob(job: ActionJobRecord, repoPath: string, signal: AbortSignal): ReturnType<typeof createActionSupervision> {
+    const git = (...args: string[]): string => {
+      signal.throwIfAborted();
+      const result = spawnSync("git", args, { cwd: repoPath, encoding: "utf8" });
+      if (result.status !== 0) throw new Error(result.stderr?.trim() || "Git evidence unavailable.");
+      return result.stdout.trim();
+    };
+    let deliveryHead = "";
+    const snapshot = () => {
+      const current = getActionJobById(this.db, job.id);
+      if (!current || !["running", "verifying", "reviewing", "waiting_merge"].includes(current.status)) {
+        throw new Error("This Actions job is no longer active.");
+      }
+      if (git("branch", "--show-current") !== job.branch) throw new Error(`Prepare the assigned feature branch '${job.branch}' first.`);
+      if (git("status", "--porcelain", "-uno")) throw new Error("Commit tracked changes before requesting review or delivery.");
+      return `${git("rev-parse", resolveImplementationDiffBase(repoPath))}:${git("rev-parse", "HEAD")}`;
+    };
+    return createActionSupervision({
+      signal, snapshot,
+      assertDeliveryTarget: (approved) => {
+        deliveryHead = approved.split(":")[1]!;
+        try { if (snapshot() === approved) return; } catch { /* A merged PR may already have cleaned its branch. */ }
+        signal.throwIfAborted();
+        if (git("status", "--porcelain", "-uno")) throw new Error("Preserve unrelated working changes before delivery cleanup.");
+        const current = getActionJobById(this.db, job.id);
+        if (current?.pr_number) {
+          const state = this.options.pullRequestStateReader?.({ cwd: repoPath, prNumber: current.pr_number })
+            ?? readPullRequestState({ cwd: repoPath, prNumber: current.pr_number, includeHead: true });
+          if (state.merged && state.state === "MERGED" && state.baseRefName === ACTIONS_BASE_BRANCH && state.headRefOid === deliveryHead) return;
+        }
+        throw new Error("Delivery target changed. Call review_action again.");
+      },
+      review: async (childSignal) => {
+        this.updateJobStatus(job.id, "running");
+        try {
+          const verdict = await this.runJobCycle(job.id, repoPath, { reviewOnly: true, signal: childSignal });
+          if (!verdict) throw new Error("Reviewer did not return a verdict.");
+          return verdict;
+        } finally {
+          if (!childSignal.aborted && ["running", "verifying", "reviewing"].includes(getActionJobById(this.db, job.id)?.status ?? "")) {
+            this.updateJobStatus(job.id, "running", { current_step: "Reviewer returned control to Developer" });
+          }
+        }
+      },
+      deliver: () => {
+        this.activeDeliveryHeads.set(job.id, deliveryHead);
+        try {
+          const result = this.handleReviewResult({ jobId: job.id, repoPath, verdict: "PASS", reviewSummary: "Approved by supervised Reviewer", supervised: true, expectedHead: deliveryHead });
+          return { ok: result.status === "completed", ...result };
+        } finally { this.activeDeliveryHeads.delete(job.id); }
+      },
     });
   }
 
@@ -1167,8 +1254,10 @@ export class LaneDispatchBus {
       testCommand?: string;
       callReviewerModel?: (prompt: string, sys: string) => Promise<string>;
       reworkCount?: number;
+      reviewOnly?: boolean;
+      signal?: AbortSignal;
     } = {},
-  ): Promise<void> {
+  ): Promise<ReviewVerdict | void> {
     const job = getActionJobById(this.db, jobId);
     if (!job || job.status !== "running") return;
 
@@ -1227,7 +1316,9 @@ export class LaneDispatchBus {
       });
     }
 
+    options.signal?.throwIfAborted();
     if (testReport.exitCode !== 0) {
+      if (options.reviewOnly) throw new Error(`Verification failed: ${testReport.summary}`);
       this.scheduleRework(jobId, repoPath, {
         stage: "Verification",
         feedback: `${testCmd} exited with code ${testReport.exitCode}: ${testReport.summary}`,
@@ -1297,7 +1388,8 @@ export class LaneDispatchBus {
 
     let verdict: ReviewVerdict;
     const reviewerAbort = new AbortController();
-    this.activeAbortControllers.set(jobId, reviewerAbort);
+    if (!options.reviewOnly) this.activeAbortControllers.set(jobId, reviewerAbort);
+    const childSignal = options.signal ? AbortSignal.any([options.signal, reviewerAbort.signal]) : reviewerAbort.signal;
     const reviewerTimeoutMs = Math.max(1, this.options.reviewerTimeoutMs ?? DEFAULT_REVIEWER_TIMEOUT_MS);
     const reviewerTimer = setTimeout(() => {
       reviewerAbort.abort(new Error(`Reviewer execution timed out after ${reviewerTimeoutMs}ms`));
@@ -1314,7 +1406,7 @@ export class LaneDispatchBus {
             systemPrompt: profile.system_prompt,
             reviewerProfileId: typeof reviewerProfile === "string" ? reviewerProfile : reviewerProfile?.id,
           }),
-          reviewerAbort.signal,
+          childSignal,
         );
       } else {
         verdict = await raceReviewerAbort(
@@ -1325,12 +1417,13 @@ export class LaneDispatchBus {
             historyKey,
             projectId,
             job.id,
-            reviewerAbort.signal,
+            childSignal,
           ),
-          reviewerAbort.signal,
+          childSignal,
         );
       }
     } catch (error) {
+      if (options.reviewOnly) throw error;
       const currentJob = getActionJobById(this.db, jobId);
       if (reviewerAbort.signal.aborted && currentJob?.status === "cancelled") {
         return;
@@ -1349,6 +1442,7 @@ export class LaneDispatchBus {
       }
     }
 
+    options.signal?.throwIfAborted();
     this.updateJobStatus(jobId, "reviewing", {
       review_verdicts_json: JSON.stringify([verdict]),
     });
@@ -1380,6 +1474,7 @@ export class LaneDispatchBus {
       });
     }
 
+    if (options.reviewOnly) return verdict;
     this.handleReviewResult({
       jobId,
       repoPath,
@@ -1397,7 +1492,9 @@ export class LaneDispatchBus {
     reviewSummary: string;
     defects?: unknown[];
     reworkCount?: number;
-  }): { status: ActionJobStatus; prNumber?: number | null; prUrl?: string | null } {
+    supervised?: boolean;
+    expectedHead?: string;
+  }): { status: ActionJobStatus; prNumber?: number | null; prUrl?: string | null; error?: string } {
     const job = getActionJobById(this.db, params.jobId);
     if (!job) {
       throw new Error(`Job not found: ${params.jobId}`);
@@ -1405,10 +1502,10 @@ export class LaneDispatchBus {
 
     if (params.verdict === "PASS") {
       const hasRemote = this.options.hasRemoteOrigin?.(params.repoPath) ?? hasGitRemoteOrigin(params.repoPath);
-      let prNumber: number | null = null;
-      let prUrl: string | null = null;
+      let prNumber: number | null = params.supervised ? job.pr_number : null;
+      let prUrl: string | null = params.supervised ? job.pr_url : null;
 
-      if (hasRemote) {
+      if (hasRemote && !prNumber) {
         const { result: prRes, attempts: prAttempts } = createPullRequestWithRetry(() =>
           (this.options.pullRequestCreator ?? createPullRequest)({
             cwd: params.repoPath,
@@ -1421,6 +1518,7 @@ export class LaneDispatchBus {
         );
 
         if (prRes.error || !prRes.prNumber) {
+          if (params.supervised) return { status: "running", error: prRes.error || "PR creation failed." };
           const rework = this.scheduleRework(job.id, params.repoPath, {
             stage: "PR creation",
             feedback: `${prRes.error || "Unknown error"} (tried ${prAttempts} times)`,
@@ -1469,13 +1567,14 @@ export class LaneDispatchBus {
         });
       }
 
-      const mergeResult = this.executeDeterministicMerge(job.id, params.repoPath);
+      const mergeResult = this.executeDeterministicMerge(job.id, params.repoPath, params);
       const completedJob = getActionJobById(this.db, job.id);
 
       return {
         status: completedJob?.status ?? (mergeResult.success ? "completed" : "running"),
         prNumber,
         prUrl,
+        ...(mergeResult.error ? { error: mergeResult.error } : {}),
       };
     }
 
@@ -1493,10 +1592,16 @@ export class LaneDispatchBus {
     return { status: rework.status };
   }
 
-  public executeDeterministicMerge(jobId: string, repoPath: string): { success: boolean; error?: string } {
+  public executeDeterministicMerge(jobId: string, repoPath: string, options: { supervised?: boolean; expectedHead?: string } = {}): { success: boolean; error?: string } {
     const job = getActionJobById(this.db, jobId);
     if (!job) {
       return { success: false, error: `Job not found: ${jobId}` };
+    }
+
+    if (this.options.sessionManager && !this.options.developerRunner
+      && (!options.expectedHead || this.activeDeliveryHeads.get(jobId) !== options.expectedHead
+        || this.activeAbortControllers.get(jobId)?.signal.aborted !== false)) {
+      return { success: false, error: "Merge requires live Developer delivery authority for the reviewed commit." };
     }
 
     const mergeRes = (this.options.mergePipeline ?? mergeAndCleanupPipeline)({
@@ -1504,6 +1609,7 @@ export class LaneDispatchBus {
       prNumber: job.pr_number,
       issueId: job.issue_id,
       branch: job.branch ?? "",
+      expectedHead: options.expectedHead,
     });
 
     if (mergeRes.success) {
@@ -1513,10 +1619,14 @@ export class LaneDispatchBus {
       });
 
       // After task completes, trigger next queued task evaluation
-      queueMicrotask(() => {
+      if (!options.supervised) queueMicrotask(() => {
         void this.evaluateQueue(job.project_id, repoPath, job.auth_user_id ?? undefined);
       });
     } else {
+      if (options.supervised) {
+        this.updateJobStatus(job.id, "running", { current_step: "Delivery returned control to Developer", error_message: mergeRes.error });
+        return mergeRes;
+      }
       this.scheduleRework(job.id, repoPath, {
         stage: "Merge and delivery",
         feedback: mergeRes.error || "Unknown merge failure",
