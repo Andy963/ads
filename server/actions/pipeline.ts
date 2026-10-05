@@ -145,6 +145,15 @@ export function findOpenPullRequest(cwd: string, branch: string): ExistingPullRe
   return parseOpenPullRequest(res.stdout?.trim() || "");
 }
 
+export function pushFeatureBranch(cwd: string, branch: string): string | null {
+  const res = spawnSync("git", ["push", "origin", branch], {
+    cwd,
+    encoding: "utf8",
+  });
+  if (res.status === 0) return null;
+  return `git push origin ${branch} failed: ${res.stderr?.trim() || "Unknown error"}`;
+}
+
 export function createPullRequest(options: {
   cwd: string;
   issueId?: number | null;
@@ -160,17 +169,23 @@ export function createPullRequest(options: {
   const bodyText = options.body ?? (options.issueId ? `Closes #${options.issueId}` : "Automated Actions PR");
 
   if (options.branch) {
+    const scopeError = checkFeatureBranchScope(options.cwd, baseBranch, options.branch, options.baseSha);
+    if (scopeError) {
+      return { prNumber: null, prUrl: null, error: scopeError };
+    }
+
+    // The Developer is required to commit, but the Actions controller owns PR
+    // delivery. Publish the branch before asking GitHub to resolve its head;
+    // otherwise a valid local implementation is reported as an empty PR.
+    const pushError = pushFeatureBranch(options.cwd, options.branch);
+    if (pushError) return { prNumber: null, prUrl: null, error: pushError };
+
     // A rework pass reaches this point with the branch already carrying a pull
     // request. Reusing it keeps the job on the same PR instead of failing on
     // "a pull request for this branch already exists".
     const existing = findOpenPullRequest(options.cwd, options.branch);
     if (existing) {
       return { prNumber: existing.prNumber, prUrl: existing.prUrl };
-    }
-
-    const scopeError = checkFeatureBranchScope(options.cwd, baseBranch, options.branch, options.baseSha);
-    if (scopeError) {
-      return { prNumber: null, prUrl: null, error: scopeError };
     }
   }
 

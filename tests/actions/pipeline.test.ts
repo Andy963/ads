@@ -12,6 +12,7 @@ import {
   buildPrMergeArgs,
   checkFeatureBranchScope,
   parseOpenPullRequest,
+  pushFeatureBranch,
   unsupportedPrMergeFlags,
 } from "../../server/actions/pipeline.js";
 
@@ -94,6 +95,28 @@ describe("Actions existing pull request lookup", () => {
     assert.equal(parseOpenPullRequest("not json"), null);
     assert.equal(parseOpenPullRequest('[{"number":0,"url":"https://example.test/pull/0"}]'), null);
     assert.equal(parseOpenPullRequest('[{"number":439}]'), null);
+  });
+});
+
+describe("Actions feature branch publishing", () => {
+  it("publishes the local feature branch before PR creation can resolve it", () => {
+    const cwd = initRepo();
+    const remote = fs.mkdtempSync(path.join(os.tmpdir(), "ads-pr-remote-"));
+    git(remote, "init", "--bare");
+    git(cwd, "remote", "add", "origin", remote);
+    git(cwd, "checkout", "-b", "codex/issue-1");
+    commit(cwd, "job work");
+
+    assert.equal(pushFeatureBranch(cwd, "codex/issue-1"), null);
+    assert.equal(
+      revParse(cwd, "codex/issue-1"),
+      spawnSync("git", ["ls-remote", remote, "refs/heads/codex/issue-1"], { encoding: "utf8" }).stdout.split("\t")[0],
+    );
+  });
+
+  it("returns the push failure without attempting PR creation", () => {
+    const cwd = initRepo();
+    assert.match(pushFeatureBranch(cwd, "codex/issue-1") ?? "", /git push origin codex\/issue-1 failed/);
   });
 });
 
