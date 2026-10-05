@@ -831,6 +831,15 @@
   font-size: 13px;
   color: #dc2626;
 }
+.layout :deep(.composer-input[data-notice-constrained]) {
+  max-height: var(--notice-input-height);
+  /* The autosizer owns inline overflow; constrained drafts must stay editable. */
+  overflow-y: auto !important;
+}
+.layout :deep(.composerMainRow[data-notice-constrained]) {
+  grid-template-areas: "left input right";
+}
+
 .noticeToast {
   flex: 0 0 auto;
   align-self: center;

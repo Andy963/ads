@@ -120,11 +120,12 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
           await activate(page.locator('.mobileMenuBtn'));
           await page.waitForFunction(() => {
             const drawer = document.querySelector(".left.mobileDrawer");
-            return drawer && Math.abs(drawer.getBoundingClientRect().left) < 0.5;
+            return drawer && !drawer.classList.contains("mobile-drawer-enter-active")
+              && Math.abs(drawer.getBoundingClientRect().left) < 0.5;
           });
           const drawer = await geometry(page);
           verify(drawer, `${engine}-${width}-drawer`);
-          assert.ok(drawer.drawer.right > 0 && drawer.drawer.left >= -0.5, "Measure the fully opened drawer, not its offscreen transition");
+          assert.ok(drawer.drawer.right > 0 && drawer.drawer.left >= -0.5, `Measure the fully opened drawer, not its offscreen transition: ${JSON.stringify(drawer.drawer)}`);
           result.measurements.push({ scenario: "drawer", ...drawer });
           await activate(page.locator('[data-testid="mobile-drawer-section-models"]'));
           await page.locator(".mobileMainPanel").waitFor();
@@ -162,6 +163,36 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
             result.measurements.push({ scenario: `disconnected-${height}`, ...compact });
             await page.screenshot({ path: path.join(artifacts, `${engine}-${width}x${height}-disconnected.png`) });
             await notice.waitFor({ state: "hidden", timeout: 6000 });
+            if (height === 320) {
+              const draft = "First draft line\nSecond draft line\nThird draft line";
+              const textarea = page.locator('[data-testid="lane-panel-actions"] textarea.composer-input');
+              for (const timing of ["before", "during"]) {
+                // Disconnection disables delivery, not the draft editor.
+                await textarea.fill("");
+                if (timing === "before") await textarea.fill(draft);
+                await activate(page.locator('[data-testid="btn-action-cancel"]'));
+                await notice.filter({ hasText: longError }).waitFor();
+                if (timing === "during") await textarea.fill(draft);
+                await notice.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
+                await page.waitForFunction(() => Boolean(document.querySelector("textarea[data-notice-constrained]")));
+                const multiline = await geometry(page);
+                verify(multiline, `${engine}-multiline-${timing}`);
+                assert.ok(multiline.clientHeight >= lineHeight, "A complete notice line survives multiline draft growth");
+                assert.equal(await textarea.inputValue(), draft, "Draft text is not discarded to make room");
+                assert.equal(await textarea.evaluate((element) => getComputedStyle(element).overflowY), "auto");
+                assert.ok(await textarea.evaluate((element) => { element.scrollTop = element.scrollHeight; return element.scrollTop > 0; }), "The compact draft remains scrollable");
+                const constrainedHeight = (await composer.boundingBox()).height;
+                assert.ok(await textarea.evaluate((element) => {
+                  const style = getComputedStyle(element);
+                  return element.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) >= parseFloat(style.lineHeight);
+                }), "The compact editor retains a complete text line");
+                result.measurements.push({ scenario: `multiline-${timing}`, ...multiline });
+                await notice.waitFor({ state: "hidden", timeout: 6000 });
+                await page.waitForFunction(() => !document.querySelector("textarea[data-notice-constrained]"));
+                assert.ok((await composer.boundingBox()).height > constrainedHeight, "Expanded composer returns after notice dismissal");
+                assert.equal(await textarea.inputValue(), draft);
+              }
+            }
           }
         }
         assert.deepEqual(errors, []);
