@@ -173,6 +173,62 @@ describe("server-authoritative Actions chat selection", () => {
     expect(socket.promptFrames).not.toHaveBeenCalled();
   });
 
+  it("releases a same-session selection barrier after A/B/A resolves to an authoritative A bootstrap", async () => {
+    const { ctx, chat, rt, socket, patch } = await setup();
+    welcome(socket, "old-chat", 90);
+    await history(socket, "Original A transcript", 90);
+    const key = seedInputs(rt, chat);
+
+    // A held command delays the peer rebind to B. Input is rejected, but the
+    // authoritative selection returns to A before that barrier drains.
+    socket.onMessage({
+      type: "error", code: "session_changed", chat_session_id: "old-chat",
+      clientMessageId: "old-input", message: "Session selection is changing",
+    });
+    expect(rt.syncInProgress).toBe(true);
+    expect(rt.inputLocked.value).toBe(true);
+    expect(rt.pendingAckClientMessageId).toBeNull();
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(rt.transcriptCursor).toBe(0);
+    expect(sessionStorage.getItem("ads.syncCursor.p1.old-chat")).toBeNull();
+    expect(createOutboxStore().read(key)).toMatchObject({ pending: null, sent: [], queued: [] });
+    expect(createOutboxStore().read(key).retired).toEqual(expect.arrayContaining(["old-input", "old-sent"]));
+    socket.onMessage({ type: "result", ok: false, output: "Stale held command result" });
+    await chat.flushQueuedPrompts(rt);
+    expect(socket.promptFrames).not.toHaveBeenCalled();
+
+    // Neither identity nor generation nor cursor advances. The same-session
+    // welcome/history must still release the selection barrier.
+    welcome(socket, "old-chat", 90);
+    expect(rt.syncInProgress).toBe(true);
+    chat.enqueuePrompt("Fresh input after no-op selection", [], rt);
+    const freshId = rt.queuedPrompts.value[0]!.clientMessageId;
+    expect(socket.promptFrames).not.toHaveBeenCalled();
+    await history(socket, "Authoritative A transcript", 90);
+    expect(rt.syncInProgress).toBe(false);
+    expect(rt.inputLocked.value).toBe(false);
+    expect(rt.awaitingBootstrapHistory).toBe(false);
+    expect(rt.transcriptCursor).toBe(90);
+    expect(ctx.getRuntime("p1").chatSessionId).toBe("old-chat");
+    expect(socket.promptFrames).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ text: "Fresh input after no-op selection" }), freshId,
+    );
+    expect(rt.messages.value.some((message) => message.content === "Stale held command result")).toBe(false);
+
+    socket.onMessage({ type: "ack", client_message_id: freshId });
+    socket.onMessage({ type: "user", seq: 91, clientMessageId: freshId, text: "Fresh input after no-op selection" });
+    socket.onMessage({ type: "result", seq: 92, clientMessageId: freshId, ok: true, output: "Fresh reply on A" });
+    await nextTick();
+    expect(rt.messages.value.some((message) => message.content === "Fresh reply on A")).toBe(true);
+    expect(rt.transcriptCursor).toBe(92);
+    expect(rt.pendingAckClientMessageId).toBeNull();
+    expect(createOutboxStore().read(key)).toMatchObject({ pending: null, sent: [], queued: [] });
+    expect(socket.promptFrames).toHaveBeenCalledTimes(1);
+    expect(socket.switchChatSession).not.toHaveBeenCalled();
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
+  });
+
   it.each(["prompt", "command"])("ignores a late old-session %s rejection without poisoning the new chat", async (type) => {
     const { chat, rt, socket } = await setup();
     welcome(socket, "old-chat");

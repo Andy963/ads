@@ -125,14 +125,14 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
   const projectDb = getStateDatabase();
   ensureWebAuthTables(projectDb);
   ensureWebProjectTables(projectDb);
-  const sessionSwitchHandlers = new Map<WebSocket, (chatSessionId: string) => void>();
+  const sessionSwitchHandlers = new Map<WebSocket, () => void>();
   const removeProjectSessionListener = onWebProjectSessionChange(projectDb, (event) => {
     if (isAcopilotChatSessionId(event.chatSessionId)) return;
     for (const [candidate, meta] of state.clientMetaByWs) {
       if (candidate.readyState !== 1 || (candidate as AliveWebSocket).isConnector
         || meta.authUserId !== event.userId || meta.sessionId !== event.projectId
         || isAcopilotChatSessionId(meta.chatSessionId) || meta.chatSessionId === event.chatSessionId) continue;
-      sessionSwitchHandlers.get(candidate)?.(event.chatSessionId);
+      sessionSwitchHandlers.get(candidate)?.();
     }
   });
   const seenChatSessionIdsBySharedSession = new Map<string, Set<string>>();
@@ -1448,8 +1448,37 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       return promptQueued ? { ...result, enqueue: false } : result;
     };
 
+    const sendCurrentChatBootstrap = (): void => {
+      const nextInFlight = state.interruptControllers.has(currentLane.historyKey);
+      sendInitialBootstrapMessages({
+        ws,
+        safeJsonSend,
+        sessionManager: currentLane.sessionManager,
+        orchestrator: currentLane.orchestrator,
+        userId: currentLane.userId,
+        agentAvailability: agents.agentAvailability,
+        sessionId,
+        chatSessionId: currentLane.chatSessionId,
+        workspace: getWorkspaceState(currentLane.currentCwd),
+        inFlight: nextInFlight,
+        historyStore: currentLane.historyStore,
+        historyKey: currentLane.historyKey,
+        latestSeq: state.syncEventStore?.getLatestSeqForLanes(currentLane.laneNamespace, currentLane.syncLaneKeys) ?? 0,
+        laneGeneration: currentLane.laneGeneration,
+        runtimeSnapshots: collectRuntimeSnapshots(currentLane, nextInFlight),
+      });
+
+      sendPromptQueueSnapshot();
+    };
+
     const switchCurrentChatSession = (nextChatSessionId: string, publishSelection: boolean): void => {
       if (ws.readyState !== 1) return;
+      if (!publishSelection && nextChatSessionId === currentLane.chatSessionId) {
+        // A superseded A -> B -> A selection still owes the peer a welcome:
+        // its rejected input may already have put it behind a selection barrier.
+        sendCurrentChatBootstrap();
+        return;
+      }
       const previousLane = currentLane;
 
       abortInFlightForHistoryKey(previousLane.historyKey);
@@ -1540,25 +1569,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
         updateWebProject(projectDb, { userId: authUserId, projectId: sessionId, chatSessionId: nextChatSessionId });
       }
 
-      sendInitialBootstrapMessages({
-        ws,
-        safeJsonSend,
-        sessionManager: currentLane.sessionManager,
-        orchestrator: currentLane.orchestrator,
-        userId: currentLane.userId,
-        agentAvailability: agents.agentAvailability,
-        sessionId,
-        chatSessionId: currentLane.chatSessionId,
-        workspace: getWorkspaceState(currentLane.currentCwd),
-        inFlight: nextInFlight,
-        historyStore: currentLane.historyStore,
-        historyKey: currentLane.historyKey,
-        latestSeq: state.syncEventStore?.getLatestSeqForLanes(currentLane.laneNamespace, currentLane.syncLaneKeys) ?? 0,
-        laneGeneration: currentLane.laneGeneration,
-        runtimeSnapshots: collectRuntimeSnapshots(currentLane, nextInFlight),
-      });
-
-      sendPromptQueueSnapshot();
+      sendCurrentChatBootstrap();
 
       logger.info(
         "[WebSocket] in-band session switch conn=" + connectionId + " session=" + sessionId + " chat=" + chatSessionId + " user=" + userId + " history=" + historyKey,
@@ -1566,15 +1577,19 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
     };
 
     let pendingPeerSwitchCount = 0;
-    sessionSwitchHandlers.set(ws, (targetChatSessionId) => {
+    sessionSwitchHandlers.set(ws, () => {
       pendingSwitchCount += 1;
       pendingPeerSwitchCount += 1;
       // Break a running turn before queuing the rebind behind its cleanup.
       abortInFlightForHistoryKey(currentLane.historyKey);
       messageChain = messageChain.then(() => {
+        if (pendingPeerSwitchCount > 1) return;
         const selected = getWebProjectRecord(projectDb, authUserId, sessionId)?.chatSessionId;
-        if (selected !== targetChatSessionId || currentLane.chatSessionId === selected) return;
-        switchCurrentChatSession(targetChatSessionId, false);
+        if (!selected || isAcopilotChatSessionId(selected)) {
+          ws.close(1012, "session selection changed");
+          return;
+        }
+        switchCurrentChatSession(selected, false);
       }).catch((error) => {
         logger.warn(`[WebSocket] peer session switch failed conn=${connectionId}: ${String(error)}`);
         // A reconnect resolves the canonical selection and obtains a fresh snapshot.

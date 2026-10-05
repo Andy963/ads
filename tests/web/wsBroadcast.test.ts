@@ -406,6 +406,42 @@ describe("web/server/ws/broadcast", () => {
     }
   });
 
+  it("completes an A-to-B-to-A selection barrier with an authoritative same-session bootstrap", async () => {
+    registerProject();
+    const a = connectProject();
+    const b = connectProject();
+    const release = Promise.withResolvers<void>();
+    const heldLock = workspaceLock.runExclusive(async () => release.promise);
+    try {
+      await Promise.all([a.ready, b.ready]);
+      const ack = waitForWsMessage(b.client, (f) => f.type === "ack" && f.client_message_id === "held-before-selection");
+      b.client.send(JSON.stringify({ type: "command", payload: "hold", client_message_id: "held-before-selection" }));
+      await ack;
+      const movedA = waitForWsMessage(a.client, (f) => f.type === "welcome" && f.chatSessionId === "temporary-b");
+      a.client.send(JSON.stringify({ type: "switch_chat_session", payload: { chatSessionId: "temporary-b" } }));
+      await movedA;
+      const rejected = waitForWsMessage(b.client, (f) => f.type === "error" && f.code === "session_changed");
+      b.client.send(JSON.stringify({ type: "prompt", payload: "old-input", chat_session_id: "main", client_message_id: "old-input" }));
+      await rejected;
+      const returnedA = waitForWsMessage(a.client, (f) => f.type === "welcome" && f.chatSessionId === "main");
+      a.client.send(JSON.stringify({ type: "switch_chat_session", payload: { chatSessionId: "main" } }));
+      await returnedA;
+      const returnedB = waitForWsMessage(b.client, (f) => f.type === "welcome" && f.chatSessionId === "main");
+      release.resolve();
+      const welcome = await returnedB;
+      assert.equal(welcome.historyMode, "snapshot");
+      assert.equal(b.frames.some((f) => f.type === "welcome" && f.chatSessionId === "temporary-b"), false);
+      const result = waitForWsMessage(b.client, (f) => f.type === "result" && f.clientMessageId === "after-noop");
+      b.client.send(JSON.stringify({ type: "prompt", payload: "after-noop", chat_session_id: "main", client_message_id: "after-noop" }));
+      await result;
+      assert.equal(b.frames.some((f) => f.type === "user" && f.clientMessageId === "old-input"), false);
+    } finally {
+      release.resolve();
+      await heldLock;
+      a.client.terminate(); b.client.terminate();
+    }
+  });
+
   it("broadcasts command results and workspace state to another active connection in the same session", async () => {
     const url = `ws://127.0.0.1:${port}`;
     const protocols = ["ads-v1", "ads-session.test-session", "ads-chat.main"];
