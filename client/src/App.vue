@@ -19,6 +19,7 @@ const SessionResumePicker = lazyComponent(() => import("./components/SessionResu
 
 import { createAppController } from "./app/controller";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
+import { useNoticeSpace } from "./composables/app/useNoticeSpace";
 import { useProjectSidebar } from "./composables/app/useProjectSidebar";
 import { createTapActivation } from "./lib/tapActivation";
 import { crumb } from "./lib/diagBreadcrumbs";
@@ -486,6 +487,9 @@ const actionQueueJobs = computed(() => {
 const activeActionJob = computed(() => {
   return actionQueueJobs.value.find((job) => job.status !== "queued") ?? actionQueueJobs.value[0] ?? null;
 });
+
+const noticeRef = ref<HTMLElement | null>(null);
+useNoticeSpace(noticeRef);
 
 function showActionNotice(message: string): void {
   const text = String(message ?? "").trim();
@@ -1668,7 +1672,7 @@ const acopilotConnectionStatus = computed(() => {
       </div>
     </header>
 
-    <div v-if="apiNotice" class="noticeToast" role="status" aria-live="polite" aria-atomic="true" tabindex="0">
+    <div v-if="apiNotice" ref="noticeRef" class="noticeToast" role="status" aria-live="polite" aria-atomic="true" tabindex="0">
       <span class="noticeToastText">{{ apiNotice }}</span>
     </div>
 

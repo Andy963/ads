@@ -835,10 +835,10 @@
   flex: 0 0 auto;
   align-self: center;
   min-height: 0;
-  max-height: 25%;
+  max-height: var(--notice-height, 25%);
   max-width: min(calc(100% - 24px), 620px);
-  margin: 6px 12px;
-  padding: 8px 12px;
+  margin: var(--notice-margin, 6px) 12px;
+  padding: var(--notice-padding, 8px) 12px;
   overflow: auto;
   overscroll-behavior: contain;
   border-radius: 12px;

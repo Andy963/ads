@@ -132,6 +132,38 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
           const settingsPanel = await page.locator(".mobileMainPanel").boundingBox();
           assert.ok(settingsNotice && settingsPanel && settingsNotice.y + settingsNotice.height <= settingsPanel.y + 0.5, "Global notice remains readable above mobile settings");
         }
+        if (width === 320) {
+          // Keep WebSockets disconnected while HTTP task fixtures remain
+          // available, so the real connection-status row occupies space.
+          await page.routeWebSocket("**/ws*", (socket) => socket.close());
+          await page.goto(fixture.origin);
+          await activate(page.locator('[data-testid="lane-tab-actions"]'));
+          await page.locator(".topbar").evaluate((element) => {
+            element.style.height = "calc(var(--topbar-height) + 34px)";
+            element.style.paddingTop = "34px";
+          });
+          await page.locator('[data-testid="lane-panel-actions"] [data-testid="lane-connection-status"]').waitFor();
+          for (const height of [360, 320]) {
+            await page.setViewportSize({ width, height });
+            const composer = page.locator('[data-testid="lane-panel-actions"] .composer');
+            await page.waitForFunction(() => {
+              const element = document.querySelector('[data-testid="lane-panel-actions"] .composer');
+              return element && element.getBoundingClientRect().bottom <= window.innerHeight + 1;
+            });
+            const before = await composer.boundingBox();
+            assert.ok(before.y + before.height <= height + 1, "Composer fits before the notice");
+            await activate(page.locator('[data-testid="btn-action-cancel"]'));
+            await notice.filter({ hasText: longError }).waitFor();
+            await notice.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
+            const compact = await geometry(page);
+            verify(compact, `${engine}-${width}x${height}-disconnected`);
+            const lineHeight = await notice.evaluate((element) => parseFloat(getComputedStyle(element).lineHeight));
+            assert.ok(compact.clientHeight >= lineHeight, "The compact scroll area retains a readable text line");
+            result.measurements.push({ scenario: `disconnected-${height}`, ...compact });
+            await page.screenshot({ path: path.join(artifacts, `${engine}-${width}x${height}-disconnected.png`) });
+            await notice.waitFor({ state: "hidden", timeout: 6000 });
+          }
+        }
         assert.deepEqual(errors, []);
         result.status = "passed";
       } catch (error) {
