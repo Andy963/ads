@@ -280,6 +280,7 @@
   color: var(--accent-2);
 }
 .layout {
+  position: relative;
   --sidebar-width: clamp(280px, 24vw, 360px);
   flex: 1;
   display: grid;
@@ -831,43 +832,37 @@
   color: #dc2626;
 }
 .noticeToast {
-  position: fixed;
-  left: 50%;
-  top: calc(var(--topbar-height) + env(safe-area-inset-top, 0px) + 12px);
-  transform: translateX(-50%);
-  display: inline-flex;
-  align-items: center;
+  flex: 0 0 auto;
+  align-self: center;
+  min-height: 0;
+  max-height: 25%;
+  max-width: min(calc(100% - 24px), 620px);
+  margin: 6px 12px;
   padding: 8px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(34, 197, 94, 0.28);
-  background: rgba(34, 197, 94, 0.1);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
   box-shadow: var(--shadow-sm);
   font-size: 13px;
-  color: #15803d;
-  max-width: min(92vw, 620px);
-  pointer-events: none;
-  z-index: 40;
+  line-height: 1.5;
+  color: var(--text);
   animation: noticeToastIn 0.14s ease-out;
 }
 .noticeToastText {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 @keyframes noticeToastIn {
-  from {
-    opacity: 0;
-    transform: translateX(-50%) translateY(-6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
-  }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 @keyframes spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
 @media (max-width: 900px) {
   .app {
     --topbar-height: 36px;
@@ -983,8 +978,8 @@
     display: none;
   }
   .left.mobileDrawer {
-    position: fixed;
-    top: calc(var(--topbar-height) + env(safe-area-inset-top, 0px));
+    position: absolute;
+    top: 0;
     bottom: 0;
     left: 0;
     z-index: 110;
@@ -1111,8 +1106,8 @@
     padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
   }
   .mobileDrawerBackdrop {
-    position: fixed;
-    inset: calc(var(--topbar-height) + env(safe-area-inset-top, 0px)) 0 0;
+    position: absolute;
+    inset: 0;
     z-index: 100;
     background: rgba(15, 23, 42, 0.34);
     backdrop-filter: blur(2px);

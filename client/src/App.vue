@@ -1668,6 +1668,10 @@ const acopilotConnectionStatus = computed(() => {
       </div>
     </header>
 
+    <div v-if="apiNotice" class="noticeToast" role="status" aria-live="polite" aria-atomic="true" tabindex="0">
+      <span class="noticeToastText">{{ apiNotice }}</span>
+    </div>
+
     <main class="layout">
       <Transition name="mobile-fade">
         <div
@@ -2012,10 +2016,6 @@ const acopilotConnectionStatus = computed(() => {
         </div>
       </section>
     </main>
-
-    <div v-if="apiNotice" class="noticeToast" role="status" aria-live="polite">
-      <span class="noticeToastText">{{ apiNotice }}</span>
-    </div>
 
     <DraggableModal v-if="settingsOpen" card-variant="large" @close="closeSettings">
       <ModelManager
