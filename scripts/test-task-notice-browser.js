@@ -37,16 +37,36 @@ async function geometry(page) {
   });
 }
 
+async function anchors(page) {
+  return page.evaluate(() => Object.fromEntries(
+    [".topbar", ".laneTabs", ".actionsJobBanner"].map((selector) => {
+      const rect = document.querySelector(selector)?.getBoundingClientRect();
+      return [selector, rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null];
+    }),
+  ));
+}
+
+function verifyAnchors(before, after, label) {
+  for (const selector of Object.keys(before)) {
+    assert.equal(Boolean(before[selector]), Boolean(after[selector]), `${label}: ${selector} presence`);
+    if (!before[selector]) continue;
+    for (const key of ["x", "y", "width", "height"]) {
+      assert.ok(Math.abs(before[selector][key] - after[selector][key]) < 0.5,
+        `${label}: ${selector} ${key} changed: ${JSON.stringify({ before, after })}`);
+    }
+  }
+}
+
 function verify(g, label) {
   assert.ok(g.notice && g.notice.height > 0, `${label}: visible notice`);
-  for (const key of ["topbar", "lanes", "task", "composer", "drawer"]) {
+  for (const key of ["topbar", "lanes", "task", "composer"]) {
     if (g[key]) assert.equal(intersects(g.notice, g[key]), false, `${label}: notice overlaps ${key}: ${JSON.stringify(g)}`);
   }
   assert.ok(g.composer, `${label}: composer geometry must be measured`);
   assert.notEqual(g.position, "fixed", `${label}: notice must reserve layout space`);
   assert.notEqual(g.position, "absolute", `${label}: notice must reserve layout space`);
   assert.ok(g.notice.top >= g.topbar.bottom - 0.5, `${label}: safe-area/header clearance`);
-  assert.ok(g.notice.bottom <= g.layout.top + 0.5, `${label}: main layout must start below notice`);
+  assert.ok(g.notice.top >= (g.task?.bottom ?? g.lanes.bottom) - 0.5, `${label}: notice must follow workspace controls and task queue`);
   assert.ok(g.notice.left >= 0 && g.notice.right <= g.viewport.width + 0.5, `${label}: horizontal bounds`);
   assert.ok(g.notice.bottom <= g.viewport.height, `${label}: vertical bounds`);
   assert.equal(g.overflow, false, `${label}: notice horizontal overflow`);
@@ -91,7 +111,9 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
         const short = await geometry(page);
         verify(short, `${engine}-${width}-dismiss`);
         result.measurements.push({ scenario: "dismiss", ...short });
+        const shortAnchors = await anchors(page);
         await notice.waitFor({ state: "hidden", timeout: 6000 });
+        verifyAnchors(shortAnchors, await anchors(page), "Short notice expiry");
 
         if (width < 900) {
           // Only header safe-area padding and viewport height are simulated;
@@ -103,12 +125,15 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
           await page.setViewportSize({ width, height: 480 });
           await page.locator('[data-testid="lane-panel-actions"] textarea.composer-input').focus();
         }
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const beforeNotice = await anchors(page);
         await activate(page.locator('[data-testid="btn-action-cancel"]'));
         await notice.filter({ hasText: longError }).waitFor();
         await notice.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
         assert.ok((await notice.textContent()).includes(longError), "Full notice text is retained");
         const long = await geometry(page);
         verify(long, `${engine}-${width}-long`);
+        verifyAnchors(beforeNotice, await anchors(page), "Long notice appearance");
         if (width < 900) assert.ok(long.topbar.height >= 70, "Simulated top safe area must actually affect the layout");
         if (long.scrollHeight > long.clientHeight + 1) {
           assert.match(long.overflowY, /auto|scroll/);
@@ -116,7 +141,21 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
         }
         result.measurements.push({ scenario: "long-reduced-height", ...long });
         await page.screenshot({ path: path.join(artifacts, `${engine}-${width}-notice.png`) });
+        await notice.waitFor({ state: "hidden", timeout: 6000 });
+        verifyAnchors(beforeNotice, await anchors(page), "Long notice expiry");
+        await activate(page.locator('[data-testid="btn-action-cancel"]'));
+        await notice.waitFor();
+        await activate(page.locator('[data-testid="lane-tab-acopilot"]'));
+        await page.locator('#lane-panel-acopilot .noticeToast').waitFor();
+        assert.equal(await notice.count(), 1, "Only the active lane announces the notice");
+        await activate(page.locator('[data-testid="lane-tab-actions"]'));
+        await page.locator('#lane-panel-actions .noticeToast').waitFor();
         if (width < 900) {
+          // Lane transitions can consume the short notice lifetime on WebKit.
+          // Start a fresh real API notice for the separate settings scenario.
+          await notice.waitFor({ state: "hidden", timeout: 6000 });
+          await activate(page.locator('[data-testid="btn-action-cancel"]'));
+          await notice.waitFor();
           await activate(page.locator('.mobileMenuBtn'));
           await page.waitForFunction(() => {
             const drawer = document.querySelector(".left.mobileDrawer");
@@ -124,7 +163,7 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
               && Math.abs(drawer.getBoundingClientRect().left) < 0.5;
           });
           const drawer = await geometry(page);
-          verify(drawer, `${engine}-${width}-drawer`);
+          // The drawer intentionally overlays workspace content, including its notice.
           assert.ok(drawer.drawer.right > 0 && drawer.drawer.left >= -0.5, `Measure the fully opened drawer, not its offscreen transition: ${JSON.stringify(drawer.drawer)}`);
           result.measurements.push({ scenario: "drawer", ...drawer });
           await activate(page.locator('[data-testid="mobile-drawer-section-models"]'));
@@ -195,6 +234,18 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
             }
           }
         }
+        jobs = [{ id: "notice-blocked", issue_title: "Last queued task", status: "blocked", issue_id: 526 }];
+        await page.setViewportSize({ width, height: 844 });
+        await page.goto(fixture.origin);
+        await activate(page.locator('[data-testid="lane-tab-actions"]'));
+        await activate(page.locator('[data-testid="btn-action-resolve-dismiss"]'));
+        await notice.waitFor();
+        await page.locator('[data-testid="actions-job-banner"]').waitFor({ state: "hidden" });
+        await notice.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
+        verify(await geometry(page), `${engine}-${width}-empty-queue`);
+        const emptyAnchors = await anchors(page);
+        await notice.waitFor({ state: "hidden", timeout: 6000 });
+        verifyAnchors(emptyAnchors, await anchors(page), "Empty queue notice expiry");
         assert.deepEqual(errors, []);
         result.status = "passed";
       } catch (error) {
