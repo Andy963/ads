@@ -155,8 +155,51 @@ describe("chat execute stacking and command collapse", () => {
 
     expect(commands[0].classes()).toContain("execute-cmd--overflowing");
     expect(wrapper.findAll(".execute-cmd-copy")).toHaveLength(2);
+    expect(wrapper.get(".execute-cmd-track").element.getAttribute("style")).toContain("--execute-marquee-duration: 8s");
 
     wrapper.unmount();
+  });
+
+  it("scales marquee duration with the measured command width", async () => {
+    const wrapper = mount(MainChatMessageList, {
+      props: {
+        messages: [{ id: "e-long", role: "system", kind: "execute", content: "out", command: "long command" }],
+        copiedMessageId: null,
+        formatMessageTs: () => "",
+        liveStepExpanded: false,
+        liveStepHasOverflow: false,
+        liveStepCanToggleExpanded: false,
+        liveStepOutlineItems: [],
+        liveStepOutlineHiddenCount: 0,
+        liveStepCollapsedTrivialOutline: false,
+      },
+      attachTo: document.body,
+    });
+
+    try {
+      const command = wrapper.get(".execute-cmd");
+      const copy = command.get(".execute-cmd-copy");
+      Object.defineProperty(command.element, "clientWidth", { configurable: true, value: 100 });
+      Object.defineProperty(copy.element, "scrollWidth", { configurable: true, value: 1000 });
+      vi.spyOn(copy.element, "getBoundingClientRect").mockReturnValue({ width: 100 } as DOMRect);
+
+      await settleUi(wrapper);
+
+      expect(command.classes()).toContain("execute-cmd--overflowing");
+      expect(command.get(".execute-cmd-track").element.getAttribute("style")).toContain("--execute-marquee-duration: 20.64s");
+
+      await wrapper.setProps({
+        messages: [{ id: "e-long", role: "system", kind: "execute", content: "out", command: "a much longer command" }],
+      });
+      const nextCopy = command.get(".execute-cmd-copy");
+      Object.defineProperty(nextCopy.element, "scrollWidth", { configurable: true, value: 2000 });
+      vi.spyOn(nextCopy.element, "getBoundingClientRect").mockReturnValue({ width: 100 } as DOMRect);
+      await settleUi(wrapper);
+
+      expect(command.get(".execute-cmd-track").element.getAttribute("style")).toContain("--execute-marquee-duration: 40.64s");
+    } finally {
+      wrapper.unmount();
+    }
   });
 
   it("does not mark a completed command that fits", async () => {
