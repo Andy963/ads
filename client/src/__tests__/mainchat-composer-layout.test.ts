@@ -292,6 +292,13 @@ describe("MainChat compact composer layout", () => {
     expect(chat).toMatch(/\.chat\s*\{[^}]*flex:\s*1 1 auto\s*;/);
   });
 
+  it("balances composer input spacing between the action toggle and placeholder text", async () => {
+    const composer = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
+
+    expect(composer).toMatch(/\.composerMainRow\s*\{[^}]*column-gap:\s*2px\s*;/);
+    expect(composer).toMatch(/\.composer-input\s*\{[^}]*padding:\s*6px 4px 6px 2px\s*;/);
+  });
+
   it("reserves the tool row when only the visual viewport height changes", async () => {
     const viewport = Object.assign(new EventTarget(), { height: 844, offsetTop: 0, width: 390 });
     vi.stubGlobal("visualViewport", viewport);

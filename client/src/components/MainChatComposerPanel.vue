@@ -987,7 +987,7 @@ onBeforeUnmount(() => {
   align-items: flex-end;
   padding: 8px;
   flex-shrink: 0;
-  column-gap: 6px;
+  column-gap: 2px;
   row-gap: 2px;
 }
 
@@ -1435,7 +1435,7 @@ onBeforeUnmount(() => {
   min-height: 34px;
   border-radius: 0;
   border: none;
-  padding: 6px 4px;
+  padding: 6px 4px 6px 2px;
   font-size: 16px;
   line-height: 1.5;
   background: transparent;
