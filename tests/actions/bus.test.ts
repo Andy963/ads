@@ -131,6 +131,21 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(evaluate.mock.callCount(), 1);
   });
 
+  it("rejects direct merge without live supervised delivery authority", () => {
+    const db = getStateDatabase();
+    let merges = 0;
+    const bus = new LaneDispatchBus(db, {
+      sessionManager: {} as any,
+      mergePipeline: () => { merges++; return { success: true }; },
+    });
+    const job = bus.dispatchJob({ projectId: repoDir, issueTitle: "No merge bypass", issueDescription: "Require live review", acceptanceCriteria: ["Reject direct merge"] });
+    updateActionJobStatus(db, job.jobId, "running");
+    assert.equal(bus.executeDeterministicMerge(job.jobId, repoDir).success, false);
+    assert.equal(bus.executeDeterministicMerge(job.jobId, repoDir, { supervised: true, expectedHead: "forged" }).success, false);
+    assert.equal(merges, 0);
+    assert.equal(bus.getJob(job.jobId)?.status, "running");
+  });
+
   it("auto-starts a dispatched job without a manual queue start when the queue is idle", async () => {
     const db = getStateDatabase();
     const bus = new LaneDispatchBus(db);
@@ -1235,9 +1250,12 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       setDeveloperInstructions: (inst: string) => {
         instructionsSet = inst;
       },
-      invokeAgent: async (_agentId: string, input: any) => {
+      invokeAgent: async (_agentId: string, input: any, options: any) => {
         turnPrompt = typeof input === "string" ? input : input[0]?.text || "";
+        spawnSync("git", ["checkout", "-b", "codex/issue-909"], { cwd: repoDir });
         commitImplementation("session-manager");
+        assert.equal((await options.actionTools.review_action()).ok, true);
+        assert.equal((await options.actionTools.deliver_action()).ok, true);
         return { response: "Implemented changes successfully", usage: { input_tokens: 10, output_tokens: 20 } };
       },
       send: async (input: any) => {

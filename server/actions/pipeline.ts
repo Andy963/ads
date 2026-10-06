@@ -70,8 +70,8 @@ const GH_PR_MERGE_SUPPORTED_FLAGS = new Set([
   "--subject",
 ]);
 
-export function buildPrMergeArgs(prNumber: number): string[] {
-  return ["pr", "merge", String(prNumber), "--squash"];
+export function buildPrMergeArgs(prNumber: number, expectedHead?: string): string[] {
+  return ["pr", "merge", String(prNumber), "--squash", ...(expectedHead ? ["--match-head-commit", expectedHead] : [])];
 }
 
 export function unsupportedPrMergeFlags(args: string[]): string[] {
@@ -145,6 +145,15 @@ export function findOpenPullRequest(cwd: string, branch: string): ExistingPullRe
   return parseOpenPullRequest(res.stdout?.trim() || "");
 }
 
+export function pushFeatureBranch(cwd: string, branch: string): string | null {
+  const res = spawnSync("git", ["push", "origin", branch], {
+    cwd,
+    encoding: "utf8",
+  });
+  if (res.status === 0) return null;
+  return `git push origin ${branch} failed: ${res.stderr?.trim() || "Unknown error"}`;
+}
+
 export function createPullRequest(options: {
   cwd: string;
   issueId?: number | null;
@@ -160,17 +169,23 @@ export function createPullRequest(options: {
   const bodyText = options.body ?? (options.issueId ? `Closes #${options.issueId}` : "Automated Actions PR");
 
   if (options.branch) {
+    const scopeError = checkFeatureBranchScope(options.cwd, baseBranch, options.branch, options.baseSha);
+    if (scopeError) {
+      return { prNumber: null, prUrl: null, error: scopeError };
+    }
+
+    // The Developer is required to commit, but the Actions controller owns PR
+    // delivery. Publish the branch before asking GitHub to resolve its head;
+    // otherwise a valid local implementation is reported as an empty PR.
+    const pushError = pushFeatureBranch(options.cwd, options.branch);
+    if (pushError) return { prNumber: null, prUrl: null, error: pushError };
+
     // A rework pass reaches this point with the branch already carrying a pull
     // request. Reusing it keeps the job on the same PR instead of failing on
     // "a pull request for this branch already exists".
     const existing = findOpenPullRequest(options.cwd, options.branch);
     if (existing) {
       return { prNumber: existing.prNumber, prUrl: existing.prUrl };
-    }
-
-    const scopeError = checkFeatureBranchScope(options.cwd, baseBranch, options.branch, options.baseSha);
-    if (scopeError) {
-      return { prNumber: null, prUrl: null, error: scopeError };
     }
   }
 
@@ -212,8 +227,17 @@ export function mergeAndCleanupPipeline(options: {
   issueId?: number | null;
   branch: string;
   baseBranch?: string;
+  expectedHead?: string;
 }): MergeResult {
   const base = options.baseBranch ?? ACTIONS_BASE_BRANCH;
+  // A reviewed PR may be merged while somebody advances its branch. Cleanup
+  // must never discard those newer, unreviewed commits.
+  if (options.expectedHead && options.branch && options.branch !== base) {
+    const ref = spawnSync("git", ["rev-parse", "--verify", `refs/heads/${options.branch}`], { cwd: options.cwd, encoding: "utf8" });
+    if (ref.status === 0 && ref.stdout.trim() !== options.expectedHead) {
+      return { success: false, error: "Feature branch advanced beyond the reviewed commit; preserve it instead of cleaning up." };
+    }
+  }
   const hasRemote = spawnSync("git", ["remote", "get-url", "origin"], {
     cwd: options.cwd,
     encoding: "utf8",
@@ -222,7 +246,11 @@ export function mergeAndCleanupPipeline(options: {
 
   // 1. Merge PR if prNumber is provided
   if (options.prNumber) {
-    const mergeRes = spawnSync("gh", buildPrMergeArgs(options.prNumber), {
+    const prior = options.expectedHead ? readPullRequestState({ cwd: options.cwd, prNumber: options.prNumber, includeHead: true }) : null;
+    if (prior && (prior.error || prior.headRefOid !== options.expectedHead || prior.baseRefName !== base)) {
+      return { success: false, error: "Pull request does not match the reviewed head and base." };
+    }
+    const mergeRes = prior?.merged ? { status: 0, stderr: "" } : spawnSync("gh", buildPrMergeArgs(options.prNumber, options.expectedHead), {
       cwd: options.cwd,
       encoding: "utf8",
     });
@@ -344,6 +372,10 @@ export function mergeAndCleanupPipeline(options: {
 
   // 5. Delete local feature branch
   if (options.branch && options.branch !== base) {
+    if (options.expectedHead) {
+      const error = deleteReviewedFeatureBranch(options.cwd, options.branch, options.expectedHead, hasRemote);
+      return error ? { success: false, error } : { success: true };
+    }
     const branchExists = spawnSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${options.branch}`], {
       cwd: options.cwd,
       encoding: "utf8",
@@ -385,11 +417,33 @@ export function mergeAndCleanupPipeline(options: {
   return { success: true };
 }
 
+export function deleteReviewedFeatureBranch(cwd: string, branch: string, expectedHead: string, hasRemote: boolean): string | null {
+  const ref = `refs/heads/${branch}`;
+  const local = spawnSync("git", ["rev-parse", "--verify", ref], { cwd, encoding: "utf8" });
+  const remote = hasRemote ? spawnSync("git", ["ls-remote", "--exit-code", "--heads", "origin", ref], { cwd, encoding: "utf8" }) : null;
+  if ((local.status === 0 && local.stdout.trim() !== expectedHead)
+    || (remote?.status === 0 && remote.stdout.split(/\s+/)[0] !== expectedHead)) {
+    return "Feature branch advanced beyond the reviewed commit; branch refs were preserved.";
+  }
+  if (remote && remote.status !== 0 && remote.status !== 2) return "Unable to verify remote branch before cleanup.";
+  if (local.status === 0) {
+    // Compare-and-delete prevents a concurrent writer from losing new commits.
+    const deleted = spawnSync("git", ["update-ref", "-d", ref, expectedHead], { cwd, encoding: "utf8" });
+    if (deleted.status !== 0) return "Local branch changed during cleanup; it was preserved.";
+  }
+  if (remote?.status === 0) {
+    const deleted = spawnSync("git", ["push", "origin", `:${ref}`, `--force-with-lease=${ref}:${expectedHead}`], { cwd, encoding: "utf8" });
+    if (deleted.status !== 0) return `Remote branch cleanup refused: ${deleted.stderr.trim()}`;
+  }
+  return null;
+}
+
 export interface PullRequestStateResult {
   state: string | null;
   merged: boolean;
   baseRefName: string | null;
   mergedAt: number | null;
+  headRefOid?: string | null;
   error?: string;
 }
 
@@ -401,18 +455,19 @@ export interface PullRequestStateResult {
 export function readPullRequestState(options: {
   cwd: string;
   prNumber: number;
+  includeHead?: boolean;
 }): PullRequestStateResult {
   const unknown: PullRequestStateResult = { state: null, merged: false, baseRefName: null, mergedAt: null };
   const res = spawnSync(
     "gh",
-    ["pr", "view", String(options.prNumber), "--json", "state,mergedAt,baseRefName"],
+    ["pr", "view", String(options.prNumber), "--json", options.includeHead ? "state,mergedAt,baseRefName,headRefOid" : "state,mergedAt,baseRefName"],
     { cwd: options.cwd, encoding: "utf8" },
   );
   if (res.status !== 0) {
     return { ...unknown, error: res.stderr?.trim() || "Failed to read pull request state" };
   }
 
-  let parsed: { state?: unknown; mergedAt?: unknown; baseRefName?: unknown };
+  let parsed: { state?: unknown; mergedAt?: unknown; baseRefName?: unknown; headRefOid?: unknown };
   try {
     parsed = JSON.parse(res.stdout || "{}") as typeof parsed;
   } catch (error) {
@@ -426,5 +481,6 @@ export function readPullRequestState(options: {
     merged: mergedAt.length > 0,
     baseRefName: typeof parsed.baseRefName === "string" ? parsed.baseRefName : null,
     mergedAt: mergedAt ? Date.parse(mergedAt) || null : null,
+    ...(options.includeHead ? { headRefOid: typeof parsed.headRefOid === "string" ? parsed.headRefOid : null } : {}),
   };
 }

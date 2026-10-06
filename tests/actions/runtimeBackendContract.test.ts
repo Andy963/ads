@@ -19,6 +19,7 @@ import { SessionManager } from "../../server/sessions/sessionManager.js";
 function createCodexServer(options: {
   threadId?: string;
   onTurnStart?: () => void;
+  supervised?: boolean;
   autoCompleteTurn?: {
     threadId: string;
     turnId: string;
@@ -33,6 +34,15 @@ function createCodexServer(options: {
   const stderr = new PassThrough();
   const client = new CodexAppServerClient();
   client.attach({ stdin, stdout, stderr, waitClose: async () => null });
+  const emitFinal = () => {
+    const { threadId, turnId, response } = options.autoCompleteTurn!;
+    stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method: "item/completed", params: { item: { type: "agentMessage", id: "final", text: response }, threadId, turnId } })}\n`);
+    stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method: "turn/completed", params: { threadId, turn: { id: turnId } } })}\n`);
+  };
+  const requestTool = (tool: string) => {
+    const { threadId, turnId } = options.autoCompleteTurn!;
+    stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: tool, method: "item/tool/call", params: { threadId, turnId, callId: tool, tool, arguments: {} } })}\n`);
+  };
   let buffer = "";
   stdin.on("data", (chunk: Buffer | string) => {
     buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -42,23 +52,21 @@ function createCodexServer(options: {
       buffer = buffer.slice(end + 1);
       end = buffer.indexOf("\n");
       if (!line.trim()) continue;
-      const message = JSON.parse(line) as { id?: number; method?: string };
+      const message = JSON.parse(line) as { id?: number | string; method?: string; result?: { success?: boolean } };
+      if (options.supervised && !message.method) {
+        assert.equal(message.result?.success, true);
+        if (message.id === "review_action") requestTool("deliver_action");
+        else emitFinal();
+        continue;
+      }
       if (message.method === "turn/start") {
         options.onTurnStart?.();
         if (options.autoCompleteTurn) {
-          const { threadId, turnId, response } = options.autoCompleteTurn;
+          const { threadId, turnId } = options.autoCompleteTurn;
           stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method: "thread/started", params: { thread: { id: threadId } } })}\n`);
           stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method: "turn/started", params: { threadId, turn: { id: turnId } } })}\n`);
-          stdout.write(`${JSON.stringify({
-            jsonrpc: "2.0",
-            method: "item/completed",
-            params: {
-              item: { type: "agentMessage", id: "developer-message", text: response },
-              threadId,
-              turnId,
-            },
-          })}\n`);
-          stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method: "turn/completed", params: { threadId, turn: { id: turnId } } })}\n`);
+          if (options.supervised) queueMicrotask(() => requestTool("review_action"));
+          else emitFinal();
         }
       }
       const result = message.method === "thread/start" ? { thread: { id: options.threadId ?? "review-thread" } } : {};
@@ -173,8 +181,20 @@ describe("Actions runtime backend contracts", () => {
           provider: "test",
         }),
       },
-      fetchImpl: async () => {
+      fetchImpl: async (_input, init) => {
         requestCount += 1;
+        const body = JSON.parse(String(init?.body));
+        if (requestCount > 2 && requestCount < 6) {
+          const results = body.messages.filter((m: { role: string }) => m.role === "tool");
+          assert.ok(results.length > 0);
+        }
+        if (requestCount === 2 || requestCount === 3 || requestCount === 4) {
+          const tool = requestCount === 2 ? "review_action" : "deliver_action";
+          return nativeSseResponse([
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: `supervision-${requestCount}`, type: "function", function: { name: tool, arguments: "{}" } }] } }] },
+            { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+          ]);
+        }
         if (requestCount === 1) {
           return nativeSseResponse([
             { choices: [{ delta: { tool_calls: [{ index: 0, id: "developer-commit", type: "function", function: { name: "exec_command", arguments: JSON.stringify({ cmd: "git", args: ["commit", "-m", "implementation"] }) } }] } }] },
@@ -197,12 +217,28 @@ describe("Actions runtime backend contracts", () => {
       }),
     });
     const db = getStateDatabase();
+    let deliveries = 0;
+    let creates = 0;
+    let reviewedHead = "";
     const bus = new LaneDispatchBus(db, {
       sessionManager,
       reviewerRunner: async () => JSON.stringify({ status: "PASS", summary: "Native developer passed", defects: [] }),
       testCommand: "true",
-      hasRemoteOrigin: () => false,
-      mergePipeline: () => ({ success: true }),
+      hasRemoteOrigin: () => true,
+      pullRequestCreator: () => { creates++; return { prNumber: 42, prUrl: "https://github.test/pull/42" }; },
+      pullRequestStateReader: () => ({ state: "MERGED", merged: true, mergedAt: 1, baseRefName: "dev", headRefOid: reviewedHead }),
+      mergePipeline: ({ prNumber, expectedHead }) => {
+        assert.equal(prNumber, 42);
+        assert.ok(expectedHead);
+        reviewedHead = expectedHead!;
+        if (++deliveries === 1) {
+          spawnSync("git", ["checkout", "dev"], { cwd: workspace });
+          spawnSync("git", ["merge", "--ff-only", "codex/issue-374"], { cwd: workspace });
+          spawnSync("git", ["branch", "-d", "codex/issue-374"], { cwd: workspace });
+          return { success: false, error: "Merged, but issue close failed" };
+        }
+        return { success: true };
+      },
     });
     const job = bus.dispatchJob({
       projectId: workspace,
@@ -216,6 +252,10 @@ describe("Actions runtime backend contracts", () => {
 
     await bus.executeDeveloper(job.jobId, workspace);
     await waitForJobStatus(bus, job.jobId, "completed");
+    assert.equal(deliveries, 2);
+    assert.equal(creates, 1);
+    assert.equal(requestCount, 5);
+    assert.equal(bus.getJob(job.jobId)?.rework_count, 0);
 
     assert.match(
       spawnSync("git", ["log", "-1", "--pretty=%s"], { cwd: workspace, encoding: "utf8" }).stdout,
@@ -228,6 +268,7 @@ describe("Actions runtime backend contracts", () => {
     let committed = false;
     const server = createCodexServer({
       threadId: "developer-thread",
+      supervised: true,
       onTurnStart: () => {
         if (!committed) {
           committed = true;

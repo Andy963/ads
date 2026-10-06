@@ -19,6 +19,7 @@ const SessionResumePicker = lazyComponent(() => import("./components/SessionResu
 
 import { createAppController } from "./app/controller";
 import { useLaneRuntimeBridge, type ChatLane } from "./composables/app/useLaneRuntimeBridge";
+import { useNoticeSpace } from "./composables/app/useNoticeSpace";
 import { useProjectSidebar } from "./composables/app/useProjectSidebar";
 import { createTapActivation } from "./lib/tapActivation";
 import { crumb } from "./lib/diagBreadcrumbs";
@@ -486,6 +487,13 @@ const actionQueueJobs = computed(() => {
 const activeActionJob = computed(() => {
   return actionQueueJobs.value.find((job) => job.status !== "queued") ?? actionQueueJobs.value[0] ?? null;
 });
+
+const noticeRef = ref<HTMLElement | null>(null);
+useNoticeSpace(noticeRef);
+const acopilotNoticeRef = ref<HTMLElement | null>(null);
+const actionsNoticeRef = ref<HTMLElement | null>(null);
+useNoticeSpace(acopilotNoticeRef);
+useNoticeSpace(actionsNoticeRef);
 
 function showActionNotice(message: string): void {
   const text = String(message ?? "").trim();
@@ -1668,6 +1676,10 @@ const acopilotConnectionStatus = computed(() => {
       </div>
     </header>
 
+    <div v-if="apiNotice && isMobile && mobileDrawerSection !== 'projects'" ref="noticeRef" class="noticeToast" role="status" aria-live="polite" aria-atomic="true" tabindex="0">
+      <span class="noticeToastText">{{ apiNotice }}</span>
+    </div>
+
     <main class="layout">
       <Transition name="mobile-fade">
         <div
@@ -1918,6 +1930,9 @@ const acopilotConnectionStatus = computed(() => {
               :data-message-count="acopilotMessages.length"
               :data-panel-key="`${acopilotPanelKey}:${errorRecoveryGeneration}`"
             >
+              <div v-if="apiNotice && activeWorkspaceTab === 'acopilot'" ref="acopilotNoticeRef" class="noticeToast" role="status" aria-live="polite" aria-atomic="true" tabindex="0">
+                <span class="noticeToastText">{{ apiNotice }}</span>
+              </div>
               <MainChatView
                 ref="acopilotChatRef"
                 :key="`${acopilotPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
@@ -1974,6 +1989,9 @@ const acopilotConnectionStatus = computed(() => {
                 @cancel="cancelActionJob"
                 @resolve="resolveActionJob"
               />
+              <div v-if="apiNotice && activeWorkspaceTab === 'actions'" ref="actionsNoticeRef" class="noticeToast" role="status" aria-live="polite" aria-atomic="true" tabindex="0">
+                <span class="noticeToastText">{{ apiNotice }}</span>
+              </div>
               <MainChatView
                 ref="actionsChatRef"
                 :key="`${actionsPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
@@ -2012,10 +2030,6 @@ const acopilotConnectionStatus = computed(() => {
         </div>
       </section>
     </main>
-
-    <div v-if="apiNotice" class="noticeToast" role="status" aria-live="polite">
-      <span class="noticeToastText">{{ apiNotice }}</span>
-    </div>
 
     <DraggableModal v-if="settingsOpen" card-variant="large" @close="closeSettings">
       <ModelManager

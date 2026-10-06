@@ -38,6 +38,7 @@
     "test:lane-control-browser": "node scripts/test-lane-control-browser.js",
     "test:model-settings-browser": "node scripts/test-model-settings-browser.js",
     "test:model-selection-browser": "node scripts/test-model-selection-browser.js",
+    "test:task-notice-browser": "node scripts/test-task-notice-browser.js",
     "test:message-retry-browser": "node scripts/test-message-retry-browser.js",
     "postbuild": "node scripts/chmod-bins.js",
     "bundle": "npm run build && node scripts/bundle.js",

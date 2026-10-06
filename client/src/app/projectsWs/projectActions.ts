@@ -5,6 +5,7 @@ import type { ChatActions } from "../chat";
 
 import { deriveProjectNameFromPath } from "./projectName";
 import type { ProjectDeps } from "./types";
+import { clearPreviousSessionInputs, persistChatSessionSelection, requestChatSessionSwitch } from "./chatSessionSelection";
 import { diagAlert } from "../../lib/diagAlert";
 import {
   readAppNavigationState,
@@ -480,7 +481,12 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     if (!project) return;
 
     const newChatSessionId = crypto.randomUUID?.() ?? randomId("chat");
-    updateProject(pid, { chatSessionId: newChatSessionId });
+    const rt = activeRuntime.value;
+    clearPreviousSessionInputs(ctx, rt);
+    const intent = requestChatSessionSwitch(rt, newChatSessionId);
+    // The in-band switch owns remote persistence. A concurrent PATCH can
+    // arrive after a newer switch and roll every peer back to this selection.
+    persistChatSessionSelection(projects, pid, newChatSessionId, persistProjects);
     activeRuntime.value.chatSessionId = newChatSessionId;
     ctx.transcriptCache.attach(activeRuntime.value, {
       projectId: pid,
@@ -488,6 +494,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
       chatSessionId: newChatSessionId,
       workspace: project.path,
     });
+    ctx.bindPromptOutbox(rt);
     activeRuntime.value.ignoreNextHistory = false;
     activeRuntime.value.ignoreNextHistoryGeneration = undefined;
     activeRuntime.value.suppressNextClearHistoryResult = false;
@@ -533,6 +540,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
     if (activeRuntime.value.connected.value && typeof currentWs?.switchChatSession === "function") {
       const switched = currentWs.switchChatSession(newChatSessionId);
       if (switched) {
+        intent.sentOn = rt.ws;
         return;
       }
     }

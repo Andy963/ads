@@ -7,7 +7,8 @@ import path from "node:path";
 
 import WebSocket, { type RawData } from "ws";
 
-import { resetStateDatabaseForTests } from "../../server/state/database.js";
+import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
+import { upsertWebProject, updateWebProject, getWebProjectRecord } from "../../server/web/projects/store.js";
 import { AsyncLock } from "../../server/utils/asyncLock.js";
 import { HistoryStore } from "../../server/utils/historyStore.js";
 import { SessionManager } from "../../server/sessions/sessionManager.js";
@@ -136,6 +137,7 @@ describe("web/server/ws/broadcast", () => {
   let advisorHistoryStore: HistoryStore;
   let syncEventStore: SyncEventStore;
   let laneGenerationStore: WebLaneGenerationStore;
+  let workspaceLock: AsyncLock;
   const originalEnv = { ...process.env };
 
   beforeEach(async (t) => {
@@ -165,6 +167,7 @@ describe("web/server/ws/broadcast", () => {
     syncEventStore = new SyncEventStore({ stateDbPath: process.env.ADS_STATE_DB_PATH });
     laneGenerationStore = new WebLaneGenerationStore({ stateDbPath: process.env.ADS_STATE_DB_PATH });
     const lock = new AsyncLock();
+    workspaceLock = lock;
     const agentAvailability = new NoopAgentAvailability();
     const directoryManager = new DirectoryManager([workspaceRoot]);
     const workerFactory = createFakeSessionFactory("worker");
@@ -186,7 +189,7 @@ describe("web/server/ws/broadcast", () => {
       auth: {
         allowedOrigins: new Set(),
         isOriginAllowed: () => true,
-        authenticateRequest: () => ({ ok: true, userId: "test" }),
+        authenticateRequest: (req) => ({ ok: true, userId: String(req.headers["x-test-user"] ?? "test"), connector: req.headers["x-test-connector"] === "true" }),
       },
       agents: {
         agentAvailability,
@@ -272,6 +275,170 @@ describe("web/server/ws/broadcast", () => {
       fs.rmSync(workspaceRoot, { recursive: true, force: true });
     } catch {
       // ignore
+    }
+  });
+
+  function registerProject(userId = "test", projectId = "shared-project", chatSessionId = "main") {
+    const db = getStateDatabase();
+    db.prepare("INSERT OR IGNORE INTO web_users (id, username, password_hash, created_at, updated_at) VALUES (?, ?, 'fixture', 1, 1)").run(userId, userId);
+    return upsertWebProject(db, { userId, projectId, chatSessionId, workspaceRoot, name: "Shared project" });
+  }
+
+  function connectProject(projectId = "shared-project", chatSessionId = "main", userId = "test", query = "", connector = false) {
+    const frames: WsJson[] = [];
+    const client = new WebSocket(`ws://127.0.0.1:${port}/${query}`, ["ads-v1", `ads-session.${projectId}`, `ads-chat.${chatSessionId}`], {
+      origin: "http://localhost", headers: { "x-test-user": userId, "x-test-connector": String(connector) },
+    });
+    client.on("message", (raw) => frames.push(JSON.parse(raw.toString()) as WsJson));
+    const ready = waitForWsMessage(client, (frame) => frame.type === "welcome");
+    return { client, frames, ready };
+  }
+
+  it("synchronizes bidirectional user/reply fanout, session selection and stale reconnects", async () => {
+    registerProject();
+    const a = connectProject();
+    const b = connectProject();
+    let reconnect: ReturnType<typeof connectProject> | undefined;
+    try {
+      await Promise.all([a.ready, b.ready]);
+      const sendTurn = async (sender: WebSocket, id: string, chatSessionId = "main") => {
+        const users = [a, b].map(({ client }) => waitForWsMessage(client, (f) => f.type === "user" && f.clientMessageId === id));
+        const replies = [a, b].map(({ client }) => waitForWsMessage(client, (f) => f.type === "result" && f.clientMessageId === id));
+        sender.send(JSON.stringify({ type: "prompt", payload: id, client_message_id: id, chat_session_id: chatSessionId }));
+        await Promise.all([...users, ...replies]);
+        for (const peer of [a, b]) {
+          assert.equal(peer.frames.filter((f) => f.type === "user" && f.clientMessageId === id).length, 1);
+          assert.equal(peer.frames.filter((f) => f.type === "result" && f.clientMessageId === id).length, 1);
+        }
+      };
+      await sendTurn(a.client, "from-ios");
+      await sendTurn(b.client, "from-desktop");
+      const welcomes = [a, b].map(({ client }) => waitForWsMessage(client, (f) => f.type === "welcome" && f.chatSessionId === "new-chat"));
+      a.client.send(JSON.stringify({ type: "switch_chat_session", payload: { chatSessionId: "new-chat" } }));
+      // Source input queued immediately after switching must bind to the new lane.
+      await sendTurn(a.client, "immediate-new-chat-input", "new-chat");
+      await Promise.all(welcomes);
+      assert.equal(getWebProjectRecord(getStateDatabase(), "test", "shared-project")?.chatSessionId, "new-chat");
+      await sendTurn(b.client, "from-desktop-new-chat", "new-chat");
+      const staleError = waitForWsMessage(b.client, (f) => f.type === "error" && f.code === "session_changed");
+      b.client.send(JSON.stringify({ type: "prompt", payload: "late-stale-input", client_message_id: "late-stale-input", chat_session_id: "main" }));
+      await staleError;
+      const oldKey = resolveSyncLaneKey({ authUserId: "test", sessionId: "shared-project", chatSessionId: "main" });
+      const newKey = resolveSyncLaneKey({ authUserId: "test", sessionId: "shared-project", chatSessionId: "new-chat" });
+      assert.equal(workerHistoryStore.get(oldKey).some((e) => e.text === "immediate-new-chat-input"), false);
+      assert.equal(workerHistoryStore.get(newKey).filter((e) => e.text === "immediate-new-chat-input").length, 1);
+      assert.equal(workerHistoryStore.get(newKey).some((e) => e.text === "late-stale-input"), false);
+      const duplicateAck = waitForWsMessage(b.client, (f) => f.type === "ack" && f.client_message_id === "from-desktop-new-chat");
+      b.client.send(JSON.stringify({ type: "prompt", payload: "from-desktop-new-chat", client_message_id: "from-desktop-new-chat" }));
+      assert.equal((await duplicateAck).duplicate, true);
+      reconnect = connectProject("shared-project", "main", "test", "?afterSeq=1&laneGeneration=1");
+      const replay = waitForWsMessage(reconnect.client, (f) => f.type === "history");
+      const welcome = await reconnect.ready;
+      assert.equal(welcome.chatSessionId, "new-chat");
+      assert.equal(welcome.historyMode, "snapshot");
+      assert.match(JSON.stringify(await replay), /from-desktop-new-chat/);
+    } finally {
+      a.client.terminate(); b.client.terminate(); reconnect?.client.terminate();
+    }
+  });
+
+  it("propagates project-store selection changes in order without crossing user/project/Acopilot boundaries", async () => {
+    registerProject();
+    registerProject("other-user");
+    const peers = [connectProject(), connectProject(), connectProject("shared-project", "acopilot"),
+      connectProject("other-project"), connectProject("shared-project", "main", "other-user"),
+      connectProject("shared-project", "connector-chat", "test", "", true)];
+    try {
+      const initial = await Promise.all(peers.map((peer) => peer.ready));
+      assert.equal(initial[5]?.chatSessionId, "connector-chat");
+      const switched = peers.slice(0, 2).map(({ client }) => waitForWsMessage(client, (f) => f.type === "welcome" && f.chatSessionId === "latest"));
+      updateWebProject(getStateDatabase(), { userId: "test", projectId: "shared-project", chatSessionId: "superseded" });
+      updateWebProject(getStateDatabase(), { userId: "test", projectId: "shared-project", chatSessionId: "latest" });
+      await Promise.all(switched);
+      for (const peer of peers.slice(0, 2)) {
+        assert.equal(peer.frames.some((f) => f.type === "welcome" && f.chatSessionId === "superseded"), false);
+      }
+      for (const peer of peers.slice(2)) {
+        assert.equal(peer.frames.filter((f) => f.type === "welcome").length, 1);
+      }
+      assert.equal(getWebProjectRecord(getStateDatabase(), "other-user", "shared-project")?.chatSessionId, "main");
+    } finally { for (const peer of peers) peer.client.terminate(); }
+  });
+
+  it("fences peer input during a queued rebind and bootstraps messages emitted before that peer catches up", async () => {
+    registerProject();
+    const a = connectProject();
+    const b = connectProject();
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const heldLock = workspaceLock.runExclusive(async () => { started.resolve(); await release.promise; });
+    try {
+      await Promise.all([a.ready, b.ready]);
+      await started.promise;
+      const commandAck = waitForWsMessage(b.client, (f) => f.type === "ack" && f.client_message_id === "old-command");
+      b.client.send(JSON.stringify({ type: "command", payload: "hold", client_message_id: "old-command" }));
+      await commandAck;
+      const switchedA = waitForWsMessage(a.client, (f) => f.type === "welcome" && f.chatSessionId === "while-busy", 4000, "switch busy");
+      const switchedB = waitForWsMessage(b.client, (f) => f.type === "welcome" && f.chatSessionId === "while-busy", 4000, "switch busy");
+      a.client.send(JSON.stringify({ type: "switch_chat_session", payload: { chatSessionId: "while-busy" } }));
+      await switchedA;
+      const rejected = waitForWsMessage(b.client, (f) => f.type === "error" && f.code === "session_changed", 4000, "reject old input");
+      b.client.send(JSON.stringify({ type: "prompt", payload: "stale-input", client_message_id: "stale-input" }));
+      await rejected;
+      // Persist a new-lane message while the other peer is still finishing old work.
+      const persisted = waitForWsMessage(a.client, (f) => f.type === "user" && f.clientMessageId === "new-while-busy", 4000, "persist new input");
+      a.client.send(JSON.stringify({ type: "prompt", payload: "new-while-busy", client_message_id: "new-while-busy" }));
+      await persisted;
+      const replay = waitForWsMessage(b.client, (f) => f.type === "history", 4000, "busy history");
+      const completed = waitForWsMessage(a.client, (f) => f.type === "result" && f.clientMessageId === "new-while-busy");
+      release.resolve();
+      await switchedB;
+      assert.match(JSON.stringify(await replay), /new-while-busy/);
+      await completed;
+      const key = resolveSyncLaneKey({ authUserId: "test", sessionId: "shared-project", chatSessionId: "while-busy" });
+      assert.equal(workerHistoryStore.get(key).some((e) => e.text === "stale-input"), false);
+      const welcomeIndex = b.frames.findIndex((f) => f.type === "welcome" && f.chatSessionId === "while-busy", 4000, "switch busy");
+      assert.equal(b.frames.slice(welcomeIndex).some((f) => f.type === "result" && f.clientMessageId === "old-command"), false);
+    } finally {
+      release.resolve();
+      await heldLock;
+      a.client.terminate(); b.client.terminate();
+    }
+  });
+
+  it("completes an A-to-B-to-A selection barrier with an authoritative same-session bootstrap", async () => {
+    registerProject();
+    const a = connectProject();
+    const b = connectProject();
+    const release = Promise.withResolvers<void>();
+    const heldLock = workspaceLock.runExclusive(async () => release.promise);
+    try {
+      await Promise.all([a.ready, b.ready]);
+      const ack = waitForWsMessage(b.client, (f) => f.type === "ack" && f.client_message_id === "held-before-selection");
+      b.client.send(JSON.stringify({ type: "command", payload: "hold", client_message_id: "held-before-selection" }));
+      await ack;
+      const movedA = waitForWsMessage(a.client, (f) => f.type === "welcome" && f.chatSessionId === "temporary-b");
+      a.client.send(JSON.stringify({ type: "switch_chat_session", payload: { chatSessionId: "temporary-b" } }));
+      await movedA;
+      const rejected = waitForWsMessage(b.client, (f) => f.type === "error" && f.code === "session_changed");
+      b.client.send(JSON.stringify({ type: "prompt", payload: "old-input", chat_session_id: "main", client_message_id: "old-input" }));
+      await rejected;
+      const returnedA = waitForWsMessage(a.client, (f) => f.type === "welcome" && f.chatSessionId === "main");
+      a.client.send(JSON.stringify({ type: "switch_chat_session", payload: { chatSessionId: "main" } }));
+      await returnedA;
+      const returnedB = waitForWsMessage(b.client, (f) => f.type === "welcome" && f.chatSessionId === "main");
+      release.resolve();
+      const welcome = await returnedB;
+      assert.equal(welcome.historyMode, "snapshot");
+      assert.equal(b.frames.some((f) => f.type === "welcome" && f.chatSessionId === "temporary-b"), false);
+      const result = waitForWsMessage(b.client, (f) => f.type === "result" && f.clientMessageId === "after-noop");
+      b.client.send(JSON.stringify({ type: "prompt", payload: "after-noop", chat_session_id: "main", client_message_id: "after-noop" }));
+      await result;
+      assert.equal(b.frames.some((f) => f.type === "user" && f.clientMessageId === "old-input"), false);
+    } finally {
+      release.resolve();
+      await heldLock;
+      a.client.terminate(); b.client.terminate();
     }
   });
 

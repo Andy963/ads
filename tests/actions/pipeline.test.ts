@@ -12,7 +12,10 @@ import {
   buildPrMergeArgs,
   checkFeatureBranchScope,
   parseOpenPullRequest,
+  pushFeatureBranch,
   unsupportedPrMergeFlags,
+  deleteReviewedFeatureBranch,
+  mergeAndCleanupPipeline,
 } from "../../server/actions/pipeline.js";
 
 function git(cwd: string, ...args: string[]): void {
@@ -97,6 +100,28 @@ describe("Actions existing pull request lookup", () => {
   });
 });
 
+describe("Actions feature branch publishing", () => {
+  it("publishes the local feature branch before PR creation can resolve it", () => {
+    const cwd = initRepo();
+    const remote = fs.mkdtempSync(path.join(os.tmpdir(), "ads-pr-remote-"));
+    git(remote, "init", "--bare");
+    git(cwd, "remote", "add", "origin", remote);
+    git(cwd, "checkout", "-b", "codex/issue-1");
+    commit(cwd, "job work");
+
+    assert.equal(pushFeatureBranch(cwd, "codex/issue-1"), null);
+    assert.equal(
+      revParse(cwd, "codex/issue-1"),
+      spawnSync("git", ["ls-remote", remote, "refs/heads/codex/issue-1"], { encoding: "utf8" }).stdout.split("\t")[0],
+    );
+  });
+
+  it("returns the push failure without attempting PR creation", () => {
+    const cwd = initRepo();
+    assert.match(pushFeatureBranch(cwd, "codex/issue-1") ?? "", /git push origin codex\/issue-1 failed/);
+  });
+});
+
 describe("Actions PR merge arguments", () => {
   it("targets the requested pull request and squashes", () => {
     assert.deepEqual(buildPrMergeArgs(428), ["pr", "merge", "428", "--squash"]);
@@ -114,6 +139,40 @@ describe("Actions PR merge arguments", () => {
 });
 
 describe("Actions feature branch scope", () => {
+  it("preserves new local and remote commits after partial reviewed delivery", () => {
+    const cwd = initRepo();
+    const remote = fs.mkdtempSync(path.join(os.tmpdir(), "ads-reviewed-remote-"));
+    git(remote, "init", "--bare");
+    git(cwd, "remote", "add", "origin", remote);
+    git(cwd, "checkout", "-b", "feature");
+    commit(cwd, "reviewed");
+    const reviewed = revParse(cwd, "HEAD");
+    git(cwd, "push", "origin", "feature");
+    commit(cwd, "unreviewed");
+    const advanced = revParse(cwd, "HEAD");
+    git(cwd, "push", "origin", "feature");
+    git(cwd, "checkout", "dev");
+    assert.match(deleteReviewedFeatureBranch(cwd, "feature", reviewed, true)!, /preserved/);
+    assert.equal(revParse(cwd, "feature"), advanced);
+    assert.equal(revParse(remote, "feature"), advanced);
+    assert.equal(mergeAndCleanupPipeline({ cwd, branch: "feature", expectedHead: reviewed, prNumber: 42 }).success, false);
+    assert.equal(revParse(cwd, "feature"), advanced);
+  });
+
+  it("conditionally deletes reviewed refs and tolerates already absent refs", () => {
+    const cwd = initRepo();
+    const remote = fs.mkdtempSync(path.join(os.tmpdir(), "ads-reviewed-remote-"));
+    git(remote, "init", "--bare");
+    git(cwd, "remote", "add", "origin", remote);
+    git(cwd, "branch", "feature");
+    git(cwd, "push", "origin", "feature");
+    const head = revParse(cwd, "feature");
+    assert.equal(deleteReviewedFeatureBranch(cwd, "feature", head, true), null);
+    assert.equal(deleteReviewedFeatureBranch(cwd, "feature", head, true), null);
+    assert.notEqual(spawnSync("git", ["rev-parse", "--verify", "refs/heads/feature"], { cwd }).status, 0);
+    assert.notEqual(spawnSync("git", ["rev-parse", "--verify", "refs/heads/feature"], { cwd: remote }).status, 0);
+  });
+
   it("accepts a branch that stacks commits on the recorded base commit", () => {
     const cwd = initRepo();
     const anchor = revParse(cwd, "dev");

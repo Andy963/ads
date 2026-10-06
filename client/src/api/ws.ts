@@ -61,6 +61,8 @@ type WsMessage =
     }
   | { type: string; seq?: number; [k: string]: unknown };
 
+const SESSION_UNSCOPED_MESSAGES = new Set(["ping", "pong", "switch_chat_session"]);
+
 export class AdsWebSocket {
   private ws: WebSocket | null = null;
   private readonly sessionId: string;
@@ -85,10 +87,12 @@ export class AdsWebSocket {
     }
     try {
       const clientMessageId = String(options?.clientMessageId ?? "").trim();
-      const msg =
-        clientMessageId
-          ? { type, payload, client_message_id: clientMessageId }
-          : { type, payload };
+      const msg = {
+        type,
+        payload,
+        ...(clientMessageId ? { client_message_id: clientMessageId } : {}),
+        ...(!SESSION_UNSCOPED_MESSAGES.has(type) ? { chat_session_id: this.chatSessionId } : {}),
+      };
       this.ws.send(JSON.stringify(msg));
       return true;
     } catch {
@@ -151,6 +155,10 @@ export class AdsWebSocket {
         msg = JSON.parse(raw) as WsMessage;
       } catch {
         return;
+      }
+      if (msg.type === "welcome") {
+        const chatSessionId = String(msg.chatSessionId ?? "").trim();
+        if (chatSessionId) this.chatSessionId = chatSessionId;
       }
       this.onMessage?.(msg);
     };

@@ -98,13 +98,26 @@ describe("MainChat header UI", () => {
     expect(mobileCss).toMatch(/\.mobileMenuBtn\s*\{[^}]*height:\s*var\(--topbar-height\)\s*;/);
   });
 
-  it("shares the header height with safe-area drawer and overlay positioning", () => {
+  it("places workspace notices below controls while preserving mobile settings notices", () => {
     const css = readUtf8("../App.css");
+    const app = readUtf8("../App.vue");
+    const notice = css.match(/\.noticeToast\s*\{[^}]*\}/)?.[0];
 
     expect(css).toMatch(/\.topbar\s*\{[^}]*height:\s*calc\(var\(--topbar-height\) \+ env\(safe-area-inset-top/);
-    expect(css).toMatch(/\.left\.mobileDrawer\s*\{[^}]*top:\s*calc\(var\(--topbar-height\) \+ env\(safe-area-inset-top/);
-    expect(css).toMatch(/\.mobileDrawerBackdrop\s*\{[^}]*inset:\s*calc\(var\(--topbar-height\) \+ env\(safe-area-inset-top/);
-    expect(css).toMatch(/\.noticeToast\s*\{[^}]*top:\s*calc\(var\(--topbar-height\) \+ env\(safe-area-inset-top/);
+    expect(css).toMatch(/\.layout\s*\{[^}]*position:\s*relative/);
+    expect(css).toMatch(/\.left\.mobileDrawer\s*\{[^}]*position:\s*absolute;[^}]*top:\s*0;/);
+    expect(css).toMatch(/\.mobileDrawerBackdrop\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0;/);
+    expect(notice).toMatch(/flex:\s*0 0 auto/);
+    expect(notice).not.toMatch(/position:\s*(fixed|absolute)/);
+    expect(notice).toMatch(/background:\s*var\(--surface\)/);
+    expect(css).toMatch(/\.noticeToastText\s*\{[^}]*white-space:\s*pre-wrap;[^}]*overflow-wrap:\s*anywhere/);
+    const actions = app.slice(app.indexOf('id="lane-panel-actions"'));
+    expect(actions.indexOf('ref="actionsNoticeRef"')).toBeGreaterThan(actions.indexOf('<ActionsQueueStack'));
+    expect(actions.indexOf('ref="actionsNoticeRef"')).toBeLessThan(actions.indexOf('<MainChatView'));
+    expect(app).toContain('v-if="apiNotice && activeWorkspaceTab === \'actions\'"');
+    expect(app).toContain('v-if="apiNotice && activeWorkspaceTab === \'acopilot\'"');
+    expect(app).toContain('v-if="apiNotice && isMobile && mobileDrawerSection !== \'projects\'"');
+    expect(app).toContain('role="status" aria-live="polite" aria-atomic="true"');
     expect(css).not.toMatch(/(?:height|top|inset):\s*calc\(48px \+/);
   });
 
