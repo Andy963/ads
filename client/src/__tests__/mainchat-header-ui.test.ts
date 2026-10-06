@@ -98,7 +98,7 @@ describe("MainChat header UI", () => {
     expect(mobileCss).toMatch(/\.mobileMenuBtn\s*\{[^}]*height:\s*var\(--topbar-height\)\s*;/);
   });
 
-  it("reserves notice space and anchors mobile overlays to the remaining layout", () => {
+  it("places workspace notices below controls while preserving mobile settings notices", () => {
     const css = readUtf8("../App.css");
     const app = readUtf8("../App.vue");
     const notice = css.match(/\.noticeToast\s*\{[^}]*\}/)?.[0];
@@ -111,7 +111,12 @@ describe("MainChat header UI", () => {
     expect(notice).not.toMatch(/position:\s*(fixed|absolute)/);
     expect(notice).toMatch(/background:\s*var\(--surface\)/);
     expect(css).toMatch(/\.noticeToastText\s*\{[^}]*white-space:\s*pre-wrap;[^}]*overflow-wrap:\s*anywhere/);
-    expect(app.indexOf('class="noticeToast"')).toBeLessThan(app.indexOf('<main class="layout">'));
+    const actions = app.slice(app.indexOf('id="lane-panel-actions"'));
+    expect(actions.indexOf('ref="actionsNoticeRef"')).toBeGreaterThan(actions.indexOf('<ActionsQueueStack'));
+    expect(actions.indexOf('ref="actionsNoticeRef"')).toBeLessThan(actions.indexOf('<MainChatView'));
+    expect(app).toContain('v-if="apiNotice && activeWorkspaceTab === \'actions\'"');
+    expect(app).toContain('v-if="apiNotice && activeWorkspaceTab === \'acopilot\'"');
+    expect(app).toContain('v-if="apiNotice && isMobile && mobileDrawerSection !== \'projects\'"');
     expect(app).toContain('role="status" aria-live="polite" aria-atomic="true"');
     expect(css).not.toMatch(/(?:height|top|inset):\s*calc\(48px \+/);
   });

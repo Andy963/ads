@@ -22,12 +22,13 @@ describe("notice space reservation", () => {
 
   it("compacts an already single-row editor without oscillation and releases constraints", async () => {
     const app = document.createElement("div");
+    app.className = "app";
     app.innerHTML = `
       <header class="topbar" data-height="70"></header>
-      <div class="noticeToast" style="line-height:19.5px;border:1px solid"></div>
       <div class="laneTabs" data-height="36"></div>
       <section class="lanePanel">
         <div class="actionsJobBanner" data-height="76"></div>
+        <div class="noticeToast" style="line-height:19.5px;border:1px solid"></div>
         <div class="composer">
           <div class="composerMainRow composerMainRow--expanded" style="row-gap:2px">
             <div class="composerMainRowLeft" data-height="34"></div>

@@ -10,7 +10,7 @@ export function noticeSpace(available: number, viewportHeight: number, lineHeigh
 /** Reserve actual chat controls before allocating space to a transient notice. */
 export function useNoticeSpace(notice: Ref<HTMLElement | null>): void {
   watch(notice, (element, _previous, onCleanup) => {
-    const app = element?.parentElement;
+    const app = element?.closest<HTMLElement>(".app");
     if (!element || !app || typeof ResizeObserver === "undefined") return;
     let active = true;
     let frame: number | null = null;

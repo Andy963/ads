@@ -490,6 +490,10 @@ const activeActionJob = computed(() => {
 
 const noticeRef = ref<HTMLElement | null>(null);
 useNoticeSpace(noticeRef);
+const acopilotNoticeRef = ref<HTMLElement | null>(null);
+const actionsNoticeRef = ref<HTMLElement | null>(null);
+useNoticeSpace(acopilotNoticeRef);
+useNoticeSpace(actionsNoticeRef);
 
 function showActionNotice(message: string): void {
   const text = String(message ?? "").trim();
@@ -1672,7 +1676,7 @@ const acopilotConnectionStatus = computed(() => {
       </div>
     </header>
 
-    <div v-if="apiNotice" ref="noticeRef" class="noticeToast" role="status" aria-live="polite" aria-atomic="true" tabindex="0">
+    <div v-if="apiNotice && isMobile && mobileDrawerSection !== 'projects'" ref="noticeRef" class="noticeToast" role="status" aria-live="polite" aria-atomic="true" tabindex="0">
       <span class="noticeToastText">{{ apiNotice }}</span>
     </div>
 
@@ -1926,6 +1930,9 @@ const acopilotConnectionStatus = computed(() => {
               :data-message-count="acopilotMessages.length"
               :data-panel-key="`${acopilotPanelKey}:${errorRecoveryGeneration}`"
             >
+              <div v-if="apiNotice && activeWorkspaceTab === 'acopilot'" ref="acopilotNoticeRef" class="noticeToast" role="status" aria-live="polite" aria-atomic="true" tabindex="0">
+                <span class="noticeToastText">{{ apiNotice }}</span>
+              </div>
               <MainChatView
                 ref="acopilotChatRef"
                 :key="`${acopilotPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
@@ -1982,6 +1989,9 @@ const acopilotConnectionStatus = computed(() => {
                 @cancel="cancelActionJob"
                 @resolve="resolveActionJob"
               />
+              <div v-if="apiNotice && activeWorkspaceTab === 'actions'" ref="actionsNoticeRef" class="noticeToast" role="status" aria-live="polite" aria-atomic="true" tabindex="0">
+                <span class="noticeToastText">{{ apiNotice }}</span>
+              </div>
               <MainChatView
                 ref="actionsChatRef"
                 :key="`${actionsPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
