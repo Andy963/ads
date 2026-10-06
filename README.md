@@ -73,7 +73,8 @@ npm run web:init-admin -- --username admin --password-stdin
 
 详细的模块说明与进阶指南请查阅 `docs/` 目录：
 
-- 🗂️ **[架构决策记录 (ADR) 索引](docs/adr/README.md)**：ADR 0001–0013 全部已接受决策的链接索引表。
+- 🗂️ **[架构决策记录 (ADR) 索引](docs/adr/README.md)**：ADR 0001–0041 全部已接受决策的链接索引表。
+- 📋 **[Acopilot & Actions 架构演进与协同规格](docs/acopilot-actions-spec.md)**：Acopilot 方案规划主脑、Actions 执行交付泳道与 Detached Reviewer 独立审查规范。
 - 🎯 **[Codex 技能规范与架构说明](docs/adr/0007-align-skills-with-codex-standard.md)**：全局 `$CODEX_HOME/skills`、优先级（global > builtin）、`<skill_save>` 自动沉淀与迁移机制。
 - 🏗 **[原生 Agent 运行时 (ADR 0013)](docs/adr/0013-native-agent-runtime-phase-1.md)**：进程内 Native Runtime 的设计、工具沙箱与凭据边界。
 - 📖 **[Web Console 完整使用指南](docs/web.md)**：工作区 Tab、Provider 模型管理、移动端交互规范与 Web 专属配置。
@@ -106,9 +107,12 @@ ads/
 ├── connectors/        # Channel Connectors (e.g. telegram)
 │   └── telegram/      # Standalone Telegram channel connector
 ├── server/            # Core backend engine
+│   ├── actions/       # Actions 任务总线与执行交付流水线
 │   ├── agents/        # Agent 适配器（Codex App-Server / Native Runtime）与执行守护器
-│   ├── middleware/    # Core middleware pipeline (memory, safety, hooks)
+│   ├── audio/         # 内置语音识别 (ASR) 与纠错服务
 │   ├── middleware/    # Turn 生命周期、中间件与内置安全拦截
+│   ├── reviewer/      # Detached Reviewer 独立审查执行器与工具
+│   ├── runtime/       # 原生 Agent 运行时引擎与上下文投影
 │   ├── scheduler/     # 自然语言定时调度引擎与 Cron 运行时
 │   ├── sessions/      # Session, directory, and thread persistence
 │   ├── state/         # 全局 SQLite (state.db) 数据表与迁移
