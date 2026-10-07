@@ -206,9 +206,9 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
             for (let note = 1; note <= 10; note += 1) {
               const noteId = `fixture-note-${marker}-${note}`;
               const text = `interim note ${note} while the worker inspects the fixture\nnote ${note} second line keeps the row tall`;
-              emit({ phase: "responding", title: "Fixture note", detail: "Worker note", delta: text, timestamp: ts + note * 10, raw: { type: "item.started", item: { type: "agent_message", id: noteId } } });
+              emit({ phase: "responding", title: "Fixture note", detail: "Worker note", delta: text, timestamp: ts + note * 10, raw: { type: "item.started", item: { type: "agent_message", id: noteId, text } } });
               await sleep(70);
-              emit({ phase: "responding", title: "Fixture note", detail: "Worker note complete", timestamp: ts + note * 10 + 1, raw: { type: "item.completed", item: { type: "agent_message", id: noteId } } });
+              emit({ phase: "responding", title: "Fixture note", detail: "Worker note complete", timestamp: ts + note * 10 + 1, raw: { type: "item.completed", item: { type: "agent_message", id: noteId, text } } });
               await sleep(30);
             }
             // Phase 1 window: a running command follows the notes. The viewport
