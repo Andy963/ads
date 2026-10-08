@@ -749,6 +749,62 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(JSON.parse(blocked?.attempts_json ?? "[]").length, 2);
   });
 
+  it("records a structured blocked card when the rework budget is exhausted", () => {
+    const db = getStateDatabase();
+    const historyEntries: any[] = [];
+    const bus = new LaneDispatchBus(db, {
+      historyStore: {
+        add: (key, entry) => historyEntries.push({ key, entry }),
+      },
+    });
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 4043,
+      issueTitle: "Exhausted rework budget",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify the structured blocked card"],
+    });
+
+    bus.handleReviewResult({
+      jobId: job.jobId,
+      repoPath: repoDir,
+      verdict: "REJECT",
+      reviewSummary: "Defect 1",
+      reworkCount: 0,
+    });
+    bus.handleReviewResult({
+      jobId: job.jobId,
+      repoPath: repoDir,
+      verdict: "REJECT",
+      reviewSummary: "Defect 2",
+      reworkCount: 1,
+    });
+    const final = bus.handleReviewResult({
+      jobId: job.jobId,
+      repoPath: repoDir,
+      verdict: "REJECT",
+      reviewSummary: "Defect 3",
+      reworkCount: 2,
+    });
+    assert.strictEqual(final.status, "blocked");
+
+    const blockedEntry = historyEntries.find((h) => h.entry.kind === "action_blocked");
+    assert.ok(blockedEntry, "expected a persisted action_blocked chat entry");
+    assert.strictEqual(blockedEntry.entry.role, "assistant");
+    const text = String(blockedEntry.entry.text);
+    assert.match(text, /^### 🛑 Task Blocked: #4043 Exhausted rework budget/);
+    assert.match(text, /\*\*Block Classification:\*\* Rework Budget Exhausted/);
+    assert.match(text, /\*\*Failure Stage:\*\* Reviewer rejection/);
+    assert.match(text, /\*\*Core Error:\*\* Reviewer rejection failed: Defect 3/);
+    assert.match(text, /\*\*Chronological Attempt Breakdown:\*\*/);
+    assert.match(text, /1\. Reviewer rejection: Reviewer rejection failed: Defect 1/);
+    assert.match(text, /2\. Reviewer rejection: Reviewer rejection failed: Defect 2/);
+    assert.match(text, /3\. Reviewer rejection: Reviewer rejection failed: Defect 3/);
+    assert.match(text, /Human attention required after 3 rework attempts\./);
+    assert.match(text, /click \*\*Dismiss\*\* on the top queue stack/);
+  });
+
   it("carries every recorded attempt into the next Developer prompt", async () => {
     const db = getStateDatabase();
     const prompts: string[] = [];
@@ -1005,6 +1061,56 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(prCalls, 3);
     assert.strictEqual(developerCalls, 0);
     assert.match(blocked?.error_message ?? "", /PR creation failed: simulated PR failure \(tried 3 times\)/);
+  });
+
+  it("records a structured blocked card when an infrastructure failure blocks the job", async () => {
+    const db = getStateDatabase();
+    const historyEntries: any[] = [];
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => {
+        commitImplementation("infra-blocked-card");
+        return { exitCode: 0 };
+      },
+      reviewerRunner: async () => JSON.stringify({
+        status: "PASS",
+        summary: "PR creation still failing.",
+        defects: [],
+      }),
+      testCommand: "git status",
+      hasRemoteOrigin: () => true,
+      pullRequestCreator: () => ({ prNumber: null, prUrl: null, error: "simulated PR failure" }),
+      mergePipeline: () => ({ success: true }),
+      historyStore: {
+        add: (key, entry) => historyEntries.push({ key, entry }),
+      },
+    });
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 410,
+      issueTitle: "Infrastructure blocked card",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify the infrastructure blocked card"],
+    });
+    spawnSync("git", ["checkout", "-b", job.branch!], { cwd: repoDir });
+
+    const result = bus.handleReviewResult({
+      jobId: job.jobId,
+      repoPath: repoDir,
+      verdict: "PASS",
+      reviewSummary: "Ready",
+    });
+    assert.strictEqual(result.status, "blocked");
+
+    const blockedEntry = historyEntries.find((h) => h.entry.kind === "action_blocked");
+    assert.ok(blockedEntry, "expected a persisted action_blocked chat entry");
+    assert.strictEqual(blockedEntry.entry.role, "assistant");
+    const text = String(blockedEntry.entry.text);
+    assert.match(text, /^### 🛑 Task Blocked: #410 Infrastructure blocked card/);
+    assert.match(text, /\*\*Block Classification:\*\* Infrastructure \/ External Dependency/);
+    assert.match(text, /\*\*Core Error:\*\* PR creation failed: simulated PR failure \(tried 3 times\)/);
+    assert.match(text, /no rework attempt was spent/);
+    assert.match(text, /click \*\*Dismiss\*\* on the top queue stack/);
+    assert.doesNotMatch(text, /Chronological Attempt Breakdown/);
   });
 
   it("recovers from merge failure and only then advances the queue", async () => {

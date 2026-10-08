@@ -104,6 +104,48 @@ function formatAttemptHistory(attempts: ActionJobAttempt[]): string {
   return attempts.map(formatAttemptLine).join("\n");
 }
 
+type ActionBlockedClassification = "infrastructure" | "rework-exhausted";
+
+const ACTION_BLOCKED_CLASSIFICATION_LABELS: Record<ActionBlockedClassification, string> = {
+  infrastructure: "Infrastructure / External Dependency",
+  "rework-exhausted": "Rework Budget Exhausted",
+};
+
+function formatActionBlockedCard(input: {
+  job: Pick<ActionJobRecord, "id" | "issue_id" | "issue_title">;
+  classification: ActionBlockedClassification;
+  failureStage: string;
+  failure: string;
+  attempts?: ActionJobAttempt[];
+  guidanceNote: string;
+}): string {
+  const headerRef = input.job.issue_id != null
+    ? `#${input.job.issue_id} ${input.job.issue_title}`.trim()
+    : input.job.id;
+  const lines = [
+    `### 🛑 Task Blocked: ${headerRef}`,
+    "",
+    `**Block Classification:** ${ACTION_BLOCKED_CLASSIFICATION_LABELS[input.classification]}`,
+    `**Failure Stage:** ${input.failureStage}`,
+    `**Core Error:** ${input.failure}`,
+    "",
+  ];
+  if (input.attempts && input.attempts.length > 0) {
+    lines.push(
+      "**Chronological Attempt Breakdown:**",
+      ...input.attempts.map((attempt) => `${attempt.attempt}. ${attempt.stage}: ${attempt.failure}`),
+      "",
+    );
+  }
+  lines.push(
+    "**Operator Resolution Guidance:**",
+    `- ${input.guidanceNote}`,
+    "- Human intervention is required; automated rework will not resume this task.",
+    "- Once the underlying cause is resolved, click **Dismiss** on the top queue stack to clear this blocked task.",
+  );
+  return lines.join("\n");
+}
+
 function buildExecuteHistoryText(command: string, output: string): string {
   const normalizedCommand = String(command ?? "").trim() || "command";
   const normalizedOutput = String(output ?? "").replace(/\r\n/g, "\n").trim();
@@ -522,7 +564,13 @@ export class LaneDispatchBus {
         error_message: failure,
         blocked_at: Date.now(),
       });
-      this.recordActionMessage(job, repoPath, reason, "action_blocked", "assistant");
+      this.recordActionMessage(job, repoPath, formatActionBlockedCard({
+        job,
+        classification: "infrastructure",
+        failureStage: input.stage,
+        failure,
+        guidanceNote: "The environment must be fixed before this job can continue; no rework attempt was spent.",
+      }), "action_blocked", "assistant");
       return { status: "blocked", reworkCount: currentCount };
     }
 
@@ -538,7 +586,6 @@ export class LaneDispatchBus {
       const reason = repeated
         ? `Attempt ${attemptIndex} repeated the failure of attempt ${previous.attempt} unchanged, so the retry was cut short.`
         : `Human attention required after ${MAX_REWORK_ATTEMPTS} rework attempts.`;
-      const message = `${reason}\nAttempt history:\n${history}`;
       this.updateJobStatus(job.id, "blocked", {
         rework_count: attemptIndex,
         current_step: reason,
@@ -546,7 +593,14 @@ export class LaneDispatchBus {
         error_message: failure,
         blocked_at: Date.now(),
       });
-      this.recordActionMessage(job, repoPath, message, "action_blocked", "assistant");
+      this.recordActionMessage(job, repoPath, formatActionBlockedCard({
+        job,
+        classification: "rework-exhausted",
+        failureStage: input.stage,
+        failure,
+        attempts,
+        guidanceNote: reason,
+      }), "action_blocked", "assistant");
       return { status: "blocked", reworkCount: attemptIndex };
     }
 
