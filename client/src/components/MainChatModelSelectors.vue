@@ -311,7 +311,16 @@ function selectReasoningEffort(effort: string): void {
       </label>
     </div>
 
-    <SettingsSheet v-if="pickerOpen" title="Model & reasoning" close-label="Done" test-id="model-picker-sheet" @close="closePicker">
+    <SettingsSheet
+      v-if="pickerOpen"
+      title="Model & reasoning"
+      action-label="Done"
+      action-test-id="model-picker-done"
+      close-label=""
+      test-id="model-picker-sheet"
+      @close="closePicker"
+      @submit="closePicker"
+    >
       <div class="settingsBlock">
         <h2 class="settingsBlockTitle">Conversation models</h2>
         <div class="settingsList">

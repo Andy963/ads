@@ -89,7 +89,7 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
         assert.equal(await slider.getAttribute("max"), "1");
         assert.equal(await sheet.evaluate(element => element.scrollWidth <= element.clientWidth), true);
         await page.screenshot({ path: path.join(artifacts, `${engine}-${width}-chat-picker.png`) });
-        await sheet.locator('[data-testid="sheet-cancel"]').click();
+        await sheet.locator('[data-testid="model-picker-done"]').click();
         assert.equal(await page.locator('[data-testid="chat-model-capsule"]').evaluate(element => document.activeElement === element), true);
 
         if (width < 900) {

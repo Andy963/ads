@@ -571,4 +571,49 @@ describe("MainChat model selector", () => {
     wrapper.unmount();
     document.body.innerHTML = "";
   });
+
+  it("positions Done button at top right, suppresses top-left cancel, and closes on Done or Escape", async () => {
+    document.body.innerHTML = "";
+    const model = makeModel("gpt-5.6", "GPT-5.6", "openai");
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [model],
+        modelId: "gpt-5.6",
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
+    const sheet = document.body.querySelector('[data-testid="model-picker-sheet"]') as HTMLElement | null;
+    expect(sheet).not.toBeNull();
+
+    // The top-left header slot is empty (no sheet-cancel button)
+    expect(sheet?.querySelector('[data-testid="sheet-cancel"]')).toBeNull();
+
+    // The Done button renders in the top-right header position with bold styling (.sheetDone)
+    const doneBtn = sheet?.querySelector('[data-testid="model-picker-done"]') as HTMLButtonElement | null;
+    expect(doneBtn).not.toBeNull();
+    expect(doneBtn?.textContent?.trim()).toBe("Done");
+    expect(doneBtn?.classList.contains("sheetDone")).toBe(true);
+    expect(doneBtn?.classList.contains("sheetNavigationButton")).toBe(true);
+
+    // Clicking the Done button closes the model selection sheet cleanly
+    doneBtn?.click();
+    await wrapper.vm.$nextTick();
+    expect(document.body.querySelector('[data-testid="model-picker-sheet"]')).toBeNull();
+
+    // Reopen and verify pressing Escape closes the model selection sheet cleanly
+    await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
+    const reopenedSheet = document.body.querySelector('[data-testid="model-picker-sheet"]') as HTMLElement | null;
+    expect(reopenedSheet).not.toBeNull();
+    reopenedSheet?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await wrapper.vm.$nextTick();
+    expect(document.body.querySelector('[data-testid="model-picker-sheet"]')).toBeNull();
+
+    wrapper.unmount();
+    document.body.innerHTML = "";
+  });
 });
