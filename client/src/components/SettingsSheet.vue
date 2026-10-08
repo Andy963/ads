@@ -55,7 +55,8 @@ onBeforeUnmount(() => {
       @click.self="backdropPointer && requestClose()">
       <div class="sheetPanel">
         <header class="sheetNavigation">
-          <button type="button" class="sheetNavigationButton" :disabled="busy" data-testid="sheet-cancel" @click="cancel">{{ discard ? 'Keep editing' : closeLabel }}</button>
+          <button v-if="discard || (closeLabel && closeLabel.trim())" type="button" class="sheetNavigationButton" :disabled="busy" data-testid="sheet-cancel" @click="cancel">{{ discard ? 'Keep editing' : closeLabel }}</button>
+          <span v-else />
           <h2 ref="heading" tabindex="-1" autofocus>{{ discard ? 'Discard changes?' : title }}</h2>
           <button v-if="actionLabel && !discard" type="button" class="sheetNavigationButton sheetDone" :class="{ destructive }" :disabled="busy || actionDisabled" :data-testid="actionTestId" @click="emit('submit')">{{ busy ? 'Saving…' : actionLabel }}</button>
           <span v-else />
