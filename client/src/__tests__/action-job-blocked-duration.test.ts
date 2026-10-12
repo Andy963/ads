@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatBlockedDuration } from "../lib/actionJobs";
+import { formatBlockedDuration, isActionJobInTopQueue } from "../lib/actionJobs";
 
 const NOW = 1_700_000_000_000;
 const MINUTE = 60_000;
@@ -22,5 +22,15 @@ describe("formatBlockedDuration", () => {
     expect(formatBlockedDuration(undefined, NOW)).toBeNull();
     expect(formatBlockedDuration(Number.NaN, NOW, null)).toBeNull();
     expect(formatBlockedDuration(NOW + MINUTE, NOW)).toBe("just now");
+  });
+});
+
+describe("isActionJobInTopQueue", () => {
+  it("keeps terminal jobs out of the top queue without changing their stored status", () => {
+    expect(isActionJobInTopQueue("failed")).toBe(false);
+    expect(isActionJobInTopQueue("completed")).toBe(false);
+    expect(isActionJobInTopQueue("cancelled")).toBe(false);
+    expect(isActionJobInTopQueue("queued")).toBe(true);
+    expect(isActionJobInTopQueue("blocked")).toBe(true);
   });
 });

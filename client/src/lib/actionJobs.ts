@@ -48,6 +48,10 @@ export function isActionJobExecutionActive(status: string): boolean {
     || status === "blocked";
 }
 
+export function isActionJobInTopQueue(status: ActionJobStatus): boolean {
+  return status !== "completed" && status !== "failed" && status !== "cancelled";
+}
+
 export function isActionJobLockingStatus(status: string): boolean {
   return ACTIONS_JOB_LOCKING_STATUSES.has(status as ActionJobStatus);
 }
