@@ -35,7 +35,7 @@ const models = ref<ModelConfig[]>([]);
 const busy = ref(false);
 const error = ref("");
 const notice = ref("");
-watch(section, () => { error.value = ""; notice.value = ""; });
+watch([section, activeTab], () => { error.value = ""; notice.value = ""; closeModelSwipe(); clearSuppressedModelRowClick(); });
 const providerDialog = ref(false);
 const modelDialog = ref(false);
 const providerBaseline = ref("");
@@ -44,6 +44,18 @@ const providerEditor = ref<HTMLFormElement | null>(null);
 const modelEditor = ref<HTMLFormElement | null>(null);
 const providerActions = ref<ModelProvider | null>(null);
 const deleteTarget = ref<{ kind: "provider" | "model"; id: string; name: string } | null>(null);
+const MODEL_ROW_SWIPE_WIDTH_PX = 80;
+const MODEL_ROW_SWIPE_THRESHOLD_PX = 8;
+const modelSwipeOpenId = ref<string | null>(null);
+const activeModelSwipeId = ref<string | null>(null);
+const activeModelSwipeOffset = ref(0);
+let modelTouchStartX = 0;
+let modelTouchStartY = 0;
+let modelTouchStartOffset = 0;
+let modelTouchAxis: "horizontal" | "vertical" | null = null;
+let modelTouchMoved = false;
+let suppressNextModelRowClick = false;
+let swipeClickResetTimer: number | null = null;
 const providerForm = reactive({ id: "", name: "", baseUrl: "", apiKey: "", hasCredential: false, wireApi: "responses", isEnabled: true });
 const modelForm = reactive({ id: "", providerId: "", modelId: "", displayName: "", config: "{}", maxInputTokens: "", maxOutputTokens: "" });
 const parsedModelConfig = computed<Record<string, unknown> | null>(() => {
@@ -90,6 +102,103 @@ const groups = computed(() => [
   ...providers.value.map((provider) => ({ id: provider.id, provider, models: models.value.filter((model) => model.providerId === provider.id) })),
   ...(models.value.some((model) => !model.providerId) ? [{ id: "unassigned", provider: null, models: models.value.filter((model) => !model.providerId) }] : []),
 ]);
+function modelSwipeOffset(modelId: string): number {
+  if (activeModelSwipeId.value === modelId) return activeModelSwipeOffset.value;
+  return modelSwipeOpenId.value === modelId ? -MODEL_ROW_SWIPE_WIDTH_PX : 0;
+}
+function closeModelSwipe(): void {
+  modelSwipeOpenId.value = null;
+  activeModelSwipeId.value = null;
+  activeModelSwipeOffset.value = 0;
+}
+function readTouchPoint(event: TouchEvent): { x: number; y: number } | null {
+  const touch = event.touches[0] ?? event.changedTouches[0];
+  return touch ? { x: touch.clientX, y: touch.clientY } : null;
+}
+function handleModelTouchStart(model: ModelConfig, event: TouchEvent): void {
+  if (busy.value || event.touches.length !== 1) return;
+  if (modelSwipeOpenId.value !== null && modelSwipeOpenId.value !== model.id) modelSwipeOpenId.value = null;
+  const point = readTouchPoint(event);
+  if (!point) return;
+  modelTouchStartX = point.x;
+  modelTouchStartY = point.y;
+  modelTouchStartOffset = modelSwipeOpenId.value === model.id ? -MODEL_ROW_SWIPE_WIDTH_PX : 0;
+  modelTouchAxis = null;
+  modelTouchMoved = false;
+  activeModelSwipeId.value = model.id;
+  activeModelSwipeOffset.value = modelTouchStartOffset;
+}
+function handleModelTouchMove(modelId: string, event: TouchEvent): void {
+  if (activeModelSwipeId.value !== modelId) return;
+  const point = readTouchPoint(event);
+  if (!point) return;
+  const deltaX = point.x - modelTouchStartX;
+  const deltaY = point.y - modelTouchStartY;
+  const absoluteX = Math.abs(deltaX);
+  const absoluteY = Math.abs(deltaY);
+  if (modelTouchAxis === null) {
+    if (Math.max(absoluteX, absoluteY) < MODEL_ROW_SWIPE_THRESHOLD_PX) return;
+    if (absoluteY > absoluteX) {
+      modelTouchAxis = "vertical";
+      activeModelSwipeId.value = null;
+      return;
+    }
+    modelTouchAxis = "horizontal";
+  }
+  if (modelTouchAxis !== "horizontal") return;
+  modelTouchMoved = true;
+  event.preventDefault();
+  activeModelSwipeOffset.value = Math.max(-MODEL_ROW_SWIPE_WIDTH_PX, Math.min(0, modelTouchStartOffset + deltaX));
+}
+function clearSuppressedModelRowClick(): void {
+  suppressNextModelRowClick = false;
+  if (swipeClickResetTimer !== null) {
+    window.clearTimeout(swipeClickResetTimer);
+    swipeClickResetTimer = null;
+  }
+}
+function suppressRowClickAfterSwipe(): void {
+  suppressNextModelRowClick = true;
+  if (swipeClickResetTimer !== null) window.clearTimeout(swipeClickResetTimer);
+  swipeClickResetTimer = window.setTimeout(() => {
+    suppressNextModelRowClick = false;
+    swipeClickResetTimer = null;
+  }, 400);
+}
+function finishModelTouch(modelId: string, event: TouchEvent, cancelled = false): void {
+  if (activeModelSwipeId.value !== modelId) return;
+  const wasHorizontalSwipe = modelTouchAxis === "horizontal" && modelTouchMoved;
+  if (wasHorizontalSwipe) {
+    modelSwipeOpenId.value = !cancelled && activeModelSwipeOffset.value <= -MODEL_ROW_SWIPE_WIDTH_PX / 2 ? modelId : null;
+    suppressRowClickAfterSwipe();
+    event.preventDefault();
+  }
+  activeModelSwipeId.value = null;
+  activeModelSwipeOffset.value = 0;
+  modelTouchAxis = null;
+  modelTouchMoved = false;
+}
+function handleModelRowClick(model: ModelConfig, event: MouseEvent): void {
+  if (suppressNextModelRowClick) {
+    clearSuppressedModelRowClick();
+    closeModelSwipe();
+    event.preventDefault();
+    return;
+  }
+  if (modelSwipeOpenId.value !== null) {
+    closeModelSwipe();
+    event.preventDefault();
+    return;
+  }
+  editModel(model.providerId || "", model);
+}
+function handleModelManagerClick(event: MouseEvent): void {
+  const target = event.target;
+  if (!(target instanceof Element) || !target.closest(".modelRowSwipe")) {
+    closeModelSwipe();
+    clearSuppressedModelRowClick();
+  }
+}
 async function load(): Promise<void> {
   [providers.value, models.value] = await Promise.all([props.api.get<ModelProvider[]>("/api/model-providers"), props.api.get<ModelConfig[]>("/api/model-configs")]);
 }
@@ -133,6 +242,7 @@ async function deleteProvider(provider: ModelProvider): Promise<void> {
   deleteTarget.value = { kind: "provider", id: provider.id, name: provider.name };
 }
 function editModel(providerId: string, model?: ModelConfig): void {
+  closeModelSwipe();
   Object.assign(modelForm, { id: model?.id ?? "", providerId, modelId: model?.modelId ?? "", displayName: model?.displayName ?? "", config: JSON.stringify(model?.configJson ?? { reasoningEfforts: ["medium", "high"], defaultReasoningEffort: "high" }, null, 2) });
   syncTokenFields();
   modelDialog.value = true;
@@ -157,6 +267,7 @@ async function saveModel(): Promise<void> {
   });
 }
 async function deleteModel(model: ModelConfig): Promise<void> {
+  closeModelSwipe();
   error.value = "";
   deleteTarget.value = { kind: "model", id: model.id, name: model.displayName };
 }
@@ -173,11 +284,14 @@ async function confirmDelete(): Promise<void> {
   });
 }
 onMounted(() => perform(load));
-onBeforeUnmount(() => { providerForm.apiKey = ""; });
+onBeforeUnmount(() => {
+  providerForm.apiKey = "";
+  clearSuppressedModelRowClick();
+});
 </script>
 
 <template>
-  <section class="iosSettings modelManager" :class="{ 'modelManager--roles': activeTab !== 'models' }" data-testid="model-manager">
+  <section class="iosSettings modelManager" :class="{ 'modelManager--roles': activeTab !== 'models' }" data-testid="model-manager" @click="handleModelManagerClick">
     <header v-if="showHeader" class="managerHeader">
       <h2>Settings</h2><button type="button" class="settingsIconButton" aria-label="Close settings" @click="emit('close')">✕</button>
     </header>
@@ -222,10 +336,14 @@ onBeforeUnmount(() => { providerForm.apiKey = ""; });
                 <span class="connectionStatus" :class="{ ready: group.provider.isEnabled && group.provider.hasCredential }">{{ !group.provider.isEnabled ? 'Off' : group.provider.hasCredential ? 'Ready' : 'Set up' }}</span>
                 <span class="settingsChevron" aria-hidden="true">›</span>
               </button>
-              <button v-for="model in group.models" :key="model.id" type="button" class="settingsRow modelRow" :disabled="busy" :data-testid="'model-row-' + model.id" @click="editModel(model.providerId || '', model)">
-                <span class="settingsRowContent"><span>{{ model.displayName }}</span><small class="settingsDetail">{{ model.modelId }}</small></span>
-                <span class="settingsChevron" aria-hidden="true">›</span>
-              </button>
+              <div v-for="model in group.models" :key="model.id" class="modelRowSwipe" :class="{ revealed: modelSwipeOpenId === model.id }">
+                <button type="button" class="modelSwipeDelete" :disabled="busy" :tabindex="modelSwipeOpenId === model.id ? 0 : -1" :aria-hidden="modelSwipeOpenId !== model.id" :data-testid="'model-swipe-delete-' + model.id" @click.stop="deleteModel(model)">Delete</button>
+                <button type="button" class="settingsRow modelRow modelRowSurface" :class="{ swiping: activeModelSwipeId === model.id }" :disabled="busy" :style="{ transform: `translateX(${modelSwipeOffset(model.id)}px)` }" :data-testid="'model-row-' + model.id"
+                  @click="handleModelRowClick(model, $event)" @touchstart.passive="handleModelTouchStart(model, $event)" @touchmove="handleModelTouchMove(model.id, $event)" @touchend="finishModelTouch(model.id, $event)" @touchcancel="finishModelTouch(model.id, $event, true)">
+                  <span class="settingsRowContent"><span>{{ model.displayName }}</span><small class="settingsDetail">{{ model.modelId }}</small></span>
+                  <span class="settingsChevron" aria-hidden="true">›</span>
+                </button>
+              </div>
               <button v-if="group.provider" type="button" class="settingsRow tinted" :disabled="busy" :data-testid="'provider-add-model-' + group.id" @click="editModel(group.id)"><span aria-hidden="true">＋</span>Add model</button>
             </div>
             <p v-if="!group.provider" class="settingsNote">Choose a provider when editing these legacy models.</p>
