@@ -12,10 +12,14 @@ export function createActionsLaneBroadcaster(args: {
   clientMetaByWs: Map<WebSocket, WebSocketClientMeta>;
   sendJson: (ws: WebSocket, payload: unknown) => void;
   warn: (message: string) => void;
-}): (payload: unknown, logicalHistoryKey?: string, projectId?: string) => void {
+}): (payload: unknown, logicalHistoryKey: string, projectId: string) => void {
   return (payload, logicalHistoryKey, projectId): void => {
     const logicalKey = String(logicalHistoryKey ?? "").trim();
-    if (!logicalKey) return;
+    const targetProjectId = String(projectId ?? "").trim();
+    if (!logicalKey || !targetProjectId) {
+      args.warn("[WebSocket][Sync] refusing unscoped Actions broadcast without a project id");
+      return;
+    }
 
     const generation = args.laneGenerationStore.getGeneration(WEB_ACTIONS_NAMESPACE, logicalKey);
     const historyKey = generation > 1 ? `${logicalKey}:generation:${generation}` : logicalKey;
@@ -45,6 +49,7 @@ export function createActionsLaneBroadcaster(args: {
       });
       if (seq === null) {
         args.warn(`[WebSocket][Sync] refusing unlogged Actions event type=${eventType} history=${historyKey}`);
+        return;
       } else {
         framedPayload = { ...record, seq };
       }
@@ -53,7 +58,7 @@ export function createActionsLaneBroadcaster(args: {
     for (const [ws, meta] of args.clientMetaByWs.entries()) {
       if (meta.historyKey !== historyKey) continue;
       if (meta.logicalHistoryKey && meta.logicalHistoryKey !== logicalKey) continue;
-      if (projectId && meta.sessionId !== projectId) continue;
+      if (meta.sessionId !== targetProjectId) continue;
       args.sendJson(ws, framedPayload);
     }
   };

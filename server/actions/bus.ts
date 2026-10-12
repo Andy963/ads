@@ -615,7 +615,7 @@ export interface LaneDispatchBusOptions {
     get?: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }>;
   };
   getWorkspaceLock?: (workspaceRoot: string) => AsyncLock;
-  broadcastToActionsLane?: (payload: unknown, targetHistoryKey?: string, projectId?: string) => void;
+  broadcastToActionsLane?: (payload: unknown, targetHistoryKey: string, projectId: string) => void;
   interruptControllers?: Map<string, AbortController>;
   developerRunner?: DeveloperRunner;
   reviewerRunner?: ReviewerRunner;

@@ -131,6 +131,80 @@ describe("Actions lane sync broadcasting", () => {
     assert.equal(syncEventStore.getLatestSeq(WEB_ACTIONS_NAMESPACE, logicalHistoryKey), 0);
   });
 
+  it("does not send an event when sync persistence fails", () => {
+    const authUserId = "user-4";
+    const sessionId = "project-4";
+    const chatSessionId = "main";
+    const logicalHistoryKey = resolveSyncLaneKey({ authUserId, sessionId, chatSessionId });
+    const laneGenerationStore = new WebLaneGenerationStore({ stateDbPath });
+    const socket = {} as WebSocket;
+    const frames: unknown[] = [];
+    const warnings: string[] = [];
+    const broadcast = createActionsLaneBroadcaster({
+      syncEventStore: {
+        append: () => null,
+        getLatestSeq: () => 0,
+      },
+      laneGenerationStore,
+      clientMetaByWs: new Map([[socket, {
+        historyKey: logicalHistoryKey,
+        logicalHistoryKey,
+        laneGeneration: 1,
+        sessionId,
+        chatSessionId,
+        connectionId: "live",
+        authUserId,
+        sessionUserId: 1,
+      }]]),
+      sendJson: (_ws, payload) => frames.push(payload),
+      warn: (message) => warnings.push(message),
+    });
+
+    broadcast({ type: "assistant_done", text: "Final result" }, logicalHistoryKey, sessionId);
+
+    assert.deepEqual(frames, []);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /unlogged Actions event/);
+  });
+
+  it("refuses to record or send an Actions event without a project id", () => {
+    const authUserId = "user-5";
+    const sessionId = "project-5";
+    const chatSessionId = "main";
+    const logicalHistoryKey = resolveSyncLaneKey({ authUserId, sessionId, chatSessionId });
+    const syncEventStore = new SyncEventStore({ stateDbPath });
+    const laneGenerationStore = new WebLaneGenerationStore({ stateDbPath });
+    const socket = {} as WebSocket;
+    const frames: unknown[] = [];
+    const warnings: string[] = [];
+    const broadcast = createActionsLaneBroadcaster({
+      syncEventStore,
+      laneGenerationStore,
+      clientMetaByWs: new Map([[socket, {
+        historyKey: logicalHistoryKey,
+        logicalHistoryKey,
+        laneGeneration: 1,
+        sessionId,
+        chatSessionId,
+        connectionId: "live",
+        authUserId,
+        sessionUserId: 1,
+      }]]),
+      sendJson: (_ws, payload) => frames.push(payload),
+      warn: (message) => warnings.push(message),
+    });
+
+    (broadcast as unknown as (payload: unknown, logicalHistoryKey: string) => void)(
+      { type: "message", role: "assistant", text: "Unscoped" },
+      logicalHistoryKey,
+    );
+
+    assert.deepEqual(frames, []);
+    assert.equal(syncEventStore.getLatestSeq(WEB_ACTIONS_NAMESPACE, logicalHistoryKey), 0);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /without a project id/);
+  });
+
   it("keeps transient deltas out of the replay log but sequences their barrier", () => {
     const authUserId = "user-3";
     const sessionId = "project-3";
