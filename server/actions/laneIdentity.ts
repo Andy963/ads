@@ -6,6 +6,7 @@ import { deriveProjectSessionId } from "../web/server/projectSessionId.js";
 export type ActionsLaneIdentity = WsConnectionIdentity & {
   projectId: string;
   chatSessionId: string;
+  logicalHistoryKey: string;
 };
 
 type ProjectLaneRow = {
@@ -39,6 +40,7 @@ export function resolveActionsLaneIdentity(
     projectId: string;
     repoPath?: string;
     authUserId?: string | null;
+    generation?: number;
   },
 ): ActionsLaneIdentity | null {
   const projectId = resolveProjectId(args.projectId, args.repoPath);
@@ -76,14 +78,18 @@ export function resolveActionsLaneIdentity(
   const chatSessionId = normalize(row?.chat_session_id) || "main";
   if (!resolvedUserId) return null;
 
+  const identityArgs = {
+    authUserId: resolvedUserId,
+    sessionId: projectId,
+    chatSessionId,
+    connectionId: "actions",
+  };
+  const logicalHistoryKey = buildWsConnectionIdentity(identityArgs).historyKey;
+
   return {
-    ...buildWsConnectionIdentity({
-      authUserId: resolvedUserId,
-      sessionId: projectId,
-      chatSessionId,
-      connectionId: "actions",
-    }),
+    ...buildWsConnectionIdentity({ ...identityArgs, generation: args.generation }),
     projectId,
     chatSessionId,
+    logicalHistoryKey,
   };
 }

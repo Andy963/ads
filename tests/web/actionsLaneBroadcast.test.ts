@@ -56,9 +56,9 @@ describe("Actions lane sync broadcasting", () => {
       warn: (message) => assert.fail(message),
     });
 
-    broadcast({ type: "command", command: "npm test", output: "passed", jobId: "job-1", ts: 10 }, logicalHistoryKey, sessionId);
-    broadcast({ type: "message", role: "assistant", text: "Reviewer: PASS", jobId: "job-1", ts: 11, raw: { internal: true } }, logicalHistoryKey, sessionId);
-    broadcast({ type: "assistant_done", text: "PR merged successfully", jobId: "job-1", ts: 12 }, logicalHistoryKey, sessionId);
+    broadcast({ type: "command", command: "npm test", output: "passed", jobId: "job-1", ts: 10 }, logicalHistoryKey, sessionId, 1);
+    broadcast({ type: "message", role: "assistant", text: "Reviewer: PASS", jobId: "job-1", ts: 11, raw: { internal: true } }, logicalHistoryKey, sessionId, 1);
+    broadcast({ type: "assistant_done", text: "PR merged successfully", jobId: "job-1", ts: 12 }, logicalHistoryKey, sessionId, 1);
 
     const replay = syncEventStore.readAfterLanes({
       namespace: WEB_ACTIONS_NAMESPACE,
@@ -122,13 +122,57 @@ describe("Actions lane sync broadcasting", () => {
       sendJson: (ws, payload) => frames.set(ws, [...(frames.get(ws) ?? []), payload]),
       warn: (message) => assert.fail(message),
     });
-    broadcast({ type: "action_job_updated", jobId: "job-2", status: "running" }, logicalHistoryKey, sessionId);
+    broadcast({ type: "action_job_updated", jobId: "job-2", status: "running" }, logicalHistoryKey, sessionId, 2);
 
     assert.equal(frames.get(previousSocket)?.length ?? 0, 0);
     assert.equal(frames.get(currentSocket)?.length, 1);
     assert.equal((frames.get(currentSocket)?.[0] as { seq?: number }).seq, 1);
     assert.equal(syncEventStore.getLatestSeq(WEB_ACTIONS_NAMESPACE, currentHistoryKey), 1);
     assert.equal(syncEventStore.getLatestSeq(WEB_ACTIONS_NAMESPACE, logicalHistoryKey), 0);
+    const replay = syncEventStore.readAfterLanes({
+      namespace: WEB_ACTIONS_NAMESPACE,
+      laneKeys: [currentHistoryKey],
+      afterSeq: 0,
+    });
+    assert.deepEqual(replay.events.map((event) => event.payload.status), ["running"]);
+  });
+
+  it("rejects a delayed event from the previous generation after reset", () => {
+    const authUserId = "user-6";
+    const sessionId = "project-6";
+    const chatSessionId = "main";
+    const logicalHistoryKey = resolveSyncLaneKey({ authUserId, sessionId, chatSessionId });
+    const currentHistoryKey = resolveSyncLaneKey({ authUserId, sessionId, chatSessionId, generation: 2 });
+    const syncEventStore = new SyncEventStore({ stateDbPath });
+    const laneGenerationStore = new WebLaneGenerationStore({ stateDbPath });
+    laneGenerationStore.bumpGeneration(WEB_ACTIONS_NAMESPACE, logicalHistoryKey);
+    const currentSocket = {} as WebSocket;
+    const frames: unknown[] = [];
+    const warnings: string[] = [];
+    const broadcast = createActionsLaneBroadcaster({
+      syncEventStore,
+      laneGenerationStore,
+      clientMetaByWs: new Map([[currentSocket, {
+        historyKey: currentHistoryKey,
+        logicalHistoryKey,
+        laneGeneration: 2,
+        sessionId,
+        chatSessionId,
+        connectionId: "current",
+        authUserId,
+        sessionUserId: 1,
+      }]]),
+      sendJson: (_ws, payload) => frames.push(payload),
+      warn: (message) => warnings.push(message),
+    });
+
+    broadcast({ type: "assistant_done", text: "Old job result", jobId: "old-job" }, logicalHistoryKey, sessionId, 1);
+
+    assert.deepEqual(frames, []);
+    assert.equal(syncEventStore.getLatestSeq(WEB_ACTIONS_NAMESPACE, currentHistoryKey), 0);
+    assert.equal(syncEventStore.getLatestSeq(WEB_ACTIONS_NAMESPACE, logicalHistoryKey), 0);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0]!, /refusing stale Actions broadcast/);
   });
 
   it("does not send an event when sync persistence fails", () => {
@@ -160,7 +204,7 @@ describe("Actions lane sync broadcasting", () => {
       warn: (message) => warnings.push(message),
     });
 
-    broadcast({ type: "assistant_done", text: "Final result" }, logicalHistoryKey, sessionId);
+    broadcast({ type: "assistant_done", text: "Final result" }, logicalHistoryKey, sessionId, 1);
 
     assert.deepEqual(frames, []);
     assert.equal(warnings.length, 1);
@@ -231,7 +275,7 @@ describe("Actions lane sync broadcasting", () => {
       warn: (message) => assert.fail(message),
     });
 
-    broadcast({ type: "delta", delta: "partial", jobId: "job-3" }, logicalHistoryKey, sessionId);
+    broadcast({ type: "delta", delta: "partial", jobId: "job-3" }, logicalHistoryKey, sessionId, 1);
 
     assert.deepEqual(frames, [{ type: "delta", delta: "partial", jobId: "job-3", afterSeq: 0 }]);
     assert.equal(syncEventStore.getLatestSeq(WEB_ACTIONS_NAMESPACE, logicalHistoryKey), 0);

@@ -863,6 +863,13 @@ Core reviewing rules:
       addColumnIfMissing(db, "action_jobs", "head_sha", "TEXT");
     },
   },
+  {
+    version: 34,
+    description: "Pin Actions jobs to their lane generation",
+    up: (db) => {
+      addColumnIfMissing(db, "action_jobs", "lane_generation", "INTEGER NOT NULL DEFAULT 1");
+    },
+  },
 ];
 
 /**

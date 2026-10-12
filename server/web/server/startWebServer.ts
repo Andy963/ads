@@ -32,6 +32,7 @@ import { WebLaneGenerationStore } from "./sync/laneGeneration.js";
 import { DirectoryManager } from "../../sessions/directoryManager.js";
 import {
   createWebLaneResources,
+  WEB_ACTIONS_NAMESPACE,
 } from "./start/webLaneResources.js";
 import { createActionsLaneBroadcaster } from "./start/actionsLaneBroadcast.js";
 import { resolveAgentsSnapshotThreadId } from "./ws/threadIds.js";
@@ -279,6 +280,8 @@ export async function startWebServer(): Promise<void> {
     sessionManager,
     historyStore: laneResources.worker.historyStore,
     getWorkspaceLock,
+    captureActionsLaneGeneration: (logicalHistoryKey) =>
+      laneGenerationStore.getGeneration(WEB_ACTIONS_NAMESPACE, logicalHistoryKey),
     broadcastToActionsLane,
     interruptControllers,
   });

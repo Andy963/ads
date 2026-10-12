@@ -615,7 +615,8 @@ export interface LaneDispatchBusOptions {
     get?: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }>;
   };
   getWorkspaceLock?: (workspaceRoot: string) => AsyncLock;
-  broadcastToActionsLane?: (payload: unknown, targetHistoryKey: string, projectId: string) => void;
+  captureActionsLaneGeneration?: (logicalHistoryKey: string) => number;
+  broadcastToActionsLane?: (payload: unknown, logicalHistoryKey: string, projectId: string, laneGeneration: number) => void;
   interruptControllers?: Map<string, AbortController>;
   developerRunner?: DeveloperRunner;
   reviewerRunner?: ReviewerRunner;
@@ -667,24 +668,46 @@ export class LaneDispatchBus {
 
   private laneIdentityForJob(job: ActionJobRecord, repoPath?: string) {
     if (job.auth_user_id && job.chat_session_id) {
-      return buildWsConnectionIdentity({
+      const identityArgs = {
         authUserId: job.auth_user_id,
         sessionId: job.project_id,
         chatSessionId: job.chat_session_id,
         connectionId: "actions",
-      });
+      };
+      return {
+        ...buildWsConnectionIdentity({ ...identityArgs, generation: job.lane_generation }),
+        logicalHistoryKey: buildWsConnectionIdentity(identityArgs).historyKey,
+      };
     }
 
-    return resolveActionsLaneIdentity(this.db, {
+    const identity = resolveActionsLaneIdentity(this.db, {
       projectId: job.project_id,
       repoPath,
       authUserId: job.auth_user_id,
-    }) ?? buildWsConnectionIdentity({
+      generation: job.lane_generation,
+    });
+    if (identity) return identity;
+
+    const identityArgs = {
       authUserId: `actions:${job.id}`,
       sessionId: job.project_id,
       chatSessionId: job.chat_session_id || "main",
       connectionId: "actions",
-    });
+    };
+    return {
+      ...buildWsConnectionIdentity({ ...identityArgs, generation: job.lane_generation }),
+      logicalHistoryKey: buildWsConnectionIdentity(identityArgs).historyKey,
+    };
+  }
+
+  private broadcastJobEvent(job: ActionJobRecord, payload: unknown, repoPath?: string): void {
+    const identity = this.laneIdentityForJob(job, repoPath);
+    this.options.broadcastToActionsLane?.(
+      payload,
+      identity.logicalHistoryKey,
+      job.project_id,
+      job.lane_generation,
+    );
   }
 
   private recordActionMessage(
@@ -694,20 +717,20 @@ export class LaneDispatchBus {
     kind: string,
     role: "status" | "assistant" = "status",
   ): void {
-    const historyKey = this.laneIdentityForJob(job, repoPath).historyKey;
-    this.options.historyStore?.add(historyKey, {
+    const identity = this.laneIdentityForJob(job, repoPath);
+    this.options.historyStore?.add(identity.historyKey, {
       role,
       text,
       ts: Date.now(),
       kind,
     });
-    this.options.broadcastToActionsLane?.({
+    this.broadcastJobEvent(job, {
       type: "message",
       role,
       text,
       jobId: job.id,
       ts: Date.now(),
-    }, historyKey, job.project_id);
+    }, repoPath);
   }
 
   private scheduleRework(
@@ -828,8 +851,7 @@ export class LaneDispatchBus {
     updateActionJobStatus(this.db, jobId, status, nextUpdates);
     const updated = getActionJobById(this.db, jobId);
     if (updated && this.options.broadcastToActionsLane) {
-      const historyKey = this.laneIdentityForJob(updated).historyKey;
-      this.options.broadcastToActionsLane({
+      this.broadcastJobEvent(updated, {
         type: "action_job_updated",
         jobId: updated.id,
         issueId: updated.issue_id,
@@ -839,7 +861,7 @@ export class LaneDispatchBus {
         reworkCount: updated.rework_count,
         projectId: updated.project_id,
         ts: Date.now(),
-      }, historyKey, updated.project_id);
+      });
     }
     return updated;
   }
@@ -882,20 +904,26 @@ export class LaneDispatchBus {
       adrs: (params.adrs ?? []).map((adr) => ({ ...adr })),
     };
 
-    const job = createActionJob(this.db, {
-      id,
-      project_id: projectId,
-      job_kind: jobKind,
-      issue_id: params.issueId,
-      issue_title: params.issueTitle,
-      issue_snapshot: issueSnapshot,
-      status: "queued",
-      branch,
-      developer_profile_id: params.developerProfileId,
-      reviewer_profile_ids_json: JSON.stringify(params.reviewerProfileIds ?? []),
-      auth_user_id: laneIdentity?.authUserId ?? null,
-      chat_session_id: laneIdentity?.chatSessionId ?? null,
-    });
+    const job = this.db.transaction(() => {
+      const laneGeneration = laneIdentity
+        ? this.options.captureActionsLaneGeneration?.(laneIdentity.logicalHistoryKey) ?? 1
+        : 1;
+      return createActionJob(this.db, {
+        id,
+        project_id: projectId,
+        lane_generation: laneGeneration,
+        job_kind: jobKind,
+        issue_id: params.issueId,
+        issue_title: params.issueTitle,
+        issue_snapshot: issueSnapshot,
+        status: "queued",
+        branch,
+        developer_profile_id: params.developerProfileId,
+        reviewer_profile_ids_json: JSON.stringify(params.reviewerProfileIds ?? []),
+        auth_user_id: laneIdentity?.authUserId ?? null,
+        chat_session_id: laneIdentity?.chatSessionId ?? null,
+      });
+    })();
 
     this.updateJobStatus(job.id, "queued", {
       current_step: "Queued in Actions queue",
@@ -1199,13 +1227,13 @@ export class LaneDispatchBus {
 
       // Notify connected Actions lane WebSocket clients
       if (this.options.broadcastToActionsLane) {
-        this.options.broadcastToActionsLane({
+        this.broadcastJobEvent(job, {
           type: "message",
           role: "user",
           text: finalTaskPrompt,
           ts: Date.now(),
           jobId: job.id,
-        }, historyKey, projectId);
+        }, repoPath);
       }
 
       let unsubscribe: (() => void) | null = null;
@@ -1230,11 +1258,7 @@ export class LaneDispatchBus {
             const payload = buildActionAgentEventPayload(event, job.id);
             if (Object.keys(payload).length === 0) return;
             if (this.options.broadcastToActionsLane) {
-              this.options.broadcastToActionsLane(
-                payload,
-                historyKey,
-                projectId,
-              );
+              this.broadcastJobEvent(job, payload, repoPath);
             }
             if (this.options.historyStore && payload.type === "command" && isTerminalCommandPayload(payload)) {
               this.options.historyStore.add(historyKey, {
@@ -1305,12 +1329,12 @@ export class LaneDispatchBus {
 
           // Broadcast turn completion
           if (this.options.broadcastToActionsLane) {
-            this.options.broadcastToActionsLane({
+            this.broadcastJobEvent(job, {
               type: "assistant_done",
               text: turnResult.response,
               jobId: job.id,
               ts: Date.now(),
-            }, historyKey, projectId);
+            }, repoPath);
           }
 
           this.activeAbortControllers.delete(jobId);
@@ -1558,14 +1582,14 @@ export class LaneDispatchBus {
         })),
       };
       const reviewCardText = formatReviewVerdictCard(result);
-      this.options.broadcastToActionsLane?.({
+      this.broadcastJobEvent(current, {
         type: "message",
         role: "assistant",
         text: reviewCardText,
         jobId: current.id,
         ts: Date.now(),
         status: result.status,
-      }, identity.historyKey, current.project_id);
+      }, repoPath);
       this.options.historyStore?.add(identity.historyKey, {
         role: "assistant",
         text: reviewCardText,
@@ -1628,7 +1652,7 @@ export class LaneDispatchBus {
     };
 
     if (this.options.broadcastToActionsLane) {
-      this.options.broadcastToActionsLane({
+      this.broadcastJobEvent(job, {
         type: "command",
         command: testCmd,
         output: testReport.summary,
@@ -1636,7 +1660,7 @@ export class LaneDispatchBus {
         status: testReport.exitCode === 0 ? "completed" : "failed",
         jobId: job.id,
         ts: Date.now(),
-      }, historyKey, projectId);
+      }, repoPath);
     }
 
     if (this.options.historyStore) {
@@ -1737,14 +1761,14 @@ export class LaneDispatchBus {
     const reviewCardText = formatReviewVerdictCard(verdict);
 
     if (this.options.broadcastToActionsLane) {
-      this.options.broadcastToActionsLane({
+      this.broadcastJobEvent(job, {
         type: "message",
         role: "assistant",
         text: reviewCardText,
         jobId: job.id,
         ts: Date.now(),
         status: verdict.status,
-      }, historyKey, projectId);
+      }, repoPath);
     }
 
     if (this.options.historyStore) {
@@ -1822,12 +1846,11 @@ export class LaneDispatchBus {
           : "Review passed. Starting automatic local merge and cleanup.",
       });
 
-      const projectId = job.project_id;
       const identity = this.laneIdentityForJob(job, params.repoPath);
       const historyKey = identity.historyKey;
 
       if (this.options.broadcastToActionsLane) {
-        this.options.broadcastToActionsLane({
+        this.broadcastJobEvent(job, {
           type: "message",
           role: "status",
           text: hasRemote
@@ -1835,7 +1858,7 @@ export class LaneDispatchBus {
             : "Review approved. Starting automatic local merge and cleanup.",
           jobId: job.id,
           ts: Date.now(),
-        }, historyKey, projectId);
+        }, params.repoPath);
       }
 
       if (this.options.historyStore) {

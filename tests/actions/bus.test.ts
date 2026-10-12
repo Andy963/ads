@@ -21,6 +21,9 @@ import { getDefaultRoleProfile } from "../../server/state/roleProfileStore.js";
 import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
 import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
 import { deriveProjectSessionId } from "../../server/web/server/projectSessionId.js";
+import { WebLaneGenerationStore } from "../../server/web/server/sync/laneGeneration.js";
+import { resolveSyncLaneKey } from "../../server/web/server/sync/lane.js";
+import { WEB_ACTIONS_NAMESPACE } from "../../server/web/server/start/webLaneResources.js";
 
 describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
   let tmpDir: string;
@@ -102,9 +105,20 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     spawnSync("git", ["commit", "-m", `implement ${label}`], { cwd: repoDir });
   }
 
-  it("dispatches a job non-blockingly with formatted id and queued status", async (context) => {
+  it("dispatches a job non-blockingly with its captured lane generation", async (context) => {
     const db = getStateDatabase();
-    const bus = new LaneDispatchBus(db);
+    const projectId = deriveProjectSessionId(repoDir);
+    const authUserId = "user-1";
+    addWebProjectMapping(db, projectId, authUserId);
+    const logicalHistoryKey = resolveSyncLaneKey({ authUserId, sessionId: projectId, chatSessionId: "main" });
+    const laneGenerationStore = new WebLaneGenerationStore({ stateDbPath: process.env.ADS_STATE_DB_PATH });
+    laneGenerationStore.bumpGeneration(WEB_ACTIONS_NAMESPACE, logicalHistoryKey);
+    const bus = new LaneDispatchBus(db, {
+      captureActionsLaneGeneration: (key) => {
+        assert.strictEqual(key, logicalHistoryKey);
+        return laneGenerationStore.getGeneration(WEB_ACTIONS_NAMESPACE, key);
+      },
+    });
     const evaluate = context.mock.method(bus, "evaluateQueue", async () => ({ allowed: false }));
 
     const result = bus.dispatchJob({
@@ -114,6 +128,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       issueTitle: "Acopilot & Actions refactor",
       issueDescription: "Complete issue description",
       acceptanceCriteria: ["Verify the queued job"],
+      authUserId,
     });
 
     assert.strictEqual(result.ok, true);
@@ -128,6 +143,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.ok(stored);
     assert.strictEqual(stored.status, "queued");
     assert.strictEqual(stored.branch, "codex/issue-277");
+    assert.strictEqual(stored.lane_generation, 2);
     await Promise.resolve();
     assert.strictEqual(evaluate.mock.callCount(), 1);
   });

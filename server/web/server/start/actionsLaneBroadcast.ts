@@ -12,8 +12,8 @@ export function createActionsLaneBroadcaster(args: {
   clientMetaByWs: Map<WebSocket, WebSocketClientMeta>;
   sendJson: (ws: WebSocket, payload: unknown) => void;
   warn: (message: string) => void;
-}): (payload: unknown, logicalHistoryKey: string, projectId: string) => void {
-  return (payload, logicalHistoryKey, projectId): void => {
+}): (payload: unknown, logicalHistoryKey: string, projectId: string, laneGeneration: number) => void {
+  return (payload, logicalHistoryKey, projectId, laneGeneration): void => {
     const logicalKey = String(logicalHistoryKey ?? "").trim();
     const targetProjectId = String(projectId ?? "").trim();
     if (!logicalKey || !targetProjectId) {
@@ -21,8 +21,16 @@ export function createActionsLaneBroadcaster(args: {
       return;
     }
 
-    const generation = args.laneGenerationStore.getGeneration(WEB_ACTIONS_NAMESPACE, logicalKey);
-    const historyKey = generation > 1 ? `${logicalKey}:generation:${generation}` : logicalKey;
+    if (!Number.isInteger(laneGeneration) || laneGeneration < 1) {
+      args.warn("[WebSocket][Sync] refusing Actions broadcast without a valid lane generation");
+      return;
+    }
+    const currentGeneration = args.laneGenerationStore.getGeneration(WEB_ACTIONS_NAMESPACE, logicalKey);
+    if (currentGeneration !== laneGeneration) {
+      args.warn(`[WebSocket][Sync] refusing stale Actions broadcast generation=${laneGeneration} current=${currentGeneration}`);
+      return;
+    }
+    const historyKey = laneGeneration > 1 ? `${logicalKey}:generation:${laneGeneration}` : logicalKey;
     const record = payload && typeof payload === "object" && !Array.isArray(payload)
       ? payload as Record<string, unknown>
       : null;
