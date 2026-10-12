@@ -42,7 +42,7 @@ import {
   Clock,
 } from "@element-plus/icons-vue";
 import { isLaneConnected } from "./lib/laneConnectionStatus";
-import { hasLockingActionJob, type ActionJobQueueItem } from "./lib/actionJobs";
+import { hasLockingActionJob, isActionJobExecutionActive, type ActionJobQueueItem } from "./lib/actionJobs";
 const {
   loggedIn,
   cachedTranscriptAvailable,
@@ -475,7 +475,7 @@ const actionQueueStatusOrder: Record<ActionJobItem["status"], number> = {
 
 const actionQueueJobs = computed(() => {
   return actionJobs.value
-    .filter((job) => ["running", "verifying", "reviewing", "waiting_merge", "blocked", "queued"].includes(job.status))
+    .filter((job) => ["running", "verifying", "reviewing", "waiting_merge", "blocked", "queued", "failed"].includes(job.status))
     .slice()
     .sort((left, right) => {
       const statusDelta = actionQueueStatusOrder[left.status] - actionQueueStatusOrder[right.status];
@@ -485,7 +485,9 @@ const actionQueueJobs = computed(() => {
 });
 
 const activeActionJob = computed(() => {
-  return actionQueueJobs.value.find((job) => job.status !== "queued") ?? actionQueueJobs.value[0] ?? null;
+  return actionQueueJobs.value.find((job) => isActionJobExecutionActive(job.status))
+    ?? actionQueueJobs.value.find((job) => job.status === "queued")
+    ?? null;
 });
 
 const noticeRef = ref<HTMLElement | null>(null);
@@ -558,6 +560,7 @@ async function loadActionJobs(): Promise<void> {
 }
 
 const isStartingQueue = ref(false);
+const reviewingActionJobId = ref<string | null>(null);
 
 async function triggerStartActionQueue(): Promise<void> {
   const pid = activeProjectId.value.trim();
@@ -619,6 +622,29 @@ async function resolveActionJob(jobId: string, action: string): Promise<void> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     showActionNotice(`处理任务失败：${message}`);
+  }
+}
+
+async function reviewFailedActionJob(jobId: string): Promise<void> {
+  if (!jobId || reviewingActionJobId.value) return;
+  const pid = activeProjectId.value.trim();
+  const repoPath = resolveActiveWorkspaceRoot() || activeProject.value?.path || "";
+  reviewingActionJobId.value = jobId;
+  try {
+    const result = await api.post<{
+      status: "PASS" | "REJECT";
+      summary: string;
+      defects: Array<{ file: string; line?: number; severity: "blocker" | "warning"; description: string }>;
+    }>(`/api/actions/jobs/${encodeURIComponent(jobId)}/review`, { projectId: pid, repoPath });
+    const defects = result.defects.length
+      ? `\n${result.defects.map((defect) => `- [${defect.severity.toUpperCase()}] ${defect.file}${defect.line ? `:${defect.line}` : ""}: ${defect.description}`).join("\n")}`
+      : "";
+    showActionNotice(`独立审查 ${result.status}：${result.summary}${defects}`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    showActionNotice(`独立审查失败：${message}`);
+  } finally {
+    reviewingActionJobId.value = null;
   }
 }
 
@@ -1983,11 +2009,13 @@ const acopilotConnectionStatus = computed(() => {
                 v-if="actionQueueJobs.length"
                 :jobs="actionQueueJobs"
                 :active-job-id="activeActionJob?.id ?? null"
+                :reviewing-job-id="reviewingActionJobId"
                 :starting="isStartingQueue"
                 :reset-key="`${activeProjectId}:${accountGeneration}`"
                 @start="triggerStartActionQueue"
                 @cancel="cancelActionJob"
                 @resolve="resolveActionJob"
+                @review="reviewFailedActionJob"
               />
               <div v-if="apiNotice && activeWorkspaceTab === 'actions'" ref="actionsNoticeRef" class="noticeToast" role="status" aria-live="polite" aria-atomic="true" tabindex="0">
                 <span class="noticeToastText">{{ apiNotice }}</span>

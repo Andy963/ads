@@ -430,4 +430,19 @@ describe("ActionsQueueStack front card metadata layout", () => {
     expect(front.find(".actionsJobStep").exists()).toBe(false);
     wrapper.unmount();
   });
+
+  it("offers independent review only for the selected failed job", async () => {
+    const wrapper = mountStack([makeJob("queued"), makeJob("failed", "failed")]);
+
+    expect(wrapper.find('[data-testid="btn-action-review"]').exists()).toBe(false);
+    await wrapper.find('[data-testid="actions-queue-front"]').trigger("keydown", { key: "ArrowDown" });
+    expect(frontId(wrapper)).toBe("failed");
+    const reviewButton = wrapper.find('[data-testid="btn-action-review"]');
+    expect(reviewButton.exists()).toBe(true);
+    expect(wrapper.find('[data-testid="actions-queue-front"]').element.contains(reviewButton.element)).toBe(true);
+
+    await fireClick(wrapper, '[data-testid="btn-action-review"]');
+    expect(wrapper.emitted("review")).toEqual([["failed"]]);
+    wrapper.unmount();
+  });
 });

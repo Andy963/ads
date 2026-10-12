@@ -3,7 +3,8 @@ import { z } from "zod";
 import type { Database as DatabaseType } from "better-sqlite3";
 
 import { getStateDatabase } from "../../../../state/database.js";
-import { LaneDispatchBus } from "../../../../actions/bus.js";
+import { ActionJobReviewConflictError, LaneDispatchBus } from "../../../../actions/bus.js";
+import { ReviewerIncompleteError } from "../../../../reviewer/incomplete.js";
 import { ensureWebAuthTables } from "../../../auth/schema.js";
 import { ensureWebProjectTables } from "../../../projects/schema.js";
 import type { ApiRouteContext } from "../types.js";
@@ -52,7 +53,12 @@ export type ResolvedProjectContext = {
 };
 
 function toActionJobResponse(job: Record<string, unknown>): Record<string, unknown> {
-  const { auth_user_id: _authUserId, chat_session_id: _chatSessionId, ...publicJob } = job;
+  const {
+    auth_user_id: _authUserId,
+    chat_session_id: _chatSessionId,
+    head_sha: _headSha,
+    ...publicJob
+  } = job;
   return publicJob;
 }
 
@@ -257,6 +263,63 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
     }
     const jobs = bus.getJobs(resolved.projectId, resolved.repoPath, auth.userId);
     sendJson(res, 200, jobs.map((job) => toActionJobResponse(job as unknown as Record<string, unknown>)));
+    return true;
+  }
+
+  const reviewMatch = /^\/api\/actions\/jobs\/([^/]+)\/review$/.exec(pathname);
+  if (reviewMatch && req.method === "POST") {
+    let body: ActionMutationBody = {};
+    try {
+      const parsed = await readJsonBody(req);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        body = parsed as ActionMutationBody;
+      }
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return true;
+    }
+
+    const jobId = decodeURIComponent(reviewMatch[1] ?? "");
+    const job = bus.getJob(jobId);
+    if (!job) {
+      sendJson(res, 404, { error: `Job not found: ${jobId}` });
+      return true;
+    }
+
+    const requestedRepoPath = typeof body.repoPath === "string" ? body.repoPath : null;
+    const resolved = resolveProjectContext(
+      stateDb,
+      auth.userId,
+      typeof body.projectId === "string" ? body.projectId : job.project_id,
+      requestedRepoPath,
+      url,
+      deps.resolveWorkspaceRoot,
+      allowedDirs,
+    );
+    if (!resolved) {
+      sendJson(res, 400, { error: `Invalid or unauthorized repository for job '${jobId}'` });
+      return true;
+    }
+    const ownedJob = bus.getJobs(resolved.projectId, resolved.repoPath, auth.userId)
+      .find((candidate) => candidate.id === jobId);
+    if (!ownedJob) {
+      sendJson(res, 404, { error: `Job not found: ${jobId}` });
+      return true;
+    }
+
+    try {
+      const result = await bus.reviewFailedJob(jobId, resolved.repoPath);
+      sendJson(res, 200, { ok: true, authoritative: true, ...result });
+    } catch (error) {
+      const conflict = error instanceof ActionJobReviewConflictError;
+      const incomplete = error instanceof ReviewerIncompleteError;
+      sendJson(res, conflict ? 409 : incomplete ? 422 : 502, {
+        error: conflict || incomplete
+          ? error.message
+          : "Independent review failed; no authoritative verdict is available.",
+        authoritative: false,
+      });
+    }
     return true;
   }
 

@@ -36,4 +36,6 @@ Accepted
 保留独立审查和确定性交付，同时让 Developer 处理环境及流程问题。不会要求用户操作
 服务器环境，也不会增加恢复流程 UI。进程崩溃后的在途任务不承诺自动恢复，本决策
 不改变既有启动清理行为。旧 runner 注入接口保留用于兼容测试；生产 SessionManager
-路径使用受监督工具，不再在 Developer 结束后启动 detached 工作流。
+Developer 执行路径使用受监督工具，不会在 Developer 结束后自动启动 detached 工作流。ADR 0042
+定义一个由用户显式请求、限定 failed 任务且不改变任务生命周期的独立只读审查入口；该入口不恢复
+Developer 授权。

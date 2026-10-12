@@ -289,6 +289,20 @@ function resolveImplementationDiffBase(repoPath: string): "origin/dev" | "dev" {
   return hasGitRemoteOrigin(repoPath) ? "origin/dev" : "dev";
 }
 
+function resolveAssignedBranchHead(repoPath: string, branch: string | null): string | null {
+  if (!branch) return null;
+  const currentBranch = spawnSync("git", ["branch", "--show-current"], { cwd: repoPath, encoding: "utf8" });
+  if (currentBranch.status !== 0 || currentBranch.stdout?.trim() !== branch) return null;
+  const status = spawnSync("git", ["status", "--porcelain"], { cwd: repoPath, encoding: "utf8" });
+  if (status.status !== 0 || status.stdout?.trim()) return null;
+  const ref = `refs/heads/${branch}`;
+  const refCheck = spawnSync("git", ["check-ref-format", ref], { cwd: repoPath, encoding: "utf8" });
+  if (refCheck.status !== 0) return null;
+  const result = spawnSync("git", ["rev-parse", "--verify", `${ref}^{commit}`], { cwd: repoPath, encoding: "utf8" });
+  const commit = result.stdout?.trim();
+  return result.status === 0 && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(commit ?? "") ? commit! : null;
+}
+
 function hasCommittedImplementationDiff(repoPath: string): boolean {
   const base = resolveImplementationDiffBase(repoPath);
   const result = spawnSync("git", ["diff", "--name-only", `${base}...HEAD`], {
@@ -377,7 +391,7 @@ export function validateGitEvidence(input: {
     errors.push(`git rev-parse base returned an invalid commit: ${input.baseCommit ?? "<empty>"}`);
   }
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(input.headCommit ?? "")) {
-    errors.push(`git rev-parse HEAD returned an invalid commit: ${input.headCommit ?? "<empty>"}`);
+    errors.push(`git rev-parse review head returned an invalid commit: ${input.headCommit ?? "<empty>"}`);
   }
   return errors.length > 0 ? errors.join("; ") : undefined;
 }
@@ -408,6 +422,167 @@ export function parseActionJobIssueSnapshot(job: ActionJobRecord): ActionJobIssu
       adrs: [],
     };
   }
+}
+
+function parseCompleteReviewIssueSnapshot(job: ActionJobRecord): ActionJobIssueSnapshot | null {
+  try {
+    const parsed = JSON.parse(job.issue_snapshot_json) as Partial<ActionJobIssueSnapshot> | null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    if (typeof parsed.title !== "string" || !parsed.title.trim()) return null;
+    if (typeof parsed.description !== "string" || !parsed.description.trim()) return null;
+    if (!Array.isArray(parsed.acceptanceCriteria)
+      || parsed.acceptanceCriteria.some((criterion) => typeof criterion !== "string" || !criterion.trim())) return null;
+    if (job.job_kind === "github_issue" && parsed.acceptanceCriteria.length === 0) return null;
+    if (!Array.isArray(parsed.adrs) || parsed.adrs.some((adr) => (
+      !adr
+      || typeof adr.id !== "string"
+      || !adr.id.trim()
+      || typeof adr.title !== "string"
+      || !adr.title.trim()
+      || typeof adr.decision !== "string"
+      || !adr.decision.trim()
+    ))) return null;
+
+    return {
+      title: parsed.title,
+      description: parsed.description,
+      acceptanceCriteria: parsed.acceptanceCriteria as string[],
+      adrs: parsed.adrs as ActionJobIssueSnapshot["adrs"],
+    };
+  } catch {
+    return null;
+  }
+}
+
+export class ActionJobReviewConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ActionJobReviewConflictError";
+  }
+}
+
+export type IndependentReviewResult = Pick<ReviewVerdict, "status" | "summary" | "defects">;
+
+function findVerificationReport(
+  job: ActionJobRecord,
+  history: Array<{ role: string; text: string; ts: number; kind?: string }>,
+): ReviewPayload["testReport"] {
+  const steps = parseActionJobSteps(job.steps_json);
+  let verificationIndex = -1;
+  for (let index = 0; index < steps.length; index += 1) {
+    if (steps[index]?.status === "verifying") verificationIndex = index;
+  }
+  if (verificationIndex < 0) return undefined;
+
+  const verificationStep = steps[verificationIndex]!;
+  const nextStepAt = steps[verificationIndex + 1]?.ts ?? job.updated_at;
+  const entry = [...history].reverse().find((item) => (
+    item.kind === ACTION_EXECUTE_HISTORY_KIND
+    && item.ts >= verificationStep.ts
+    && item.ts <= nextStepAt
+    && /^\$ \[Verification exit \d+\] /.test(item.text)
+  ));
+  if (!entry) return undefined;
+
+  const match = /^\$ \[Verification exit (-?\d+)\] ([^\n]+)(?:\r?\n([\s\S]*))?$/.exec(entry.text);
+  if (!match) return undefined;
+  const output = String(match[3] ?? "").trim();
+  const exitCode = Number(match[1]);
+  return {
+    command: match[2]!.trim(),
+    exitCode,
+    summary: output || (exitCode === 0 ? "Tests and checks passed successfully" : "Verification command failed"),
+    output,
+  };
+}
+
+function captureReviewPayload(
+  job: ActionJobRecord,
+  repoPath: string,
+  testReport?: ReviewPayload["testReport"],
+  requirePinnedEvidence = false,
+): ReviewPayload {
+  const git = (args: string[]) => spawnSync("git", args, { cwd: repoPath, encoding: "utf8" });
+  const captureErrors: string[] = [];
+  const branchResult = requirePinnedEvidence ? null : git(["branch", "--show-current"]);
+  if (branchResult && branchResult.status !== 0) captureErrors.push("git branch --show-current failed");
+  const baseRef = requirePinnedEvidence ? job.base_sha : resolveImplementationDiffBase(repoPath);
+  const headRef = requirePinnedEvidence ? job.head_sha : "HEAD";
+  if (requirePinnedEvidence && !baseRef) captureErrors.push("job does not have a recorded base commit");
+  if (requirePinnedEvidence && !headRef) captureErrors.push("job does not have a pinned head commit");
+
+  const validCommitHash = (value: string | null): value is string => (
+    typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value)
+  );
+  if (requirePinnedEvidence && baseRef && !validCommitHash(baseRef)) captureErrors.push("job has an invalid recorded base commit");
+  if (requirePinnedEvidence && headRef && !validCommitHash(headRef)) captureErrors.push("job has an invalid pinned head commit");
+  const diffBase = requirePinnedEvidence
+    ? baseRef || "<missing-base>"
+    : baseRef!;
+  const baseCommitResult = !requirePinnedEvidence || validCommitHash(baseRef)
+    ? git(["rev-parse", "--verify", `${diffBase}^{commit}`])
+    : null;
+  const headCommitResult = requirePinnedEvidence
+    ? validCommitHash(headRef) ? git(["rev-parse", "--verify", `${headRef}^{commit}`]) : null
+    : git(["rev-parse", "--verify", "HEAD^{commit}"]);
+  const baseCommit = baseCommitResult?.stdout?.trim();
+  const headCommit = headCommitResult?.stdout?.trim();
+  const separator = requirePinnedEvidence ? ".." : "...";
+  const capturedRange = `${baseCommit || diffBase}${separator}${headCommit || headRef || "<missing-head>"}`;
+  const range = requirePinnedEvidence ? capturedRange : `${diffBase}...HEAD`;
+  if (requirePinnedEvidence && baseCommit && headCommit) {
+    const ancestryResult = git(["merge-base", "--is-ancestor", baseCommit, headCommit]);
+    if (ancestryResult.status !== 0) captureErrors.push("recorded base commit is not an ancestor of the pinned head");
+  }
+  const diffRes = baseCommit && headCommit ? git(["diff", capturedRange]) : null;
+  const diffStatRes = baseCommit && headCommit ? git(["diff", "--stat", capturedRange]) : null;
+
+  if (!baseCommitResult || baseCommitResult.status !== 0) captureErrors.push(`git rev-parse base '${diffBase}' failed`);
+  if (!headCommitResult || headCommitResult.status !== 0) captureErrors.push("git rev-parse review head failed");
+  if (!diffRes || diffRes.status !== 0) captureErrors.push(`git diff exited with status ${String(diffRes?.status ?? "unavailable")}`);
+  if (!diffStatRes || diffStatRes.status !== 0) captureErrors.push(`git diff --stat exited with status ${String(diffStatRes?.status ?? "unavailable")}`);
+
+  const diff = diffRes?.stdout || "";
+  const diffStat = diffStatRes?.stdout || "";
+  const evidenceError = validateGitEvidence({ diff, diffStat, baseCommit, headCommit });
+  const completeIssueSnapshot = requirePinnedEvidence ? parseCompleteReviewIssueSnapshot(job) : null;
+  if (requirePinnedEvidence && !completeIssueSnapshot) {
+    captureErrors.push("persisted Issue or ADR snapshot is missing or invalid");
+  }
+  const issueSnapshot = completeIssueSnapshot ?? parseActionJobIssueSnapshot(job);
+  return {
+    issue: {
+      id: job.issue_id,
+      title: issueSnapshot.title,
+      description: issueSnapshot.description,
+      acceptanceCriteria: issueSnapshot.acceptanceCriteria,
+    },
+    adrs: issueSnapshot.adrs,
+    diffRange: {
+      baseRef: diffBase,
+      headRef: headRef ?? "<missing-head>",
+      baseCommit: baseCommit || undefined,
+      headCommit: headCommit || undefined,
+      range,
+    },
+    diff,
+    diffStat,
+    diffCaptureError: [...captureErrors, evidenceError].filter((error): error is string => Boolean(error)).join("; ") || undefined,
+    testReport,
+    ...(!captureErrors.length && !evidenceError && baseCommit && headCommit
+      && !filterDiff(diff, REVIEW_DIFF_MAX_LINES, diffStat).truncated
+      ? extractRelatedContexts(repoPath, baseCommit, headCommit)
+      : {}),
+  };
+}
+
+function formatReviewVerdictCard(verdict: Pick<ReviewVerdict, "status" | "summary" | "defects">): string {
+  const defectsList = verdict.defects.length > 0
+    ? "\n\n**Defects Identified:**\n" + verdict.defects.map((defect) => (
+        `- [${defect.severity.toUpperCase()}] \`${defect.file}${defect.line ? `:${defect.line}` : ""}\`: ${defect.description}`
+      )).join("\n")
+    : "\n\n*No blocking defects identified.*";
+  return `### Code Review: ${verdict.status === "PASS" ? "✅ Approved (PASS)" : "❌ Rejected (REJECT)"}\n\n${verdict.summary}${defectsList}`;
 }
 
 async function raceReviewerAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -476,6 +651,7 @@ export class LaneDispatchBus {
   private activeAbortControllers = new Map<string, AbortController>();
   private developerProjects = new Set<string>();
   private activeDeliveryHeads = new Map<string, string>();
+  private independentReviewerJobs = new Set<string>();
 
   constructor(
     private db: DatabaseType,
@@ -563,6 +739,7 @@ export class LaneDispatchBus {
         current_step: reason,
         error_message: failure,
         blocked_at: Date.now(),
+        head_sha: job.head_sha ?? resolveAssignedBranchHead(repoPath, job.branch),
       });
       this.recordActionMessage(job, repoPath, formatActionBlockedCard({
         job,
@@ -592,6 +769,7 @@ export class LaneDispatchBus {
         attempts_json: attemptsJson,
         error_message: failure,
         blocked_at: Date.now(),
+        head_sha: job.head_sha ?? resolveAssignedBranchHead(repoPath, job.branch),
       });
       this.recordActionMessage(job, repoPath, formatActionBlockedCard({
         job,
@@ -630,7 +808,7 @@ export class LaneDispatchBus {
   private updateJobStatus(
     jobId: string,
     status: ActionJobStatus,
-    updates?: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "attempts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "base_sha" | "rework_count" | "blocked_at">>,
+    updates?: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "attempts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "base_sha" | "head_sha" | "rework_count" | "blocked_at">>,
   ): ActionJobRecord | null {
     const current = getActionJobById(this.db, jobId);
     const nextUpdates = { ...(updates ?? {}) };
@@ -1306,6 +1484,89 @@ export class LaneDispatchBus {
     }
   }
 
+  public async reviewFailedJob(jobId: string, repoPath: string): Promise<IndependentReviewResult> {
+    const job = getActionJobById(this.db, jobId);
+    if (!job) throw new Error(`Job not found: ${jobId}`);
+    if (job.status !== "failed") {
+      throw new ActionJobReviewConflictError(
+        `Independent review is only available for failed Actions jobs; current status is '${job.status}'.`,
+      );
+    }
+    if (this.independentReviewerJobs.has(jobId)) {
+      throw new ActionJobReviewConflictError("An independent review is already running for this Actions job.");
+    }
+
+    this.independentReviewerJobs.add(jobId);
+    const runReview = async (): Promise<IndependentReviewResult> => {
+      const current = getActionJobById(this.db, jobId);
+      if (!current || current.status !== "failed") {
+        throw new ActionJobReviewConflictError(
+          `Independent review is only available for failed Actions jobs; current status is '${current?.status ?? "missing"}'.`,
+        );
+      }
+
+      const identity = this.laneIdentityForJob(current, repoPath);
+      const history = this.options.historyStore?.get?.(identity.historyKey) ?? [];
+      const payload = captureReviewPayload(
+        current,
+        repoPath,
+        findVerificationReport(current, history),
+        true,
+      );
+
+      let reviewerProfileId: string | undefined;
+      try {
+        const selectedProfiles = JSON.parse(current.reviewer_profile_ids_json) as unknown;
+        if (Array.isArray(selectedProfiles) && typeof selectedProfiles[0] === "string") {
+          reviewerProfileId = selectedProfiles[0];
+        }
+      } catch {
+        throw new Error("Independent review failed: stored Reviewer profile selection is invalid.");
+      }
+
+      const verdict = await this.executeReviewer(
+        payload,
+        repoPath,
+        reviewerProfileId,
+        identity.historyKey,
+        current.project_id,
+        current.id,
+      );
+      const result: IndependentReviewResult = {
+        status: verdict.status,
+        summary: verdict.summary,
+        defects: verdict.defects.map((defect) => ({
+          file: defect.file,
+          ...(defect.line === undefined ? {} : { line: defect.line }),
+          severity: defect.severity,
+          description: defect.description,
+        })),
+      };
+      const reviewCardText = formatReviewVerdictCard(result);
+      this.options.broadcastToActionsLane?.({
+        type: "message",
+        role: "assistant",
+        text: reviewCardText,
+        jobId: current.id,
+        ts: Date.now(),
+        status: result.status,
+      }, identity.historyKey, current.project_id);
+      this.options.historyStore?.add(identity.historyKey, {
+        role: "assistant",
+        text: reviewCardText,
+        ts: Date.now(),
+        kind: "review_verdict",
+      });
+      return result;
+    };
+
+    try {
+      return await runReview();
+    } finally {
+      this.independentReviewerJobs.delete(jobId);
+    }
+  }
+
   public async runJobCycle(
     jobId: string,
     repoPath: string,
@@ -1391,56 +1652,7 @@ export class LaneDispatchBus {
       current_step: "Detached clean-room reviewer auditing code changes against specifications",
     });
 
-    const diffBase = resolveImplementationDiffBase(repoPath);
-    const baseCommitResult = spawnSync("git", ["rev-parse", diffBase], { cwd: repoPath, encoding: "utf8" });
-    const headCommitResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" });
-    const baseCommit = baseCommitResult.stdout?.trim();
-    const headCommit = headCommitResult.stdout?.trim();
-    const capturedRange = `${baseCommit}...${headCommit}`;
-    const diffRes = spawnSync("git", ["diff", capturedRange], {
-      cwd: repoPath,
-      encoding: "utf8",
-    });
-    const diffStatRes = spawnSync("git", ["diff", "--stat", capturedRange], {
-      cwd: repoPath,
-      encoding: "utf8",
-    });
-
-    const captureErrors: string[] = [];
-    if (diffRes.status !== 0) captureErrors.push(`git diff exited with status ${String(diffRes.status)}`);
-    if (diffStatRes.status !== 0) captureErrors.push(`git diff --stat exited with status ${String(diffStatRes.status)}`);
-    if (baseCommitResult.status !== 0) {
-      captureErrors.push(`git rev-parse ${diffBase} exited with status ${String(baseCommitResult.status)}`);
-    }
-    if (headCommitResult.status !== 0) captureErrors.push(`git rev-parse HEAD exited with status ${String(headCommitResult.status)}`);
-    const diff = diffRes.stdout || "";
-    const diffStat = diffStatRes.stdout || "";
-    const evidenceError = validateGitEvidence({ diff, diffStat, baseCommit, headCommit });
-    const issueSnapshot = parseActionJobIssueSnapshot(job);
-
-    const payload: ReviewPayload = {
-      issue: {
-        id: job.issue_id,
-        title: issueSnapshot.title,
-        description: issueSnapshot.description,
-        acceptanceCriteria: issueSnapshot.acceptanceCriteria,
-      },
-      adrs: issueSnapshot.adrs,
-      diffRange: {
-        baseRef: diffBase,
-        headRef: "HEAD",
-        baseCommit: baseCommit || undefined,
-        headCommit: headCommit || undefined,
-        range: `${diffBase}...HEAD`,
-      },
-      diff,
-      diffStat,
-      diffCaptureError: [...captureErrors, evidenceError].filter((error): error is string => Boolean(error)).join("; ") || undefined,
-      testReport,
-      ...(!captureErrors.length && !evidenceError && !filterDiff(diff, REVIEW_DIFF_MAX_LINES, diffStat).truncated
-        ? extractRelatedContexts(repoPath, baseCommit!, headCommit!)
-        : {}),
-    };
+    const payload = captureReviewPayload(job, repoPath, testReport);
 
     const reviewerProfile = (job.reviewer_profile_ids_json ? JSON.parse(job.reviewer_profile_ids_json)[0] : null)
       ?? getDefaultRoleProfile(this.db, "reviewer");
@@ -1507,11 +1719,7 @@ export class LaneDispatchBus {
     });
 
     // Format Review Verdict card and broadcast to Actions lane
-    const defectsList = verdict.defects && verdict.defects.length > 0
-      ? "\n\n**Defects Identified:**\n" + verdict.defects.map((d) => `- [${d.severity.toUpperCase()}] \`${d.file}${d.line ? `:${d.line}` : ""}\`: ${d.description}`).join("\n")
-      : "\n\n*No blocking defects identified.*";
-
-    const reviewCardText = `### Code Review: ${verdict.status === "PASS" ? "✅ Approved (PASS)" : "❌ Rejected (REJECT)"}\n\n${verdict.summary}${defectsList}`;
+    const reviewCardText = formatReviewVerdictCard(verdict);
 
     if (this.options.broadcastToActionsLane) {
       this.options.broadcastToActionsLane({
@@ -1748,6 +1956,7 @@ export class LaneDispatchBus {
       current_step: `Resolved by operator: ${outcome.summary}.${noteSuffix}`,
       error_message: note || "Dismissed by operator.",
       blocked_at: null,
+      head_sha: job.head_sha ?? resolveAssignedBranchHead(targetRepo, job.branch),
     });
     this.recordActionMessage(
       job,

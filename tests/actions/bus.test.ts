@@ -14,12 +14,13 @@ import {
 } from "../../server/actions/bus.js";
 import { handleActionRoutes, setBusInstance } from "../../server/web/server/api/routes/actions.js";
 import { checkThreePointGate } from "../../server/actions/threePointGate.js";
-import { updateActionJobStatus } from "../../server/state/actionJobStore.js";
+import { createActionJob, updateActionJobStatus } from "../../server/state/actionJobStore.js";
 import type { PullRequestStateResult } from "../../server/actions/pipeline.js";
 import type { completeNativeChat } from "../../server/runtime/openAiCompatibleClient.js";
 import { getDefaultRoleProfile } from "../../server/state/roleProfileStore.js";
 import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
 import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
+import { deriveProjectSessionId } from "../../server/web/server/projectSessionId.js";
 
 describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
   let tmpDir: string;
@@ -1979,7 +1980,9 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     });
 
     assert.strictEqual(listed, true);
-    assert.ok((JSON.parse(responseBody) as Array<{ id: string }>).some((item) => item.id === job.jobId));
+    const listedJobs = JSON.parse(responseBody) as Array<{ id: string; head_sha?: string | null }>;
+    assert.ok(listedJobs.some((item) => item.id === job.jobId));
+    assert.ok(listedJobs.every((item) => !("head_sha" in item)));
 
     fakeReq.method = "POST";
     const handled = await handleActionRoutes({
@@ -2084,6 +2087,291 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       acceptanceCriteria: ["Verify reconciliation"],
     }).jobId;
   }
+
+  function createReviewJob(
+    db: ReturnType<typeof getStateDatabase>,
+    id: string,
+    status: "blocked" | "queued" | "running" | "verifying" | "reviewing" | "waiting_merge" | "completed" | "failed" | "cancelled",
+    baseSha: string | null,
+    authUserId = "user-1",
+    headSha: string | null = null,
+  ) {
+    const profile = getDefaultRoleProfile(db, "reviewer")!;
+    return createActionJob(db, {
+      id,
+      project_id: deriveProjectSessionId(repoDir),
+      issue_id: 537,
+      issue_title: "Independent review fixture",
+      issue_snapshot: {
+        title: "Independent review fixture",
+        description: "Review the failed implementation without restarting it.",
+        acceptanceCriteria: ["Use the captured Issue and ADR context."],
+        adrs: [{ id: "ADR-0040", title: "Reviewer boundary", decision: "Preserve independent read-only review." }],
+      },
+      status,
+      branch: "codex/issue-537",
+      base_sha: baseSha,
+      head_sha: headSha,
+      reviewer_profile_ids_json: JSON.stringify([profile.id]),
+      auth_user_id: authUserId,
+      chat_session_id: "main",
+    });
+  }
+
+  async function postIndependentReview(
+    jobId: string,
+    authUserId = "user-1",
+    projectId = deriveProjectSessionId(repoDir),
+  ) {
+    const routePath = `/api/actions/jobs/${encodeURIComponent(jobId)}/review`;
+    const fakeReq: any = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      async *[Symbol.asyncIterator]() {
+        yield Buffer.from(JSON.stringify({ projectId, repoPath: repoDir }), "utf8");
+      },
+    };
+    let statusCode = 200;
+    let responseBody = "";
+    const fakeRes: any = {
+      writeHead(code: number) { statusCode = code; },
+      setHeader() {},
+      end(data: string) { responseBody = data; },
+    };
+    const handled = await handleActionRoutes({
+      req: fakeReq,
+      res: fakeRes,
+      pathname: routePath,
+      url: new URL(`http://localhost${routePath}`),
+      auth: { userId: authUserId, username: "tester" },
+    }, { allowedDirs: [repoDir] });
+    return { handled, statusCode, body: responseBody ? JSON.parse(responseBody) : null };
+  }
+
+  function prepareReviewBranch(): string {
+    const baseSha = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf8" }).stdout).trim();
+    const checkout = spawnSync("git", ["checkout", "-b", "codex/issue-537"], { cwd: repoDir, encoding: "utf8" });
+    assert.strictEqual(checkout.status, 0, checkout.stderr);
+    commitImplementation("independent-review");
+    return baseSha;
+  }
+
+  it("independently reviews a dismissed failure with its configured Reviewer profile", async (context) => {
+    const db = getStateDatabase();
+    const projectId = deriveProjectSessionId(repoDir);
+    addWebProjectMapping(db, projectId);
+    const baseSha = prepareReviewBranch();
+    const profile = getDefaultRoleProfile(db, "reviewer")!;
+    db.prepare("UPDATE role_profiles SET model_id = ?, system_prompt = ?, reasoning_effort = ? WHERE id = ?")
+      .run("recovered-reviewer-model", "Independent Reviewer instructions", "medium", profile.id);
+    const job = createReviewJob(db, "job-independent-review", "blocked", baseSha);
+    const verificationStartedAt = Date.now() - 20;
+    updateActionJobStatus(db, job.id, "blocked", {
+      steps_json: JSON.stringify([
+        { status: "verifying", step: "Running automated test suite and verification commands", ts: verificationStartedAt },
+        { status: "blocked", step: "Developer execution failed", ts: Date.now() },
+      ]),
+    });
+
+    let reviewerCalls = 0;
+    let developerCalls = 0;
+    let queueCalls = 0;
+    let workspaceLockCalls = 0;
+    const expectedHeadSha = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf8" }).stdout).trim();
+    const broadcasts: Array<Record<string, unknown>> = [];
+    const historyEntries: Array<{ role: string; text: string; ts: number; kind?: string }> = [];
+    const bus = new LaneDispatchBus(db, {
+      developerRunner: async () => { developerCalls += 1; return { exitCode: 0 }; },
+      reviewerModelResolver: (model, owner) => {
+        assert.strictEqual(model, "recovered-reviewer-model");
+        assert.strictEqual(owner, "user-1");
+        return { model, baseUrl: "https://reviewer.invalid/v1", apiKey: "fixture-key", provider: "openai" };
+      },
+      getWorkspaceLock: () => {
+        workspaceLockCalls += 1;
+        throw new Error("independent review must not wait for the shared workspace lock");
+      },
+      reviewerComplete: async (request) => {
+        reviewerCalls += 1;
+        assert.strictEqual(request.model, "recovered-reviewer-model");
+        assert.strictEqual(request.options?.reasoningEffort, "medium");
+        assert.strictEqual(request.messages[0]?.content, "Independent Reviewer instructions");
+        const prompt = request.messages[1]?.content ?? "";
+        assert.match(prompt, /Review the failed implementation without restarting it/);
+        assert.match(prompt, /ADR-0040: Reviewer boundary/);
+        assert.match(prompt, /Command: npm test/);
+        assert.match(prompt, /Persisted verification output/);
+        assert.match(prompt, /Exact Diff Range/);
+        assert.ok(prompt.includes(`Head: ${expectedHeadSha} (${expectedHeadSha})`));
+        return {
+          text: JSON.stringify({ status: "PASS", summary: "Independent review passed.", defects: [], reasoning: "private" }),
+          toolCalls: [],
+          usage: null,
+        };
+      },
+      historyStore: {
+        add: (_key, entry) => { historyEntries.push(entry); },
+        get: () => [{
+          role: "status",
+          text: "$ [Verification exit 0] npm test\nPersisted verification output",
+          ts: verificationStartedAt + 1,
+          kind: "action_execute",
+        }],
+      },
+      broadcastToActionsLane: (payload) => broadcasts.push(payload as Record<string, unknown>),
+    });
+    setBusInstance(bus);
+    const originalEvaluate = bus.evaluateQueue.bind(bus);
+    bus.evaluateQueue = (async (...args: Parameters<typeof bus.evaluateQueue>) => {
+      queueCalls += 1;
+      return originalEvaluate(...args);
+    }) as typeof bus.evaluateQueue;
+    const cycle = context.mock.method(bus, "runJobCycle", async () => {
+      throw new Error("independent review must not enter the job cycle");
+    });
+
+    assert.deepStrictEqual(bus.resolveJob(job.id, "dismiss", { repoPath: repoDir }), { ok: true, status: "failed" });
+    await Promise.resolve();
+    const queueCallsAfterDismiss = queueCalls;
+    const stateBeforeReview = bus.getJob(job.id)!;
+    assert.strictEqual(stateBeforeReview.head_sha, expectedHeadSha);
+    const checkoutQueuedJob = spawnSync("git", ["checkout", "-b", "codex/next-queued-job"], { cwd: repoDir, encoding: "utf8" });
+    assert.strictEqual(checkoutQueuedJob.status, 0, checkoutQueuedJob.stderr);
+    commitImplementation("queued-job");
+    const response = await postIndependentReview(job.id);
+
+    assert.strictEqual(response.handled, true);
+    assert.strictEqual(response.statusCode, 200);
+    assert.deepStrictEqual(response.body, {
+      ok: true,
+      authoritative: true,
+      status: "PASS",
+      summary: "Independent review passed.",
+      defects: [],
+    });
+    assert.strictEqual(reviewerCalls, 1);
+    assert.strictEqual(developerCalls, 0);
+    assert.strictEqual(workspaceLockCalls, 0);
+    assert.strictEqual(cycle.mock.callCount(), 0);
+    assert.strictEqual(queueCalls, queueCallsAfterDismiss);
+    assert.strictEqual(bus.getJob(job.id)?.status, "failed");
+    assert.strictEqual(bus.getJob(job.id)?.review_verdicts_json, stateBeforeReview.review_verdicts_json);
+    assert.strictEqual(bus.getJob(job.id)?.attempts_json, stateBeforeReview.attempts_json);
+    assert.ok(historyEntries.some((entry) => entry.kind === "review_verdict" && entry.text.includes("Independent review passed.")));
+    const verdictBroadcast = broadcasts.find((event) => event.status === "PASS");
+    assert.ok(verdictBroadcast);
+    assert.match(String(verdictBroadcast.text), /Independent review passed\./);
+    assert.doesNotMatch(String(verdictBroadcast.text), /private|reasoning|recovered-reviewer-model/);
+    assert.deepStrictEqual(Object.keys(response.body).sort(), ["authoritative", "defects", "ok", "status", "summary"]);
+  });
+
+  it("rejects independent review for every non-failed job state", async () => {
+    const db = getStateDatabase();
+    const projectId = deriveProjectSessionId(repoDir);
+    addWebProjectMapping(db, projectId);
+    let reviewerCalls = 0;
+    const bus = new LaneDispatchBus(db, { reviewerRunner: async () => {
+      reviewerCalls += 1;
+      return JSON.stringify({ status: "PASS", summary: "unexpected", defects: [] });
+    } });
+    setBusInstance(bus);
+
+    const statuses = ["queued", "running", "verifying", "reviewing", "waiting_merge", "completed", "cancelled", "blocked"] as const;
+    for (const [index, status] of statuses.entries()) {
+      const job = createReviewJob(db, `job-ineligible-${index}`, status, null);
+      const response = await postIndependentReview(job.id);
+      assert.strictEqual(response.statusCode, 409, status);
+      assert.strictEqual(response.body.authoritative, false, status);
+      assert.strictEqual(response.body.error, `Independent review is only available for failed Actions jobs; current status is '${status}'.`);
+      assert.strictEqual(bus.getJob(job.id)?.status, status);
+    }
+    assert.strictEqual(reviewerCalls, 0);
+  });
+
+  it("rejects independent review when the selected job belongs to another user", async () => {
+    const db = getStateDatabase();
+    const projectId = deriveProjectSessionId(repoDir);
+    addWebProjectMapping(db, projectId, "user-2");
+    const job = createReviewJob(db, "job-review-other-owner", "failed", null, "user-2");
+    let reviewerCalls = 0;
+    const bus = new LaneDispatchBus(db, { reviewerRunner: async () => {
+      reviewerCalls += 1;
+      return JSON.stringify({ status: "PASS", summary: "unexpected", defects: [] });
+    } });
+    setBusInstance(bus);
+
+    const response = await postIndependentReview(job.id, "user-1");
+    assert.strictEqual(response.statusCode, 400);
+    assert.strictEqual(reviewerCalls, 0);
+    assert.strictEqual(response.body.authoritative, undefined);
+  });
+
+  it("returns a non-authoritative evidence error without invoking Reviewer", async () => {
+    const db = getStateDatabase();
+    const projectId = deriveProjectSessionId(repoDir);
+    addWebProjectMapping(db, projectId);
+    prepareReviewBranch();
+    const job = createReviewJob(db, "job-review-missing-evidence", "failed", "missing-base-commit");
+    let reviewerCalls = 0;
+    const bus = new LaneDispatchBus(db, { reviewerRunner: async () => {
+      reviewerCalls += 1;
+      return JSON.stringify({ status: "PASS", summary: "unexpected", defects: [] });
+    } });
+    setBusInstance(bus);
+
+    const response = await postIndependentReview(job.id);
+    assert.strictEqual(response.statusCode, 422);
+    assert.strictEqual(response.body.authoritative, false);
+    assert.match(response.body.error, /Reviewer evidence capture failed; no authoritative verdict is available/);
+    assert.strictEqual(reviewerCalls, 0);
+    assert.strictEqual(bus.getJob(job.id)?.status, "failed");
+  });
+
+  it("does not pin review evidence from a dirty dismissal workspace", async () => {
+    const db = getStateDatabase();
+    const projectId = deriveProjectSessionId(repoDir);
+    addWebProjectMapping(db, projectId);
+    const baseSha = prepareReviewBranch();
+    const job = createReviewJob(db, "job-review-dirty-workspace", "blocked", baseSha);
+    fs.writeFileSync(path.join(repoDir, "uncommitted-review-change.txt"), "uncommitted\n");
+    let reviewerCalls = 0;
+    const bus = new LaneDispatchBus(db, { reviewerRunner: async () => {
+      reviewerCalls += 1;
+      return JSON.stringify({ status: "PASS", summary: "unexpected", defects: [] });
+    } });
+    setBusInstance(bus);
+
+    assert.deepStrictEqual(bus.resolveJob(job.id, "dismiss", { repoPath: repoDir }), { ok: true, status: "failed" });
+    await Promise.resolve();
+    assert.strictEqual(bus.getJob(job.id)?.head_sha, null);
+    const response = await postIndependentReview(job.id);
+    assert.strictEqual(response.statusCode, 422);
+    assert.strictEqual(response.body.authoritative, false);
+    assert.strictEqual(reviewerCalls, 0);
+  });
+
+  it("rejects an incomplete persisted Issue snapshot before invoking Reviewer", async () => {
+    const db = getStateDatabase();
+    const projectId = deriveProjectSessionId(repoDir);
+    addWebProjectMapping(db, projectId);
+    const baseSha = prepareReviewBranch();
+    const headSha = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf8" }).stdout).trim();
+    const job = createReviewJob(db, "job-review-missing-issue-snapshot", "failed", baseSha, "user-1", headSha);
+    db.prepare("UPDATE action_jobs SET issue_snapshot_json = ? WHERE id = ?").run("{", job.id);
+    let reviewerCalls = 0;
+    const bus = new LaneDispatchBus(db, { reviewerRunner: async () => {
+      reviewerCalls += 1;
+      return JSON.stringify({ status: "PASS", summary: "unexpected", defects: [] });
+    } });
+    setBusInstance(bus);
+
+    const response = await postIndependentReview(job.id);
+    assert.strictEqual(response.statusCode, 422);
+    assert.strictEqual(response.body.authoritative, false);
+    assert.match(response.body.error, /Reviewer evidence capture failed; no authoritative verdict is available/);
+    assert.strictEqual(reviewerCalls, 0);
+    assert.strictEqual(bus.getJob(job.id)?.status, "failed");
+  });
 
   function blockJob(bus: LaneDispatchBus, jobId: string, prNumber?: number): string {
     // Two identical rejections trip the repeated-failure short circuit and block the job.
