@@ -26,6 +26,7 @@ const props = defineProps<{
   jobs: ActionJobQueueItem[];
   /** Execution-active job (first non-queued job), used only for the default selection. */
   activeJobId: string | null;
+  reviewingJobId?: string | null;
   starting: boolean;
   /** Changes on project/account switch: resets selection and cancels gestures. */
   resetKey: string;
@@ -35,6 +36,7 @@ const emit = defineEmits<{
   (e: "start"): void;
   (e: "cancel", jobId: string): void;
   (e: "resolve", jobId: string, action: string): void;
+  (e: "review", jobId: string): void;
 }>();
 
 const BLOCKED_RESOLVE_ACTIONS = [
@@ -309,8 +311,11 @@ const frontBlockedFor = computed(() => {
 
 // Start mirrors the queue-level FIFO start: only offered when nothing is
 // executing, and the handler revalidates against the live queue at activation.
-const hasActiveJob = computed(() => props.jobs.some((job) => job.status !== "queued"));
+const hasActiveJob = computed(() => props.jobs.some((job) => [
+  "running", "verifying", "reviewing", "waiting_merge", "blocked",
+].includes(job.status)));
 const showStart = computed(() => frontJob.value?.status === "queued" && !hasActiveJob.value);
+const showReview = computed(() => frontJob.value?.status === "failed");
 const showCancel = computed(() =>
   Boolean(frontJob.value && ["queued", "running", "verifying", "reviewing", "waiting_merge"].includes(frontJob.value.status)),
 );
@@ -373,7 +378,7 @@ const frontAriaLabel = computed(() => {
         @click.capture="onClickCapture"
       >
         <div class="actionsQueueCardMeta">
-          <span v-if="showStart || showCancel || frontJob.status === 'blocked'" class="actionsJobActions">
+          <span v-if="showStart || showCancel || showReview || frontJob.status === 'blocked'" class="actionsJobActions">
             <button
               v-if="showStart"
               type="button"
@@ -392,6 +397,16 @@ const frontAriaLabel = computed(() => {
               @click="emit('cancel', frontJob.id)"
             >
               Cancel
+            </button>
+            <button
+              v-if="showReview"
+              type="button"
+              class="btnActionCancel"
+              :disabled="reviewingJobId === frontJob.id"
+              data-testid="btn-action-review"
+              @click="emit('review', frontJob.id)"
+            >
+              {{ reviewingJobId === frontJob.id ? 'Reviewing...' : 'Review' }}
             </button>
             <template v-if="frontJob.status === 'blocked'">
               <button

@@ -40,6 +40,14 @@ const ACTIONS_JOB_LOCKING_STATUSES: ReadonlySet<ActionJobStatus> = new Set([
   "waiting_merge",
 ]);
 
+export function isActionJobExecutionActive(status: string): boolean {
+  return status === "running"
+    || status === "verifying"
+    || status === "reviewing"
+    || status === "waiting_merge"
+    || status === "blocked";
+}
+
 export function isActionJobLockingStatus(status: string): boolean {
   return ACTIONS_JOB_LOCKING_STATUSES.has(status as ActionJobStatus);
 }
