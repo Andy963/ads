@@ -28,6 +28,7 @@ import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
 import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
 import { ThreadStorage } from "../../server/sessions/threadStorage.js";
 import { HistoryStore } from "../../server/utils/historyStore.js";
+import { stateSchemaMigrations } from "../../server/state/schemaMigrations.js";
 
 describe("state/database", () => {
   let tmpDir: string;
@@ -40,6 +41,174 @@ describe("state/database", () => {
 
     process.env.ADS_STATE_DB_PATH = dbPath;
     resetStateDatabaseForTests();
+  });
+
+  it("backfills existing Actions jobs created in the current lane generation", () => {
+    const migrationDb = new DatabaseConstructor(":memory:");
+    migrationDb.exec(`
+      CREATE TABLE action_jobs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        auth_user_id TEXT,
+        chat_session_id TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE web_lane_generations (
+        namespace TEXT NOT NULL,
+        lane_key TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(namespace, lane_key)
+      );
+      INSERT INTO web_lane_generations VALUES ('web-actions', 'user-1::project-1::main', 2, 2000);
+      INSERT INTO action_jobs VALUES ('before-reset', 'project-1', 'user-1', 'main', 1000);
+      INSERT INTO action_jobs VALUES ('after-reset', 'project-1', 'user-1', 'main', 3000);
+      INSERT INTO action_jobs VALUES ('other-lane', 'project-1', 'user-2', 'main', 3000);
+    `);
+
+    try {
+      stateSchemaMigrations.find((migration) => migration.version === 34)!.up(migrationDb);
+
+      const jobs = migrationDb
+        .prepare("SELECT id, lane_generation FROM action_jobs ORDER BY id")
+        .all() as Array<{ id: string; lane_generation: number }>;
+      assert.deepStrictEqual(jobs, [
+        { id: "after-reset", lane_generation: 2 },
+        { id: "before-reset", lane_generation: 1 },
+        { id: "other-lane", lane_generation: 1 },
+      ]);
+    } finally {
+      migrationDb.close();
+    }
+  });
+
+  it("recovers a legacy job through a unique workspace-root project mapping", () => {
+    const migrationDb = new DatabaseConstructor(":memory:");
+    migrationDb.exec(`
+      CREATE TABLE action_jobs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        lane_generation INTEGER NOT NULL DEFAULT 1,
+        auth_user_id TEXT,
+        chat_session_id TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE web_lane_generations (
+        namespace TEXT NOT NULL,
+        lane_key TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(namespace, lane_key)
+      );
+      CREATE TABLE web_projects (
+        user_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        workspace_root TEXT NOT NULL,
+        chat_session_id TEXT NOT NULL
+      );
+      INSERT INTO web_projects VALUES ('user-1', 'project-1', '/workspace/project-1', 'main');
+      INSERT INTO web_lane_generations VALUES ('web-actions', 'user-1::project-1::main', 3, 2000);
+      INSERT INTO action_jobs VALUES ('workspace-alias', '/workspace/project-1', 1, NULL, NULL, 3000);
+    `);
+
+    try {
+      stateSchemaMigrations.find((migration) => migration.version === 35)!.up(migrationDb);
+
+      assert.deepStrictEqual(
+        migrationDb.prepare("SELECT lane_generation FROM action_jobs WHERE id = 'workspace-alias'").get(),
+        { lane_generation: 3 },
+      );
+    } finally {
+      migrationDb.close();
+    }
+  });
+
+  it("does not reassign pre-reset, boundary, or ambiguous legacy jobs", () => {
+    const migrationDb = new DatabaseConstructor(":memory:");
+    migrationDb.exec(`
+      CREATE TABLE action_jobs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        lane_generation INTEGER NOT NULL DEFAULT 1,
+        auth_user_id TEXT,
+        chat_session_id TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE web_lane_generations (
+        namespace TEXT NOT NULL,
+        lane_key TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(namespace, lane_key)
+      );
+      CREATE TABLE web_projects (
+        user_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        workspace_root TEXT NOT NULL,
+        chat_session_id TEXT NOT NULL
+      );
+      INSERT INTO web_projects VALUES ('user-1', 'project-1', '/workspace/project-1', 'main');
+      INSERT INTO web_projects VALUES ('user-2', 'project-1', '/workspace/project-1', 'main');
+      INSERT INTO web_lane_generations VALUES ('web-actions', 'user-1::project-1::main', 2, 2000);
+      INSERT INTO web_lane_generations VALUES ('web-actions', 'user-2::project-1::main', 4, 2000);
+      INSERT INTO web_lane_generations VALUES ('web-actions', 'user-1::unmapped-project::main', 2, 2000);
+      INSERT INTO action_jobs VALUES ('before-reset', 'project-1', 1, 'user-1', 'main', 1000);
+      INSERT INTO action_jobs VALUES ('at-reset', 'project-1', 1, 'user-1', 'main', 2000);
+      INSERT INTO action_jobs VALUES ('partial-identity', 'unmapped-project', 1, 'user-1', NULL, 3000);
+      INSERT INTO action_jobs VALUES ('ambiguous', 'project-1', 1, NULL, NULL, 3000);
+    `);
+
+    try {
+      stateSchemaMigrations.find((migration) => migration.version === 35)!.up(migrationDb);
+
+      const jobs = migrationDb
+        .prepare("SELECT id, lane_generation FROM action_jobs ORDER BY id")
+        .all() as Array<{ id: string; lane_generation: number }>;
+      assert.deepStrictEqual(jobs, [
+        { id: "ambiguous", lane_generation: 1 },
+        { id: "at-reset", lane_generation: 1 },
+        { id: "before-reset", lane_generation: 1 },
+        { id: "partial-identity", lane_generation: 1 },
+      ]);
+    } finally {
+      migrationDb.close();
+    }
+  });
+
+  it("repairs a database that already applied the initial lane fence migration", () => {
+    const migrationDb = new DatabaseConstructor(":memory:");
+    migrationDb.exec(`
+      CREATE TABLE action_jobs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        lane_generation INTEGER NOT NULL DEFAULT 1,
+        auth_user_id TEXT,
+        chat_session_id TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE web_lane_generations (
+        namespace TEXT NOT NULL,
+        lane_key TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(namespace, lane_key)
+      );
+      INSERT INTO web_lane_generations VALUES ('web-actions', 'user-1::project-1::main', 2, 2000);
+      INSERT INTO action_jobs VALUES ('after-reset', 'project-1', 1, 'user-1', 'main', 3000);
+    `);
+
+    try {
+      const repair = stateSchemaMigrations.find((migration) => migration.version === 35)!.up;
+      repair(migrationDb);
+      repair(migrationDb);
+
+      assert.deepStrictEqual(
+        migrationDb.prepare("SELECT lane_generation FROM action_jobs WHERE id = 'after-reset'").get(),
+        { lane_generation: 2 },
+      );
+    } finally {
+      migrationDb.close();
+    }
   });
 
   afterEach(() => {

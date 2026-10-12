@@ -32,7 +32,9 @@ import { WebLaneGenerationStore } from "./sync/laneGeneration.js";
 import { DirectoryManager } from "../../sessions/directoryManager.js";
 import {
   createWebLaneResources,
+  WEB_ACTIONS_NAMESPACE,
 } from "./start/webLaneResources.js";
+import { createActionsLaneBroadcaster } from "./start/actionsLaneBroadcast.js";
 import { resolveAgentsSnapshotThreadId } from "./ws/threadIds.js";
 import { createSessionCacheRegistry } from "./ws/sessionCacheRegistry.js";
 import { LaneDispatchBus } from "../../actions/bus.js";
@@ -266,23 +268,20 @@ export async function startWebServer(): Promise<void> {
   const laneGenerationStore = new WebLaneGenerationStore({ stateDbPath });
   const wsHub = createWebSocketHub();
 
-  const broadcastToActionsLane = (payload: unknown, targetHistoryKey?: string, projectId?: string): void => {
-    if (!targetHistoryKey) return;
-    for (const [ws, meta] of wsHub.clientMetaByWs.entries()) {
-      const matchesHistoryKey =
-        meta.logicalHistoryKey === targetHistoryKey ||
-        meta.historyKey === targetHistoryKey ||
-        meta.historyKey.startsWith(`${targetHistoryKey}:generation:`);
-      if (!matchesHistoryKey) continue;
-      if (projectId && meta.sessionId !== projectId) continue;
-      wsHub.safeSendJson(ws, payload);
-    }
-  };
+  const broadcastToActionsLane = createActionsLaneBroadcaster({
+    syncEventStore,
+    laneGenerationStore,
+    clientMetaByWs: wsHub.clientMetaByWs,
+    sendJson: wsHub.safeSendJson,
+    warn: (message) => logger.warn(message),
+  });
 
   const actionBus = new LaneDispatchBus(getStateDatabase(stateDbPath), {
     sessionManager,
     historyStore: laneResources.worker.historyStore,
     getWorkspaceLock,
+    captureActionsLaneGeneration: (logicalHistoryKey) =>
+      laneGenerationStore.getGeneration(WEB_ACTIONS_NAMESPACE, logicalHistoryKey),
     broadcastToActionsLane,
     interruptControllers,
   });

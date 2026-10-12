@@ -36,6 +36,132 @@ function addColumnIfMissing(
   db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
 }
 
+type LegacyActionsJobRow = {
+  id?: unknown;
+  project_id?: unknown;
+  auth_user_id?: unknown;
+  chat_session_id?: unknown;
+  created_at?: unknown;
+};
+
+type LegacyProjectRow = {
+  user_id?: unknown;
+  project_id?: unknown;
+  workspace_root?: unknown;
+  chat_session_id?: unknown;
+};
+
+function normalizeMigrationText(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
+function tableExists(db: DatabaseType, table: string): boolean {
+  return Boolean(
+    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table),
+  );
+}
+
+function findUniqueLegacyProject(
+  db: DatabaseType,
+  projectId: string,
+  authUserId: string,
+  chatSessionId: string,
+): LegacyProjectRow | null {
+  try {
+    const rows = db
+      .prepare(
+        `SELECT user_id, project_id, workspace_root, chat_session_id
+         FROM web_projects
+         WHERE project_id = ? OR workspace_root = ?`,
+      )
+      .all(projectId, projectId) as LegacyProjectRow[];
+    const candidates = rows.filter((row) => {
+      const rowUserId = normalizeMigrationText(row.user_id);
+      const rowChatSessionId = normalizeMigrationText(row.chat_session_id) || "main";
+      return Boolean(rowUserId)
+        && (!authUserId || rowUserId === authUserId)
+        && (!chatSessionId || rowChatSessionId === chatSessionId);
+    });
+    const uniqueRows = new Map<string, LegacyProjectRow>();
+    for (const row of candidates) {
+      const rowUserId = normalizeMigrationText(row.user_id);
+      const rowProjectId = normalizeMigrationText(row.project_id);
+      const rowChatSessionId = normalizeMigrationText(row.chat_session_id) || "main";
+      if (!rowUserId || !rowProjectId) continue;
+      uniqueRows.set(`${rowUserId}\u0000${rowProjectId}\u0000${rowChatSessionId}`, row);
+    }
+    return uniqueRows.size === 1 ? [...uniqueRows.values()][0] : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveLegacyActionsLaneKey(
+  db: DatabaseType,
+  job: LegacyActionsJobRow,
+  hasWebProjects: boolean,
+): string | null {
+  const projectId = normalizeMigrationText(job.project_id);
+  const authUserId = normalizeMigrationText(job.auth_user_id);
+  const chatSessionId = normalizeMigrationText(job.chat_session_id);
+  if (!projectId) return null;
+
+  const project = hasWebProjects
+    ? findUniqueLegacyProject(db, projectId, authUserId, chatSessionId)
+    : null;
+  const resolvedAuthUserId = authUserId || normalizeMigrationText(project?.user_id);
+  const resolvedProjectId = normalizeMigrationText(project?.project_id) || projectId;
+  const resolvedChatSessionId = chatSessionId || normalizeMigrationText(project?.chat_session_id) || "main";
+  if (!resolvedAuthUserId || (!authUserId && !project) || (!chatSessionId && !project)) return null;
+
+  return `${resolvedAuthUserId}::${resolvedProjectId}::${resolvedChatSessionId}`;
+}
+
+function repairLegacyActionsLaneGenerations(db: DatabaseType): void {
+  if (!tableExists(db, "action_jobs") || !tableExists(db, "web_lane_generations")) return;
+
+  const hasLaneGeneration = db
+    .prepare("SELECT 1 FROM pragma_table_info('action_jobs') WHERE name = 'lane_generation'")
+    .get();
+  if (!hasLaneGeneration) return;
+
+  const hasWebProjects = tableExists(db, "web_projects");
+  const jobs = db
+    .prepare(
+      `SELECT id, project_id, auth_user_id, chat_session_id, created_at
+       FROM action_jobs
+       WHERE lane_generation = 1`,
+    )
+    .all() as LegacyActionsJobRow[];
+  const getGeneration = db.prepare(
+    `SELECT generation, updated_at
+     FROM web_lane_generations
+     WHERE namespace = ? AND lane_key = ?`,
+  );
+  const updateGeneration = db.prepare(
+    "UPDATE action_jobs SET lane_generation = ? WHERE id = ? AND lane_generation = 1",
+  );
+
+  for (const job of jobs) {
+    const laneKey = resolveLegacyActionsLaneKey(db, job, hasWebProjects);
+    if (!laneKey) continue;
+
+    const lane = getGeneration.get("web-actions", laneKey) as
+      | { generation?: unknown; updated_at?: unknown }
+      | undefined;
+    const generation = Number(lane?.generation);
+    const resetAt = Number(lane?.updated_at);
+    const createdAt = Number(job.created_at);
+    if (!Number.isInteger(generation) || generation <= 1
+      || !Number.isFinite(resetAt) || !Number.isFinite(createdAt) || createdAt <= resetAt) {
+      continue;
+    }
+
+    const jobId = normalizeMigrationText(job.id);
+    if (jobId) updateGeneration.run(generation, jobId);
+  }
+}
+
 export const stateSchemaMigrations: StateSchemaMigration[] = [
   {
     version: 1,
@@ -861,6 +987,21 @@ Core reviewing rules:
     description: "Pin the Actions job head commit when it becomes blocked or failed",
     up: (db) => {
       addColumnIfMissing(db, "action_jobs", "head_sha", "TEXT");
+    },
+  },
+  {
+    version: 34,
+    description: "Pin Actions jobs to their lane generation",
+    up: (db) => {
+      addColumnIfMissing(db, "action_jobs", "lane_generation", "INTEGER NOT NULL DEFAULT 1");
+      repairLegacyActionsLaneGenerations(db);
+    },
+  },
+  {
+    version: 35,
+    description: "Repair legacy Actions job lane generations after the initial fence migration",
+    up: (db) => {
+      repairLegacyActionsLaneGenerations(db);
     },
   },
 ];

@@ -1623,6 +1623,16 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           }
           continue;
         }
+        if (kind === "action_step" && role === "status") {
+          next.push({
+            id: `h-action-step-${idx}`,
+            role: "system",
+            kind: "text",
+            content: historyText,
+            ts: ts ?? undefined,
+          });
+          continue;
+        }
         if (isExecuteHistoryKind(kind)) {
           restoredHistoryStatus = null;
           replayedExecuteActivity = true;
@@ -1868,7 +1878,25 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const globalWindow = typeof window !== "undefined"
         ? (window as unknown as { __ADS_ON_ACTION_JOB_UPDATED__?: (payload: unknown) => void })
         : null;
-      const detail = firstWireText(msg.detail, msg.title).trim();
+      const phase = firstWireText(msg.phase).trim();
+      const detail = firstWireText(
+        msg.detail,
+        msg.title,
+        phase ? `Developer ${phase} activity` : "Developer activity",
+      ).trim();
+      const jobId = firstWireText(msg.jobId).trim();
+      const status = firstWireText(msg.status).trim();
+      const ts = finiteTimestamp(msg.timestamp ?? msg.ts);
+      const stepId = `${jobId}:action-step:${ts ?? 0}:${phase}:${status}:${detail}`;
+      if (detail && jobId && !rt.messages.value.some((message) => message.id === stepId)) {
+        pushMessageBeforeLive({
+          id: stepId,
+          role: "system",
+          kind: "text",
+          content: phase ? `[Developer ${phase}] ${firstWireText(msg.detail, msg.title).trim() || "Activity"}` : detail,
+          ts,
+        }, rt);
+      }
       if (detail && typeof globalWindow?.__ADS_ON_ACTION_JOB_UPDATED__ === "function") {
         globalWindow.__ADS_ON_ACTION_JOB_UPDATED__({
           ...(msg as Record<string, unknown>),
