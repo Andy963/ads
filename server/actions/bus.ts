@@ -410,6 +410,36 @@ export function parseActionJobIssueSnapshot(job: ActionJobRecord): ActionJobIssu
   }
 }
 
+function parseCompleteReviewIssueSnapshot(job: ActionJobRecord): ActionJobIssueSnapshot | null {
+  try {
+    const parsed = JSON.parse(job.issue_snapshot_json) as Partial<ActionJobIssueSnapshot> | null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    if (typeof parsed.title !== "string" || !parsed.title.trim()) return null;
+    if (typeof parsed.description !== "string" || !parsed.description.trim()) return null;
+    if (!Array.isArray(parsed.acceptanceCriteria)
+      || parsed.acceptanceCriteria.some((criterion) => typeof criterion !== "string" || !criterion.trim())) return null;
+    if (job.job_kind === "github_issue" && parsed.acceptanceCriteria.length === 0) return null;
+    if (!Array.isArray(parsed.adrs) || parsed.adrs.some((adr) => (
+      !adr
+      || typeof adr.id !== "string"
+      || !adr.id.trim()
+      || typeof adr.title !== "string"
+      || !adr.title.trim()
+      || typeof adr.decision !== "string"
+      || !adr.decision.trim()
+    ))) return null;
+
+    return {
+      title: parsed.title,
+      description: parsed.description,
+      acceptanceCriteria: parsed.acceptanceCriteria as string[],
+      adrs: parsed.adrs as ActionJobIssueSnapshot["adrs"],
+    };
+  } catch {
+    return null;
+  }
+}
+
 export class ActionJobReviewConflictError extends Error {
   constructor(message: string) {
     super(message);
@@ -501,7 +531,11 @@ function captureReviewPayload(
   const diff = diffRes.stdout || "";
   const diffStat = diffStatRes.stdout || "";
   const evidenceError = validateGitEvidence({ diff, diffStat, baseCommit, headCommit });
-  const issueSnapshot = parseActionJobIssueSnapshot(job);
+  const completeIssueSnapshot = requireAssignedBranch ? parseCompleteReviewIssueSnapshot(job) : null;
+  if (requireAssignedBranch && !completeIssueSnapshot) {
+    captureErrors.push("persisted Issue or ADR snapshot is missing or invalid");
+  }
+  const issueSnapshot = completeIssueSnapshot ?? parseActionJobIssueSnapshot(job);
   return {
     issue: {
       id: job.issue_id,

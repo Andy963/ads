@@ -2311,6 +2311,28 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(bus.getJob(job.id)?.status, "failed");
   });
 
+  it("rejects an incomplete persisted Issue snapshot before invoking Reviewer", async () => {
+    const db = getStateDatabase();
+    const projectId = deriveProjectSessionId(repoDir);
+    addWebProjectMapping(db, projectId);
+    const baseSha = prepareReviewBranch();
+    const job = createReviewJob(db, "job-review-missing-issue-snapshot", "failed", baseSha);
+    db.prepare("UPDATE action_jobs SET issue_snapshot_json = ? WHERE id = ?").run("{", job.id);
+    let reviewerCalls = 0;
+    const bus = new LaneDispatchBus(db, { reviewerRunner: async () => {
+      reviewerCalls += 1;
+      return JSON.stringify({ status: "PASS", summary: "unexpected", defects: [] });
+    } });
+    setBusInstance(bus);
+
+    const response = await postIndependentReview(job.id);
+    assert.strictEqual(response.statusCode, 422);
+    assert.strictEqual(response.body.authoritative, false);
+    assert.match(response.body.error, /Reviewer evidence capture failed; no authoritative verdict is available/);
+    assert.strictEqual(reviewerCalls, 0);
+    assert.strictEqual(bus.getJob(job.id)?.status, "failed");
+  });
+
   function blockJob(bus: LaneDispatchBus, jobId: string, prNumber?: number): string {
     // Two identical rejections trip the repeated-failure short circuit and block the job.
     for (const reworkCount of [0, 1]) {
