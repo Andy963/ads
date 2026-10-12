@@ -856,6 +856,13 @@ Core reviewing rules:
       `);
     },
   },
+  {
+    version: 33,
+    description: "Pin the Actions job head commit when it becomes blocked or failed",
+    up: (db) => {
+      addColumnIfMissing(db, "action_jobs", "head_sha", "TEXT");
+    },
+  },
 ];
 
 /**

@@ -1980,7 +1980,9 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     });
 
     assert.strictEqual(listed, true);
-    assert.ok((JSON.parse(responseBody) as Array<{ id: string }>).some((item) => item.id === job.jobId));
+    const listedJobs = JSON.parse(responseBody) as Array<{ id: string; head_sha?: string | null }>;
+    assert.ok(listedJobs.some((item) => item.id === job.jobId));
+    assert.ok(listedJobs.every((item) => !("head_sha" in item)));
 
     fakeReq.method = "POST";
     const handled = await handleActionRoutes({
@@ -2092,6 +2094,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     status: "blocked" | "queued" | "running" | "verifying" | "reviewing" | "waiting_merge" | "completed" | "failed" | "cancelled",
     baseSha: string | null,
     authUserId = "user-1",
+    headSha: string | null = null,
   ) {
     const profile = getDefaultRoleProfile(db, "reviewer")!;
     return createActionJob(db, {
@@ -2108,6 +2111,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       status,
       branch: "codex/issue-537",
       base_sha: baseSha,
+      head_sha: headSha,
       reviewer_profile_ids_json: JSON.stringify([profile.id]),
       auth_user_id: authUserId,
       chat_session_id: "main",
@@ -2172,6 +2176,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     let reviewerCalls = 0;
     let developerCalls = 0;
     let queueCalls = 0;
+    let workspaceLockCalls = 0;
+    const expectedHeadSha = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf8" }).stdout).trim();
     const broadcasts: Array<Record<string, unknown>> = [];
     const historyEntries: Array<{ role: string; text: string; ts: number; kind?: string }> = [];
     const bus = new LaneDispatchBus(db, {
@@ -2180,6 +2186,10 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
         assert.strictEqual(model, "recovered-reviewer-model");
         assert.strictEqual(owner, "user-1");
         return { model, baseUrl: "https://reviewer.invalid/v1", apiKey: "fixture-key", provider: "openai" };
+      },
+      getWorkspaceLock: () => {
+        workspaceLockCalls += 1;
+        throw new Error("independent review must not wait for the shared workspace lock");
       },
       reviewerComplete: async (request) => {
         reviewerCalls += 1;
@@ -2192,6 +2202,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
         assert.match(prompt, /Command: npm test/);
         assert.match(prompt, /Persisted verification output/);
         assert.match(prompt, /Exact Diff Range/);
+        assert.ok(prompt.includes(`Head: ${expectedHeadSha} (${expectedHeadSha})`));
         return {
           text: JSON.stringify({ status: "PASS", summary: "Independent review passed.", defects: [], reasoning: "private" }),
           toolCalls: [],
@@ -2223,6 +2234,10 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     await Promise.resolve();
     const queueCallsAfterDismiss = queueCalls;
     const stateBeforeReview = bus.getJob(job.id)!;
+    assert.strictEqual(stateBeforeReview.head_sha, expectedHeadSha);
+    const checkoutQueuedJob = spawnSync("git", ["checkout", "-b", "codex/next-queued-job"], { cwd: repoDir, encoding: "utf8" });
+    assert.strictEqual(checkoutQueuedJob.status, 0, checkoutQueuedJob.stderr);
+    commitImplementation("queued-job");
     const response = await postIndependentReview(job.id);
 
     assert.strictEqual(response.handled, true);
@@ -2236,6 +2251,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     });
     assert.strictEqual(reviewerCalls, 1);
     assert.strictEqual(developerCalls, 0);
+    assert.strictEqual(workspaceLockCalls, 0);
     assert.strictEqual(cycle.mock.callCount(), 0);
     assert.strictEqual(queueCalls, queueCallsAfterDismiss);
     assert.strictEqual(bus.getJob(job.id)?.status, "failed");
@@ -2311,12 +2327,36 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.strictEqual(bus.getJob(job.id)?.status, "failed");
   });
 
+  it("does not pin review evidence from a dirty dismissal workspace", async () => {
+    const db = getStateDatabase();
+    const projectId = deriveProjectSessionId(repoDir);
+    addWebProjectMapping(db, projectId);
+    const baseSha = prepareReviewBranch();
+    const job = createReviewJob(db, "job-review-dirty-workspace", "blocked", baseSha);
+    fs.writeFileSync(path.join(repoDir, "uncommitted-review-change.txt"), "uncommitted\n");
+    let reviewerCalls = 0;
+    const bus = new LaneDispatchBus(db, { reviewerRunner: async () => {
+      reviewerCalls += 1;
+      return JSON.stringify({ status: "PASS", summary: "unexpected", defects: [] });
+    } });
+    setBusInstance(bus);
+
+    assert.deepStrictEqual(bus.resolveJob(job.id, "dismiss", { repoPath: repoDir }), { ok: true, status: "failed" });
+    await Promise.resolve();
+    assert.strictEqual(bus.getJob(job.id)?.head_sha, null);
+    const response = await postIndependentReview(job.id);
+    assert.strictEqual(response.statusCode, 422);
+    assert.strictEqual(response.body.authoritative, false);
+    assert.strictEqual(reviewerCalls, 0);
+  });
+
   it("rejects an incomplete persisted Issue snapshot before invoking Reviewer", async () => {
     const db = getStateDatabase();
     const projectId = deriveProjectSessionId(repoDir);
     addWebProjectMapping(db, projectId);
     const baseSha = prepareReviewBranch();
-    const job = createReviewJob(db, "job-review-missing-issue-snapshot", "failed", baseSha);
+    const headSha = String(spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf8" }).stdout).trim();
+    const job = createReviewJob(db, "job-review-missing-issue-snapshot", "failed", baseSha, "user-1", headSha);
     db.prepare("UPDATE action_jobs SET issue_snapshot_json = ? WHERE id = ?").run("{", job.id);
     let reviewerCalls = 0;
     const bus = new LaneDispatchBus(db, { reviewerRunner: async () => {

@@ -37,6 +37,7 @@ export interface ActionJobRecord {
   status: ActionJobStatus;
   branch: string | null;
   base_sha: string | null;
+  head_sha: string | null;
   developer_profile_id: string | null;
   reviewer_profile_ids_json: string;
   current_step: string | null;
@@ -89,6 +90,7 @@ export function createActionJob(
     status?: ActionJobStatus;
     branch?: string | null;
     base_sha?: string | null;
+    head_sha?: string | null;
     developer_profile_id?: string | null;
     reviewer_profile_ids_json?: string;
     auth_user_id?: string | null;
@@ -100,6 +102,7 @@ export function createActionJob(
   const kind: ActionJobKind = job.job_kind ?? "github_issue";
   const issueId = job.issue_id ?? null;
   const branch = job.branch ?? null;
+  const headSha = job.head_sha ?? null;
   const devProfileId = job.developer_profile_id ?? null;
   const reviewerProfilesJson = job.reviewer_profile_ids_json ?? "[]";
   const issueSnapshot: ActionJobIssueSnapshot = job.issue_snapshot ?? {
@@ -112,11 +115,11 @@ export function createActionJob(
 
   db.prepare(`
     INSERT INTO action_jobs
-      (id, project_id, job_kind, issue_id, issue_title, issue_snapshot_json, status, branch, base_sha,
+      (id, project_id, job_kind, issue_id, issue_title, issue_snapshot_json, status, branch, base_sha, head_sha,
        developer_profile_id, reviewer_profile_ids_json, current_step, steps_json,
        review_verdicts_json, attempts_json, pr_number, pr_url, error_message, rework_count,
        blocked_at, auth_user_id, chat_session_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', '[]', NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', '[]', NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?)
   `).run(
     job.id,
     job.project_id,
@@ -127,6 +130,7 @@ export function createActionJob(
     status,
     branch,
     job.base_sha ?? null,
+    headSha,
     devProfileId,
     reviewerProfilesJson,
     job.auth_user_id ?? null,
@@ -145,6 +149,7 @@ export function createActionJob(
     status,
     branch,
     base_sha: job.base_sha ?? null,
+    head_sha: headSha,
     developer_profile_id: devProfileId,
     reviewer_profile_ids_json: reviewerProfilesJson,
     current_step: null,
@@ -167,7 +172,7 @@ export function updateActionJobStatus(
   db: DatabaseType,
   id: string,
   status: ActionJobStatus,
-  updates: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "attempts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "base_sha" | "rework_count" | "blocked_at">> = {},
+  updates: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "attempts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "base_sha" | "head_sha" | "rework_count" | "blocked_at">> = {},
   now = Date.now(),
 ): void {
   const fields = ["status = ?", "updated_at = ?"];
@@ -208,6 +213,10 @@ export function updateActionJobStatus(
   if ("base_sha" in updates) {
     fields.push("base_sha = ?");
     values.push(updates.base_sha ?? null);
+  }
+  if ("head_sha" in updates) {
+    fields.push("head_sha = ?");
+    values.push(updates.head_sha ?? null);
   }
   if ("rework_count" in updates) {
     fields.push("rework_count = ?");

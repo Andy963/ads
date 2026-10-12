@@ -19,9 +19,12 @@ lifecycle merely to obtain a read-only review.
   job only. The existing Actions card supplies the selected job identifier;
   there is no manual identifier entry or standalone persistent control.
 - Capture the persisted Issue and ADR snapshots, the job's recorded base commit,
-  current head commit, diff, and any verification report already associated
-  with that job. Reject incomplete evidence without returning an authoritative
-  verdict.
+  pinned head commit, diff, and any verification report already associated with
+  that job. Pin the head only from the assigned branch with a clean working
+  tree when the job becomes blocked or is dismissed, so queue progress cannot
+  redirect review to another job's checkout. Capture Git evidence directly from
+  those commits without acquiring the shared workspace lock. Reject incomplete
+  evidence without returning an authoritative verdict.
 - Invoke the configured enabled Reviewer role profile through the existing
   detached Reviewer execution primitive, without opening a Developer turn or
   using `actionTools`.

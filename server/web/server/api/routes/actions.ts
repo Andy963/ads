@@ -53,7 +53,12 @@ export type ResolvedProjectContext = {
 };
 
 function toActionJobResponse(job: Record<string, unknown>): Record<string, unknown> {
-  const { auth_user_id: _authUserId, chat_session_id: _chatSessionId, ...publicJob } = job;
+  const {
+    auth_user_id: _authUserId,
+    chat_session_id: _chatSessionId,
+    head_sha: _headSha,
+    ...publicJob
+  } = job;
   return publicJob;
 }
 

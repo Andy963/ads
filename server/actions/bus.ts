@@ -289,6 +289,20 @@ function resolveImplementationDiffBase(repoPath: string): "origin/dev" | "dev" {
   return hasGitRemoteOrigin(repoPath) ? "origin/dev" : "dev";
 }
 
+function resolveAssignedBranchHead(repoPath: string, branch: string | null): string | null {
+  if (!branch) return null;
+  const currentBranch = spawnSync("git", ["branch", "--show-current"], { cwd: repoPath, encoding: "utf8" });
+  if (currentBranch.status !== 0 || currentBranch.stdout?.trim() !== branch) return null;
+  const status = spawnSync("git", ["status", "--porcelain"], { cwd: repoPath, encoding: "utf8" });
+  if (status.status !== 0 || status.stdout?.trim()) return null;
+  const ref = `refs/heads/${branch}`;
+  const refCheck = spawnSync("git", ["check-ref-format", ref], { cwd: repoPath, encoding: "utf8" });
+  if (refCheck.status !== 0) return null;
+  const result = spawnSync("git", ["rev-parse", "--verify", `${ref}^{commit}`], { cwd: repoPath, encoding: "utf8" });
+  const commit = result.stdout?.trim();
+  return result.status === 0 && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(commit ?? "") ? commit! : null;
+}
+
 function hasCommittedImplementationDiff(repoPath: string): boolean {
   const base = resolveImplementationDiffBase(repoPath);
   const result = spawnSync("git", ["diff", "--name-only", `${base}...HEAD`], {
@@ -377,7 +391,7 @@ export function validateGitEvidence(input: {
     errors.push(`git rev-parse base returned an invalid commit: ${input.baseCommit ?? "<empty>"}`);
   }
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(input.headCommit ?? "")) {
-    errors.push(`git rev-parse HEAD returned an invalid commit: ${input.headCommit ?? "<empty>"}`);
+    errors.push(`git rev-parse review head returned an invalid commit: ${input.headCommit ?? "<empty>"}`);
   }
   return errors.length > 0 ? errors.join("; ") : undefined;
 }
@@ -486,53 +500,53 @@ function captureReviewPayload(
   job: ActionJobRecord,
   repoPath: string,
   testReport?: ReviewPayload["testReport"],
-  requireAssignedBranch = false,
+  requirePinnedEvidence = false,
 ): ReviewPayload {
   const git = (args: string[]) => spawnSync("git", args, { cwd: repoPath, encoding: "utf8" });
   const captureErrors: string[] = [];
-  const branchResult = git(["branch", "--show-current"]);
-  if (branchResult.status !== 0) captureErrors.push("git branch --show-current failed");
-  if (requireAssignedBranch && (!job.branch || branchResult.stdout?.trim() !== job.branch)) {
-    captureErrors.push(`current branch does not match the assigned feature branch '${job.branch ?? "<missing>"}'`);
-  }
-  if (requireAssignedBranch && !job.base_sha) {
-    captureErrors.push("job does not have a recorded base commit");
-  }
+  const branchResult = requirePinnedEvidence ? null : git(["branch", "--show-current"]);
+  if (branchResult && branchResult.status !== 0) captureErrors.push("git branch --show-current failed");
+  const baseRef = requirePinnedEvidence ? job.base_sha : resolveImplementationDiffBase(repoPath);
+  const headRef = requirePinnedEvidence ? job.head_sha : "HEAD";
+  if (requirePinnedEvidence && !baseRef) captureErrors.push("job does not have a recorded base commit");
+  if (requirePinnedEvidence && !headRef) captureErrors.push("job does not have a pinned head commit");
 
-  if (requireAssignedBranch) {
-    const statusResult = git(["status", "--porcelain"]);
-    if (statusResult.status !== 0) captureErrors.push("git status failed while capturing review evidence");
-    else if (statusResult.stdout?.trim()) captureErrors.push("working tree is not clean; review evidence would be incomplete");
-  }
-
-  const diffBase = requireAssignedBranch
-    ? job.base_sha || resolveImplementationDiffBase(repoPath)
-    : resolveImplementationDiffBase(repoPath);
-  const baseCommitResult = git(["rev-parse", "--verify", `${diffBase}^{commit}`]);
-  const headCommitResult = git(["rev-parse", "--verify", "HEAD^{commit}"]);
-  const baseCommit = baseCommitResult.stdout?.trim();
-  const headCommit = headCommitResult.stdout?.trim();
-  const range = requireAssignedBranch
-    ? `${baseCommit || diffBase}..${headCommit || "HEAD"}`
-    : `${diffBase}...HEAD`;
-  const capturedRange = `${baseCommit || diffBase}${requireAssignedBranch ? ".." : "..."}${headCommit || "HEAD"}`;
-  if (requireAssignedBranch && baseCommit && headCommit) {
+  const validCommitHash = (value: string | null): value is string => (
+    typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value)
+  );
+  if (requirePinnedEvidence && baseRef && !validCommitHash(baseRef)) captureErrors.push("job has an invalid recorded base commit");
+  if (requirePinnedEvidence && headRef && !validCommitHash(headRef)) captureErrors.push("job has an invalid pinned head commit");
+  const diffBase = requirePinnedEvidence
+    ? baseRef || "<missing-base>"
+    : baseRef!;
+  const baseCommitResult = !requirePinnedEvidence || validCommitHash(baseRef)
+    ? git(["rev-parse", "--verify", `${diffBase}^{commit}`])
+    : null;
+  const headCommitResult = requirePinnedEvidence
+    ? validCommitHash(headRef) ? git(["rev-parse", "--verify", `${headRef}^{commit}`]) : null
+    : git(["rev-parse", "--verify", "HEAD^{commit}"]);
+  const baseCommit = baseCommitResult?.stdout?.trim();
+  const headCommit = headCommitResult?.stdout?.trim();
+  const separator = requirePinnedEvidence ? ".." : "...";
+  const capturedRange = `${baseCommit || diffBase}${separator}${headCommit || headRef || "<missing-head>"}`;
+  const range = requirePinnedEvidence ? capturedRange : `${diffBase}...HEAD`;
+  if (requirePinnedEvidence && baseCommit && headCommit) {
     const ancestryResult = git(["merge-base", "--is-ancestor", baseCommit, headCommit]);
-    if (ancestryResult.status !== 0) captureErrors.push("recorded base commit is not an ancestor of the current head");
+    if (ancestryResult.status !== 0) captureErrors.push("recorded base commit is not an ancestor of the pinned head");
   }
-  const diffRes = git(["diff", capturedRange]);
-  const diffStatRes = git(["diff", "--stat", capturedRange]);
+  const diffRes = baseCommit && headCommit ? git(["diff", capturedRange]) : null;
+  const diffStatRes = baseCommit && headCommit ? git(["diff", "--stat", capturedRange]) : null;
 
-  if (baseCommitResult.status !== 0) captureErrors.push(`git rev-parse base '${diffBase}' failed`);
-  if (headCommitResult.status !== 0) captureErrors.push("git rev-parse HEAD failed");
-  if (diffRes.status !== 0) captureErrors.push(`git diff exited with status ${String(diffRes.status)}`);
-  if (diffStatRes.status !== 0) captureErrors.push(`git diff --stat exited with status ${String(diffStatRes.status)}`);
+  if (!baseCommitResult || baseCommitResult.status !== 0) captureErrors.push(`git rev-parse base '${diffBase}' failed`);
+  if (!headCommitResult || headCommitResult.status !== 0) captureErrors.push("git rev-parse review head failed");
+  if (!diffRes || diffRes.status !== 0) captureErrors.push(`git diff exited with status ${String(diffRes?.status ?? "unavailable")}`);
+  if (!diffStatRes || diffStatRes.status !== 0) captureErrors.push(`git diff --stat exited with status ${String(diffStatRes?.status ?? "unavailable")}`);
 
-  const diff = diffRes.stdout || "";
-  const diffStat = diffStatRes.stdout || "";
+  const diff = diffRes?.stdout || "";
+  const diffStat = diffStatRes?.stdout || "";
   const evidenceError = validateGitEvidence({ diff, diffStat, baseCommit, headCommit });
-  const completeIssueSnapshot = requireAssignedBranch ? parseCompleteReviewIssueSnapshot(job) : null;
-  if (requireAssignedBranch && !completeIssueSnapshot) {
+  const completeIssueSnapshot = requirePinnedEvidence ? parseCompleteReviewIssueSnapshot(job) : null;
+  if (requirePinnedEvidence && !completeIssueSnapshot) {
     captureErrors.push("persisted Issue or ADR snapshot is missing or invalid");
   }
   const issueSnapshot = completeIssueSnapshot ?? parseActionJobIssueSnapshot(job);
@@ -546,7 +560,7 @@ function captureReviewPayload(
     adrs: issueSnapshot.adrs,
     diffRange: {
       baseRef: diffBase,
-      headRef: "HEAD",
+      headRef: headRef ?? "<missing-head>",
       baseCommit: baseCommit || undefined,
       headCommit: headCommit || undefined,
       range,
@@ -725,6 +739,7 @@ export class LaneDispatchBus {
         current_step: reason,
         error_message: failure,
         blocked_at: Date.now(),
+        head_sha: job.head_sha ?? resolveAssignedBranchHead(repoPath, job.branch),
       });
       this.recordActionMessage(job, repoPath, formatActionBlockedCard({
         job,
@@ -754,6 +769,7 @@ export class LaneDispatchBus {
         attempts_json: attemptsJson,
         error_message: failure,
         blocked_at: Date.now(),
+        head_sha: job.head_sha ?? resolveAssignedBranchHead(repoPath, job.branch),
       });
       this.recordActionMessage(job, repoPath, formatActionBlockedCard({
         job,
@@ -792,7 +808,7 @@ export class LaneDispatchBus {
   private updateJobStatus(
     jobId: string,
     status: ActionJobStatus,
-    updates?: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "attempts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "base_sha" | "rework_count" | "blocked_at">>,
+    updates?: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "attempts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "base_sha" | "head_sha" | "rework_count" | "blocked_at">>,
   ): ActionJobRecord | null {
     const current = getActionJobById(this.db, jobId);
     const nextUpdates = { ...(updates ?? {}) };
@@ -1545,8 +1561,7 @@ export class LaneDispatchBus {
     };
 
     try {
-      const lock = this.options.getWorkspaceLock?.(repoPath);
-      return lock ? await lock.runExclusive(runReview) : await runReview();
+      return await runReview();
     } finally {
       this.independentReviewerJobs.delete(jobId);
     }
@@ -1941,6 +1956,7 @@ export class LaneDispatchBus {
       current_step: `Resolved by operator: ${outcome.summary}.${noteSuffix}`,
       error_message: note || "Dismissed by operator.",
       blocked_at: null,
+      head_sha: job.head_sha ?? resolveAssignedBranchHead(targetRepo, job.branch),
     });
     this.recordActionMessage(
       job,
