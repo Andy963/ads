@@ -123,6 +123,66 @@ describe("Actions WebSocket event contract", () => {
       jobId: "job-1",
       currentStep: "npm test",
     }));
+    expect(rt.messages.value.some((message) => message.content === "npm test")).toBe(true);
+  });
+
+  it("renders empty-detail steps and Developer deltas without dropping Action output", () => {
+    const { rt, handler } = setup();
+    const onJobUpdate = vi.fn();
+    (window as unknown as { __ADS_ON_ACTION_JOB_UPDATED__?: (payload: unknown) => void }).__ADS_ON_ACTION_JOB_UPDATED__ = onJobUpdate;
+
+    const emptyStep = {
+      type: "action_step",
+      jobId: "job-step",
+      phase: "tool",
+      detail: "",
+      title: "",
+      status: "running",
+      timestamp: 1000,
+    };
+    handler(emptyStep);
+    handler(emptyStep);
+    handler({ type: "delta", delta: "Developer output", jobId: "job-step", phase: "responding", timestamp: 1001 });
+
+    expect(rt.messages.value.filter((message) => message.content === "[Developer tool] Activity")).toHaveLength(1);
+    expect(rt.messages.value.some((message) => message.role === "assistant" && message.content.includes("Developer output"))).toBe(true);
+    expect(onJobUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      type: "action_step",
+      currentStep: "Developer tool activity",
+    }));
+  });
+
+  it("replays verification, Reviewer, and final Action events into the transcript", () => {
+    const { rt, handler } = setup();
+
+    handler({
+      type: "command",
+      command: "npm test",
+      output: "all tests passed",
+      status: "completed",
+      jobId: "job-replay",
+      seq: 10,
+      ts: 1000,
+    });
+    handler({
+      type: "message",
+      role: "assistant",
+      text: "### Code Review: Approved (PASS)",
+      jobId: "job-replay",
+      seq: 11,
+      ts: 1001,
+    });
+    handler({
+      type: "assistant_done",
+      text: "PR merged successfully",
+      jobId: "job-replay",
+      seq: 12,
+      ts: 1002,
+    });
+
+    expect(rt.messages.value.some((message) => message.kind === "execute" && message.command === "npm test")).toBe(true);
+    expect(rt.messages.value.some((message) => message.content.includes("Code Review: Approved (PASS)"))).toBe(true);
+    expect(rt.messages.value.some((message) => message.content === "PR merged successfully")).toBe(true);
   });
 
   it("restores persisted Action file changes as patch metadata", () => {
@@ -133,6 +193,7 @@ describe("Actions WebSocket event contract", () => {
       items: [
         { role: "user", text: "Implement the change", kind: "action_dispatch", ts: 1000 },
         { role: "status", text: "[Files]\n[modify] server/example.ts", kind: "file_change", ts: 1001 },
+        { role: "status", text: "[Developer tool] Activity", kind: "action_step", ts: 1002 },
         { role: "assistant", text: "Implementation complete", ts: 1002 },
       ],
     });
@@ -142,6 +203,7 @@ describe("Actions WebSocket event contract", () => {
       && message.patch?.files.some((file) => file.path === "server/example.ts")
     ))).toBe(true);
     expect(rt.messages.value.some((message) => message.role === "assistant" && message.content === "Implementation complete")).toBe(true);
+    expect(rt.messages.value.some((message) => message.role === "system" && message.content === "[Developer tool] Activity")).toBe(true);
   });
 });
 

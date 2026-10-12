@@ -152,6 +152,13 @@ function buildExecuteHistoryText(command: string, output: string): string {
   return normalizedOutput ? `$ ${normalizedCommand}\n${normalizedOutput}` : `$ ${normalizedCommand}`;
 }
 
+function buildActionStepHistoryText(payload: Record<string, unknown>): string {
+  const phase = String(payload.phase ?? "").trim();
+  const detail = String(payload.detail ?? "").trim() || String(payload.title ?? "").trim();
+  const label = phase ? `Developer ${phase}` : "Developer activity";
+  return detail ? `[${label}] ${detail}` : `[${label}] Activity`;
+}
+
 function isTerminalCommandPayload(payload: Record<string, unknown>): boolean {
   const status = String(payload.status ?? "").trim().toLowerCase();
   return status === "completed" || status === "failed" || status === "declined" || status === "cancelled";
@@ -1254,6 +1261,14 @@ export class LaneDispatchBus {
                   kind: "file_change",
                 });
               }
+            }
+            if (this.options.historyStore && payload.type === "action_step") {
+              this.options.historyStore.add(historyKey, {
+                role: "status",
+                text: buildActionStepHistoryText(payload),
+                ts: Number(payload.timestamp) || Date.now(),
+                kind: "action_step",
+              });
             }
           });
 

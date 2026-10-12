@@ -1318,6 +1318,16 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
           timestamp: Date.now(),
         });
         handler({
+          phase: "tool",
+          title: "",
+          detail: "",
+          timestamp: Date.now(),
+          raw: {
+            type: "item.started",
+            item: { id: "tool-item-1", type: "mcp_tool_call", name: "workspace.inspect" },
+          },
+        });
+        handler({
           phase: "command",
           title: "Running check",
           delta: "git status",
@@ -1437,6 +1447,11 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.ok(historyEntries.some((h) =>
       h.entry.kind === "file_change"
       && h.entry.text.includes("server/example.ts"),
+    ));
+    assert.ok(historyEntries.some((h) =>
+      h.entry.kind === "action_step"
+      && h.entry.role === "status"
+      && h.entry.text === "[Developer tool] Activity",
     ));
 
     // Wait for full cycle (verification + reviewer) to complete
