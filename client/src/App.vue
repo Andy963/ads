@@ -42,7 +42,12 @@ import {
   Clock,
 } from "@element-plus/icons-vue";
 import { isLaneConnected } from "./lib/laneConnectionStatus";
-import { hasLockingActionJob, isActionJobExecutionActive, type ActionJobQueueItem } from "./lib/actionJobs";
+import {
+  hasLockingActionJob,
+  isActionJobExecutionActive,
+  isActionJobInTopQueue,
+  type ActionJobQueueItem,
+} from "./lib/actionJobs";
 const {
   loggedIn,
   cachedTranscriptAvailable,
@@ -475,7 +480,7 @@ const actionQueueStatusOrder: Record<ActionJobItem["status"], number> = {
 
 const actionQueueJobs = computed(() => {
   return actionJobs.value
-    .filter((job) => ["running", "verifying", "reviewing", "waiting_merge", "blocked", "queued", "failed"].includes(job.status))
+    .filter((job) => isActionJobInTopQueue(job.status))
     .slice()
     .sort((left, right) => {
       const statusDelta = actionQueueStatusOrder[left.status] - actionQueueStatusOrder[right.status];
