@@ -634,6 +634,40 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.ok(updated?.current_step?.includes("PR squash merged"));
   });
 
+  it("broadcasts kind pr_delivery and records history on review approval delivery", () => {
+    const db = getStateDatabase();
+    const broadcasts: Array<Record<string, unknown>> = [];
+    const historyEntries: any[] = [];
+    const bus = new LaneDispatchBus(db, {
+      broadcastToActionsLane: (payload) => broadcasts.push(payload as Record<string, unknown>),
+      historyStore: {
+        add: (key, entry) => historyEntries.push({ key, entry }),
+      },
+    });
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      issueId: 707,
+      issueTitle: "Task 707",
+      issueDescription: "Complete issue description",
+      acceptanceCriteria: ["Verify task 707 delivery"],
+    });
+
+    bus.handleReviewResult({
+      jobId: job.jobId,
+      repoPath: repoDir,
+      verdict: "PASS",
+      reviewSummary: "LGTM",
+    });
+
+    const deliveryBroadcast = broadcasts.find((b) => b.type === "message" && b.role === "status" && b.kind === "pr_delivery");
+    assert.ok(deliveryBroadcast, "expected broadcast with kind: 'pr_delivery'");
+    assert.match(String(deliveryBroadcast.text), /Review approved/);
+
+    const deliveryHistory = historyEntries.find((h) => h.entry.kind === "pr_delivery");
+    assert.ok(deliveryHistory, "expected history entry with kind: 'pr_delivery'");
+  });
+
   it("merges local branch via fast-forward fallback when no PR number exists", async () => {
     const db = getStateDatabase();
     const bus = new LaneDispatchBus(db);
@@ -1344,6 +1378,16 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
           },
         });
         handler({
+          phase: "tool",
+          title: "",
+          detail: "",
+          timestamp: Date.now() + 50,
+          raw: {
+            type: "item.completed",
+            item: { id: "tool-item-1", type: "mcp_tool_call", name: "workspace.inspect" },
+          },
+        });
+        handler({
           phase: "command",
           title: "Running check",
           delta: "git status",
@@ -1469,6 +1513,12 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       && h.entry.role === "status"
       && h.entry.text === "[Developer tool] Activity",
     ));
+    const actionStepEntries = historyEntries.filter((h) =>
+      h.entry.kind === "action_step"
+      && h.entry.role === "status"
+      && h.entry.text === "[Developer tool] Activity",
+    );
+    assert.strictEqual(actionStepEntries.length, 1);
 
     // Wait for full cycle (verification + reviewer) to complete
     for (let i = 0; i < 50; i++) {

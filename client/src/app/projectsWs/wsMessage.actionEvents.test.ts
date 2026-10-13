@@ -205,6 +205,87 @@ describe("Actions WebSocket event contract", () => {
     expect(rt.messages.value.some((message) => message.role === "assistant" && message.content === "Implementation complete")).toBe(true);
     expect(rt.messages.value.some((message) => message.role === "system" && message.content === "[Developer tool] Activity")).toBe(true);
   });
+
+  it("deduplicates action_step cards between start and completion across streaming", () => {
+    const { rt, handler } = setup();
+
+    handler({
+      type: "action_step",
+      jobId: "job-dedup",
+      identity: "job-dedup:tool-review-1",
+      phase: "tool",
+      detail: "review_action",
+      status: "running",
+      timestamp: 1000,
+    });
+    handler({
+      type: "action_step",
+      jobId: "job-dedup",
+      identity: "job-dedup:tool-review-1",
+      phase: "tool",
+      detail: "review_action",
+      status: "completed",
+      timestamp: 1050,
+    });
+
+    const reviewCards = rt.messages.value.filter(
+      (m) => m.role === "system" && m.content === "[Developer tool] review_action",
+    );
+    expect(reviewCards).toHaveLength(1);
+  });
+
+  it("deduplicates consecutive action_step entries during history replay", () => {
+    const { rt, handler } = setup();
+
+    handler({
+      type: "history",
+      items: [
+        { role: "status", text: "[Developer tool] review_action", kind: "action_step", ts: 1000 },
+        { role: "status", text: "[Developer tool] review_action", kind: "action_step", ts: 1050 },
+      ],
+    });
+
+    const cards = rt.messages.value.filter(
+      (m) => m.role === "system" && m.content === "[Developer tool] review_action",
+    );
+    expect(cards).toHaveLength(1);
+  });
+
+  it("routes live PR delivery status events to transcript cards instead of laneStatus", () => {
+    const { rt, handler } = setup();
+    const deliveryText = "Review approved. PR #42 created (https://github.com/org/repo/pull/42). Starting automatic merge and cleanup.";
+
+    handler({
+      type: "message",
+      role: "status",
+      text: deliveryText,
+      jobId: "job-pr-1",
+      kind: "pr_delivery",
+      ts: 2000,
+    });
+
+    expect(rt.laneStatus.value).toBeNull();
+    const card = rt.messages.value.find((m) => m.role === "system" && m.content === deliveryText);
+    expect(card).toBeDefined();
+    expect(card?.kind).toBe("text");
+  });
+
+  it("restores kind pr_delivery history entries as transcript cards without setting laneStatus", () => {
+    const { rt, handler } = setup();
+    const deliveryText = "[PR Created] PR #42: https://github.com/org/repo/pull/42. Starting automatic merge and cleanup.";
+
+    handler({
+      type: "history",
+      items: [
+        { role: "status", text: deliveryText, kind: "pr_delivery", ts: 2000 },
+      ],
+    });
+
+    expect(rt.laneStatus.value).toBeNull();
+    const card = rt.messages.value.find((m) => m.role === "system" && m.content === deliveryText);
+    expect(card).toBeDefined();
+    expect(card?.kind).toBe("text");
+  });
 });
 
 describe("assistant item completion reconciliation", () => {

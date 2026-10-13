@@ -241,11 +241,15 @@ function buildActionAgentEventPayload(event: AgentEvent, jobId: string, reviewer
   }
 
   if (!reviewer && (event.phase === "context" || event.phase === "tool" || event.phase === "connection")) {
+    const detailOrTitle = String(event.detail ?? event.title ?? "").trim();
+    const identity = `${jobId}:${itemId || `${event.phase}:${detailOrTitle || "activity"}`}`;
     return {
       type: "action_step",
       title,
       detail: event.detail,
       status: eventType === "item.completed" ? "completed" : "running",
+      identity,
+      id: itemId || identity,
       jobId,
       timestamp: event.timestamp,
       phase: event.phase,
@@ -1254,6 +1258,7 @@ export class LaneDispatchBus {
           }
 
           // Attach event listener for real-time WebSocket streaming
+          const recordedActionSteps = new Set<string>();
           unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
             const payload = buildActionAgentEventPayload(event, job.id);
             if (Object.keys(payload).length === 0) return;
@@ -1287,12 +1292,16 @@ export class LaneDispatchBus {
               }
             }
             if (this.options.historyStore && payload.type === "action_step") {
-              this.options.historyStore.add(historyKey, {
-                role: "status",
-                text: buildActionStepHistoryText(payload),
-                ts: Number(payload.timestamp) || Date.now(),
-                kind: "action_step",
-              });
+              const stepKey = String(payload.identity ?? payload.id ?? buildActionStepHistoryText(payload));
+              if (!recordedActionSteps.has(stepKey)) {
+                recordedActionSteps.add(stepKey);
+                this.options.historyStore.add(historyKey, {
+                  role: "status",
+                  text: buildActionStepHistoryText(payload),
+                  ts: Number(payload.timestamp) || Date.now(),
+                  kind: "action_step",
+                });
+              }
             }
           });
 
@@ -1858,6 +1867,7 @@ export class LaneDispatchBus {
             : "Review approved. Starting automatic local merge and cleanup.",
           jobId: job.id,
           ts: Date.now(),
+          kind: "pr_delivery",
         }, params.repoPath);
       }
 
