@@ -1623,13 +1623,20 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           }
           continue;
         }
-        if (kind === "action_step" && role === "status") {
-          const last = next[next.length - 1];
-          if (last && last.role === "system" && last.kind === "text" && last.content === historyText) {
+        if ((kind === "action_step" || kind.startsWith("action_step:")) && role === "status") {
+          const stepIdentity = kind.startsWith("action_step:") ? kind.slice("action_step:".length).trim() : "";
+          const stepId = stepIdentity ? `h-action-step-${stepIdentity}` : `h-action-step-${idx}`;
+          if (stepIdentity && next.some((m) => m.id === stepId)) {
             continue;
           }
+          if (!stepIdentity) {
+            const last = next[next.length - 1];
+            if (last && last.role === "system" && last.kind === "text" && last.content === historyText) {
+              continue;
+            }
+          }
           next.push({
-            id: `h-action-step-${idx}`,
+            id: stepId,
             role: "system",
             kind: "text",
             content: historyText,
@@ -1930,10 +1937,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const stepId = `${jobId}:action-step:${stepIdentity}`;
       const content = phase ? `[Developer ${phase}] ${firstWireText(msg.detail, msg.title).trim() || "Activity"}` : detail;
       const ts = finiteTimestamp(msg.timestamp ?? msg.ts);
+      const isDuplicate = rawIdentity
+        ? rt.messages.value.some((message) => message.id === stepId)
+        : rt.messages.value.some((message) => message.id === stepId || (message.role === "system" && message.id.startsWith(`${jobId}:action-step:`) && message.content === content));
       if (
         detail &&
         jobId &&
-        !rt.messages.value.some((message) => message.id === stepId || (message.role === "system" && message.id.startsWith(`${jobId}:action-step:`) && message.content === content))
+        !isDuplicate
       ) {
         pushMessageBeforeLive({
           id: stepId,

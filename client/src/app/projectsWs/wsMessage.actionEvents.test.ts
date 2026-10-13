@@ -234,6 +234,36 @@ describe("Actions WebSocket event contract", () => {
     expect(reviewCards).toHaveLength(1);
   });
 
+  it("renders distinct status cards for separate tool executions with different identities", () => {
+    const { rt, handler } = setup();
+
+    // Attempt 1 execution
+    handler({
+      type: "action_step",
+      jobId: "job-rework",
+      identity: "job-rework:tool-review-attempt-1",
+      phase: "tool",
+      detail: "review_action",
+      status: "completed",
+      timestamp: 1000,
+    });
+    // Attempt 2 execution
+    handler({
+      type: "action_step",
+      jobId: "job-rework",
+      identity: "job-rework:tool-review-attempt-2",
+      phase: "tool",
+      detail: "review_action",
+      status: "completed",
+      timestamp: 2000,
+    });
+
+    const reviewCards = rt.messages.value.filter(
+      (m) => m.role === "system" && m.content === "[Developer tool] review_action",
+    );
+    expect(reviewCards).toHaveLength(2);
+  });
+
   it("deduplicates consecutive action_step entries during history replay", () => {
     const { rt, handler } = setup();
 
@@ -249,6 +279,25 @@ describe("Actions WebSocket event contract", () => {
       (m) => m.role === "system" && m.content === "[Developer tool] review_action",
     );
     expect(cards).toHaveLength(1);
+  });
+
+  it("deduplicates identified action_step entries during history replay even when non-adjacent", () => {
+    const { rt, handler } = setup();
+
+    handler({
+      type: "history",
+      items: [
+        { role: "status", text: "[Developer tool] review_action", kind: "action_step:tool-1", ts: 1000 },
+        { role: "status", text: "middle step", kind: "file_change", ts: 1010 },
+        { role: "status", text: "[Developer tool] review_action", kind: "action_step:tool-1", ts: 1050 },
+        { role: "status", text: "[Developer tool] review_action", kind: "action_step:tool-2", ts: 2000 },
+      ],
+    });
+
+    const reviewCards = rt.messages.value.filter(
+      (m) => m.role === "system" && m.content === "[Developer tool] review_action",
+    );
+    expect(reviewCards).toHaveLength(2);
   });
 
   it("routes live PR delivery status events to transcript cards instead of laneStatus", () => {

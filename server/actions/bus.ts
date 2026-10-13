@@ -1292,14 +1292,15 @@ export class LaneDispatchBus {
               }
             }
             if (this.options.historyStore && payload.type === "action_step") {
-              const stepKey = String(payload.identity ?? payload.id ?? buildActionStepHistoryText(payload));
+              const stepIdentity = String(payload.identity ?? payload.id ?? "").trim();
+              const stepKey = stepIdentity || buildActionStepHistoryText(payload);
               if (!recordedActionSteps.has(stepKey)) {
                 recordedActionSteps.add(stepKey);
                 this.options.historyStore.add(historyKey, {
                   role: "status",
                   text: buildActionStepHistoryText(payload),
                   ts: Number(payload.timestamp) || Date.now(),
-                  kind: "action_step",
+                  kind: stepIdentity ? `action_step:${stepIdentity}` : "action_step",
                 });
               }
             }

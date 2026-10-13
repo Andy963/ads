@@ -1509,12 +1509,12 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       && h.entry.text.includes("server/example.ts"),
     ));
     assert.ok(historyEntries.some((h) =>
-      h.entry.kind === "action_step"
+      typeof h.entry.kind === "string" && h.entry.kind.startsWith("action_step")
       && h.entry.role === "status"
       && h.entry.text === "[Developer tool] Activity",
     ));
     const actionStepEntries = historyEntries.filter((h) =>
-      h.entry.kind === "action_step"
+      typeof h.entry.kind === "string" && h.entry.kind.startsWith("action_step")
       && h.entry.role === "status"
       && h.entry.text === "[Developer tool] Activity",
     );
