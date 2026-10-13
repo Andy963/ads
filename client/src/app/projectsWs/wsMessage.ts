@@ -1625,7 +1625,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
         if ((kind === "action_step" || kind.startsWith("action_step:")) && role === "status") {
           const stepIdentity = kind.startsWith("action_step:") ? kind.slice("action_step:".length).trim() : "";
-          const stepId = stepIdentity ? `h-action-step-${stepIdentity}` : `h-action-step-${idx}`;
+          const stepId = stepIdentity ? `action-step:${stepIdentity}` : `h-action-step-${idx}`;
           if (stepIdentity && next.some((m) => m.id === stepId)) {
             continue;
           }
@@ -1820,7 +1820,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             const alreadyHas = existing.some((m) =>
               m.id === cardId ||
               (Boolean(deliveryJobId) && m.role === "system" && m.id === `${deliveryJobId}:delivery`) ||
-              (m.role === "system" && m.content === text)
+              (!deliveryJobId && m.role === "system" && m.content === text)
             );
             if (!alreadyHas) {
               pushMessageBeforeLive({
@@ -1944,8 +1944,8 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       ).trim();
       const jobId = firstWireText(msg.jobId).trim();
       const rawIdentity = firstWireText(msg.identity, msg.id).trim();
-      const stepIdentity = rawIdentity || `${phase}:${detail}`;
-      const stepId = `${jobId}:action-step:${stepIdentity}`;
+      const stepIdentity = rawIdentity || `${jobId}:${phase}:${detail}`;
+      const stepId = `action-step:${stepIdentity}`;
       const content = phase ? `[Developer ${phase}] ${firstWireText(msg.detail, msg.title).trim() || "Activity"}` : detail;
       const ts = finiteTimestamp(msg.timestamp ?? msg.ts);
       const isDuplicate = rawIdentity

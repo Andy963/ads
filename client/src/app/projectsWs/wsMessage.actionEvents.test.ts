@@ -365,6 +365,30 @@ describe("Actions WebSocket event contract", () => {
     expect(deliveryCards).toHaveLength(1);
     expect(rt.laneStatus.value).toBeNull();
   });
+
+  it("keeps same-text PR delivery cards for different jobs distinct", () => {
+    const { rt, handler } = setup();
+    const deliveryText = "Review approved. Starting automatic local merge and cleanup.";
+
+    handler({
+      type: "message",
+      role: "status",
+      text: deliveryText,
+      jobId: "job-pr-local-1",
+      kind: "pr_delivery:job-pr-local-1",
+      ts: 2000,
+    });
+    handler({
+      type: "message",
+      role: "status",
+      text: deliveryText,
+      jobId: "job-pr-local-2",
+      kind: "pr_delivery:job-pr-local-2",
+      ts: 2001,
+    });
+
+    expect(rt.messages.value.filter((m) => m.content === deliveryText)).toHaveLength(2);
+  });
 });
 
 describe("assistant item completion reconciliation", () => {

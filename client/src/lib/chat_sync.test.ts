@@ -801,6 +801,29 @@ describe("chat_sync.mergeHistoryFromServer", () => {
     expect(out.map((m) => m.kind)).toEqual(["text", "error"]);
   });
 
+  it("preserves action-step identity when live and replayed cards share the same text", () => {
+    const user = msg({ id: "u-action", role: "user", content: "Run the task" });
+    const local = [
+      user,
+      msg({ id: "job-547:action-step:job-547:tool-review-1", role: "system", content: "[Developer tool] review_action" }),
+      msg({ id: "job-547:action-step:job-547:tool-review-2", role: "system", content: "[Developer tool] review_action" }),
+    ];
+    const server = [
+      user,
+      msg({ id: "action-step:job-547:tool-review-1", role: "system", content: "[Developer tool] review_action" }),
+      msg({ id: "action-step:job-547:tool-review-2", role: "system", content: "[Developer tool] review_action" }),
+    ];
+
+    const merged = mergeHistoryFromServer(local, server, LIVE);
+
+    expect(merged.filter((item) => item.content === "[Developer tool] review_action")).toHaveLength(2);
+    expect(merged.map((item) => item.id)).toEqual([
+      "u-action",
+      "job-547:action-step:job-547:tool-review-1",
+      "job-547:action-step:job-547:tool-review-2",
+    ]);
+  });
+
   it("keeps a trailing failed user turn when earlier history still aligns (Issue #221)", () => {
     const local: ChatItem[] = [
       msg({ id: "u-1", role: "user", content: "first", ts: 1000 }),

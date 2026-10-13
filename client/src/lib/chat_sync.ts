@@ -63,11 +63,30 @@ function toComparable(items: ChatItem[]): ComparableChat[] {
     kind: m.kind,
     content: normalizeContentForMerge(m.content),
     command: m.kind === "execute" ? String(m.command ?? "").trim() : "",
-    identity: stableUserIdentity(m),
+    identity: stableTranscriptIdentity(m),
   }));
 }
 
-function stableUserIdentity(item: ChatItem): string {
+function stableTranscriptIdentity(item: ChatItem): string {
+  if (item.role === "system" && item.kind === "text") {
+    const id = String(item.id ?? "").trim();
+    const actionStepMarker = ":action-step:";
+    const liveActionStepIndex = id.indexOf(actionStepMarker);
+    if (id.startsWith("action-step:")) {
+      return `action-step:${id.slice("action-step:".length)}`;
+    }
+    if (liveActionStepIndex >= 0) {
+      return `action-step:${id.slice(liveActionStepIndex + actionStepMarker.length)}`;
+    }
+    if (id.startsWith("h-action-step-")) {
+      const identity = id.slice("h-action-step-".length);
+      if (identity && !/^\d+$/.test(identity)) return `action-step:${identity}`;
+    }
+    if (id.endsWith(":delivery")) {
+      const jobId = id.slice(0, -":delivery".length);
+      if (jobId) return `pr-delivery:${jobId}`;
+    }
+  }
   if (item.role !== "user") return "";
   const id = String(item.id ?? "").trim();
   if (!id || /^h-u-\d+$/.test(id) || !id.includes("-")) return "";
@@ -80,6 +99,11 @@ function comparableKey(chat: ComparableChat): string {
 
 function comparableMatches(left: ComparableChat, right: ComparableChat): boolean {
   if (left.role !== right.role || left.kind !== right.kind) return false;
+  const isStrictIdentity = (identity: string): boolean =>
+    identity.startsWith("action-step:") || identity.startsWith("pr-delivery:");
+  if (isStrictIdentity(left.identity) || isStrictIdentity(right.identity)) {
+    return Boolean(left.identity && right.identity && left.identity === right.identity);
+  }
   if (left.identity && right.identity) return left.identity === right.identity;
   return comparableKey(left) === comparableKey(right);
 }
