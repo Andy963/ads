@@ -415,7 +415,7 @@ function toggleMobileDrawer(): void {
   else openMobileDrawer();
 }
 
-const drawerActivation = createTapActivation<boolean>(toggleMobileDrawer, { name: "mobile-drawer" });
+const drawerActivation = createTapActivation<boolean>(toggleMobileDrawer, { preserveFocus: true, name: "mobile-drawer" });
 
 function selectWorkspaceTab(tab: ChatLane): void {
   if (activeWorkspaceTab.value === tab) {
