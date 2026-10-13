@@ -38,8 +38,18 @@ describe("chat bubble role colors and geometry contract", () => {
     const assistantMatch = css.match(/\.msg\[data-role="assistant"\]\s+\.bubble\s*\{([^}]+)\}/);
     expect(assistantMatch).not.toBeNull();
     const assistantBody = assistantMatch![1];
-    expect(assistantBody).toMatch(/background:\s*rgba\(255,\s*255,\s*255,\s*0\.96\)/);
+    expect(assistantBody).toMatch(/background:\s*rgba\(168,\s*85,\s*247,\s*0\.1\)/);
     expect(assistantBody).toMatch(/color:\s*#1e293b/);
+    expect(assistantBody).toMatch(/padding:\s*10px 14px 24px/);
+    expect(assistantBody).toMatch(/border-radius:\s*14px/);
+
+    // Distinct color variants across the palette
+    expect(css).toMatch(/\.msg\[data-role="assistant"\]\[data-tint="purple"\]\s+\.bubble/);
+    expect(css).toMatch(/\.msg\[data-role="assistant"\]\[data-tint="blue"\]\s+\.bubble/);
+    expect(css).toMatch(/\.msg\[data-role="assistant"\]\[data-tint="green"\]\s+\.bubble/);
+    expect(css).toMatch(/\.msg\[data-role="assistant"\]\[data-tint="amber"\]\s+\.bubble/);
+    expect(css).toMatch(/\.msg\[data-role="assistant"\]\[data-tint="pink"\]\s+\.bubble/);
+    expect(css).toMatch(/\.msg\[data-role="assistant"\]\[data-tint="teal"\]\s+\.bubble/);
 
     // User and assistant color treatments must be distinct
     expect(userBody).not.toEqual(assistantBody);
@@ -63,15 +73,16 @@ describe("chat bubble role colors and geometry contract", () => {
     // Base .bubble is full-width
     expect(css).toMatch(/\.bubble\s*\{[\s\S]*?width:\s*100%/);
     expect(css).toMatch(/\.bubble\s*\{[\s\S]*?max-width:\s*100%/);
-    expect(css).toMatch(/\.bubble\s*\{[\s\S]*?padding:\s*4px 0 24px/);
 
-    // Assistant bubble does NOT restrict width, padding, or border-radius
+    // Assistant bubble stays full-width but provides protective padding and rounded corners
     const assistantMatch = css.match(/\.msg\[data-role="assistant"\]\s+\.bubble\s*\{([^}]+)\}/);
-    expect(assistantMatch![1]).not.toMatch(/width:/);
-    expect(assistantMatch![1]).not.toMatch(/max-width:/);
-    expect(assistantMatch![1]).not.toMatch(/padding:/);
-    expect(assistantMatch![1]).not.toMatch(/margin:/);
-    expect(assistantMatch![1]).not.toMatch(/border-radius:/);
+    expect(assistantMatch![1]).toMatch(/width:\s*100%/);
+    expect(assistantMatch![1]).toMatch(/max-width:\s*100%/);
+    expect(assistantMatch![1]).toMatch(/padding:\s*10px 14px 24px/);
+    expect(assistantMatch![1]).toMatch(/border-radius:\s*14px/);
+
+    // Assistant actions align with padding
+    expect(css).toMatch(/\.msg\[data-role="assistant"\]\s+\.msgActions\s*\{[^}]*left:\s*14px/);
   });
 
   it("preserves independent styling for system, error, and execute bubbles", async () => {
@@ -118,6 +129,29 @@ describe("chat bubble role colors and geometry contract", () => {
     const execMsg = wrapper.find('.msg[data-kind="execute"][data-id="ex-1"]');
     expect(execMsg.exists()).toBe(true);
     expect(execMsg.find(".bubble.execute-block").exists()).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  it("cycles dynamic color tints sequentially across assistant bubbles", () => {
+    const messages = [
+      { id: "u-1", role: "user", kind: "text", content: "Prompt 1", ts: 100 },
+      { id: "a-1", role: "assistant", kind: "text", content: "Answer 1", ts: 101 },
+      { id: "a-2", role: "assistant", kind: "text", content: "Answer 2", ts: 102 },
+      { id: "a-3", role: "assistant", kind: "text", content: "Answer 3", ts: 103 },
+      { id: "a-4", role: "assistant", kind: "text", content: "Answer 4", ts: 104 },
+      { id: "a-5", role: "assistant", kind: "text", content: "Answer 5", ts: 105 },
+      { id: "a-6", role: "assistant", kind: "text", content: "Answer 6", ts: 106 },
+    ];
+
+    const wrapper = mountMessageList(messages);
+
+    expect(wrapper.find('.msg[data-id="a-1"]').attributes("data-tint")).toBe("purple");
+    expect(wrapper.find('.msg[data-id="a-2"]').attributes("data-tint")).toBe("blue");
+    expect(wrapper.find('.msg[data-id="a-3"]').attributes("data-tint")).toBe("green");
+    expect(wrapper.find('.msg[data-id="a-4"]').attributes("data-tint")).toBe("amber");
+    expect(wrapper.find('.msg[data-id="a-5"]').attributes("data-tint")).toBe("pink");
+    expect(wrapper.find('.msg[data-id="a-6"]').attributes("data-tint")).toBe("teal");
 
     wrapper.unmount();
   });
