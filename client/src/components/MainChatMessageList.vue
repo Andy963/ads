@@ -1302,6 +1302,11 @@ function retryUserTurn(message: RenderMessage): void {
   overflow: visible;
 }
 
+.msg[data-role="assistant"] .bubble {
+  background: rgba(255, 255, 255, 0.96);
+  color: #1e293b;
+}
+
 .msg[data-role="system"] .bubble {
   padding: 10px 14px;
   border-radius: 12px;
