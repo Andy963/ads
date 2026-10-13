@@ -81,6 +81,16 @@ describe("message action row order", () => {
     wrapper.unmount();
   });
 
+  it("suppresses the action row on system status messages to prevent text overlap", () => {
+    const wrapper = mountMessageList([
+      { id: "s-1", role: "system", kind: "text", content: "[Developer tool] review_action", ts: 1 },
+    ]);
+
+    expect(wrapper.find('.msg[data-role="system"] .msgActions').exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
   it("left-aligns the user action row in the stylesheet", async () => {
     const css = await readSfc("../components/MainChatMessageList.vue", import.meta.url);
 

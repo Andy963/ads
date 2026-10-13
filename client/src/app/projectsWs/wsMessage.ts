@@ -182,7 +182,7 @@ function hasTerminalHistoryTail(items: unknown[]): boolean {
     if (role === "status" && kind === "status" && !replayedLaneStatus(kind, text)) {
       continue;
     }
-    return role === "ai" || role === "assistant" || (role === "status" && (isExecuteHistoryKind(kind) || kind === "error" || Boolean(replayedLaneStatus(kind, text))));
+    return role === "ai" || role === "assistant" || (role === "status" && (isExecuteHistoryKind(kind) || kind === "error" || kind === "pr_delivery" || kind.startsWith("pr_delivery:") || Boolean(replayedLaneStatus(kind, text))));
   }
   return false;
 }
@@ -1623,9 +1623,41 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           }
           continue;
         }
-        if (kind === "action_step" && role === "status") {
+        if ((kind === "action_step" || kind.startsWith("action_step:")) && role === "status") {
+          const stepIdentity = kind.startsWith("action_step:") ? kind.slice("action_step:".length).trim() : "";
+          const stepId = stepIdentity ? `action-step:${stepIdentity}` : `h-action-step-${idx}`;
+          if (stepIdentity && next.some((m) => m.id === stepId)) {
+            continue;
+          }
+          if (!stepIdentity) {
+            const last = next[next.length - 1];
+            if (last && last.role === "system" && last.kind === "text" && last.content === historyText) {
+              continue;
+            }
+          }
           next.push({
-            id: `h-action-step-${idx}`,
+            id: stepId,
+            role: "system",
+            kind: "text",
+            content: historyText,
+            ts: ts ?? undefined,
+          });
+          continue;
+        }
+        if ((kind === "pr_delivery" || kind.startsWith("pr_delivery:")) && role === "status") {
+          const deliveryJobId = kind.startsWith("pr_delivery:") ? kind.slice("pr_delivery:".length).trim() : "";
+          const cardId = deliveryJobId ? `${deliveryJobId}:delivery` : `h-delivery-${idx}`;
+          if (deliveryJobId && next.some((m) => m.id === cardId || (m.role === "system" && m.id === `${deliveryJobId}:delivery`))) {
+            continue;
+          }
+          if (!deliveryJobId) {
+            const last = next[next.length - 1];
+            if (last && last.role === "system" && last.kind === "text" && (last.content === historyText || last.id.endsWith(":delivery"))) {
+              continue;
+            }
+          }
+          next.push({
+            id: cardId,
             role: "system",
             kind: "text",
             content: historyText,
@@ -1735,8 +1767,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const rec = msg as Record<string, unknown>;
       const role = String(rec.role ?? "").trim();
       const text = firstWireText(rec.text, rec.content).trim();
+      const jobId = firstWireText(rec.jobId).trim();
+      const kind = firstWireText(rec.kind).trim();
       const eventTsRaw = Number(rec.ts);
       const eventTs = Number.isFinite(eventTsRaw) && eventTsRaw > 0 ? Math.floor(eventTsRaw) : Date.now();
+      const existing = rt.messages.value;
       if (role === "user") {
         markTurnActive(rec);
         if (String(rec.jobId ?? "").trim()) {
@@ -1744,7 +1779,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           seenActionFileChangeActivities.clear();
         }
         const clientMessageId = String(rec.clientMessageId ?? rec.client_message_id ?? rec.jobId ?? "").trim();
-        const existing = rt.messages.value;
         const lastUser = [...existing].reverse().find((m) => m.role === "user");
         const alreadyHas = clientMessageId
           ? existing.some((m) => m.id === clientMessageId)
@@ -1761,7 +1795,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       } else if (role === "assistant" || role === "ai") {
         if (text) {
           sealActiveStreamingAssistant?.(rt);
-          const existing = rt.messages.value;
           const alreadyHas = existing.some((m) => m.role === "assistant" && m.content === text);
           if (!alreadyHas) {
             pushMessageBeforeLive({
@@ -1775,7 +1808,32 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
       } else if (role === "status") {
         if (text) {
-          rt.laneStatus.value = { kind: "info", message: text };
+          const isDelivery = kind === "pr_delivery" || kind.startsWith("pr_delivery:") || (Boolean(jobId) && (
+            text.includes("Review approved") ||
+            text.includes("PR #") ||
+            text.includes("automatic merge") ||
+            text.includes("automatic local merge")
+          ));
+          if (isDelivery) {
+            const deliveryJobId = jobId || (kind.startsWith("pr_delivery:") ? kind.slice("pr_delivery:".length).trim() : "");
+            const cardId = String(rec.id ?? (deliveryJobId ? `${deliveryJobId}:delivery` : randomId("delivery")));
+            const alreadyHas = existing.some((m) =>
+              m.id === cardId ||
+              (Boolean(deliveryJobId) && m.role === "system" && m.id === `${deliveryJobId}:delivery`) ||
+              (!deliveryJobId && m.role === "system" && m.content === text)
+            );
+            if (!alreadyHas) {
+              pushMessageBeforeLive({
+                id: cardId,
+                role: "system",
+                kind: "text",
+                content: text,
+                ts: eventTs ?? Date.now(),
+              }, rt);
+            }
+          } else {
+            rt.laneStatus.value = { kind: "info", message: text };
+          }
         }
       }
       return;
@@ -1885,15 +1943,24 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         phase ? `Developer ${phase} activity` : "Developer activity",
       ).trim();
       const jobId = firstWireText(msg.jobId).trim();
-      const status = firstWireText(msg.status).trim();
+      const rawIdentity = firstWireText(msg.identity, msg.id).trim();
+      const stepIdentity = rawIdentity || `${jobId}:${phase}:${detail}`;
+      const stepId = `action-step:${stepIdentity}`;
+      const content = phase ? `[Developer ${phase}] ${firstWireText(msg.detail, msg.title).trim() || "Activity"}` : detail;
       const ts = finiteTimestamp(msg.timestamp ?? msg.ts);
-      const stepId = `${jobId}:action-step:${ts ?? 0}:${phase}:${status}:${detail}`;
-      if (detail && jobId && !rt.messages.value.some((message) => message.id === stepId)) {
+      const isDuplicate = rawIdentity
+        ? rt.messages.value.some((message) => message.id === stepId)
+        : rt.messages.value.some((message) => message.id === stepId || (message.role === "system" && message.id.startsWith(`${jobId}:action-step:`) && message.content === content));
+      if (
+        detail &&
+        jobId &&
+        !isDuplicate
+      ) {
         pushMessageBeforeLive({
           id: stepId,
           role: "system",
           kind: "text",
-          content: phase ? `[Developer ${phase}] ${firstWireText(msg.detail, msg.title).trim() || "Activity"}` : detail,
+          content,
           ts,
         }, rt);
       }

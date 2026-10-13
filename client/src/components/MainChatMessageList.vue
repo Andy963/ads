@@ -572,6 +572,7 @@ function caretPath(open: boolean): string {
 }
 
 function shouldShowMsgActions(m: RenderMessage): boolean {
+  if (m.role === "system") return false;
   if (m.streaming && String(m.content ?? "").length === 0) return false;
   if (m.kind === "patch" || m.kind === "thought" || m.kind === "divider") return false;
   return true;

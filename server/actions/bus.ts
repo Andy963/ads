@@ -241,11 +241,15 @@ function buildActionAgentEventPayload(event: AgentEvent, jobId: string, reviewer
   }
 
   if (!reviewer && (event.phase === "context" || event.phase === "tool" || event.phase === "connection")) {
+    const detailOrTitle = String(event.detail ?? event.title ?? "").trim();
+    const identity = `${jobId}:${itemId || `${event.phase}:${detailOrTitle || "activity"}`}`;
     return {
       type: "action_step",
       title,
       detail: event.detail,
       status: eventType === "item.completed" ? "completed" : "running",
+      identity,
+      id: itemId || identity,
       jobId,
       timestamp: event.timestamp,
       phase: event.phase,
@@ -1254,6 +1258,7 @@ export class LaneDispatchBus {
           }
 
           // Attach event listener for real-time WebSocket streaming
+          const recordedActionSteps = new Set<string>();
           unsubscribe = orchestrator.onEvent((event: AgentEvent) => {
             const payload = buildActionAgentEventPayload(event, job.id);
             if (Object.keys(payload).length === 0) return;
@@ -1287,12 +1292,17 @@ export class LaneDispatchBus {
               }
             }
             if (this.options.historyStore && payload.type === "action_step") {
-              this.options.historyStore.add(historyKey, {
-                role: "status",
-                text: buildActionStepHistoryText(payload),
-                ts: Number(payload.timestamp) || Date.now(),
-                kind: "action_step",
-              });
+              const stepIdentity = String(payload.identity ?? payload.id ?? "").trim();
+              const stepKey = stepIdentity || buildActionStepHistoryText(payload);
+              if (!recordedActionSteps.has(stepKey)) {
+                recordedActionSteps.add(stepKey);
+                this.options.historyStore.add(historyKey, {
+                  role: "status",
+                  text: buildActionStepHistoryText(payload),
+                  ts: Number(payload.timestamp) || Date.now(),
+                  kind: stepIdentity ? `action_step:${stepIdentity}` : "action_step",
+                });
+              }
             }
           });
 
@@ -1848,27 +1858,27 @@ export class LaneDispatchBus {
 
       const identity = this.laneIdentityForJob(job, params.repoPath);
       const historyKey = identity.historyKey;
+      const deliveryText = hasRemote
+        ? `Review approved. PR #${prNumber} created (${prUrl}). Starting automatic merge and cleanup.`
+        : "Review approved. Starting automatic local merge and cleanup.";
 
       if (this.options.broadcastToActionsLane) {
         this.broadcastJobEvent(job, {
           type: "message",
           role: "status",
-          text: hasRemote
-            ? `Review approved. PR #${prNumber} created (${prUrl}). Starting automatic merge and cleanup.`
-            : "Review approved. Starting automatic local merge and cleanup.",
+          text: deliveryText,
           jobId: job.id,
           ts: Date.now(),
+          kind: `pr_delivery:${job.id}`,
         }, params.repoPath);
       }
 
       if (this.options.historyStore) {
         this.options.historyStore.add(historyKey, {
           role: "status",
-          text: hasRemote
-            ? `[PR Created] PR #${prNumber}: ${prUrl}. Starting automatic merge and cleanup.`
-            : "[Local Merge] Review approved. Starting automatic merge and cleanup.",
+          text: deliveryText,
           ts: Date.now(),
-          kind: "pr_delivery",
+          kind: `pr_delivery:${job.id}`,
         });
       }
 

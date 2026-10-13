@@ -205,6 +205,190 @@ describe("Actions WebSocket event contract", () => {
     expect(rt.messages.value.some((message) => message.role === "assistant" && message.content === "Implementation complete")).toBe(true);
     expect(rt.messages.value.some((message) => message.role === "system" && message.content === "[Developer tool] Activity")).toBe(true);
   });
+
+  it("deduplicates action_step cards between start and completion across streaming", () => {
+    const { rt, handler } = setup();
+
+    handler({
+      type: "action_step",
+      jobId: "job-dedup",
+      identity: "job-dedup:tool-review-1",
+      phase: "tool",
+      detail: "review_action",
+      status: "running",
+      timestamp: 1000,
+    });
+    handler({
+      type: "action_step",
+      jobId: "job-dedup",
+      identity: "job-dedup:tool-review-1",
+      phase: "tool",
+      detail: "review_action",
+      status: "completed",
+      timestamp: 1050,
+    });
+
+    const reviewCards = rt.messages.value.filter(
+      (m) => m.role === "system" && m.content === "[Developer tool] review_action",
+    );
+    expect(reviewCards).toHaveLength(1);
+  });
+
+  it("renders distinct status cards for separate tool executions with different identities", () => {
+    const { rt, handler } = setup();
+
+    // Attempt 1 execution
+    handler({
+      type: "action_step",
+      jobId: "job-rework",
+      identity: "job-rework:tool-review-attempt-1",
+      phase: "tool",
+      detail: "review_action",
+      status: "completed",
+      timestamp: 1000,
+    });
+    // Attempt 2 execution
+    handler({
+      type: "action_step",
+      jobId: "job-rework",
+      identity: "job-rework:tool-review-attempt-2",
+      phase: "tool",
+      detail: "review_action",
+      status: "completed",
+      timestamp: 2000,
+    });
+
+    const reviewCards = rt.messages.value.filter(
+      (m) => m.role === "system" && m.content === "[Developer tool] review_action",
+    );
+    expect(reviewCards).toHaveLength(2);
+  });
+
+  it("deduplicates consecutive action_step entries during history replay", () => {
+    const { rt, handler } = setup();
+
+    handler({
+      type: "history",
+      items: [
+        { role: "status", text: "[Developer tool] review_action", kind: "action_step", ts: 1000 },
+        { role: "status", text: "[Developer tool] review_action", kind: "action_step", ts: 1050 },
+      ],
+    });
+
+    const cards = rt.messages.value.filter(
+      (m) => m.role === "system" && m.content === "[Developer tool] review_action",
+    );
+    expect(cards).toHaveLength(1);
+  });
+
+  it("deduplicates identified action_step entries during history replay even when non-adjacent", () => {
+    const { rt, handler } = setup();
+
+    handler({
+      type: "history",
+      items: [
+        { role: "status", text: "[Developer tool] review_action", kind: "action_step:tool-1", ts: 1000 },
+        { role: "status", text: "middle step", kind: "file_change", ts: 1010 },
+        { role: "status", text: "[Developer tool] review_action", kind: "action_step:tool-1", ts: 1050 },
+        { role: "status", text: "[Developer tool] review_action", kind: "action_step:tool-2", ts: 2000 },
+      ],
+    });
+
+    const reviewCards = rt.messages.value.filter(
+      (m) => m.role === "system" && m.content === "[Developer tool] review_action",
+    );
+    expect(reviewCards).toHaveLength(2);
+  });
+
+  it("routes live PR delivery status events to transcript cards instead of laneStatus", () => {
+    const { rt, handler } = setup();
+    const deliveryText = "Review approved. PR #42 created (https://github.com/org/repo/pull/42). Starting automatic merge and cleanup.";
+
+    handler({
+      type: "message",
+      role: "status",
+      text: deliveryText,
+      jobId: "job-pr-1",
+      kind: "pr_delivery",
+      ts: 2000,
+    });
+
+    expect(rt.laneStatus.value).toBeNull();
+    const card = rt.messages.value.find((m) => m.role === "system" && m.content === deliveryText);
+    expect(card).toBeDefined();
+    expect(card?.kind).toBe("text");
+  });
+
+  it("restores kind pr_delivery history entries as transcript cards without setting laneStatus", () => {
+    const { rt, handler } = setup();
+    const deliveryText = "[PR Created] PR #42: https://github.com/org/repo/pull/42. Starting automatic merge and cleanup.";
+
+    handler({
+      type: "history",
+      items: [
+        { role: "status", text: deliveryText, kind: "pr_delivery", ts: 2000 },
+      ],
+    });
+
+    expect(rt.laneStatus.value).toBeNull();
+    const card = rt.messages.value.find((m) => m.role === "system" && m.content === deliveryText);
+    expect(card).toBeDefined();
+    expect(card?.kind).toBe("text");
+  });
+
+  it("deduplicates PR delivery cards across live streaming and history replay for the same job", () => {
+    const { rt, handler } = setup();
+    const liveText = "Review approved. PR #42 created (https://github.com/org/repo/pull/42). Starting automatic merge and cleanup.";
+    const historyText = "Review approved. PR #42 created (https://github.com/org/repo/pull/42). Starting automatic merge and cleanup.";
+
+    // Live event arrives first
+    handler({
+      type: "message",
+      role: "status",
+      text: liveText,
+      jobId: "job-pr-dedup",
+      kind: "pr_delivery:job-pr-dedup",
+      ts: 2000,
+    });
+
+    // Replay / bootstrap arrives after
+    handler({
+      type: "history",
+      items: [
+        { role: "status", text: historyText, kind: "pr_delivery:job-pr-dedup", ts: 2000 },
+      ],
+    });
+
+    const deliveryCards = rt.messages.value.filter(
+      (m) => m.role === "system" && m.id === "job-pr-dedup:delivery",
+    );
+    expect(deliveryCards).toHaveLength(1);
+    expect(rt.laneStatus.value).toBeNull();
+  });
+
+  it("keeps same-text PR delivery cards for different jobs distinct", () => {
+    const { rt, handler } = setup();
+    const deliveryText = "Review approved. Starting automatic local merge and cleanup.";
+
+    handler({
+      type: "message",
+      role: "status",
+      text: deliveryText,
+      jobId: "job-pr-local-1",
+      kind: "pr_delivery:job-pr-local-1",
+      ts: 2000,
+    });
+    handler({
+      type: "message",
+      role: "status",
+      text: deliveryText,
+      jobId: "job-pr-local-2",
+      kind: "pr_delivery:job-pr-local-2",
+      ts: 2001,
+    });
+
+    expect(rt.messages.value.filter((m) => m.content === deliveryText)).toHaveLength(2);
+  });
 });
 
 describe("assistant item completion reconciliation", () => {
