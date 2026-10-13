@@ -182,7 +182,7 @@ function hasTerminalHistoryTail(items: unknown[]): boolean {
     if (role === "status" && kind === "status" && !replayedLaneStatus(kind, text)) {
       continue;
     }
-    return role === "ai" || role === "assistant" || (role === "status" && (isExecuteHistoryKind(kind) || kind === "error" || kind === "pr_delivery" || Boolean(replayedLaneStatus(kind, text))));
+    return role === "ai" || role === "assistant" || (role === "status" && (isExecuteHistoryKind(kind) || kind === "error" || kind === "pr_delivery" || kind.startsWith("pr_delivery:") || Boolean(replayedLaneStatus(kind, text))));
   }
   return false;
 }
@@ -1644,13 +1644,20 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           });
           continue;
         }
-        if (kind === "pr_delivery" && role === "status") {
-          const last = next[next.length - 1];
-          if (last && last.role === "system" && last.kind === "text" && last.content === historyText) {
+        if ((kind === "pr_delivery" || kind.startsWith("pr_delivery:")) && role === "status") {
+          const deliveryJobId = kind.startsWith("pr_delivery:") ? kind.slice("pr_delivery:".length).trim() : "";
+          const cardId = deliveryJobId ? `${deliveryJobId}:delivery` : `h-delivery-${idx}`;
+          if (deliveryJobId && next.some((m) => m.id === cardId || (m.role === "system" && m.id === `${deliveryJobId}:delivery`))) {
             continue;
           }
+          if (!deliveryJobId) {
+            const last = next[next.length - 1];
+            if (last && last.role === "system" && last.kind === "text" && (last.content === historyText || last.id.endsWith(":delivery"))) {
+              continue;
+            }
+          }
           next.push({
-            id: `h-delivery-${idx}`,
+            id: cardId,
             role: "system",
             kind: "text",
             content: historyText,
@@ -1801,16 +1808,20 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
       } else if (role === "status") {
         if (text) {
-          const isDelivery = kind === "pr_delivery" || (Boolean(jobId) && (
-            kind === "pr_delivery" ||
+          const isDelivery = kind === "pr_delivery" || kind.startsWith("pr_delivery:") || (Boolean(jobId) && (
             text.includes("Review approved") ||
             text.includes("PR #") ||
             text.includes("automatic merge") ||
             text.includes("automatic local merge")
           ));
           if (isDelivery) {
-            const cardId = String(rec.id ?? (jobId ? `${jobId}:delivery` : randomId("delivery")));
-            const alreadyHas = existing.some((m) => m.id === cardId || (m.role === "system" && m.content === text));
+            const deliveryJobId = jobId || (kind.startsWith("pr_delivery:") ? kind.slice("pr_delivery:".length).trim() : "");
+            const cardId = String(rec.id ?? (deliveryJobId ? `${deliveryJobId}:delivery` : randomId("delivery")));
+            const alreadyHas = existing.some((m) =>
+              m.id === cardId ||
+              (Boolean(deliveryJobId) && m.role === "system" && m.id === `${deliveryJobId}:delivery`) ||
+              (m.role === "system" && m.content === text)
+            );
             if (!alreadyHas) {
               pushMessageBeforeLive({
                 id: cardId,

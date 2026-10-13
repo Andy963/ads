@@ -1858,28 +1858,27 @@ export class LaneDispatchBus {
 
       const identity = this.laneIdentityForJob(job, params.repoPath);
       const historyKey = identity.historyKey;
+      const deliveryText = hasRemote
+        ? `Review approved. PR #${prNumber} created (${prUrl}). Starting automatic merge and cleanup.`
+        : "Review approved. Starting automatic local merge and cleanup.";
 
       if (this.options.broadcastToActionsLane) {
         this.broadcastJobEvent(job, {
           type: "message",
           role: "status",
-          text: hasRemote
-            ? `Review approved. PR #${prNumber} created (${prUrl}). Starting automatic merge and cleanup.`
-            : "Review approved. Starting automatic local merge and cleanup.",
+          text: deliveryText,
           jobId: job.id,
           ts: Date.now(),
-          kind: "pr_delivery",
+          kind: `pr_delivery:${job.id}`,
         }, params.repoPath);
       }
 
       if (this.options.historyStore) {
         this.options.historyStore.add(historyKey, {
           role: "status",
-          text: hasRemote
-            ? `[PR Created] PR #${prNumber}: ${prUrl}. Starting automatic merge and cleanup.`
-            : "[Local Merge] Review approved. Starting automatic merge and cleanup.",
+          text: deliveryText,
           ts: Date.now(),
-          kind: "pr_delivery",
+          kind: `pr_delivery:${job.id}`,
         });
       }
 

@@ -660,11 +660,11 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       reviewSummary: "LGTM",
     });
 
-    const deliveryBroadcast = broadcasts.find((b) => b.type === "message" && b.role === "status" && b.kind === "pr_delivery");
+    const deliveryBroadcast = broadcasts.find((b) => b.type === "message" && b.role === "status" && typeof b.kind === "string" && b.kind.startsWith("pr_delivery"));
     assert.ok(deliveryBroadcast, "expected broadcast with kind: 'pr_delivery'");
     assert.match(String(deliveryBroadcast.text), /Review approved/);
 
-    const deliveryHistory = historyEntries.find((h) => h.entry.kind === "pr_delivery");
+    const deliveryHistory = historyEntries.find((h) => typeof h.entry.kind === "string" && h.entry.kind.startsWith("pr_delivery"));
     assert.ok(deliveryHistory, "expected history entry with kind: 'pr_delivery'");
   });
 

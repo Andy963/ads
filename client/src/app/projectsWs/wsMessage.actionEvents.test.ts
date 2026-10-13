@@ -335,6 +335,36 @@ describe("Actions WebSocket event contract", () => {
     expect(card).toBeDefined();
     expect(card?.kind).toBe("text");
   });
+
+  it("deduplicates PR delivery cards across live streaming and history replay for the same job", () => {
+    const { rt, handler } = setup();
+    const liveText = "Review approved. PR #42 created (https://github.com/org/repo/pull/42). Starting automatic merge and cleanup.";
+    const historyText = "Review approved. PR #42 created (https://github.com/org/repo/pull/42). Starting automatic merge and cleanup.";
+
+    // Live event arrives first
+    handler({
+      type: "message",
+      role: "status",
+      text: liveText,
+      jobId: "job-pr-dedup",
+      kind: "pr_delivery:job-pr-dedup",
+      ts: 2000,
+    });
+
+    // Replay / bootstrap arrives after
+    handler({
+      type: "history",
+      items: [
+        { role: "status", text: historyText, kind: "pr_delivery:job-pr-dedup", ts: 2000 },
+      ],
+    });
+
+    const deliveryCards = rt.messages.value.filter(
+      (m) => m.role === "system" && m.id === "job-pr-dedup:delivery",
+    );
+    expect(deliveryCards).toHaveLength(1);
+    expect(rt.laneStatus.value).toBeNull();
+  });
 });
 
 describe("assistant item completion reconciliation", () => {
