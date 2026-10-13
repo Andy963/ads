@@ -98,6 +98,16 @@ describe("MainChat header UI", () => {
     expect(mobileCss).toMatch(/\.mobileMenuBtn\s*\{[^}]*height:\s*var\(--topbar-height\)\s*;/);
   });
 
+  it("suppresses persistent focus outline on mobile drawer button while preserving keyboard focus", () => {
+    const css = readUtf8("../App.css");
+    const mobileCss = css.slice(css.indexOf("@media (max-width: 900px)"));
+    expect(mobileCss).toMatch(/\.mobileMenuBtn:focus\s*\{[^}]*outline:\s*none\s*;/);
+    expect(mobileCss).toMatch(/\.mobileMenuBtn:focus:not\(:focus-visible\)\s*\{[^}]*outline:\s*none\s*;/);
+    expect(mobileCss).toMatch(/\.mobileMenuBtn:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)\s*;/);
+    const app = readUtf8("../App.vue");
+    expect(app).toContain('createTapActivation<boolean>(toggleMobileDrawer, { preserveFocus: true, name: "mobile-drawer" })');
+  });
+
   it("places workspace notices below controls while preserving mobile settings notices", () => {
     const css = readUtf8("../App.css");
     const app = readUtf8("../App.vue");
