@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nextTick } from "vue";
 import { config, flushPromises, mount } from "@vue/test-utils";
 import ModelManager from "../components/ModelManager.vue";
 import ModelServicePicker from "../components/ModelServicePicker.vue";
@@ -28,6 +29,20 @@ function fixture() {
     }),
   };
   return { providers, models, services, profiles, api };
+}
+function touchEvent(type: string, touches: Array<{ clientX: number; clientY: number }>, changedTouches = touches): Event {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperties(event, {
+    touches: { value: touches },
+    changedTouches: { value: changedTouches },
+  });
+  return event;
+}
+async function swipeModel(row: { element: Element }, start: { clientX: number; clientY: number }, end: { clientX: number; clientY: number }): Promise<void> {
+  row.element.dispatchEvent(touchEvent("touchstart", [start]));
+  row.element.dispatchEvent(touchEvent("touchmove", [end]));
+  row.element.dispatchEvent(touchEvent("touchend", [], [end]));
+  await nextTick();
 }
 beforeEach(() => { config.global.stubs.teleport = true; });
 afterEach(() => { delete config.global.stubs.teleport; vi.restoreAllMocks(); localStorage.clear(); sessionStorage.clear(); });
@@ -112,6 +127,62 @@ describe("provider-first model management", () => {
     expect(wrapper.get('[data-testid="provider-dialog"]').text()).toContain("Provider save failed");
     expect(JSON.stringify(localStorage)).not.toContain("private-test-key");
     expect(JSON.stringify(sessionStorage)).not.toContain("private-test-key");
+    wrapper.unmount();
+  });
+
+  it("reveals a delete action for a horizontal model swipe and suppresses the follow-up click", async () => {
+    const { api } = fixture();
+    const wrapper = mount(ModelManager, { props: { api: api as any } });
+    await flushPromises();
+    const row = wrapper.get('[data-testid="model-row-m1"]');
+    await swipeModel(row, { clientX: 180, clientY: 40 }, { clientX: 90, clientY: 42 });
+    expect(row.attributes("style")).toContain("translateX(-80px)");
+    expect(wrapper.get('[data-testid="model-swipe-delete-m1"]').attributes("tabindex")).toBe("0");
+    await row.trigger("click");
+    expect(wrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(false);
+    expect(row.attributes("style")).toContain("translateX(0px)");
+    wrapper.unmount();
+  });
+
+  it("opens the existing delete confirmation without opening the model editor", async () => {
+    const { api } = fixture();
+    const wrapper = mount(ModelManager, { props: { api: api as any } });
+    await flushPromises();
+    const row = wrapper.get('[data-testid="model-row-m1"]');
+    await swipeModel(row, { clientX: 180, clientY: 40 }, { clientX: 90, clientY: 42 });
+    await wrapper.get('[data-testid="model-swipe-delete-m1"]').trigger("click");
+    expect(wrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(false);
+    expect(wrapper.get('[data-testid="settings-delete-confirm"]').text()).toContain("Delete Provider One model?");
+    expect(api.delete).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("lets predominantly vertical movement pass through without opening the swipe action", async () => {
+    const { api } = fixture();
+    const wrapper = mount(ModelManager, { props: { api: api as any } });
+    await flushPromises();
+    const row = wrapper.get('[data-testid="model-row-m1"]');
+    await swipeModel(row, { clientX: 100, clientY: 40 }, { clientX: 104, clientY: 120 });
+    expect(row.attributes("style")).toContain("translateX(0px)");
+    expect(wrapper.get('[data-testid="model-swipe-delete-m1"]').attributes("tabindex")).toBe("-1");
+    await row.trigger("click");
+    expect(wrapper.get('[data-testid="model-manager-dialog"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("closes an open swipe action when another model row or an outside control is clicked", async () => {
+    const { api } = fixture();
+    const wrapper = mount(ModelManager, { props: { api: api as any } });
+    await flushPromises();
+    const firstRow = wrapper.get('[data-testid="model-row-m1"]');
+    await swipeModel(firstRow, { clientX: 180, clientY: 40 }, { clientX: 90, clientY: 42 });
+    await wrapper.get('[data-testid="model-row-m2"]').trigger("click");
+    expect(firstRow.attributes("style")).toContain("translateX(0px)");
+    expect(wrapper.find('[data-testid="model-manager-dialog"]').exists()).toBe(false);
+    await swipeModel(firstRow, { clientX: 180, clientY: 40 }, { clientX: 90, clientY: 42 });
+    await wrapper.get('[data-testid="provider-add-model-p1"]').trigger("click");
+    expect(firstRow.attributes("style")).toContain("translateX(0px)");
+    expect(wrapper.get('[data-testid="model-manager-dialog"]').exists()).toBe(true);
     wrapper.unmount();
   });
 });
