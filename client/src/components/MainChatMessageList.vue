@@ -598,6 +598,26 @@ function retryUserTurn(message: RenderMessage): void {
   const failure = getTurnFailureForUser(message);
   if (failure) emit("retryMessage", failure);
 }
+
+const ASSISTANT_BUBBLE_TINTS = ["purple", "blue", "green", "amber", "pink", "teal"] as const;
+type AssistantBubbleTint = typeof ASSISTANT_BUBBLE_TINTS[number];
+
+const assistantMessageTintMap = computed<Map<string, AssistantBubbleTint>>(() => {
+  const map = new Map<string, AssistantBubbleTint>();
+  let assistantCount = 0;
+  for (const msg of renderMessages.value) {
+    if (msg.role === "assistant" && msg.kind === "text" && msg.id !== LIVE_STEP_MESSAGE_ID) {
+      map.set(msg.id, ASSISTANT_BUBBLE_TINTS[assistantCount % ASSISTANT_BUBBLE_TINTS.length]!);
+      assistantCount += 1;
+    }
+  }
+  return map;
+});
+
+function getAssistantTint(m: RenderMessage): AssistantBubbleTint | undefined {
+  if (m.role !== "assistant" || m.kind !== "text" || m.id === LIVE_STEP_MESSAGE_ID) return undefined;
+  return assistantMessageTintMap.value.get(m.id) ?? ASSISTANT_BUBBLE_TINTS[0];
+}
 </script>
 
 <template>
@@ -618,7 +638,14 @@ function retryUserTurn(message: RenderMessage): void {
       aria-hidden="true"
     ></div>
     <template v-for="(m, messageIndex) in loadedMessages" :key="m.id">
-      <div v-if="!isTurnFailureCard(m)" class="msg" :data-id="m.id" :data-role="m.role" :data-kind="m.kind">
+      <div
+        v-if="!isTurnFailureCard(m)"
+        class="msg"
+        :data-id="m.id"
+        :data-role="m.role"
+        :data-kind="m.kind"
+        :data-tint="getAssistantTint(m)"
+      >
         <div v-if="m.kind === 'command'" class="command-block">
         <button
           class="command-tree-header"
@@ -1304,8 +1331,51 @@ function retryUserTurn(message: RenderMessage): void {
 }
 
 .msg[data-role="assistant"] .bubble {
-  background: rgba(255, 255, 255, 0.96);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 10px 14px 24px;
+  border: none;
+  border-radius: 14px;
+  background: rgba(168, 85, 247, 0.1);
   color: #1e293b;
+  overflow: visible;
+}
+
+.msg[data-role="assistant"][data-tint="purple"] .bubble {
+  background: rgba(168, 85, 247, 0.1);
+}
+
+.msg[data-role="assistant"][data-tint="blue"] .bubble {
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.msg[data-role="assistant"][data-tint="green"] .bubble {
+  background: rgba(34, 197, 94, 0.11);
+}
+
+.msg[data-role="assistant"][data-tint="amber"] .bubble {
+  background: rgba(245, 158, 11, 0.11);
+}
+
+.msg[data-role="assistant"][data-tint="pink"] .bubble {
+  background: rgba(244, 114, 182, 0.12);
+}
+
+.msg[data-role="assistant"][data-tint="teal"] .bubble {
+  background: rgba(20, 184, 166, 0.1);
+}
+
+.msg[data-id="live-step"] .bubble {
+  background: transparent;
+  padding: 4px 0 24px;
+  border-radius: 0;
+}
+
+.msg[data-role="assistant"] .msgActions {
+  left: 14px;
+  bottom: 4px;
 }
 
 .msg[data-role="system"] .bubble {
