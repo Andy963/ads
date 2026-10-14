@@ -57,9 +57,10 @@ const firePointer = async (wrapper: VueWrapper, type: string, init: PointerEvent
 };
 
 const fireClick = async (wrapper: VueWrapper, selector: string, detail = 1): Promise<void> => {
-  wrapper.find(selector).element.dispatchEvent(
-    new MouseEvent("click", { bubbles: true, cancelable: true, detail }),
-  );
+  const event = new MouseEvent("click", { bubbles: true, cancelable: true, detail });
+  // Match VTU's timestamp fix while preserving MouseEvent's read-only detail.
+  Object.defineProperty(event, "_vts", { value: Date.now() + 1, writable: true });
+  wrapper.find(selector).element.dispatchEvent(event);
   await wrapper.vm.$nextTick();
 };
 
@@ -370,6 +371,26 @@ describe("ActionsQueueStack vertical drag gestures", () => {
     wrapper.unmount();
   });
 
+  it("preserves compatibility-click suppression and keyboard activation with a frozen clock", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    const wrapper = mountStack([makeJob("a"), makeJob("b")]);
+    try {
+      await drag(wrapper, [190, 150]);
+      expect(frontId(wrapper)).toBe("b");
+
+      await fireClick(wrapper, '[data-testid="btn-action-cancel"]');
+      expect(wrapper.emitted("cancel")).toBeUndefined();
+
+      await fireClick(wrapper, '[data-testid="btn-action-cancel"]', 0);
+      expect(wrapper.emitted("cancel")).toEqual([["b"]]);
+
+      await fireClick(wrapper, '[data-testid="btn-action-cancel"]');
+      expect(wrapper.emitted("cancel")).toEqual([["b"]]);
+    } finally {
+      wrapper.unmount();
+    }
+  });
+
   it("treats a stationary press as a tap: selection unchanged, click works", async () => {
     const wrapper = mountStack([makeJob("a"), makeJob("b")]);
 
@@ -444,5 +465,22 @@ describe("ActionsQueueStack front card metadata layout", () => {
     await fireClick(wrapper, '[data-testid="btn-action-review"]');
     expect(wrapper.emitted("review")).toEqual([["failed"]]);
     wrapper.unmount();
+  });
+
+  it("routes a newly rendered review action with a frozen clock", async () => {
+    const now = 1_700_000_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const wrapper = mountStack([makeJob("queued"), makeJob("failed", "failed")]);
+    try {
+      expect(wrapper.find('[data-testid="btn-action-review"]').exists()).toBe(false);
+      await wrapper.get('[data-testid="actions-queue-front"]').trigger("keydown", { key: "ArrowDown" });
+      expect(frontId(wrapper)).toBe("failed");
+
+      await fireClick(wrapper, '[data-testid="btn-action-review"]');
+      expect(wrapper.emitted("review")).toEqual([["failed"]]);
+      expect(Date.now()).toBe(now);
+    } finally {
+      wrapper.unmount();
+    }
   });
 });
