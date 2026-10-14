@@ -98,6 +98,10 @@ function isValidRestorableViewport(
   for (let i = 0; i < messages.length; i++) {
     if (messages[i]?.role === "user") lastUserIndex = i;
   }
+  // Completed turns must always default to bottom alignment on cold start
+  if (lastUserIndex >= 0 && !inFlight) {
+    return false;
+  }
   if (lastUserIndex >= 0 && effectiveIndex < lastUserIndex) {
     return false;
   }
@@ -747,6 +751,9 @@ onMounted(() => {
     // first visible frame does not briefly jump to the default scroll position.
     restoreInitialViewport();
     if (!initialViewportRestored) void nextTick().then(restoreInitialViewport);
+    if (streamingAnswerId.value) {
+      engageReadingLock(streamingAnswerId.value, { smooth: false });
+    }
   } else if (streamingAnswerId.value) {
     // Remounting into an in-flight answer locks instantly, without animation.
     engageReadingLock(streamingAnswerId.value, { smooth: false });
@@ -862,8 +869,8 @@ watch(
     if (initialViewportActive && tailAdvanced) {
       initialViewportActive = false;
       // A freshly submitted turn leaves the restored viewport once new content
-      // starts streaming; other tail advances keep the old behavior.
-      if (!readingLockEl && !readingLockAligning) scrollChatToBottom();
+      // starts streaming; in-flight restored turns keep reading lock without jumping.
+      if (!hasInFlightTurn(props.messages) && !readingLockEl && !readingLockAligning) scrollChatToBottom();
       return;
     }
     scheduleChatScrollToBottom();

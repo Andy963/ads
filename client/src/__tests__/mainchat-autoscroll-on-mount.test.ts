@@ -467,4 +467,44 @@ describe("MainChat auto-scroll on mount", () => {
     expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
     wrapper.unmount();
   });
+
+  it("discards completed turn user-message anchor on cold start and aligns to bottom", async () => {
+    const messages = [
+      msg("u-1", "user", "question"),
+      msg("a-1", "assistant", "answer"),
+    ];
+    const wrapper = mount(MainChat, {
+      props: {
+        messages,
+        viewport: {
+          following: false,
+          firstLoadedId: "u-1",
+          anchorId: "u-1",
+          anchorOffset: 0,
+          scrollTop: 30,
+          tailMessageId: "a-1",
+        },
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: MarkdownContentStub,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => 1200 });
+    chat.scrollTop = 0;
+
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(1200);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+
+    wrapper.unmount();
+  });
 });
