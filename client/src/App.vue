@@ -416,13 +416,18 @@ function toggleMobileDrawer(): void {
 }
 
 const drawerActivation = createTapActivation<boolean>(toggleMobileDrawer, { preserveFocus: true, name: "mobile-drawer" });
+let skipDrawerToggleFocus = false;
 
 function onMobileDrawerTogglePointerUp(event: PointerEvent): void {
+  skipDrawerToggleFocus = true;
   drawerActivation.onPointerUp(event);
   (event.currentTarget as HTMLElement)?.blur();
 }
 
 function onMobileDrawerToggleClick(event: MouseEvent): void {
+  if (event.detail !== 0) {
+    skipDrawerToggleFocus = true;
+  }
   drawerActivation.onClick(event, true);
   (event.currentTarget as HTMLElement)?.blur();
 }
@@ -1223,9 +1228,12 @@ watch(mobileDrawerOpen, async (open) => {
     mobileDrawerRef.value
       ?.querySelector<HTMLElement>('[data-testid="mobile-drawer-section-projects"]')
       ?.focus();
-  } else {
+  } else if (!skipDrawerToggleFocus) {
     mobileDrawerToggleRef.value?.focus();
+  } else {
+    mobileDrawerToggleRef.value?.blur();
   }
+  skipDrawerToggleFocus = false;
 });
 
 watch(isMobile, (mobile) => {

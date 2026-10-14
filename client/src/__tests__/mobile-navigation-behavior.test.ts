@@ -166,25 +166,48 @@ describe("mobile navigation behavior", () => {
     const button = wrapper.get('[data-testid="mobile-drawer-toggle"]');
     const blurSpy = vi.spyOn(button.element as HTMLElement, "blur");
 
-    const pointerDown = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, clientX: 12, clientY: 20 });
-    Object.defineProperties(pointerDown, {
-      pointerType: { value: "touch" }, pointerId: { value: 1 }, isPrimary: { value: true },
-    });
-    button.element.dispatchEvent(pointerDown);
+    // Helper to simulate a touch tap on the toggle button
+    const tapButton = async () => {
+      const pointerDown = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, clientX: 12, clientY: 20 });
+      Object.defineProperties(pointerDown, {
+        pointerType: { value: "touch" }, pointerId: { value: 1 }, isPrimary: { value: true },
+      });
+      button.element.dispatchEvent(pointerDown);
 
-    const pointerUp = new MouseEvent("pointerup", { bubbles: true, cancelable: true, button: 0, clientX: 12, clientY: 20 });
-    Object.defineProperties(pointerUp, {
-      pointerType: { value: "touch" }, pointerId: { value: 1 }, isPrimary: { value: true },
-    });
-    button.element.dispatchEvent(pointerUp);
-    await nextTick();
+      const pointerUp = new MouseEvent("pointerup", { bubbles: true, cancelable: true, button: 0, clientX: 12, clientY: 20 });
+      Object.defineProperties(pointerUp, {
+        pointerType: { value: "touch" }, pointerId: { value: 1 }, isPrimary: { value: true },
+      });
+      button.element.dispatchEvent(pointerUp);
+      await nextTick();
+      await nextTick();
+    };
 
+    // Open drawer via touch tap
+    await tapButton();
     expect(blurSpy).toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(button.element);
+
+    // Close drawer via touch tap (verifies close-watcher does not refocus the button)
+    blurSpy.mockClear();
+    await tapButton();
+    expect(blurSpy).toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(button.element);
+
+    // Click activation to open and close
+    blurSpy.mockClear();
+    button.element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+    await nextTick();
+    await nextTick();
+    expect(blurSpy).toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(button.element);
 
     blurSpy.mockClear();
     button.element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
     await nextTick();
+    await nextTick();
     expect(blurSpy).toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(button.element);
 
     wrapper.unmount();
   });
