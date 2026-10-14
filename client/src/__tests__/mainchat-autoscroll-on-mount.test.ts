@@ -365,12 +365,63 @@ describe("MainChat auto-scroll on mount", () => {
 
     height = 1200;
     await wrapper.setProps({
-      messages: [...messages, msg("m-65", "assistant", "new tail")],
+      messages: messages.map((message, index) => index === messages.length - 1
+        ? { ...message, content: "updated authoritative tail" }
+        : message),
       transcriptAuthoritativeSeq: 2,
     });
     await settleUi(wrapper);
 
     expect(chat.scrollTop).toBe(1200);
+    wrapper.unmount();
+  });
+
+  it("treats a scrollbar drag after restoration as explicit user control", async () => {
+    const messages = Array.from({ length: 65 }, (_, index) => msg(`m-${index}`, "assistant", `line ${index}`));
+    const wrapper = mount(MainChat, {
+      props: {
+        messages,
+        viewport: {
+          following: false,
+          firstLoadedId: "m-35",
+          anchorId: "missing-anchor",
+          anchorOffset: 0,
+          scrollTop: 180,
+          userControlled: true,
+          scopeKey: "same-session",
+          tailMessageId: "m-64",
+        },
+        transcriptScopeKey: "same-session",
+        transcriptAuthoritative: false,
+        transcriptAuthoritativeSeq: 0,
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: { stubs: { MarkdownContent: MarkdownContentStub } },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => 900 });
+    chat.scrollTop = 0;
+    await settleUi(wrapper);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    chat.scrollTop = 40;
+    await wrapper.find(".chat").trigger("scroll");
+    await settleUi(wrapper);
+
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => 1200 });
+    await wrapper.setProps({
+      messages: [...messages, msg("m-65", "assistant", "new authoritative tail")],
+      transcriptAuthoritative: true,
+      transcriptAuthoritativeSeq: 1,
+    });
+    await settleUi(wrapper);
+
+    expect(chat.scrollTop).toBe(40);
     wrapper.unmount();
   });
 
