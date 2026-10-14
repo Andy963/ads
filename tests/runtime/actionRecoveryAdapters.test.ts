@@ -167,10 +167,6 @@ describe("Actions recovery context through runtime adapters", () => {
             const request = JSON.parse(buffer.slice(0, end));
             buffer = buffer.slice(end + 1);
             requests.push(request);
-            if (request.method === "mcpServerStatus/list") {
-              assert.equal(request.params.threadId, "thread");
-              write({ id: request.id, result: { data: [], nextCursor: null } });
-            }
             if (["initialize", "thread/start", "thread/resume", "turn/start"].includes(request.method)) {
               if (request.method.startsWith("thread/")) {
                 assert.equal(request.params.sandbox, sandboxMode);
@@ -246,7 +242,7 @@ describe("Actions recovery context through runtime adapters", () => {
         }
         assert.equal(requests.filter(request => request.method === "thread/start").length, resumed ? 0 : 1);
         assert.equal(requests.filter(request => request.method === "thread/resume").length, resumed ? 1 : 0);
-        assert.equal(requests.filter(request => request.method === "mcpServerStatus/list").length, 1);
+        assert.equal(requests.some(request => request.method?.startsWith("mcp")), false);
         assert.equal(actionTools.review_action.mock.callCount(), 1);
         assert.equal(actionTools.deliver_action.mock.callCount(), 1);
         assertDispatches();
