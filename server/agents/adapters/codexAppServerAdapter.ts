@@ -28,6 +28,7 @@ import type { CommandExecutionRequestApprovalResponse } from "../../codex/appSer
 import type { PermissionsRequestApprovalResponse } from "../../codex/appServer/protocol/v2/PermissionsRequestApprovalResponse.js";
 import type { SandboxPolicy } from "../../codex/appServer/protocol/v2/SandboxPolicy.js";
 import type { AskForApproval } from "../../codex/appServer/protocol/v2/AskForApproval.js";
+import type { ListMcpServerStatusParams } from "../../codex/appServer/protocol/v2/ListMcpServerStatusParams.js";
 import { AsyncLock } from "../../utils/asyncLock.js";
 import type { ThreadGoal } from "../../codex/appServer/protocol/v2/ThreadGoal.js";
 import type { ThreadGoalStatus } from "../../codex/appServer/protocol/v2/ThreadGoalStatus.js";
@@ -57,6 +58,9 @@ const logger = createLogger("CodexAppServerAdapter");
 export const CODEX_ADAPTER_ID = "codex";
 const DEFAULT_AUTO_COMPACT_TIMEOUT_MS = 120_000;
 const COMPACT_INTERRUPT_GRACE_MS = 5_000;
+const RECOVERY_MCP_TIMEOUT_MS = 5_000;
+const RECOVERY_MCP_MAX_PAGES = 32;
+const RECOVERY_MCP_MAX_CURSOR_LENGTH = 4_096;
 const DEFAULT_METADATA: AgentMetadata = {
   id: CODEX_ADAPTER_ID,
   name: "Codex",
@@ -645,7 +649,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       }
     }
 
-    if (this.threadId) {
+    if (this.threadId && !options?.actionRecovery) {
       try {
         await this.maybeCompactThread(client, this.threadId, options?.signal);
         assertActiveTurn();
@@ -1017,6 +1021,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
     const startTurn = async (threadId: string): Promise<void> => {
       assertActiveTurn();
+      if (options?.actionRecovery) {
+        await this.assertRecoveryMcpInventoryEmpty(client, threadId, options.signal);
+        assertActiveTurn();
+      }
       await client.request(
         "turn/start",
         this.buildTurnStartParams(threadId, userInput, Boolean(options?.actionRecovery)),
@@ -1349,6 +1357,57 @@ export class CodexAppServerAdapter implements AgentAdapter {
       this.loadedThreadsByClient.set(client, set);
     }
     set.add(threadId);
+  }
+
+  private async assertRecoveryMcpInventoryEmpty(
+    client: CodexAppServerClient,
+    threadId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const failure = () => new TransientModelRetryAttemptError(
+      "Actions recovery requires a verified empty provider MCP inventory.",
+      { retryable: false, sideEffectObserved: false },
+    );
+    const deadline = Date.now() + RECOVERY_MCP_TIMEOUT_MS;
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    let onAbort: (() => void) | undefined;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(createAbortError("Actions recovery cancelled"));
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      if (!threadId.trim() || signal?.aborted) throw failure();
+      for (let page = 0; page < RECOVERY_MCP_MAX_PAGES; page += 1) {
+        const timeoutMs = deadline - Date.now();
+        if (timeoutMs <= 0) throw failure();
+        const result = await Promise.race([
+          client.request<ListMcpServerStatusParams, unknown>("mcpServerStatus/list", {
+            threadId, detail: "toolsAndAuthOnly", limit: 100, ...(cursor === undefined ? {} : { cursor }),
+          }, { timeoutMs }),
+          cancelled,
+        ]);
+        if (signal?.aborted || Date.now() >= deadline) throw failure();
+        if (!result || typeof result !== "object" || Array.isArray(result)) throw failure();
+        const inventory = result as Record<string, unknown>;
+        // A server with no tools today can expose tools later; annotations are not enforcement.
+        if (!Array.isArray(inventory.data) || inventory.data.length !== 0) throw failure();
+        if (inventory.nextCursor === null) return;
+        if (typeof inventory.nextCursor !== "string" || !inventory.nextCursor.trim()
+          || inventory.nextCursor.length > RECOVERY_MCP_MAX_CURSOR_LENGTH || cursors.has(inventory.nextCursor)) {
+          throw failure();
+        }
+        cursor = inventory.nextCursor;
+        cursors.add(cursor);
+      }
+      throw failure();
+    } catch {
+      if (signal?.aborted) throw createAbortError("Actions recovery cancelled");
+      // Never propagate server details or allow inventory failures to trigger a model/thread retry.
+      throw failure();
+    } finally {
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+    }
   }
 
   private rememberConfiguredTurnPolicy(result: { sandbox?: SandboxPolicy; approvalPolicy?: AskForApproval }): void {

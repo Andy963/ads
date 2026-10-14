@@ -55,7 +55,8 @@ describe("native stopped-turn continuation", () => {
         let toolsStarted = 0;
         const effectsPath = path.join(workspace, "effects.txt");
         const cancellation = stage === "active-tool" ? setInterval(() => {
-          if (fs.existsSync(effectsPath)) controller.abort();
+          // Creation can be observed before appendFileSync writes its evidence.
+          if (fs.existsSync(effectsPath) && fs.readFileSync(effectsPath, "utf8") === "1") controller.abort();
         }, 10) : undefined;
         t.after(() => { if (cancellation) clearInterval(cancellation); });
         const create = () => new NativeAgentAdapter({
