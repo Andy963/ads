@@ -82,6 +82,7 @@ export function createAppContext() {
       sessionId: project.sessionId,
       chatSessionId: acopilot ? WIRE_ACOPILOT_SESSION_ID : project.chatSessionId || "main",
       workspace: project.path,
+      lane: acopilot ? "acopilot" : "actions",
     });
     if (rt.transcriptRestored && rt.messages.value.length > 0) cachedTranscriptAvailable.value = true;
   };

@@ -202,6 +202,229 @@ describe("MainChat auto-scroll on mount", () => {
     wrapper.unmount();
   });
 
+  it("restores an explicitly user-controlled position in an unchanged completed session", async () => {
+    const messages = [
+      msg("u-1", "user", "question"),
+      ...Array.from({ length: 64 }, (_, index) => msg(`a-${index}`, "assistant", `line ${index}`)),
+    ];
+    const wrapper = mount(MainChat, {
+      props: {
+        messages,
+        viewport: {
+          following: false,
+          firstLoadedId: "a-35",
+          anchorId: "missing-anchor",
+          anchorOffset: 0,
+          scrollTop: 180,
+          userControlled: true,
+          scopeKey: "same-session",
+          tailMessageId: "a-63",
+        },
+        transcriptScopeKey: "same-session",
+        transcriptAuthoritative: false,
+        transcriptAuthoritativeSeq: 0,
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: { stubs: { MarkdownContent: MarkdownContentStub } },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => 900 });
+    chat.scrollTop = 0;
+    await settleUi(wrapper);
+
+    expect(chat.scrollTop).toBe(180);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("discards a cached anchor when the authoritative snapshot replaces its history", async () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        messages: [msg("u-1", "user", "old question"), msg("a-1", "assistant", "same tail")],
+        viewport: {
+          following: false,
+          firstLoadedId: "u-1",
+          anchorId: "missing-anchor",
+          anchorOffset: 0,
+          scrollTop: 80,
+          userControlled: true,
+          scopeKey: "same-session",
+          tailMessageId: "a-1",
+        },
+        transcriptScopeKey: "same-session",
+        transcriptAuthoritative: false,
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: { stubs: { MarkdownContent: MarkdownContentStub } },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    let height = 500;
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => height });
+    chat.scrollTop = 0;
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(80);
+
+    height = 1400;
+    await wrapper.setProps({
+      messages: [msg("u-2", "user", "authoritative question"), msg("a-1", "assistant", "same tail")],
+      transcriptAuthoritative: true,
+      transcriptAuthoritativeSeq: 1,
+    });
+    await settleUi(wrapper);
+
+    expect(chat.scrollTop).toBe(1400);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("returns to the current scope tail when a mounted panel changes ownership", async () => {
+    const wrapper = mount(MainChat, {
+      props: {
+        messages: [msg("m-1", "assistant", "old scope")],
+        viewport: {
+          following: false,
+          firstLoadedId: "m-1",
+          anchorId: "m-1",
+          anchorOffset: 0,
+          scrollTop: 80,
+          userControlled: true,
+          scopeKey: "project-a",
+          tailMessageId: "m-1",
+        },
+        transcriptScopeKey: "project-a",
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: { stubs: { MarkdownContent: MarkdownContentStub } },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    let height = 400;
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => height });
+    await settleUi(wrapper);
+
+    height = 1200;
+    await wrapper.setProps({
+      messages: [msg("m-1", "assistant", "new scope")],
+      transcriptScopeKey: "project-b",
+    });
+    await settleUi(wrapper);
+
+    expect(chat.scrollTop).toBe(1200);
+    wrapper.unmount();
+  });
+
+  it("handles a later authoritative catch-up after the boolean is already true", async () => {
+    const messages = Array.from({ length: 65 }, (_, index) => msg(`m-${index}`, "assistant", `line ${index}`));
+    const wrapper = mount(MainChat, {
+      props: {
+        messages,
+        viewport: {
+          following: false,
+          firstLoadedId: "m-35",
+          anchorId: "missing-anchor",
+          anchorOffset: 0,
+          scrollTop: 180,
+          tailMessageId: "m-64",
+        },
+        transcriptScopeKey: "same-session",
+        transcriptAuthoritative: false,
+        transcriptAuthoritativeSeq: 0,
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: { stubs: { MarkdownContent: MarkdownContentStub } },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    let height = 900;
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => height });
+    chat.scrollTop = 0;
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(180);
+
+    await wrapper.setProps({ transcriptAuthoritative: true, transcriptAuthoritativeSeq: 1 });
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(180);
+
+    height = 1200;
+    await wrapper.setProps({
+      messages: messages.map((message, index) => index === messages.length - 1
+        ? { ...message, content: "updated authoritative tail" }
+        : message),
+      transcriptAuthoritativeSeq: 2,
+    });
+    await settleUi(wrapper);
+
+    expect(chat.scrollTop).toBe(1200);
+    wrapper.unmount();
+  });
+
+  it("treats a scrollbar drag after restoration as explicit user control", async () => {
+    const messages = Array.from({ length: 65 }, (_, index) => msg(`m-${index}`, "assistant", `line ${index}`));
+    const wrapper = mount(MainChat, {
+      props: {
+        messages,
+        viewport: {
+          following: false,
+          firstLoadedId: "m-35",
+          anchorId: "missing-anchor",
+          anchorOffset: 0,
+          scrollTop: 180,
+          userControlled: true,
+          scopeKey: "same-session",
+          tailMessageId: "m-64",
+        },
+        transcriptScopeKey: "same-session",
+        transcriptAuthoritative: false,
+        transcriptAuthoritativeSeq: 0,
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: { stubs: { MarkdownContent: MarkdownContentStub } },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => 900 });
+    chat.scrollTop = 0;
+    await settleUi(wrapper);
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+    chat.scrollTop = 40;
+    await wrapper.find(".chat").trigger("scroll");
+    await settleUi(wrapper);
+
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => 1200 });
+    await wrapper.setProps({
+      messages: [...messages, msg("m-65", "assistant", "new authoritative tail")],
+      transcriptAuthoritative: true,
+      transcriptAuthoritativeSeq: 1,
+    });
+    await settleUi(wrapper);
+
+    expect(chat.scrollTop).toBe(40);
+    wrapper.unmount();
+  });
+
   it("moves to the bottom when new messages arrive before the restored viewport is used", async () => {
     const wrapper = mount(MainChat, {
       props: {

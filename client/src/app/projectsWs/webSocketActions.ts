@@ -440,6 +440,10 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     const wsInstance = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: rt.chatSessionId, resume: resumeOptions(rt) });
 
     rt.ws = wsInstance;
+    // A reconnect may reuse the cached transcript while the new bootstrap is
+    // still pending. MainChat must not treat that cache as authoritative until
+    // this connection commits its history baseline.
+    rt.transcriptAuthoritative.value = false;
     let syncGeneration = rt.syncGeneration;
     let disconnectCleanupDone = false;
     let disconnectWasBusy = false;
@@ -458,6 +462,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     let bootstrapReportedInFlight: boolean | null = null;
     let bootstrapHistoryExpected = false;
     let snapshotBootstrapPending = false;
+    let resumeBootstrapPending = false;
     let observedTerminalSeq = 0;
     let welcomeSeen = false;
     let awaitingSessionSelection = false;
@@ -532,6 +537,22 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       deferredRuntimeSnapshots = [];
     };
 
+    const markTranscriptAuthoritative = (): void => {
+      rt.transcriptReady = true;
+      rt.transcriptRestored = false;
+      rt.transcriptAuthoritative.value = true;
+      rt.transcriptAuthoritativeSeq.value += 1;
+    };
+
+    const finishResumeBootstrap = (): void => {
+      // Resume can replay durable events over the socket after welcome. The
+      // cached baseline is authoritative only once that advertised tail lands.
+      if (!resumeBootstrapPending || sequencer.getLastAppliedSeq() < bootstrapBoundarySeq) return;
+      resumeBootstrapPending = false;
+      markTranscriptAuthoritative();
+      rt.transcriptCache?.schedule();
+    };
+
     const applyDeferredRuntimeSnapshots = (terminalFenceSeq = 0): void => {
       if (deferredRuntimeSnapshots.length === 0) return;
       const snapshots = deferredRuntimeSnapshots.slice();
@@ -575,8 +596,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       } else {
         handleWsPayload?.(history);
       }
-      rt.transcriptReady = true;
-      rt.transcriptRestored = false;
+      markTranscriptAuthoritative();
       rt.transcriptCache?.schedule();
       const terminalBootstrapFence =
         bootstrapReportedInFlight === false && hasTerminalAssistantHistory(history) ? bootstrapBoundarySeq : 0;
@@ -675,12 +695,15 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         sessionId: project.sessionId,
         chatSessionId: nextChatSessionId,
         workspace: project.path,
+        lane: mode === ACOPILOT_LANE_ID ? "acopilot" : "actions",
       });
+      wasNearBottomBeforeDisconnect = rt.transcriptViewport.value?.following !== false;
       rt.chatSessionId = nextChatSessionId;
       ctx.bindPromptOutbox(rt);
       rt.transcriptReady = false;
       rt.transcriptCursor = 0;
       snapshotBootstrapPending = false;
+      resumeBootstrapPending = false;
       observedTerminalSeq = 0;
       syncChatSessionId = nextChatSessionId;
       clearSyncRetryTimer();
@@ -701,14 +724,16 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       return true;
     };
 
-    const resetChatSyncForGeneration = (options?: { invalidateConnection?: boolean }): void => {
+    const resetChatSyncForGeneration = (options?: { invalidateConnection?: boolean; preserveViewport?: boolean }): void => {
       syncLaneEpoch += 1;
       bootstrapHistoryApplyScheduled = false;
       clearSyncRetryTimer();
       syncRetryAttempts = 0;
-      rt.transcriptCache?.invalidate();
+      if (!options?.preserveViewport) rt.transcriptCache?.invalidate();
+      rt.transcriptAuthoritative.value = false;
       rt.transcriptReady = false;
       snapshotBootstrapPending = false;
+      resumeBootstrapPending = false;
       observedTerminalSeq = 0;
       sequencer.abortCatchUp();
       sequencer.resetCursor();
@@ -775,6 +800,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       }
 
       clearOutboxForGenerationChange(rt);
+      rt.transcriptResetSeq.value += 1;
       resetChatSyncForGeneration({ invalidateConnection: true });
       return true;
     };
@@ -1012,8 +1038,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           });
         }
         activeSequencer.completeCatchUp();
-        rt.transcriptReady = true;
-        rt.transcriptRestored = false;
+        markTranscriptAuthoritative();
         if (wasNearBottomBeforeDisconnect) {
           triggerBottomAlignmentPass();
         }
@@ -1218,6 +1243,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           // This rejection is a selection barrier, not a terminal turn error
           // (which would immediately flush the next queued old-session input).
           awaitingSessionSelection = true;
+          ctx.transcriptCache.suspendRuntime(rt);
           resetChatSyncForGeneration();
           clearPreviousSessionInputs(ctx, rt);
           rt.syncInProgress = true;
@@ -1289,6 +1315,15 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             }
             return;
           }
+          if (awaitingSessionSelection && welcomeChatSessionId === syncChatSessionId) {
+            // A rejected selection may resolve back to the original session.
+            // Reopen its suspended writer before committing the new baseline.
+            ctx.transcriptCache.attach(rt, {
+              projectId: pid, sessionId: project.sessionId, chatSessionId: welcomeChatSessionId,
+              workspace: project.path, lane: mode === ACOPILOT_LANE_ID ? "acopilot" : "actions",
+            });
+            wasNearBottomBeforeDisconnect = rt.transcriptViewport.value?.following !== false;
+          }
           const sameSessionSnapshot = welcomeSeen && rec.historyMode === "snapshot" && welcomeChatSessionId === syncChatSessionId;
           const sessionChanged = Boolean(serverChatSessionId && serverChatSessionId !== rt.chatSessionId);
           if (sessionChanged) {
@@ -1321,7 +1356,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             handleMessage = createMessageHandler();
             handleWsPayload = handleMessage;
           }
-          if (sessionChanged) setMessages([], rt);
+          // attach() may already have restored the destination session's own
+          // cache. Clearing it here loses its viewport before bootstrap arrives.
+          if (sessionChanged && !rt.transcriptRestored) setMessages([], rt);
           if (intent) {
             confirmChatSessionSwitch(rt);
             rt.syncInProgress = false;
@@ -1337,12 +1374,13 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           }
           if (generationChanged) {
             clearOutboxForGenerationChange(rt);
+            rt.transcriptResetSeq.value += 1;
           }
           if (generationChanged || sameSessionSnapshot) {
             // A snapshot is a new sync transaction even for A -> B -> A. Fence
             // old HTTP operations before releasing the selection gate; a
             // normal resume must keep its cached cursor and current epoch.
-            resetChatSyncForGeneration();
+            resetChatSyncForGeneration({ preserveViewport: !generationChanged });
           }
           if (generationChanged) {
             rt.lastConsumedResetGeneration = Math.floor(serverLaneGeneration);
@@ -1359,6 +1397,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           }
           if (rec.bootstrapHistory === true) expectBootstrapHistory();
           snapshotBootstrapPending = rec.historyMode === "snapshot" && rec.bootstrapHistory === true;
+          resumeBootstrapPending = rec.historyMode === "resume" && rec.bootstrapHistory !== true;
           if (rec.historyMode === "snapshot") {
             // The server's authoritative snapshot already covers latestSeq.
             // Buffer concurrent live frames until that baseline is committed.
@@ -1395,13 +1434,13 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           // cursor boundary has been established.
           if (intent || sessionChanged) reconcilePromptOutbox(rt, wsInstance);
           handleMessage(msg);
+          finishResumeBootstrap();
           if (rec.historyMode === "snapshot" && rec.bootstrapHistory !== true) {
             sequencer.replaceWithSnapshot(bootstrapBoundarySeq, () => applyAuthoritativeHistory({ type: "history", items: [] }));
             sequencer.completeCatchUp();
             rt.syncInProgress = false;
             rt.needsChatSync = false;
-            rt.transcriptReady = true;
-            rt.transcriptRestored = false;
+            markTranscriptAuthoritative();
             rt.transcriptCache?.schedule();
             if (wasNearBottomBeforeDisconnect) {
               triggerBottomAlignmentPass();
@@ -1424,6 +1463,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         }
       }
       sequencer.observe(msg, () => applySyncPayload(msg as Record<string, unknown>));
+      finishResumeBootstrap();
     };
 
     wsInstance.connect();

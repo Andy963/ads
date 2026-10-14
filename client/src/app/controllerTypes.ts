@@ -180,6 +180,14 @@ export type ProjectRuntime = {
   transcriptReady: boolean;
   transcriptRestored: boolean;
   transcriptViewport: Ref<TranscriptViewport | null>;
+  /** Canonical owner/project/session/lane tuple used for viewport writes. */
+  transcriptScopeKey: Ref<string>;
+  /** True only after the current lane has applied an authoritative bootstrap. */
+  transcriptAuthoritative: Ref<boolean>;
+  /** Monotonic signal for each authoritative bootstrap or catch-up commit. */
+  transcriptAuthoritativeSeq: Ref<number>;
+  /** Invalidates reading state when the current lane generation is replaced. */
+  transcriptResetSeq: Ref<number>;
   transcriptAlignSeq: Ref<number>;
   transcriptCache?: { schedule: () => void; invalidate: () => void };
   laneGeneration?: number;

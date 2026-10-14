@@ -38,12 +38,12 @@ type TestSocket = {
 
 const cleanups: Array<() => void> = [];
 
-async function setup() {
+async function setup(cacheOwner = "user-521") {
   const scope = effectScope();
   const harness = scope.run(() => {
     const ctx = createAppContext();
     ctx.loggedIn.value = true;
-    ctx.transcriptCache.setOwner("user-521");
+    if (cacheOwner) ctx.transcriptCache.setOwner(cacheOwner);
     ctx.projects.value = [{
       id: "p1", sessionId: "p1", name: "Project", path: "/workspace/project",
       chatSessionId: "old-chat", initialized: true, createdAt: 1, updatedAt: 1,
@@ -102,6 +102,7 @@ function seedInputs(rt: ProjectRuntime, chat: ReturnType<typeof createChatAction
 beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   localStorage.clear();
@@ -109,6 +110,144 @@ afterEach(() => {
 });
 
 describe("server-authoritative Actions chat selection", () => {
+  it("restores the original reading record when a rejected selection returns the same unchanged session", async () => {
+    const { ctx, rt, socket } = await setup();
+    welcome(socket, "old-chat", 50);
+    await history(socket, "Unchanged A transcript", 50);
+    const saved = {
+      following: false, firstLoadedId: rt.messages.value[0]!.id, anchorId: rt.messages.value[0]!.id,
+      anchorOffset: -12, scrollTop: 240, scopeKey: rt.transcriptScopeKey.value,
+      tailMessageId: rt.messages.value.at(-1)!.id, userControlled: true,
+    };
+    rt.transcriptViewport.value = saved;
+    socket.onMessage({ type: "error", code: "session_changed", chat_session_id: "old-chat" });
+    await nextTick();
+    expect(rt.transcriptViewport.value).toBeNull();
+    welcome(socket, "old-chat", 50);
+    expect(rt.transcriptViewport.value).toEqual(saved);
+    await history(socket, "Unchanged A transcript", 50);
+    expect(rt.transcriptViewport.value).toEqual(saved);
+    expect(rt.transcriptAuthoritative.value).toBe(true);
+    ctx.transcriptCache.flush();
+    expect(readCachedTranscript(transcriptCacheKey("user-521", {
+      projectId: "p1", sessionId: "p1", chatSessionId: "old-chat", workspace: "/workspace/project",
+    }))).toMatchObject({ cursor: 50, viewport: saved });
+  });
+
+  it.each(["peer", "source", "rejected"])("preserves A's reading position across a real %s A/B/A switch without leaking it into B", async (origin) => {
+    vi.useFakeTimers();
+    const { ctx, projects, chat, rt, socket } = await setup();
+    welcome(socket, "old-chat", 90, 8);
+    await history(socket, "Unchanged A transcript", 90);
+    const messagesA = rt.messages.value.slice();
+    const scopeA = rt.transcriptScopeKey.value;
+    const viewportA = {
+      following: false, firstLoadedId: messagesA[0]!.id, anchorId: messagesA[0]!.id,
+      anchorOffset: -12, scrollTop: 240, scopeKey: scopeA, tailMessageId: messagesA.at(-1)!.id, userControlled: true,
+    };
+    rt.transcriptViewport.value = viewportA;
+    const outboxKey = seedInputs(rt, chat);
+    const keyFor = (chatSessionId: string) => transcriptCacheKey("user-521", {
+      projectId: "p1", sessionId: "p1", chatSessionId, workspace: "/workspace/project",
+    });
+    await nextTick();
+    // Leave A's latest viewport queued rather than explicitly flushing it.
+    expect(readCachedTranscript(keyFor("old-chat"))).toBeNull();
+    const writes = vi.spyOn(Storage.prototype, "setItem");
+
+    if (origin === "rejected") {
+      socket.onMessage({
+        type: "error", code: "session_changed", chat_session_id: "old-chat",
+        clientMessageId: "old-input", message: "Selection changed",
+      });
+      expect(rt.transcriptCursor).toBe(0);
+      expect(rt.transcriptViewport.value).toBeNull();
+      expect(rt.syncInProgress).toBe(true);
+      const savedBeforeWelcome = localStorage.getItem(keyFor("old-chat"));
+      socket.onMessage({ type: "result", ok: false, output: "Stale old result" });
+      await nextTick();
+      await vi.advanceTimersByTimeAsync(1000);
+      ctx.transcriptCache.flush();
+      expect(localStorage.getItem(keyFor("old-chat"))).toBe(savedBeforeWelcome);
+      expect(readCachedTranscript(keyFor("old-chat"))).toMatchObject({ cursor: 90, viewport: viewportA });
+      expect(socket.promptFrames).not.toHaveBeenCalled();
+    }
+    if (origin === "source") await projects.startNewChatSession();
+    else welcome(socket, "peer-chat", 2, 1);
+    const sessionB = rt.chatSessionId;
+    expect(sessionB).not.toBe("old-chat");
+    expect(rt.transcriptScopeKey.value).not.toBe(scopeA);
+    expect(rt.transcriptViewport.value).toBeNull();
+    expect(rt.transcriptCursor).toBe(0);
+    expect(rt.transcriptReady).toBe(false);
+    expect(rt.transcriptAuthoritative.value).toBe(false);
+    expect(readCachedTranscript(keyFor("old-chat"))).toMatchObject({
+      messages: messagesA, cursor: 90, generation: 8, viewport: viewportA,
+    });
+    const savedA = writes.mock.calls.findIndex(([key]) => key === keyFor("old-chat"));
+    const retiredInput = writes.mock.calls.findIndex(([key, value]) =>
+      key === outboxKey && JSON.parse(value).retired?.includes("old-input"));
+    expect(savedA).toBeGreaterThanOrEqual(0);
+    expect(retiredInput).toBeGreaterThan(savedA);
+    expect(createOutboxStore().read(outboxKey)).toMatchObject({ pending: null, sent: [], queued: [] });
+    expect(createOutboxStore().read(outboxKey).retired).toEqual(expect.arrayContaining(["old-input", "old-sent"]));
+    expect(sessionStorage.getItem("ads.syncCursor.p1.old-chat")).toBeNull();
+
+    // A's deferred writer must not overwrite either session after rebinding.
+    await vi.advanceTimersByTimeAsync(250);
+    expect(readCachedTranscript(keyFor("old-chat"))).toMatchObject({ cursor: 90, viewport: viewportA });
+    expect(readCachedTranscript(keyFor(sessionB))).toMatchObject({ cursor: 0, viewport: null });
+    if (origin === "source") welcome(socket, sessionB, 2, 1);
+    await history(socket, "B transcript", 2);
+    expect(rt.transcriptViewport.value).toBeNull();
+    expect(rt.transcriptCursor).toBe(2);
+    const messagesB = rt.messages.value.slice();
+    const viewportB = {
+      following: false, firstLoadedId: messagesB[0]!.id, anchorId: messagesB[0]!.id,
+      anchorOffset: -4, scrollTop: 800, scopeKey: rt.transcriptScopeKey.value,
+      tailMessageId: messagesB.at(-1)!.id, userControlled: true,
+    };
+    rt.transcriptViewport.value = viewportB;
+    await nextTick();
+
+    welcome(socket, "old-chat", 90, 8);
+    expect(rt.transcriptScopeKey.value).toBe(scopeA);
+    expect(rt.transcriptViewport.value).toEqual(viewportA);
+    await history(socket, "Unchanged A transcript", 90);
+    expect(rt.messages.value).toEqual(messagesA);
+    expect(rt.transcriptCursor).toBe(90);
+    expect(rt.transcriptAuthoritative.value).toBe(true);
+    expect(rt.transcriptViewport.value).toEqual(viewportA);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(readCachedTranscript(keyFor("old-chat"))).toMatchObject({
+      messages: messagesA, cursor: 90, generation: 8, viewport: viewportA,
+    });
+    expect(readCachedTranscript(keyFor(sessionB))).toMatchObject({
+      messages: messagesB, cursor: 2, generation: 1, viewport: viewportB,
+    });
+    await chat.flushQueuedPrompts(rt);
+    expect(rt.queuedPrompts.value).toEqual([]);
+    expect(rt.pendingAckClientMessageId).toBeNull();
+    expect(socket.promptFrames).not.toHaveBeenCalled();
+  });
+
+  it.each(["peer", "source"])("clears unbound reading state on a %s switch when the cache has no owner", async (origin) => {
+    const { projects, rt, socket } = await setup("");
+    welcome(socket, "old-chat", 90, 8);
+    await history(socket, "Uncached A transcript", 90);
+    rt.transcriptViewport.value = {
+      following: false, firstLoadedId: rt.messages.value[0]!.id, anchorId: rt.messages.value[0]!.id,
+      anchorOffset: -12, scrollTop: 240,
+    };
+    expect(rt.transcriptCache).toBeUndefined();
+    if (origin === "source") await projects.startNewChatSession();
+    else welcome(socket, "peer-chat");
+    expect(rt.transcriptViewport.value).toBeNull();
+    expect(rt.transcriptCursor).toBe(0);
+    expect(rt.transcriptReady).toBe(false);
+    expect(rt.transcriptAuthoritative.value).toBe(false);
+  });
+
   it("rebinds a peer welcome, retires old inputs/cursors, and persists only the local selection", async () => {
     const { ctx, chat, rt, socket, patch } = await setup();
     welcome(socket, "old-chat", 90, 8);

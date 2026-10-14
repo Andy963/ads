@@ -16,9 +16,9 @@ function seed() {
   localStorage.setItem("ADS_WEB_ACTIVE_PROJECT", "default");
   const cache = createTranscriptCache();
   cache.setOwner("user-1");
-  for (const lane of ["acopilot", "main"]) {
+  for (const [lane, laneId] of [["acopilot", "acopilot"], ["main", "actions"]] as const) {
     const rt = createProjectRuntime({ maxLiveActivitySteps: 5 });
-    cache.attach(rt, { projectId: "default", sessionId: "default", chatSessionId: lane, workspace: "" });
+    cache.attach(rt, { projectId: "default", sessionId: "default", chatSessionId: lane, workspace: "", lane: laneId });
     rt.laneGeneration = 1;
     rt.transcriptReady = true;
     rt.transcriptCursor = 10;

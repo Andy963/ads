@@ -30,6 +30,7 @@ beforeEach(() => { vi.useFakeTimers(); localStorage.clear(); });
 afterEach(() => {
   for (const cache of caches.splice(0)) cache.dispose();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   localStorage.clear();
 });
 
@@ -74,6 +75,59 @@ describe("atomic transcript cache", () => {
     expect(readCachedTranscript(key)).toMatchObject({ cursor: 17, messages: rt.messages.value, complete: true });
   });
 
+  it.each(["timer", "idle"])("suspends only the outgoing runtime and fences its pending %s write across a rebind", async (pending) => {
+    const callbacks: IdleRequestCallback[] = [];
+    const cancelIdle = vi.fn();
+    if (pending === "idle") {
+      vi.stubGlobal("requestIdleCallback", vi.fn((callback: IdleRequestCallback) => {
+        callbacks.push(callback);
+        return callbacks.length;
+      }));
+      vi.stubGlobal("cancelIdleCallback", cancelIdle);
+    }
+    const { cache, rt, key } = seed();
+    const viewport = {
+      following: false, firstLoadedId: message.id, anchorId: message.id,
+      anchorOffset: -12, scrollTop: 240, scopeKey: rt.transcriptScopeKey.value,
+    };
+    rt.transcriptViewport.value = viewport;
+    await nextTick();
+    if (pending === "idle") await vi.advanceTimersByTimeAsync(250);
+    const staleIdleCallback = callbacks[0];
+    const oldBinding = rt.transcriptCache!;
+    const writes = vi.spyOn(Storage.prototype, "setItem");
+    const other = createProjectRuntime({ maxLiveActivitySteps: 5 });
+    const otherScope = { ...scope, projectId: "unrelated" };
+    cache.attach(other, otherScope);
+    other.laneGeneration = 1;
+    cache.suspendRuntime(rt);
+    expect(readCachedTranscript(key)).toMatchObject({ messages: [message], cursor: 15, viewport });
+    expect(readCachedTranscript(transcriptCacheKey("user-1", otherScope))).toBeNull();
+    if (pending === "idle") expect(cancelIdle).toHaveBeenCalledExactlyOnceWith(1);
+
+    const nextScope = { ...scope, chatSessionId: "next" };
+    cache.attach(rt, nextScope);
+    expect(rt.transcriptViewport.value).toBeNull();
+    expect(rt.transcriptCursor).toBe(0);
+    const savedOutgoing = localStorage.getItem(key);
+    writes.mockClear();
+    rt.messages.value = [{ ...message, id: "next-answer", content: "Next session answer" }];
+    rt.transcriptCursor = 3;
+    rt.transcriptReady = true;
+    oldBinding.schedule();
+    // Even an idle callback already dispatched before cancellation is fenced
+    // by the disposed binding and cannot serialize the newly bound runtime.
+    staleIdleCallback?.({ didTimeout: false, timeRemaining: () => 50 });
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(250);
+    for (const callback of callbacks.slice(1)) callback({ didTimeout: false, timeRemaining: () => 50 });
+    expect(writes.mock.calls.filter(([writtenKey]) => writtenKey === key)).toEqual([]);
+    expect(localStorage.getItem(key)).toBe(savedOutgoing);
+    expect(readCachedTranscript(transcriptCacheKey("user-1", nextScope))).toMatchObject({
+      messages: [{ content: "Next session answer" }], cursor: 3, viewport: null,
+    });
+  });
+
   it.each([
     { projectId: "p-2" }, { sessionId: "s-2" }, { chatSessionId: "advisor" }, { workspace: "/tmp/other" },
   ])("isolates cached data by %o", (changed) => {
@@ -83,6 +137,41 @@ describe("atomic transcript cache", () => {
     cache.attach(other, { ...scope, ...changed });
     expect(other.messages.value).toEqual([]);
     expect(other.transcriptReady).toBe(false);
+  });
+
+  it("keeps a suspended record intact until the same key is explicitly reattached", async () => {
+    const { cache, rt, key } = seed();
+    const viewport = {
+      following: false, firstLoadedId: message.id, anchorId: message.id,
+      anchorOffset: -12, scrollTop: 240, scopeKey: rt.transcriptScopeKey.value, userControlled: true,
+    };
+    rt.transcriptViewport.value = viewport;
+    const oldBinding = rt.transcriptCache!;
+    await nextTick();
+    cache.suspendRuntime(rt);
+    expect(rt.transcriptCache).toBeUndefined();
+    const saved = localStorage.getItem(key);
+    rt.messages.value = [];
+    rt.transcriptCursor = 0;
+    rt.transcriptViewport.value = null;
+    oldBinding.schedule();
+    oldBinding.invalidate();
+    cache.suspendRuntime(rt);
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(1000);
+    cache.flush();
+    expect(localStorage.getItem(key)).toBe(saved);
+
+    cache.attach(rt, scope);
+    expect(rt.transcriptCache).toBeDefined();
+    expect(rt.transcriptCache).not.toBe(oldBinding);
+    expect(rt.messages.value).toEqual([message]);
+    expect(rt.transcriptCursor).toBe(15);
+    expect(rt.transcriptViewport.value).toEqual(viewport);
+    rt.transcriptCursor = 16;
+    rt.transcriptCache!.schedule();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(readCachedTranscript(key)).toMatchObject({ cursor: 16, viewport });
   });
 
   it("clears the previous owner's records and fences pending writes on account change", async () => {
@@ -108,6 +197,57 @@ describe("atomic transcript cache", () => {
     expect(rt.transcriptCursor).toBe(0);
     expect(rt.transcriptReady).toBe(false);
     expect(readCachedTranscript(key)).toMatchObject({ messages: [message], cursor: 15 });
+  });
+
+  it("does not restore a viewport written by another lane with the same transcript key", () => {
+    const cache = createCache();
+    const actionsScope = { ...scope, lane: "actions" as const };
+    const acopilotScope = { ...scope, lane: "acopilot" as const };
+    const actions = createProjectRuntime({ maxLiveActivitySteps: 5 });
+    cache.attach(actions, actionsScope);
+    actions.laneGeneration = 2;
+    actions.transcriptCursor = 15;
+    actions.transcriptReady = true;
+    actions.messages.value = [message];
+    actions.transcriptViewport.value = {
+      following: false,
+      firstLoadedId: message.id,
+      anchorId: message.id,
+      anchorOffset: 0,
+      scrollTop: 240,
+      scopeKey: JSON.stringify(["user-1", "p-1", "s-1", "main", "/tmp/project", "actions"]),
+    };
+    cache.flush();
+
+    const acopilot = createProjectRuntime({ maxLiveActivitySteps: 5 });
+    cache.attach(acopilot, acopilotScope);
+    expect(acopilot.messages.value).toEqual([]);
+    expect(acopilot.transcriptViewport.value).toBeNull();
+
+    const acopilotMessage = { ...message, id: "advisor-answer-1", content: "Cached advisor answer" };
+    acopilot.laneGeneration = 3;
+    acopilot.transcriptCursor = 21;
+    acopilot.transcriptReady = true;
+    acopilot.messages.value = [acopilotMessage];
+    acopilot.transcriptViewport.value = {
+      following: false,
+      firstLoadedId: acopilotMessage.id,
+      anchorId: acopilotMessage.id,
+      anchorOffset: 0,
+      scrollTop: 480,
+      scopeKey: JSON.stringify(["user-1", "p-1", "s-1", "main", "/tmp/project", "acopilot"]),
+    };
+    cache.flush();
+
+    const restoredActions = createProjectRuntime({ maxLiveActivitySteps: 5 });
+    cache.attach(restoredActions, actionsScope);
+    expect(restoredActions.messages.value).toEqual([message]);
+    expect(restoredActions.transcriptViewport.value?.scrollTop).toBe(240);
+
+    const restoredAcopilot = createProjectRuntime({ maxLiveActivitySteps: 5 });
+    cache.attach(restoredAcopilot, acopilotScope);
+    expect(restoredAcopilot.messages.value).toEqual([acopilotMessage]);
+    expect(restoredAcopilot.transcriptViewport.value?.scrollTop).toBe(480);
   });
 
   it("detaches removed runtimes so later flushes cannot recreate their cache", async () => {

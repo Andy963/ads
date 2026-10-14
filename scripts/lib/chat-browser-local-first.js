@@ -80,7 +80,7 @@ export async function verifyLocalFirstTranscript({ page, context, fixture, frame
     await until(() => fixture.received.some((entry) => entry.marker === marker), "held provider request");
     // Submission intentionally follows the newly sent turn. Park the viewport
     // away from the tail again while the provider reply is still held, then
-    // rebase the probe so this stage measures only reconnect and HTTP delta
+    // rebase the probe so this stage measures only reconnect and WebSocket delta
     // catch-up stability.
     await chat.evaluate((root) => {
       root.dispatchEvent(new Event("wheel"));
@@ -95,11 +95,14 @@ export async function verifyLocalFirstTranscript({ page, context, fixture, frame
     release();
     await waitForReply(`Advisor reply: ${marker}`);
     await settle();
-    await until(() => syncResponses.length > responseStart, "real HTTP catch-up response");
+    const replayFrames = () => frames.slice(deltaStart).filter((frame) => frame.chatSessionId === "acopilot");
+    await until(() => {
+      const welcome = replayFrames().find((frame) => frame.type === "welcome" && frame.historyMode === "resume");
+      return welcome && replayFrames().some((frame) => frame.type === "result" &&
+        Number.isSafeInteger(frame.seq) && frame.seq > 0 && frame.seq <= welcome.latestSeq);
+    }, "real WebSocket replay through the welcome boundary");
     const replies = syncResponses.slice(responseStart);
-    assert.ok(replies.every((response) => response.status === 200 && !response.truncated));
-    assert.ok(replies.some((response) => response.types.includes("result")));
-    assert.ok(replies.every((response) => !response.types.includes("history")));
+    assert.equal(replies.length, 0, "WebSocket resume must not issue a redundant HTTP catch-up request");
     assert.ok(!frames.slice(deltaStart).some((frame) => frame.type === "history"));
     report.incremental = await snapshot();
     assert.equal(report.incremental.retained, true);

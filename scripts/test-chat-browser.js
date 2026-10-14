@@ -127,9 +127,11 @@ async function runEngine(engine, artifacts, report) {
     const frames = [];
     result.frames = frames;
     page.on("websocket", (socket) => {
+      let chatSessionId;
       socket.on("framereceived", ({ payload }) => {
         const frame = JSON.parse(String(payload));
-        frames.push({ type: frame.type, historyMode: frame.historyMode, chatSessionId: frame.chatSessionId,
+        if (frame.type === "welcome") chatSessionId = frame.chatSessionId;
+        frames.push({ type: frame.type, seq: frame.seq, historyMode: frame.historyMode, chatSessionId: frame.chatSessionId ?? chatSessionId,
           latestSeq: frame.latestSeq, historySize: Array.isArray(frame.items) ? frame.items.length : undefined });
       });
     });
@@ -426,7 +428,7 @@ async function runEngine(engine, artifacts, report) {
     stage("navigation");
     result.localFirst = {};
     await verifyLocalFirstTranscript({ page, context, fixture, frames, send, waitForReply, chooseLane, settle, report: result.localFirst, engine });
-    result.checks.push("Cached first frame, retained scroll anchor, offline reload, unchanged reconnect and real HTTP delta catch-up");
+    result.checks.push("Cached first frame, retained scroll anchor, offline reload, unchanged reconnect and real WebSocket delta replay");
     stage("local-first");
 
     const rowMetrics = [];

@@ -517,6 +517,28 @@ describe("MainChat two-phase reading viewport", () => {
     wrapper.unmount();
   });
 
+  it("continues to follow a post-bootstrap user turn after authority is established", async () => {
+    const state: ScrollState = { top: 0, height: 1200 };
+    const rowOffsets: Record<string, number> = { "u-2": 900, "a-2": 940 };
+    const { wrapper, host } = mountChat([msg("a-1", "assistant", "previous answer")]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+    await wrapper.setProps({ transcriptAuthoritative: true });
+
+    await wrapper.setProps({
+      busy: true,
+      messages: [
+        msg("a-1", "assistant", "previous answer"),
+        msg("u-2", "user", "new question"),
+        msg("a-2", "assistant", "", true),
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(state.top).toBe(600);
+    wrapper.unmount();
+  });
+
   it("locks a short answer immediately and holds while it grows", async () => {
     const state: ScrollState = { top: 0, height: 1000 };
     const rowOffsets: Record<string, number> = {};

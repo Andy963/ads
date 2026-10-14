@@ -8,6 +8,11 @@ export type TranscriptViewport = {
   anchorId: string;
   anchorOffset: number;
   scrollTop: number;
+  // Reading-lock positions are transient and must not trap the next project
+  // open above the latest completed turn.
+  userControlled?: boolean;
+  // The cache binding validates this against the current ownership tuple.
+  scopeKey?: string;
   // Optional for backwards compatibility with v1 records written before
   // viewport freshness was tracked.
   tailMessageId?: string;
@@ -18,6 +23,7 @@ export type TranscriptScope = {
   sessionId: string;
   chatSessionId: string;
   workspace: string;
+  lane?: "actions" | "acopilot";
 };
 
 export const TRANSCRIPT_CACHE_PREFIX = "ads.transcript.v1.";
@@ -28,6 +34,7 @@ const FLUSH_DELAY_MS = 250;
 type CachedTranscript = {
   version: 1;
   key: string;
+  scopeKey?: string;
   messages: ChatItem[];
   cursor: number;
   generation: number;
@@ -38,7 +45,13 @@ type CachedTranscript = {
 
 export function transcriptCacheKey(owner: string, scope: TranscriptScope): string {
   return TRANSCRIPT_CACHE_PREFIX + JSON.stringify([
-    owner, scope.projectId, scope.sessionId, scope.chatSessionId, scope.workspace,
+    owner, scope.projectId, scope.sessionId, scope.chatSessionId, scope.workspace, scope.lane ?? "actions",
+  ]);
+}
+
+export function transcriptScopeKey(owner: string, scope: TranscriptScope): string {
+  return JSON.stringify([
+    owner, scope.projectId, scope.sessionId, scope.chatSessionId, scope.workspace, scope.lane ?? "actions",
   ]);
 }
 
@@ -81,6 +94,8 @@ function validViewport(value: unknown): value is TranscriptViewport {
     typeof value.firstLoadedId === "string" && typeof value.anchorId === "string" &&
     typeof value.anchorOffset === "number" && Number.isFinite(value.anchorOffset) &&
     typeof value.scrollTop === "number" && Number.isFinite(value.scrollTop) && value.scrollTop >= 0 &&
+    (value.userControlled === undefined || typeof value.userControlled === "boolean") &&
+    (value.scopeKey === undefined || typeof value.scopeKey === "string") &&
     (value.tailMessageId === undefined || typeof value.tailMessageId === "string");
 }
 
@@ -90,6 +105,7 @@ export function readCachedTranscript(key: string): CachedTranscript | null {
     if (!raw || raw.length > MAX_RECORD_CHARS) return null;
     const parsed: unknown = JSON.parse(raw);
     if (!record(parsed) || parsed.version !== 1 || parsed.key !== key ||
+      (parsed.scopeKey !== undefined && typeof parsed.scopeKey !== "string") ||
       !Number.isSafeInteger(parsed.cursor) || Number(parsed.cursor) < 0 ||
       !Number.isSafeInteger(parsed.generation) || Number(parsed.generation) < 1 ||
       typeof parsed.savedAt !== "number" || !Number.isFinite(parsed.savedAt) ||
@@ -136,20 +152,29 @@ function saveCachedTranscript(value: CachedTranscript): void {
 export function createTranscriptCache() {
   const owner = ref("");
   try { owner.value = localStorage.getItem(TRANSCRIPT_OWNER_KEY) ?? ""; } catch { /* Storage may be disabled. */ }
-  const bindings = new Map<ProjectRuntime, { key: string; scope: TranscriptScope; flush: () => void; dispose: () => void }>();
+  const bindings = new Map<ProjectRuntime, {
+    key: string;
+    scope: TranscriptScope;
+    scopeKey: string;
+    suspended: boolean;
+    flush: () => void;
+    dispose: () => void;
+  }>();
 
   const attach = (rt: ProjectRuntime, scope: TranscriptScope): void => {
     if (!owner.value) return;
     const key = transcriptCacheKey(owner.value, scope);
+    const scopeKey = transcriptScopeKey(owner.value, scope);
     const previous = bindings.get(rt);
-    if (previous?.key === key) return;
+    if (previous?.key === key && previous.scopeKey === scopeKey && !previous.suspended) return;
     previous?.flush();
     previous?.dispose();
     if (previous) {
       // A new worker session retains the old conversation above its divider.
       // The server copies that review-only history into the new lane too.
       const sameProject = previous.scope.projectId === scope.projectId &&
-        previous.scope.sessionId === scope.sessionId && previous.scope.workspace === scope.workspace;
+        previous.scope.sessionId === scope.sessionId && previous.scope.workspace === scope.workspace &&
+        (previous.scope.lane ?? "actions") === (scope.lane ?? "actions");
       if (!sameProject) {
         rt.messages.value = [];
       }
@@ -157,16 +182,23 @@ export function createTranscriptCache() {
       // messages above the new divider, but never restore its scroll position
       // into a different session scope.
       rt.transcriptViewport.value = null;
+      rt.transcriptAuthoritative.value = false;
       rt.transcriptReady = false;
       rt.transcriptRestored = false;
       rt.transcriptCursor = 0;
     }
     rt.projectSessionId = scope.sessionId;
     rt.chatSessionId = scope.chatSessionId;
+    rt.transcriptScopeKey.value = scopeKey;
+    rt.transcriptAuthoritative.value = false;
     const cached = readCachedTranscript(key);
     if (cached) {
       rt.messages.value = cached.messages.map((message) => message.streaming ? { ...message, streaming: false } : message);
-      rt.transcriptViewport.value = cached.viewport;
+      rt.transcriptViewport.value = cached.viewport &&
+        (!cached.scopeKey || cached.scopeKey === scopeKey) &&
+        (!cached.viewport.scopeKey || cached.viewport.scopeKey === scopeKey)
+        ? cached.viewport
+        : null;
       const hasValidCursor = Number.isSafeInteger(cached.cursor) && cached.cursor > 0;
       rt.transcriptCursor = hasValidCursor ? cached.cursor : (cached.complete ? cached.cursor : 0);
       rt.transcriptReady = hasValidCursor || cached.complete;
@@ -188,7 +220,7 @@ export function createTranscriptCache() {
       cancel();
       if (disposed || !rt.laneGeneration) return;
       saveCachedTranscript({
-        version: 1, key,
+        version: 1, key, scopeKey,
         messages: rt.messages.value.filter((message) => message.kind !== "thought" && message.kind !== "plan"),
         cursor: rt.transcriptCursor,
         generation: rt.laneGeneration,
@@ -210,26 +242,45 @@ export function createTranscriptCache() {
       }, FLUSH_DELAY_MS);
     };
     const invalidate = (): void => {
+      if (disposed) return;
       cancel();
       rt.transcriptCursor = 0;
       rt.transcriptReady = false;
       rt.transcriptRestored = false;
       rt.transcriptViewport.value = null;
+      rt.transcriptAuthoritative.value = false;
       try { localStorage.removeItem(key); } catch { /* Best effort. */ }
     };
     // Array commits are already batched by the streaming reducer. A deep
     // watcher would walk the entire transcript for every incoming token.
     const stop = watch([rt.messages, rt.busy, rt.transcriptViewport], schedule, { flush: "post" });
     rt.transcriptCache = { schedule, invalidate };
-    bindings.set(rt, { key, scope, flush, dispose: () => { disposed = true; cancel(); stop(); } });
+    bindings.set(rt, {
+      key, scope, scopeKey, suspended: false, flush,
+      dispose: () => { disposed = true; cancel(); stop(); },
+    });
   };
 
   const flush = (): void => { for (const binding of bindings.values()) binding.flush(); };
+  // Selection rejection can precede the next welcome by an arbitrary delay.
+  // Keep the record and scope metadata, but retire every old writer. A later
+  // attach may hydrate either this same scope or a different session safely.
+  const suspendRuntime = (rt: ProjectRuntime): void => {
+    const binding = bindings.get(rt);
+    if (!binding || binding.suspended) return;
+    binding.flush();
+    binding.dispose();
+    binding.suspended = true;
+    rt.transcriptCache = undefined;
+    rt.transcriptAuthoritative.value = false;
+  };
   const detach = (rt: ProjectRuntime): void => {
     const binding = bindings.get(rt);
     binding?.dispose();
     bindings.delete(rt);
     rt.transcriptCache = undefined;
+    rt.transcriptScopeKey.value = "";
+    rt.transcriptAuthoritative.value = false;
     if (binding) {
       try { localStorage.removeItem(binding.key); } catch { /* Best effort. */ }
     }
@@ -251,5 +302,5 @@ export function createTranscriptCache() {
     owner.value = id;
     try { localStorage.setItem(TRANSCRIPT_OWNER_KEY, id); } catch { /* Best effort. */ }
   };
-  return { owner, attach, flush, detach, dispose, clear, setOwner };
+  return { owner, attach, flush, suspendRuntime, detach, dispose, clear, setOwner };
 }

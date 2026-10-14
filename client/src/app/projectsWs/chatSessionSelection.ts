@@ -36,7 +36,11 @@ export function persistChatSessionSelection(
   persistProjects();
 }
 
-export function clearPreviousSessionInputs(ctx: ChatActions, rt: ProjectRuntime): void {
+export function clearPreviousSessionInputs(ctx: ChatActions & Pick<AppContext, "transcriptCache">, rt: ProjectRuntime): void {
+  // Save under the outgoing binding before retiring inputs or changing identity.
+  // Retire the writer before clearing live state: invalidating the stored
+  // record would destroy the reading position when returning later.
+  ctx.transcriptCache.suspendRuntime(rt);
   rt.promptReconciliationPending = true;
   ctx.restorePendingPrompt(rt, true);
   const store = createOutboxStore();
@@ -62,11 +66,11 @@ export function clearPreviousSessionInputs(ctx: ChatActions, rt: ProjectRuntime)
   rt.promptReconciliationIds = undefined;
   rt.pendingImages.value = [];
   ctx.cancelPendingResume(rt);
-  rt.transcriptCache?.invalidate();
   rt.transcriptCursor = 0;
   rt.transcriptReady = false;
   rt.transcriptRestored = false;
   rt.transcriptViewport.value = null;
+  rt.transcriptAuthoritative.value = false;
   try {
     sessionStorage.removeItem(legacyPendingPromptStorageKey(rt.projectSessionId, rt.chatSessionId));
     sessionStorage.removeItem(`ads.syncCursor.${rt.projectSessionId}.${rt.chatSessionId}`);
