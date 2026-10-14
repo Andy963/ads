@@ -410,12 +410,29 @@ function openMobileDrawer(section?: MobileDrawerSection): void {
   mobileContextMenuOpen.value = false;
 }
 
-function toggleMobileDrawer(): void {
-  if (mobileDrawerOpen.value) closeMobileDrawer();
-  else openMobileDrawer();
+function toggleMobileDrawer(isKeyboard?: boolean): void {
+  if (mobileDrawerOpen.value) {
+    if (!isKeyboard) {
+      skipDrawerToggleFocus = true;
+    }
+    closeMobileDrawer();
+  } else {
+    openMobileDrawer();
+  }
 }
 
 const drawerActivation = createTapActivation<boolean>(toggleMobileDrawer, { preserveFocus: true, name: "mobile-drawer" });
+let skipDrawerToggleFocus = false;
+
+function onMobileDrawerTogglePointerUp(event: PointerEvent): void {
+  drawerActivation.onPointerUp(event);
+  (event.currentTarget as HTMLElement)?.blur();
+}
+
+function onMobileDrawerToggleClick(event: MouseEvent): void {
+  drawerActivation.onClick(event, event.detail === 0);
+  (event.currentTarget as HTMLElement)?.blur();
+}
 
 function selectWorkspaceTab(tab: ChatLane): void {
   if (activeWorkspaceTab.value === tab) {
@@ -1213,9 +1230,12 @@ watch(mobileDrawerOpen, async (open) => {
     mobileDrawerRef.value
       ?.querySelector<HTMLElement>('[data-testid="mobile-drawer-section-projects"]')
       ?.focus();
-  } else {
+  } else if (!skipDrawerToggleFocus) {
     mobileDrawerToggleRef.value?.focus();
+  } else {
+    mobileDrawerToggleRef.value?.blur();
   }
+  skipDrawerToggleFocus = false;
 });
 
 watch(isMobile, (mobile) => {
@@ -1610,11 +1630,11 @@ const acopilotConnectionStatus = computed(() => {
         :aria-label="mobileDrawerOpen ? '关闭导航' : '打开导航'"
         :aria-expanded="mobileDrawerOpen"
         data-testid="mobile-drawer-toggle"
-        @pointerdown.stop="drawerActivation.onPointerDown($event, true)"
+        @pointerdown.stop="drawerActivation.onPointerDown($event, false)"
         @pointermove.stop="drawerActivation.onPointerMove"
         @pointercancel.stop="drawerActivation.onPointerCancel"
-        @pointerup.stop="drawerActivation.onPointerUp"
-        @click.stop="drawerActivation.onClick($event, true)"
+        @pointerup.stop="onMobileDrawerTogglePointerUp"
+        @click.stop="onMobileDrawerToggleClick"
       >
         <svg class="mobileMenuIcon" width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
           <rect x="2" y="5.5" width="16" height="2.2" rx="1.1" />
