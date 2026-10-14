@@ -67,14 +67,14 @@ function touchEvent(type: string, x: number, y: number): Event {
   return event;
 }
 
-function mountChat(messages: ChatMessage[]) {
+function mountChat(messages: ChatMessage[], busy = false) {
   const wrapper = mount(MainChat, {
     props: {
       messages,
       queuedPrompts: [],
       pendingImages: [],
       connected: true,
-      busy: true,
+      busy,
     },
     global: { stubs: { MarkdownContent: true, ChatFilePreviewModal: true } },
     attachTo: document.body,
@@ -257,8 +257,8 @@ describe("MainChat two-phase reading viewport", () => {
     await settleUi(wrapper);
     expect(state.top).toBe(1040 - LOCK_OFFSET);
 
-    // The stream finishes: since the viewport is in the final turn area,
-    // reading lock is released and bottom following is restored.
+    // The stream finishes: completion does not release the reading lock. Only
+    // physical user input or the floating control can hand the viewport back.
     await wrapper.setProps({
       messages: [
         msg("a-1", "assistant", "earlier"),
@@ -269,9 +269,9 @@ describe("MainChat two-phase reading viewport", () => {
       busy: false,
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(4200 - (state.clientHeight ?? 600));
-    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
-    expect(host.style.getPropertyValue("overflow-anchor")).toBe("auto");
+    expect(state.top).toBe(1040 - LOCK_OFFSET);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+    expect(host.style.getPropertyValue("overflow-anchor")).toBe("none");
 
     wrapper.unmount();
   });
@@ -332,6 +332,36 @@ describe("MainChat two-phase reading viewport", () => {
     expect(state.top).toBe(2840 - LOCK_OFFSET);
     expect(host.style.getPropertyValue("overflow-anchor")).toBe("none");
     expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  it("locks a fast completed answer even when no streaming frame was observed", async () => {
+    const state: ScrollState = { top: 0, height: 1000 };
+    const rowOffsets: Record<string, number> = {};
+    const { wrapper, host } = mountChat([
+      msg("u-1", "user", "earlier question"),
+      msg("a-1", "assistant", "earlier"),
+    ]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+
+    rowOffsets["u-2"] = 1000;
+    rowOffsets["a-2"] = 1040;
+    state.height = 1800;
+    await wrapper.setProps({
+      messages: [
+        msg("u-1", "user", "earlier question"),
+        msg("a-1", "assistant", "earlier"),
+        msg("u-2", "user", "question"),
+        msg("a-2", "assistant", "completed before the first render", false),
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(state.top).toBe(1040 - LOCK_OFFSET);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+    expect(host.style.getPropertyValue("overflow-anchor")).toBe("none");
 
     wrapper.unmount();
   });
@@ -462,7 +492,32 @@ describe("MainChat two-phase reading viewport", () => {
     wrapper.unmount();
   });
 
-  it("keeps following the tail until the answer is tall enough to align, then locks once", async () => {
+  it("does not skip an active completed answer during snapshot hydration", async () => {
+    const state: ScrollState = { top: 0, height: 2400 };
+    const rowOffsets: Record<string, number> = { "a-1": 1800 };
+    const { wrapper, host } = mountChat([msg("u-1", "user", "question")]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+
+    await wrapper.setProps({
+      busy: true,
+      messages: [
+        msg("u-1", "user", "question"),
+        executeMsg("exec-1", "first command", false),
+        executeMsg("exec-2", "second command", false),
+        executeMsg("exec-3", "third command", false),
+        msg("a-1", "assistant", "completed snapshot answer", false),
+      ],
+    });
+    await settleUi(wrapper);
+
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+    expect(host.style.getPropertyValue("overflow-anchor")).toBe("none");
+
+    wrapper.unmount();
+  });
+
+  it("locks a short answer immediately and holds while it grows", async () => {
     const state: ScrollState = { top: 0, height: 1000 };
     const rowOffsets: Record<string, number> = {};
     const { wrapper, host } = mountChat([msg("a-1", "assistant", "earlier")]);
@@ -470,8 +525,9 @@ describe("MainChat two-phase reading viewport", () => {
     await settleUi(wrapper);
     expect(state.top).toBe(400);
 
-    // The first delta lands, but a one-line answer leaves no scroll range to
-    // align its top into: the lock stays pending and the tail is followed.
+    // The first delta lands while the answer is short. The ideal top offset is
+    // outside the reachable range, but the reading lock still owns the
+    // viewport instead of waiting for more content.
     rowOffsets["u-2"] = 1000;
     rowOffsets["a-2"] = 1040;
     state.height = 1080;
@@ -480,16 +536,17 @@ describe("MainChat two-phase reading viewport", () => {
     });
     await settleUi(wrapper);
     expect(state.top).toBe(1080 - 600);
-    expect(host.style.getPropertyValue("overflow-anchor")).toBe("");
-    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+    expect(host.style.getPropertyValue("overflow-anchor")).toBe("none");
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
 
-    // Once the answer can fill the viewport, the deferred alignment runs once.
+    // Once the answer grows, the earlier lock remains authoritative and no
+    // second alignment follows the new height.
     state.height = 1700;
     await wrapper.setProps({
       messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question"), msg("a-2", "assistant", "line 1\nline 2\nline 3", true)],
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(1040 - LOCK_OFFSET);
+    expect(state.top).toBe(1080 - 600);
     expect(host.style.getPropertyValue("overflow-anchor")).toBe("none");
     expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
 
@@ -499,12 +556,19 @@ describe("MainChat two-phase reading viewport", () => {
       messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question"), msg("a-2", "assistant", "line 1\nline 2\nline 3\nburst", true)],
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(1040 - LOCK_OFFSET);
+    expect(state.top).toBe(1080 - 600);
 
     wrapper.unmount();
   });
 
   it("does not correct the viewport for layout drift or burst growth while reading-locked", async () => {
+    const visualViewport = Object.assign(new EventTarget(), {
+      height: 600,
+      offsetTop: 0,
+      width: 390,
+      offsetLeft: 0,
+    });
+    vi.stubGlobal("visualViewport", visualViewport);
     const state: ScrollState = { top: 0, height: 1000 };
     const rowOffsets: Record<string, number> = {};
     const { wrapper, host } = mountChat([msg("a-1", "assistant", "earlier")]);
@@ -523,6 +587,15 @@ describe("MainChat two-phase reading viewport", () => {
     });
     await settleUi(wrapper);
     expect(state.top).toBe(1040 - LOCK_OFFSET);
+
+    // Mobile toolbar and keyboard churn must not re-enable tail-following
+    // after the reading lock has become authoritative.
+    visualViewport.dispatchEvent(new Event("resize"));
+    visualViewport.dispatchEvent(new Event("scroll"));
+    host.dispatchEvent(new Event("scroll"));
+    await settleUi(wrapper);
+    expect(state.top).toBe(1040 - LOCK_OFFSET);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
 
     // Native layout shifts (e.g. an execute block above finishing) move the
     // viewport: no per-frame correction pulls it back to the anchor.
@@ -634,7 +707,7 @@ describe("MainChat two-phase reading viewport", () => {
     wrapper.unmount();
   });
 
-  it("defers the lock while the answer fits, aligns once it outgrows the viewport, then holds", async () => {
+  it("locks a short first turn without waiting for additional height", async () => {
     const state: ScrollState = { top: 0, height: 300 };
     const rowOffsets: Record<string, number> = {};
     const { wrapper, host } = mountChat([]);
@@ -649,24 +722,27 @@ describe("MainChat two-phase reading viewport", () => {
       messages: [msg("u-1", "user", "first question"), msg("a-1", "assistant", "answer", true)],
     });
     await settleUi(wrapper);
-    // The transcript still fits: there is no scroll range to align into, so
-    // the viewport keeps following the (already visible) tail.
+    // The transcript still fits, but the answer has entered the viewport. The
+    // lock is established immediately even though its ideal target is not
+    // reachable.
     expect(state.top).toBe(0);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+    expect(host.style.getPropertyValue("overflow-anchor")).toBe("none");
 
-    // The reply grows beyond one screen: now the one-shot alignment can run
-    // and pins the answer top 12px below the viewport top.
+    // The reply grows beyond one screen: the one-shot alignment does not run a
+    // second time and the initial reading position remains stable.
     rowOffsets["a-1"] = 60;
     state.height = 2400;
     await wrapper.setProps({ messages: [msg("u-1", "user", "first question"), msg("a-1", "assistant", "long answer", true)] });
     await settleUi(wrapper);
-    expect(state.top).toBe(60 - LOCK_OFFSET);
+    expect(state.top).toBe(0);
     expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
 
     // Further growth must not move the reading position again.
     state.height = 3000;
     await wrapper.setProps({ messages: [msg("u-1", "user", "first question"), msg("a-1", "assistant", "long answer\nburst", true)] });
     await settleUi(wrapper);
-    expect(state.top).toBe(60 - LOCK_OFFSET);
+    expect(state.top).toBe(0);
 
     wrapper.unmount();
   });
@@ -912,7 +988,7 @@ describe("MainChat two-phase reading viewport", () => {
     wrapper.unmount();
   });
 
-  it("releases reading lock and restores bottom following when answer streaming finishes near bottom", async () => {
+  it("keeps the reading lock when answer streaming finishes near bottom", async () => {
     const state: ScrollState = { top: 0, height: 1000 };
     const rowOffsets: Record<string, number> = {};
     const { wrapper, host } = mountChat([msg("a-1", "assistant", "earlier")]);
@@ -928,7 +1004,7 @@ describe("MainChat two-phase reading viewport", () => {
     await settleUi(wrapper);
     expect(state.top).toBe(1040 - LOCK_OFFSET);
 
-    // User scrolls near the bottom or answer is short enough to fit
+    // A layout-only scroll event near the bottom does not release the lock.
     state.top = 1700 - 600 - 20;
     host.dispatchEvent(new Event("scroll"));
     await settleUi(wrapper);
@@ -939,14 +1015,14 @@ describe("MainChat two-phase reading viewport", () => {
       busy: false,
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(1700 - 600);
-    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
-    expect(host.style.getPropertyValue("overflow-anchor")).toBe("auto");
+    expect(state.top).toBe(1700 - 600 - 20);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+    expect(host.style.getPropertyValue("overflow-anchor")).toBe("none");
 
     wrapper.unmount();
   });
 
-  it("persists following mode on background save after turn completes in final turn area", async () => {
+  it("persists the reading lock on background save after turn completes", async () => {
     const state: ScrollState = { top: 0, height: 1000 };
     const rowOffsets: Record<string, number> = {};
     const { wrapper, host } = mountChat([msg("a-1", "assistant", "earlier")]);
@@ -971,13 +1047,14 @@ describe("MainChat two-phase reading viewport", () => {
       busy: false,
     });
     await settleUi(wrapper);
-    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
 
-    // Viewport save emitted on unmount / backgrounding persists following: true
+    // Viewport save emitted on unmount / backgrounding preserves the locked
+    // reading position rather than silently switching back to following mode.
     wrapper.unmount();
     const emitted = wrapper.emitted("update:viewport");
     expect(emitted).toBeDefined();
     const lastViewport = emitted![emitted!.length - 1]![0] as any;
-    expect(lastViewport.following).toBe(true);
+    expect(lastViewport.following).toBe(false);
   });
 });

@@ -207,16 +207,16 @@ let chatContentLayoutTransitionFrame: number | null = null;
 
 // Two-phase reading viewport. Phase 1 (intermediate execution): the viewport
 // follows the streaming tail so commands and live steps stay visible. Phase 2
-// (final answer): the first content delta of the answer block arms the reading
-// lock. While the answer is still shorter than the viewport there is no scroll
-// range to align it into, so tail-following continues; once the answer can
-// reach the viewport top, one smooth alignment pins it there
-// (READING_LOCK_TOP_OFFSET_PX), native scroll anchoring is disabled, and
-// bottom-following pauses; the answer then grows downward without per-frame
-// scrollTop corrections. Phase 3: only physical input (wheel with a non-zero
-// delta, a touch drag past the threshold, scroll keys, or the scroll-to-bottom
-// button) releases the reading lock — layout reflow from burst streaming must
-// not hand control back.
+// (final answer): the first non-empty answer block arms the reading lock. A
+// short answer may not have enough scroll range to reach the top offset, but it
+// still owns the viewport from that point onward; waiting for it to grow would
+// keep the transcript in bottom-following mode. The target is therefore
+// clamped to the currently reachable range, native scroll anchoring is
+// disabled, and the answer grows downward without per-frame scrollTop
+// corrections. Phase 3: only physical input (wheel with a non-zero delta, a
+// touch drag past the threshold, scroll keys, or the scroll-to-bottom button)
+// releases the reading lock — layout reflow from burst streaming must not hand
+// control back.
 let readingLockEl: HTMLElement | null = null;
 let readingLockAligning = false;
 let readingLockSeq = 0;
@@ -336,16 +336,12 @@ function alignAnswerToViewportTop(row: HTMLElement, smooth: boolean): void {
   scheduleViewportSave();
 }
 
-// Attempt the one-shot alignment. Returns false while the answer is shorter
-// than the viewport: there is not enough scroll range below it to bring its
-// top to the viewport top, so tail-following continues and the caller retries
-// as the answer grows.
+// Attempt the one-shot alignment. The answer owns the reading state even when
+// its ideal target is outside the current scroll range; scrollTop is clamped
+// by the browser to the nearest reachable position.
 function tryLockAnswerRow(row: HTMLElement, smooth: boolean): boolean {
   const host = listRef.value;
   if (!host) return false;
-  const rowTop = row.getBoundingClientRect().top - host.getBoundingClientRect().top + host.scrollTop;
-  const target = Math.max(0, rowTop - READING_LOCK_TOP_OFFSET_PX);
-  if (target > Math.max(0, host.scrollHeight - host.clientHeight)) return false;
   cancelBottomSettlement();
   settlingBottom = false;
   disableNativeScrollAnchoring(host);
@@ -370,11 +366,11 @@ function engageReadingLock(messageId: string, options?: { smooth?: boolean }): v
       const host = listRef.value;
       if (!host) return;
       const row = host.querySelector<HTMLElement>(`.msg[data-id="${escapeSelectorValue(messageId)}"]`);
-      if (!row) return;
-      if (!tryLockAnswerRow(row, options?.smooth !== false)) {
+      if (!row) {
         readingLockPendingId = messageId;
-        if (autoScroll.value) host.scrollTop = host.scrollHeight;
+        return;
       }
+      tryLockAnswerRow(row, options?.smooth !== false);
     } finally {
       if (readingLockSeq === seq) readingLockAligning = false;
     }
@@ -487,9 +483,9 @@ function scheduleChatScrollToBottom(): void {
       const host = listRef.value;
       if (!host) return;
       if (readingLockPendingId && autoScroll.value) {
-        // The answer has grown: retry the deferred one-shot alignment.
+        // The answer row may have been mounted after the watcher ran.
         const row = host.querySelector<HTMLElement>(`.msg[data-id="${escapeSelectorValue(readingLockPendingId)}"]`);
-        if (row && tryLockAnswerRow(row, true)) {
+        if (row && tryLockAnswerRow(row, false)) {
           scheduleViewportSave();
           return;
         }
@@ -728,10 +724,24 @@ const lastUserMessageId = computed(() => {
   return "";
 });
 
-// The turn's final answer block, detected from the message stream. Phase 2 of
-// the reading viewport starts when this appears (the answer's first content
-// delta has landed), not when the empty send-time placeholder is pushed.
-const streamingAnswerId = computed(() => findStreamingAnswerId(props.messages, isLiveCardMessageId));
+// This is deliberately separate from the transcript's last user message. A
+// cold-start history can end in a completed assistant answer, but only a turn
+// that was observed as active may use a completed answer as a lock candidate.
+const activeTurnUserId = ref("");
+const liveStreamingAnswerId = computed(() => findStreamingAnswerId(props.messages, isLiveCardMessageId));
+const streamingAnswerId = computed(() => {
+  if (activeTurnUserId.value || props.busy) {
+    return findStreamingAnswerId(props.messages, isLiveCardMessageId, {
+      userId: activeTurnUserId.value || undefined,
+      includeCompleted: true,
+    });
+  }
+  return liveStreamingAnswerId.value;
+});
+
+if (props.busy || hasInFlightTurn(props.messages)) {
+  activeTurnUserId.value = lastUserMessageId.value;
+}
 
 function isViewportInFinalTurn(): boolean {
   const host = listRef.value;
@@ -790,11 +800,17 @@ onMounted(() => {
 watch([lastUserMessageId, streamingAnswerId, () => props.messages.length], ([id, answerId, currentMessageCount], previous) => {
   const [previousId, previousAnswerId] = previous;
   const tail = props.messages.at(-1);
-  const hasActiveStreamingTail = Boolean(answerId) || Boolean(tail?.streaming);
   const messageDelta = currentMessageCount - observedMessageCount;
-  const isInitialTranscriptHydration = !hasActiveStreamingTail && messageDelta > 2;
+  const isNewUserTurn = Boolean(id && id !== previousId);
+  const hasLiveTurnSignal =
+    props.busy ||
+    Boolean(tail?.streaming) ||
+    Boolean(liveStreamingAnswerId.value) ||
+    Boolean(activeTurnUserId.value && activeTurnUserId.value === id);
+  const isInitialTranscriptHydration = messageDelta > 2 && !hasLiveTurnSignal;
   observedMessageCount = currentMessageCount;
   if (isInitialTranscriptHydration) {
+    activeTurnUserId.value = "";
     if (wasAnchoredBeforeDisconnect || autoScroll.value) {
       autoScroll.value = true;
       showScrollToBottom.value = false;
@@ -802,16 +818,23 @@ watch([lastUserMessageId, streamingAnswerId, () => props.messages.length], ([id,
     }
     return;
   }
+  if (!id) activeTurnUserId.value = "";
+  if (isNewUserTurn && (props.busy || Boolean(tail?.streaming) || Boolean(liveStreamingAnswerId.value) || Boolean(previousId))) {
+    activeTurnUserId.value = id;
+  }
+  const currentAnswerId = activeTurnUserId.value === id && id
+    ? findStreamingAnswerId(props.messages, isLiveCardMessageId, { userId: id, includeCompleted: true })
+    : answerId;
   // The locked row can disappear when the transcript is reset or replaced.
-  // Check the message list itself (not just DOM connectivity) because this
-  // watcher runs pre-flush, before the removed row leaves the document.
+  // Check the message list itself because a normal Vue/Markdown update may
+  // recreate the DOM row with the same message id while the lock remains
+  // authoritative.
   const anchoredMessageId = readingLockEl?.dataset.id ?? readingLockPendingId;
-  if (anchoredMessageId && ((readingLockEl && !readingLockEl.isConnected) || !props.messages.some((m) => m.id === anchoredMessageId))) {
+  if (anchoredMessageId && !props.messages.some((m) => m.id === anchoredMessageId)) {
     releaseReadingLock();
     autoScroll.value = true;
     scheduleChatScrollToBottom();
   }
-  const isNewUserTurn = Boolean(id && id !== previousId);
   if (isNewUserTurn && (readingLockEl || readingLockAligning || readingLockPendingId)) {
     // A follow-up prompt supersedes the current reading position: follow the
     // new turn's intermediate execution until its answer starts.
@@ -832,18 +855,18 @@ watch([lastUserMessageId, streamingAnswerId, () => props.messages.length], ([id,
     showScrollToBottom.value = false;
     scheduleChatScrollToBottom();
   }
-  if (answerId && answerId !== previousAnswerId && !readingLockAligning) {
+  if (currentAnswerId && currentAnswerId !== previousAnswerId && !readingLockAligning) {
     if (readingLockEl) {
       // The streaming answer was re-created (e.g. a snapshot rewrite moved it
       // to a fresh message): move the reading position to the replacement.
-      if (readingLockEl.dataset.id !== answerId) {
+      if (readingLockEl.dataset.id !== currentAnswerId) {
         releaseReadingLock();
-        engageReadingLock(answerId, { smooth: true });
+        engageReadingLock(currentAnswerId, { smooth: false });
       }
     } else if (autoScroll.value) {
-      engageReadingLock(answerId, { smooth: true });
+      engageReadingLock(currentAnswerId, { smooth: false });
     }
-  } else if (!answerId && (previousAnswerId || readingLockEl || readingLockPendingId)) {
+  } else if (!currentAnswerId && (previousAnswerId || readingLockEl || readingLockPendingId)) {
     if (isViewportInFinalTurn()) {
       releaseReadingLock();
       readingLockAligning = false;

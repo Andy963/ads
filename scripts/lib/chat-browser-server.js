@@ -218,11 +218,12 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
             await sleep(2000);
             emit({ phase: "command", title: "Run burst command", detail: "fixture burst command", timestamp: ts + 151, raw: { type: "item.completed", item: { type: "command_execution", id: commandId, command: "fixture burst command", status: "completed", exit_code: 0, aggregated_output: "burst command ok\n" } } });
             await sleep(150);
-            // Phase 2: the final answer starts with a single anchor line (too
-            // short to align yet), grows to 35 lines (enough scroll range for
-            // the one-shot alignment), then bursts to 50 lines (growth after
-            // the lock must not move the viewport). Responding deltas are
-            // cumulative per item id; the server slices the increment.
+            // Phase 2: the final answer starts with a single anchor line, which
+            // must establish the reading lock even before it can fill a
+            // viewport. It grows to 35 lines and then bursts to 50 lines;
+            // growth after the lock must not move the viewport. Responding
+            // deltas are cumulative per item id; the server slices the
+            // increment.
             const answerHead = `burst answer anchor line for ${marker}`;
             const answerLines = (count) => Array.from({ length: count }, (_, index) => `burst tail line ${index + 1}`).join("\n");
             const answerMid = `${answerHead}\n\n${answerLines(35)}`;
