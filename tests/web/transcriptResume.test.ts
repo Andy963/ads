@@ -79,4 +79,50 @@ describe("transcript resume handshake", () => {
     assert.equal(sent[0]?.historyMode, "snapshot");
     assert.equal(sent.some((frame) => frame.type === "history"), true);
   });
+
+  it("streams unconsumed sequence events in resume mode immediately following welcome", () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const args = {
+      ws: {} as any,
+      safeJsonSend: (_ws: unknown, payload: unknown) => sent.push(payload as Record<string, unknown>),
+      sessionManager: {
+        getContextRestoreMode: () => "thread_resumed", getSavedThreadId: () => "thread-1",
+        getEffectiveState: () => ({ model: "test-model", modelReasoningEffort: "high", activeAgentId: "codex" }),
+      } as any,
+      orchestrator: { getActiveAgentId: () => "codex", getThreadId: () => "thread-1", listAgents: () => [] } as any,
+      userId: 1, agentAvailability: {} as any, sessionId: "session-1", chatSessionId: "main",
+      workspace: { path: "/tmp/workspace" }, historyKey: "lane", inFlight: false,
+      historyStore: { get: () => [
+        { role: "user", text: "Question", kind: "client_message_id:prompt-1", ts: 1 },
+        { role: "ai", text: "Answer", ts: 2 },
+      ] } as any,
+      latestSeq: 12, laneGeneration: 2, resume: { afterSeq: 10, laneGeneration: 2 },
+      sync: {
+        namespace: "web-worker",
+        laneKeys: ["lane"],
+        store: {
+          readAfterLanes: (opts: { afterSeq: number }) => {
+            if (opts.afterSeq === 10) {
+              return {
+                events: [
+                  { seq: 11, type: "message", payload: { type: "message", role: "assistant", text: "chunk 1" }, ts: 100 },
+                  { seq: 12, type: "result", payload: { type: "result", ok: true }, ts: 101 },
+                ],
+                latestSeq: 12, minAvailableSeq: 1, truncated: false, hasMore: false,
+              };
+            }
+            return { events: [], latestSeq: 12, minAvailableSeq: 1, truncated: false, hasMore: false };
+          },
+        },
+      },
+    };
+    sendInitialBootstrapMessages(args);
+    assert.equal(sent[0]?.type, "welcome");
+    assert.equal(sent[0]?.historyMode, "resume");
+    assert.equal(sent[1]?.seq, 11);
+    assert.equal(sent[1]?.type, "message");
+    assert.equal(sent[2]?.seq, 12);
+    assert.equal(sent[2]?.type, "result");
+    assert.equal(sent[3]?.type, "agents");
+  });
 });

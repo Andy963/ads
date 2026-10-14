@@ -128,6 +128,41 @@ export function sendInitialBootstrapMessages(args: {
       state: bootstrapState,
     }),
   );
+
+  if (resumed && args.resume && args.sync) {
+    let currentAfterSeq = args.resume.afterSeq;
+    while (true) {
+      const readResult = args.sync.store.readAfterLanes({
+        namespace: args.sync.namespace,
+        laneKeys: args.sync.laneKeys,
+        afterSeq: currentAfterSeq,
+        limit: 1000,
+      });
+      for (const event of readResult.events) {
+        const framedPayload = projectCommandFrame(event.payload);
+        const eventTs = Number(event.ts);
+        const message = framedPayload && typeof framedPayload === "object" && !Array.isArray(framedPayload)
+          ? {
+              ...framedPayload,
+              ...(!Object.prototype.hasOwnProperty.call(framedPayload, "ts") && Number.isFinite(eventTs) && eventTs > 0
+                ? { ts: Math.floor(eventTs) }
+                : {}),
+              seq: event.seq,
+            }
+          : {
+              type: event.type,
+              ...(Number.isFinite(eventTs) && eventTs > 0 ? { ts: Math.floor(eventTs) } : {}),
+              seq: event.seq,
+            };
+        args.safeJsonSend(args.ws, message);
+        currentAfterSeq = event.seq;
+      }
+      if (!readResult.hasMore || readResult.events.length === 0) {
+        break;
+      }
+    }
+  }
+
   args.safeJsonSend(
     args.ws,
     buildAgentsPayload({

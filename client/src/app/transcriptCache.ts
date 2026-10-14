@@ -167,8 +167,9 @@ export function createTranscriptCache() {
     if (cached) {
       rt.messages.value = cached.messages.map((message) => message.streaming ? { ...message, streaming: false } : message);
       rt.transcriptViewport.value = cached.viewport;
-      rt.transcriptCursor = cached.complete ? cached.cursor : 0;
-      rt.transcriptReady = cached.complete;
+      const hasValidCursor = Number.isSafeInteger(cached.cursor) && cached.cursor > 0;
+      rt.transcriptCursor = hasValidCursor ? cached.cursor : (cached.complete ? cached.cursor : 0);
+      rt.transcriptReady = hasValidCursor || cached.complete;
       rt.transcriptRestored = true;
       rt.laneGeneration = cached.generation;
       rt.laneGenerationScope = `${scope.sessionId}::${scope.chatSessionId}`;
