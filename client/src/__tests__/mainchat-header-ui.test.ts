@@ -101,11 +101,15 @@ describe("MainChat header UI", () => {
   it("suppresses persistent focus outline on mobile drawer button while preserving keyboard focus", () => {
     const css = readUtf8("../App.css");
     const mobileCss = css.slice(css.indexOf("@media (max-width: 900px)"));
+    expect(mobileCss).toMatch(/\.mobileMenuBtn\s*\{[^}]*outline:\s*none\s*;/);
+    expect(mobileCss).toMatch(/\.mobileMenuBtn\s*\{[^}]*-webkit-tap-highlight-color:\s*transparent\s*;/);
     expect(mobileCss).toMatch(/\.mobileMenuBtn:focus\s*\{[^}]*outline:\s*none\s*;/);
     expect(mobileCss).toMatch(/\.mobileMenuBtn:focus:not\(:focus-visible\)\s*\{[^}]*outline:\s*none\s*;/);
-    expect(mobileCss).toMatch(/\.mobileMenuBtn:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)\s*;/);
+    expect(mobileCss).toMatch(/\.mobileMenuBtn:focus-visible\s*\{[^}]*outline:\s*none\s*;/);
+    expect(mobileCss).not.toMatch(/\.mobileMenuBtn:focus-visible\s*\{[^}]*outline:\s*2px/);
     const app = readUtf8("../App.vue");
     expect(app).toContain('createTapActivation<boolean>(toggleMobileDrawer, { preserveFocus: true, name: "mobile-drawer" })');
+    expect(app).toContain('(event.currentTarget as HTMLElement)?.blur()');
   });
 
   it("places workspace notices below controls while preserving mobile settings notices", () => {

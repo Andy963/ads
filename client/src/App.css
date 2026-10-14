@@ -903,6 +903,7 @@
   }
   .mobileMenuBtn {
     touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
     display: grid;
     place-items: center;
     width: 44px;
@@ -914,6 +915,7 @@
     background: transparent;
     color: var(--accent);
     cursor: pointer;
+    outline: none;
   }
   .mobileMenuBtn:focus {
     outline: none;
@@ -922,8 +924,7 @@
     outline: none;
   }
   .mobileMenuBtn:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
+    outline: none;
   }
   .mobileMenuBtn:hover {
     background: rgba(15, 23, 42, 0.06);

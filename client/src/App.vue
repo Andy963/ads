@@ -417,6 +417,16 @@ function toggleMobileDrawer(): void {
 
 const drawerActivation = createTapActivation<boolean>(toggleMobileDrawer, { preserveFocus: true, name: "mobile-drawer" });
 
+function onMobileDrawerTogglePointerUp(event: PointerEvent): void {
+  drawerActivation.onPointerUp(event);
+  (event.currentTarget as HTMLElement)?.blur();
+}
+
+function onMobileDrawerToggleClick(event: MouseEvent): void {
+  drawerActivation.onClick(event, true);
+  (event.currentTarget as HTMLElement)?.blur();
+}
+
 function selectWorkspaceTab(tab: ChatLane): void {
   if (activeWorkspaceTab.value === tab) {
     closeMobileContextMenu();
@@ -1613,8 +1623,8 @@ const acopilotConnectionStatus = computed(() => {
         @pointerdown.stop="drawerActivation.onPointerDown($event, true)"
         @pointermove.stop="drawerActivation.onPointerMove"
         @pointercancel.stop="drawerActivation.onPointerCancel"
-        @pointerup.stop="drawerActivation.onPointerUp"
-        @click.stop="drawerActivation.onClick($event, true)"
+        @pointerup.stop="onMobileDrawerTogglePointerUp"
+        @click.stop="onMobileDrawerToggleClick"
       >
         <svg class="mobileMenuIcon" width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
           <rect x="2" y="5.5" width="16" height="2.2" rx="1.1" />
