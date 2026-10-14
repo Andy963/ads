@@ -351,18 +351,17 @@ function selectReasoningEffort(effort: string): void {
   min-width: 0;
 }
 
-/* Segment of the shared lane control surface, not a standalone button: it
-   drops its own border and background so it reads as one control with the
-   lane tabs, and reuses the exact active-tab treatment on hover. */
+/* Keep the selector visually attached to the lane surface while giving it
+   enough contrast to read as an interactive control. */
 .modelCapsule {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   height: 28px;
   padding: 0 10px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.42);
   color: var(--text);
   font-size: 13px;
   font-weight: 600;
@@ -370,7 +369,8 @@ function selectReasoningEffort(effort: string): void {
   cursor: pointer;
   width: 100%;
   min-width: 0;
-  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, transform 0.12s ease;
   white-space: nowrap;
 }
 
@@ -386,9 +386,19 @@ function selectReasoningEffort(effort: string): void {
 .modelCapsuleEffort { flex: 0 0 auto; font-size: 11px; opacity: .8; }
 
 .modelCapsule:hover:not(:disabled) {
-  border-color: transparent;
+  border-color: rgba(15, 23, 42, 0.12);
   background-color: var(--surface);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12), 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.modelCapsule:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.modelCapsule:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.18), 0 1px 3px rgba(15, 23, 42, 0.12);
 }
 
 .modelCapsule--disabled {
