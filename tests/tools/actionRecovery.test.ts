@@ -116,10 +116,19 @@ describe("trusted Actions recovery plumbing", () => {
   });
 
   it("enforces a diagnostic allowlist before parsing or executing hallucinated native tools", async () => {
+    // Test routing through the real search process without requiring host ripgrep.
+    const bin = path.join(workspace, "bin");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, "rg"), [
+      `#!${process.execPath}`,
+      'require("node:assert/strict").deepEqual(process.argv.slice(2), ["--line-number", "--no-heading", "--color", "never", "--", "Original", "evidence.txt"]);',
+      'process.stdout.write("1: " + require("node:fs").readFileSync("evidence.txt", "utf8"));',
+    ].join("\n"), { mode: 0o755 });
     const review = mock.fn(async () => ({ ok: true }));
     const deliver = mock.fn(async () => ({ ok: true }));
     const executor = new NativeToolExecutor({
       ...context, actionRecovery, actionTools: { review_action: review, deliver_action: deliver },
+      env: { PATH: bin },
       readHistory: () => "Archived diagnostic evidence",
     });
     const file = path.join(workspace, "evidence.txt");
