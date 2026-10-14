@@ -46,6 +46,7 @@ const props = defineProps<{
   workspaceRoot?: string | null;
   initialFirstLoadedId?: string;
   initialAnchorId?: string;
+  autoScroll?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -448,6 +449,10 @@ watch(
     }
 
     if (!previous?.length) {
+      if (props.autoScroll !== false) {
+        loadedStart.value = Math.max(0, next.length - INITIAL_MESSAGE_WINDOW);
+        return;
+      }
       const restoredIndex = next.findIndex((message) => message.id === props.initialFirstLoadedId);
       const anchorIndex = next.findIndex((message) => message.id === props.initialAnchorId);
       const restored = [restoredIndex, anchorIndex].filter((index) => index >= 0);

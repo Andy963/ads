@@ -257,7 +257,8 @@ describe("MainChat two-phase reading viewport", () => {
     await settleUi(wrapper);
     expect(state.top).toBe(1040 - LOCK_OFFSET);
 
-    // The stream finishes: the lock persists so the user can keep reading.
+    // The stream finishes: since the viewport is in the final turn area,
+    // reading lock is released and bottom following is restored.
     await wrapper.setProps({
       messages: [
         msg("a-1", "assistant", "earlier"),
@@ -265,10 +266,12 @@ describe("MainChat two-phase reading viewport", () => {
         msg("u-2", "user", "new question"),
         msg("a-3", "assistant", "first line\n\nburst of streamed markdown"),
       ],
+      busy: false,
     });
     await settleUi(wrapper);
-    expect(state.top).toBe(1040 - LOCK_OFFSET);
-    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+    expect(state.top).toBe(4200 - (state.clientHeight ?? 600));
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+    expect(host.style.getPropertyValue("overflow-anchor")).toBe("auto");
 
     wrapper.unmount();
   });
@@ -907,5 +910,74 @@ describe("MainChat two-phase reading viewport", () => {
     expect(state.top).toBe(640 - LOCK_OFFSET);
 
     wrapper.unmount();
+  });
+
+  it("releases reading lock and restores bottom following when answer streaming finishes near bottom", async () => {
+    const state: ScrollState = { top: 0, height: 1000 };
+    const rowOffsets: Record<string, number> = {};
+    const { wrapper, host } = mountChat([msg("a-1", "assistant", "earlier")]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+
+    rowOffsets["u-2"] = 1000;
+    rowOffsets["a-2"] = 1040;
+    state.height = 1700;
+    await wrapper.setProps({
+      messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question"), msg("a-2", "assistant", "answer", true)],
+    });
+    await settleUi(wrapper);
+    expect(state.top).toBe(1040 - LOCK_OFFSET);
+
+    // User scrolls near the bottom or answer is short enough to fit
+    state.top = 1700 - 600 - 20;
+    host.dispatchEvent(new Event("scroll"));
+    await settleUi(wrapper);
+
+    // Answer finishes streaming
+    await wrapper.setProps({
+      messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question"), msg("a-2", "assistant", "answer", false)],
+      busy: false,
+    });
+    await settleUi(wrapper);
+    expect(state.top).toBe(1700 - 600);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+    expect(host.style.getPropertyValue("overflow-anchor")).toBe("auto");
+
+    wrapper.unmount();
+  });
+
+  it("persists following mode on background save after turn completes in final turn area", async () => {
+    const state: ScrollState = { top: 0, height: 1000 };
+    const rowOffsets: Record<string, number> = {};
+    const { wrapper, host } = mountChat([msg("a-1", "assistant", "earlier")]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+
+    // Stream an answer that outgrows the viewport and engages reading lock (autoScroll = false)
+    rowOffsets["u-2"] = 1000;
+    rowOffsets["a-2"] = 1040;
+    state.height = 2600;
+    await wrapper.setProps({
+      messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question"), msg("a-2", "assistant", "streaming answer", true)],
+      busy: true,
+    });
+    await settleUi(wrapper);
+    expect(state.top).toBe(1040 - LOCK_OFFSET);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+
+    // Answer finishes streaming while viewport is in final turn area
+    await wrapper.setProps({
+      messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question"), msg("a-2", "assistant", "streaming answer finished", false)],
+      busy: false,
+    });
+    await settleUi(wrapper);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+
+    // Viewport save emitted on unmount / backgrounding persists following: true
+    wrapper.unmount();
+    const emitted = wrapper.emitted("update:viewport");
+    expect(emitted).toBeDefined();
+    const lastViewport = emitted![emitted!.length - 1]![0] as any;
+    expect(lastViewport.following).toBe(true);
   });
 });
