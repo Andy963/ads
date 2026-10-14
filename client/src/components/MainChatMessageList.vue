@@ -604,7 +604,7 @@ function retryUserTurn(message: RenderMessage): void {
   if (failure) emit("retryMessage", failure);
 }
 
-const ASSISTANT_BUBBLE_TINTS = ["purple", "blue", "green", "amber", "pink", "teal"] as const;
+const ASSISTANT_BUBBLE_TINTS = ["purple", "blue", "green", "amber", "pink"] as const;
 type AssistantBubbleTint = typeof ASSISTANT_BUBBLE_TINTS[number];
 
 const assistantMessageTintMap = computed<Map<string, AssistantBubbleTint>>(() => {
@@ -1340,46 +1340,63 @@ function getAssistantTint(m: RenderMessage): AssistantBubbleTint | undefined {
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  padding: 10px 14px 24px;
-  border: none;
-  border-radius: 14px;
-  background: rgba(168, 85, 247, 0.1);
-  color: #1e293b;
+  padding: 10px 16px 24px;
+  border: 1px solid rgba(192, 132, 252, 0.45);
+  border-radius: 18px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  background: #FAF5FF;
+  color: #581c87;
   overflow: visible;
 }
 
+.msg[data-role="assistant"] .bubble :deep(.md) {
+  color: inherit;
+}
+
 .msg[data-role="assistant"][data-tint="purple"] .bubble {
-  background: rgba(168, 85, 247, 0.1);
+  background: #FAF5FF;
+  border: 1px solid rgba(192, 132, 252, 0.45);
+  color: #581c87;
 }
 
 .msg[data-role="assistant"][data-tint="blue"] .bubble {
-  background: rgba(59, 130, 246, 0.1);
+  background: #F0F9FF;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #0c4a6e;
 }
 
 .msg[data-role="assistant"][data-tint="green"] .bubble {
-  background: rgba(34, 197, 94, 0.11);
+  background: #F0FDF4;
+  border: 1px solid rgba(74, 222, 128, 0.45);
+  color: #14532d;
 }
 
 .msg[data-role="assistant"][data-tint="amber"] .bubble {
-  background: rgba(245, 158, 11, 0.11);
+  background: #FFFBEB;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  color: #78350f;
 }
 
 .msg[data-role="assistant"][data-tint="pink"] .bubble {
-  background: rgba(244, 114, 182, 0.12);
-}
-
-.msg[data-role="assistant"][data-tint="teal"] .bubble {
-  background: rgba(20, 184, 166, 0.1);
+  background: #FDF2F8;
+  border: 1px solid rgba(244, 114, 182, 0.4);
+  color: #831843;
 }
 
 .msg[data-id="live-step"] .bubble {
   background: transparent;
   padding: 4px 0 24px;
   border-radius: 0;
+  border: none;
+  box-shadow: none;
+}
+
+.msg[data-id="live-step"] .bubble :deep(.md) {
+  color: var(--github-text);
 }
 
 .msg[data-role="assistant"] .msgActions {
-  left: 14px;
+  left: 16px;
   bottom: 4px;
 }
 
@@ -1752,10 +1769,11 @@ function getAssistantTint(m: RenderMessage): AssistantBubbleTint | undefined {
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 900px) {
   .msg[data-role="user"] .bubble {
     width: 100%;
     max-width: 100%;
+    border-radius: 18px;
   }
 }
 

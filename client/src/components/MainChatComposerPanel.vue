@@ -1554,10 +1554,10 @@ onBeforeUnmount(() => {
   background: #dc2626;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 900px) {
   .composer {
-    padding-left: 12px;
-    padding-right: 12px;
+    padding-left: 8px;
+    padding-right: 8px;
   }
 
   .actionSheet {
