@@ -67,6 +67,7 @@ export function clearPreviousSessionInputs(ctx: ChatActions, rt: ProjectRuntime)
   rt.transcriptReady = false;
   rt.transcriptRestored = false;
   rt.transcriptViewport.value = null;
+  rt.transcriptAuthoritative.value = false;
   try {
     sessionStorage.removeItem(legacyPendingPromptStorageKey(rt.projectSessionId, rt.chatSessionId));
     sessionStorage.removeItem(`ads.syncCursor.${rt.projectSessionId}.${rt.chatSessionId}`);

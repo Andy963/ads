@@ -27,6 +27,8 @@ const props = withDefaults(defineProps<{
   runningTaskCount?: number;
   workspaceRoot?: string | null;
   viewportScopeKey?: string;
+  transcriptScopeKey?: string;
+  transcriptAuthoritative?: boolean;
   threadWarning?: string | null;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
   connectionStatusMessage?: string | null;
@@ -55,15 +57,6 @@ const initialTailContent = String(initialTailMessage?.content ?? "");
 const initialTailStreaming = Boolean(initialTailMessage?.streaming);
 const INITIAL_MESSAGE_WINDOW = 30;
 
-function findFinalTurnAssistantId(messages: readonly ChatMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m?.role === "assistant" && m.kind === "text") return m.id;
-    if (m?.role === "user") break;
-  }
-  return "";
-}
-
 function hasInFlightTurn(messages: readonly ChatMessage[]): boolean {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
@@ -77,9 +70,11 @@ function isValidRestorableViewport(
   viewport: TranscriptViewport | null | undefined,
   messages: readonly ChatMessage[],
   tailMessageId: string,
+  currentScopeKey?: string,
 ): viewport is TranscriptViewport {
   if (!viewport || viewport.following !== false) return false;
   if (!viewport.tailMessageId || viewport.tailMessageId !== tailMessageId) return false;
+  if (viewport.scopeKey && currentScopeKey && viewport.scopeKey !== currentScopeKey) return false;
   if (messages.length === 0) return false;
 
   const inFlight = hasInFlightTurn(messages);
@@ -99,15 +94,12 @@ function isValidRestorableViewport(
   for (let i = 0; i < messages.length; i++) {
     if (messages[i]?.role === "user") lastUserIndex = i;
   }
-  // Completed turns must always default to bottom alignment on cold start
-  if (lastUserIndex >= 0 && !inFlight) {
+  // Completed-turn restores are allowed only for an explicit user position.
+  // Reading-lock positions remain transient and cold-start at the tail.
+  if (!inFlight && lastUserIndex >= 0 && viewport.userControlled !== true) {
     return false;
   }
-  if (lastUserIndex >= 0 && effectiveIndex < lastUserIndex) {
-    return false;
-  }
-
-  if (!inFlight && viewport.anchorId && (viewport.anchorId === tailMessageId || viewport.anchorId === findFinalTurnAssistantId(messages))) {
+  if (inFlight && lastUserIndex >= 0 && effectiveIndex < lastUserIndex) {
     return false;
   }
 
@@ -118,6 +110,7 @@ const restorableViewport = isValidRestorableViewport(
   initialViewport,
   props.messages,
   initialTailMessageId,
+  props.transcriptScopeKey,
 )
   ? initialViewport
   : null;
@@ -125,6 +118,9 @@ const autoScroll = ref(!restorableViewport);
 let initialViewportActive = Boolean(restorableViewport);
 let initialViewportRestored = false;
 let wasAnchoredBeforeDisconnect = !restorableViewport;
+let viewportUserControlled = Boolean(restorableViewport?.userControlled);
+let userTookViewportControl = false;
+let observedTranscriptAuthoritative = Boolean(props.transcriptAuthoritative);
 const showScrollToBottom = ref(false);
 let viewportFrame: number | null = null;
 
@@ -135,13 +131,15 @@ function saveViewport(): void {
   const top = host.getBoundingClientRect().top;
   const anchor = rows.find((row) => row.getBoundingClientRect().bottom > top);
   const turnStreaming = Boolean(props.messages.at(-1)?.streaming) || Boolean(streamingAnswerId.value);
-  const following = autoScroll.value || (!turnStreaming && isViewportInFinalTurn());
+  const following = autoScroll.value || (!viewportUserControlled && !turnStreaming && isViewportInFinalTurn());
   const viewport = {
     following,
     firstLoadedId: rows[0]?.dataset.id ?? "",
     anchorId: anchor?.dataset.id ?? "",
     anchorOffset: anchor ? anchor.getBoundingClientRect().top - top : 0,
     scrollTop: Math.max(0, host.scrollTop),
+    userControlled: viewportUserControlled,
+    scopeKey: props.transcriptScopeKey || undefined,
     tailMessageId: props.messages.at(-1)?.id ?? "",
   } satisfies TranscriptViewport;
   emit("update:viewportScope", props.viewportScopeKey);
@@ -353,6 +351,12 @@ function tryLockAnswerRow(row: HTMLElement, smooth: boolean): boolean {
   return true;
 }
 
+function markViewportUserControlled(): void {
+  viewportUserControlled = true;
+  userTookViewportControl = true;
+  initialViewportActive = false;
+}
+
 function engageReadingLock(messageId: string, options?: { smooth?: boolean }): void {
   readingLockAligning = true;
   const seq = ++readingLockSeq;
@@ -385,6 +389,7 @@ function scrollChatToBottom(explicit = false): void {
   cancelBottomSettlement();
   settlingBottom = explicit;
   autoScroll.value = true;
+  viewportUserControlled = false;
   showScrollToBottom.value = false;
   const host = listRef.value;
   if (host) {
@@ -415,6 +420,7 @@ function onChatScrollIntent(): void {
   if (chatContentLayoutTransitionFrame !== null) cancelFrame(chatContentLayoutTransitionFrame);
   chatContentLayoutTransitionFrame = null;
   initialViewportActive = false;
+  markViewportUserControlled();
   followEpoch += 1;
   readingLockSeq += 1;
   releaseReadingLock();
@@ -686,6 +692,12 @@ function handleScroll() {
   }
   const { scrollTop, scrollHeight, clientHeight } = listRef.value;
   const distance = scrollHeight - scrollTop - clientHeight;
+  // Scrollbar-thumb drags do not emit wheel/touch/key intent. A non-bottom
+  // scroll outside a layout transition is still an explicit user position.
+  if (!physicalScrollIntent && !initialViewportActive && !chatKeyboardLayoutTransition &&
+      !chatContentLayoutTransition && distance >= CHAT_STICKY_THRESHOLD_PX) {
+    markViewportUserControlled();
+  }
   autoScroll.value = distance < CHAT_STICKY_THRESHOLD_PX;
   showScrollToBottom.value = distance >= CHAT_STICKY_THRESHOLD_PX;
   scheduleViewportSave();
@@ -819,7 +831,8 @@ watch([lastUserMessageId, streamingAnswerId, () => props.messages.length], ([id,
     return;
   }
   if (!id) activeTurnUserId.value = "";
-  if (isNewUserTurn && (props.busy || Boolean(tail?.streaming) || Boolean(liveStreamingAnswerId.value) || Boolean(previousId))) {
+  if (isNewUserTurn && !props.transcriptAuthoritative &&
+      (props.busy || Boolean(tail?.streaming) || Boolean(liveStreamingAnswerId.value) || Boolean(previousId))) {
     activeTurnUserId.value = id;
   }
   const currentAnswerId = activeTurnUserId.value === id && id
@@ -880,6 +893,46 @@ watch([lastUserMessageId, streamingAnswerId, () => props.messages.length], ([id,
     scheduleViewportSave();
   }
 });
+
+watch(
+  () => props.transcriptScopeKey,
+  (scopeKey, previousScopeKey) => {
+    if (!scopeKey || !previousScopeKey || scopeKey === previousScopeKey) return;
+    // The runtime may remain mounted while a project/session identity is being
+    // rebound. A position from the old tuple is never valid in the new one.
+    initialViewportActive = false;
+    initialViewportRestored = false;
+    viewportUserControlled = false;
+    userTookViewportControl = false;
+    scrollChatToBottom();
+  },
+);
+
+watch(
+  () => Boolean(props.transcriptAuthoritative),
+  (authoritative) => {
+    const wasAuthoritative = observedTranscriptAuthoritative;
+    observedTranscriptAuthoritative = authoritative;
+    if (!authoritative || wasAuthoritative || userTookViewportControl) return;
+
+    const currentTailId = props.messages.at(-1)?.id ?? "";
+    const savedTailId = restorableViewport?.tailMessageId ?? initialTailMessageId;
+    const savedAnchorStillExists = !restorableViewport || props.messages.some((message) =>
+      message.id === restorableViewport.anchorId || message.id === restorableViewport.firstLoadedId,
+    );
+    if (currentTailId !== savedTailId || !savedAnchorStillExists) {
+      // The cache was superseded by a newer authoritative transcript. Do not
+      // strand the user at the cached offset unless they intervened first.
+      initialViewportActive = false;
+      scrollChatToBottom();
+      return;
+    }
+    if (!restorableViewport) {
+      autoScroll.value = true;
+      scheduleChatScrollToBottom();
+    }
+  },
+);
 
 watch(
   () => props.messages.length,
@@ -1033,6 +1086,7 @@ onBeforeUnmount(() => {
         @keydown="onChatKeydown"
       >
         <MainChatMessageList
+          :key="props.transcriptScopeKey"
           :messages="messages"
           :auto-scroll="autoScroll"
           :initial-first-loaded-id="restorableViewport?.firstLoadedId"

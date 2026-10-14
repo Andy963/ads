@@ -110,6 +110,31 @@ describe("atomic transcript cache", () => {
     expect(readCachedTranscript(key)).toMatchObject({ messages: [message], cursor: 15 });
   });
 
+  it("does not restore a viewport written by another lane with the same transcript key", () => {
+    const cache = createCache();
+    const actionsScope = { ...scope, lane: "actions" as const };
+    const actions = createProjectRuntime({ maxLiveActivitySteps: 5 });
+    cache.attach(actions, actionsScope);
+    actions.laneGeneration = 2;
+    actions.transcriptCursor = 15;
+    actions.transcriptReady = true;
+    actions.messages.value = [message];
+    actions.transcriptViewport.value = {
+      following: false,
+      firstLoadedId: message.id,
+      anchorId: message.id,
+      anchorOffset: 0,
+      scrollTop: 240,
+      scopeKey: JSON.stringify(["user-1", "p-1", "s-1", "main", "/tmp/project", "actions"]),
+    };
+    cache.flush();
+
+    const acopilot = createProjectRuntime({ maxLiveActivitySteps: 5 });
+    cache.attach(acopilot, { ...scope, lane: "acopilot" });
+    expect(acopilot.messages.value).toEqual([message]);
+    expect(acopilot.transcriptViewport.value).toBeNull();
+  });
+
   it("detaches removed runtimes so later flushes cannot recreate their cache", async () => {
     const { cache, rt, key } = seed();
     cache.flush();

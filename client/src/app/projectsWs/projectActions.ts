@@ -493,6 +493,7 @@ export function createProjectActions(ctx: AppContext & ChatActions, deps: Projec
       sessionId: project.sessionId,
       chatSessionId: newChatSessionId,
       workspace: project.path,
+      lane: "actions",
     });
     ctx.bindPromptOutbox(rt);
     activeRuntime.value.ignoreNextHistory = false;

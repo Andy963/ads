@@ -440,6 +440,10 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     const wsInstance = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: rt.chatSessionId, resume: resumeOptions(rt) });
 
     rt.ws = wsInstance;
+    // A reconnect may reuse the cached transcript while the new bootstrap is
+    // still pending. MainChat must not treat that cache as authoritative until
+    // this connection commits its history baseline.
+    rt.transcriptAuthoritative.value = false;
     let syncGeneration = rt.syncGeneration;
     let disconnectCleanupDone = false;
     let disconnectWasBusy = false;
@@ -532,6 +536,12 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       deferredRuntimeSnapshots = [];
     };
 
+    const markTranscriptAuthoritative = (): void => {
+      rt.transcriptReady = true;
+      rt.transcriptRestored = false;
+      rt.transcriptAuthoritative.value = true;
+    };
+
     const applyDeferredRuntimeSnapshots = (terminalFenceSeq = 0): void => {
       if (deferredRuntimeSnapshots.length === 0) return;
       const snapshots = deferredRuntimeSnapshots.slice();
@@ -575,8 +585,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       } else {
         handleWsPayload?.(history);
       }
-      rt.transcriptReady = true;
-      rt.transcriptRestored = false;
+      markTranscriptAuthoritative();
       rt.transcriptCache?.schedule();
       const terminalBootstrapFence =
         bootstrapReportedInFlight === false && hasTerminalAssistantHistory(history) ? bootstrapBoundarySeq : 0;
@@ -675,6 +684,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         sessionId: project.sessionId,
         chatSessionId: nextChatSessionId,
         workspace: project.path,
+        lane: mode === ACOPILOT_LANE_ID ? "acopilot" : "actions",
       });
       rt.chatSessionId = nextChatSessionId;
       ctx.bindPromptOutbox(rt);
@@ -1012,8 +1022,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           });
         }
         activeSequencer.completeCatchUp();
-        rt.transcriptReady = true;
-        rt.transcriptRestored = false;
+        markTranscriptAuthoritative();
         if (wasNearBottomBeforeDisconnect) {
           triggerBottomAlignmentPass();
         }
@@ -1400,8 +1409,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             sequencer.completeCatchUp();
             rt.syncInProgress = false;
             rt.needsChatSync = false;
-            rt.transcriptReady = true;
-            rt.transcriptRestored = false;
+            markTranscriptAuthoritative();
             rt.transcriptCache?.schedule();
             if (wasNearBottomBeforeDisconnect) {
               triggerBottomAlignmentPass();
