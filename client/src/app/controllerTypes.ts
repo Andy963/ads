@@ -186,6 +186,8 @@ export type ProjectRuntime = {
   transcriptAuthoritative: Ref<boolean>;
   /** Monotonic signal for each authoritative bootstrap or catch-up commit. */
   transcriptAuthoritativeSeq: Ref<number>;
+  /** Invalidates reading state when the current lane generation is replaced. */
+  transcriptResetSeq: Ref<number>;
   transcriptAlignSeq: Ref<number>;
   transcriptCache?: { schedule: () => void; invalidate: () => void };
   laneGeneration?: number;

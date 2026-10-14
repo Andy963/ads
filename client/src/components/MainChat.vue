@@ -30,10 +30,11 @@ const props = withDefaults(defineProps<{
   transcriptScopeKey?: string;
   transcriptAuthoritative?: boolean;
   transcriptAuthoritativeSeq?: number;
+  transcriptResetSeq?: number;
   threadWarning?: string | null;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
   connectionStatusMessage?: string | null;
-}>(), { voiceInputActive: true, transcriptAlignSeq: 0, transcriptAuthoritativeSeq: 0 });
+}>(), { voiceInputActive: true, transcriptAlignSeq: 0, transcriptAuthoritativeSeq: 0, transcriptResetSeq: 0 });
 
 const emit = defineEmits<{
   (e: "update:draft", value: string): void;
@@ -53,9 +54,9 @@ const emit = defineEmits<{
 const listRef = ref<HTMLElement | null>(null);
 const initialViewport = props.viewport;
 const initialTailMessage = props.messages.at(-1);
-const initialTailMessageId = initialTailMessage?.id ?? "";
-const initialTailContent = String(initialTailMessage?.content ?? "");
-const initialTailStreaming = Boolean(initialTailMessage?.streaming);
+let initialTailMessageId = initialTailMessage?.id ?? "";
+let initialTailContent = String(initialTailMessage?.content ?? "");
+let initialTailStreaming = Boolean(initialTailMessage?.streaming);
 const INITIAL_MESSAGE_WINDOW = 30;
 
 function hasInFlightTurn(messages: readonly ChatMessage[]): boolean {
@@ -97,7 +98,7 @@ function isValidRestorableViewport(
   const effectiveIndex = anchorIndex >= 0 ? anchorIndex : firstLoadedIndex;
 
   const recentWindowStart = Math.max(0, messages.length - INITIAL_MESSAGE_WINDOW);
-  if (effectiveIndex < recentWindowStart) {
+  if (effectiveIndex < recentWindowStart && viewport.userControlled !== true) {
     return false;
   }
 
@@ -110,7 +111,7 @@ function isValidRestorableViewport(
   if (!inFlight && lastUserIndex >= 0 && viewport.userControlled !== true) {
     return false;
   }
-  if (inFlight && lastUserIndex >= 0 && effectiveIndex < lastUserIndex) {
+  if (inFlight && lastUserIndex >= 0 && effectiveIndex < lastUserIndex && viewport.userControlled !== true) {
     return false;
   }
 
@@ -211,7 +212,7 @@ const liveStepExpanded = ref(false);
 const liveStepHasOverflow = ref(false);
 
 let chatResizeObserver: ResizeObserver | null = null;
-let chatScrollQueued = false;
+let chatScrollQueued: number | null = null;
 let bottomSettleFrame: number | null = null;
 let settlingBottom = false;
 let chatTouchStart: { x: number; y: number } | null = null;
@@ -410,6 +411,7 @@ function scrollChatToBottom(explicit = false): void {
   settlingBottom = explicit;
   autoScroll.value = true;
   viewportUserControlled = false;
+  if (explicit) userTookViewportControl = false;
   viewportTailGuardActive = false;
   showScrollToBottom.value = false;
   const host = listRef.value;
@@ -445,11 +447,7 @@ function onChatScrollIntent(): void {
   if (initialViewportRestoreFrame !== null) cancelFrame(initialViewportRestoreFrame);
   initialViewportRestoreFrame = null;
   markViewportUserControlled();
-  followEpoch += 1;
-  readingLockSeq += 1;
-  releaseReadingLock();
-  readingLockAligning = false;
-  if (settlingBottom) pauseChatAutoScroll();
+  pauseChatAutoScroll();
 }
 
 function onChatWheel(event: WheelEvent): void {
@@ -499,13 +497,15 @@ const bottomActivation = createTapActivation<boolean>(() => scrollChatToBottom(t
 function scheduleChatScrollToBottom(): void {
   if (readingLockAligning) return;
   if (!readingLockEl && !autoScroll.value) return;
-  if (chatScrollQueued) return;
-  chatScrollQueued = true;
+  const epoch = followEpoch;
+  if (chatScrollQueued === epoch) return;
+  chatScrollQueued = epoch;
   void (async () => {
     try {
       // Allow Vue + MarkdownContent to commit DOM updates before measuring scrollHeight.
       await nextTick();
       await nextTick();
+      if (epoch !== followEpoch) return;
       if (readingLockAligning) return;
       // While the reading lock holds, the answer grows downward on its own;
       // never re-pin the bottom or correct the scroll position per frame.
@@ -527,7 +527,7 @@ function scheduleChatScrollToBottom(): void {
       settleBottomLayout();
       scheduleViewportSave();
     } finally {
-      chatScrollQueued = false;
+      if (chatScrollQueued === epoch) chatScrollQueued = null;
     }
   })();
 }
@@ -818,7 +818,7 @@ onMounted(() => {
     // first visible frame does not briefly jump to the default scroll position.
     restoreInitialViewport();
     if (!initialViewportRestored) void nextTick().then(restoreInitialViewport);
-    if (streamingAnswerId.value) {
+    if (streamingAnswerId.value && !restorableViewport.value.userControlled) {
       engageReadingLock(streamingAnswerId.value, { smooth: false });
     }
   } else if (streamingAnswerId.value) {
@@ -857,9 +857,10 @@ watch([lastUserMessageId, streamingAnswerId, () => props.messages.length], ([id,
   const authoritativeBootstrapPending = Boolean(props.transcriptAuthoritative) &&
     (!observedTranscriptAuthoritative || props.transcriptAuthoritativeSeq !== observedTranscriptAuthoritativeSeq);
   observedMessageCount = currentMessageCount;
+  if (userTookViewportControl && !autoScroll.value) return;
   if (isInitialTranscriptHydration) {
     activeTurnUserId.value = "";
-    if (wasAnchoredBeforeDisconnect || autoScroll.value) {
+    if (!userTookViewportControl && (wasAnchoredBeforeDisconnect || autoScroll.value)) {
       autoScroll.value = true;
       showScrollToBottom.value = false;
       scheduleChatScrollToBottom();
@@ -931,18 +932,34 @@ watch([lastUserMessageId, streamingAnswerId, () => props.messages.length], ([id,
 });
 
 watch(
-  () => props.transcriptScopeKey,
-  (scopeKey, previousScopeKey) => {
-    if (!scopeKey || scopeKey === previousScopeKey) return;
+  [() => props.transcriptScopeKey, () => props.transcriptResetSeq],
+  ([scopeKey, resetSeq], [previousScopeKey, previousResetSeq]) => {
+    if (scopeKey === previousScopeKey && resetSeq === previousResetSeq) return;
     // The runtime may remain mounted while a project/session identity is being
     // rebound. A position from the old tuple is never valid in the new one.
     const candidate = props.viewport;
-    const nextViewport = candidate?.scopeKey === scopeKey && isValidRestorableViewport(
+    const nextViewport = resetSeq === previousResetSeq && candidate?.scopeKey === scopeKey && isValidRestorableViewport(
       candidate,
       props.messages,
       props.messages.at(-1)?.id ?? "",
       scopeKey,
     ) ? candidate : null;
+    followEpoch += 1;
+    readingLockSeq += 1;
+    releaseReadingLock();
+    readingLockAligning = false;
+    cancelBottomSettlement();
+    if (viewportFrame !== null) cancelFrame(viewportFrame);
+    viewportFrame = null;
+    if (initialViewportRestoreFrame !== null) cancelFrame(initialViewportRestoreFrame);
+    initialViewportRestoreFrame = null;
+    suppressInitialViewportScroll = false;
+    chatPhysicalScrollIntent = false;
+    activeTurnUserId.value = "";
+    observedMessageCount = props.messages.length;
+    initialTailMessageId = props.messages.at(-1)?.id ?? "";
+    initialTailContent = String(props.messages.at(-1)?.content ?? "");
+    initialTailStreaming = Boolean(props.messages.at(-1)?.streaming);
     restorableViewport.value = nextViewport;
     initialViewportActive = Boolean(nextViewport);
     initialViewportRestored = false;
@@ -957,7 +974,7 @@ watch(
     if (nextViewport) {
       autoScroll.value = false;
       void nextTick().then(() => {
-        if (props.transcriptScopeKey === scopeKey) restoreInitialViewport();
+        if (props.transcriptScopeKey === scopeKey && props.transcriptResetSeq === resetSeq) restoreInitialViewport();
       });
     } else {
       scrollChatToBottom();
@@ -1013,7 +1030,7 @@ watch(
     if (!connected && wasConnected) {
       wasAnchoredBeforeDisconnect = autoScroll.value || (!streamingAnswerId.value && isViewportInFinalTurn());
     } else if (connected && !wasConnected) {
-      if (wasAnchoredBeforeDisconnect && !streamingAnswerId.value && !readingLockEl) {
+      if (!userTookViewportControl && wasAnchoredBeforeDisconnect && !streamingAnswerId.value && !readingLockEl) {
         autoScroll.value = true;
         showScrollToBottom.value = false;
         scheduleChatScrollToBottom();
@@ -1025,7 +1042,7 @@ watch(
 watch(
   () => props.transcriptAlignSeq,
   (seq) => {
-    if (seq && !readingLockEl && !readingLockAligning && !streamingAnswerId.value) {
+    if (seq && !userTookViewportControl && !readingLockEl && !readingLockAligning && !streamingAnswerId.value) {
       scrollChatToBottom(true);
     }
   },
@@ -1154,7 +1171,7 @@ onBeforeUnmount(() => {
         @keydown="onChatKeydown"
       >
         <MainChatMessageList
-          :key="props.transcriptScopeKey"
+          :key="JSON.stringify([props.transcriptScopeKey, props.transcriptResetSeq])"
           :messages="messages"
           :auto-scroll="autoScroll"
           :initial-first-loaded-id="restorableViewport?.firstLoadedId"

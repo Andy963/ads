@@ -18,6 +18,7 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     transcriptScopeKey: ref(""),
     transcriptAuthoritative: ref(false),
     transcriptAuthoritativeSeq: ref(0),
+    transcriptResetSeq: ref(0),
     transcriptAlignSeq: ref(0),
     laneGeneration: undefined,
     dismissedPromptIds: new Set<string>(),

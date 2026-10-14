@@ -33,30 +33,48 @@ afterEach(() => {
   sessionStorage.clear();
 });
 
-async function harness() {
+async function harness(lane: "actions" | "acopilot" = "actions") {
   let controller!: ReturnType<typeof createAppController>;
   const wrapper = mount(defineComponent({
     components: { MainChat },
     setup() {
       controller = createAppController();
-      return { rt: controller.activeRuntime };
+      return { rt: lane === "acopilot" ? controller.activeAcopilotRuntime : controller.activeRuntime };
     },
-    template: '<MainChat :messages="rt.messages.value" :queued-prompts="[]" :pending-images="[]" :connected="rt.connected.value" :busy="rt.busy.value" read-only />',
+    template: `<MainChat
+      :messages="rt.messages.value"
+      :viewport="rt.transcriptViewport.value"
+      :transcript-scope-key="rt.transcriptScopeKey.value"
+      :transcript-authoritative="rt.transcriptAuthoritative.value"
+      :transcript-authoritative-seq="rt.transcriptAuthoritativeSeq.value"
+      :transcript-reset-seq="rt.transcriptResetSeq.value"
+      :transcript-align-seq="rt.transcriptAlignSeq.value"
+      :queued-prompts="[]"
+      :pending-images="[]"
+      :connected="rt.connected.value"
+      :busy="rt.busy.value"
+      @update:viewport="rt.transcriptViewport.value = $event"
+      read-only
+    />`,
   }));
   wrappers.push(wrapper);
   controller.loggedIn.value = true;
   controller.transcriptCache.setOwner("user-1");
-  await controller.connectWs("default");
+  const connect = lane === "acopilot" ? controller.connectAcopilotWs : controller.connectWs;
+  await connect("default");
   const socket = state.sockets.at(-1)!;
   socket.onOpen();
-  return { controller, wrapper, rt: controller.getRuntime("default"), socket };
+  const rt = lane === "acopilot" ? controller.getAcopilotRuntime("default") : controller.getRuntime("default");
+  return { controller, wrapper, rt, socket, connect };
 }
 
 async function bootstrap(info: Awaited<ReturnType<typeof harness>>) {
+  expect(info.rt.transcriptAuthoritative.value).toBe(false);
   info.socket.onMessage({
     type: "welcome", historyMode: "snapshot", bootstrapHistory: true,
-    latestSeq: 10, laneGeneration: 1, inFlight: false, chatSessionId: "main",
+    latestSeq: 10, laneGeneration: 1, inFlight: false, chatSessionId: info.rt.chatSessionId,
   });
+  expect(info.rt.transcriptAuthoritative.value).toBe(false);
   info.socket.onMessage({ type: "history", items: [
     { role: "user", text: "Question", ts: 1, kind: "client_message_id:question-1" },
     { role: "ai", text: "**Cached answer**", ts: 2 },
@@ -64,20 +82,66 @@ async function bootstrap(info: Awaited<ReturnType<typeof harness>>) {
   await flushPromises();
   expect(info.rt.transcriptCursor).toBe(10);
   expect(info.rt.transcriptReady).toBe(true);
+  expect(info.rt.transcriptAuthoritative.value).toBe(true);
+  expect(info.rt.transcriptAuthoritativeSeq.value).toBe(1);
 }
 
 async function reconnect(info: Awaited<ReturnType<typeof harness>>, latestSeq = 10) {
+  const authoritativeSeq = info.rt.transcriptAuthoritativeSeq.value;
   info.socket.onClose({ code: 1006 });
   await info.controller.connectWs("default");
+  expect(info.rt.transcriptAuthoritative.value).toBe(false);
   const socket = state.sockets.at(-1)!;
   expect(socket.options.resume).toEqual({ afterSeq: 10, laneGeneration: 1 });
   socket.onOpen();
   socket.onMessage({ type: "welcome", historyMode: latestSeq > 10 ? "catch_up" : "resume", bootstrapHistory: false, latestSeq, laneGeneration: 1, inFlight: false });
   await flushPromises();
+  expect(info.rt.transcriptAuthoritative.value).toBe(true);
+  expect(info.rt.transcriptAuthoritativeSeq.value).toBe(authoritativeSeq + 1);
   return socket;
 }
 
 describe("local-first reconnect integration", () => {
+  it("restores the destination reading position across a real A/B/A session switch", async () => {
+    const info = await harness();
+    await bootstrap(info);
+    const messagesA = [...info.rt.messages.value];
+    const chat = info.wrapper.get(".chat").element as HTMLElement;
+    Object.defineProperties(chat, {
+      scrollHeight: { configurable: true, value: 2000 },
+      clientHeight: { configurable: true, value: 500 },
+    });
+    info.rt.transcriptViewport.value = {
+      following: false, firstLoadedId: messagesA[0]!.id, anchorId: "missing-anchor",
+      anchorOffset: 0, scrollTop: 430, userControlled: true,
+      scopeKey: info.rt.transcriptScopeKey.value, tailMessageId: messagesA.at(-1)!.id,
+    };
+    info.controller.transcriptCache.flush();
+    info.socket.onMessage({
+      type: "welcome", chatSessionId: "session-b", historyMode: "snapshot",
+      bootstrapHistory: true, latestSeq: 20, laneGeneration: 1, inFlight: false,
+    });
+    info.socket.onMessage({ type: "history", items: [{ role: "ai", text: "Session B answer", ts: 3 }] });
+    await flushPromises();
+    expect(info.wrapper.text()).toContain("Session B answer");
+    expect(chat.scrollTop).toBe(2000);
+
+    info.socket.onMessage({
+      type: "welcome", chatSessionId: "main", historyMode: "snapshot",
+      bootstrapHistory: true, latestSeq: 10, laneGeneration: 1, inFlight: false,
+    });
+    await flushPromises();
+    expect(info.rt.messages.value).toEqual(messagesA);
+    expect(chat.scrollTop).toBe(430);
+    info.socket.onMessage({ type: "history", items: [
+      { role: "user", text: "Question", ts: 1, kind: "client_message_id:question-1" },
+      { role: "ai", text: "**Cached answer**", ts: 2 },
+    ] });
+    await flushPromises();
+    expect(chat.scrollTop).toBe(430);
+    expect(info.wrapper.text()).not.toContain("Session B answer");
+  });
+
   it("fences old outbox watchers and pending input at an authentication boundary", async () => {
     const info = await harness();
     await bootstrap(info);
@@ -117,6 +181,7 @@ describe("local-first reconnect integration", () => {
     const chat = info.wrapper.find(".chat").element as HTMLElement;
     Object.defineProperty(chat, "scrollHeight", { configurable: true, value: 2000 });
     Object.defineProperty(chat, "clientHeight", { configurable: true, value: 500 });
+    await info.wrapper.find(".chat").trigger("wheel", { deltaY: -80 });
     chat.scrollTop = 430;
     await info.wrapper.find(".chat").trigger("scroll");
     await reconnect(info);
@@ -149,6 +214,40 @@ describe("local-first reconnect integration", () => {
     expect(info.wrapper.find('.msg[data-role="assistant"]').element).toBe(row);
     expect(render.mock.calls.filter(([content]) => content === "**Cached answer**")).toHaveLength(1);
     expect(info.rt.transcriptCursor).toBe(12);
+  });
+
+  it("publishes resume authority only after the advertised WebSocket replay boundary", async () => {
+    const info = await harness();
+    await bootstrap(info);
+    info.socket.onClose({ code: 1006 });
+    await info.controller.connectWs("default");
+    const socket = state.sockets.at(-1)!;
+    socket.onOpen();
+    socket.onMessage({
+      type: "welcome", historyMode: "resume", bootstrapHistory: false,
+      latestSeq: 12, laneGeneration: 1, inFlight: false,
+    });
+    await flushPromises();
+    expect(info.rt.transcriptAuthoritative.value).toBe(false);
+    expect(info.rt.transcriptAuthoritativeSeq.value).toBe(1);
+
+    socket.onMessage({ type: "user", seq: 11, clientMessageId: "question-2", text: "New question", ts: 3 });
+    await flushPromises();
+    expect(info.rt.transcriptAuthoritative.value).toBe(false);
+    socket.onMessage({ type: "result", seq: 12, ok: true, output: "New answer", ts: 4 });
+    await flushPromises();
+    expect(info.rt.transcriptAuthoritative.value).toBe(true);
+    expect(info.rt.transcriptAuthoritativeSeq.value).toBe(2);
+    expect(info.rt.transcriptCursor).toBe(12);
+    expect(info.rt.messages.value.map((message) => message.content)).toEqual([
+      "Question", "**Cached answer**", "New question", "New answer",
+    ]);
+    expect(state.get).not.toHaveBeenCalled();
+
+    socket.onMessage({ type: "result", seq: 12, ok: true, output: "Duplicate answer", ts: 4 });
+    await flushPromises();
+    expect(info.rt.transcriptAuthoritativeSeq.value).toBe(2);
+    expect(info.wrapper.text()).not.toContain("Duplicate answer");
   });
 
   it("uses the atomic cold cache cursor, not a newer detached cursor", async () => {
@@ -228,6 +327,45 @@ describe("local-first reconnect integration", () => {
     expect(info.rt.transcriptReady).toBe(true);
     expect(info.rt.transcriptCursor).toBe(0);
     expect(info.rt.laneGeneration).toBe(2);
+  });
+
+  it.each(["actions", "acopilot"] as const)("retires only the old generation's reading control in the %s lane", async (lane) => {
+    const info = await harness(lane);
+    await bootstrap(info);
+    const scope = info.rt.transcriptScopeKey.value;
+    const chat = info.wrapper.get(".chat").element as HTMLElement;
+    Object.defineProperties(chat, {
+      scrollHeight: { configurable: true, value: 2000 },
+      clientHeight: { configurable: true, value: 500 },
+    });
+    await info.wrapper.get(".chat").trigger("wheel", { deltaY: -80 });
+    chat.scrollTop = 430;
+    await info.wrapper.get(".chat").trigger("scroll");
+    info.socket.onClose({ code: 1006 });
+    await info.connect("default");
+    const socket = state.sockets.at(-1)!;
+    socket.onOpen();
+    socket.onMessage({
+      type: "welcome", historyMode: "snapshot", bootstrapHistory: true,
+      latestSeq: 20, laneGeneration: 2, inFlight: false, chatSessionId: info.rt.chatSessionId,
+    });
+    await flushPromises();
+    expect(info.rt.transcriptResetSeq.value).toBe(1);
+    expect(info.rt.transcriptScopeKey.value).toBe(scope);
+    socket.onMessage({ type: "history", items: [
+      { role: "user", text: "New generation question", ts: 3, kind: "client_message_id:question-2" },
+      { role: "ai", text: "New generation answer", ts: 4 },
+    ] });
+    await flushPromises();
+    expect(chat.scrollTop).toBe(2000);
+
+    await info.wrapper.get(".chat").trigger("wheel", { deltaY: -80 });
+    chat.scrollTop = 120;
+    await info.wrapper.get(".chat").trigger("scroll");
+    socket.onMessage({ type: "welcome", historyMode: "resume", latestSeq: 20, laneGeneration: 2, inFlight: false });
+    await flushPromises();
+    expect(info.rt.transcriptResetSeq.value).toBe(1);
+    expect(chat.scrollTop).toBe(120);
   });
 
   it("can rebuild a cold baseline after a server generation rollback", async () => {

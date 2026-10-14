@@ -156,6 +156,7 @@ export function createTranscriptCache() {
     key: string;
     scope: TranscriptScope;
     scopeKey: string;
+    suspended: boolean;
     flush: () => void;
     dispose: () => void;
   }>();
@@ -165,7 +166,7 @@ export function createTranscriptCache() {
     const key = transcriptCacheKey(owner.value, scope);
     const scopeKey = transcriptScopeKey(owner.value, scope);
     const previous = bindings.get(rt);
-    if (previous?.key === key && previous.scopeKey === scopeKey) return;
+    if (previous?.key === key && previous.scopeKey === scopeKey && !previous.suspended) return;
     previous?.flush();
     previous?.dispose();
     if (previous) {
@@ -241,6 +242,7 @@ export function createTranscriptCache() {
       }, FLUSH_DELAY_MS);
     };
     const invalidate = (): void => {
+      if (disposed) return;
       cancel();
       rt.transcriptCursor = 0;
       rt.transcriptReady = false;
@@ -253,10 +255,25 @@ export function createTranscriptCache() {
     // watcher would walk the entire transcript for every incoming token.
     const stop = watch([rt.messages, rt.busy, rt.transcriptViewport], schedule, { flush: "post" });
     rt.transcriptCache = { schedule, invalidate };
-    bindings.set(rt, { key, scope, scopeKey, flush, dispose: () => { disposed = true; cancel(); stop(); } });
+    bindings.set(rt, {
+      key, scope, scopeKey, suspended: false, flush,
+      dispose: () => { disposed = true; cancel(); stop(); },
+    });
   };
 
   const flush = (): void => { for (const binding of bindings.values()) binding.flush(); };
+  // Selection rejection can precede the next welcome by an arbitrary delay.
+  // Keep the record and scope metadata, but retire every old writer. A later
+  // attach may hydrate either this same scope or a different session safely.
+  const suspendRuntime = (rt: ProjectRuntime): void => {
+    const binding = bindings.get(rt);
+    if (!binding || binding.suspended) return;
+    binding.flush();
+    binding.dispose();
+    binding.suspended = true;
+    rt.transcriptCache = undefined;
+    rt.transcriptAuthoritative.value = false;
+  };
   const detach = (rt: ProjectRuntime): void => {
     const binding = bindings.get(rt);
     binding?.dispose();
@@ -285,5 +302,5 @@ export function createTranscriptCache() {
     owner.value = id;
     try { localStorage.setItem(TRANSCRIPT_OWNER_KEY, id); } catch { /* Best effort. */ }
   };
-  return { owner, attach, flush, detach, dispose, clear, setOwner };
+  return { owner, attach, flush, suspendRuntime, detach, dispose, clear, setOwner };
 }
