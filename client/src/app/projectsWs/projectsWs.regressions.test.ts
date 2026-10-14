@@ -191,7 +191,7 @@ describe("webSocketActions model preference restore", () => {
     ctx.api.get = vi.fn().mockResolvedValue({ ok: true, events: [], latestSeq: 15 });
 
     await actions.connectWs("default");
-    const ws = rt.ws as any;
+    const ws = rt.ws as unknown as { onMessage?: (msg: unknown) => void };
 
     // Simulate server delivering welcome in resume mode with latestSeq > lastAppliedSeq
     ws.onMessage?.({
@@ -210,7 +210,7 @@ describe("webSocketActions model preference restore", () => {
     const { ctx, actions } = setup();
     const rt = ctx.getRuntime("default");
     rt.reconnectAttempts = 4;
-    rt.reconnectTimer = 12345 as any;
+    rt.reconnectTimer = 12345 as unknown as number;
 
     Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
     actions.handleVisibilityChange();

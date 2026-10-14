@@ -13,6 +13,7 @@ import { findStreamingAnswerId, hasExecutionBlockAfter } from "../app/chatStream
 const props = withDefaults(defineProps<{
   messages: ChatMessage[];
   viewport?: TranscriptViewport | null;
+  transcriptAlignSeq?: number;
   queuedPrompts: QueuedPrompt[];
   pendingImages: IncomingImage[];
   draft?: string;
@@ -29,7 +30,7 @@ const props = withDefaults(defineProps<{
   threadWarning?: string | null;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
   connectionStatusMessage?: string | null;
-}>(), { voiceInputActive: true });
+}>(), { voiceInputActive: true, transcriptAlignSeq: 0 });
 
 const emit = defineEmits<{
   (e: "update:draft", value: string): void;
@@ -123,6 +124,7 @@ const restorableViewport = isValidRestorableViewport(
 const autoScroll = ref(!restorableViewport);
 let initialViewportActive = Boolean(restorableViewport);
 let initialViewportRestored = false;
+let wasAnchoredBeforeDisconnect = !restorableViewport;
 const showScrollToBottom = ref(false);
 let viewportFrame: number | null = null;
 
@@ -270,7 +272,10 @@ function settleBottomLayout(): void {
     const distance = height - host.scrollTop - host.clientHeight;
     stableFrames = height === previousHeight && distance <= 2 ? stableFrames + 1 : 0;
     previousHeight = height;
-    if (distance > 2) host.scrollTop = height;
+    if (distance > 2) {
+      host.scrollTop = height;
+      void host.offsetHeight;
+    }
     if (++frames >= 8 || stableFrames >= 2) {
       settlingBottom = false;
       handleScroll();
@@ -385,6 +390,11 @@ function scrollChatToBottom(explicit = false): void {
   settlingBottom = explicit;
   autoScroll.value = true;
   showScrollToBottom.value = false;
+  const host = listRef.value;
+  if (host) {
+    host.scrollTop = host.scrollHeight;
+    void host.offsetHeight;
+  }
   scheduleChatScrollToBottom();
 }
 
@@ -486,6 +496,7 @@ function scheduleChatScrollToBottom(): void {
       }
       if (!autoScroll.value) return;
       host.scrollTop = host.scrollHeight;
+      void host.offsetHeight;
       showScrollToBottom.value = false;
       settleBottomLayout();
       scheduleViewportSave();
@@ -784,6 +795,11 @@ watch([lastUserMessageId, streamingAnswerId, () => props.messages.length], ([id,
   const isInitialTranscriptHydration = !hasActiveStreamingTail && messageDelta > 2;
   observedMessageCount = currentMessageCount;
   if (isInitialTranscriptHydration) {
+    if (wasAnchoredBeforeDisconnect || autoScroll.value) {
+      autoScroll.value = true;
+      showScrollToBottom.value = false;
+      scheduleChatScrollToBottom();
+    }
     return;
   }
   // The locked row can disappear when the transcript is reset or replaced.
@@ -848,6 +864,30 @@ watch(
     if (readingLockEl || readingLockAligning) return;
     if (autoScroll.value) scheduleChatScrollToBottom();
     else showScrollToBottom.value = true;
+  },
+);
+
+watch(
+  () => props.connected,
+  (connected, wasConnected) => {
+    if (!connected && wasConnected) {
+      wasAnchoredBeforeDisconnect = autoScroll.value || (!streamingAnswerId.value && isViewportInFinalTurn());
+    } else if (connected && !wasConnected) {
+      if (wasAnchoredBeforeDisconnect && !streamingAnswerId.value && !readingLockEl) {
+        autoScroll.value = true;
+        showScrollToBottom.value = false;
+        scheduleChatScrollToBottom();
+      }
+    }
+  },
+);
+
+watch(
+  () => props.transcriptAlignSeq,
+  (seq) => {
+    if (seq && !readingLockEl && !readingLockAligning && !streamingAnswerId.value) {
+      scrollChatToBottom(true);
+    }
   },
 );
 

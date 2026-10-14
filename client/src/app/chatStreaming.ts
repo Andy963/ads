@@ -404,10 +404,11 @@ export function createStreamingActions(params: {
     }, LIVE_ACTIVITY_TTL_MS);
   };
 
-  const clearStepLive = (rt?: ProjectRuntime): void => {
+  const clearStepLive = (rt?: ProjectRuntime, options?: { skipMessageUpdate?: boolean }): void => {
     const state = runtimeOrActive(rt);
     clearLiveActivityTimer(state);
     clearLiveActivityWindow(state.liveActivity);
+    if (options?.skipMessageUpdate) return;
     const existing = state.messages.value.slice();
     // Keep persisted legacy live-step messages readable. Only transient
     // activity and retired reasoning cards are cleared when a turn seals.

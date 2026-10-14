@@ -165,6 +165,7 @@ export function createAppContext() {
   const recentCommands = proxyRuntimeRef((rt) => rt.recentCommands);
   const pendingImages = proxyRuntimeRef((rt) => rt.pendingImages);
   const queuedPrompts = proxyRuntimeRef((rt) => rt.queuedPrompts);
+  const transcriptAlignSeq = proxyRuntimeRef((rt) => rt.transcriptAlignSeq);
 
   const agentBusy = computed(() => busy.value);
   const apiAuthorized = computed(() => loggedIn.value);
@@ -272,6 +273,7 @@ export function createAppContext() {
     recentCommands,
     pendingImages,
     queuedPrompts,
+    transcriptAlignSeq,
     agentBusy,
     apiAuthorized,
     runtimeOrActive,

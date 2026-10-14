@@ -1728,8 +1728,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", assistantAggregate: true, content: historyText, ts: ts ?? undefined });
         }
       }
-      dropReconnectBusyMessage();
-      applyResumeHistory(next, rt);
+      const isAuthoritative = Boolean((msg as Record<string, unknown>).authoritative);
+      if (!isAuthoritative) {
+        dropReconnectBusyMessage();
+        applyResumeHistory(next, rt);
+      } else {
+        applyResumeHistory(next, rt, { authoritative: true });
+      }
       const canTreatHistoryAsTerminal = terminalHistoryTail && !rt.busy.value && !rt.turnInFlight;
       if (canTreatHistoryAsTerminal) {
         terminalFenceActive = true;
