@@ -608,4 +608,35 @@ describe("web/ws/bootstrapDelivery", () => {
     assert.doesNotMatch(JSON.stringify(sentInFlight), /private command output/);
   });
 
+  it("delivers maxClients in welcome payload when provided", () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const historyStore = new HistoryStore({ namespace: "test-bootstrap-delivery-max-clients", maxEntriesPerSession: 20 });
+
+    sendInitialBootstrapMessages({
+      ws: {} as any,
+      safeJsonSend: (_ws, payload) => sent.push(payload as Record<string, unknown>),
+      sessionManager: {
+        getSavedThreadId: () => undefined,
+        getContextRestoreMode: () => "fresh",
+        getEffectiveState: () => ({ model: "gpt-4o", modelReasoningEffort: "high", activeAgentId: "codex" }),
+      } as any,
+      orchestrator: {
+        getActiveAgentId: () => "codex",
+        getThreadId: () => null,
+        listAgents: () => [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }],
+      } as any,
+      userId: 7,
+      agentAvailability: { mergeStatus: (_agentId, status) => status } as any,
+      sessionId: "session-1",
+      chatSessionId: "main",
+      workspace: { path: "/tmp/project" },
+      inFlight: false,
+      historyStore,
+      historyKey: "history-1",
+      maxClients: 40,
+    });
+
+    assert.equal(sent[0]?.type, "welcome");
+    assert.equal(sent[0]?.maxClients, 40);
+  });
 });

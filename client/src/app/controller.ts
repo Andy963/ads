@@ -66,6 +66,8 @@ export function createAppContext() {
 
   const runtimeByProjectId = new Map<string, ProjectRuntime>();
   const acopilotRuntimeByProjectId = new Map<string, ProjectRuntime>();
+  const maxWsClients = ref<number | null>(null);
+  const projectAccessOrder = ref<string[]>([]);
 
   const normalizeProjectId = (id: string | null | undefined): string => {
     const trimmed = String(id ?? "").trim();
@@ -135,6 +137,8 @@ export function createAppContext() {
     }
     runtimeByProjectId.clear();
     acopilotRuntimeByProjectId.clear();
+    projectAccessOrder.value = [];
+    maxWsClients.value = null;
     accountGeneration.value += 1;
     clearPersistedOutboxes();
   };
@@ -281,6 +285,8 @@ export function createAppContext() {
     resolveActiveWorkspaceRoot,
     withWorkspaceQueryFor,
     withWorkspaceQuery,
+    maxWsClients,
+    projectAccessOrder,
   };
 }
 
@@ -329,6 +335,7 @@ export function createAppController() {
 
   const closeProjectConnections = (projectId: string): void => {
     const pid = ctx.normalizeProjectId(projectId);
+    ctx.projectAccessOrder.value = ctx.projectAccessOrder.value.filter((id) => id !== pid);
 
     const actionsRt = ctx.runtimeByProjectId.get(pid);
     if (actionsRt) {
@@ -365,6 +372,40 @@ export function createAppController() {
 
   const activateProject = async (projectId: string): Promise<void> => {
     const pid = ctx.normalizeProjectId(projectId);
+
+    // Maintain MRU order for project switching
+    const nextOrder = ctx.projectAccessOrder.value.filter((id) => id !== pid);
+    nextOrder.push(pid);
+    ctx.projectAccessOrder.value = nextOrder;
+
+    // Dynamically derive connection pool capacity from server's maxClients limit.
+    // Each project holds up to 2 sockets (actions + acopilot).
+    const serverLimit = ctx.maxWsClients.value ?? 32;
+    const poolCapacity = Math.max(1, Math.floor(serverLimit / 2));
+
+    // Harvest oldest background project connections if open count exceeds capacity
+    const openProjectIds = nextOrder.filter((id) => {
+      const art = ctx.runtimeByProjectId.get(id);
+      const crt = ctx.acopilotRuntimeByProjectId.get(id);
+      return Boolean((art?.ws && art.connected.value) || (crt?.ws && crt.connected.value));
+    });
+
+    while (openProjectIds.length > poolCapacity) {
+      const oldestId = openProjectIds.shift();
+      if (oldestId && oldestId !== pid) {
+        const art = ctx.runtimeByProjectId.get(oldestId);
+        if (art) {
+          ws.closeRuntimeConnection(art);
+          clearRuntimeTimers(art);
+        }
+        const crt = ctx.acopilotRuntimeByProjectId.get(oldestId);
+        if (crt) {
+          ws.closeRuntimeConnection(crt);
+          clearRuntimeTimers(crt);
+        }
+      }
+    }
+
     const rt = ctx.getRuntime(pid);
     const acopilotRt = ctx.getAcopilotRuntime(pid);
     if (!ctx.loggedIn.value) return;

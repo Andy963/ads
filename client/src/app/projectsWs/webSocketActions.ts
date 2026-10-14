@@ -60,6 +60,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     getRuntime,
     getAcopilotRuntime,
     maxTurnCommands,
+    maxWsClients,
+    projectAccessOrder,
   } = ctx;
 
   const {
@@ -1117,6 +1119,17 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       if (ev.code === 4409) {
         cleanupTerminalCloseState();
         rt.wsError.value = "Max clients reached (increase ADS_WEB_MAX_CLIENTS)";
+        const activeId = activeProjectId.value;
+        const candidateId = projectAccessOrder?.value.find((id) => id !== activeId);
+        if (candidateId) {
+          if (projectAccessOrder) {
+            projectAccessOrder.value = projectAccessOrder.value.filter((id) => id !== candidateId);
+          }
+          const art = runtimeByProjectId.get(candidateId);
+          if (art) closeRuntimeConnection(art);
+          const crt = acopilotRuntimeByProjectId.get(candidateId);
+          if (crt) closeRuntimeConnection(crt);
+        }
         return;
       }
 
@@ -1240,6 +1253,10 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         const rec = msg as Record<string, unknown>;
         const latestSeq = Number(rec.latestSeq);
         if (rec.type === "welcome") {
+          const serverMaxClients = Number(rec.maxClients);
+          if (Number.isSafeInteger(serverMaxClients) && serverMaxClients > 0 && maxWsClients) {
+            maxWsClients.value = serverMaxClients;
+          }
           const serverChatSessionId = String(rec.chatSessionId ?? "").trim();
           const serverLaneGeneration = Number(rec.laneGeneration);
           const hasServerLaneGeneration = Number.isFinite(serverLaneGeneration) && serverLaneGeneration >= 1;
