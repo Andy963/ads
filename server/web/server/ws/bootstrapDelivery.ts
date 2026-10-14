@@ -80,6 +80,7 @@ export function sendInitialBootstrapMessages(args: {
   historyKey: string;
   latestSeq?: number;
   laneGeneration?: number;
+  maxClients?: number;
   resume?: Parameters<typeof canResumeTranscript>[0]["resume"];
   sync?: Parameters<typeof canResumeTranscript>[0]["sync"];
   /** Runtime-only snapshots that are not part of durable chat history. */
@@ -125,6 +126,7 @@ export function sendInitialBootstrapMessages(args: {
       historyMode: resumed ? "resume" : "snapshot",
       completedClientMessageIds: collectCompletedClientMessageIds(historyEntries),
       latestSeq: args.latestSeq,
+      maxClients: args.maxClients,
       state: bootstrapState,
     }),
   );

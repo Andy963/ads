@@ -1229,6 +1229,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
         historyKey: currentLane.historyKey,
         latestSeq: state.syncEventStore?.getLatestSeqForLanes(currentLane.laneNamespace, currentLane.syncLaneKeys) ?? 0,
         laneGeneration: currentLane.laneGeneration,
+       maxClients: config.maxClients,
         runtimeSnapshots: collectRuntimeSnapshots(currentLane, nextInFlight),
       });
 
@@ -1306,6 +1307,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       } : undefined,
       latestSeq: state.syncEventStore?.getLatestSeqForLanes(currentLane.laneNamespace, currentLane.syncLaneKeys) ?? 0,
       laneGeneration: currentLane.laneGeneration,
+     maxClients: config.maxClients,
       runtimeSnapshots: collectRuntimeSnapshots(currentLane, inFlight),
     });
     sendPromptQueueSnapshot();
@@ -1465,6 +1467,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
         historyKey: currentLane.historyKey,
         latestSeq: state.syncEventStore?.getLatestSeqForLanes(currentLane.laneNamespace, currentLane.syncLaneKeys) ?? 0,
         laneGeneration: currentLane.laneGeneration,
+       maxClients: config.maxClients,
         runtimeSnapshots: collectRuntimeSnapshots(currentLane, nextInFlight),
       });
 

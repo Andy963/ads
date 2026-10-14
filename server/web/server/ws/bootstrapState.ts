@@ -62,6 +62,7 @@ export function buildWelcomePayload(args: {
   historyMode?: "resume" | "snapshot";
   completedClientMessageIds: string[];
   latestSeq?: number;
+  maxClients?: number;
   state: WsBootstrapState;
 }): Record<string, unknown> {
   return {
@@ -75,6 +76,7 @@ export function buildWelcomePayload(args: {
     ...(args.historyMode ? { historyMode: args.historyMode } : {}),
     completedClientMessageIds: args.completedClientMessageIds,
     ...(typeof args.latestSeq === "number" ? { latestSeq: args.latestSeq } : {}),
+    ...(typeof args.maxClients === "number" && args.maxClients > 0 ? { maxClients: args.maxClients } : {}),
     ...(typeof args.state.laneGeneration === "number" ? { laneGeneration: args.state.laneGeneration } : {}),
     threadId: args.state.threadId,
     effectiveModel: args.state.effectiveState.model,
