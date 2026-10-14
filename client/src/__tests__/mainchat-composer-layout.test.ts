@@ -377,4 +377,14 @@ describe("MainChat compact composer layout", () => {
     expect(useComposerSource).not.toMatch(/diagAlert\(/);
     expect(useComposerSource).not.toMatch(/import.*diagAlert.*from/);
   });
+
+  it("aligns mobile horizontal padding to 8px across the chat stream and composer", async () => {
+    const composer = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
+    const chat = await readSfc("../components/MainChat.css", import.meta.url);
+    const app = await readSfc("../App.css", import.meta.url);
+
+    expect(composer).toMatch(/@media\s*\(max-width:\s*900px\)\s*\{[\s\S]*?\.composer\s*\{[\s\S]*?padding-left:\s*8px\s*;[\s\S]*?padding-right:\s*8px\s*;/);
+    expect(chat).toMatch(/@media\s*\(max-width:\s*900px\)\s*\{[\s\S]*?\.chat\s*\{[\s\S]*?padding:\s*12px 8px\s*;/);
+    expect(app).toMatch(/@media\s*\(max-width:\s*900px\)[\s\S]*?\.laneTabs\s*\{[\s\S]*?width:\s*calc\(100% - 16px\)\s*;[\s\S]*?max-width:\s*none\s*;/);
+  });
 });

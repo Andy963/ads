@@ -1299,6 +1299,7 @@
   }
   .laneTabs {
     width: calc(100% - 16px);
+    max-width: none;
     min-height: 36px;
     margin: 4px 8px;
     padding: 3px;
