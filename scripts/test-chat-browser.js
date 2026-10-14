@@ -261,10 +261,10 @@ async function runEngine(engine, artifacts, report) {
     stage("lane-isolation-and-drafts");
 
     // Two-phase reading viewport: while interim notes and a command stream in,
-    // the viewport follows the tail; once the final answer can fill the
-    // viewport, one alignment pins the answer top (12px offset) and locks;
-    // burst growth must not move the reading position; the floating button
-    // hands bottom-following back.
+    // the viewport follows the tail; once the final answer enters the viewport
+    // (including a short first delta), one alignment establishes the lock;
+    // burst growth and mobile viewport churn must not move the reading
+    // position; the floating button hands bottom-following back.
    await send("browser-worker-burst");
    const visibleChatMetrics = () => page.evaluate(() => {
       const chat = document.querySelector(".lanePanel:not([aria-hidden]) .chat");
@@ -290,6 +290,9 @@ async function runEngine(engine, artifacts, report) {
         bottomGap: chat.scrollHeight - chat.clientHeight - chat.scrollTop,
       };
       if (check === "command-tail") return state.tall && state.midCommands && !state.answerText && state.bottomGap <= 8;
+      if (check === "answer-started") {
+        return state.answerText && chat.style.overflowAnchor === "none" && Boolean(chat.parentElement?.querySelector(".scrollToBottom"));
+      }
       if (check === "burst-grown") return state.tailText;
       if (check === "released-bottom") return state.tailText && state.bottomGap <= 8;
       return false;
@@ -300,37 +303,38 @@ async function runEngine(engine, artifacts, report) {
     assert.ok(executionPhase.bottomGap <= 8, `Command output must stay pinned to the tail, got bottom gap ${executionPhase.bottomGap}`);
     assert.notEqual(executionPhase.overflowAnchor, "none", "Native scroll anchoring must stay untouched during tail-following");
    assert.equal(executionPhase.fabVisible, false, "No floating button while following the tail");
-   await page.waitForFunction(() => {
+    await visibleChatState("answer-started");
+    await page.waitForFunction(() => {
       const chat = document.querySelector(".lanePanel:not([aria-hidden]) .chat");
       if (!chat) return false;
-      const answerRow = [...chat.querySelectorAll(".msg[data-id]")]
-        .find((el) => el.textContent.includes("burst answer anchor line"));
-      if (!answerRow) return false;
-      const delta = answerRow.getBoundingClientRect().top - chat.getBoundingClientRect().top;
-      if (Math.abs(delta - 12) > 24) {
-        window.__readingAnchorLastTop = -1;
-        return false;
-      }
-      // Resolve only once the smooth alignment has settled: two consecutive
-      // polls at the same scroll position.
       const top = chat.scrollTop;
-      if (window.__readingAnchorLastTop === top) return true;
-      window.__readingAnchorLastTop = top;
-      return false;
+      const settled = window.__readingLockLastTop === top;
+      window.__readingLockLastTop = top;
+      return settled;
     });
-    const anchored = await visibleChatMetrics();
-    assert.ok(anchored && anchored.answerTopDelta !== null, "The answer row must exist once its first delta lands");
-    assert.ok(Math.abs(anchored.answerTopDelta - 12) <= 24, `The answer top must sit ~12px below the viewport top, got ${anchored.answerTopDelta}`);
-    assert.equal(anchored.overflowAnchor, "none", "The reading lock must disable native scroll anchoring");
-    assert.equal(anchored.fabVisible, true, "The floating button must appear once bottom-following pauses");
-    await page.screenshot({ path: path.join("/tmp", `reading-viewport-anchor-${engine}.png`) });
+    const locked = await visibleChatMetrics();
+    assert.ok(locked && locked.answerTopDelta !== null, "The answer row must exist once its first delta lands");
+    assert.equal(locked.overflowAnchor, "none", "The reading lock must disable native scroll anchoring");
+    assert.equal(locked.fabVisible, true, "The floating button must appear once bottom-following pauses");
+    if (mobile) {
+      await page.evaluate(() => {
+        const viewport = window.__chatViewport ?? window.visualViewport;
+        viewport?.dispatchEvent(new Event("resize"));
+        viewport?.dispatchEvent(new Event("scroll"));
+      });
+      await settle();
+      const afterViewport = await visibleChatMetrics();
+      assert.ok(afterViewport, "The visible chat must remain measurable after viewport churn");
+      assert.ok(Math.abs(afterViewport.scrollTop - locked.scrollTop) <= 2, "Visual viewport churn must not move the reading lock");
+    }
+    await page.screenshot({ path: path.join("/tmp", `reading-viewport-lock-${engine}.png`) });
     await visibleChatState("burst-grown");
     await settle();
     const afterBurst = await visibleChatMetrics();
     assert.ok(afterBurst, "The visible chat must be measurable after the burst");
-    assert.ok(Math.abs(afterBurst.scrollTop - anchored.scrollTop) <= 2, `Burst growth must not move the reading position (${anchored.scrollTop} -> ${afterBurst.scrollTop})`);
+    assert.ok(Math.abs(afterBurst.scrollTop - locked.scrollTop) <= 2, `Burst growth must not move the reading position (${JSON.stringify({ locked, afterBurst })})`);
     await page.screenshot({ path: path.join("/tmp", `reading-viewport-burst-${engine}.png`) });
-    await activate(".scrollToBottom:visible");
+    await activate(activePanel().locator(".scrollToBottom"));
     await visibleChatState("released-bottom");
     const released = await visibleChatMetrics();
     assert.equal(released?.overflowAnchor, "auto", "Releasing the lock must restore native scroll anchoring");

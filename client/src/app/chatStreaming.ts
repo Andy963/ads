@@ -25,31 +25,66 @@ type AnswerDetectionMessage = {
   streaming?: boolean;
 };
 
+type FindStreamingAnswerOptions = {
+  userId?: string;
+  includeCompleted?: boolean;
+};
+
 /**
- * Locate the turn's final answer block: the last streaming assistant text
- * message after the last user message. The empty assistant placeholder pushed
- * when the prompt is sent is excluded — phase 2 begins when the first real
- * delta lands, not when the placeholder appears — and transient live cards
- * (live-step/live-activity) never count as the answer.
+ * Locate the turn's final answer block: the last non-empty assistant text
+ * message after the active user message. The empty assistant placeholder
+ * pushed when the prompt is sent is excluded — phase 2 begins when the first
+ * real delta lands, not when the placeholder appears — and transient live
+ * cards (live-step/live-activity) never count as the answer.
+ *
+ * Completed messages are included only when the caller has already identified
+ * an active turn. That covers snapshots and fast completions without treating
+ * a completed answer from cold-start history as a new reading turn.
  */
 export function findStreamingAnswerId(
   items: readonly AnswerDetectionMessage[],
   isLiveMessageId: (id: string) => boolean,
+  options: FindStreamingAnswerOptions = {},
 ): string {
   let lastUserIndex = -1;
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    if (items[index]?.role === "user") {
-      lastUserIndex = index;
-      break;
+  let turnEndIndex = items.length;
+  if (options.userId) {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      if (items[index]?.role === "user" && items[index]?.id === options.userId) {
+        lastUserIndex = index;
+        break;
+      }
+    }
+    if (lastUserIndex >= 0) {
+      for (let index = lastUserIndex + 1; index < items.length; index += 1) {
+        if (items[index]?.role === "user") {
+          turnEndIndex = index;
+          break;
+        }
+      }
+    }
+  } else {
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      if (items[index]?.role === "user") {
+        lastUserIndex = index;
+        break;
+      }
     }
   }
-  for (let index = items.length - 1; index > lastUserIndex; index -= 1) {
+  if (lastUserIndex < 0) return "";
+  let answerPhaseStart = lastUserIndex;
+  for (let index = lastUserIndex + 1; index < turnEndIndex; index += 1) {
+    if (ANSWER_PHASE_BOUNDARY_KINDS.has(String(items[index]?.kind ?? ""))) {
+      answerPhaseStart = index;
+    }
+  }
+  for (let index = turnEndIndex - 1; index > answerPhaseStart; index -= 1) {
     const message = items[index]!;
     if (isLiveMessageId(message.id)) continue;
     if (
       message.role === "assistant" &&
       message.kind === "text" &&
-      message.streaming === true &&
+      (message.streaming === true || options.includeCompleted === true) &&
       String(message.content ?? "").trim()
     ) {
       return message.id;

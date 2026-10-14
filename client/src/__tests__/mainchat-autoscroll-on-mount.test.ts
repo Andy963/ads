@@ -57,7 +57,7 @@ describe("MainChat auto-scroll on mount", () => {
         queuedPrompts: [],
         pendingImages: [],
         connected: true,
-        busy: true,
+        busy: false,
       },
       global: {
         stubs: {

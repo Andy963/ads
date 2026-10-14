@@ -37,6 +37,11 @@ describe("findStreamingAnswerId", () => {
     expect(findStreamingAnswerId(items, isLiveMessageId)).toBe("a-2");
   });
 
+  it("does not treat completed narration before execution as the final answer", () => {
+    const items = [user("u-1"), answer("a-1", "intermediate narration", false), execute("exec-1")];
+    expect(findStreamingAnswerId(items, isLiveMessageId, { includeCompleted: true })).toBe("");
+  });
+
   it("ignores the empty assistant placeholder pushed when the prompt is sent", () => {
     const items = [user("u-1"), answer("a-1", "")];
     expect(findStreamingAnswerId(items, isLiveMessageId)).toBe("");
@@ -50,6 +55,21 @@ describe("findStreamingAnswerId", () => {
   it("ignores assistant text that is no longer streaming", () => {
     const items = [user("u-1"), answer("a-1", "finished answer", false)];
     expect(findStreamingAnswerId(items, isLiveMessageId)).toBe("");
+  });
+
+  it("accepts a completed answer when the caller confirms an active turn", () => {
+    const items = [user("u-1"), answer("a-1", "fast answer", false)];
+    expect(findStreamingAnswerId(items, isLiveMessageId, { includeCompleted: true })).toBe("a-1");
+  });
+
+  it("limits completed-answer detection to the requested user turn", () => {
+    const items = [
+      user("u-1"),
+      answer("a-1", "previous answer", false),
+      user("u-2"),
+      answer("a-2", "current answer", false),
+    ];
+    expect(findStreamingAnswerId(items, isLiveMessageId, { userId: "u-1", includeCompleted: true })).toBe("a-1");
   });
 
   it("ignores non-text assistant kinds such as thought blocks", () => {
