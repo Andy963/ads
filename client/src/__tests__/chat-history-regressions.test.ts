@@ -385,6 +385,7 @@ describe("Issue #207 visible chat context switching", () => {
     );
     expect(oldAdvisorSocket).toBeTruthy();
     expect(oldWorkerSocket).toBeTruthy();
+    oldWorkerSocket!.onMessage?.({ type: "welcome", maxClients: 2, chatSessionId: "chat-a", latestSeq: 1 });
     emitHistory(oldAdvisorSocket!, "Project A history");
     await settleUi(wrapper);
 
@@ -396,7 +397,9 @@ describe("Issue #207 visible chat context switching", () => {
     await nextTick();
 
     expect((wrapper.vm as any).activeProjectId).toBe("sess-b");
-    expect(oldWorkerSocket).toBeTruthy();
+    // Under Issue #561 connection pooling, background project WebSockets are retained
+    // rather than closed, but their incoming events must remain fenced from the active lane.
+    expect(oldWorkerSocket!.closed).toBe(false);
     expect(wrapper.find('[data-testid="lane-panel-actions"]').text()).not.toContain("Project A history");
 
     oldWorkerSocket!.onMessage?.({

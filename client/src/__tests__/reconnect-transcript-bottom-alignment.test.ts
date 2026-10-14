@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { defineComponent, nextTick, ref, watch } from "vue";
-import { flushPromises, mount } from "@vue/test-utils";
+import { describe, expect, it } from "vitest";
+import { nextTick, ref, watch } from "vue";
+import { mount } from "@vue/test-utils";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -48,6 +48,39 @@ describe("Issue #559: reconnect transcript bottom alignment and atomic history r
     expect(rt.messages.value.map((m) => m.content)).toEqual(["snapshot question", "snapshot answer"]);
     // Confirm 0 was never observed
     expect(observedLengths).not.toContain(0);
+  });
+
+  it("never publishes an empty message array when current transcript contains transient live-activity/thought rows before snapshot", async () => {
+    const rt = createProjectRuntime({ maxLiveActivitySteps: 10 });
+    rt.projectSessionId = "p1";
+    rt.chatSessionId = "main";
+    rt.messages.value = [
+      { id: "live-activity", role: "assistant", kind: "thought", content: "thinking...", ts: 1 },
+    ];
+
+    const observedLengths: number[] = [];
+    const chat = createChatActions({ runtimeOrActive: (target?: any) => target ?? rt } as any);
+
+    watch(
+      rt.messages,
+      (current) => {
+        observedLengths.push(current.length);
+      },
+      { flush: "sync" },
+    );
+
+    chat.applyResumeHistory(
+      [
+        msg("u-snapshot", "user", "snapshot question"),
+        msg("a-snapshot", "assistant", "snapshot answer"),
+      ],
+      rt,
+      { authoritative: true },
+    );
+
+    expect(observedLengths).toEqual([2]);
+    expect(observedLengths).not.toContain(0);
+    expect(rt.messages.value.map((m) => m.content)).toEqual(["snapshot question", "snapshot answer"]);
   });
 
   it("restores autoScroll and aligns to bottom upon reconnection when user was previously at bottom", async () => {
