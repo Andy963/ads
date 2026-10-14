@@ -1731,8 +1731,10 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const isAuthoritative = Boolean((msg as Record<string, unknown>).authoritative);
       if (!isAuthoritative) {
         dropReconnectBusyMessage();
+        applyResumeHistory(next, rt);
+      } else {
+        applyResumeHistory(next, rt, { authoritative: true });
       }
-      applyResumeHistory(next, rt, { authoritative: isAuthoritative });
       const canTreatHistoryAsTerminal = terminalHistoryTail && !rt.busy.value && !rt.turnInFlight;
       if (canTreatHistoryAsTerminal) {
         terminalFenceActive = true;
