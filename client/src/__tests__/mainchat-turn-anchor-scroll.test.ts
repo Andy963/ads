@@ -908,4 +908,62 @@ describe("MainChat two-phase reading viewport", () => {
 
     wrapper.unmount();
   });
+
+  it("releases reading lock and restores bottom following when answer streaming finishes near bottom", async () => {
+    const state: ScrollState = { top: 0, height: 1000 };
+    const rowOffsets: Record<string, number> = {};
+    const { wrapper, host } = mountChat([msg("a-1", "assistant", "earlier")]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+
+    rowOffsets["u-2"] = 1000;
+    rowOffsets["a-2"] = 1040;
+    state.height = 1700;
+    await wrapper.setProps({
+      messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question"), msg("a-2", "assistant", "answer", true)],
+    });
+    await settleUi(wrapper);
+    expect(state.top).toBe(1040 - LOCK_OFFSET);
+
+    // User scrolls near the bottom or answer is short enough to fit
+    state.top = 1700 - 600 - 20;
+    host.dispatchEvent(new Event("scroll"));
+    await settleUi(wrapper);
+
+    // Answer finishes streaming
+    await wrapper.setProps({
+      messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question"), msg("a-2", "assistant", "answer", false)],
+      busy: false,
+    });
+    await settleUi(wrapper);
+    expect(state.top).toBe(1700 - 600);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+    expect(host.style.getPropertyValue("overflow-anchor")).toBe("auto");
+
+    wrapper.unmount();
+  });
+
+  it("persists following mode on background save after turn completes in final turn area", async () => {
+    const state: ScrollState = { top: 0, height: 1000 };
+    const rowOffsets: Record<string, number> = {};
+    const { wrapper, host } = mountChat([msg("a-1", "assistant", "earlier")]);
+    installLayoutMocks(host, state, rowOffsets);
+    await settleUi(wrapper);
+
+    rowOffsets["u-2"] = 1000;
+    rowOffsets["a-2"] = 1040;
+    state.height = 1700;
+    await wrapper.setProps({
+      messages: [msg("a-1", "assistant", "earlier"), msg("u-2", "user", "question"), msg("a-2", "assistant", "answer", false)],
+      busy: false,
+    });
+    await settleUi(wrapper);
+
+    // Viewport save emitted on unmount or backgrounding
+    wrapper.unmount();
+    const emitted = wrapper.emitted("update:viewport");
+    expect(emitted).toBeDefined();
+    const lastViewport = emitted![emitted!.length - 1]![0] as any;
+    expect(lastViewport.following).toBe(true);
+  });
 });

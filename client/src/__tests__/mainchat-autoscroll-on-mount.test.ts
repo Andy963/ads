@@ -300,4 +300,129 @@ describe("MainChat auto-scroll on mount", () => {
     expect(chat.scrollTop).toBe(100);
     wrapper.unmount();
   });
+
+  it("discards a stale viewport anchor positioned far above recent conversational history on cold start", async () => {
+    const messages = Array.from({ length: 65 }, (_, index) => msg(`m-${index}`, "assistant", `line ${index}`));
+    const wrapper = mount(MainChat, {
+      props: {
+        messages,
+        viewport: {
+          following: false,
+          firstLoadedId: "m-10",
+          anchorId: "m-10",
+          anchorOffset: 0,
+          scrollTop: 80,
+          tailMessageId: "m-64",
+        },
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: MarkdownContentStub,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => 3000 });
+    chat.scrollTop = 0;
+
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(3000);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it("discards a finished turn reading-lock anchor on cold start and aligns to bottom", async () => {
+    const messages = [
+      msg("u-1", "user", "question"),
+      msg("a-1", "assistant", "long answer from finished turn"),
+    ];
+    const wrapper = mount(MainChat, {
+      props: {
+        messages,
+        viewport: {
+          following: false,
+          firstLoadedId: "u-1",
+          anchorId: "a-1",
+          anchorOffset: 12,
+          scrollTop: 100,
+          tailMessageId: "a-1",
+        },
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: MarkdownContentStub,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => 1500 });
+    chat.scrollTop = 0;
+
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(1500);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it("discards an ancient turn anchor on cold start across multi-turn conversation", async () => {
+    const messages = [
+      msg("u-1", "user", "turn 1"),
+      msg("a-1", "assistant", "answer 1"),
+      msg("u-2", "user", "turn 2"),
+      msg("a-2", "assistant", "answer 2"),
+      msg("u-3", "user", "turn 3"),
+      msg("a-3", "assistant", "answer 3"),
+      msg("u-4", "user", "turn 4"),
+      msg("a-4", "assistant", "answer 4"),
+      msg("u-5", "user", "turn 5"),
+      msg("a-5", "assistant", "answer 5"),
+    ];
+    const wrapper = mount(MainChat, {
+      props: {
+        messages,
+        viewport: {
+          following: false,
+          firstLoadedId: "u-1",
+          anchorId: "a-1",
+          anchorOffset: 0,
+          scrollTop: 50,
+          tailMessageId: "a-5",
+        },
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: MarkdownContentStub,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => 2000 });
+    chat.scrollTop = 0;
+
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(2000);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(false);
+
+    wrapper.unmount();
+  });
 });
