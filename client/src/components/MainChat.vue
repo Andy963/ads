@@ -29,10 +29,11 @@ const props = withDefaults(defineProps<{
   viewportScopeKey?: string;
   transcriptScopeKey?: string;
   transcriptAuthoritative?: boolean;
+  transcriptAuthoritativeSeq?: number;
   threadWarning?: string | null;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
   connectionStatusMessage?: string | null;
-}>(), { voiceInputActive: true, transcriptAlignSeq: 0 });
+}>(), { voiceInputActive: true, transcriptAlignSeq: 0, transcriptAuthoritativeSeq: 0 });
 
 const emit = defineEmits<{
   (e: "update:draft", value: string): void;
@@ -106,21 +107,25 @@ function isValidRestorableViewport(
   return true;
 }
 
-const restorableViewport = isValidRestorableViewport(
-  initialViewport,
-  props.messages,
-  initialTailMessageId,
-  props.transcriptScopeKey,
-)
-  ? initialViewport
-  : null;
-const autoScroll = ref(!restorableViewport);
-let initialViewportActive = Boolean(restorableViewport);
+const restorableViewport = ref<TranscriptViewport | null>(
+  isValidRestorableViewport(
+    initialViewport,
+    props.messages,
+    initialTailMessageId,
+    props.transcriptScopeKey,
+  )
+    ? initialViewport
+    : null,
+);
+const autoScroll = ref(!restorableViewport.value);
+let initialViewportActive = Boolean(restorableViewport.value);
 let initialViewportRestored = false;
-let wasAnchoredBeforeDisconnect = !restorableViewport;
-let viewportUserControlled = Boolean(restorableViewport?.userControlled);
+let wasAnchoredBeforeDisconnect = !restorableViewport.value;
+let viewportUserControlled = Boolean(restorableViewport.value?.userControlled);
 let userTookViewportControl = false;
 let observedTranscriptAuthoritative = Boolean(props.transcriptAuthoritative);
+let observedTranscriptAuthoritativeSeq = props.transcriptAuthoritativeSeq;
+let lastAuthoritativeTailId = restorableViewport.value?.tailMessageId ?? initialTailMessageId;
 const showScrollToBottom = ref(false);
 let viewportFrame: number | null = null;
 
@@ -705,17 +710,18 @@ function handleScroll() {
 
 function restoreInitialViewport(): void {
   const host = listRef.value;
-  if (!host || !restorableViewport || !initialViewportActive || initialViewportRestored) return;
+  const viewport = restorableViewport.value;
+  if (!host || !viewport || !initialViewportActive || initialViewportRestored) return;
   // A hidden pane cannot apply a scroll position yet. The resize observer below
   // retries once the lane becomes visible.
   if (host.scrollHeight === 0) return;
   const anchor = [...host.querySelectorAll<HTMLElement>(".msg")]
-    .find((row) => row.dataset.id === restorableViewport.anchorId);
+    .find((row) => row.dataset.id === viewport.anchorId);
   // This is initial restoration only. History prepends continue to use native
   // scroll anchoring and never receive a scrollTop correction.
   host.scrollTop = anchor
-    ? Math.max(0, host.scrollTop + anchor.getBoundingClientRect().top - host.getBoundingClientRect().top - restorableViewport.anchorOffset)
-    : restorableViewport.scrollTop;
+    ? Math.max(0, host.scrollTop + anchor.getBoundingClientRect().top - host.getBoundingClientRect().top - viewport.anchorOffset)
+    : viewport.scrollTop;
   initialViewportRestored = true;
   showScrollToBottom.value = true;
 }
@@ -779,7 +785,7 @@ onMounted(() => {
   chatVisualViewport = window.visualViewport ?? null;
   chatVisualViewport?.addEventListener("resize", onVisualViewportChange, { passive: true });
   chatVisualViewport?.addEventListener("scroll", onVisualViewportChange, { passive: true });
-  if (host && restorableViewport) {
+  if (host && restorableViewport.value) {
     // Restore synchronously when the cached pane is already laid out so the
     // first visible frame does not briefly jump to the default scroll position.
     restoreInitialViewport();
@@ -897,37 +903,59 @@ watch([lastUserMessageId, streamingAnswerId, () => props.messages.length], ([id,
 watch(
   () => props.transcriptScopeKey,
   (scopeKey, previousScopeKey) => {
-    if (!scopeKey || !previousScopeKey || scopeKey === previousScopeKey) return;
+    if (!scopeKey || scopeKey === previousScopeKey) return;
     // The runtime may remain mounted while a project/session identity is being
     // rebound. A position from the old tuple is never valid in the new one.
-    initialViewportActive = false;
+    const candidate = props.viewport;
+    const nextViewport = candidate?.scopeKey === scopeKey && isValidRestorableViewport(
+      candidate,
+      props.messages,
+      props.messages.at(-1)?.id ?? "",
+      scopeKey,
+    ) ? candidate : null;
+    restorableViewport.value = nextViewport;
+    initialViewportActive = Boolean(nextViewport);
     initialViewportRestored = false;
-    viewportUserControlled = false;
+    viewportUserControlled = Boolean(nextViewport?.userControlled);
     userTookViewportControl = false;
-    scrollChatToBottom();
+    wasAnchoredBeforeDisconnect = !nextViewport;
+    observedTranscriptAuthoritative = Boolean(props.transcriptAuthoritative);
+    observedTranscriptAuthoritativeSeq = props.transcriptAuthoritativeSeq;
+    lastAuthoritativeTailId = nextViewport?.tailMessageId ?? props.messages.at(-1)?.id ?? "";
+    if (nextViewport) {
+      autoScroll.value = false;
+      void nextTick().then(() => {
+        if (props.transcriptScopeKey === scopeKey) restoreInitialViewport();
+      });
+    } else {
+      scrollChatToBottom();
+    }
   },
 );
 
 watch(
-  () => Boolean(props.transcriptAuthoritative),
-  (authoritative) => {
-    const wasAuthoritative = observedTranscriptAuthoritative;
+  [() => Boolean(props.transcriptAuthoritative), () => props.transcriptAuthoritativeSeq],
+  ([authoritative, authoritativeSeq]) => {
+    const becameAuthoritative = authoritative && !observedTranscriptAuthoritative;
+    const sequenceChanged = authoritativeSeq !== observedTranscriptAuthoritativeSeq;
     observedTranscriptAuthoritative = authoritative;
-    if (!authoritative || wasAuthoritative || userTookViewportControl) return;
+    observedTranscriptAuthoritativeSeq = authoritativeSeq;
+    if (!authoritative || (!becameAuthoritative && !sequenceChanged) || userTookViewportControl) return;
 
     const currentTailId = props.messages.at(-1)?.id ?? "";
-    const savedTailId = restorableViewport?.tailMessageId ?? initialTailMessageId;
-    const savedAnchorStillExists = !restorableViewport || props.messages.some((message) =>
-      message.id === restorableViewport.anchorId || message.id === restorableViewport.firstLoadedId,
+    const savedAnchorStillExists = !restorableViewport.value || props.messages.some((message) =>
+      message.id === restorableViewport.value.anchorId || message.id === restorableViewport.value.firstLoadedId,
     );
-    if (currentTailId !== savedTailId || !savedAnchorStillExists) {
+    if (currentTailId !== lastAuthoritativeTailId || !savedAnchorStillExists) {
       // The cache was superseded by a newer authoritative transcript. Do not
       // strand the user at the cached offset unless they intervened first.
       initialViewportActive = false;
       scrollChatToBottom();
+      lastAuthoritativeTailId = currentTailId;
       return;
     }
-    if (!restorableViewport) {
+    lastAuthoritativeTailId = currentTailId;
+    if (!restorableViewport.value) {
       autoScroll.value = true;
       scheduleChatScrollToBottom();
     }

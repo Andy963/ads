@@ -45,7 +45,7 @@ type CachedTranscript = {
 
 export function transcriptCacheKey(owner: string, scope: TranscriptScope): string {
   return TRANSCRIPT_CACHE_PREFIX + JSON.stringify([
-    owner, scope.projectId, scope.sessionId, scope.chatSessionId, scope.workspace,
+    owner, scope.projectId, scope.sessionId, scope.chatSessionId, scope.workspace, scope.lane ?? "actions",
   ]);
 }
 
@@ -172,7 +172,8 @@ export function createTranscriptCache() {
       // A new worker session retains the old conversation above its divider.
       // The server copies that review-only history into the new lane too.
       const sameProject = previous.scope.projectId === scope.projectId &&
-        previous.scope.sessionId === scope.sessionId && previous.scope.workspace === scope.workspace;
+        previous.scope.sessionId === scope.sessionId && previous.scope.workspace === scope.workspace &&
+        (previous.scope.lane ?? "actions") === (scope.lane ?? "actions");
       if (!sameProject) {
         rt.messages.value = [];
       }

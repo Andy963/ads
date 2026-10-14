@@ -540,6 +540,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.transcriptReady = true;
       rt.transcriptRestored = false;
       rt.transcriptAuthoritative.value = true;
+      rt.transcriptAuthoritativeSeq.value += 1;
     };
 
     const applyDeferredRuntimeSnapshots = (terminalFenceSeq = 0): void => {

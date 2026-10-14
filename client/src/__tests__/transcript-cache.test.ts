@@ -113,6 +113,7 @@ describe("atomic transcript cache", () => {
   it("does not restore a viewport written by another lane with the same transcript key", () => {
     const cache = createCache();
     const actionsScope = { ...scope, lane: "actions" as const };
+    const acopilotScope = { ...scope, lane: "acopilot" as const };
     const actions = createProjectRuntime({ maxLiveActivitySteps: 5 });
     cache.attach(actions, actionsScope);
     actions.laneGeneration = 2;
@@ -130,9 +131,34 @@ describe("atomic transcript cache", () => {
     cache.flush();
 
     const acopilot = createProjectRuntime({ maxLiveActivitySteps: 5 });
-    cache.attach(acopilot, { ...scope, lane: "acopilot" });
-    expect(acopilot.messages.value).toEqual([message]);
+    cache.attach(acopilot, acopilotScope);
+    expect(acopilot.messages.value).toEqual([]);
     expect(acopilot.transcriptViewport.value).toBeNull();
+
+    const acopilotMessage = { ...message, id: "advisor-answer-1", content: "Cached advisor answer" };
+    acopilot.laneGeneration = 3;
+    acopilot.transcriptCursor = 21;
+    acopilot.transcriptReady = true;
+    acopilot.messages.value = [acopilotMessage];
+    acopilot.transcriptViewport.value = {
+      following: false,
+      firstLoadedId: acopilotMessage.id,
+      anchorId: acopilotMessage.id,
+      anchorOffset: 0,
+      scrollTop: 480,
+      scopeKey: JSON.stringify(["user-1", "p-1", "s-1", "main", "/tmp/project", "acopilot"]),
+    };
+    cache.flush();
+
+    const restoredActions = createProjectRuntime({ maxLiveActivitySteps: 5 });
+    cache.attach(restoredActions, actionsScope);
+    expect(restoredActions.messages.value).toEqual([message]);
+    expect(restoredActions.transcriptViewport.value?.scrollTop).toBe(240);
+
+    const restoredAcopilot = createProjectRuntime({ maxLiveActivitySteps: 5 });
+    cache.attach(restoredAcopilot, acopilotScope);
+    expect(restoredAcopilot.messages.value).toEqual([acopilotMessage]);
+    expect(restoredAcopilot.transcriptViewport.value?.scrollTop).toBe(480);
   });
 
   it("detaches removed runtimes so later flushes cannot recreate their cache", async () => {

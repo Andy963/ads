@@ -222,6 +222,7 @@ describe("MainChat auto-scroll on mount", () => {
         },
         transcriptScopeKey: "same-session",
         transcriptAuthoritative: false,
+        transcriptAuthoritativeSeq: 0,
         queuedPrompts: [],
         pendingImages: [],
         connected: true,
@@ -277,6 +278,7 @@ describe("MainChat auto-scroll on mount", () => {
     await wrapper.setProps({
       messages: [msg("u-2", "user", "authoritative question"), msg("a-1", "assistant", "same tail")],
       transcriptAuthoritative: true,
+      transcriptAuthoritativeSeq: 1,
     });
     await settleUi(wrapper);
 
@@ -289,6 +291,16 @@ describe("MainChat auto-scroll on mount", () => {
     const wrapper = mount(MainChat, {
       props: {
         messages: [msg("m-1", "assistant", "old scope")],
+        viewport: {
+          following: false,
+          firstLoadedId: "m-1",
+          anchorId: "m-1",
+          anchorOffset: 0,
+          scrollTop: 80,
+          userControlled: true,
+          scopeKey: "project-a",
+          tailMessageId: "m-1",
+        },
         transcriptScopeKey: "project-a",
         queuedPrompts: [],
         pendingImages: [],
@@ -308,6 +320,53 @@ describe("MainChat auto-scroll on mount", () => {
     await wrapper.setProps({
       messages: [msg("m-1", "assistant", "new scope")],
       transcriptScopeKey: "project-b",
+    });
+    await settleUi(wrapper);
+
+    expect(chat.scrollTop).toBe(1200);
+    wrapper.unmount();
+  });
+
+  it("handles a later authoritative catch-up after the boolean is already true", async () => {
+    const messages = Array.from({ length: 65 }, (_, index) => msg(`m-${index}`, "assistant", `line ${index}`));
+    const wrapper = mount(MainChat, {
+      props: {
+        messages,
+        viewport: {
+          following: false,
+          firstLoadedId: "m-35",
+          anchorId: "missing-anchor",
+          anchorOffset: 0,
+          scrollTop: 180,
+          tailMessageId: "m-64",
+        },
+        transcriptScopeKey: "same-session",
+        transcriptAuthoritative: false,
+        transcriptAuthoritativeSeq: 0,
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+      },
+      global: { stubs: { MarkdownContent: MarkdownContentStub } },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    let height = 900;
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => height });
+    chat.scrollTop = 0;
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(180);
+
+    await wrapper.setProps({ transcriptAuthoritative: true, transcriptAuthoritativeSeq: 1 });
+    await settleUi(wrapper);
+    expect(chat.scrollTop).toBe(180);
+
+    height = 1200;
+    await wrapper.setProps({
+      messages: [...messages, msg("m-65", "assistant", "new tail")],
+      transcriptAuthoritativeSeq: 2,
     });
     await settleUi(wrapper);
 
