@@ -63,16 +63,25 @@ function findFinalTurnAssistantId(messages: readonly ChatMessage[]): string {
   return "";
 }
 
+function hasInFlightTurn(messages: readonly ChatMessage[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.streaming) return true;
+    if (m?.role === "user") break;
+  }
+  return false;
+}
+
 function isValidRestorableViewport(
   viewport: TranscriptViewport | null | undefined,
   messages: readonly ChatMessage[],
   tailMessageId: string,
-  tailStreaming: boolean,
 ): viewport is TranscriptViewport {
   if (!viewport || viewport.following !== false) return false;
   if (!viewport.tailMessageId || viewport.tailMessageId !== tailMessageId) return false;
   if (messages.length === 0) return false;
 
+  const inFlight = hasInFlightTurn(messages);
   const anchorIndex = viewport.anchorId ? messages.findIndex((m) => m.id === viewport.anchorId) : -1;
   const firstLoadedIndex = viewport.firstLoadedId ? messages.findIndex((m) => m.id === viewport.firstLoadedId) : -1;
 
@@ -85,18 +94,15 @@ function isValidRestorableViewport(
     return false;
   }
 
-  const userIndices: number[] = [];
+  let lastUserIndex = -1;
   for (let i = 0; i < messages.length; i++) {
-    if (messages[i]?.role === "user") userIndices.push(i);
+    if (messages[i]?.role === "user") lastUserIndex = i;
   }
-  if (userIndices.length > 1) {
-    const recentTurnThreshold = userIndices[Math.max(0, userIndices.length - 2)]!;
-    if (effectiveIndex < recentTurnThreshold) {
-      return false;
-    }
+  if (lastUserIndex >= 0 && effectiveIndex < lastUserIndex) {
+    return false;
   }
 
-  if (!tailStreaming && viewport.anchorId && (viewport.anchorId === tailMessageId || viewport.anchorId === findFinalTurnAssistantId(messages))) {
+  if (!inFlight && viewport.anchorId && (viewport.anchorId === tailMessageId || viewport.anchorId === findFinalTurnAssistantId(messages))) {
     return false;
   }
 
@@ -107,7 +113,6 @@ const restorableViewport = isValidRestorableViewport(
   initialViewport,
   props.messages,
   initialTailMessageId,
-  initialTailStreaming,
 )
   ? initialViewport
   : null;
@@ -816,15 +821,15 @@ watch([lastUserMessageId, streamingAnswerId, () => props.messages.length], ([id,
       engageReadingLock(answerId, { smooth: true });
     }
   } else if (!answerId && (previousAnswerId || readingLockEl || readingLockPendingId)) {
-    const host = listRef.value;
-    const distance = host ? host.scrollHeight - host.scrollTop - host.clientHeight : 0;
-    const nearBottom = distance < CHAT_STICKY_THRESHOLD_PX;
-    releaseReadingLock();
-    readingLockAligning = false;
-    if (nearBottom) {
+    if (isViewportInFinalTurn()) {
+      releaseReadingLock();
+      readingLockAligning = false;
       autoScroll.value = true;
       showScrollToBottom.value = false;
       scheduleChatScrollToBottom();
+    } else {
+      releaseReadingLock();
+      readingLockAligning = false;
     }
     scheduleViewportSave();
   }

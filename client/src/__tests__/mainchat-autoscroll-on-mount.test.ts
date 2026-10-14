@@ -425,4 +425,46 @@ describe("MainChat auto-scroll on mount", () => {
 
     wrapper.unmount();
   });
+
+  it("discards a previous-turn anchor when an in-flight turn is streaming and aligns to in-flight turn", async () => {
+    const messages = [
+      msg("u-1", "user", "turn 1 prompt"),
+      msg("a-1", "assistant", "turn 1 answer"),
+      msg("u-2", "user", "turn 2 prompt"),
+      { ...msg("a-2", "assistant", "turn 2 answer streaming"), streaming: true },
+    ];
+    const wrapper = mount(MainChat, {
+      props: {
+        messages,
+        viewport: {
+          following: false,
+          firstLoadedId: "u-1",
+          anchorId: "a-1",
+          anchorOffset: 0,
+          scrollTop: 50,
+          tailMessageId: "a-2",
+        },
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: true,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: MarkdownContentStub,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    const chat = wrapper.find(".chat").element as HTMLElement;
+    Object.defineProperty(chat, "scrollHeight", { configurable: true, get: () => 1800 });
+    chat.scrollTop = 0;
+
+    await settleUi(wrapper);
+    // Discards previous-turn anchor a-1, and instead engages reading lock on the streaming answer a-2
+    expect(chat.scrollTop).toBe(0);
+    expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+    wrapper.unmount();
+  });
 });
