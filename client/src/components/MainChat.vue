@@ -873,7 +873,7 @@ watch(
     if (!connected && wasConnected) {
       wasAnchoredBeforeDisconnect = autoScroll.value || (!streamingAnswerId.value && isViewportInFinalTurn());
     } else if (connected && !wasConnected) {
-      if (wasAnchoredBeforeDisconnect) {
+      if (wasAnchoredBeforeDisconnect && !streamingAnswerId.value && !readingLockEl) {
         autoScroll.value = true;
         showScrollToBottom.value = false;
         scheduleChatScrollToBottom();
@@ -885,7 +885,7 @@ watch(
 watch(
   () => props.transcriptAlignSeq,
   (seq) => {
-    if (seq) {
+    if (seq && !readingLockEl && !readingLockAligning && !streamingAnswerId.value) {
       scrollChatToBottom(true);
     }
   },

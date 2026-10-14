@@ -22,6 +22,13 @@ describe("Issue #559: reconnect transcript bottom alignment and atomic history r
       msg("u-1", "user", "existing question"),
       msg("a-1", "assistant", "existing answer"),
     ];
+    rt.latestExecuteKey = "old-exec";
+    rt.latestExecuteSequence = 42;
+    rt.latestExecuteTimestamp = 1000;
+    rt.retiredExecuteKeys.add("old-retired");
+    rt.seenCommandIds.add("old-cmd");
+    rt.recentCommands.value = ["$ ls"];
+    rt.executeOrder = ["old-exec"];
 
     const observedLengths: number[] = [];
     const chat = createChatActions({ runtimeOrActive: (target?: any) => target ?? rt } as any);
@@ -48,6 +55,14 @@ describe("Issue #559: reconnect transcript bottom alignment and atomic history r
     expect(rt.messages.value.map((m) => m.content)).toEqual(["snapshot question", "snapshot answer"]);
     // Confirm 0 was never observed
     expect(observedLengths).not.toContain(0);
+    // Confirm execution state was completely reset
+    expect(rt.latestExecuteKey).toBeUndefined();
+    expect(rt.latestExecuteSequence).toBeUndefined();
+    expect(rt.latestExecuteTimestamp).toBeUndefined();
+    expect(rt.retiredExecuteKeys.size).toBe(0);
+    expect(rt.seenCommandIds.size).toBe(0);
+    expect(rt.recentCommands.value).toEqual([]);
+    expect(rt.executeOrder).toEqual([]);
   });
 
   it("never publishes an empty message array when current transcript contains transient live-activity/thought rows before snapshot", async () => {
@@ -164,11 +179,13 @@ describe("Issue #559: reconnect transcript bottom alignment and atomic history r
     ];
     const messages = ref<ChatMessage[]>([...streamingMessages]);
     const connected = ref(true);
+    const transcriptAlignSeq = ref(0);
 
     const wrapper = mount(MainChat, {
       props: {
         messages: messages.value,
         connected: connected.value,
+        transcriptAlignSeq: transcriptAlignSeq.value,
         queuedPrompts: [],
         pendingImages: [],
         busy: true,
@@ -177,6 +194,18 @@ describe("Issue #559: reconnect transcript bottom alignment and atomic history r
         stubs: { MarkdownContent: true, ChatFilePreviewModal: true },
       },
       attachTo: document.body,
+    });
+
+    const host = wrapper.find(".chat").element as HTMLElement;
+    let currentScrollTop = 100;
+    Object.defineProperties(host, {
+      scrollHeight: { configurable: true, get: () => 2000 },
+      clientHeight: { configurable: true, get: () => 500 },
+      scrollTop: {
+        configurable: true,
+        get: () => currentScrollTop,
+        set: (v: number) => { currentScrollTop = v; },
+      },
     });
 
     await nextTick();
@@ -200,8 +229,15 @@ describe("Issue #559: reconnect transcript bottom alignment and atomic history r
     await nextTick();
     await nextTick();
 
+    // Explicit bottom alignment pass is triggered on reconnect
+    transcriptAlignSeq.value += 1;
+    await wrapper.setProps({ transcriptAlignSeq: transcriptAlignSeq.value });
+    await nextTick();
+    await nextTick();
+
     // Scroll to bottom button should appear because reading lock is engaged
     expect(wrapper.find(".scrollToBottom").exists()).toBe(true);
+    expect(currentScrollTop).toBeLessThan(2000);
 
     wrapper.unmount();
   });

@@ -28,7 +28,6 @@ import {
 } from "./chatSessionSelection";
 import { WIRE_ACOPILOT_SESSION_ID } from "../../lib/laneWire";
 import { ACOPILOT_LANE_ID } from "../../lib/laneIds";
-import { clearLiveActivityWindow } from "../../lib/live_activity";
 
 const TERMINAL_BOOTSTRAP_COVERED_EVENT_TYPES = new Set([
   "history",
@@ -803,21 +802,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     };
 
     const applyAuthoritativeHistory = (payload: Record<string, unknown>): void => {
-      if (rt.liveActivityTtlTimer !== null) {
-        try {
-          window.clearTimeout(rt.liveActivityTtlTimer);
-        } catch {
-          // ignore
-        }
-        rt.liveActivityTtlTimer = null;
-      }
-      clearLiveActivityWindow(rt.liveActivity);
-      rt.recentCommands.value = [];
-      rt.seenCommandIds.clear();
-      rt.executePreviewByKey.clear();
-      rt.executeOrder = [];
-      rt.turnCommands = [];
-      rt.turnCommandCount = 0;
+      clearStepLive(rt, { skipMessageUpdate: true });
+      finalizeCommandBlock(rt, { skipMessageUpdate: true });
       rt.streamEndOffsets?.clear();
       rt.streamSnapshotRevisions?.clear();
       rt.ignoreNextHistory = false;

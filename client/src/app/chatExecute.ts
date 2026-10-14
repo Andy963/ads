@@ -312,7 +312,7 @@ export function createExecuteActions(params: {
 
   const finalizeCommandBlock = (
     rt?: ProjectRuntime,
-    options?: { removeActiveExecuteBlocks?: boolean },
+    options?: { removeActiveExecuteBlocks?: boolean; skipMessageUpdate?: boolean },
   ): void => {
     const state = runtimeOrActive(rt);
     const existing = state.messages.value.slice();
@@ -354,7 +354,7 @@ export function createExecuteActions(params: {
     state.retiredExecuteKeys.clear();
     state.seenCommandIds.clear();
 
-    if (changed) setMessages(finalized, state);
+    if (!options?.skipMessageUpdate && changed) setMessages(finalized, state);
   };
 
   return { ingestCommand, commandKeyForWsEvent, upsertExecuteBlock, finalizeCommandBlock };
