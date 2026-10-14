@@ -98,6 +98,63 @@ describe("Issue #559: reconnect transcript bottom alignment and atomic history r
     expect(rt.messages.value.map((m) => m.content)).toEqual(["snapshot question", "snapshot answer"]);
   });
 
+  it("does not publish an empty array when reconnect notice was present before authoritative snapshot", async () => {
+    const rt = createProjectRuntime({ maxLiveActivitySteps: 10 });
+    rt.projectSessionId = "p1";
+    rt.chatSessionId = "main";
+    rt.messages.value = [
+      { id: "notice", role: "system", kind: "text", content: "Connection lost while a request was running. Reconnecting and syncing history…" },
+    ];
+
+    const observedLengths: number[] = [];
+    const chat = createChatActions({ runtimeOrActive: (target?: any) => target ?? rt } as any);
+
+    watch(
+      rt.messages,
+      (current) => {
+        observedLengths.push(current.length);
+      },
+      { flush: "sync" },
+    );
+
+    chat.applyResumeHistory(
+      [
+        msg("u-snapshot", "user", "snapshot question"),
+        msg("a-snapshot", "assistant", "snapshot answer"),
+      ],
+      rt,
+      { authoritative: true },
+    );
+
+    expect(observedLengths).toEqual([2]);
+    expect(observedLengths).not.toContain(0);
+    expect(rt.messages.value.map((m) => m.content)).toEqual(["snapshot question", "snapshot answer"]);
+  });
+
+  it("preserves activeThreadId and in-flight inputLocked when applying authoritative snapshot during in-flight reconnect", async () => {
+    const rt = createProjectRuntime({ maxLiveActivitySteps: 10 });
+    rt.projectSessionId = "p1";
+    rt.chatSessionId = "main";
+    rt.activeThreadId.value = "thread-active-123";
+    rt.inputLocked.value = true;
+    rt.laneStatus.value = { kind: "progress", message: "In flight" };
+
+    const chat = createChatActions({ runtimeOrActive: (target?: any) => target ?? rt } as any);
+
+    chat.applyResumeHistory(
+      [
+        msg("u-1", "user", "task in flight"),
+        msg("a-1", "assistant", "partial text", true),
+      ],
+      rt,
+      { authoritative: true },
+    );
+
+    expect(rt.activeThreadId.value).toBe("thread-active-123");
+    expect(rt.inputLocked.value).toBe(true);
+    expect(rt.laneStatus.value).toEqual({ kind: "progress", message: "In flight" });
+  });
+
   it("restores autoScroll and aligns to bottom upon reconnection when user was previously at bottom", async () => {
     const initialMessages: ChatMessage[] = [
       msg("u-1", "user", "hello"),

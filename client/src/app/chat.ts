@@ -859,9 +859,6 @@ export function createChatActions(ctx: AppContext) {
   ): void => {
     if (options?.authoritative) {
       rt.resumeReplacePending = false;
-      rt.inputLocked.value = false;
-      rt.laneStatus.value = null;
-      rt.activeThreadId.value = null;
       finalizeCommandBlock(rt, { skipMessageUpdate: true });
       clearStepLive(rt, { skipMessageUpdate: true });
       setMessages(serverHistory, rt);

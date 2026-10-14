@@ -1729,7 +1729,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
       }
       const isAuthoritative = Boolean((msg as Record<string, unknown>).authoritative);
-      dropReconnectBusyMessage();
+      if (!isAuthoritative) {
+        dropReconnectBusyMessage();
+      }
       applyResumeHistory(next, rt, { authoritative: isAuthoritative });
       const canTreatHistoryAsTerminal = terminalHistoryTail && !rt.busy.value && !rt.turnInFlight;
       if (canTreatHistoryAsTerminal) {
