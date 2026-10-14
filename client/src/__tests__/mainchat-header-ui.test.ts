@@ -25,12 +25,14 @@ describe("MainChat header UI", () => {
     const divider = css.match(/\.laneControlDivider\s*\{[^}]*\}/)?.[0];
     const controls = css.match(/\.laneModelControls\s*\{[^}]*\}/)?.[0];
 
-    // The bar itself is the only painted surface: one border, one radius, one fill.
+    // The bar is the shared painted surface, with a restrained elevation that
+    // keeps the controls separate from the chat content.
     expect(surface).toMatch(/gap:\s*0\s*;/);
     expect(surface).toMatch(/overflow:\s*hidden\s*;/);
     expect(surface).toMatch(/padding:\s*3px\s*;/);
     expect(surface).toMatch(/border-radius:\s*12px\s*;/);
     expect(surface).toMatch(/background:\s*var\(--segmented-bg\)\s*;/);
+    expect(surface).toMatch(/box-shadow:\s*0 1px 3px rgba\(0, 0, 0, 0\.06\)\s*;/);
     expect(surface).not.toMatch(/border-bottom:\s*1px/);
 
     // The lane group is a bare slot inside that surface, not a second box.
@@ -40,11 +42,12 @@ describe("MainChat header UI", () => {
     expect(group).not.toMatch(/border-radius:/);
     expect(group).not.toMatch(/padding:/);
 
-    // Separation is a short hairline inside the surface, never a full-height rule.
+    // Separation is a short, softened hairline inside the surface.
     expect(divider).toBeDefined();
     expect(divider).toMatch(/flex:\s*0 0 1px\s*;/);
-    expect(divider).toMatch(/height:\s*18px\s*;/);
+    expect(divider).toMatch(/height:\s*20px\s*;/);
     expect(divider).toMatch(/align-self:\s*center\s*;/);
+    expect(divider).toMatch(/opacity:\s*0\.8\s*;/);
     expect(controls).toMatch(/border-left:\s*none\s*;/);
     expect(controls).not.toMatch(/border-left:\s*1px/);
     expect(controls).toMatch(/padding-left:\s*0\s*;/);
@@ -56,10 +59,20 @@ describe("MainChat header UI", () => {
     // Every segment in the surface is exactly as tall as the lane tab.
     const tab = css.match(/\.laneTab\s*\{[^}]*\}/)?.[0];
     expect(tab).toMatch(/min-height:\s*28px\s*;/);
+    expect(tab).toMatch(/border-radius:\s*9px\s*;/);
+    expect(tab).toMatch(/transform 0\.12s ease/);
+    const activeTab = css.match(/\.laneTab\.active\s*\{[^}]*\}/)?.[0];
+    expect(activeTab).toMatch(/box-shadow:\s*0 1px 3px rgba\(15, 23, 42, 0\.12\), 0 1px 2px rgba\(15, 23, 42, 0\.06\)\s*;/);
+    expect(css).toMatch(/\.laneTab:not\(\.active\):hover\s*\{[^}]*background:\s*rgba\(255, 255, 255, 0\.42\)\s*;/);
     const capsule = selectors_rule(readUtf8("../components/MainChatModelSelectors.vue"), ".modelCapsule");
     expect(capsule).toMatch(/height:\s*28px\s*;/);
-    expect(capsule).toMatch(/background:\s*transparent\s*;/);
-    expect(capsule).toMatch(/border:\s*1px solid transparent\s*;/);
+    expect(capsule).toMatch(/background:\s*rgba\(255, 255, 255, 0\.42\)\s*;/);
+    expect(capsule).toMatch(/border:\s*1px solid rgba\(15, 23, 42, 0\.08\)\s*;/);
+    expect(capsule).toMatch(/border-radius:\s*9px\s*;/);
+    expect(capsule).toMatch(/transform 0\.12s ease/);
+    expect(selectors).toMatch(/\.modelCapsule:hover:not\(:disabled\)\s*\{[^}]*border-color:\s*rgba\(15, 23, 42, 0\.12\)\s*;/);
+    expect(selectors).toMatch(/\.modelCapsule:active:not\(:disabled\)\s*\{[^}]*transform:\s*translateY\(1px\)\s*;/);
+    expect(selectors).toMatch(/\.modelCapsule:focus-visible\s*\{[^}]*outline:\s*none\s*;/);
 
     expect(css).not.toMatch(/\.laneTab\s*\{[^}]*justify-self\s*;/);
     expect(selectors.match(/<select\s/g)).toHaveLength(2);
