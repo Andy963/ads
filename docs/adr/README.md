@@ -51,4 +51,5 @@
 - 0039 - [ADR 0039: Share built-in Actions dispatch across runtimes](0039-shared-built-in-dispatch.md)
 - 0040 - [ADR 0040: 由 Developer 监督 Reviewer 子代理](0040-developer-supervised-reviewer.md)
 - 0041 - [ADR 0041: 跨设备共享项目的活动聊天会话](0041-shared-active-chat-session.md)
+- 0043 - [ADR 0043: 由 Acopilot 自动接管阻塞任务](0043-automatic-blocked-action-takeover.md)
 <!-- ADS:ADR_INDEX_END -->

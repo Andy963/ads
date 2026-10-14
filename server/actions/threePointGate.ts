@@ -14,11 +14,18 @@ export function checkThreePointGate(
   projectId: string,
   targetBranch = "dev",
   developerOwnsWorkspace = false,
+  candidateJobId?: string,
 ): GateCheckResult {
   // 1. Terminal State Gate
   const activeJobs = db.prepare(
-    "SELECT * FROM action_jobs WHERE project_id = ? AND status IN ('running', 'verifying', 'reviewing', 'waiting_merge', 'blocked') LIMIT 1"
-  ).get(projectId) as ActionJobRecord | undefined;
+    `SELECT * FROM action_jobs j WHERE project_id = ?
+     AND status IN ('running', 'verifying', 'reviewing', 'waiting_merge', 'blocked')
+     AND NOT (status = 'blocked' AND EXISTS (
+       SELECT 1 FROM action_takeovers t JOIN action_jobs successor ON successor.id = t.successor_job_id
+       WHERE t.job_id = j.id AND successor.status NOT IN ('failed', 'cancelled')
+         AND (successor.status != 'queued' OR successor.id = ?)
+     )) LIMIT 1`
+  ).get(projectId, candidateJobId ?? "") as ActionJobRecord | undefined;
 
   if (activeJobs) {
     return {

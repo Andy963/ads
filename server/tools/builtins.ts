@@ -1,6 +1,8 @@
 import type { NativeToolDefinition } from "../runtime/openAiCompatibleClient.js";
-import type { ActionJobStatus } from "../state/actionJobStore.js";
+import type { ActionRecoveryContext } from "../agents/actionTools.js";
+import type { ActionJobKind, ActionJobStatus } from "../state/actionJobStore.js";
 import { getBus } from "../web/server/api/routes/actions.js";
+import { ActionRecoveryError } from "../actions/takeover.js";
 
 export const BUILTIN_TOOL_DEFINITIONS: NativeToolDefinition[] = [
   {
@@ -27,6 +29,7 @@ export const BUILTIN_TOOL_DEFINITIONS: NativeToolDefinition[] = [
 export interface BuiltinToolContext {
   workspaceRoot: string;
   authUserId?: string;
+  actionRecovery?: ActionRecoveryContext;
   signal?: AbortSignal;
 }
 
@@ -87,24 +90,31 @@ export function executeBuiltinTool(name: string, args: unknown, context: Builtin
     const bus = getBus();
     // Queue persistence is a side effect; never forward an abort reason or raw bus error.
     throwIfAborted(context.signal);
-    const result = bus.dispatchJob({
-      projectId: context.workspaceRoot,
+    const dispatchArgs = {
       repoPath: context.workspaceRoot,
       authUserId: context.authUserId,
       issueId: issueId as number | null,
       issueTitle: input.title.trim(),
       issueDescription: input.description.trim(),
       acceptanceCriteria,
-      jobKind: kind,
-    });
+      jobKind: kind as ActionJobKind,
+    };
+    const result = context.actionRecovery
+      ? bus.dispatchRecoveryJob({
+        jobId: context.actionRecovery.jobId,
+        promptId: context.actionRecovery.promptId,
+        ...dispatchArgs,
+      })
+      : bus.dispatchJob({ projectId: context.workspaceRoot, ...dispatchArgs });
     return {
       ok: result.ok,
       job_id: result.jobId,
       status: result.status,
       message: `Dispatched task to Actions queue with status '${result.status}'`,
     };
-  } catch {
+  } catch (error) {
     throwIfAborted(context.signal);
+    if (context.actionRecovery && error instanceof ActionRecoveryError) throw error;
     throw new Error("Unable to dispatch Actions job");
   }
 }

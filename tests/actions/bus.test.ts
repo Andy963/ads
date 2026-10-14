@@ -752,7 +752,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     const blocked = bus.getJob(job.jobId);
     assert.strictEqual(blocked?.rework_count, 3);
     assert.strictEqual(blocked?.error_message, "Reviewer rejection failed: Defect 3");
-    assert.strictEqual(blocked?.current_step, "Human attention required after 3 rework attempts.");
+    assert.strictEqual(blocked?.current_step, "Acopilot takeover required after 3 rework attempts.");
 
     const attempts = JSON.parse(blocked?.attempts_json ?? "[]") as Array<Record<string, unknown>>;
     assert.strictEqual(attempts.length, 3);
@@ -852,7 +852,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.match(text, /1\. Reviewer rejection: Reviewer rejection failed: Defect 1/);
     assert.match(text, /2\. Reviewer rejection: Reviewer rejection failed: Defect 2/);
     assert.match(text, /3\. Reviewer rejection: Reviewer rejection failed: Defect 3/);
-    assert.match(text, /Human attention required after 3 rework attempts\./);
+    assert.match(text, /Acopilot takeover required after 3 rework attempts\./);
     assert.match(text, /click \*\*Dismiss\*\* on the top queue stack/);
   });
 

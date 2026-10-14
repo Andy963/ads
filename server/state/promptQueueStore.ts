@@ -180,7 +180,7 @@ function canonicalizePayload(value: unknown): unknown {
   return normalized;
 }
 
-function hashPayload(payload: Record<string, unknown>): string {
+export function hashPromptQueuePayload(payload: Record<string, unknown>): string {
   return createHash("sha256").update(JSON.stringify(canonicalizePayload(payload))).digest("hex");
 }
 
@@ -420,7 +420,7 @@ export function createPromptQueueStore(db: DatabaseType) {
   const enqueue = (input: EnqueuePromptInput): { entry: PromptQueueEntry; duplicate: boolean } => {
     const clientMessageId = requiredText(input.clientMessageId, "clientMessageId");
     let payload = input.payload;
-    let payloadHash = hashPayload(payload);
+    let payloadHash = hashPromptQueuePayload(payload);
     if (input.retryOriginal && !input.retryFailed) {
       throw new Error("Retrying the original prompt requires an explicit replay request");
     }
@@ -458,7 +458,7 @@ export function createPromptQueueStore(db: DatabaseType) {
         // Completed rows have already scrubbed their payload and stay terminal.
         if (existing.status !== "failed") return { entry: existing, duplicate: true };
         payload = { ...existing.payload, replay_incomplete: true };
-        payloadHash = hashPayload(payload);
+        payloadHash = hashPromptQueuePayload(payload);
       }
       if (existing.payloadHash && existing.payloadHash !== payloadHash) {
         throw new Error("clientMessageId is already associated with a different prompt payload");

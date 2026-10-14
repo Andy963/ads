@@ -25,6 +25,10 @@ import type { CodexAppServerClient } from "../../codex/appServer/rpcClient.js";
 import { builtinDynamicTools, createBuiltinToolBridge } from "../../codex/appServer/builtinTools.js";
 import { createActionToolBridge } from "../../codex/appServer/actionTools.js";
 import type { CommandExecutionRequestApprovalResponse } from "../../codex/appServer/protocol/v2/CommandExecutionRequestApprovalResponse.js";
+import type { PermissionsRequestApprovalResponse } from "../../codex/appServer/protocol/v2/PermissionsRequestApprovalResponse.js";
+import type { SandboxPolicy } from "../../codex/appServer/protocol/v2/SandboxPolicy.js";
+import type { AskForApproval } from "../../codex/appServer/protocol/v2/AskForApproval.js";
+import type { ListMcpServerStatusParams } from "../../codex/appServer/protocol/v2/ListMcpServerStatusParams.js";
 import { AsyncLock } from "../../utils/asyncLock.js";
 import type { ThreadGoal } from "../../codex/appServer/protocol/v2/ThreadGoal.js";
 import type { ThreadGoalStatus } from "../../codex/appServer/protocol/v2/ThreadGoalStatus.js";
@@ -54,6 +58,9 @@ const logger = createLogger("CodexAppServerAdapter");
 export const CODEX_ADAPTER_ID = "codex";
 const DEFAULT_AUTO_COMPACT_TIMEOUT_MS = 120_000;
 const COMPACT_INTERRUPT_GRACE_MS = 5_000;
+const RECOVERY_MCP_TIMEOUT_MS = 5_000;
+const RECOVERY_MCP_MAX_PAGES = 32;
+const RECOVERY_MCP_MAX_CURSOR_LENGTH = 4_096;
 const DEFAULT_METADATA: AgentMetadata = {
   id: CODEX_ADAPTER_ID,
   name: "Codex",
@@ -254,6 +261,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
   private readonly registry: CodexAppServerDaemonRegistry;
   private readonly binary?: string;
   private readonly sandboxMode: SandboxMode;
+  private configuredTurnPolicy?: { sandboxPolicy: SandboxPolicy; approvalPolicy: AskForApproval };
   private workingDirectory?: string;
   private model?: string;
   private modelReasoningEffort?: string;
@@ -615,12 +623,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
    };
 
     const resumeThread = async (id: string): Promise<string> => {
-      const resumeResult = await client.request<Record<string, unknown>, { thread?: { id?: string } }>(
+      const resumeResult = await client.request<Record<string, unknown>, { thread?: { id?: string }; sandbox?: SandboxPolicy; approvalPolicy?: AskForApproval }>(
         "thread/resume",
         this.buildThreadResumeParams(id),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
       );
       assertActiveTurn();
+      this.rememberConfiguredTurnPolicy(resumeResult);
       const resumedId =
         typeof resumeResult?.thread?.id === "string" && resumeResult.thread.id.length > 0
           ? resumeResult.thread.id
@@ -640,7 +649,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       }
     }
 
-    if (this.threadId) {
+    if (this.threadId && !options?.actionRecovery) {
       try {
         await this.maybeCompactThread(client, this.threadId, options?.signal);
         assertActiveTurn();
@@ -666,7 +675,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
     let acceptingBuiltinCalls = true;
     const cleanupFns: Array<() => void> = [];
     const builtinTools = createBuiltinToolBridge({
-      context: { workspaceRoot: this.workspaceRoot, authUserId: this.authUserId, signal: options?.signal },
+      context: {
+        workspaceRoot: this.workspaceRoot,
+        authUserId: this.authUserId,
+        actionRecovery: options?.actionRecovery,
+        signal: options?.signal,
+      },
       scope: () => ({
         threadId: this.threadId,
         turnId: state.turnId,
@@ -676,7 +690,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     });
     cleanupFns.push(client.onServerRequest("item/tool/call", builtinTools.handle, { matches: builtinTools.matches }));
     const actionTools = createActionToolBridge({
-      tools: options?.actionTools,
+      tools: options?.actionRecovery ? undefined : options?.actionTools,
       signal: options?.signal,
       scope: () => ({ threadId: this.threadId, turnId: state.turnId, active: acceptingBuiltinCalls && !state.failed }),
       markSideEffect: (id) => retryState.markSideEffect({ type: "tool_call", id, tool: "actions" }),
@@ -734,6 +748,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
     cleanupFns.push(
       client.onServerRequest("item/commandExecution/requestApproval", (params) => {
+        if (options?.actionRecovery) return { decision: "decline" } satisfies CommandExecutionRequestApprovalResponse;
         const request = params && typeof params === "object" ? params as Record<string, unknown> : {};
         const itemId = typeof request.itemId === "string" ? request.itemId : randomUUID();
         const command = typeof request.command === "string" ? request.command : "";
@@ -759,10 +774,16 @@ export class CodexAppServerAdapter implements AgentAdapter {
     cleanupFns.push(
       client.onServerRequest(
         "item/fileChange/requestApproval",
-        () => ({ decision: "accept" }),
+        () => ({ decision: options?.actionRecovery ? "decline" : "accept" }),
         { matches: matchesCurrentTurnRequest },
       ),
     );
+
+    if (options?.actionRecovery) {
+      cleanupFns.push(client.onServerRequest("item/permissions/requestApproval", () => ({
+        permissions: {}, scope: "turn",
+      } satisfies PermissionsRequestApprovalResponse), { matches: matchesCurrentTurnRequest }));
+    }
 
     // The daemon connection is shared by every session of the project, so
     // notifications from other sessions' turns arrive on this client too. A
@@ -977,12 +998,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
     const startThread = async (): Promise<string> => {
       assertActiveTurn();
-      const startResult = await client.request<Record<string, unknown>, { thread?: { id?: string } }>(
+      const startResult = await client.request<Record<string, unknown>, { thread?: { id?: string }; sandbox?: SandboxPolicy; approvalPolicy?: AskForApproval }>(
         "thread/start",
-        this.buildThreadStartParams(Boolean(options?.actionTools)),
+        this.buildThreadStartParams(Boolean(options?.actionTools && !options?.actionRecovery)),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
       );
       assertActiveTurn();
+      this.rememberConfiguredTurnPolicy(startResult);
      const newId = startResult?.thread?.id;
      if (typeof newId === "string" && newId.length > 0) {
        this.threadId = newId;
@@ -999,9 +1021,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
     const startTurn = async (threadId: string): Promise<void> => {
       assertActiveTurn();
+      if (options?.actionRecovery) {
+        await this.assertRecoveryMcpInventoryEmpty(client, threadId, options.signal);
+        assertActiveTurn();
+      }
       await client.request(
         "turn/start",
-        this.buildTurnStartParams(threadId, userInput),
+        this.buildTurnStartParams(threadId, userInput, Boolean(options?.actionRecovery)),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
       );
       assertActiveTurn();
@@ -1333,11 +1359,76 @@ export class CodexAppServerAdapter implements AgentAdapter {
     set.add(threadId);
   }
 
-  private buildTurnStartParams(threadId: string, input: UserInputPart[]): Record<string, unknown> {
+  private async assertRecoveryMcpInventoryEmpty(
+    client: CodexAppServerClient,
+    threadId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const failure = () => new TransientModelRetryAttemptError(
+      "Actions recovery requires a verified empty provider MCP inventory.",
+      { retryable: false, sideEffectObserved: false },
+    );
+    const deadline = Date.now() + RECOVERY_MCP_TIMEOUT_MS;
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    let onAbort: (() => void) | undefined;
+    const cancelled = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(createAbortError("Actions recovery cancelled"));
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      if (!threadId.trim() || signal?.aborted) throw failure();
+      for (let page = 0; page < RECOVERY_MCP_MAX_PAGES; page += 1) {
+        const timeoutMs = deadline - Date.now();
+        if (timeoutMs <= 0) throw failure();
+        const result = await Promise.race([
+          client.request<ListMcpServerStatusParams, unknown>("mcpServerStatus/list", {
+            threadId, detail: "toolsAndAuthOnly", limit: 100, ...(cursor === undefined ? {} : { cursor }),
+          }, { timeoutMs }),
+          cancelled,
+        ]);
+        if (signal?.aborted || Date.now() >= deadline) throw failure();
+        if (!result || typeof result !== "object" || Array.isArray(result)) throw failure();
+        const inventory = result as Record<string, unknown>;
+        // A server with no tools today can expose tools later; annotations are not enforcement.
+        if (!Array.isArray(inventory.data) || inventory.data.length !== 0) throw failure();
+        if (inventory.nextCursor === null) return;
+        if (typeof inventory.nextCursor !== "string" || !inventory.nextCursor.trim()
+          || inventory.nextCursor.length > RECOVERY_MCP_MAX_CURSOR_LENGTH || cursors.has(inventory.nextCursor)) {
+          throw failure();
+        }
+        cursor = inventory.nextCursor;
+        cursors.add(cursor);
+      }
+      throw failure();
+    } catch {
+      if (signal?.aborted) throw createAbortError("Actions recovery cancelled");
+      // Never propagate server details or allow inventory failures to trigger a model/thread retry.
+      throw failure();
+    } finally {
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  private rememberConfiguredTurnPolicy(result: { sandbox?: SandboxPolicy; approvalPolicy?: AskForApproval }): void {
+    const sandboxPolicy: SandboxPolicy = result.sandbox ?? (this.sandboxMode === "danger-full-access"
+      ? { type: "dangerFullAccess" }
+      : this.sandboxMode === "read-only" ? { type: "readOnly", networkAccess: false }
+        : { type: "workspaceWrite", writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false });
+    this.configuredTurnPolicy = { sandboxPolicy, approvalPolicy: result.approvalPolicy ?? "untrusted" };
+  }
+
+  private buildTurnStartParams(threadId: string, input: UserInputPart[], recovery = false): Record<string, unknown> {
     const params: Record<string, unknown> = {
       threadId,
       input,
+      // turn/start overrides are sticky, so explicitly restore the resolved policy on ordinary turns.
+      ...this.configuredTurnPolicy,
     };
+    if (recovery) {
+      params.sandboxPolicy = { type: "readOnly", networkAccess: false } satisfies SandboxPolicy;
+      params.approvalPolicy = "never" satisfies AskForApproval;
+    }
     if (this.model) params.model = this.resolveModel?.(this.model) ?? this.model;
     params.effort = this.modelReasoningEffort || "high";
     if (this.workingDirectory) params.cwd = this.workingDirectory;

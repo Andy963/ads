@@ -45,6 +45,9 @@ import { deriveProjectSessionId } from "../web/server/projectSessionId.js";
 import { resolveActionsLaneIdentity } from "./laneIdentity.js";
 import { checkActionsRuntimePreflight } from "./runtimePreflight.js";
 import { resolveAgentRuntime, type AgentRuntimeBackend } from "../runtime/config.js";
+import { getPrecedingTakeover } from "../state/actionTakeoverStore.js";
+import { ActionTakeoverCoordinator, type RecoveryDispatchInput, type TakeoverQueue } from "./takeover.js";
+import type { PromptQueueEntry } from "../state/promptQueueStore.js";
 
 const MAX_REWORK_ATTEMPTS = 3;
 const PR_CREATION_ATTEMPTS = 3;
@@ -140,8 +143,8 @@ function formatActionBlockedCard(input: {
   lines.push(
     "**Operator Resolution Guidance:**",
     `- ${input.guidanceNote}`,
-    "- Human intervention is required; automated rework will not resume this task.",
-    "- Once the underlying cause is resolved, click **Dismiss** on the top queue stack to clear this blocked task.",
+    "- Acopilot will automatically diagnose this handoff and may dispatch a bounded follow-up with fresh independent Review.",
+    "- This execution will not resume. For manual cleanup, click **Dismiss** on the top queue stack to clear the blocked record.",
   );
   return lines.join("\n");
 }
@@ -620,6 +623,7 @@ export interface LaneDispatchBusOptions {
   };
   getWorkspaceLock?: (workspaceRoot: string) => AsyncLock;
   captureActionsLaneGeneration?: (logicalHistoryKey: string) => number;
+  captureLaneGeneration?: (namespace: string, logicalHistoryKey: string) => number;
   broadcastToActionsLane?: (payload: unknown, logicalHistoryKey: string, projectId: string, laneGeneration: number) => void;
   interruptControllers?: Map<string, AbortController>;
   developerRunner?: DeveloperRunner;
@@ -664,11 +668,29 @@ export class LaneDispatchBus {
   private developerProjects = new Set<string>();
   private activeDeliveryHeads = new Map<string, string>();
   private independentReviewerJobs = new Set<string>();
+  private readonly takeovers: ActionTakeoverCoordinator;
 
   constructor(
     private db: DatabaseType,
     private options: LaneDispatchBusOptions = {},
-  ) {}
+  ) {
+    this.takeovers = new ActionTakeoverCoordinator(db, {
+      generation: (namespace, key) => this.options.captureLaneGeneration?.(namespace, key)
+        ?? (namespace === "web-actions" ? this.options.captureActionsLaneGeneration?.(key) : undefined) ?? 1,
+      isBusy: (project, workspace) => this.developerProjects.has(project)
+        || Boolean(this.options.getWorkspaceLock?.(workspace).isBusy()),
+      evaluate: (project, workspace, owner) => this.evaluateQueue(project, workspace, owner),
+      report: (job, message) => {
+        this.updateJobStatus(job.id, job.status, { current_step: message });
+        this.recordActionMessage(job, "", message, "action_takeover", "assistant");
+      },
+    });
+  }
+
+  public startTakeovers(queue: TakeoverQueue): void { this.takeovers.start(queue); }
+  public stopTakeovers(): void { this.takeovers.stop(); }
+  public prepareTakeoverPrompt(entry: PromptQueueEntry) { return this.takeovers.contextForPrompt(entry); }
+  public dispatchRecoveryJob(input: RecoveryDispatchInput) { return this.takeovers.dispatch(input); }
 
   private laneIdentityForJob(job: ActionJobRecord, repoPath?: string) {
     if (job.auth_user_id && job.chat_session_id) {
@@ -796,7 +818,7 @@ export class LaneDispatchBus {
     if (outcome === "block-exhausted") {
       const reason = repeated
         ? `Attempt ${attemptIndex} repeated the failure of attempt ${previous.attempt} unchanged, so the retry was cut short.`
-        : `Human attention required after ${MAX_REWORK_ATTEMPTS} rework attempts.`;
+        : `Acopilot takeover required after ${MAX_REWORK_ATTEMPTS} rework attempts.`;
       this.updateJobStatus(job.id, "blocked", {
         rework_count: attemptIndex,
         current_step: reason,
@@ -852,8 +874,13 @@ export class LaneDispatchBus {
       steps.push({ status, step: nextStep, ts: Date.now() });
       nextUpdates.steps_json = JSON.stringify(steps);
     }
-    updateActionJobStatus(this.db, jobId, status, nextUpdates);
-    const updated = getActionJobById(this.db, jobId);
+    const updated = this.db.transaction(() => {
+      updateActionJobStatus(this.db, jobId, status, nextUpdates);
+      const job = getActionJobById(this.db, jobId);
+      if (job?.status === "blocked") this.takeovers.capture(job);
+      return job;
+    })();
+    if (status === "blocked") queueMicrotask(() => { void this.takeovers.pump(); });
     if (updated && this.options.broadcastToActionsLane) {
       this.broadcastJobEvent(updated, {
         type: "action_job_updated",
@@ -969,6 +996,9 @@ export class LaneDispatchBus {
       `SELECT * FROM action_jobs
        WHERE project_id = ? AND pr_number IS NOT NULL
          AND status IN ('queued', 'running', 'verifying', 'reviewing', 'waiting_merge', 'blocked')
+         AND NOT EXISTS (SELECT 1 FROM action_takeovers t
+           WHERE (t.job_id = action_jobs.id AND t.prompt_json IS NOT NULL)
+              OR t.successor_job_id = action_jobs.id)
        ORDER BY created_at ASC`,
     ).all(canonicalProjectId) as ActionJobRecord[];
 
@@ -1014,10 +1044,10 @@ export class LaneDispatchBus {
       const owner = String(authUserId ?? "").trim();
       const queuedJobs = owner
         ? this.db.prepare(
-            "SELECT * FROM action_jobs WHERE project_id = ? AND auth_user_id = ? AND status = 'queued' ORDER BY created_at ASC",
+            "SELECT * FROM action_jobs WHERE project_id = ? AND auth_user_id = ? AND status = 'queued' ORDER BY EXISTS (SELECT 1 FROM action_takeovers WHERE successor_job_id = action_jobs.id) DESC, created_at ASC",
           ).all(canonicalProjectId, owner) as ActionJobRecord[]
         : this.db.prepare(
-            "SELECT * FROM action_jobs WHERE project_id = ? AND status = 'queued' ORDER BY created_at ASC",
+            "SELECT * FROM action_jobs WHERE project_id = ? AND status = 'queued' ORDER BY EXISTS (SELECT 1 FROM action_takeovers WHERE successor_job_id = action_jobs.id) DESC, created_at ASC",
           ).all(canonicalProjectId) as ActionJobRecord[];
 
       if (queuedJobs.length === 0) {
@@ -1025,8 +1055,13 @@ export class LaneDispatchBus {
       }
 
       const nextJob = queuedJobs[0]!;
+      const recoveryGate = this.takeovers.recoveryGate(nextJob.id);
+      if (!recoveryGate.allowed) {
+        this.updateJobStatus(nextJob.id, "queued", { current_step: recoveryGate.reason, error_message: recoveryGate.reason });
+        return recoveryGate;
+      }
       const supervised = Boolean(this.options.sessionManager && !this.options.developerRunner);
-      const gateResult = checkThreePointGate(this.db, repoPath, canonicalProjectId, "dev", supervised);
+      const gateResult = checkThreePointGate(this.db, repoPath, canonicalProjectId, "dev", supervised, nextJob.id);
 
       if (!gateResult.allowed) {
         if (gateResult.gateBlocked === "cleanliness") {
@@ -1069,6 +1104,9 @@ export class LaneDispatchBus {
           reason: error instanceof Error ? error.message : String(error),
         };
       }
+      if (getActionJobById(this.db, nextJob.id)?.status !== "queued") {
+        return { allowed: false, reason: "Queued job changed during runtime preflight" };
+      }
       if (!preflight.ok) {
         const reason = `Actions runtime preflight failed: ${preflight.reason ?? "unsupported capabilities"}`;
         this.updateJobStatus(nextJob.id, "queued", {
@@ -1081,6 +1119,16 @@ export class LaneDispatchBus {
           reason,
         };
       }
+
+      // Runtime discovery can yield. Neither cancellation nor a reset during it
+      // may resurrect the captured queued record or authorize a stale recovery.
+      const currentRecoveryGate = this.takeovers.recoveryGate(nextJob.id);
+      if (!currentRecoveryGate.allowed) {
+        this.updateJobStatus(nextJob.id, "queued", { current_step: currentRecoveryGate.reason, error_message: currentRecoveryGate.reason });
+        return currentRecoveryGate;
+      }
+      const currentGate = checkThreePointGate(this.db, repoPath, canonicalProjectId, "dev", supervised, nextJob.id);
+      if (!currentGate.allowed) return currentGate;
 
       // Gate passed: checkout feature branch and mark running
       let createdAnchor: string | null = null;
@@ -1198,9 +1246,13 @@ export class LaneDispatchBus {
       ? `Implement GitHub Issue #${job.issue_id}: ${job.issue_title}.\nRead the issue, implement the requested code changes on branch '${job.branch}', run verification tests, and commit.`
       : `${job.issue_title}.\nImplement the requested changes on branch '${job.branch}', run verification tests, and commit.`;
 
+    const recoveryInstruction = getPrecedingTakeover(this.db, job.id)?.instruction;
     const finalTaskPrompt = [
       taskPrompt,
       JSON.stringify(parseActionJobIssueSnapshot(job)),
+      recoveryInstruction
+        ? `Acopilot recovery instructions (the original Issue contract above remains authoritative):\n${recoveryInstruction}`
+        : "",
       AUTOMATED_ACTION_INSTRUCTIONS,
       "You own the whole job. Inspect the checkout first; safely prepare the assigned feature branch from dev. Preserve unrelated changes: never reset, clean, stash, or overwrite them. Never develop on dev/main/master. Handle routine environment problems yourself.",
       "After committing, call review_action to invoke your isolated Reviewer subagent. Findings and operational errors return to you. Fix them and call again if needed (at most 3 calls). After PASS, call deliver_action (at most 3 calls). Repair delivery errors yourself; changing code or the base requires fresh review. Never merge outside deliver_action. After successful delivery stop all tools and report completion. If you cannot finish safely, explain the blocker; blocked jobs still offer dismiss only.",
@@ -1244,6 +1296,12 @@ export class LaneDispatchBus {
       const detach = () => { unsubscribe?.(); unsubscribe = null; };
       try {
         const execute = async () => {
+          if (getActionJobById(this.db, jobId)?.status !== "running") return;
+          const recoveryGate = this.takeovers.recoveryGate(jobId);
+          if (!recoveryGate.allowed) {
+            this.updateJobStatus(jobId, "queued", { current_step: recoveryGate.reason, error_message: recoveryGate.reason });
+            return;
+          }
           const orchestrator = sessionManager.getOrCreate(userId, repoPath, true, {
             authUserId,
             projectId,
@@ -1388,6 +1446,7 @@ export class LaneDispatchBus {
         detach();
         this.activeAbortControllers.delete(jobId);
         this.developerProjects.delete(projectId);
+        if (getActionJobById(this.db, jobId)?.status === "blocked") void this.takeovers.pump();
         if (getActionJobById(this.db, jobId)?.status === "completed") {
           queueMicrotask(() => { void this.evaluateQueue(job.project_id, repoPath, job.auth_user_id ?? undefined); });
         }
