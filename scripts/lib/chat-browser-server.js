@@ -62,6 +62,7 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
   const failedReplies = new Set();
   const heldCommandCompletions = new Map();
   let heldAuthentication = null;
+  let heldServiceWorker = null;
   let originOffline = false;
   const contentTypes = {
     ".html": "text/html",
@@ -87,6 +88,13 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
     try {
       const url = new URL(request.url, "http://localhost");
       const pathname = url.pathname;
+      if (pathname === "/sw.js" && heldServiceWorker) {
+        const gate = heldServiceWorker;
+        gate.requests += 1;
+        response.on("close", () => { if (!response.writableFinished) gate.cancelled += 1; });
+        await gate.ready;
+        if (response.destroyed) return;
+      }
       if (pathname === "/favicon.ico") {
         response.writeHead(204);
         response.end();
@@ -352,6 +360,18 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
         release: () => { heldAuthentication = null; gate.release(); },
       };
     },
+    holdServiceWorker() {
+      if (heldServiceWorker) throw new Error("Service worker response is already held");
+      let release;
+      const ready = new Promise((resolve) => { release = resolve; });
+      const gate = { ready, release, requests: 0, cancelled: 0 };
+      heldServiceWorker = gate;
+      return {
+        received: () => gate.requests,
+        cancelled: () => gate.cancelled,
+        release: () => { heldServiceWorker = null; gate.release(); },
+      };
+    },
     disconnectClients() {
       for (const client of clients) client.terminate();
     },
@@ -384,6 +404,7 @@ export async function startChatBrowserServer(buildRoot, { legacyWorker = false, 
     },
     async close() {
       heldAuthentication?.release();
+      heldServiceWorker?.release();
       for (const { release } of heldReplies.values()) release();
       heldReplies.clear();
       for (const { release } of heldCommandCompletions.values()) release();

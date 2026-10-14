@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { chromium, webkit } from "playwright";
 import { startChatBrowserServer } from "./lib/chat-browser-server.js";
+import { observeChatServiceWorkerLifecycle, waitForChatServiceWorkerLifecycle } from "./lib/chat-service-worker-lifecycle.js";
 import { verifyPostSendInteractions } from "./lib/chat-browser-post-send.js";
 import { verifyMonotonicHistory } from "./lib/chat-browser-history.js";
 import { verifyLocalFirstTranscript } from "./lib/chat-browser-local-first.js";
@@ -32,6 +33,7 @@ async function runEngine(engine, artifacts, report) {
   let page;
   const profile = path.join(artifacts, `${engine}-profile`);
   const result = { engine, checks: [], timings: [], received: fixture.received, requests: fixture.requests };
+  let phase = "startup";
   const stage = (name) => {
     const now = performance.now();
     result.timings.push({ name, ms: Math.round(now - stageStart) });
@@ -58,11 +60,13 @@ async function runEngine(engine, artifacts, report) {
       Object.defineProperty(navigator, "standalone", { value: true });
     }, { mobile });
     page = await context.newPage();
+    await page.addInitScript(observeChatServiceWorkerLifecycle);
+    result.serviceWorkerLifecycle = [];
     const errors = [];
     result.errorDetails = [];
     result.failedRequests = [];
     page.on("requestfailed", (request) => result.failedRequests.push({
-      url: request.url(), failure: request.failure(), offline: result.localFirst?.offline,
+      url: request.url(), failure: request.failure(), phase, at: Date.now(), offline: result.localFirst?.offline,
     }));
     const browserWarnings = [];
     const isExpectedOutageError = (text) => mobile && result.localFirst?.offlineMode?.startsWith("origin-unreachable") && (
@@ -100,9 +104,14 @@ async function runEngine(engine, artifacts, report) {
         return;
       }
       errors.push(error.message);
-      result.errorDetails.push({ source: "pageerror", text: error.message, offline: result.localFirst?.offline, refused: [...fixture.refusedRequests] });
+      result.errorDetails.push({ source: "pageerror", text: error.message, stack: error.stack, phase, at: Date.now(), url: page.url(),
+        offline: result.localFirst?.offline, refused: [...fixture.refusedRequests] });
     });
     page.on("console", (message) => {
+      if (message.text().startsWith("CHAT_SW_LIFECYCLE ")) {
+        result.serviceWorkerLifecycle.push({ phase, ...JSON.parse(message.text().slice("CHAT_SW_LIFECYCLE ".length)) });
+        return;
+      }
       if (message.type() !== "error") return;
       const text = message.text();
       if (isWebKitApiCorsNoise(text)) {
@@ -181,28 +190,38 @@ async function runEngine(engine, artifacts, report) {
       await activate(sendButton());
       assert.equal(await input().inputValue(), "", "Accepted prompts must immediately clear the physical textarea");
     };
+    phase = "legacy-worker-install";
     await page.goto(`${fixture.origin}/legacy.html`);
     await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
     fixture.useCurrentServiceWorker();
+    phase = "service-worker-upgrade";
     await page.evaluate(async () => {
       window.__previousChatWorker = navigator.serviceWorker.controller;
       const registration = await navigator.serviceWorker.getRegistration();
-      await registration.update();
-      const waiting = registration.waiting || (await new Promise((resolve) => {
+      const installed = new Promise((resolve) => {
         registration.addEventListener("updatefound", () => {
           const worker = registration.installing;
           worker?.addEventListener("statechange", () => {
             if (worker.state === "installed") resolve(worker);
           });
-        });
-      }));
+        }, { once: true });
+      });
+      await registration.update();
+      const waiting = registration.waiting || await installed;
       waiting?.postMessage({ type: "SKIP_WAITING" });
     });
     await page.waitForFunction(() => navigator.serviceWorker.controller && navigator.serviceWorker.controller !== window.__previousChatWorker);
     result.checks.push("New service worker activates without an updated registration script in the old page");
     stage("service-worker-upgrade");
+    phase = "current-shell-load";
     await page.goto(fixture.origin, { waitUntil: "domcontentloaded" });
+    // DOMContentLoaded precedes registerSW's load-triggered register/update chain.
+    // Reloading here without a barrier cancels its script fetch in WebKit.
+    await waitForChatServiceWorkerLifecycle(page);
+    phase = "current-shell-reload";
     await page.reload({ waitUntil: "domcontentloaded" });
+    await waitForChatServiceWorkerLifecycle(page);
+    phase = "chat-regressions";
     await page.waitForFunction(() => navigator.serviceWorker.controller && document.querySelector("textarea:not(:disabled)"));
     result.postSend = await verifyPostSendInteractions({ page, fixture, mobile });
     if (mobile) {
@@ -518,6 +537,16 @@ async function runEngine(engine, artifacts, report) {
 const formatStages = (timings) => (timings ?? []).map((timing) => `${timing.name}=${timing.ms}ms`).join(" ");
 
 async function runSerial(selectedEngines) {
+  if (selectedEngines.includes("webkit")) {
+    const code = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ["--test", path.join(repoRoot, "tests/scripts/chatServiceWorkerLifecycle.browser.js")], {
+        stdio: "inherit",
+      });
+      child.on("error", reject);
+      child.on("exit", (code) => resolve(code));
+    });
+    assert.equal(code, 0, "The deterministic service worker lifecycle regression must pass");
+  }
   const artifacts = process.env.ADS_CHAT_BROWSER_ARTIFACTS
     ? path.resolve(process.env.ADS_CHAT_BROWSER_ARTIFACTS)
     : await mkdtemp(path.join(tmpdir(), "ads-chat-browser-check-"));
