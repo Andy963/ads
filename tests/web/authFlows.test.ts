@@ -3,10 +3,16 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type http from "node:http";
 
 import { resetStateDatabaseForTests, getStateDatabase } from "../../server/state/database.js";
+import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
+import { createModelProviderStore } from "../../server/state/modelProviderStore.js";
+import { createUpstreamCredentialStore } from "../../server/state/upstreamCredentialStore.js";
+import { resolveCodexProviderInjection, CODEX_PROVIDER_API_KEY_ENV } from "../../server/codex/appServer/providerInjection.js";
 import { serializeCookie } from "../../server/web/auth/cookies.js";
 import { initAdmin } from "../../server/web/auth/initAdmin.js";
+import { authenticateRequest } from "../../server/web/server/auth.js";
 import {
   createWebSession,
   hashSessionToken,
@@ -135,5 +141,64 @@ describe("web/auth state-backed flows", () => {
     assert.equal(resolveSessionSlidingEnabled(), false);
     process.env.ADS_WEB_SESSION_SLIDING = "unknown";
     assert.equal(resolveSessionSlidingEnabled(), false);
+  });
+
+  it("connector authentication uses the primary Web user for provider credentials", () => {
+    const admin = initAdmin({ username: "admin", password: "pw", nowSeconds: 1700000000 });
+    assert.equal(admin.status, "created");
+    process.env.ADS_CONNECTOR_TOKEN = "connector-token";
+    delete process.env.ADS_CONNECTOR_USER_ID;
+
+    const db = getStateDatabase(process.env.ADS_STATE_DB_PATH);
+    createModelProviderStore(db).upsertProvider({
+      id: "provider-openrouter",
+      name: "OpenRouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      wireApi: "responses",
+      isEnabled: true,
+    });
+    createGlobalModelConfigStore(db).upsertModelConfig({
+      id: "model-1",
+      modelId: "gpt-5.2",
+      displayName: "GPT 5.2",
+      provider: "openai",
+      providerId: "provider-openrouter",
+      isEnabled: true,
+      isDefault: false,
+    });
+    createUpstreamCredentialStore(db).save(
+      admin.userId,
+      { baseUrl: "https://openrouter.ai/api/v1", provider: "provider-openrouter", apiKey: "admin-provider-key" },
+      "provider-openrouter",
+    );
+
+    const auth = authenticateRequest(
+      { headers: { authorization: "Bearer connector-token" } } as http.IncomingMessage,
+      { sessionTtlSeconds: 60, sessionPepper: "pepper" },
+    );
+    assert.equal(auth.ok, true);
+    if (!auth.ok) return;
+    assert.equal(auth.userId, admin.userId);
+    assert.equal(auth.username, "admin");
+    assert.equal(auth.connector, true);
+
+    const injection = resolveCodexProviderInjection({ db, owner: auth.userId, model: "gpt-5.2" });
+    assert.equal(injection?.env[CODEX_PROVIDER_API_KEY_ENV], "admin-provider-key");
+  });
+
+  it("connector authentication honors an explicit credential owner override", () => {
+    initAdmin({ username: "admin", password: "pw", nowSeconds: 1700000000 });
+    process.env.ADS_CONNECTOR_TOKEN = "connector-token";
+    process.env.ADS_CONNECTOR_USER_ID = "configured-owner";
+
+    const auth = authenticateRequest(
+      { headers: { authorization: "Bearer connector-token" } } as http.IncomingMessage,
+      { sessionTtlSeconds: 60, sessionPepper: "pepper" },
+    );
+    assert.equal(auth.ok, true);
+    if (!auth.ok) return;
+    assert.equal(auth.userId, "configured-owner");
+    assert.equal(auth.username, "configured-owner");
+    assert.equal(auth.connector, true);
   });
 });

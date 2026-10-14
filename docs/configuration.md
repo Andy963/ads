@@ -146,7 +146,7 @@ Telegram variables belong to the standalone `connectors/telegram` package and ar
 | `ADS_CORE_URL` | `http://127.0.0.1:8787` | ADS Core HTTP 地址 |
 | `ADS_CORE_WS_URL` | Derived | ADS Core WebSocket 地址 |
 | `ADS_CONNECTOR_TOKEN` | 必填 | Core connector bearer token；Connector 与 Core 必须配置为同一值 |
-| `ADS_CONNECTOR_USER_ID` | `connector` | Bearer connector 的逻辑用户 ID |
+| `ADS_CONNECTOR_USER_ID` | 首个启用的 Web 用户 | Bearer connector 使用的凭据 owner 覆盖值；未设置或保持 `connector` 时使用首个启用的 Web 用户 |
 | `TELEGRAM_MAX_REQUESTS_PER_MINUTE` | `30` | 每分钟最高请求频率限制 |
 | `TELEGRAM_PROXY_URL` | 未设置 | 网络代理地址（如 `http://127.0.0.1:7890`） |
 | `TELEGRAM_SILENT_NOTIFICATIONS` | `true` | 是否静默推送任务完成通知 |

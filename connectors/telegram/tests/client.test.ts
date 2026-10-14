@@ -72,6 +72,42 @@ describe("AdsCoreClient", () => {
     await new Promise<void>((resolve) => wss.close(() => resolve()));
   });
 
+  it("propagates the server message from error frames", async () => {
+    const wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      wss.once("listening", () => resolve());
+      wss.once("error", reject);
+    });
+    const address = wss.address();
+    if (!address || typeof address === "string") {
+      throw new Error("WebSocket test server did not expose a TCP address");
+    }
+
+    wss.on("connection", (ws) => {
+      ws.on("message", (raw) => {
+        const message = JSON.parse(String(raw)) as { type?: string; client_message_id?: string };
+        if (message.type === "prompt") {
+          ws.send(JSON.stringify({
+            type: "error",
+            message: "Provider OpenRouter has no API key configured for this account.",
+            clientMessageId: message.client_message_id,
+          }));
+        }
+      });
+    });
+
+    const client = new AdsCoreClient({
+      coreUrl: `http://127.0.0.1:${address.port}`,
+      coreWsUrl: `ws://127.0.0.1:${address.port}`,
+    });
+    await client.connect();
+    const { finalResponse } = await client.sendPrompt({ text: "Hello", clientMessageId: "error-message-test" });
+    await assert.rejects(finalResponse, /Provider OpenRouter has no API key configured/);
+
+    client.close();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
+
   it("uses an isolated Core chat session for each Telegram chat", async () => {
     const protocols: string[][] = [];
     const wss = new WebSocketServer({ port: 0 });

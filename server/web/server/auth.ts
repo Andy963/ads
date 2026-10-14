@@ -1,8 +1,11 @@
 import type http from "node:http";
 
+import { getStateDatabase } from "../../state/database.js";
 import { parseCookies, serializeCookie } from "../auth/cookies.js";
+import { ensureWebAuthTables } from "../auth/schema.js";
 import {
   ADS_SESSION_COOKIE_NAME,
+  findPrimaryActiveUser,
   hashSessionToken,
   lookupSessionByToken,
   refreshSessionIfNeeded,
@@ -55,6 +58,27 @@ function readBearerToken(req: http.IncomingMessage): string | null {
   return match?.[1]?.trim() || null;
 }
 
+function resolveConnectorIdentity(): { userId: string; username: string } {
+  const configuredUserId = String(process.env.ADS_CONNECTOR_USER_ID ?? "").trim();
+  if (configuredUserId && configuredUserId !== "connector") {
+    return { userId: configuredUserId, username: configuredUserId };
+  }
+
+  try {
+    const db = getStateDatabase();
+    ensureWebAuthTables(db);
+    const primaryUser = findPrimaryActiveUser(db);
+    if (primaryUser) {
+      return { userId: primaryUser.id, username: primaryUser.username };
+    }
+  } catch {
+    // Preserve connector authentication when the Web Console has not been initialized yet.
+  }
+
+  const fallback = configuredUserId || "connector";
+  return { userId: fallback, username: fallback };
+}
+
 export function buildSessionCookie(req: http.IncomingMessage, token: string, ttlSeconds: number): string {
   return serializeCookie(ADS_SESSION_COOKIE_NAME, token, {
     httpOnly: true,
@@ -82,11 +106,11 @@ export function authenticateRequest(
   const connectorToken = String(process.env.ADS_CONNECTOR_TOKEN ?? "").trim();
   const bearerToken = readBearerToken(req);
   if (connectorToken && bearerToken && bearerToken === connectorToken) {
-    const connectorUserId = String(process.env.ADS_CONNECTOR_USER_ID ?? "connector").trim() || "connector";
+    const connectorIdentity = resolveConnectorIdentity();
     return {
       ok: true,
-      userId: connectorUserId,
-      username: connectorUserId,
+      userId: connectorIdentity.userId,
+      username: connectorIdentity.username,
       tokenHash: hashSessionToken(bearerToken, options.sessionPepper),
       connector: true,
     };
