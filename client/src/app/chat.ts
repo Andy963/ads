@@ -852,7 +852,17 @@ export function createChatActions(ctx: AppContext) {
     finalizeCommandBlock(rt);
   };
 
-  const applyResumeHistory = (serverHistory: ChatItem[], rt: ProjectRuntime): void => {
+  const applyResumeHistory = (
+    serverHistory: ChatItem[],
+    rt: ProjectRuntime,
+    options?: { authoritative?: boolean },
+  ): void => {
+    if (options?.authoritative) {
+      rt.resumeReplacePending = false;
+      rt.inputLocked.value = false;
+      setMessages(serverHistory, rt);
+      return;
+    }
     if (!rt.resumeReplacePending) {
       applyMergedHistory(serverHistory, rt);
       return;

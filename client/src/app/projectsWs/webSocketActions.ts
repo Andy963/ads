@@ -474,6 +474,14 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         writeCursor: (seq) => writeSyncCursor(rt, seq, chatSessionId),
       });
     let sequencer = createChatSequencer(syncChatSessionId);
+    let wasNearBottomBeforeDisconnect =
+      rt.transcriptViewport.value === null || rt.transcriptViewport.value.following !== false;
+
+    const triggerBottomAlignmentPass = (): void => {
+      if (wasNearBottomBeforeDisconnect) {
+        rt.transcriptAlignSeq.value += 1;
+      }
+    };
 
     const isCurrentSync = (expectedLaneEpoch: number = syncLaneEpoch): boolean =>
       rt.ws === wsInstance &&
@@ -573,6 +581,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       const terminalBootstrapFence =
         bootstrapReportedInFlight === false && hasTerminalAssistantHistory(history) ? bootstrapBoundarySeq : 0;
       applyDeferredRuntimeSnapshots(Math.max(terminalBootstrapFence, observedTerminalSeq));
+      if (wasNearBottomBeforeDisconnect) {
+        triggerBottomAlignmentPass();
+      }
       void flushQueuedPrompts(rt);
     };
 
@@ -793,7 +804,6 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     const applyAuthoritativeHistory = (payload: Record<string, unknown>): void => {
       clearStepLive(rt);
       finalizeCommandBlock(rt);
-      setMessages([], rt);
       rt.recentCommands.value = [];
       rt.seenCommandIds.clear();
       rt.executePreviewByKey.clear();
@@ -804,7 +814,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.streamSnapshotRevisions?.clear();
       rt.ignoreNextHistory = false;
       rt.ignoreNextHistoryGeneration = undefined;
-      applySyncPayload(payload);
+      applySyncPayload({ ...payload, authoritative: true });
     };
 
     function hasTerminalAssistantHistory(payload: Record<string, unknown>): boolean {
@@ -1010,6 +1020,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         activeSequencer.completeCatchUp();
         rt.transcriptReady = true;
         rt.transcriptRestored = false;
+        if (wasNearBottomBeforeDisconnect) {
+          triggerBottomAlignmentPass();
+        }
         // Bootstrap snapshots are current-state rows rather than another
         // history stream. Apply them only after the baseline and all cursor
         // events have committed, so a stale snapshot cannot overwrite a newer
@@ -1062,6 +1075,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     const cleanupDisconnectState = (options?: { showReconnectMessage?: boolean }) => {
       const showReconnectMessage = options?.showReconnectMessage ?? true;
       if (disconnectCleanupDone) return;
+      wasNearBottomBeforeDisconnect =
+        rt.transcriptViewport.value === null || rt.transcriptViewport.value.following !== false;
       disconnectCleanupDone = true;
       disconnectWasBusy = rt.busy.value;
       rt.needsChatSync = true;
@@ -1394,6 +1409,9 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             rt.transcriptReady = true;
             rt.transcriptRestored = false;
             rt.transcriptCache?.schedule();
+            if (wasNearBottomBeforeDisconnect) {
+              triggerBottomAlignmentPass();
+            }
             void flushQueuedPrompts(rt);
          } else if (rec.historyMode === "resume" && !rt.awaitingBootstrapHistory && !rt.inputLocked.value) {
            void flushQueuedPrompts(rt);

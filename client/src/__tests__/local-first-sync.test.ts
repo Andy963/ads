@@ -72,7 +72,7 @@ async function reconnect(info: Awaited<ReturnType<typeof harness>>, latestSeq = 
   const socket = state.sockets.at(-1)!;
   expect(socket.options.resume).toEqual({ afterSeq: 10, laneGeneration: 1 });
   socket.onOpen();
-  socket.onMessage({ type: "welcome", historyMode: "resume", bootstrapHistory: false, latestSeq, laneGeneration: 1, inFlight: false });
+  socket.onMessage({ type: "welcome", historyMode: latestSeq > 10 ? "catch_up" : "resume", bootstrapHistory: false, latestSeq, laneGeneration: 1, inFlight: false });
   await flushPromises();
   return socket;
 }

@@ -1728,8 +1728,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           next.push({ id: `h-a-${idx}`, role: "assistant", kind: "text", assistantAggregate: true, content: historyText, ts: ts ?? undefined });
         }
       }
+      const isAuthoritative = Boolean((msg as Record<string, unknown>).authoritative);
       dropReconnectBusyMessage();
-      applyResumeHistory(next, rt);
+      applyResumeHistory(next, rt, { authoritative: isAuthoritative });
       const canTreatHistoryAsTerminal = terminalHistoryTail && !rt.busy.value && !rt.turnInFlight;
       if (canTreatHistoryAsTerminal) {
         terminalFenceActive = true;

@@ -180,6 +180,7 @@ export type ProjectRuntime = {
   transcriptReady: boolean;
   transcriptRestored: boolean;
   transcriptViewport: Ref<TranscriptViewport | null>;
+  transcriptAlignSeq: Ref<number>;
   transcriptCache?: { schedule: () => void; invalidate: () => void };
   laneGeneration?: number;
   /** Client ids the user removed from a server-tracked card; see OutboxSnapshot. */

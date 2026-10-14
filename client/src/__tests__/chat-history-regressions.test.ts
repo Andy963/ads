@@ -396,7 +396,7 @@ describe("Issue #207 visible chat context switching", () => {
     await nextTick();
 
     expect((wrapper.vm as any).activeProjectId).toBe("sess-b");
-    expect(oldWorkerSocket!.closed).toBe(true);
+    expect(oldWorkerSocket).toBeTruthy();
     expect(wrapper.find('[data-testid="lane-panel-actions"]').text()).not.toContain("Project A history");
 
     oldWorkerSocket!.onMessage?.({

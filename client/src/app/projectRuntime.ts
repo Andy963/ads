@@ -15,6 +15,7 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     transcriptReady: false,
     transcriptRestored: false,
     transcriptViewport: ref(null),
+    transcriptAlignSeq: ref(0),
     laneGeneration: undefined,
     dismissedPromptIds: new Set<string>(),
     consumedPromptIds: new Set<string>(),

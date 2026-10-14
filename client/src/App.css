@@ -295,6 +295,11 @@
   flex: 1;
   min-height: 0;
 }
+.chatHost :deep(.chat),
+.chatHost .chat {
+  -webkit-overflow-scrolling: touch;
+  transform: translateZ(0);
+}
 .left {
   display: flex;
   flex-direction: column;

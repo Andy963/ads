@@ -259,7 +259,7 @@ describe("server-authoritative Actions chat selection", () => {
     get.mockClear();
     socket.onMessage({
       type: "welcome", chatSessionId: "old-chat", laneGeneration: 1,
-      latestSeq: 80, historyMode: "resume", bootstrapHistory: true, inFlight: false,
+      latestSeq: 80, historyMode: "catch_up", bootstrapHistory: true, inFlight: false,
     });
     expect(get).toHaveBeenCalledTimes(1);
     expect(get.mock.calls[0]?.[0]).toContain("afterSeq=50");
@@ -333,7 +333,7 @@ describe("server-authoritative Actions chat selection", () => {
     vi.mocked(ctx.api.get).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
     socket.onMessage({
       type: "welcome", chatSessionId: "old-chat", laneGeneration: 1,
-      latestSeq: 80, historyMode: "resume", bootstrapHistory: true, inFlight: false,
+      latestSeq: 80, historyMode: "catch_up", bootstrapHistory: true, inFlight: false,
     });
     socket.onMessage({ type: "history", afterSeq: 150, items: [{ role: "ai", text: "Buffered stale history", ts: 1 }] });
     socket.onMessage({ type: "result", ok: true, output: "Buffered stale result" });
@@ -391,7 +391,7 @@ describe("server-authoritative Actions chat selection", () => {
     await history(socket, "Old transcript");
     let finish!: (value: unknown) => void;
     vi.mocked(ctx.api.get).mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
-    socket.onMessage({ type: "welcome", chatSessionId: "old-chat", latestSeq: 90, laneGeneration: 1, historyMode: "resume", inFlight: false });
+    socket.onMessage({ type: "welcome", chatSessionId: "old-chat", latestSeq: 90, laneGeneration: 1, historyMode: "catch_up", inFlight: false });
     expect(finish).toBeTypeOf("function");
     if (origin === "source") await projects.startNewChatSession();
     else welcome(socket, "peer-chat");

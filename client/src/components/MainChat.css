@@ -21,6 +21,8 @@
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  transform: translateZ(0);
   /* Keep the browser's native scroll anchoring active so top insertions
      (earlier history, reconnect backfill) never shift the viewport. */
   overflow-anchor: auto;
