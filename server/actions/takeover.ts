@@ -100,7 +100,11 @@ export class ActionTakeoverCoordinator {
     try {
       if (!this.contextForPrompt(entry)) throw new ActionRecoveryError("Recovery handoff is unavailable.");
       const job = getActionJobById(this.db, jobId);
-      if (!job) throw new ActionRecoveryError("Recovery job is unavailable.");
+      const source = getActionJobById(this.db, parent.job_id);
+      if (!job || !source || job.auth_user_id !== entry.authUserId || job.project_id !== entry.sessionId
+        || job.chat_session_id !== source.chat_session_id || job.lane_generation !== source.lane_generation) {
+        throw new ActionRecoveryError("Recovery job no longer belongs to its authorized owner and lane.");
+      }
       this.assertSafeWorkspace(job, entry.workspaceRoot);
       return { allowed: true };
     } catch (error) {

@@ -996,6 +996,9 @@ export class LaneDispatchBus {
       `SELECT * FROM action_jobs
        WHERE project_id = ? AND pr_number IS NOT NULL
          AND status IN ('queued', 'running', 'verifying', 'reviewing', 'waiting_merge', 'blocked')
+         AND NOT EXISTS (SELECT 1 FROM action_takeovers t
+           WHERE (t.job_id = action_jobs.id AND t.prompt_json IS NOT NULL)
+              OR t.successor_job_id = action_jobs.id)
        ORDER BY created_at ASC`,
     ).all(canonicalProjectId) as ActionJobRecord[];
 
@@ -1101,6 +1104,9 @@ export class LaneDispatchBus {
           reason: error instanceof Error ? error.message : String(error),
         };
       }
+      if (getActionJobById(this.db, nextJob.id)?.status !== "queued") {
+        return { allowed: false, reason: "Queued job changed during runtime preflight" };
+      }
       if (!preflight.ok) {
         const reason = `Actions runtime preflight failed: ${preflight.reason ?? "unsupported capabilities"}`;
         this.updateJobStatus(nextJob.id, "queued", {
@@ -1113,6 +1119,16 @@ export class LaneDispatchBus {
           reason,
         };
       }
+
+      // Runtime discovery can yield. Neither cancellation nor a reset during it
+      // may resurrect the captured queued record or authorize a stale recovery.
+      const currentRecoveryGate = this.takeovers.recoveryGate(nextJob.id);
+      if (!currentRecoveryGate.allowed) {
+        this.updateJobStatus(nextJob.id, "queued", { current_step: currentRecoveryGate.reason, error_message: currentRecoveryGate.reason });
+        return currentRecoveryGate;
+      }
+      const currentGate = checkThreePointGate(this.db, repoPath, canonicalProjectId, "dev", supervised, nextJob.id);
+      if (!currentGate.allowed) return currentGate;
 
       // Gate passed: checkout feature branch and mark running
       let createdAnchor: string | null = null;
@@ -1280,6 +1296,12 @@ export class LaneDispatchBus {
       const detach = () => { unsubscribe?.(); unsubscribe = null; };
       try {
         const execute = async () => {
+          if (getActionJobById(this.db, jobId)?.status !== "running") return;
+          const recoveryGate = this.takeovers.recoveryGate(jobId);
+          if (!recoveryGate.allowed) {
+            this.updateJobStatus(jobId, "queued", { current_step: recoveryGate.reason, error_message: recoveryGate.reason });
+            return;
+          }
           const orchestrator = sessionManager.getOrCreate(userId, repoPath, true, {
             authUserId,
             projectId,

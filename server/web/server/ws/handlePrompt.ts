@@ -66,6 +66,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
 
   await lock.runExclusive(async () => {
     if (!isLaneCurrent()) return;
+    deps.validateActionRecovery?.();
     const imageDir = resolveWorkspaceStatePath(workspaceRoot, "temp", "web-images");
     const promptInput = buildPromptInput(deps.request.parsed.payload, imageDir);
     if (!promptInput.ok) {
@@ -311,7 +312,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       promptRun.ensureActive();
 
       const workspaceRootForAdr = workspaceRoot;
-      const { outputToSend } = await processPromptOutputBlocks({
+      const { outputToSend } = deps.actionRecovery ? { outputToSend: result.response } : await processPromptOutputBlocks({
         rawResponse: result.response,
         workspaceRoot: workspaceRootForAdr,
       });
@@ -320,7 +321,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       const threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
       let outputForChat = outputToSend;
 
-      outputForChat = await processScheduleOutput({
+      outputForChat = deps.actionRecovery ? outputForChat : await processScheduleOutput({
         outputForChat,
         isDraftCommand: false,
         workspaceRoot: workspaceRootForAdr,

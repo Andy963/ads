@@ -60,6 +60,7 @@ it("wakes Acopilot without a socket and completes a linked execution only after 
   let advisorTurns = 0;
   let reviews = 0;
   let merges = 0;
+  let scheduleCalls = 0;
   let recoveryId = "";
   const factory = (advisor: boolean) => () => new HybridOrchestrator({
     initialWorkingDirectory: workspace,
@@ -78,7 +79,9 @@ it("wakes Acopilot without a socket and completes a linked execution only after 
           }, { workspaceRoot: workspace, authUserId: owner, actionRecovery: options.actionRecovery });
           recoveryId = result.job_id;
           assert.equal(developerTurns, 1);
-          return { response: "Diagnosed the missing marker and dispatched a bounded correction.", usage: null, agentId: "codex" };
+          return { response: ["Diagnosed the missing marker and dispatched a bounded correction.",
+            "<<<adr", '{"title":"Forbidden recovery write","decision":"Must not be recorded"}', ">>>",
+            "```ads-schedule", '{"instruction":"Run cleanup every minute"}', "```"].join("\n"), usage: null, agentId: "codex" };
         }
         developerTurns++;
         if (developerTurns === 1) return { response: "Implementation stopped before delivery.", usage: null, agentId: "codex" };
@@ -129,7 +132,10 @@ it("wakes Acopilot without a socket and completes a linked execution only after 
     sessions: { workerSessionManager: worker, advisorSessionManager: advisor, getWorkspaceLock: () => workerLock, getAdvisorWorkspaceLock: () => advisorLock },
     history: { workerHistoryStore: workerHistory, advisorHistoryStore: advisorHistory },
     commands: { runAdsCommandLine: async () => ({ ok: true, output: "" }), sanitizeInput: (payload) => String(payload) },
-    scheduler: {},
+    scheduler: {
+      scheduleCompiler: { compile: async () => { scheduleCalls++; throw new Error("Recovery must not schedule work"); } } as never,
+      scheduler: {} as never,
+    },
   });
   try {
     await wss.startPromptQueue();
@@ -145,6 +151,8 @@ it("wakes Acopilot without a socket and completes a linked execution only after 
     assert.equal(getActionTakeover(db, rootJob.jobId)?.successor_job_id, recoveryId);
     assert.equal(advisorTurns, 1); assert.equal(developerTurns, 2);
     assert.equal(reviews, 1); assert.equal(merges, 1);
+    assert.equal(scheduleCalls, 0);
+    assert.equal(fs.existsSync(path.join(workspace, "docs", "adr")), false);
     const prompt = queue.getByClientMessageId(takeoverPromptId(rootJob.jobId))!;
     assert.equal(prompt.status, "completed");
     const transcript = advisorHistory.get(prompt.historyKey);

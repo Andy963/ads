@@ -57,6 +57,7 @@ import {
 import {
   NATIVE_TOOL_DEFINITIONS,
   NativeToolExecutor,
+  RECOVERY_TOOL_DEFINITIONS,
   type NativeToolExecutionResult,
 } from "../../runtime/tools.js";
 
@@ -788,7 +789,8 @@ export class NativeAgentAdapter implements AgentAdapter {
       if (retryState.attempt > 1) this.pendingRetryCheckpoint = undefined;
       for (let round = 0; ; round += 1) {
         assertTurnActive();
-        const roundTools = options.actionTools ? [...NATIVE_TOOL_DEFINITIONS, ...ACTION_TOOL_DEFINITIONS] : NATIVE_TOOL_DEFINITIONS;
+        const roundTools = options.actionRecovery ? RECOVERY_TOOL_DEFINITIONS
+          : options.actionTools ? [...NATIVE_TOOL_DEFINITIONS, ...ACTION_TOOL_DEFINITIONS] : NATIVE_TOOL_DEFINITIONS;
         const roundMessages = currentMessages;
         const itemId = `${turnId}-message-${round}`;
         const contextProjection = projectNativeContext(roundMessages, {

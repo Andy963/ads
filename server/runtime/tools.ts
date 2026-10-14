@@ -126,6 +126,9 @@ export const NATIVE_TOOL_DEFINITIONS: NativeToolDefinition[] = [
   ...BUILTIN_TOOL_DEFINITIONS,
 ];
 
+const RECOVERY_TOOL_NAMES = new Set(["read_file", "search", "read_execution_history", "dispatch_action_job"]);
+export const RECOVERY_TOOL_DEFINITIONS = NATIVE_TOOL_DEFINITIONS.filter(tool => RECOVERY_TOOL_NAMES.has(tool.function.name));
+
 export interface NativeToolExecutionResult {
   output: string;
   failed?: boolean;
@@ -417,6 +420,9 @@ export class NativeToolExecutor {
 
   async execute(call: NativeChatToolCall): Promise<NativeToolExecutionResult> {
     this.throwIfAborted();
+    if (this.actionRecovery && !RECOVERY_TOOL_NAMES.has(call.function.name)) {
+      throw new Error("Tool is unavailable during Actions recovery diagnosis");
+    }
     if (call.function.name === "dispatch_action_job" || isActionTool(call.function.name)) return this.dispatchActionJob(call);
     const args = parseArguments(call);
     switch (call.function.name) {

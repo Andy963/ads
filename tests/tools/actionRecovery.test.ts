@@ -12,6 +12,7 @@ import type { AgentSendOptions } from "../../server/agents/types.js";
 import { builtinDynamicTools, createBuiltinToolBridge } from "../../server/codex/appServer/builtinTools.js";
 import { NativeToolExecutor, NATIVE_TOOL_DEFINITIONS } from "../../server/runtime/tools.js";
 import { executeToolDirectives } from "../../server/skills/builtinTools.js";
+import { readMemory } from "../../server/memory/memory.js";
 import { BUILTIN_TOOL_DEFINITIONS, executeBuiltinTool, type BuiltinToolContext } from "../../server/tools/builtins.js";
 import { getBus, setBusInstance } from "../../server/web/server/api/routes/actions.js";
 
@@ -112,6 +113,68 @@ describe("trusted Actions recovery plumbing", () => {
       assert.deepEqual(Object.keys(schema.properties as object), expected);
     }
     assert.deepEqual(builtinDynamicTools().map(tool => tool.name), ["dispatch_action_job"]);
+  });
+
+  it("enforces a diagnostic allowlist before parsing or executing hallucinated native tools", async () => {
+    const review = mock.fn(async () => ({ ok: true }));
+    const deliver = mock.fn(async () => ({ ok: true }));
+    const executor = new NativeToolExecutor({
+      ...context, actionRecovery, actionTools: { review_action: review, deliver_action: deliver },
+      readHistory: () => "Archived diagnostic evidence",
+    });
+    const file = path.join(workspace, "evidence.txt");
+    fs.writeFileSync(file, "Original evidence\n");
+    const call = (name: string, args: unknown) => executor.execute({
+      id: name, type: "function", function: { name, arguments: JSON.stringify(args) },
+    });
+    try {
+      for (const [name, args] of [
+        ["exec_command", { cmd: "gh pr merge 567 --merge" }],
+        ["exec_command", { cmd: "gh", args: ["issue", "close", "567"] }],
+        ["apply_patch", { patch: "*** Begin Patch\n*** Update File: evidence.txt\n@@\n-Original evidence\n+Modified evidence\n*** End Patch" }],
+        ["wait_command", { session_id: "foreign-session" }], ["cancel_command", { session_id: "foreign-session" }],
+        ["review_action", {}], ["deliver_action", {}], ["unknown_tool", {}], ["memory.update", {}],
+      ] as const) {
+        await assert.rejects(call(name, args), /unavailable during Actions recovery diagnosis/);
+      }
+      await assert.rejects(executor.execute({ id: "malformed", type: "function", function: {
+        name: "exec_command", arguments: "invalid-json",
+      } }), /unavailable during Actions recovery diagnosis/);
+      assert.match((await call("read_file", { file: "evidence.txt" })).output, /Original evidence/);
+      assert.match((await call("search", { pattern: "Original", path: "evidence.txt" })).output, /Original evidence/);
+      assert.equal((await call("read_execution_history", {})).output, "Archived diagnostic evidence");
+      assert.equal(fs.readFileSync(file, "utf8"), "Original evidence\n");
+      assert.equal(review.mock.callCount(), 0);
+      assert.equal(deliver.mock.callCount(), 0);
+      assert.deepEqual(executor.pendingCommandIds(), []);
+    } finally {
+      await executor.dispose();
+    }
+  });
+
+  it("rejects mutating text directives without disabling later ordinary memory writes", async () => {
+    const write = '<<<tool.memory.update op="add">>>\n- Original fact\n>>>';
+    await executeToolDirectives({ ...context, text: write });
+    const original = readMemory(workspace);
+    for (const text of [
+      '<<<tool.memory.update op="replace">>>\n- Unauthorized replacement\n>>>',
+      '<<<tool.memory.update op="remove">>>\n- Original fact\n>>>',
+      '<<<tool.exec_command>>>\ngh pr merge 567 --merge\n>>>',
+      '<<<tool.apply_patch>>>\nUnauthorized patch\n>>>',
+      '<<<tool.review_action>>>\n{}\n>>>',
+      '<<<tool.deliver_action>>>\n{}\n>>>',
+      '<<<tool.unknown_tool>>>\n{}\n>>>',
+    ]) {
+      const result = await executeToolDirectives({ ...context, actionRecovery, text });
+      assert.match(result[0], /unavailable during Actions recovery diagnosis/);
+      assert.equal(readMemory(workspace), original);
+    }
+    const search = await executeToolDirectives({ ...context, actionRecovery, text: '<<<tool.session_search>>>\n>>>' });
+    assert.deepEqual(search, ["tool.session_search: no matches"]);
+    await executeToolDirectives({ ...context, text: write.replace("Original fact", "Ordinary later fact") });
+    assert.match(readMemory(workspace), /Ordinary later fact/);
+    assert.equal(bus.dispatchJob.mock.callCount(), 0);
+    assert.equal(bus.dispatchRecoveryJob.mock.callCount(), 0);
   });
 
   for (const [name, invoke] of Object.entries(entryPoints)) {

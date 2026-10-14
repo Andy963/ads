@@ -201,6 +201,7 @@ export type WsCommandStateDeps = Pick<
 
 export type WsPromptHandlerDeps = {
   actionRecovery?: import("../../../agents/actionTools.js").ActionRecoveryContext;
+  validateActionRecovery?: () => void;
   request: WsRequestDeps;
   transport: WsTransportDeps;
   observability: Omit<WsObservabilityDeps, "sessionLogger"> & {

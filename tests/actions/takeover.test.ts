@@ -5,8 +5,10 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it, type TestContext } from "node:test";
 
+import { LaneDispatchBus, type LaneDispatchBusOptions } from "../../server/actions/bus.js";
+import { checkActionsRuntimePreflight } from "../../server/actions/runtimePreflight.js";
 import {
   ActionTakeoverCoordinator,
   type RecoveryDispatchInput,
@@ -39,6 +41,37 @@ import { deriveProjectSessionId } from "../../server/web/server/projectSessionId
 import { WebLaneGenerationStore } from "../../server/web/server/sync/laneGeneration.js";
 import { buildWsConnectionIdentity } from "../../server/web/server/ws/connectionIdentity.js";
 import { ACOPILOT_CHAT_SESSION_ID } from "../../server/web/server/ws/session.js";
+import type { AgentSendOptions } from "../../server/agents/types.js";
+import { AsyncLock } from "../../server/utils/asyncLock.js";
+
+function barrier() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function awaitBarrier(promise: Promise<unknown>, label: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), 10_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+class ObservedWorkspaceLock extends AsyncLock {
+  readonly developerQueued = barrier();
+
+  override async runExclusive<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (signal) this.developerQueued.resolve();
+    return super.runExclusive(fn, signal);
+  }
+}
 
 class FakeDurableQueue implements TakeoverQueue {
   readonly enqueued: EnqueuePromptInput[] = [];
@@ -102,6 +135,7 @@ describe("ActionTakeoverCoordinator", { concurrency: false }, () => {
   let evaluations: Array<{ project: string; workspace: string; owner: string }>;
   let reports: Array<{ jobId: string; message: string }>;
   let onEvaluate: (() => Promise<unknown>) | undefined;
+  let cleanups: Array<() => Promise<void>>;
 
   function git(...args: string[]): string {
     const result = spawnSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", ...args], {
@@ -245,6 +279,7 @@ describe("ActionTakeoverCoordinator", { concurrency: false }, () => {
     repoDir = path.join(tmpDir, "repo");
     dbPath = path.join(tmpDir, "state.db");
     coordinators = [];
+    cleanups = [];
     evaluations = [];
     reports = [];
     busy = false;
@@ -275,6 +310,7 @@ describe("ActionTakeoverCoordinator", { concurrency: false }, () => {
   });
 
   afterEach(async () => {
+    for (const cleanup of cleanups.reverse()) await cleanup();
     for (const coordinator of coordinators) coordinator.stop();
     await Promise.resolve();
     resetStateDatabaseForTests();
@@ -849,6 +885,251 @@ describe("ActionTakeoverCoordinator", { concurrency: false }, () => {
     assert.equal(queue.enqueued.length, 3);
     assert.deepEqual(job(), root);
     assert.deepEqual(JSON.parse(takeover().evidence_json), root);
+  });
+
+  describe("takeover admission races", () => {
+    const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+    async function admissionHarness(context: TestContext, preflightOk = true) {
+      // Drive only explicit pumps; wall-clock intervals must not win the barriers.
+      context.mock.timers.enable({ apis: ["setInterval"] });
+      createBlocked();
+      fs.writeFileSync(path.join(repoDir, "untracked.txt"), "Keep unrelated workspace data\n");
+      const preflightEntered = barrier();
+      const releasePreflight = barrier();
+      const releaseLock = barrier();
+      const lock = new ObservedWorkspaceLock();
+      const executions: Promise<void>[] = [];
+      const evaluations: Array<ReturnType<LaneDispatchBus["evaluateQueue"]>> = [];
+      const holders: Promise<void>[] = [];
+      const observed = { sessions: 0, turns: 0, merges: 0, reviews: 0, deliveryAllowed: [] as boolean[] };
+      const orchestrator = {
+        getActiveAgentId: () => "codex",
+        onEvent: () => () => undefined,
+        reset: () => undefined,
+        setDeveloperInstructions: () => undefined,
+        invokeAgent: async (_agentId: string, _input: unknown, options: AgentSendOptions) => {
+          observed.turns++;
+          assert.ok(options.actionTools);
+          const delivery = await options.actionTools.deliver_action();
+          observed.deliveryAllowed.push(delivery.ok);
+          return { response: "Admission fixture stopped before implementation and independent review." };
+        },
+      };
+      const bus = new LaneDispatchBus(db, {
+        captureLaneGeneration: (namespace, key) => generations.getGeneration(namespace, key),
+        getWorkspaceLock: () => lock,
+        sessionManager: {
+          getRuntimeBackend: () => "native",
+          getOrCreate: () => { observed.sessions++; return orchestrator; },
+        } as unknown as NonNullable<LaneDispatchBusOptions["sessionManager"]>,
+        runtimePreflight: async () => {
+          preflightEntered.resolve();
+          await releasePreflight.promise;
+          return { ...checkActionsRuntimePreflight({ backend: "native" }), ok: preflightOk, reason: preflightOk ? undefined : "Runtime discovery failed" };
+        },
+        pullRequestStateReader: () => ({ state: "OPEN", merged: false, baseRefName: "dev", mergedAt: null }),
+        reviewerRunner: async () => {
+          observed.reviews++;
+          return JSON.stringify({ status: "PASS", summary: "Unexpected review", defects: [] });
+        },
+        mergePipeline: () => { observed.merges++; return { success: true }; },
+      });
+      const executeDeveloper = bus.executeDeveloper.bind(bus);
+      context.mock.method(bus, "executeDeveloper", (...args: Parameters<LaneDispatchBus["executeDeveloper"]>) => {
+        const execution = executeDeveloper(...args);
+        executions.push(execution);
+        return execution;
+      });
+      cleanups.push(async () => {
+        bus.stopTakeovers();
+        releasePreflight.resolve();
+        releaseLock.resolve();
+        await Promise.all(holders);
+        await Promise.all(evaluations);
+        await flush();
+        await Promise.all(executions);
+        await flush();
+      });
+      bus.startTakeovers(queue);
+      queue.setStatus(takeoverPromptId(rootId), "running");
+      const childId = bus.dispatchRecoveryJob(recoveryInput()).jobId;
+      // Drain the dispatch report's microtask while the prompt is still running.
+      await flush();
+      queue.setStatus(takeoverPromptId(rootId), "completed");
+      return {
+        bus, childId, lock, observed, preflightEntered, releasePreflight, releaseLock,
+        evaluate: () => {
+          const evaluation = bus.evaluateQueue(projectId, repoDir, owner);
+          evaluations.push(evaluation);
+          return evaluation;
+        },
+        holdWorkspace: async () => {
+          const entered = barrier();
+          holders.push(lock.runExclusive(async () => { entered.resolve(); await releaseLock.promise; }));
+          await awaitBarrier(entered.promise, "workspace holder");
+        },
+        settle: async () => {
+          await flush();
+          await Promise.all(executions);
+          await flush();
+        },
+      };
+    }
+
+    it("does not reconcile a registered parent or linked child from their inherited merged PR", async () => {
+      const blocked = createBlocked();
+      const coordinator = await start();
+      const reads: number[] = [];
+      const bus = new LaneDispatchBus(db, {
+        pullRequestStateReader: ({ prNumber }) => {
+          reads.push(prNumber);
+          return { state: "MERGED", merged: true, baseRefName: "dev", mergedAt: Date.parse("2026-10-15T00:00:00Z") };
+        },
+      });
+      const original = takeover();
+      assert.deepEqual(bus.reconcileJobsWithGitHub(projectId, repoDir), []);
+      assert.deepEqual(job(), blocked);
+      assert.deepEqual(takeover(), original);
+      queue.setStatus(takeoverPromptId(rootId), "running");
+      const childId = coordinator.dispatch(recoveryInput()).jobId;
+      const child = job(childId);
+      const linked = takeover();
+      const legacy = createActionJob(db, {
+        id: "legacy-merged-job", project_id: projectId, issue_title: "Normal reconciliation still works",
+        status: "waiting_merge", auth_user_id: owner, chat_session_id: "main",
+      });
+      updateActionJobStatus(db, legacy.id, "waiting_merge", { pr_number: 902 });
+      assert.deepEqual(bus.reconcileJobsWithGitHub(projectId, repoDir).map((entry) => entry.id), [legacy.id]);
+      assert.ok(reads.includes(902));
+      assert.equal(job(legacy.id).status, "completed");
+      assert.deepEqual(job(), blocked);
+      assert.deepEqual(job(childId), child);
+      assert.deepEqual(takeover(), linked);
+      assert.equal(child.status, "queued");
+      assert.equal(child.pr_number, blocked.pr_number);
+      assert.equal(child.review_verdicts_json, "[]");
+      assert.equal(child.attempts_json, "[]");
+    });
+
+    const mutations: Array<{ name: string; apply: (childId: string) => void; cancelled?: boolean }> = [
+      {
+        name: "Actions reset",
+        apply: () => generations.bumpGeneration("web-actions", buildWsConnectionIdentity({
+          authUserId: owner, sessionId: projectId, chatSessionId: "main",
+        }).historyKey),
+      },
+      {
+        name: "Acopilot reset",
+        apply: () => generations.bumpGeneration("web-acopilot", prompt().logicalHistoryKey),
+      },
+      {
+        name: "child cancellation", cancelled: true,
+        // A peer process changes durable status without this worker's AbortController.
+        apply: (id) => updateActionJobStatus(db, id, "cancelled"),
+      },
+      {
+        name: "project removal",
+        apply: () => db.prepare("DELETE FROM web_projects WHERE project_id = ? AND user_id = ?").run(projectId, owner),
+      },
+      {
+        name: "child owner change",
+        apply: (id) => db.prepare("UPDATE action_jobs SET auth_user_id = ? WHERE id = ?").run("another-owner", id),
+      },
+      {
+        name: "child project change",
+        apply: (id) => db.prepare("UPDATE action_jobs SET project_id = ? WHERE id = ?").run("another-project", id),
+      },
+      {
+        name: "child generation change",
+        apply: (id) => db.prepare("UPDATE action_jobs SET lane_generation = lane_generation + 1 WHERE id = ?").run(id),
+      },
+      {
+        name: "dirty tracked workspace",
+        apply: () => { fs.appendFileSync(path.join(repoDir, "README.md"), "Unrelated pending work\n"); git("add", "README.md"); },
+      },
+      { name: "unrelated branch checkout", apply: () => { git("checkout", "-b", "work/unrelated"); } },
+    ];
+
+    for (const stage of ["runtime preflight", "workspace lock"] as const) {
+      for (const mutation of mutations) {
+        it(`does not start or resurrect recovery after ${mutation.name} during ${stage}`, async (context) => {
+          const harness = await admissionHarness(context);
+          const parent = job();
+          const evidence = takeover().evidence_json;
+          const evaluation = harness.evaluate();
+          await awaitBarrier(harness.preflightEntered.promise, "runtime preflight entry");
+          if (stage === "workspace lock") {
+            await harness.holdWorkspace();
+            harness.releasePreflight.resolve();
+            assert.equal((await evaluation).allowed, true);
+            await awaitBarrier(harness.lock.developerQueued.promise, "Developer queued for workspace lock");
+            assert.equal(harness.observed.turns, 0);
+          }
+          mutation.apply(harness.childId);
+          const mutated = job(harness.childId);
+          const workspace = workspaceSnapshot();
+          harness.releasePreflight.resolve();
+          harness.releaseLock.resolve();
+          const result = await evaluation;
+          await harness.settle();
+          if (stage === "runtime preflight") assert.equal(result.allowed, false);
+          assert.equal(harness.observed.sessions, 0);
+          assert.equal(harness.observed.turns, 0);
+          assert.equal(harness.observed.reviews, 0);
+          assert.equal(harness.observed.merges, 0);
+          const current = job(harness.childId);
+          assert.equal(current.status, mutation.cancelled ? "cancelled" : "queued");
+          assert.equal(current.auth_user_id, mutated.auth_user_id);
+          assert.equal(current.project_id, mutated.project_id);
+          assert.equal(current.lane_generation, mutated.lane_generation);
+          assert.equal(current.review_verdicts_json, "[]");
+          assert.equal(current.attempts_json, "[]");
+          assert.equal(current.rework_count, 0);
+          if (mutation.cancelled) assert.deepEqual(current, mutated);
+          assert.deepEqual(workspaceSnapshot(), workspace);
+          assert.deepEqual(job(), parent);
+          assert.equal(takeover().evidence_json, evidence);
+        });
+      }
+
+      it(`admits an unchanged clean recovery after ${stage} without granting reviewed delivery`, async (context) => {
+        const harness = await admissionHarness(context);
+        const evaluation = harness.evaluate();
+        await awaitBarrier(harness.preflightEntered.promise, "runtime preflight entry");
+        if (stage === "workspace lock") await harness.holdWorkspace();
+        harness.releasePreflight.resolve();
+        assert.equal((await evaluation).allowed, true);
+        if (stage === "workspace lock") {
+          await awaitBarrier(harness.lock.developerQueued.promise, "Developer queued for workspace lock");
+          assert.equal(harness.observed.turns, 0);
+          harness.releaseLock.resolve();
+        }
+        await harness.settle();
+        assert.equal(harness.observed.sessions, 1);
+        assert.equal(harness.observed.turns, 1);
+        assert.deepEqual(harness.observed.deliveryAllowed, [false]);
+        assert.equal(harness.observed.reviews, 0);
+        assert.equal(harness.observed.merges, 0);
+        assert.equal(job().status, "blocked");
+        assert.equal(job(harness.childId).review_verdicts_json, "[]");
+        // The fake Developer deliberately ends without reviewed delivery.
+        assert.equal(job(harness.childId).status, "blocked");
+      });
+    }
+
+    it("does not resurrect a cancelled child when awaited runtime preflight fails", async (context) => {
+      const harness = await admissionHarness(context, false);
+      const evaluation = harness.evaluate();
+      await awaitBarrier(harness.preflightEntered.promise, "runtime preflight entry");
+      updateActionJobStatus(db, harness.childId, "cancelled");
+      const cancelled = job(harness.childId);
+      harness.releasePreflight.resolve();
+      assert.equal((await evaluation).allowed, false);
+      await harness.settle();
+      assert.deepEqual(job(harness.childId), cancelled);
+      assert.equal(harness.observed.turns, 0);
+    });
   });
 
   it("only releases the three-point terminal gate for the exact viable successor candidate", async () => {

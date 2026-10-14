@@ -413,6 +413,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
     }
     const result = await handlePromptMessage({
       actionRecovery,
+      ...(actionRecovery ? { validateActionRecovery: () => { state.prepareTakeoverPrompt?.(entry); } } : {}),
       request: {
         parsed: parsedPrompt,
         requestId: `prompt-queue-${entry.id}`,

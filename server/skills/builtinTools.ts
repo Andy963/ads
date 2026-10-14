@@ -7,6 +7,7 @@ import { updateMemory } from "../memory/memory.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("BuiltinTools");
+const RECOVERY_DIRECTIVES = new Set(["session_search", "dispatch_action_job"]);
 
 export interface ToolDirective {
   name: string;
@@ -50,6 +51,9 @@ export async function executeToolDirectives(args: {
   const results: string[] = [];
   for (const directive of extractToolDirectives(args.text)) {
     try {
+      if (args.actionRecovery && !RECOVERY_DIRECTIVES.has(directive.name)) {
+        throw new Error("Tool is unavailable during Actions recovery diagnosis");
+      }
       if (directive.name === "memory.update") {
         const op = normalizeMemoryOp(directive.attrs.op);
         updateMemory({ workspaceRoot: args.workspaceRoot, op, content: directive.body, key: directive.attrs.key });
