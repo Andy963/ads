@@ -287,6 +287,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
 
       promptRun.ensureActive();
       agentTurnPromise = runAgentTurn(orchestrator, effectiveInput, {
+        actionRecovery: deps.actionRecovery,
         streaming: true,
         signal: controller.signal,
         onExploredEntry: handleExploredEntry,

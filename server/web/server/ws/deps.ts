@@ -101,6 +101,7 @@ export type WsStateDeps = {
   laneGenerationStore?: import("../sync/laneGeneration.js").WebLaneGenerationStore;
   promptQueueStore?: PromptQueueStore;
   isProcessRunning?: (pid: number) => boolean;
+  prepareTakeoverPrompt?: (entry: import("../../../state/promptQueueStore.js").PromptQueueEntry) => import("../../../agents/actionTools.js").ActionRecoveryContext | null;
 };
 
 export type WsSessionDeps = {
@@ -199,6 +200,7 @@ export type WsCommandStateDeps = Pick<
 };
 
 export type WsPromptHandlerDeps = {
+  actionRecovery?: import("../../../agents/actionTools.js").ActionRecoveryContext;
   request: WsRequestDeps;
   transport: WsTransportDeps;
   observability: Omit<WsObservabilityDeps, "sessionLogger"> & {

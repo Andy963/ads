@@ -731,6 +731,7 @@ export class NativeAgentAdapter implements AgentAdapter {
     assertTurnActive();
     const toolExecutor = new NativeToolExecutor({
       actionTools: options.actionTools,
+      actionRecovery: options.actionRecovery,
       workspaceRoot: this.workspaceRoot,
       authUserId: this.authUserId,
       readHistory: this.transcriptStore && this.transcriptId

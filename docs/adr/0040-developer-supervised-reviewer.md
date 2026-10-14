@@ -30,6 +30,7 @@ Accepted
 - PR 已合并但收尾失败时，同一父级复用已记录的 PR，并核实其 head/base 后继续收尾，
   不重复创建 PR，不保存跨父执行的恢复授权。
 - 最终未完成的任务仍进入 blocked，唯一人工处置仍为 dismiss。
+  ADR 0043 补充自动 Acopilot 交接及有界关联修复；不恢复旧执行，也不继承其 PASS。
 
 ## Consequences
 

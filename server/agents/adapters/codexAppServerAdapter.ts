@@ -666,7 +666,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
     let acceptingBuiltinCalls = true;
     const cleanupFns: Array<() => void> = [];
     const builtinTools = createBuiltinToolBridge({
-      context: { workspaceRoot: this.workspaceRoot, authUserId: this.authUserId, signal: options?.signal },
+      context: {
+        workspaceRoot: this.workspaceRoot,
+        authUserId: this.authUserId,
+        actionRecovery: options?.actionRecovery,
+        signal: options?.signal,
+      },
       scope: () => ({
         threadId: this.threadId,
         turnId: state.turnId,

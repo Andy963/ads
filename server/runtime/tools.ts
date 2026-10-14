@@ -4,7 +4,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import { BUILTIN_TOOL_DEFINITIONS, executeBuiltinTool } from "../tools/builtins.js";
-import { executeActionTool, isActionTool, type ActionTools } from "../agents/actionTools.js";
+import { executeActionTool, isActionTool, type ActionRecoveryContext, type ActionTools } from "../agents/actionTools.js";
 import type { MiddlewarePipeline, TurnContext } from "../middleware/index.js";
 import { findSecurityViolation } from "../middleware/builtin/globalRulesMiddleware.js";
 import { getExecAllowlistFromEnv, hasShellSyntax, runCommand, tokenizeCommandLine } from "../utils/commandRunner.js";
@@ -144,6 +144,7 @@ export interface NativeToolExecutionResult {
 
 export interface NativeToolExecutorOptions {
   actionTools?: ActionTools;
+  actionRecovery?: ActionRecoveryContext;
   readHistory?: (after: number, offset: number) => string;
   workspaceRoot: string;
   authUserId?: string;
@@ -367,6 +368,7 @@ function applyOperation(original: string | null, operation: PatchOperation): str
 
 export class NativeToolExecutor {
   private readonly actionTools?: ActionTools;
+  private readonly actionRecovery?: ActionRecoveryContext;
   private readonly readHistory?: (after: number, offset: number) => string;
   private readonly workspaceRoot: string;
   private readonly authUserId?: string;
@@ -387,6 +389,7 @@ export class NativeToolExecutor {
 
   constructor(options: NativeToolExecutorOptions) {
     this.actionTools = options.actionTools;
+    this.actionRecovery = options.actionRecovery;
     this.readHistory = options.readHistory;
     this.workspaceRoot = fs.realpathSync(path.resolve(options.workspaceRoot));
     this.authUserId = options.authUserId;
@@ -457,6 +460,7 @@ export class NativeToolExecutor {
         : executeBuiltinTool(call.function.name, parseArguments(call), {
         workspaceRoot: this.workspaceRoot,
         authUserId: this.authUserId,
+        actionRecovery: this.actionRecovery,
         signal: this.signal,
       })),
     }));

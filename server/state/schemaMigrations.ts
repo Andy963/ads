@@ -5,6 +5,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 import { ensureLanePromptTables } from "./lanePromptStore.js";
 import { sanitizeModelConfigJson } from "./modelConfigTypes.js";
 import { ensurePromptQueueTables } from "./promptQueueStore.js";
+import { ensureActionTakeoverTables } from "./actionTakeoverStore.js";
 import { ensureRoleProfiles } from "./roleProfileStore.js";
 
 export interface StateSchemaMigration {
@@ -1003,6 +1004,11 @@ Core reviewing rules:
     up: (db) => {
       repairLegacyActionsLaneGenerations(db);
     },
+  },
+  {
+    version: 36,
+    description: "Persist blocked Actions handoffs and bounded successor lineage",
+    up: ensureActionTakeoverTables,
   },
 ];
 

@@ -282,6 +282,7 @@ export async function startWebServer(): Promise<void> {
     getWorkspaceLock,
     captureActionsLaneGeneration: (logicalHistoryKey) =>
       laneGenerationStore.getGeneration(WEB_ACTIONS_NAMESPACE, logicalHistoryKey),
+    captureLaneGeneration: (namespace, key) => laneGenerationStore.getGeneration(namespace, key),
     broadcastToActionsLane,
     interruptControllers,
   });
@@ -416,6 +417,7 @@ export async function startWebServer(): Promise<void> {
       syncEventStore,
       laneGenerationStore,
       promptQueueStore,
+      prepareTakeoverPrompt: (entry) => actionBus.prepareTakeoverPrompt(entry),
       isProcessRunning,
     },
     sessions: {
@@ -439,15 +441,17 @@ export async function startWebServer(): Promise<void> {
     });
     promptQueueLifecycle = wss;
     await wss.startPromptQueue();
+    actionBus.startTakeovers({ enqueue: wss.enqueuePrompt, get: (id) => promptQueueStore.getByClientMessageId(id), isOwner: wss.isPromptQueueOwner });
     await listenServer(server, webConfig.port, webConfig.host);
     registerWebShutdown({
       cleanupPidFile,
-      stopPromptQueue: wss.stopPromptQueue,
+      stopPromptQueue: async () => { actionBus.stopTakeovers(); await wss.stopPromptQueue(); },
       scheduler,
       historyMaintenance,
       sessionManagers: [sessionManager, advisorSessionManager],
     });
   } catch (error) {
+    actionBus.stopTakeovers();
     await promptQueueLifecycle?.stopPromptQueue().catch(() => undefined);
     scheduler.stop();
     historyMaintenance.stop();

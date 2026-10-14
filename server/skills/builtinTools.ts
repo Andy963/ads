@@ -1,5 +1,6 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
+import type { ActionRecoveryContext } from "../agents/actionTools.js";
 import { executeBuiltinTool } from "../tools/builtins.js";
 import { getWorkspacesDatabase, resolveWorkspaceId } from "../storage/database.js";
 import { updateMemory } from "../memory/memory.js";
@@ -41,6 +42,7 @@ export async function executeToolDirectives(args: {
   text: string;
   workspaceRoot: string;
   authUserId?: string;
+  actionRecovery?: ActionRecoveryContext;
   signal?: AbortSignal;
   sessionId?: string;
   db?: DatabaseType;
@@ -72,7 +74,12 @@ export async function executeToolDirectives(args: {
           ...(Object.hasOwn(attrs, "acceptance_criteria") ? {
             acceptance_criteria: attrs.acceptance_criteria.split("|").map((criterion) => criterion.trim()).filter(Boolean),
           } : {}),
-        }, { workspaceRoot: args.workspaceRoot, authUserId: args.authUserId, signal: args.signal });
+        }, {
+          workspaceRoot: args.workspaceRoot,
+          authUserId: args.authUserId,
+          actionRecovery: args.actionRecovery,
+          signal: args.signal,
+        });
         results.push(`tool.dispatch_action_job: ok (job_id: ${res.job_id}, status: ${res.status})`);
         continue;
       }
