@@ -410,25 +410,27 @@ function openMobileDrawer(section?: MobileDrawerSection): void {
   mobileContextMenuOpen.value = false;
 }
 
-function toggleMobileDrawer(): void {
-  if (mobileDrawerOpen.value) closeMobileDrawer();
-  else openMobileDrawer();
+function toggleMobileDrawer(isKeyboard?: boolean): void {
+  if (mobileDrawerOpen.value) {
+    if (!isKeyboard) {
+      skipDrawerToggleFocus = true;
+    }
+    closeMobileDrawer();
+  } else {
+    openMobileDrawer();
+  }
 }
 
 const drawerActivation = createTapActivation<boolean>(toggleMobileDrawer, { preserveFocus: true, name: "mobile-drawer" });
 let skipDrawerToggleFocus = false;
 
 function onMobileDrawerTogglePointerUp(event: PointerEvent): void {
-  skipDrawerToggleFocus = true;
   drawerActivation.onPointerUp(event);
   (event.currentTarget as HTMLElement)?.blur();
 }
 
 function onMobileDrawerToggleClick(event: MouseEvent): void {
-  if (event.detail !== 0) {
-    skipDrawerToggleFocus = true;
-  }
-  drawerActivation.onClick(event, true);
+  drawerActivation.onClick(event, event.detail === 0);
   (event.currentTarget as HTMLElement)?.blur();
 }
 
@@ -1628,7 +1630,7 @@ const acopilotConnectionStatus = computed(() => {
         :aria-label="mobileDrawerOpen ? '关闭导航' : '打开导航'"
         :aria-expanded="mobileDrawerOpen"
         data-testid="mobile-drawer-toggle"
-        @pointerdown.stop="drawerActivation.onPointerDown($event, true)"
+        @pointerdown.stop="drawerActivation.onPointerDown($event, false)"
         @pointermove.stop="drawerActivation.onPointerMove"
         @pointercancel.stop="drawerActivation.onPointerCancel"
         @pointerup.stop="onMobileDrawerTogglePointerUp"

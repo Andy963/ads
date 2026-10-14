@@ -159,9 +159,9 @@ describe("mobile navigation behavior", () => {
     wrapper.unmount();
   });
 
-  it("releases focus on mobile drawer button activation (Issue #556)", async () => {
+  it("releases focus on mobile drawer button activation without breaking keyboard focus (Issue #556)", async () => {
     const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false, ModelManager: ModelManagerStub } } });
+    const wrapper = shallowMount(App, { attachTo: document.body, global: { stubs: { LoginGate: false, ModelManager: ModelManagerStub } } });
     await settleUi(wrapper);
     const button = wrapper.get('[data-testid="mobile-drawer-toggle"]');
     const blurSpy = vi.spyOn(button.element as HTMLElement, "blur");
@@ -183,31 +183,47 @@ describe("mobile navigation behavior", () => {
       await nextTick();
     };
 
-    // Open drawer via touch tap
+    // 1. Open drawer via touch tap
     await tapButton();
     expect(blurSpy).toHaveBeenCalled();
     expect(document.activeElement).not.toBe(button.element);
 
-    // Close drawer via touch tap (verifies close-watcher does not refocus the button)
+    // 2. Close drawer via touch tap (verifies close-watcher does not refocus the button)
     blurSpy.mockClear();
     await tapButton();
     expect(blurSpy).toHaveBeenCalled();
     expect(document.activeElement).not.toBe(button.element);
 
-    // Click activation to open and close
-    blurSpy.mockClear();
-    button.element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+    // 3. Test non-activating pointer gesture (drift/drag) does not leave stale state
+    const pointerDownDrift = new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, clientX: 12, clientY: 20 });
+    Object.defineProperties(pointerDownDrift, {
+      pointerType: { value: "touch" }, pointerId: { value: 2 }, isPrimary: { value: true },
+    });
+    button.element.dispatchEvent(pointerDownDrift);
+    const pointerMoveDrift = new MouseEvent("pointermove", { bubbles: true, cancelable: true, button: 0, clientX: 50, clientY: 50 });
+    Object.defineProperties(pointerMoveDrift, {
+      pointerType: { value: "touch" }, pointerId: { value: 2 }, isPrimary: { value: true },
+    });
+    button.element.dispatchEvent(pointerMoveDrift);
+    const pointerUpDrift = new MouseEvent("pointerup", { bubbles: true, cancelable: true, button: 0, clientX: 50, clientY: 50 });
+    Object.defineProperties(pointerUpDrift, {
+      pointerType: { value: "touch" }, pointerId: { value: 2 }, isPrimary: { value: true },
+    });
+    button.element.dispatchEvent(pointerUpDrift);
     await nextTick();
     await nextTick();
-    expect(blurSpy).toHaveBeenCalled();
-    expect(document.activeElement).not.toBe(button.element);
 
-    blurSpy.mockClear();
-    button.element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+    // 4. Open via keyboard and close via keyboard - verifies keyboard focus restoration is preserved
+    button.element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
     await nextTick();
     await nextTick();
-    expect(blurSpy).toHaveBeenCalled();
-    expect(document.activeElement).not.toBe(button.element);
+    expect(wrapper.find(".mobileDrawer").exists()).toBe(true);
+
+    button.element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+    await nextTick();
+    await nextTick();
+    expect(wrapper.find(".mobileDrawer").exists()).toBe(false);
+    expect(document.activeElement).toBe(button.element);
 
     wrapper.unmount();
   });
