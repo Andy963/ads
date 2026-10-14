@@ -121,7 +121,7 @@ describe("atomic transcript cache", () => {
     expect(localStorage.getItem(key)).toBeNull();
   });
 
-  it("keeps partial text readable but never fast-resumes an incomplete cold baseline", () => {
+  it("retains committed sequence cursor when backgrounded mid-turn to attempt incremental resume", () => {
     const { cache, rt } = seed();
     rt.messages.value = [{ ...message, streaming: true }];
     rt.busy.value = true;
@@ -130,6 +130,22 @@ describe("atomic transcript cache", () => {
     createCache().attach(restored, scope);
     expect(restored.messages.value[0]?.content).toBe(message.content);
     expect(restored.messages.value[0]?.streaming).toBe(false);
+    expect(restored.transcriptCursor).toBe(15);
+    expect(restored.transcriptReady).toBe(true);
+  });
+
+  it("never fast-resumes when cursor is 0 and complete is false", () => {
+    const cache = createCache();
+    const rt = createProjectRuntime({ maxLiveActivitySteps: 5 });
+    cache.attach(rt, scope);
+    rt.laneGeneration = 2;
+    rt.transcriptCursor = 0;
+    rt.transcriptReady = false;
+    rt.messages.value = [{ ...message, streaming: true }];
+    rt.busy.value = true;
+    cache.flush();
+    const restored = createProjectRuntime({ maxLiveActivitySteps: 5 });
+    createCache().attach(restored, scope);
     expect(restored.transcriptCursor).toBe(0);
     expect(restored.transcriptReady).toBe(false);
   });

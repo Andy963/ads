@@ -143,9 +143,11 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
   const closeAllConnections = (): void => {
     for (const rt of runtimeByProjectId.values()) {
+     rt.reconnectAttempts = 0;
       closeRuntimeConnection(rt);
     }
     for (const rt of acopilotRuntimeByProjectId.values()) {
+     rt.reconnectAttempts = 0;
       closeRuntimeConnection(rt);
     }
   };
@@ -391,69 +393,49 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       // ignore
     }
 
-    const provisionalWs = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: rt.chatSessionId, resume: resumeOptions(rt) });
-    rt.ws = provisionalWs;
+    const hasEstablishedIdentity =
+      String(project.id ?? "").trim() === "default" ||
+      (Boolean(String(project.sessionId ?? "").trim()) && Boolean(String(project.path ?? "").trim()));
 
-    const identity = await resolveProjectIdentity(project);
-    if (initialRt.ws !== provisionalWs) {
-      // Runtime was closed or superseded while resolving project identity. Avoid reconnecting.
-      return;
-    }
-
-    const identityChanged = Boolean(identity && (identity.sessionId !== project.sessionId || identity.path !== project.path));
-    if (identity && (identity.sessionId !== project.sessionId || identity.path !== project.path)) {
-      const nextProject: ProjectTab = {
-        ...project,
-        id: identity.sessionId,
-        sessionId: identity.sessionId,
-        path: identity.path,
-        updatedAt: Date.now(),
-      };
-      replaceProjectId(project.id, nextProject);
-      pid = nextProject.id;
-      project = nextProject;
-    }
-
-    rt = getRuntimeForMode(mode, pid);
-    if (rt !== initialRt) {
-      rt.syncGeneration += 1;
-      rt.syncInProgress = false;
-    }
-    rt.projectSessionId = String(project.sessionId ?? "").trim();
-    rt.chatSessionId = resolveChatSessionId(project, mode);
-    const finalLaneGenerationScope = laneGenerationScopeKey(rt, rt.chatSessionId);
-    if (rt.laneGenerationScope !== finalLaneGenerationScope) {
-      rt.laneGeneration = readLaneGeneration(rt, rt.chatSessionId) ?? undefined;
-      rt.laneGenerationScope = finalLaneGenerationScope;
-      rt.lastConsumedResetGeneration = undefined;
-      rt.legacySessionResetConsumed = false;
-    }
-    restoreReasoningEffort(rt);
-    restoreModelId(rt);
-
-    let wsInstance = provisionalWs;
-    if (identityChanged || rt !== initialRt) {
-      if (rt !== initialRt && initialRt.ws === provisionalWs) {
-        try {
-          provisionalWs.close();
-        } catch {
-          // ignore
-        }
-        initialRt.ws = null;
+    if (!hasEstablishedIdentity) {
+      const identity = await resolveProjectIdentity(project);
+      if (initialRt.ws !== null) {
+        // Runtime connection changed while resolving project identity. Avoid reconnecting.
+        return;
       }
 
-      clearReconnectTimer(rt);
-      const prevFinal = rt.ws as { close: () => void } | null;
-      rt.ws = null;
-      try {
-        prevFinal?.close();
-      } catch {
-        // ignore
+      if (identity && (identity.sessionId !== project.sessionId || identity.path !== project.path)) {
+        const nextProject: ProjectTab = {
+          ...project,
+          id: identity.sessionId,
+          sessionId: identity.sessionId,
+          path: identity.path,
+          updatedAt: Date.now(),
+        };
+        replaceProjectId(project.id, nextProject);
+        pid = nextProject.id;
+        project = nextProject;
       }
 
-      wsInstance = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: rt.chatSessionId, resume: resumeOptions(rt) });
-      rt.ws = wsInstance;
+      rt = getRuntimeForMode(mode, pid);
+      if (rt !== initialRt) {
+        rt.syncGeneration += 1;
+        rt.syncInProgress = false;
+      }
+      rt.projectSessionId = String(project.sessionId ?? "").trim();
+      rt.chatSessionId = resolveChatSessionId(project, mode);
+      const finalLaneGenerationScope = laneGenerationScopeKey(rt, rt.chatSessionId);
+      if (rt.laneGenerationScope !== finalLaneGenerationScope) {
+        rt.laneGeneration = readLaneGeneration(rt, rt.chatSessionId) ?? undefined;
+        rt.laneGenerationScope = finalLaneGenerationScope;
+        rt.lastConsumedResetGeneration = undefined;
+        rt.legacySessionResetConsumed = false;
+      }
+      restoreReasoningEffort(rt);
+      restoreModelId(rt);
     }
+
+    const wsInstance = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: rt.chatSessionId, resume: resumeOptions(rt) });
 
     rt.ws = wsInstance;
     let syncGeneration = rt.syncGeneration;
@@ -1357,6 +1339,14 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             rt.syncInProgress = true;
             rt.transcriptReady = false;
             sequencer.beginCatchUp();
+         } else if (rec.historyMode === "resume") {
+           // In resume mode, catch-up sequence events are streamed directly over
+           // WebSocket immediately following welcome. No secondary HTTP GET is needed.
+           rt.needsChatSync = false;
+           rt.syncInProgress = false;
+           if (rec.bootstrapHistory !== true) {
+             scheduleIdleBootstrapHistory();
+           }
           } else if (rec.historyMode !== "snapshot" && Number.isFinite(latestSeq) && latestSeq > sequencer.getLastAppliedSeq()) {
             rt.needsChatSync = true;
             sequencer.beginCatchUp();
@@ -1388,6 +1378,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
             rt.transcriptRestored = false;
             rt.transcriptCache?.schedule();
             void flushQueuedPrompts(rt);
+         } else if (rec.historyMode === "resume" && !rt.awaitingBootstrapHistory && !rt.inputLocked.value) {
+           void flushQueuedPrompts(rt);
           }
           // `handleMessage` derives `awaitingBootstrapHistory` from the
           // welcome context and queued prompts, so arm the watchdog only after
@@ -1414,11 +1406,35 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
   const connectAcopilotWs = async (projectId: string = activeProjectId.value): Promise<void> =>
     connectWsInternal(ACOPILOT_LANE_ID, projectId);
 
+  const handleVisibilityChange = (): void => {
+    if (typeof document === "undefined" || document.visibilityState !== "visible") return;
+    for (const rt of [...runtimeByProjectId.values(), ...acopilotRuntimeByProjectId.values()]) {
+      rt.reconnectAttempts = 0;
+      clearReconnectTimer(rt);
+    }
+    if (loggedIn.value) {
+      const pid = activeProjectId.value;
+      const rt = getRuntime(pid);
+      const acopilotRt = getAcopilotRuntime(pid);
+      if (!rt.ws || !rt.connected.value) {
+        void connectWs(pid);
+      }
+      if (!acopilotRt.ws || !acopilotRt.connected.value) {
+        void connectAcopilotWs(pid);
+      }
+    }
+  };
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+  }
+
   return {
     clearReconnectTimer,
     closeRuntimeConnection,
     closeAllConnections,
     connectWs,
     connectAcopilotWs,
+    handleVisibilityChange,
   };
 }
