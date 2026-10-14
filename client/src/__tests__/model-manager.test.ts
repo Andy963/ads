@@ -4,6 +4,7 @@ import { config, flushPromises, mount } from "@vue/test-utils";
 import ModelManager from "../components/ModelManager.vue";
 import ModelServicePicker from "../components/ModelServicePicker.vue";
 import RoleSettings from "../components/RoleSettings.vue";
+import { readSfc } from "./readSfc";
 import {
   DEFAULT_MODEL_CONTEXT_WINDOW,
   DEFAULT_MODEL_OUTPUT_TOKENS,
@@ -183,6 +184,52 @@ describe("provider-first model management", () => {
     await wrapper.get('[data-testid="provider-add-model-p1"]').trigger("click");
     expect(firstRow.attributes("style")).toContain("translateX(0px)");
     expect(wrapper.get('[data-testid="model-manager-dialog"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("keeps standard surface background on modelRowSwipe without container-level destructive red fill", async () => {
+    const css = await readSfc("../components/modelSettings.css", import.meta.url);
+    const rowSwipeRule = css.match(/\.modelRowSwipe\s*\{([^}]+)\}/)?.[1] ?? "";
+    expect(rowSwipeRule).toContain("background: var(--settings-surface)");
+    expect(rowSwipeRule).not.toContain("var(--settings-destructive");
+    expect(rowSwipeRule).not.toContain("#ff3b30");
+
+    const deleteRule = css.match(/\.modelSwipeDelete\s*\{([^}]+)\}/)?.[1] ?? "";
+    expect(deleteRule).toContain("background: var(--settings-destructive, #ff3b30)");
+    expect(deleteRule).toContain("width: 80px");
+  });
+
+  it("does not bleed destructive red background when models enter busy or delete states", async () => {
+    const { api } = fixture();
+    let resolveDelete: () => void = () => {};
+    api.delete.mockImplementationOnce(() => new Promise<void>(resolve => { resolveDelete = resolve; }));
+
+    const wrapper = mount(ModelManager, { props: { api: api as any } });
+    await flushPromises();
+
+    const row = wrapper.get('[data-testid="model-row-m1"]');
+    const rowSwipe = wrapper.get(".modelRowSwipe");
+    expect(rowSwipe.classes()).not.toContain("destructive");
+
+    await swipeModel(row, { clientX: 180, clientY: 40 }, { clientX: 90, clientY: 42 });
+    expect(wrapper.get('[data-testid="model-row-m1"]').attributes("style")).toContain("translateX(-80px)");
+
+    await wrapper.get('[data-testid="model-swipe-delete-m1"]').trigger("click");
+    expect(wrapper.get('[data-testid="settings-delete-confirm"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="model-row-m1"]').attributes("style")).toContain("translateX(0px)");
+
+    const confirmButton = wrapper.get('[data-testid="settings-delete-confirm"]').findAll("button").find(b => b.text().includes("Delete"));
+    expect(confirmButton).toBeDefined();
+    await confirmButton!.trigger("click");
+    await nextTick();
+
+    const surfaceButton = wrapper.get('[data-testid="model-row-m1"]');
+    expect(surfaceButton.attributes("disabled")).toBeDefined();
+    expect(rowSwipe.classes()).not.toContain("revealed");
+    expect(rowSwipe.classes()).not.toContain("destructive");
+
+    resolveDelete();
+    await flushPromises();
     wrapper.unmount();
   });
 });

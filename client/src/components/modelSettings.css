@@ -20,12 +20,16 @@
 .iosSettings .settingsList { border-radius: var(--radius); background: var(--settings-surface); overflow: hidden; min-width: 0; }
 .iosSettings .settingsRow { position: relative; display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; margin: 0; padding: 12px 16px; border: 0; border-radius: 0; background: var(--settings-surface); color: inherit; text-align: left; font-size: 17px; box-sizing: border-box; }
 .iosSettings .settingsRow + .settingsRow::before { content: ""; position: absolute; height: .5px; background: var(--settings-separator); left: 16px; right: 0; top: 0; }
-.iosSettings .modelRowSwipe { position: relative; overflow: hidden; background: var(--settings-destructive, #ff3b30); }
+.iosSettings .modelRowSwipe { position: relative; overflow: hidden; background: var(--settings-surface); }
 .iosSettings .settingsList > .settingsRow + .modelRowSwipe::before,
 .iosSettings .settingsList > .modelRowSwipe + .modelRowSwipe::before,
 .iosSettings .settingsList > .modelRowSwipe + .settingsRow::before { content: ""; position: absolute; z-index: 2; height: .5px; background: var(--settings-separator); left: 16px; right: 0; top: 0; }
-.iosSettings .modelSwipeDelete { position: absolute; inset: 0 0 0 auto; z-index: 0; display: flex; align-items: center; justify-content: center; width: 80px; min-height: 44px; padding: 8px; border: 0; background: var(--settings-destructive, #ff3b30); color: #fff; font-size: 15px; font-weight: 600; }
-.iosSettings .modelRowSurface { position: relative; z-index: 1; touch-action: pan-y; transition: transform .2s ease; }
+.iosSettings .modelSwipeDelete { position: absolute; inset: 0 0 0 auto; z-index: 0; display: flex; align-items: center; justify-content: center; width: 80px; min-height: 44px; padding: 8px; border: 0; background: var(--settings-destructive, #ff3b30); color: #fff; font-size: 15px; font-weight: 600; opacity: 0; visibility: hidden; pointer-events: none; }
+.iosSettings .modelRowSwipe.revealed .modelSwipeDelete,
+.iosSettings .modelRowSwipe.swiping .modelSwipeDelete,
+.iosSettings .modelRowSwipe:has(.swiping) .modelSwipeDelete { opacity: 1; visibility: visible; pointer-events: auto; }
+.iosSettings .modelRowSurface { position: relative; z-index: 1; touch-action: pan-y; transition: transform .2s ease; background: var(--settings-surface); }
+.iosSettings .modelRowSurface:disabled { background: var(--settings-surface); }
 .iosSettings .modelRowSurface.swiping { transition: none; }
 .iosSettings button.settingsRow:active { background: var(--hover-bg); }
 .iosSettings .settingsRowContent { flex: 1; min-width: 0; overflow-wrap: anywhere; }

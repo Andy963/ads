@@ -336,7 +336,7 @@ onBeforeUnmount(() => {
                 <span class="connectionStatus" :class="{ ready: group.provider.isEnabled && group.provider.hasCredential }">{{ !group.provider.isEnabled ? 'Off' : group.provider.hasCredential ? 'Ready' : 'Set up' }}</span>
                 <span class="settingsChevron" aria-hidden="true">›</span>
               </button>
-              <div v-for="model in group.models" :key="model.id" class="modelRowSwipe" :class="{ revealed: modelSwipeOpenId === model.id }">
+              <div v-for="model in group.models" :key="model.id" class="modelRowSwipe" :class="{ revealed: modelSwipeOpenId === model.id, swiping: activeModelSwipeId === model.id }">
                 <button type="button" class="modelSwipeDelete" :disabled="busy" :tabindex="modelSwipeOpenId === model.id ? 0 : -1" :aria-hidden="modelSwipeOpenId !== model.id" :data-testid="'model-swipe-delete-' + model.id" @click.stop="deleteModel(model)">Delete</button>
                 <button type="button" class="settingsRow modelRow modelRowSurface" :class="{ swiping: activeModelSwipeId === model.id }" :disabled="busy" :style="{ transform: `translateX(${modelSwipeOffset(model.id)}px)` }" :data-testid="'model-row-' + model.id"
                   @click="handleModelRowClick(model, $event)" @touchstart.passive="handleModelTouchStart(model, $event)" @touchmove="handleModelTouchMove(model.id, $event)" @touchend="finishModelTouch(model.id, $event)" @touchcancel="finishModelTouch(model.id, $event, true)">
