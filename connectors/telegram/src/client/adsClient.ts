@@ -157,7 +157,7 @@ export class AdsCoreClient {
       } else if (parsed.type === "error" && pending) {
         clearTimeout(pending.timer);
         this.pendingPrompts.delete(resolvedId);
-        pending.reject(new Error(String(parsed.error ?? "ADS Core prompt failed")));
+        pending.reject(new Error(String(parsed.message ?? parsed.error ?? "ADS Core prompt failed")));
       }
 
       if (parsed.type === "welcome") {

@@ -96,6 +96,19 @@ export function findUserById(db: DatabaseType, userId: string): WebUser | null {
   return row ?? null;
 }
 
+export function findPrimaryActiveUser(db: DatabaseType): WebUser | null {
+  const row = db
+    .prepare(
+      `SELECT id, username, created_at, updated_at, last_login_at, disabled_at
+       FROM web_users
+       WHERE disabled_at IS NULL
+       ORDER BY created_at ASC, id ASC
+       LIMIT 1`,
+    )
+    .get() as WebUser | undefined;
+  return row ?? null;
+}
+
 export function countUsers(dbPath?: string): number {
   const db = getDb(dbPath);
   const row = db.prepare("SELECT COUNT(*) AS c FROM web_users").get() as { c: number };

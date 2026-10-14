@@ -72,6 +72,7 @@ We appreciate security researchers who help keep ADS safe:
 
 - **Whitelist Users**: Set `TELEGRAM_ALLOWED_USER_ID` in the connector service environment. Do not put Telegram credentials in the ADS Core environment.
 - **Connector Authentication**: Set the same high-entropy `ADS_CONNECTOR_TOKEN` for Core and the connector. Treat it as a credential with access to the configured Core workspace.
+- **Connector Credential Owner**: Connector prompts use the first active Web Console user's provider credentials by default. Restrict `ADS_CONNECTOR_USER_ID` to an explicit Web user ID only when a different owner is intentionally required.
 - **Limit Directories**: Use `ALLOWED_DIRS`（全端共享）限制 Core 可访问路径
 - **Sandbox Mode**: Use `read-only` or `workspace-write` mode unless absolutely necessary
   - `read-only`: Core can only read files

@@ -11,7 +11,8 @@ Configure Core and the connector separately. Core only needs the connector crede
 ```bash
 # ADS Core environment
 ADS_CONNECTOR_TOKEN="your-shared-core-token"
-ADS_CONNECTOR_USER_ID="connector"
+# Optional: override the Web user whose provider credentials the connector uses.
+# ADS_CONNECTOR_USER_ID="web-user-id"
 
 # Telegram Connector environment
 TELEGRAM_BOT_TOKEN="1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ"
@@ -56,6 +57,7 @@ This connector version handles text messages only. Voice transcription, image an
 - The connector accepts only users listed in `TELEGRAM_ALLOWED_USER_ID` or `TELEGRAM_ALLOWED_USERS`.
 - `TELEGRAM_*` variables and the Telegram API token belong only to the connector environment. ADS Core never reads them.
 - `ADS_CONNECTOR_TOKEN` is a Core credential. Set the same high-entropy value on Core and the connector, and rotate it if exposed.
+- Connector-authenticated prompts use the first active Web Console user's provider credentials by default. Set `ADS_CONNECTOR_USER_ID` to an explicit Web user ID only when an override is required.
 - Core `ALLOWED_DIRS` and sandbox mode limit the workspace access available to Connector-originated prompts.
 
 ## Connector Environment Variables
@@ -68,7 +70,7 @@ This connector version handles text messages only. Voice transcription, image an
 | `ADS_CORE_URL` | `http://127.0.0.1:8787` | ADS Core HTTP address. |
 | `ADS_CORE_WS_URL` | Derived from `ADS_CORE_URL` | ADS Core WebSocket endpoint. |
 | `ADS_CONNECTOR_TOKEN` | Required | Bearer token shared with ADS Core. |
-| `ADS_CONNECTOR_USER_ID` | `connector` | Connector logical user ID, configured by Core. |
+| `ADS_CONNECTOR_USER_ID` | First active Web user | Optional Web user ID whose provider credentials the connector uses. |
 | `TELEGRAM_NOTIFICATION_CHAT_ID` | Unset | Fallback target for `task_terminal` notifications. |
 | `TELEGRAM_MAX_REQUESTS_PER_MINUTE` | `30` | Per-user request limit. |
 | `TELEGRAM_PROXY_URL` | Unset | HTTP(S) proxy URL. |
