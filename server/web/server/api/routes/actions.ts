@@ -37,6 +37,13 @@ const dispatchSchema = z.object({
   }
 });
 
+const interactiveReviewSchema = z.object({
+  projectId: z.string().trim().optional(),
+  repoPath: z.string().trim().optional(),
+  branch: z.string().trim().optional(),
+  prNumber: z.number().int().positive().optional(),
+});
+
 export interface ActionRouteDeps {
   resolveWorkspaceRoot?: (url: URL) => string;
   allowedDirs?: string[];
@@ -263,6 +270,52 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
     }
     const jobs = bus.getJobs(resolved.projectId, resolved.repoPath, auth.userId);
     sendJson(res, 200, jobs.map((job) => toActionJobResponse(job as unknown as Record<string, unknown>)));
+    return true;
+  }
+
+  if (pathname === "/api/actions/review" && req.method === "POST") {
+    let body: unknown = {};
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      sendJson(res, 400, { error: "Invalid JSON body" });
+      return true;
+    }
+    const parsed = interactiveReviewSchema.safeParse(body);
+    if (!parsed.success) {
+      sendJson(res, 400, { error: "Invalid interactive review payload", details: parsed.error.issues });
+      return true;
+    }
+    const resolved = resolveProjectContext(
+      stateDb,
+      auth.userId,
+      parsed.data.projectId,
+      parsed.data.repoPath,
+      url,
+      deps.resolveWorkspaceRoot,
+      allowedDirs,
+    );
+    if (!resolved) {
+      sendJson(res, 400, { error: "Invalid or unauthorized repository for interactive review" });
+      return true;
+    }
+    try {
+      const result = await bus.reviewInteractiveTarget({
+        projectId: resolved.projectId,
+        repoPath: resolved.repoPath,
+        authUserId: auth.userId,
+        branch: parsed.data.branch,
+        prNumber: parsed.data.prNumber,
+      });
+      sendJson(res, 200, { ok: true, authoritative: true, ...result });
+    } catch (error) {
+      const conflict = error instanceof ActionJobReviewConflictError;
+      const incomplete = error instanceof ReviewerIncompleteError;
+      sendJson(res, conflict ? 409 : incomplete ? 422 : 502, {
+        error: error instanceof Error ? error.message : String(error),
+        authoritative: false,
+      });
+    }
     return true;
   }
 

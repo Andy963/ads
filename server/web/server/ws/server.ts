@@ -1741,6 +1741,11 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
               agents: {
                 agentAvailability: agents.agentAvailability,
               },
+              ...(!aliveWs.isConnector
+                && !isAcopilotChatSessionId(lane.chatSessionId)
+                && state.createInteractiveActionTools
+                ? { createInteractiveActionTools: state.createInteractiveActionTools }
+                : {}),
               state: {
                 directoryManager: state.directoryManager,
                 workspaceCache: state.workspaceCache,

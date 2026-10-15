@@ -1,9 +1,12 @@
 import { createActionSupervision } from "./supervision.js";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 
 import { runAgentTurn } from "../agents/turn.js";
+import type { ActionTools } from "../agents/actionTools.js";
 import type { AgentEvent } from "../codex/events.js";
 import type { SessionManager } from "../sessions/sessionManager.js";
 import { buildWsConnectionIdentity } from "../web/server/ws/connectionIdentity.js";
@@ -12,8 +15,6 @@ import {
   buildReviewPrompt,
   runDetachedReview,
 } from "../reviewer/runner.js";
-import { filterDiff, REVIEW_DIFF_MAX_LINES } from "../reviewer/diffFilter.js";
-import { extractRelatedContexts } from "../reviewer/contextExtractor.js";
 import { ReviewerIncompleteError } from "../reviewer/incomplete.js";
 import { runReviewerInspection } from "../reviewer/inspectionRunner.js";
 import { createNativeModelResolver, type NativeModelConfig } from "../runtime/modelResolver.js";
@@ -48,6 +49,10 @@ import { resolveAgentRuntime, type AgentRuntimeBackend } from "../runtime/config
 import { getPrecedingTakeover } from "../state/actionTakeoverStore.js";
 import { ActionTakeoverCoordinator, type RecoveryDispatchInput, type TakeoverQueue } from "./takeover.js";
 import type { PromptQueueEntry } from "../state/promptQueueStore.js";
+import {
+  captureReviewPayload,
+  type ReviewTarget,
+} from "./reviewService.js";
 
 const MAX_REWORK_ATTEMPTS = 3;
 const PR_CREATION_ATTEMPTS = 3;
@@ -392,23 +397,7 @@ const BLOCKED_RESOLUTION_OUTCOMES: Record<BlockedJobResolution, { status: Action
 
 const DEFAULT_REVIEWER_TIMEOUT_MS = 30 * 60 * 1000;
 
-export function validateGitEvidence(input: {
-  diff: string;
-  diffStat: string;
-  baseCommit?: string;
-  headCommit?: string;
-}): string | undefined {
-  const errors: string[] = [];
-  if (!input.diff.trim()) errors.push("git diff returned empty output");
-  if (!input.diffStat.trim()) errors.push("git diff --stat returned empty output");
-  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(input.baseCommit ?? "")) {
-    errors.push(`git rev-parse base returned an invalid commit: ${input.baseCommit ?? "<empty>"}`);
-  }
-  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(input.headCommit ?? "")) {
-    errors.push(`git rev-parse review head returned an invalid commit: ${input.headCommit ?? "<empty>"}`);
-  }
-  return errors.length > 0 ? errors.join("; ") : undefined;
-}
+export { validateGitEvidence } from "./reviewService.js";
 
 export function parseActionJobIssueSnapshot(job: ActionJobRecord): ActionJobIssueSnapshot {
   try {
@@ -468,6 +457,42 @@ function parseCompleteReviewIssueSnapshot(job: ActionJobRecord): ActionJobIssueS
   }
 }
 
+function captureActionJobReviewPayload(
+  job: ActionJobRecord,
+  repoPath: string,
+  testReport?: ReviewPayload["testReport"],
+  requirePinnedEvidence = false,
+): ReviewPayload {
+  const issueSnapshot = requirePinnedEvidence
+    ? parseCompleteReviewIssueSnapshot(job)
+    : parseActionJobIssueSnapshot(job);
+  const fallbackSnapshot = issueSnapshot ?? parseActionJobIssueSnapshot(job);
+  const target: ReviewTarget = {
+    issue: {
+      id: job.issue_id,
+      title: fallbackSnapshot.title,
+      description: fallbackSnapshot.description,
+      acceptanceCriteria: fallbackSnapshot.acceptanceCriteria,
+    },
+    adrs: fallbackSnapshot.adrs,
+    baseRef: requirePinnedEvidence ? job.base_sha ?? "<missing-base>" : resolveImplementationDiffBase(repoPath),
+    headRef: requirePinnedEvidence ? job.head_sha ?? "<missing-head>" : "HEAD",
+    baseCommit: requirePinnedEvidence ? job.base_sha : undefined,
+    headCommit: requirePinnedEvidence ? job.head_sha : undefined,
+  };
+  const payload = captureReviewPayload(target, repoPath, {
+    requirePinnedEvidence,
+    testReport,
+  });
+  if (requirePinnedEvidence && !issueSnapshot) {
+    payload.diffCaptureError = [
+      payload.diffCaptureError,
+      "persisted Issue or ADR snapshot is missing or invalid",
+    ].filter(Boolean).join("; ");
+  }
+  return payload;
+}
+
 export class ActionJobReviewConflictError extends Error {
   constructor(message: string) {
     super(message);
@@ -476,6 +501,75 @@ export class ActionJobReviewConflictError extends Error {
 }
 
 export type IndependentReviewResult = Pick<ReviewVerdict, "status" | "summary" | "defects">;
+
+export type InteractiveReviewTarget = ReviewTarget & {
+  projectId: string;
+  repoPath: string;
+  authUserId: string;
+  branch: string;
+  prNumber: number;
+  prUrl: string;
+};
+
+export type InteractiveReviewTargetRequest = {
+  projectId: string;
+  repoPath: string;
+  authUserId: string;
+  branch?: string;
+  prNumber?: number | null;
+};
+
+type InteractiveGithubMetadata = {
+  pullRequest: {
+    number: number;
+    url: string;
+    state: string;
+    headRefName: string;
+    baseRefName: string;
+    baseRefOid: string;
+    headRefOid: string;
+  };
+  issue: {
+    number: number;
+    title: string;
+    body: string;
+  };
+};
+
+function parseAcceptanceCriteria(body: string): string[] {
+  const section = /(?:^|\n)##+\s+Acceptance Criteria\s*\n([\s\S]*?)(?=\n##+\s|$)/i.exec(body)?.[1] ?? "";
+  return section
+    .split(/\r?\n/)
+    .map((line) => /^\s*(?:[-*]|\d+[.)])\s+(.+?)\s*$/.exec(line)?.[1]?.trim() ?? "")
+    .filter(Boolean);
+}
+
+function parseAdrSnapshot(repoPath: string, baseCommit: string, headCommit: string): Array<{ id: string; title: string; decision: string }> {
+  const changed = spawnSync("git", ["diff", "--name-only", `${baseCommit}...${headCommit}`], {
+    cwd: repoPath,
+    encoding: "utf8",
+  });
+  if (changed.status !== 0) return [];
+  return String(changed.stdout ?? "")
+    .split(/\r?\n/)
+    .map((file) => file.trim())
+    .filter((file) => /^docs\/adr\/[^/]+\.md$/.test(file))
+    .map((file) => {
+      try {
+        const content = readFileSync(path.join(repoPath, file), "utf8");
+        const title = /^#\s+(.+)$/m.exec(content)?.[1]?.trim() ?? path.basename(file, ".md");
+        const decision = /(?:^|\n)##\s+Decision\s*\n([\s\S]*?)(?=\n##\s|$)/i.exec(content)?.[1]?.trim() ?? content.trim();
+        return { id: path.basename(file, ".md"), title, decision };
+      } catch {
+        return null;
+      }
+    })
+    .filter((adr): adr is { id: string; title: string; decision: string } => adr !== null);
+}
+
+function interactiveTargetKey(target: InteractiveReviewTarget): string {
+  return `${target.repoPath}\u0000${target.branch}\u0000${target.prNumber}\u0000${target.baseCommit}\u0000${target.headCommit}`;
+}
 
 function findVerificationReport(
   job: ActionJobRecord,
@@ -507,86 +601,6 @@ function findVerificationReport(
     exitCode,
     summary: output || (exitCode === 0 ? "Tests and checks passed successfully" : "Verification command failed"),
     output,
-  };
-}
-
-function captureReviewPayload(
-  job: ActionJobRecord,
-  repoPath: string,
-  testReport?: ReviewPayload["testReport"],
-  requirePinnedEvidence = false,
-): ReviewPayload {
-  const git = (args: string[]) => spawnSync("git", args, { cwd: repoPath, encoding: "utf8" });
-  const captureErrors: string[] = [];
-  const branchResult = requirePinnedEvidence ? null : git(["branch", "--show-current"]);
-  if (branchResult && branchResult.status !== 0) captureErrors.push("git branch --show-current failed");
-  const baseRef = requirePinnedEvidence ? job.base_sha : resolveImplementationDiffBase(repoPath);
-  const headRef = requirePinnedEvidence ? job.head_sha : "HEAD";
-  if (requirePinnedEvidence && !baseRef) captureErrors.push("job does not have a recorded base commit");
-  if (requirePinnedEvidence && !headRef) captureErrors.push("job does not have a pinned head commit");
-
-  const validCommitHash = (value: string | null): value is string => (
-    typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value)
-  );
-  if (requirePinnedEvidence && baseRef && !validCommitHash(baseRef)) captureErrors.push("job has an invalid recorded base commit");
-  if (requirePinnedEvidence && headRef && !validCommitHash(headRef)) captureErrors.push("job has an invalid pinned head commit");
-  const diffBase = requirePinnedEvidence
-    ? baseRef || "<missing-base>"
-    : baseRef!;
-  const baseCommitResult = !requirePinnedEvidence || validCommitHash(baseRef)
-    ? git(["rev-parse", "--verify", `${diffBase}^{commit}`])
-    : null;
-  const headCommitResult = requirePinnedEvidence
-    ? validCommitHash(headRef) ? git(["rev-parse", "--verify", `${headRef}^{commit}`]) : null
-    : git(["rev-parse", "--verify", "HEAD^{commit}"]);
-  const baseCommit = baseCommitResult?.stdout?.trim();
-  const headCommit = headCommitResult?.stdout?.trim();
-  const separator = requirePinnedEvidence ? ".." : "...";
-  const capturedRange = `${baseCommit || diffBase}${separator}${headCommit || headRef || "<missing-head>"}`;
-  const range = requirePinnedEvidence ? capturedRange : `${diffBase}...HEAD`;
-  if (requirePinnedEvidence && baseCommit && headCommit) {
-    const ancestryResult = git(["merge-base", "--is-ancestor", baseCommit, headCommit]);
-    if (ancestryResult.status !== 0) captureErrors.push("recorded base commit is not an ancestor of the pinned head");
-  }
-  const diffRes = baseCommit && headCommit ? git(["diff", capturedRange]) : null;
-  const diffStatRes = baseCommit && headCommit ? git(["diff", "--stat", capturedRange]) : null;
-
-  if (!baseCommitResult || baseCommitResult.status !== 0) captureErrors.push(`git rev-parse base '${diffBase}' failed`);
-  if (!headCommitResult || headCommitResult.status !== 0) captureErrors.push("git rev-parse review head failed");
-  if (!diffRes || diffRes.status !== 0) captureErrors.push(`git diff exited with status ${String(diffRes?.status ?? "unavailable")}`);
-  if (!diffStatRes || diffStatRes.status !== 0) captureErrors.push(`git diff --stat exited with status ${String(diffStatRes?.status ?? "unavailable")}`);
-
-  const diff = diffRes?.stdout || "";
-  const diffStat = diffStatRes?.stdout || "";
-  const evidenceError = validateGitEvidence({ diff, diffStat, baseCommit, headCommit });
-  const completeIssueSnapshot = requirePinnedEvidence ? parseCompleteReviewIssueSnapshot(job) : null;
-  if (requirePinnedEvidence && !completeIssueSnapshot) {
-    captureErrors.push("persisted Issue or ADR snapshot is missing or invalid");
-  }
-  const issueSnapshot = completeIssueSnapshot ?? parseActionJobIssueSnapshot(job);
-  return {
-    issue: {
-      id: job.issue_id,
-      title: issueSnapshot.title,
-      description: issueSnapshot.description,
-      acceptanceCriteria: issueSnapshot.acceptanceCriteria,
-    },
-    adrs: issueSnapshot.adrs,
-    diffRange: {
-      baseRef: diffBase,
-      headRef: headRef ?? "<missing-head>",
-      baseCommit: baseCommit || undefined,
-      headCommit: headCommit || undefined,
-      range,
-    },
-    diff,
-    diffStat,
-    diffCaptureError: [...captureErrors, evidenceError].filter((error): error is string => Boolean(error)).join("; ") || undefined,
-    testReport,
-    ...(!captureErrors.length && !evidenceError && baseCommit && headCommit
-      && !filterDiff(diff, REVIEW_DIFF_MAX_LINES, diffStat).truncated
-      ? extractRelatedContexts(repoPath, baseCommit, headCommit)
-      : {}),
   };
 }
 
@@ -660,6 +674,12 @@ export interface LaneDispatchBusOptions {
     expectedHead?: string;
   }) => MergeResult;
   pullRequestStateReader?: (options: { cwd: string; prNumber: number }) => PullRequestStateResult;
+  interactiveGithubMetadataReader?: (input: {
+    repoPath: string;
+    branch: string;
+    issueId: number;
+    prNumber?: number | null;
+  }) => InteractiveGithubMetadata;
 }
 
 export class LaneDispatchBus {
@@ -668,6 +688,7 @@ export class LaneDispatchBus {
   private developerProjects = new Set<string>();
   private activeDeliveryHeads = new Map<string, string>();
   private independentReviewerJobs = new Set<string>();
+  private interactiveReviewerTargets = new Set<string>();
   private readonly takeovers: ActionTakeoverCoordinator;
 
   constructor(
@@ -1539,6 +1560,278 @@ export class LaneDispatchBus {
     });
   }
 
+  private readInteractiveGithubMetadata(input: {
+    repoPath: string;
+    branch: string;
+    issueId: number;
+    prNumber?: number | null;
+  }): InteractiveGithubMetadata {
+    if (this.options.interactiveGithubMetadataReader) {
+      return this.options.interactiveGithubMetadataReader(input);
+    }
+
+    const prFields = "number,url,state,headRefName,baseRefName,baseRefOid,headRefOid";
+    const prCommand = input.prNumber
+      ? ["pr", "view", String(input.prNumber), "--json", prFields]
+      : ["pr", "list", "--head", input.branch, "--state", "open", "--limit", "2", "--json", prFields];
+    const prResult = spawnSync("gh", prCommand, { cwd: input.repoPath, encoding: "utf8" });
+    if (prResult.status !== 0) {
+      throw new Error(`Unable to resolve the GitHub pull request: ${prResult.stderr?.trim() || "gh command failed"}`);
+    }
+    let prRecords: Array<Record<string, unknown>>;
+    try {
+      const parsed = JSON.parse(prResult.stdout || "[]") as unknown;
+      prRecords = Array.isArray(parsed) ? parsed as Array<Record<string, unknown>> : [parsed as Record<string, unknown>];
+    } catch (error) {
+      throw new Error(`GitHub pull request metadata is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (prRecords.length !== 1) {
+      throw new Error("Interactive review requires exactly one matching open pull request.");
+    }
+    const pr = prRecords[0]!;
+    const pullRequest = {
+      number: Number(pr.number),
+      url: String(pr.url ?? "").trim(),
+      state: String(pr.state ?? "").trim(),
+      headRefName: String(pr.headRefName ?? ""),
+      baseRefName: String(pr.baseRefName ?? ""),
+      baseRefOid: String(pr.baseRefOid ?? ""),
+      headRefOid: String(pr.headRefOid ?? ""),
+    };
+    if (!Number.isSafeInteger(pullRequest.number) || pullRequest.number < 1 || !pullRequest.url) {
+      throw new Error("The matching pull request is missing its number or URL.");
+    }
+
+    const issueResult = spawnSync("gh", ["issue", "view", String(input.issueId), "--json", "number,title,body,state"], {
+      cwd: input.repoPath,
+      encoding: "utf8",
+    });
+    if (issueResult.status !== 0) {
+      throw new Error(`Unable to resolve GitHub Issue #${input.issueId}: ${issueResult.stderr?.trim() || "gh command failed"}`);
+    }
+    let issue: Record<string, unknown>;
+    try {
+      issue = JSON.parse(issueResult.stdout || "{}") as Record<string, unknown>;
+    } catch (error) {
+      throw new Error(`GitHub Issue metadata is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return {
+      pullRequest,
+      issue: {
+        number: Number(issue.number),
+        title: String(issue.title ?? "").trim(),
+        body: String(issue.body ?? "").trim(),
+      },
+    };
+  }
+
+  private resolveInteractiveTarget(input: InteractiveReviewTargetRequest): InteractiveReviewTarget {
+    const repoPath = path.resolve(String(input.repoPath ?? "").trim());
+    const authUserId = String(input.authUserId ?? "").trim();
+    const projectId = resolveCanonicalProjectId(input.projectId, repoPath);
+    if (!repoPath || !authUserId || !projectId) {
+      throw new Error("Interactive review requires an authenticated project workspace.");
+    }
+
+    const identity = resolveActionsLaneIdentity(this.db, {
+      projectId,
+      repoPath,
+      authUserId,
+    });
+    if (!identity || identity.authUserId !== authUserId || identity.projectId !== projectId) {
+      throw new Error("Interactive review is limited to the authenticated Actions project workspace.");
+    }
+
+    const git = (args: string[], label: string): string => {
+      const result = spawnSync("git", args, { cwd: repoPath, encoding: "utf8" });
+      if (result.status !== 0) {
+        throw new Error(`${label}: ${result.stderr?.trim() || "command failed"}`);
+      }
+      return String(result.stdout ?? "").trim();
+    };
+
+    const branch = git(["branch", "--show-current"], "Unable to determine the current feature branch");
+    if (input.branch && input.branch !== branch) {
+      throw new Error(`Requested branch '${input.branch}' does not match the current branch '${branch}'.`);
+    }
+    const issueMatch = /^codex\/issue-(\d+)$/.exec(branch);
+    if (!issueMatch) {
+      throw new Error("Interactive review requires the assigned codex/issue-<id> feature branch.");
+    }
+    const issueId = Number(issueMatch[1]);
+    if (!Number.isSafeInteger(issueId) || issueId < 1) {
+      throw new Error("The current feature branch does not identify a valid GitHub Issue.");
+    }
+    if (git(["status", "--porcelain", "-uno"], "Unable to inspect tracked workspace state")) {
+      throw new Error("Commit tracked changes before requesting interactive review or delivery.");
+    }
+
+    const baseRef = resolveImplementationDiffBase(repoPath);
+    const baseCommit = git(["rev-parse", "--verify", `${baseRef}^{commit}`], `Unable to resolve the ${ACTIONS_BASE_BRANCH} base branch`);
+    const headCommit = git(["rev-parse", "--verify", "HEAD^{commit}"], "Unable to resolve the current feature commit");
+    if (spawnSync("git", ["merge-base", "--is-ancestor", baseCommit, headCommit], { cwd: repoPath }).status !== 0) {
+      throw new Error(`The feature branch must descend from the current '${ACTIONS_BASE_BRANCH}' base.`);
+    }
+
+    const metadata = this.readInteractiveGithubMetadata({
+      repoPath,
+      branch,
+      issueId,
+      prNumber: input.prNumber,
+    });
+    const pr = metadata.pullRequest;
+    if (pr.state.toUpperCase() !== "OPEN"
+      || pr.headRefName !== branch
+      || pr.baseRefName !== ACTIONS_BASE_BRANCH
+      || pr.headRefOid !== headCommit
+      || pr.baseRefOid !== baseCommit) {
+      throw new Error("The pull request does not match the current feature branch, base, or exact head commit.");
+    }
+
+    const issue = metadata.issue;
+    const issueTitle = issue.title;
+    const issueDescription = issue.body;
+    const acceptanceCriteria = parseAcceptanceCriteria(issueDescription);
+    if (issue.number !== issueId || !issueTitle || !issueDescription || acceptanceCriteria.length === 0) {
+      throw new Error(`GitHub Issue #${issueId} does not provide a complete review specification.`);
+    }
+
+    return {
+      projectId,
+      repoPath,
+      authUserId,
+      branch,
+      prNumber: pr.number,
+      prUrl: pr.url,
+      issue: {
+        id: issueId,
+        title: issueTitle,
+        description: issueDescription,
+        acceptanceCriteria,
+      },
+      adrs: parseAdrSnapshot(repoPath, baseCommit, headCommit),
+      baseRef,
+      headRef: "HEAD",
+      baseCommit,
+      headCommit,
+    };
+  }
+
+  public resolveInteractiveReviewTarget(input: InteractiveReviewTargetRequest): InteractiveReviewTarget {
+    return this.resolveInteractiveTarget(input);
+  }
+
+  private runInteractiveVerification(repoPath: string): ReviewPayload["testReport"] {
+    const command = String(this.options.testCommand ?? "git status").trim();
+    const parts = command.split(/\s+/).filter(Boolean);
+    if (parts.length === 0) throw new Error("Interactive review verification command is empty.");
+    const result = spawnSync(parts[0]!, parts.slice(1), { cwd: repoPath, encoding: "utf8" });
+    const output = [result.stdout, result.stderr]
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean)
+      .join("\n")
+      .slice(-20_000);
+    const exitCode = result.status ?? 1;
+    const report = {
+      command,
+      exitCode,
+      summary: output || (exitCode === 0 ? "Tests and checks passed successfully" : "Verification command failed"),
+      output,
+    };
+    if (exitCode !== 0) throw new Error(`Verification failed: ${report.summary}`);
+    return report;
+  }
+
+  private async executeInteractiveReview(
+    target: InteractiveReviewTarget,
+    signal: AbortSignal,
+  ): Promise<ReviewVerdict> {
+    const key = `${target.authUserId}\u0000${interactiveTargetKey(target)}`;
+    if (this.interactiveReviewerTargets.has(key)) {
+      throw new ActionJobReviewConflictError("An interactive review is already running for this target.");
+    }
+    this.interactiveReviewerTargets.add(key);
+    try {
+      signal.throwIfAborted();
+      const testReport = this.runInteractiveVerification(target.repoPath);
+      const payload = captureReviewPayload(target, target.repoPath, { testReport });
+      return await this.executeReviewer(
+        payload,
+        target.repoPath,
+        undefined,
+        undefined,
+        target.projectId,
+        undefined,
+        signal,
+        target.authUserId,
+      );
+    } finally {
+      this.interactiveReviewerTargets.delete(key);
+    }
+  }
+
+  public async reviewInteractiveTarget(input: InteractiveReviewTargetRequest): Promise<IndependentReviewResult> {
+    const target = this.resolveInteractiveTarget(input);
+    const verdict = await this.executeInteractiveReview(target, new AbortController().signal);
+    return {
+      status: verdict.status,
+      summary: verdict.summary,
+      defects: verdict.defects.map((defect) => ({
+        file: defect.file,
+        ...(defect.line === undefined ? {} : { line: defect.line }),
+        severity: defect.severity,
+        description: defect.description,
+      })),
+    };
+  }
+
+  public createInteractiveActionTools(
+    input: InteractiveReviewTargetRequest & { signal: AbortSignal },
+  ): (ActionTools & { dispose: () => Promise<void> }) | undefined {
+    try {
+      this.resolveInteractiveTarget(input);
+    } catch {
+      // Interactive tools are only advertised after the server can verify the
+      // current authenticated workspace, feature branch, Issue, and PR.
+      return undefined;
+    }
+    let reviewedTarget: InteractiveReviewTarget | undefined;
+    const supervision = createActionSupervision({
+      signal: input.signal,
+      snapshot: () => {
+        const target = this.resolveInteractiveTarget(input);
+        reviewedTarget = target;
+        return interactiveTargetKey(target);
+      },
+      review: async (signal) => {
+        const target = this.resolveInteractiveTarget(input);
+        const verdict = await this.executeInteractiveReview(target, signal);
+        reviewedTarget = target;
+        return verdict;
+      },
+      assertDeliveryTarget: (approved) => {
+        const target = this.resolveInteractiveTarget(input);
+        if (interactiveTargetKey(target) !== approved) {
+          throw new Error("Delivery target changed. Call review_action again.");
+        }
+        reviewedTarget = target;
+      },
+      deliver: () => {
+        if (!reviewedTarget) return { ok: false, error: "Delivery requires PASS for the current review target." };
+        const mergeResult = (this.options.mergePipeline ?? mergeAndCleanupPipeline)({
+          cwd: reviewedTarget.repoPath,
+          prNumber: reviewedTarget.prNumber,
+          issueId: reviewedTarget.issue.id,
+          branch: reviewedTarget.branch,
+          baseBranch: ACTIONS_BASE_BRANCH,
+          expectedHead: reviewedTarget.headCommit ?? undefined,
+        });
+        return { ok: mergeResult.success, ...(mergeResult.error ? { error: mergeResult.error } : {}), ...mergeResult };
+      },
+    });
+    return supervision;
+  }
+
   public async executeReviewer(
     payload: ReviewPayload,
     repoPath: string,
@@ -1547,6 +1840,7 @@ export class LaneDispatchBus {
     _projectId?: string,
     jobId?: string,
     signal?: AbortSignal,
+    ownerOverride?: string,
   ): Promise<ReviewVerdict> {
     if (payload.diffCaptureError) {
       throw new ReviewerIncompleteError("Reviewer evidence capture failed; no authoritative verdict is available.");
@@ -1569,7 +1863,7 @@ export class LaneDispatchBus {
       }
       const commit = payload.diffRange?.headCommit;
       if (!commit) throw new Error("Reviewer inspection requires captured head commit evidence.");
-      const owner = (jobId ? getActionJobById(this.db, jobId)?.auth_user_id : null) ?? "";
+      const owner = ownerOverride ?? (jobId ? getActionJobById(this.db, jobId)?.auth_user_id : null) ?? "";
       const model = this.options.reviewerModelResolver
         ? this.options.reviewerModelResolver(profile.model_id, owner)
         : createNativeModelResolver({ owner, stateDbPath: this.db.name, requireOwnerCredentials: true }).resolve(profile.model_id);
@@ -1615,7 +1909,7 @@ export class LaneDispatchBus {
 
       const identity = this.laneIdentityForJob(current, repoPath);
       const history = this.options.historyStore?.get?.(identity.historyKey) ?? [];
-      const payload = captureReviewPayload(
+      const payload = captureActionJobReviewPayload(
         current,
         repoPath,
         findVerificationReport(current, history),
@@ -1760,7 +2054,7 @@ export class LaneDispatchBus {
       current_step: "Detached clean-room reviewer auditing code changes against specifications",
     });
 
-    const payload = captureReviewPayload(job, repoPath, testReport);
+    const payload = captureActionJobReviewPayload(job, repoPath, testReport);
 
     const reviewerProfile = (job.reviewer_profile_ids_json ? JSON.parse(job.reviewer_profile_ids_json)[0] : null)
       ?? getDefaultRoleProfile(this.db, "reviewer");
