@@ -187,6 +187,7 @@ describe("mobile navigation behavior", () => {
     await tapButton();
     expect(blurSpy).toHaveBeenCalled();
     expect(document.activeElement).not.toBe(button.element);
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="mobile-drawer"]').element);
 
     // 2. Close drawer via touch tap (verifies close-watcher does not refocus the button)
     blurSpy.mockClear();
@@ -218,6 +219,7 @@ describe("mobile navigation behavior", () => {
     await nextTick();
     await nextTick();
     expect(wrapper.find(".mobileDrawer").exists()).toBe(true);
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="mobile-drawer-section-projects"]').element);
 
     button.element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
     await nextTick();
@@ -226,6 +228,31 @@ describe("mobile navigation behavior", () => {
     expect(document.activeElement).toBe(button.element);
 
     wrapper.unmount();
+  });
+
+  it("releases pointer focus on drawer navigation without blurring keyboard activation", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { attachTo: document.body, global: { stubs: { LoginGate: false, ModelManager: ModelManagerStub } } });
+    try {
+      await settleUi(wrapper);
+      await wrapper.get('[data-testid="mobile-drawer-toggle"]').trigger("click");
+      await settleUi(wrapper);
+      const projects = wrapper.get('[data-testid="mobile-drawer-section-projects"]');
+      expect(document.activeElement).toBe(projects.element);
+
+      const click = new MouseEvent("click", { bubbles: true, detail: 1 });
+      Object.defineProperty(click, "_vts", { value: Date.now() + 1, writable: true });
+      projects.element.dispatchEvent(click);
+      await nextTick();
+      expect(document.activeElement).toBe(wrapper.get('[data-testid="mobile-drawer"]').element);
+      expect(wrapper.find(".mobileDrawer").exists()).toBe(true);
+
+      (projects.element as HTMLElement).focus();
+      await projects.trigger("click");
+      expect(document.activeElement).toBe(projects.element);
+    } finally {
+      wrapper.unmount();
+    }
   });
 
   it("switches the main area and contextual actions across mobile modules", async () => {
@@ -956,6 +983,7 @@ describe("mobile navigation behavior", () => {
       expect((drawer.element as HTMLElement).style.transform).toBe("");
       expect((drawer.element as HTMLElement).style.transition).toBe("");
       expect(wrapper.get('[data-testid="mobile-drawer-toggle"]').attributes("aria-expanded")).toBe("true");
+      expect(document.activeElement).not.toBe(wrapper.get('[data-testid="mobile-drawer-section-projects"]').element);
       const backdrop = wrapper.get('[data-testid="mobile-drawer-backdrop"]');
       expect((backdrop.element as HTMLElement).style.opacity).toBe("");
 

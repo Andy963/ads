@@ -400,9 +400,10 @@ function closeMobileDrawer(): void {
   mobileContextMenuOpen.value = false;
 }
 
-function openMobileDrawer(section?: MobileDrawerSection): void {
+function openMobileDrawer(section?: MobileDrawerSection, focusNavigation = false): void {
   if (!isMobile.value) return;
   cancelDrawerGesture();
+  focusDrawerNavigationOnOpen = focusNavigation;
   if (section) {
     mobileDrawerSection.value = section;
   }
@@ -417,12 +418,13 @@ function toggleMobileDrawer(isKeyboard?: boolean): void {
     }
     closeMobileDrawer();
   } else {
-    openMobileDrawer();
+    openMobileDrawer(undefined, Boolean(isKeyboard));
   }
 }
 
 const drawerActivation = createTapActivation<boolean>(toggleMobileDrawer, { preserveFocus: true, name: "mobile-drawer" });
 let skipDrawerToggleFocus = false;
+let focusDrawerNavigationOnOpen = false;
 
 function onMobileDrawerTogglePointerUp(event: PointerEvent): void {
   drawerActivation.onPointerUp(event);
@@ -432,6 +434,14 @@ function onMobileDrawerTogglePointerUp(event: PointerEvent): void {
 function onMobileDrawerToggleClick(event: MouseEvent): void {
   drawerActivation.onClick(event, event.detail === 0);
   (event.currentTarget as HTMLElement)?.blur();
+}
+
+function onMobileDrawerNavigationClick(event: MouseEvent): void {
+  if (event.detail === 0 || !(event.target instanceof Element)) return;
+  const item = event.target.closest<HTMLElement>(".mobileDrawerNavItem");
+  if (!item) return;
+  item.blur();
+  if (mobileDrawerOpen.value) mobileDrawerRef.value?.focus({ preventScroll: true });
 }
 
 function selectWorkspaceTab(tab: ChatLane): void {
@@ -1212,10 +1222,11 @@ function onDrawerKeydown(ev: KeyboardEvent): void {
   const first = focusable[0];
   const last = focusable[focusable.length - 1];
   const active = document.activeElement;
-  if (ev.shiftKey && (active === first || !drawer.contains(active))) {
+  const outsideItems = active === drawer || !drawer.contains(active);
+  if (ev.shiftKey && (active === first || outsideItems)) {
     ev.preventDefault();
     last.focus();
-  } else if (!ev.shiftKey && (active === last || !drawer.contains(active))) {
+  } else if (!ev.shiftKey && (active === last || outsideItems)) {
     ev.preventDefault();
     first.focus();
   }
@@ -1225,11 +1236,16 @@ watch(mobileDrawerOpen, async (open) => {
   if (typeof document === "undefined") return;
   document.body.style.overflow = open && isMobile.value ? "hidden" : "";
   if (!isMobile.value) return;
+  const focusNavigation = focusDrawerNavigationOnOpen;
+  focusDrawerNavigationOnOpen = false;
   await nextTick();
+  if (mobileDrawerOpen.value !== open || !isMobile.value) return;
   if (open) {
-    mobileDrawerRef.value
-      ?.querySelector<HTMLElement>('[data-testid="mobile-drawer-section-projects"]')
-      ?.focus();
+    // Keep focus inside the drawer without giving touch opens a navigation ring.
+    const target = focusNavigation
+      ? mobileDrawerRef.value?.querySelector<HTMLElement>('[data-testid="mobile-drawer-section-projects"]')
+      : mobileDrawerRef.value;
+    target?.focus({ preventScroll: true });
   } else if (!skipDrawerToggleFocus) {
     mobileDrawerToggleRef.value?.focus();
   } else {
@@ -1748,12 +1764,13 @@ const acopilotConnectionStatus = computed(() => {
           class="left"
           :class="{ mobileDrawer: isMobile }"
           :style="drawerGestureStyle"
+          :tabindex="isMobile ? -1 : undefined"
           data-testid="mobile-drawer"
           @touchstart.passive="onDrawerSwipeTouchStart"
           @touchmove.passive="onDrawerSwipeTouchMove"
           @keydown="onDrawerKeydown"
         >
-        <nav v-if="isMobile" class="mobileDrawerNav" aria-label="导航模块">
+        <nav v-if="isMobile" class="mobileDrawerNav" aria-label="导航模块" @click="onMobileDrawerNavigationClick">
           <button
             type="button"
             class="mobileDrawerNavItem"

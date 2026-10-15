@@ -1026,6 +1026,9 @@
     box-shadow: 18px 0 42px rgba(15, 23, 42, 0.16);
     overflow: hidden;
   }
+  .mobileDrawer:focus {
+    outline: none;
+  }
   .mobileDrawerNav {
     display: flex;
     flex-direction: column;
@@ -1198,7 +1201,7 @@
     overflow-y: auto;
     overflow-x: hidden;
     border-radius: 13px;
-    padding: 8px 8px 24px;
+    padding: 8px 0 24px;
     overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
   }
