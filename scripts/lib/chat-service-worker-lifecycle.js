@@ -41,4 +41,3 @@ export async function waitForChatServiceWorkerLifecycle(page) {
   if (state.failures.length) throw new Error(`Service worker initialization failed: ${JSON.stringify(state.failures)}`);
   return state;
 }
-
