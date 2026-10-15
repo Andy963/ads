@@ -1,6 +1,6 @@
 import { createActionSupervision } from "./supervision.js";
-import { randomBytes } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
@@ -396,6 +396,7 @@ const BLOCKED_RESOLUTION_OUTCOMES: Record<BlockedJobResolution, { status: Action
 };
 
 const DEFAULT_REVIEWER_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_INTERACTIVE_VERIFICATION_TIMEOUT_MS = 30 * 60 * 1000;
 
 export { validateGitEvidence } from "./reviewService.js";
 
@@ -568,7 +569,21 @@ function parseAdrSnapshot(repoPath: string, baseCommit: string, headCommit: stri
 }
 
 function interactiveTargetKey(target: InteractiveReviewTarget): string {
-  return `${target.repoPath}\u0000${target.branch}\u0000${target.prNumber}\u0000${target.baseCommit}\u0000${target.headCommit}`;
+  return createHash("sha256")
+    .update(JSON.stringify({
+      repoPath: target.repoPath,
+      authUserId: target.authUserId,
+      branch: target.branch,
+      prNumber: target.prNumber,
+      prUrl: target.prUrl,
+      issue: target.issue,
+      adrs: target.adrs ?? [],
+      baseRef: target.baseRef,
+      headRef: target.headRef,
+      baseCommit: target.baseCommit,
+      headCommit: target.headCommit,
+    }))
+    .digest("hex");
 }
 
 function findVerificationReport(
@@ -643,6 +658,7 @@ export interface LaneDispatchBusOptions {
   developerRunner?: DeveloperRunner;
   reviewerRunner?: ReviewerRunner;
   testCommand?: string;
+  interactiveVerificationTimeoutMs?: number;
   reviewerTimeoutMs?: number;
   reviewerToolTurnBudget?: number;
   reviewerComplete?: typeof completeNativeChat;
@@ -1721,25 +1737,72 @@ export class LaneDispatchBus {
     return this.resolveInteractiveTarget(input);
   }
 
-  private runInteractiveVerification(repoPath: string): ReviewPayload["testReport"] {
-    const command = String(this.options.testCommand ?? "git status").trim();
+  private async runInteractiveVerification(
+    repoPath: string,
+    signal: AbortSignal,
+  ): Promise<ReviewPayload["testReport"]> {
+    const command = String(this.options.testCommand ?? "npm test").trim();
     const parts = command.split(/\s+/).filter(Boolean);
     if (parts.length === 0) throw new Error("Interactive review verification command is empty.");
-    const result = spawnSync(parts[0]!, parts.slice(1), { cwd: repoPath, encoding: "utf8" });
-    const output = [result.stdout, result.stderr]
-      .map((value) => String(value ?? "").trim())
-      .filter(Boolean)
-      .join("\n")
-      .slice(-20_000);
-    const exitCode = result.status ?? 1;
-    const report = {
-      command,
-      exitCode,
-      summary: output || (exitCode === 0 ? "Tests and checks passed successfully" : "Verification command failed"),
-      output,
-    };
-    if (exitCode !== 0) throw new Error(`Verification failed: ${report.summary}`);
-    return report;
+    signal.throwIfAborted();
+
+    const timeoutMs = Math.max(
+      1,
+      Math.floor(this.options.interactiveVerificationTimeoutMs ?? DEFAULT_INTERACTIVE_VERIFICATION_TIMEOUT_MS),
+    );
+    return await new Promise<ReviewPayload["testReport"]>((resolve, reject) => {
+      const child = spawn(parts[0]!, parts.slice(1), {
+        cwd: repoPath,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let output = "";
+      let settled = false;
+      const timeout = setTimeout(() => {
+        terminate();
+        finish(new Error(`Verification command timed out after ${timeoutMs}ms.`));
+      }, timeoutMs);
+      const appendOutput = (chunk: Buffer | string): void => {
+        output = `${output}${String(chunk)}`.slice(-20_000);
+      };
+      const terminate = (): void => {
+        if (child.exitCode === null) child.kill("SIGTERM");
+        setTimeout(() => {
+          if (child.exitCode === null) child.kill("SIGKILL");
+        }, 1_000).unref();
+      };
+      const finish = (error?: Error, report?: ReviewPayload["testReport"]): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        signal.removeEventListener("abort", onAbort);
+        if (error) reject(error);
+        else resolve(report);
+      };
+      const onAbort = (): void => {
+        terminate();
+        finish(signal.reason instanceof Error ? signal.reason : new Error("Verification command aborted."));
+      };
+
+      signal.addEventListener("abort", onAbort, { once: true });
+      child.stdout.on("data", appendOutput);
+      child.stderr.on("data", appendOutput);
+      child.once("error", (error) => finish(error));
+      child.once("close", (code) => {
+        const exitCode = code ?? 1;
+        const trimmedOutput = output.trim();
+        const report = {
+          command,
+          exitCode,
+          summary: trimmedOutput || (exitCode === 0 ? "Tests and checks passed successfully" : "Verification command failed"),
+          output: trimmedOutput,
+        };
+        if (exitCode !== 0) {
+          finish(new Error(`Verification failed: ${report.summary}`));
+          return;
+        }
+        finish(undefined, report);
+      });
+    });
   }
 
   private async executeInteractiveReview(
@@ -1753,8 +1816,15 @@ export class LaneDispatchBus {
     this.interactiveReviewerTargets.add(key);
     try {
       signal.throwIfAborted();
-      const testReport = this.runInteractiveVerification(target.repoPath);
-      const payload = captureReviewPayload(target, target.repoPath, { testReport });
+      const testReport = await this.runInteractiveVerification(target.repoPath, signal);
+      const payload = captureReviewPayload(target, target.repoPath, {
+        requirePinnedEvidence: true,
+        testReport,
+      });
+      const evidence = payload.diffRange;
+      if (!evidence || evidence.baseCommit !== target.baseCommit || evidence.headCommit !== target.headCommit) {
+        throw new ReviewerIncompleteError("Reviewer evidence did not remain pinned to the interactive review target.");
+      }
       return await this.executeReviewer(
         payload,
         target.repoPath,

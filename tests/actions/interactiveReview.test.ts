@@ -99,10 +99,16 @@ describe("interactive Actions review supervision", () => {
       expectedHead?: string;
     }) => void,
     reviewStatus: "PASS" | "REJECT" = "PASS",
+    options: {
+      testCommand?: string;
+      interactiveVerificationTimeoutMs?: number;
+      onReviewPrompt?: (prompt: string) => void;
+    } = {},
   ): LaneDispatchBus {
     const current = getTarget;
     return new LaneDispatchBus(getStateDatabase(), {
-      testCommand: "git status",
+      testCommand: options.testCommand ?? "git status",
+      interactiveVerificationTimeoutMs: options.interactiveVerificationTimeoutMs,
       interactiveGithubMetadataReader: () => {
         const value = current();
         return {
@@ -122,11 +128,14 @@ describe("interactive Actions review supervision", () => {
           },
         };
       },
-      reviewerRunner: async () => JSON.stringify({
-        status: reviewStatus,
-        summary: reviewStatus === "PASS" ? "Exact target reviewed" : "Defect found",
-        defects: reviewStatus === "PASS" ? [] : [{ file: "change.txt", severity: "blocker", description: "Fixture defect" }],
-      }),
+      reviewerRunner: async (prompt) => {
+        options.onReviewPrompt?.(prompt);
+        return JSON.stringify({
+          status: reviewStatus,
+          summary: reviewStatus === "PASS" ? "Exact target reviewed" : "Defect found",
+          defects: reviewStatus === "PASS" ? [] : [{ file: "change.txt", severity: "blocker", description: "Fixture defect" }],
+        });
+      },
       mergePipeline: (options) => {
         onMerge(options);
         return { success: true };
@@ -153,7 +162,7 @@ describe("interactive Actions review supervision", () => {
     });
 
     const reviewed = await tools.review_action();
-    assert.equal(reviewed.ok, true);
+    assert.equal(reviewed.ok, true, reviewed.error);
     assert.equal((reviewed.verdict as { status: string }).status, "PASS");
     const delivered = await tools.deliver_action();
     assert.equal(delivered.ok, true);
@@ -179,13 +188,99 @@ describe("interactive Actions review supervision", () => {
       signal: new AbortController().signal,
     });
 
-    assert.equal((await tools.review_action()).ok, true);
+    const reviewed = await tools.review_action();
+    assert.equal(reviewed.ok, true, reviewed.error);
     reviewTarget = target({ prNumber: 902, prUrl: "https://github.invalid/pull/902" });
     const delivered = await tools.deliver_action();
     assert.equal(delivered.ok, false);
     assert.match(String(delivered.error), /Delivery target changed/);
     assert.equal(merges, 0);
     await tools.dispose();
+  });
+
+  it("invalidates delivery when the Issue snapshot changes after PASS", async () => {
+    let reviewTarget = target();
+    let merges = 0;
+    const bus = createBus(() => reviewTarget, () => { merges += 1; });
+    const tools = bus.createInteractiveActionTools({
+      projectId: reviewTarget.projectId,
+      repoPath: repoDir,
+      authUserId: "user-1",
+      signal: new AbortController().signal,
+    });
+
+    const reviewed = await tools.review_action();
+    assert.equal(reviewed.ok, true, reviewed.error);
+    reviewTarget = target({
+      issue: {
+        ...reviewTarget.issue,
+        description: "Review this implementation.\n\n## Acceptance Criteria\n- Review the changed Issue snapshot.",
+        acceptanceCriteria: ["Review the changed Issue snapshot."],
+      },
+    });
+    const delivered = await tools.deliver_action();
+    assert.equal(delivered.ok, false);
+    assert.match(String(delivered.error), /Delivery target changed/);
+    assert.equal(merges, 0);
+    await tools.dispose();
+  });
+
+  it("pins the Reviewer prompt to the verified commits and reports executed checks", async () => {
+    const reviewTarget = target();
+    let reviewPrompt = "";
+    const bus = createBus(() => reviewTarget, () => {}, "PASS", {
+      onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
+    });
+    const tools = bus.createInteractiveActionTools({
+      projectId: reviewTarget.projectId,
+      repoPath: repoDir,
+      authUserId: "user-1",
+      signal: new AbortController().signal,
+    });
+
+    const reviewed = await tools.review_action();
+    assert.equal(reviewed.ok, true, reviewed.error);
+    assert.ok(reviewPrompt.includes(`## Exact Diff Range:\n${baseCommit}..${headCommit}`));
+    assert.ok(reviewPrompt.includes("Command: git status"));
+    assert.ok(reviewPrompt.includes("Exit Code: 0"));
+    await tools.dispose();
+  });
+
+  it("terminates verification when the interactive hard timeout expires", async () => {
+    const reviewTarget = target();
+    const bus = createBus(() => reviewTarget, () => {}, "PASS", {
+      testCommand: "node -e setTimeout(()=>{},10000)",
+      interactiveVerificationTimeoutMs: 50,
+    });
+    const tools = bus.createInteractiveActionTools({
+      projectId: reviewTarget.projectId,
+      repoPath: repoDir,
+      authUserId: "user-1",
+      signal: new AbortController().signal,
+    });
+
+    const reviewed = await tools.review_action();
+    assert.equal(reviewed.ok, false);
+    assert.match(String(reviewed.error), /timed out/);
+    await tools.dispose();
+  });
+
+  it("cancels an in-flight verification when the supervised tools are disposed", async () => {
+    const reviewTarget = target();
+    const bus = createBus(() => reviewTarget, () => {}, "PASS", {
+      testCommand: "node -e setTimeout(()=>{},10000)",
+    });
+    const tools = bus.createInteractiveActionTools({
+      projectId: reviewTarget.projectId,
+      repoPath: repoDir,
+      authUserId: "user-1",
+      signal: new AbortController().signal,
+    });
+
+    const review = tools.review_action();
+    await Promise.resolve();
+    await tools.dispose();
+    await assert.rejects(review, /abort/i);
   });
 
   it("does not authorize delivery after a rejected review", async () => {
