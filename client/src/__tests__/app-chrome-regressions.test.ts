@@ -398,7 +398,7 @@ describe("project row mobile layout", () => {
     expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*flex:\s*1 1 0\s*;/);
     expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*overflow-y:\s*auto\s*;/);
     expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*overflow-x:\s*hidden\s*;/);
-    expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*padding:\s*8px 8px 24px\s*;/);
+    expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*padding:\s*8px 0 24px\s*;/);
     expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*-webkit-overflow-scrolling:\s*touch\s*;/);
     expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*overscroll-behavior:\s*contain\s*;/);
 
