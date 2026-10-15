@@ -36,11 +36,11 @@ export async function verifyChatNavigation({ page, mobile, settle }) {
         assert.ok(Math.abs(drawerGeometry.navRight - drawerGeometry.projectRight) < 1, "Drawer cards must share the right edge");
         assert.ok(Math.abs(drawerGeometry.iconLeft - drawerGeometry.radioLeft) < 1, "Navigation icons and project radios must align");
 
-        await drawer.focus();
         await page.keyboard.press("Tab");
         assert.equal(await projects.evaluate(element => element === document.activeElement), true);
         assert.equal(await projects.evaluate(element => getComputedStyle(element).outlineWidth), "2px",
           "Keyboard navigation must retain its visible focus ring after touch input");
+        await projects.tap();
         await page.keyboard.press("Shift+Tab");
         assert.equal(await drawer.evaluate(element => element.contains(document.activeElement)), true,
           "Reverse keyboard navigation must stay inside the drawer");
@@ -61,6 +61,14 @@ export async function verifyChatNavigation({ page, mobile, settle }) {
     assert.equal(await projects.evaluate(element => element === document.activeElement), true,
       "Keyboard opening must still focus the first navigation item");
     assert.equal(await projects.evaluate(element => getComputedStyle(element).outlineWidth), "2px");
+    await projects.tap();
+    await page.keyboard.press("Tab");
+    assert.equal(await projects.evaluate(element => element === document.activeElement), true,
+      "A touch after keyboard opening must not let Tab escape the drawer");
+    await projects.tap();
+    await page.keyboard.press("Shift+Tab");
+    assert.equal(await page.locator(".mobileDrawer").evaluate(element => element.contains(document.activeElement)), true,
+      "A touch after keyboard opening must not let Shift+Tab escape the drawer");
     await page.keyboard.press("Escape");
     await page.locator(".mobileDrawer").waitFor({ state: "hidden" });
     assert.equal(await toggle.evaluate(element => element === document.activeElement), true);

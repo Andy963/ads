@@ -244,7 +244,7 @@ describe("mobile navigation behavior", () => {
       Object.defineProperty(click, "_vts", { value: Date.now() + 1, writable: true });
       projects.element.dispatchEvent(click);
       await nextTick();
-      expect(document.activeElement).not.toBe(projects.element);
+      expect(document.activeElement).toBe(wrapper.get('[data-testid="mobile-drawer"]').element);
       expect(wrapper.find(".mobileDrawer").exists()).toBe(true);
 
       (projects.element as HTMLElement).focus();

@@ -438,7 +438,10 @@ function onMobileDrawerToggleClick(event: MouseEvent): void {
 
 function onMobileDrawerNavigationClick(event: MouseEvent): void {
   if (event.detail === 0 || !(event.target instanceof Element)) return;
-  event.target.closest<HTMLElement>(".mobileDrawerNavItem")?.blur();
+  const item = event.target.closest<HTMLElement>(".mobileDrawerNavItem");
+  if (!item) return;
+  item.blur();
+  if (mobileDrawerOpen.value) mobileDrawerRef.value?.focus({ preventScroll: true });
 }
 
 function selectWorkspaceTab(tab: ChatLane): void {
