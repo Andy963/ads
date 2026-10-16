@@ -607,21 +607,20 @@ function retryUserTurn(message: RenderMessage): void {
 const ASSISTANT_BUBBLE_TINTS = ["purple", "blue", "green", "amber", "pink"] as const;
 type AssistantBubbleTint = typeof ASSISTANT_BUBBLE_TINTS[number];
 
-const assistantMessageTintMap = computed<Map<string, AssistantBubbleTint>>(() => {
-  const map = new Map<string, AssistantBubbleTint>();
-  let assistantCount = 0;
-  for (const msg of renderMessages.value) {
-    if (msg.role === "assistant" && msg.kind === "text" && msg.id !== LIVE_STEP_MESSAGE_ID) {
-      map.set(msg.id, ASSISTANT_BUBBLE_TINTS[assistantCount % ASSISTANT_BUBBLE_TINTS.length]!);
-      assistantCount += 1;
-    }
+// Keep tint selection independent of transcript order as history is loaded.
+function hashMessageId(id: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < id.length; index += 1) {
+    hash ^= id.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
   }
-  return map;
-});
+  return hash >>> 0;
+}
 
 function getAssistantTint(m: RenderMessage): AssistantBubbleTint | undefined {
   if (m.role !== "assistant" || m.kind !== "text" || m.id === LIVE_STEP_MESSAGE_ID) return undefined;
-  return assistantMessageTintMap.value.get(m.id) ?? ASSISTANT_BUBBLE_TINTS[0];
+  const tintIndex = hashMessageId(m.id) % ASSISTANT_BUBBLE_TINTS.length;
+  return ASSISTANT_BUBBLE_TINTS[tintIndex];
 }
 </script>
 

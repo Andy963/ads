@@ -147,25 +147,31 @@ describe("chat bubble role colors and geometry contract", () => {
     wrapper.unmount();
   });
 
-  it("cycles dynamic color tints sequentially across assistant bubbles", () => {
-    const messages = [
+  it("keeps assistant tints stable when earlier history is prepended", async () => {
+    const initialMessages = [
       { id: "u-1", role: "user", kind: "text", content: "Prompt 1", ts: 100 },
       { id: "a-1", role: "assistant", kind: "text", content: "Answer 1", ts: 101 },
       { id: "a-2", role: "assistant", kind: "text", content: "Answer 2", ts: 102 },
       { id: "a-3", role: "assistant", kind: "text", content: "Answer 3", ts: 103 },
-      { id: "a-4", role: "assistant", kind: "text", content: "Answer 4", ts: 104 },
-      { id: "a-5", role: "assistant", kind: "text", content: "Answer 5", ts: 105 },
-      { id: "a-6", role: "assistant", kind: "text", content: "Answer 6", ts: 106 },
     ];
 
-    const wrapper = mountMessageList(messages);
+    const wrapper = mountMessageList(initialMessages);
+    const existingAssistantIds = ["a-1", "a-2", "a-3"];
+    const initialTints = new Map(
+      existingAssistantIds.map((id) => [id, wrapper.find(`.msg[data-id="${id}"]`).attributes("data-tint")]),
+    );
 
-    expect(wrapper.find('.msg[data-id="a-1"]').attributes("data-tint")).toBe("purple");
-    expect(wrapper.find('.msg[data-id="a-2"]').attributes("data-tint")).toBe("blue");
-    expect(wrapper.find('.msg[data-id="a-3"]').attributes("data-tint")).toBe("green");
-    expect(wrapper.find('.msg[data-id="a-4"]').attributes("data-tint")).toBe("amber");
-    expect(wrapper.find('.msg[data-id="a-5"]').attributes("data-tint")).toBe("pink");
-    expect(wrapper.find('.msg[data-id="a-6"]').attributes("data-tint")).toBe("purple");
+    await wrapper.setProps({
+      messages: [
+        { id: "history-user", role: "user", kind: "text", content: "Earlier prompt", ts: 90 },
+        { id: "history-assistant", role: "assistant", kind: "text", content: "Earlier answer", ts: 91 },
+        ...initialMessages,
+      ],
+    });
+
+    for (const id of existingAssistantIds) {
+      expect(wrapper.find(`.msg[data-id="${id}"]`).attributes("data-tint")).toBe(initialTints.get(id));
+    }
 
     wrapper.unmount();
   });
