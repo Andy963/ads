@@ -4,10 +4,10 @@ import type { ReviewVerdict } from "../reviewer/types.js";
 /** Authority belongs to one live parent, not a new resumable job state. */
 export function createActionSupervision(options: {
   signal: AbortSignal;
-  snapshot: () => string;
+  snapshot: () => string | Promise<string>;
   review: (signal: AbortSignal) => Promise<ReviewVerdict>;
-  assertDeliveryTarget?: (approved: string) => void;
-  deliver: () => ActionToolResult;
+  assertDeliveryTarget?: (approved: string) => void | Promise<void>;
+  deliver: (approved: string) => ActionToolResult | Promise<ActionToolResult>;
 }): ActionTools & { dispose: () => Promise<void> } {
   const children = new AbortController();
   const signal = AbortSignal.any([options.signal, children.signal]);
@@ -26,18 +26,30 @@ export function createActionSupervision(options: {
     try {
       if (name === "review_action") {
         approved = undefined;
-        const snapshot = options.snapshot();
+        const snapshotResult = options.snapshot();
+        const snapshot = snapshotResult instanceof Promise ? await snapshotResult : snapshotResult;
         const verdict = await options.review(signal);
         signal.throwIfAborted();
-        if (options.snapshot() !== snapshot) throw new Error("The review target changed. Review the current commit again.");
+        const currentSnapshotResult = options.snapshot();
+        const currentSnapshot = currentSnapshotResult instanceof Promise
+          ? await currentSnapshotResult
+          : currentSnapshotResult;
+        if (currentSnapshot !== snapshot) throw new Error("The review target changed. Review the current commit again.");
         if (verdict.status === "PASS") approved = snapshot;
         return { ok: verdict.status === "PASS", verdict };
       }
       if (!approved) throw new Error("Delivery requires PASS for the current clean branch and base. Call review_action again.");
-      if (options.assertDeliveryTarget) options.assertDeliveryTarget(approved);
-      else if (options.snapshot() !== approved) throw new Error("Delivery target changed. Call review_action again.");
+      if (options.assertDeliveryTarget) {
+        const result = options.assertDeliveryTarget(approved);
+        if (result instanceof Promise) await result;
+      } else {
+        const snapshotResult = options.snapshot();
+        const snapshot = snapshotResult instanceof Promise ? await snapshotResult : snapshotResult;
+        if (snapshot !== approved) throw new Error("Delivery target changed. Call review_action again.");
+      }
       signal.throwIfAborted();
-      const result = options.deliver();
+      const deliveryResult = options.deliver(approved);
+      const result = deliveryResult instanceof Promise ? await deliveryResult : deliveryResult;
       if (result.ok) delivered = result;
       return result;
     } catch (error) {

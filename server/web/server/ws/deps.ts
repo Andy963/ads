@@ -15,6 +15,7 @@ import type { WsMessage } from "./schema.js";
 import type { SessionCacheRegistry } from "./sessionCacheRegistry.js";
 import type { SyncEventStore } from "../sync/store.js";
 import type { PromptQueueStore } from "../../../state/promptQueueStore.js";
+import type { ActionTools } from "../../../agents/actionTools.js";
 
 export type WsLogger = {
   info: (msg: string) => void;
@@ -50,6 +51,13 @@ export type WsClientMeta = {
 
 export type WsOrchestrator = ReturnType<SessionManager["getOrCreate"]>;
 export type WsLaneValidityCheck = () => boolean;
+export type WsSupervisedActionTools = ActionTools & { dispose: () => Promise<void> };
+export type WsInteractiveActionToolsFactory = (args: {
+  authUserId: string;
+  projectId: string;
+  repoPath: string;
+  signal: AbortSignal;
+}) => WsSupervisedActionTools | undefined | Promise<WsSupervisedActionTools | undefined>;
 
 export type WsResetResult =
   | number
@@ -102,6 +110,7 @@ export type WsStateDeps = {
   promptQueueStore?: PromptQueueStore;
   isProcessRunning?: (pid: number) => boolean;
   prepareTakeoverPrompt?: (entry: import("../../../state/promptQueueStore.js").PromptQueueEntry) => import("../../../agents/actionTools.js").ActionRecoveryContext | null;
+  createInteractiveActionTools?: WsInteractiveActionToolsFactory;
 };
 
 export type WsSessionDeps = {
@@ -202,6 +211,7 @@ export type WsCommandStateDeps = Pick<
 export type WsPromptHandlerDeps = {
   actionRecovery?: import("../../../agents/actionTools.js").ActionRecoveryContext;
   validateActionRecovery?: () => void;
+  createInteractiveActionTools?: (signal: AbortSignal) => WsSupervisedActionTools | undefined | Promise<WsSupervisedActionTools | undefined>;
   request: WsRequestDeps;
   transport: WsTransportDeps;
   observability: Omit<WsObservabilityDeps, "sessionLogger"> & {

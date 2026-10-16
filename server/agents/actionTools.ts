@@ -6,8 +6,8 @@ export type ActionToolResult = { ok: boolean; [key: string]: unknown };
 export type ActionTools = Record<ActionToolName, () => Promise<ActionToolResult>>;
 
 export const ACTION_TOOL_DEFINITIONS: NativeToolDefinition[] = [
-  ["review_action", "Run verification and an isolated read-only Reviewer subagent for this Actions job. Findings and operational errors return to you; fix them before retrying. No arguments: the server captures the assigned branch and Issue evidence."],
-  ["deliver_action", "Deliver the exact commit approved by review_action using the existing PR, merge and cleanup pipeline. Operational errors return to you. After success, stop using tools and report completion."],
+  ["review_action", "Run verification and an isolated read-only Reviewer subagent for the current Actions review target. Findings and operational errors return to you; fix them before retrying. No arguments: the server captures the authenticated workspace, branch, Issue, PR, and commit evidence."],
+  ["deliver_action", "Deliver the exact commit approved by review_action using the verified PR, merge, and cleanup pipeline. Operational errors return to you. After success, stop using tools and report completion."],
 ].map(([name, description]) => ({
   type: "function",
   function: { name: name!, description: description!, parameters: { type: "object", properties: {}, additionalProperties: false } },

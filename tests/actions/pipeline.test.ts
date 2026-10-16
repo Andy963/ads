@@ -138,6 +138,37 @@ describe("Actions PR merge arguments", () => {
   });
 });
 
+describe("Actions reviewed PR delivery", () => {
+  it("refuses delivery when the pull request base commit changed after review", () => {
+    const cwd = initRepo();
+    git(cwd, "checkout", "-b", "feature");
+    commit(cwd, "reviewed");
+    const reviewedHead = revParse(cwd, "HEAD");
+
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-gh-fixture-"));
+    const ghPath = path.join(binDir, "gh");
+    const previousPath = process.env.PATH;
+    fs.writeFileSync(ghPath, "#!/bin/sh\nprintf '%s\\n' '{\"state\":\"OPEN\",\"mergedAt\":null,\"baseRefName\":\"dev\",\"baseRefOid\":\"changed-base\",\"headRefOid\":\"" + reviewedHead + "\"}'\n");
+    fs.chmodSync(ghPath, 0o755);
+    process.env.PATH = `${binDir}${path.delimiter}${previousPath ?? ""}`;
+    try {
+      const result = mergeAndCleanupPipeline({
+        cwd,
+        prNumber: 42,
+        branch: "feature",
+        baseBranch: "dev",
+        expectedHead: reviewedHead,
+        expectedBaseSha: revParse(cwd, "dev"),
+      });
+      assert.equal(result.success, false);
+      assert.match(result.error ?? "", /reviewed head, base, or base commit/);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+  });
+});
+
 describe("Actions feature branch scope", () => {
   it("preserves new local and remote commits after partial reviewed delivery", () => {
     const cwd = initRepo();

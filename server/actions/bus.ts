@@ -1,9 +1,12 @@
 import { createActionSupervision } from "./supervision.js";
-import { randomBytes } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 
 import { runAgentTurn } from "../agents/turn.js";
+import type { ActionTools } from "../agents/actionTools.js";
 import type { AgentEvent } from "../codex/events.js";
 import type { SessionManager } from "../sessions/sessionManager.js";
 import { buildWsConnectionIdentity } from "../web/server/ws/connectionIdentity.js";
@@ -12,8 +15,6 @@ import {
   buildReviewPrompt,
   runDetachedReview,
 } from "../reviewer/runner.js";
-import { filterDiff, REVIEW_DIFF_MAX_LINES } from "../reviewer/diffFilter.js";
-import { extractRelatedContexts } from "../reviewer/contextExtractor.js";
 import { ReviewerIncompleteError } from "../reviewer/incomplete.js";
 import { runReviewerInspection } from "../reviewer/inspectionRunner.js";
 import { createNativeModelResolver, type NativeModelConfig } from "../runtime/modelResolver.js";
@@ -48,6 +49,11 @@ import { resolveAgentRuntime, type AgentRuntimeBackend } from "../runtime/config
 import { getPrecedingTakeover } from "../state/actionTakeoverStore.js";
 import { ActionTakeoverCoordinator, type RecoveryDispatchInput, type TakeoverQueue } from "./takeover.js";
 import type { PromptQueueEntry } from "../state/promptQueueStore.js";
+import {
+  captureReviewPayloadAsync,
+  captureReviewPayload,
+  type ReviewTarget,
+} from "./reviewService.js";
 
 const MAX_REWORK_ATTEMPTS = 3;
 const PR_CREATION_ATTEMPTS = 3;
@@ -391,24 +397,10 @@ const BLOCKED_RESOLUTION_OUTCOMES: Record<BlockedJobResolution, { status: Action
 };
 
 const DEFAULT_REVIEWER_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_INTERACTIVE_VERIFICATION_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_MS = 30 * 1000;
 
-export function validateGitEvidence(input: {
-  diff: string;
-  diffStat: string;
-  baseCommit?: string;
-  headCommit?: string;
-}): string | undefined {
-  const errors: string[] = [];
-  if (!input.diff.trim()) errors.push("git diff returned empty output");
-  if (!input.diffStat.trim()) errors.push("git diff --stat returned empty output");
-  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(input.baseCommit ?? "")) {
-    errors.push(`git rev-parse base returned an invalid commit: ${input.baseCommit ?? "<empty>"}`);
-  }
-  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(input.headCommit ?? "")) {
-    errors.push(`git rev-parse review head returned an invalid commit: ${input.headCommit ?? "<empty>"}`);
-  }
-  return errors.length > 0 ? errors.join("; ") : undefined;
-}
+export { validateGitEvidence } from "./reviewService.js";
 
 export function parseActionJobIssueSnapshot(job: ActionJobRecord): ActionJobIssueSnapshot {
   try {
@@ -468,6 +460,42 @@ function parseCompleteReviewIssueSnapshot(job: ActionJobRecord): ActionJobIssueS
   }
 }
 
+function captureActionJobReviewPayload(
+  job: ActionJobRecord,
+  repoPath: string,
+  testReport?: ReviewPayload["testReport"],
+  requirePinnedEvidence = false,
+): ReviewPayload {
+  const issueSnapshot = requirePinnedEvidence
+    ? parseCompleteReviewIssueSnapshot(job)
+    : parseActionJobIssueSnapshot(job);
+  const fallbackSnapshot = issueSnapshot ?? parseActionJobIssueSnapshot(job);
+  const target: ReviewTarget = {
+    issue: {
+      id: job.issue_id,
+      title: fallbackSnapshot.title,
+      description: fallbackSnapshot.description,
+      acceptanceCriteria: fallbackSnapshot.acceptanceCriteria,
+    },
+    adrs: fallbackSnapshot.adrs,
+    baseRef: requirePinnedEvidence ? job.base_sha ?? "<missing-base>" : resolveImplementationDiffBase(repoPath),
+    headRef: requirePinnedEvidence ? job.head_sha ?? "<missing-head>" : "HEAD",
+    baseCommit: requirePinnedEvidence ? job.base_sha : undefined,
+    headCommit: requirePinnedEvidence ? job.head_sha : undefined,
+  };
+  const payload = captureReviewPayload(target, repoPath, {
+    requirePinnedEvidence,
+    testReport,
+  });
+  if (requirePinnedEvidence && !issueSnapshot) {
+    payload.diffCaptureError = [
+      payload.diffCaptureError,
+      "persisted Issue or ADR snapshot is missing or invalid",
+    ].filter(Boolean).join("; ");
+  }
+  return payload;
+}
+
 export class ActionJobReviewConflictError extends Error {
   constructor(message: string) {
     super(message);
@@ -476,6 +504,76 @@ export class ActionJobReviewConflictError extends Error {
 }
 
 export type IndependentReviewResult = Pick<ReviewVerdict, "status" | "summary" | "defects">;
+
+export type InteractiveReviewTarget = ReviewTarget & {
+  projectId: string;
+  repoPath: string;
+  authUserId: string;
+  branch: string;
+  prNumber: number;
+  prUrl: string;
+};
+
+export type InteractiveReviewTargetRequest = {
+  projectId: string;
+  repoPath: string;
+  authUserId: string;
+  branch?: string;
+  prNumber?: number | null;
+};
+
+type InteractiveGithubMetadata = {
+  pullRequest: {
+    number: number;
+    url: string;
+    state: string;
+    headRefName: string;
+    baseRefName: string;
+    baseRefOid: string;
+    headRefOid: string;
+  };
+  issue: {
+    number: number;
+    title: string;
+    body: string;
+  };
+};
+
+type InteractiveCommandResult = {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+};
+
+function normalizeInteractiveTimeout(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) ? Math.max(1, Math.floor(value!)) : fallback;
+}
+
+function parseAcceptanceCriteria(body: string): string[] {
+  const section = /(?:^|\n)##+\s+Acceptance Criteria\s*\n([\s\S]*?)(?=\n##+\s|$)/i.exec(body)?.[1] ?? "";
+  return section
+    .split(/\r?\n/)
+    .map((line) => /^\s*(?:[-*]|\d+[.)])\s+(.+?)\s*$/.exec(line)?.[1]?.trim() ?? "")
+    .filter(Boolean);
+}
+
+function interactiveTargetKey(target: InteractiveReviewTarget): string {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      repoPath: target.repoPath,
+      authUserId: target.authUserId,
+      branch: target.branch,
+      prNumber: target.prNumber,
+      prUrl: target.prUrl,
+      issue: target.issue,
+      adrs: target.adrs ?? [],
+      baseRef: target.baseRef,
+      headRef: target.headRef,
+      baseCommit: target.baseCommit,
+      headCommit: target.headCommit,
+    }))
+    .digest("hex");
+}
 
 function findVerificationReport(
   job: ActionJobRecord,
@@ -507,86 +605,6 @@ function findVerificationReport(
     exitCode,
     summary: output || (exitCode === 0 ? "Tests and checks passed successfully" : "Verification command failed"),
     output,
-  };
-}
-
-function captureReviewPayload(
-  job: ActionJobRecord,
-  repoPath: string,
-  testReport?: ReviewPayload["testReport"],
-  requirePinnedEvidence = false,
-): ReviewPayload {
-  const git = (args: string[]) => spawnSync("git", args, { cwd: repoPath, encoding: "utf8" });
-  const captureErrors: string[] = [];
-  const branchResult = requirePinnedEvidence ? null : git(["branch", "--show-current"]);
-  if (branchResult && branchResult.status !== 0) captureErrors.push("git branch --show-current failed");
-  const baseRef = requirePinnedEvidence ? job.base_sha : resolveImplementationDiffBase(repoPath);
-  const headRef = requirePinnedEvidence ? job.head_sha : "HEAD";
-  if (requirePinnedEvidence && !baseRef) captureErrors.push("job does not have a recorded base commit");
-  if (requirePinnedEvidence && !headRef) captureErrors.push("job does not have a pinned head commit");
-
-  const validCommitHash = (value: string | null): value is string => (
-    typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(value)
-  );
-  if (requirePinnedEvidence && baseRef && !validCommitHash(baseRef)) captureErrors.push("job has an invalid recorded base commit");
-  if (requirePinnedEvidence && headRef && !validCommitHash(headRef)) captureErrors.push("job has an invalid pinned head commit");
-  const diffBase = requirePinnedEvidence
-    ? baseRef || "<missing-base>"
-    : baseRef!;
-  const baseCommitResult = !requirePinnedEvidence || validCommitHash(baseRef)
-    ? git(["rev-parse", "--verify", `${diffBase}^{commit}`])
-    : null;
-  const headCommitResult = requirePinnedEvidence
-    ? validCommitHash(headRef) ? git(["rev-parse", "--verify", `${headRef}^{commit}`]) : null
-    : git(["rev-parse", "--verify", "HEAD^{commit}"]);
-  const baseCommit = baseCommitResult?.stdout?.trim();
-  const headCommit = headCommitResult?.stdout?.trim();
-  const separator = requirePinnedEvidence ? ".." : "...";
-  const capturedRange = `${baseCommit || diffBase}${separator}${headCommit || headRef || "<missing-head>"}`;
-  const range = requirePinnedEvidence ? capturedRange : `${diffBase}...HEAD`;
-  if (requirePinnedEvidence && baseCommit && headCommit) {
-    const ancestryResult = git(["merge-base", "--is-ancestor", baseCommit, headCommit]);
-    if (ancestryResult.status !== 0) captureErrors.push("recorded base commit is not an ancestor of the pinned head");
-  }
-  const diffRes = baseCommit && headCommit ? git(["diff", capturedRange]) : null;
-  const diffStatRes = baseCommit && headCommit ? git(["diff", "--stat", capturedRange]) : null;
-
-  if (!baseCommitResult || baseCommitResult.status !== 0) captureErrors.push(`git rev-parse base '${diffBase}' failed`);
-  if (!headCommitResult || headCommitResult.status !== 0) captureErrors.push("git rev-parse review head failed");
-  if (!diffRes || diffRes.status !== 0) captureErrors.push(`git diff exited with status ${String(diffRes?.status ?? "unavailable")}`);
-  if (!diffStatRes || diffStatRes.status !== 0) captureErrors.push(`git diff --stat exited with status ${String(diffStatRes?.status ?? "unavailable")}`);
-
-  const diff = diffRes?.stdout || "";
-  const diffStat = diffStatRes?.stdout || "";
-  const evidenceError = validateGitEvidence({ diff, diffStat, baseCommit, headCommit });
-  const completeIssueSnapshot = requirePinnedEvidence ? parseCompleteReviewIssueSnapshot(job) : null;
-  if (requirePinnedEvidence && !completeIssueSnapshot) {
-    captureErrors.push("persisted Issue or ADR snapshot is missing or invalid");
-  }
-  const issueSnapshot = completeIssueSnapshot ?? parseActionJobIssueSnapshot(job);
-  return {
-    issue: {
-      id: job.issue_id,
-      title: issueSnapshot.title,
-      description: issueSnapshot.description,
-      acceptanceCriteria: issueSnapshot.acceptanceCriteria,
-    },
-    adrs: issueSnapshot.adrs,
-    diffRange: {
-      baseRef: diffBase,
-      headRef: headRef ?? "<missing-head>",
-      baseCommit: baseCommit || undefined,
-      headCommit: headCommit || undefined,
-      range,
-    },
-    diff,
-    diffStat,
-    diffCaptureError: [...captureErrors, evidenceError].filter((error): error is string => Boolean(error)).join("; ") || undefined,
-    testReport,
-    ...(!captureErrors.length && !evidenceError && baseCommit && headCommit
-      && !filterDiff(diff, REVIEW_DIFF_MAX_LINES, diffStat).truncated
-      ? extractRelatedContexts(repoPath, baseCommit, headCommit)
-      : {}),
   };
 }
 
@@ -629,6 +647,8 @@ export interface LaneDispatchBusOptions {
   developerRunner?: DeveloperRunner;
   reviewerRunner?: ReviewerRunner;
   testCommand?: string;
+  interactiveCommandTimeoutMs?: number;
+  interactiveVerificationTimeoutMs?: number;
   reviewerTimeoutMs?: number;
   reviewerToolTurnBudget?: number;
   reviewerComplete?: typeof completeNativeChat;
@@ -658,8 +678,15 @@ export interface LaneDispatchBusOptions {
     branch: string;
     baseBranch?: string;
     expectedHead?: string;
+    expectedBaseSha?: string;
   }) => MergeResult;
   pullRequestStateReader?: (options: { cwd: string; prNumber: number }) => PullRequestStateResult;
+  interactiveGithubMetadataReader?: (input: {
+    repoPath: string;
+    branch: string;
+    issueId: number;
+    prNumber?: number | null;
+  }) => InteractiveGithubMetadata | Promise<InteractiveGithubMetadata>;
 }
 
 export class LaneDispatchBus {
@@ -668,6 +695,7 @@ export class LaneDispatchBus {
   private developerProjects = new Set<string>();
   private activeDeliveryHeads = new Map<string, string>();
   private independentReviewerJobs = new Set<string>();
+  private interactiveReviewerTargets = new Set<string>();
   private readonly takeovers: ActionTakeoverCoordinator;
 
   constructor(
@@ -1492,7 +1520,6 @@ export class LaneDispatchBus {
       if (result.status !== 0) throw new Error(result.stderr?.trim() || "Git evidence unavailable.");
       return result.stdout.trim();
     };
-    let deliveryHead = "";
     const snapshot = () => {
       const current = getActionJobById(this.db, job.id);
       if (!current || !["running", "verifying", "reviewing", "waiting_merge"].includes(current.status)) {
@@ -1505,7 +1532,7 @@ export class LaneDispatchBus {
     return createActionSupervision({
       signal, snapshot,
       assertDeliveryTarget: (approved) => {
-        deliveryHead = approved.split(":")[1]!;
+        const deliveryHead = approved.split(":")[1]!;
         try { if (snapshot() === approved) return; } catch { /* A merged PR may already have cleaned its branch. */ }
         signal.throwIfAborted();
         if (git("status", "--porcelain", "-uno")) throw new Error("Preserve unrelated working changes before delivery cleanup.");
@@ -1529,7 +1556,8 @@ export class LaneDispatchBus {
           }
         }
       },
-      deliver: () => {
+      deliver: (approved) => {
+        const deliveryHead = approved.split(":")[1]!;
         this.activeDeliveryHeads.set(job.id, deliveryHead);
         try {
           const result = this.handleReviewResult({ jobId: job.id, repoPath, verdict: "PASS", reviewSummary: "Approved by supervised Reviewer", supervised: true, expectedHead: deliveryHead });
@@ -1537,6 +1565,440 @@ export class LaneDispatchBus {
         } finally { this.activeDeliveryHeads.delete(job.id); }
       },
     });
+  }
+
+  private async runInteractiveCommand(
+    command: string,
+    args: string[],
+    repoPath: string,
+    signal?: AbortSignal,
+    timeoutMs = normalizeInteractiveTimeout(
+      this.options.interactiveCommandTimeoutMs,
+      DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_MS,
+    ),
+    maxOutputLength = 20_000,
+  ): Promise<InteractiveCommandResult> {
+    signal?.throwIfAborted();
+    return await new Promise<InteractiveCommandResult>((resolve, reject) => {
+      const child = spawn(command, args, {
+        cwd: repoPath,
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      let escalation: ReturnType<typeof setTimeout> | undefined;
+
+      const append = (current: string, chunk: Buffer | string): string =>
+        `${current}${String(chunk)}`.slice(-maxOutputLength);
+      const sendSignal = (name: NodeJS.Signals): void => {
+        if (child.exitCode !== null) return;
+        try {
+          if (process.platform !== "win32" && child.pid) process.kill(-child.pid, name);
+          else child.kill(name);
+        } catch {
+          try { child.kill(name); } catch { /* The process exited between checks. */ }
+        }
+      };
+      const terminate = (): void => {
+        sendSignal("SIGTERM");
+        escalation = setTimeout(() => sendSignal("SIGKILL"), 1_000);
+        escalation.unref();
+      };
+      const finish = (error?: Error, result?: InteractiveCommandResult): void => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        if (escalation) clearTimeout(escalation);
+        if (signal) signal.removeEventListener("abort", onAbort);
+        if (error) reject(error);
+        else resolve(result!);
+      };
+      const onAbort = (): void => {
+        terminate();
+        finish(signal?.reason instanceof Error ? signal.reason : new Error("Interactive command aborted."));
+      };
+
+      const timeout = setTimeout(() => {
+        terminate();
+        finish(new Error(`Interactive command '${command}' timed out after ${timeoutMs}ms.`));
+      }, timeoutMs);
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+      child.stdout.on("data", (chunk: Buffer | string) => { stdout = append(stdout, chunk); });
+      child.stderr.on("data", (chunk: Buffer | string) => { stderr = append(stderr, chunk); });
+      child.once("error", (error) => finish(error));
+      child.once("close", (code) => finish(undefined, {
+        exitCode: code ?? 1,
+        stdout,
+        stderr,
+      }));
+    });
+  }
+
+  private async readInteractiveGithubMetadata(input: {
+    repoPath: string;
+    branch: string;
+    issueId: number;
+    prNumber?: number | null;
+  }, signal?: AbortSignal): Promise<InteractiveGithubMetadata> {
+    if (this.options.interactiveGithubMetadataReader) {
+      const metadata = await this.options.interactiveGithubMetadataReader(input);
+      signal?.throwIfAborted();
+      return metadata;
+    }
+
+    const prFields = "number,url,state,headRefName,baseRefName,baseRefOid,headRefOid";
+    const prCommand = input.prNumber
+      ? ["pr", "view", String(input.prNumber), "--json", prFields]
+      : ["pr", "list", "--head", input.branch, "--state", "open", "--limit", "2", "--json", prFields];
+    const prResult = await this.runInteractiveCommand("gh", prCommand, input.repoPath, signal);
+    if (prResult.exitCode !== 0) {
+      throw new Error(`Unable to resolve the GitHub pull request: ${prResult.stderr.trim() || "gh command failed"}`);
+    }
+    let prRecords: Array<Record<string, unknown>>;
+    try {
+      const parsed = JSON.parse(prResult.stdout || "[]") as unknown;
+      prRecords = Array.isArray(parsed) ? parsed as Array<Record<string, unknown>> : [parsed as Record<string, unknown>];
+    } catch (error) {
+      throw new Error(`GitHub pull request metadata is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (prRecords.length !== 1) {
+      throw new Error("Interactive review requires exactly one matching open pull request.");
+    }
+    const pr = prRecords[0]!;
+    const pullRequest = {
+      number: Number(pr.number),
+      url: String(pr.url ?? "").trim(),
+      state: String(pr.state ?? "").trim(),
+      headRefName: String(pr.headRefName ?? ""),
+      baseRefName: String(pr.baseRefName ?? ""),
+      baseRefOid: String(pr.baseRefOid ?? ""),
+      headRefOid: String(pr.headRefOid ?? ""),
+    };
+    if (!Number.isSafeInteger(pullRequest.number) || pullRequest.number < 1 || !pullRequest.url) {
+      throw new Error("The matching pull request is missing its number or URL.");
+    }
+
+    const issueResult = await this.runInteractiveCommand(
+      "gh",
+      ["issue", "view", String(input.issueId), "--json", "number,title,body,state"],
+      input.repoPath,
+      signal,
+    );
+    if (issueResult.exitCode !== 0) {
+      throw new Error(`Unable to resolve GitHub Issue #${input.issueId}: ${issueResult.stderr.trim() || "gh command failed"}`);
+    }
+    let issue: Record<string, unknown>;
+    try {
+      issue = JSON.parse(issueResult.stdout || "{}") as Record<string, unknown>;
+    } catch (error) {
+      throw new Error(`GitHub Issue metadata is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return {
+      pullRequest,
+      issue: {
+        number: Number(issue.number),
+        title: String(issue.title ?? "").trim(),
+        body: String(issue.body ?? "").trim(),
+      },
+    };
+  }
+
+  private async readInteractiveAdrSnapshot(
+    repoPath: string,
+    baseCommit: string,
+    headCommit: string,
+    signal?: AbortSignal,
+  ): Promise<Array<{ id: string; title: string; decision: string }>> {
+    const changed = await this.runInteractiveCommand(
+      "git",
+      ["diff", "--name-only", `${baseCommit}...${headCommit}`],
+      repoPath,
+      signal,
+    );
+    if (changed.exitCode !== 0) {
+      throw new Error(`Unable to capture changed ADR files: ${changed.stderr.trim() || "git command failed"}`);
+    }
+    const files = String(changed.stdout)
+      .split(/\r?\n/)
+      .map((file) => file.trim())
+      .filter((file) => /^docs\/adr\/[^/]+\.md$/.test(file));
+    return files.map((file) => {
+      let content: string;
+      try {
+        content = readFileSync(path.join(repoPath, file), "utf8");
+      } catch (error) {
+        throw new Error(`Unable to read changed ADR '${file}': ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const title = /^#\s+(.+)$/m.exec(content)?.[1]?.trim() ?? path.basename(file, ".md");
+      const decision = /(?:^|\n)##\s+Decision\s*\n([\s\S]*?)(?=\n##\s|$)/i.exec(content)?.[1]?.trim() ?? content.trim();
+      return { id: path.basename(file, ".md"), title, decision };
+    });
+  }
+
+  private async resolveInteractiveTarget(
+    input: InteractiveReviewTargetRequest,
+    signal?: AbortSignal,
+  ): Promise<InteractiveReviewTarget> {
+    signal?.throwIfAborted();
+    const repoPath = path.resolve(String(input.repoPath ?? "").trim());
+    const authUserId = String(input.authUserId ?? "").trim();
+    const projectId = resolveCanonicalProjectId(input.projectId, repoPath);
+    if (!repoPath || !authUserId || !projectId) {
+      throw new Error("Interactive review requires an authenticated project workspace.");
+    }
+
+    const identity = resolveActionsLaneIdentity(this.db, {
+      projectId,
+      repoPath,
+      authUserId,
+    });
+    if (!identity || identity.authUserId !== authUserId || identity.projectId !== projectId) {
+      throw new Error("Interactive review is limited to the authenticated Actions project workspace.");
+    }
+
+    const git = async (args: string[], label: string): Promise<string> => {
+      const result = await this.runInteractiveCommand("git", args, repoPath, signal);
+      if (result.exitCode !== 0) {
+        throw new Error(`${label}: ${result.stderr.trim() || "command failed"}`);
+      }
+      return result.stdout.trim();
+    };
+
+    const branch = await git(["branch", "--show-current"], "Unable to determine the current feature branch");
+    if (input.branch && input.branch !== branch) {
+      throw new Error(`Requested branch '${input.branch}' does not match the current branch '${branch}'.`);
+    }
+    const issueMatch = /^codex\/issue-(\d+)$/.exec(branch);
+    if (!issueMatch) {
+      throw new Error("Interactive review requires the assigned codex/issue-<id> feature branch.");
+    }
+    const issueId = Number(issueMatch[1]);
+    if (!Number.isSafeInteger(issueId) || issueId < 1) {
+      throw new Error("The current feature branch does not identify a valid GitHub Issue.");
+    }
+    if (await git(["status", "--porcelain", "-uno"], "Unable to inspect tracked workspace state")) {
+      throw new Error("Commit tracked changes before requesting interactive review or delivery.");
+    }
+
+    const remote = await this.runInteractiveCommand("git", ["remote", "get-url", "origin"], repoPath, signal);
+    const baseRef = remote.exitCode === 0 && remote.stdout.trim() ? "origin/dev" : "dev";
+    const baseCommit = await git(["rev-parse", "--verify", `${baseRef}^{commit}`], `Unable to resolve the ${ACTIONS_BASE_BRANCH} base branch`);
+    const headCommit = await git(["rev-parse", "--verify", "HEAD^{commit}"], "Unable to resolve the current feature commit");
+    const ancestry = await this.runInteractiveCommand("git", ["merge-base", "--is-ancestor", baseCommit, headCommit], repoPath, signal);
+    if (ancestry.exitCode !== 0) {
+      throw new Error(`The feature branch must descend from the current '${ACTIONS_BASE_BRANCH}' base.`);
+    }
+
+    const metadata = await this.readInteractiveGithubMetadata({
+      repoPath,
+      branch,
+      issueId,
+      prNumber: input.prNumber,
+    }, signal);
+    const pr = metadata.pullRequest;
+    if (pr.state.toUpperCase() !== "OPEN"
+      || pr.headRefName !== branch
+      || pr.baseRefName !== ACTIONS_BASE_BRANCH
+      || pr.headRefOid !== headCommit
+      || pr.baseRefOid !== baseCommit) {
+      throw new Error("The pull request does not match the current feature branch, base, or exact head commit.");
+    }
+
+    const issue = metadata.issue;
+    const issueTitle = issue.title;
+    const issueDescription = issue.body;
+    const acceptanceCriteria = parseAcceptanceCriteria(issueDescription);
+    if (issue.number !== issueId || !issueTitle || !issueDescription || acceptanceCriteria.length === 0) {
+      throw new Error(`GitHub Issue #${issueId} does not provide a complete review specification.`);
+    }
+
+    return {
+      projectId,
+      repoPath,
+      authUserId,
+      branch,
+      prNumber: pr.number,
+      prUrl: pr.url,
+      issue: {
+        id: issueId,
+        title: issueTitle,
+        description: issueDescription,
+        acceptanceCriteria,
+      },
+      adrs: await this.readInteractiveAdrSnapshot(repoPath, baseCommit, headCommit, signal),
+      baseRef,
+      headRef: "HEAD",
+      baseCommit,
+      headCommit,
+    };
+  }
+
+  public async resolveInteractiveReviewTarget(input: InteractiveReviewTargetRequest): Promise<InteractiveReviewTarget> {
+    return await this.resolveInteractiveTarget(input);
+  }
+
+  private async runInteractiveVerification(
+    repoPath: string,
+    signal: AbortSignal,
+  ): Promise<ReviewPayload["testReport"]> {
+    const command = String(this.options.testCommand ?? "npm test").trim();
+    const parts = command.split(/\s+/).filter(Boolean);
+    if (parts.length === 0) throw new Error("Interactive review verification command is empty.");
+    signal.throwIfAborted();
+
+    const timeoutMs = normalizeInteractiveTimeout(
+      this.options.interactiveVerificationTimeoutMs,
+      DEFAULT_INTERACTIVE_VERIFICATION_TIMEOUT_MS,
+    );
+    const result = await this.runInteractiveCommand(parts[0]!, parts.slice(1), repoPath, signal, timeoutMs);
+    const output = [result.stdout, result.stderr]
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .join("\n");
+    const report = {
+      command,
+      exitCode: result.exitCode,
+      summary: output || (result.exitCode === 0 ? "Tests and checks passed successfully" : "Verification command failed"),
+      output,
+    };
+    if (result.exitCode !== 0) throw new Error(`Verification failed: ${report.summary}`);
+    return report;
+  }
+
+  private async executeInteractiveReview(
+    target: InteractiveReviewTarget,
+    signal: AbortSignal,
+    resolveCurrentTarget: () => Promise<InteractiveReviewTarget>,
+  ): Promise<ReviewVerdict> {
+    const key = `${target.authUserId}\u0000${interactiveTargetKey(target)}`;
+    if (this.interactiveReviewerTargets.has(key)) {
+      throw new ActionJobReviewConflictError("An interactive review is already running for this target.");
+    }
+    this.interactiveReviewerTargets.add(key);
+    try {
+      signal.throwIfAborted();
+      const testReport = await this.runInteractiveVerification(target.repoPath, signal);
+      const verifiedTarget = await resolveCurrentTarget();
+      if (interactiveTargetKey(verifiedTarget) !== interactiveTargetKey(target)) {
+        throw new ReviewerIncompleteError("Interactive review target changed during verification; no authoritative verdict is available.");
+      }
+      const payload = await captureReviewPayloadAsync(
+        verifiedTarget,
+        verifiedTarget.repoPath,
+        { requirePinnedEvidence: true, testReport },
+        async (args) => {
+          const result = await this.runInteractiveCommand(
+            "git",
+            args,
+            verifiedTarget.repoPath,
+            signal,
+            normalizeInteractiveTimeout(this.options.interactiveCommandTimeoutMs, DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_MS),
+            2_000_000,
+          );
+          return { status: result.exitCode, stdout: result.stdout, stderr: result.stderr };
+        },
+      );
+      const evidence = payload.diffRange;
+      if (!evidence || evidence.baseCommit !== verifiedTarget.baseCommit || evidence.headCommit !== verifiedTarget.headCommit) {
+        throw new ReviewerIncompleteError("Reviewer evidence did not remain pinned to the interactive review target.");
+      }
+      const capturedTarget = await resolveCurrentTarget();
+      if (interactiveTargetKey(capturedTarget) !== interactiveTargetKey(verifiedTarget)) {
+        throw new ReviewerIncompleteError("Interactive review target changed while capturing evidence; no authoritative verdict is available.");
+      }
+      return await this.executeReviewer(
+        payload,
+        verifiedTarget.repoPath,
+        undefined,
+        undefined,
+        verifiedTarget.projectId,
+        undefined,
+        signal,
+        verifiedTarget.authUserId,
+      );
+    } finally {
+      this.interactiveReviewerTargets.delete(key);
+    }
+  }
+
+  public async reviewInteractiveTarget(input: InteractiveReviewTargetRequest): Promise<IndependentReviewResult> {
+    const controller = new AbortController();
+    const target = await this.resolveInteractiveTarget(input, controller.signal);
+    const verdict = await this.executeInteractiveReview(
+      target,
+      controller.signal,
+      () => this.resolveInteractiveTarget(input, controller.signal),
+    );
+    return {
+      status: verdict.status,
+      summary: verdict.summary,
+      defects: verdict.defects.map((defect) => ({
+        file: defect.file,
+        ...(defect.line === undefined ? {} : { line: defect.line }),
+        severity: defect.severity,
+        description: defect.description,
+      })),
+    };
+  }
+
+  public createInteractiveActionTools(
+    input: InteractiveReviewTargetRequest & { signal: AbortSignal },
+  ): Promise<(ActionTools & { dispose: () => Promise<void> }) | undefined> {
+    return this.createInteractiveActionToolsAsync(input);
+  }
+
+  private async createInteractiveActionToolsAsync(
+    input: InteractiveReviewTargetRequest & { signal: AbortSignal },
+  ): Promise<(ActionTools & { dispose: () => Promise<void> }) | undefined> {
+    try {
+      await this.resolveInteractiveTarget(input, input.signal);
+    } catch {
+      // Interactive tools are only advertised after the server can verify the
+      // current authenticated workspace, feature branch, Issue, and PR.
+      return undefined;
+    }
+
+    const supervision = createActionSupervision({
+      signal: input.signal,
+      snapshot: async () => {
+        const target = await this.resolveInteractiveTarget(input, input.signal);
+        return interactiveTargetKey(target);
+      },
+      review: async (signal) => {
+        const target = await this.resolveInteractiveTarget(input, signal);
+        const verdict = await this.executeInteractiveReview(
+          target,
+          signal,
+          () => this.resolveInteractiveTarget(input, signal),
+        );
+        return verdict;
+      },
+      assertDeliveryTarget: async (approved) => {
+        const target = await this.resolveInteractiveTarget(input, input.signal);
+        if (interactiveTargetKey(target) !== approved) {
+          throw new Error("Delivery target changed. Call review_action again.");
+        }
+      },
+      deliver: async (approved) => {
+        const target = await this.resolveInteractiveTarget(input, input.signal);
+        if (interactiveTargetKey(target) !== approved) {
+          throw new Error("Delivery target changed. Call review_action again.");
+        }
+        const mergeResult = (this.options.mergePipeline ?? mergeAndCleanupPipeline)({
+          cwd: target.repoPath,
+          prNumber: target.prNumber,
+          issueId: target.issue.id,
+          branch: target.branch,
+          baseBranch: ACTIONS_BASE_BRANCH,
+          expectedHead: target.headCommit ?? undefined,
+          expectedBaseSha: target.baseCommit ?? undefined,
+        });
+        return { ok: mergeResult.success, ...(mergeResult.error ? { error: mergeResult.error } : {}), ...mergeResult };
+      },
+    });
+    return supervision;
   }
 
   public async executeReviewer(
@@ -1547,6 +2009,7 @@ export class LaneDispatchBus {
     _projectId?: string,
     jobId?: string,
     signal?: AbortSignal,
+    ownerOverride?: string,
   ): Promise<ReviewVerdict> {
     if (payload.diffCaptureError) {
       throw new ReviewerIncompleteError("Reviewer evidence capture failed; no authoritative verdict is available.");
@@ -1569,7 +2032,7 @@ export class LaneDispatchBus {
       }
       const commit = payload.diffRange?.headCommit;
       if (!commit) throw new Error("Reviewer inspection requires captured head commit evidence.");
-      const owner = (jobId ? getActionJobById(this.db, jobId)?.auth_user_id : null) ?? "";
+      const owner = ownerOverride ?? (jobId ? getActionJobById(this.db, jobId)?.auth_user_id : null) ?? "";
       const model = this.options.reviewerModelResolver
         ? this.options.reviewerModelResolver(profile.model_id, owner)
         : createNativeModelResolver({ owner, stateDbPath: this.db.name, requireOwnerCredentials: true }).resolve(profile.model_id);
@@ -1615,7 +2078,7 @@ export class LaneDispatchBus {
 
       const identity = this.laneIdentityForJob(current, repoPath);
       const history = this.options.historyStore?.get?.(identity.historyKey) ?? [];
-      const payload = captureReviewPayload(
+      const payload = captureActionJobReviewPayload(
         current,
         repoPath,
         findVerificationReport(current, history),
@@ -1760,7 +2223,7 @@ export class LaneDispatchBus {
       current_step: "Detached clean-room reviewer auditing code changes against specifications",
     });
 
-    const payload = captureReviewPayload(job, repoPath, testReport);
+    const payload = captureActionJobReviewPayload(job, repoPath, testReport);
 
     const reviewerProfile = (job.reviewer_profile_ids_json ? JSON.parse(job.reviewer_profile_ids_json)[0] : null)
       ?? getDefaultRoleProfile(this.db, "reviewer");

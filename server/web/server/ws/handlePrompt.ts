@@ -8,7 +8,7 @@ import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { resolveWorkspaceStatePath } from "../../../workspace/adsPaths.js";
 import { buildPromptInput, buildUserLogEntry, cleanupTempFiles } from "../../utils.js";
 import { runAgentTurn } from "../../../agents/turn.js";
-import type { WsPromptHandlerDeps, WsPromptOutcome } from "./deps.js";
+import type { WsPromptHandlerDeps, WsPromptOutcome, WsSupervisedActionTools } from "./deps.js";
 import { processScheduleOutput } from "../advisor/scheduleHandler.js";
 import { preferInMemoryThreadId } from "./threadIds.js";
 import {
@@ -240,6 +240,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       },
     });
     let agentTurnPromise: Promise<Awaited<ReturnType<typeof runAgentTurn>>> | undefined;
+    let interactiveActionTools: WsSupervisedActionTools | undefined;
 
     try {
       const activeAgentId = orchestrator.getActiveAgentId();
@@ -287,8 +288,10 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       const pipeline = deps.middleware ?? createCoreMiddlewarePipeline();
 
       promptRun.ensureActive();
+      interactiveActionTools = await deps.createInteractiveActionTools?.(controller.signal);
       agentTurnPromise = runAgentTurn(orchestrator, effectiveInput, {
         actionRecovery: deps.actionRecovery,
+        actionTools: interactiveActionTools,
         streaming: true,
         signal: controller.signal,
         onExploredEntry: handleExploredEntry,
@@ -433,6 +436,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         error: error instanceof Error ? error.message : String(error),
       };
     } finally {
+      await interactiveActionTools?.dispose();
       unsubscribe();
       promptRun.cleanup();
       cleanupAfter();

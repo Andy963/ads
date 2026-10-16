@@ -228,6 +228,7 @@ export function mergeAndCleanupPipeline(options: {
   branch: string;
   baseBranch?: string;
   expectedHead?: string;
+  expectedBaseSha?: string;
 }): MergeResult {
   const base = options.baseBranch ?? ACTIONS_BASE_BRANCH;
   // A reviewed PR may be merged while somebody advances its branch. Cleanup
@@ -246,9 +247,14 @@ export function mergeAndCleanupPipeline(options: {
 
   // 1. Merge PR if prNumber is provided
   if (options.prNumber) {
-    const prior = options.expectedHead ? readPullRequestState({ cwd: options.cwd, prNumber: options.prNumber, includeHead: true }) : null;
-    if (prior && (prior.error || prior.headRefOid !== options.expectedHead || prior.baseRefName !== base)) {
-      return { success: false, error: "Pull request does not match the reviewed head and base." };
+    const prior = options.expectedHead || options.expectedBaseSha
+      ? readPullRequestState({ cwd: options.cwd, prNumber: options.prNumber, includeHead: true })
+      : null;
+    if (prior && (prior.error
+      || (options.expectedHead && prior.headRefOid !== options.expectedHead)
+      || prior.baseRefName !== base
+      || (options.expectedBaseSha && prior.baseRefOid !== options.expectedBaseSha))) {
+      return { success: false, error: "Pull request does not match the reviewed head, base, or base commit." };
     }
     const mergeRes = prior?.merged ? { status: 0, stderr: "" } : spawnSync("gh", buildPrMergeArgs(options.prNumber, options.expectedHead), {
       cwd: options.cwd,
@@ -442,6 +448,7 @@ export interface PullRequestStateResult {
   state: string | null;
   merged: boolean;
   baseRefName: string | null;
+  baseRefOid?: string | null;
   mergedAt: number | null;
   headRefOid?: string | null;
   error?: string;
@@ -460,14 +467,16 @@ export function readPullRequestState(options: {
   const unknown: PullRequestStateResult = { state: null, merged: false, baseRefName: null, mergedAt: null };
   const res = spawnSync(
     "gh",
-    ["pr", "view", String(options.prNumber), "--json", options.includeHead ? "state,mergedAt,baseRefName,headRefOid" : "state,mergedAt,baseRefName"],
+    ["pr", "view", String(options.prNumber), "--json", options.includeHead
+      ? "state,mergedAt,baseRefName,baseRefOid,headRefOid"
+      : "state,mergedAt,baseRefName,baseRefOid"],
     { cwd: options.cwd, encoding: "utf8" },
   );
   if (res.status !== 0) {
     return { ...unknown, error: res.stderr?.trim() || "Failed to read pull request state" };
   }
 
-  let parsed: { state?: unknown; mergedAt?: unknown; baseRefName?: unknown; headRefOid?: unknown };
+  let parsed: { state?: unknown; mergedAt?: unknown; baseRefName?: unknown; baseRefOid?: unknown; headRefOid?: unknown };
   try {
     parsed = JSON.parse(res.stdout || "{}") as typeof parsed;
   } catch (error) {
@@ -480,6 +489,7 @@ export function readPullRequestState(options: {
     state: typeof parsed.state === "string" ? parsed.state : null,
     merged: mergedAt.length > 0,
     baseRefName: typeof parsed.baseRefName === "string" ? parsed.baseRefName : null,
+    baseRefOid: typeof parsed.baseRefOid === "string" ? parsed.baseRefOid : null,
     mergedAt: mergedAt ? Date.parse(mergedAt) || null : null,
     ...(options.includeHead ? { headRefOid: typeof parsed.headRefOid === "string" ? parsed.headRefOid : null } : {}),
   };

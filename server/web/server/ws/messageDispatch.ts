@@ -1,11 +1,13 @@
 import type { WebSocket } from "ws";
 
 import type { SessionManager } from "../../../sessions/sessionManager.js";
+import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { handleCommandMessage } from "./handleCommand.js";
 import type {
   WsCommandHandlerDeps,
   WsCommandRuntimeDeps,
   WsHistoryRuntimeDeps,
+  WsInteractiveActionToolsFactory,
   WsLaneValidityCheck,
   WsLogger,
   WsResetResult,
@@ -68,6 +70,7 @@ export async function dispatchWsMessage(args: {
   traceWsDuplication: boolean;
   logger: WsLogger;
   updateWorkspaceRootMeta: (cwd: string) => void;
+  createInteractiveActionTools?: WsInteractiveActionToolsFactory;
 }): Promise<{
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
   currentCwd: string;
@@ -121,6 +124,15 @@ export async function dispatchWsMessage(args: {
       return { orchestrator, currentCwd };
     }
 
+    const createInteractiveActionTools = args.createInteractiveActionTools
+      ? async (signal: AbortSignal) => await args.createInteractiveActionTools!({
+          authUserId: args.authUserId,
+          projectId: args.sessionId,
+          repoPath: detectWorkspaceFrom(currentCwd),
+          signal,
+        })
+      : undefined;
+
     const promptResult = await handlePromptMessage({
       request: {
         parsed,
@@ -160,6 +172,7 @@ export async function dispatchWsMessage(args: {
         historyStore: args.historyStore,
       },
       scheduler: args.scheduler,
+      ...(createInteractiveActionTools ? { createInteractiveActionTools } : {}),
     });
     if (promptResult.handled) {
       return { orchestrator: promptResult.orchestrator, currentCwd };
@@ -173,6 +186,7 @@ export async function dispatchWsMessage(args: {
         parsed,
         clientMessageId,
       },
+      ...(createInteractiveActionTools ? { createInteractiveActionTools } : {}),
       transport: {
         ws: args.ws,
         safeJsonSend: args.safeJsonSend,
