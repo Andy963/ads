@@ -7,7 +7,7 @@ export function createActionSupervision(options: {
   snapshot: () => string | Promise<string>;
   review: (signal: AbortSignal) => Promise<ReviewVerdict>;
   assertDeliveryTarget?: (approved: string) => void | Promise<void>;
-  deliver: () => ActionToolResult | Promise<ActionToolResult>;
+  deliver: (approved: string) => ActionToolResult | Promise<ActionToolResult>;
 }): ActionTools & { dispose: () => Promise<void> } {
   const children = new AbortController();
   const signal = AbortSignal.any([options.signal, children.signal]);
@@ -48,7 +48,7 @@ export function createActionSupervision(options: {
         if (snapshot !== approved) throw new Error("Delivery target changed. Call review_action again.");
       }
       signal.throwIfAborted();
-      const deliveryResult = options.deliver();
+      const deliveryResult = options.deliver(approved);
       const result = deliveryResult instanceof Promise ? await deliveryResult : deliveryResult;
       if (result.ok) delivered = result;
       return result;

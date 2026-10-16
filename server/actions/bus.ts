@@ -678,6 +678,7 @@ export interface LaneDispatchBusOptions {
     branch: string;
     baseBranch?: string;
     expectedHead?: string;
+    expectedBaseSha?: string;
   }) => MergeResult;
   pullRequestStateReader?: (options: { cwd: string; prNumber: number }) => PullRequestStateResult;
   interactiveGithubMetadataReader?: (input: {
@@ -1519,7 +1520,6 @@ export class LaneDispatchBus {
       if (result.status !== 0) throw new Error(result.stderr?.trim() || "Git evidence unavailable.");
       return result.stdout.trim();
     };
-    let deliveryHead = "";
     const snapshot = () => {
       const current = getActionJobById(this.db, job.id);
       if (!current || !["running", "verifying", "reviewing", "waiting_merge"].includes(current.status)) {
@@ -1532,7 +1532,7 @@ export class LaneDispatchBus {
     return createActionSupervision({
       signal, snapshot,
       assertDeliveryTarget: (approved) => {
-        deliveryHead = approved.split(":")[1]!;
+        const deliveryHead = approved.split(":")[1]!;
         try { if (snapshot() === approved) return; } catch { /* A merged PR may already have cleaned its branch. */ }
         signal.throwIfAborted();
         if (git("status", "--porcelain", "-uno")) throw new Error("Preserve unrelated working changes before delivery cleanup.");
@@ -1556,7 +1556,8 @@ export class LaneDispatchBus {
           }
         }
       },
-      deliver: () => {
+      deliver: (approved) => {
+        const deliveryHead = approved.split(":")[1]!;
         this.activeDeliveryHeads.set(job.id, deliveryHead);
         try {
           const result = this.handleReviewResult({ jobId: job.id, repoPath, verdict: "PASS", reviewSummary: "Approved by supervised Reviewer", supervised: true, expectedHead: deliveryHead });
@@ -1719,21 +1720,21 @@ export class LaneDispatchBus {
     if (changed.exitCode !== 0) {
       throw new Error(`Unable to capture changed ADR files: ${changed.stderr.trim() || "git command failed"}`);
     }
-    return String(changed.stdout)
+    const files = String(changed.stdout)
       .split(/\r?\n/)
       .map((file) => file.trim())
-      .filter((file) => /^docs\/adr\/[^/]+\.md$/.test(file))
-      .map((file) => {
-        try {
-          const content = readFileSync(path.join(repoPath, file), "utf8");
-          const title = /^#\s+(.+)$/m.exec(content)?.[1]?.trim() ?? path.basename(file, ".md");
-          const decision = /(?:^|\n)##\s+Decision\s*\n([\s\S]*?)(?=\n##\s|$)/i.exec(content)?.[1]?.trim() ?? content.trim();
-          return { id: path.basename(file, ".md"), title, decision };
-        } catch {
-          return null;
-        }
-      })
-      .filter((adr): adr is { id: string; title: string; decision: string } => adr !== null);
+      .filter((file) => /^docs\/adr\/[^/]+\.md$/.test(file));
+    return files.map((file) => {
+      let content: string;
+      try {
+        content = readFileSync(path.join(repoPath, file), "utf8");
+      } catch (error) {
+        throw new Error(`Unable to read changed ADR '${file}': ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const title = /^#\s+(.+)$/m.exec(content)?.[1]?.trim() ?? path.basename(file, ".md");
+      const decision = /(?:^|\n)##\s+Decision\s*\n([\s\S]*?)(?=\n##\s|$)/i.exec(content)?.[1]?.trim() ?? content.trim();
+      return { id: path.basename(file, ".md"), title, decision };
+    });
   }
 
   private async resolveInteractiveTarget(
@@ -1951,9 +1952,8 @@ export class LaneDispatchBus {
   private async createInteractiveActionToolsAsync(
     input: InteractiveReviewTargetRequest & { signal: AbortSignal },
   ): Promise<(ActionTools & { dispose: () => Promise<void> }) | undefined> {
-    let currentTarget: InteractiveReviewTarget;
     try {
-      currentTarget = await this.resolveInteractiveTarget(input, input.signal);
+      await this.resolveInteractiveTarget(input, input.signal);
     } catch {
       // Interactive tools are only advertised after the server can verify the
       // current authenticated workspace, feature branch, Issue, and PR.
@@ -1963,18 +1963,16 @@ export class LaneDispatchBus {
     const supervision = createActionSupervision({
       signal: input.signal,
       snapshot: async () => {
-        currentTarget = await this.resolveInteractiveTarget(input, input.signal);
-        return interactiveTargetKey(currentTarget);
+        const target = await this.resolveInteractiveTarget(input, input.signal);
+        return interactiveTargetKey(target);
       },
       review: async (signal) => {
         const target = await this.resolveInteractiveTarget(input, signal);
-        currentTarget = target;
         const verdict = await this.executeInteractiveReview(
           target,
           signal,
           () => this.resolveInteractiveTarget(input, signal),
         );
-        currentTarget = await this.resolveInteractiveTarget(input, signal);
         return verdict;
       },
       assertDeliveryTarget: async (approved) => {
@@ -1982,16 +1980,20 @@ export class LaneDispatchBus {
         if (interactiveTargetKey(target) !== approved) {
           throw new Error("Delivery target changed. Call review_action again.");
         }
-        currentTarget = target;
       },
-      deliver: () => {
+      deliver: async (approved) => {
+        const target = await this.resolveInteractiveTarget(input, input.signal);
+        if (interactiveTargetKey(target) !== approved) {
+          throw new Error("Delivery target changed. Call review_action again.");
+        }
         const mergeResult = (this.options.mergePipeline ?? mergeAndCleanupPipeline)({
-          cwd: currentTarget.repoPath,
-          prNumber: currentTarget.prNumber,
-          issueId: currentTarget.issue.id,
-          branch: currentTarget.branch,
+          cwd: target.repoPath,
+          prNumber: target.prNumber,
+          issueId: target.issue.id,
+          branch: target.branch,
           baseBranch: ACTIONS_BASE_BRANCH,
-          expectedHead: currentTarget.headCommit ?? undefined,
+          expectedHead: target.headCommit ?? undefined,
+          expectedBaseSha: target.baseCommit ?? undefined,
         });
         return { ok: mergeResult.success, ...(mergeResult.error ? { error: mergeResult.error } : {}), ...mergeResult };
       },

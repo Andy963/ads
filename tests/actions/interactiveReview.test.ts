@@ -97,6 +97,7 @@ describe("interactive Actions review supervision", () => {
       branch: string;
       baseBranch?: string;
       expectedHead?: string;
+      expectedBaseSha?: string;
     }) => void,
     reviewStatus: "PASS" | "REJECT" = "PASS",
     options: {
@@ -156,6 +157,7 @@ describe("interactive Actions review supervision", () => {
       branch: string;
       baseBranch?: string;
       expectedHead?: string;
+      expectedBaseSha?: string;
     } | undefined;
     const bus = createBus(() => reviewTarget, (options) => { mergeOptions = options; });
     const tools = await bus.createInteractiveActionTools({
@@ -177,6 +179,7 @@ describe("interactive Actions review supervision", () => {
       branch: "codex/issue-900",
       baseBranch: "dev",
       expectedHead: headCommit,
+      expectedBaseSha: baseCommit,
     });
     await tools.dispose();
   });
@@ -227,6 +230,26 @@ describe("interactive Actions review supervision", () => {
     assert.match(String(delivered.error), /Delivery target changed/);
     assert.equal(merges, 0);
     await tools.dispose();
+  });
+
+  it("fails closed when a changed ADR cannot be read", async () => {
+    const adrDir = path.join(repoDir, "docs", "adr");
+    fs.mkdirSync(adrDir, { recursive: true });
+    fs.symlinkSync("missing-target.md", path.join(adrDir, "0099-missing.md"));
+    spawnSync("git", ["add", "docs/adr/0099-missing.md"], { cwd: repoDir });
+    spawnSync("git", ["commit", "-m", "add unreadable adr fixture"], { cwd: repoDir });
+    headCommit = git("rev-parse", "HEAD");
+
+    const reviewTarget = target();
+    const bus = createBus(() => reviewTarget, () => {});
+    await assert.rejects(
+      bus.resolveInteractiveReviewTarget({
+        projectId: reviewTarget.projectId,
+        repoPath: repoDir,
+        authUserId: "user-1",
+      }),
+      /Unable to read changed ADR 'docs\/adr\/0099-missing\.md'/,
+    );
   });
 
   it("pins the Reviewer prompt to the verified commits and reports executed checks", async () => {
