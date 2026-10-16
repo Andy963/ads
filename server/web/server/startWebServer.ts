@@ -418,8 +418,8 @@ export async function startWebServer(): Promise<void> {
       laneGenerationStore,
       promptQueueStore,
       prepareTakeoverPrompt: (entry) => actionBus.prepareTakeoverPrompt(entry),
-      createInteractiveActionTools: ({ authUserId, projectId, repoPath, signal }) =>
-        actionBus.createInteractiveActionTools({ authUserId, projectId, repoPath, signal }),
+      createInteractiveActionTools: async ({ authUserId, projectId, repoPath, signal }) =>
+        await actionBus.createInteractiveActionTools({ authUserId, projectId, repoPath, signal }),
       isProcessRunning,
     },
     sessions: {

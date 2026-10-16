@@ -103,13 +103,17 @@ describe("interactive Actions review supervision", () => {
       testCommand?: string;
       interactiveVerificationTimeoutMs?: number;
       onReviewPrompt?: (prompt: string) => void;
+      onMetadataRead?: (count: number) => void;
     } = {},
   ): LaneDispatchBus {
     const current = getTarget;
+    let metadataReads = 0;
     return new LaneDispatchBus(getStateDatabase(), {
       testCommand: options.testCommand ?? "git status",
       interactiveVerificationTimeoutMs: options.interactiveVerificationTimeoutMs,
       interactiveGithubMetadataReader: () => {
+        metadataReads += 1;
+        options.onMetadataRead?.(metadataReads);
         const value = current();
         return {
           pullRequest: {
@@ -154,7 +158,7 @@ describe("interactive Actions review supervision", () => {
       expectedHead?: string;
     } | undefined;
     const bus = createBus(() => reviewTarget, (options) => { mergeOptions = options; });
-    const tools = bus.createInteractiveActionTools({
+    const tools = await bus.createInteractiveActionTools({
       projectId: reviewTarget.projectId,
       repoPath: repoDir,
       authUserId: "user-1",
@@ -181,7 +185,7 @@ describe("interactive Actions review supervision", () => {
     let reviewTarget = target();
     let merges = 0;
     const bus = createBus(() => reviewTarget, () => { merges += 1; });
-    const tools = bus.createInteractiveActionTools({
+    const tools = await bus.createInteractiveActionTools({
       projectId: reviewTarget.projectId,
       repoPath: repoDir,
       authUserId: "user-1",
@@ -202,7 +206,7 @@ describe("interactive Actions review supervision", () => {
     let reviewTarget = target();
     let merges = 0;
     const bus = createBus(() => reviewTarget, () => { merges += 1; });
-    const tools = bus.createInteractiveActionTools({
+    const tools = await bus.createInteractiveActionTools({
       projectId: reviewTarget.projectId,
       repoPath: repoDir,
       authUserId: "user-1",
@@ -231,7 +235,7 @@ describe("interactive Actions review supervision", () => {
     const bus = createBus(() => reviewTarget, () => {}, "PASS", {
       onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
     });
-    const tools = bus.createInteractiveActionTools({
+    const tools = await bus.createInteractiveActionTools({
       projectId: reviewTarget.projectId,
       repoPath: repoDir,
       authUserId: "user-1",
@@ -246,13 +250,35 @@ describe("interactive Actions review supervision", () => {
     await tools.dispose();
   });
 
+  it("rejects a target that drifts while verification is running", async () => {
+    let reviewTarget = target();
+    const bus = createBus(() => reviewTarget, () => {}, "PASS", {
+      onMetadataRead: (count) => {
+        if (count === 4) {
+          reviewTarget = target({ prNumber: 902, prUrl: "https://github.invalid/pull/902" });
+        }
+      },
+    });
+    const tools = await bus.createInteractiveActionTools({
+      projectId: reviewTarget.projectId,
+      repoPath: repoDir,
+      authUserId: "user-1",
+      signal: new AbortController().signal,
+    });
+
+    const reviewed = await tools.review_action();
+    assert.equal(reviewed.ok, false);
+    assert.match(String(reviewed.error), /changed during verification/);
+    await tools.dispose();
+  });
+
   it("terminates verification when the interactive hard timeout expires", async () => {
     const reviewTarget = target();
     const bus = createBus(() => reviewTarget, () => {}, "PASS", {
       testCommand: "node -e setTimeout(()=>{},10000)",
       interactiveVerificationTimeoutMs: 50,
     });
-    const tools = bus.createInteractiveActionTools({
+    const tools = await bus.createInteractiveActionTools({
       projectId: reviewTarget.projectId,
       repoPath: repoDir,
       authUserId: "user-1",
@@ -270,7 +296,7 @@ describe("interactive Actions review supervision", () => {
     const bus = createBus(() => reviewTarget, () => {}, "PASS", {
       testCommand: "node -e setTimeout(()=>{},10000)",
     });
-    const tools = bus.createInteractiveActionTools({
+    const tools = await bus.createInteractiveActionTools({
       projectId: reviewTarget.projectId,
       repoPath: repoDir,
       authUserId: "user-1",
@@ -287,7 +313,7 @@ describe("interactive Actions review supervision", () => {
     const reviewTarget = target();
     let merges = 0;
     const bus = createBus(() => reviewTarget, () => { merges += 1; }, "REJECT");
-    const tools = bus.createInteractiveActionTools({
+    const tools = await bus.createInteractiveActionTools({
       projectId: reviewTarget.projectId,
       repoPath: repoDir,
       authUserId: "user-1",

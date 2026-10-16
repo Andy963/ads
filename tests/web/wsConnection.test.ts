@@ -15,7 +15,7 @@ import { SessionManager } from "../../server/sessions/sessionManager.js";
 import { DirectoryManager } from "../../server/sessions/directoryManager.js";
 import { NoopAgentAvailability } from "../../server/agents/health/agentAvailability.js";
 import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
-import type { WsClientMeta } from "../../server/web/server/ws/deps.js";
+import type { WsClientMeta, WsInteractiveActionToolsFactory } from "../../server/web/server/ws/deps.js";
 import { resolveSyncLaneKey, resolveSyncNamespace } from "../../server/web/server/sync/lane.js";
 import { SyncEventStore } from "../../server/web/server/sync/store.js";
 
@@ -86,10 +86,11 @@ type StartWsServerOptions = {
   maxClients: number;
   pingIntervalMs: number;
   maxMissedPongs: number;
-  authenticateRequest?: (req: http.IncomingMessage) => { ok: true; userId: string };
+  authenticateRequest?: (req: http.IncomingMessage) => { ok: true; userId: string; connector?: true };
   workerSessionManager?: SessionManager;
   advisorSessionManager?: SessionManager;
   withSyncEventStore?: boolean;
+  createInteractiveActionTools?: WsInteractiveActionToolsFactory;
 };
 
 async function startWsServer(options: StartWsServerOptions, t?: TestContext): Promise<StartedWsServer | null> {
@@ -144,6 +145,9 @@ async function startWsServer(options: StartWsServerOptions, t?: TestContext): Pr
       cwdStorePath: process.env.ADS_STATE_DB_PATH,
       persistCwdStore: () => {},
       ...(syncEventStore ? { syncEventStore } : {}),
+      ...(options.createInteractiveActionTools
+        ? { createInteractiveActionTools: options.createInteractiveActionTools }
+        : {}),
     },
     sessions: {
       workerSessionManager,
@@ -225,7 +229,13 @@ async function stopWsServer(started: StartedWsServer | null): Promise<void> {
   }
 }
 
-function createFakeSessionFactory(prefix: string, options: { blockFirstSend?: boolean } = {}) {
+function createFakeSessionFactory(
+  prefix: string,
+  options: {
+    blockFirstSend?: boolean;
+    onSendOptions?: (options?: { actionTools?: unknown }) => void;
+  } = {},
+) {
   let nextId = 1;
   let firstSend = true;
   let resolveFirstSendStarted: (() => void) | null = null;
@@ -247,7 +257,8 @@ function createFakeSessionFactory(prefix: string, options: { blockFirstSend?: bo
       const adapter = {
         id: "codex" as const,
         metadata: { id: "codex" as const, name: "Codex", capabilities: ["text" as const] },
-        send: async (input: unknown) => {
+        send: async (input: unknown, sendOptions?: { actionTools?: unknown }) => {
+          options.onSendOptions?.(sendOptions);
           if (options.blockFirstSend && firstSend) {
             firstSend = false;
             resolveFirstSendStarted?.();
@@ -581,5 +592,106 @@ describe("web/server/ws in-band switch_chat_session", () => {
     const switchedHistory = started!.workerHistoryStore.get(switchedHistoryKey);
     assert.equal(initialHistory.some((entry) => entry.text === "second prompt"), false);
     assert.ok(switchedHistory.some((entry) => entry.text === "second prompt"));
+  });
+});
+
+describe("web/server/ws interactive Actions tools", () => {
+  let started: StartedWsServer | null = null;
+  let workerFactory: ReturnType<typeof createFakeSessionFactory>;
+  let advisorFactory: ReturnType<typeof createFakeSessionFactory>;
+  let actionFactoryCalls = 0;
+  const workerActionTools: unknown[] = [];
+  const advisorActionTools: unknown[] = [];
+  const sockets: WebSocket[] = [];
+
+  beforeEach(async (t) => {
+    actionFactoryCalls = 0;
+    workerActionTools.length = 0;
+    advisorActionTools.length = 0;
+    workerFactory = createFakeSessionFactory("actions", {
+      onSendOptions: (options) => workerActionTools.push(options?.actionTools),
+    });
+    advisorFactory = createFakeSessionFactory("advisor", {
+      onSendOptions: (options) => advisorActionTools.push(options?.actionTools),
+    });
+    const actionTools = {
+      review_action: async () => ({ ok: true }),
+      deliver_action: async () => ({ ok: true }),
+      dispose: async () => {},
+    };
+
+    started = await startWsServer({
+      maxClients: 10,
+      pingIntervalMs: 0,
+      maxMissedPongs: 0,
+      authenticateRequest: (req) => {
+        const connector = req.headers["x-connector"] === "1";
+        const userHeader = req.headers["x-user-id"];
+        const userId = Array.isArray(userHeader) ? userHeader[0] : userHeader;
+        return {
+          ok: true as const,
+          userId: String(userId ?? (connector ? "connector" : "browser")),
+          ...(connector ? { connector: true as const } : {}),
+        };
+      },
+      workerSessionManager: new SessionManager(0, 0, "workspace-write", "test-model", undefined, undefined, {
+        createSession: workerFactory.factory as never,
+      }),
+      advisorSessionManager: new SessionManager(0, 0, "read-only", "test-model", undefined, undefined, {
+        createSession: advisorFactory.factory as never,
+      }),
+      createInteractiveActionTools: () => {
+        actionFactoryCalls += 1;
+        return actionTools;
+      },
+    }, t);
+  });
+
+  afterEach(async () => {
+    for (const ws of sockets) {
+      try {
+        ws.terminate();
+      } catch {
+        // ignore
+      }
+    }
+    sockets.length = 0;
+    await stopWsServer(started);
+    started = null;
+  });
+
+  it("passes tools only through the browser Actions prompt path", async () => {
+    const sendPrompt = async (protocols: string[], prompt: string, headers?: Record<string, string>): Promise<void> => {
+      const ws = new WebSocket(`ws://127.0.0.1:${started!.port}/ws`, protocols, {
+        origin: "http://localhost",
+        ...(headers ? { headers } : {}),
+      });
+      sockets.push(ws);
+      const welcomePromise = waitForWsMessage(ws, (message) => message.type === "welcome");
+      await waitForWsOpen(ws);
+      await welcomePromise;
+      const resultPromise = waitForWsMessage(ws, (message) => message.type === "result" && message.output === "ok");
+      ws.send(JSON.stringify({ type: "prompt", payload: prompt }));
+      await resultPromise;
+    };
+
+    await sendPrompt(["ads-v1", "ads-session.browser", "ads-chat.main"], "Actions prompt", { "x-user-id": "browser" });
+    assert.equal(workerFactory.created.length, 1);
+    assert.equal(workerActionTools.length, 1);
+    assert.ok(workerActionTools[0]);
+
+    await sendPrompt(["ads-v1", "ads-session.advisor", "ads-chat.acopilot"], "Advisor prompt", { "x-user-id": "advisor" });
+    assert.equal(advisorFactory.created.length, 1);
+    assert.deepEqual(advisorActionTools, [undefined]);
+
+    await sendPrompt(
+      ["ads-v1", "ads-session.connector", "ads-chat.main"],
+      "Connector prompt",
+      { "x-connector": "1" },
+    );
+    assert.equal(workerFactory.created.length, 2);
+    assert.equal(workerActionTools.length, 2);
+    assert.equal(workerActionTools[1], undefined);
+    assert.equal(actionFactoryCalls, 1);
   });
 });

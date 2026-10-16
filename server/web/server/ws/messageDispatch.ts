@@ -125,7 +125,7 @@ export async function dispatchWsMessage(args: {
     }
 
     const createInteractiveActionTools = args.createInteractiveActionTools
-      ? (signal: AbortSignal) => args.createInteractiveActionTools!({
+      ? async (signal: AbortSignal) => await args.createInteractiveActionTools!({
           authUserId: args.authUserId,
           projectId: args.sessionId,
           repoPath: detectWorkspaceFrom(currentCwd),
