@@ -77,7 +77,6 @@ export async function runAgentTurn(
   }
   const sendOptions: AgentSendOptions = {
     actionTools: options.actionTools,
-    actionRecovery: options.actionRecovery,
     streaming: options.streaming,
     outputSchema: activeAgentId === "codex" ? options.outputSchema : undefined,
     signal: options.signal,
@@ -93,7 +92,6 @@ export async function runAgentTurn(
       workspaceRoot,
       sessionId: options.historySessionId,
       authUserId: options.authUserId,
-      actionRecovery: options.actionRecovery,
       signal: options.signal,
     });
     const cleanedResponse = stripToolDirectives(result.response);

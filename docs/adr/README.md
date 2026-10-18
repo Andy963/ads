@@ -53,4 +53,5 @@
 - 0041 - [ADR 0041: 跨设备共享项目的活动聊天会话](0041-shared-active-chat-session.md)
 - 0043 - [ADR 0043: 由 Acopilot 自动接管阻塞任务](0043-automatic-blocked-action-takeover.md)
 - 0044 - [ADR 0044: Separate Reviewer Capability from Actions Job Ownership](0044-interactive-developer-review-boundary.md)
+- 0045 - [ADR 0045: Developer Owns the Complete Actions Job Lifecycle](0045-developer-owns-actions-job-lifecycle.md)
 <!-- ADS:ADR_INDEX_END -->

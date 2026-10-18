@@ -24,7 +24,6 @@ import type { CodexProviderInjection } from "../../codex/appServer/providerInjec
 import type { CodexAppServerClient } from "../../codex/appServer/rpcClient.js";
 import { builtinDynamicTools, createBuiltinToolBridge } from "../../codex/appServer/builtinTools.js";
 import type { CommandExecutionRequestApprovalResponse } from "../../codex/appServer/protocol/v2/CommandExecutionRequestApprovalResponse.js";
-import type { PermissionsRequestApprovalResponse } from "../../codex/appServer/protocol/v2/PermissionsRequestApprovalResponse.js";
 import type { SandboxPolicy } from "../../codex/appServer/protocol/v2/SandboxPolicy.js";
 import type { AskForApproval } from "../../codex/appServer/protocol/v2/AskForApproval.js";
 import { AsyncLock } from "../../utils/asyncLock.js";
@@ -644,7 +643,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       }
     }
 
-    if (this.threadId && !options?.actionRecovery) {
+    if (this.threadId) {
       try {
         await this.maybeCompactThread(client, this.threadId, options?.signal);
         assertActiveTurn();
@@ -673,8 +672,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       context: {
         workspaceRoot: this.workspaceRoot,
         authUserId: this.authUserId,
-        actionRecovery: options?.actionRecovery,
-        actionTools: options?.actionRecovery ? undefined : options?.actionTools,
+        actionTools: options?.actionTools,
         signal: options?.signal,
       },
       scope: () => ({
@@ -741,7 +739,6 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
     cleanupFns.push(
       client.onServerRequest("item/commandExecution/requestApproval", (params) => {
-        if (options?.actionRecovery) return { decision: "decline" } satisfies CommandExecutionRequestApprovalResponse;
         const request = params && typeof params === "object" ? params as Record<string, unknown> : {};
         const itemId = typeof request.itemId === "string" ? request.itemId : randomUUID();
         const command = typeof request.command === "string" ? request.command : "";
@@ -767,16 +764,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
     cleanupFns.push(
       client.onServerRequest(
         "item/fileChange/requestApproval",
-        () => ({ decision: options?.actionRecovery ? "decline" : "accept" }),
+        () => ({ decision: "accept" }),
         { matches: matchesCurrentTurnRequest },
       ),
     );
-
-    if (options?.actionRecovery) {
-      cleanupFns.push(client.onServerRequest("item/permissions/requestApproval", () => ({
-        permissions: {}, scope: "turn",
-      } satisfies PermissionsRequestApprovalResponse), { matches: matchesCurrentTurnRequest }));
-    }
 
     // The daemon connection is shared by every session of the project, so
     // notifications from other sessions' turns arrive on this client too. A
@@ -993,7 +984,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       assertActiveTurn();
       const startResult = await client.request<Record<string, unknown>, { thread?: { id?: string }; sandbox?: SandboxPolicy; approvalPolicy?: AskForApproval }>(
         "thread/start",
-        this.buildThreadStartParams(Boolean(options?.actionTools && !options?.actionRecovery)),
+        this.buildThreadStartParams(Boolean(options?.actionTools)),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
       );
       assertActiveTurn();
@@ -1016,7 +1007,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       assertActiveTurn();
       await client.request(
         "turn/start",
-        this.buildTurnStartParams(threadId, userInput, Boolean(options?.actionRecovery)),
+        this.buildTurnStartParams(threadId, userInput),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
       );
       assertActiveTurn();
@@ -1356,17 +1347,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
     this.configuredTurnPolicy = { sandboxPolicy, approvalPolicy: result.approvalPolicy ?? "untrusted" };
   }
 
-  private buildTurnStartParams(threadId: string, input: UserInputPart[], recovery = false): Record<string, unknown> {
+  private buildTurnStartParams(threadId: string, input: UserInputPart[]): Record<string, unknown> {
     const params: Record<string, unknown> = {
       threadId,
       input,
       // turn/start overrides are sticky, so explicitly restore the resolved policy on ordinary turns.
       ...this.configuredTurnPolicy,
     };
-    if (recovery) {
-      params.sandboxPolicy = { type: "readOnly", networkAccess: false } satisfies SandboxPolicy;
-      params.approvalPolicy = "never" satisfies AskForApproval;
-    }
     if (this.model) params.model = this.resolveModel?.(this.model) ?? this.model;
     params.effort = this.modelReasoningEffort || "high";
     if (this.workingDirectory) params.cwd = this.workingDirectory;

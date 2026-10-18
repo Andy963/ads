@@ -1,13 +1,11 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
-import type { ActionRecoveryContext } from "../agents/actionTools.js";
 import { executeBuiltinTool } from "../tools/builtins.js";
 import { getWorkspacesDatabase, resolveWorkspaceId } from "../storage/database.js";
 import { updateMemory } from "../memory/memory.js";
 import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("BuiltinTools");
-const RECOVERY_DIRECTIVES = new Set(["session_search", "dispatch_action_job"]);
 
 export interface ToolDirective {
   name: string;
@@ -43,7 +41,6 @@ export async function executeToolDirectives(args: {
   text: string;
   workspaceRoot: string;
   authUserId?: string;
-  actionRecovery?: ActionRecoveryContext;
   signal?: AbortSignal;
   sessionId?: string;
   db?: DatabaseType;
@@ -51,9 +48,6 @@ export async function executeToolDirectives(args: {
   const results: string[] = [];
   for (const directive of extractToolDirectives(args.text)) {
     try {
-      if (args.actionRecovery && !RECOVERY_DIRECTIVES.has(directive.name)) {
-        throw new Error("Tool is unavailable during Actions recovery diagnosis");
-      }
       if (directive.name === "memory.update") {
         const op = normalizeMemoryOp(directive.attrs.op);
         updateMemory({ workspaceRoot: args.workspaceRoot, op, content: directive.body, key: directive.attrs.key });
@@ -81,7 +75,6 @@ export async function executeToolDirectives(args: {
         }, {
           workspaceRoot: args.workspaceRoot,
           authUserId: args.authUserId,
-          actionRecovery: args.actionRecovery,
           signal: args.signal,
         });
         results.push(`tool.dispatch_action_job: ok (job_id: ${res.job_id}, status: ${res.status})`);

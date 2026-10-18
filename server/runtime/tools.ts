@@ -8,7 +8,7 @@ import {
   executeBuiltinTool,
   isActionTool,
 } from "../tools/builtins.js";
-import type { ActionRecoveryContext, ActionTools } from "../agents/actionTools.js";
+import type { ActionTools } from "../agents/actionTools.js";
 import type { MiddlewarePipeline, TurnContext } from "../middleware/index.js";
 import { findSecurityViolation } from "../middleware/builtin/globalRulesMiddleware.js";
 import { getExecAllowlistFromEnv, hasShellSyntax, runCommand, tokenizeCommandLine } from "../utils/commandRunner.js";
@@ -130,9 +130,6 @@ export const NATIVE_TOOL_DEFINITIONS: NativeToolDefinition[] = [
   ...BUILTIN_TOOL_DEFINITIONS,
 ];
 
-const RECOVERY_TOOL_NAMES = new Set(["read_file", "search", "read_execution_history", "dispatch_action_job"]);
-export const RECOVERY_TOOL_DEFINITIONS = NATIVE_TOOL_DEFINITIONS.filter(tool => RECOVERY_TOOL_NAMES.has(tool.function.name));
-
 export interface NativeToolExecutionResult {
   output: string;
   failed?: boolean;
@@ -151,7 +148,6 @@ export interface NativeToolExecutionResult {
 
 export interface NativeToolExecutorOptions {
   actionTools?: ActionTools;
-  actionRecovery?: ActionRecoveryContext;
   readHistory?: (after: number, offset: number) => string;
   workspaceRoot: string;
   authUserId?: string;
@@ -375,7 +371,6 @@ function applyOperation(original: string | null, operation: PatchOperation): str
 
 export class NativeToolExecutor {
   private readonly actionTools?: ActionTools;
-  private readonly actionRecovery?: ActionRecoveryContext;
   private readonly readHistory?: (after: number, offset: number) => string;
   private readonly workspaceRoot: string;
   private readonly authUserId?: string;
@@ -396,7 +391,6 @@ export class NativeToolExecutor {
 
   constructor(options: NativeToolExecutorOptions) {
     this.actionTools = options.actionTools;
-    this.actionRecovery = options.actionRecovery;
     this.readHistory = options.readHistory;
     this.workspaceRoot = fs.realpathSync(path.resolve(options.workspaceRoot));
     this.authUserId = options.authUserId;
@@ -424,9 +418,6 @@ export class NativeToolExecutor {
 
   async execute(call: NativeChatToolCall): Promise<NativeToolExecutionResult> {
     this.throwIfAborted();
-    if (this.actionRecovery && !RECOVERY_TOOL_NAMES.has(call.function.name)) {
-      throw new Error("Tool is unavailable during Actions recovery diagnosis");
-    }
     if (call.function.name === "dispatch_action_job" || isActionTool(call.function.name)) return this.executeBuiltinCall(call);
     const args = parseArguments(call);
     switch (call.function.name) {
@@ -469,7 +460,6 @@ export class NativeToolExecutor {
         workspaceRoot: this.workspaceRoot,
         authUserId: this.authUserId,
         actionTools: this.actionTools,
-        actionRecovery: this.actionRecovery,
         signal: this.signal,
       })),
     }));

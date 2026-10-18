@@ -110,7 +110,6 @@ export type WsStateDeps = {
   laneGenerationStore?: import("../sync/laneGeneration.js").WebLaneGenerationStore;
   promptQueueStore?: PromptQueueStore;
   isProcessRunning?: (pid: number) => boolean;
-  prepareTakeoverPrompt?: (entry: import("../../../state/promptQueueStore.js").PromptQueueEntry) => import("../../../agents/actionTools.js").ActionRecoveryContext | null;
   createInteractiveActionTools?: WsInteractiveActionToolsFactory;
 };
 
@@ -210,8 +209,6 @@ export type WsCommandStateDeps = Pick<
 };
 
 export type WsPromptHandlerDeps = {
-  actionRecovery?: import("../../../agents/actionTools.js").ActionRecoveryContext;
-  validateActionRecovery?: () => void;
   createInteractiveActionTools?: (signal: AbortSignal, reviewPrompt?: string) => WsSupervisedActionTools | Promise<WsSupervisedActionTools>;
   request: WsRequestDeps;
   transport: WsTransportDeps;
