@@ -468,6 +468,30 @@
   height: 18px;
   flex: 0 0 auto;
 }
+.projectRemove {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: rgba(254, 202, 202, 0.55);
+  color: rgba(185, 28, 28, 0.95);
+  cursor: pointer;
+  user-select: none;
+}
+.projectRemove:hover:not(.disabled) {
+  background: rgba(254, 202, 202, 0.85);
+}
+.projectRemove.disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.projectNode.active .projectRemove {
+  background: rgba(239, 68, 68, 0.14);
+  color: #dc2626;
+}
 .projectDragHandle {
   width: 18px;
   height: 18px;

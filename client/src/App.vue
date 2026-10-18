@@ -1393,6 +1393,7 @@ const PROJECT_ROW_SWIPE_THRESHOLD_PX = 8;
 const PROJECT_ROW_LONG_PRESS_MS = 500;
 
 const actionSheetProjectId = ref<string | null>(null);
+const pendingRemoveProjectId = ref<string | null>(null);
 
 let projectTouchStartX = 0;
 let projectTouchStartY = 0;
@@ -1410,6 +1411,12 @@ const actionSheetProject = computed(() => {
   return projects.value.find((p) => p.id === id) ?? null;
 });
 
+const pendingRemoveProject = computed(() => {
+  const id = pendingRemoveProjectId.value;
+  if (!id) return null;
+  return projects.value.find((p) => p.id === id) ?? null;
+});
+
 function openProjectActionSheet(p: ProjectLike): void {
   projectSwipeOpenId.value = null;
   activeProjectSwipeId.value = null;
@@ -1418,6 +1425,23 @@ function openProjectActionSheet(p: ProjectLike): void {
 
 function closeProjectActionSheet(): void {
   actionSheetProjectId.value = null;
+}
+
+function requestRemoveProject(p: ProjectLike): void {
+  if (!canRemoveProject(p.id)) return;
+  pendingRemoveProjectId.value = p.id;
+}
+
+function cancelRemoveProject(): void {
+  pendingRemoveProjectId.value = null;
+}
+
+async function confirmRemoveProject(): Promise<void> {
+  const p = pendingRemoveProject.value;
+  pendingRemoveProjectId.value = null;
+  if (p) {
+    await handleRemoveProject(p.id);
+  }
 }
 
 function cancelProjectLongPress(): void {
@@ -1878,6 +1902,19 @@ const acopilotConnectionStatus = computed(() => {
                 <span class="projectBranch">{{ formatProjectBranch(p.branch) }}</span>
               </span>
               <span class="projectRowActions">
+                <span
+                  v-if="!isMobile && loggedIn && p.id !== 'default'"
+                  class="projectRemove"
+                  :class="{ disabled: !canRemoveProject(p.id) }"
+                  :title="canRemoveProject(p.id) ? '从列表移除' : '项目正在运行，暂时无法移除'"
+                  aria-label="从列表移除"
+                  :data-testid="`project-remove-${p.id}`"
+                  @click.stop.prevent="requestRemoveProject(p)"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </span>
                 <span v-if="!isMobile && p.id === 'default'" class="projectDragSpacer" aria-hidden="true" />
                 <span
                   v-else-if="!isMobile && loggedIn"
@@ -2210,6 +2247,20 @@ const acopilotConnectionStatus = computed(() => {
         <div class="modalActions">
           <button type="button" class="btnSecondary" @click="cancelProjectSwitch">取消</button>
           <button type="button" class="btnDanger" @click="confirmProjectSwitch">切换</button>
+        </div>
+      </div>
+    </div>
+    <div v-if="pendingRemoveProject" class="modalOverlay" role="dialog" aria-modal="true" @click.self="cancelRemoveProject">
+      <div class="modalCard" role="document">
+        <div class="modalTitle">从列表移除项目？</div>
+        <div class="modalDesc">仅从项目列表移除，不会删除本地文件或工作区数据。</div>
+        <div class="modalPreview">
+          <div class="modalPreviewTitle">{{ pendingRemoveProject.name || pendingRemoveProject.id }}</div>
+          <div v-if="pendingRemoveProject.path" class="modalPreviewPrompt">{{ pendingRemoveProject.path }}</div>
+        </div>
+        <div class="modalActions">
+          <button type="button" class="btnSecondary" @click="cancelRemoveProject">取消</button>
+          <button type="button" class="btnDanger" data-testid="project-remove-confirm" @click="confirmRemoveProject">移除</button>
         </div>
       </div>
     </div>
