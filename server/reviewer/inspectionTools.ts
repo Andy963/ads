@@ -6,7 +6,8 @@ import type { NativeChatToolCall, NativeToolDefinition } from "../runtime/openAi
 const MAX_OUTPUT = 8000;
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_FILE_LINES = 200;
-const PAGE_CHARS = 1000;
+const SEARCH_PAGE_CHARS = 1000;
+const DIFF_PAGE_CHARS = 7000;
 const GIT_TIMEOUT_MS = 5000;
 const GIT_PREFIX = ["--no-pager", "-c", "core.fsmonitor=false"];
 const pathSchema = z.string().min(1).max(512).refine((value) => !path.isAbsolute(value) && !value.includes("\\") && !value.split("/").includes(".."),
@@ -20,9 +21,9 @@ const schemas = {
 };
 
 export const REVIEWER_TOOLS: NativeToolDefinition[] = [
-  { type: "function", function: { name: "read_diff", description: "Read the captured exact review diff in character pages. Start offset=0 and follow next_offset until done. Required for a diff too large for the initial prompt.", parameters: { type: "object", additionalProperties: false, properties: { offset: { type: "integer", minimum: 0 } } } } },
+  { type: "function", function: { name: "read_diff", description: `Read the captured exact review diff in pages of up to ${DIFF_PAGE_CHARS} characters. Start offset=0 and follow next_offset until done. Required for a diff too large for the initial prompt.`, parameters: { type: "object", additionalProperties: false, properties: { offset: { type: "integer", minimum: 0 } } } } },
   { type: "function", function: { name: "read_file_range", description: `Read up to ${MAX_FILE_LINES} numbered lines from a regular file of at most 1 MiB in the reviewed Git commit, not the mutable working tree. end_line is clamped to EOF before the line budget is checked. Output is capped at ${MAX_OUTPUT} characters; request a smaller range if truncated. Correct rejected paths/ranges and retry.`, parameters: { type: "object", additionalProperties: false, properties: { path: { type: "string" }, start_line: { type: "integer", minimum: 1 }, end_line: { type: "integer", minimum: 1 } }, required: ["path", "start_line", "end_line"] } } },
-  { type: "function", function: { name: "search_code", description: `Search literal text (1-256 characters) in permitted regular files of at most 1 MiB in the reviewed commit. path_pattern is a workspace-relative glob. Returns ${PAGE_CHARS}-character pages with offset, content, next_offset, done and total_chars. Start offset=0 and follow next_offset with the same query/glob until done. Narrow path_pattern for large result sets.`, parameters: { type: "object", additionalProperties: false, properties: { query: { type: "string", minLength: 1, maxLength: 256 }, path_pattern: { type: "string", maxLength: 256 }, offset: { type: "integer", minimum: 0 } }, required: ["query"] } } },
+  { type: "function", function: { name: "search_code", description: `Search literal text (1-256 characters) in permitted regular files of at most 1 MiB in the reviewed commit. path_pattern is a workspace-relative glob. Returns ${SEARCH_PAGE_CHARS}-character pages with offset, content, next_offset, done and total_chars. Start offset=0 and follow next_offset with the same query/glob until done. Narrow path_pattern for large result sets.`, parameters: { type: "object", additionalProperties: false, properties: { query: { type: "string", minLength: 1, maxLength: 256 }, path_pattern: { type: "string", maxLength: 256 }, offset: { type: "integer", minimum: 0 } }, required: ["query"] } } },
   { type: "function", function: { name: "list_dir", description: "List direct children in the reviewed commit. Use path '.' for the root. Symlinks, submodules, secrets and generated directories are excluded.", parameters: { type: "object", additionalProperties: false, properties: { path: { type: "string" } }, required: ["path"] } } },
 ];
 
@@ -34,10 +35,20 @@ function gitEnvironment(): NodeJS.ProcessEnv {
   return { ...env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0" };
 }
 
-function page(offset: number, content: string, total: number): string {
+function encodePage(offset: number, content: string, total: number): string {
   if (offset > total) throw new InspectionRequestError("Page offset is outside the evidence. Restart at offset=0 with the same query and path_pattern.");
   const next = offset + content.length;
   return JSON.stringify({ offset, content, next_offset: next, done: next === total, total_chars: total });
+}
+function diffPage(offset: number, diff: string, total: number): { output: string; end: number } {
+  let low = offset;
+  let high = Math.min(total, offset + DIFF_PAGE_CHARS);
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (encodePage(offset, diff.slice(offset, middle), total).length <= MAX_OUTPUT) low = middle;
+    else high = middle - 1;
+  }
+  return { output: encodePage(offset, diff.slice(offset, low), total), end: low };
 }
 function permitted(file: string): boolean {
   return !file.split("/").some((part) => [".git", ".ads", "node_modules", "dist"].includes(part)
@@ -66,7 +77,7 @@ export class ReviewerInspectionTools {
   }
 
   private async searchPage(files: Entry[], query: string, offset: number): Promise<string> {
-    if (!files.length) return page(offset, "", 0);
+    if (!files.length) return encodePage(offset, "", 0);
     let content = "";
     let total = 0;
     this.signal.throwIfAborted();
@@ -80,7 +91,7 @@ export class ReviewerInspectionTools {
       child.stdout.on("data", (chunk: string) => {
         // Drain to EOF to detect Git failures, but retain only this bounded page.
         const start = Math.max(0, offset - total);
-        const end = Math.min(chunk.length, offset + PAGE_CHARS - total);
+        const end = Math.min(chunk.length, offset + SEARCH_PAGE_CHARS - total);
         if (start < end) content += chunk.slice(start, end);
         total += chunk.length;
       });
@@ -99,7 +110,7 @@ export class ReviewerInspectionTools {
       if (error.code === "E2BIG") throw new InspectionRequestError("Search exceeds the process argument limit. Narrow path_pattern.");
       throw error;
     });
-    return page(offset, content, total);
+    return encodePage(offset, content, total);
   }
 
   private async files(): Promise<Entry[]> {
@@ -125,10 +136,9 @@ export class ReviewerInspectionTools {
           const { offset } = schemas.read_diff.parse(input);
           if (this.diff === undefined) throw new Error("No captured diff is available.");
           if (offset > this.diff.length) throw new InspectionRequestError("Diff offset is outside the captured evidence. Restart at offset=0.");
-          // JSON escaping can expand sixfold; keep the whole page and cursor within MAX_OUTPUT.
-          const end = Math.min(this.diff.length, offset + PAGE_CHARS);
-          if (offset <= this.diffReadThrough) this.diffReadThrough = Math.max(this.diffReadThrough, end);
-          output = page(offset, this.diff.slice(offset, end), this.diff.length);
+          const result = diffPage(offset, this.diff, this.diff.length);
+          if (offset <= this.diffReadThrough) this.diffReadThrough = Math.max(this.diffReadThrough, result.end);
+          output = result.output;
           break;
         }
         case "read_file_range": {

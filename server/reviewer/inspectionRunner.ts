@@ -31,7 +31,11 @@ export async function runReviewerInspection(options: {
   const requiresPaging = diff !== undefined && (diff.split("\n").length > REVIEW_DIFF_MAX_LINES || diff.length > REVIEW_DIFF_MAX_CHARS);
   const tools = new ReviewerInspectionTools(options.workspace, options.commit, options.signal, diff);
   const guard = new ToolLoopGuard();
-  const budget = resolveNativeContextBudget({ contextWindow: options.model.contextWindow, reservedTokens: options.model.options?.maxTokens ?? 4096 });
+  const configuredOutputTokens = options.model.options?.maxTokens;
+  const budget = resolveNativeContextBudget({
+    contextWindow: options.model.contextWindow,
+    ...(configuredOutputTokens === undefined ? {} : { reservedTokens: configuredOutputTokens }),
+  });
   const complete = options.complete ?? completeNativeModel;
   const messages: NativeChatMessage[] = [
     { role: "system", content: options.systemPrompt },
