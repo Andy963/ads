@@ -192,6 +192,9 @@ export class ReviewerInspectionTools {
 
   hasUnavailableSnapshot(): boolean { return this.snapshotUnavailable; }
   hasReadFullDiff(): boolean { return this.diff !== undefined && this.diffReadThrough >= this.diff.length; }
+  diffProgress(): { read: number; total: number } | undefined {
+    return this.diff === undefined ? undefined : { read: this.diffReadThrough, total: this.diff.length };
+  }
 
   dispose(): void { this.entries = null; }
 }

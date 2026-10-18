@@ -38,7 +38,7 @@ it("does not hide unknown tool outcomes or retry an invalid summary", async () =
   await assert.rejects(compactExecution({ messages: messages(), budget: { contextWindow: 6144, reservedTokens: 1024 }, historyHint: "history", summarize: async () => {
     calls++;
     return { text: "partial", toolCalls: [], usage: null, finishReason: "length" };
-  } }), NativeContextLimitError);
+  } }), /execution summary was incomplete \(finish_reason=length, text_chars=7, tool_calls=0\)/);
   assert.equal(calls, 1);
 });
 

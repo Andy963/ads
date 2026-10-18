@@ -1549,7 +1549,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       const payload = { ...reviewerPayload(), diff };
       assert.equal((await bus.executeReviewer(payload, repoDir)).status, "PASS");
       await assert.rejects(bus.executeReviewer({ ...payload, diff: `${diff}\n+ overflow` }, repoDir), ReviewerIncompleteError);
-      assert.equal(calls, useNative ? 2 : 1);
+      // Native inspection asks the same Reviewer session to finish paging before failing closed.
+      assert.equal(calls, useNative ? 4 : 1);
     }
   });
 

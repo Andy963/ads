@@ -270,6 +270,8 @@ describe("isolated Reviewer inspection", () => {
     const result = await runReviewerInspection({ ...options(), model: { ...options().model, contextWindow: 16_384 }, diff, complete: async request => {
       maxMessages = Math.max(maxMessages, request.messages.length);
       if (!request.tools.length) {
+        assert.ok((request.options?.maxTokens ?? 0) > 4096, "reviewer summary budget must leave room for high-effort reasoning");
+        assert.ok(request.messages.every(message => !message.tool_calls?.length), "summary evidence must be flattened so the model cannot replay tool calls");
         summaries++;
         return { ...verdict, text: "Reviewed previous diff pages; continue at the last returned next_offset." };
       }
@@ -339,6 +341,25 @@ describe("isolated Reviewer inspection", () => {
     } });
     assert.equal(result.status, "PASS");
     assert.equal(covered, diff);
+  });
+
+  it("continues the same inspection after an early final verdict", async () => {
+    const diff = ["diff --git a/file.ts b/file.ts", ...Array.from({ length: 3000 }, (_, i) => `-const old${i} = ${i};`)].join("\n");
+    let turns = 0;
+    const result = await runReviewerInspection({ ...options(), diff, complete: async request => {
+      turns++;
+      if (turns === 1) return verdict;
+      const last = request.messages.at(-1);
+      if (last?.role === "user") {
+        assert.match(String(last.content), /not fully inspected yet.*offset=0/);
+        return { ...verdict, text: "", toolCalls: [call("read_diff", { offset: 0 }, "page-1")] };
+      }
+      const page = JSON.parse(String(last?.content));
+      if (page.done) return verdict;
+      return { ...verdict, text: "", toolCalls: [call("read_diff", { offset: page.next_offset }, `page-${turns}`)] };
+    } });
+    assert.equal(result.status, "PASS");
+    assert.ok(turns > 2);
   });
 
   for (const count of [6, 8]) {
