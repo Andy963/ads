@@ -70,7 +70,7 @@ export async function executeToolDirectives(args: {
       if (directive.name === "dispatch_action_job") {
         const { issue, issue_title: issueTitle, ...attrs } = directive.attrs;
         const issueId = attrs.issue_id ?? issue;
-        const res = executeBuiltinTool(directive.name, {
+        const res = await executeBuiltinTool(directive.name, {
           ...attrs,
           ...(issueId !== undefined ? { issue_id: Number(issueId) } : {}),
           title: attrs.title ?? issueTitle ?? (issueId ? `Issue #${Number(issueId)}` : "Task"),

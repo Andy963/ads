@@ -23,7 +23,6 @@ import {
 import type { CodexProviderInjection } from "../../codex/appServer/providerInjection.js";
 import type { CodexAppServerClient } from "../../codex/appServer/rpcClient.js";
 import { builtinDynamicTools, createBuiltinToolBridge } from "../../codex/appServer/builtinTools.js";
-import { createActionToolBridge } from "../../codex/appServer/actionTools.js";
 import type { CommandExecutionRequestApprovalResponse } from "../../codex/appServer/protocol/v2/CommandExecutionRequestApprovalResponse.js";
 import type { PermissionsRequestApprovalResponse } from "../../codex/appServer/protocol/v2/PermissionsRequestApprovalResponse.js";
 import type { SandboxPolicy } from "../../codex/appServer/protocol/v2/SandboxPolicy.js";
@@ -675,6 +674,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
         workspaceRoot: this.workspaceRoot,
         authUserId: this.authUserId,
         actionRecovery: options?.actionRecovery,
+        actionTools: options?.actionRecovery ? undefined : options?.actionTools,
         signal: options?.signal,
       },
       scope: () => ({
@@ -682,16 +682,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
         turnId: state.turnId,
         active: acceptingBuiltinCalls && !state.failed,
       }),
-      markSideEffect: (callId) => retryState.markSideEffect({ type: "tool_call", id: callId, tool: "dispatch_action_job" }),
+      markSideEffect: (callId, tool) => retryState.markSideEffect({
+        type: "tool_call",
+        id: callId,
+        tool: tool === "dispatch_action_job" ? tool : "actions",
+      }),
     });
     cleanupFns.push(client.onServerRequest("item/tool/call", builtinTools.handle, { matches: builtinTools.matches }));
-    const actionTools = createActionToolBridge({
-      tools: options?.actionRecovery ? undefined : options?.actionTools,
-      signal: options?.signal,
-      scope: () => ({ threadId: this.threadId, turnId: state.turnId, active: acceptingBuiltinCalls && !state.failed }),
-      markSideEffect: (id) => retryState.markSideEffect({ type: "tool_call", id, tool: "actions" }),
-    });
-    cleanupFns.push(client.onServerRequest("item/tool/call", actionTools.handle, { matches: actionTools.matches }));
     const emit = (event: ThreadEvent) => {
       const mapped = mapThreadEventToAgentEvent(event, Date.now());
       if (mapped) {
