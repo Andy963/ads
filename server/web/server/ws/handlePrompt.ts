@@ -288,7 +288,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       const pipeline = deps.middleware ?? createCoreMiddlewarePipeline();
 
       promptRun.ensureActive();
-      interactiveActionTools = await deps.createInteractiveActionTools?.(controller.signal);
+      interactiveActionTools = await deps.createInteractiveActionTools?.(controller.signal, originalTurnPrompt);
       agentTurnPromise = runAgentTurn(orchestrator, effectiveInput, {
         actionRecovery: deps.actionRecovery,
         actionTools: interactiveActionTools,

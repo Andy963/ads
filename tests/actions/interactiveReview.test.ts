@@ -184,6 +184,50 @@ describe("interactive Actions review supervision", () => {
     await tools.dispose();
   });
 
+  it("keeps the built-in reviewer capability available until invocation-time target validation", async () => {
+    const bus = createBus(() => target(), () => {});
+    const tools = await bus.createInteractiveActionTools({
+      projectId: "not-a-real-project",
+      repoPath: path.join(repoDir, "not-a-real-repo"),
+      authUserId: "user-1",
+      signal: new AbortController().signal,
+    });
+
+    assert.ok(tools);
+    const result = await tools.review_action();
+    assert.equal(result.ok, false);
+    assert.match(String(result.error), /project workspace/);
+    await tools.dispose();
+  });
+
+  it("reviews the authenticated workspace without a feature branch, clean worktree, or PR", async () => {
+    spawnSync("git", ["checkout", "-b", "feature/local-review"], { cwd: repoDir });
+    fs.writeFileSync(path.join(repoDir, "change.txt"), "uncommitted local change\n");
+    let reviewPrompt = "";
+    const bus = createBus(() => target(), () => {}, "PASS", {
+      testCommand: "git status",
+      onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
+    });
+    const tools = await bus.createInteractiveActionTools({
+      projectId: deriveProjectSessionId(repoDir),
+      repoPath: repoDir,
+      authUserId: "user-1",
+      reviewPrompt: "Review the local implementation before opening a pull request.",
+      signal: new AbortController().signal,
+    });
+
+    const reviewed = await tools.review_action();
+    assert.equal(reviewed.ok, true, reviewed.error);
+    assert.match(reviewPrompt, /Interactive workspace review/);
+    assert.match(reviewPrompt, /before opening a pull request/);
+    assert.match(reviewPrompt, /uncommitted local change/);
+
+    const delivered = await tools.deliver_action();
+    assert.equal(delivered.ok, false);
+    assert.match(String(delivered.error), /PR-scoped review/);
+    await tools.dispose();
+  });
+
   it("rejects delivery when the PR target changes after PASS", async () => {
     let reviewTarget = target();
     let merges = 0;
@@ -277,7 +321,7 @@ describe("interactive Actions review supervision", () => {
     let reviewTarget = target();
     const bus = createBus(() => reviewTarget, () => {}, "PASS", {
       onMetadataRead: (count) => {
-        if (count === 4) {
+        if (count === 2) {
           reviewTarget = target({ prNumber: 902, prUrl: "https://github.invalid/pull/902" });
         }
       },
@@ -291,7 +335,7 @@ describe("interactive Actions review supervision", () => {
 
     const reviewed = await tools.review_action();
     assert.equal(reviewed.ok, false);
-    assert.match(String(reviewed.error), /changed during verification/);
+    assert.match(String(reviewed.error), /target changed/);
     await tools.dispose();
   });
 

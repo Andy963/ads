@@ -3,8 +3,12 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
-import { BUILTIN_TOOL_DEFINITIONS, executeBuiltinTool } from "../tools/builtins.js";
-import { executeActionTool, isActionTool, type ActionRecoveryContext, type ActionTools } from "../agents/actionTools.js";
+import {
+  BUILTIN_TOOL_DEFINITIONS,
+  executeBuiltinTool,
+  isActionTool,
+} from "../tools/builtins.js";
+import type { ActionRecoveryContext, ActionTools } from "../agents/actionTools.js";
 import type { MiddlewarePipeline, TurnContext } from "../middleware/index.js";
 import { findSecurityViolation } from "../middleware/builtin/globalRulesMiddleware.js";
 import { getExecAllowlistFromEnv, hasShellSyntax, runCommand, tokenizeCommandLine } from "../utils/commandRunner.js";
@@ -384,7 +388,7 @@ export class NativeToolExecutor {
   private readonly commands: CommandSessions;
   private readonly commandOutput = new Map<string, string>();
   // One executor spans the model rounds of a turn attempt, never subsequent sends.
-  private readonly dispatchCalls = new Map<string, {
+  private readonly builtinCalls = new Map<string, {
     name: string;
     arguments: string;
     result: Promise<NativeToolExecutionResult>;
@@ -415,7 +419,7 @@ export class NativeToolExecutor {
   async dispose(): Promise<void> {
     await this.commands.dispose();
     this.commandOutput.clear();
-    this.dispatchCalls.clear();
+    this.builtinCalls.clear();
   }
 
   async execute(call: NativeChatToolCall): Promise<NativeToolExecutionResult> {
@@ -423,7 +427,7 @@ export class NativeToolExecutor {
     if (this.actionRecovery && !RECOVERY_TOOL_NAMES.has(call.function.name)) {
       throw new Error("Tool is unavailable during Actions recovery diagnosis");
     }
-    if (call.function.name === "dispatch_action_job" || isActionTool(call.function.name)) return this.dispatchActionJob(call);
+    if (call.function.name === "dispatch_action_job" || isActionTool(call.function.name)) return this.executeBuiltinCall(call);
     const args = parseArguments(call);
     switch (call.function.name) {
       case "read_execution_history": {
@@ -451,26 +455,25 @@ export class NativeToolExecutor {
     }
   }
 
-  private dispatchActionJob(call: NativeChatToolCall): Promise<NativeToolExecutionResult> {
-    const cached = this.dispatchCalls.get(call.id);
+  private executeBuiltinCall(call: NativeChatToolCall): Promise<NativeToolExecutionResult> {
+    const cached = this.builtinCalls.get(call.id);
     if (cached) {
       if (cached.name !== call.function.name || !sameArguments(cached.arguments, call.function.arguments)) {
         throw new Error("Conflicting arguments for dispatch_action_job call ID");
       }
       return cached.result;
     }
-    // Cache before execution, including rejections: a queue failure may follow persistence.
+    // Cache before execution, including rejections: a host failure may follow a side effect.
     const result = Promise.resolve().then(async () => ({
-      output: JSON.stringify(isActionTool(call.function.name)
-        ? await executeActionTool(call.function.name, parseArguments(call), this.actionTools)
-        : executeBuiltinTool(call.function.name, parseArguments(call), {
+      output: JSON.stringify(await executeBuiltinTool(call.function.name, parseArguments(call), {
         workspaceRoot: this.workspaceRoot,
         authUserId: this.authUserId,
+        actionTools: this.actionTools,
         actionRecovery: this.actionRecovery,
         signal: this.signal,
       })),
     }));
-    this.dispatchCalls.set(call.id, { name: call.function.name, arguments: call.function.arguments, result });
+    this.builtinCalls.set(call.id, { name: call.function.name, arguments: call.function.arguments, result });
     return result;
   }
 

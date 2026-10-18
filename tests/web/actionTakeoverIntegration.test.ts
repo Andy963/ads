@@ -73,7 +73,7 @@ it("wakes Acopilot without a socket and completes a linked execution only after 
           assert.match(String(input), /Automatic Actions handoff/);
           assert.ok(options.actionRecovery);
           assert.equal(options.actionTools, undefined, "Acopilot must not receive Review or delivery authority");
-          const result = executeBuiltinTool("dispatch_action_job", {
+          const result = await executeBuiltinTool("dispatch_action_job", {
             issue_id: 567, title: "Repair", description: "Implement the missing recovery marker and verify it.",
             acceptance_criteria: ["Model replacement must not replace the original"],
           }, { workspaceRoot: workspace, authUserId: owner, actionRecovery: options.actionRecovery });

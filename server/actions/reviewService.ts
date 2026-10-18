@@ -23,6 +23,11 @@ export type ReviewTarget = {
 export type ReviewCaptureOptions = {
   requirePinnedEvidence?: boolean;
   testReport?: ReviewPayload["testReport"];
+  diffOverride?: {
+    diff: string;
+    diffStat: string;
+    range?: string;
+  };
 };
 
 export type ReviewGitResult = {
@@ -92,8 +97,12 @@ export function captureReviewPayload(
       captureErrors.push("recorded base commit is not an ancestor of the pinned head");
     }
   }
-  const diffRes = baseCommit && headCommit ? git(["diff", capturedRange]) : null;
-  const diffStatRes = baseCommit && headCommit ? git(["diff", "--stat", capturedRange]) : null;
+  const diffRes = options.diffOverride
+    ? { status: 0, stdout: options.diffOverride.diff }
+    : baseCommit && headCommit ? git(["diff", capturedRange]) : null;
+  const diffStatRes = options.diffOverride
+    ? { status: 0, stdout: options.diffOverride.diffStat }
+    : baseCommit && headCommit ? git(["diff", "--stat", capturedRange]) : null;
 
   if (!baseCommitResult || baseCommitResult.status !== 0) captureErrors.push(`git rev-parse base '${baseRef}' failed`);
   if (!headCommitResult || headCommitResult.status !== 0) captureErrors.push("git rev-parse review head failed");
@@ -115,7 +124,8 @@ export function captureReviewPayload(
       headRef,
       baseCommit: baseCommit || undefined,
       headCommit: headCommit || undefined,
-      range: requirePinnedEvidence ? capturedRange : `${baseRef}...${headRef}`,
+      range: options.diffOverride?.range
+        ?? (requirePinnedEvidence ? capturedRange : `${baseRef}...${headRef}`),
     },
     diff,
     diffStat,
@@ -165,8 +175,12 @@ export async function captureReviewPayloadAsync(
     const ancestryResult = await git(["merge-base", "--is-ancestor", baseCommit, headCommit]);
     if (ancestryResult.status !== 0) captureErrors.push("recorded base commit is not an ancestor of the pinned head");
   }
-  const diffRes = baseCommit && headCommit ? await git(["diff", capturedRange]) : null;
-  const diffStatRes = baseCommit && headCommit ? await git(["diff", "--stat", capturedRange]) : null;
+  const diffRes = options.diffOverride
+    ? { status: 0, stdout: options.diffOverride.diff }
+    : baseCommit && headCommit ? await git(["diff", capturedRange]) : null;
+  const diffStatRes = options.diffOverride
+    ? { status: 0, stdout: options.diffOverride.diffStat }
+    : baseCommit && headCommit ? await git(["diff", "--stat", capturedRange]) : null;
 
   if (!baseCommitResult || baseCommitResult.status !== 0) captureErrors.push(`git rev-parse base '${baseRef}' failed`);
   if (!headCommitResult || headCommitResult.status !== 0) captureErrors.push("git rev-parse review head failed");
@@ -188,7 +202,8 @@ export async function captureReviewPayloadAsync(
       headRef,
       baseCommit: baseCommit || undefined,
       headCommit: headCommit || undefined,
-      range: requirePinnedEvidence ? capturedRange : `${baseRef}...${headRef}`,
+      range: options.diffOverride?.range
+        ?? (requirePinnedEvidence ? capturedRange : `${baseRef}...${headRef}`),
     },
     diff,
     diffStat,

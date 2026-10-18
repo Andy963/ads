@@ -520,6 +520,30 @@ export type InteractiveReviewTargetRequest = {
   authUserId: string;
   branch?: string;
   prNumber?: number | null;
+  reviewPrompt?: string;
+};
+
+type InteractiveWorkspaceReviewTarget = ReviewTarget & {
+  projectId: string;
+  repoPath: string;
+  authUserId: string;
+  branch: string;
+  workingTreeDiff: {
+    diff: string;
+    diffStat: string;
+    range: string;
+  };
+};
+
+type InteractiveReviewSession = {
+  projectId: string;
+  repoPath: string;
+  authUserId: string;
+  target: InteractiveReviewTarget | InteractiveWorkspaceReviewTarget;
+  key: string;
+  deliveryTarget?: InteractiveReviewTarget;
+  requirePinnedEvidence: boolean;
+  diffOverride?: InteractiveWorkspaceReviewTarget["workingTreeDiff"];
 };
 
 type InteractiveGithubMetadata = {
@@ -571,6 +595,23 @@ function interactiveTargetKey(target: InteractiveReviewTarget): string {
       headRef: target.headRef,
       baseCommit: target.baseCommit,
       headCommit: target.headCommit,
+    }))
+    .digest("hex");
+}
+
+function interactiveWorkspaceTargetKey(target: InteractiveWorkspaceReviewTarget): string {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      repoPath: target.repoPath,
+      authUserId: target.authUserId,
+      branch: target.branch,
+      issue: target.issue,
+      adrs: target.adrs ?? [],
+      baseRef: target.baseRef,
+      headRef: target.headRef,
+      baseCommit: target.baseCommit,
+      headCommit: target.headCommit,
+      workingTreeDiff: target.workingTreeDiff,
     }))
     .digest("hex");
 }
@@ -1636,6 +1677,69 @@ export class LaneDispatchBus {
     });
   }
 
+  private async captureInteractiveWorkingTreeDiff(
+    repoPath: string,
+    baseCommit: string,
+    headCommit: string,
+    signal?: AbortSignal,
+  ): Promise<InteractiveWorkspaceReviewTarget["workingTreeDiff"]> {
+    const runGit = async (args: string[]): Promise<InteractiveCommandResult> =>
+      await this.runInteractiveCommand(
+        "git",
+        args,
+        repoPath,
+        signal,
+        normalizeInteractiveTimeout(this.options.interactiveCommandTimeoutMs, DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_MS),
+        2_000_000,
+      );
+
+    const committedDiff = await runGit(["diff", "--binary", `${baseCommit}...${headCommit}`]);
+    if (committedDiff.exitCode !== 0) {
+      throw new Error(`Unable to capture committed review diff: ${committedDiff.stderr.trim() || "git command failed"}`);
+    }
+    const workingTreeDiff = await runGit(["diff", "--binary", "HEAD"]);
+    if (workingTreeDiff.exitCode !== 0) {
+      throw new Error(`Unable to capture working-tree review diff: ${workingTreeDiff.stderr.trim() || "git command failed"}`);
+    }
+    const committedStat = await runGit(["diff", "--stat", `${baseCommit}...${headCommit}`]);
+    if (committedStat.exitCode !== 0) {
+      throw new Error(`Unable to capture committed review diff stat: ${committedStat.stderr.trim() || "git command failed"}`);
+    }
+    const workingTreeStat = await runGit(["diff", "--stat", "HEAD"]);
+    if (workingTreeStat.exitCode !== 0) {
+      throw new Error(`Unable to capture working-tree review diff stat: ${workingTreeStat.stderr.trim() || "git command failed"}`);
+    }
+
+    const untracked = await runGit(["ls-files", "--others", "--exclude-standard", "-z"]);
+    if (untracked.exitCode !== 0) {
+      throw new Error(`Unable to enumerate untracked review files: ${untracked.stderr.trim() || "git command failed"}`);
+    }
+    const untrackedDiffs: string[] = [];
+    const untrackedStats: string[] = [];
+    for (const file of untracked.stdout.split("\0").map(value => value.trim()).filter(Boolean)) {
+      const diff = await runGit(["diff", "--no-index", "--binary", "--", "/dev/null", file]);
+      if (diff.exitCode !== 0 && diff.exitCode !== 1) {
+        throw new Error(`Unable to capture untracked review file '${file}': ${diff.stderr.trim() || "git command failed"}`);
+      }
+      if (diff.stdout.trim()) untrackedDiffs.push(diff.stdout.trimEnd());
+      const stat = await runGit(["diff", "--no-index", "--stat", "--", "/dev/null", file]);
+      if (stat.exitCode !== 0 && stat.exitCode !== 1) {
+        throw new Error(`Unable to capture untracked review file stat '${file}': ${stat.stderr.trim() || "git command failed"}`);
+      }
+      if (stat.stdout.trim()) untrackedStats.push(stat.stdout.trimEnd());
+    }
+
+    return {
+      diff: [committedDiff.stdout.trimEnd(), workingTreeDiff.stdout.trimEnd(), ...untrackedDiffs]
+        .filter(Boolean)
+        .join("\n"),
+      diffStat: [committedStat.stdout.trimEnd(), workingTreeStat.stdout.trimEnd(), ...untrackedStats]
+        .filter(Boolean)
+        .join("\n"),
+      range: `${baseCommit}...${headCommit} plus working tree`,
+    };
+  }
+
   private async readInteractiveGithubMetadata(input: {
     repoPath: string;
     branch: string;
@@ -1737,10 +1841,10 @@ export class LaneDispatchBus {
     });
   }
 
-  private async resolveInteractiveTarget(
+  private async resolveInteractiveProjectContext(
     input: InteractiveReviewTargetRequest,
     signal?: AbortSignal,
-  ): Promise<InteractiveReviewTarget> {
+  ): Promise<{ projectId: string; repoPath: string; authUserId: string }> {
     signal?.throwIfAborted();
     const repoPath = path.resolve(String(input.repoPath ?? "").trim());
     const authUserId = String(input.authUserId ?? "").trim();
@@ -1757,6 +1861,58 @@ export class LaneDispatchBus {
     if (!identity || identity.authUserId !== authUserId || identity.projectId !== projectId) {
       throw new Error("Interactive review is limited to the authenticated Actions project workspace.");
     }
+    return { projectId, repoPath, authUserId };
+  }
+
+  private async resolveInteractiveWorkspaceTarget(
+    input: InteractiveReviewTargetRequest,
+    signal?: AbortSignal,
+  ): Promise<InteractiveWorkspaceReviewTarget> {
+    const { projectId, repoPath, authUserId } = await this.resolveInteractiveProjectContext(input, signal);
+    const git = async (args: string[], label: string): Promise<string> => {
+      const result = await this.runInteractiveCommand("git", args, repoPath, signal);
+      if (result.exitCode !== 0) {
+        throw new Error(`${label}: ${result.stderr.trim() || "command failed"}`);
+      }
+      return result.stdout.trim();
+    };
+
+    const branch = (await git(["branch", "--show-current"], "Unable to determine the current workspace branch")) || "(detached HEAD)";
+    const remote = await this.runInteractiveCommand("git", ["remote", "get-url", "origin"], repoPath, signal);
+    const baseRef = remote.exitCode === 0 && remote.stdout.trim() ? "origin/dev" : "dev";
+    const baseCommit = await git(["rev-parse", "--verify", `${baseRef}^{commit}`], `Unable to resolve the ${ACTIONS_BASE_BRANCH} base branch`);
+    const headCommit = await git(["rev-parse", "--verify", "HEAD^{commit}"], "Unable to resolve the current workspace commit");
+    const workingTreeDiff = await this.captureInteractiveWorkingTreeDiff(repoPath, baseCommit, headCommit, signal);
+    const reviewPrompt = String(input.reviewPrompt ?? "").trim();
+    const description = reviewPrompt
+      ? `Review the current workspace changes against this user request:\n\n${reviewPrompt}`
+      : "Review the current committed and working-tree changes in the authenticated workspace.";
+
+    return {
+      projectId,
+      repoPath,
+      authUserId,
+      branch,
+      issue: {
+        id: null,
+        title: "Interactive workspace review",
+        description,
+        acceptanceCriteria: [],
+      },
+      adrs: await this.readInteractiveAdrSnapshot(repoPath, baseCommit, headCommit, signal),
+      baseRef,
+      headRef: "HEAD",
+      baseCommit,
+      headCommit,
+      workingTreeDiff,
+    };
+  }
+
+  private async resolveInteractiveTarget(
+    input: InteractiveReviewTargetRequest,
+    signal?: AbortSignal,
+  ): Promise<InteractiveReviewTarget> {
+    const { projectId, repoPath, authUserId } = await this.resolveInteractiveProjectContext(input, signal);
 
     const git = async (args: string[], label: string): Promise<string> => {
       const result = await this.runInteractiveCommand("git", args, repoPath, signal);
@@ -1867,32 +2023,66 @@ export class LaneDispatchBus {
     return report;
   }
 
-  private async executeInteractiveReview(
-    target: InteractiveReviewTarget,
+  private async resolveInteractiveReviewSession(
+    input: InteractiveReviewTargetRequest,
     signal: AbortSignal,
-    resolveCurrentTarget: () => Promise<InteractiveReviewTarget>,
+  ): Promise<InteractiveReviewSession> {
+    const workspaceTarget = await this.resolveInteractiveWorkspaceTarget(input, signal);
+    try {
+      const target = await this.resolveInteractiveTarget(input, signal);
+      return {
+        projectId: target.projectId,
+        repoPath: target.repoPath,
+        authUserId: target.authUserId,
+        target,
+        key: interactiveTargetKey(target),
+        deliveryTarget: target,
+        requirePinnedEvidence: true,
+      };
+    } catch {
+      signal.throwIfAborted();
+      return {
+        projectId: workspaceTarget.projectId,
+        repoPath: workspaceTarget.repoPath,
+        authUserId: workspaceTarget.authUserId,
+        target: workspaceTarget,
+        key: interactiveWorkspaceTargetKey(workspaceTarget),
+        requirePinnedEvidence: false,
+        diffOverride: workspaceTarget.workingTreeDiff,
+      };
+    }
+  }
+
+  private async executeInteractiveReviewSession(
+    session: InteractiveReviewSession,
+    signal: AbortSignal,
+    resolveCurrentSession: () => Promise<InteractiveReviewSession>,
   ): Promise<ReviewVerdict> {
-    const key = `${target.authUserId}\u0000${interactiveTargetKey(target)}`;
+    const key = `${session.authUserId}\u0000${session.key}`;
     if (this.interactiveReviewerTargets.has(key)) {
       throw new ActionJobReviewConflictError("An interactive review is already running for this target.");
     }
     this.interactiveReviewerTargets.add(key);
     try {
       signal.throwIfAborted();
-      const testReport = await this.runInteractiveVerification(target.repoPath, signal);
-      const verifiedTarget = await resolveCurrentTarget();
-      if (interactiveTargetKey(verifiedTarget) !== interactiveTargetKey(target)) {
+      const testReport = await this.runInteractiveVerification(session.repoPath, signal);
+      const verifiedSession = await resolveCurrentSession();
+      if (verifiedSession.key !== session.key) {
         throw new ReviewerIncompleteError("Interactive review target changed during verification; no authoritative verdict is available.");
       }
       const payload = await captureReviewPayloadAsync(
-        verifiedTarget,
-        verifiedTarget.repoPath,
-        { requirePinnedEvidence: true, testReport },
+        verifiedSession.target,
+        verifiedSession.repoPath,
+        {
+          requirePinnedEvidence: verifiedSession.requirePinnedEvidence,
+          testReport,
+          ...(verifiedSession.diffOverride ? { diffOverride: verifiedSession.diffOverride } : {}),
+        },
         async (args) => {
           const result = await this.runInteractiveCommand(
             "git",
             args,
-            verifiedTarget.repoPath,
+            verifiedSession.repoPath,
             signal,
             normalizeInteractiveTimeout(this.options.interactiveCommandTimeoutMs, DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_MS),
             2_000_000,
@@ -1901,22 +2091,24 @@ export class LaneDispatchBus {
         },
       );
       const evidence = payload.diffRange;
-      if (!evidence || evidence.baseCommit !== verifiedTarget.baseCommit || evidence.headCommit !== verifiedTarget.headCommit) {
+      if (!evidence
+        || evidence.baseCommit !== verifiedSession.target.baseCommit
+        || evidence.headCommit !== verifiedSession.target.headCommit) {
         throw new ReviewerIncompleteError("Reviewer evidence did not remain pinned to the interactive review target.");
       }
-      const capturedTarget = await resolveCurrentTarget();
-      if (interactiveTargetKey(capturedTarget) !== interactiveTargetKey(verifiedTarget)) {
+      const capturedSession = await resolveCurrentSession();
+      if (capturedSession.key !== verifiedSession.key) {
         throw new ReviewerIncompleteError("Interactive review target changed while capturing evidence; no authoritative verdict is available.");
       }
       return await this.executeReviewer(
         payload,
-        verifiedTarget.repoPath,
+        verifiedSession.repoPath,
         undefined,
         undefined,
-        verifiedTarget.projectId,
+        verifiedSession.projectId,
         undefined,
         signal,
-        verifiedTarget.authUserId,
+        verifiedSession.authUserId,
       );
     } finally {
       this.interactiveReviewerTargets.delete(key);
@@ -1926,11 +2118,27 @@ export class LaneDispatchBus {
   public async reviewInteractiveTarget(input: InteractiveReviewTargetRequest): Promise<IndependentReviewResult> {
     const controller = new AbortController();
     const target = await this.resolveInteractiveTarget(input, controller.signal);
-    const verdict = await this.executeInteractiveReview(
+    const session = {
+      projectId: target.projectId,
+      repoPath: target.repoPath,
+      authUserId: target.authUserId,
       target,
-      controller.signal,
-      () => this.resolveInteractiveTarget(input, controller.signal),
-    );
+      key: interactiveTargetKey(target),
+      deliveryTarget: target,
+      requirePinnedEvidence: true,
+    } satisfies InteractiveReviewSession;
+    const verdict = await this.executeInteractiveReviewSession(session, controller.signal, async () => {
+      const current = await this.resolveInteractiveTarget(input, controller.signal);
+      return {
+        projectId: current.projectId,
+        repoPath: current.repoPath,
+        authUserId: current.authUserId,
+        target: current,
+        key: interactiveTargetKey(current),
+        deliveryTarget: current,
+        requirePinnedEvidence: true,
+      } satisfies InteractiveReviewSession;
+    });
     return {
       status: verdict.status,
       summary: verdict.summary,
@@ -1945,45 +2153,43 @@ export class LaneDispatchBus {
 
   public createInteractiveActionTools(
     input: InteractiveReviewTargetRequest & { signal: AbortSignal },
-  ): Promise<(ActionTools & { dispose: () => Promise<void> }) | undefined> {
+  ): Promise<ActionTools & { dispose: () => Promise<void> }> {
     return this.createInteractiveActionToolsAsync(input);
   }
 
   private async createInteractiveActionToolsAsync(
     input: InteractiveReviewTargetRequest & { signal: AbortSignal },
-  ): Promise<(ActionTools & { dispose: () => Promise<void> }) | undefined> {
-    try {
-      await this.resolveInteractiveTarget(input, input.signal);
-    } catch {
-      // Interactive tools are only advertised after the server can verify the
-      // current authenticated workspace, feature branch, Issue, and PR.
-      return undefined;
-    }
-
+  ): Promise<ActionTools & { dispose: () => Promise<void> }> {
+    let deliveryTarget: InteractiveReviewTarget | undefined;
     const supervision = createActionSupervision({
       signal: input.signal,
-      snapshot: async () => {
-        const target = await this.resolveInteractiveTarget(input, input.signal);
-        return interactiveTargetKey(target);
-      },
+      snapshot: async () => (await this.resolveInteractiveReviewSession(input, input.signal)).key,
       review: async (signal) => {
-        const target = await this.resolveInteractiveTarget(input, signal);
-        const verdict = await this.executeInteractiveReview(
-          target,
+        deliveryTarget = undefined;
+        const session = await this.resolveInteractiveReviewSession(input, signal);
+        const verdict = await this.executeInteractiveReviewSession(
+          session,
           signal,
-          () => this.resolveInteractiveTarget(input, signal),
+          () => this.resolveInteractiveReviewSession(input, signal),
         );
+        if (verdict.status === "PASS") deliveryTarget = session.deliveryTarget;
         return verdict;
       },
       assertDeliveryTarget: async (approved) => {
+        if (!deliveryTarget) {
+          throw new Error("Delivery requires a PASS from a PR-scoped review. Create a matching pull request and call review_action again.");
+        }
         const target = await this.resolveInteractiveTarget(input, input.signal);
-        if (interactiveTargetKey(target) !== approved) {
+        if (interactiveTargetKey(target) !== approved || interactiveTargetKey(target) !== interactiveTargetKey(deliveryTarget)) {
           throw new Error("Delivery target changed. Call review_action again.");
         }
       },
       deliver: async (approved) => {
+        if (!deliveryTarget) {
+          throw new Error("Delivery requires a PASS from a PR-scoped review. Create a matching pull request and call review_action again.");
+        }
         const target = await this.resolveInteractiveTarget(input, input.signal);
-        if (interactiveTargetKey(target) !== approved) {
+        if (interactiveTargetKey(target) !== approved || interactiveTargetKey(target) !== interactiveTargetKey(deliveryTarget)) {
           throw new Error("Delivery target changed. Call review_action again.");
         }
         const mergeResult = (this.options.mergePipeline ?? mergeAndCleanupPipeline)({

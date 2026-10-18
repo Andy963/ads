@@ -35,7 +35,7 @@ function directive(args: Record<string, unknown>): string {
 }
 
 const entryPoints: Record<string, (args: Record<string, unknown>, context: BuiltinToolContext) => Promise<string>> = {
-  builtin: async (args, context) => JSON.stringify(executeBuiltinTool("dispatch_action_job", args, context)),
+  builtin: async (args, context) => JSON.stringify(await executeBuiltinTool("dispatch_action_job", args, context)),
   native: async (args, context) => {
     const executor = new NativeToolExecutor(context);
     try {
@@ -53,7 +53,7 @@ const entryPoints: Record<string, (args: Record<string, unknown>, context: Built
       scope: () => ({ threadId: "thread", turnId: "turn", active: true }),
       markSideEffect: () => {},
     });
-    const result = bridge.handle({
+    const result = await bridge.handle({
       threadId: "thread", turnId: "turn", callId: "dispatch",
       tool: "dispatch_action_job", arguments: args,
     });

@@ -6,11 +6,11 @@ Accepted — Issue #578
 
 ## Context
 
-The clean-room Reviewer is a capability of the Actions Developer lifecycle, but
-its previous entry point was created only while an `action_jobs` row was being
-executed. An authenticated Developer working directly in the Actions WebSocket
-lane therefore could not receive `review_action` or `deliver_action`, even when
-the Developer had prepared a feature branch and pull request.
+The clean-room Reviewer is a reusable capability of an authenticated Actions
+Developer workspace, but its previous entry point was created only while an
+`action_jobs` row was being executed. An interactive Developer therefore could
+not review ordinary local changes before preparing a feature branch or pull
+request.
 
 The queue job remains the owner of queue status, retry history, and lane
 delivery. Those concerns must not become a requirement for a one-shot review
@@ -23,16 +23,27 @@ workspace, user, branch, Issue, or pull request.
 - Reviewer evidence capture is implemented as a reusable service accepting an
   immutable Issue/ADR snapshot, verified base/head commits, diff, and test
   report. Queue jobs and interactive sessions use this same capture path.
-- The Actions WebSocket lane may receive supervised action tools only after the
-  server verifies the authenticated project mapping, `codex/issue-<id>` branch,
-  clean tracked workspace, `dev` ancestry, matching open pull request, exact
-  base/head SHAs, and complete GitHub Issue evidence.
-- Interactive review state is held only by the active parent turn. A PASS
-  authorizes delivery for that exact target; re-reading the target before
+- The Actions WebSocket lane is the only interactive lane that may receive the
+  supervised action tools. `review_action` validates only the authenticated
+  project workspace and captures the committed plus working-tree diff with the
+  current user request. It does not require an Actions job, Issue branch, clean
+  worktree, or GitHub PR.
+- A review that resolves a complete PR target may authorize `deliver_action`.
+  Delivery still verifies the `codex/issue-<id>` branch, clean tracked
+  workspace, `dev` ancestry, matching open PR, exact base/head SHAs, and
+  complete GitHub Issue evidence. A local workspace review never grants
+  delivery authority.
+- Interactive review state is held only by the active parent turn. A delivery
+  PASS authorizes the exact reviewed target; re-reading the target before
   delivery invalidates the authorization when any identity or commit changes.
 - The interactive HTTP review route is read-only and receives branch/PR hints
   only as claims to validate. It does not create an Actions job or grant
   delivery authority.
+- `review_action` and `deliver_action` are ADS built-in tools. Their schemas,
+  argument validation, idempotency, and runtime bridges are shared by native
+  and Codex app-server sessions; the lane-specific supervised capability is
+  only the server-authorized execution context and is not a second tool
+  protocol or a queue-job ownership requirement.
 - Acopilot, Worker connector sessions, and ordinary non-Actions lanes do not
   receive the privileged tools. The existing queue supervision and failed-job
   review paths remain separate wrappers around the shared Reviewer capability.

@@ -7,7 +7,7 @@ import path from "node:path";
 import { LaneDispatchBus } from "../../server/actions/bus.js";
 import { NATIVE_TOOL_DEFINITIONS, NativeToolExecutor } from "../../server/runtime/tools.js";
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
-import { BUILTIN_TOOL_DEFINITIONS, executeBuiltinTool } from "../../server/tools/builtins.js";
+import { ACTION_TOOL_DEFINITIONS, BUILTIN_TOOL_DEFINITIONS, executeBuiltinTool } from "../../server/tools/builtins.js";
 import { getBus, setBusInstance } from "../../server/web/server/api/routes/actions.js";
 import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
 import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
@@ -52,6 +52,26 @@ describe("shared built-in dispatch", () => {
     assert.deepEqual(BUILTIN_TOOL_DEFINITIONS[0].function.parameters.required, ["title", "description", "acceptance_criteria"]);
   });
 
+  it("exposes Reviewer and delivery as supervised built-in tools", async () => {
+    assert.deepEqual(ACTION_TOOL_DEFINITIONS.map((tool) => tool.function.name), ["review_action", "deliver_action"]);
+    let reviews = 0;
+    const actionTools = {
+      review_action: async () => { reviews += 1; return { ok: true, verdict: { status: "PASS" } }; },
+      deliver_action: async () => ({ ok: true }),
+    };
+    const reviewed = await executeBuiltinTool("review_action", {}, { workspaceRoot: workspace, actionTools });
+    assert.equal(reviewed.ok, true);
+    assert.equal(reviews, 1);
+    await assert.rejects(
+      executeBuiltinTool("review_action", {}, { workspaceRoot: workspace }),
+      /Reviewer tools are unavailable in this lane/,
+    );
+    await assert.rejects(
+      executeBuiltinTool("deliver_action", { unexpected: true }, { workspaceRoot: workspace, actionTools }),
+      /empty argument object only/,
+    );
+  });
+
   it("returns the same queued result and persists trusted owner bindings from both function entry points", async (t) => {
     ensureWebAuthTables(db);
     ensureWebProjectTables(db);
@@ -64,7 +84,7 @@ describe("shared built-in dispatch", () => {
     }
     const dispatch = t.mock.method(bus, "dispatchJob");
     const context = { workspaceRoot: workspace, authUserId: "trusted-owner" };
-    const shared = executeBuiltinTool("dispatch_action_job", contract, context);
+    const shared = await executeBuiltinTool("dispatch_action_job", contract, context);
     const executor = new NativeToolExecutor(context);
     try {
       const native = JSON.parse((await executor.execute({
@@ -101,8 +121,8 @@ describe("shared built-in dispatch", () => {
     }
   });
 
-  it("accepts an explicit empty criteria array only for local prompts", () => {
-    const result = executeBuiltinTool("dispatch_action_job", {
+  it("accepts an explicit empty criteria array only for local prompts", async () => {
+    const result = await executeBuiltinTool("dispatch_action_job", {
       title: "Local task", description: "Complete a local task", acceptance_criteria: [], kind: "local_prompt",
     }, { workspaceRoot: workspace });
     assert.equal(bus.getJob(result.job_id)?.job_kind, "local_prompt");
@@ -126,7 +146,7 @@ describe("shared built-in dispatch", () => {
     ];
     try {
       for (const args of invalid) {
-        assert.throws(() => executeBuiltinTool("dispatch_action_job", args, { workspaceRoot: workspace }),
+        await assert.rejects(executeBuiltinTool("dispatch_action_job", args, { workspaceRoot: workspace }),
           (error: Error) => !error.message.includes("secret-payload"));
         await assert.rejects(executor.execute({
           id: "invalid-dispatch", type: "function",
@@ -140,14 +160,14 @@ describe("shared built-in dispatch", () => {
     }
   });
 
-  it("checks cancellation again after validation and before queue side effects", (t) => {
+  it("checks cancellation again after validation and before queue side effects", async (t) => {
     const dispatch = t.mock.method(bus, "dispatchJob");
     const controller = new AbortController();
     const args = { ...contract, get acceptance_criteria() {
       controller.abort(new Error("secret-abort-reason"));
       return contract.acceptance_criteria;
     } };
-    assert.throws(() => executeBuiltinTool("dispatch_action_job", args, {
+    await assert.rejects(executeBuiltinTool("dispatch_action_job", args, {
       workspaceRoot: workspace, signal: controller.signal,
     }), { name: "AbortError", message: "Aborted" });
     assert.equal(dispatch.mock.callCount(), 0);
@@ -155,14 +175,14 @@ describe("shared built-in dispatch", () => {
 
   it("does not expose unknown names, malformed payloads, bus failures or abort reasons", async (t) => {
     const dispatch = t.mock.method(bus, "dispatchJob", () => { throw new Error("secret-bus-payload"); });
-    assert.throws(() => executeBuiltinTool("secret-tool-name", contract, { workspaceRoot: workspace }),
+    await assert.rejects(executeBuiltinTool("secret-tool-name", contract, { workspaceRoot: workspace }),
       { message: "Unknown built-in tool" });
     assert.equal(dispatch.mock.callCount(), 0);
-    assert.throws(() => executeBuiltinTool("dispatch_action_job", contract, { workspaceRoot: workspace }),
+    await assert.rejects(executeBuiltinTool("dispatch_action_job", contract, { workspaceRoot: workspace }),
       { message: "Unable to dispatch Actions job" });
     const controller = new AbortController();
     controller.abort(new Error("secret-abort-reason"));
-    assert.throws(() => executeBuiltinTool("dispatch_action_job", contract, {
+    await assert.rejects(executeBuiltinTool("dispatch_action_job", contract, {
       workspaceRoot: workspace, signal: controller.signal,
     }), { name: "AbortError", message: "Aborted" });
     const executor = new NativeToolExecutor({ workspaceRoot: workspace });

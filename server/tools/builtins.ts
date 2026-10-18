@@ -1,5 +1,10 @@
 import type { NativeToolDefinition } from "../runtime/openAiCompatibleClient.js";
-import type { ActionRecoveryContext } from "../agents/actionTools.js";
+import type {
+  ActionRecoveryContext,
+  ActionToolName,
+  ActionToolResult,
+  ActionTools,
+} from "../agents/actionTools.js";
 import type { ActionJobKind, ActionJobStatus } from "../state/actionJobStore.js";
 import { getBus } from "../web/server/api/routes/actions.js";
 import { ActionRecoveryError } from "../actions/takeover.js";
@@ -26,19 +31,52 @@ export const BUILTIN_TOOL_DEFINITIONS: NativeToolDefinition[] = [
   },
 ];
 
+export const ACTION_TOOL_DEFINITIONS: NativeToolDefinition[] = [
+  [
+    "review_action",
+    "Run verification and an isolated read-only Reviewer subagent for the current authenticated workspace. The server captures the current committed and working-tree diff plus the active user request; a matching PR is only needed if delivery is requested.",
+  ],
+  [
+    "deliver_action",
+    "Deliver the exact commit approved by review_action using the verified PR, merge, and cleanup pipeline. Operational errors return to you. After success, stop using tools and report completion.",
+  ],
+].map(([name, description]) => ({
+  type: "function",
+  function: {
+    name: name!,
+    description: description!,
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+}));
+
+export function isActionTool(name: string): name is ActionToolName {
+  return name === "review_action" || name === "deliver_action";
+}
+
+export function isBuiltinTool(name: string): boolean {
+  return name === "dispatch_action_job" || isActionTool(name);
+}
+
+export function builtinToolDefinitions(includeActions = false): NativeToolDefinition[] {
+  return includeActions
+    ? [...BUILTIN_TOOL_DEFINITIONS, ...ACTION_TOOL_DEFINITIONS]
+    : BUILTIN_TOOL_DEFINITIONS;
+}
+
 export interface BuiltinToolContext {
   workspaceRoot: string;
   authUserId?: string;
   actionRecovery?: ActionRecoveryContext;
+  actionTools?: ActionTools;
   signal?: AbortSignal;
 }
 
-export interface BuiltinToolResult {
+export type BuiltinToolResult = {
   ok: boolean;
   job_id: string;
   status: ActionJobStatus;
   message: string;
-}
+} | ActionToolResult;
 
 const DISPATCH_ARGUMENTS = new Set(["issue_id", "title", "description", "acceptance_criteria", "kind"]);
 
@@ -46,8 +84,21 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 }
 
-export function executeBuiltinTool(name: string, args: unknown, context: BuiltinToolContext): BuiltinToolResult {
+export async function executeBuiltinTool(name: string, args: unknown, context: BuiltinToolContext): Promise<BuiltinToolResult> {
   throwIfAborted(context.signal);
+  if (isActionTool(name)) {
+    if (context.actionRecovery) {
+      throw new Error("Reviewer tools are unavailable during Actions recovery diagnosis.");
+    }
+    if (!context.actionTools) {
+      throw new Error("Reviewer tools are unavailable in this lane.");
+    }
+    if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).length) {
+      throw new Error("Reviewer tools accept an empty argument object only.");
+    }
+    throwIfAborted(context.signal);
+    return await context.actionTools[name]();
+  }
   if (name !== "dispatch_action_job") throw new Error("Unknown built-in tool");
   if (!args || typeof args !== "object" || Array.isArray(args)) {
     throw new Error("Tool arguments must be a JSON object");

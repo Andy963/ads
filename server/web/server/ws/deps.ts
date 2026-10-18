@@ -56,8 +56,9 @@ export type WsInteractiveActionToolsFactory = (args: {
   authUserId: string;
   projectId: string;
   repoPath: string;
+  reviewPrompt?: string;
   signal: AbortSignal;
-}) => WsSupervisedActionTools | undefined | Promise<WsSupervisedActionTools | undefined>;
+}) => WsSupervisedActionTools | Promise<WsSupervisedActionTools>;
 
 export type WsResetResult =
   | number
@@ -211,7 +212,7 @@ export type WsCommandStateDeps = Pick<
 export type WsPromptHandlerDeps = {
   actionRecovery?: import("../../../agents/actionTools.js").ActionRecoveryContext;
   validateActionRecovery?: () => void;
-  createInteractiveActionTools?: (signal: AbortSignal) => WsSupervisedActionTools | undefined | Promise<WsSupervisedActionTools | undefined>;
+  createInteractiveActionTools?: (signal: AbortSignal, reviewPrompt?: string) => WsSupervisedActionTools | Promise<WsSupervisedActionTools>;
   request: WsRequestDeps;
   transport: WsTransportDeps;
   observability: Omit<WsObservabilityDeps, "sessionLogger"> & {

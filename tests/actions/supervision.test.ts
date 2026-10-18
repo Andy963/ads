@@ -1,7 +1,7 @@
 import { it } from "node:test";
 import assert from "node:assert/strict";
 import { createActionSupervision } from "../../server/actions/supervision.js";
-import { createActionToolBridge } from "../../server/codex/appServer/actionTools.js";
+import { createBuiltinToolBridge } from "../../server/codex/appServer/builtinTools.js";
 import { NativeToolExecutor } from "../../server/runtime/tools.js";
 
 const pass = { status: "PASS" as const, summary: "Reviewed", defects: [], reviewedAt: 1 };
@@ -62,12 +62,18 @@ it("bounds unsuccessful review calls and propagates parent cancellation", async 
   await assert.rejects(tools.review_action(), /abort/i);
 });
 
-it("Codex tool bridge deduplicates in-flight child calls and rejects foreign turns", async () => {
+it("Codex built-in tool bridge deduplicates in-flight child calls and rejects foreign turns", async () => {
   let calls = 0;
   let finish!: (value: { ok: boolean }) => void;
-  const bridge = createActionToolBridge({
+  const bridge = createBuiltinToolBridge({
+    context: {
+      workspaceRoot: process.cwd(),
+      actionTools: {
+        review_action: () => { calls++; return new Promise(resolve => { finish = resolve; }); },
+        deliver_action: async () => ({ ok: true }),
+      },
+    },
     scope: () => ({ threadId: "parent", turnId: "turn", active: true }), markSideEffect: () => {},
-    tools: { review_action: () => { calls++; return new Promise(resolve => { finish = resolve; }); }, deliver_action: async () => ({ ok: true }) },
   });
   const request = { threadId: "parent", turnId: "turn", callId: "child", tool: "review_action", arguments: {} };
   const first = bridge.handle(request);

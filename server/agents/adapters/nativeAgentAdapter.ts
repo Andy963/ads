@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { ACTION_TOOL_DEFINITIONS } from "../actionTools.js";
 import { ToolLoopGuard, ToolLoopPausedError } from "../../runtime/toolLoopGuard.js";
 import { compactExecution } from "../../runtime/executionCompaction.js";
+import { ACTION_TOOL_DEFINITIONS } from "../../tools/builtins.js";
 
 import type { Input, ThreadEvent, ThreadItem, Usage } from "../protocol/types.js";
 import type {
