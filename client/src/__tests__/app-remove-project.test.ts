@@ -200,6 +200,43 @@ describe("App.removeProject", () => {
     wrapper.unmount();
   });
 
+  it("offers desktop removal through a confirmation dialog", async () => {
+    projectsFromApi = [
+      { id: "p1", workspaceRoot: "/w/p1", name: "P1", chatSessionId: "main", createdAt: 1, updatedAt: 1 },
+      { id: "p2", workspaceRoot: "/w/p2", name: "P2", chatSessionId: "main", createdAt: 2, updatedAt: 2 },
+    ];
+    activeProjectIdFromApi = "p1";
+
+    deleteImpl = async (url: string) => {
+      expect(url).toBe("/api/projects/p2");
+      projectsFromApi = projectsFromApi.filter((p) => p.id !== "p2");
+      return { success: true, activeProjectId: "p1" };
+    };
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await waitForProjectIds(wrapper as any, ["default", "p1", "p2"]);
+
+    expect(wrapper.find('[data-testid="project-remove-default"]').exists()).toBe(false);
+    const removeButton = wrapper.find('[data-testid="project-remove-p2"]');
+    expect(removeButton.exists()).toBe(true);
+
+    await removeButton.trigger("click");
+    await settleUi(wrapper);
+
+    expect(deleteCalls).toEqual([]);
+    const confirmButton = wrapper.find('[data-testid="project-remove-confirm"]');
+    expect(confirmButton.exists()).toBe(true);
+
+    await confirmButton.trigger("click");
+    await settleUi(wrapper);
+
+    expect(deleteCalls).toEqual(["/api/projects/p2"]);
+    expect(idsFromVm(wrapper as any)).toEqual(["default", "p1"]);
+
+    wrapper.unmount();
+  });
+
   it("clears stale local projects when the server returns an empty list", async () => {
     localStorage.setItem(
       "ADS_WEB_PROJECTS",
