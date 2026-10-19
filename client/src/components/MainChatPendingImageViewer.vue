@@ -17,6 +17,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
+  <Teleport to="body">
   <DraggableModal card-variant="large" @close="emit('close')">
     <div class="attachmentsViewer">
       <div class="attachmentsViewerHeader" data-drag-handle>
@@ -40,6 +41,7 @@ const emit = defineEmits<{
       </div>
     </div>
   </DraggableModal>
+  </Teleport>
 </template>
 
 <style scoped>
