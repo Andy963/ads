@@ -66,7 +66,6 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
 
   await lock.runExclusive(async () => {
     if (!isLaneCurrent()) return;
-    deps.validateActionRecovery?.();
     const imageDir = resolveWorkspaceStatePath(workspaceRoot, "temp", "web-images");
     const promptInput = buildPromptInput(deps.request.parsed.payload, imageDir);
     if (!promptInput.ok) {
@@ -290,7 +289,6 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       promptRun.ensureActive();
       interactiveActionTools = await deps.createInteractiveActionTools?.(controller.signal, originalTurnPrompt);
       agentTurnPromise = runAgentTurn(orchestrator, effectiveInput, {
-        actionRecovery: deps.actionRecovery,
         actionTools: interactiveActionTools,
         streaming: true,
         signal: controller.signal,
@@ -315,7 +313,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       promptRun.ensureActive();
 
       const workspaceRootForAdr = workspaceRoot;
-      const { outputToSend } = deps.actionRecovery ? { outputToSend: result.response } : await processPromptOutputBlocks({
+      const { outputToSend } = await processPromptOutputBlocks({
         rawResponse: result.response,
         workspaceRoot: workspaceRootForAdr,
       });
@@ -324,7 +322,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       const threadReset = Boolean(expectedThreadId) && Boolean(threadId) && expectedThreadId !== threadId;
       let outputForChat = outputToSend;
 
-      outputForChat = deps.actionRecovery ? outputForChat : await processScheduleOutput({
+      outputForChat = await processScheduleOutput({
         outputForChat,
         isDraftCommand: false,
         workspaceRoot: workspaceRootForAdr,

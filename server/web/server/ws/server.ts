@@ -353,7 +353,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
   const queueTransportWs = { readyState: 1 } as unknown as WebSocket;
   let promptQueueService: PromptQueueService | null = null;
   const runQueuedPrompt = async (entry: PromptQueueEntry): Promise<{ ok: boolean; error?: string }> => {
-    const actionRecovery = state.prepareTakeoverPrompt?.(entry) ?? undefined;
     const laneResources = resolveWsLaneResources({ chatSessionId: entry.chatSessionId, sessions, history });
     const orchestrator = laneResources.sessionManager.getOrCreate(entry.userId, entry.workspaceRoot, true, {
       authUserId: entry.authUserId,
@@ -413,8 +412,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       return { ok: false, error: "Prompt execution failed before queue completion" };
     }
     const result = await handlePromptMessage({
-      actionRecovery,
-      ...(actionRecovery ? { validateActionRecovery: () => { state.prepareTakeoverPrompt?.(entry); } } : {}),
       request: {
         parsed: parsedPrompt,
         requestId: `prompt-queue-${entry.id}`,

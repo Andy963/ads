@@ -1,13 +1,11 @@
 import type { NativeToolDefinition } from "../runtime/openAiCompatibleClient.js";
 import type {
-  ActionRecoveryContext,
   ActionToolName,
   ActionToolResult,
   ActionTools,
 } from "../agents/actionTools.js";
 import type { ActionJobKind, ActionJobStatus } from "../state/actionJobStore.js";
 import { getBus } from "../web/server/api/routes/actions.js";
-import { ActionRecoveryError } from "../actions/takeover.js";
 
 export const BUILTIN_TOOL_DEFINITIONS: NativeToolDefinition[] = [
   {
@@ -66,7 +64,6 @@ export function builtinToolDefinitions(includeActions = false): NativeToolDefini
 export interface BuiltinToolContext {
   workspaceRoot: string;
   authUserId?: string;
-  actionRecovery?: ActionRecoveryContext;
   actionTools?: ActionTools;
   signal?: AbortSignal;
 }
@@ -87,9 +84,6 @@ function throwIfAborted(signal?: AbortSignal): void {
 export async function executeBuiltinTool(name: string, args: unknown, context: BuiltinToolContext): Promise<BuiltinToolResult> {
   throwIfAborted(context.signal);
   if (isActionTool(name)) {
-    if (context.actionRecovery) {
-      throw new Error("Reviewer tools are unavailable during Actions recovery diagnosis.");
-    }
     if (!context.actionTools) {
       throw new Error("Reviewer tools are unavailable in this lane.");
     }
@@ -150,22 +144,15 @@ export async function executeBuiltinTool(name: string, args: unknown, context: B
       acceptanceCriteria,
       jobKind: kind as ActionJobKind,
     };
-    const result = context.actionRecovery
-      ? bus.dispatchRecoveryJob({
-        jobId: context.actionRecovery.jobId,
-        promptId: context.actionRecovery.promptId,
-        ...dispatchArgs,
-      })
-      : bus.dispatchJob({ projectId: context.workspaceRoot, ...dispatchArgs });
+    const result = bus.dispatchJob({ projectId: context.workspaceRoot, ...dispatchArgs });
     return {
       ok: result.ok,
       job_id: result.jobId,
       status: result.status,
       message: `Dispatched task to Actions queue with status '${result.status}'`,
     };
-  } catch (error) {
+  } catch {
     throwIfAborted(context.signal);
-    if (context.actionRecovery && error instanceof ActionRecoveryError) throw error;
     throw new Error("Unable to dispatch Actions job");
   }
 }

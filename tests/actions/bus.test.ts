@@ -752,7 +752,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     const blocked = bus.getJob(job.jobId);
     assert.strictEqual(blocked?.rework_count, 3);
     assert.strictEqual(blocked?.error_message, "Reviewer rejection failed: Defect 3");
-    assert.strictEqual(blocked?.current_step, "Acopilot takeover required after 3 rework attempts.");
+    assert.strictEqual(blocked?.current_step, "Actions rework budget exhausted after 3 attempts.");
 
     const attempts = JSON.parse(blocked?.attempts_json ?? "[]") as Array<Record<string, unknown>>;
     assert.strictEqual(attempts.length, 3);
@@ -852,7 +852,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
     assert.match(text, /1\. Reviewer rejection: Reviewer rejection failed: Defect 1/);
     assert.match(text, /2\. Reviewer rejection: Reviewer rejection failed: Defect 2/);
     assert.match(text, /3\. Reviewer rejection: Reviewer rejection failed: Defect 3/);
-    assert.match(text, /Acopilot takeover required after 3 rework attempts\./);
+    assert.match(text, /Actions rework budget exhausted after 3 attempts\./);
     assert.match(text, /click \*\*Dismiss\*\* on the top queue stack/);
   });
 
@@ -1549,7 +1549,8 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       const payload = { ...reviewerPayload(), diff };
       assert.equal((await bus.executeReviewer(payload, repoDir)).status, "PASS");
       await assert.rejects(bus.executeReviewer({ ...payload, diff: `${diff}\n+ overflow` }, repoDir), ReviewerIncompleteError);
-      assert.equal(calls, useNative ? 2 : 1);
+      // Native inspection asks the same Reviewer session to finish paging before failing closed.
+      assert.equal(calls, useNative ? 4 : 1);
     }
   });
 
@@ -1593,7 +1594,7 @@ describe("LaneDispatchBus & ThreePointCheckoutGate", () => {
       try { return await new Promise<never>((_resolve, reject) => request.signal!.addEventListener("abort", () => reject(request.signal!.reason), { once: true })); }
       finally { active--; }
     }));
-    const pending = bus.executeReviewer(reviewerPayload(), repoDir, undefined, undefined, undefined, undefined, abort.signal);
+    const pending = bus.executeReviewer(reviewerPayload(), repoDir, undefined, undefined, abort.signal);
     await entered.promise;
     abort.abort(new Error("cancelled"));
     await assert.rejects(pending, /cancelled/);

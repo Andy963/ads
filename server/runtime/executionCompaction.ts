@@ -32,7 +32,10 @@ export async function compactExecution(options: {
   const result = await options.summarize(request.messages);
   if (result.toolCalls.length || !result.text.trim() || result.text.length > 12_000
     || result.finishReason === "length" || result.finishReason === "content_filter") {
-    throw new NativeContextLimitError("Paused: execution summary was incomplete. Saved tool evidence has not been replayed.");
+    throw new NativeContextLimitError(
+      `Paused: execution summary was incomplete (finish_reason=${result.finishReason ?? "unknown"}, `
+      + `text_chars=${result.text.length}, tool_calls=${result.toolCalls.length}). Saved tool evidence has not been replayed.`,
+    );
   }
   const anchors = prefix.filter(message => message.role === "system" || message.role === "user");
   // Never carry stale Responses item ids/ciphertext into a synthetic summary.

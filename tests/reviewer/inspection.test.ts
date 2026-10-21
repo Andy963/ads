@@ -270,6 +270,8 @@ describe("isolated Reviewer inspection", () => {
     const result = await runReviewerInspection({ ...options(), model: { ...options().model, contextWindow: 16_384 }, diff, complete: async request => {
       maxMessages = Math.max(maxMessages, request.messages.length);
       if (!request.tools.length) {
+        assert.ok((request.options?.maxTokens ?? 0) > 4096, "reviewer summary budget must leave room for high-effort reasoning");
+        assert.ok(request.messages.every(message => !message.tool_calls?.length), "summary evidence must be flattened so the model cannot replay tool calls");
         summaries++;
         return { ...verdict, text: "Reviewed previous diff pages; continue at the last returned next_offset." };
       }
@@ -296,23 +298,68 @@ describe("isolated Reviewer inspection", () => {
       return { ...verdict, text: "", toolCalls: [call("read_diff", { offset: page?.next_offset ?? 0 }, `page-${++rounds}`)] };
     } });
     assert.equal(result.status, "PASS");
-    assert.ok(rounds > 10);
+    assert.ok(rounds > 1);
+    assert.ok(rounds < 15);
     await assert.rejects(runReviewerInspection({ ...options(), diff, prompt, complete: async () => verdict }), /complete paged diff/);
   });
 
-  it("pages all evidence of a diff larger than 1500 lines", async () => {
-    const diff = ["diff --git a/file.ts b/file.ts", ...Array.from({ length: 1600 }, (_, i) => `+const n${i} = ${i};`)].join("\n");
+  it("inspects every page of a large deletion-heavy diff with enough output budget for a final verdict", async () => {
+    const removed = Array.from({ length: 6000 }, (_, i) => `-const removedValue${i} = ${i};`);
+    const diff = ["diff --git a/file.ts b/file.ts", "--- a/file.ts", "+++ b/file.ts", ...removed].join("\n");
     let rounds = 0;
     const result = await runReviewerInspection({ ...options(), diff, complete: async request => {
+      assert.ok((request.options?.maxTokens ?? 0) > 4096, "reviewer completion budget must leave room for high-effort reasoning");
       rounds++;
       const last = request.messages.at(-1);
-      const page = last?.role === "tool" ? JSON.parse(String(last.content)) : undefined;
+      const rawPage = last?.role === "tool" ? String(last.content) : undefined;
+      assert.ok((rawPage?.length ?? 0) <= 8000);
+      const page = rawPage === undefined ? undefined : JSON.parse(rawPage);
       if (page?.done) return verdict;
       return { ...verdict, text: "", toolCalls: [call("read_diff", { offset: page?.next_offset ?? 0 }, `page-${rounds}`)] };
     } });
     assert.equal(result.status, "PASS");
-    assert.ok(rounds > 10);
+    assert.ok(rounds > 1);
+    assert.ok(rounds < 30, "large diff pages must not require an unbounded inspection loop");
     await assert.rejects(runReviewerInspection({ ...options(), diff, complete: async () => verdict }), /complete paged diff/);
+  });
+
+  it("keeps escaped diff pages valid JSON while covering every character", async () => {
+    const diff = "diff --git a/file.ts b/file.ts\n+" + '"\\'.repeat(20_000);
+    let covered = "";
+    let rounds = 0;
+    const result = await runReviewerInspection({ ...options(), diff, complete: async request => {
+      const last = request.messages.at(-1);
+      if (last?.role !== "tool") return { ...verdict, text: "", toolCalls: [call("read_diff", { offset: 0 }, `page-${++rounds}`)] };
+      const raw = String(last.content);
+      assert.ok(raw.length <= 8000);
+      const page = JSON.parse(raw);
+      assert.equal(page.offset, covered.length);
+      assert.equal(page.next_offset, page.offset + page.content.length);
+      covered += page.content;
+      if (page.done) return verdict;
+      return { ...verdict, text: "", toolCalls: [call("read_diff", { offset: page.next_offset }, `page-${++rounds}`)] };
+    } });
+    assert.equal(result.status, "PASS");
+    assert.equal(covered, diff);
+  });
+
+  it("continues the same inspection after an early final verdict", async () => {
+    const diff = ["diff --git a/file.ts b/file.ts", ...Array.from({ length: 3000 }, (_, i) => `-const old${i} = ${i};`)].join("\n");
+    let turns = 0;
+    const result = await runReviewerInspection({ ...options(), diff, complete: async request => {
+      turns++;
+      if (turns === 1) return verdict;
+      const last = request.messages.at(-1);
+      if (last?.role === "user") {
+        assert.match(String(last.content), /not fully inspected yet.*offset=0/);
+        return { ...verdict, text: "", toolCalls: [call("read_diff", { offset: 0 }, "page-1")] };
+      }
+      const page = JSON.parse(String(last?.content));
+      if (page.done) return verdict;
+      return { ...verdict, text: "", toolCalls: [call("read_diff", { offset: page.next_offset }, `page-${turns}`)] };
+    } });
+    assert.equal(result.status, "PASS");
+    assert.ok(turns > 2);
   });
 
   for (const count of [6, 8]) {
