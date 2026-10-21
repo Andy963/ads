@@ -18,6 +18,8 @@ import {
 import { ReviewerIncompleteError } from "../reviewer/incomplete.js";
 import { runReviewerInspection } from "../reviewer/inspectionRunner.js";
 import { createNativeModelResolver, type NativeModelConfig } from "../runtime/modelResolver.js";
+import { ToolLoopPausedError } from "../runtime/toolLoopGuard.js";
+import { NativeContextLimitError } from "../runtime/nativeContextProjection.js";
 import type { completeNativeChat } from "../runtime/openAiCompatibleClient.js";
 import type { ReviewPayload, ReviewVerdict } from "../reviewer/types.js";
 import { getDefaultRoleProfile, getRoleProfileById } from "../state/roleProfileStore.js";
@@ -1347,7 +1349,7 @@ export class LaneDispatchBus {
           // different job, or an explicit lane reset, starts a new provider thread.
           const sessionKey = `${authUserId}\u0000${historyKey}`;
           if (this.developerSessionJobs.get(sessionKey) !== job.id) {
-            orchestrator.reset?.();
+            orchestrator.reset?.({ clearPersistedState: true });
             this.developerSessionJobs.set(sessionKey, job.id);
           }
 
@@ -1478,11 +1480,14 @@ export class LaneDispatchBus {
             void this.evaluateQueue(job.project_id, repoPath, job.auth_user_id ?? undefined);
           });
         } else {
+          const recoverable =
+            err instanceof ToolLoopPausedError ||
+            err instanceof NativeContextLimitError;
           this.scheduleRework(jobId, repoPath, {
             stage: "Developer execution",
             feedback: err instanceof Error ? err.message : String(err),
             reworkCount,
-            failureClass: "infrastructure",
+            ...(recoverable ? {} : { failureClass: "infrastructure" }),
           });
         }
       } finally {
