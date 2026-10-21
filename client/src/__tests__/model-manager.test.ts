@@ -232,6 +232,23 @@ describe("provider-first model management", () => {
     await flushPromises();
     wrapper.unmount();
   });
+
+  it("opens provider delete confirmation stating models will also be deleted, and deletes with removeReferences", async () => {
+    const { api } = fixture();
+    const wrapper = mount(ModelManager, { props: { api: api as any } });
+    await flushPromises();
+    await wrapper.get('[data-testid="provider-actions-p1"]').trigger("click");
+    await wrapper.get('[data-testid="provider-delete-p1"]').trigger("click");
+    const confirm = wrapper.get('[data-testid="settings-delete-confirm"]');
+    expect(confirm.text()).toContain("Delete Provider One?");
+    expect(confirm.text()).toContain("This also deletes all models associated with this provider and removes them from enabled services");
+    const confirmButton = confirm.findAll("button").find(b => b.text().includes("Delete"));
+    expect(confirmButton).toBeDefined();
+    await confirmButton!.trigger("click");
+    await flushPromises();
+    expect(api.delete).toHaveBeenCalledWith("/api/model-providers/p1?removeReferences=true");
+    wrapper.unmount();
+  });
 });
 
 describe("model token limits", () => {

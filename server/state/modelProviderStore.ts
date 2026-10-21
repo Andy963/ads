@@ -56,7 +56,7 @@ export function createModelProviderStore(db: DatabaseType) {
   const deleteStmt = db.prepare("DELETE FROM model_providers WHERE id = ?");
   // Prepared lazily: model_configs may not exist when the provider store is
   // created before the model config store.
-  const detachModelsStmt = () => db.prepare("UPDATE model_configs SET provider_id = NULL WHERE provider_id = ?");
+  const deleteModelsStmt = () => db.prepare("DELETE FROM model_configs WHERE provider_id = ?");
 
   const listProviders = (): ModelProvider[] => {
     const rows = listStmt.all() as Record<string, unknown>[];
@@ -92,22 +92,22 @@ export function createModelProviderStore(db: DatabaseType) {
   };
 
   /**
-   * Delete a provider and detach (never drop) the model configs that
-   * referenced it — their free-form provider string stays intact.
+   * Delete a provider and drop all model configs attached to it.
+   * Model configs without a provider_id are preserved.
    */
   const deleteProvider = (id: string): boolean => {
     const normalized = String(id ?? "").trim();
     if (!normalized) return false;
     let deleted = false;
     const tx = db.transaction(() => {
+      const existing = getProvider(normalized);
+      if (!existing) return;
+      const configColumns = db.prepare("PRAGMA table_info(model_configs)").all() as Array<{ name?: string }>;
+      if (configColumns.some((column) => column.name === "provider_id")) {
+        deleteModelsStmt().run(normalized);
+      }
       const res = deleteStmt.run(normalized) as { changes?: number };
       deleted = Number(res.changes ?? 0) > 0;
-      if (deleted) {
-        const configColumns = db.prepare("PRAGMA table_info(model_configs)").all() as Array<{ name?: string }>;
-        if (configColumns.some((column) => column.name === "provider_id")) {
-          detachModelsStmt().run(normalized);
-        }
-      }
     });
     tx();
     return deleted;

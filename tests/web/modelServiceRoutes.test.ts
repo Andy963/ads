@@ -32,7 +32,9 @@ it("round-trips provider catalogs, same-name models and service defaults through
   const origin = "http://127.0.0.1:" + (server.address() as { port: number }).port;
   async function request(path: string, method = "GET", body?: unknown) {
     const response = await fetch(origin + path, { method, headers: { "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-    return { status: response.status, body: await response.json() };
+    const text = await response.text();
+    const parsedBody = text ? JSON.parse(text) : null;
+    return { status: response.status, body: parsedBody };
   }
   try {
     const first = await request("/api/model-providers", "POST", { name: "One", baseUrl: "https://one.invalid/v1", apiKey: "key-one" });
@@ -87,6 +89,22 @@ it("round-trips provider catalogs, same-name models and service defaults through
     assert.deepEqual(services.get("conversation"), { service: "conversation", modelIds: [], defaultModelId: null });
     assert.equal(services.get("correction").defaultModelId, two.id);
     assert.equal(getDefaultRoleProfile(db, "acopilot")?.model_id, "");
+
+    assert.equal((await request("/api/model-providers/" + second.body.id, "DELETE")).status, 409);
+    db.exec("CREATE TRIGGER reject_provider_delete BEFORE DELETE ON model_providers BEGIN SELECT RAISE(ABORT, 'Provider deletion failed'); END");
+    assert.equal((await request("/api/model-providers/" + second.body.id + "?removeReferences=true", "DELETE")).status, 500);
+    assert.ok(providerStore.getProvider(second.body.id));
+    assert.ok(modelStore.getModelConfig(two.id));
+    assert.equal(services.get("correction").defaultModelId, two.id);
+    db.exec("DROP TRIGGER reject_provider_delete");
+
+    assert.equal((await request("/api/model-providers/" + second.body.id + "?removeReferences=true", "DELETE")).status, 200);
+    assert.equal(providerStore.getProvider(second.body.id), null);
+    assert.equal(modelStore.getModelConfig(two.id), null);
+    assert.deepEqual(services.get("correction").modelIds, []);
+    assert.equal(services.get("correction").defaultModelId, null);
+    assert.deepEqual(services.get("transcription").modelIds, []);
+    assert.equal(services.get("transcription").defaultModelId, null);
   } finally {
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));

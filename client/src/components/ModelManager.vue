@@ -275,7 +275,7 @@ async function confirmDelete(): Promise<void> {
   const target = deleteTarget.value;
   if (!target) return;
   await perform(async () => {
-    await props.api.delete(`/api/${target.kind === 'provider' ? 'model-providers' : 'model-configs'}/${encodeURIComponent(target.id)}${target.kind === 'model' ? '?removeReferences=true' : ''}`);
+    await props.api.delete(`/api/${target.kind === 'provider' ? 'model-providers' : 'model-configs'}/${encodeURIComponent(target.id)}?removeReferences=true`);
     deleteTarget.value = null;
     closeProvider();
     modelDialog.value = false;
@@ -406,7 +406,7 @@ onBeforeUnmount(() => {
       </div>
     </SettingsSheet>
     <SettingsSheet v-if="deleteTarget" title="Delete?" action-label="Delete" destructive :busy="busy" test-id="settings-delete-confirm" @close="deleteTarget = null; error = ''" @submit="confirmDelete">
-      <div class="settingsBlock"><p>Delete {{ deleteTarget.name }}?</p><p class="settingsNote">{{ deleteTarget.kind === 'model' ? 'This also removes it from enabled services. If it is a default, another enabled model becomes the default; an empty service has none. Roles using it follow the remaining conversation default. This cannot be undone.' : 'Remove this provider from all enabled services first. Its models are kept as unassigned. This cannot be undone.' }}</p><p v-if="error" class="settingsFeedback" role="alert">{{ error }}</p></div>
+      <div class="settingsBlock"><p>Delete {{ deleteTarget.name }}?</p><p class="settingsNote">{{ deleteTarget.kind === 'model' ? 'This also removes it from enabled services. If it is a default, another enabled model becomes the default; an empty service has none. Roles using it follow the remaining conversation default. This cannot be undone.' : 'This also deletes all models associated with this provider and removes them from enabled services. If any was a default, another enabled model becomes the default; an empty service has none. Roles using them follow the remaining conversation default. This cannot be undone.' }}</p><p v-if="error" class="settingsFeedback" role="alert">{{ error }}</p></div>
     </SettingsSheet>
   </section>
 </template>
