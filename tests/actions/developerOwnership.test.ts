@@ -23,6 +23,9 @@ import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
 import { buildWsConnectionIdentity } from "../../server/web/server/ws/connectionIdentity.js";
 import { HistoryStore } from "../../server/utils/historyStore.js";
 import { AsyncLock } from "../../server/utils/asyncLock.js";
+import { ToolLoopPausedError } from "../../server/runtime/toolLoopGuard.js";
+import { NativeCapabilityError } from "../../server/runtime/nativeProviderCapabilities.js";
+import { NativeContextLimitError } from "../../server/runtime/nativeContextProjection.js";
 
 const OWNER = "owner-582";
 const TEST_COMMAND = "node -e 'process.exit(0)'";
@@ -56,10 +59,12 @@ function countAcopilotPrompts(dbPath: string): number {
 
 function createOrchestrator(invoke: (input: string, options: AgentSendOptions) => Promise<{ response: string; usage: null; agentId: string }>) {
   let resetCount = 0;
+  let lastResetOptions: { clearPersistedState?: boolean } | undefined;
   let threadId: string | null = null;
   const orchestrator = {
-    reset() {
+    reset(options?: { clearPersistedState?: boolean }) {
       resetCount += 1;
+      lastResetOptions = options;
       threadId = `thread-${resetCount}`;
     },
     getThreadId() {
@@ -78,6 +83,7 @@ function createOrchestrator(invoke: (input: string, options: AgentSendOptions) =
   return {
     orchestrator,
     get resetCount() { return resetCount; },
+    get lastResetOptions() { return lastResetOptions; },
     get threadId() { return threadId; },
   };
 }
@@ -418,5 +424,210 @@ describe("Developer ownership of Actions jobs", { concurrency: false }, () => {
     assert.match(capturedPrompt, /Local Test Suite Execution Report/);
     assert.match(capturedPrompt, /\+reviewed-marker/);
     assert.doesNotMatch(capturedPrompt, /Developer private reasoning/);
+  });
+
+  it("clears persisted state when switching Developer session to a different job", async () => {
+    let callCount = 0;
+    const recordedResetOptions: Array<{ clearPersistedState?: boolean } | undefined> = [];
+    const fake = createOrchestrator(async (_input, options) => {
+      callCount += 1;
+      recordedResetOptions.push(fake.lastResetOptions);
+      if (callCount === 1) {
+        return { response: "Job 1 turn 1", usage: null, agentId: "codex" };
+      }
+      if (callCount === 2) {
+        git(repoDir, "checkout", "-b", "codex/issue-901");
+        commitFile(repoDir, "file1.txt", "content1\n");
+        const review = await options.actionTools!.review_action();
+        const delivered = await options.actionTools!.deliver_action();
+        assert.equal(review.ok, true, JSON.stringify(review));
+        assert.equal(delivered.ok, true, JSON.stringify(delivered));
+        return { response: "Job 1 complete", usage: null, agentId: "codex" };
+      }
+      git(repoDir, "checkout", "-b", "codex/issue-902");
+      commitFile(repoDir, "file2.txt", "content2\n");
+      const review = await options.actionTools!.review_action();
+      const delivered = await options.actionTools!.deliver_action();
+      assert.equal(review.ok, true, JSON.stringify(review));
+      assert.equal(delivered.ok, true, JSON.stringify(delivered));
+      return { response: "Job 2 complete", usage: null, agentId: "codex" };
+    });
+
+    const lock = new AsyncLock();
+    const bus = new LaneDispatchBus(getStateDatabase(dbPath), {
+      sessionManager: createSessionManager(fake.orchestrator),
+      getWorkspaceLock: () => lock,
+      runtimePreflight: () => ({ ok: true, backend: "native", missingCapabilities: [], unsupportedRuntimeCapabilities: [] }),
+      testCommand: TEST_COMMAND,
+      reviewerRunner: async () => JSON.stringify({ status: "PASS", summary: "ok", defects: [] }),
+      hasRemoteOrigin: () => false,
+      mergePipeline: () => ({ success: true }),
+    });
+
+    const job1 = bus.dispatchJob({
+      projectId: repoDir,
+      repoPath: repoDir,
+      authUserId: OWNER,
+      issueId: 901,
+      issueTitle: "Job 1",
+      issueDescription: "First job",
+      acceptanceCriteria: ["AC1"],
+    });
+
+    await waitFor(() => {
+      const current = bus.getJob(job1.jobId);
+      if (current?.status === "blocked" || current?.status === "failed") {
+        assert.fail(`Job 1 unexpected status: ${current.status}, error: ${current.error_message}, step: ${current.current_step}`);
+      }
+      return current?.status === "completed";
+    });
+    assert.equal(callCount, 2);
+    assert.deepEqual(recordedResetOptions, [{ clearPersistedState: true }, { clearPersistedState: true }]);
+    assert.equal(fake.resetCount, 1);
+
+    git(repoDir, "checkout", "dev");
+    const job2 = bus.dispatchJob({
+      projectId: repoDir,
+      repoPath: repoDir,
+      authUserId: OWNER,
+      issueId: 902,
+      issueTitle: "Job 2",
+      issueDescription: "Second job",
+      acceptanceCriteria: ["AC2"],
+    });
+
+    await waitFor(() => {
+      const current = bus.getJob(job2.jobId);
+      if (current?.status === "blocked" || current?.status === "failed") {
+        assert.fail(`Job 2 unexpected status: ${current.status}, error: ${current.error_message}, step: ${current.current_step}`);
+      }
+      return current?.status === "completed";
+    });
+    assert.equal(callCount, 3);
+    assert.equal(fake.resetCount, 2);
+    assert.deepEqual(fake.lastResetOptions, { clearPersistedState: true });
+  });
+
+  it("reworks on recoverable native errors like ToolLoopPausedError but blocks on NativeCapabilityError", async () => {
+    let callCount = 0;
+    const fake = createOrchestrator(async (_input, options) => {
+      callCount += 1;
+      if (callCount === 1) {
+        throw new ToolLoopPausedError("Loop detected");
+      }
+      git(repoDir, "checkout", "-b", "codex/issue-903");
+      commitFile(repoDir, "loop-fixed.txt", "fixed\n");
+      const review = await options.actionTools!.review_action();
+      const delivered = await options.actionTools!.deliver_action();
+      assert.equal(review.ok, true, JSON.stringify(review));
+      assert.equal(delivered.ok, true, JSON.stringify(delivered));
+      return { response: "Fixed after loop pause rework", usage: null, agentId: "codex" };
+    });
+
+    const lock = new AsyncLock();
+    const bus = new LaneDispatchBus(getStateDatabase(dbPath), {
+      sessionManager: createSessionManager(fake.orchestrator),
+      getWorkspaceLock: () => lock,
+      runtimePreflight: () => ({ ok: true, backend: "native", missingCapabilities: [], unsupportedRuntimeCapabilities: [] }),
+      testCommand: TEST_COMMAND,
+      reviewerRunner: async () => JSON.stringify({ status: "PASS", summary: "ok", defects: [] }),
+      hasRemoteOrigin: () => false,
+      mergePipeline: () => ({ success: true }),
+    });
+
+    const job = bus.dispatchJob({
+      projectId: repoDir,
+      repoPath: repoDir,
+      authUserId: OWNER,
+      issueId: 903,
+      issueTitle: "Loop pause recovery",
+      issueDescription: "Recover from loop pause",
+      acceptanceCriteria: ["Recovers"],
+    });
+
+    await waitFor(() => {
+      const current = bus.getJob(job.jobId);
+      if (current?.status === "blocked" || current?.status === "failed") {
+        assert.fail(`Job unexpected status: ${current.status}, error: ${current.error_message}, step: ${current.current_step}`);
+      }
+      return current?.status === "completed";
+    });
+    assert.equal(callCount, 2);
+    const completedJob = bus.getJob(job.jobId);
+    assert.equal(completedJob?.rework_count, 1);
+
+    git(repoDir, "checkout", "dev");
+    let contextLimitCalls = 0;
+    const fakeContextLimit = createOrchestrator(async (_input, options) => {
+      contextLimitCalls += 1;
+      if (contextLimitCalls === 1) {
+        throw new NativeContextLimitError("Context limit reached");
+      }
+      git(repoDir, "checkout", "-b", "codex/issue-905");
+      commitFile(repoDir, "context-fixed.txt", "fixed\n");
+      const review = await options.actionTools!.review_action();
+      const delivered = await options.actionTools!.deliver_action();
+      assert.equal(review.ok, true, JSON.stringify(review));
+      assert.equal(delivered.ok, true, JSON.stringify(delivered));
+      return { response: "Fixed after context limit rework", usage: null, agentId: "codex" };
+    });
+    const busContextLimit = new LaneDispatchBus(getStateDatabase(dbPath), {
+      sessionManager: createSessionManager(fakeContextLimit.orchestrator),
+      getWorkspaceLock: () => lock,
+      runtimePreflight: () => ({ ok: true, backend: "native", missingCapabilities: [], unsupportedRuntimeCapabilities: [] }),
+      testCommand: TEST_COMMAND,
+      reviewerRunner: async () => JSON.stringify({ status: "PASS", summary: "ok", defects: [] }),
+      hasRemoteOrigin: () => false,
+      mergePipeline: () => ({ success: true }),
+    });
+
+    const contextJob = busContextLimit.dispatchJob({
+      projectId: repoDir,
+      repoPath: repoDir,
+      authUserId: OWNER,
+      issueId: 905,
+      issueTitle: "Context limit recovery",
+      issueDescription: "Recover from context limit",
+      acceptanceCriteria: ["Recovers"],
+    });
+
+    await waitFor(() => {
+      const current = busContextLimit.getJob(contextJob.jobId);
+      if (current?.status === "blocked" || current?.status === "failed") {
+        assert.fail(`Job unexpected status: ${current.status}, error: ${current.error_message}, step: ${current.current_step}`);
+      }
+      return current?.status === "completed";
+    });
+    assert.equal(contextLimitCalls, 2);
+    assert.equal(busContextLimit.getJob(contextJob.jobId)?.rework_count, 1);
+
+    git(repoDir, "checkout", "dev");
+    const fakeFatal = createOrchestrator(async () => {
+      throw new NativeCapabilityError("toolCalls");
+    });
+    const busFatal = new LaneDispatchBus(getStateDatabase(dbPath), {
+      sessionManager: createSessionManager(fakeFatal.orchestrator),
+      getWorkspaceLock: () => lock,
+      runtimePreflight: () => ({ ok: true, backend: "native", missingCapabilities: [], unsupportedRuntimeCapabilities: [] }),
+      testCommand: TEST_COMMAND,
+      reviewerRunner: async () => JSON.stringify({ status: "PASS", summary: "ok", defects: [] }),
+      hasRemoteOrigin: () => false,
+      mergePipeline: () => ({ success: true }),
+    });
+
+    const fatalJob = busFatal.dispatchJob({
+      projectId: repoDir,
+      repoPath: repoDir,
+      authUserId: OWNER,
+      issueId: 904,
+      issueTitle: "Fatal capability failure",
+      issueDescription: "Fails capability",
+      acceptanceCriteria: ["Blocks immediately"],
+    });
+
+    await waitFor(() => busFatal.getJob(fatalJob.jobId)?.status === "blocked");
+    const blockedJob = busFatal.getJob(fatalJob.jobId);
+    assert.equal(blockedJob?.status, "blocked");
+    assert.equal(blockedJob?.rework_count, 0);
   });
 });
