@@ -17,29 +17,31 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <DraggableModal card-variant="large" @close="emit('close')">
-    <div class="attachmentsViewer">
-      <div class="attachmentsViewerHeader" data-drag-handle>
-        <div class="attachmentsViewerTitle">附件预览</div>
-        <button class="attachmentsViewerClose" type="button" @click="emit('close')">
-          <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-            <path
-              fill-rule="evenodd"
-              d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
-              clip-rule="evenodd"
-            />
-          </svg>
-        </button>
-      </div>
-      <div class="attachmentsViewerBody">
-        <div class="attachmentsViewerImages">
-          <template v-for="img in props.previews" :key="img.key">
-            <img v-if="img.src" class="attachmentsViewerImg" :src="img.src" alt="" />
-          </template>
+  <Teleport to="body">
+    <DraggableModal card-variant="large" @close="emit('close')">
+      <div class="attachmentsViewer">
+        <div class="attachmentsViewerHeader" data-drag-handle>
+          <div class="attachmentsViewerTitle">附件预览</div>
+          <button class="attachmentsViewerClose" type="button" @click="emit('close')">
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+              <path
+                fill-rule="evenodd"
+                d="M4.22 4.22a.75.75 0 0 1 1.06 0L10 8.94l4.72-4.72a.75.75 0 1 1 1.06 1.06L11.06 10l4.72 4.72a.75.75 0 1 1-1.06 1.06L10 11.06l-4.72 4.72a.75.75 0 1 1-1.06-1.06L8.94 10 4.22 5.28a.75.75 0 0 1 0-1.06Z"
+                clip-rule="evenodd"
+              />
+            </svg>
+          </button>
+        </div>
+        <div class="attachmentsViewerBody">
+          <div class="attachmentsViewerImages">
+            <template v-for="img in props.previews" :key="img.key">
+              <img v-if="img.src" class="attachmentsViewerImg" :src="img.src" alt="" />
+            </template>
+          </div>
         </div>
       </div>
-    </div>
-  </DraggableModal>
+    </DraggableModal>
+  </Teleport>
 </template>
 
 <style scoped>

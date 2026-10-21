@@ -313,22 +313,64 @@ describe("MainChat pending image viewer", () => {
     });
 
     expect(wrapper.find(".attachmentsViewer").exists()).toBe(false);
+    expect(document.body.querySelector(".attachmentsViewer")).toBeNull();
     const thumbs = wrapper.findAll(".attachmentsThumb");
     expect(thumbs).toHaveLength(2);
     expect(thumbs[0]!.find("img.attachmentsThumbImg").attributes("src")).toBe(images[0]!.data);
 
     await thumbs[0]!.trigger("click");
-    expect(wrapper.find(".attachmentsViewer").exists()).toBe(true);
+    const viewer = document.body.querySelector(".attachmentsViewer");
+    expect(viewer).not.toBeNull();
 
-    const viewerImages = wrapper.findAll<HTMLImageElement>(".attachmentsViewerImg");
+    const viewerImages = Array.from(document.body.querySelectorAll<HTMLImageElement>(".attachmentsViewerImg"));
     expect(viewerImages).toHaveLength(2);
-    expect(viewerImages[0]!.attributes("src")).toBe(images[0]!.data);
-    expect(viewerImages[1]!.attributes("src")).toBe(images[1]!.data);
+    expect(viewerImages[0]!.getAttribute("src")).toBe(images[0]!.data);
+    expect(viewerImages[1]!.getAttribute("src")).toBe(images[1]!.data);
 
-    await wrapper.find(".attachmentsViewerClose").trigger("click");
-    expect(wrapper.find(".attachmentsViewer").exists()).toBe(false);
+    const closeBtn = document.body.querySelector(".attachmentsViewerClose") as HTMLElement;
+    closeBtn.click();
+    await wrapper.vm.$nextTick();
+    expect(document.body.querySelector(".attachmentsViewer")).toBeNull();
 
     wrapper.unmount();
+  });
+
+  it("teleports viewer modal directly to document.body outside transformed lane containers", async () => {
+    const container = document.createElement("div");
+    container.className = "lanePanel";
+    container.style.transform = "translate3d(-50%, 0, 0)";
+    document.body.appendChild(container);
+
+    const images = [{ data: "data:image/png;base64,TEST" }];
+    const wrapper = mount(MainChat, {
+      props: {
+        messages: [],
+        ...mainChatBaseProps,
+        pendingImages: images,
+      },
+      global: {
+        stubs: {
+          MarkdownContent: true,
+        },
+      },
+      attachTo: container,
+    });
+
+    const thumb = wrapper.find(".attachmentsThumb");
+    await thumb.trigger("click");
+
+    expect(container.querySelector(".attachmentsViewer")).toBeNull();
+    const bodyViewer = document.body.querySelector(".attachmentsViewer");
+    expect(bodyViewer).not.toBeNull();
+    expect(bodyViewer?.parentElement?.classList.contains("draggableCard")).toBe(true);
+
+    const closeBtn = document.body.querySelector(".attachmentsViewerClose") as HTMLElement;
+    closeBtn.click();
+    await wrapper.vm.$nextTick();
+    expect(document.body.querySelector(".attachmentsViewer")).toBeNull();
+
+    wrapper.unmount();
+    container.remove();
   });
 
   it("normalizes attachment id to backend raw URL for preview", async () => {
