@@ -392,11 +392,23 @@ async function handleModelProviderRoutes(ctx: ApiRouteContext, deps: ModelRouteD
     }
 
     if (req.method === "DELETE") {
-      const used = createModelServiceStore(providerStore.db).list().some((service) => service.modelIds.some((id) =>
+      const existing = providerStore.getProvider(providerId);
+      if (!existing) {
+        sendJson(res, 404, { error: "Not found" });
+        return true;
+      }
+      const services = createModelServiceStore(providerStore.db);
+      const used = services.list().some((service) => service.modelIds.some((id) =>
         createGlobalModelConfigStore(providerStore.db).getModelConfig(id)?.providerId === providerId));
-      if (used) { sendJson(res, 409, { error: "Disable this provider's models in all services before deleting it." }); return true; }
-      // Model configs referencing the provider are preserved and detached.
-      const deleted = providerStore.deleteProvider(providerId);
+      const removeReferences = ctx.url.searchParams.get("removeReferences") === "true";
+      if (!removeReferences && used) {
+        sendJson(res, 409, { error: "Disable this provider's models in all services before deleting it." });
+        return true;
+      }
+      const deleted = providerStore.db.transaction(() => {
+        services.removeProviderReferences(providerId);
+        return providerStore.deleteProvider(providerId);
+      })();
       sendJson(res, 200, { success: deleted });
       return true;
     }

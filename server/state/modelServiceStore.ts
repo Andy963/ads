@@ -101,5 +101,14 @@ export function createModelServiceStore(db: Database) {
     })();
   }
 
-  return { get, list: () => MODEL_SERVICES.map(get), save, listModels, resolveDefault, resolveConversation, removeModelReferences };
+  function removeProviderReferences(providerId: string): void {
+    db.transaction(() => {
+      const attached = models.listModelConfigs().filter((model) => model.providerId === providerId);
+      for (const model of attached) {
+        removeModelReferences(model.id);
+      }
+    })();
+  }
+
+  return { get, list: () => MODEL_SERVICES.map(get), save, listModels, resolveDefault, resolveConversation, removeModelReferences, removeProviderReferences };
 }

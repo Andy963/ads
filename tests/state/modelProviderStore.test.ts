@@ -56,7 +56,7 @@ describe("model provider store", () => {
     assert.throws(() => store.upsertProvider({ id: "p", name: "x", baseUrl: "", isEnabled: true }), /baseUrl is required/);
   });
 
-  it("preserves model configs with a null provider reference and detaches on provider delete", () => {
+  it("deletes associated model configs on provider delete and preserves unrelated unassigned model configs", () => {
     const store = createModelProviderStore(db);
     const modelStore = createGlobalModelConfigStore(db);
     store.upsertProvider({ id: "provider-1", name: "openrouter", baseUrl: "https://openrouter.ai/api/v1", isEnabled: true });
@@ -81,12 +81,32 @@ describe("model provider store", () => {
     assert.equal(modelStore.getModelConfig("model-1")?.providerId, "provider-1");
     assert.equal(modelStore.getModelConfig("model-legacy")?.providerId, null);
 
-    store.deleteProvider("provider-1");
-    const detached = modelStore.getModelConfig("model-1");
-    assert.ok(detached, "model config must survive provider deletion");
-    assert.equal(detached.providerId, null);
-    assert.equal(detached.provider, "openai");
-    assert.equal(modelStore.getModelConfig("model-legacy")?.provider, "custom-legacy");
+    assert.equal(store.deleteProvider("provider-1"), true);
+    assert.equal(modelStore.getModelConfig("model-1"), null);
+    const legacy = modelStore.getModelConfig("model-legacy");
+    assert.ok(legacy);
+    assert.equal(legacy.provider, "custom-legacy");
+    assert.equal(legacy.providerId, null);
+  });
+
+  it("rolls back provider and associated model deletion when a transaction failure occurs", () => {
+    const store = createModelProviderStore(db);
+    const modelStore = createGlobalModelConfigStore(db);
+    store.upsertProvider({ id: "provider-1", name: "openrouter", baseUrl: "https://openrouter.ai/api/v1", isEnabled: true });
+    modelStore.upsertModelConfig({
+      id: "model-1",
+      modelId: "gpt-5.2",
+      displayName: "GPT 5.2",
+      provider: "openai",
+      providerId: "provider-1",
+      isEnabled: true,
+      isDefault: false,
+    });
+    db.exec("CREATE TRIGGER reject_delete_model BEFORE DELETE ON model_configs BEGIN SELECT RAISE(ABORT, 'Model deletion failed'); END");
+    assert.throws(() => store.deleteProvider("provider-1"), /Model deletion failed/);
+    assert.ok(store.getProvider("provider-1"));
+    assert.ok(modelStore.getModelConfig("model-1"));
+    db.exec("DROP TRIGGER reject_delete_model");
   });
 
   it("adds the provider_id column to pre-existing model_configs without touching rows", () => {
