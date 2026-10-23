@@ -1,7 +1,8 @@
-export const RECONNECT_BUSY_MESSAGE = "请求执行中连接中断，正在重连并同步历史…";
+import { t } from "../../lib/i18n";
 
-export const RECONNECT_PENDING_RESEND_NOTICE =
-  "请求尚未送达后端时连接已断开，重连后将自动重新发送…";
+export const RECONNECT_BUSY_MESSAGE = t("connection.reconnectBusy");
+
+export const RECONNECT_PENDING_RESEND_NOTICE = t("connection.reconnectPendingResend");
 
 export const RECONNECT_NOTICE_VARIANTS: readonly string[] = [
   RECONNECT_BUSY_MESSAGE,

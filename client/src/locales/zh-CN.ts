@@ -1,0 +1,25 @@
+const zhCN = {
+  "auth.adminNotInitialized": "管理员尚未初始化。请在服务器上运行",
+  "auth.signInToContinue": "登录以继续。",
+  "auth.username": "用户名",
+  "auth.password": "密码",
+  "auth.showPassword": "显示密码",
+  "auth.hidePassword": "隐藏密码",
+  "auth.signIn": "登录",
+  "auth.signingIn": "正在登录…",
+  "auth.checkingConnection": "正在连接服务器…缓存对话暂时为只读。",
+  "auth.offlineCached": "当前处于离线状态，正在以只读方式显示本地缓存。",
+  "auth.serverUnavailableCached": "暂时无法连接服务器，正在以只读方式显示本地缓存。",
+  "auth.serverRequestFailedCached": "服务器已响应，但暂时无法验证当前会话；本地缓存保持只读。",
+  "auth.offlineRetry": "当前处于离线状态，请恢复网络连接后重试。",
+  "auth.serverUnavailableRetry": "无法连接服务器，请检查服务器状态后重试。",
+  "auth.serverRequestFailed": "服务器暂时无法验证会话，请稍后重试。",
+  "auth.invalidCredentials": "用户名或密码错误。",
+  "auth.accessDenied": "此账户无权登录。",
+  "auth.retry": "重试",
+  "connection.disconnected": "连接已断开，正在重连…",
+  "connection.reconnectBusy": "请求执行期间连接中断，正在重连并同步历史…",
+  "connection.reconnectPendingResend": "请求尚未送达服务器，连接恢复后将自动重新发送…",
+} as const;
+
+export default zhCN;

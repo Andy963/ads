@@ -5,6 +5,7 @@ import App from "../App.vue";
 import { createProjectRuntime } from "../app/projectRuntime";
 import { createTranscriptCache, TRANSCRIPT_CACHE_PREFIX, TRANSCRIPT_OWNER_KEY } from "../app/transcriptCache";
 import { legacyPendingPromptStorageKey, outboxStorageKey } from "../app/outbox";
+import { t } from "../lib/i18n";
 
 const state = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock("../api/client", () => ({ ApiClient: class { get = state.get; } }));
@@ -49,8 +50,41 @@ describe("cached app bootstrap and authentication", () => {
     expect(wrapper.find(".chat").text()).toContain("Cached acopilot answer");
     expect(wrapper.find(".app").attributes("data-cache-read-only")).toBe("true");
     expect(wrapper.find("textarea.composer-input").attributes("disabled")).toBeDefined();
+    expect(wrapper.find("[data-testid='lane-connection-status']").text()).toContain(t("auth.checkingConnection"));
     const authStatusCalls = state.get.mock.calls.filter(([path]) => path === "/api/auth/status");
     expect(authStatusCalls).toHaveLength(1);
+  });
+
+  it("reports an unavailable server instead of implying the cached session needs sign-in", async () => {
+    state.get.mockRejectedValue(new TypeError("Network unavailable"));
+    const wrapper = mountApp();
+    await flushPromises();
+
+    const status = wrapper.find("[data-testid='lane-connection-status']").text();
+    expect(status).toContain(t("auth.serverUnavailableCached"));
+    expect(status).not.toContain("sign in");
+    expect(status).not.toContain("登录");
+  });
+
+  it("reports offline state separately from an unreachable server", async () => {
+    const originalOnLine = navigator.onLine;
+    Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+    state.get.mockRejectedValue(new TypeError("Network unavailable"));
+    try {
+      const wrapper = mountApp();
+      await flushPromises();
+      expect(wrapper.find("[data-testid='lane-connection-status']").text()).toContain(t("auth.offlineCached"));
+    } finally {
+      Object.defineProperty(navigator, "onLine", { configurable: true, value: originalOnLine });
+    }
+  });
+
+  it("does not label a server response error as a network disconnection", async () => {
+    state.get.mockRejectedValue(new Error("Internal server error", { cause: { status: 500 } }));
+    const wrapper = mountApp();
+    await flushPromises();
+
+    expect(wrapper.find("[data-testid='lane-connection-status']").text()).toContain(t("auth.serverRequestFailedCached"));
   });
 
   it("restores the selected mobile lane before its first render", () => {
@@ -91,7 +125,7 @@ describe("cached app bootstrap and authentication", () => {
     try {
       const wrapper = mountApp();
       await flushPromises();
-      expect(wrapper.find(".gate").text()).toContain("Admin is not initialized");
+      expect(wrapper.find(".gate").text()).toContain(t("auth.adminNotInitialized"));
       expect(wrapper.find(".app").exists()).toBe(false);
     } finally {
       read.mockRestore();

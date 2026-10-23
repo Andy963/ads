@@ -42,6 +42,7 @@ import {
   Clock,
 } from "@element-plus/icons-vue";
 import { isLaneConnected } from "./lib/laneConnectionStatus";
+import { t } from "./lib/i18n";
 import {
   hasLockingActionJob,
   isActionJobExecutionActive,
@@ -1613,10 +1614,30 @@ async function onSettingsChanged(): Promise<void> {
 
 const runningTaskCount = computed(() => 0);
 
-const disconnectedStatusMessage = "连接已断开，正在重连…";
+const authConnectionState = ref<"checking" | "offline" | "unavailable" | "request-failed">("checking");
+const disconnectedStatusMessage = t("connection.disconnected");
+
+function handleAuthConnectionState(state: "checking" | "offline" | "unavailable" | "request-failed"): void {
+  authConnectionState.value = state;
+}
+
+function cachedConnectionStatus() {
+  if (authConnectionState.value === "checking") {
+    return { kind: "progress" as const, message: t("auth.checkingConnection") };
+  }
+  const messageKey = authConnectionState.value === "offline"
+    ? "auth.offlineCached"
+    : authConnectionState.value === "request-failed"
+      ? "auth.serverRequestFailedCached"
+      : "auth.serverUnavailableCached";
+  return {
+    kind: "disconnected" as const,
+    message: t(messageKey),
+  };
+}
 
 const actionsConnectionStatus = computed(() => {
-  if (!loggedIn.value) return { kind: "info" as const, message: "Cached conversation: read-only until sign-in." };
+  if (!loggedIn.value) return cachedConnectionStatus();
   const laneStatus = actionsLaneStatus.value;
   if (!connected.value && laneStatus?.kind === "progress") return laneStatus;
   const error = String(wsError.value ?? "").trim();
@@ -1626,7 +1647,7 @@ const actionsConnectionStatus = computed(() => {
 });
 
 const acopilotConnectionStatus = computed(() => {
-  if (!loggedIn.value) return { kind: "info" as const, message: "Cached conversation: read-only until sign-in." };
+  if (!loggedIn.value) return cachedConnectionStatus();
   const laneStatus = acopilotLaneStatus.value;
   if (!acopilotConnected.value && laneStatus?.kind === "progress") return laneStatus;
   const error = String(activeAcopilotRuntime.value.wsError.value ?? "").trim();
@@ -1643,6 +1664,7 @@ const acopilotConnectionStatus = computed(() => {
     v-show="!cachedTranscriptAvailable"
     @logged-in="handleLoggedIn"
     @auth-required="handleAuthRequired"
+    @connection-state="handleAuthConnectionState"
   />
   <div
     v-if="loggedIn || cachedTranscriptAvailable"

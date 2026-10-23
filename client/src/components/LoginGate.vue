@@ -2,10 +2,14 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient } from "../api/client";
 import type { AuthMe, AuthStatus } from "../api/types";
+import { t } from "../lib/i18n";
+
+type AuthConnectionState = "checking" | "offline" | "unavailable" | "request-failed";
 
 const emit = defineEmits<{
   (e: "logged-in", me: AuthMe): void;
   (e: "auth-required"): void;
+  (e: "connection-state", state: AuthConnectionState): void;
 }>();
 
 const api = new ApiClient({ baseUrl: "" });
@@ -18,11 +22,37 @@ const password = ref("");
 const showPassword = ref(false);
 const error = ref<string | null>(null);
 const busy = ref(false);
+const connectionRetryAvailable = ref(false);
 let refreshing = false;
 let refreshRequested = false;
 let disposed = false;
 
 const canSubmit = computed(() => Boolean(username.value.trim()) && Boolean(password.value));
+
+function isOffline(): boolean {
+  return typeof navigator !== "undefined" && navigator.onLine === false;
+}
+
+function authConnectionStateFor(error: unknown): Exclude<AuthConnectionState, "checking"> {
+  const status = error instanceof Error
+    ? (error.cause as { status?: number } | undefined)?.status
+    : undefined;
+  if (isOffline()) return "offline";
+  if (status === undefined) return "unavailable";
+  return "request-failed";
+}
+
+function authErrorMessage(error: unknown): string {
+  const status = error instanceof Error
+    ? (error.cause as { status?: number } | undefined)?.status
+    : undefined;
+  if (status === 401) return t("auth.invalidCredentials");
+  if (status === 403) return t("auth.accessDenied");
+  const connectionState = authConnectionStateFor(error);
+  if (connectionState === "offline") return t("auth.offlineRetry");
+  if (connectionState === "unavailable") return t("auth.serverUnavailableRetry");
+  return t("auth.serverRequestFailed");
+}
 
 async function refresh(): Promise<void> {
   if (disposed) return;
@@ -31,9 +61,11 @@ async function refresh(): Promise<void> {
     return;
   }
   refreshing = true;
+  connectionRetryAvailable.value = false;
   if (initialized.value === null) {
     loading.value = true;
   }
+  emit("connection-state", "checking");
   error.value = null;
   try {
     const status = await api.get<AuthStatus>("/api/auth/status");
@@ -48,10 +80,15 @@ async function refresh(): Promise<void> {
     if (disposed) return;
     emit("logged-in", me.value);
   } catch (e) {
+    if (disposed) return;
     me.value = null;
     const status = e instanceof Error ? (e.cause as { status?: number } | undefined)?.status : undefined;
-    if (!disposed && (status === 401 || status === 403)) emit("auth-required");
-    else error.value = e instanceof Error ? e.message : String(e);
+    if (status === 401 || status === 403) emit("auth-required");
+    else {
+      emit("connection-state", authConnectionStateFor(e));
+      connectionRetryAvailable.value = true;
+      error.value = authErrorMessage(e);
+    }
   } finally {
     loading.value = false;
     refreshing = false;
@@ -65,13 +102,14 @@ async function refresh(): Promise<void> {
 async function submit(): Promise<void> {
   if (!canSubmit.value || busy.value) return;
   busy.value = true;
+  connectionRetryAvailable.value = false;
   error.value = null;
   try {
     await api.post<{ success: true }>("/api/auth/login", { username: username.value.trim(), password: password.value });
     password.value = "";
     await refresh();
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    error.value = authErrorMessage(e);
   } finally {
     busy.value = false;
   }
@@ -117,15 +155,15 @@ onBeforeUnmount(() => {
 
       <template v-else>
         <p v-if="initialized === false" class="desc">
-          Admin is not initialized. Run <code>npm run web:init-admin -- --username &lt;username&gt; --password-stdin</code> on the server.
+          {{ t("auth.adminNotInitialized") }} <code>npm run web:init-admin -- --username &lt;username&gt; --password-stdin</code>.
         </p>
 
         <template v-else-if="initialized === true">
-          <p class="desc">Sign in to continue.</p>
+          <p class="desc">{{ t("auth.signInToContinue") }}</p>
 
           <form class="form" @submit.prevent="submit">
             <label class="field">
-              <span class="field-label">Username</span>
+              <span class="field-label">{{ t("auth.username") }}</span>
               <input
                 v-model="username"
                 type="text"
@@ -133,25 +171,25 @@ onBeforeUnmount(() => {
                 autocomplete="username"
                 autocapitalize="off"
                 spellcheck="false"
-                placeholder="Username"
+                :placeholder="t('auth.username')"
                 data-testid="login-username"
               />
             </label>
             <label class="field">
-              <span class="field-label">Password</span>
+              <span class="field-label">{{ t("auth.password") }}</span>
               <div class="password-wrap">
                 <input
                   v-model="password"
                   :type="showPassword ? 'text' : 'password'"
                   name="password"
                   autocomplete="current-password"
-                  placeholder="Password"
+                  :placeholder="t('auth.password')"
                   data-testid="login-password"
                 />
                 <button
                   type="button"
                   class="pw-toggle"
-                  :aria-label="showPassword ? 'Hide password' : 'Show password'"
+                  :aria-label="showPassword ? t('auth.hidePassword') : t('auth.showPassword')"
                   :aria-pressed="showPassword"
                   @click="togglePassword"
                 >
@@ -168,7 +206,7 @@ onBeforeUnmount(() => {
             </label>
             <button class="submit-btn" type="submit" :disabled="!canSubmit || busy" data-testid="login-submit">
               <span v-if="busy" class="spinner" aria-hidden="true"></span>
-              {{ busy ? "Signing in…" : "Sign in" }}
+              {{ busy ? t("auth.signingIn") : t("auth.signIn") }}
             </button>
           </form>
         </template>
@@ -182,6 +220,9 @@ onBeforeUnmount(() => {
         </svg>
         <span>{{ error }}</span>
       </p>
+      <button v-if="connectionRetryAvailable" class="retry-btn" type="button" :disabled="loading" @click="refresh">
+        {{ t("auth.retry") }}
+      </button>
     </div>
   </div>
 </template>
@@ -389,6 +430,19 @@ input:-webkit-autofill:focus {
   height: 16px;
   flex: none;
   margin-top: 1px;
+}
+.retry-btn {
+  margin-top: 12px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.retry-btn:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 @keyframes error-in {
   from {
