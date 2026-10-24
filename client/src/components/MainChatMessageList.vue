@@ -18,6 +18,76 @@ function userMessageText(content: string): string {
   return content.replace(MARKDOWN_IMAGE_RE, "").trim();
 }
 
+function parseShellWords(command: string): string[] | null {
+  const words: string[] = [];
+  let word = "";
+  let quote: "'" | '"' | null = null;
+  let started = false;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index] ?? "";
+
+    if (quote === "'") {
+      if (character === "'") quote = null;
+      else word += character;
+      continue;
+    }
+
+    if (quote === '"') {
+      if (character === '"') {
+        quote = null;
+      } else if (character === "\\") {
+        const next = command[index + 1];
+        if (next === "\n") {
+          index += 1;
+        } else if (next && ['"', "\\", "$", "`"].includes(next)) {
+          word += next;
+          index += 1;
+        } else {
+          word += character;
+        }
+      } else {
+        word += character;
+      }
+      continue;
+    }
+
+    if (character === "\\") {
+      const next = command[index + 1];
+      if (!next) return null;
+      if (next !== "\n") word += next;
+      started = true;
+      index += 1;
+    } else if (character === "'" || character === '"') {
+      quote = character;
+      started = true;
+    } else if (/\s/.test(character)) {
+      if (started) {
+        words.push(word);
+        word = "";
+        started = false;
+      }
+    } else {
+      word += character;
+      started = true;
+    }
+  }
+
+  if (quote) return null;
+  if (started) words.push(word);
+  return words;
+}
+
+function formatExecuteCommandForDisplay(command: unknown): string {
+  const rawCommand = String(command ?? "");
+  const words = parseShellWords(rawCommand);
+  if (!words || words.length !== 3) return rawCommand;
+
+  const executable = words[0]?.split("/").at(-1);
+  if (executable !== "bash" || !["-lc", "-c"].includes(words[1] ?? "")) return rawCommand;
+  return words[2] ?? rawCommand;
+}
+
 function userMessageAttachments(content: string): Array<{ alt: string; url: string }> {
   if (!content) return [];
   const attachments: Array<{ alt: string; url: string }> = [];
@@ -319,7 +389,7 @@ const hasEarlierMessages = computed(() => loadedStart.value > 0);
 const executeCommandSignature = computed(() =>
   renderMessages.value
     .filter((message) => message.kind === "execute")
-    .map((message) => `${String(message.id ?? "").trim()}:${message.command ?? ""}:${message.streaming ? 1 : 0}`)
+    .map((message) => `${String(message.id ?? "").trim()}:${formatExecuteCommandForDisplay(message.command)}:${message.streaming ? 1 : 0}`)
     .join("|"),
 );
 
@@ -693,11 +763,11 @@ function getAssistantTint(m: RenderMessage): AssistantBubbleTint | undefined {
               class="execute-cmd"
               :class="{ 'execute-cmd--overflowing': isExecuteCommandOverflowing(m.id) }"
               :data-message-id="m.id"
-              :title="m.command || ''"
+              :title="formatExecuteCommandForDisplay(m.command)"
             >
-              <div :key="m.command" class="execute-cmd-track" :style="executeCommandTrackStyle(m.id)">
-                <span class="execute-cmd-copy">{{ m.command || "" }}</span>
-                <span v-if="isExecuteCommandOverflowing(m.id)" class="execute-cmd-copy" aria-hidden="true">{{ m.command || "" }}</span>
+              <div :key="formatExecuteCommandForDisplay(m.command)" class="execute-cmd-track" :style="executeCommandTrackStyle(m.id)">
+                <span class="execute-cmd-copy">{{ formatExecuteCommandForDisplay(m.command) }}</span>
+                <span v-if="isExecuteCommandOverflowing(m.id)" class="execute-cmd-copy" aria-hidden="true">{{ formatExecuteCommandForDisplay(m.command) }}</span>
               </div>
             </div>
             <span v-if="m.streaming" class="executeLoadingDots" aria-label="Running...">

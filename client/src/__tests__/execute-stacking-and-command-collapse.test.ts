@@ -46,10 +46,12 @@ describe("chat execute stacking and command collapse", () => {
     wrapper.unmount();
   });
 
-  it("renders the command without any copy button or output", async () => {
+  it("renders the unwrapped command without any copy button or output", async () => {
+    const rawCommand = `/bin/bash -lc 'cmd-1'`;
+    const message = { id: "e-1", role: "system", kind: "execute", content: "out-1", command: rawCommand } as const;
     const wrapper = mount(MainChatMessageList, {
       props: {
-        messages: [{ id: "e-1", role: "system", kind: "execute", content: "out-1", command: "cmd-1" }],
+        messages: [message],
         copiedMessageId: null,
         formatMessageTs: () => "",
         liveStepExpanded: false,
@@ -71,11 +73,22 @@ describe("chat execute stacking and command collapse", () => {
     await settleUi(wrapper);
     expect(wrapper.get(".execute-cmd").text()).toBe("cmd-1");
     expect(wrapper.get(".execute-cmd").attributes("title")).toBe("cmd-1");
+    expect(message.command).toBe(rawCommand);
     expect(wrapper.findAll(".execute-cmd-copy")).toHaveLength(1);
     expect(wrapper.get(".execute-block").findAll("button")).toHaveLength(0);
     expect(wrapper.find(".execute-output").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("out-1");
     expect(wrapper.emitted("copyMessage")).toBeUndefined();
+
+    const quotedInvocation = `"/bin/bash" "-lc" "cd /workspace && echo \\"ready\\""`;
+    await wrapper.setProps({ messages: [{ ...message, command: quotedInvocation }] });
+    await settleUi(wrapper);
+
+    expect(wrapper.get(".execute-cmd").text()).toBe('cd /workspace && echo "ready"');
+    const command = "/bin/bash ./scripts/check.sh";
+    await wrapper.setProps({ messages: [{ ...message, command }] });
+    await settleUi(wrapper);
+    expect(wrapper.get(".execute-cmd").text()).toBe(command);
 
     wrapper.unmount();
   });
