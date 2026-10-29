@@ -227,6 +227,22 @@ describe("state/database", () => {
     assert.ok(fs.existsSync(dbPath), "State database file should exist");
   });
 
+  it("creates the Web Push subscription table in the latest schema", () => {
+    const db = getStateDatabase();
+    const info = getStateDatabaseInfo();
+    const columns = db.prepare("PRAGMA table_info('web_push_subscriptions')").all() as Array<{ name: string }>;
+
+    assert.equal(info.schemaVersion, stateSchemaMigrations.length);
+    assert.deepEqual(columns.map((column) => column.name), [
+      "endpoint",
+      "user_id",
+      "p256dh",
+      "auth",
+      "created_at",
+      "updated_at",
+    ]);
+  });
+
   it("should return cached database instance", () => {
     const db1 = getStateDatabase();
     const db2 = getStateDatabase();

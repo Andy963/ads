@@ -19,12 +19,14 @@ import { handleActionRoutes } from "./routes/actions.js";
 import { handleScheduleRoutes } from "./routes/schedules.js";
 import { handleSyncRoutes } from "./routes/sync.js";
 import { handleRunRoutes } from "./routes/runs.js";
+import { handleWebPushRoutes } from "./routes/webPush.js";
 
 import type { ScheduleCompiler } from "../../../scheduler/compiler.js";
 import type { SchedulerRuntime } from "../../../scheduler/runtime.js";
 import type { SyncEventStore } from "../sync/store.js";
 import type { WebLaneGenerationStore } from "../sync/laneGeneration.js";
 import type { LanePromptStore } from "../../../state/lanePromptStore.js";
+import type { createWebPushService } from "../../push/service.js";
 
 export function createApiRequestHandler(deps: {
   logger: Logger;
@@ -44,6 +46,7 @@ export function createApiRequestHandler(deps: {
   advisorHistoryStore?: { get: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }> };
   laneGenerationStore?: WebLaneGenerationStore;
   lanePromptStore?: LanePromptStore;
+  webPushService: ReturnType<typeof createWebPushService>;
 }): (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean> {
   const buildAttachmentRawUrl = (url: URL, attachmentId: string): string => {
     const workspaceParam = url.searchParams.get("workspace");
@@ -77,6 +80,7 @@ export function createApiRequestHandler(deps: {
     }
 
     const routeCtx: ApiRouteContext = { req, res, url, pathname, auth: { userId: auth.userId, username: auth.username } };
+    if (await handleWebPushRoutes(routeCtx, { service: deps.webPushService })) return true;
     if (await handleAudioRoutes(routeCtx, { logger: deps.logger })) return true;
     if (await handlePathRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handleProjectRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;

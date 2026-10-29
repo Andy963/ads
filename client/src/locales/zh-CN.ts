@@ -20,6 +20,22 @@ const zhCN = {
   "connection.disconnected": "连接已断开，正在重连…",
   "connection.reconnectBusy": "请求执行期间连接中断，正在重连并同步历史…",
   "connection.reconnectPendingResend": "请求尚未送达服务器，连接恢复后将自动重新发送…",
+  "webPush.title": "推送通知",
+  "webPush.description": "助手完成回复后，即使 ADS 暂时在后台，也可以收到提醒。通知不会包含对话内容。",
+  "webPush.loading": "正在检查推送设置…",
+  "webPush.httpsRequired": "推送通知需要通过 HTTPS 访问 ADS。",
+  "webPush.iosInstallRequired": "iPhone 需要 iOS 16.4 或更新版本。请先在 Safari 中将 ADS 添加到主屏幕，再从主屏幕打开并启用通知。",
+  "webPush.unsupported": "此浏览器不支持 Web Push 通知。",
+  "webPush.permissionDenied": "通知权限已关闭。请在系统或浏览器设置中允许 ADS 发送通知。",
+  "webPush.permissionNotGranted": "未获得通知权限。",
+  "webPush.serverDisabled": "服务器尚未配置 Web Push。",
+  "webPush.loadFailed": "无法读取推送设置，请重试。",
+  "webPush.enableFailed": "启用通知失败，请检查连接和浏览器权限后重试。",
+  "webPush.disableFailed": "关闭通知失败，请重试。",
+  "webPush.enable": "启用通知",
+  "webPush.disable": "关闭此设备的通知",
+  "webPush.enabled": "此设备已启用通知。",
+  "webPush.notEnabled": "只有在点击启用后，浏览器才会请求通知权限。",
 } as const;
 
 export default zhCN;

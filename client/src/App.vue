@@ -34,6 +34,7 @@ import {
 import {
   ArrowRight,
   CirclePlus,
+  Bell,
   ChatDotRound,
   Delete,
   Document,
@@ -353,12 +354,20 @@ const sessionResumeDisabledReason = computed(() => {
 });
 
 const mobileContextTitle = computed(() => {
-  if (mobileDrawerSection.value === "settings") return mobileSettingsTab.value === "models" ? "模型配置" : "角色指令";
+  if (mobileDrawerSection.value === "settings") {
+    if (mobileSettingsTab.value === "models") return "模型配置";
+    if (mobileSettingsTab.value === "notifications") return t("webPush.title");
+    return "角色指令";
+  }
   return activeProject.value?.name?.trim() || "项目";
 });
 
 const mobileContextMenuTitle = computed(() => {
-  if (mobileDrawerSection.value === "settings") return mobileSettingsTab.value === "models" ? "模型配置操作" : "角色指令操作";
+  if (mobileDrawerSection.value === "settings") {
+    if (mobileSettingsTab.value === "models") return "模型配置操作";
+    if (mobileSettingsTab.value === "notifications") return t("webPush.title");
+    return "角色指令操作";
+  }
   return "项目操作";
 });
 
@@ -480,9 +489,9 @@ function selectMobileDrawerSection(section: MobileDrawerSection): void {
   if (section === "settings") closeMobileDrawer();
 }
 
-const mobileSettingsTab = ref<"lane-prompts" | "models">("lane-prompts");
+const mobileSettingsTab = ref<"lane-prompts" | "models" | "notifications">("lane-prompts");
 
-function selectMobileDrawerSettings(tab: "lane-prompts" | "models"): void {
+function selectMobileDrawerSettings(tab: "lane-prompts" | "models" | "notifications"): void {
   if (!loggedIn.value) return;
   mobileSettingsTab.value = tab;
   selectMobileDrawerSection("settings");
@@ -1850,6 +1859,18 @@ const acopilotConnectionStatus = computed(() => {
           >
             <el-icon :size="16" aria-hidden="true"><Setting /></el-icon>
             <span>模型配置</span>
+            <el-icon class="mobileDrawerNavChevron" :size="14" aria-hidden="true"><ArrowRight /></el-icon>
+          </button>
+          <button
+            type="button"
+            class="mobileDrawerNavItem mobileDrawerNavItem--link"
+            :class="{ active: mobileDrawerSection === 'settings' && mobileSettingsTab === 'notifications' }"
+            data-testid="mobile-drawer-section-notifications"
+            :disabled="!loggedIn"
+            @click="selectMobileDrawerSettings('notifications')"
+          >
+            <el-icon :size="16" aria-hidden="true"><Bell /></el-icon>
+            <span>{{ t("webPush.title") }}</span>
             <el-icon class="mobileDrawerNavChevron" :size="14" aria-hidden="true"><ArrowRight /></el-icon>
           </button>
         </nav>

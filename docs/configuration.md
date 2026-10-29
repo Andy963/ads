@@ -33,6 +33,9 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_WEB_SESSION_TTL_SECONDS` | `604800` (7天) | 登录状态认证 Cookie 的有效期 |
 | `ADS_WEB_SESSION_PEPPER` | 空 | 密码与 Session Token 哈希增强混淆盐值 |
 | `ADS_WEB_COOKIE_SECURE` | `auto` | 认证 Cookie 的 Secure 属性 (`auto` / `true` / `false`) |
+| `ADS_WEB_PUSH_PUBLIC_KEY` | 未设置 | Web Push 的 VAPID 公钥；仅在服务端完成配置后返回给已登录客户端 |
+| `ADS_WEB_PUSH_PRIVATE_KEY` | 未设置 | Web Push 的 VAPID 私钥，只能保存在服务端环境中 |
+| `ADS_WEB_PUSH_SUBJECT` | 未设置 | VAPID 联系 URI，例如 `mailto:admin@example.com` |
 | `ADS_WEB_LOGIN_MAX_ATTEMPTS` | `5` | 触发 IP 锁定的连续密码错误阈值 |
 | `ADS_WEB_LOGIN_LOCKOUT_MS` | `300000` (5分钟) | 触发锁定后的基础冷却时长 |
 | `ADS_WEB_SESSION_SLIDING` | `false` | 是否开启滑动刷新 Session 有效期 |

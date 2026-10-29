@@ -39,6 +39,7 @@ import { resolveAgentsSnapshotThreadId } from "./ws/threadIds.js";
 import { createSessionCacheRegistry } from "./ws/sessionCacheRegistry.js";
 import { LaneDispatchBus } from "../../actions/bus.js";
 import { setBusInstance } from "./api/routes/actions.js";
+import { createWebPushService } from "../push/service.js";
 
 const logger = createLogger("WebSocket");
 
@@ -351,6 +352,16 @@ export async function startWebServer(): Promise<void> {
       });
   };
 
+  const webPushService = createWebPushService({
+    db: getStateDatabase(),
+    config: {
+      publicKey: process.env.ADS_WEB_PUSH_PUBLIC_KEY,
+      privateKey: process.env.ADS_WEB_PUSH_PRIVATE_KEY,
+      subject: process.env.ADS_WEB_PUSH_SUBJECT,
+    },
+    logger,
+  });
+
   const apiHandler = createApiRequestHandler({
     logger,
     allowedOrigins,
@@ -369,6 +380,7 @@ export async function startWebServer(): Promise<void> {
     advisorHistoryStore: laneResources.advisor.historyStore,
     laneGenerationStore,
     lanePromptStore,
+    webPushService,
   });
 
   const server = createHttpServer({ handleApiRequest: apiHandler, logger });
@@ -439,6 +451,7 @@ export async function startWebServer(): Promise<void> {
       scheduleCompiler,
       scheduler,
     },
+    notifyWebUser: webPushService.notifyUser,
     });
     promptQueueLifecycle = wss;
     await wss.startPromptQueue();

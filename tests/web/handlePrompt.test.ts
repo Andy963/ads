@@ -283,6 +283,12 @@ describe("web/server/ws terminal assistant identity", () => {
           },
         });
         (args.request as { clientMessageId: string }).clientMessageId = "turn";
+        const notifiedUsers: string[] = [];
+        args.notifyWebUser = async (userId: string) => {
+          assert.equal(fixture.historyStore.get("history-1").some((entry) => entry.role === "ai"), true);
+          notifiedUsers.push(userId);
+          throw new Error("push delivery unavailable");
+        };
         const pending = handlePromptMessage(args as any);
         await orchestrator.waitForStart();
         orchestrator.emitAssistantItem(rawOutput);
@@ -298,6 +304,7 @@ describe("web/server/ws terminal assistant identity", () => {
         assert.equal(result.clientMessageId, "turn");
         assert.notEqual(result.output, rawOutput);
         assert.deepEqual(result.assistantItems, [{ id: "answer", text: rawOutput }]);
+        assert.deepEqual(notifiedUsers, ["test-user"]);
         assert.deepEqual(fixture.historyStore.get("history-1").filter(entry => entry.role === "ai").map(entry => entry.text), [result.output]);
         if (name === "tool result") assert.equal(result.output, "Searching.\n\ntool.session_search: no matches");
       } finally {

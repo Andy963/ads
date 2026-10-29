@@ -15,10 +15,11 @@ import {
 import ModelServicePicker from "./ModelServicePicker.vue";
 import RoleSettings from "./RoleSettings.vue";
 import VoiceSettings from "./VoiceSettings.vue";
+import WebPushSettings from "./WebPushSettings.vue";
 import SettingsSheet from "./SettingsSheet.vue";
 import "./modelSettings.css";
 
-type SettingsTab = "roles" | "models" | "lane-prompts";
+type SettingsTab = "roles" | "models" | "lane-prompts" | "notifications";
 const props = withDefaults(defineProps<{ api: ApiClient; agent?: string | null; showHeader?: boolean; showTabs?: boolean; initialTab?: SettingsTab }>(), { showHeader: true, showTabs: true, initialTab: "models" });
 const emit = defineEmits<{ (e: "close"): void; (e: "changed"): void }>();
 const activeTab = ref<SettingsTab>(props.initialTab);
@@ -296,8 +297,9 @@ onBeforeUnmount(() => {
       <h2>Settings</h2><button type="button" class="settingsIconButton" aria-label="Close settings" @click="emit('close')">✕</button>
     </header>
     <nav v-if="showTabs" class="settingsTabs">
-      <button type="button" :class="{ active: activeTab !== 'models' }" data-testid="settings-tab-prompts" @click="activeTab = 'roles'">Role instructions</button>
+      <button type="button" :class="{ active: activeTab === 'roles' || activeTab === 'lane-prompts' }" data-testid="settings-tab-prompts" @click="activeTab = 'roles'">Role instructions</button>
       <button type="button" :class="{ active: activeTab === 'models' }" data-testid="settings-tab-models" @click="activeTab = 'models'">Models</button>
+      <button type="button" :class="{ active: activeTab === 'notifications' }" data-testid="settings-tab-notifications" @click="activeTab = 'notifications'">Notifications</button>
     </nav>
     <template v-if="activeTab === 'models'">
       <nav class="settingsDestinations" aria-label="Model services">
@@ -353,6 +355,7 @@ onBeforeUnmount(() => {
         <VoiceSettings v-else :key="section" :api="api" :section="section === 'correction' ? 'correction' : 'transcription'" @changed="emit('changed')" />
       </div>
     </template>
+    <WebPushSettings v-else-if="activeTab === 'notifications'" :api="api" />
     <RoleSettings v-else :api="api" @changed="emit('changed')" />
 
     <SettingsSheet v-if="providerDialog" :title="providerForm.id ? 'Edit provider' : 'Add provider'" :busy="busy" :dirty="JSON.stringify(providerForm) !== providerBaseline"

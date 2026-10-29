@@ -101,11 +101,26 @@ JSON.stringify(composerReport, null, 2);
 | `ADS_WEB_SESSION_TTL_SECONDS` | `604800` (7天) | 登录 Session Cookie 有效期（秒） |
 | `ADS_WEB_SESSION_PEPPER` | 空 | Session Token 哈希混淆 Pepper |
 | `ADS_WEB_COOKIE_SECURE` | `auto` | Cookie Secure 策略 (`auto` / `true` / `false`) |
+| `ADS_WEB_PUSH_PUBLIC_KEY` | 未设置 | Web Push VAPID 公钥 |
+| `ADS_WEB_PUSH_PRIVATE_KEY` | 未设置 | Web Push VAPID 私钥，仅服务端使用 |
+| `ADS_WEB_PUSH_SUBJECT` | 未设置 | VAPID 联系 URI，例如 `mailto:admin@example.com` |
 | `ADS_WEB_LOGIN_MAX_ATTEMPTS` | `5` | 登录重试超限锁定阈值 |
 | `ADS_WEB_LOGIN_LOCKOUT_MS` | `300000` (5分钟) | 登录锁定基础时长 |
 | `ADS_ADVISOR_CODEX_MODEL` | 未设置 | Advisor Lane 使用的专属 Codex 模型覆盖（旧名 `ADS_PLANNER_CODEX_MODEL` 仍兼容，已弃用） |
 | `ADS_ADVISOR_SANDBOX_MODE` | `danger-full-access` | Advisor Lane 沙箱权限覆盖；非法值回退为 `workspace-write`（旧名 `ADS_PLANNER_SANDBOX_MODE` 仍兼容，已弃用） |
 | `ADS_SCHEDULER_MODEL` | 未设置 | Scheduler 执行定时 Prompt 时使用的模型覆盖 |
+
+### Web Push 通知
+
+Web Push 只在助手回复成功并写入历史后发送一个不含对话正文的提醒。前台已打开的 ADS 页面会跳过系统通知；在 iPhone（iOS 16.4 或更高版本）上，需使用 HTTPS、将 ADS 添加到主屏幕并从主屏幕打开，然后在设置中点击“启用通知”。这不保持网页后台 WebSocket 常连，回到 ADS 时仍会恢复连接并同步对话。
+
+生成一对长期复用的 VAPID 密钥：
+
+```sh
+node --input-type=commonjs -e "console.log(require('web-push').generateVAPIDKeys())"
+```
+
+将生成的公钥、私钥和联系 URI 配置在运行 ADS 的服务端环境中；不要提交私钥，也不要放进客户端配置。未配置完整或密钥无效时，通知设置会显示服务端未启用，其他 Web 功能不受影响。更换 VAPID 密钥后，需要在 ADS 设置中先关闭此设备通知，再重新启用以创建新订阅。
 
 ### 语音输入设置与验证
 

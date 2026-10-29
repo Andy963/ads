@@ -1,4 +1,7 @@
 if ("serviceWorker" in navigator) {
+  const scriptUrl = document.currentScript?.src || window.location.href;
+  const baseUrl = new URL(".", scriptUrl);
+  const serviceWorkerUrl = new URL("sw.js", baseUrl);
   let refreshing = false;
   // Capture whether a controller existed before this page load. When the worker
   // claims the page for the first time (clientsClaim), controllerchange fires
@@ -33,7 +36,7 @@ if ("serviceWorker" in navigator) {
 
   window.addEventListener("load", () => {
     navigator.serviceWorker
-      .register("/sw.js", { scope: "/", updateViaCache: "none" })
+      .register(serviceWorkerUrl.href, { scope: baseUrl.pathname, updateViaCache: "none" })
       .then((registration) => {
         registration.addEventListener("updatefound", () => {
           const installing = registration.installing;

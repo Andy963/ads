@@ -396,6 +396,13 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           text: outputForChat,
           agentId: orchestrator.getActiveAgentId?.(),
         });
+        if (turnChannel === "web" && deps.notifyWebUser) {
+          void deps.notifyWebUser(deps.context.authUserId).catch((error) => {
+            deps.observability.logger.warn(
+              `[WebPush] Failed to dispatch response notification: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+        }
       }
       promptRun.ensureActive();
       if (threadReset) {
