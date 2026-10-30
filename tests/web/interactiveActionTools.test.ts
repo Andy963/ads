@@ -51,7 +51,6 @@ it("passes interactive supervised tools to Actions prompts and disposes them aft
   let disposed = false;
   const actionTools = {
     review_action: async () => ({ ok: true }),
-    deliver_action: async () => ({ ok: true }),
     dispose: async () => { disposed = true; },
   };
   const workspaceRoot = process.cwd();

@@ -56,4 +56,5 @@
 - 0045 - [ADR 0045: Developer Owns the Complete Actions Job Lifecycle](0045-developer-owns-actions-job-lifecycle.md)
 - 0046 - [ADR 0046: Make the Native Runtime the Default Backend](0046-native-runtime-as-default.md)
 - 0047 - [ADR 0047: Multiplex Project Lanes over One WebSocket](0047-multiplex-websocket-lanes.md)
+- 0048 - [ADR 0048: Acopilot Implementation with an Actions Reviewer Queue](0048-two-role-architecture-with-actions-review-queue.md)
 <!-- ADS:ADR_INDEX_END -->

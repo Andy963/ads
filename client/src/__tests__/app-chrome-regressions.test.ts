@@ -456,7 +456,7 @@ describe("project status spinner", () => {
     await settleUi(wrapper);
     const projectStatus = wrapper.find(".projectStatus");
     expect(projectStatus.classes()).toEqual(expect.arrayContaining(["spinning", "spinning--acopilot"]));
-    expect(projectStatus.attributes("title")).toBe("Acopilot 正在规划…");
+    expect(projectStatus.attributes("title")).toBe("Acopilot 正在处理…");
     expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes()).toContain("laneTabStatusDot--busy-acopilot");
     expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes("laneTabStatusDot--busy-actions")).toBe(false);
 

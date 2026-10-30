@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import Database from "better-sqlite3";
 import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
 import { createModelProviderStore } from "../../server/state/modelProviderStore.js";
-import { createModelServiceStore } from "../../server/state/modelServiceStore.js";
+import { ConversationModelUnavailableError, createModelServiceStore } from "../../server/state/modelServiceStore.js";
 import { createLanePromptStore, ensureLanePromptTables } from "../../server/state/lanePromptStore.js";
 import { getRoleProfiles, saveRoleProfile } from "../../server/state/roleProfileStore.js";
 import { stateSchemaMigrations } from "../../server/state/schemaMigrations.js";
@@ -37,6 +37,39 @@ describe("model service membership", () => {
     } finally { db.close(); }
   });
 
+  it("reports the requested key and available models when a conversation model is removed", () => {
+    const db = new Database(":memory:");
+    try {
+      const services = createModelServiceStore(db);
+      const models = createGlobalModelConfigStore(db);
+      models.upsertModelConfig({
+        id: "catalog-a",
+        modelId: "model-a",
+        provider: "openai",
+        displayName: "Model A",
+        isEnabled: true,
+        isDefault: true,
+      });
+      services.save("conversation", ["catalog-a"], "catalog-a");
+
+      const error = (() => {
+        try {
+          services.resolveConversation("model-b");
+          return null;
+        } catch (value) {
+          return value;
+        }
+      })();
+
+      assert.ok(error instanceof ConversationModelUnavailableError);
+      assert.equal(error.requestedModelId, "model-b");
+      assert.deepEqual(error.availableModelIds, ["Model A"]);
+      assert.equal(error.reason, "missing");
+    } finally {
+      db.close();
+    }
+  });
+
   it("does not re-enable models when stores reopen or a provider is disabled", () => {
     const db = new Database(":memory:");
     try {
@@ -57,25 +90,34 @@ describe("model service membership", () => {
 });
 
 describe("single role prompt authority", () => {
-  it("migrates the editor-visible prompt, drops history and never recreates it", () => {
+  it("archives the retired Actions prompt and keeps the Reviewer profile authoritative", () => {
     const db = new Database(":memory:");
     try {
       for (const migration of stateSchemaMigrations.slice(0, 30)) db.transaction(() => migration.up(db))();
       ensureLanePromptTables(db);
       db.prepare("INSERT INTO lane_system_prompt_versions VALUES (?, 99, ?, 0, 1)").run("actions", "Visible editor prompt");
       db.prepare("UPDATE lane_system_prompt_state SET current_version = 99 WHERE lane = ?").run("actions");
-      db.prepare("UPDATE role_profiles SET system_prompt = ? WHERE role = ?").run("Stale second copy", "developer");
       const migrate = stateSchemaMigrations[30];
       db.transaction(() => migrate.up(db))();
       db.transaction(() => migrate.up(db))();
+      assert.equal(
+        (db.prepare("SELECT system_prompt FROM role_profiles WHERE role = ?").get("developer") as { system_prompt: string }).system_prompt,
+        "Visible editor prompt",
+      );
+      const consolidateRoles = stateSchemaMigrations.find((migration) => migration.version === 38);
+      assert.ok(consolidateRoles);
+      db.transaction(() => consolidateRoles.up(db))();
+
       const store = createLanePromptStore(db);
-      assert.equal(store.getActiveLanePrompt("actions").prompt, "Visible editor prompt");
+      assert.match(store.getActiveLanePrompt("actions").prompt, /You are the ADS Reviewer/);
       for (let index = 0; index < 4; index++) store.setLanePrompt("actions", `Current prompt ${index}`);
-      const profile = getRoleProfiles(db, "developer")[0];
+      const profile = getRoleProfiles(db, "reviewer")[0];
       assert.equal(profile.system_prompt, "Current prompt 3");
       saveRoleProfile(db, { ...profile, system_prompt: "Saved through role API", is_default: true, is_enabled: true });
       assert.equal(store.getActiveLanePrompt("actions").prompt, "Saved through role API");
-      assert.equal(getRoleProfiles(db).length, 3);
+      assert.equal(getRoleProfiles(db).length, 2);
+      const archived = db.prepare("SELECT profile_json FROM legacy_role_profile_archive WHERE role = ?").get("developer") as { profile_json: string };
+      assert.match((JSON.parse(archived.profile_json) as { system_prompt: string }).system_prompt, /Visible editor prompt/);
       assert.deepEqual(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('lane_system_prompt_versions', 'lane_system_prompt_state', 'role_settings_history')").all(), []);
     } finally { db.close(); }
   });

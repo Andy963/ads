@@ -22,6 +22,7 @@ import { handlePromptError } from "./promptErrorHandling.js";
 import { beginWsPromptRun, isWsPromptAbort, isWsPromptSilentAbort, raceWsPromptAbort } from "./promptLifecycle.js";
 import { recordConversationMessage } from "../../../utils/conversationMessageRecorder.js";
 import { createCoreMiddlewarePipeline, type MiddlewareChannel } from "../../../middleware/index.js";
+import { ConversationModelUnavailableError } from "../../../state/modelServiceStore.js";
 
 export { buildHistoryInjectionContext, prependContextToInput } from "./promptModelConfig.js";
 export { formatWriteExploredSummary } from "./workerPromptHandler.js";
@@ -161,7 +162,18 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         ts: Date.now(),
         kind: "error",
       });
-      sendToChat({ type: "error", message });
+      sendToChat(error instanceof ConversationModelUnavailableError
+        ? {
+            type: "error",
+            message,
+            errorInfo: {
+              code: "conversation_model_unavailable",
+              retryable: false,
+              needsReset: false,
+              requestedModel: error.requestedModelId,
+            },
+          }
+        : { type: "error", message });
       promptRun.cleanup();
       cleanupAfter();
       outcome = { ok: false, error: message };
@@ -300,7 +312,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       const pipeline = deps.middleware ?? createCoreMiddlewarePipeline();
 
       promptRun.ensureActive();
-      interactiveActionTools = await deps.createInteractiveActionTools?.(controller.signal, originalTurnPrompt);
+      interactiveActionTools = await deps.createInteractiveActionTools?.(controller.signal);
       agentTurnPromise = runAgentTurn(orchestrator, effectiveInput, {
         actionTools: interactiveActionTools,
         streaming: true,

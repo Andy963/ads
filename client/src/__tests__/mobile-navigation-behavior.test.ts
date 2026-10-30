@@ -335,8 +335,8 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find(".selected-agent").text()).toBe("");
     expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-show-header")).toBe("false");
     expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-show-tabs")).toBe("false");
-    expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-initial-tab")).toBe("lane-prompts");
-    // Role prompts expose no contextual actions, so the menu button hides.
+    expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-initial-tab")).toBe("roles");
+    // Role instructions expose no contextual actions, so the menu button hides.
     expect(wrapper.find('[data-testid="mobile-context-menu-toggle"]').exists()).toBe(false);
 
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");

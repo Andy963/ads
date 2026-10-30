@@ -31,8 +31,8 @@ describe("shared/terminology compatibility matrix", () => {
     assert.deepEqual([...CANONICAL_LANE_IDS], [ACOPILOT_LANE_ID, ACTIONS_LANE_ID]);
   });
 
-  it("exposes exactly the two Actions execution roles", () => {
-    assert.deepEqual([...ACTIONS_ROLE_IDS], ["developer", "reviewer"]);
+  it("exposes Reviewer as the only Actions role", () => {
+    assert.deepEqual([...ACTIONS_ROLE_IDS], ["reviewer"]);
   });
 
   it("keeps top-level lanes and Actions roles disjoint", () => {
@@ -103,15 +103,14 @@ describe("shared/terminology compatibility matrix", () => {
   });
 
   it("resolves stored role profiles through their own alias table", () => {
-    // A stored `worker` profile is the implementation role, not the actions lane.
-    // This is the one legacy word whose meaning depends on context.
-    assert.equal(normalizeStoredRoleProfileValue("worker"), "developer");
+    assert.equal(normalizeStoredRoleProfileValue("developer"), "acopilot");
+    assert.equal(normalizeStoredRoleProfileValue("worker"), "acopilot");
     assert.equal(normalizeStoredRoleProfileValue("advisor"), "acopilot");
     assert.equal(normalizeLaneId("worker"), "actions");
   });
 
-  it("keeps the stored role vocabulary limited to what role_profiles holds today", () => {
-    assert.deepEqual([...STORED_ROLE_PROFILE_VALUES], ["acopilot", "developer", "reviewer"]);
+  it("keeps stored role profiles limited to Acopilot and Reviewer", () => {
+    assert.deepEqual([...STORED_ROLE_PROFILE_VALUES], ["acopilot", "reviewer"]);
     for (const value of STORED_ROLE_PROFILE_VALUES) {
       assert.equal(isStoredRoleProfileValue(value), true);
     }
@@ -119,11 +118,11 @@ describe("shared/terminology compatibility matrix", () => {
     assert.equal(normalizeStoredRoleProfileValue("actions"), null);
   });
 
-  it("rejects an unknown Actions role rather than defaulting to developer", () => {
+  it("rejects a retired implementation role from the Actions role vocabulary", () => {
     assert.equal(normalizeActionsRole("worker"), null);
     assert.equal(normalizeActionsRole("advisor"), null);
     assert.equal(normalizeActionsRole(""), null);
-    assert.equal(normalizeActionsRole("developer"), "developer");
+    assert.equal(normalizeActionsRole("developer"), null);
   });
 
   it("orders lane variants canonical-first and deterministically", () => {

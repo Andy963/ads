@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by ADR 0048 — the Actions queue now runs read-only Reviewer jobs only, so implementation reconciliation and blocked resolution no longer apply.
 
 ## Context
 

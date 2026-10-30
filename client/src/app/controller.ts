@@ -312,6 +312,7 @@ export function createAppController() {
   const ws = createWebSocketActions({ ...ctx, ...chat } as AppContext & ChatActions, {
     updateProject: projects.updateProject,
     persistProjects: projects.persistProjects,
+    refreshModelPreferences: laneActions.refreshModelSelection,
   });
 
   laneDeps.connectWs = ws.connectWs;

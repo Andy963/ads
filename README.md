@@ -3,17 +3,16 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node Version](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
 
-ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编排中枢。它以项目工作区为核心，围绕 Acopilot（方案规划）/ Actions（代码执行）双 Lane 构建 AI 开发工作流。Agent 运行时提供双引擎：默认使用进程内原生运行时（Native Runtime），直连 OpenAI 兼容端点并执行工具；也可通过 `ADS_AGENT_RUNTIME=codex-app-server` 切换到 Codex App-Server 统一接入多 Provider 模型。同时还支持可选的独立 Channel Connector。
+ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编排中枢。它以项目工作区为核心，围绕 Acopilot（Issue、实现与 PR）/ Actions（Reviewer 队列）双 Lane 构建 AI 开发工作流。Agent 运行时提供双引擎：默认使用进程内原生运行时（Native Runtime），直连 OpenAI 兼容端点并执行工具；也可通过 `ADS_AGENT_RUNTIME=codex-app-server` 切换到 Codex App-Server 统一接入多 Provider 模型。同时还支持可选的独立 Channel Connector。
 
 ---
 
 ## 核心特性
 
 - **现代 Web Console**：基于 Vue 3 + Vite 构建的响应式控制台，支持移动端抽屉导航与桌面端全功能布局。
-- **双 Lane 协作工作流**：顶层只有两个 Lane，Actions Lane 内部再分执行角色，两套词汇互不相交（见 [ADR 0027](docs/adr/0027-canonical-lane-and-actions-role-terminology.md)）。
-  - **Acopilot (规划 Lane)**：专属架构方案研讨，可通过 GitHub Issue/PR 追踪设计与交付。
-  - **Actions (执行 Lane)**：专注代码执行、命令运行与文件修改，实时输出紧凑的阶段进展和执行预览。
-  - **Actions 执行角色**：`Developer` 负责代码执行；`Reviewer` 在物理隔离的干净上下文中做独立审查，不是顶层 Lane。
+- **双 Lane 协作工作流**：顶层只有 `Acopilot` 与 `Actions` 两个 Lane，角色只有 Acopilot 与 Reviewer（见 [ADR 0027](docs/adr/0027-canonical-lane-and-actions-role-terminology.md)）。
+  - **Acopilot**：负责调查、创建 GitHub Issue、实现代码、验证、准备 PR，并根据评审结果返工。
+  - **Actions**：仅运行只读 Reviewer 队列；评审进度和结果显示在 Actions 队列与会话中，不执行实现或自动合并。
 - **双引擎 Agent 运行时**：默认使用进程内 **Native Runtime**，直连 OpenAI 兼容端点并执行工具；设置 `ADS_AGENT_RUNTIME=codex-app-server` 可切换到 **Codex App-Server** 路由多 Provider 模型（包括 Anthropic Claude、Google Gemini 与 DeepSeek）。支持模型可视化启用/停用与即时配置。
 - **确定性安全拦截**：在命令执行边界保护 ADS 自身进程和 SQLite 数据库文件，不依赖模型提示或可变数据库规则。
 - **Codex 标准技能体系**：全局技能原生对齐 `$CODEX_HOME/skills`（默认 `~/.codex/skills`）；支持对话中 `<skill_save>` 自动沉淀与存量遗留技能无损原子迁移，与 native Codex CLI 完全互通。
@@ -73,8 +72,8 @@ npm run web:init-admin -- --username admin --password-stdin
 
 详细的模块说明与进阶指南请查阅 `docs/` 目录：
 
-- 🗂️ **[架构决策记录 (ADR) 索引](docs/adr/README.md)**：ADR 0001–0041 全部已接受决策的链接索引表。
-- 📋 **[Acopilot & Actions 架构演进与协同规格](docs/acopilot-actions-spec.md)**：Acopilot 方案规划主脑、Actions 执行交付泳道与 Detached Reviewer 独立审查规范。
+- 🗂️ **[架构决策记录 (ADR) 索引](docs/adr/README.md)**：ADR 0001–0048 的决策记录链接索引。
+- 📋 **[Acopilot & Actions 协同规格](docs/acopilot-actions-spec.md)**：Acopilot 负责 Issue、实现、PR 与返工；Actions 泳道内的只读 Reviewer 负责精确提交评审。
 - 🎯 **[Codex 技能规范与架构说明](docs/adr/0007-align-skills-with-codex-standard.md)**：全局 `$CODEX_HOME/skills`、优先级（global > builtin）、`<skill_save>` 自动沉淀与迁移机制。
 - 🏗 **[原生 Agent 运行时 (ADR 0013)](docs/adr/0013-native-agent-runtime-phase-1.md)**：进程内 Native Runtime 的设计、工具沙箱与凭据边界。
 - 📖 **[Web Console 完整使用指南](docs/web.md)**：工作区 Tab、Provider 模型管理、移动端交互规范与 Web 专属配置。

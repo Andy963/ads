@@ -4,6 +4,20 @@ import { MODEL_SERVICES, type ModelService, type ModelServiceSelection } from ".
 import { createGlobalModelConfigStore } from "./globalModelConfigStore.js";
 import { createModelProviderStore } from "./modelProviderStore.js";
 
+export class ConversationModelUnavailableError extends Error {
+  constructor(
+    readonly requestedModelId: string,
+    readonly availableModelIds: string[],
+    readonly reason: "missing" | "ambiguous",
+  ) {
+    const available = availableModelIds.join(", ") || "none";
+    super(reason === "ambiguous"
+      ? `Conversation model '${requestedModelId}' is ambiguous; select one of: ${available}.`
+      : `Conversation model '${requestedModelId}' is not available in the conversation service; select one of: ${available}.`);
+    this.name = "ConversationModelUnavailableError";
+  }
+}
+
 export function createModelServiceStore(db: Database) {
   const models = createGlobalModelConfigStore(db);
   const providers = createModelProviderStore(db);
@@ -74,7 +88,14 @@ export function createModelServiceStore(db: Database) {
     if (exact) return exact;
     const legacy = available.filter((model) => model.modelId === reference);
     if (legacy.length === 1) return legacy[0];
-    throw new Error("Select an enabled conversation model; the saved selection is unavailable or ambiguous.");
+    const availableLabels = available
+      .map((model) => model.displayName?.trim() || model.modelId)
+      .filter((label): label is string => Boolean(label));
+    throw new ConversationModelUnavailableError(
+      reference,
+      availableLabels,
+      legacy.length > 1 ? "ambiguous" : "missing",
+    );
   }
 
   function removeModelReferences(modelId: string): void {

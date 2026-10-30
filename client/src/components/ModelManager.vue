@@ -19,7 +19,7 @@ import WebPushSettings from "./WebPushSettings.vue";
 import SettingsSheet from "./SettingsSheet.vue";
 import "./modelSettings.css";
 
-type SettingsTab = "roles" | "models" | "lane-prompts" | "notifications";
+type SettingsTab = "roles" | "models" | "notifications";
 const props = withDefaults(defineProps<{ api: ApiClient; agent?: string | null; showHeader?: boolean; showTabs?: boolean; initialTab?: SettingsTab }>(), { showHeader: true, showTabs: true, initialTab: "models" });
 const emit = defineEmits<{ (e: "close"): void; (e: "changed"): void }>();
 const activeTab = ref<SettingsTab>(props.initialTab);
@@ -297,7 +297,7 @@ onBeforeUnmount(() => {
       <h2>Settings</h2><button type="button" class="settingsIconButton" aria-label="Close settings" @click="emit('close')">✕</button>
     </header>
     <nav v-if="showTabs" class="settingsTabs">
-      <button type="button" :class="{ active: activeTab === 'roles' || activeTab === 'lane-prompts' }" data-testid="settings-tab-prompts" @click="activeTab = 'roles'">Role instructions</button>
+      <button type="button" :class="{ active: activeTab === 'roles' }" data-testid="settings-tab-roles" @click="activeTab = 'roles'">Role instructions</button>
       <button type="button" :class="{ active: activeTab === 'models' }" data-testid="settings-tab-models" @click="activeTab = 'models'">Models</button>
       <button type="button" :class="{ active: activeTab === 'notifications' }" data-testid="settings-tab-notifications" @click="activeTab = 'notifications'">Notifications</button>
     </nav>

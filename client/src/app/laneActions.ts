@@ -43,6 +43,8 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      api,
      activeProjectId,
      activeProject,
+    runtimeByProjectId,
+    acopilotRuntimeByProjectId,
      normalizeProjectId,
      getRuntime,
      getAcopilotRuntime,
@@ -89,45 +91,56 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      return String(activeProject.value?.sessionId ?? "").trim();
    };
 
+   const reconcileRuntimeModel = (enabledModels: ModelConfig[], rt: ProjectRuntime): void => {
+     const sessionId = resolveStorageSessionId(rt);
+     if (!sessionId) return;
+     if (enabledModels.length === 0) return;
+     const agentId = String(rt.activeAgentId.value ?? "").trim();
+     const compatibleModels = agentId
+       ? enabledModels.filter((model) => supportsAgentModel({ agentId, model }))
+       : enabledModels;
+     const compatibleIds = new Set(
+       compatibleModels.map((model) => String(model.id).trim()).filter(Boolean),
+     );
+     const knownIds = new Set(
+       enabledModels.map((model) => String(model.id).trim()).filter(Boolean),
+     );
+     const fallback = compatibleModels.find((model) => model.isDefault) ?? compatibleModels[0] ?? null;
+     const fallbackModelId = String(fallback?.id ?? "").trim();
+     const stored = readModelIdPreference(sessionId, rt.chatSessionId, agentId);
+
+     const storedModelId = stored === null ? null : normalizeModelId(stored);
+     let candidate = storedModelId ?? normalizeModelId(rt.modelId.value);
+     const legacyMatches = compatibleModels.filter((model) => model.modelId === candidate);
+     if (!knownIds.has(candidate) && legacyMatches.length === 1) candidate = legacyMatches[0].id;
+     if (candidate === "auto" || !compatibleIds.has(candidate)) {
+       candidate = fallbackModelId || "auto";
+     }
+
+     rt.modelId.value = candidate;
+     if (candidate !== "auto" && storedModelId !== candidate) {
+       writeModelPreference(sessionId, rt.chatSessionId, agentId, { modelId: candidate });
+     }
+   };
+
    const loadModels = async (): Promise<void> => {
      models.value = await api.get<ModelConfig[]>("/api/models");
-
      const enabledModels = models.value.filter((m) => m.isEnabled);
-     if (enabledModels.length === 0) return;
+     const runtimes = new Set<ProjectRuntime>([
+       ...runtimeByProjectId.values(),
+       ...acopilotRuntimeByProjectId.values(),
+       activeRuntime.value,
+       activeAcopilotRuntime.value,
+     ]);
+     for (const rt of runtimes) reconcileRuntimeModel(enabledModels, rt);
+   };
 
-     const ensureRuntimeModelId = (rt: ProjectRuntime): void => {
-       const sessionId = resolveStorageSessionId(rt);
-       if (!sessionId) return;
-       const agentId = String(rt.activeAgentId.value ?? "").trim();
-       const compatibleModels = agentId
-         ? enabledModels.filter((model) => supportsAgentModel({ agentId, model }))
-         : enabledModels;
-       const compatibleIds = new Set(
-         compatibleModels.map((model) => String(model.id).trim()).filter(Boolean),
-       );
-       const knownIds = new Set(
-         enabledModels.map((model) => String(model.id).trim()).filter(Boolean),
-       );
-       const fallback = compatibleModels.find((model) => model.isDefault) ?? compatibleModels[0] ?? null;
-       const fallbackModelId = String(fallback?.id ?? "").trim();
-       const stored = readModelIdPreference(sessionId, rt.chatSessionId, agentId);
-
-       const storedModelId = stored === null ? null : normalizeModelId(stored);
-       let candidate = storedModelId ?? normalizeModelId(rt.modelId.value);
-       const legacyMatches = compatibleModels.filter((model) => model.modelId === candidate);
-       if (!knownIds.has(candidate) && legacyMatches.length === 1) candidate = legacyMatches[0].id;
-       if (candidate === "auto" || !compatibleIds.has(candidate)) {
-         candidate = fallbackModelId || "auto";
-       }
-
-       rt.modelId.value = candidate;
-       if (candidate !== "auto" && storedModelId !== candidate) {
-         writeModelPreference(sessionId, rt.chatSessionId, agentId, { modelId: candidate });
-       }
-     };
-
-     ensureRuntimeModelId(activeRuntime.value);
-     ensureRuntimeModelId(activeAcopilotRuntime.value);
+   const refreshModelSelection = async (rt: ProjectRuntime): Promise<{ modelId: string; label: string } | null> => {
+     await loadModels();
+     const modelId = normalizeModelId(rt.modelId.value);
+     if (!modelId || modelId === "auto") return null;
+     const config = models.value.find((item) => item.id === modelId);
+     return { modelId, label: config?.displayName?.trim() || config?.modelId || modelId };
    };
 
    const sendMainPrompt = (content: string): void => {
@@ -509,6 +522,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
     setNotice,
     clearNotice,
     loadModels,
+    refreshModelSelection,
     sendMainPrompt,
     sendAcopilotPrompt,
     switchMainAgent,

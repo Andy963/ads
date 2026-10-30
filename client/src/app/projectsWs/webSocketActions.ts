@@ -1208,6 +1208,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       maxTurnCommands,
       randomId: ctx.randomId,
       updateProject: deps.updateProject,
+      refreshModelPreferences: deps.refreshModelPreferences,
       applyResumeHistory,
       cancelPendingResume,
       clearPendingPrompt,

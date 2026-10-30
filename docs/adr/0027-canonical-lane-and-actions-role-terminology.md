@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted。泳道与 legacy alias 契约仍然有效；其中 `developer` 角色档案部分已被
+ADR 0048 取代，角色表只保留 `acopilot` 与 `reviewer`。
 
 ## Context
 

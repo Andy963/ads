@@ -157,7 +157,7 @@ describe("SessionManager", () => {
       models.upsertModelConfig({ id, modelId: "upstream-" + id, displayName: id, provider: "openai", isEnabled: true, isDefault: false });
     }
     services.save("conversation", ["role-chat", "role-actions", "explicit-choice"], "explicit-choice");
-    for (const [lane, role, model] of [["acopilot", "acopilot", "role-chat"], ["actions", "developer", "role-actions"]] as const) {
+    for (const [lane, role, model] of [["acopilot", "acopilot", "role-chat"], ["actions", "reviewer", "role-actions"]] as const) {
       const profile = getDefaultRoleProfile(db, role)!;
       saveRoleProfile(db, { ...profile, model_id: model, reasoning_effort: "medium", is_default: true, is_enabled: true });
       const sessions = createFakeSessionFactory();
@@ -422,6 +422,8 @@ describe("SessionManager", () => {
   });
 
   it("degrades a persisted Codex session to history injection under the default native runtime", () => {
+    const configuredRuntime = process.env.ADS_AGENT_RUNTIME;
+    delete process.env.ADS_AGENT_RUNTIME;
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-default-native-runtime-"));
     const storage = new ThreadStorage({
       namespace: "default-native-runtime",
@@ -455,6 +457,8 @@ describe("SessionManager", () => {
     } finally {
       defaultManager.destroy();
       fs.rmSync(directory, { recursive: true, force: true });
+      if (configuredRuntime === undefined) delete process.env.ADS_AGENT_RUNTIME;
+      else process.env.ADS_AGENT_RUNTIME = configuredRuntime;
     }
   });
 

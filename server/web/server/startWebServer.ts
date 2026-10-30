@@ -269,7 +269,6 @@ export async function startWebServer(): Promise<void> {
   const syncEventStore = new SyncEventStore({ stateDbPath });
   const laneGenerationStore = new WebLaneGenerationStore({ stateDbPath });
   const wsHub = createWebSocketHub();
-
   const broadcastToActionsLane = createActionsLaneBroadcaster({
     syncEventStore,
     laneGenerationStore,
@@ -278,15 +277,13 @@ export async function startWebServer(): Promise<void> {
     warn: (message) => logger.warn(message),
   });
 
+  const reviewTestCommand = process.env.ADS_REVIEW_TEST_COMMAND?.trim();
   const actionBus = new LaneDispatchBus(getStateDatabase(stateDbPath), {
-    sessionManager,
+    ...(reviewTestCommand ? { testCommand: reviewTestCommand } : {}),
     historyStore: laneResources.worker.historyStore,
-    getWorkspaceLock,
     captureActionsLaneGeneration: (logicalHistoryKey) =>
       laneGenerationStore.getGeneration(WEB_ACTIONS_NAMESPACE, logicalHistoryKey),
-    captureLaneGeneration: (namespace, key) => laneGenerationStore.getGeneration(namespace, key),
     broadcastToActionsLane,
-    interruptControllers,
   });
   setBusInstance(actionBus);
 
@@ -434,8 +431,8 @@ export async function startWebServer(): Promise<void> {
       syncEventStore,
       laneGenerationStore,
       promptQueueStore,
-      createInteractiveActionTools: async ({ authUserId, projectId, repoPath, reviewPrompt, signal }) =>
-        await actionBus.createInteractiveActionTools({ authUserId, projectId, repoPath, reviewPrompt, signal }),
+      createInteractiveActionTools: async ({ authUserId, projectId, repoPath, signal }) =>
+        await actionBus.createInteractiveActionTools({ authUserId, projectId, repoPath, signal }),
       isProcessRunning,
     },
     sessions: {

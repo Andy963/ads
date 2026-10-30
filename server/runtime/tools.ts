@@ -418,7 +418,7 @@ export class NativeToolExecutor {
 
   async execute(call: NativeChatToolCall): Promise<NativeToolExecutionResult> {
     this.throwIfAborted();
-    if (call.function.name === "dispatch_action_job" || isActionTool(call.function.name)) return this.executeBuiltinCall(call);
+    if (isActionTool(call.function.name)) return this.executeBuiltinCall(call);
     const args = parseArguments(call);
     switch (call.function.name) {
       case "read_execution_history": {
@@ -450,7 +450,7 @@ export class NativeToolExecutor {
     const cached = this.builtinCalls.get(call.id);
     if (cached) {
       if (cached.name !== call.function.name || !sameArguments(cached.arguments, call.function.arguments)) {
-        throw new Error("Conflicting arguments for dispatch_action_job call ID");
+        throw new Error("Conflicting arguments for built-in call ID");
       }
       return cached.result;
     }

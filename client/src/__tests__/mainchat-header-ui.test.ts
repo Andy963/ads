@@ -139,7 +139,7 @@ describe("MainChat header UI", () => {
     expect(notice).toMatch(/background:\s*var\(--surface\)/);
     expect(css).toMatch(/\.noticeToastText\s*\{[^}]*white-space:\s*pre-wrap;[^}]*overflow-wrap:\s*anywhere/);
     const actions = app.slice(app.indexOf('id="lane-panel-actions"'));
-    expect(actions.indexOf('ref="actionsNoticeRef"')).toBeGreaterThan(actions.indexOf('<ActionsQueueStack'));
+    expect(actions).not.toContain("<ActionsQueueStack");
     expect(actions.indexOf('ref="actionsNoticeRef"')).toBeLessThan(actions.indexOf('<MainChatView'));
     expect(app).toContain('v-if="apiNotice && activeWorkspaceTab === \'actions\'"');
     expect(app).toContain('v-if="apiNotice && activeWorkspaceTab === \'acopilot\'"');

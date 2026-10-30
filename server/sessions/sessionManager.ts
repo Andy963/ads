@@ -806,7 +806,7 @@ export class SessionManager {
     const lane = this.options.lane;
     if (!lane) return null;
     const db = getStateDatabase(this.options.stateDbPath);
-    const profile = getDefaultRoleProfile(db, lane === "acopilot" ? "acopilot" : "developer");
+    const profile = getDefaultRoleProfile(db, lane === "acopilot" ? "acopilot" : "reviewer");
     if (!profile?.is_enabled || !profile.model_id) return null;
     try {
       const model = createModelServiceStore(db).resolveConversation(profile.model_id);

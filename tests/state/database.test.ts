@@ -11,13 +11,8 @@ import {
   resolveStateDbPath,
 } from "../../server/state/database.js";
 import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
-import {
-  createActionJob,
-  getActionJobs,
-  getActionJobById,
-  updateActionJobStatus,
-  deleteActionJobsByProject,
-} from "../../server/state/actionJobStore.js";
+import { getActionJobs, getActionJobById } from "../../server/state/actionJobStore.js";
+import { insertLegacyActionJob } from "../helpers/legacyActionJobs.js";
 import { createLanePromptStore } from "../../server/state/lanePromptStore.js";
 import {
   getRoleProfiles,
@@ -565,70 +560,43 @@ describe("state/database", () => {
       name: string;
       is_default: number;
     }>;
-    assert.strictEqual(profiles.length, 3);
+    assert.strictEqual(profiles.length, 2);
     assert.deepStrictEqual(
       profiles.map((p) => ({ role: p.role, is_default: p.is_default })),
       [
         { role: "acopilot", is_default: 1 },
-        { role: "developer", is_default: 1 },
         { role: "reviewer", is_default: 1 },
       ],
     );
   });
 
   describe("state/actionJobStore", () => {
-    it("creates, queries, and updates action jobs", () => {
+    it("reads legacy action jobs as history without exposing ownership in the list API", () => {
       const db = getStateDatabase();
-      const job = createActionJob(db, {
+      insertLegacyActionJob(db, {
         id: "job-100-277-abcd",
         project_id: "/home/andy/repos/ads",
         issue_id: 277,
         issue_title: "Acopilot & Actions refactor",
-        issue_snapshot: {
-          title: "Acopilot & Actions refactor",
-          description: "Complete immutable contract",
-          acceptanceCriteria: ["Reviewer is isolated"],
-          adrs: [{ id: "ADR 0020", title: "Reviewer context", decision: "Use a fresh session" }],
-        },
-        status: "queued",
+        status: "blocked",
         branch: "codex/issue-277",
       });
-
-      assert.strictEqual(job.id, "job-100-277-abcd");
-      assert.strictEqual(job.status, "queued");
-      assert.strictEqual(job.rework_count, 0);
 
       const retrieved = getActionJobById(db, "job-100-277-abcd");
       assert.ok(retrieved);
       assert.strictEqual(retrieved.issue_id, 277);
+      assert.strictEqual(retrieved.status, "blocked");
+      assert.strictEqual(retrieved.rework_count, 0);
       assert.deepStrictEqual(JSON.parse(retrieved.issue_snapshot_json), {
         title: "Acopilot & Actions refactor",
-        description: "Complete immutable contract",
-        acceptanceCriteria: ["Reviewer is isolated"],
-        adrs: [{ id: "ADR 0020", title: "Reviewer context", decision: "Use a fresh session" }],
+        description: "",
+        acceptanceCriteria: [],
+        adrs: [],
       });
-
-      updateActionJobStatus(db, "job-100-277-abcd", "running", {
-        current_step: "Implementing schema migrations",
-        rework_count: 1,
-      });
-
-      const updated = getActionJobById(db, "job-100-277-abcd");
-      assert.ok(updated);
-      assert.strictEqual(updated.status, "running");
-      assert.strictEqual(updated.current_step, "Implementing schema migrations");
-      assert.strictEqual(updated.rework_count, 1);
 
       const list = getActionJobs(db, "/home/andy/repos/ads");
       assert.strictEqual(list.length, 1);
-
-      createActionJob(db, {
-        id: "job-standalone-del",
-        project_id: "/home/andy/repos/standalone",
-        issue_title: "Standalone task",
-      });
-      const deleted = deleteActionJobsByProject(db, "/home/andy/repos/standalone");
-      assert.strictEqual(deleted, 1);
+      assert.strictEqual(list[0]?.id, "job-100-277-abcd");
     });
 
     it("cascade deletes action_jobs when project is deleted", () => {
@@ -651,7 +619,7 @@ describe("state/database", () => {
         1,
       );
 
-      createActionJob(db, {
+      insertLegacyActionJob(db, {
         id: "job-del-1",
         project_id: "proj-to-delete",
         issue_title: "Task 1",
@@ -721,32 +689,24 @@ describe("state/database", () => {
     it("retrieves seeded default role profiles", () => {
       const db = getStateDatabase();
       const allProfiles = getRoleProfiles(db);
-      assert.ok(allProfiles.length >= 3);
+      assert.equal(allProfiles.length, 2);
 
       const acopilot = getDefaultRoleProfile(db, "acopilot");
-      const developer = getDefaultRoleProfile(db, "developer");
       const reviewer = getDefaultRoleProfile(db, "reviewer");
 
       assert.ok(acopilot);
       assert.strictEqual(acopilot.role, "acopilot");
       assert.strictEqual(acopilot.is_default, 1);
 
-      assert.ok(developer);
-      assert.strictEqual(developer.role, "developer");
-      assert.strictEqual(developer.is_default, 1);
-
       assert.ok(reviewer);
       assert.strictEqual(reviewer.role, "reviewer");
       assert.strictEqual(reviewer.is_default, 1);
     });
 
-    it("keeps the Developer and Reviewer roles in separate, independently-defaulted profiles", () => {
+    it("keeps Acopilot and Reviewer in separate, independently-defaulted profiles", () => {
       const db = getStateDatabase();
 
-      // The role_profiles vocabulary holds a lane-level `acopilot` profile
-      // alongside the two Actions roles, so a role filter must select exactly
-      // one role and never bleed into another.
-      for (const role of ["acopilot", "developer", "reviewer"] as const) {
+      for (const role of ["acopilot", "reviewer"] as const) {
         const rows = getRoleProfiles(db, role);
         assert.ok(rows.length > 0, `expected at least one ${role} profile`);
         assert.ok(
@@ -755,45 +715,33 @@ describe("state/database", () => {
         );
       }
 
-      const developerDefault = getDefaultRoleProfile(db, "developer");
+      const acopilotDefault = getDefaultRoleProfile(db, "acopilot");
       const reviewerDefault = getDefaultRoleProfile(db, "reviewer");
-      assert.ok(developerDefault && reviewerDefault);
-      assert.notStrictEqual(developerDefault.id, reviewerDefault.id);
-      assert.notStrictEqual(developerDefault.system_prompt, reviewerDefault.system_prompt);
+      assert.ok(acopilotDefault && reviewerDefault);
+      assert.notStrictEqual(acopilotDefault.id, reviewerDefault.id);
+      assert.notStrictEqual(acopilotDefault.system_prompt, reviewerDefault.system_prompt);
 
-      // Promoting a Developer default must not clear the Reviewer default: the
-      // reset is scoped by role, which is what keeps the detached Reviewer
-      // context from being merged into the Developer one.
       const promoted = saveRoleProfile(db, {
-        id: "profile-default-developer",
-        role: "developer",
-        name: "Developer Alternate",
+        id: "profile-default-acopilot",
+        role: "acopilot",
+        name: "Acopilot Alternate",
         model_id: "gpt-5.6",
-        system_prompt: "Developer alternate prompt",
+        system_prompt: "Acopilot alternate prompt",
         is_default: true,
       });
-      assert.strictEqual(promoted.role, "developer");
+      assert.strictEqual(promoted.role, "acopilot");
 
-      assert.strictEqual(getDefaultRoleProfile(db, "developer")?.id, "profile-default-developer");
+      assert.strictEqual(getDefaultRoleProfile(db, "acopilot")?.id, "profile-default-acopilot");
 
-      // Assert the is_default flag itself rather than the returned id:
-      // getDefaultRoleProfile falls back to any row for the role when no default
-      // is flagged, so comparing ids would pass even if the promotion had
-      // cleared every other role's default.
       assert.strictEqual(
         getRoleProfiles(db, "reviewer").filter((row) => row.is_default === 1).length,
         1,
-        "the Reviewer must keep exactly one flagged default after a Developer promotion",
+        "the Reviewer must keep exactly one flagged default after an Acopilot profile update",
       );
       assert.strictEqual(
         getRoleProfiles(db, "acopilot").filter((row) => row.is_default === 1).length,
         1,
-        "the Acopilot lane profile must keep exactly one flagged default after a Developer promotion",
-      );
-      assert.strictEqual(
-        getRoleProfiles(db, "developer").filter((row) => row.is_default === 1).length,
-        1,
-        "promoting a Developer default must leave exactly one Developer default",
+        "Acopilot must keep exactly one flagged default after a profile update",
       );
     });
 
@@ -875,7 +823,7 @@ describe("state/database", () => {
       assert.strictEqual(historyIndex, undefined);
 
       const profiles = getRoleProfiles(db);
-      assert.strictEqual(profiles.length, 3);
+      assert.strictEqual(profiles.length, 2);
     });
   });
 

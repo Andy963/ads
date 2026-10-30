@@ -42,6 +42,7 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_ADVISOR_CODEX_MODEL` | 未设置 | Advisor Lane 专用的 Codex 模型覆盖（旧名 `ADS_PLANNER_CODEX_MODEL` 仍兼容，已弃用） |
 | `ADS_ADVISOR_SANDBOX_MODE` | `danger-full-access` | Codex/Advisor Lane 沙箱权限覆盖；用于需要调用 GitHub CLI 的场景。非法值安全回退为 `workspace-write`（旧名 `ADS_PLANNER_SANDBOX_MODE` 仍兼容，已弃用）；不影响 Native Runtime 的直接宿主机执行语义 |
 | `ADS_SCHEDULER_MODEL` | 未设置 | Scheduler 执行定时 Prompt 时使用的模型覆盖 |
+| `ADS_REVIEW_TEST_COMMAND` | `npm test` | Actions Reviewer 队列在评审前执行的验证命令；非 Node 仓库需覆盖为仓库实际的检查命令 |
 
 ---
 
@@ -106,7 +107,7 @@ Chat Completions 的 `max_tokens` 使用同一个有效上限。输入预算等�
 
 ### Native lifecycle 与 capability 边界
 
-- `durable` Web/Actions Developer session 将 completed Native turn 保存到 ADS state store；`ephemeral` session（包括独立 Actions Reviewer session）始终新建，并在使用后释放。
+- `durable` Web/Acopilot session 将 completed Native turn 保存到 ADS state store；`ephemeral` session（包括独立 Actions Reviewer session）始终新建，并在使用后释放。
 - 只有 completed turn 才会恢复。interrupted、failed 和 cancelled turn 保留审计记录，但不会作为成功上下文重放；下一次 provider request 使用 durable transcript 的 token-budgeted projection。
 - Native command 直接在宿主机执行，保留现有 safety、allowlist、timeout、output 和 cancellation 检查，并继承宿主 environment 与 `$HOME`。运维不能把 `native` 视为 Codex app-server sandbox 的等价模式。
 - Provider capability 为 `supported`、`unsupported` 或 `unknown`。请求 unsupported 或 unknown 能力时，在 provider request 前以结构化 `NATIVE_CAPABILITY_UNSUPPORTED` error 失败，不做静默降级。
@@ -184,9 +185,9 @@ Telegram variables belong to the standalone `connectors/telegram` package and ar
 
 抽屉、主界面、模型管理与角色指令共用系统字体、背景、强调色、分隔线和圆角变量。移动端模型页使用 22px 标题和紧凑留白；角色切换条高 36px，可在角色栏或非编辑区左右滑动切换，保留未保存草稿，不干扰编辑器的文本选择、纵向滚动或屏幕边缘导航。
 
-用户与 Agent 消息操作行均先显示时间，再显示按钮。Acopilot 和 Actions 的失败消息重试在各自会话内重放原消息，保留消息标识、模型及推理强度；状态栏显示等待发送、等待连接或已发送反馈，不重复新增用户消息。Actions 执行任务期间仍禁止插入重试，并显示阻塞原因。
+用户与 Agent 消息操作行均先显示时间，再显示按钮。Acopilot 和 Actions 的失败消息重试在各自会话内重放原消息，保留消息标识、模型及推理强度；状态栏显示等待发送、等待连接或已发送反馈，不重复新增用户消息。Action 工具（实现占位校验、评审、交付）运行期间禁止插入重试，并显示阻塞原因。
 
-排队消息与任务队列沿用相同的分组配色和圆角。消息卡片最多显示三行并可内部滚动，多条积压时由外层队列滚动，不压缩卡片；任务状态、截断标题及操作按钮保持紧凑同行。重试成功时只清除结果对应的队列卡片，不影响后续排队消息。
+排队消息沿用相同的分组配色和圆角。消息卡片最多显示三行并可内部滚动，多条积压时由外层队列滚动，不压缩卡片；重试成功时只清除结果对应的队列卡片，不影响后续排队消息。
 
 主界面点击模型／强度入口后，使用同样的分组列表编辑页选择模型。推理强度采用离散滑块，档位按所选模型的配置从低到高排列，拖动预览，松手提交；也支持键盘方向键调整。只有一个配置档位时不可拖动，断线或运行锁定时不可修改。
 
@@ -205,12 +206,14 @@ Web 路径不读取原语音环境变量、Groq 环境密钥或 Codex 凭据，�
 
 ### 单份角色配置
 
-Acopilot、Developer、Reviewer 各自只保存一条当前角色配置。角色页的模型和推理强度位于指令下方，采用与模型管理一致的分组列表和单选编辑页；选择即保存对应字段，系统指令通过保存按钮单独提交。模型保存失败或未配置可用模型均不会丢弃、阻止保存指令草稿，重新选择旧模型名对应的模型会写入其配置 ID。角色页面不维护历史版本或另一份指令副本。迁移以旧角色编辑器实际显示的当前指令为准，合并到角色表后移除旧版本表和指针表。数据库迁移只会在使用新版本启动时执行，修改源码本身不会迁移运行数据库。
+Acopilot 与 Reviewer 各自只保存一条当前角色配置。角色页的模型和推理强度位于指令下方，采用与模型管理一致的分组列表和单选编辑页；选择即保存对应字段，系统指令通过保存按钮单独提交。模型保存失败或未配置可用模型均不会丢弃、阻止保存指令草稿，重新选择旧模型名对应的模型会写入其配置 ID。角色页面不维护历史版本或另一份指令副本。迁移以旧角色编辑器实际显示的当前指令为准，合并到角色表后移除旧版本表和指针表。数据库迁移只会在使用新版本启动时执行，修改源码本身不会迁移运行数据库。
 
 ## Reviewer 只读检查
 
-`ADS_REVIEWER_TOOL_TURNS` 的正整数配置已弃用并忽略；`0` 仍可显式禁用探索。Reviewer 不限制总工具轮数或累计输出量；固定 commit 的重复无进展会先提醒再暂停。文件单次读取仍最多 100 行、输出最多 8,000 字符；超过初始 1,500 行或 40,000 字符预览的 diff 必须用 `read_diff` 分页读完。上下文按完整工具批次整理，证据不足、协议错误、网络错误均阻塞审核，不生成代码 REJECT，也不消耗开发返工次数。
+`ADS_REVIEWER_TOOL_TURNS` 的正整数配置已弃用并忽略；`0` 仍可显式禁用探索。Reviewer 不限制总工具轮数或累计输出量；固定 commit 的重复无进展会先提醒再暂停。文件单次读取仍最多 100 行、输出最多 8,000 字符；超过初始 1,500 行或 40,000 字符预览的 diff 必须用 `read_diff` 分页读完。上下文按完整工具批次整理，证据不足、协议错误、网络错误均阻塞审核，不生成代码 REJECT，也不消耗返工次数。
 
-Reviewer 执行或输出协议错误会显示具体原因并进入 `blocked`，不消耗 Developer 返工预算，也不生成虚假的代码缺陷。输出截断、内容过滤、无效 JSON 和工具关闭后仍请求工具等错误与合法 `REJECT` 区分；只有后者继续既有代码返工流程。
+Reviewer 执行或输出协议错误会显示具体原因并返回操作失败，不消耗返工次数，也不生成虚假的代码缺陷。输出截断、内容过滤、无效 JSON 和工具关闭后仍请求工具等错误与合法 `REJECT` 区分；只有后者要求 Acopilot 修复后重新评审。
 
 Reviewer 的模型、推理强度和 system prompt 来自角色配置；连接使用任务所有者的 HTTP 模型配置和凭据。仅配置 Codex CLI 登录而无可用 HTTP 连接不能保证 Reviewer 可用。检查对象是精确被审查提交，不是未提交工作区；不支持写入、shell、符号链接或子模块检查。详见 ADR 0033。
+
+Acopilot 会话中的 `review_action` 将当前 Issue-backed PR 派入 Actions Reviewer 队列，并等待结构化结果。队列先运行 `ADS_REVIEW_TEST_COMMAND`（默认 `npm test`），再调用只读 Reviewer；PR、Issue 条件、相关 ADR、base/head 与验证报告会绑定到同一任务，并显示在 Actions 队列和会话中。Reviewer 角色必须启用并配置可用模型，否则任务以操作失败结束。只有对精确目标产生的 PASS 才是该提交的评审结果；head、base 或 Issue 条件变化后须重新派审。PASS 不会自动合并，合并仍需用户明确授权。

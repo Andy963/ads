@@ -33,7 +33,7 @@ describe("Role prompt keyboard layout", () => {
       attachTo: document.body,
       props: {
         api: { get: vi.fn(async (url: string) => url === "/api/role-profiles" ? [{ id: "p", role: "acopilot", model_id: "", reasoning_effort: "high", system_prompt: "Current prompt" }] : []) } as any,
-        initialTab: "lane-prompts",
+        initialTab: "roles",
         showHeader: false,
       },
     });
@@ -137,7 +137,7 @@ describe("Role prompt keyboard layout", () => {
     await resize(475);
     const revealTimer = schedule.mock.results.at(-1)!.value;
     await wrapper!.get('[data-testid="settings-tab-models"]').trigger("click");
-    await wrapper!.get('[data-testid="settings-tab-prompts"]').trigger("click");
+    await wrapper!.get('[data-testid="settings-tab-roles"]').trigger("click");
     expect(wrapper!.get('[data-testid="lane-prompt-panel"]').classes()).not.toContain("lanePromptPanel--keyboard-open");
     expect(cancel).toHaveBeenCalledWith(revealTimer);
 

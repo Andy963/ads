@@ -611,10 +611,10 @@ describe("web/server/ws multiplexed lanes", () => {
       maxClients: 1,
       pingIntervalMs: 0,
       maxMissedPongs: 0,
-      workerSessionManager: new SessionManager(0, 0, "workspace-write", "test-model", undefined, undefined, {
+      workerSessionManager: new SessionManager(0, 0, "read-only", "test-model", undefined, undefined, {
         createSession: workerFactory.factory as never,
       }),
-      advisorSessionManager: new SessionManager(0, 0, "read-only", "test-model", undefined, undefined, {
+      advisorSessionManager: new SessionManager(0, 0, "danger-full-access", "test-model", undefined, undefined, {
         createSession: advisorFactory.factory as never,
       }),
       withSyncEventStore: true,
@@ -693,7 +693,6 @@ describe("web/server/ws interactive Actions tools", () => {
     });
     const actionTools = {
       review_action: async () => ({ ok: true }),
-      deliver_action: async () => ({ ok: true }),
       dispose: async () => {},
     };
 
@@ -737,7 +736,7 @@ describe("web/server/ws interactive Actions tools", () => {
     started = null;
   });
 
-  it("passes tools only through the browser Actions prompt path", async () => {
+  it("passes tools only through the browser Acopilot prompt path", async () => {
     const sendPrompt = async (protocols: string[], prompt: string, headers?: Record<string, string>): Promise<void> => {
       const ws = new WebSocket(`ws://127.0.0.1:${started!.port}/ws`, protocols, {
         origin: "http://localhost",
@@ -755,11 +754,12 @@ describe("web/server/ws interactive Actions tools", () => {
     await sendPrompt(["ads-v1", "ads-session.browser", "ads-chat.main"], "Actions prompt", { "x-user-id": "browser" });
     assert.equal(workerFactory.created.length, 1);
     assert.equal(workerActionTools.length, 1);
-    assert.ok(workerActionTools[0]);
+    assert.equal(workerActionTools[0], undefined);
 
-    await sendPrompt(["ads-v1", "ads-session.advisor", "ads-chat.acopilot"], "Advisor prompt", { "x-user-id": "advisor" });
+    await sendPrompt(["ads-v1", "ads-session.advisor", "ads-chat.acopilot"], "Acopilot prompt", { "x-user-id": "advisor" });
     assert.equal(advisorFactory.created.length, 1);
-    assert.deepEqual(advisorActionTools, [undefined]);
+    assert.equal(advisorActionTools.length, 1);
+    assert.ok(advisorActionTools[0]);
 
     await sendPrompt(
       ["ads-v1", "ads-session.connector", "ads-chat.main"],

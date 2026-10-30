@@ -15,7 +15,7 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 async function setup() {
-  const profiles = ["acopilot", "developer", "reviewer"].map(role => ({ id: role, role, model_id: "m1", reasoning_effort: "high", system_prompt: role + " instructions" }));
+  const profiles = ["acopilot", "reviewer"].map(role => ({ id: role, role, model_id: "m1", reasoning_effort: "high", system_prompt: role + " instructions" }));
   const api = {
     get: vi.fn(async (url: string) => structuredClone(url === "/api/role-profiles" ? profiles : [{ id: "m1", displayName: "Model", provider: "openai" }])),
     put: vi.fn(async () => profiles[0]),
@@ -39,22 +39,24 @@ async function swipe(target: Element, dx: number, dy = 0, x = 180) {
 function activeRole() { return wrapper.get('.lanePromptLane[aria-pressed="true"]').text(); }
 
 describe("role swipe navigation", () => {
-  it("swipes through all three roles without wrapping and preserves unsaved drafts", async () => {
+  it("swipes through both roles without wrapping and preserves unsaved drafts", async () => {
     const api = await setup();
     const bar = wrapper.get(".lanePromptLaneSelector").element;
     await wrapper.get("textarea").setValue("Unsaved Acopilot instructions");
     await swipe(bar, 100);
     expect(activeRole()).toBe("Acopilot");
     await swipe(bar, -100);
-    expect(activeRole()).toBe("Developer");
-    await wrapper.get("textarea").setValue("Unsaved Developer instructions");
+    expect(activeRole()).toBe("Reviewer");
+    await wrapper.get("textarea").setValue("Unsaved Reviewer instructions");
     await swipe(bar, -100);
     expect(activeRole()).toBe("Reviewer");
     await swipe(bar, -100);
     expect(activeRole()).toBe("Reviewer");
     await swipe(bar, 100);
-    expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("Unsaved Developer instructions");
+    expect(activeRole()).toBe("Acopilot");
+    expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("Unsaved Acopilot instructions");
     await swipe(bar, 100);
+    expect(activeRole()).toBe("Acopilot");
     expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("Unsaved Acopilot instructions");
     expect(api.put).not.toHaveBeenCalled();
   });
@@ -79,7 +81,7 @@ describe("role swipe navigation", () => {
     await swipe(wrapper.get('[data-testid="role-model-select"]').element, -100);
     expect(activeRole()).toBe("Acopilot");
     await swipe(wrapper.get(".settingsBlockTitle").element, -100);
-    expect(activeRole()).toBe("Developer");
+    expect(activeRole()).toBe("Reviewer");
   });
 
   it("cancels multi-touch and touchcancel without switching roles", async () => {
@@ -102,7 +104,7 @@ describe("role swipe navigation", () => {
     await swipe(button.element, -100);
     button.element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
     await nextTick();
-    expect(activeRole()).toBe("Developer");
+    expect(activeRole()).toBe("Reviewer");
     await dispatch(button.element, "touchstart", [touch(80, 100)]);
     await dispatch(button.element, "touchend", [], [touch(80, 100)]);
     await button.trigger("click");

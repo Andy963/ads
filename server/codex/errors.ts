@@ -2,6 +2,7 @@ export type CodexErrorCode =
   | "thread_corrupted"
   | "model_mismatch"
   | "model_not_supported"
+  | "conversation_model_unavailable"
   | "session_in_use"
   | "rate_limit"
   | "usage_limit"

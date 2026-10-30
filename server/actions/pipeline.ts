@@ -1,224 +1,22 @@
 import { spawnSync } from "node:child_process";
 
-export interface CreatePrResult {
-  prNumber: number | null;
-  prUrl: string | null;
-  error?: string;
-}
-
 export interface MergeResult {
   success: boolean;
   error?: string;
 }
 
-// `gh pr create` without --base targets the repository default branch, which is
-// main in this repo. Creation and delivery must read the same value, so both
-// sides resolve the base from this constant.
+// Acopilot creates the pull request against this base and delivery merges the
+// reviewed pull request into it, so both sides read the same value here.
 export const ACTIONS_BASE_BRANCH = "dev";
-
-export function buildPrCreateArgs(options: {
-  title: string;
-  body: string;
-  labels: string[];
-  baseBranch: string;
-  headBranch?: string;
-}): string[] {
-  return [
-    "pr",
-    "create",
-    "--base",
-    options.baseBranch,
-    // Without --head gh reads the checked-out branch, so a workspace switched by
-    // another session would open the pull request against the wrong branch.
-    ...(options.headBranch ? ["--head", options.headBranch] : []),
-    "--title",
-    options.title,
-    "--body",
-    options.body,
-    ...options.labels.flatMap((label) => ["--label", label]),
-  ];
-}
-
-export function branchScopeError(params: {
-  baseBranch: string;
-  branch: string;
-  expectedBaseSha: string;
-  mergeBaseSha: string;
-}): string | null {
-  if (params.expectedBaseSha === params.mergeBaseSha) return null;
-  return (
-    `Feature branch '${params.branch}' does not descend from the '${params.baseBranch}' commit ` +
-    `recorded when the job started (${params.expectedBaseSha}); its merge-base is ` +
-    `${params.mergeBaseSha}. It carries commits unrelated to this job.`
-  );
-}
-
-// gh pr merge reads no confirmation flag; without a TTY it merges immediately.
-// Passing an unknown flag makes gh exit non-zero before any merge is attempted.
-const GH_PR_MERGE_SUPPORTED_FLAGS = new Set([
-  "--admin",
-  "--author-email",
-  "--auto",
-  "--body",
-  "--body-file",
-  "--delete-branch",
-  "--disable-auto",
-  "--match-head-commit",
-  "--merge",
-  "--rebase",
-  "--squash",
-  "--subject",
-]);
 
 export function buildPrMergeArgs(prNumber: number, expectedHead?: string): string[] {
   return ["pr", "merge", String(prNumber), "--squash", ...(expectedHead ? ["--match-head-commit", expectedHead] : [])];
-}
-
-export function unsupportedPrMergeFlags(args: string[]): string[] {
-  return args.filter((arg) => arg.startsWith("--") && !GH_PR_MERGE_SUPPORTED_FLAGS.has(arg));
 }
 
 interface PullRequestMergeState {
   state?: string;
   mergedAt?: string | null;
   mergeCommit?: { oid?: string | null } | null;
-}
-
-export function checkFeatureBranchScope(
-  cwd: string,
-  baseBranch: string,
-  branch: string,
-  expectedBaseSha?: string | null,
-): string | null {
-  const baseSha = spawnSync("git", ["rev-parse", baseBranch], { cwd, encoding: "utf8" });
-  if (baseSha.status !== 0) {
-    return `Base branch '${baseBranch}' could not be resolved in '${cwd}'.`;
-  }
-
-  // The recorded anchor, not the current base tip, decides the verdict: the base
-  // branch advancing after the branch was created is normal and must not reject
-  // a clean feature branch. Jobs predating the anchor column carry no value, and
-  // a wrong rejection would strand them, so they skip the check.
-  if (!expectedBaseSha) return null;
-
-  const anchor = spawnSync("git", ["cat-file", "-e", `${expectedBaseSha}^{commit}`], { cwd, encoding: "utf8" });
-  if (anchor.status !== 0) return null;
-
-  const mergeBase = spawnSync("git", ["merge-base", expectedBaseSha, branch], { cwd, encoding: "utf8" });
-  if (mergeBase.status !== 0) {
-    return `No common ancestor between '${baseBranch}' at ${expectedBaseSha} and '${branch}'. The branch carries unrelated history.`;
-  }
-
-  return branchScopeError({
-    baseBranch,
-    branch,
-    expectedBaseSha,
-    mergeBaseSha: mergeBase.stdout?.trim() ?? "",
-  });
-}
-
-export interface ExistingPullRequest {
-  prNumber: number;
-  prUrl: string;
-}
-
-export function parseOpenPullRequest(raw: string): ExistingPullRequest | null {
-  let parsed: Array<{ number?: unknown; url?: unknown }>;
-  try {
-    parsed = JSON.parse(raw || "[]") as typeof parsed;
-  } catch {
-    return null;
-  }
-  const first = Array.isArray(parsed) ? parsed[0] : undefined;
-  const prNumber = Number(first?.number);
-  const prUrl = typeof first?.url === "string" ? first.url : "";
-  return Number.isInteger(prNumber) && prNumber > 0 && prUrl ? { prNumber, prUrl } : null;
-}
-
-export function findOpenPullRequest(cwd: string, branch: string): ExistingPullRequest | null {
-  const res = spawnSync(
-    "gh",
-    ["pr", "list", "--head", branch, "--state", "open", "--limit", "1", "--json", "number,url"],
-    { cwd, encoding: "utf8" },
-  );
-  if (res.status !== 0) return null;
-  return parseOpenPullRequest(res.stdout?.trim() || "");
-}
-
-export function pushFeatureBranch(cwd: string, branch: string): string | null {
-  const res = spawnSync("git", ["push", "origin", branch], {
-    cwd,
-    encoding: "utf8",
-  });
-  if (res.status === 0) return null;
-  return `git push origin ${branch} failed: ${res.stderr?.trim() || "Unknown error"}`;
-}
-
-export function createPullRequest(options: {
-  cwd: string;
-  issueId?: number | null;
-  title: string;
-  body?: string;
-  labels?: string[];
-  baseBranch?: string;
-  branch?: string;
-  baseSha?: string | null;
-}): CreatePrResult {
-  const baseBranch = options.baseBranch ?? ACTIONS_BASE_BRANCH;
-  const labels = options.labels && options.labels.length > 0 ? options.labels : ["feat"];
-  const bodyText = options.body ?? (options.issueId ? `Closes #${options.issueId}` : "Automated Actions PR");
-
-  if (options.branch) {
-    const scopeError = checkFeatureBranchScope(options.cwd, baseBranch, options.branch, options.baseSha);
-    if (scopeError) {
-      return { prNumber: null, prUrl: null, error: scopeError };
-    }
-
-    // The Developer is required to commit, but the Actions controller owns PR
-    // delivery. Publish the branch before asking GitHub to resolve its head;
-    // otherwise a valid local implementation is reported as an empty PR.
-    const pushError = pushFeatureBranch(options.cwd, options.branch);
-    if (pushError) return { prNumber: null, prUrl: null, error: pushError };
-
-    // A rework pass reaches this point with the branch already carrying a pull
-    // request. Reusing it keeps the job on the same PR instead of failing on
-    // "a pull request for this branch already exists".
-    const existing = findOpenPullRequest(options.cwd, options.branch);
-    if (existing) {
-      return { prNumber: existing.prNumber, prUrl: existing.prUrl };
-    }
-  }
-
-  const args = buildPrCreateArgs({
-    title: options.title,
-    body: bodyText,
-    labels,
-    baseBranch,
-    headBranch: options.branch,
-  });
-
-  const res = spawnSync("gh", args, {
-    cwd: options.cwd,
-    encoding: "utf8",
-  });
-
-  if (res.status !== 0) {
-    return {
-      prNumber: null,
-      prUrl: null,
-      error: res.stderr?.trim() || "Failed to create PR via gh CLI",
-    };
-  }
-
-  const output = res.stdout?.trim() || "";
-  // gh pr create returns the PR URL (e.g. https://github.com/org/repo/pull/123)
-  const match = output.match(/\/pull\/(\d+)/);
-  const prNumber = match && match[1] ? Number(match[1]) : null;
-
-  return {
-    prNumber,
-    prUrl: output,
-  };
 }
 
 export function mergeAndCleanupPipeline(options: {
