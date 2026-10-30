@@ -43,8 +43,8 @@ describe("multiplexed WebSocket lanes", () => {
     actionsSocket.send(JSON.stringify({ type: "welcome", chatSessionId: "main" }));
     acopilotSocket.send(JSON.stringify({ type: "welcome", chatSessionId: "acopilot" }));
     assert.deepEqual(physicalSocket.sent.map((frame) => JSON.parse(frame)), [
-      { type: "welcome", chatSessionId: "main", subscribedChatSessionIds },
-      { type: "welcome", chatSessionId: "acopilot", subscribedChatSessionIds },
+      { type: "welcome", lane: "actions", chatSessionId: "main", subscribedChatSessionIds },
+      { type: "welcome", lane: "acopilot", chatSessionId: "acopilot", subscribedChatSessionIds },
     ]);
   });
 
@@ -78,9 +78,58 @@ describe("multiplexed WebSocket lanes", () => {
     assert.deepEqual(delivered, ["actions:switch_chat_session", "actions:delta", "acopilot:delta"]);
     assert.deepEqual(JSON.parse(physicalSocket.sent[0]!), {
       type: "welcome",
+      lane: "actions",
       chatSessionId: "work",
       subscribedChatSessionIds: ["work", "acopilot"],
     });
+  });
+
+  it("keeps the inbound binding stable unless a rebind is authoritative", () => {
+    const physicalSocket = new FakeWebSocket();
+    const subscribedChatSessionIds = ["main", "acopilot"];
+    const actionsSocket = createMultiplexedLaneSocket({
+      socket: physicalSocket as unknown as WebSocket,
+      chatSessionId: "main",
+      subscribedChatSessionIds,
+    });
+    const delivered: string[] = [];
+    actionsSocket.on("message", (data: Buffer) => delivered.push(JSON.parse(data.toString()).type));
+
+    physicalSocket.emit("message", Buffer.from(JSON.stringify({ type: "prompt", chat_session_id: "main" })));
+    actionsSocket.send(JSON.stringify({ type: "error", code: "session_changed", chat_session_id: "stale" }));
+    physicalSocket.emit("message", Buffer.from(JSON.stringify({ type: "prompt", chat_session_id: "main" })));
+
+    assert.deepEqual(delivered, ["prompt", "prompt"]);
+    assert.deepEqual(JSON.parse(physicalSocket.sent[0]!), {
+      type: "error",
+      code: "session_changed",
+      chat_session_id: "stale",
+      lane: "actions",
+      chatSessionId: "main",
+    });
+  });
+
+  it("rebinds on an accepted switch before the welcome is emitted", () => {
+    const physicalSocket = new FakeWebSocket();
+    const subscribedChatSessionIds = ["main", "acopilot"];
+    const actionsSocket = createMultiplexedLaneSocket({
+      socket: physicalSocket as unknown as WebSocket,
+      chatSessionId: "main",
+      subscribedChatSessionIds,
+    });
+    const delivered: string[] = [];
+    actionsSocket.on("message", (data: Buffer) => delivered.push(JSON.parse(data.toString()).chat_session_id));
+
+    physicalSocket.emit("message", Buffer.from(JSON.stringify({
+      type: "switch_chat_session",
+      chat_session_id: "main",
+      payload: { chatSessionId: "work" },
+    })));
+    physicalSocket.emit("message", Buffer.from(JSON.stringify({ type: "prompt", chat_session_id: "work" })));
+    physicalSocket.emit("message", Buffer.from(JSON.stringify({ type: "prompt", chat_session_id: "main" })));
+
+    assert.deepEqual(delivered, ["main", "work"]);
+    assert.deepEqual(subscribedChatSessionIds, ["work", "acopilot"]);
   });
 
   it("keeps bootstrap cursors scoped to the lane request", () => {

@@ -77,6 +77,7 @@ class ProjectWebSocketTransport {
   private pingTimer: number | null = null;
   private readonly lanes = new Map<WebSocketLane, SharedLane>();
   private readonly pendingMessages = new Map<WebSocketLane, WsMessage[]>();
+  private readonly reattaching = new Set<WebSocketLane>();
   private readonly configs: Record<WebSocketLane, WebSocketLaneConfig>;
 
   constructor(
@@ -94,6 +95,14 @@ class ProjectWebSocketTransport {
 
   attach(lane: WebSocketLane, socket: AdsWebSocket, chatSessionId: string): void {
     this.lanes.set(lane, { socket, chatSessionId });
+    this.configs[lane] = { ...this.configs[lane], chatSessionId };
+    const reattaching = this.reattaching.delete(lane);
+    if (reattaching && this.socket?.readyState === WebSocket.OPEN) {
+      // The server keeps the lane bound to the live socket, so re-attaching
+      // alone would skip the handshake (no welcome, no bootstrap cursor).
+      this.restart();
+      return;
+    }
     this.connectIfNeeded();
     if (this.socket?.readyState === WebSocket.OPEN) {
       socket.notifyOpen();
@@ -106,6 +115,7 @@ class ProjectWebSocketTransport {
   detach(lane: WebSocketLane, socket: AdsWebSocket): void {
     if (this.lanes.get(lane)?.socket !== socket) return;
     this.lanes.delete(lane);
+    this.reattaching.add(lane);
     if (this.lanes.size > 0) return;
 
     this.stopPing();
@@ -133,6 +143,19 @@ class ProjectWebSocketTransport {
     const current = this.lanes.get(lane);
     if (current?.socket === socket) current.chatSessionId = chatSessionId;
     this.configs[lane] = { ...this.configs[lane], chatSessionId };
+  }
+
+  private restart(): void {
+    const current = this.socket;
+    this.socket = null;
+    this.pendingMessages.clear();
+    this.stopPing();
+    try {
+      current?.close();
+    } catch {
+      // ignore
+    }
+    this.connectIfNeeded();
   }
 
   private connectIfNeeded(): void {
@@ -180,11 +203,7 @@ class ProjectWebSocketTransport {
       } catch {
         return;
       }
-      const chatSessionId = String(message.chatSessionId ?? "").trim();
-      const targetLane = chatSessionId
-        ? ([...this.lanes.entries()].find(([, lane]) => lane.chatSessionId === chatSessionId)?.[0]
-          ?? (["actions", "acopilot"] as const).find((lane) => this.configs[lane].chatSessionId === chatSessionId))
-        : "actions";
+      const targetLane = messageLane(message) ?? laneForChatSession(this.lanes, this.configs, message);
       if (!targetLane) return;
       const target = this.lanes.get(targetLane)?.socket;
       if (target) {
@@ -210,6 +229,27 @@ class ProjectWebSocketTransport {
     clearInterval(this.pingTimer);
     this.pingTimer = null;
   }
+}
+
+function messageLane(message: WsMessage): WebSocketLane | null {
+  const lane = String((message as Record<string, unknown>).lane ?? "").trim();
+  return lane === "actions" || lane === "acopilot" ? lane : null;
+}
+
+function laneForChatSession(
+  lanes: Map<WebSocketLane, SharedLane>,
+  configs: Record<WebSocketLane, WebSocketLaneConfig>,
+  message: WsMessage,
+): WebSocketLane | null {
+  const chatSessionId = String(message.chatSessionId ?? "").trim();
+  if (!chatSessionId) return "actions";
+  for (const [lane, entry] of lanes) {
+    if (entry.chatSessionId === chatSessionId) return lane;
+  }
+  for (const lane of ["actions", "acopilot"] as const) {
+    if (configs[lane].chatSessionId === chatSessionId) return lane;
+  }
+  return null;
 }
 
 const projectTransports = new Map<string, ProjectWebSocketTransport>();

@@ -93,6 +93,68 @@ describe("project WebSocket lane multiplexing", () => {
     acopilot.close();
   });
 
+  it("accepts a server-initiated rebind that arrives on a lane", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("location", { protocol: "http:", host: "localhost" });
+    vi.stubGlobal("window", { setInterval, clearInterval });
+    const configs = {
+      actions: { chatSessionId: "main" },
+      acopilot: { chatSessionId: "acopilot" },
+    };
+    const actions = getProjectWebSocketLane({ projectId: "project-rebind-test", sessionId: "session", lane: "actions", configs });
+    const acopilot = getProjectWebSocketLane({ projectId: "project-rebind-test", sessionId: "session", lane: "acopilot", configs });
+    const actionsMessages: unknown[] = [];
+    const acopilotMessages: unknown[] = [];
+    actions.onMessage = (message) => actionsMessages.push(message);
+    acopilot.onMessage = (message) => acopilotMessages.push(message);
+    actions.connect();
+    acopilot.connect();
+    const physicalSocket = FakeWebSocket.instances[0]!;
+    physicalSocket.readyState = FakeWebSocket.OPEN;
+    physicalSocket.onopen?.();
+
+    physicalSocket.onmessage?.({
+      data: JSON.stringify({ type: "welcome", lane: "actions", chatSessionId: "work" }),
+    } as MessageEvent);
+    physicalSocket.onmessage?.({
+      data: JSON.stringify({ type: "delta", lane: "actions", chatSessionId: "work", delta: "after rebind" }),
+    } as MessageEvent);
+
+    expect(actionsMessages).toHaveLength(2);
+    expect(acopilotMessages).toEqual([]);
+    expect(actions.send("prompt", { text: "next" })).toBe(true);
+    expect(JSON.parse(physicalSocket.sent.at(-1)!).chat_session_id).toBe("work");
+  });
+
+  it("opened a new socket when one lane re-attaches to a live transport", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("location", { protocol: "http:", host: "localhost" });
+    vi.stubGlobal("window", { setInterval, clearInterval });
+    const configs = {
+      actions: { chatSessionId: "main" },
+      acopilot: { chatSessionId: "acopilot" },
+    };
+    const actions = getProjectWebSocketLane({ projectId: "project-reattach-test", sessionId: "session", lane: "actions", configs });
+    const acopilot = getProjectWebSocketLane({ projectId: "project-reattach-test", sessionId: "session", lane: "acopilot", configs });
+    actions.connect();
+    acopilot.connect();
+    const physicalSocket = FakeWebSocket.instances[0]!;
+    physicalSocket.readyState = FakeWebSocket.OPEN;
+    physicalSocket.onopen?.();
+
+    actions.close();
+    const reopened = getProjectWebSocketLane({
+      projectId: "project-reattach-test",
+      sessionId: "session",
+      lane: "actions",
+      configs,
+    });
+    reopened.connect();
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(FakeWebSocket.instances[1]!.protocols).toEqual(expect.arrayContaining(["ads-chat.main", "ads-chat.acopilot"]));
+  });
+
   it("drops buffered frames when the physical socket disconnects", () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
     vi.stubGlobal("location", { protocol: "http:", host: "localhost" });

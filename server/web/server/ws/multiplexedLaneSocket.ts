@@ -3,6 +3,8 @@ import type { IncomingMessage } from "node:http";
 
 import { isAcopilotChatSessionId } from "./session.js";
 
+export type MultiplexedLaneName = "actions" | "acopilot";
+
 type MultiplexedWebSocket = WebSocket & { physicalSocket: WebSocket };
 
 function readFrame(data: unknown): Record<string, unknown> | null {
@@ -23,14 +25,35 @@ function frameChatSessionId(frame: Record<string, unknown>): string {
   return String(frame.chat_session_id ?? frame.chatSessionId ?? payload?.chatSessionId ?? "").trim();
 }
 
+function switchTargetChatSessionId(frame: Record<string, unknown>): string {
+  const payload = frame.payload && typeof frame.payload === "object"
+    ? frame.payload as Record<string, unknown>
+    : null;
+  return String(payload?.chatSessionId ?? "").trim();
+}
+
+function frameLaneName(chatSessionId: string): MultiplexedLaneName {
+  return isAcopilotChatSessionId(chatSessionId) ? "acopilot" : "actions";
+}
+
 export function createMultiplexedLaneSocket(args: {
   socket: WebSocket;
   chatSessionId: string;
   subscribedChatSessionIds: string[];
 }): MultiplexedWebSocket {
-  const laneIsAcopilot = isAcopilotChatSessionId(args.chatSessionId);
+  const lane = frameLaneName(args.chatSessionId);
   let activeChatSessionId = args.chatSessionId;
   const subscribedChatSessionIds = args.subscribedChatSessionIds;
+
+  // The lane keeps its transport identity across chat-session switches. Only an
+  // authoritative rebind may move the inbound routing key, otherwise a single
+  // stale frame would silently re-point the lane and swallow every later frame.
+  const rebind = (nextChatSessionId: string): void => {
+    if (!nextChatSessionId || nextChatSessionId === activeChatSessionId) return;
+    const previousIndex = subscribedChatSessionIds.indexOf(activeChatSessionId);
+    if (previousIndex >= 0) subscribedChatSessionIds[previousIndex] = nextChatSessionId;
+    activeChatSessionId = nextChatSessionId;
+  };
 
   return new Proxy(args.socket, {
     get(target, property) {
@@ -45,7 +68,10 @@ export function createMultiplexedLaneSocket(args: {
             const frame = readFrame(data);
             const messageChatSessionId = frame ? frameChatSessionId(frame) : "";
             if (messageChatSessionId && messageChatSessionId !== activeChatSessionId) return;
-            if (!messageChatSessionId && laneIsAcopilot) return;
+            if (!messageChatSessionId && lane === "acopilot") return;
+            if (frame?.type === "switch_chat_session") {
+              rebind(switchTargetChatSessionId(frame));
+            }
             listener(data, ...rest);
           }) as never);
           return target;
@@ -58,14 +84,12 @@ export function createMultiplexedLaneSocket(args: {
             target.send(data as never, ...(rest as never[]));
             return;
           }
-          const declaredChatSessionId = String(frame.chatSessionId ?? frame.chat_session_id ?? "").trim();
-          if (declaredChatSessionId && declaredChatSessionId !== activeChatSessionId) {
-            const previousIndex = subscribedChatSessionIds.indexOf(activeChatSessionId);
-            if (previousIndex >= 0) subscribedChatSessionIds[previousIndex] = declaredChatSessionId;
-            activeChatSessionId = declaredChatSessionId;
+          if (frame.type === "welcome") {
+            rebind(String(frame.chatSessionId ?? frame.chat_session_id ?? "").trim());
+            frame.subscribedChatSessionIds = subscribedChatSessionIds;
           }
+          frame.lane = lane;
           frame.chatSessionId = activeChatSessionId;
-          if (frame.type === "welcome") frame.subscribedChatSessionIds = subscribedChatSessionIds;
           target.send(JSON.stringify(frame), ...(rest as never[]));
         };
       }
