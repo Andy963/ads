@@ -269,7 +269,7 @@ export class CommandSessions {
     if (this.closed || this.signal?.aborted) throw createAbortError();
     if (this.sessions.size >= MAX_SESSIONS) throw new Error("Too many pending command sessions. Wait for or cancel an existing session before starting another.");
     if (request.shell) assertShellCommandAllowed(request.cmd, request.allowlist);
-    else assertCommandAllowed(request.cmd, request.args, request.allowlist);
+    else assertCommandAllowed(request.cmd, request.allowlist);
     const session = new CommandSession(request, this.sanitize);
     this.sessions.set(session.id, session);
     return session.id;

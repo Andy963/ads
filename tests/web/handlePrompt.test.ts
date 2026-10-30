@@ -13,6 +13,10 @@ type HistoryEntry = { role: string; text: string; ts: number; kind?: string };
 
 class MemoryHistoryStore {
   private readonly store = new Map<string, HistoryEntry[]>();
+  readonly links: Array<{
+    sessionId: string;
+    link: { agentId: string; providerSessionId: string; cwd?: string };
+  }> = [];
 
   get(sessionId: string): HistoryEntry[] {
     return this.store.get(sessionId) ?? [];
@@ -20,6 +24,14 @@ class MemoryHistoryStore {
 
   add(sessionId: string, entry: HistoryEntry): boolean {
     this.store.set(sessionId, [...this.get(sessionId), entry]);
+    return true;
+  }
+
+  linkAgentSession(
+    sessionId: string,
+    link: { agentId: string; providerSessionId: string; cwd?: string },
+  ): boolean {
+    this.links.push({ sessionId, link });
     return true;
   }
 }
@@ -283,6 +295,12 @@ describe("web/server/ws terminal assistant identity", () => {
           },
         });
         (args.request as { clientMessageId: string }).clientMessageId = "turn";
+        const notifiedUsers: string[] = [];
+        args.notifyWebUser = async (userId: string) => {
+          assert.equal(fixture.historyStore.get("history-1").some((entry) => entry.role === "ai"), true);
+          notifiedUsers.push(userId);
+          throw new Error("push delivery unavailable");
+        };
         const pending = handlePromptMessage(args as any);
         await orchestrator.waitForStart();
         orchestrator.emitAssistantItem(rawOutput);
@@ -298,6 +316,7 @@ describe("web/server/ws terminal assistant identity", () => {
         assert.equal(result.clientMessageId, "turn");
         assert.notEqual(result.output, rawOutput);
         assert.deepEqual(result.assistantItems, [{ id: "answer", text: rawOutput }]);
+        assert.deepEqual(notifiedUsers, ["test-user"]);
         assert.deepEqual(fixture.historyStore.get("history-1").filter(entry => entry.role === "ai").map(entry => entry.text), [result.output]);
         if (name === "tool result") assert.equal(result.output, "Searching.\n\ntool.session_search: no matches");
       } finally {
@@ -431,6 +450,52 @@ describe("web/server/ws handlePrompt not-ready agents", () => {
         { role: "status", text: "Claude credentials are missing", kind: "error" },
       ],
     );
+  });
+});
+
+describe("web/server/ws handlePrompt session links", () => {
+  let fixture: PromptFixture;
+
+  beforeEach(() => {
+    fixture = createPromptFixture("ads-web-prompt-session-link-");
+  });
+
+  afterEach(() => {
+    fixture.cleanup();
+  });
+
+  it("links the durable Native transcript so the session picker can list it", async () => {
+    const { historyStore, workspaceRoot } = fixture;
+    const orchestrator = {
+      setWorkingDirectory: () => {},
+      status: () => ({ ready: true, streaming: true }),
+      getActiveAgentId: () => "codex",
+      getThreadId: () => null,
+      onEvent: () => () => {},
+      invokeAgent: async () => ({ response: "done", usage: null, agentId: "codex" }),
+    };
+
+    const result = await handlePromptMessage(
+      fixture.buildArgs({
+        parsed: { type: "prompt", payload: "hello" },
+        orchestrator,
+        sessionManager: {
+          getRuntimeBackend: () => "native",
+          getNativeTranscriptId: () => "native-transcript-1",
+          getOrCreate: () => orchestrator,
+          getSavedThreadId: () => undefined,
+          needsHistoryInjection: () => false,
+          clearHistoryInjection: () => {},
+          getEffectiveState: () => ({ activeAgentId: "codex" }),
+        },
+      }) as any,
+    );
+
+    assert.equal(result.handled, true);
+    assert.deepEqual(historyStore.links, [{
+      sessionId: "history-1",
+      link: { agentId: "codex", providerSessionId: "native-transcript-1", cwd: workspaceRoot },
+    }]);
   });
 });
 

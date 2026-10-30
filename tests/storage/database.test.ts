@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
-import { getDatabase, getDatabaseInfo, getWorkspacesDatabase, resetDatabaseForTests, resolveWorkspaceId, SCHEMA_VERSION } from "../../server/storage/database.js";
+import { getDatabase, getDatabaseInfo, getWorkspacesDatabase, resetDatabaseForTests, resolveWorkspaceId, resolveWorkspacesDbPath, SCHEMA_VERSION } from "../../server/storage/database.js";
 import { withWorkspaceContext } from "../../server/workspace/asyncWorkspaceContext.js";
 import { initializeWorkspace } from "../../server/workspace/detector.js";
 import { deriveWorkspaceStateId, resolveWorkspaceStatePath } from "../../server/workspace/adsPaths.js";
@@ -579,6 +579,16 @@ describe("storage/database", () => {
     afterEach(() => {
       resetDatabaseForTests();
       fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it("redirects an inherited live workspaces path to throwaway test state", () => {
+      const liveDbPath = path.join(os.homedir(), ".local", "state", "ads", "workspaces.db");
+      process.env.ADS_WORKSPACES_DATABASE_PATH = liveDbPath;
+
+      const resolved = resolveWorkspacesDbPath();
+
+      assert.notEqual(resolved, liveDbPath);
+      assert.ok(resolved.startsWith(path.resolve(os.tmpdir()) + path.sep), resolved);
     });
 
     it("isolates task, schedule, and attachment reads by workspace", () => {

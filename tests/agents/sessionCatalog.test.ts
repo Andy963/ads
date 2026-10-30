@@ -1,5 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { listAgentSessions, listLinkedSessions } from "../../server/agents/sessions/catalog.js";
 import {
@@ -27,7 +30,7 @@ type LinkRow = {
 
 function stubHistoryStore(args: {
   links: LinkRow[];
-  entries?: Record<string, Array<{ role: string; text: string; ts: number }>>;
+  entries?: Record<string, Array<{ role: string; text: string; ts: number; kind?: string }>>;
 }): HistoryStore {
   return {
     listAgentSessionLinks: ({ agentId }: { agentId: string }) =>
@@ -151,7 +154,7 @@ describe("agents/sessions/catalog", () => {
     assert.deepEqual(catalog.items.map((item) => item.sessionId), ["codex-provider-thread"]);
   });
 
-  it("does not expose provider sessions when the active runtime is Native", async () => {
+  it("lists ADS-linked conversations for history injection under the Native runtime", async () => {
     const historyStore = stubHistoryStore({
       links: [
         {
@@ -163,13 +166,22 @@ describe("agents/sessions/catalog", () => {
           lastSeenAt: 1_000,
         },
       ],
+      entries: {
+        "web:codex": [
+          { role: "user", text: "previous conversation", ts: 1 },
+          { role: "status", text: "new session", ts: 2, kind: "session_divider" },
+          { role: "user", text: "selected conversation", ts: 3 },
+        ],
+      },
     });
 
     const result = await listAgentSessions(
       { historyStore, runtimeBackend: "native" },
       { agentId: "codex", cwd: "/repo", limit: 20, includeNoise: true },
     );
-    assert.deepEqual(result.items, []);
+    assert.deepEqual(result.items.map((item) => item.sessionId), ["codex-provider-thread"]);
+    assert.equal(result.items[0].linkedHistoryKey, "web:codex");
+    assert.equal(result.items[0].preview, "selected conversation");
   });
 
   it("prefers ADS history text over the raw provider transcript for previews", () => {
@@ -221,6 +233,46 @@ describe("agents/sessions/catalog", () => {
     );
   });
 
+  it("lists only the current project, not sibling repositories under the same parent", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ads-catalog-"));
+    try {
+      const projectA = path.join(root, "project-a");
+      const projectB = path.join(root, "project-b");
+      fs.mkdirSync(path.join(projectA, ".git"), { recursive: true });
+      fs.mkdirSync(path.join(projectA, "server"), { recursive: true });
+      fs.mkdirSync(path.join(projectB, ".git"), { recursive: true });
+
+      const historyStore = stubHistoryStore({
+        links: [
+          {
+            historyKey: "owner::a",
+            agentId: "codex",
+            providerSessionId: "sess-a",
+            cwd: path.join(projectA, "server"),
+            firstSeenAt: 2,
+            lastSeenAt: 2,
+          },
+          {
+            historyKey: "owner::b",
+            agentId: "codex",
+            providerSessionId: "sess-b",
+            cwd: projectB,
+            firstSeenAt: 1,
+            lastSeenAt: 1,
+          },
+        ],
+      });
+
+      const projectRefs = listLinkedSessions({ historyStore, agentId: "codex", cwd: projectA }).items;
+      assert.deepEqual(projectRefs.map((ref) => ref.sessionId), ["sess-a"]);
+
+      const parentRefs = listLinkedSessions({ historyStore, agentId: "codex", cwd: root }).items;
+      assert.deepEqual(parentRefs.map((ref) => ref.sessionId), []);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("sorts by recency, marks the current session first, and applies the limit", async () => {
     const historyStore = stubHistoryStore({
       links: [
@@ -231,7 +283,7 @@ describe("agents/sessions/catalog", () => {
     });
 
     const result = await listAgentSessions(
-      { historyStore, currentSessionId: "cur" },
+      { runtimeBackend: "codex-app-server", historyStore, currentSessionId: "cur" },
       { agentId: "gemini" as never, cwd: "/repo", limit: 2 },
     );
 
@@ -256,13 +308,13 @@ describe("agents/sessions/catalog", () => {
     });
 
     const byTitle = await listAgentSessions(
-      { historyStore },
+      { runtimeBackend: "codex-app-server", historyStore },
       { agentId: "gemini" as never, cwd: "/repo", searchTerm: "迁移" },
     );
     assert.deepEqual(byTitle.items.map((item) => item.sessionId), ["alpha"]);
 
     const bySessionId = await listAgentSessions(
-      { historyStore },
+      { runtimeBackend: "codex-app-server", historyStore },
       { agentId: "gemini" as never, cwd: "/repo", searchTerm: "beta" },
     );
     assert.deepEqual(bySessionId.items.map((item) => item.sessionId), ["beta"]);
@@ -284,7 +336,7 @@ describe("agents/sessions/catalog", () => {
       },
     });
 
-    const result = await listAgentSessions({ historyStore }, { agentId: "gemini" as never, cwd: "/repo" });
+    const result = await listAgentSessions({ runtimeBackend: "codex-app-server", historyStore }, { agentId: "gemini" as never, cwd: "/repo" });
     assert.deepEqual(result.items.map((item) => item.sessionId), ["real"]);
     assert.equal(result.hidden?.singleTurn, 1);
   });
@@ -297,11 +349,11 @@ describe("agents/sessions/catalog", () => {
       entries: { a: [{ role: "user", text: "继续", ts: 1 }] },
     });
 
-    const hidden = await listAgentSessions({ historyStore }, { agentId: "gemini" as never, cwd: "/repo" });
+    const hidden = await listAgentSessions({ runtimeBackend: "codex-app-server", historyStore }, { agentId: "gemini" as never, cwd: "/repo" });
     assert.equal(hidden.items.length, 0);
 
     const shown = await listAgentSessions(
-      { historyStore },
+      { runtimeBackend: "codex-app-server", historyStore },
       { agentId: "gemini" as never, cwd: "/repo", includeNoise: true },
     );
     assert.deepEqual(shown.items.map((item) => item.sessionId), ["oneshot"]);
@@ -316,7 +368,7 @@ describe("agents/sessions/catalog", () => {
     });
 
     const result = await listAgentSessions(
-      { historyStore },
+      { runtimeBackend: "codex-app-server", historyStore },
       { agentId: "gemini" as never, cwd: "/repo", searchTerm: "磁盘" },
     );
     assert.deepEqual(result.items.map((item) => item.sessionId), ["oneshot"]);
@@ -331,7 +383,7 @@ describe("agents/sessions/catalog", () => {
     });
 
     const result = await listAgentSessions(
-      { historyStore, currentSessionId: "cur" },
+      { runtimeBackend: "codex-app-server", historyStore, currentSessionId: "cur" },
       { agentId: "gemini" as never, cwd: "/repo" },
     );
     assert.deepEqual(result.items.map((item) => item.sessionId), ["cur"]);
@@ -358,7 +410,7 @@ describe("agents/sessions/catalog", () => {
       ];
     }
 
-    const result = await listAgentSessions({ historyStore: stubHistoryStore({ links, entries }) }, {
+    const result = await listAgentSessions({ runtimeBackend: "codex-app-server", historyStore: stubHistoryStore({ links, entries }) }, {
       agentId: "gemini" as never,
       cwd: "/repo",
     });
@@ -393,7 +445,7 @@ describe("agents/sessions/catalog", () => {
     ];
 
     const result = await listAgentSessions(
-      { historyStore: stubHistoryStore({ links }) },
+      { runtimeBackend: "codex-app-server", historyStore: stubHistoryStore({ links }) },
       { agentId: "gemini" as never, cwd: "/repo" },
     );
 
@@ -428,7 +480,7 @@ describe("agents/sessions/catalog", () => {
     assert.equal(linked.forksCollapsed, 2);
 
     const result = await listAgentSessions(
-      { historyStore },
+      { runtimeBackend: "codex-app-server", historyStore },
       { agentId: "claude" as never, cwd: "/repo" },
     );
     assert.deepEqual(result.items.map((item) => item.sessionId), ["fork-3", "solo"]);

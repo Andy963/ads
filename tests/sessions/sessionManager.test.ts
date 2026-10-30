@@ -12,6 +12,8 @@ import { createGlobalModelConfigStore } from "../../server/state/globalModelConf
 import { createModelServiceStore } from "../../server/state/modelServiceStore.js";
 import { getDefaultRoleProfile, saveRoleProfile } from "../../server/state/roleProfileStore.js";
 
+const CODEX_BACKEND_ENV = { ADS_AGENT_RUNTIME: "codex-app-server" };
+
 type FakeSession = {
   readonly id: number;
   resetCalls: number;
@@ -255,7 +257,7 @@ describe("SessionManager", () => {
       "workspace-write",
       undefined,
       storage,
-      undefined,
+      CODEX_BACKEND_ENV,
       { createSession: sessions.factory as never },
     );
 
@@ -294,7 +296,7 @@ describe("SessionManager", () => {
       "workspace-write",
       undefined,
       storage,
-      undefined,
+      CODEX_BACKEND_ENV,
       { createSession: sessions.factory as never },
     );
 
@@ -339,6 +341,9 @@ describe("SessionManager", () => {
       assert.equal(record?.lifecycle, "durable");
       assert.equal(record?.threadId, undefined);
       assert.deepEqual(record?.agentThreads, {});
+      const transcriptId = nativeManager.getNativeTranscriptId(1);
+      assert.match(String(transcriptId), /^[0-9a-f]{64}$/);
+      assert.equal(transcriptId, record?.nativeTranscriptId);
     } finally {
       nativeManager.destroy();
       fs.rmSync(directory, { recursive: true, force: true });
@@ -398,7 +403,7 @@ describe("SessionManager", () => {
       "workspace-write",
       undefined,
       storage,
-      undefined,
+      CODEX_BACKEND_ENV,
       { createSession: sessions.factory as never },
     );
 
@@ -412,6 +417,43 @@ describe("SessionManager", () => {
       assert.deepEqual(storage.getRecord(3)?.agentThreads, {});
     } finally {
       codexManager.destroy();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("degrades a persisted Codex session to history injection under the default native runtime", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-default-native-runtime-"));
+    const storage = new ThreadStorage({
+      namespace: "default-native-runtime",
+      stateDbPath: path.join(directory, "state.db"),
+      storagePath: path.join(directory, "threads.json"),
+      saltPath: path.join(directory, "salt"),
+    });
+    storage.setRecord(31, {
+      threadId: "codex-thread-31",
+      cwd: directory,
+      agentThreads: { codex: "codex-thread-31" },
+      activeAgentId: "codex",
+      runtimeBackend: "codex-app-server",
+      lifecycle: "durable",
+    });
+    const sessions = createFakeSessionFactory();
+    const defaultManager = new SessionManager(0, 0, "workspace-write", undefined, storage, undefined, {
+      createSession: sessions.factory as never,
+    });
+
+    try {
+      assert.equal(defaultManager.getRuntimeBackend(), "native");
+      const session = defaultManager.getOrCreate(31, directory, true) as unknown as FakeSession;
+
+      assert.equal(session.threadId, null);
+      assert.equal(defaultManager.getContextRestoreMode(31), "history_injection");
+      assert.equal(defaultManager.needsHistoryInjection(31), true);
+      assert.equal(storage.getRecord(31)?.runtimeBackend, "native");
+      assert.equal(storage.getRecord(31)?.threadId, undefined);
+      assert.deepEqual(storage.getRecord(31)?.agentThreads, {});
+    } finally {
+      defaultManager.destroy();
       fs.rmSync(directory, { recursive: true, force: true });
     }
   });
@@ -436,7 +478,7 @@ describe("SessionManager", () => {
       "workspace-write",
       undefined,
       storage,
-      undefined,
+      CODEX_BACKEND_ENV,
       { createSession: sessions.factory as never },
     );
 
@@ -455,7 +497,7 @@ describe("SessionManager", () => {
         "workspace-write",
         undefined,
         storage,
-        undefined,
+        CODEX_BACKEND_ENV,
         { createSession: sessions.factory as never },
       );
       try {
@@ -576,7 +618,7 @@ describe("SessionManager", () => {
 
     const sessions = createFakeSessionFactory();
     manager.destroy();
-    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, CODEX_BACKEND_ENV, {
       createSession: sessions.factory as never,
     });
 
@@ -617,7 +659,7 @@ describe("SessionManager", () => {
 
     const sessions = createFakeSessionFactory();
     manager.destroy();
-    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, CODEX_BACKEND_ENV, {
       createSession: sessions.factory as never,
     });
 
@@ -653,7 +695,7 @@ describe("SessionManager", () => {
 
     const sessions = createFakeSessionFactory();
     manager.destroy();
-    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, CODEX_BACKEND_ENV, {
       createSession: sessions.factory as never,
     });
 
@@ -677,7 +719,7 @@ describe("SessionManager", () => {
 
     const sessions = createFakeSessionFactory();
     manager.destroy();
-    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, CODEX_BACKEND_ENV, {
       createSession: sessions.factory as never,
     });
 
@@ -705,7 +747,7 @@ describe("SessionManager", () => {
 
     const sessions = createFakeSessionFactory();
     manager.destroy();
-    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, CODEX_BACKEND_ENV, {
       createSession: sessions.factory as never,
     });
 
@@ -742,7 +784,7 @@ describe("SessionManager", () => {
 
     const sessions = createFakeSessionFactory();
     manager.destroy();
-    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, CODEX_BACKEND_ENV, {
       createSession: sessions.factory as never,
     });
 
@@ -777,7 +819,7 @@ describe("SessionManager", () => {
 
     const sessions = createFakeSessionFactory();
     manager.destroy();
-    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, CODEX_BACKEND_ENV, {
       createSession: sessions.factory as never,
     });
 
@@ -806,7 +848,7 @@ describe("SessionManager", () => {
 
     const sessions = createFakeSessionFactory();
     manager.destroy();
-    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, CODEX_BACKEND_ENV, {
       createSession: sessions.factory as never,
     });
 
@@ -839,7 +881,7 @@ describe("SessionManager", () => {
 
     const sessions = createFakeSessionFactory();
     manager.destroy();
-    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, undefined, {
+    manager = new SessionManager(1000, 500, "workspace-write", undefined, storage, CODEX_BACKEND_ENV, {
       createSession: sessions.factory as never,
     });
 

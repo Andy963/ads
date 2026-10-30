@@ -452,6 +452,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       },
       history: { historyStore: laneResources.historyStore },
       scheduler,
+      ...(deps.notifyWebUser ? { notifyWebUser: deps.notifyWebUser } : {}),
     });
     return result.outcome;
   };
@@ -1746,6 +1747,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
               })
                 ? { createInteractiveActionTools: state.createInteractiveActionTools }
                 : {}),
+              ...(deps.notifyWebUser ? { notifyWebUser: deps.notifyWebUser } : {}),
               state: {
                 directoryManager: state.directoryManager,
                 workspaceCache: state.workspaceCache,

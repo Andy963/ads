@@ -347,6 +347,18 @@ export class SessionManager {
     return this.threadStorage?.getThreadId(userId, agentId ?? "codex");
   }
 
+  /**
+   * Durable Native transcript identity for this lane. It is what the session
+   * picker lists and what a later restore matches against, so it must survive
+   * process restarts and idle disposal.
+   */
+  getNativeTranscriptId(userId: number): string | undefined {
+    if (this.runtimeBackend !== "native") {
+      return undefined;
+    }
+    return this.runtime.getRecord(userId)?.nativeTranscriptId ?? this.getSavedState(userId)?.nativeTranscriptId;
+  }
+
   /** Forget one agent's saved session id after the provider reported it gone. */
   clearSavedThreadId(userId: number, agentId?: string): void {
     this.threadStorage?.clearThreadId(userId, agentId ?? "codex");

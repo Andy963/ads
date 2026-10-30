@@ -2,7 +2,7 @@ import path from "node:path";
 
 import type { Logger } from "../utils/logger.js";
 import type { AgentIdentifier } from "../agents/types.js";
-import type { AgentRuntimeBackend, SessionLifecycle } from "../runtime/config.js";
+import { DEFAULT_AGENT_RUNTIME, type AgentRuntimeBackend, type SessionLifecycle } from "../runtime/config.js";
 import { isNativeExecutionId, redactNativeExecutionIds } from "../runtime/sessionIdentity.js";
 import { detectWorkspaceFrom } from "../workspace/detector.js";
 
@@ -137,7 +137,7 @@ export function resolveResumeState(args: {
   nativeTranscriptAvailable?: boolean;
 }): ResumeState {
   const record = args.storage?.getRecord(args.userId);
-  const currentBackend = args.runtimeBackend ?? "codex-app-server";
+  const currentBackend = args.runtimeBackend ?? DEFAULT_AGENT_RUNTIME;
 
   if (!args.resumeThread) {
     args.logger.info(`[Continuity] user=${args.userId} restore=fresh reason=resume_not_requested`);
@@ -196,7 +196,9 @@ export function resolveResumeState(args: {
     };
   }
 
-  if (currentBackend === "native") {
+  // Only a saved Codex thread needs the degraded path; a Native session with
+  // no saved thread has nothing to inject and must stay "fresh".
+  if (currentBackend === "native" && candidateThreadId) {
     args.logger.info(
       `[Continuity] user=${args.userId} restore=history_injection reason=native_runtime_not_resumable agent=${savedActiveAgentId ?? "unknown"} thread=${redactNativeExecutionIds(candidateThreadId) ?? "none"}`,
     );

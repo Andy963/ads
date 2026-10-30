@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { PROJECT_ROOT } from "../utils/projectRoot.js";
@@ -28,6 +29,26 @@ export function resolveAdsStateDir(): string {
     return path.resolve(envDir.trim());
   }
   return path.join(PROJECT_ROOT, ".ads");
+}
+
+/**
+ * `node --test` inherits the environment of a running ADS instance, so a test
+ * process that opens state without its own temp root would write into the live
+ * database. Every state path resolver consults this before handing out a path.
+ */
+export function isTestProcess(): boolean {
+  return Boolean(process.env.NODE_TEST_CONTEXT);
+}
+
+export function isUnderTempDir(target: string): boolean {
+  const normalized = path.resolve(target);
+  const tmpRoot = path.resolve(os.tmpdir());
+  return normalized === tmpRoot || normalized.startsWith(`${tmpRoot}${path.sep}`);
+}
+
+/** Per-process throwaway location for state a test process may still write. */
+export function testStateFallbackPath(fileName: string): string {
+  return path.join(os.tmpdir(), `ads-test-state-${process.pid}`, fileName);
 }
 
 export function resolveAdsWorkspacesDir(): string {

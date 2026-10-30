@@ -6,6 +6,7 @@ import { ensureLanePromptTables } from "./lanePromptStore.js";
 import { sanitizeModelConfigJson } from "./modelConfigTypes.js";
 import { ensurePromptQueueTables } from "./promptQueueStore.js";
 import { ensureRoleProfiles } from "./roleProfileStore.js";
+import { ensureWebPushTables } from "./webPushStore.js";
 
 export interface StateSchemaMigration {
   version: number;
@@ -1008,6 +1009,11 @@ Core reviewing rules:
     version: 36,
     description: "Retire blocked Actions handoff persistence",
     up: () => undefined,
+  },
+  {
+    version: 37,
+    description: "Store authenticated Web Push subscriptions",
+    up: ensureWebPushTables,
   },
 ];
 

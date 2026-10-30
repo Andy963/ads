@@ -8,6 +8,7 @@ import {
   getStateDatabase,
   getStateDatabaseInfo,
   resetStateDatabaseForTests,
+  resolveStateDbPath,
 } from "../../server/state/database.js";
 import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
 import {
@@ -225,6 +226,35 @@ describe("state/database", () => {
     const db = getStateDatabase();
     assert.ok(db, "State database should be created");
     assert.ok(fs.existsSync(dbPath), "State database file should exist");
+  });
+
+  it("redirects an inherited live state path to throwaway test state", () => {
+    const liveStateDir = path.join(os.homedir(), ".local", "state", "ads");
+    const liveDbPath = path.join(liveStateDir, "state.db");
+    process.env.ADS_STATE_DIR = liveStateDir;
+    process.env.ADS_STATE_DB_PATH = liveDbPath;
+    resetStateDatabaseForTests();
+
+    const resolved = resolveStateDbPath();
+
+    assert.notEqual(resolved, liveDbPath);
+    assert.ok(resolved.startsWith(path.resolve(os.tmpdir()) + path.sep), resolved);
+  });
+
+  it("creates the Web Push subscription table in the latest schema", () => {
+    const db = getStateDatabase();
+    const info = getStateDatabaseInfo();
+    const columns = db.prepare("PRAGMA table_info('web_push_subscriptions')").all() as Array<{ name: string }>;
+
+    assert.equal(info.schemaVersion, stateSchemaMigrations.length);
+    assert.deepEqual(columns.map((column) => column.name), [
+      "endpoint",
+      "user_id",
+      "p256dh",
+      "auth",
+      "created_at",
+      "updated_at",
+    ]);
   });
 
   it("should return cached database instance", () => {
@@ -850,6 +880,22 @@ describe("state/database", () => {
   });
 
   describe("shared prepared statements on state.db", () => {
+    it("replaces history entries without deleting linked provider-session metadata", () => {
+      const history = new HistoryStore({ namespace: "web-worker", storagePath: dbPath });
+      history.add("session-restore", { role: "user", text: "old", ts: 1 });
+      history.linkAgentSession("session-restore", {
+        agentId: "codex",
+        providerSessionId: "provider-thread",
+        cwd: "/repo",
+      });
+
+      assert.equal(history.replaceEntries("session-restore", [
+        { role: "user", text: "restored", ts: 2 },
+      ]), true);
+      assert.deepEqual(history.get("session-restore").map((entry) => entry.text), ["restored"]);
+      assert.equal(history.getAgentSessionLinks("session-restore")[0]?.providerSessionId, "provider-thread");
+    });
+
     it("does not prepare a fresh thread/history statement set for each additional lane", () => {
       const db = getStateDatabase(dbPath);
       const originalPrepare = db.prepare.bind(db);

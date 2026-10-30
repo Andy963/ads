@@ -22,6 +22,22 @@ const enUS: Record<keyof typeof zhCN, string> = {
   "connection.disconnected": "Disconnected. Reconnecting…",
   "connection.reconnectBusy": "Connection lost while a request was running. Reconnecting and syncing history…",
   "connection.reconnectPendingResend": "The request did not reach the server. It will be resent automatically after reconnecting…",
+  "webPush.title": "Push notifications",
+  "webPush.description": "Get an alert when the assistant finishes, even while ADS is in the background. Notifications never include conversation content.",
+  "webPush.loading": "Checking push notification settings…",
+  "webPush.httpsRequired": "Push notifications require ADS to be served over HTTPS.",
+  "webPush.iosInstallRequired": "On iPhone, iOS 16.4 or later is required. Add ADS to your Home Screen in Safari, then open it from the Home Screen to enable notifications.",
+  "webPush.unsupported": "This browser does not support Web Push notifications.",
+  "webPush.permissionDenied": "Notifications are blocked. Allow notifications for ADS in your system or browser settings.",
+  "webPush.permissionNotGranted": "Notification permission was not granted.",
+  "webPush.serverDisabled": "Web Push is not configured on the server.",
+  "webPush.loadFailed": "Could not load push settings. Please try again.",
+  "webPush.enableFailed": "Could not enable notifications. Check your connection and browser permissions, then try again.",
+  "webPush.disableFailed": "Could not disable notifications. Please try again.",
+  "webPush.enable": "Enable notifications",
+  "webPush.disable": "Disable notifications on this device",
+  "webPush.enabled": "Notifications are enabled on this device.",
+  "webPush.notEnabled": "Your browser will ask for notification permission only after you tap Enable.",
 };
 
 export default enUS;

@@ -43,17 +43,32 @@ export async function handleSessionListMessage(args: {
   currentCwd: string;
   activeAgentId: AgentIdentifier;
   currentSessionId?: string | null;
+  historyOwnerId?: string;
   runtimeBackend?: AgentRuntimeBackend;
   sendJson: (payload: unknown) => void;
   logger: { info: (message: string) => void; warn: (message: string) => void };
 }): Promise<void> {
   const request = parseSessionListRequest(args.payload);
   const agentId = (request.agentId ?? args.activeAgentId) as AgentIdentifier;
+  const historyOwnerId = String(args.historyOwnerId ?? "").trim();
+  if (!historyOwnerId) {
+    args.logger.warn(`[Web][session_list] rejected request without a session owner agent=${agentId}`);
+    args.sendJson({
+      type: "session_list_result",
+      agentId,
+      cwd: args.currentCwd,
+      items: [],
+      error: "session owner unavailable",
+      appended: Boolean(request.cursor),
+    });
+    return;
+  }
 
   try {
     const result = await listAgentSessions(
       {
         historyStore: args.historyStore,
+        historyOwnerId,
         currentSessionId: args.currentSessionId,
         runtimeBackend: args.runtimeBackend,
       },

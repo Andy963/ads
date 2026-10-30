@@ -54,4 +54,5 @@
 - 0043 - [ADR 0043: 由 Acopilot 自动接管阻塞任务](0043-automatic-blocked-action-takeover.md)
 - 0044 - [ADR 0044: Separate Reviewer Capability from Actions Job Ownership](0044-interactive-developer-review-boundary.md)
 - 0045 - [ADR 0045: Developer Owns the Complete Actions Job Lifecycle](0045-developer-owns-actions-job-lifecycle.md)
+- 0046 - [ADR 0046: Make the Native Runtime the Default Backend](0046-native-runtime-as-default.md)
 <!-- ADS:ADR_INDEX_END -->

@@ -304,10 +304,11 @@ describe("mobile navigation behavior", () => {
 
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
     await settleUi(wrapper);
-    expect(wrapper.findAll(".mobileDrawerNavItem")).toHaveLength(3);
+    expect(wrapper.findAll(".mobileDrawerNavItem")).toHaveLength(4);
     expect(wrapper.findAll(".mobileDrawerNavItem")[0]?.text()).toContain("项目");
     expect(wrapper.findAll(".mobileDrawerNavItem")[1]?.text()).toContain("角色指令");
     expect(wrapper.findAll(".mobileDrawerNavItem")[2]?.text()).toContain("模型配置");
+    expect(wrapper.findAll(".mobileDrawerNavItem")[3]?.text()).toContain("Push notifications");
 
     await wrapper.find('[data-testid="mobile-drawer-section-prompts"]').trigger("click");
     await settleUi(wrapper);
@@ -326,6 +327,12 @@ describe("mobile navigation behavior", () => {
     await wrapper.find('[data-testid="mobile-drawer-section-models"]').trigger("click");
     await settleUi(wrapper);
     expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-initial-tab")).toBe("models");
+
+    await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");
+    await settleUi(wrapper);
+    await wrapper.find('[data-testid="mobile-drawer-section-notifications"]').trigger("click");
+    await settleUi(wrapper);
+    expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-initial-tab")).toBe("notifications");
 
     // Settings views expose no duplicate contextual actions, so the menu button stays hidden.
     expect(wrapper.find('[data-testid="mobile-context-menu-toggle"]').exists()).toBe(false);

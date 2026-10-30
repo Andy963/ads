@@ -67,6 +67,7 @@ export default defineConfig(({ mode }) => {
         },
         workbox: {
           clientsClaim: true,
+          importScripts: [`${base}push-sw.js`],
           navigateFallbackDenylist: [/^\/api/, /^\/ws/],
           globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
         },

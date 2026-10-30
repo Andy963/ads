@@ -106,6 +106,25 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       deps.sessions.sessionManager.getRuntimeBackend?.() !== "native";
     const getProviderThreadId = (): string | null =>
       shouldLinkProviderSession() ? orchestrator.getThreadId() : null;
+    const linkAgentSession = (sessionId: string | null | undefined): void => {
+      const normalized = String(sessionId ?? "").trim();
+      if (!normalized || typeof deps.history.historyStore.linkAgentSession !== "function") {
+        return;
+      }
+      deps.history.historyStore.linkAgentSession(deps.context.historyKey, {
+        agentId: orchestrator.getActiveAgentId(),
+        providerSessionId: normalized,
+        cwd: turnCwd,
+      });
+    };
+    // Native has no provider thread, so the durable transcript id is the only
+    // identity a later picker selection can match.
+    const linkNativeSession = (): void => {
+      if (shouldLinkProviderSession()) {
+        return;
+      }
+      linkAgentSession(deps.sessions.sessionManager.getNativeTranscriptId?.(deps.context.userId));
+    };
 
     const promptRun = beginWsPromptRun({
       historyKey: deps.context.historyKey,
@@ -225,17 +244,11 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       },
       onThreadStarted: (threadId) => {
         if (!shouldLinkProviderSession()) {
+          linkNativeSession();
           return;
         }
-        const activeAgentId = orchestrator.getActiveAgentId();
-        deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, activeAgentId);
-        if (shouldLinkProviderSession() && typeof deps.history.historyStore.linkAgentSession === "function") {
-          deps.history.historyStore.linkAgentSession(deps.context.historyKey, {
-            agentId: activeAgentId,
-            providerSessionId: threadId,
-            cwd: turnCwd,
-          });
-        }
+        deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, orchestrator.getActiveAgentId());
+        linkAgentSession(threadId);
       },
     });
     let agentTurnPromise: Promise<Awaited<ReturnType<typeof runAgentTurn>>> | undefined;
@@ -337,16 +350,12 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       promptRun.ensureActive();
       if (threadId) {
         promptRun.ensureActive();
-        const activeAgentId = orchestrator.getActiveAgentId();
-        deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, activeAgentId);
-        if (shouldLinkProviderSession() && typeof deps.history.historyStore.linkAgentSession === "function") {
-          deps.history.historyStore.linkAgentSession(deps.context.historyKey, {
-            agentId: activeAgentId,
-            providerSessionId: threadId,
-            cwd: turnCwd,
-          });
-        }
+        deps.sessions.sessionManager.saveThreadId(deps.context.userId, threadId, orchestrator.getActiveAgentId());
+        linkAgentSession(threadId);
       }
+      // Refresh the link's activity timestamp; `thread.started` fires once per
+      // Native adapter, not once per turn.
+      linkNativeSession();
       const effectiveState = deps.sessions.sessionManager.getEffectiveState(deps.context.userId);
       promptRun.ensureActive();
       if (deps.request.clientMessageId && typeof deps.history.historyStore.updatePromptExecutionMetadata === "function") {
@@ -396,6 +405,13 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           text: outputForChat,
           agentId: orchestrator.getActiveAgentId?.(),
         });
+        if (turnChannel === "web" && deps.notifyWebUser) {
+          void deps.notifyWebUser(deps.context.authUserId).catch((error) => {
+            deps.observability.logger.warn(
+              `[WebPush] Failed to dispatch response notification: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+        }
       }
       promptRun.ensureActive();
       if (threadReset) {

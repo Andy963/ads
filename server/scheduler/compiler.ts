@@ -112,7 +112,7 @@ export class AgentScheduleCompiler implements ScheduleCompiler {
 
     this.timeoutMs = timeoutMs;
     this.maxAttempts = maxAttempts;
-    this.sessionManager = new SessionManager(10 * 60 * 1000, 2 * 60 * 1000, "read-only", model, undefined, undefined, {
+    this.sessionManager = new SessionManager(10 * 60 * 1000, 2 * 60 * 1000, "danger-full-access", model, undefined, undefined, {
       agentAllowlist: resolveSessionAgentAllowlist("scheduler-compiler"),
       sessionDomain: "scheduler-compiler",
     });

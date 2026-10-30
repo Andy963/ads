@@ -187,6 +187,42 @@ export class HistoryStore {
     return this.addWithResult(sessionId, entry) === "inserted";
   }
 
+  replaceEntries(sessionId: string, entries: readonly HistoryEntry[]): boolean {
+    const normalizedKey = String(sessionId ?? "").trim();
+    if (!normalizedKey) return false;
+    const normalizedEntries = entries
+      .map((entry) => this.normalize(entry))
+      .filter((entry): entry is HistoryEntry => entry !== null);
+
+    if (!this.useSqlite || !this.db || !this.deleteSessionStmt || !this.insertStmt) {
+      this.store.set(normalizedKey, this.trim(normalizedEntries));
+      this.persist();
+      return true;
+    }
+
+    try {
+      const tx = this.db.transaction(() => {
+        this.deleteSessionStmt!.run(this.namespace, normalizedKey);
+        for (const entry of normalizedEntries) {
+          this.insertStmt!.run(
+            this.namespace,
+            normalizedKey,
+            entry.role,
+            entry.text,
+            entry.ts,
+            entry.kind ?? null,
+          );
+        }
+        this.trimSqlite(normalizedKey);
+      });
+      tx();
+      return true;
+    } catch (error) {
+      logger.warn("[HistoryStore] Failed to replace history entries", error);
+      return false;
+    }
+  }
+
   addWithResult(sessionId: string, entry: HistoryEntry): "inserted" | "duplicate" | "failed" {
     const normalized = this.normalize(entry);
     if (!normalized) return "failed";

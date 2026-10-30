@@ -146,6 +146,7 @@ export type AttachWebSocketServerDeps = {
   commands: WsCommandDeps;
   scheduler: WsSchedulerDeps;
   logger: WsLogger;
+  notifyWebUser?: (userId: string) => Promise<void>;
 };
 
 export type WsRequestDeps = {
@@ -220,6 +221,7 @@ export type WsPromptHandlerDeps = {
   history: WsHistoryRuntimeDeps;
   scheduler: WsSchedulerDeps;
   middleware?: MiddlewarePipeline;
+  notifyWebUser?: (userId: string) => Promise<void>;
 };
 
 export type WsPromptOutcome = {

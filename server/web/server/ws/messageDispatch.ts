@@ -71,6 +71,7 @@ export async function dispatchWsMessage(args: {
   logger: WsLogger;
   updateWorkspaceRootMeta: (cwd: string) => void;
   createInteractiveActionTools?: WsInteractiveActionToolsFactory;
+  notifyWebUser?: (userId: string) => Promise<void>;
 }): Promise<{
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
   currentCwd: string;
@@ -174,6 +175,7 @@ export async function dispatchWsMessage(args: {
       },
       scheduler: args.scheduler,
       ...(createInteractiveActionTools ? { createInteractiveActionTools } : {}),
+      ...(args.notifyWebUser ? { notifyWebUser: args.notifyWebUser } : {}),
     });
     if (promptResult.handled) {
       return { orchestrator: promptResult.orchestrator, currentCwd };

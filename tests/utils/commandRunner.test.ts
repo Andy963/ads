@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 
-import { assertCommandAllowed, runCommand } from "../../server/utils/commandRunner.js";
+import { assertCommandAllowed, assertShellCommandAllowed, runCommand } from "../../server/utils/commandRunner.js";
 
 describe("utils/commandRunner", () => {
   it("rejects command paths when allowlist is enabled", async () => {
@@ -45,10 +45,9 @@ describe("utils/commandRunner", () => {
     assert.equal(res.exitCode, 0);
   });
 
-  it("blocks git push even when command is allowlisted", () => {
-    assert.throws(() => {
-      assertCommandAllowed("git", ["push"], ["git"]);
-    }, /git push is blocked/i);
+  it("allows git push when git is allowlisted", () => {
+    assert.doesNotThrow(() => assertCommandAllowed("git", ["git"]));
+    assert.doesNotThrow(() => assertShellCommandAllowed("git push origin dev", ["git"]));
   });
 
   it("rejects with AbortError when the signal aborts", async () => {

@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 
 import { handleTaskResumeMessage } from "../../server/web/server/ws/handleTaskResume.js";
+import { resetStateDatabaseForTests } from "../../server/state/database.js";
+import { HistoryStore } from "../../server/utils/historyStore.js";
 
 describe("web/ws/handleTaskResume", () => {
   const originalCodexBin = process.env.ADS_CODEX_BIN;
@@ -28,7 +30,72 @@ describe("web/ws/handleTaskResume", () => {
     process.env.ADS_CODEX_BIN = originalCodexBin;
   });
 
-  it("rejects an explicit provider thread for the native runtime backend", async () => {
+  function buildNativeResumeDeps(args: {
+    historyStore: unknown;
+    historyKey: string;
+    userId: number;
+    orchestrator?: Record<string, unknown>;
+    send?: (prompt: string) => Promise<unknown>;
+    sent: unknown[];
+    threadId?: string;
+  }): { deps: any; state: { resumeFlags: boolean[]; drops: number; sends: number } } {
+    const state = { resumeFlags: [] as boolean[], drops: 0, sends: 0 };
+    const orchestrator = {
+      getActiveAgentId: () => "codex",
+      getThreadId: () => "native-current-execution",
+      setWorkingDirectory: () => {},
+      status: () => ({ ready: true }),
+      ...args.orchestrator,
+      send: async (...sendArgs: unknown[]) => {
+        state.sends += 1;
+        return args.send ? await args.send(String(sendArgs[0] ?? "")) : { output: "OK" };
+      },
+    };
+    const deps = {
+      request: {
+        parsed: {
+          type: "task_resume",
+          payload: args.threadId ? { threadId: args.threadId } : {},
+        } as any,
+      },
+      transport: {
+        ws: {} as any,
+        safeJsonSend: (_ws: unknown, payload: unknown) => args.sent.push(payload),
+        broadcastJson: (payload: unknown) => args.sent.push(payload),
+      },
+      observability: { logger: { info: () => {}, debug: () => {}, warn: () => {} } },
+      context: {
+        authUserId: args.historyKey.split("::", 1)[0],
+        userId: args.userId,
+        historyKey: args.historyKey,
+        currentCwd: "/repo",
+      },
+      sessions: {
+        sessionManager: {
+          getRuntimeBackend: () => "native",
+          getSavedState: () => ({ runtimeBackend: "native", cwd: "/repo" }),
+          getSavedThreadId: () => undefined,
+          getSavedResumeThreadId: () => undefined,
+          getContextRestoreMode: () => "thread_resumed",
+          dropSession: () => {
+            state.drops += 1;
+          },
+          getOrCreate: (_userId: number, _cwd: string | undefined, resumeThread: boolean) => {
+            state.resumeFlags.push(resumeThread);
+            return orchestrator;
+          },
+        },
+        orchestrator,
+        getWorkspaceLock: () => ({
+          runExclusive: async <T>(fn: () => Promise<T> | T): Promise<T> => await fn(),
+        }),
+      },
+      history: { historyStore: args.historyStore },
+    };
+    return { deps, state };
+  }
+
+  it("rejects a Native history link owned by another user", async () => {
     const sent: unknown[] = [];
     const historyEntries = [{ role: "user", text: "current question", ts: 1 }];
     const orchestrator = {
@@ -55,8 +122,9 @@ describe("web/ws/handleTaskResume", () => {
         },
       },
       context: {
+        authUserId: "user-9",
         userId: 9,
-        historyKey: "history-native-explicit-resume",
+        historyKey: "user-9::session-1::actions",
         currentCwd: "/mnt/d/code/ADS/ads",
       },
       sessions: {
@@ -71,6 +139,15 @@ describe("web/ws/handleTaskResume", () => {
       history: {
         historyStore: {
           get: () => historyEntries,
+          listAgentSessionLinks: () => [{
+            historyKey: "user-10::session-2::actions",
+            agentId: "codex",
+            providerSessionId: "codex-provider-thread",
+            cwd: "/mnt/d/code/ADS/ads",
+            firstSeenAt: 1,
+            lastSeenAt: 2,
+            linkCount: 1,
+          }],
         } as any,
       },
     });
@@ -78,9 +155,231 @@ describe("web/ws/handleTaskResume", () => {
     assert.equal(result.handled, true);
     assert.deepEqual(sent, [{
       type: "error",
-      message: "Provider thread resume is not supported by the native runtime backend",
+      message: "Selected session has no ADS history to restore",
     }]);
     assert.deepEqual(historyEntries, [{ role: "user", text: "current question", ts: 1 }]);
+  });
+
+  it("asks the user to switch workspaces instead of reporting missing history", async () => {
+    const sent: unknown[] = [];
+    const harness = buildNativeResumeDeps({
+      historyStore: {
+        get: () => [{ role: "user", text: "elsewhere", ts: 1 }],
+        listAgentSessionLinks: () => [{
+          historyKey: "user-21::session-2::actions",
+          agentId: "codex",
+          providerSessionId: "thread-other",
+          cwd: "/other",
+          firstSeenAt: 1,
+          lastSeenAt: 2,
+          linkCount: 1,
+        }],
+      },
+      historyKey: "user-21::session-1::actions",
+      userId: 21,
+      sent,
+      threadId: "thread-other",
+    });
+
+    await handleTaskResumeMessage(harness.deps);
+
+    assert.deepEqual(sent, [{
+      type: "error",
+      message: "Selected session belongs to another workspace (/other). Switch to that workspace before restoring it.",
+    }]);
+  });
+
+  it("restores a selected Native conversation from its linked HistoryStore transcript", async () => {
+    const sent: unknown[] = [];
+    const currentHistory = [{ role: "user", text: "current conversation", ts: 1 }];
+    const selectedHistory = [
+      { role: "user", text: "saved question", ts: 2 },
+      { role: "ai", text: "saved answer", ts: 3 },
+    ];
+    const histories = new Map([
+      ["user-12::session-current::actions", currentHistory],
+      ["user-12::session-saved::actions", selectedHistory],
+    ]);
+    const prompts: string[] = [];
+    const orchestrator = {
+      getActiveAgentId: () => "codex",
+      getThreadId: () => "native-current-execution",
+      setWorkingDirectory: () => {},
+      status: () => ({ ready: true }),
+      send: async (prompt: string) => {
+        prompts.push(prompt);
+        return { output: "OK" };
+      },
+    };
+
+    await handleTaskResumeMessage({
+      request: { parsed: { type: "task_resume", payload: { threadId: "codex-provider-thread" } } as any },
+      transport: {
+        ws: {} as any,
+        safeJsonSend: (_ws: unknown, payload: unknown) => sent.push(payload),
+        broadcastJson: (payload: unknown) => sent.push(payload),
+      },
+      observability: { logger: { info: () => {}, debug: () => {}, warn: () => {} } },
+      context: {
+        authUserId: "user-12",
+        userId: 12,
+        historyKey: "user-12::session-current::actions",
+        currentCwd: "/repo",
+      },
+      sessions: {
+        sessionManager: {
+          getRuntimeBackend: () => "native",
+          getSavedState: () => ({ runtimeBackend: "native", cwd: "/repo" }),
+          getSavedThreadId: () => undefined,
+          getSavedResumeThreadId: () => undefined,
+          dropSession: () => {},
+          getOrCreate: () => orchestrator as any,
+        } as any,
+        orchestrator: orchestrator as any,
+        getWorkspaceLock: () => ({
+          runExclusive: async <T>(fn: () => Promise<T> | T): Promise<T> => await fn(),
+        }) as any,
+      },
+      history: {
+        historyStore: {
+          get: (key: string) => histories.get(key) ?? [],
+          listAgentSessionLinks: () => [{
+            agentId: "codex",
+            providerSessionId: "codex-provider-thread",
+            historyKey: "user-12::session-saved::actions",
+            cwd: "/repo",
+            firstSeenAt: 2,
+            lastSeenAt: 3,
+            linkCount: 1,
+          }],
+          replaceEntries: (key: string, entries: typeof currentHistory) => {
+            histories.set(key, entries);
+            return true;
+          },
+        } as any,
+      },
+    } as any);
+
+    assert.match(prompts[0], /User: saved question/);
+    assert.match(prompts[0], /Assistant: saved answer/);
+    assert.deepEqual(histories.get("user-12::session-saved::actions"), selectedHistory);
+    assert.ok(histories.get("user-12::session-current::actions")?.some((entry) => entry.kind === "session_divider"));
+    assert.ok(sent.some((payload) => (payload as { type?: string }).type === "history"));
+  });
+
+  it("reattaches the durable native transcript instead of resetting the lane", async () => {
+    const sent: unknown[] = [];
+    const entries: Array<{ role: string; text: string; ts: number }> = [
+      { role: "user", text: "current question", ts: 1 },
+    ];
+    const harness = buildNativeResumeDeps({
+      historyStore: {
+        get: () => entries,
+        clear: () => {
+          entries.length = 0;
+        },
+        add: (_key: string, entry: { role: string; text: string; ts: number }) => {
+          entries.push(entry);
+          return true;
+        },
+      },
+      historyKey: "user-20::session-1::actions",
+      userId: 20,
+      sent,
+    });
+
+    const result = await handleTaskResumeMessage(harness.deps);
+
+    assert.equal(result.handled, true);
+    assert.equal(harness.state.drops, 0);
+    assert.deepEqual(harness.state.resumeFlags, [true]);
+    assert.equal(harness.state.sends, 0);
+    const history = sent.find((payload) => (payload as { type?: string }).type === "history") as
+      | { contextMode?: string; items?: Array<{ text: string }> }
+      | undefined;
+    assert.equal(history?.contextMode, "thread_resumed");
+    assert.deepEqual(history?.items?.map((item) => item.text), [
+      "current question",
+      "已恢复会话记录",
+    ]);
+  });
+
+  it("reattaches the lane's own Native session without resetting its transcript", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-resume-self-"));
+    const store = new HistoryStore({ namespace: "web-worker", storagePath: path.join(dir, "state.db") });
+    try {
+      const historyKey = "user-30::session-1::actions";
+      store.add(historyKey, { role: "user", text: "question one", ts: 1, kind: "client_message_id:m1" });
+      store.add(historyKey, { role: "ai", text: "answer one", ts: 2 });
+      store.add(historyKey, { role: "user", text: "question two", ts: 3, kind: "client_message_id:m2" });
+      store.add(historyKey, { role: "ai", text: "answer two", ts: 4 });
+      store.linkAgentSession(historyKey, { agentId: "codex", providerSessionId: "thread-self", cwd: "/repo" });
+
+      const harness = buildNativeResumeDeps({
+        historyStore: store,
+        historyKey,
+        userId: 30,
+        sent: [],
+        threadId: "thread-self",
+      });
+      await handleTaskResumeMessage(harness.deps);
+
+      assert.equal(harness.state.drops, 0);
+      assert.deepEqual(harness.state.resumeFlags, [true]);
+      const entries = store.get(historyKey);
+      assert.deepEqual(
+        entries.filter((entry) => entry.role === "ai").map((entry) => entry.text),
+        ["answer one", "answer two"],
+      );
+      assert.deepEqual(
+        entries.filter((entry) => entry.role === "user").map((entry) => entry.text),
+        ["question one", "question two"],
+      );
+      assert.equal(entries.some((entry) => entry.kind === "session_divider"), false);
+      assert.equal(entries.at(-1)?.text, "已恢复会话记录");
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps one copy when the same conversation is restored twice", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-resume-repeat-"));
+    const store = new HistoryStore({ namespace: "web-worker", storagePath: path.join(dir, "state.db") });
+    try {
+      const sourceKey = "user-31::session-saved::actions";
+      const targetKey = "user-31::session-current::actions";
+      store.add(sourceKey, { role: "user", text: "saved question", ts: 1, kind: "client_message_id:m9" });
+      store.add(sourceKey, { role: "ai", text: "saved answer", ts: 2 });
+      store.linkAgentSession(sourceKey, { agentId: "codex", providerSessionId: "thread-saved", cwd: "/repo" });
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const harness = buildNativeResumeDeps({
+          historyStore: store,
+          historyKey: targetKey,
+          userId: 31,
+          sent: [],
+          threadId: "thread-saved",
+        });
+        await handleTaskResumeMessage(harness.deps);
+      }
+
+      const target = store.get(targetKey);
+      assert.equal(target.filter((entry) => entry.role === "ai").length, 1);
+      assert.equal(target.filter((entry) => entry.role === "user").length, 1);
+      assert.equal(target.filter((entry) => entry.kind === "session_divider").length, 1);
+      assert.equal(
+        target.some((entry) => String(entry.kind ?? "").startsWith("client_message_id:")),
+        false,
+      );
+      assert.deepEqual(
+        store.get(sourceKey).map((entry) => entry.text),
+        ["saved question", "saved answer"],
+      );
+    } finally {
+      resetStateDatabaseForTests();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("rejects a Native execution alias for the Codex runtime backend", async () => {
@@ -320,6 +619,7 @@ describe("web/ws/handleTaskResume", () => {
       },
       sessions: {
         sessionManager: {
+          getRuntimeBackend: () => "codex-app-server",
           getSavedThreadId: () => undefined,
           getSavedResumeThreadId: () => undefined,
         } as any,
@@ -416,6 +716,7 @@ describe("web/ws/handleTaskResume", () => {
       },
       sessions: {
         sessionManager: {
+          getRuntimeBackend: () => "codex-app-server",
           getSavedThreadId: () => "codex-saved-thread",
           getSavedResumeThreadId: () => "saved-resume-thread",
           getSandboxMode: () => "workspace-write",
@@ -572,6 +873,7 @@ describe("web/ws/handleTaskResume", () => {
       },
       sessions: {
         sessionManager: {
+          getRuntimeBackend: () => "codex-app-server",
           getSavedThreadId: () => "claude-saved-thread",
           getSavedResumeThreadId: () => "saved-resume-thread",
           getSandboxMode: () => "workspace-write",
@@ -662,6 +964,7 @@ describe("web/ws/handleTaskResume", () => {
       },
       sessions: {
         sessionManager: {
+          getRuntimeBackend: () => "codex-app-server",
           getSavedState: () => ({ cwd: "/mnt/d/code/ADS/ads" }),
           getSavedThreadId: () => undefined,
           getSavedResumeThreadId: () => undefined,
@@ -762,6 +1065,7 @@ describe("web/ws/handleTaskResume", () => {
       },
       sessions: {
         sessionManager: {
+          getRuntimeBackend: () => "codex-app-server",
           getSavedThreadId: () => "claude-saved-thread",
           getSavedResumeThreadId: () => undefined,
           getSandboxMode: () => "workspace-write",
@@ -865,6 +1169,7 @@ describe("web/ws/handleTaskResume", () => {
       },
       sessions: {
         sessionManager: {
+          getRuntimeBackend: () => "codex-app-server",
           getSavedState: () => ({ cwd: "/mnt/d/code/ADS/ads" }),
           getSavedThreadId: () => undefined,
           getSavedResumeThreadId: () => "saved-resume-thread",
@@ -1000,6 +1305,7 @@ describe("web/ws/handleTaskResume", () => {
       },
       sessions: {
         sessionManager: {
+          getRuntimeBackend: () => "codex-app-server",
           getSavedThreadId: () => "claude-saved-thread",
           getSavedResumeThreadId: () => "saved-resume-thread",
           getSandboxMode: () => "workspace-write",
@@ -1106,6 +1412,7 @@ describe("web/ws/handleTaskResume", () => {
       context: { userId: 11, historyKey: "history-plain", currentCwd: "/mnt/d/code/ADS/ads" },
       sessions: {
         sessionManager: {
+          getRuntimeBackend: () => "codex-app-server",
           // Nothing saved anywhere, so the native path is never entered.
           getSavedThreadId: () => undefined,
           getSavedResumeThreadId: () => undefined,
