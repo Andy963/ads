@@ -300,18 +300,7 @@ function splitShellCommandSegments(value: string): string[] {
   return segments;
 }
 
-export function isGitPushCommand(cmd: string, args: string[] = []): boolean {
-  const executable = path.basename(cmd).toLowerCase();
-  if (executable !== "git") return false;
-  const first = String(args[0] ?? "").toLowerCase();
-  return first === "push";
-}
-
-function containsGitPushCommand(command: string): boolean {
-  return /\bgit\s+push\b/i.test(command);
-}
-
-export function assertCommandAllowed(cmd: string, args: string[], allowlist: string[] | null | undefined): void {
+export function assertCommandAllowed(cmd: string, allowlist: string[] | null | undefined): void {
   if (allowlist && hasPathSeparator(cmd)) {
     throw new Error(`command path is not allowed when allowlist is enabled: ${cmd}`);
   }
@@ -320,16 +309,9 @@ export function assertCommandAllowed(cmd: string, args: string[], allowlist: str
   if (allowlist && !allowlist.includes(executable)) {
     throw new Error(`command not allowed: ${executable}`);
   }
-
-  if (isGitPushCommand(cmd, args)) {
-    throw new Error("git push is blocked; push manually if needed");
-  }
 }
 
 export function assertShellCommandAllowed(command: string, allowlist: string[] | null | undefined): void {
-  if (containsGitPushCommand(command)) {
-    throw new Error("git push is blocked; push manually if needed");
-  }
   if (allowlist && /`|\$\(/.test(command)) {
     throw new Error("command substitution is not allowed when an executable allowlist is enabled");
   }
@@ -386,7 +368,7 @@ export async function runCommand(request: CommandRunRequest): Promise<CommandRun
     if (args.length > 0) throw new Error("shell commands cannot use an argument array");
     assertShellCommandAllowed(cmd, allowlist);
   } else {
-    assertCommandAllowed(cmd, args, allowlist);
+    assertCommandAllowed(cmd, allowlist);
   }
 
   const commandLine = request.shell ? cmd : [cmd, ...args].join(" ").trim();
