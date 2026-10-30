@@ -40,6 +40,7 @@ import { createSessionCacheRegistry } from "./ws/sessionCacheRegistry.js";
 import { LaneDispatchBus } from "../../actions/bus.js";
 import { setBusInstance } from "./api/routes/actions.js";
 import { createWebPushService } from "../push/service.js";
+import { createForegroundAwareWebPushNotifier } from "../push/foregroundDelivery.js";
 
 const logger = createLogger("WebSocket");
 
@@ -455,7 +456,13 @@ export async function startWebServer(): Promise<void> {
       scheduleCompiler,
       scheduler,
     },
-    notifyWebUser: webPushService.notifyUser,
+    notifyWebUser: createForegroundAwareWebPushNotifier({
+      notifyUser: webPushService.notifyUser,
+      hasOpenWebClient: (userId) => [...wsHub.clientMetaByWs].some(([ws, meta]) =>
+        ws.readyState === 1
+        && !(ws as typeof ws & { isConnector?: boolean }).isConnector
+        && meta.authUserId === userId),
+    }),
     });
     promptQueueLifecycle = wss;
     await wss.startPromptQueue();

@@ -8,6 +8,7 @@ import { createWebPushStore } from "../../server/state/webPushStore.js";
 import { handleWebPushRoutes } from "../../server/web/server/api/routes/webPush.js";
 import type { ApiRouteContext } from "../../server/web/server/api/types.js";
 import { createWebPushService, isAllowedWebPushEndpoint, webPushNotificationPayload } from "../../server/web/push/service.js";
+import { createForegroundAwareWebPushNotifier } from "../../server/web/push/foregroundDelivery.js";
 
 function routeContext(args: { method: string; path: string; userId?: string; body?: unknown }) {
   const body = args.body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(args.body));
@@ -104,27 +105,76 @@ describe("Web Push subscription routes", () => {
 });
 
 describe("Web Push delivery", () => {
-  it("sends only a generic event, removes expired subscriptions, and isolates delivery errors", async () => {
+  it("removes permanently invalid subscriptions and keeps transient failures", async () => {
     const db = new Database(":memory:");
     try {
       const sent: Array<{ endpoint: string; payload?: string | Buffer | null }> = [];
-      const service = makeService(db, async (item, payload) => {
-        sent.push({ endpoint: item.endpoint, payload });
-        if (item.endpoint.endsWith("expired")) {
-          throw Object.assign(new Error("expired"), { statusCode: 410 });
-        }
-        throw Object.assign(new Error("temporary"), { statusCode: 503 });
+      const warnings: string[] = [];
+      const loggedService = createWebPushService({
+        db,
+        config: { ...webPush.generateVAPIDKeys(), subject: "mailto:admin@example.com" },
+        logger: { warn: (message) => warnings.push(message) },
+        sendNotification: async (item, payload) => {
+          sent.push({ endpoint: item.endpoint, payload });
+          const statusCode = Number(item.endpoint.split("/").at(-1));
+          if (item.endpoint.endsWith("timeout")) throw new Error("timeout");
+          throw Object.assign(new Error("delivery failed"), { statusCode });
+        },
       });
-      service.saveSubscription("alice", subscription("expired"));
-      service.saveSubscription("alice", subscription("temporarily-failing"));
+      for (const status of [400, 401, 403, 404, 410]) {
+        const current = subscription(String(status));
+        loggedService.saveSubscription("alice", current);
+        await assert.doesNotReject(loggedService.notifyUser("alice"));
+        assert.deepEqual(createWebPushStore(db).listByUser("alice"), []);
+      }
+      for (const token of ["503", "timeout"]) {
+        const current = subscription(token);
+        loggedService.saveSubscription("alice", current);
+        await assert.doesNotReject(loggedService.notifyUser("alice"));
+        assert.deepEqual(createWebPushStore(db).listByUser("alice").map((entry) => entry.endpoint), [current.endpoint]);
+      }
 
-      await assert.doesNotReject(service.notifyUser("alice"));
-      assert.equal(sent.length, 2);
+      assert.equal(sent.length, 7);
       assert.ok(sent.every((entry) => entry.payload === webPushNotificationPayload));
       assert.doesNotMatch(String(sent[0]?.payload), /conversation|assistant reply text/);
-      assert.deepEqual(createWebPushStore(db).listByUser("alice").map((entry) => entry.endpoint), [
-        subscription("temporarily-failing").endpoint,
-      ]);
+      assert.ok(warnings.every((message) => message.includes("endpoint=fcm.googleapis.com") && message.includes("status=")));
+    } finally {
+      db.close();
+    }
+  });
+
+  it("sends only when the user has no open WebSocket client", async () => {
+    const db = new Database(":memory:");
+    try {
+      let sendCount = 0;
+      const service = makeService(db, async () => { sendCount += 1; });
+      service.saveSubscription("alice", subscription("device"));
+      let connected = true;
+      const notify = createForegroundAwareWebPushNotifier({
+        notifyUser: service.notifyUser,
+        hasOpenWebClient: () => connected,
+      });
+
+      await notify("alice");
+      assert.equal(sendCount, 0);
+      connected = false;
+      await notify("alice");
+      assert.equal(sendCount, 1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps only the newest endpoint for each user", () => {
+    const db = new Database(":memory:");
+    try {
+      const store = createWebPushStore(db);
+      store.save("alice", subscription("old"));
+      store.save("alice", subscription("new"));
+      store.save("bob", subscription("bob"));
+
+      assert.deepEqual(store.listByUser("alice").map((entry) => entry.endpoint), [subscription("new").endpoint]);
+      assert.deepEqual(store.listByUser("bob").map((entry) => entry.endpoint), [subscription("bob").endpoint]);
     } finally {
       db.close();
     }
