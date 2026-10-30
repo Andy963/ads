@@ -17,11 +17,14 @@ Each project page opened one Actions socket and one Acopilot socket. Both connec
 - Rebind a lane's chat-session ID only on authoritative signals: an outbound `welcome` or an accepted inbound `switch_chat_session`. Any other frame that mentions a different chat-session ID must not change routing, otherwise one stale frame re-points the lane and swallows later traffic.
 - Preserve per-lane bootstrap cursors and lane generations as query parameters keyed by chat-session ID. The server projects each lane's cursor onto its existing bootstrap path; synchronization history, reset barriers, transcript caches, outboxes and reconnect state remain lane-scoped.
 - Count a multiplexed physical socket once against the server's WebSocket client limit. Existing clients that request only one chat session continue to use the existing single-lane path.
+- Probe the physical socket whenever the page returns to the foreground. A backgrounded page can resume holding a half-open connection that still reports `OPEN` and never fires `close`, so per-lane connection state cannot detect it; the probe sends a ping and rebuilds the socket when no frame comes back within the timeout.
 
 ## Consequences
 
 A project page consumes one connection slot rather than two without sharing transport across projects. The server still executes lane-specific handlers and retains existing history keys; multiplexing changes the transport boundary, not the persistence identity. Every added lane must have a distinct chat-session ID and every lane-owned frame must preserve that ID so that state cannot leak between transcripts. Closing the physical connection terminates all of its lane subscriptions.
 
 Re-attaching a lane to an already-open socket replays the handshake instead of silently reusing the live transport: the server keeps lane state on the connection, so a bare re-attach would skip the `welcome` and the bootstrap cursor.
+
+The foreground probe restarts the physical socket from the transport, so every attached lane receives a fresh `welcome` and re-runs bootstrap with its own resume cursor.
 
 The WebSocket tests cover frame routing and welcome metadata, per-lane bootstrap cursor projection, client-side one-socket construction, outbound lane identity, authoritative rebinding, and isolation of inbound frames. Existing session switching and lane reset behavior remain covered by the web test suite.

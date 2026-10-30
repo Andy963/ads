@@ -35,6 +35,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+// This suite runs without a DOM, so foreground probes need a document that can
+// carry the visibilitychange listener.
+const fakeDocument = Object.assign(new EventTarget(), { visibilityState: "hidden" });
+
 describe("project WebSocket lane multiplexing", () => {
   it("uses one physical socket and routes lane messages and cursors independently", () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
@@ -197,6 +201,109 @@ describe("project WebSocket lane multiplexing", () => {
     expect(FakeWebSocket.instances).toHaveLength(2);
     expect(staleMessages).toEqual([]);
     reconnectedActions.close();
+    acopilot.close();
+  });
+
+  it("restarts the physical socket when a foreground probe is never answered", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("location", { protocol: "http:", host: "localhost" });
+    vi.stubGlobal("window", { setInterval, clearInterval, setTimeout, clearTimeout });
+    vi.stubGlobal("document", fakeDocument);
+    const configs = {
+      actions: { chatSessionId: "main", resume: { afterSeq: 99, laneGeneration: 77 } },
+      acopilot: { chatSessionId: "acopilot" },
+    };
+    const actions = getProjectWebSocketLane({ projectId: "project-probe-timeout-test", sessionId: "session", lane: "actions", configs });
+    const acopilot = getProjectWebSocketLane({ projectId: "project-probe-timeout-test", sessionId: "session", lane: "acopilot", configs });
+    actions.connect();
+    acopilot.connect();
+    const baseline = FakeWebSocket.instances.length;
+    const frozenSocket = FakeWebSocket.instances[baseline - 1]!;
+    frozenSocket.readyState = FakeWebSocket.OPEN;
+    frozenSocket.onopen?.();
+
+    fakeDocument.visibilityState = "visible";
+    fakeDocument.dispatchEvent(new Event("visibilitychange"));
+
+    expect(JSON.parse(frozenSocket.sent.at(-1)!).type).toBe("ping");
+    expect(frozenSocket.readyState).toBe(FakeWebSocket.OPEN);
+
+    vi.advanceTimersByTime(4_000);
+
+    expect(frozenSocket.readyState).toBe(3);
+    const replacements = FakeWebSocket.instances
+      .slice(baseline)
+      .filter((socket) => new URL(socket.url).searchParams.get("afterSeq.main") === "99");
+    expect(replacements).toHaveLength(1);
+    expect(replacements[0]!.protocols).toEqual(expect.arrayContaining(["ads-chat.main", "ads-chat.acopilot"]));
+    actions.close();
+    acopilot.close();
+    vi.useRealTimers();
+  });
+
+  it("keeps the physical socket when the foreground probe is answered", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("location", { protocol: "http:", host: "localhost" });
+    vi.stubGlobal("window", { setInterval, clearInterval, setTimeout, clearTimeout });
+    vi.stubGlobal("document", fakeDocument);
+    const configs = {
+      actions: { chatSessionId: "main", resume: { afterSeq: 42, laneGeneration: 7 } },
+      acopilot: { chatSessionId: "acopilot" },
+    };
+    const actions = getProjectWebSocketLane({ projectId: "project-probe-answered-test", sessionId: "session", lane: "actions", configs });
+    const acopilot = getProjectWebSocketLane({ projectId: "project-probe-answered-test", sessionId: "session", lane: "acopilot", configs });
+    actions.connect();
+    acopilot.connect();
+    const baseline = FakeWebSocket.instances.length;
+    const liveSocket = FakeWebSocket.instances[baseline - 1]!;
+    liveSocket.readyState = FakeWebSocket.OPEN;
+    liveSocket.onopen?.();
+
+    fakeDocument.visibilityState = "visible";
+    fakeDocument.dispatchEvent(new Event("visibilitychange"));
+    expect(JSON.parse(liveSocket.sent.at(-1)!).type).toBe("ping");
+    liveSocket.onmessage?.({ data: JSON.stringify({ type: "pong", ts: 1 }) } as MessageEvent);
+
+    vi.advanceTimersByTime(4_000);
+
+    expect(liveSocket.readyState).toBe(FakeWebSocket.OPEN);
+    expect(
+      FakeWebSocket.instances
+        .slice(baseline)
+        .filter((socket) => new URL(socket.url).searchParams.get("afterSeq.main") === "42"),
+    ).toEqual([]);
+    actions.close();
+    acopilot.close();
+    vi.useRealTimers();
+  });
+
+  it("restarts the physical socket when the frozen connection is already closed", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("location", { protocol: "http:", host: "localhost" });
+    vi.stubGlobal("window", { setInterval, clearInterval, setTimeout, clearTimeout });
+    vi.stubGlobal("document", fakeDocument);
+    const configs = {
+      actions: { chatSessionId: "main", resume: { afterSeq: 7, laneGeneration: 3 } },
+      acopilot: { chatSessionId: "acopilot" },
+    };
+    const actions = getProjectWebSocketLane({ projectId: "project-probe-closed-test", sessionId: "session", lane: "actions", configs });
+    const acopilot = getProjectWebSocketLane({ projectId: "project-probe-closed-test", sessionId: "session", lane: "acopilot", configs });
+    actions.connect();
+    acopilot.connect();
+    const baseline = FakeWebSocket.instances.length;
+    const deadSocket = FakeWebSocket.instances[baseline - 1]!;
+    deadSocket.readyState = 3;
+
+    fakeDocument.visibilityState = "visible";
+    fakeDocument.dispatchEvent(new Event("visibilitychange"));
+
+    const replacements = FakeWebSocket.instances
+      .slice(baseline)
+      .filter((socket) => new URL(socket.url).searchParams.get("afterSeq.main") === "7");
+    expect(replacements).toHaveLength(1);
+    actions.close();
     acopilot.close();
   });
 });

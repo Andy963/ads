@@ -63,6 +63,8 @@ type WsMessage =
 
 const SESSION_UNSCOPED_MESSAGES = new Set(["ping", "pong"]);
 
+const PROBE_TIMEOUT_MS = 4_000;
+
 export type WebSocketLane = "actions" | "acopilot";
 
 export type WebSocketLaneConfig = {
@@ -75,6 +77,8 @@ type SharedLane = { socket: AdsWebSocket; chatSessionId: string };
 class ProjectWebSocketTransport {
   private socket: WebSocket | null = null;
   private pingTimer: number | null = null;
+  private probeTimer: number | null = null;
+  private socketStartedAt = 0;
   private readonly lanes = new Map<WebSocketLane, SharedLane>();
   private readonly pendingMessages = new Map<WebSocketLane, WsMessage[]>();
   private readonly reattaching = new Set<WebSocketLane>();
@@ -118,6 +122,7 @@ class ProjectWebSocketTransport {
     this.reattaching.add(lane);
     if (this.lanes.size > 0) return;
 
+    this.clearProbe();
     this.stopPing();
     const current = this.socket;
     this.socket = null;
@@ -139,6 +144,28 @@ class ProjectWebSocketTransport {
     }
   }
 
+  /**
+   * Verifies the physical socket after the page returns to the foreground.
+   * Backgrounded pages routinely resume with a half-open socket that still
+   * reports `OPEN` and never fires `close`, so reconnect bookkeeping alone
+   * cannot tell a live connection from a dead one.
+   */
+  probe(): void {
+    const socket = this.socket;
+    if (!socket) return;
+    if (socket.readyState !== WebSocket.OPEN) {
+      if (socket.readyState === WebSocket.CONNECTING && Date.now() - this.socketStartedAt < PROBE_TIMEOUT_MS) return;
+      this.restart();
+      return;
+    }
+    if (this.probeTimer !== null) return;
+    this.probeTimer = window.setTimeout(() => {
+      this.probeTimer = null;
+      this.restart();
+    }, PROBE_TIMEOUT_MS);
+    this.send(JSON.stringify({ type: "ping", payload: { ts: Date.now() } }));
+  }
+
   updateLaneChatSession(lane: WebSocketLane, socket: AdsWebSocket, chatSessionId: string): void {
     const current = this.lanes.get(lane);
     if (current?.socket === socket) current.chatSessionId = chatSessionId;
@@ -149,6 +176,7 @@ class ProjectWebSocketTransport {
     const current = this.socket;
     this.socket = null;
     this.pendingMessages.clear();
+    this.clearProbe();
     this.stopPing();
     try {
       current?.close();
@@ -176,6 +204,7 @@ class ProjectWebSocketTransport {
     const query = queryString ? `?${queryString}` : "";
     const socket = new WebSocket(proto + location.host + "/ws" + query, protocols);
     this.socket = socket;
+    this.socketStartedAt = Date.now();
     socket.onopen = () => {
       if (this.socket !== socket) return;
       this.startPing();
@@ -189,6 +218,7 @@ class ProjectWebSocketTransport {
     socket.onclose = (event) => {
       if (this.socket !== socket) return;
       this.socket = null;
+      this.clearProbe();
       this.stopPing();
       const lanes = [...this.lanes.values()];
       this.lanes.clear();
@@ -197,6 +227,7 @@ class ProjectWebSocketTransport {
       for (const { socket: laneSocket } of lanes) laneSocket.notifyClose(event);
     };
     socket.onmessage = (event) => {
+      this.clearProbe();
       let message: WsMessage;
       try {
         message = JSON.parse(String(event.data ?? "")) as WsMessage;
@@ -229,6 +260,12 @@ class ProjectWebSocketTransport {
     clearInterval(this.pingTimer);
     this.pingTimer = null;
   }
+
+  private clearProbe(): void {
+    if (this.probeTimer === null) return;
+    clearTimeout(this.probeTimer);
+    this.probeTimer = null;
+  }
 }
 
 function messageLane(message: WsMessage): WebSocketLane | null {
@@ -254,6 +291,23 @@ function laneForChatSession(
 
 const projectTransports = new Map<string, ProjectWebSocketTransport>();
 
+let probeListenerDocument: EventTarget | null = null;
+
+function probeProjectWebSockets(): void {
+  for (const transport of projectTransports.values()) transport.probe();
+}
+
+function ensureProbeListener(): void {
+  if (typeof document === "undefined" || probeListenerDocument === document) return;
+  const target = document;
+  probeListenerDocument = target;
+  target.addEventListener("visibilitychange", () => {
+    // Reconnect bookkeeping cannot see a socket the browser froze in the
+    // background, so every foreground resume proves liveness explicitly.
+    if (target.visibilityState === "visible") probeProjectWebSockets();
+  });
+}
+
 export function getProjectWebSocketLane(args: {
   projectId: string;
   sessionId: string;
@@ -268,6 +322,7 @@ export function getProjectWebSocketLane(args: {
     });
     transport = created;
     projectTransports.set(projectId, created);
+    ensureProbeListener();
   } else {
     transport.updateConfigs(args.configs);
   }
