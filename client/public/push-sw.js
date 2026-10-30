@@ -12,21 +12,35 @@ self.addEventListener("push", (event) => {
   const scopeUrl = new URL(self.registration.scope);
   const iconUrl = new URL("pwa-192x192.png", scopeUrl).href;
 
-  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
-    if (clients.some((client) => {
-      const clientUrl = new URL(client.url);
-      return clientUrl.origin === scopeUrl.origin
-        && clientUrl.pathname.startsWith(scopeUrl.pathname)
-        && client.visibilityState === "visible";
-    })) return;
-    return self.registration.showNotification(title, {
-      body,
-      icon: iconUrl,
-      badge: iconUrl,
-      data: { url: scopeUrl.href },
-      tag: payload.type === "assistant_response" ? "assistant-response" : "ads-notification",
-    });
+  event.waitUntil(self.registration.showNotification(title, {
+    body,
+    icon: iconUrl,
+    badge: iconUrl,
+    data: { url: scopeUrl.href },
+    tag: payload.type === "assistant_response" ? "assistant-response" : "ads-notification",
   }));
+});
+
+self.addEventListener("pushsubscriptionchange", (event) => {
+  event.waitUntil((async () => {
+    const configResponse = await fetch(new URL("api/web-push/config", self.registration.scope));
+    if (!configResponse.ok) return;
+    const config = await configResponse.json();
+    if (!config.enabled || !config.publicKey) return;
+
+    const paddedKey = config.publicKey.replace(/-/g, "+").replace(/_/g, "/")
+      .padEnd(Math.ceil(config.publicKey.length / 4) * 4, "=");
+    const keyBytes = Uint8Array.from(atob(paddedKey), (character) => character.charCodeAt(0));
+    const subscription = await self.registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: keyBytes,
+    });
+    await fetch(new URL("api/web-push/subscription", self.registration.scope), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(subscription),
+    });
+  })());
 });
 
 self.addEventListener("notificationclick", (event) => {

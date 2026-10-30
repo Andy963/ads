@@ -9,7 +9,12 @@ type ServiceWorkerEvent = {
   waitUntil: (promise: Promise<unknown>) => void;
 };
 
-function loadServiceWorker(args: { language: string; clients: Array<Record<string, unknown>> }) {
+function loadServiceWorker(args: {
+  language: string;
+  clients: Array<Record<string, unknown>>;
+  fetch?: typeof fetch;
+  subscription?: { toJSON: () => unknown };
+}) {
   const handlers = new Map<string, (event: ServiceWorkerEvent) => void>();
   const notifications: Array<{ title: string; options: NotificationOptions }> = [];
   const openedUrls: string[] = [];
@@ -19,6 +24,9 @@ function loadServiceWorker(args: { language: string; clients: Array<Record<strin
       scope: "https://ads.example.test/app/",
       async showNotification(title: string, options: NotificationOptions) {
         notifications.push({ title, options });
+      },
+      pushManager: {
+        subscribe: async () => args.subscription,
       },
     },
     clients: {
@@ -33,7 +41,7 @@ function loadServiceWorker(args: { language: string; clients: Array<Record<strin
     },
   };
   const source = fs.readFileSync(new URL("../../client/public/push-sw.js", import.meta.url), "utf8");
-  runInNewContext(source, { self, URL });
+  runInNewContext(source, { self, URL, fetch: args.fetch ?? fetch, atob });
   return { handlers, notifications, openedUrls, self };
 }
 
@@ -46,7 +54,7 @@ function eventWithWaitUntil(args: Omit<ServiceWorkerEvent, "waitUntil">) {
 }
 
 describe("Web Push service worker", () => {
-  it("shows a generic localized notification only when no ADS window is visible", async () => {
+  it("shows a generic notification even when an ADS window is visible", async () => {
     const visible = loadServiceWorker({ language: "en-US", clients: [{
       url: "https://ads.example.test/app/chat",
       visibilityState: "visible",
@@ -54,7 +62,8 @@ describe("Web Push service worker", () => {
     const visibleEvent = eventWithWaitUntil({ data: { json: () => ({ type: "assistant_response" }) } });
     visible.handlers.get("push")!(visibleEvent.event);
     await visibleEvent.wait();
-    assert.equal(visible.notifications.length, 0);
+    assert.equal(visible.notifications.length, 1);
+    assert.equal(visible.notifications[0]?.options.body, "Your assistant has finished responding.");
 
     const hidden = loadServiceWorker({ language: "zh-CN", clients: [{
       url: "https://ads.example.test/app/chat",
@@ -67,6 +76,31 @@ describe("Web Push service worker", () => {
     assert.equal(hidden.notifications[0]?.options.body, "助手已完成回复。");
     assert.equal(hidden.notifications[0]?.options.icon, "https://ads.example.test/app/pwa-192x192.png");
     assert.equal(hidden.notifications[0]?.options.data.url, "https://ads.example.test/app/");
+  });
+
+  it("re-subscribes and registers the new endpoint after subscription rotation", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const subscription = { toJSON: () => ({ endpoint: "https://fcm.googleapis.com/new", keys: { p256dh: "key", auth: "auth" } }) };
+    const worker = loadServiceWorker({
+      language: "en-US",
+      clients: [],
+      subscription,
+      fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ url: String(input), init });
+        return new Response(JSON.stringify({ enabled: true, publicKey: "AQID" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }) as typeof fetch,
+    });
+    const change = eventWithWaitUntil({});
+    worker.handlers.get("pushsubscriptionchange")!(change.event);
+    await change.wait();
+
+    assert.equal(calls[0]?.url, "https://ads.example.test/app/api/web-push/config");
+    assert.equal(calls[1]?.url, "https://ads.example.test/app/api/web-push/subscription");
+    assert.equal(calls[1]?.init?.method, "POST");
+    assert.deepEqual(JSON.parse(String(calls[1]?.init?.body)), subscription.toJSON());
   });
 
   it("does not treat another app on the same origin as an ADS window", async () => {

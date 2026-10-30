@@ -81,11 +81,16 @@ export function createWebPushService(args: {
           await sendNotification(subscription, webPushNotificationPayload, { TTL: 60, urgency: "low", timeout: 10_000 });
         } catch (error) {
           const statusCode = resolveStatusCode(error);
-          if (statusCode === 404 || statusCode === 410) {
+          if (statusCode === 400 || statusCode === 401 || statusCode === 403 || statusCode === 404 || statusCode === 410) {
             store.remove(userId, subscription.endpoint);
-            return;
           }
-          args.logger.warn(`[WebPush] Delivery failed${statusCode ? ` with status ${statusCode}` : ""}`);
+          let endpointHost = "unknown";
+          try {
+            endpointHost = new URL(subscription.endpoint).host;
+          } catch {
+            // Invalid stored endpoints should still be reported without exposing the full endpoint.
+          }
+          args.logger.warn(`[WebPush] Delivery failed endpoint=${endpointHost} status=${statusCode ?? "unknown"}`);
         }
       }));
     },

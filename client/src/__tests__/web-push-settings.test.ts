@@ -20,7 +20,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function installPushEnvironment() {
+function installPushEnvironment(permission: NotificationPermission = "default") {
   for (const name of propertyNames) {
     originalWindowProperties.set(name, Object.getOwnPropertyDescriptor(window, name));
   }
@@ -30,7 +30,7 @@ function installPushEnvironment() {
 
   const requestPermission = vi.fn(async () => "granted" as NotificationPermission);
   class FakeNotification {
-    static permission: NotificationPermission = "default";
+    static permission = permission;
     static requestPermission = requestPermission;
   }
   Object.defineProperty(window, "Notification", { configurable: true, value: FakeNotification });
@@ -89,5 +89,25 @@ describe("Web Push settings", () => {
     expect(wrapper.get('[data-testid="web-push-enable"]').attributes("disabled")).toBeDefined();
     wrapper.unmount();
     Reflect.deleteProperty(navigator, "userAgent");
+  });
+
+  it("allows re-subscribing when permission is granted but the browser has no subscription", async () => {
+    const environment = installPushEnvironment("granted");
+    const api = {
+      get: vi.fn(async () => ({ enabled: true, publicKey: "B".repeat(86) })),
+      post: vi.fn(async () => ({ success: true })),
+    };
+    const wrapper = mount(WebPushSettings, { props: { api: api as any } });
+    await flushPromises();
+
+    const enable = wrapper.get('[data-testid="web-push-enable"]');
+    expect(enable.attributes("disabled")).toBeUndefined();
+    await enable.trigger("click");
+    await flushPromises();
+
+    expect(environment.requestPermission).not.toHaveBeenCalled();
+    expect(environment.pushManager.subscribe).toHaveBeenCalledOnce();
+    expect(api.post).toHaveBeenCalledWith("/api/web-push/subscription", environment.subscription.toJSON());
+    wrapper.unmount();
   });
 });
