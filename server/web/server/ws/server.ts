@@ -16,9 +16,11 @@ import {
   ACOPILOT_CHAT_SESSION_ID,
   isAcopilotChatSessionId,
   normalizeLaneChatSessionId,
+  parseWsChatSessionsFromProtocols,
   resolveWebSocketChatSessionId,
   resolveWebSocketSessionId,
 } from "./session.js";
+import { createMultiplexedLaneRequest, createMultiplexedLaneSocket } from "./multiplexedLaneSocket.js";
 import { createSafeJsonSend, summarizeWsPayloadForLog } from "./utils.js";
 import { resolveWorkspaceRootFromDirectory } from "../api/routes/workspacePath.js";
 import { sendInitialBootstrapMessages } from "./bootstrapDelivery.js";
@@ -627,7 +629,8 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
     void stopPromptQueue();
   });
 
-  wss.on("connection", (ws: WebSocket, req) => {
+  const handleLaneConnection = (ws: WebSocket, req: import("node:http").IncomingMessage): void => {
+    const physicalWs = ((ws as WebSocket & { physicalSocket?: WebSocket }).physicalSocket ?? ws);
     const protocolHeader = req.headers["sec-websocket-protocol"];
     const parsedProtocols = Array.isArray(protocolHeader)
       ? protocolHeader.flatMap((value) => String(value).split(",").map((p) => p.trim()).filter(Boolean))
@@ -675,7 +678,8 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
     });
     let bindingVersion = 0;
 
-    if (Number.isFinite(config.maxClients) && config.maxClients > 0 && state.clients.size >= config.maxClients) {
+    const isFirstPhysicalLane = !state.clients.has(physicalWs);
+    if (isFirstPhysicalLane && Number.isFinite(config.maxClients) && config.maxClients > 0 && state.clients.size >= config.maxClients) {
       ws.close(4409, `max clients reached (${config.maxClients})`);
       return;
     }
@@ -763,7 +767,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
     }
     const contextMode = sessionManager.getContextRestoreMode(userId);
 
-    state.clients.add(ws);
+    state.clients.add(physicalWs);
     state.clientMetaByWs.set(ws, clientMeta);
     registerSeenChatSessionId(authUserId, sessionId, chatSessionId);
     registerSessionCacheBinding();
@@ -773,9 +777,11 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       // ignore
     }
 
-    logger.info(
-      `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${state.clients.size} restore=${contextMode}${contextMode === "history_injection" ? " (pending history injection)" : ""}${contextMode === "thread_resumed" ? " (thread resumed)" : ""}`,
-    );
+    if (isFirstPhysicalLane) {
+      logger.info(
+        `client connected conn=${connectionId} session=${sessionId} chat=${chatSessionId} user=${userId} history=${historyKey} clients=${state.clients.size} restore=${contextMode}${contextMode === "history_injection" ? " (pending history injection)" : ""}${contextMode === "thread_resumed" ? " (thread resumed)" : ""}`,
+      );
+    }
     const inFlight = state.interruptControllers.has(historyKey);
 
     let syncNamespace = laneNamespace;
@@ -1918,6 +1924,32 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
         logger,
       });
     });
+  };
+
+  wss.on("connection", (ws: WebSocket, req) => {
+    const protocolHeader = req.headers["sec-websocket-protocol"];
+    const protocols = Array.isArray(protocolHeader)
+      ? protocolHeader.flatMap((value) => String(value).split(",").map((p) => p.trim()).filter(Boolean))
+      : typeof protocolHeader === "string"
+        ? protocolHeader.split(",").map((p) => p.trim()).filter(Boolean)
+        : [];
+    const chatSessionIds = parseWsChatSessionsFromProtocols(protocols);
+    const actionSessions = chatSessionIds.filter((chatSessionId) => !isAcopilotChatSessionId(chatSessionId));
+    const acopilotSessions = chatSessionIds.filter(isAcopilotChatSessionId);
+    if (actionSessions.length !== 1 || acopilotSessions.length !== 1) {
+      handleLaneConnection(ws, req);
+      return;
+    }
+
+    for (const chatSessionId of chatSessionIds) {
+      const laneRequest = createMultiplexedLaneRequest({ request: req, protocols, chatSessionId });
+      const laneSocket = createMultiplexedLaneSocket({
+        socket: ws,
+        chatSessionId,
+        subscribedChatSessionIds: chatSessionIds,
+      });
+      handleLaneConnection(laneSocket, laneRequest);
+    }
   });
 
   return Object.assign(wss, {

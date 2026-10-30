@@ -38,7 +38,17 @@ vi.mock("../api/ws", () => {
     clearHistory = vi.fn();
   }
 
-  return { AdsWebSocket };
+  return {
+    AdsWebSocket,
+    getProjectWebSocketLane: (options: {
+      sessionId: string;
+      lane: "actions" | "acopilot";
+      configs: Record<string, { chatSessionId: string }>;
+    }) => new AdsWebSocket({
+      sessionId: options.sessionId,
+      chatSessionId: options.configs[options.lane]?.chatSessionId,
+    }),
+  };
 });
 
 describe("Project switch WebSocket retention and dynamic connection pool (Issue #561)", () => {
@@ -83,7 +93,7 @@ describe("Project switch WebSocket retention and dynamic connection pool (Issue 
       ctx.projectAccessOrder.value = nextOrder;
 
       const serverLimit = ctx.maxWsClients.value ?? 32;
-      const poolCapacity = Math.max(1, Math.floor(serverLimit / 2));
+      const poolCapacity = Math.max(1, Math.floor(serverLimit));
 
       const openProjectIds = nextOrder.filter((id) => {
         const art = ctx.runtimeByProjectId.get(id);
@@ -188,8 +198,8 @@ describe("Project switch WebSocket retention and dynamic connection pool (Issue 
   });
 
   it("harvests oldest background project when open projects exceed server-derived capacity", async () => {
-    // Server configured with maxClients = 4 (e.g. capacity = 4 / 2 = 2 open projects)
-    const { ctx, projectActions, activateProject, createTab } = setupHarness(4);
+    // One multiplexed socket per project fits the server's two-client budget.
+    const { ctx, projectActions, activateProject, createTab } = setupHarness(2);
     const projA = createTab("proj-a", "Project A");
     const projB = createTab("proj-b", "Project B");
     const projC = createTab("proj-c", "Project C");
@@ -224,7 +234,7 @@ describe("Project switch WebSocket retention and dynamic connection pool (Issue 
 
   it("dynamically expands pool capacity when server reports larger maxClients via welcome", async () => {
     const { ctx, activateProject, createTab } = setupHarness(null);
-    // Default server capacity = 32 / 2 = 16
+    // Default server capacity = 32 multiplexed project sockets
     const projA = createTab("proj-a", "Project A");
     ctx.projects.value = [projA];
     ctx.activeProjectId.value = "proj-a";

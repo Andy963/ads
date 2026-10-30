@@ -9,8 +9,8 @@ import { createOutboxStore, legacyPendingPromptStorageKey, outboxStorageKey } fr
 import { readCachedTranscript, transcriptCacheKey } from "../app/transcriptCache";
 import { readAppNavigationState } from "../lib/preferencesStore";
 
-vi.mock("../api/ws", () => ({
-  AdsWebSocket: class {
+vi.mock("../api/ws", () => {
+  class AdsWebSocket {
     onOpen?: () => void;
     onMessage?: (message: unknown) => void;
     onClose?: (event: { code: number }) => void;
@@ -22,8 +22,23 @@ vi.mock("../api/ws", () => ({
     sendPrompt = (...args: unknown[]) => this.promptFrames(...args);
     switchChatSession = vi.fn(() => true);
     clearHistory = vi.fn();
-  },
-}));
+  }
+
+  return {
+    AdsWebSocket,
+    getProjectWebSocketLane: (options: {
+      sessionId: string;
+      lane: "actions" | "acopilot";
+      configs: Record<"actions" | "acopilot", {
+        chatSessionId: string;
+        resume?: { afterSeq: number; laneGeneration: number };
+      }>;
+    }) => {
+      const config = options.configs[options.lane];
+      return new AdsWebSocket({ chatSessionId: config.chatSessionId, resume: config.resume });
+    },
+  };
+});
 
 type TestSocket = {
   options: { chatSessionId: string; resume?: { afterSeq: number; laneGeneration: number } };

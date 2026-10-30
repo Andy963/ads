@@ -1,4 +1,4 @@
-import { AdsWebSocket } from "../../api/ws";
+import { getProjectWebSocketLane } from "../../api/ws";
 import type { SyncEventsResponse, LaneName } from "../../api/types";
 import { diagAlert } from "../../lib/diagAlert";
 import {
@@ -437,7 +437,28 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       restoreModelId(rt);
     }
 
-    const wsInstance = new AdsWebSocket({ sessionId: project.sessionId, chatSessionId: rt.chatSessionId, resume: resumeOptions(rt) });
+    const actionsRuntime = getRuntime(pid);
+    const acopilotRuntime = getAcopilotRuntime(pid);
+    const actionsChatSessionId = resolveChatSessionId(project, "actions");
+    const acopilotChatSessionId = resolveChatSessionId(project, ACOPILOT_LANE_ID);
+    actionsRuntime.chatSessionId = actionsChatSessionId;
+    acopilotRuntime.chatSessionId = acopilotChatSessionId;
+    const lane = mode === ACOPILOT_LANE_ID ? "acopilot" : "actions";
+    const wsInstance = getProjectWebSocketLane({
+      projectId: pid,
+      sessionId: project.sessionId,
+      lane,
+      configs: {
+        actions: {
+          chatSessionId: actionsChatSessionId,
+          resume: resumeOptions(actionsRuntime),
+        },
+        acopilot: {
+          chatSessionId: acopilotChatSessionId,
+          resume: resumeOptions(acopilotRuntime),
+        },
+      },
+    });
 
     rt.ws = wsInstance;
     // A reconnect may reuse the cached transcript while the new bootstrap is

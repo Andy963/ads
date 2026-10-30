@@ -381,10 +381,9 @@ export function createAppController() {
     nextOrder.push(pid);
     ctx.projectAccessOrder.value = nextOrder;
 
-    // Dynamically derive connection pool capacity from server's maxClients limit.
-    // Each project holds up to 2 sockets (actions + acopilot).
+    // Multiplexed Actions and Acopilot lanes share one socket per project.
     const serverLimit = ctx.maxWsClients.value ?? 32;
-    const poolCapacity = Math.max(1, Math.floor(serverLimit / 2));
+    const poolCapacity = Math.max(1, Math.floor(serverLimit));
 
     // Harvest oldest background project connections if open count exceeds capacity
     const openProjectIds = nextOrder.filter((id) => {
