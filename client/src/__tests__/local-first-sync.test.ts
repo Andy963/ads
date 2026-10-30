@@ -9,16 +9,34 @@ import { outboxStorageKey } from "../app/outbox";
 
 const state = vi.hoisted(() => ({ sockets: [] as any[], get: vi.fn() }));
 vi.mock("../api/client", () => ({ ApiClient: class { get = state.get; } }));
-vi.mock("../api/ws", () => ({ AdsWebSocket: class {
-  onOpen?: () => void;
-  onClose?: (event: unknown) => void;
-  onMessage?: (message: unknown) => void;
-  send = vi.fn();
-  sendPrompt = vi.fn(() => true);
-  close = vi.fn();
-  connect = vi.fn();
-  constructor(public options: unknown) { state.sockets.push(this); }
-} }));
+vi.mock("../api/ws", () => {
+  class AdsWebSocket {
+    onOpen?: () => void;
+    onClose?: (event: unknown) => void;
+    onMessage?: (message: unknown) => void;
+    send = vi.fn();
+    sendPrompt = vi.fn(() => true);
+    close = vi.fn();
+    connect = vi.fn();
+    constructor(public options: unknown) { state.sockets.push(this); }
+  }
+  return {
+    AdsWebSocket,
+    getProjectWebSocketLane: (options: {
+      sessionId: string;
+      lane: "actions" | "acopilot";
+      configs: Record<"actions" | "acopilot", {
+        chatSessionId: string;
+        resume?: { afterSeq: number; laneGeneration: number };
+      }>;
+    }) => new AdsWebSocket({
+      sessionId: options.sessionId,
+      chatSessionId: options.configs[options.lane].chatSessionId,
+      lane: options.lane,
+      resume: options.configs[options.lane].resume,
+    }),
+  };
+});
 
 const wrappers: ReturnType<typeof mount>[] = [];
 beforeEach(() => {
@@ -62,10 +80,14 @@ async function harness(lane: "actions" | "acopilot" = "actions") {
   controller.transcriptCache.setOwner("user-1");
   const connect = lane === "acopilot" ? controller.connectAcopilotWs : controller.connectWs;
   await connect("default");
-  const socket = state.sockets.at(-1)!;
+  const socket = latestSocket(lane);
   socket.onOpen();
   const rt = lane === "acopilot" ? controller.getAcopilotRuntime("default") : controller.getRuntime("default");
-  return { controller, wrapper, rt, socket, connect };
+  return { controller, wrapper, rt, socket, connect, lane };
+}
+
+function latestSocket(lane: "actions" | "acopilot") {
+  return [...state.sockets].reverse().find((socket) => socket.options.lane === lane)!;
 }
 
 async function bootstrap(info: Awaited<ReturnType<typeof harness>>) {
@@ -89,9 +111,9 @@ async function bootstrap(info: Awaited<ReturnType<typeof harness>>) {
 async function reconnect(info: Awaited<ReturnType<typeof harness>>, latestSeq = 10) {
   const authoritativeSeq = info.rt.transcriptAuthoritativeSeq.value;
   info.socket.onClose({ code: 1006 });
-  await info.controller.connectWs("default");
+  await info.connect("default");
   expect(info.rt.transcriptAuthoritative.value).toBe(false);
-  const socket = state.sockets.at(-1)!;
+  const socket = latestSocket(info.lane);
   expect(socket.options.resume).toEqual({ afterSeq: 10, laneGeneration: 1 });
   socket.onOpen();
   socket.onMessage({ type: "welcome", historyMode: latestSeq > 10 ? "catch_up" : "resume", bootstrapHistory: false, latestSeq, laneGeneration: 1, inFlight: false });
@@ -220,8 +242,8 @@ describe("local-first reconnect integration", () => {
     const info = await harness();
     await bootstrap(info);
     info.socket.onClose({ code: 1006 });
-    await info.controller.connectWs("default");
-    const socket = state.sockets.at(-1)!;
+    await info.connect("default");
+    const socket = latestSocket(info.lane);
     socket.onOpen();
     socket.onMessage({
       type: "welcome", historyMode: "resume", bootstrapHistory: false,
@@ -281,7 +303,7 @@ describe("local-first reconnect integration", () => {
     const info = await harness();
     await bootstrap(info);
     await info.controller.connectWs("default");
-    const socket = state.sockets.at(-1)!;
+    const socket = latestSocket(info.lane);
     socket.onOpen();
     socket.onMessage({ type: "welcome", historyMode: "snapshot", bootstrapHistory: true, latestSeq: 2, laneGeneration: 1, inFlight: false });
     expect(info.wrapper.text()).toContain("Cached answer");
@@ -343,7 +365,7 @@ describe("local-first reconnect integration", () => {
     await info.wrapper.get(".chat").trigger("scroll");
     info.socket.onClose({ code: 1006 });
     await info.connect("default");
-    const socket = state.sockets.at(-1)!;
+    const socket = latestSocket(info.lane);
     socket.onOpen();
     socket.onMessage({
       type: "welcome", historyMode: "snapshot", bootstrapHistory: true,
@@ -372,8 +394,8 @@ describe("local-first reconnect integration", () => {
     const info = await harness();
     await bootstrap(info);
     info.rt.laneGeneration = 5;
-    await info.controller.connectWs("default");
-    const socket = state.sockets.at(-1)!;
+    await info.connect("default");
+    const socket = latestSocket(info.lane);
     socket.onOpen();
     socket.onMessage({ type: "welcome", historyMode: "snapshot", bootstrapHistory: true, latestSeq: 1, laneGeneration: 1, inFlight: false });
     socket.onMessage({ type: "history", items: [{ role: "ai", text: "Restored database", ts: 3 }] });

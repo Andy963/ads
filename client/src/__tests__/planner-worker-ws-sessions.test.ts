@@ -60,7 +60,24 @@ vi.mock("../api/ws", () => {
     close(): void {}
   }
 
-  return { AdsWebSocket };
+  return {
+    AdsWebSocket,
+    getProjectWebSocketLane: (options: {
+      sessionId: string;
+      lane: "actions" | "acopilot";
+      configs: Record<"actions" | "acopilot", {
+        chatSessionId: string;
+        resume?: { afterSeq: number; laneGeneration: number };
+      }>;
+    }) => {
+      const config = options.configs[options.lane];
+      return new AdsWebSocket({
+        sessionId: options.sessionId,
+        chatSessionId: config.chatSessionId,
+        resume: config.resume,
+      } as never);
+    },
+  };
 });
 
 vi.mock("../components/LoginGate.vue", () => {

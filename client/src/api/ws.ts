@@ -61,7 +61,185 @@ type WsMessage =
     }
   | { type: string; seq?: number; [k: string]: unknown };
 
-const SESSION_UNSCOPED_MESSAGES = new Set(["ping", "pong", "switch_chat_session"]);
+const SESSION_UNSCOPED_MESSAGES = new Set(["ping", "pong"]);
+
+export type WebSocketLane = "actions" | "acopilot";
+
+export type WebSocketLaneConfig = {
+  chatSessionId: string;
+  resume?: { afterSeq: number; laneGeneration: number };
+};
+
+type SharedLane = { socket: AdsWebSocket; chatSessionId: string };
+
+class ProjectWebSocketTransport {
+  private socket: WebSocket | null = null;
+  private pingTimer: number | null = null;
+  private readonly lanes = new Map<WebSocketLane, SharedLane>();
+  private readonly pendingMessages = new Map<WebSocketLane, WsMessage[]>();
+  private readonly configs: Record<WebSocketLane, WebSocketLaneConfig>;
+
+  constructor(
+    private readonly sessionId: string,
+    configs: Record<WebSocketLane, WebSocketLaneConfig>,
+    private readonly onIdle: () => void,
+  ) {
+    this.configs = configs;
+  }
+
+  updateConfigs(configs: Record<WebSocketLane, WebSocketLaneConfig>): void {
+    this.configs.actions = configs.actions;
+    this.configs.acopilot = configs.acopilot;
+  }
+
+  attach(lane: WebSocketLane, socket: AdsWebSocket, chatSessionId: string): void {
+    this.lanes.set(lane, { socket, chatSessionId });
+    this.connectIfNeeded();
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      socket.notifyOpen();
+      const pending = this.pendingMessages.get(lane) ?? [];
+      this.pendingMessages.delete(lane);
+      for (const message of pending) socket.notifyMessage(message);
+    }
+  }
+
+  detach(lane: WebSocketLane, socket: AdsWebSocket): void {
+    if (this.lanes.get(lane)?.socket !== socket) return;
+    this.lanes.delete(lane);
+    if (this.lanes.size > 0) return;
+
+    this.stopPing();
+    const current = this.socket;
+    this.socket = null;
+    this.onIdle();
+    try {
+      current?.close();
+    } catch {
+      // ignore
+    }
+  }
+
+  send(frame: string): boolean {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
+    try {
+      this.socket.send(frame);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  updateLaneChatSession(lane: WebSocketLane, socket: AdsWebSocket, chatSessionId: string): void {
+    const current = this.lanes.get(lane);
+    if (current?.socket === socket) current.chatSessionId = chatSessionId;
+    this.configs[lane] = { ...this.configs[lane], chatSessionId };
+  }
+
+  private connectIfNeeded(): void {
+    if (this.socket && this.socket.readyState < WebSocket.CLOSING) return;
+
+    const proto = location.protocol === "https:" ? "wss://" : "ws://";
+    const params = new URLSearchParams();
+    const protocols = ["ads-v1", `ads-session.${this.sessionId}`];
+    for (const lane of ["actions", "acopilot"] as const) {
+      const config = this.configs[lane];
+      protocols.push(`ads-chat.${config.chatSessionId}`);
+      if (config.resume) {
+        params.set(`afterSeq.${config.chatSessionId}`, String(config.resume.afterSeq));
+        params.set(`laneGeneration.${config.chatSessionId}`, String(config.resume.laneGeneration));
+      }
+    }
+    const queryString = params.toString();
+    const query = queryString ? `?${queryString}` : "";
+    const socket = new WebSocket(proto + location.host + "/ws" + query, protocols);
+    this.socket = socket;
+    socket.onopen = () => {
+      if (this.socket !== socket) return;
+      this.startPing();
+      for (const { socket: laneSocket } of this.lanes.values()) laneSocket.notifyOpen();
+    };
+    socket.onerror = () => {
+      if (this.socket !== socket) return;
+      this.stopPing();
+      for (const { socket: laneSocket } of this.lanes.values()) laneSocket.notifyError();
+    };
+    socket.onclose = (event) => {
+      if (this.socket !== socket) return;
+      this.socket = null;
+      this.stopPing();
+      const lanes = [...this.lanes.values()];
+      this.lanes.clear();
+      this.pendingMessages.clear();
+      this.onIdle();
+      for (const { socket: laneSocket } of lanes) laneSocket.notifyClose(event);
+    };
+    socket.onmessage = (event) => {
+      let message: WsMessage;
+      try {
+        message = JSON.parse(String(event.data ?? "")) as WsMessage;
+      } catch {
+        return;
+      }
+      const chatSessionId = String(message.chatSessionId ?? "").trim();
+      const targetLane = chatSessionId
+        ? ([...this.lanes.entries()].find(([, lane]) => lane.chatSessionId === chatSessionId)?.[0]
+          ?? (["actions", "acopilot"] as const).find((lane) => this.configs[lane].chatSessionId === chatSessionId))
+        : "actions";
+      if (!targetLane) return;
+      const target = this.lanes.get(targetLane)?.socket;
+      if (target) {
+        target.notifyMessage(message);
+      } else {
+        const pending = this.pendingMessages.get(targetLane) ?? [];
+        pending.push(message);
+        if (pending.length > 200) pending.shift();
+        this.pendingMessages.set(targetLane, pending);
+      }
+    };
+  }
+
+  private startPing(): void {
+    if (this.pingTimer !== null) return;
+    this.pingTimer = window.setInterval(() => {
+      this.send(JSON.stringify({ type: "ping", payload: { ts: Date.now() } }));
+    }, 10_000);
+  }
+
+  private stopPing(): void {
+    if (this.pingTimer === null) return;
+    clearInterval(this.pingTimer);
+    this.pingTimer = null;
+  }
+}
+
+const projectTransports = new Map<string, ProjectWebSocketTransport>();
+
+export function getProjectWebSocketLane(args: {
+  projectId: string;
+  sessionId: string;
+  lane: WebSocketLane;
+  configs: Record<WebSocketLane, WebSocketLaneConfig>;
+}): AdsWebSocket {
+  const projectId = String(args.projectId ?? "").trim();
+  let transport = projectTransports.get(projectId);
+  if (!transport) {
+    const created = new ProjectWebSocketTransport(args.sessionId, args.configs, () => {
+      if (projectTransports.get(projectId) === created) projectTransports.delete(projectId);
+    });
+    transport = created;
+    projectTransports.set(projectId, created);
+  } else {
+    transport.updateConfigs(args.configs);
+  }
+  const config = args.configs[args.lane];
+  return new AdsWebSocket({
+    sessionId: args.sessionId,
+    chatSessionId: config.chatSessionId,
+    resume: config.resume,
+    transport,
+    lane: args.lane,
+  });
+}
 
 export class AdsWebSocket {
   private ws: WebSocket | null = null;
@@ -69,31 +247,37 @@ export class AdsWebSocket {
   private chatSessionId: string;
   private readonly resume?: { afterSeq: number; laneGeneration: number };
   private pingTimer: number | null = null;
+  private readonly transport?: ProjectWebSocketTransport;
+  private readonly lane?: WebSocketLane;
 
   onOpen?: () => void;
   onClose?: (ev: CloseEvent) => void;
   onError?: () => void;
   onMessage?: (msg: WsMessage) => void;
 
-  constructor(options: { sessionId?: string; chatSessionId?: string; resume?: { afterSeq: number; laneGeneration: number } }) {
+  constructor(options: {
+    sessionId?: string;
+    chatSessionId?: string;
+    resume?: { afterSeq: number; laneGeneration: number };
+    transport?: ProjectWebSocketTransport;
+    lane?: WebSocketLane;
+  }) {
     this.sessionId = options.sessionId ?? cryptoRandomId();
     this.chatSessionId = String(options.chatSessionId ?? "").trim() || "main";
     this.resume = options.resume;
+    this.transport = options.transport;
+    this.lane = options.lane;
   }
 
   send(type: string, payload?: unknown, options?: { clientMessageId?: string }): boolean {
+    if (this.transport) {
+      return this.transport.send(this.createFrame(type, payload, options));
+    }
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return false;
     }
     try {
-      const clientMessageId = String(options?.clientMessageId ?? "").trim();
-      const msg = {
-        type,
-        payload,
-        ...(clientMessageId ? { client_message_id: clientMessageId } : {}),
-        ...(!SESSION_UNSCOPED_MESSAGES.has(type) ? { chat_session_id: this.chatSessionId } : {}),
-      };
-      this.ws.send(JSON.stringify(msg));
+      this.ws.send(this.createFrame(type, payload, options));
       return true;
     } catch {
       return false;
@@ -119,8 +303,10 @@ export class AdsWebSocket {
   switchChatSession(chatSessionId: string): boolean {
     const id = String(chatSessionId ?? "").trim();
     if (!id) return false;
+    if (!this.send("switch_chat_session", { chatSessionId: id })) return false;
     this.chatSessionId = id;
-    return this.send("switch_chat_session", { chatSessionId: id });
+    if (this.transport && this.lane) this.transport.updateLaneChatSession(this.lane, this, id);
+    return true;
   }
 
   clearHistory(payload?: unknown): void {
@@ -128,6 +314,10 @@ export class AdsWebSocket {
   }
 
   connect(): void {
+    if (this.transport && this.lane) {
+      this.transport.attach(this.lane, this, this.chatSessionId);
+      return;
+    }
     const proto = location.protocol === "https:" ? "wss://" : "ws://";
     const query = this.resume ? `?${new URLSearchParams({
       afterSeq: String(this.resume.afterSeq), laneGeneration: String(this.resume.laneGeneration),
@@ -165,6 +355,11 @@ export class AdsWebSocket {
   }
 
   close(): void {
+    if (this.transport && this.lane) {
+      this.transport.detach(this.lane, this);
+      this.stopPing();
+      return;
+    }
     try {
       this.ws?.close();
     } catch {
@@ -185,6 +380,33 @@ export class AdsWebSocket {
         // ignore
       }
     }, 10_000);
+  }
+
+  notifyOpen(): void { this.onOpen?.(); }
+
+  notifyError(): void { this.onError?.(); }
+
+  notifyClose(event: CloseEvent): void { this.onClose?.(event); }
+
+  notifyMessage(message: WsMessage): void {
+    if (message.type === "welcome") {
+      const chatSessionId = String(message.chatSessionId ?? "").trim();
+      if (chatSessionId) {
+        this.chatSessionId = chatSessionId;
+        if (this.transport && this.lane) this.transport.updateLaneChatSession(this.lane, this, chatSessionId);
+      }
+    }
+    this.onMessage?.(message);
+  }
+
+  private createFrame(type: string, payload?: unknown, options?: { clientMessageId?: string }): string {
+    const clientMessageId = String(options?.clientMessageId ?? "").trim();
+    return JSON.stringify({
+      type,
+      payload,
+      ...(clientMessageId ? { client_message_id: clientMessageId } : {}),
+      ...(!SESSION_UNSCOPED_MESSAGES.has(type) ? { chat_session_id: this.chatSessionId } : {}),
+    });
   }
 
   private stopPing(): void {

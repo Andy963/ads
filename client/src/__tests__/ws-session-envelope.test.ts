@@ -53,7 +53,7 @@ describe("WebSocket chat session envelope", () => {
     expect(socket.switchChatSession("target-chat")).toBe(true);
     socket.sendPrompt({ text: "After switch" }, "next-input");
     expect(frames(wire)).toEqual([
-      { type: "switch_chat_session", payload: { chatSessionId: "target-chat" } },
+      { type: "switch_chat_session", chat_session_id: "old-chat", payload: { chatSessionId: "target-chat" } },
       { type: "prompt", payload: { text: "After switch" }, client_message_id: "next-input", chat_session_id: "target-chat" },
     ]);
     socket.close();

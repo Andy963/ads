@@ -99,16 +99,23 @@ export function cleanupClosedConnection(args: {
   promptRunEpochs?: Map<string, number>;
   logger: WsLogger;
 }): void {
-  args.clients.delete(args.ws);
+  const physicalSocket = (socket: WebSocket): WebSocket =>
+    (socket as WebSocket & { physicalSocket?: WebSocket }).physicalSocket ?? socket;
   const meta = args.clientMetaByWs.get(args.ws);
   const inFlight = Boolean(meta?.historyKey && args.interruptControllers.has(meta.historyKey));
   const hasSiblingConnection = Boolean(
     meta?.historyKey &&
     [...args.clientMetaByWs.entries()].some(
       ([candidate, candidateMeta]) =>
-        candidate !== args.ws && args.clients.has(candidate) && candidateMeta.historyKey === meta.historyKey,
+        candidate !== args.ws
+        && args.clients.has(physicalSocket(candidate))
+        && candidateMeta.historyKey === meta.historyKey,
     ),
   );
+  const hasSiblingLane = [...args.clientMetaByWs.keys()].some(
+    (candidate) => candidate !== args.ws && physicalSocket(candidate) === physicalSocket(args.ws),
+  );
+  if (!hasSiblingLane) args.clients.delete(physicalSocket(args.ws));
   if (args.code === 4401 && inFlight && !hasSiblingConnection && meta?.historyKey) {
     invalidateWsPromptRun({
       historyKey: meta.historyKey,

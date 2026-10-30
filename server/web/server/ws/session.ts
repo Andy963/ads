@@ -29,6 +29,25 @@ export function parseWsChatSessionFromProtocols(protocols: string[]): string | n
   return parseProtocolToken(protocols, "ads-chat");
 }
 
+export function parseWsChatSessionsFromProtocols(protocols: string[]): string[] {
+  const chatSessions: string[] = [];
+  for (let i = 0; i < protocols.length; i += 1) {
+    const entry = protocols[i] ?? "";
+    const dotPrefix = "ads-chat.";
+    const colonPrefix = "ads-chat:";
+    let value: string | null = null;
+    if (entry.startsWith(dotPrefix)) value = entry.slice(dotPrefix.length);
+    else if (entry.startsWith(colonPrefix)) value = entry.slice(colonPrefix.length);
+    else if (entry === "ads-chat" && i + 1 < protocols.length) {
+      value = protocols[i + 1] ?? "";
+      i += 1;
+    }
+    const normalized = normalizeLaneChatSessionId(value);
+    if (normalized && !chatSessions.includes(normalized)) chatSessions.push(normalized);
+  }
+  return chatSessions;
+}
+
 export function normalizeRequestedSessionId(args: {
   requestedSessionId: string;
   workspaceRoot: string;
