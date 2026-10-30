@@ -49,8 +49,8 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
-| `ADS_AGENT_RUNTIME` | `codex-app-server` | Agent 运行时后端：`codex-app-server`（默认，经 Codex App-Server daemon）或 `native`（进程内原生运行时，直连 OpenAI 兼容端点；兼容别名 `in-process`） |
-| `ADS_CODEX_BIN` | `codex` | Codex 二进制执行文件路径或别名；ADS 通过 `codex app-server` 启动 |
+| `ADS_AGENT_RUNTIME` | `native` | Agent 运行时后端：`native`（默认，进程内原生运行时，直连 OpenAI 兼容端点；兼容别名 `in-process`）或 `codex-app-server`（经 Codex App-Server daemon） |
+| `ADS_CODEX_BIN` | `codex` | Codex 二进制执行文件路径或别名，仅 `codex-app-server` 后端使用；ADS 通过 `codex app-server` 启动 |
 | `ADS_AGENT_PROBE_TIMEOUT_MS` | `5000` | 启动时探测 Agent 可用性的超时时间（毫秒） |
 | `ADS_AGENT_IDLE_TIMEOUT_MS` | `3600000` (1小时) | CLI 连续无标准输出/错误的空闲看门狗超时，`0` 表示禁用 |
 | `ADS_AGENT_MAX_RUN_TIMEOUT_MS` | `43200000` (12小时)| 单次 CLI 运行的最大硬超时保护，`0` 表示禁用 |
@@ -64,7 +64,9 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 
 ## 4. 原生运行时 (Native Runtime)
 
-仅当 `ADS_AGENT_RUNTIME=native` 时生效。`ADS_AGENT_RUNTIME` 是进程级、互斥的 backend 选择；session 生命周期内不能切换到 Codex app-server，也不能跨 backend resume。逻辑 agent `codex`、runtime backend、execution session、provider session 和 ADS transcript 是不同身份，详见 [ADR 0026](adr/0026-native-runtime-lifecycle-and-capability-contract.md)。
+Native Runtime 是默认后端。`ADS_AGENT_RUNTIME` 是进程级、互斥的 backend 选择；session 生命周期内不能切换到 Codex app-server，也不能跨 backend resume。每轮 Native 对话都会把该 lane 的 durable transcript id 写入 `history_session_links`，因此会话列表可以列出 Native 会话；选择其他会话时从 `HistoryStore` 读取已保存 transcript 并注入新 Native session，不恢复 provider thread；选择当前 lane 自己的会话则直接续接已有 transcript，不会重置。仅存在于 provider 文件、没有 ADS 历史关联的会话不能使用此恢复路径。逻辑 agent `codex`、runtime backend、execution session、provider session 和 ADS transcript 是不同身份，详见 [ADR 0026](adr/0026-native-runtime-lifecycle-and-capability-contract.md) 与 [ADR 0046](adr/0046-native-runtime-as-default.md)。
+
+无法识别的 `ADS_AGENT_RUNTIME` 值会记录一条 warning 并回退到 `codex-app-server`，不会静默启用宿主机全权限的 Native 执行。
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|
@@ -165,7 +167,7 @@ Telegram variables belong to the standalone `connectors/telegram` package and ar
 
 每个服务商下面列出其模型，可以同步上游目录，也可以手动添加、编辑名称和模型选项。同步只新增模型，不覆盖已有别名、选项或推理强度，也不自动启用新模型。不同服务商的同名模型以配置 ID 区分。旧的未关联模型保留在待关联分组中，需要手动指定服务商。
 
-- `codex-app-server` 运行时通过 `-c model_providers.*` 覆盖把服务商注入 `codex app-server` 进程，密钥只出现在该进程的环境变量中（`env_key` 引用），从不出现在命令行参数里；切换服务商会在下一次请求时启动新的 daemon。
+- `codex-app-server` 运行时通过 `-c model_providers.*` 覆盖把服务商注入 `codex app-server` 进程，密钥只出现在该进程的环境变量中（`env_key` 引用），从不出现在命令行参数里；切换服务商会在下一次请求时启动新的 daemon。Native Runtime 不经过该进程，直接使用同一份加密服务商配置。
 - `native` 运行时经保存的模型配置解析服务商地址、加密密钥及 API format。`responses` 使用 `/responses`，`chat` 使用 `/chat/completions`；未设置格式的旧服务商仍走 Chat。未知格式会在请求前报错，不会静默切换协议端点。
 - Native Responses 支持流式/非流式文本、图片、函数工具及结构化输出（仍需启用对应 capability）。输出上限映射为 `max_output_tokens`，effort 映射为 `reasoning.effort`。它使用 `store: false`、完整本地投影和 scoped output replay，不依赖 provider conversation；encrypted reasoning 不显示在 UI，也不作为日志内容输出。模型、端点、凭据或协议变更后不跨连接回放 opaque metadata，保留通用对话与工具证据。详见 [ADR 0037](adr/0037-native-responses-protocol.md)。
 - 删除模型（包括旧的未关联模型）前会明确确认同时移除服务引用；删除默认模型时选择剩余候选，没有候选则清空默认。引用该模型的角色改用剩余的对话默认模型。引用调整与删除在同一事务中执行，失败时全部回滚。删除服务商仍需先移除其服务引用；删除服务商不会删除关联模型，模型保留为待关联。

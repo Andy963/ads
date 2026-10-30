@@ -165,6 +165,7 @@ describe("telegram/sessionState helpers", () => {
       logger: { info: () => {} },
       resumeTtlMs: 60_000,
       currentCwd: "/tmp/project",
+      runtimeBackend: "codex-app-server",
     });
 
     assert.equal(resume.activeAgentId, undefined);
@@ -188,6 +189,7 @@ describe("telegram/sessionState helpers", () => {
       storage,
       logger: { info: () => {} },
       currentCwd: "/tmp/project",
+      runtimeBackend: "codex-app-server",
     });
 
     assert.equal(resume.activeAgentId, undefined);
@@ -212,6 +214,7 @@ describe("telegram/sessionState helpers", () => {
       storage,
       logger: { info: () => {} },
       resumeTtlMs: 60_000,
+      runtimeBackend: "codex-app-server",
     });
 
     assert.equal(resume.restoreMode, "thread_resumed");
@@ -362,6 +365,7 @@ describe("telegram/sessionState helpers", () => {
       logger: { info: () => {} },
       resumeTtlMs: 60_000,
       currentCwd: "/tmp/project",
+      runtimeBackend: "codex-app-server",
     });
 
     assert.equal(resume.restoreMode, "thread_resumed");

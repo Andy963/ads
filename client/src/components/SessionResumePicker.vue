@@ -109,7 +109,7 @@ function onResume(session: ResumableSession): void {
       <div>
         <div class="pickerTitle">恢复会话</div>
         <div class="pickerSubtitle">
-          选择一个此前的 {{ agentId || "代理" }} 会话，直接续接原生上下文
+          选择一个此前的 {{ agentId || "代理" }} 会话，恢复已保存的对话上下文
         </div>
       </div>
       <button class="pickerIconBtn" type="button" title="关闭" data-testid="session-picker-close" @click="emit('close')">

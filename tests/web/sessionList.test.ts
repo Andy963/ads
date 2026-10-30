@@ -55,7 +55,7 @@ describe("web/ws/handleSessionList", () => {
       payload: {},
       historyStore: stubHistoryStore([
         {
-          historyKey: "h1",
+          historyKey: "user-1::h1",
           agentId: "gemini",
           providerSessionId: "sess-1",
           cwd: "/repo",
@@ -64,6 +64,8 @@ describe("web/ws/handleSessionList", () => {
         },
       ]),
       currentCwd: "/repo",
+      historyOwnerId: "user-1",
+      runtimeBackend: "codex-app-server",
       activeAgentId: "gemini" as never,
       currentSessionId: "sess-1",
       sendJson: (payload) => sent.push(payload),
@@ -88,6 +90,8 @@ describe("web/ws/handleSessionList", () => {
         },
       } as unknown as HistoryStore,
       currentCwd: "/repo",
+      historyOwnerId: "user-1",
+      runtimeBackend: "codex-app-server",
       activeAgentId: "codex" as never,
       sendJson: (payload) => sent.push(payload),
       logger: silentLogger,
@@ -101,7 +105,7 @@ describe("web/ws/handleSessionList", () => {
 
   it("pages a long list and marks the continuation as appended", async () => {
     const links = Array.from({ length: 25 }, (_, index) => ({
-      historyKey: `h${index}`,
+      historyKey: `user-1::h${index}`,
       agentId: "gemini",
       providerSessionId: `sess-${index}`,
       cwd: "/repo",
@@ -114,6 +118,8 @@ describe("web/ws/handleSessionList", () => {
       payload: {},
       historyStore: stubHistoryStore(links),
       currentCwd: "/repo",
+      historyOwnerId: "user-1",
+      runtimeBackend: "codex-app-server",
       activeAgentId: "gemini" as never,
       sendJson: (payload) => firstPage.push(payload),
       logger: silentLogger,
@@ -129,6 +135,8 @@ describe("web/ws/handleSessionList", () => {
       payload: { cursor: first.nextCursor },
       historyStore: stubHistoryStore(links),
       currentCwd: "/repo",
+      historyOwnerId: "user-1",
+      runtimeBackend: "codex-app-server",
       activeAgentId: "gemini" as never,
       sendJson: (payload) => secondPage.push(payload),
       logger: silentLogger,
@@ -147,5 +155,68 @@ describe("web/ws/handleSessionList", () => {
       second.items.map((item) => item.sessionId),
       ["sess-4", "sess-3", "sess-2", "sess-1", "sess-0"],
     );
+  });
+
+  it("lists ADS-linked sessions for database restore when the native runtime is active", async () => {
+    const sent: unknown[] = [];
+    await handleSessionListMessage({
+      payload: {},
+      historyStore: stubHistoryStore([
+        {
+          historyKey: "user-1::session-1::actions",
+          agentId: "codex",
+          providerSessionId: "user-1-thread",
+          cwd: "/repo",
+          firstSeenAt: 1,
+          lastSeenAt: 2,
+        },
+        {
+          historyKey: "user-2::session-2::actions",
+          agentId: "codex",
+          providerSessionId: "user-2-thread",
+          cwd: "/repo",
+          firstSeenAt: 3,
+          lastSeenAt: 4,
+        },
+      ]),
+      currentCwd: "/repo",
+      historyOwnerId: "user-1",
+      runtimeBackend: "native",
+      activeAgentId: "codex" as never,
+      sendJson: (payload) => sent.push(payload),
+      logger: silentLogger,
+    });
+
+    const response = sent[0] as { items: unknown[]; error?: string };
+    assert.equal(response.items.length, 1);
+    assert.equal((response.items[0] as { linkedHistoryKey?: string }).linkedHistoryKey, "user-1::session-1::actions");
+    assert.equal(response.error, undefined);
+  });
+
+  it("refuses to list sessions when the caller has no session owner", async () => {
+    const sent: unknown[] = [];
+    await handleSessionListMessage({
+      payload: {},
+      historyStore: stubHistoryStore([
+        {
+          historyKey: "user-2::session-2::actions",
+          agentId: "codex",
+          providerSessionId: "user-2-thread",
+          cwd: "/repo",
+          firstSeenAt: 1,
+          lastSeenAt: 2,
+        },
+      ]),
+      currentCwd: "/repo",
+      historyOwnerId: "",
+      runtimeBackend: "native",
+      activeAgentId: "codex" as never,
+      sendJson: (payload) => sent.push(payload),
+      logger: silentLogger,
+    });
+
+    const response = sent[0] as { items: unknown[]; error?: string };
+    assert.deepEqual(response.items, []);
+    assert.equal(response.error, "session owner unavailable");
   });
 });

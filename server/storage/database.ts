@@ -4,7 +4,13 @@ import path from "node:path";
 import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
 
 import { detectWorkspace, getWorkspaceDbPath, resolveConfiguredDatabasePath, resolveWorkspaceRoot } from "../workspace/detector.js";
-import { deriveWorkspaceStateId, resolveAdsStateDir } from "../workspace/adsPaths.js";
+import {
+  deriveWorkspaceStateId,
+  isTestProcess,
+  isUnderTempDir,
+  resolveAdsStateDir,
+  testStateFallbackPath,
+} from "../workspace/adsPaths.js";
 import { getWorkspaceContextRoot } from "../workspace/asyncWorkspaceContext.js";
 import { parseNonNegativeIntFlag } from "../utils/flags.js";
 import { migrations } from "./migrations.js";
@@ -156,10 +162,22 @@ export function resolveWorkspacesDbPath(explicitPath?: string): string {
   if (configured) {
     const normalized = configured.replace(/^sqlite:\/\//, "");
     const resolved = path.isAbsolute(normalized) ? normalized : path.resolve(normalized);
+    if (isTestProcess() && !isUnderTempDir(resolved)) {
+      return resolveTestWorkspacesDbPath();
+    }
     fs.mkdirSync(path.dirname(resolved), { recursive: true });
     return resolved;
   }
+  if (isTestProcess()) {
+    return resolveTestWorkspacesDbPath();
+  }
   return path.join(resolveAdsStateDir(), "workspaces.db");
+}
+
+function resolveTestWorkspacesDbPath(): string {
+  const fallback = testStateFallbackPath("workspaces.db");
+  fs.mkdirSync(path.dirname(fallback), { recursive: true });
+  return fallback;
 }
 
 export function getWorkspacesDatabase(explicitPath?: string, _workspacePath?: string): DatabaseType {

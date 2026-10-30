@@ -17,7 +17,7 @@ import { createPromptQueueStore } from "../../state/promptQueueStore.js";
 import { HistoryMaintenanceScheduler } from "../../state/historyMaintenance.js";
 import { HistoryStore } from "../../utils/historyStore.js";
 import { createLogger } from "../../utils/logger.js";
-import { CliAgentAvailability } from "../../agents/health/agentAvailability.js";
+import { CliAgentAvailability, requiresCliAvailabilityProbe } from "../../agents/health/agentAvailability.js";
 import { createWorkspaceContextResolver } from "./workspaceContext.js";
 import { loadCwdStore, persistCwdStore, isLikelyWebProcess, isProcessRunning, wait, sanitizeInput } from "../utils.js";
 import { runAdsCommandLine } from "../commandRouter.js";
@@ -344,6 +344,10 @@ export async function startWebServer(): Promise<void> {
 	    }
 	  };
   const startAgentAvailabilityProbe = (): void => {
+    if (!requiresCliAvailabilityProbe(sessionManager.getRuntimeBackend())) {
+      broadcastAgentsSnapshot();
+      return;
+    }
     void agentAvailability
       .probeAll(webAgentIds)
       .then(() => broadcastAgentsSnapshot())

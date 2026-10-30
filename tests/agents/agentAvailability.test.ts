@@ -4,7 +4,17 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { CliAgentAvailability } from "../../server/agents/health/agentAvailability.js";
+import {
+  CliAgentAvailability,
+  requiresCliAvailabilityProbe,
+} from "../../server/agents/health/agentAvailability.js";
+
+describe("requiresCliAvailabilityProbe", () => {
+  it("probes the Codex CLI only for the app-server backend", () => {
+    assert.equal(requiresCliAvailabilityProbe("codex-app-server"), true);
+    assert.equal(requiresCliAvailabilityProbe("native"), false);
+  });
+});
 
 describe("CliAgentAvailability", () => {
   it("merges probe result into adapter status", async () => {

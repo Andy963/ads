@@ -4,7 +4,7 @@
 
 Accepted
 
-工具总轮数和累计探索配额已由 [ADR 0038](0038-progress-based-execution.md) 替代；本文的权限与隔离约束保持不变。
+工具总轮数和累计探索配额已由 [ADR 0038](0038-progress-based-execution.md) 替代；"默认 Codex app-server、Native 需显式启用" 已由 [ADR 0046](0046-native-runtime-as-default.md) 替代；本文的权限与隔离约束保持不变。
 
 ## Context
 

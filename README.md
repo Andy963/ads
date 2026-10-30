@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node Version](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](https://nodejs.org)
 
-ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编排中枢。它以项目工作区为核心，围绕 Acopilot（方案规划）/ Actions（代码执行）双 Lane 构建 AI 开发工作流。Agent 运行时提供双引擎：默认通过 Codex App-Server 统一接入多 Provider 模型，也可通过 `ADS_AGENT_RUNTIME=native` 切换到进程内原生运行时（Native Runtime），直连 OpenAI 兼容端点并在项目级沙箱中执行工具。同时还支持可选的独立 Channel Connector。
+ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编排中枢。它以项目工作区为核心，围绕 Acopilot（方案规划）/ Actions（代码执行）双 Lane 构建 AI 开发工作流。Agent 运行时提供双引擎：默认使用进程内原生运行时（Native Runtime），直连 OpenAI 兼容端点并执行工具；也可通过 `ADS_AGENT_RUNTIME=codex-app-server` 切换到 Codex App-Server 统一接入多 Provider 模型。同时还支持可选的独立 Channel Connector。
 
 ---
 
@@ -14,10 +14,10 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编�
   - **Acopilot (规划 Lane)**：专属架构方案研讨，可通过 GitHub Issue/PR 追踪设计与交付。
   - **Actions (执行 Lane)**：专注代码执行、命令运行与文件修改，实时输出紧凑的阶段进展和执行预览。
   - **Actions 执行角色**：`Developer` 负责代码执行；`Reviewer` 在物理隔离的干净上下文中做独立审查，不是顶层 Lane。
-- **双引擎 Agent 运行时**：默认经 **Codex App-Server** 路由多 Provider 模型（包括 Anthropic Claude、Google Gemini 与 DeepSeek）；设置 `ADS_AGENT_RUNTIME=native` 可切换到进程内 **Native Runtime**，直连 OpenAI 兼容端点并在项目级沙箱内执行工具。支持模型可视化启用/停用与即时配置。
+- **双引擎 Agent 运行时**：默认使用进程内 **Native Runtime**，直连 OpenAI 兼容端点并执行工具；设置 `ADS_AGENT_RUNTIME=codex-app-server` 可切换到 **Codex App-Server** 路由多 Provider 模型（包括 Anthropic Claude、Google Gemini 与 DeepSeek）。支持模型可视化启用/停用与即时配置。
 - **确定性安全拦截**：在命令执行边界保护 ADS 自身进程和 SQLite 数据库文件，不依赖模型提示或可变数据库规则。
 - **Codex 标准技能体系**：全局技能原生对齐 `$CODEX_HOME/skills`（默认 `~/.codex/skills`）；支持对话中 `<skill_save>` 自动沉淀与存量遗留技能无损原子迁移，与 native Codex CLI 完全互通。
-- **原生会话恢复 (Session Resume)**：零 Token 冗余恢复底层 CLI 真实历史上下文，断线重连自动增量同步。
+- **会话恢复 (Session Resume)**：`codex-app-server` 下零 Token 冗余续接底层 CLI 真实历史上下文；Native 下续接 durable transcript，必要时用本地历史做上下文注入；断线重连自动增量同步。
 - **多模态与语音转写**：支持拖拽/粘贴图片预览、语音一键转写 Prompt，以及代码文件与行号跳转预览模态框。
 - **远程 Telegram Connector**：可选的独立单用户 Connector，支持文本对话、会话控制与任务终态通知，不将 Telegram 依赖加载到 Core。
 
@@ -28,7 +28,7 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编�
 ### 1. 环境依赖
 - **Node.js**: `>= 24.0.0`
 - **npm**: 确保具备 C++ 编译环境以支持 `better-sqlite3` 原生模块构建。
-- **Agent runtime**: 默认后端需本机已安装并配置 `codex` App-Server CLI；若使用 `ADS_AGENT_RUNTIME=native` 原生运行时，则无需 `codex` CLI（命令直接在宿主机上执行，与 Web 工作区的 `danger-full-access` 语义一致，请仅在单租户自托管环境启用）。
+- **Agent runtime**: 默认后端是进程内 Native Runtime，只需配置可用的对话模型服务商，无需安装 `codex` CLI；命令直接在宿主机上执行，与 Web 工作区的 `danger-full-access` 语义一致，请仅在单租户自托管环境启用。只有在 `ADS_AGENT_RUNTIME=codex-app-server` 时才需要本机安装并配置 `codex` App-Server CLI。
 
 ### 2. 安装与构建
 ```bash

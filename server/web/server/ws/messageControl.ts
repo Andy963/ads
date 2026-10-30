@@ -16,6 +16,7 @@ import type {
 import { invalidateWsPromptRun } from "./promptLifecycle.js";
 import { handleSessionListMessage } from "./handleSessionList.js";
 import { handleTaskResumeMessage } from "./handleTaskResume.js";
+import { resolveHistoryOwnerId } from "./connectionIdentity.js";
 import type { WsMessage } from "./schema.js";
 import type { PromptIdentityReconciliation } from "../../../state/promptQueueStore.js";
 
@@ -298,9 +299,10 @@ export async function handleWsControlMessage(args: {
       historyStore: args.historyStore as unknown as HistoryStore,
       currentCwd: args.currentCwd,
       activeAgentId: args.orchestrator.getActiveAgentId(),
+      historyOwnerId: resolveHistoryOwnerId(args.authUserId, args.historyKey),
       currentSessionId: args.sessionManager.getRuntimeBackend?.() !== "native"
         ? args.orchestrator.getThreadId()
-        : null,
+        : args.sessionManager.getNativeTranscriptId?.(args.userId) ?? null,
       runtimeBackend: args.sessionManager.getRuntimeBackend(),
       sendJson: args.sendJson,
       logger: args.logger,

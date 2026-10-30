@@ -5,7 +5,12 @@ import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlit
 
 import { stateSchemaMigrations } from "./schemaMigrations.js";
 import { createLogger } from "../utils/logger.js";
-import { resolveAdsStateDir } from "../workspace/adsPaths.js";
+import {
+  isTestProcess,
+  isUnderTempDir,
+  resolveAdsStateDir,
+  testStateFallbackPath,
+} from "../workspace/adsPaths.js";
 
 const logger = createLogger("StateDatabase");
 const LEGACY_STATE_SCHEMA_VERSION = 1;
@@ -29,7 +34,13 @@ export function resolveStateDbPath(explicitPath?: string): string {
     if (candidate === ":memory:") {
       return candidate;
     }
-    return path.resolve(candidate);
+    const resolved = path.resolve(candidate);
+    // Tests must never reach the live database, whatever the inherited env
+    // says; they may only point at their own temp state.
+    return isTestProcess() && !isUnderTempDir(resolved) ? testStateFallbackPath("state.db") : resolved;
+  }
+  if (isTestProcess()) {
+    return testStateFallbackPath("state.db");
   }
   return path.join(resolveAdsStateDir(), "state.db");
 }

@@ -88,14 +88,14 @@ describe("SessionManager agent allowlists", () => {
     }
   });
 
-  it("uses the app-server adapter for the codex agent by default", () => {
-    const manager = new SessionManager(0, 0, "workspace-write");
+  it("uses the native adapter for the codex agent by default", () => {
+    const manager = new SessionManager(0, 0, "workspace-write", undefined, undefined, {});
 
     try {
       const session = manager.getOrCreate(123456, "/tmp/ads-codex-unified");
       const adapter = session.getAdapter("codex");
 
-      assert(adapter instanceof CodexAppServerAdapter);
+      assert(adapter instanceof NativeAgentAdapter);
       assert.equal(adapter?.id, "codex");
       assert.equal(adapter?.preservesThreadOnModelChange, true);
     } finally {
@@ -103,21 +103,21 @@ describe("SessionManager agent allowlists", () => {
     }
   });
 
-  it("selects the native adapter only when explicitly enabled", () => {
+  it("selects the app-server adapter only when explicitly enabled", () => {
     const manager = new SessionManager(
       0,
       0,
       "workspace-write",
       undefined,
       undefined,
-      { ADS_AGENT_RUNTIME: "native", ADS_WEB_SESSION_PEPPER: "test-only-pepper" },
+      { ADS_AGENT_RUNTIME: "codex-app-server", ADS_WEB_SESSION_PEPPER: "test-only-pepper" },
     );
 
     try {
       const session = manager.getOrCreate(123457, "/tmp/ads-native-runtime-session");
       const adapter = session.getAdapter("codex");
 
-      assert(adapter instanceof NativeAgentAdapter);
+      assert(adapter instanceof CodexAppServerAdapter);
       assert.equal(adapter?.id, "codex");
       assert.equal(adapter?.preservesThreadOnModelChange, true);
     } finally {

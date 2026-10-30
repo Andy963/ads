@@ -1,7 +1,17 @@
 import { spawn } from "node:child_process";
 
 import { withAgentCliPath } from "../cli/pathEnv.js";
+import type { AgentRuntimeBackend } from "../../runtime/config.js";
 import type { AgentIdentifier, AgentStatus } from "../types.js";
+
+/**
+ * Only the Codex app-server backend shells out to the Codex CLI; the native
+ * runtime executes in-process and must not be reported unavailable just
+ * because the host has no `codex` binary.
+ */
+export function requiresCliAvailabilityProbe(backend: AgentRuntimeBackend): boolean {
+  return backend === "codex-app-server";
+}
 
 export type AvailabilityRecord = {
   ready: boolean;

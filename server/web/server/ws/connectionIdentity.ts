@@ -19,6 +19,22 @@ function normalizeGeneration(value: number | undefined): number {
   return Number.isFinite(generation) && generation >= 1 ? Math.floor(generation) : 0;
 }
 
+/**
+ * Owner segment of a lane history key. Callers must treat an empty result as
+ * "identity unknown" and refuse the operation: an unscoped listing would mix
+ * every user's linked sessions into one picker.
+ */
+export function resolveHistoryOwnerId(
+  authUserId: string | undefined,
+  historyKey: string | undefined,
+): string {
+  const explicit = String(authUserId ?? "").trim();
+  if (explicit) {
+    return explicit;
+  }
+  return String(historyKey ?? "").split("::", 1)[0].trim();
+}
+
 export function buildWsConnectionIdentity(args: {
   authUserId: string;
   sessionId: string;

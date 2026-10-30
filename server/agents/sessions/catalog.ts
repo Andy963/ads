@@ -1,7 +1,7 @@
 import type { HistoryStore } from "../../utils/historyStore.js";
-import type { AgentRuntimeBackend } from "../../runtime/config.js";
+import { DEFAULT_AGENT_RUNTIME, type AgentRuntimeBackend } from "../../runtime/config.js";
 import { isNativeExecutionId } from "../../runtime/sessionIdentity.js";
-import { areSessionCwdsCompatible } from "../../sessions/sessionState.js";
+import { detectWorkspaceFrom } from "../../workspace/detector.js";
 
 import { listCodexSessions } from "./codexSessionSource.js";
 import { buildSessionTitle, truncatePreview } from "./promptPreview.js";
@@ -11,6 +11,24 @@ import { decodeSessionListCursor, encodeSessionListCursor, normalizeSessionListL
 /** ADS-linked sessions are the most reliable candidates, so they are read generously. */
 const LINK_SCAN_LIMIT = 200;
 
+/**
+ * The picker lists the current project only. Comparing workspace roots keeps
+ * the project's own subdirectories together while separating sibling
+ * repositories that merely share a parent directory, which plain path nesting
+ * would treat as the same place.
+ */
+function isInWorkspace(cwd: string | undefined, workspaceCwd: string): boolean {
+  const target = String(workspaceCwd ?? "").trim();
+  if (!target) {
+    return true;
+  }
+  const candidate = String(cwd ?? "").trim();
+  if (!candidate) {
+    return false;
+  }
+  return detectWorkspaceFrom(candidate) === detectWorkspaceFrom(target);
+}
+
 function titleFromHistory(
   historyStore: HistoryStore | undefined,
   historyKey: string,
@@ -19,13 +37,15 @@ function titleFromHistory(
   if (!entries.length) {
     return {};
   }
-  const firstUser = entries.find((entry) => entry.role === "user");
+  const lastDividerIndex = entries.map((entry) => entry.kind).lastIndexOf("session_divider");
+  const currentEntries = lastDividerIndex >= 0 ? entries.slice(lastDividerIndex + 1) : entries;
+  const firstUser = currentEntries.find((entry) => entry.role === "user");
   const title = buildSessionTitle([firstUser?.text]);
   return {
     title: title || undefined,
     preview: firstUser ? truncatePreview(firstUser.text) : undefined,
-    messageCount: entries.length,
-    userTurns: entries.filter((entry) => entry.role === "user").length,
+    messageCount: currentEntries.length,
+    userTurns: currentEntries.filter((entry) => entry.role === "user").length,
   };
 }
 
@@ -39,24 +59,29 @@ function titleFromHistory(
  * lane, and every id but the last is strictly superseded: resuming an older fork
  * would drop the turns that came after it. The store already groups this way;
  * the pass here also covers a non-SQLite store.
+ *
+ * `historyOwnerId` scopes the result to one authenticated owner. Omitting it
+ * lists every owner's links, so request handlers must resolve a non-empty owner
+ * before calling in.
  */
 export function listLinkedSessions(args: {
   historyStore?: HistoryStore;
   agentId: string;
   cwd: string;
+  historyOwnerId?: string;
   includeAllCwds?: boolean;
-  runtimeBackend?: AgentRuntimeBackend;
 }): { items: AgentSessionRef[]; forksCollapsed: number } {
-  if ((args.runtimeBackend ?? "codex-app-server") === "native") {
-    return { items: [], forksCollapsed: 0 };
-  }
   const links = args.historyStore?.listAgentSessionLinks({ agentId: args.agentId, limit: LINK_SCAN_LIMIT }) ?? [];
   const newestByLane = new Map<string, { link: (typeof links)[number]; forkCount: number }>();
+  const historyOwnerId = String(args.historyOwnerId ?? "").trim();
   for (const link of links) {
+    if (historyOwnerId && !link.historyKey.startsWith(`${historyOwnerId}::`)) {
+      continue;
+    }
     if (args.agentId === "codex" && isNativeExecutionId(link.providerSessionId)) {
       continue;
     }
-    if (!args.includeAllCwds && !areSessionCwdsCompatible(link.cwd, args.cwd)) {
+    if (!args.includeAllCwds && !isInWorkspace(link.cwd, args.cwd)) {
       continue;
     }
     const existing = newestByLane.get(link.historyKey);
@@ -181,6 +206,7 @@ export interface AgentSessionCatalogDeps {
    * the provider sources alone.
    */
   historyStore?: HistoryStore;
+  historyOwnerId?: string;
   /** Session id the active orchestrator is already attached to, if any. */
   currentSessionId?: string | null;
   /** Runtime backend that owns provider session ids in this process. */
@@ -212,15 +238,15 @@ export async function listAgentSessions(
     ? { items: [], forksCollapsed: 0 }
     : listLinkedSessions({
         historyStore: deps.historyStore,
+        historyOwnerId: deps.historyOwnerId,
         agentId: query.agentId,
         cwd: query.cwd,
         includeAllCwds: query.includeAllCwds,
-        runtimeBackend: deps.runtimeBackend,
       });
 
   let providerItems: AgentSessionRef[] = [];
   let providerCursor: string | undefined;
-  if (query.agentId === "codex" && (deps.runtimeBackend ?? "codex-app-server") === "codex-app-server") {
+  if (query.agentId === "codex" && (deps.runtimeBackend ?? DEFAULT_AGENT_RUNTIME) === "codex-app-server") {
     const result = await listCodexSessions({
       cwd: query.cwd,
       limit,
@@ -237,7 +263,7 @@ export async function listAgentSessions(
   // ADS-linked entries are primary: their previews come from real user text.
   const ranked = mergeById(linked.items, providerItems)
     .filter((ref) => matchesSearch(ref, query.searchTerm))
-    .filter((ref) => query.includeAllCwds || areSessionCwdsCompatible(ref.cwd, query.cwd))
+    .filter((ref) => query.includeAllCwds || isInWorkspace(ref.cwd, query.cwd))
     .map((ref) => ({
       ...ref,
       isCurrent: Boolean(deps.currentSessionId && ref.sessionId === deps.currentSessionId),
