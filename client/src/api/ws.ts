@@ -76,12 +76,13 @@ type SharedLane = { socket: AdsWebSocket; chatSessionId: string };
 
 class ProjectWebSocketTransport {
   private socket: WebSocket | null = null;
-  private pingTimer: number | null = null;
   private probeTimer: number | null = null;
   private socketStartedAt = 0;
   private readonly lanes = new Map<WebSocketLane, SharedLane>();
   private readonly pendingMessages = new Map<WebSocketLane, WsMessage[]>();
   private readonly reattaching = new Set<WebSocketLane>();
+  /** Sockets whose handshake was still in flight when they were retired. */
+  private readonly deferredClose = new Set<WebSocket>();
   private readonly configs: Record<WebSocketLane, WebSocketLaneConfig>;
 
   constructor(
@@ -123,15 +124,10 @@ class ProjectWebSocketTransport {
     if (this.lanes.size > 0) return;
 
     this.clearProbe();
-    this.stopPing();
     const current = this.socket;
     this.socket = null;
     this.onIdle();
-    try {
-      current?.close();
-    } catch {
-      // ignore
-    }
+    this.closeSocket(current);
   }
 
   send(frame: string): boolean {
@@ -172,17 +168,35 @@ class ProjectWebSocketTransport {
     this.configs[lane] = { ...this.configs[lane], chatSessionId };
   }
 
+  /** True while the physical socket carrying this lane has not opened yet. */
+  isLaneConnecting(lane: WebSocketLane, socket: AdsWebSocket): boolean {
+    return this.lanes.get(lane)?.socket === socket && this.socket?.readyState === 0;
+  }
+
+  /**
+   * Closing a handshake still in flight makes the browser drop the connection
+   * without a close frame, which the server can only record as 1006. Retire
+   * such a socket on open instead, so the server sees a normal close code.
+   */
+  private closeSocket(socket: WebSocket | null): void {
+    if (!socket) return;
+    if (socket.readyState === 0) {
+      this.deferredClose.add(socket);
+      return;
+    }
+    try {
+      socket.close(1000, "client reconnect");
+    } catch {
+      // ignore
+    }
+  }
+
   private restart(): void {
     const current = this.socket;
     this.socket = null;
     this.pendingMessages.clear();
     this.clearProbe();
-    this.stopPing();
-    try {
-      current?.close();
-    } catch {
-      // ignore
-    }
+    this.closeSocket(current);
     this.connectIfNeeded();
   }
 
@@ -206,20 +220,26 @@ class ProjectWebSocketTransport {
     this.socket = socket;
     this.socketStartedAt = Date.now();
     socket.onopen = () => {
+      if (this.deferredClose.delete(socket)) {
+        try {
+          socket.close(1000, "client reconnect");
+        } catch {
+          // ignore
+        }
+        return;
+      }
       if (this.socket !== socket) return;
-      this.startPing();
       for (const { socket: laneSocket } of this.lanes.values()) laneSocket.notifyOpen();
     };
     socket.onerror = () => {
       if (this.socket !== socket) return;
-      this.stopPing();
       for (const { socket: laneSocket } of this.lanes.values()) laneSocket.notifyError();
     };
     socket.onclose = (event) => {
+      this.deferredClose.delete(socket);
       if (this.socket !== socket) return;
       this.socket = null;
       this.clearProbe();
-      this.stopPing();
       const lanes = [...this.lanes.values()];
       this.lanes.clear();
       this.pendingMessages.clear();
@@ -246,19 +266,6 @@ class ProjectWebSocketTransport {
         this.pendingMessages.set(targetLane, pending);
       }
     };
-  }
-
-  private startPing(): void {
-    if (this.pingTimer !== null) return;
-    this.pingTimer = window.setInterval(() => {
-      this.send(JSON.stringify({ type: "ping", payload: { ts: Date.now() } }));
-    }, 10_000);
-  }
-
-  private stopPing(): void {
-    if (this.pingTimer === null) return;
-    clearInterval(this.pingTimer);
-    this.pingTimer = null;
   }
 
   private clearProbe(): void {
@@ -341,7 +348,6 @@ export class AdsWebSocket {
   private readonly sessionId: string;
   private chatSessionId: string;
   private readonly resume?: { afterSeq: number; laneGeneration: number };
-  private pingTimer: number | null = null;
   private readonly transport?: ProjectWebSocketTransport;
   private readonly lane?: WebSocketLane;
 
@@ -422,15 +428,12 @@ export class AdsWebSocket {
 
     this.ws = new WebSocket(url, protocols);
     this.ws.onopen = () => {
-      this.startPing();
       this.onOpen?.();
     };
     this.ws.onerror = () => {
-      this.stopPing();
       this.onError?.();
     };
     this.ws.onclose = (ev) => {
-      this.stopPing();
       this.onClose?.(ev);
     };
     this.ws.onmessage = (ev) => {
@@ -452,29 +455,37 @@ export class AdsWebSocket {
   close(): void {
     if (this.transport && this.lane) {
       this.transport.detach(this.lane, this);
-      this.stopPing();
+      return;
+    }
+    const ws = this.ws;
+    this.ws = null;
+    if (!ws) return;
+    if (ws.readyState === 0) {
+      // Same reason as ProjectWebSocketTransport.closeSocket: a handshake that
+      // is still in flight must open before it can report a normal close code.
+      ws.onopen = () => {
+        try {
+          ws.close(1000, "client close");
+        } catch {
+          // ignore
+        }
+      };
+      ws.onerror = null;
+      ws.onmessage = null;
+      ws.onclose = null;
       return;
     }
     try {
-      this.ws?.close();
+      ws.close(1000, "client close");
     } catch {
       // ignore
-    } finally {
-      this.stopPing();
-      this.ws = null;
     }
   }
 
-  private startPing(): void {
-    if (this.pingTimer !== null) return;
-    // Keep the backend connection alive through intermediaries (dev proxies, NAT, etc).
-    this.pingTimer = window.setInterval(() => {
-      try {
-        this.send("ping", { ts: Date.now() });
-      } catch {
-        // ignore
-      }
-    }, 10_000);
+  /** True while this lane has not completed its handshake yet. */
+  isConnecting(): boolean {
+    if (this.transport && this.lane) return this.transport.isLaneConnecting(this.lane, this);
+    return this.ws?.readyState === 0;
   }
 
   notifyOpen(): void { this.onOpen?.(); }
@@ -502,16 +513,6 @@ export class AdsWebSocket {
       ...(clientMessageId ? { client_message_id: clientMessageId } : {}),
       ...(!SESSION_UNSCOPED_MESSAGES.has(type) ? { chat_session_id: this.chatSessionId } : {}),
     });
-  }
-
-  private stopPing(): void {
-    if (this.pingTimer === null) return;
-    try {
-      clearInterval(this.pingTimer);
-    } catch {
-      // ignore
-    }
-    this.pingTimer = null;
   }
 }
 

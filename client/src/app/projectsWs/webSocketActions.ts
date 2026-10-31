@@ -319,9 +319,16 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     }
   };
 
-  const resumeOptions = (rt: ProjectRuntime): { afterSeq: number; laneGeneration: number } | undefined =>
-    rt.transcriptReady && Number.isSafeInteger(rt.transcriptCursor) && rt.transcriptCursor >= 0 && rt.laneGeneration
-      ? { afterSeq: rt.transcriptCursor, laneGeneration: rt.laneGeneration } : undefined;
+  const resumeOptions = (rt: ProjectRuntime): { afterSeq: number; laneGeneration: number } | undefined => {
+    // A committed cursor is enough to continue this lane. `transcriptReady` is
+    // cleared while a bootstrap is still being applied, and requiring it turned
+    // every reconnect in that window into a full snapshot replay. Generation
+    // changes and local resets zero the cursor, so they still get a snapshot.
+    const afterSeq = Number.isSafeInteger(rt.transcriptCursor) ? rt.transcriptCursor : 0;
+    const laneGeneration = Number.isSafeInteger(rt.laneGeneration) ? Number(rt.laneGeneration) : 0;
+    if (afterSeq <= 0 || laneGeneration < 1) return undefined;
+    return { afterSeq, laneGeneration };
+  };
 
   const syncEventsPath = (
     rt: ProjectRuntime,
@@ -375,7 +382,25 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     return getRuntime(pid);
   };
 
-  const connectWsInternal = async (mode: WsMode, projectId: string = activeProjectId.value): Promise<void> => {
+  /**
+   * Overlapping connect calls for one lane must share a single handshake.
+   * A second socket opened in that window closes the first one while the
+   * browser is still connecting, which the server can only record as 1006.
+   */
+  const connectInFlight = new Map<string, Promise<void>>();
+
+  const connectWsInternal = (mode: WsMode, projectId: string = activeProjectId.value): Promise<void> => {
+    const key = `${mode}:${normalizeProjectId(projectId)}`;
+    const pending = connectInFlight.get(key);
+    if (pending) return pending;
+    const run = runConnect(mode, projectId).finally(() => {
+      if (connectInFlight.get(key) === run) connectInFlight.delete(key);
+    });
+    connectInFlight.set(key, run);
+    return run;
+  };
+
+  const runConnect = async (mode: WsMode, projectId: string): Promise<void> => {
     if (!loggedIn.value) return;
     const preferenceLane = mode === ACOPILOT_LANE_ID ? "acopilot" : "actions";
     let pid = normalizeProjectId(projectId);
@@ -384,6 +409,12 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
     const chatSessionId = resolveChatSessionId(project, mode);
     const initialRt = getRuntimeForMode(mode, pid);
+    const opened = initialRt.ws as { isConnecting?: () => boolean } | null;
+    if (opened && typeof opened.isConnecting === "function" && opened.isConnecting()) {
+      // The handshake for this lane is already running; reusing it keeps the
+      // server from recording an abnormal close on the socket being replaced.
+      return;
+    }
     let rt = initialRt;
     rt.inputLocked ??= { value: false };
     rt.laneStatus ??= { value: null };

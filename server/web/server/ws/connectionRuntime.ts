@@ -127,6 +127,6 @@ export function cleanupClosedConnection(args: {
   const reasonText = formatCloseReason(args.reason);
   const suffix = reasonText ? ` reason=${reasonText}` : "";
   args.logger.info(
-    `client disconnected conn=${meta?.connectionId ?? "unknown"} session=${args.sessionId} user=${args.userId} history=${meta?.historyKey ?? ""} code=${args.code}${suffix} inFlight=${inFlight}`,
+    `client disconnected conn=${meta?.connectionId ?? "unknown"} session=${args.sessionId} user=${args.userId} history=${meta?.historyKey ?? ""} code=${args.code}${suffix} inFlight=${inFlight} chat=${meta?.chatSessionId ?? ""} transcript=${meta?.transcriptMode ?? "unknown"}`,
   );
 }

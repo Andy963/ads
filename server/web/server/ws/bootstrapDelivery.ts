@@ -85,7 +85,7 @@ export function sendInitialBootstrapMessages(args: {
   sync?: Parameters<typeof canResumeTranscript>[0]["sync"];
   /** Runtime-only snapshots that are not part of durable chat history. */
   runtimeSnapshots?: Array<Record<string, unknown>>;
-}): void {
+}): "resume" | "snapshot" {
   const bootstrapState = buildWsBootstrapState({
     sessionManager: args.sessionManager,
     orchestrator: args.orchestrator,
@@ -194,4 +194,5 @@ export function sendInitialBootstrapMessages(args: {
   if (inFlightStatus) {
     args.safeJsonSend(args.ws, { type: "status", message: inFlightStatus, kind: "status" });
   }
+  return resumed ? "resume" : "snapshot";
 }

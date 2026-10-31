@@ -595,8 +595,9 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
             if (candidate.isAlive === false) {
               candidate.missedPongs = (candidate.missedPongs ?? 0) + 1;
               if (config.maxMissedPongs > 0 && candidate.missedPongs >= config.maxMissedPongs) {
+                const staleMeta = state.clientMetaByWs.get(candidate);
                 logger.warn(
-                  `[WebSocket] terminating stale client connection missedPongs=${candidate.missedPongs} maxMissedPongs=${config.maxMissedPongs}`,
+                  `[WebSocket] terminating stale client connection missedPongs=${candidate.missedPongs} maxMissedPongs=${config.maxMissedPongs} conn=${staleMeta?.connectionId ?? "unknown"} chat=${staleMeta?.chatSessionId ?? ""} transcript=${staleMeta?.transcriptMode ?? "unknown"}`,
                 );
                 try {
                   candidate.terminate();
@@ -701,6 +702,12 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       clientMeta,
     } = initialIdentity;
     clientMeta = { ...clientMeta, logicalHistoryKey };
+
+    const recordTranscriptMode = (mode: "resume" | "snapshot"): void => {
+      clientMeta = { ...clientMeta, transcriptMode: mode };
+      state.clientMetaByWs.set(ws, clientMeta);
+    };
+
     ws.on("error", (error) => {
       const message = error instanceof Error ? error.message : String(error);
       logger.warn(
@@ -1224,7 +1231,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       orchestrator = sessionManager.getOrCreate(userId, currentCwd, false, { authUserId });
       currentLane = captureLane();
 
-      sendInitialBootstrapMessages({
+      recordTranscriptMode(sendInitialBootstrapMessages({
         ws,
         safeJsonSend,
         sessionManager: currentLane.sessionManager,
@@ -1241,7 +1248,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
         laneGeneration: currentLane.laneGeneration,
        maxClients: config.maxClients,
         runtimeSnapshots: collectRuntimeSnapshots(currentLane, nextInFlight),
-      });
+      }));
 
       logger.info(
         `[WebSocket] in-band lane reset conn=${connectionId} session=${sessionId} chat=${chatSessionId} generation=${laneGeneration} user=${userId} history=${historyKey}`,
@@ -1296,7 +1303,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
 
     inBandResetHandlers.set(ws, rebindCurrentConnection);
 
-    sendInitialBootstrapMessages({
+    recordTranscriptMode(sendInitialBootstrapMessages({
       ws,
       safeJsonSend,
       sessionManager: currentLane.sessionManager,
@@ -1319,7 +1326,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       laneGeneration: currentLane.laneGeneration,
      maxClients: config.maxClients,
       runtimeSnapshots: collectRuntimeSnapshots(currentLane, inFlight),
-    });
+    }));
     sendPromptQueueSnapshot();
 
     let messageChain = Promise.resolve();
@@ -1462,7 +1469,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
 
     const sendCurrentChatBootstrap = (): void => {
       const nextInFlight = state.interruptControllers.has(currentLane.historyKey);
-      sendInitialBootstrapMessages({
+      recordTranscriptMode(sendInitialBootstrapMessages({
         ws,
         safeJsonSend,
         sessionManager: currentLane.sessionManager,
@@ -1479,7 +1486,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
         laneGeneration: currentLane.laneGeneration,
        maxClients: config.maxClients,
         runtimeSnapshots: collectRuntimeSnapshots(currentLane, nextInFlight),
-      });
+      }));
 
       sendPromptQueueSnapshot();
     };

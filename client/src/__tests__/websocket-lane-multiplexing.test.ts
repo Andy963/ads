@@ -12,6 +12,7 @@ class FakeWebSocket {
   onerror: (() => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   sent: string[] = [];
+  closeCodes: number[] = [];
   readonly protocols: string[];
   readonly url: string;
 
@@ -25,7 +26,8 @@ class FakeWebSocket {
     this.sent.push(message);
   }
 
-  close(): void {
+  close(code?: number): void {
+    this.closeCodes.push(code ?? -1);
     this.readyState = 3;
   }
 }
@@ -305,5 +307,61 @@ describe("project WebSocket lane multiplexing", () => {
     expect(replacements).toHaveLength(1);
     actions.close();
     acopilot.close();
+  });
+
+  it("sends no application-level keepalive frames while the socket stays open", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("location", { protocol: "http:", host: "localhost" });
+    vi.stubGlobal("window", { setInterval, clearInterval, setTimeout, clearTimeout });
+    const configs = {
+      actions: { chatSessionId: "main" },
+      acopilot: { chatSessionId: "acopilot" },
+    };
+    const actions = getProjectWebSocketLane({ projectId: "project-keepalive-test", sessionId: "session", lane: "actions", configs });
+    const acopilot = getProjectWebSocketLane({ projectId: "project-keepalive-test", sessionId: "session", lane: "acopilot", configs });
+    actions.connect();
+    acopilot.connect();
+    const socket = FakeWebSocket.instances.at(-1)!;
+    socket.readyState = FakeWebSocket.OPEN;
+    socket.onopen?.();
+
+    vi.advanceTimersByTime(60_000);
+
+    expect(socket.sent).toEqual([]);
+    expect(socket.closeCodes).toEqual([]);
+    actions.close();
+    acopilot.close();
+    vi.useRealTimers();
+  });
+
+  it("defers closing a socket whose handshake is still in flight", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    vi.stubGlobal("location", { protocol: "http:", host: "localhost" });
+    vi.stubGlobal("window", { setInterval, clearInterval, setTimeout, clearTimeout });
+    vi.stubGlobal("document", fakeDocument);
+    const configs = {
+      actions: { chatSessionId: "main" },
+      acopilot: { chatSessionId: "acopilot" },
+    };
+    const actions = getProjectWebSocketLane({ projectId: "project-deferred-close-test", sessionId: "session", lane: "actions", configs });
+    const acopilot = getProjectWebSocketLane({ projectId: "project-deferred-close-test", sessionId: "session", lane: "acopilot", configs });
+    actions.connect();
+    acopilot.connect();
+    const connecting = FakeWebSocket.instances.at(-1)!;
+    expect(connecting.readyState).toBe(0);
+
+    actions.close();
+    acopilot.close();
+
+    // Closing a CONNECTING socket makes the browser drop it without a close
+    // frame, so the close must wait for the handshake to finish.
+    expect(connecting.readyState).toBe(0);
+    expect(connecting.closeCodes).toEqual([]);
+
+    connecting.readyState = FakeWebSocket.OPEN;
+    connecting.onopen?.();
+
+    expect(connecting.closeCodes).toEqual([1000]);
   });
 });

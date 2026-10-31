@@ -47,6 +47,8 @@ export type WsClientMeta = {
   authUserId: string;
   sessionUserId: number;
   workspaceRoot?: string;
+  /** How this connection received its transcript baseline. */
+  transcriptMode?: "resume" | "snapshot";
 };
 
 export type WsOrchestrator = ReturnType<SessionManager["getOrCreate"]>;

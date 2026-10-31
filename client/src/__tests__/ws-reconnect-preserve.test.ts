@@ -23,6 +23,8 @@ let lastWs: {
 } | null = null;
 let lastSentPromptPayload: unknown = null;
 let sentPromptFrames: Array<{ payload: unknown; clientMessageId: string }> = [];
+let createdActionSockets = 0;
+let lastLaneConfigs: Record<"actions" | "acopilot", { chatSessionId: string; resume?: { afterSeq: number; laneGeneration: number } }> | null = null;
 
 vi.mock("../api/ws", () => {
   class AdsWebSocket {
@@ -37,6 +39,7 @@ vi.mock("../api/ws", () => {
     constructor(options: { sessionId: string; chatSessionId?: string }) {
       const chatSessionId = String(options.chatSessionId ?? "main").trim() || "main";
       if (chatSessionId === "acopilot") return;
+      createdActionSockets += 1;
       lastWs = this as unknown as typeof lastWs;
     }
 
@@ -65,6 +68,7 @@ vi.mock("../api/ws", () => {
       }>;
     }) => {
       const config = options.configs[options.lane];
+      lastLaneConfigs = options.configs;
       return new AdsWebSocket({
         sessionId: options.sessionId,
         chatSessionId: config.chatSessionId,
@@ -148,6 +152,8 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     lastWs = null;
     lastSentPromptPayload = null;
     sentPromptFrames = [];
+    createdActionSockets = 0;
+    lastLaneConfigs = null;
     localStorage.clear();
     sessionStorage.clear();
   });
@@ -156,6 +162,8 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     lastWs = null;
     lastSentPromptPayload = null;
     sentPromptFrames = [];
+    createdActionSockets = 0;
+    lastLaneConfigs = null;
     vi.clearAllMocks();
     localStorage.clear();
     sessionStorage.clear();
@@ -259,6 +267,47 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     expect(rt.messages.value.map((message) => message.content)).toEqual(["keep me"]);
     expect(rt.activeThreadId.value).toBe("thread-1");
     expect(rt.threadWarning.value).toBeNull();
+    wrapper.unmount();
+  });
+
+  it("keeps a single handshake when connect is requested twice for the same lane", async () => {
+    const { wrapper, controller } = await mountReconnectHarness();
+    createdActionSockets = 0;
+
+    const results = await Promise.allSettled([controller.connectWs("default"), controller.connectWs("default")]);
+    await settleUi(wrapper);
+
+    expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect(createdActionSockets).toBe(1);
+    wrapper.unmount();
+  });
+
+  it("reconnects with the committed cursor while a bootstrap is still pending", async () => {
+    const { wrapper, controller, rt } = await mountReconnectHarness();
+
+    lastWs!.onOpen?.();
+    lastWs!.onMessage?.({
+      type: "welcome",
+      laneGeneration: 4,
+      inFlight: false,
+      contextMode: "thread_resumed",
+      threadId: "thread-1",
+    });
+    await settleUi(wrapper);
+    expect(rt.laneGeneration).toBe(4);
+
+    // A snapshot bootstrap clears transcriptReady while its history is applied.
+    // The in-memory transcript still covers the committed cursor, so the next
+    // handshake must resume instead of replaying the whole history.
+    rt.transcriptCursor = 42;
+    rt.transcriptReady = false;
+    lastWs!.onClose?.({ code: 1006, reason: "" });
+    await settleUi(wrapper);
+
+    await controller.connectWs("default");
+    await settleUi(wrapper);
+
+    expect(lastLaneConfigs?.actions.resume).toEqual({ afterSeq: 42, laneGeneration: 4 });
     wrapper.unmount();
   });
 

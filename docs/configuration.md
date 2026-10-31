@@ -26,8 +26,8 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_WEB_HOST` | `127.0.0.1` | HTTP 与 WebSocket 监听地址 |
 | `ADS_WEB_PORT` | `8787` | HTTP 与 WebSocket 监听端口 |
 | `ADS_WEB_MAX_CLIENTS` | `32` | 允许同时建立的最大 WebSocket 客户端连接数 |
-| `ADS_WEB_WS_PING_INTERVAL_MS` | `15000` | WebSocket 心跳 Ping 间隔（毫秒） |
-| `ADS_WEB_WS_MAX_MISSED_PONGS` | `3` | 判定连接断开前允许连续丢失的心跳 Pong 次数 |
+| `ADS_WEB_WS_PING_INTERVAL_MS` | `30000` | WebSocket 协议层 Ping 间隔（毫秒）。客户端不再发送应用层心跳，存活检测只依赖这一项 |
+| `ADS_WEB_WS_MAX_MISSED_PONGS` | `6` | 判定连接断开前允许连续丢失的 Ping 次数。按默认值算，后台挂起约三分钟的标签页不会被判死 |
 | `ADS_WEB_WS_MAX_PAYLOAD_BYTES` | `16777216` (16MB) | 单个 WebSocket 帧的最大允许字节数 |
 | `ADS_WEB_ALLOWED_ORIGINS` | 未设置 | 跨域与 WebSocket 握手白名单，未设置仅放行同源与 localhost |
 | `ADS_WEB_SESSION_TTL_SECONDS` | `604800` (7天) | 登录状态认证 Cookie 的有效期 |
