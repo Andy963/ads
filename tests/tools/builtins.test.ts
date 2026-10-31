@@ -55,7 +55,7 @@ describe("Acopilot implementation and review tools", () => {
         type: "function",
         function: { name: "begin_implementation", arguments: JSON.stringify({ issue_id: 516 }) },
       });
-      assert.deepEqual(JSON.parse(result.output), { ok: true, issueId: 516 });
+      assert.equal(result.output, "begin_implementation completed.\nIssue: #516.");
       assert.deepEqual(calls, [{ issue_id: 516 }]);
     } finally {
       await executor.dispose();

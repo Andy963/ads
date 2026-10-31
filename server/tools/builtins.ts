@@ -54,6 +54,61 @@ export interface BuiltinToolContext {
 
 export type BuiltinToolResult = ActionToolResult;
 
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+/** Return a short tool result that the provider can present as normal prose. */
+export function formatBuiltinToolResult(tool: string, result: BuiltinToolResult): string {
+  const lines = [`${tool} ${result.ok ? "completed" : "failed"}.`];
+  const jobId = stringValue(result.jobId);
+  const status = stringValue(result.status);
+  if (jobId) lines.push(`Actions job: ${jobId}.`);
+
+  if (tool === "review_action") {
+    const verdict = recordValue(result.verdict);
+    const verdictStatus = stringValue(verdict?.status);
+    const summary = stringValue(verdict?.summary);
+    if (verdictStatus) lines.push(`Status: ${verdictStatus}.`);
+    else if (status) lines.push(`Status: ${status}.`);
+    if (summary) lines.push(`Summary: ${summary}`);
+    const defects = Array.isArray(verdict?.defects) ? verdict.defects : [];
+    const findings = defects.flatMap((defect) => {
+      const finding = recordValue(defect);
+      const file = stringValue(finding?.file);
+      const severity = stringValue(finding?.severity);
+      const description = stringValue(finding?.description);
+      if (!description) return [];
+      const line = numberValue(finding?.line);
+      const location = file ? `${file}${line !== undefined ? `:${line}` : ""}` : "review finding";
+      return [`- ${location}${severity ? ` (${severity})` : ""}: ${description}`];
+    });
+    if (findings.length) lines.push("Findings:", ...findings);
+  } else {
+    if (status) lines.push(`Status: ${status}.`);
+    const issueId = numberValue(result.issueId ?? result.issue_id);
+    const branch = stringValue(result.branch);
+    const pullRequestNumber = numberValue(result.pullRequestNumber ?? result.pr_number);
+    if (issueId !== undefined) lines.push(`Issue: #${issueId}.`);
+    if (branch) lines.push(`Branch: ${branch}.`);
+    if (pullRequestNumber !== undefined) lines.push(`Pull request: #${pullRequestNumber}.`);
+  }
+
+  const error = stringValue(result.error);
+  if (error) lines.push(`Reason: ${error}`);
+  return lines.join("\n");
+}
+
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
 }
