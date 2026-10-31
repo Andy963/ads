@@ -140,6 +140,14 @@ async function ensureWsConnected(wrapper: any): Promise<void> {
   }
   expect(lastWs).toBeTruthy();
   lastWs!.onOpen?.();
+  lastWs!.onMessage?.({
+    type: "welcome",
+    historyMode: "snapshot",
+    bootstrapHistory: false,
+    latestSeq: 0,
+    inFlight: false,
+    contextMode: "fresh",
+  });
   await settleUi(wrapper);
 }
 

@@ -68,6 +68,7 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     resumeReplacePending: false,
     awaitingBootstrapHistory: false,
     ws: null,
+    connectionWatchdogTimer: null,
     reconnectTimer: null,
     reconnectAttempts: 0,
     pendingCdRequestedPath: null,

@@ -20,6 +20,8 @@ type RuntimeShape = {
   queuedPrompts: Ref<QueuedPrompt[]>;
   pendingImages: Ref<unknown[]>;
   connected: Ref<boolean>;
+  ws?: unknown;
+  transcriptAuthoritative?: Ref<boolean>;
   busy: Ref<boolean>;
   turnInFlight?: boolean;
   inputLocked: Ref<boolean>;
@@ -42,6 +44,10 @@ function asRuntimeShape(value: unknown): RuntimeShape {
 
 function asAcopilotRuntimeShape(value: unknown): AcopilotRuntimeShape {
   return value as AcopilotRuntimeShape;
+}
+
+function runtimeIsReady(runtime: RuntimeShape): boolean {
+  return Boolean(runtime.connected.value && runtime.transcriptAuthoritative?.value === true);
 }
 
 // Delivery state has to survive this projection: the card gates its status
@@ -180,6 +186,7 @@ export function useLaneRuntimeBridge(params: {
   );
   const acopilotPendingImages = computed(() => acopilotRuntime.value.pendingImages.value);
   const acopilotConnected = computed(() => acopilotRuntime.value.connected.value);
+  const acopilotReady = computed(() => runtimeIsReady(acopilotRuntime.value));
   const acopilotBusy = computed(() => acopilotRuntime.value.busy.value);
   const acopilotInputLocked = computed(() => acopilotRuntime.value.inputLocked.value);
   const acopilotLaneStatus = computed(() => acopilotRuntime.value.laneStatus.value);
@@ -200,6 +207,7 @@ export function useLaneRuntimeBridge(params: {
   );
 
   const actionsAgents = computed(() => actionsRuntime.value.availableAgents.value);
+  const actionsReady = computed(() => runtimeIsReady(actionsRuntime.value));
   const actionsInputLocked = computed(() => actionsRuntime.value.inputLocked.value);
   const actionsLaneStatus = computed(() => actionsRuntime.value.laneStatus.value);
   const actionsActiveAgentId = computed(() => actionsRuntime.value.activeAgentId.value);
@@ -240,7 +248,7 @@ export function useLaneRuntimeBridge(params: {
 
   const activeLaneHasResume = computed(() => true);
   const activeLaneNewSessionBlocked = computed(() => {
-    if (activeChatLane.value === "acopilot") return !acopilotConnected.value;
+    if (activeChatLane.value === "acopilot") return !acopilotReady.value;
     return false;
   });
 
@@ -319,6 +327,7 @@ export function useLaneRuntimeBridge(params: {
     acopilotQueuedPrompts,
     acopilotPendingImages,
     acopilotConnected,
+    acopilotReady,
     acopilotBusy,
     acopilotInputLocked,
     acopilotLaneStatus,
@@ -329,6 +338,7 @@ export function useLaneRuntimeBridge(params: {
     acopilotChatKey,
     acopilotPanelKey,
     actionsAgents,
+    actionsReady,
     actionsInputLocked,
     actionsLaneStatus,
     actionsActiveAgentId,

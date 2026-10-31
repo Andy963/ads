@@ -53,7 +53,7 @@ const emit = defineEmits<{
   (e: "retryQueued", id: string): void;
 }>();
 
-const canInterrupt = computed(() => props.busy);
+const canInterrupt = computed(() => props.busy && props.connected);
 
 const normalizedConnectionStatusKind = computed(() => props.connectionStatusKind ?? "info");
 const latestPrompt = ref("");

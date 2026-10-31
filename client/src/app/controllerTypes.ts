@@ -257,6 +257,8 @@ export type ProjectRuntime = {
   resumeReplacePending: boolean;
   awaitingBootstrapHistory: boolean;
   ws: unknown;
+  /** Timer that forces a reconnect when the socket opens without completing bootstrap. */
+  connectionWatchdogTimer: number | null;
   reconnectTimer: number | null;
   reconnectAttempts: number;
   pendingCdRequestedPath: string | null;

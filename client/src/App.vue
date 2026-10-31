@@ -54,7 +54,6 @@ const {
   api,
   models,
   loadModels,
-  connected,
   openProjectDialog,
   projects,
   activeProjectId,
@@ -162,7 +161,7 @@ const {
   acopilotMessages,
   acopilotQueuedPrompts,
   acopilotPendingImages,
-  acopilotConnected,
+  acopilotReady,
   acopilotBusy,
   acopilotInputLocked,
   acopilotLaneStatus,
@@ -173,6 +172,7 @@ const {
   acopilotChatKey,
   acopilotPanelKey,
   actionsAgents,
+  actionsReady,
   actionsInputLocked,
   actionsLaneStatus,
   actionsActiveAgentId,
@@ -260,7 +260,7 @@ const acopilotChatRef = ref<MainChatHandle | null>(null);
 const actionsChatRef = ref<MainChatHandle | null>(null);
 
 const activeLaneConnected = computed(() =>
-  activeWorkspaceTab.value === "acopilot" ? Boolean(acopilotConnected.value) : Boolean(connected.value),
+  activeWorkspaceTab.value === "acopilot" ? Boolean(acopilotReady.value) : Boolean(actionsReady.value),
 );
 const activeLaneInputLocked = computed(() =>
   activeWorkspaceTab.value === "acopilot" ? Boolean(acopilotInputLocked.value) : actionsComposerInputLocked.value,
@@ -1418,20 +1418,20 @@ function cachedConnectionStatus() {
 const actionsConnectionStatus = computed(() => {
   if (!loggedIn.value) return cachedConnectionStatus();
   const laneStatus = actionsLaneStatus.value;
-  if (!connected.value && laneStatus?.kind === "progress") return laneStatus;
+  if (!actionsReady.value && laneStatus?.kind === "progress") return laneStatus;
   const error = String(wsError.value ?? "").trim();
   if (error) return { kind: "error" as const, message: error };
-  if (!connected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
+  if (!actionsReady.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
   return laneStatus;
 });
 
 const acopilotConnectionStatus = computed(() => {
   if (!loggedIn.value) return cachedConnectionStatus();
   const laneStatus = acopilotLaneStatus.value;
-  if (!acopilotConnected.value && laneStatus?.kind === "progress") return laneStatus;
+  if (!acopilotReady.value && laneStatus?.kind === "progress") return laneStatus;
   const error = String(activeAcopilotRuntime.value.wsError.value ?? "").trim();
   if (error) return { kind: "error" as const, message: error };
-  if (!acopilotConnected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
+  if (!acopilotReady.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
   return laneStatus;
 });
 
@@ -1790,7 +1790,7 @@ const acopilotConnectionStatus = computed(() => {
               <span
                 class="laneTabStatusDot"
                 :class="[
-                  isLaneConnected(tab.id, { acopilot: acopilotConnected, actions: connected })
+                  isLaneConnected(tab.id, { acopilot: acopilotReady, actions: actionsReady })
                     ? 'laneTabStatusDot--connected'
                     : 'laneTabStatusDot--disconnected',
                   (tab.id === 'acopilot' ? acopilotBusy : agentBusy)
@@ -1868,7 +1868,7 @@ const acopilotConnectionStatus = computed(() => {
                 :voice-input-active="activeWorkspaceTab === 'acopilot' && loggedIn && !settingsOpen && !mobileDrawerOpen"
                 :queued-prompts="acopilotQueuedPrompts"
                 :pending-images="acopilotPendingImages"
-                :connected="acopilotConnected"
+                :connected="acopilotReady"
                 :busy="acopilotBusy"
                 :input-locked="!loggedIn || acopilotInputLocked"
                 :workspace-root="resolveActiveWorkspaceRoot()"
@@ -1928,7 +1928,7 @@ const acopilotConnectionStatus = computed(() => {
                 :voice-input-active="activeWorkspaceTab === 'actions' && loggedIn && !settingsOpen && !mobileDrawerOpen"
                 :queued-prompts="actionsQueuedPrompts"
                 :pending-images="pendingImages"
-                :connected="connected"
+                :connected="actionsReady"
                 :busy="agentBusy"
                 :input-locked="!loggedIn || actionsComposerInputLocked"
                 :workspace-root="resolveActiveWorkspaceRoot()"

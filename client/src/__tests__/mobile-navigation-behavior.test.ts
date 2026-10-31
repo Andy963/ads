@@ -54,7 +54,17 @@ vi.mock("../api/ws", () => {
     constructor(_: { sessionId: string; chatSessionId?: string }) {}
 
     connect(): void {
-      queueMicrotask(() => this.onOpen?.());
+      queueMicrotask(() => {
+        this.onOpen?.();
+        this.onMessage?.({
+          type: "welcome",
+          historyMode: "snapshot",
+          bootstrapHistory: false,
+          latestSeq: 0,
+          inFlight: false,
+          contextMode: "fresh",
+        });
+      });
     }
 
     close(): void {}

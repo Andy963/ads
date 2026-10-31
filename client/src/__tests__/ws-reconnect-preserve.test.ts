@@ -161,6 +161,26 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     sessionStorage.clear();
   });
 
+  it("reconnects when the websocket opens without sending welcome", async () => {
+    vi.useFakeTimers();
+    try {
+      const { wrapper, rt } = await mountReconnectHarness();
+
+      lastWs!.onOpen?.();
+      expect(rt.connected.value).toBe(true);
+      expect(rt.transcriptAuthoritative.value).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(rt.connected.value).toBe(false);
+      expect(rt.connectionWatchdogTimer).toBeNull();
+      expect(rt.reconnectTimer).not.toBeNull();
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("replaces a thinking placeholder when synchronized history completes its turn (Issue #235)", async () => {
     const { wrapper, rt } = await mountReconnectHarness();
     rt.messages.value = [
@@ -1895,7 +1915,7 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     wrapper.unmount();
   });
 
-  it("unlocks a missing bootstrap history frame after the watchdog timeout", async () => {
+  it("reconnects when the bootstrap history frame never arrives", async () => {
     vi.useFakeTimers();
     try {
       const { wrapper, rt } = await mountReconnectHarness();
@@ -1913,9 +1933,11 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
       await vi.advanceTimersByTimeAsync(5000);
       await settleUi(wrapper);
 
-      expect(rt.awaitingBootstrapHistory).toBe(false);
-      expect(rt.inputLocked.value).toBe(false);
-      expect(lastSentPromptPayload).toMatchObject({ text: "send after timeout" });
+      expect(rt.awaitingBootstrapHistory).toBe(true);
+      expect(rt.inputLocked.value).toBe(true);
+      expect(rt.connected.value).toBe(false);
+      expect(rt.transcriptAuthoritative.value).toBe(false);
+      expect(lastSentPromptPayload).toBeNull();
       wrapper.unmount();
     } finally {
       vi.useRealTimers();
