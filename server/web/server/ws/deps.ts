@@ -56,7 +56,6 @@ export type WsInteractiveActionToolsFactory = (args: {
   authUserId: string;
   projectId: string;
   repoPath: string;
-  reviewPrompt?: string;
   signal: AbortSignal;
 }) => WsSupervisedActionTools | Promise<WsSupervisedActionTools>;
 
@@ -210,7 +209,7 @@ export type WsCommandStateDeps = Pick<
 };
 
 export type WsPromptHandlerDeps = {
-  createInteractiveActionTools?: (signal: AbortSignal, reviewPrompt?: string) => WsSupervisedActionTools | Promise<WsSupervisedActionTools>;
+  createInteractiveActionTools?: (signal: AbortSignal) => WsSupervisedActionTools | Promise<WsSupervisedActionTools>;
   request: WsRequestDeps;
   transport: WsTransportDeps;
   observability: Omit<WsObservabilityDeps, "sessionLogger"> & {

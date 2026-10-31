@@ -34,6 +34,11 @@ type ResourceController<T extends object> = {
   inspect: () => MaterializationState;
 };
 
+type LaneResource<T extends object> = {
+  value: T;
+  inspect: () => MaterializationState;
+};
+
 const lazyControllers = new WeakMap<object, ResourceController<object>>();
 
 export function createLazyObject<T extends object>(factory: () => T): T {
@@ -91,7 +96,7 @@ export function inspectLazyObject(value: unknown): MaterializationState | null {
   return lazyControllers.get(value as object)?.inspect() ?? null;
 }
 
-function createResource<T extends object>(factory: () => T, lazy: boolean): { value: T; inspect: () => MaterializationState } {
+function createResource<T extends object>(factory: () => T, lazy: boolean): LaneResource<T> {
   if (!lazy) {
     const value = factory();
     return {
@@ -144,6 +149,7 @@ function createLaneRuntime(args: {
   historyMaxTextLength: number;
   lazy: boolean;
   sessionManagerOptions?: SessionManagerOptions;
+  workspaceLockPool: LaneResource<WorkspaceLockPool>;
 }): WebLaneRuntime {
   const threadStorage = createResource(
     () =>
@@ -163,7 +169,6 @@ function createLaneRuntime(args: {
       }),
     args.lazy,
   );
-  const workspaceLockPool = createResource(() => new WorkspaceLockPool(), args.lazy);
   const sessionManager = createResource(
     () =>
       new SessionManager(
@@ -189,12 +194,12 @@ function createLaneRuntime(args: {
     threadStorage: threadStorage.value,
     historyStore: historyStore.value,
     sessionManager: sessionManager.value,
-    getWorkspaceLock: (workspaceRoot: string) => workspaceLockPool.value.get(workspaceRoot),
+    getWorkspaceLock: (workspaceRoot: string) => args.workspaceLockPool.value.get(workspaceRoot),
     inspectMaterialization: () => ({
       threadStorage: threadStorage.inspect(),
       historyStore: historyStore.inspect(),
       sessionManager: sessionManager.inspect(),
-      workspaceLockPool: workspaceLockPool.inspect(),
+      workspaceLockPool: args.workspaceLockPool.inspect(),
     }),
   };
 }
@@ -219,11 +224,13 @@ export function createWebLaneResources(args: {
     console.warn("[config] ADS_PLANNER_SANDBOX_MODE is deprecated; use ADS_ADVISOR_SANDBOX_MODE");
   }
 
+  const workspaceLockPool = createResource(() => new WorkspaceLockPool(), true);
+
   return {
     worker: createLaneRuntime({
       namespace: WEB_ACTIONS_NAMESPACE,
       lane: "actions",
-      sandboxMode: "danger-full-access",
+      sandboxMode: "read-only",
       sessionTimeoutMs: args.sessionTimeoutMs,
       sessionCleanupIntervalMs: args.sessionCleanupIntervalMs,
       stateDbPath: args.stateDbPath,
@@ -231,11 +238,12 @@ export function createWebLaneResources(args: {
       historyMaxTextLength: args.historyMaxTextLength ?? 64 * 1024,
       lazy: false,
       sessionManagerOptions: args.workerSessionManagerOptions,
+      workspaceLockPool,
     }),
     advisor: createLaneRuntime({
       namespace: WEB_ACOPILOT_NAMESPACE,
       lane: "acopilot",
-      // The Advisor uses danger-full-access for planning and GitHub operations (e.g. gh CLI).
+      // Acopilot needs write access to implement while Reviewer stays read-only.
       sandboxMode: advisorSandboxMode,
       defaultModel: args.advisorCodexModel,
       sessionTimeoutMs: args.sessionTimeoutMs,
@@ -245,6 +253,7 @@ export function createWebLaneResources(args: {
       historyMaxTextLength: args.historyMaxTextLength ?? 64 * 1024,
       lazy: true,
       sessionManagerOptions: args.advisorSessionManagerOptions,
+      workspaceLockPool,
     }),
   };
 }

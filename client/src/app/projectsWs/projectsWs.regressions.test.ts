@@ -26,7 +26,24 @@ vi.mock("../../api/ws", () => {
     close = vi.fn();
   }
 
-  return { AdsWebSocket };
+  return {
+    AdsWebSocket,
+    getProjectWebSocketLane: (options: {
+      sessionId: string;
+      lane: "actions" | "acopilot";
+      configs: Record<"actions" | "acopilot", {
+        chatSessionId: string;
+        resume?: { afterSeq: number; laneGeneration: number };
+      }>;
+    }) => {
+      const config = options.configs[options.lane];
+      return new AdsWebSocket({
+        sessionId: options.sessionId,
+        chatSessionId: config.chatSessionId,
+        resume: config.resume,
+      } as never);
+    },
+  };
 });
 
 describe("sync event sequencer", () => {
@@ -217,5 +234,20 @@ describe("webSocketActions model preference restore", () => {
 
     expect(rt.reconnectAttempts).toBe(0);
     expect(rt.reconnectTimer).toBeNull();
+  });
+
+  it("reconnects immediately on foreground when bootstrap is incomplete", async () => {
+    const { ctx, actions } = setup();
+    await actions.connectWs("default");
+    const firstWs = ctx.getRuntime("default").ws;
+    const rt = ctx.getRuntime("default");
+    rt.connected.value = true;
+    rt.transcriptAuthoritative.value = false;
+
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    actions.handleVisibilityChange();
+    await Promise.resolve();
+
+    expect(rt.ws).not.toBe(firstWs);
   });
 });

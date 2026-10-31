@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Issue #516
+Superseded by ADR 0048 — `dispatch_action_job` and its text directive are removed.
 
 ## Context
 

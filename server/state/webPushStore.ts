@@ -26,15 +26,20 @@ export function createWebPushStore(db: DatabaseType) {
   return {
     save(userId: string, subscription: StoredWebPushSubscription): void {
       const now = Math.floor(Date.now() / 1000);
-      db.prepare(`
-        INSERT INTO web_push_subscriptions (endpoint, user_id, p256dh, auth, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(endpoint) DO UPDATE SET
-          user_id = excluded.user_id,
-          p256dh = excluded.p256dh,
-          auth = excluded.auth,
-          updated_at = excluded.updated_at
-      `).run(subscription.endpoint, userId, subscription.keys.p256dh, subscription.keys.auth, now, now);
+      const saveSubscription = db.transaction(() => {
+        db.prepare("DELETE FROM web_push_subscriptions WHERE user_id = ? AND endpoint != ?")
+          .run(userId, subscription.endpoint);
+        db.prepare(`
+          INSERT INTO web_push_subscriptions (endpoint, user_id, p256dh, auth, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ON CONFLICT(endpoint) DO UPDATE SET
+            user_id = excluded.user_id,
+            p256dh = excluded.p256dh,
+            auth = excluded.auth,
+            updated_at = excluded.updated_at
+        `).run(subscription.endpoint, userId, subscription.keys.p256dh, subscription.keys.auth, now, now);
+      });
+      saveSubscription();
     },
 
     remove(userId: string, endpoint: string): void {

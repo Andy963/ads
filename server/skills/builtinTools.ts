@@ -1,6 +1,5 @@
 import type { Database as DatabaseType } from "better-sqlite3";
 
-import { executeBuiltinTool } from "../tools/builtins.js";
 import { getWorkspacesDatabase, resolveWorkspaceId } from "../storage/database.js";
 import { updateMemory } from "../memory/memory.js";
 import { createLogger } from "../utils/logger.js";
@@ -59,25 +58,6 @@ export async function executeToolDirectives(args: {
         const limit = parseLimit(directive.attrs.limit);
         const matches = searchSessionMessages({ workspaceRoot: args.workspaceRoot, query, limit, db: args.db });
         results.push(formatSessionSearchResult(matches));
-        continue;
-      }
-      if (directive.name === "dispatch_action_job") {
-        const { issue, issue_title: issueTitle, ...attrs } = directive.attrs;
-        const issueId = attrs.issue_id ?? issue;
-        const res = await executeBuiltinTool(directive.name, {
-          ...attrs,
-          ...(issueId !== undefined ? { issue_id: Number(issueId) } : {}),
-          title: attrs.title ?? issueTitle ?? (issueId ? `Issue #${Number(issueId)}` : "Task"),
-          description: directive.body,
-          ...(Object.hasOwn(attrs, "acceptance_criteria") ? {
-            acceptance_criteria: attrs.acceptance_criteria.split("|").map((criterion) => criterion.trim()).filter(Boolean),
-          } : {}),
-        }, {
-          workspaceRoot: args.workspaceRoot,
-          authUserId: args.authUserId,
-          signal: args.signal,
-        });
-        results.push(`tool.dispatch_action_job: ok (job_id: ${res.job_id}, status: ${res.status})`);
         continue;
       }
       logger.warn("Rejected unknown tool directive");

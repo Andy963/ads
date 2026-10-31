@@ -34,8 +34,9 @@ describe("SystemPromptManager prompt injection", () => {
     assert(acopilotInjection);
     assert(actionsInjection);
     assert.match(acopilotInjection.text, /ADS Acopilot/);
-    assert.doesNotMatch(acopilotInjection.text, /You are the ADS Actions Developer/);
-    assert.match(actionsInjection.text, /ADS Actions Developer/);
+    assert.match(acopilotInjection.text, /owner of the full implementation lifecycle/);
+    assert.doesNotMatch(acopilotInjection.text, /You are the ADS Reviewer/);
+    assert.match(actionsInjection.text, /You are the ADS Reviewer/);
     assert.doesNotMatch(actionsInjection.text, /You are the ADS Acopilot/);
   });
 
@@ -52,7 +53,7 @@ describe("SystemPromptManager prompt injection", () => {
     const workerManager = new SystemPromptManager({ workspaceRoot: workspace, lane: "worker" as never });
     const workerInjection = workerManager.maybeInject();
     assert(workerInjection);
-    assert.match(workerInjection.text, /ADS Actions Developer/);
+    assert.match(workerInjection.text, /You are the ADS Reviewer/);
   });
 
   it("hot-loads a new database version on the next injection", () => {
@@ -84,10 +85,10 @@ describe("SystemPromptManager prompt injection", () => {
 
     for (const [lane, expected] of [
       ["acopilot", /ADS Acopilot/],
-      ["actions", /ADS Actions Developer/],
+      ["actions", /You are the ADS Reviewer/],
       ["advisor", /ADS Acopilot/],
       ["planner", /ADS Acopilot/],
-      ["worker", /ADS Actions Developer/],
+      ["worker", /You are the ADS Reviewer/],
     ] as const) {
       const manager = new SystemPromptManager({
         workspaceRoot: workspace,
@@ -105,7 +106,7 @@ describe("SystemPromptManager prompt injection", () => {
     const injection = manager.maybeInject();
 
     if (injection) {
-      assert.doesNotMatch(injection.text, /You are the ADS (?:Acopilot|Actions Developer)/);
+      assert.doesNotMatch(injection.text, /You are the ADS (?:Acopilot|Reviewer)/);
     }
   });
 

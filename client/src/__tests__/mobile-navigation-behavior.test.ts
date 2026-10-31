@@ -54,7 +54,17 @@ vi.mock("../api/ws", () => {
     constructor(_: { sessionId: string; chatSessionId?: string }) {}
 
     connect(): void {
-      queueMicrotask(() => this.onOpen?.());
+      queueMicrotask(() => {
+        this.onOpen?.();
+        this.onMessage?.({
+          type: "welcome",
+          historyMode: "snapshot",
+          bootstrapHistory: false,
+          latestSeq: 0,
+          inFlight: false,
+          contextMode: "fresh",
+        });
+      });
     }
 
     close(): void {}
@@ -64,7 +74,24 @@ vi.mock("../api/ws", () => {
     clearHistory(): void {}
   }
 
-  return { AdsWebSocket };
+  return {
+    AdsWebSocket,
+    getProjectWebSocketLane: (options: {
+      sessionId: string;
+      lane: "actions" | "acopilot";
+      configs: Record<"actions" | "acopilot", {
+        chatSessionId: string;
+        resume?: { afterSeq: number; laneGeneration: number };
+      }>;
+    }) => {
+      const config = options.configs[options.lane];
+      return new AdsWebSocket({
+        sessionId: options.sessionId,
+        chatSessionId: config.chatSessionId,
+        resume: config.resume,
+      } as never);
+    },
+  };
 });
 
 vi.mock("../components/LoginGate.vue", () => ({
@@ -318,8 +345,8 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find(".selected-agent").text()).toBe("");
     expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-show-header")).toBe("false");
     expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-show-tabs")).toBe("false");
-    expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-initial-tab")).toBe("lane-prompts");
-    // Role prompts expose no contextual actions, so the menu button hides.
+    expect(wrapper.find('[data-testid="settings-panel"]').attributes("data-initial-tab")).toBe("roles");
+    // Role instructions expose no contextual actions, so the menu button hides.
     expect(wrapper.find('[data-testid="mobile-context-menu-toggle"]').exists()).toBe(false);
 
     await wrapper.find('[data-testid="mobile-drawer-toggle"]').trigger("click");

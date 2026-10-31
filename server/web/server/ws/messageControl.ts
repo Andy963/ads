@@ -3,7 +3,7 @@ import { isAcopilotChatSessionId } from "./session.js";
 
 import type { SessionManager } from "../../../sessions/sessionManager.js";
 import { getStateDatabase } from "../../../state/database.js";
-import { createModelServiceStore } from "../../../state/modelServiceStore.js";
+import { ConversationModelUnavailableError, createModelServiceStore } from "../../../state/modelServiceStore.js";
 import { normalizeConfiguredReasoningEffort } from "../../../state/modelConfigTypes.js";
 import type { HistoryStore } from "../../../utils/historyStore.js";
 import type {
@@ -126,7 +126,22 @@ export async function handleWsControlMessage(args: {
     try {
       modelConfig = createModelServiceStore(getStateDatabase()).resolveConversation(parsed.model);
     } catch (error) {
-      args.sendJson({ type: "result", ok: false, kind: "model_override", output: error instanceof Error ? error.message : "Invalid model", client_message_id: requestId });
+      const message = error instanceof Error ? error.message : "Invalid model";
+      args.sendJson(error instanceof ConversationModelUnavailableError
+        ? {
+            type: "result",
+            ok: false,
+            kind: "model_override",
+            output: message,
+            client_message_id: requestId,
+            errorInfo: {
+              code: "conversation_model_unavailable",
+              retryable: false,
+              needsReset: false,
+              requestedModel: error.requestedModelId,
+            },
+          }
+        : { type: "result", ok: false, kind: "model_override", output: message, client_message_id: requestId });
       return { handled: true, orchestrator: args.orchestrator };
     }
     const allowedEfforts = readConfiguredReasoningEfforts(modelConfig.configJson);

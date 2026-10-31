@@ -1,58 +1,18 @@
 import path from "node:path";
-import { z } from "zod";
 import type { Database as DatabaseType } from "better-sqlite3";
 
 import { getStateDatabase } from "../../../../state/database.js";
-import { ActionJobReviewConflictError, LaneDispatchBus } from "../../../../actions/bus.js";
-import { ReviewerIncompleteError } from "../../../../reviewer/incomplete.js";
+import { LaneDispatchBus } from "../../../../actions/bus.js";
 import { ensureWebAuthTables } from "../../../auth/schema.js";
 import { ensureWebProjectTables } from "../../../projects/schema.js";
 import type { ApiRouteContext } from "../types.js";
-import { readJsonBody, sendJson } from "../../http.js";
+import { sendJson } from "../../http.js";
 import { validateWorkspacePath } from "./workspacePath.js";
-
-const dispatchSchema = z.object({
-  projectId: z.string(),
-  issueId: z.number().nullable().optional(),
-  issueTitle: z.string(),
-  issueDescription: z.string().min(1),
-  acceptanceCriteria: z.array(z.string().trim().min(1)),
-  adrs: z.array(z.object({
-    id: z.string(),
-    title: z.string(),
-    decision: z.string(),
-  })).optional(),
-  jobKind: z.enum(["github_issue", "local_prompt"]).optional(),
-  repoPath: z.string().optional(),
-  developerProfileId: z.string().nullable().optional(),
-  reviewerProfileIds: z.array(z.string()).optional(),
-}).superRefine((data, ctx) => {
-  const jobKind = data.jobKind ?? (data.issueId ? "github_issue" : "local_prompt");
-  if (jobKind === "github_issue" && data.acceptanceCriteria.length === 0) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["acceptanceCriteria"],
-      message: "GitHub Issue jobs require at least one acceptance criterion",
-    });
-  }
-});
-
-const interactiveReviewSchema = z.object({
-  projectId: z.string().trim().optional(),
-  repoPath: z.string().trim().optional(),
-  branch: z.string().trim().optional(),
-  prNumber: z.number().int().positive().optional(),
-});
 
 export interface ActionRouteDeps {
   resolveWorkspaceRoot?: (url: URL) => string;
   allowedDirs?: string[];
 }
-
-type ActionMutationBody = {
-  projectId?: unknown;
-  repoPath?: unknown;
-};
 
 export type ResolvedProjectContext = {
   projectId: string;
@@ -63,7 +23,6 @@ function toActionJobResponse(job: Record<string, unknown>): Record<string, unkno
   const {
     auth_user_id: _authUserId,
     chat_session_id: _chatSessionId,
-    head_sha: _headSha,
     ...publicJob
   } = job;
   return publicJob;
@@ -174,90 +133,12 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
   const allowedDirs = deps.allowedDirs ?? [];
 
   if (pathname === "/api/actions/dispatch" && req.method === "POST") {
-    let body: unknown;
-    try {
-      body = await readJsonBody(req);
-    } catch {
-      sendJson(res, 400, { error: "Invalid JSON body" });
-      return true;
-    }
-
-    const parsed = dispatchSchema.safeParse(body);
-    if (!parsed.success) {
-      sendJson(res, 400, { error: "Invalid dispatch payload", details: parsed.error.issues });
-      return true;
-    }
-
-    const resolved = resolveProjectContext(
-      stateDb,
-      auth.userId,
-      parsed.data.projectId,
-      parsed.data.repoPath,
-      url,
-      deps.resolveWorkspaceRoot,
-      allowedDirs,
-    );
-    if (!resolved) {
-      sendJson(res, 400, { error: `Invalid or unauthorized repository for project '${parsed.data.projectId}'` });
-      return true;
-    }
-
-    const result = bus.dispatchJob({
-      projectId: resolved.projectId,
-      issueId: parsed.data.issueId,
-      issueTitle: parsed.data.issueTitle,
-      issueDescription: parsed.data.issueDescription,
-      acceptanceCriteria: parsed.data.acceptanceCriteria,
-      adrs: parsed.data.adrs,
-      jobKind: parsed.data.jobKind ?? (parsed.data.issueId ? "github_issue" : "local_prompt"),
-      repoPath: resolved.repoPath,
-      developerProfileId: parsed.data.developerProfileId,
-      reviewerProfileIds: parsed.data.reviewerProfileIds,
-      authUserId: auth.userId,
-    });
-
-    sendJson(res, 200, result);
+    sendJson(res, 410, { error: "Asynchronous Actions dispatch is retired; implement in Acopilot." });
     return true;
   }
 
   if (pathname === "/api/actions/queue/start" && req.method === "POST") {
-    let body: ActionMutationBody = {};
-    try {
-      const parsed = await readJsonBody(req);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        body = parsed as ActionMutationBody;
-      }
-    } catch {
-      // body can be empty
-    }
-
-    const requestedProjectId = typeof body.projectId === "string" ? body.projectId : null;
-    const projectId = String(requestedProjectId ?? url.searchParams.get("projectId") ?? "").trim();
-    if (!projectId) {
-      sendJson(res, 400, { error: "Missing projectId parameter" });
-      return true;
-    }
-
-    const requestedRepoPath = typeof body.repoPath === "string" ? body.repoPath : null;
-    const resolved = resolveProjectContext(
-      stateDb,
-      auth.userId,
-      projectId,
-      requestedRepoPath,
-      url,
-      deps.resolveWorkspaceRoot,
-      allowedDirs,
-    );
-    if (!resolved) {
-      sendJson(res, 400, { error: `Invalid or unauthorized repository for project '${projectId}'` });
-      return true;
-    }
-
-    const result = await bus.evaluateQueue(resolved.projectId, resolved.repoPath, auth.userId);
-    sendJson(res, 200, {
-      ok: result.allowed,
-      ...result,
-    });
+    sendJson(res, 410, { error: "Asynchronous Actions queue execution is retired; continue in Acopilot." });
     return true;
   }
 
@@ -268,255 +149,14 @@ export async function handleActionRoutes(ctx: ApiRouteContext, deps: ActionRoute
       sendJson(res, 400, { error: `Invalid or unauthorized project '${projectId}'` });
       return true;
     }
+    bus.resumeReviewQueue(resolved.projectId, resolved.repoPath);
     const jobs = bus.getJobs(resolved.projectId, resolved.repoPath, auth.userId);
     sendJson(res, 200, jobs.map((job) => toActionJobResponse(job as unknown as Record<string, unknown>)));
     return true;
   }
 
-  if (pathname === "/api/actions/review" && req.method === "POST") {
-    let body: unknown = {};
-    try {
-      body = await readJsonBody(req);
-    } catch {
-      sendJson(res, 400, { error: "Invalid JSON body" });
-      return true;
-    }
-    const parsed = interactiveReviewSchema.safeParse(body);
-    if (!parsed.success) {
-      sendJson(res, 400, { error: "Invalid interactive review payload", details: parsed.error.issues });
-      return true;
-    }
-    const resolved = resolveProjectContext(
-      stateDb,
-      auth.userId,
-      parsed.data.projectId,
-      parsed.data.repoPath,
-      url,
-      deps.resolveWorkspaceRoot,
-      allowedDirs,
-    );
-    if (!resolved) {
-      sendJson(res, 400, { error: "Invalid or unauthorized repository for interactive review" });
-      return true;
-    }
-    try {
-      const result = await bus.reviewInteractiveTarget({
-        projectId: resolved.projectId,
-        repoPath: resolved.repoPath,
-        authUserId: auth.userId,
-        branch: parsed.data.branch,
-        prNumber: parsed.data.prNumber,
-      });
-      sendJson(res, 200, { ok: true, authoritative: true, ...result });
-    } catch (error) {
-      const conflict = error instanceof ActionJobReviewConflictError;
-      const incomplete = error instanceof ReviewerIncompleteError;
-      sendJson(res, conflict ? 409 : incomplete ? 422 : 502, {
-        error: error instanceof Error ? error.message : String(error),
-        authoritative: false,
-      });
-    }
-    return true;
-  }
-
-  const reviewMatch = /^\/api\/actions\/jobs\/([^/]+)\/review$/.exec(pathname);
-  if (reviewMatch && req.method === "POST") {
-    let body: ActionMutationBody = {};
-    try {
-      const parsed = await readJsonBody(req);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        body = parsed as ActionMutationBody;
-      }
-    } catch {
-      sendJson(res, 400, { error: "Invalid JSON body" });
-      return true;
-    }
-
-    const jobId = decodeURIComponent(reviewMatch[1] ?? "");
-    const job = bus.getJob(jobId);
-    if (!job) {
-      sendJson(res, 404, { error: `Job not found: ${jobId}` });
-      return true;
-    }
-
-    const requestedRepoPath = typeof body.repoPath === "string" ? body.repoPath : null;
-    const resolved = resolveProjectContext(
-      stateDb,
-      auth.userId,
-      typeof body.projectId === "string" ? body.projectId : job.project_id,
-      requestedRepoPath,
-      url,
-      deps.resolveWorkspaceRoot,
-      allowedDirs,
-    );
-    if (!resolved) {
-      sendJson(res, 400, { error: `Invalid or unauthorized repository for job '${jobId}'` });
-      return true;
-    }
-    const ownedJob = bus.getJobs(resolved.projectId, resolved.repoPath, auth.userId)
-      .find((candidate) => candidate.id === jobId);
-    if (!ownedJob) {
-      sendJson(res, 404, { error: `Job not found: ${jobId}` });
-      return true;
-    }
-
-    try {
-      const result = await bus.reviewFailedJob(jobId, resolved.repoPath);
-      sendJson(res, 200, { ok: true, authoritative: true, ...result });
-    } catch (error) {
-      const conflict = error instanceof ActionJobReviewConflictError;
-      const incomplete = error instanceof ReviewerIncompleteError;
-      sendJson(res, conflict ? 409 : incomplete ? 422 : 502, {
-        error: conflict || incomplete
-          ? error.message
-          : "Independent review failed; no authoritative verdict is available.",
-        authoritative: false,
-      });
-    }
-    return true;
-  }
-
-  const mergeMatch = /^\/api\/actions\/jobs\/([^/]+)\/merge$/.exec(pathname);
-  if (mergeMatch && req.method === "POST") {
-    let body: ActionMutationBody = {};
-    try {
-      const parsed = await readJsonBody(req);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        body = parsed as ActionMutationBody;
-      }
-    } catch {
-      // ignore
-    }
-
-    const jobId = decodeURIComponent(mergeMatch[1] ?? "");
-    const job = bus.getJob(jobId);
-    if (!job) {
-      sendJson(res, 404, { error: `Job not found: ${jobId}` });
-      return true;
-    }
-
-    const requestedRepoPath = typeof body.repoPath === "string" ? body.repoPath : null;
-    const resolved = resolveProjectContext(
-      stateDb,
-      auth.userId,
-      typeof body.projectId === "string" ? body.projectId : job.project_id,
-      requestedRepoPath,
-      url,
-      deps.resolveWorkspaceRoot,
-      allowedDirs,
-    );
-    if (!resolved) {
-      sendJson(res, 400, { error: `Invalid or unauthorized repository for job '${jobId}'` });
-      return true;
-    }
-    const ownedJob = bus.getJobs(resolved.projectId, resolved.repoPath, auth.userId)
-      .find((candidate) => candidate.id === jobId);
-    if (!ownedJob) {
-      sendJson(res, 404, { error: `Job not found: ${jobId}` });
-      return true;
-    }
-
-    sendJson(res, 409, { error: "Direct merge is retired. The active Developer must use reviewed delivery." });
-    return true;
-  }
-
-  const resolveMatch = /^\/api\/actions\/jobs\/([^/]+)\/resolve$/.exec(pathname);
-  if (resolveMatch && req.method === "POST") {
-    let body: ActionMutationBody & { action?: unknown; note?: unknown } = {};
-    try {
-      const parsed = await readJsonBody(req);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        body = parsed as typeof body;
-      }
-    } catch {
-      // ignore
-    }
-
-    const action = typeof body.action === "string" ? body.action.trim() : "";
-    if (action !== "dismiss") {
-      sendJson(res, 400, { error: "action must be: dismiss" });
-      return true;
-    }
-
-    const jobId = decodeURIComponent(resolveMatch[1] ?? "");
-    const job = bus.getJob(jobId);
-    if (!job) {
-      sendJson(res, 404, { error: `Job not found: ${jobId}` });
-      return true;
-    }
-    const requestedRepoPath = typeof body.repoPath === "string" ? body.repoPath : null;
-    const resolved = resolveProjectContext(
-      stateDb,
-      auth.userId,
-      typeof body.projectId === "string" ? body.projectId : job.project_id,
-      requestedRepoPath,
-      url,
-      deps.resolveWorkspaceRoot,
-      allowedDirs,
-    );
-    if (!resolved) {
-      sendJson(res, 400, { error: `Invalid or unauthorized repository for job '${jobId}'` });
-      return true;
-    }
-    const ownedJob = bus.getJobs(resolved.projectId, resolved.repoPath, auth.userId)
-      .find((candidate) => candidate.id === jobId);
-    if (!ownedJob) {
-      sendJson(res, 404, { error: `Job not found: ${jobId}` });
-      return true;
-    }
-
-    const result = bus.resolveJob(jobId, action, {
-      note: typeof body.note === "string" ? body.note : undefined,
-      repoPath: resolved.repoPath,
-    });
-    if (!result.ok) {
-      sendJson(res, 409, { error: result.error });
-      return true;
-    }
-    sendJson(res, 200, { ok: true, jobId, action, status: result.status });
-    return true;
-  }
-
-  const cancelMatch = /^\/api\/actions\/jobs\/([^/]+)\/cancel$/.exec(pathname);
-  if (cancelMatch && req.method === "POST") {
-    let body: ActionMutationBody = {};
-    try {
-      const parsed = await readJsonBody(req);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        body = parsed as ActionMutationBody;
-      }
-    } catch {
-      // ignore
-    }
-
-    const jobId = decodeURIComponent(cancelMatch[1] ?? "");
-    const job = bus.getJob(jobId);
-    if (!job) {
-      sendJson(res, 404, { error: `Job not found: ${jobId}` });
-      return true;
-    }
-    const requestedRepoPath = typeof body.repoPath === "string" ? body.repoPath : null;
-    const resolved = resolveProjectContext(
-      stateDb,
-      auth.userId,
-      typeof body.projectId === "string" ? body.projectId : job.project_id,
-      requestedRepoPath,
-      url,
-      deps.resolveWorkspaceRoot,
-      allowedDirs,
-    );
-    if (!resolved) {
-      sendJson(res, 400, { error: `Invalid or unauthorized repository for job '${jobId}'` });
-      return true;
-    }
-    const ownedJob = bus.getJobs(resolved.projectId, resolved.repoPath, auth.userId)
-      .find((candidate) => candidate.id === jobId);
-    if (!ownedJob) {
-      sendJson(res, 404, { error: `Job not found: ${jobId}` });
-      return true;
-    }
-    bus.cancelJob(jobId, resolved.repoPath);
-    sendJson(res, 200, { ok: true, jobId, status: "cancelled" });
+  if (pathname.startsWith("/api/actions/") && req.method === "POST") {
+    sendJson(res, 410, { error: "Asynchronous Actions job operations are retired; continue implementation and review in Acopilot." });
     return true;
   }
 

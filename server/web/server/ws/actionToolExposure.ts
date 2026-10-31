@@ -1,4 +1,4 @@
-import { WEB_ACTIONS_NAMESPACE } from "../start/webLaneResources.js";
+import { WEB_ACOPILOT_NAMESPACE } from "../start/webLaneResources.js";
 
 export function shouldExposeInteractiveActionTools(input: {
   isConnector: boolean;
@@ -7,5 +7,5 @@ export function shouldExposeInteractiveActionTools(input: {
 }): boolean {
   return input.factoryAvailable
     && !input.isConnector
-    && input.laneNamespace === WEB_ACTIONS_NAMESPACE;
+    && input.laneNamespace === WEB_ACOPILOT_NAMESPACE;
 }

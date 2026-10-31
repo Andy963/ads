@@ -134,12 +134,14 @@ describe("web lazy advisor lane", () => {
         sessionManager: { materialized: false, materializeCount: 0 },
         workspaceLockPool: { materialized: false, materializeCount: 0 },
       });
+      assert.equal(lanes.worker.sessionManager.getStats().sandboxMode, "read-only");
       assert.equal(lanes.advisor.sessionManager.getStats().sandboxMode, "danger-full-access");
       const firstOrchestrator = lanes.advisor.sessionManager.getOrCreate(123, workspaceRoot, false);
       assert.equal(firstOrchestrator.status().streaming, true);
       assert.equal(lanes.advisor.historyStore.add("advisor::session", { role: "user", text: "/pwd", ts: Date.now() }), true);
       const firstLock = lanes.advisor.getWorkspaceLock(workspaceRoot);
       await firstLock.runExclusive(() => "ok");
+      assert.equal(lanes.worker.getWorkspaceLock(workspaceRoot), firstLock);
 
       assert.deepEqual(lanes.advisor.inspectMaterialization(), {
         threadStorage: { materialized: true, materializeCount: 1 },

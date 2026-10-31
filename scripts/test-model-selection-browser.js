@@ -46,7 +46,7 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
       const result = { engine, width };
       report.cases.push(result);
       db.prepare("UPDATE role_profiles SET model_id = ?, system_prompt = ?, reasoning_effort = ? WHERE role = ?")
-        .run("browser-model", "Saved instructions", "high", "developer");
+        .run("browser-model", "Saved instructions", "high", "reviewer");
       const page = await browser.newPage({ viewport: { width, height: 844 }, isMobile: width < 900, hasTouch: width < 900, serviceWorkers: "block" });
       page.setDefaultTimeout(10000);
       const errors = [];
@@ -130,35 +130,35 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
           await page.locator('[data-testid="mobile-drawer-section-prompts"]').click();
         } else await page.locator('[data-testid="settings-open"]').click();
         const panel = page.locator('[data-testid="lane-prompt-panel"]');
-        await panel.locator('[data-testid="lane-prompt-lane-actions"]').click();
+        await panel.locator('[data-testid="lane-prompt-lane-reviewer"]').click();
         const editor = panel.locator("textarea");
         await editor.fill("Unsaved instructions");
         if (width < 900) {
           const bar = panel.locator(".lanePromptLaneSelector");
           result.roleBarHeight = (await bar.boundingBox()).height;
           assert.ok(result.roleBarHeight <= 36, "Role navigation should remain compact");
+          await swipeRole(bar, 90);
+          await page.waitForFunction(() => document.querySelector('.lanePromptLane[aria-pressed="true"]')?.textContent === "Acopilot");
           await swipeRole(bar, -90);
           await page.waitForFunction(() => document.querySelector('.lanePromptLane[aria-pressed="true"]')?.textContent === "Reviewer");
-          await swipeRole(bar, 90);
-          await page.waitForFunction(() => document.querySelector('.lanePromptLane[aria-pressed="true"]')?.textContent === "Developer");
           assert.equal(await editor.inputValue(), "Unsaved instructions");
           for (const gesture of [[10, 90], [-90, 0, true]]) {
             await swipeRole(bar, ...gesture);
-            assert.equal(await bar.locator('[aria-pressed="true"]').textContent(), "Developer");
+            assert.equal(await bar.locator('[aria-pressed="true"]').textContent(), "Reviewer");
           }
           await swipeRole(editor, -90);
-          assert.equal(await bar.locator('[aria-pressed="true"]').textContent(), "Developer");
+          assert.equal(await bar.locator('[aria-pressed="true"]').textContent(), "Reviewer");
           assert.equal(fixture.requests.filter(request => request.method === "PUT" && request.pathname.startsWith("/api/role-profiles")).length, 0);
           if (engine === "chromium") {
             const session = await page.context().newCDPSession(page);
             const box = await bar.boundingBox();
             const x = box.x + box.width / 2;
             const y = box.y + box.height / 2;
-            for (const direction of [-1, 1]) {
+            for (const direction of [1, -1]) {
               await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
               for (const offset of [20, 45, 90]) await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x + direction * offset, y }] });
               await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-              await page.waitForFunction(role => document.querySelector('.lanePromptLane[aria-pressed="true"]')?.textContent === role, direction < 0 ? "Reviewer" : "Developer");
+              await page.waitForFunction(role => document.querySelector('.lanePromptLane[aria-pressed="true"]')?.textContent === role, direction < 0 ? "Reviewer" : "Acopilot");
             }
             await session.detach();
             assert.equal(await editor.inputValue(), "Unsaved instructions");
@@ -171,11 +171,11 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
         assert.equal(await roleSheet.locator('[data-testid="role-model-m1"]').getAttribute("aria-pressed"), "true");
         await roleSheet.locator('[data-testid="role-model-m1"]').click();
         await roleSheet.waitFor({ state: "detached" });
-        let record = db.prepare("SELECT model_id, system_prompt FROM role_profiles WHERE role = ?").get("developer");
+        let record = db.prepare("SELECT model_id, system_prompt FROM role_profiles WHERE role = ?").get("reviewer");
         assert.deepEqual(record, { model_id: "m1", system_prompt: "Saved instructions" });
         assert.equal(await editor.inputValue(), "Unsaved instructions");
         await panel.locator('[data-testid="role-model-select"]').click();
-        await page.route("**/api/role-profiles/profile-default-developer", route => route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "Model temporarily unavailable" }) }), { times: 1 });
+        await page.route("**/api/role-profiles/profile-default-reviewer", route => route.fulfill({ status: 400, contentType: "application/json", body: JSON.stringify({ error: "Model temporarily unavailable" }) }), { times: 1 });
         await roleSheet.locator('[data-testid="role-model-m2"]').click();
         await roleSheet.locator('[role="alert"]').waitFor();
         assert.equal(await roleSheet.locator('[data-testid="role-model-m1"]').getAttribute("aria-pressed"), "true");
@@ -186,9 +186,9 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
         await roleSheet.waitFor({ state: "detached" });
         await panel.locator('[data-testid="lane-prompt-save"]').click();
         await page.waitForFunction(() => document.querySelector('[data-testid="lane-prompt-status"]')?.textContent?.startsWith("Instructions saved."));
-        record = db.prepare("SELECT model_id, system_prompt, reasoning_effort FROM role_profiles WHERE role = ?").get("developer");
+        record = db.prepare("SELECT model_id, system_prompt, reasoning_effort FROM role_profiles WHERE role = ?").get("reviewer");
         assert.deepEqual(record, { model_id: "m2", system_prompt: "Unsaved instructions", reasoning_effort: "medium" });
-        assert.equal(db.prepare("SELECT count(*) AS total FROM role_profiles").get().total, 3);
+        assert.equal(db.prepare("SELECT count(*) AS total FROM role_profiles").get().total, 2);
         assert.equal(await panel.evaluate(element => element.scrollWidth <= element.clientWidth), true);
         await page.screenshot({ path: path.join(artifacts, `${engine}-${width}-role-settings.png`) });
         assert.deepEqual(errors, []);

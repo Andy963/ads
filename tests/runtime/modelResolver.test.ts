@@ -136,7 +136,7 @@ describe("native model resolver", () => {
     }
     assert.throws(() => resolver.resolve("shared-model"), /ambiguous/i);
     services.save("conversation", ["provider-a-model"], "provider-a-model");
-    assert.throws(() => resolver.resolve("provider-b-model"), /enabled conversation model/i);
+    assert.throws(() => resolver.resolve("provider-b-model"), /not available in the conversation service/i);
   });
 
   it("rejects unsupported provider wire formats before sending a native request", () => {

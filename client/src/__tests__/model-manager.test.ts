@@ -19,7 +19,7 @@ function fixture() {
     { id: "p2", name: "Provider Two", baseUrl: "https://two.invalid/v1", isEnabled: true, hasCredential: false }];
   const models = providers.map((p, i) => ({ id: "m" + (i + 1), modelId: "same-name", displayName: p.name + " model", provider: p.name, providerId: p.id, isEnabled: true, isDefault: false }));
   const services = ["conversation", "transcription", "correction"].map(service => ({ service, modelIds: ["m1", "m2"], defaultModelId: "m1" }));
-  const profiles = ["acopilot", "developer", "reviewer"].map(role => ({ id: role, role, model_id: "m1", reasoning_effort: "high", system_prompt: role + " prompt" }));
+  const profiles = ["acopilot", "reviewer"].map(role => ({ id: role, role, model_id: "m1", reasoning_effort: "high", system_prompt: role + " prompt" }));
   const api = {
     get: vi.fn(async (url: string) => structuredClone(url === "/api/model-providers" ? providers : url === "/api/model-configs" || url === "/api/models" ? models : url === "/api/model-services" ? services : url === "/api/role-profiles" ? profiles : [])),
     post: vi.fn(async () => ({})), patch: vi.fn(async () => ({})), delete: vi.fn(async () => ({})),
@@ -593,12 +593,24 @@ describe("single-copy role settings", () => {
     wrapper.unmount();
   });
 
+  it("explains the distinct Acopilot and Reviewer responsibilities", async () => {
+    const { api } = fixture();
+    const wrapper = mount(RoleSettings, { props: { api: api as any } });
+    await flushPromises();
+    expect(wrapper.findAll(".lanePromptLane").map(button => button.text())).toEqual(["Acopilot", "Reviewer"]);
+    expect(wrapper.get('[data-testid="role-instructions-description"]').text()).toContain("implementation");
+    await wrapper.get('[data-testid="lane-prompt-lane-reviewer"]').trigger("click");
+    expect(wrapper.get('[data-testid="role-instructions-description"]').text()).toContain("Read-only");
+    expect(wrapper.get('[data-testid="role-instructions-description"]').text()).toContain("PASS or REJECT");
+    wrapper.unmount();
+  });
+
   it("preserves instruction drafts across roles and model or effort saves", async () => {
     const { api } = fixture();
     const wrapper = mount(RoleSettings, { props: { api: api as any } });
     await flushPromises();
     await wrapper.get('[data-testid="lane-prompt-editor"]').setValue("Edited prompt");
-    await wrapper.get('[data-testid="lane-prompt-lane-actions"]').trigger("click");
+    await wrapper.get('[data-testid="lane-prompt-lane-reviewer"]').trigger("click");
     await wrapper.get('[data-testid="lane-prompt-lane-acopilot"]').trigger("click");
     expect((wrapper.get('[data-testid="lane-prompt-editor"]').element as HTMLTextAreaElement).value).toBe("Edited prompt");
     await wrapper.get('[data-testid="role-model-select"]').trigger("click");

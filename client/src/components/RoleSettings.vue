@@ -49,7 +49,11 @@ const selectedModel = computed(() => {
   return exact ?? (legacy.length === 1 ? legacy[0] : undefined);
 });
 const efforts = computed(() => current.value?.reasoning_effort === "low" ? ["low", "medium", "high"] : ["medium", "high"]);
-const roles = [{ id: "acopilot", label: "Acopilot" }, { id: "developer", label: "Developer" }, { id: "reviewer", label: "Reviewer" }] as const;
+const roles = [
+  { id: "acopilot", label: "Acopilot", description: "Owns Issue definition, implementation, testing, pull requests, review fixes, and authorized delivery." },
+  { id: "reviewer", label: "Reviewer", description: "Independently reviews pull requests and returns PASS or REJECT. Read-only; never changes code." },
+] as const;
+const selectedRole = computed(() => roles.find((role) => role.id === selected.value)!);
 let swipe: { identifier: number; x: number; y: number; role: StoredRoleProfileValue; horizontal: boolean } | null = null;
 let suppressClickUntil = 0;
 watch([busy, picker, selected], () => { swipe = null; });
@@ -161,9 +165,10 @@ onBeforeUnmount(() => {
 <template>
   <section ref="panel" class="iosSettings lanePromptPanel" :class="{ 'lanePromptPanel--keyboard-open': keyboardOpen }" :aria-busy="busy" data-testid="lane-prompt-panel"
     @focusin="updateKeyboard" @focusout="updateKeyboard" @touchstart.passive="startSwipe" @touchmove="moveSwipe" @touchend="endSwipe" @touchcancel="swipe = null" @click.capture="guardSwipeClick">
-    <nav class="lanePromptLaneSelector" aria-label="Role">
-      <button v-for="role in roles" :key="role.id" type="button" class="lanePromptLane" :class="{ active: selected === role.id }" :aria-pressed="selected === role.id" :disabled="busy" :data-testid="`lane-prompt-lane-${role.id === 'developer' ? 'actions' : role.id}`" @click="selected = role.id">{{ role.label }}</button>
+    <nav class="lanePromptLaneSelector" aria-label="Agent role">
+      <button v-for="role in roles" :key="role.id" type="button" class="lanePromptLane" :class="{ active: selected === role.id }" :aria-pressed="selected === role.id" :disabled="busy" :data-testid="`lane-prompt-lane-${role.id}`" @click="selected = role.id">{{ role.label }}</button>
     </nav>
+    <p class="settingsNote roleDescription" data-testid="role-instructions-description">{{ selectedRole.description }}</p>
     <p v-if="error && !picker" class="settingsFeedback" role="alert" data-testid="lane-prompt-error">{{ error }}</p>
     <p v-if="message" class="settingsFeedback" role="status" data-testid="lane-prompt-status">{{ message }}</p>
     <template v-if="current">

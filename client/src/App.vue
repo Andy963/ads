@@ -7,7 +7,7 @@ const appVersion = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0
 import LoginGate from "./components/LoginGate.vue";
 import MainChatView from "./components/MainChat.vue";
 import MainChatModelSelectors from "./components/MainChatModelSelectors.vue";
-import ActionsQueueStack from "./components/ActionsQueueStack.vue";
+import ActionsReviewQueue from "./components/ActionsReviewQueue.vue";
 import { lazyComponent } from "./lib/asyncComponent";
 
 // Settings and session pickers sit behind modals/drawers; keep them out of the
@@ -44,12 +44,6 @@ import {
 } from "@element-plus/icons-vue";
 import { isLaneConnected } from "./lib/laneConnectionStatus";
 import { t } from "./lib/i18n";
-import {
-  hasLockingActionJob,
-  isActionJobExecutionActive,
-  isActionJobInTopQueue,
-  type ActionJobQueueItem,
-} from "./lib/actionJobs";
 const {
   loggedIn,
   cachedTranscriptAvailable,
@@ -60,7 +54,6 @@ const {
   api,
   models,
   loadModels,
-  connected,
   openProjectDialog,
   projects,
   activeProjectId,
@@ -168,7 +161,7 @@ const {
   acopilotMessages,
   acopilotQueuedPrompts,
   acopilotPendingImages,
-  acopilotConnected,
+  acopilotReady,
   acopilotBusy,
   acopilotInputLocked,
   acopilotLaneStatus,
@@ -179,6 +172,7 @@ const {
   acopilotChatKey,
   acopilotPanelKey,
   actionsAgents,
+  actionsReady,
   actionsInputLocked,
   actionsLaneStatus,
   actionsActiveAgentId,
@@ -256,14 +250,7 @@ function handleActionsViewport(viewport: TranscriptViewport): void {
 
 const activeWorkspaceTab = computed<ChatLane>(() => activeChatLane.value);
 
-type ActionJobItem = ActionJobQueueItem;
-
-const actionJobs = ref<ActionJobItem[]>([]);
-
-const actionsJobExecutionActive = computed(() => hasLockingActionJob(actionJobs.value));
-const actionsComposerInputLocked = computed(() =>
-  Boolean(actionsInputLocked.value) || actionsJobExecutionActive.value,
-);
+const actionsComposerInputLocked = computed(() => Boolean(actionsInputLocked.value));
 
 type MainChatHandle = {
   refreshAfterVisibility?: () => void | Promise<void>;
@@ -273,7 +260,7 @@ const acopilotChatRef = ref<MainChatHandle | null>(null);
 const actionsChatRef = ref<MainChatHandle | null>(null);
 
 const activeLaneConnected = computed(() =>
-  activeWorkspaceTab.value === "acopilot" ? Boolean(acopilotConnected.value) : Boolean(connected.value),
+  activeWorkspaceTab.value === "acopilot" ? Boolean(acopilotReady.value) : Boolean(actionsReady.value),
 );
 const activeLaneInputLocked = computed(() =>
   activeWorkspaceTab.value === "acopilot" ? Boolean(acopilotInputLocked.value) : actionsComposerInputLocked.value,
@@ -337,7 +324,7 @@ function projectStatusClass(projectId: string): string {
 
 function projectStatusTitle(projectId: string): string | undefined {
   const state = projectBusyState(projectId);
-  if (state === "acopilot") return "Acopilot 正在规划…";
+  if (state === "acopilot") return "Acopilot 正在处理…";
   if (state === "actions") return "Actions 正在执行…";
   if (state === "both") return "Acopilot 与 Actions 均在运行中…";
   return undefined;
@@ -489,48 +476,13 @@ function selectMobileDrawerSection(section: MobileDrawerSection): void {
   if (section === "settings") closeMobileDrawer();
 }
 
-const mobileSettingsTab = ref<"lane-prompts" | "models" | "notifications">("lane-prompts");
+const mobileSettingsTab = ref<"roles" | "models" | "notifications">("roles");
 
-function selectMobileDrawerSettings(tab: "lane-prompts" | "models" | "notifications"): void {
+function selectMobileDrawerSettings(tab: "roles" | "models" | "notifications"): void {
   if (!loggedIn.value) return;
   mobileSettingsTab.value = tab;
   selectMobileDrawerSection("settings");
 }
-
-type QueueStartResponse = {
-  allowed?: boolean;
-  reason?: string;
-  dequeuedJobId?: string;
-};
-
-const actionQueueStatusOrder: Record<ActionJobItem["status"], number> = {
-  queued: 50,
-  running: 10,
-  verifying: 20,
-  reviewing: 30,
-  waiting_merge: 40,
-  completed: 60,
-  failed: 70,
-  blocked: 45,
-  cancelled: 80,
-};
-
-const actionQueueJobs = computed(() => {
-  return actionJobs.value
-    .filter((job) => isActionJobInTopQueue(job.status))
-    .slice()
-    .sort((left, right) => {
-      const statusDelta = actionQueueStatusOrder[left.status] - actionQueueStatusOrder[right.status];
-      if (statusDelta !== 0) return statusDelta;
-      return (left.created_at ?? 0) - (right.created_at ?? 0);
-    });
-});
-
-const activeActionJob = computed(() => {
-  return actionQueueJobs.value.find((job) => isActionJobExecutionActive(job.status))
-    ?? actionQueueJobs.value.find((job) => job.status === "queued")
-    ?? null;
-});
 
 const noticeRef = ref<HTMLElement | null>(null);
 useNoticeSpace(noticeRef);
@@ -539,164 +491,7 @@ const actionsNoticeRef = ref<HTMLElement | null>(null);
 useNoticeSpace(acopilotNoticeRef);
 useNoticeSpace(actionsNoticeRef);
 
-function showActionNotice(message: string): void {
-  const text = String(message ?? "").trim();
-  if (!text) return;
-  apiNotice.value = text;
-  window.setTimeout(() => {
-    if (apiNotice.value === text) apiNotice.value = null;
-  }, 3000);
-}
-
-let actionJobsPollTimer: number | null = null;
-
-function stopActionJobsPolling(): void {
-  if (actionJobsPollTimer != null) {
-    clearInterval(actionJobsPollTimer);
-    actionJobsPollTimer = null;
-  }
-}
-
-// Job changes arrive over the project WebSocket (action_job_updated /
-// action_step), so a healthy session never polls. The interval below is a
-// degraded-mode fallback for when that stream is down: it only runs while the
-// lane is disconnected with live jobs, and stops again after the next
-// reconnect resynchronizes the snapshot.
-function ensureActionJobsPolling(): void {
-  if (actionJobsPollTimer != null || connected.value) return;
-  const hasActiveJob = actionJobs.value.some((j) =>
-    ["running", "verifying", "reviewing", "waiting_merge", "queued"].includes(j.status),
-  );
-  if (!hasActiveJob) return;
-  actionJobsPollTimer = window.setInterval(async () => {
-    await loadActionJobs();
-    const stillActive = actionJobs.value.some((j) =>
-      ["running", "verifying", "reviewing", "waiting_merge", "queued"].includes(j.status),
-    );
-    if (!stillActive || connected.value) stopActionJobsPolling();
-  }, 2000);
-}
-
-watch(connected, (isConnected) => {
-  if (!isConnected) {
-    ensureActionJobsPolling();
-    return;
-  }
-  // Reconnected: resync once, then leave updates to the event stream.
-  stopActionJobsPolling();
-  void loadActionJobs();
-});
-
-async function loadActionJobs(): Promise<void> {
-  const pid = activeProjectId.value.trim();
-  if (!pid) return;
-  try {
-    const list = await api.get<ActionJobItem[]>(`/api/actions/jobs?projectId=${encodeURIComponent(pid)}`);
-    if (Array.isArray(list)) {
-      actionJobs.value = list;
-      ensureActionJobsPolling();
-    }
-  } catch {
-    // best-effort
-  }
-}
-
-const isStartingQueue = ref(false);
-const reviewingActionJobId = ref<string | null>(null);
-
-async function triggerStartActionQueue(): Promise<void> {
-  const pid = activeProjectId.value.trim();
-  if (!pid || isStartingQueue.value) return;
-  const activeRunningJob = actionJobs.value.find((j) =>
-    ["running", "verifying", "reviewing", "waiting_merge", "blocked"].includes(j.status),
-  );
-  if (activeRunningJob) {
-    const reason = activeRunningJob.status === "blocked"
-      ? activeRunningJob.error_message || "任务需要人工处理"
-      : "已有活跃任务正在执行中";
-    showActionNotice(`启动执行被阻止：${reason} (${activeRunningJob.issue_title || activeRunningJob.id})`);
-    return;
-  }
-  isStartingQueue.value = true;
-  const repoPath = resolveActiveWorkspaceRoot() || activeProject.value?.path || "";
-  try {
-    const res = await api.post<QueueStartResponse>("/api/actions/queue/start", { projectId: pid, repoPath });
-    if (res.allowed === false) {
-      showActionNotice(`启动执行被阻止：${res.reason || "三点门禁未通过"}`);
-    } else if (res.dequeuedJobId) {
-      showActionNotice("已启动执行，详细进度将在 Actions 面板中显示。");
-    } else {
-      showActionNotice("当前没有可启动的排队任务。");
-    }
-    await loadActionJobs();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    showActionNotice(`启动执行失败：${message}`);
-  } finally {
-    isStartingQueue.value = false;
-  }
-}
-
-async function cancelActionJob(jobId: string): Promise<void> {
-  if (!jobId) return;
-  const pid = activeProjectId.value.trim();
-  const repoPath = resolveActiveWorkspaceRoot() || activeProject.value?.path || "";
-  try {
-    await api.post(`/api/actions/jobs/${encodeURIComponent(jobId)}/cancel`, { projectId: pid, repoPath });
-    await loadActionJobs();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    showActionNotice(`取消任务失败：${message}`);
-  }
-}
-
-async function resolveActionJob(jobId: string, action: string): Promise<void> {
-  if (!jobId) return;
-  const pid = activeProjectId.value.trim();
-  const repoPath = resolveActiveWorkspaceRoot() || activeProject.value?.path || "";
-  try {
-    const res = await api.post<{ status?: string; error?: string }>(
-      `/api/actions/jobs/${encodeURIComponent(jobId)}/resolve`,
-      { action, projectId: pid, repoPath },
-    );
-    showActionNotice(`任务已标记为 ${res.status ?? action}。`);
-    await loadActionJobs();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    showActionNotice(`处理任务失败：${message}`);
-  }
-}
-
-async function reviewFailedActionJob(jobId: string): Promise<void> {
-  if (!jobId || reviewingActionJobId.value) return;
-  const pid = activeProjectId.value.trim();
-  const repoPath = resolveActiveWorkspaceRoot() || activeProject.value?.path || "";
-  reviewingActionJobId.value = jobId;
-  try {
-    const result = await api.post<{
-      status: "PASS" | "REJECT";
-      summary: string;
-      defects: Array<{ file: string; line?: number; severity: "blocker" | "warning"; description: string }>;
-    }>(`/api/actions/jobs/${encodeURIComponent(jobId)}/review`, { projectId: pid, repoPath });
-    const defects = result.defects.length
-      ? `\n${result.defects.map((defect) => `- [${defect.severity.toUpperCase()}] ${defect.file}${defect.line ? `:${defect.line}` : ""}: ${defect.description}`).join("\n")}`
-      : "";
-    showActionNotice(`独立审查 ${result.status}：${result.summary}${defects}`);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    showActionNotice(`独立审查失败：${message}`);
-  } finally {
-    reviewingActionJobId.value = null;
-  }
-}
-
-// The Actions lane session is shared with running queue jobs: a prompt sent
-// mid-execution would fire an abort into the active Developer turn.
 function sendActionsPrompt(content: string): void {
-  if (actionsJobExecutionActive.value) {
-    showActionNotice("任务正在执行中，请先等待任务完成或取消任务。");
-    return;
-  }
   sendMainPrompt(content);
 }
 
@@ -707,10 +502,6 @@ function retryAcopilotMessage(message: Parameters<typeof retryPrompt>[0]): void 
 
 function retryActionsMessage(message: Parameters<typeof retryPrompt>[0]): void {
   if (!loggedIn.value) return;
-  if (actionsJobExecutionActive.value) {
-    showActionNotice("任务正在执行中，请先等待任务完成或取消任务。");
-    return;
-  }
   retryPrompt(message);
 }
 
@@ -1333,32 +1124,11 @@ onMounted(() => {
   window.addEventListener("keydown", onMobileKeydown);
   window.addEventListener("pagehide", stashComposerDrafts);
   restoreStashedComposerDrafts();
-  (window as any).__ADS_ON_ACTION_JOB_UPDATED__ = (payload?: unknown) => {
-    const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
-    if (record?.type === "action_step") {
-      const jobId = String(record.jobId ?? "").trim();
-      const currentStep = String(record.currentStep ?? record.detail ?? record.title ?? "").trim();
-      if (jobId && currentStep) {
-        actionJobs.value = actionJobs.value.map((job) => job.id === jobId ? { ...job, current_step: currentStep } : job);
-      }
-      return;
-    }
-    void loadActionJobs();
-  };
-  void loadActionJobs();
-});
-
-watch(activeProjectId, () => {
-  void loadActionJobs();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onMobileKeydown);
   window.removeEventListener("pagehide", stashComposerDrafts);
-  stopActionJobsPolling();
-  if ((window as any).__ADS_ON_ACTION_JOB_UPDATED__) {
-    delete (window as any).__ADS_ON_ACTION_JOB_UPDATED__;
-  }
   cancelDrawerGesture();
   cancelLaneGesture();
   cancelProjectLongPress();
@@ -1648,20 +1418,20 @@ function cachedConnectionStatus() {
 const actionsConnectionStatus = computed(() => {
   if (!loggedIn.value) return cachedConnectionStatus();
   const laneStatus = actionsLaneStatus.value;
-  if (!connected.value && laneStatus?.kind === "progress") return laneStatus;
+  if (!actionsReady.value && laneStatus?.kind === "progress") return laneStatus;
   const error = String(wsError.value ?? "").trim();
   if (error) return { kind: "error" as const, message: error };
-  if (!connected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
+  if (!actionsReady.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
   return laneStatus;
 });
 
 const acopilotConnectionStatus = computed(() => {
   if (!loggedIn.value) return cachedConnectionStatus();
   const laneStatus = acopilotLaneStatus.value;
-  if (!acopilotConnected.value && laneStatus?.kind === "progress") return laneStatus;
+  if (!acopilotReady.value && laneStatus?.kind === "progress") return laneStatus;
   const error = String(activeAcopilotRuntime.value.wsError.value ?? "").trim();
   if (error) return { kind: "error" as const, message: error };
-  if (!acopilotConnected.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
+  if (!acopilotReady.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
   return laneStatus;
 });
 
@@ -1840,10 +1610,10 @@ const acopilotConnectionStatus = computed(() => {
           <button
             type="button"
             class="mobileDrawerNavItem mobileDrawerNavItem--link mobileDrawerNavItem--divider"
-            :class="{ active: mobileDrawerSection === 'settings' && mobileSettingsTab === 'lane-prompts' }"
+            :class="{ active: mobileDrawerSection === 'settings' && mobileSettingsTab === 'roles' }"
             data-testid="mobile-drawer-section-prompts"
             :disabled="!loggedIn"
-            @click="selectMobileDrawerSettings('lane-prompts')"
+            @click="selectMobileDrawerSettings('roles')"
           >
             <el-icon :size="16" aria-hidden="true"><ChatDotRound /></el-icon>
             <span>角色指令</span>
@@ -2020,7 +1790,7 @@ const acopilotConnectionStatus = computed(() => {
               <span
                 class="laneTabStatusDot"
                 :class="[
-                  isLaneConnected(tab.id, { acopilot: acopilotConnected, actions: connected })
+                  isLaneConnected(tab.id, { acopilot: acopilotReady, actions: actionsReady })
                     ? 'laneTabStatusDot--connected'
                     : 'laneTabStatusDot--disconnected',
                   (tab.id === 'acopilot' ? acopilotBusy : agentBusy)
@@ -2098,7 +1868,7 @@ const acopilotConnectionStatus = computed(() => {
                 :voice-input-active="activeWorkspaceTab === 'acopilot' && loggedIn && !settingsOpen && !mobileDrawerOpen"
                 :queued-prompts="acopilotQueuedPrompts"
                 :pending-images="acopilotPendingImages"
-                :connected="acopilotConnected"
+                :connected="acopilotReady"
                 :busy="acopilotBusy"
                 :input-locked="!loggedIn || acopilotInputLocked"
                 :workspace-root="resolveActiveWorkspaceRoot()"
@@ -2132,21 +1902,15 @@ const acopilotConnectionStatus = computed(() => {
               :data-message-count="messages.length"
               :data-panel-key="`${actionsPanelKey}:${errorRecoveryGeneration}`"
             >
-              <ActionsQueueStack
-                v-if="actionQueueJobs.length"
-                :jobs="actionQueueJobs"
-                :active-job-id="activeActionJob?.id ?? null"
-                :reviewing-job-id="reviewingActionJobId"
-                :starting="isStartingQueue"
-                :reset-key="`${activeProjectId}:${accountGeneration}`"
-                @start="triggerStartActionQueue"
-                @cancel="cancelActionJob"
-                @resolve="resolveActionJob"
-                @review="reviewFailedActionJob"
-              />
               <div v-if="apiNotice && activeWorkspaceTab === 'actions'" ref="actionsNoticeRef" class="noticeToast" role="status" aria-live="polite" aria-atomic="true" tabindex="0">
                 <span class="noticeToastText">{{ apiNotice }}</span>
               </div>
+              <ActionsReviewQueue
+                v-if="loggedIn && activeProjectId"
+                :key="`${activeProjectId}:${accountGeneration}`"
+                :project-id="activeProjectId"
+                :active="activeWorkspaceTab === 'actions'"
+              />
               <MainChatView
                 ref="actionsChatRef"
                 :key="`${actionsPanelKey}:${errorRecoveryGeneration}:${accountGeneration}`"
@@ -2164,7 +1928,7 @@ const acopilotConnectionStatus = computed(() => {
                 :voice-input-active="activeWorkspaceTab === 'actions' && loggedIn && !settingsOpen && !mobileDrawerOpen"
                 :queued-prompts="actionsQueuedPrompts"
                 :pending-images="pendingImages"
-                :connected="connected"
+                :connected="actionsReady"
                 :busy="agentBusy"
                 :input-locked="!loggedIn || actionsComposerInputLocked"
                 :workspace-root="resolveActiveWorkspaceRoot()"
@@ -2194,7 +1958,7 @@ const acopilotConnectionStatus = computed(() => {
     <DraggableModal v-if="settingsOpen" card-variant="large" @close="closeSettings">
       <ModelManager
         :api="api"
-        initial-tab="lane-prompts"
+        initial-tab="roles"
         @close="closeSettings"
         @changed="onSettingsChanged"
       />

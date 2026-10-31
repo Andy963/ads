@@ -79,6 +79,8 @@ type StartedWsServer = {
   workspaceRoot: string;
   workerHistoryStore: HistoryStore;
   advisorHistoryStore: HistoryStore;
+  clients: Set<WebSocket>;
+  logLines: string[];
   syncEventStore?: SyncEventStore;
 };
 
@@ -102,6 +104,7 @@ async function startWsServer(options: StartWsServerOptions, t?: TestContext): Pr
   const server = http.createServer();
   const clients = new Set<WebSocket>();
   const clientMetaByWs = new Map<WebSocket, WsClientMeta>();
+  const logLines: string[] = [];
   const workerSessionManager =
     options.workerSessionManager ?? new SessionManager(0, 0, "workspace-write", "test-model");
   const advisorSessionManager =
@@ -117,7 +120,7 @@ async function startWsServer(options: StartWsServerOptions, t?: TestContext): Pr
 
   const wss = attachWebSocketServer({
     server,
-    logger: { info: () => {}, warn: () => {}, debug: () => {} },
+    logger: { info: (message) => logLines.push(message), warn: () => {}, debug: () => {} },
     config: {
       workspaceRoot,
       allowedDirs: [workspaceRoot],
@@ -195,6 +198,8 @@ async function startWsServer(options: StartWsServerOptions, t?: TestContext): Pr
     workspaceRoot,
     workerHistoryStore,
     advisorHistoryStore,
+    clients,
+    logLines,
     syncEventStore,
   };
 }
@@ -595,6 +600,78 @@ describe("web/server/ws in-band switch_chat_session", () => {
   });
 });
 
+describe("web/server/ws multiplexed lanes", () => {
+  let started: StartedWsServer | null = null;
+  const sockets: WebSocket[] = [];
+
+  beforeEach(async (t) => {
+    const workerFactory = createFakeSessionFactory("worker");
+    const advisorFactory = createFakeSessionFactory("advisor");
+    started = await startWsServer({
+      maxClients: 1,
+      pingIntervalMs: 0,
+      maxMissedPongs: 0,
+      workerSessionManager: new SessionManager(0, 0, "read-only", "test-model", undefined, undefined, {
+        createSession: workerFactory.factory as never,
+      }),
+      advisorSessionManager: new SessionManager(0, 0, "danger-full-access", "test-model", undefined, undefined, {
+        createSession: advisorFactory.factory as never,
+      }),
+      withSyncEventStore: true,
+    }, t);
+  });
+
+  afterEach(async () => {
+    for (const ws of sockets) {
+      try {
+        ws.close();
+      } catch {
+        // ignore
+      }
+    }
+    sockets.length = 0;
+    await stopWsServer(started);
+    started = null;
+  });
+
+  it("uses one server connection and keeps both lane streams isolated", async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${started!.port}/ws`, [
+      "ads-v1", "ads-session.main", "ads-chat.main", "ads-chat.acopilot",
+    ]);
+    sockets.push(ws);
+    const actionsWelcomePromise = waitForWsMessage(ws, (message) => message.type === "welcome" && message.chatSessionId === "main");
+    const acopilotWelcomePromise = waitForWsMessage(ws, (message) => message.type === "welcome" && message.chatSessionId === "acopilot");
+    await waitForWsOpen(ws);
+    const [actionsWelcome, acopilotWelcome] = await Promise.all([actionsWelcomePromise, acopilotWelcomePromise]);
+
+    assert.deepEqual(actionsWelcome.subscribedChatSessionIds, ["main", "acopilot"]);
+    assert.deepEqual(acopilotWelcome.subscribedChatSessionIds, ["main", "acopilot"]);
+    assert.equal(started!.clients.size, 1);
+    assert.equal(started!.logLines.filter((line) => line.includes("client connected")).length, 1);
+
+    const actionsResultPromise = waitForWsMessage(
+      ws,
+      (message) => message.type === "result" && message.chatSessionId === "main",
+    );
+    const acopilotResultPromise = waitForWsMessage(
+      ws,
+      (message) => message.type === "result" && message.chatSessionId === "acopilot",
+    );
+    ws.send(JSON.stringify({ type: "prompt", payload: "Actions lane", client_message_id: "actions", chat_session_id: "main" }));
+    ws.send(JSON.stringify({ type: "prompt", payload: "Acopilot lane", client_message_id: "acopilot", chat_session_id: "acopilot" }));
+    const [actionsResult, acopilotResult] = await Promise.all([actionsResultPromise, acopilotResultPromise]);
+    assert.equal(actionsResult.output, "ok");
+    assert.equal(acopilotResult.output, "ok");
+
+    const actionsHistoryKey = resolveSyncLaneKey({ authUserId: "test", sessionId: "main", chatSessionId: "main" });
+    const acopilotHistoryKey = resolveSyncLaneKey({ authUserId: "test", sessionId: "main", chatSessionId: "acopilot" });
+    assert.ok(started!.workerHistoryStore.get(actionsHistoryKey).some((entry) => entry.text === "Actions lane"));
+    assert.equal(started!.workerHistoryStore.get(actionsHistoryKey).some((entry) => entry.text === "Acopilot lane"), false);
+    assert.ok(started!.advisorHistoryStore.get(acopilotHistoryKey).some((entry) => entry.text === "Acopilot lane"));
+    assert.equal(started!.advisorHistoryStore.get(acopilotHistoryKey).some((entry) => entry.text === "Actions lane"), false);
+  });
+});
+
 describe("web/server/ws interactive Actions tools", () => {
   let started: StartedWsServer | null = null;
   let workerFactory: ReturnType<typeof createFakeSessionFactory>;
@@ -616,7 +693,6 @@ describe("web/server/ws interactive Actions tools", () => {
     });
     const actionTools = {
       review_action: async () => ({ ok: true }),
-      deliver_action: async () => ({ ok: true }),
       dispose: async () => {},
     };
 
@@ -660,7 +736,7 @@ describe("web/server/ws interactive Actions tools", () => {
     started = null;
   });
 
-  it("passes tools only through the browser Actions prompt path", async () => {
+  it("passes tools only through the browser Acopilot prompt path", async () => {
     const sendPrompt = async (protocols: string[], prompt: string, headers?: Record<string, string>): Promise<void> => {
       const ws = new WebSocket(`ws://127.0.0.1:${started!.port}/ws`, protocols, {
         origin: "http://localhost",
@@ -678,11 +754,12 @@ describe("web/server/ws interactive Actions tools", () => {
     await sendPrompt(["ads-v1", "ads-session.browser", "ads-chat.main"], "Actions prompt", { "x-user-id": "browser" });
     assert.equal(workerFactory.created.length, 1);
     assert.equal(workerActionTools.length, 1);
-    assert.ok(workerActionTools[0]);
+    assert.equal(workerActionTools[0], undefined);
 
-    await sendPrompt(["ads-v1", "ads-session.advisor", "ads-chat.acopilot"], "Advisor prompt", { "x-user-id": "advisor" });
+    await sendPrompt(["ads-v1", "ads-session.advisor", "ads-chat.acopilot"], "Acopilot prompt", { "x-user-id": "advisor" });
     assert.equal(advisorFactory.created.length, 1);
-    assert.deepEqual(advisorActionTools, [undefined]);
+    assert.equal(advisorActionTools.length, 1);
+    assert.ok(advisorActionTools[0]);
 
     await sendPrompt(
       ["ads-v1", "ads-session.connector", "ads-chat.main"],

@@ -1,4 +1,4 @@
-import type { ProjectTab } from "../controller";
+import type { ProjectRuntime, ProjectTab } from "../controller";
 
 export type ProjectDeps = {
   activateProject: (projectId: string) => Promise<void>;
@@ -10,4 +10,5 @@ export type ProjectDeps = {
 export type WsDeps = {
   updateProject: (id: string, updates: Partial<ProjectTab>) => void;
   persistProjects: () => void;
+  refreshModelPreferences?: (rt: ProjectRuntime) => Promise<{ modelId: string; label: string } | null>;
 };

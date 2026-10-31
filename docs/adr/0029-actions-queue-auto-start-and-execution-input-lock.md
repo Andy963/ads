@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by ADR 0048 — Actions auto-start remains for serialized Reviewer jobs; implementation jobs are not dispatched to this queue.
 
 ## Context
 

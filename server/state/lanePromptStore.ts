@@ -106,7 +106,7 @@ export function createLanePromptStore(db: DatabaseType) {
   // snapshots: both the editor and runtime read the same role profile.
   const getSnapshot = (rawLane: unknown): LanePromptSnapshot => {
     const lane = validateLane(rawLane);
-    const profile = getDefaultRoleProfile(db, lane === "actions" ? "developer" : "acopilot");
+    const profile = getDefaultRoleProfile(db, lane === "actions" ? "reviewer" : "acopilot");
     if (!profile) throw new Error(`Role prompt is not initialized: ${lane}`);
     const current = { lane, version: profile.version, prompt: profile.system_prompt, isBase: profile.system_prompt === BASE_LANE_PROMPTS[lane], createdAt: profile.updated_at };
     return {
@@ -131,7 +131,7 @@ export function createLanePromptStore(db: DatabaseType) {
   const setLanePrompt = (rawLane: unknown, rawPrompt: unknown, now = Date.now()): LanePromptSnapshot => {
     const lane = validateLane(rawLane);
     const prompt = validatePrompt(rawPrompt);
-    const profile = getDefaultRoleProfile(db, lane === "actions" ? "developer" : "acopilot");
+    const profile = getDefaultRoleProfile(db, lane === "actions" ? "reviewer" : "acopilot");
     if (!profile) throw new Error(`Role prompt is not initialized: ${lane}`);
     saveRoleProfile(db, { ...profile, system_prompt: prompt, is_enabled: Boolean(profile.is_enabled), is_default: Boolean(profile.is_default) }, now);
     return getSnapshot(lane);

@@ -5,16 +5,18 @@ import { BASE_LANE_PROMPTS } from "./lanePromptDefaults.js";
 
 export function ensureRoleProfiles(db: DatabaseType): void {
   db.exec(`CREATE TABLE IF NOT EXISTS role_profiles (
-    id TEXT PRIMARY KEY, role TEXT NOT NULL UNIQUE CHECK (role IN ('acopilot', 'developer', 'reviewer')),
-    name TEXT NOT NULL, model_id TEXT NOT NULL, reasoning_effort TEXT NOT NULL DEFAULT 'high',
+    id TEXT PRIMARY KEY,
+    role TEXT NOT NULL UNIQUE CHECK (role IN ('acopilot', 'reviewer')),
+    name TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    reasoning_effort TEXT NOT NULL DEFAULT 'high',
     system_prompt TEXT NOT NULL, is_enabled INTEGER NOT NULL DEFAULT 1,
     is_default INTEGER NOT NULL DEFAULT 1, version INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL
   )`);
   const insert = db.prepare(`INSERT INTO role_profiles (id, role, name, model_id, system_prompt, updated_at)
     SELECT ?, ?, ?, '', ?, ? WHERE NOT EXISTS (SELECT 1 FROM role_profiles WHERE role = ?)`);
   for (const [role, prompt] of [
-    ["acopilot", BASE_LANE_PROMPTS.acopilot], ["developer", BASE_LANE_PROMPTS.actions],
-    ["reviewer", "You are the Detached Reviewer for ADS. Review the proposed change independently."],
+    ["acopilot", BASE_LANE_PROMPTS.acopilot], ["reviewer", BASE_LANE_PROMPTS.actions],
   ]) insert.run(`profile-default-${role}`, role, role, prompt, Date.now(), role);
 }
 

@@ -248,6 +248,7 @@ describe("useLaneRuntimeBridge", () => {
       activeAcopilotRuntime: shallowRef({
         ...createRuntime(),
         connected: ref(true),
+        transcriptAuthoritative: ref(true),
       }),
       queuedPrompts: ref([]),
       pendingImages: ref([]),
@@ -264,6 +265,33 @@ describe("useLaneRuntimeBridge", () => {
     acopilotBridge.handleLaneNewSession();
     expect(startNewAcopilotSession).toHaveBeenCalledTimes(1);
     expect(clearAcopilotChat).not.toHaveBeenCalled();
+  });
+
+  it("does not expose an open but unbootstrapped websocket as ready", () => {
+    const actionsRuntime = {
+      ...createRuntime(),
+      connected: ref(true),
+      ws: {},
+      transcriptAuthoritative: ref(false),
+    };
+    const bridge = useLaneRuntimeBridge({
+      activeProjectId: ref("p1"),
+      activeProject: ref({ chatSessionId: "main" }),
+      activeRuntime: shallowRef(actionsRuntime),
+      activeAcopilotRuntime: shallowRef(createRuntime()),
+      queuedPrompts: ref([]),
+      pendingImages: ref([]),
+      agentBusy: ref(false),
+      clearAcopilotChat: () => {},
+      startNewChatSession: () => {},
+      resumeAcopilotThread: () => {},
+      resumeTaskThread: () => {},
+    });
+
+    expect(bridge.actionsReady.value).toBe(false);
+
+    actionsRuntime.transcriptAuthoritative.value = true;
+    expect(bridge.actionsReady.value).toBe(true);
   });
 
   it("preserves every delivery state through both lane projections", () => {

@@ -28,7 +28,7 @@ const enUS: Record<keyof typeof zhCN, string> = {
   "webPush.httpsRequired": "Push notifications require ADS to be served over HTTPS.",
   "webPush.iosInstallRequired": "On iPhone, iOS 16.4 or later is required. Add ADS to your Home Screen in Safari, then open it from the Home Screen to enable notifications.",
   "webPush.unsupported": "This browser does not support Web Push notifications.",
-  "webPush.permissionDenied": "Notifications are blocked. Allow notifications for ADS in your system or browser settings.",
+  "webPush.permissionDenied": "Your browser has blocked notifications and removed this subscription. Allow notifications for ADS in your system or browser settings, then enable them again.",
   "webPush.permissionNotGranted": "Notification permission was not granted.",
   "webPush.serverDisabled": "Web Push is not configured on the server.",
   "webPush.loadFailed": "Could not load push settings. Please try again.",
@@ -37,7 +37,7 @@ const enUS: Record<keyof typeof zhCN, string> = {
   "webPush.enable": "Enable notifications",
   "webPush.disable": "Disable notifications on this device",
   "webPush.enabled": "Notifications are enabled on this device.",
-  "webPush.notEnabled": "Your browser will ask for notification permission only after you tap Enable.",
+  "webPush.notEnabled": "This browser has no active notification subscription. Tap Enable to create one.",
 };
 
 export default enUS;

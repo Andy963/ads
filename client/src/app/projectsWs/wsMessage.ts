@@ -256,6 +256,7 @@ export type WsMessageHandlerArgs = {
   randomId: (prefix: string) => string;
 
   updateProject: (id: string, updates: Partial<ProjectTab>) => void;
+  refreshModelPreferences?: (rt: ProjectRuntime) => Promise<{ modelId: string; label: string } | null>;
 
   applyResumeHistory: ChatActions["applyResumeHistory"];
   cancelPendingResume: ChatActions["cancelPendingResume"];
@@ -292,6 +293,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     wsInstance,
     randomId,
     updateProject,
+    refreshModelPreferences,
     applyResumeHistory,
     cancelPendingResume,
     clearPendingPrompt,
@@ -320,6 +322,18 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
   rt.inputLocked ??= { value: false };
   rt.laneStatus ??= { value: null };
   rt.retiredExecuteKeys ??= new Set<string>();
+  const refreshUnavailableModel = (message: string): void => {
+    if (!refreshModelPreferences) return;
+    void refreshModelPreferences(rt)
+      .then((next) => {
+        if (!next || rt.turnInFlight) return;
+        rt.laneStatus.value = {
+          kind: "error",
+          message: `${message}\n\n已切换到可用模型：${next.label}。请重新发送。`,
+        };
+      })
+      .catch(() => undefined);
+  };
   let recoveredBackendActivitySeen = false;
   let terminalFenceActive = false;
   let terminalFenceSeq = 0;
@@ -332,7 +346,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
   }>();
   const explicitCommandIdentities = new Map<string, string>();
   const seenCommandFrameIds = new Set<string>();
-  const seenActionFileChangeActivities = new Set<string>();
   let legacyCommandCounter = 0;
 
   const finiteOffset = (value: unknown): number | null => {
@@ -375,7 +388,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     legacyCommandTracks.clear();
     explicitCommandIdentities.clear();
     seenCommandFrameIds.clear();
-    seenActionFileChangeActivities.clear();
     rt.latestExecuteKey = undefined;
     rt.latestExecuteSequence = undefined;
     rt.latestExecuteTimestamp = undefined;
@@ -1779,10 +1791,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const existing = rt.messages.value;
       if (role === "user") {
         markTurnActive(rec);
-        if (String(rec.jobId ?? "").trim()) {
-          resetTurnPatchSummary();
-          seenActionFileChangeActivities.clear();
-        }
         const clientMessageId = String(rec.clientMessageId ?? rec.client_message_id ?? rec.jobId ?? "").trim();
         const lastUser = [...existing].reverse().find((m) => m.role === "user");
         const alreadyHas = clientMessageId
@@ -1813,6 +1821,20 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
       } else if (role === "status") {
         if (text) {
+          if (kind.startsWith("action_step:")) {
+            const stepIdentity = kind.slice("action_step:".length).trim();
+            const stepId = stepIdentity ? `action-step:${stepIdentity}` : String(rec.id ?? randomId("action-step"));
+            if (!existing.some((message) => message.id === stepId)) {
+              pushMessageBeforeLive({
+                id: stepId,
+                role: "system",
+                kind: "text",
+                content: text,
+                ts: eventTs,
+              }, rt);
+            }
+            return;
+          }
           const isDelivery = kind === "pr_delivery" || kind.startsWith("pr_delivery:") || (Boolean(jobId) && (
             text.includes("Review approved") ||
             text.includes("PR #") ||
@@ -1840,148 +1862,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             rt.laneStatus.value = { kind: "info", message: text };
           }
         }
-      }
-      return;
-    }
-
-    if (
-      type === "command"
-      && typeof (msg as Record<string, unknown>).jobId === "string"
-      && (msg as Record<string, unknown>).jobId.trim().length > 0
-    ) {
-      const rec = msg as Record<string, unknown>;
-      const cmd = normalizeWireCommand(rec.command).trim();
-      if (cmd) {
-        const identity = String(rec.identity ?? rec.id ?? rec.jobId ?? "").trim() || null;
-        const status = String(rec.status ?? "running").trim().toLowerCase();
-        const terminal = status === "completed" || status === "failed" || status === "declined" || status === "cancelled";
-        const key = commandKeyForWsEvent(cmd, identity);
-        if (key) {
-          ingestCommand(cmd, rt, null);
-          const output = normalizeWireText(rec.outputDelta ?? rec.output);
-          upsertExecuteBlock(key, cmd, output, rt, {
-            snapshot: true,
-            terminal,
-            eventId: String(rec.eventId ?? rec.id ?? `action-cmd:${identity ?? cmd}`).trim(),
-            ts: Number(rec.ts) || Date.now(),
-          } satisfies ExecuteBlockUpdate);
-        }
-      }
-      return;
-    }
-
-    if (type === "assistant_done") {
-      const rec = msg as Record<string, unknown>;
-      const text = firstWireText(rec.text, rec.output, rec.content).trim();
-      const jobId = String(rec.jobId ?? "").trim();
-      const stableId = jobId ? `${jobId}:assistant_done` : "";
-      const hadStreamingText = Boolean(text) && rt.messages.value.some((message) =>
-        message.role === "assistant" && message.streaming && message.content === text,
-      );
-      sealActiveStreamingAssistant?.(rt);
-      if (text && !hadStreamingText) {
-        const existing = rt.messages.value;
-        const alreadyHas = stableId
-          ? existing.some((message) => message.id === stableId)
-          : existing.some((message) => message.role === "assistant" && message.content === text);
-        if (!alreadyHas) {
-          pushMessageBeforeLive({
-            id: stableId || randomId("action-assistant"),
-            role: "assistant",
-            kind: "text",
-            content: text,
-            ts: Number(rec.ts) || Date.now(),
-          }, rt);
-        }
-      }
-      return;
-    }
-
-    if (type === "file_change") {
-      const rec = msg as Record<string, unknown>;
-      const changes = Array.isArray(rec.changes) ? rec.changes : [];
-      const files = changes
-        .map((change) => {
-          if (!change || typeof change !== "object") return null;
-          const entry = change as { kind?: unknown; path?: unknown };
-          const path = String(entry.path ?? "").trim();
-          if (!path) return null;
-          return {
-            path,
-            added: null,
-            removed: null,
-          } satisfies ChatPatchFile;
-        })
-        .filter((file): file is ChatPatchFile => file !== null);
-      if (files.length === 0) return;
-
-      for (const file of files) {
-        if (!turnPatchFilesByPath.has(file.path)) turnPatchOrder.push(file.path);
-        turnPatchFilesByPath.set(file.path, { added: file.added, removed: file.removed });
-      }
-      upsertTurnPatchMessage(buildTurnPatchPayload(), {
-        beforeTerminalAssistant: true,
-        ts: finiteTimestamp(rec.timestamp ?? rec.ts),
-      });
-
-      const status = String(rec.status ?? "running").trim().toLowerCase();
-      const identity = String(rec.identity ?? rec.id ?? rec.jobId ?? "").trim();
-      const activityKey = `${identity}:${status}:${files.map((file) => file.path).join(",")}`;
-      if (!seenActionFileChangeActivities.has(activityKey)) {
-        seenActionFileChangeActivities.add(activityKey);
-        const verb = status === "completed" ? "Updated" : "Updating";
-        const summary = `${verb} ${files.map((file) => file.path).join(", ")}`;
-        ingestExploredActivity(rt.liveActivity, "Write", summary);
-        upsertLiveActivity(rt);
-      }
-      return;
-    }
-
-    if (type === "action_step") {
-      const globalWindow = typeof window !== "undefined"
-        ? (window as unknown as { __ADS_ON_ACTION_JOB_UPDATED__?: (payload: unknown) => void })
-        : null;
-      const phase = firstWireText(msg.phase).trim();
-      const detail = firstWireText(
-        msg.detail,
-        msg.title,
-        phase ? `Developer ${phase} activity` : "Developer activity",
-      ).trim();
-      const jobId = firstWireText(msg.jobId).trim();
-      const rawIdentity = firstWireText(msg.identity, msg.id).trim();
-      const stepIdentity = rawIdentity || `${jobId}:${phase}:${detail}`;
-      const stepId = `action-step:${stepIdentity}`;
-      const content = phase ? `[Developer ${phase}] ${firstWireText(msg.detail, msg.title).trim() || "Activity"}` : detail;
-      const ts = finiteTimestamp(msg.timestamp ?? msg.ts);
-      const isDuplicate = rawIdentity
-        ? rt.messages.value.some((message) => message.id === stepId)
-        : rt.messages.value.some((message) => message.id === stepId || (message.role === "system" && message.id.startsWith(`${jobId}:action-step:`) && message.content === content));
-      if (
-        detail &&
-        jobId &&
-        !isDuplicate
-      ) {
-        pushMessageBeforeLive({
-          id: stepId,
-          role: "system",
-          kind: "text",
-          content,
-          ts,
-        }, rt);
-      }
-      if (detail && typeof globalWindow?.__ADS_ON_ACTION_JOB_UPDATED__ === "function") {
-        globalWindow.__ADS_ON_ACTION_JOB_UPDATED__({
-          ...(msg as Record<string, unknown>),
-          currentStep: detail,
-        });
-      }
-      return;
-    }
-
-    if (type === "action_job_updated") {
-      const globalWindow = typeof window !== "undefined" ? (window as unknown as { __ADS_ON_ACTION_JOB_UPDATED__?: (payload: unknown) => void }) : null;
-      if (typeof globalWindow?.__ADS_ON_ACTION_JOB_UPDATED__ === "function") {
-        globalWindow.__ADS_ON_ACTION_JOB_UPDATED__(msg);
       }
       return;
     }
@@ -2247,6 +2127,12 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           };
         } else {
           rt.laneStatus.value = { kind: "error", message: output || "Model switch failed." };
+          const failureInfo = msg.errorInfo && typeof msg.errorInfo === "object"
+            ? (msg.errorInfo as { code?: string })
+            : undefined;
+          if (failureInfo?.code === "conversation_model_unavailable") {
+            refreshUnavailableModel(output || "Model switch failed.");
+          }
         }
         return;
       }
@@ -2424,6 +2310,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         );
       }
       if (isUserAbort) discardAbortedPromptCard(rt, removeQueuedPrompt);
+      if (errorInfo?.code === "conversation_model_unavailable") refreshUnavailableModel(userMessage);
       void flushQueuedPrompts(rt, { preserveErrorStatus: true });
       return;
     }

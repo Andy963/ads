@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by ADR 0048 for the asynchronous dispatch workflow; the two-lane split it introduces remains.
 
 ## Context
 

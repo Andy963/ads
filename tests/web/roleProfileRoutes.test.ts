@@ -15,7 +15,7 @@ it("saves role model, effort and instructions independently through the real HTT
   const store = createGlobalModelConfigStore(db);
   const model = store.upsertModelConfig({ id: "role-catalog-id", modelId: "legacy-model-name", displayName: "Model alias", provider: "openai", isEnabled: true, isDefault: true });
   createModelServiceStore(db).save("conversation", [model.id], model.id);
-  const profile = getDefaultRoleProfile(db, "developer")!;
+  const profile = getDefaultRoleProfile(db, "acopilot")!;
   db.prepare("UPDATE role_profiles SET model_id = ? WHERE id = ?").run(model.modelId, profile.id);
   const count = db.prepare("SELECT count(*) AS total FROM role_profiles").get();
   const server = createServer((req, res) => {
@@ -44,7 +44,7 @@ it("saves role model, effort and instructions independently through the real HTT
     assert.equal(effort.body.system_prompt, profile.system_prompt);
     const invalid = await update({ model_id: "missing" });
     assert.equal(invalid.status, 400);
-    assert.equal(getDefaultRoleProfile(db, "developer")?.model_id, model.id);
+    assert.equal(getDefaultRoleProfile(db, "acopilot")?.model_id, model.id);
     createModelServiceStore(db).save("conversation", [], null);
     const prompt = await update({ system_prompt: "Edited instructions" });
     assert.equal(prompt.status, 200);

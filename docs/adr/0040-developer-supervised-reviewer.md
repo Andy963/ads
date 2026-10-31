@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by ADR 0048.
 
 ## Context
 

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { Database as DatabaseType } from "better-sqlite3";
 
+import { BASE_LANE_PROMPTS } from "./lanePromptDefaults.js";
 import { ensureLanePromptTables } from "./lanePromptStore.js";
 import { sanitizeModelConfigJson } from "./modelConfigTypes.js";
 import { ensurePromptQueueTables } from "./promptQueueStore.js";
@@ -1015,7 +1016,260 @@ Core reviewing rules:
     description: "Store authenticated Web Push subscriptions",
     up: ensureWebPushTables,
   },
+  {
+    version: 38,
+    description: "Consolidate implementation ownership into Acopilot and retire legacy Developer jobs",
+    up: (db) => {
+      const hasRoleProfiles = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'role_profiles'")
+        .get();
+      if (!hasRoleProfiles) ensureRoleProfiles(db);
+
+      type LegacyRoleProfile = {
+        id: string;
+        role: string;
+        name: string;
+        model_id: string;
+        reasoning_effort: string;
+        system_prompt: string;
+        is_enabled: number;
+        is_default: number;
+        version: number;
+        updated_at: number;
+      };
+      const legacyProfiles = db.prepare("SELECT * FROM role_profiles").all() as LegacyRoleProfile[];
+      const preferredProfile = (role: string): LegacyRoleProfile | undefined => legacyProfiles
+        .filter((profile) => profile.role === role)
+        .sort((left, right) => right.is_default - left.is_default || right.updated_at - left.updated_at || left.id.localeCompare(right.id))[0];
+      const acopilotProfile = preferredProfile("acopilot") ?? preferredProfile("developer");
+      const reviewerProfile = preferredProfile("reviewer");
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS legacy_role_profile_archive (
+          migration_version INTEGER NOT NULL,
+          profile_id TEXT NOT NULL,
+          role TEXT NOT NULL,
+          profile_json TEXT NOT NULL,
+          archived_at INTEGER NOT NULL,
+          PRIMARY KEY (migration_version, profile_id)
+        );
+        DROP INDEX IF EXISTS idx_role_profiles_role;
+        DROP INDEX IF EXISTS idx_role_profile_single;
+        ALTER TABLE role_profiles RENAME TO role_profiles_legacy_roles;
+        CREATE TABLE role_profiles (
+          id TEXT PRIMARY KEY,
+          role TEXT NOT NULL UNIQUE CHECK (role IN ('acopilot', 'reviewer')),
+          name TEXT NOT NULL,
+          model_id TEXT NOT NULL,
+          reasoning_effort TEXT NOT NULL DEFAULT 'high',
+          system_prompt TEXT NOT NULL,
+          is_enabled INTEGER NOT NULL DEFAULT 1,
+          is_default INTEGER NOT NULL DEFAULT 0,
+          version INTEGER NOT NULL DEFAULT 1,
+          updated_at INTEGER NOT NULL
+        );
+        DROP TABLE role_profiles_legacy_roles;
+        CREATE INDEX idx_role_profiles_role ON role_profiles(role, is_enabled);
+      `);
+
+      const now = Date.now();
+      const archiveProfile = db.prepare(`
+        INSERT OR IGNORE INTO legacy_role_profile_archive
+          (migration_version, profile_id, role, profile_json, archived_at)
+        VALUES (38, ?, ?, ?, ?)
+      `);
+      for (const profile of legacyProfiles.filter((entry) => entry.role === "developer")) {
+        archiveProfile.run(profile.id, profile.role, JSON.stringify(profile), now);
+      }
+
+      const insertProfile = db.prepare(`
+        INSERT INTO role_profiles (
+          id, role, name, model_id, reasoning_effort, system_prompt,
+          is_enabled, is_default, version, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      if (acopilotProfile) {
+        const promoted = acopilotProfile.role === "developer";
+        insertProfile.run(
+          acopilotProfile.id,
+          "acopilot",
+          promoted ? acopilotProfile.name.replace(/Developer/g, "Acopilot") : acopilotProfile.name,
+          acopilotProfile.model_id,
+          acopilotProfile.reasoning_effort,
+          promoted ? BASE_LANE_PROMPTS.acopilot : acopilotProfile.system_prompt,
+          acopilotProfile.is_enabled,
+          acopilotProfile.is_default,
+          acopilotProfile.version + (promoted ? 1 : 0),
+          promoted ? now : acopilotProfile.updated_at,
+        );
+      }
+      if (reviewerProfile) {
+        insertProfile.run(
+          reviewerProfile.id,
+          "reviewer",
+          reviewerProfile.name,
+          reviewerProfile.model_id,
+          reviewerProfile.reasoning_effort,
+          reviewerProfile.system_prompt,
+          reviewerProfile.is_enabled,
+          reviewerProfile.is_default,
+          reviewerProfile.version,
+          reviewerProfile.updated_at,
+        );
+      }
+      ensureRoleProfiles(db);
+
+      const commonPrompt = BASE_LANE_PROMPTS.acopilot.split("\n\nAcopilot lane:")[0] ?? "";
+      const acopilotSection = BASE_LANE_PROMPTS.acopilot.slice(BASE_LANE_PROMPTS.acopilot.indexOf("Acopilot lane:"));
+      const reviewerSection = BASE_LANE_PROMPTS.actions.slice(BASE_LANE_PROMPTS.actions.indexOf("Actions lane:"));
+      const updateProfilePrompt = db.prepare(`
+        UPDATE role_profiles
+        SET system_prompt = ?, version = version + 1, updated_at = ?
+        WHERE role = ? AND system_prompt <> ?
+      `);
+      for (const role of ["acopilot", "reviewer"] as const) {
+        const profile = db.prepare("SELECT name, version, system_prompt FROM role_profiles WHERE role = ?").get(role) as
+          | { name: string; version: number; system_prompt: string }
+          | undefined;
+        if (!profile) continue;
+
+        const basePrompt = BASE_LANE_PROMPTS[role === "acopilot" ? "acopilot" : "actions"];
+        const defaultName = role === "acopilot" ? "Default Acopilot" : "Default Reviewer";
+        let preservedPrompt = profile.version === 1 && profile.name === defaultName
+          ? basePrompt
+          : profile.system_prompt;
+        if (role === "acopilot") preservedPrompt = stripRetiredAcopilotClaims(preservedPrompt).trim();
+        const section = role === "acopilot" ? acopilotSection : reviewerSection;
+        const withCommonRules = preservedPrompt.includes(commonPrompt)
+          ? preservedPrompt
+          : `${commonPrompt}\n\n${preservedPrompt}`.trim();
+        const mergedPrompt = withCommonRules.includes(section)
+          ? withCommonRules
+          : `${withCommonRules}\n\n${section}${preservedPrompt === basePrompt ? "" : `\n${CUSTOMIZED_PROMPT_PRECEDENCE}`}`.trim();
+        if (mergedPrompt !== profile.system_prompt) updateProfilePrompt.run(mergedPrompt, now, role, mergedPrompt);
+      }
+
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'action_jobs'").get()) {
+        db.prepare(`
+          UPDATE action_jobs
+          SET status = 'cancelled',
+              current_step = 'Legacy Actions implementation job retired',
+              error_message = 'Continue implementation in Acopilot; dispatch a Reviewer job when the PR is ready.',
+              updated_at = ?
+          WHERE status IN ('queued', 'running', 'verifying', 'reviewing', 'waiting_merge')
+        `).run(now);
+      }
+    },
+  },
+  {
+    version: 39,
+    description: "Restore Actions-lane pull request review jobs",
+    up: (db) => {
+      const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'action_jobs'").get();
+      if (!table) return;
+
+      db.exec(`
+        DROP INDEX IF EXISTS idx_action_jobs_lookup;
+        ALTER TABLE action_jobs RENAME TO action_jobs_legacy_review_queue;
+
+        CREATE TABLE action_jobs (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          lane_generation INTEGER NOT NULL DEFAULT 1,
+          job_kind TEXT NOT NULL DEFAULT 'github_issue' CHECK(job_kind IN ('github_issue', 'local_prompt', 'pull_request_review')),
+          issue_id INTEGER,
+          issue_title TEXT NOT NULL,
+          issue_snapshot_json TEXT NOT NULL DEFAULT '{}',
+          verification_report_json TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL CHECK(status IN (
+            'queued', 'running', 'verifying', 'reviewing', 'waiting_merge', 'completed', 'failed', 'blocked', 'cancelled'
+          )),
+          branch TEXT,
+          base_sha TEXT,
+          head_sha TEXT,
+          developer_profile_id TEXT,
+          reviewer_profile_ids_json TEXT NOT NULL DEFAULT '[]',
+          current_step TEXT,
+          steps_json TEXT NOT NULL DEFAULT '[]',
+          review_verdicts_json TEXT NOT NULL DEFAULT '[]',
+          attempts_json TEXT NOT NULL DEFAULT '[]',
+          pr_number INTEGER,
+          pr_url TEXT,
+          error_message TEXT,
+          rework_count INTEGER NOT NULL DEFAULT 0,
+          blocked_at INTEGER,
+          auth_user_id TEXT,
+          chat_session_id TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        INSERT INTO action_jobs (
+          id, project_id, lane_generation, job_kind, issue_id, issue_title, issue_snapshot_json,
+          status, branch, base_sha, head_sha, developer_profile_id, reviewer_profile_ids_json,
+          current_step, steps_json, review_verdicts_json, attempts_json, pr_number, pr_url,
+          error_message, rework_count, blocked_at, auth_user_id, chat_session_id, created_at, updated_at
+        )
+        SELECT
+          id, project_id, COALESCE(lane_generation, 1), job_kind, issue_id, issue_title, issue_snapshot_json,
+          status, branch, base_sha, head_sha, developer_profile_id, reviewer_profile_ids_json,
+          current_step, steps_json, review_verdicts_json, attempts_json, pr_number, pr_url,
+          error_message, rework_count, blocked_at, auth_user_id, chat_session_id, created_at, updated_at
+        FROM action_jobs_legacy_review_queue;
+
+        DROP TABLE action_jobs_legacy_review_queue;
+        CREATE INDEX idx_action_jobs_lookup ON action_jobs(project_id, status, created_at);
+      `);
+    },
+  },
 ];
+
+/**
+ * The `Role & Boundary` section is where custom Acopilot prompts declare the
+ * retired split of labour: read-only investigation, and implementation handed
+ * to a separate Developer. That whole section is replaced by the canonical
+ * Acopilot section, so the stale boundary cannot survive in a partially
+ * rewritten form.
+ */
+const ROLE_BOUNDARY_HEADING = /^#{1,6}\s+role\s*(?:&|and)?\s*boundary\s*$/i;
+const HEADING = /^#{1,6}\s+\S/;
+
+function stripRetiredRoleBoundary(prompt: string): string {
+  const kept: string[] = [];
+  let insideBoundary = false;
+  for (const line of prompt.split("\n")) {
+    const isHeading = HEADING.test(line);
+    if (isHeading && ROLE_BOUNDARY_HEADING.test(line.trim())) {
+      insideBoundary = true;
+      continue;
+    }
+    if (insideBoundary && isHeading) insideBoundary = false;
+    if (!insideBoundary) kept.push(line);
+  }
+  return kept.join("\n");
+}
+
+/**
+ * Lines outside the boundary section can still point at the retired handoff
+ * (for example a saved rule that calls `dispatch_action_job`, or a rule that
+ * tells Acopilot not to touch source code). Those lines are dropped
+ * individually, and only when they clearly describe that handoff.
+ */
+const RETIRED_ACOPILOT_CLAIMS: readonly RegExp[] = [
+  /\bread[- ]only\b[^.]*\b(?:role|analysis|investigation|review)\b/i,
+  /\bhand(?:s|ed|ing)?\b[^.]*\b(?:implementation|implementation work|work)\b[^.]*\b(?:developer|actions)\b/i,
+  /\b(?:do not|don't|never)\b[^.]*\bimplement\b[^.]*\b(?:in this lane|directly|source[- ]code|source code)\b/i,
+  /\bdispatch_action_job\b/i,
+  /\bdispatch\b[^.]*\b(?:implementation|implementation tasks|approved tasks)\b[^.]*\bactions\b/i,
+];
+
+const CUSTOMIZED_PROMPT_PRECEDENCE = "- Where this section conflicts with an earlier line in this prompt, this section wins.";
+
+function stripRetiredAcopilotClaims(prompt: string): string {
+  return stripRetiredRoleBoundary(prompt)
+    .split("\n")
+    .filter((line) => !RETIRED_ACOPILOT_CLAIMS.some((pattern) => pattern.test(line)))
+    .join("\n");
+}
 
 /**
  * Rebuild the lane system prompt tables so their CHECK constraints and stored

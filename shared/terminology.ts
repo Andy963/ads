@@ -37,25 +37,24 @@ export const ACTIONS_LANE_ID = "actions";
 export const CANONICAL_LANE_IDS = [ACOPILOT_LANE_ID, ACTIONS_LANE_ID] as const;
 export type CanonicalLaneId = (typeof CANONICAL_LANE_IDS)[number];
 
-/** Execution roles inside the Actions lane. */
-export const ACTIONS_ROLE_IDS = ["developer", "reviewer"] as const;
+/** The read-only role exposed through the Actions lane. */
+export const ACTIONS_ROLE_IDS = ["reviewer"] as const;
 export type ActionsRole = (typeof ACTIONS_ROLE_IDS)[number];
 
 /**
  * Values the `role_profiles.role` column can hold.
  *
- * `acopilot` is a lane-level profile rather than an Actions role, and it shares
- * this column with the two Actions roles. That conflation is pre-existing and
- * persisted; splitting it is out of scope for the terminology contract.
+ * `acopilot` is the implementation owner and `reviewer` is the read-only
+ * review role exposed through the Actions lane.
  */
-export const STORED_ROLE_PROFILE_VALUES = ["acopilot", "developer", "reviewer"] as const;
+export const STORED_ROLE_PROFILE_VALUES = ["acopilot", "reviewer"] as const;
 export type StoredRoleProfileValue = (typeof STORED_ROLE_PROFILE_VALUES)[number];
 
 /**
  * Legacy lane values accepted on read, mapped to the lane they denote.
  *
- * `worker` is the Actions lane here. It denotes the Developer role only in
- * role-profile context; see LEGACY_ROLE_PROFILE_ALIASES for why the two differ.
+ * `worker` is the Actions lane here. Its former Developer profile is folded
+ * into Acopilot after role consolidation.
  */
 export const LEGACY_LANE_ALIASES = {
   advisor: "acopilot",
@@ -66,14 +65,13 @@ export const LEGACY_LANE_ALIASES = {
 /**
  * Legacy role-profile values accepted on read.
  *
- * A stored `worker` profile describes the agent doing implementation work, so
- * it resolves to the `developer` role rather than to the `actions` lane. This is
- * the one place where the same legacy word means different things by context,
- * and conflating the two is exactly the split-brain the migration removes.
+ * A stored `worker` profile used to describe the implementation role. That
+ * responsibility now belongs to Acopilot.
  */
 export const LEGACY_ROLE_PROFILE_ALIASES = {
   advisor: "acopilot",
-  worker: "developer",
+  developer: "acopilot",
+  worker: "acopilot",
 } as const satisfies Record<string, StoredRoleProfileValue>;
 
 export type LegacyLaneAlias = keyof typeof LEGACY_LANE_ALIASES;

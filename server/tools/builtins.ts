@@ -4,61 +4,45 @@ import type {
   ActionToolResult,
   ActionTools,
 } from "../agents/actionTools.js";
-import type { ActionJobKind, ActionJobStatus } from "../state/actionJobStore.js";
-import { getBus } from "../web/server/api/routes/actions.js";
 
-export const BUILTIN_TOOL_DEFINITIONS: NativeToolDefinition[] = [
+export const BUILTIN_TOOL_DEFINITIONS: NativeToolDefinition[] = [];
+
+export const ACTION_TOOL_DEFINITIONS: NativeToolDefinition[] = [
   {
     type: "function",
     function: {
-      name: "dispatch_action_job",
-      description: "Dispatch an approved GitHub Issue or task prompt to the background Actions execution queue.",
+      name: "begin_implementation",
+      description: "Confirm the requested Issue owns the current workspace task slot before changing files or branches. Refuses a different open PR or a branch assigned to another Issue.",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
-          issue_id: { type: "integer", minimum: 1, description: "GitHub Issue number if available." },
-          title: { type: "string", minLength: 1, description: "Task or Issue title." },
-          description: { type: "string", minLength: 1, description: "Complete Issue description or local task prompt." },
-          acceptance_criteria: { type: "array", items: { type: "string", minLength: 1 }, description: "Immutable acceptance criteria snapshot. GitHub Issues require at least one criterion; local prompts may use an empty array." },
-          kind: { type: "string", enum: ["github_issue", "local_prompt"], description: "Kind of task; defaults to github_issue." },
+          issue_id: { type: "integer", minimum: 1, description: "GitHub Issue number being implemented." },
         },
-        required: ["title", "description", "acceptance_criteria"],
+        required: ["issue_id"],
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "review_action",
+      description: "Pin the current Issue-backed pull request and enqueue a read-only Reviewer job in the Actions lane. Wait for its structured result, which also appears in the Actions queue and conversation; review execution never runs in the Acopilot lane.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
 ];
 
-export const ACTION_TOOL_DEFINITIONS: NativeToolDefinition[] = [
-  [
-    "review_action",
-    "Run verification and an isolated read-only Reviewer subagent for the current authenticated workspace. The server captures the current committed and working-tree diff plus the active user request; a matching PR is only needed if delivery is requested.",
-  ],
-  [
-    "deliver_action",
-    "Deliver the exact commit approved by review_action using the verified PR, merge, and cleanup pipeline. Operational errors return to you. After success, stop using tools and report completion.",
-  ],
-].map(([name, description]) => ({
-  type: "function",
-  function: {
-    name: name!,
-    description: description!,
-    parameters: { type: "object", properties: {}, additionalProperties: false },
-  },
-}));
-
 export function isActionTool(name: string): name is ActionToolName {
-  return name === "review_action" || name === "deliver_action";
+  return name === "begin_implementation" || name === "review_action";
 }
 
 export function isBuiltinTool(name: string): boolean {
-  return name === "dispatch_action_job" || isActionTool(name);
+  return isActionTool(name);
 }
 
 export function builtinToolDefinitions(includeActions = false): NativeToolDefinition[] {
-  return includeActions
-    ? [...BUILTIN_TOOL_DEFINITIONS, ...ACTION_TOOL_DEFINITIONS]
-    : BUILTIN_TOOL_DEFINITIONS;
+  return includeActions ? ACTION_TOOL_DEFINITIONS : BUILTIN_TOOL_DEFINITIONS;
 }
 
 export interface BuiltinToolContext {
@@ -68,14 +52,7 @@ export interface BuiltinToolContext {
   signal?: AbortSignal;
 }
 
-export type BuiltinToolResult = {
-  ok: boolean;
-  job_id: string;
-  status: ActionJobStatus;
-  message: string;
-} | ActionToolResult;
-
-const DISPATCH_ARGUMENTS = new Set(["issue_id", "title", "description", "acceptance_criteria", "kind"]);
+export type BuiltinToolResult = ActionToolResult;
 
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -85,7 +62,21 @@ export async function executeBuiltinTool(name: string, args: unknown, context: B
   throwIfAborted(context.signal);
   if (isActionTool(name)) {
     if (!context.actionTools) {
-      throw new Error("Reviewer tools are unavailable in this lane.");
+      throw new Error("Acopilot workflow tools are unavailable in this lane.");
+    }
+    if (name === "begin_implementation") {
+      if (!args || typeof args !== "object" || Array.isArray(args)) {
+        throw new Error("begin_implementation requires an issue_id argument.");
+      }
+      const input = args as Record<string, unknown>;
+      if (Object.keys(input).length !== 1 || !Number.isSafeInteger(input.issue_id) || Number(input.issue_id) < 1) {
+        throw new Error("begin_implementation requires a positive integer issue_id argument.");
+      }
+      if (!context.actionTools.begin_implementation) {
+        throw new Error("Implementation task-slot validation is unavailable in this lane.");
+      }
+      throwIfAborted(context.signal);
+      return await context.actionTools.begin_implementation({ issue_id: Number(input.issue_id) });
     }
     if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).length) {
       throw new Error("Reviewer tools accept an empty argument object only.");
@@ -93,66 +84,5 @@ export async function executeBuiltinTool(name: string, args: unknown, context: B
     throwIfAborted(context.signal);
     return await context.actionTools[name]();
   }
-  if (name !== "dispatch_action_job") throw new Error("Unknown built-in tool");
-  if (!args || typeof args !== "object" || Array.isArray(args)) {
-    throw new Error("Tool arguments must be a JSON object");
-  }
-  const input = args as Record<string, unknown>;
-  if (Object.keys(input).some((key) => !DISPATCH_ARGUMENTS.has(key))) {
-    throw new Error("dispatch_action_job does not accept additional arguments");
-  }
-  // Preserve the text directive's missing-field contract at the shared boundary.
-  if (!Object.hasOwn(input, "acceptance_criteria")) {
-    throw new Error("dispatch_action_job requires an explicit acceptance_criteria field");
-  }
-  if (typeof input.title !== "string" || !input.title.trim()) {
-    throw new Error("Tool argument title is required");
-  }
-  if (typeof input.description !== "string" || !input.description.trim()) {
-    throw new Error("Tool argument description is required");
-  }
-  const kind = Object.hasOwn(input, "kind") ? input.kind : "github_issue";
-  if (kind !== "github_issue" && kind !== "local_prompt") {
-    throw new Error("Tool argument kind must be github_issue or local_prompt");
-  }
-  if (!Array.isArray(input.acceptance_criteria)
-    || input.acceptance_criteria.some((criterion) => typeof criterion !== "string" || !criterion.trim())) {
-    throw new Error("Tool argument acceptance_criteria must be an array of nonempty strings");
-  }
-  const acceptanceCriteria = (input.acceptance_criteria as string[]).map((criterion) => criterion.trim());
-  if (kind === "github_issue" && acceptanceCriteria.length === 0) {
-    throw new Error("dispatch_action_job requires a complete description and acceptance criteria");
-  }
-  const issueId = Object.hasOwn(input, "issue_id") ? input.issue_id : null;
-  if (Object.hasOwn(input, "issue_id")
-    && (typeof issueId !== "number" || !Number.isSafeInteger(issueId) || issueId <= 0)) {
-    throw new Error("Tool argument issue_id must be a positive integer");
-  }
-  if (!context.workspaceRoot.trim()) throw new Error("Built-in tool workspace is required");
-
-  throwIfAborted(context.signal);
-  try {
-    const bus = getBus();
-    // Queue persistence is a side effect; never forward an abort reason or raw bus error.
-    throwIfAborted(context.signal);
-    const dispatchArgs = {
-      repoPath: context.workspaceRoot,
-      authUserId: context.authUserId,
-      issueId: issueId as number | null,
-      issueTitle: input.title.trim(),
-      issueDescription: input.description.trim(),
-      acceptanceCriteria,
-      jobKind: kind as ActionJobKind,
-    };
-    const result = bus.dispatchJob({ projectId: context.workspaceRoot, ...dispatchArgs });
-    return {
-      ok: result.ok,
-      job_id: result.jobId,
-      status: result.status,
-      message: `Dispatched task to Actions queue with status '${result.status}'`,
-    };
-  } catch {
-    throwIfAborted(context.signal);
-    throw new Error("Unable to dispatch Actions job");
-  }
+  throw new Error("Unknown built-in tool");
 }

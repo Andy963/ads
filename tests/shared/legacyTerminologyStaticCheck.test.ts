@@ -94,7 +94,7 @@ const ALLOWED_LEGACY_TERMINOLOGY: Record<string, LegacyAllowance> = {
   // ---- persistence keys (must not be renamed in place) ----
   "server/web/server/start/webLaneResources.ts": {
     reason: "compatibility: advisor-named lane runtime wiring around the canonical WEB_ACOPILOT/WEB_ACTIONS namespaces",
-    legacyLines: 16,
+    legacyLines: 15,
   },
   "server/web/server/startWebServer.ts": {
     reason: "persistence-key: advisor/worker lane runtime wiring keyed on the history namespaces",

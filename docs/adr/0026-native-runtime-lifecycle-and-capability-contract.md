@@ -84,9 +84,8 @@ sandbox 的等价模式。
 - capability failure 显式且可操作，不会被静默忽略或伪装成成功执行。
 - Native 直接宿主机执行仍是有明确风险的安全取舍，不应被描述为 Codex app-server
   sandbox 的等价物。
-- 该契约由 runtime preflight、共享 backend、Native transcript、projection、capability、
+- 该契约由共享 backend、Native transcript、projection、capability、
   retry 和 tool safety 测试共同验证：
-  [`runtimePreflight.test.ts`](../../tests/actions/runtimePreflight.test.ts)、
   [`runtimeBackendContract.test.ts`](../../tests/actions/runtimeBackendContract.test.ts)、
   [`agentAdapterContract.test.ts`](../../tests/runtime/agentAdapterContract.test.ts)、
   [`sessionManagerAgents.test.ts`](../../tests/sessions/sessionManagerAgents.test.ts)、

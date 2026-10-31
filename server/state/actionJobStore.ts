@@ -11,7 +11,7 @@ export type ActionJobStatus =
   | "blocked"
   | "cancelled";
 
-export type ActionJobKind = "github_issue" | "local_prompt";
+export type ActionJobKind = "github_issue" | "local_prompt" | "pull_request_review";
 
 export interface ActionJobIssueSnapshot {
   title: string;
@@ -35,6 +35,7 @@ export interface ActionJobRecord {
   issue_id: number | null;
   issue_title: string;
   issue_snapshot_json: string;
+  verification_report_json: string;
   status: ActionJobStatus;
   branch: string | null;
   base_sha: string | null;
@@ -85,160 +86,71 @@ export function createActionJob(
     id: string;
     project_id: string;
     lane_generation?: number;
-    job_kind?: ActionJobKind;
-    issue_id?: number | null;
+    job_kind: ActionJobKind;
+    issue_id: number;
     issue_title: string;
-    issue_snapshot?: ActionJobIssueSnapshot;
+    issue_snapshot: ActionJobIssueSnapshot;
     status?: ActionJobStatus;
-    branch?: string | null;
-    base_sha?: string | null;
-    head_sha?: string | null;
-    developer_profile_id?: string | null;
-    reviewer_profile_ids_json?: string;
-    auth_user_id?: string | null;
-    chat_session_id?: string | null;
+    branch: string;
+    base_sha: string;
+    head_sha: string;
+    reviewer_profile_ids_json: string;
+    pr_number: number;
+    pr_url: string;
+    auth_user_id: string;
+    chat_session_id: string;
   },
   now = Date.now(),
 ): ActionJobRecord {
-  const status: ActionJobStatus = job.status ?? "queued";
-  const kind: ActionJobKind = job.job_kind ?? "github_issue";
-  const laneGeneration = Number.isInteger(job.lane_generation) && Number(job.lane_generation) >= 1
-    ? Number(job.lane_generation)
-    : 1;
-  const issueId = job.issue_id ?? null;
-  const branch = job.branch ?? null;
-  const headSha = job.head_sha ?? null;
-  const devProfileId = job.developer_profile_id ?? null;
-  const reviewerProfilesJson = job.reviewer_profile_ids_json ?? "[]";
-  const issueSnapshot: ActionJobIssueSnapshot = job.issue_snapshot ?? {
-    title: job.issue_title,
-    description: job.issue_title,
-    acceptanceCriteria: [],
-    adrs: [],
-  };
-  const issueSnapshotJson = JSON.stringify(issueSnapshot);
-
+  const status = job.status ?? "queued";
+  const laneGeneration = Math.max(1, Math.floor(job.lane_generation ?? 1));
+  const issueSnapshotJson = JSON.stringify(job.issue_snapshot);
   db.prepare(`
-    INSERT INTO action_jobs
-      (id, project_id, lane_generation, job_kind, issue_id, issue_title, issue_snapshot_json, status, branch, base_sha, head_sha,
-       developer_profile_id, reviewer_profile_ids_json, current_step, steps_json,
-       review_verdicts_json, attempts_json, pr_number, pr_url, error_message, rework_count,
-       blocked_at, auth_user_id, chat_session_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', '[]', NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?)
+    INSERT INTO action_jobs (
+      id, project_id, lane_generation, job_kind, issue_id, issue_title, issue_snapshot_json,
+      verification_report_json, status, branch, base_sha, head_sha, reviewer_profile_ids_json,
+      current_step, steps_json, review_verdicts_json, attempts_json, pr_number, pr_url,
+      error_message, rework_count, blocked_at, auth_user_id, chat_session_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, NULL, '[]', '[]', '[]', ?, ?, NULL, 0, NULL, ?, ?, ?, ?)
   `).run(
     job.id,
     job.project_id,
     laneGeneration,
-    kind,
-    issueId,
+    job.job_kind,
+    job.issue_id,
     job.issue_title,
     issueSnapshotJson,
     status,
-    branch,
-    job.base_sha ?? null,
-    headSha,
-    devProfileId,
-    reviewerProfilesJson,
-    job.auth_user_id ?? null,
-    job.chat_session_id ?? null,
+    job.branch,
+    job.base_sha,
+    job.head_sha,
+    job.reviewer_profile_ids_json,
+    job.pr_number,
+    job.pr_url,
+    job.auth_user_id,
+    job.chat_session_id,
     now,
     now,
   );
-
-  return {
-    id: job.id,
-    project_id: job.project_id,
-    lane_generation: laneGeneration,
-    job_kind: kind,
-    issue_id: issueId,
-    issue_title: job.issue_title,
-    issue_snapshot_json: issueSnapshotJson,
-    status,
-    branch,
-    base_sha: job.base_sha ?? null,
-    head_sha: headSha,
-    developer_profile_id: devProfileId,
-    reviewer_profile_ids_json: reviewerProfilesJson,
-    current_step: null,
-    steps_json: "[]",
-    review_verdicts_json: "[]",
-    attempts_json: "[]",
-    pr_number: null,
-    pr_url: null,
-    error_message: null,
-    rework_count: 0,
-    blocked_at: null,
-    auth_user_id: job.auth_user_id ?? null,
-    chat_session_id: job.chat_session_id ?? null,
-    created_at: now,
-    updated_at: now,
-  };
+  return getActionJobById(db, job.id)!;
 }
 
 export function updateActionJobStatus(
   db: DatabaseType,
   id: string,
   status: ActionJobStatus,
-  updates: Partial<Pick<ActionJobRecord, "current_step" | "steps_json" | "review_verdicts_json" | "attempts_json" | "pr_number" | "pr_url" | "error_message" | "branch" | "base_sha" | "head_sha" | "rework_count" | "blocked_at">> = {},
+  updates: Partial<Pick<ActionJobRecord,
+    "current_step" | "review_verdicts_json" | "verification_report_json" | "error_message">> = {},
   now = Date.now(),
 ): void {
   const fields = ["status = ?", "updated_at = ?"];
   const values: unknown[] = [status, now];
-
-  if ("current_step" in updates) {
-    fields.push("current_step = ?");
-    values.push(updates.current_step ?? null);
+  for (const field of ["current_step", "review_verdicts_json", "verification_report_json", "error_message"] as const) {
+    if (!(field in updates)) continue;
+    fields.push(`${field} = ?`);
+    const fallback = field === "verification_report_json" ? "" : field === "review_verdicts_json" ? "[]" : null;
+    values.push(updates[field] ?? fallback);
   }
-  if ("steps_json" in updates) {
-    fields.push("steps_json = ?");
-    values.push(updates.steps_json ?? "[]");
-  }
-  if ("review_verdicts_json" in updates) {
-    fields.push("review_verdicts_json = ?");
-    values.push(updates.review_verdicts_json ?? "[]");
-  }
-  if ("attempts_json" in updates) {
-    fields.push("attempts_json = ?");
-    values.push(updates.attempts_json ?? "[]");
-  }
-  if ("pr_number" in updates) {
-    fields.push("pr_number = ?");
-    values.push(updates.pr_number ?? null);
-  }
-  if ("pr_url" in updates) {
-    fields.push("pr_url = ?");
-    values.push(updates.pr_url ?? null);
-  }
-  if ("error_message" in updates) {
-    fields.push("error_message = ?");
-    values.push(updates.error_message ?? null);
-  }
-  if ("branch" in updates) {
-    fields.push("branch = ?");
-    values.push(updates.branch ?? null);
-  }
-  if ("base_sha" in updates) {
-    fields.push("base_sha = ?");
-    values.push(updates.base_sha ?? null);
-  }
-  if ("head_sha" in updates) {
-    fields.push("head_sha = ?");
-    values.push(updates.head_sha ?? null);
-  }
-  if ("rework_count" in updates) {
-    fields.push("rework_count = ?");
-    values.push(Math.max(0, Math.floor(updates.rework_count ?? 0)));
-  }
-  if ("blocked_at" in updates) {
-    fields.push("blocked_at = ?");
-    values.push(updates.blocked_at ?? null);
-  }
-
   values.push(id);
   db.prepare(`UPDATE action_jobs SET ${fields.join(", ")} WHERE id = ?`).run(...values);
-}
-
-export function deleteActionJobsByProject(db: DatabaseType, projectId: string): number {
-  const result = db.prepare(`DELETE FROM action_jobs WHERE project_id = ?`).run(projectId) as { changes?: number };
-  return result?.changes ?? 0;
 }

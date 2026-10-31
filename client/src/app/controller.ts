@@ -129,12 +129,14 @@ export function createAppContext() {
       rt.ws = null;
       socket?.close();
       rt.connected.value = false;
+      rt.transcriptAuthoritative.value = false;
       rt.queuedPrompts.value = [];
       rt.pendingImages.value = [];
       rt.composerDraft.value = "";
-      for (const timer of [rt.reconnectTimer, rt.noticeTimer, rt.liveActivityTtlTimer]) {
+      for (const timer of [rt.connectionWatchdogTimer, rt.reconnectTimer, rt.noticeTimer, rt.liveActivityTtlTimer]) {
         if (timer !== null) window.clearTimeout(timer);
       }
+      rt.connectionWatchdogTimer = null;
     }
     runtimeByProjectId.clear();
     acopilotRuntimeByProjectId.clear();
@@ -312,12 +314,25 @@ export function createAppController() {
   const ws = createWebSocketActions({ ...ctx, ...chat } as AppContext & ChatActions, {
     updateProject: projects.updateProject,
     persistProjects: projects.persistProjects,
+    refreshModelPreferences: laneActions.refreshModelSelection,
   });
 
   laneDeps.connectWs = ws.connectWs;
   laneDeps.connectAcopilotWs = ws.connectAcopilotWs;
 
-  const clearRuntimeTimers = (rt: { noticeTimer: number | null; liveActivityTtlTimer: number | null }): void => {
+  const clearRuntimeTimers = (rt: {
+    connectionWatchdogTimer: number | null;
+    noticeTimer: number | null;
+    liveActivityTtlTimer: number | null;
+  }): void => {
+    if (rt.connectionWatchdogTimer !== null) {
+      try {
+        window.clearTimeout(rt.connectionWatchdogTimer);
+      } catch {
+        // ignore
+      }
+      rt.connectionWatchdogTimer = null;
+    }
     if (rt.noticeTimer !== null) {
       try {
         window.clearTimeout(rt.noticeTimer);
@@ -381,10 +396,9 @@ export function createAppController() {
     nextOrder.push(pid);
     ctx.projectAccessOrder.value = nextOrder;
 
-    // Dynamically derive connection pool capacity from server's maxClients limit.
-    // Each project holds up to 2 sockets (actions + acopilot).
+    // Multiplexed Actions and Acopilot lanes share one socket per project.
     const serverLimit = ctx.maxWsClients.value ?? 32;
-    const poolCapacity = Math.max(1, Math.floor(serverLimit / 2));
+    const poolCapacity = Math.max(1, Math.floor(serverLimit));
 
     // Harvest oldest background project connections if open count exceeds capacity
     const openProjectIds = nextOrder.filter((id) => {
@@ -417,8 +431,10 @@ export function createAppController() {
     acopilotRt.wsError.value = null;
     try {
       await Promise.all([
-        (!rt.ws || !rt.connected.value) ? ws.connectWs(pid) : Promise.resolve(),
-        (!acopilotRt.ws || !acopilotRt.connected.value) ? ws.connectAcopilotWs(pid) : Promise.resolve(),
+        (!rt.ws || !rt.connected.value || !rt.transcriptAuthoritative.value) ? ws.connectWs(pid) : Promise.resolve(),
+        (!acopilotRt.ws || !acopilotRt.connected.value || !acopilotRt.transcriptAuthoritative.value)
+          ? ws.connectAcopilotWs(pid)
+          : Promise.resolve(),
       ]);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -481,12 +497,14 @@ export function createAppController() {
       }
     };
     window.addEventListener("pagehide", ctx.transcriptCache.flush);
+    window.addEventListener("pageshow", handleConnectivityRestored);
     window.addEventListener("online", handleConnectivityRestored);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     (ctx as AppContext & {
       __connectivityCleanup?: () => void;
     }).__connectivityCleanup = () => {
       window.removeEventListener("online", handleConnectivityRestored);
+      window.removeEventListener("pageshow", handleConnectivityRestored);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("pagehide", ctx.transcriptCache.flush);
     };

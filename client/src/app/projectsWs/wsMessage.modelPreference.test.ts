@@ -13,7 +13,9 @@ import { createWsMessageHandler } from "./wsMessage";
 
 const SERVER_DEFAULT_MODEL = "gemini-3.8-flash-high";
 
-function setup(): { rt: ProjectRuntime; handler: (msg: unknown) => void } {
+function setup(overrides: {
+  refreshModelPreferences?: (rt: ProjectRuntime) => Promise<{ modelId: string; label: string } | null>;
+} = {}): { rt: ProjectRuntime; handler: (msg: unknown) => void } {
   const ctx = createAppContext();
   const chat = createChatActions(ctx as AppContext);
   const rt = ctx.getAcopilotRuntime("default");
@@ -27,6 +29,7 @@ function setup(): { rt: ProjectRuntime; handler: (msg: unknown) => void } {
     maxTurnCommands: 64,
     randomId: ctx.randomId,
     updateProject: vi.fn(),
+    refreshModelPreferences: overrides.refreshModelPreferences,
     applyResumeHistory: chat.applyResumeHistory,
     cancelPendingResume: chat.cancelPendingResume,
     clearPendingPrompt: chat.clearPendingPrompt,
@@ -159,6 +162,31 @@ describe("wsMessage applyEffectiveState model preference guard", () => {
     expect(rt.laneStatus.value).toEqual({
       kind: "error",
       message: "Unknown or disabled model: missing-model",
+    });
+  });
+
+  it("refreshes the saved selection and names the fallback after a removed conversation model is rejected", async () => {
+    const refreshModelPreferences = vi.fn().mockResolvedValue({
+      modelId: "fallback-id",
+      label: "Fallback Model",
+    });
+    const { rt, handler } = setup({ refreshModelPreferences });
+    rt.modelId.value = "removed-model";
+
+    handler({
+      type: "error",
+      message: "Conversation model 'removed-model' is not available in the conversation service; select one of: Fallback Model.",
+      errorInfo: {
+        code: "conversation_model_unavailable",
+        retryable: false,
+        needsReset: false,
+        requestedModel: "removed-model",
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(refreshModelPreferences).toHaveBeenCalledWith(rt);
+      expect(rt.laneStatus.value?.message).toContain("Fallback Model");
     });
   });
 

@@ -66,10 +66,10 @@ Web 与独立 Channel Connector 通过 Core WebSocket 协议使用各自隔离�
     - **`CodexAppServerAdapter`（`ADS_AGENT_RUNTIME=codex-app-server`）**：通过 Codex App-Server 标准化封装多 Provider 模型的 RPC 调用、结构化事件与进程生命周期，支持 Codex App Server JSON-RPC 长连接与一次性 CLI 的无缝降级。
   - Native durable conversation 使用 ADS state store 中的 provider-neutral transcript，按 completed turn 恢复；ephemeral session（例如 Actions Reviewer）不持久化。上下文发送前经过独立的 token-aware projection，不能把 Native transcript 当作 Codex rollout。
   - Native provider capability 按 `supported` / `unsupported` / `unknown` 协商；未知或不支持的能力在请求前以结构化错误拒绝，不静默降级。完整边界见 [ADR 0026](adr/0026-native-runtime-lifecycle-and-capability-contract.md)。
-- **共享业务内置工具**：`dispatch_action_job` 的定义、参数校验和入队逻辑统一在
-  `server/tools/builtins.ts`。Native 直接调用，Codex App Server 经动态工具回调调用；
-  文本指令仅保留为兼容入口。新建 Codex 线程注册工具，恢复时由 provider 保留；升级前的
-  旧线程不自动重置，仍可使用文本兼容入口。权限、去重及兼容边界见 [ADR 0039](adr/0039-shared-built-in-dispatch.md)。
+- **Actions Reviewer 队列**：`begin_implementation` 与 `review_action` 只向 Acopilot 泳道暴露。
+  `review_action` 将固定的 PR、Issue、ADR 与 base/head 快照写入持久队列；验证和只读 Reviewer 在 Actions lane
+  按项目串行运行，进度及判词同时写入 Actions 会话，并将结构化结果返回 Acopilot。队列不执行 Developer，
+  PASS 也不会触发合并。详见 [ADR 0048](adr/0048-two-role-architecture-with-actions-review-queue.md)。
 - **上游重试与自愈 (Upstream Retry & Healing)**：
   - 自动识别限流（429）、服务器高负载（503）、Cloudflare/网关超时（520–524）以及上游安全拦截。
   - 仅在未产生命令执行或文件写入等副作用前，自动指数退避重试，保障网络波动下的任务可靠性。

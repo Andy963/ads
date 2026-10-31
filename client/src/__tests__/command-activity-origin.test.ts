@@ -19,8 +19,8 @@ vi.mock("../api/client", () => ({
   },
 }));
 
-vi.mock("../api/ws", () => ({
-  AdsWebSocket: class {
+vi.mock("../api/ws", () => {
+  class AdsWebSocket {
     onOpen?: () => void;
     onMessage?: (frame: unknown) => void;
     constructor(options: { chatSessionId?: string }) {
@@ -31,8 +31,16 @@ vi.mock("../api/ws", () => ({
     send() {}
     sendPrompt() {}
     interrupt() {}
-  },
-}));
+  }
+  return {
+    AdsWebSocket,
+    getProjectWebSocketLane: (options: {
+      sessionId: string;
+      lane: "actions" | "acopilot";
+      configs: Record<"actions" | "acopilot", { chatSessionId: string }>;
+    }) => new AdsWebSocket({ chatSessionId: options.configs[options.lane].chatSessionId }),
+  };
+});
 
 vi.mock("../components/LoginGate.vue", () => ({
   default: defineComponent({

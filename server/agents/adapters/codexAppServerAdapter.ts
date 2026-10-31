@@ -680,10 +680,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
         turnId: state.turnId,
         active: acceptingBuiltinCalls && !state.failed,
       }),
-      markSideEffect: (callId, tool) => retryState.markSideEffect({
+      markSideEffect: (callId, _tool) => retryState.markSideEffect({
         type: "tool_call",
         id: callId,
-        tool: tool === "dispatch_action_job" ? tool : "actions",
+        tool: "actions",
       }),
     });
     cleanupFns.push(client.onServerRequest("item/tool/call", builtinTools.handle, { matches: builtinTools.matches }));

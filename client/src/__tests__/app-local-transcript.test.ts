@@ -9,7 +9,13 @@ import { t } from "../lib/i18n";
 
 const state = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock("../api/client", () => ({ ApiClient: class { get = state.get; } }));
-vi.mock("../api/ws", () => ({ AdsWebSocket: class { connect() {} close() {} } }));
+vi.mock("../api/ws", () => {
+  class AdsWebSocket { connect() {} close() {} }
+  return {
+    AdsWebSocket,
+    getProjectWebSocketLane: () => new AdsWebSocket(),
+  };
+});
 const wrappers: ReturnType<typeof mount>[] = [];
 
 function seed() {

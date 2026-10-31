@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Issue #537
+Superseded by ADR 0048.
 
 ## Context
 

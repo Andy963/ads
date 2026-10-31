@@ -64,7 +64,24 @@ vi.mock("../api/ws", () => {
     interrupt(): void {}
   }
 
-  return { AdsWebSocket };
+  return {
+    AdsWebSocket,
+    getProjectWebSocketLane: (options: {
+      sessionId: string;
+      lane: "actions" | "acopilot";
+      configs: Record<"actions" | "acopilot", {
+        chatSessionId: string;
+        resume?: { afterSeq: number; laneGeneration: number };
+      }>;
+    }) => {
+      const config = options.configs[options.lane];
+      return new AdsWebSocket({
+        sessionId: options.sessionId,
+        chatSessionId: config.chatSessionId,
+        resume: config.resume,
+      } as never);
+    },
+  };
 });
 
 vi.mock("../components/LoginGate.vue", () => {
@@ -93,6 +110,14 @@ async function ensureWsConnected(wrapper: any): Promise<void> {
   }
   expect(lastWs).toBeTruthy();
   lastWs!.onOpen?.();
+  lastWs!.onMessage?.({
+    type: "welcome",
+    historyMode: "snapshot",
+    bootstrapHistory: false,
+    latestSeq: 0,
+    inFlight: false,
+    contextMode: "fresh",
+  });
   await settleUi(wrapper);
 }
 

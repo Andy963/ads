@@ -5,17 +5,14 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { spawnSync } from "node:child_process";
 
-import {
-  LaneDispatchBus,
-  type InteractiveReviewTarget,
-} from "../../server/actions/bus.js";
-import { handleActionRoutes, setBusInstance } from "../../server/web/server/api/routes/actions.js";
-import { deriveProjectSessionId } from "../../server/web/server/projectSessionId.js";
+import { LaneDispatchBus, type InteractiveReviewTarget } from "../../server/actions/bus.js";
+import { createActionJob, updateActionJobStatus } from "../../server/state/actionJobStore.js";
 import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
 import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
+import { deriveProjectSessionId } from "../../server/web/server/projectSessionId.js";
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
 
-describe("interactive Actions review supervision", () => {
+describe("Actions Reviewer queue", () => {
   const originalStateDbPath = process.env.ADS_STATE_DB_PATH;
   let tmpDir: string;
   let repoDir: string;
@@ -23,7 +20,7 @@ describe("interactive Actions review supervision", () => {
   let headCommit: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-interactive-review-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-actions-review-"));
     process.env.ADS_STATE_DB_PATH = path.join(tmpDir, "state.db");
     resetStateDatabaseForTests();
     repoDir = path.join(tmpDir, "repo");
@@ -90,25 +87,20 @@ describe("interactive Actions review supervision", () => {
 
   function createBus(
     getTarget: () => InteractiveReviewTarget,
-    onMerge: (options: {
-      cwd: string;
-      prNumber?: number | null;
-      issueId?: number | null;
-      branch: string;
-      baseBranch?: string;
-      expectedHead?: string;
-      expectedBaseSha?: string;
-    }) => void,
-    reviewStatus: "PASS" | "REJECT" = "PASS",
     options: {
+      reviewStatus?: "PASS" | "REJECT";
       testCommand?: string;
       interactiveVerificationTimeoutMs?: number;
       onReviewPrompt?: (prompt: string) => void;
       onMetadataRead?: (count: number) => void;
+      openPullRequests?: Array<{ number: number; headRefName: string }>;
+      onHistoryMessage?: (entry: { role: string; text: string; kind?: string }) => void;
+      onBroadcast?: (payload: unknown) => void;
+      reviewerRunner?: (prompt: string) => Promise<string>;
     } = {},
   ): LaneDispatchBus {
-    const current = getTarget;
     let metadataReads = 0;
+    const current = getTarget;
     return new LaneDispatchBus(getStateDatabase(), {
       testCommand: options.testCommand ?? "git status",
       interactiveVerificationTimeoutMs: options.interactiveVerificationTimeoutMs,
@@ -125,7 +117,9 @@ describe("interactive Actions review supervision", () => {
             baseRefName: "dev",
             baseRefOid: value.baseCommit!,
             headRefOid: value.headCommit!,
+            body: "Closes #900",
           },
+          openPullRequests: options.openPullRequests ?? [{ number: value.prNumber, headRefName: value.branch }],
           issue: {
             number: value.issue.id!,
             title: value.issue.title,
@@ -133,146 +127,256 @@ describe("interactive Actions review supervision", () => {
           },
         };
       },
-      reviewerRunner: async (prompt) => {
+      interactiveOpenPullRequestReader: () => options.openPullRequests ?? [{
+        number: current().prNumber,
+        headRefName: current().branch,
+      }],
+      reviewerRunner: options.reviewerRunner ?? (async (prompt) => {
         options.onReviewPrompt?.(prompt);
+        const status = options.reviewStatus ?? "PASS";
         return JSON.stringify({
-          status: reviewStatus,
-          summary: reviewStatus === "PASS" ? "Exact target reviewed" : "Defect found",
-          defects: reviewStatus === "PASS" ? [] : [{ file: "change.txt", severity: "blocker", description: "Fixture defect" }],
+          status,
+          summary: status === "PASS" ? "Exact target reviewed" : "Defect found",
+          defects: status === "PASS" ? [] : [{ file: "change.txt", severity: "blocker", description: "Fixture defect" }],
         });
+      }),
+      historyStore: {
+        add: (_key, entry) => options.onHistoryMessage?.(entry),
       },
-      mergePipeline: (options) => {
-        onMerge(options);
-        return { success: true };
-      },
+      broadcastToActionsLane: (payload) => options.onBroadcast?.(payload),
     });
   }
 
-  it("reviews and delivers an authenticated target only after PASS", async () => {
+  function reviewRequest(reviewTarget: InteractiveReviewTarget, signal = new AbortController().signal) {
+    return {
+      projectId: reviewTarget.projectId,
+      repoPath: repoDir,
+      authUserId: reviewTarget.authUserId,
+      signal,
+    };
+  }
+
+  it("pins a review job, runs verification, and records the verdict in Actions history", async () => {
     const reviewTarget = target();
-    let mergeOptions: {
-      cwd: string;
-      prNumber?: number | null;
-      issueId?: number | null;
-      branch: string;
-      baseBranch?: string;
-      expectedHead?: string;
-      expectedBaseSha?: string;
-    } | undefined;
-    const bus = createBus(() => reviewTarget, (options) => { mergeOptions = options; });
-    const tools = await bus.createInteractiveActionTools({
-      projectId: reviewTarget.projectId,
-      repoPath: repoDir,
-      authUserId: "user-1",
-      signal: new AbortController().signal,
-    });
-
-    const reviewed = await tools.review_action();
-    assert.equal(reviewed.ok, true, reviewed.error);
-    assert.equal((reviewed.verdict as { status: string }).status, "PASS");
-    const delivered = await tools.deliver_action();
-    assert.equal(delivered.ok, true);
-    assert.deepEqual(mergeOptions, {
-      cwd: repoDir,
-      prNumber: 901,
-      issueId: 900,
-      branch: "codex/issue-900",
-      baseBranch: "dev",
-      expectedHead: headCommit,
-      expectedBaseSha: baseCommit,
-    });
-    await tools.dispose();
-  });
-
-  it("keeps the built-in reviewer capability available until invocation-time target validation", async () => {
-    const bus = createBus(() => target(), () => {});
-    const tools = await bus.createInteractiveActionTools({
-      projectId: "not-a-real-project",
-      repoPath: path.join(repoDir, "not-a-real-repo"),
-      authUserId: "user-1",
-      signal: new AbortController().signal,
-    });
-
-    assert.ok(tools);
-    const result = await tools.review_action();
-    assert.equal(result.ok, false);
-    assert.match(String(result.error), /project workspace/);
-    await tools.dispose();
-  });
-
-  it("reviews the authenticated workspace without a feature branch, clean worktree, or PR", async () => {
-    spawnSync("git", ["checkout", "-b", "feature/local-review"], { cwd: repoDir });
-    fs.writeFileSync(path.join(repoDir, "change.txt"), "uncommitted local change\n");
     let reviewPrompt = "";
-    const bus = createBus(() => target(), () => {}, "PASS", {
-      testCommand: "git status",
+    const history: Array<{ role: string; text: string; kind?: string }> = [];
+    const broadcasts: unknown[] = [];
+    const bus = createBus(() => reviewTarget, {
       onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
+      onHistoryMessage: (entry) => history.push(entry),
+      onBroadcast: (payload) => broadcasts.push(payload),
     });
-    const tools = await bus.createInteractiveActionTools({
-      projectId: deriveProjectSessionId(repoDir),
-      repoPath: repoDir,
-      authUserId: "user-1",
-      reviewPrompt: "Review the local implementation before opening a pull request.",
-      signal: new AbortController().signal,
-    });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
 
-    const reviewed = await tools.review_action();
-    assert.equal(reviewed.ok, true, reviewed.error);
-    assert.match(reviewPrompt, /Interactive workspace review/);
-    assert.match(reviewPrompt, /before opening a pull request/);
-    assert.match(reviewPrompt, /uncommitted local change/);
+    const result = await tools.review_action();
 
-    const delivered = await tools.deliver_action();
-    assert.equal(delivered.ok, false);
-    assert.match(String(delivered.error), /PR-scoped review/);
+    assert.equal(result.ok, true, result.error);
+    assert.equal((result.verdict as { status: string }).status, "PASS");
+    assert.ok(reviewPrompt.includes(`## Exact Diff Range:\n${baseCommit}..${headCommit}`));
+    assert.ok(reviewPrompt.includes("Command: git status"));
+    assert.ok(reviewPrompt.includes("Exit Code: 0"));
+    const job = bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0];
+    assert.ok(job);
+    assert.equal(job.status, "completed");
+    assert.equal(job.job_kind, "pull_request_review");
+    assert.equal(job.base_sha, baseCommit);
+    assert.equal(job.head_sha, headCommit);
+    assert.equal(job.pr_number, reviewTarget.prNumber);
+    assert.equal(JSON.parse(job.issue_snapshot_json).acceptanceCriteria[0], "Review the exact commit.");
+    assert.equal(JSON.parse(job.verification_report_json).exitCode, 0);
+    assert.ok(history.some((entry) => entry.kind === `action_review_result:${job.id}`));
+    assert.ok(broadcasts.some((payload) => (payload as { kind?: string }).kind === `action_review_result:${job.id}`));
     await tools.dispose();
   });
 
-  it("rejects delivery when the PR target changes after PASS", async () => {
-    let reviewTarget = target();
-    let merges = 0;
-    const bus = createBus(() => reviewTarget, () => { merges += 1; });
-    const tools = await bus.createInteractiveActionTools({
-      projectId: reviewTarget.projectId,
-      repoPath: repoDir,
-      authUserId: "user-1",
-      signal: new AbortController().signal,
-    });
+  it("returns REJECT as a completed review result without treating it as an operational failure", async () => {
+    const reviewTarget = target();
+    const bus = createBus(() => reviewTarget, { reviewStatus: "REJECT" });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
 
-    const reviewed = await tools.review_action();
-    assert.equal(reviewed.ok, true, reviewed.error);
-    reviewTarget = target({ prNumber: 902, prUrl: "https://github.invalid/pull/902" });
-    const delivered = await tools.deliver_action();
-    assert.equal(delivered.ok, false);
-    assert.match(String(delivered.error), /Delivery target changed/);
-    assert.equal(merges, 0);
+    const result = await tools.review_action();
+
+    assert.equal(result.ok, true);
+    assert.equal((result.verdict as { status: string }).status, "REJECT");
+    assert.equal(bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0]?.status, "completed");
     await tools.dispose();
   });
 
-  it("invalidates delivery when the Issue snapshot changes after PASS", async () => {
-    let reviewTarget = target();
-    let merges = 0;
-    const bus = createBus(() => reviewTarget, () => { merges += 1; });
-    const tools = await bus.createInteractiveActionTools({
-      projectId: reviewTarget.projectId,
-      repoPath: repoDir,
-      authUserId: "user-1",
-      signal: new AbortController().signal,
+  it("fails interrupted review jobs and allows the same pinned target to be dispatched again", async () => {
+    const reviewTarget = target();
+    const db = getStateDatabase();
+    createActionJob(db, {
+      id: "interrupted-review",
+      project_id: reviewTarget.projectId,
+      job_kind: "pull_request_review",
+      issue_id: reviewTarget.issue.id,
+      issue_title: reviewTarget.issue.title,
+      issue_snapshot: {
+        title: reviewTarget.issue.title,
+        description: reviewTarget.issue.description!,
+        acceptanceCriteria: reviewTarget.issue.acceptanceCriteria!,
+        adrs: [],
+      },
+      branch: reviewTarget.branch,
+      base_sha: baseCommit,
+      head_sha: headCommit,
+      reviewer_profile_ids_json: "[]",
+      pr_number: reviewTarget.prNumber,
+      pr_url: reviewTarget.prUrl,
+      auth_user_id: reviewTarget.authUserId,
+      chat_session_id: "main",
     });
+    updateActionJobStatus(db, "interrupted-review", "reviewing", {
+      current_step: "Running Reviewer",
+      review_verdicts_json: JSON.stringify([{ status: "PASS" }]),
+    });
+    const bus = createBus(() => reviewTarget);
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
 
-    const reviewed = await tools.review_action();
-    assert.equal(reviewed.ok, true, reviewed.error);
-    reviewTarget = target({
-      issue: {
-        ...reviewTarget.issue,
-        description: "Review this implementation.\n\n## Acceptance Criteria\n- Review the changed Issue snapshot.",
-        acceptanceCriteria: ["Review the changed Issue snapshot."],
+    const result = await tools.review_action();
+
+    assert.equal(result.ok, true, result.error);
+    const jobs = bus.getJobs(reviewTarget.projectId, repoDir, "user-1");
+    const interrupted = jobs.find((job) => job.id === "interrupted-review");
+    assert.equal(interrupted?.status, "failed");
+    assert.deepEqual(JSON.parse(interrupted?.review_verdicts_json ?? "[]"), []);
+    assert.match(interrupted?.error_message ?? "", /no active worker/);
+    assert.equal(jobs.filter((job) => job.status === "completed").length, 1);
+    await tools.dispose();
+  });
+
+  it("fails closed when the target changes after the review was queued", async () => {
+    let reviewTarget = target();
+    const bus = createBus(() => reviewTarget, {
+      onMetadataRead: (count) => {
+        if (count === 2) reviewTarget = target({ prNumber: 902, prUrl: "https://github.invalid/pull/902" });
       },
     });
-    const delivered = await tools.deliver_action();
-    assert.equal(delivered.ok, false);
-    assert.match(String(delivered.error), /Delivery target changed/);
-    assert.equal(merges, 0);
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
+
+    const result = await tools.review_action();
+    const job = bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0];
+
+    assert.equal(result.ok, false);
+    assert.match(String(result.error), /changed after dispatch/);
+    assert.ok(job);
+    assert.equal(job.status, "failed");
+    assert.deepEqual(JSON.parse(job.review_verdicts_json), []);
+    await tools.dispose();
+  });
+
+  it("serializes multiple queued reviews for the same project", async () => {
+    const reviewTarget = target();
+    let activeReviews = 0;
+    let maxActiveReviews = 0;
+    let completedReviews = 0;
+    const bus = createBus(() => reviewTarget, {
+      reviewerRunner: async () => {
+        activeReviews += 1;
+        maxActiveReviews = Math.max(maxActiveReviews, activeReviews);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        activeReviews -= 1;
+        completedReviews += 1;
+        return JSON.stringify({ status: "PASS", summary: "Reviewed", defects: [] });
+      },
+    });
+    const db = getStateDatabase();
+    for (const id of ["review-1", "review-2"]) {
+      createActionJob(db, {
+        id,
+        project_id: reviewTarget.projectId,
+        job_kind: "pull_request_review",
+        issue_id: 900,
+        issue_title: reviewTarget.issue.title,
+        issue_snapshot: {
+          title: reviewTarget.issue.title,
+          description: reviewTarget.issue.description!,
+          acceptanceCriteria: reviewTarget.issue.acceptanceCriteria!,
+          adrs: [],
+        },
+        branch: reviewTarget.branch,
+        base_sha: baseCommit,
+        head_sha: headCommit,
+        reviewer_profile_ids_json: "[]",
+        pr_number: reviewTarget.prNumber,
+        pr_url: reviewTarget.prUrl,
+        auth_user_id: "user-1",
+        chat_session_id: "main",
+      });
+    }
+
+    await bus.processReviewQueue(reviewTarget.projectId, repoDir);
+
+    assert.equal(completedReviews, 2);
+    assert.equal(maxActiveReviews, 1);
+    assert.deepEqual(bus.getJobs(reviewTarget.projectId, repoDir, "user-1").map((job) => job.status), ["completed", "completed"]);
+  });
+
+  it("does not cancel the durable queue when the originating Acopilot call aborts", async () => {
+    const reviewTarget = target();
+    const controller = new AbortController();
+    const bus = createBus(() => reviewTarget, {
+      onMetadataRead: (count) => {
+        if (count === 2) controller.abort(new Error("Acopilot request aborted"));
+      },
+    });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget, controller.signal));
+
+    await assert.rejects(tools.review_action(), /Acopilot request aborted/);
+    await bus.processReviewQueue(reviewTarget.projectId, repoDir);
+
+    const job = bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0];
+    assert.ok(job);
+    assert.equal(job.status, "completed");
+    assert.equal(JSON.parse(job.review_verdicts_json)[0].status, "PASS");
+    await tools.dispose();
+  });
+
+  it("validates the Issue task slot without changing the workspace", async () => {
+    spawnSync("git", ["checkout", "dev"], { cwd: repoDir });
+    const reviewTarget = target();
+    const bus = createBus(() => reviewTarget, { openPullRequests: [] });
+    const result = await bus.beginInteractiveImplementation({
+      projectId: reviewTarget.projectId,
+      repoPath: repoDir,
+      authUserId: "user-1",
+      issueId: 900,
+    });
+
+    assert.deepEqual(result, { ok: true, issueId: 900, branch: "dev" });
+    assert.equal(git("branch", "--show-current"), "dev");
+  });
+
+  it("blocks a task when the base workspace is dirty or another PR owns the slot", async () => {
+    spawnSync("git", ["checkout", "dev"], { cwd: repoDir });
+    const reviewTarget = target();
+    const dirtyBus = createBus(() => reviewTarget, { openPullRequests: [] });
+    fs.writeFileSync(path.join(repoDir, "uncommitted.txt"), "preserve this change\n");
+    await assert.rejects(dirtyBus.beginInteractiveImplementation({
+      projectId: reviewTarget.projectId,
+      repoPath: repoDir,
+      authUserId: "user-1",
+      issueId: 900,
+    }), /base workspace has uncommitted changes/);
+    assert.equal(fs.readFileSync(path.join(repoDir, "uncommitted.txt"), "utf8"), "preserve this change\n");
+    fs.rmSync(path.join(repoDir, "uncommitted.txt"));
+
+    const busyBus = createBus(() => reviewTarget, { openPullRequests: [{ number: 902, headRefName: "codex/issue-902" }] });
+    await assert.rejects(busyBus.beginInteractiveImplementation({
+      projectId: reviewTarget.projectId,
+      repoPath: repoDir,
+      authUserId: "user-1",
+      issueId: 900,
+    }), /Open pull request #902 owns the repository task slot/);
+  });
+
+  it("rejects review when the Issue-backed PR is missing or ambiguous", async () => {
+    const reviewTarget = target();
+    const bus = createBus(() => reviewTarget, { openPullRequests: [] });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
+
+    await assert.rejects(tools.review_action(), /Only one open pull request/);
+    assert.deepEqual(bus.getJobs(reviewTarget.projectId, repoDir, "user-1"), []);
     await tools.dispose();
   });
 
@@ -281,163 +385,33 @@ describe("interactive Actions review supervision", () => {
     fs.mkdirSync(adrDir, { recursive: true });
     fs.symlinkSync("missing-target.md", path.join(adrDir, "0099-missing.md"));
     spawnSync("git", ["add", "docs/adr/0099-missing.md"], { cwd: repoDir });
-    spawnSync("git", ["commit", "-m", "add unreadable adr fixture"], { cwd: repoDir });
+    spawnSync("git", ["commit", "-m", "add unreadable ADR fixture"], { cwd: repoDir });
     headCommit = git("rev-parse", "HEAD");
-
     const reviewTarget = target();
-    const bus = createBus(() => reviewTarget, () => {});
-    await assert.rejects(
-      bus.resolveInteractiveReviewTarget({
-        projectId: reviewTarget.projectId,
-        repoPath: repoDir,
-        authUserId: "user-1",
-      }),
-      /Unable to read changed ADR 'docs\/adr\/0099-missing\.md'/,
-    );
-  });
+    const bus = createBus(() => reviewTarget);
 
-  it("pins the Reviewer prompt to the verified commits and reports executed checks", async () => {
-    const reviewTarget = target();
-    let reviewPrompt = "";
-    const bus = createBus(() => reviewTarget, () => {}, "PASS", {
-      onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
-    });
-    const tools = await bus.createInteractiveActionTools({
+    await assert.rejects(bus.resolveInteractiveReviewTarget({
       projectId: reviewTarget.projectId,
       repoPath: repoDir,
       authUserId: "user-1",
-      signal: new AbortController().signal,
-    });
-
-    const reviewed = await tools.review_action();
-    assert.equal(reviewed.ok, true, reviewed.error);
-    assert.ok(reviewPrompt.includes(`## Exact Diff Range:\n${baseCommit}..${headCommit}`));
-    assert.ok(reviewPrompt.includes("Command: git status"));
-    assert.ok(reviewPrompt.includes("Exit Code: 0"));
-    await tools.dispose();
+    }), /Unable to read changed ADR 'docs\/adr\/0099-missing\.md'/);
   });
 
-  it("rejects a target that drifts while verification is running", async () => {
-    let reviewTarget = target();
-    const bus = createBus(() => reviewTarget, () => {}, "PASS", {
-      onMetadataRead: (count) => {
-        if (count === 2) {
-          reviewTarget = target({ prNumber: 902, prUrl: "https://github.invalid/pull/902" });
-        }
-      },
-    });
-    const tools = await bus.createInteractiveActionTools({
-      projectId: reviewTarget.projectId,
-      repoPath: repoDir,
-      authUserId: "user-1",
-      signal: new AbortController().signal,
-    });
-
-    const reviewed = await tools.review_action();
-    assert.equal(reviewed.ok, false);
-    assert.match(String(reviewed.error), /target changed/);
-    await tools.dispose();
-  });
-
-  it("terminates verification when the interactive hard timeout expires", async () => {
+  it("fails an operational queue job when verification times out", async () => {
     const reviewTarget = target();
-    const bus = createBus(() => reviewTarget, () => {}, "PASS", {
+    const bus = createBus(() => reviewTarget, {
       testCommand: "node -e setTimeout(()=>{},10000)",
       interactiveVerificationTimeoutMs: 50,
     });
-    const tools = await bus.createInteractiveActionTools({
-      projectId: reviewTarget.projectId,
-      repoPath: repoDir,
-      authUserId: "user-1",
-      signal: new AbortController().signal,
-    });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
 
-    const reviewed = await tools.review_action();
-    assert.equal(reviewed.ok, false);
-    assert.match(String(reviewed.error), /timed out/);
+    const result = await tools.review_action();
+
+    assert.equal(result.ok, false);
+    assert.match(String(result.error), /timed out/);
+    const job = bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0];
+    assert.equal(job?.status, "failed");
+    assert.deepEqual(JSON.parse(job?.review_verdicts_json ?? "[]"), []);
     await tools.dispose();
-  });
-
-  it("cancels an in-flight verification when the supervised tools are disposed", async () => {
-    const reviewTarget = target();
-    const bus = createBus(() => reviewTarget, () => {}, "PASS", {
-      testCommand: "node -e setTimeout(()=>{},10000)",
-    });
-    const tools = await bus.createInteractiveActionTools({
-      projectId: reviewTarget.projectId,
-      repoPath: repoDir,
-      authUserId: "user-1",
-      signal: new AbortController().signal,
-    });
-
-    const review = tools.review_action();
-    await Promise.resolve();
-    await tools.dispose();
-    await assert.rejects(review, /abort/i);
-  });
-
-  it("does not authorize delivery after a rejected review", async () => {
-    const reviewTarget = target();
-    let merges = 0;
-    const bus = createBus(() => reviewTarget, () => { merges += 1; }, "REJECT");
-    const tools = await bus.createInteractiveActionTools({
-      projectId: reviewTarget.projectId,
-      repoPath: repoDir,
-      authUserId: "user-1",
-      signal: new AbortController().signal,
-    });
-
-    const reviewed = await tools.review_action();
-    assert.equal(reviewed.ok, false);
-    const delivered = await tools.deliver_action();
-    assert.equal(delivered.ok, false);
-    assert.match(String(delivered.error), /requires PASS/);
-    assert.equal(merges, 0);
-    await tools.dispose();
-  });
-
-  it("serves the stateless authenticated review endpoint without creating a job", async () => {
-    const reviewTarget = target();
-    const bus = createBus(() => reviewTarget, () => {});
-    setBusInstance(bus);
-    const payload = JSON.stringify({
-      projectId: reviewTarget.projectId,
-      repoPath: repoDir,
-      branch: reviewTarget.branch,
-      prNumber: reviewTarget.prNumber,
-    });
-    const request = {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      async *[Symbol.asyncIterator]() {
-        yield Buffer.from(payload);
-      },
-    } as never;
-    let statusCode = 200;
-    let responseBody = "";
-    const response = {
-      writeHead(code: number) { statusCode = code; },
-      setHeader() {},
-      end(data: string) { responseBody = data; },
-    } as never;
-
-    const handled = await handleActionRoutes({
-      req: request,
-      res: response,
-      pathname: "/api/actions/review",
-      url: new URL("http://localhost/api/actions/review"),
-      auth: { userId: "user-1", username: "tester" },
-    }, { allowedDirs: [repoDir] });
-
-    assert.equal(handled, true);
-    assert.equal(statusCode, 200);
-    assert.deepEqual(JSON.parse(responseBody), {
-      ok: true,
-      authoritative: true,
-      status: "PASS",
-      summary: "Exact target reviewed",
-      defects: [],
-    });
-    assert.deepEqual(bus.getJobs(reviewTarget.projectId, repoDir, "user-1"), []);
   });
 });

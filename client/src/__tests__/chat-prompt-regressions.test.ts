@@ -77,7 +77,24 @@ vi.mock("../api/ws", () => {
     interrupt(): void {}
   }
 
-  return { AdsWebSocket };
+  return {
+    AdsWebSocket,
+    getProjectWebSocketLane: (options: {
+      sessionId: string;
+      lane: "actions" | "acopilot";
+      configs: Record<"actions" | "acopilot", {
+        chatSessionId: string;
+        resume?: { afterSeq: number; laneGeneration: number };
+      }>;
+    }) => {
+      const config = options.configs[options.lane];
+      return new AdsWebSocket({
+        sessionId: options.sessionId,
+        chatSessionId: config.chatSessionId,
+        resume: config.resume,
+      } as never);
+    },
+  };
 });
 
 vi.mock("../components/LoginGate.vue", () => {
@@ -123,6 +140,14 @@ async function ensureWsConnected(wrapper: any): Promise<void> {
   }
   expect(lastWs).toBeTruthy();
   lastWs!.onOpen?.();
+  lastWs!.onMessage?.({
+    type: "welcome",
+    historyMode: "snapshot",
+    bootstrapHistory: false,
+    latestSeq: 0,
+    inFlight: false,
+    contextMode: "fresh",
+  });
   await settleUi(wrapper);
 }
 
@@ -735,11 +760,13 @@ describe("issue-478: turn failure retry", () => {
     expect(String(rt.laneStatus.value?.message ?? "")).toContain("无需重试");
   });
 
-  it("shows a notice instead of silently ignoring the retry while an action job holds the lane", async () => {
+  it("does not let retired Actions queue state block a retry", async () => {
+    let actionJobsReads = 0;
     getImpl = async (url: string) => {
       if (url === "/api/models") return [] satisfies ModelConfig[];
       if (url.startsWith("/api/paths/validate")) return { ok: false };
       if (url.startsWith("/api/actions/jobs")) {
+        actionJobsReads += 1;
         return [{
           id: "job-1",
           project_id: "/home/andy/repos/ads",
@@ -771,10 +798,9 @@ describe("issue-478: turn failure retry", () => {
     wrapper.vm.retryActionsMessage(card);
     await settleUi(wrapper);
 
-    expect(lastWs!.sendPrompt.mock.calls.length).toBe(sendCallsBefore);
-    expect(String(wrapper.vm.apiNotice ?? "")).toContain("任务正在执行中");
-    // The failure card stays in place so the retry remains available.
-    expect((wrapper.vm.messages as Array<any>).some((m) => m.id === card.id)).toBe(true);
+    expect(lastWs!.sendPrompt.mock.calls.length).toBeGreaterThan(sendCallsBefore);
+    expect(actionJobsReads).toBe(0);
+    expect(String(wrapper.vm.apiNotice ?? "")).not.toContain("任务正在执行中");
 
     wrapper.unmount();
   });
