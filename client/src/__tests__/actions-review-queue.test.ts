@@ -9,7 +9,7 @@ afterEach(() => {
 });
 
 describe("Actions Reviewer queue", () => {
-  it("renders pinned review results and refreshes active jobs", async () => {
+  it("renders one compact card and refreshes active jobs", async () => {
     vi.useFakeTimers();
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({
@@ -20,14 +20,8 @@ describe("Actions Reviewer queue", () => {
           issue_title: "Review the queue migration",
           status: "verifying",
           current_step: "Running checks",
-          branch: "codex/issue-598",
-          base_sha: "base-commit-1234567890",
-          head_sha: "head-commit-1234567890",
           pr_number: 598,
           pr_url: "https://github.invalid/pull/598",
-          error_message: null,
-          verification_report_json: "",
-          review_verdicts_json: "[]",
         }],
       })
       .mockResolvedValueOnce({
@@ -38,22 +32,8 @@ describe("Actions Reviewer queue", () => {
           issue_title: "Review the queue migration",
           status: "completed",
           current_step: "PASS: Queue behavior is correct",
-          branch: "codex/issue-598",
-          base_sha: "base-commit-1234567890",
-          head_sha: "head-commit-1234567890",
           pr_number: 598,
           pr_url: "https://github.invalid/pull/598",
-          error_message: null,
-          verification_report_json: JSON.stringify({
-            command: "npm test",
-            exitCode: 0,
-            summary: "All tests passed",
-          }),
-          review_verdicts_json: JSON.stringify([{
-            status: "PASS",
-            summary: "Queue behavior is correct",
-            defects: [],
-          }]),
         }],
       });
     vi.stubGlobal("fetch", fetchMock);
@@ -61,16 +41,19 @@ describe("Actions Reviewer queue", () => {
     const wrapper = mount(ActionsReviewQueue, { props: { projectId: "project-1" } });
     await flushPromises();
     expect(wrapper.text()).toContain("PR #598");
-    expect(wrapper.text()).toContain("Running checks");
+    expect(wrapper.text()).toContain("VERIFYING");
+    expect(wrapper.text()).toContain("Review the queue migration");
+    expect(wrapper.findAll('[data-testid="actions-review-card"]')).toHaveLength(1);
+    expect(wrapper.text()).not.toContain("Running checks");
 
     await vi.advanceTimersByTimeAsync(3000);
     await flushPromises();
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenCalledWith("/api/actions/jobs?projectId=project-1", { credentials: "include" });
-    expect(wrapper.text()).toContain("PASS");
-    expect(wrapper.text()).toContain("Queue behavior is correct");
-    expect(wrapper.text()).toContain("npm test (exit 0)");
+    expect(wrapper.find('[data-testid="actions-review-card"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("Queue behavior is correct");
+    expect(wrapper.text()).not.toContain("npm test");
     wrapper.unmount();
   });
 
@@ -83,14 +66,8 @@ describe("Actions Reviewer queue", () => {
         issue_title: "Review the queue migration",
         status: "completed",
         current_step: "PASS: Reviewed",
-        branch: "codex/issue-598",
-        base_sha: "base-commit-1234567890",
-        head_sha: "head-commit-1234567890",
         pr_number: 598,
         pr_url: "https://github.invalid/pull/598",
-        error_message: null,
-        verification_report_json: "",
-        review_verdicts_json: JSON.stringify([{ status: "PASS", summary: "Reviewed", defects: [] }]),
       }],
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -103,7 +80,7 @@ describe("Actions Reviewer queue", () => {
     await flushPromises();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(wrapper.text()).toContain("PASS");
+    expect(wrapper.find('[data-testid="actions-review-card"]').exists()).toBe(false);
     wrapper.unmount();
   });
 });
