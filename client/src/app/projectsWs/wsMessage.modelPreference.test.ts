@@ -6,6 +6,7 @@ import {
   readModelIdPreference,
   readReasoningEffortPreference,
   writeModelPreference,
+  writeReasoningEffortPreference,
 } from "../../lib/preferencesStore";
 import type { ProjectRuntime } from "../controllerTypes";
 
@@ -13,23 +14,26 @@ import { createWsMessageHandler } from "./wsMessage";
 
 const SERVER_DEFAULT_MODEL = "gemini-3.8-flash-high";
 
-function setup(overrides: {
+function setup(options: {
+  chatSessionId?: string;
+  preferenceLane?: "actions" | "acopilot";
   refreshModelPreferences?: (rt: ProjectRuntime) => Promise<{ modelId: string; label: string } | null>;
 } = {}): { rt: ProjectRuntime; handler: (msg: unknown) => void } {
   const ctx = createAppContext();
   const chat = createChatActions(ctx as AppContext);
-  const rt = ctx.getAcopilotRuntime("default");
+  const rt = options.preferenceLane === "actions" ? ctx.getRuntime("default") : ctx.getAcopilotRuntime("default");
   rt.projectSessionId = "default";
-  rt.chatSessionId = "advisor";
+  rt.chatSessionId = options.chatSessionId ?? (options.preferenceLane === "actions" ? "main" : "advisor");
   const handler = createWsMessageHandler({
     projects: ctx.projects,
     pid: "default",
     rt,
+    preferenceLane: options.preferenceLane,
     wsInstance: { send: vi.fn() },
     maxTurnCommands: 64,
     randomId: ctx.randomId,
     updateProject: vi.fn(),
-    refreshModelPreferences: overrides.refreshModelPreferences,
+    refreshModelPreferences: options.refreshModelPreferences,
     applyResumeHistory: chat.applyResumeHistory,
     cancelPendingResume: chat.cancelPendingResume,
     clearPendingPrompt: chat.clearPendingPrompt,
@@ -115,6 +119,20 @@ describe("wsMessage applyEffectiveState model preference guard", () => {
     expect(rt.modelReasoningEffort.value).toBe("medium");
     expect(readModelIdPreference("default", "advisor", "codex")).toBe(SERVER_DEFAULT_MODEL);
     expect(readReasoningEffortPreference("default", "advisor", "codex")).toBe("medium");
+  });
+
+  it("restores lane-wide reasoning effort after switching to a new chat session", () => {
+    const { rt, handler } = setup({ chatSessionId: "new-chat-session", preferenceLane: "actions" });
+    rt.activeAgentId.value = "codex";
+    writeReasoningEffortPreference("default", "actions", "codex", "max");
+
+    handler({
+      ...welcomeFrame({ effectiveModelReasoningEffort: "high" }),
+      chatSessionId: "new-chat-session",
+    });
+
+    expect(rt.modelReasoningEffort.value).toBe("max");
+    expect(readReasoningEffortPreference("default", "actions", "codex")).toBe("max");
   });
 
   it("handles a model override result without terminating the active chat turn", () => {

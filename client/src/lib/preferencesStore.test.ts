@@ -20,6 +20,7 @@ import {
   writeModelPreference,
   writeMobileTabPreference,
   writeProjectPreferences,
+  writeReasoningEffortPreference,
 } from "./preferencesStore";
 import { normalizeReasoningEffort } from "./chatPreferences";
 
@@ -89,6 +90,16 @@ describe("preferencesStore", () => {
     expect(normalizeReasoningEffort(readReasoningEffortPreference("p1", "main"))).toBe("max");
     expect(normalizeReasoningEffort(readReasoningEffortPreference("p1", "advisor", "codex"))).toBe("ultra");
     expect(normalizeReasoningEffort(readReasoningEffortPreference("p1", "worker", "codex"))).toBe("high");
+  });
+
+  it("keeps reasoning effort lane-wide and reads older chat-scoped values", () => {
+    writeModelPreference("p1", "chat-session-1", "codex", { effort: "max" });
+
+    expect(readReasoningEffortPreference("p1", "actions", "codex", "chat-session-1")).toBe("max");
+
+    writeReasoningEffortPreference("p1", "actions", "codex", "max");
+
+    expect(readReasoningEffortPreference("p1", "actions", "codex", "chat-session-2")).toBe("max");
   });
 
   it("migrates legacy scattered keys into the unified record and deletes them", () => {

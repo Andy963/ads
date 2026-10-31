@@ -6,6 +6,7 @@
    readModelIdPreference,
    readReasoningEffortPreference,
    writeModelPreference,
+  writeReasoningEffortPreference,
  } from "../lib/preferencesStore";
  import { supportsAgentModel } from "../lib/model_agent";
  import { crumb } from "../lib/diagBreadcrumbs";
@@ -175,11 +176,11 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      advisor.composerDraft.value = "";
    };
 
-   const persistReasoningEffort = (rt: ProjectRuntime): void => {
+   const persistReasoningEffort = (rt: ProjectRuntime, lane: "actions" | "acopilot"): void => {
      const sessionId = resolveStorageSessionId(rt);
      if (!sessionId) return;
      const effort = normalizeReasoningEffort(rt.modelReasoningEffort.value);
-     writeModelPreference(sessionId, rt.chatSessionId, rt.activeAgentId.value, { effort });
+     writeReasoningEffortPreference(sessionId, lane, rt.activeAgentId.value, effort);
    };
 
    const persistModelId = (rt: ProjectRuntime): void => {
@@ -215,7 +216,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      apiError.value = null;
      const rt = activeRuntime.value;
      rt.modelReasoningEffort.value = normalizeReasoningEffort(effort);
-     persistReasoningEffort(rt);
+     persistReasoningEffort(rt, "actions");
      sendModelOverride(rt);
    };
 
@@ -231,7 +232,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      apiError.value = null;
      const rt = activeAcopilotRuntime.value;
      rt.modelReasoningEffort.value = normalizeReasoningEffort(effort);
-     persistReasoningEffort(rt);
+     persistReasoningEffort(rt, "acopilot");
      sendModelOverride(rt);
    };
 
@@ -243,7 +244,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      sendModelOverride(rt);
    };
 
-   const alignRuntimeModelForAgent = (rt: ProjectRuntime, agentId: string): void => {
+   const alignRuntimeModelForAgent = (rt: ProjectRuntime, agentId: string, lane: "actions" | "acopilot"): void => {
      const nextAgentId = String(agentId ?? "").trim();
      if (!nextAgentId) return;
      const sessionId = resolveStorageSessionId(rt);
@@ -253,7 +254,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
          if (storedModel !== null) {
            rt.modelId.value = normalizeModelId(storedModel);
          }
-         const storedEffort = readReasoningEffortPreference(sessionId, rt.chatSessionId, nextAgentId);
+         const storedEffort = readReasoningEffortPreference(sessionId, lane, nextAgentId, rt.chatSessionId);
          if (storedEffort !== null) {
            rt.modelReasoningEffort.value = normalizeReasoningEffort(storedEffort);
          }
@@ -285,7 +286,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      const rt = activeRuntime.value;
      if (!rt.availableAgents.value.some((agent) => agent.id === next && agent.ready)) return;
      rt.activeAgentId.value = next;
-     alignRuntimeModelForAgent(rt, next);
+     alignRuntimeModelForAgent(rt, next, "actions");
      rt.ws?.send?.("set_agent", { agentId: next });
    };
 
@@ -296,7 +297,7 @@ function clearRuntimeNoticeTimer(rt: Pick<ProjectRuntime, "noticeTimer">): void 
      const rt = activeAcopilotRuntime.value;
      if (!rt.availableAgents.value.some((agent) => agent.id === next && agent.ready)) return;
      rt.activeAgentId.value = next;
-     alignRuntimeModelForAgent(rt, next);
+     alignRuntimeModelForAgent(rt, next, "acopilot");
      rt.ws?.send?.("set_agent", { agentId: next });
    };
 

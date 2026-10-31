@@ -96,10 +96,10 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     setMessages,
   } = ctx;
 
-  const restoreReasoningEffort = (rt: ProjectRuntime): void => {
+  const restoreReasoningEffort = (rt: ProjectRuntime, lane: "actions" | "acopilot"): void => {
     const sessionId = String(rt.projectSessionId ?? "").trim();
     if (!sessionId) return;
-    const stored = readReasoningEffortPreference(sessionId, rt.chatSessionId, rt.activeAgentId.value);
+    const stored = readReasoningEffortPreference(sessionId, lane, rt.activeAgentId.value, rt.chatSessionId);
     if (stored !== null) {
       rt.modelReasoningEffort.value = normalizeReasoningEffort(stored);
     }
@@ -377,6 +377,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
   const connectWsInternal = async (mode: WsMode, projectId: string = activeProjectId.value): Promise<void> => {
     if (!loggedIn.value) return;
+    const preferenceLane = mode === ACOPILOT_LANE_ID ? "acopilot" : "actions";
     let pid = normalizeProjectId(projectId);
     let project = projects.value.find((p) => p.id === pid) ?? null;
     if (!project) return;
@@ -395,7 +396,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       rt.lastConsumedResetGeneration = undefined;
       rt.legacySessionResetConsumed = false;
     }
-    restoreReasoningEffort(rt);
+    restoreReasoningEffort(rt, preferenceLane);
     restoreModelId(rt);
     rt.syncGeneration += 1;
     rt.syncInProgress = false;
@@ -451,7 +452,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
         rt.lastConsumedResetGeneration = undefined;
         rt.legacySessionResetConsumed = false;
       }
-      restoreReasoningEffort(rt);
+      restoreReasoningEffort(rt, preferenceLane);
       restoreModelId(rt);
     }
 
@@ -1243,6 +1244,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       projects,
       pid,
       rt,
+      preferenceLane,
       wsInstance,
       maxTurnCommands,
       randomId: ctx.randomId,
