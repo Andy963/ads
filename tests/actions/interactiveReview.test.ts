@@ -11,7 +11,9 @@ import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
 import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
 import { deriveProjectSessionId } from "../../server/web/server/projectSessionId.js";
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
+import { getDefaultRoleProfile, saveRoleProfile } from "../../server/state/roleProfileStore.js";
 import type { completeNativeChat } from "../../server/runtime/openAiCompatibleClient.js";
+import type { completeNativeModel } from "../../server/runtime/nativeCompletion.js";
 
 describe("Actions Reviewer queue", () => {
   const originalStateDbPath = process.env.ADS_STATE_DB_PATH;
@@ -113,6 +115,7 @@ describe("Actions Reviewer queue", () => {
       reviewerRunner?: (prompt: string) => Promise<string>;
       useInspection?: boolean;
       reviewerComplete?: typeof completeNativeChat;
+      reviewPresentationComplete?: typeof completeNativeModel;
     } = {},
   ): LaneDispatchBus {
     let metadataReads = 0;
@@ -171,6 +174,20 @@ describe("Actions Reviewer queue", () => {
               });
             }),
           }),
+      ...(options.reviewPresentationComplete
+        ? {
+            reviewPresentationModelResolver: () => ({
+              model: "presentation-test",
+              baseUrl: "http://invalid",
+              apiKey: "test",
+              provider: "test",
+              wireApi: "chat" as const,
+              contextWindow: 200_000,
+              options: {},
+            }),
+            reviewPresentationComplete: options.reviewPresentationComplete,
+          }
+        : {}),
       historyStore: {
         add: (_key, entry) => options.onHistoryMessage?.(entry),
       },
@@ -230,6 +247,82 @@ describe("Actions Reviewer queue", () => {
     assert.equal(result.ok, true);
     assert.equal((result.verdict as { status: string }).status, "REJECT");
     assert.equal(bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0]?.status, "completed");
+    await tools.dispose();
+  });
+
+  it("uses the Acopilot profile model to narrate the verdict for the Actions lane", async () => {
+    const reviewTarget = target();
+    const history: Array<{ role: string; text: string; kind?: string }> = [];
+    const db = getStateDatabase();
+    const profile = getDefaultRoleProfile(db, "acopilot");
+    assert.ok(profile);
+    saveRoleProfile(db, {
+      ...profile,
+      model_id: "presentation-model",
+      system_prompt: "Configured Acopilot presentation prompt",
+      is_enabled: true,
+      is_default: true,
+    });
+    let presentationRequest: Parameters<typeof completeNativeModel>[0] | undefined;
+    const bus = createBus(() => reviewTarget, {
+      onHistoryMessage: (entry) => history.push(entry),
+      reviewPresentationComplete: async (request) => {
+        presentationRequest = request;
+        return {
+          text: "审查通过。验证完成，未发现需要修改的问题。",
+          toolCalls: [],
+          finishReason: "stop",
+          usage: null,
+        };
+      },
+    });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
+
+    const result = await tools.review_action();
+
+    assert.equal(result.ok, true, result.error);
+    assert.ok(presentationRequest);
+    assert.equal(presentationRequest.messages[0]?.content, "Configured Acopilot presentation prompt");
+    assert.match(String(presentationRequest.messages[1]?.content), /<review-verdict>/);
+    assert.deepEqual(presentationRequest.tools, []);
+    const presentation = history.find((entry) => entry.kind?.startsWith("action_review_result:"));
+    assert.ok(presentation);
+    assert.equal(presentation.text, "审查通过。验证完成，未发现需要修改的问题。");
+    assert.equal(presentation.text.includes('"status"'), false);
+    await tools.dispose();
+  });
+
+  it("falls back to deterministic text when the presentation model returns protocol JSON", async () => {
+    const reviewTarget = target();
+    const history: Array<{ role: string; text: string; kind?: string }> = [];
+    const db = getStateDatabase();
+    const profile = getDefaultRoleProfile(db, "acopilot");
+    assert.ok(profile);
+    saveRoleProfile(db, {
+      ...profile,
+      model_id: "presentation-model",
+      system_prompt: "Configured Acopilot presentation prompt",
+      is_enabled: true,
+      is_default: true,
+    });
+    const bus = createBus(() => reviewTarget, {
+      onHistoryMessage: (entry) => history.push(entry),
+      reviewPresentationComplete: async () => ({
+        text: JSON.stringify({ status: "PASS", summary: "Internal protocol", defects: [] }),
+        toolCalls: [],
+        finishReason: "stop",
+        usage: null,
+      }),
+    });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
+
+    const result = await tools.review_action();
+
+    assert.equal(result.ok, true, result.error);
+    const presentation = history.find((entry) => entry.kind?.startsWith("action_review_result:"));
+    assert.ok(presentation);
+    assert.match(presentation.text, /^Reviewer PASS for PR #901/);
+    assert.equal(presentation.text.includes('"status"'), false);
     await tools.dispose();
   });
 

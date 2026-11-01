@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  buildReviewVerdictNarrationPrompt,
   findReviewProtocolStart,
   formatReviewVerdictText,
+  normalizeReviewVerdictNarration,
   parseReviewVerdictText,
   presentReviewVerdictText,
 } from "../../server/reviewer/verdictPresentation.js";
@@ -57,5 +59,16 @@ describe("reviewer verdict presentation", () => {
       formatReviewVerdictText({ status: "PASS", summary: "Clean", defects: [], reviewedAt: 1 }),
       "Reviewer verdict: PASS\nClean\nNo findings reported.",
     );
+  });
+
+  it("builds a model narration request and rejects protocol-shaped narration", () => {
+    const prompt = buildReviewVerdictNarrationPrompt({
+      pullRequestNumber: 42,
+      verdict: { status: "PASS", summary: "Clean", defects: [], reviewedAt: 1 },
+    });
+    assert.match(prompt, /<review-verdict>/);
+    assert.match(prompt, /"pullRequestNumber":42/);
+    assert.equal(normalizeReviewVerdictNarration("Readable result."), "Readable result.");
+    assert.equal(normalizeReviewVerdictNarration('{"status":"PASS"}'), null);
   });
 });
