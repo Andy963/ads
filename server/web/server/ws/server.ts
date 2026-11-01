@@ -1740,6 +1740,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
               userId: lane.userId,
               historyKey: lane.historyKey,
               currentCwd: lane.currentCwd,
+              lane: lane.laneNamespace === WEB_ACTIONS_NAMESPACE ? "actions" : "acopilot",
               cacheKey: lane.cacheKey,
               sessionManager: lane.sessionManager,
               orchestrator: lane.orchestrator,

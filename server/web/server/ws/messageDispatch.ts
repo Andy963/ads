@@ -19,6 +19,7 @@ import { handlePromptMessage } from "./handlePrompt.js";
 import { ensureWsSessionLogger, handleWsControlMessage } from "./messageControl.js";
 import type { WsMessage } from "./schema.js";
 import type { PromptIdentityReconciliation } from "../../../state/promptQueueStore.js";
+import type { CanonicalLaneId } from "../../../../shared/terminology.js";
 
 export type IncomingWsMessage = {
   parsed: WsMessage;
@@ -36,6 +37,7 @@ export async function dispatchWsMessage(args: {
   userId: number;
   historyKey: string;
   currentCwd: string;
+  lane?: CanonicalLaneId;
   cacheKey: string;
   sessionManager: SessionManager;
   orchestrator: ReturnType<SessionManager["getOrCreate"]>;
@@ -160,6 +162,7 @@ export async function dispatchWsMessage(args: {
         userId: args.userId,
         historyKey: args.historyKey,
         currentCwd,
+        ...(args.lane ? { lane: args.lane } : {}),
         isLaneCurrent: args.isLaneCurrent,
       },
       sessions: {

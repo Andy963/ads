@@ -16,6 +16,7 @@ import type { SessionCacheRegistry } from "./sessionCacheRegistry.js";
 import type { SyncEventStore } from "../sync/store.js";
 import type { PromptQueueStore } from "../../../state/promptQueueStore.js";
 import type { ActionTools } from "../../../agents/actionTools.js";
+import type { CanonicalLaneId } from "../../../../shared/terminology.js";
 
 export type WsLogger = {
   info: (msg: string) => void;
@@ -172,6 +173,7 @@ export type WsConnectionContextDeps = {
   userId: number;
   historyKey: string;
   currentCwd: string;
+  lane?: CanonicalLaneId;
   isLaneCurrent?: WsLaneValidityCheck;
 };
 

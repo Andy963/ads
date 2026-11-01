@@ -11,6 +11,7 @@ import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
 import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
 import { deriveProjectSessionId } from "../../server/web/server/projectSessionId.js";
 import { getStateDatabase, resetStateDatabaseForTests } from "../../server/state/database.js";
+import type { completeNativeChat } from "../../server/runtime/openAiCompatibleClient.js";
 
 describe("Actions Reviewer queue", () => {
   const originalStateDbPath = process.env.ADS_STATE_DB_PATH;
@@ -97,6 +98,8 @@ describe("Actions Reviewer queue", () => {
       onHistoryMessage?: (entry: { role: string; text: string; kind?: string }) => void;
       onBroadcast?: (payload: unknown) => void;
       reviewerRunner?: (prompt: string) => Promise<string>;
+      useInspection?: boolean;
+      reviewerComplete?: typeof completeNativeChat;
     } = {},
   ): LaneDispatchBus {
     let metadataReads = 0;
@@ -131,15 +134,30 @@ describe("Actions Reviewer queue", () => {
         number: current().prNumber,
         headRefName: current().branch,
       }],
-      reviewerRunner: options.reviewerRunner ?? (async (prompt) => {
-        options.onReviewPrompt?.(prompt);
-        const status = options.reviewStatus ?? "PASS";
-        return JSON.stringify({
-          status,
-          summary: status === "PASS" ? "Exact target reviewed" : "Defect found",
-          defects: status === "PASS" ? [] : [{ file: "change.txt", severity: "blocker", description: "Fixture defect" }],
-        });
-      }),
+      ...(options.useInspection
+        ? {
+            reviewerModelResolver: () => ({
+              model: "reviewer-test",
+              baseUrl: "http://invalid",
+              apiKey: "test",
+              provider: "test",
+              wireApi: "chat" as const,
+              contextWindow: 200_000,
+              options: {},
+            }),
+            reviewerComplete: options.reviewerComplete,
+          }
+        : {
+            reviewerRunner: options.reviewerRunner ?? (async (prompt) => {
+              options.onReviewPrompt?.(prompt);
+              const status = options.reviewStatus ?? "PASS";
+              return JSON.stringify({
+                status,
+                summary: status === "PASS" ? "Exact target reviewed" : "Defect found",
+                defects: status === "PASS" ? [] : [{ file: "change.txt", severity: "blocker", description: "Fixture defect" }],
+              });
+            }),
+          }),
       historyStore: {
         add: (_key, entry) => options.onHistoryMessage?.(entry),
       },
@@ -412,6 +430,50 @@ describe("Actions Reviewer queue", () => {
     const job = bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0];
     assert.equal(job?.status, "failed");
     assert.deepEqual(JSON.parse(job?.review_verdicts_json ?? "[]"), []);
+    await tools.dispose();
+  });
+
+  it("streams verification output and Reviewer inspection steps into the lane", async () => {
+    const reviewTarget = target();
+    const history: Array<{ role: string; text: string; kind?: string }> = [];
+    let calls = 0;
+    const bus = createBus(() => reviewTarget, {
+      useInspection: true,
+      onHistoryMessage: (entry) => history.push(entry),
+      reviewerComplete: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            text: "",
+            toolCalls: [{
+              id: "call-1",
+              type: "function",
+              function: { name: "list_dir", arguments: JSON.stringify({ path: "." }) },
+            }],
+            finishReason: "tool_calls",
+            usage: null,
+          };
+        }
+        return {
+          text: JSON.stringify({ status: "PASS", summary: "Looks good", defects: [] }),
+          toolCalls: [],
+          finishReason: "stop",
+          usage: null,
+        };
+      },
+    });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
+
+    const result = await tools.review_action();
+
+    assert.equal(result.ok, true, result.error);
+    const texts = history.map((entry) => entry.text);
+    assert.ok(texts.includes("Verification started: git status"), JSON.stringify(texts));
+    assert.ok(texts.includes("Reviewer step: list_dir ."), JSON.stringify(texts));
+    const verdictEntry = history.find((entry) => entry.kind?.startsWith("action_review_result:"));
+    assert.ok(verdictEntry);
+    assert.match(verdictEntry.text, /^Reviewer PASS for PR #901/);
+    assert.equal(verdictEntry.text.includes('"status"'), false);
     await tools.dispose();
   });
 });

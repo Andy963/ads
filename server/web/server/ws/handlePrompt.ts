@@ -19,6 +19,7 @@ import { applySessionOverrides } from "./sessionOverrides.js";
 import { attachWorkerPromptHandler } from "./workerPromptHandler.js";
 import { processPromptOutputBlocks } from "./promptOutputProcessing.js";
 import { handlePromptError } from "./promptErrorHandling.js";
+import { presentReviewVerdictText } from "../../../reviewer/verdictPresentation.js";
 import { beginWsPromptRun, isWsPromptAbort, isWsPromptSilentAbort, raceWsPromptAbort } from "./promptLifecycle.js";
 import { recordConversationMessage } from "../../../utils/conversationMessageRecorder.js";
 import { createCoreMiddlewarePipeline, type MiddlewareChannel } from "../../../middleware/index.js";
@@ -58,6 +59,10 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     deps.transport.broadcastJson(payload);
   };
   const isLaneCurrent = (): boolean => (deps.context.isLaneCurrent ? deps.context.isLaneCurrent() : true);
+  // The Actions lane is the human-facing review log. Its model output is the
+  // Reviewer protocol, so it is presented after completion rather than streamed
+  // token by token into the transcript.
+  const humanLogLane = deps.context.lane === "actions";
 
   let orchestrator = deps.sessions.orchestrator;
   let outcome: WsPromptOutcome = { ok: false, error: "Prompt did not complete" };
@@ -238,6 +243,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       resolveAgentId: () => orchestrator.getActiveAgentId(),
       channel: turnChannel,
       isActive: promptRun.isActive,
+      gateProtocolText: humanLogLane,
       onSessionFallback: ({ previousSessionId, detail }) => {
         // This turn already ran without the old context; re-sending it now would
         // not put it back. Flag the *next* turn so the ADS history goes in then.
@@ -357,6 +363,9 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         source: deps.context.chatSessionId || "worker",
         isActive: promptRun.isActive,
       });
+      if (humanLogLane) {
+        outputForChat = presentReviewVerdictText(outputForChat);
+      }
       promptRun.ensureActive();
 
       promptRun.ensureActive();
@@ -387,11 +396,15 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           );
         }
       }
+      const rawAssistantItems = getAssistantItems();
+      const assistantItems = humanLogLane && rawAssistantItems
+        ? rawAssistantItems.map((item) => ({ ...item, text: presentReviewVerdictText(item.text) }))
+        : rawAssistantItems;
       sendToChat({
         type: "result",
         ok: true,
         output: outputForChat,
-        assistantItems: getAssistantItems(),
+        assistantItems,
         threadId,
         expectedThreadId,
         threadReset,

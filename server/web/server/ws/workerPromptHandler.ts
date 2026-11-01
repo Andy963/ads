@@ -103,6 +103,12 @@ export function attachWorkerPromptHandler(args: {
   channel?: string;
   ruleGate?: RuleEnforcementGate;
   isActive?: () => boolean;
+  /**
+   * Hold back assistant text that opens as a machine protocol document (a bare
+   * JSON object or fenced block) so the lane can present that answer itself.
+   * Ordinary prose still streams.
+   */
+  gateProtocolText?: boolean;
 }): {
   unsubscribe: () => void;
   handleExploredEntry: (entry: ExploredEntry) => void;
@@ -118,7 +124,23 @@ export function attachWorkerPromptHandler(args: {
   const terminalCommandKeys = new Set<string>();
   let latestCommandKey: string | null = null;
   let exploredHeaderSent = false;
+  const protocolTextModes = new Map<string, "pending" | "stream" | "withhold">();
+  const streamedAssistantItems = new Set<string>();
   const isActive = (): boolean => (args.isActive ? args.isActive() : true);
+
+  const assistantTextMode = (itemId: string, fullText: string): "pending" | "stream" | "withhold" => {
+    if (!args.gateProtocolText) return "stream";
+    const known = protocolTextModes.get(itemId);
+    if (known === "stream" || known === "withhold") return known;
+    const trimmed = fullText.trimStart();
+    if (!trimmed) {
+      protocolTextModes.set(itemId, "pending");
+      return "pending";
+    }
+    const mode = trimmed.startsWith("{") || trimmed.startsWith("```") ? "withhold" : "stream";
+    protocolTextModes.set(itemId, mode);
+    return mode;
+  };
 
   /** Report command safety violations that reach the event bridge. */
   const evaluateCommandSafety = (commandLine: string): void => {
@@ -239,8 +261,15 @@ export function attachWorkerPromptHandler(args: {
       }
       const delta = previous ? next.slice(previous.length) : next;
       lastRespondingTextByItemId.set(itemId, next);
-      if (delta) {
-        args.sendToChat({ type: "delta", delta, assistantItemId: itemId, ts: eventTimestamp });
+      if (delta && assistantTextMode(itemId, next) === "stream") {
+        const alreadyStreamed = streamedAssistantItems.has(itemId);
+        args.sendToChat({
+          type: "delta",
+          delta: alreadyStreamed ? delta : next,
+          assistantItemId: itemId,
+          ts: eventTimestamp,
+        });
+        streamedAssistantItems.add(itemId);
       }
       return;
     }
@@ -250,7 +279,9 @@ export function attachWorkerPromptHandler(args: {
         const text = String((rawItem as { text?: unknown }).text ?? "");
         assistantItems.set(itemId, text);
         if (text.trim()) latestAssistantItemId = itemId;
-        args.sendToChat({ type: "assistant_item", assistantItemId: itemId, assistantItemText: text, ts: eventTimestamp });
+        if (streamedAssistantItems.has(itemId) || assistantTextMode(itemId, text) === "stream") {
+          args.sendToChat({ type: "assistant_item", assistantItemId: itemId, assistantItemText: text, ts: eventTimestamp });
+        }
         if (!completedRespondingItemIds.has(itemId)) {
           completedRespondingItemIds.add(itemId);
           if (activeRespondingItemId === itemId) {
