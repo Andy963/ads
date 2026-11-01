@@ -623,6 +623,51 @@ describe("web/server/ws Actions lane reviewer presentation", () => {
     assert.equal(frames.some((frame) => frame.type === "assistant_item"), false);
   });
 
+  it("renders a verdict after prose and a fenced protocol without leaking it", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-preface-thread");
+    const preface = "Review complete. The result is:";
+    const response = `${preface}\n\n\`\`\`json\n${verdict}\n\`\`\``;
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(preface);
+    orchestrator.emitAssistantDelta(response);
+    orchestrator.emitAssistantItem(response);
+    orchestrator.resolveLate(response);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; delta?: string; output?: string; assistantItemText?: string }>;
+    assert.deepEqual(frames.filter((frame) => frame.type === "delta").map((frame) => frame.delta), [preface]);
+    assert.equal(frames.some((frame) => frame.type === "assistant_item"), false);
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.match(String(result.output), /^Review complete\. The result is:\n\nReviewer verdict: REJECT/);
+    assert.equal(JSON.stringify(result).includes(verdict), false);
+    assert.equal(JSON.stringify(historyStore.get("history-1")).includes(verdict), false);
+  });
+
+  it("replaces an invalid protocol candidate instead of persisting raw JSON", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-invalid-protocol-thread");
+    const response = "Review complete.\n\n```json\n{\"status\": \"MAYBE\"}\n```";
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(response);
+    orchestrator.emitAssistantItem(response);
+    orchestrator.resolveLate(response);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; output?: string; assistantItemText?: string }>;
+    assert.equal(frames.some((frame) => frame.type === "assistant_item"), false);
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.equal(String(result.output).includes('{"status": "MAYBE"}'), false);
+    assert.match(String(result.output), /Reviewer verdict could not be rendered\./);
+    assert.equal(JSON.stringify(historyStore.get("history-1")).includes('{"status": "MAYBE"}'), false);
+  });
+
   it("keeps ordinary assistant streaming for the Acopilot lane", async () => {
     const { chatMessages } = fixture;
     const orchestrator = new SlowOrchestrator("acopilot-thread");

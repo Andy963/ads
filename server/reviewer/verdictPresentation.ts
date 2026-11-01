@@ -1,17 +1,77 @@
 import type { ReviewVerdict } from "./types.js";
 import { parseReviewVerdict } from "./verdictParser.js";
 
+type ProtocolSegment = {
+  start: number;
+  end: number;
+  text: string;
+};
+
+function findFencedProtocol(text: string): ProtocolSegment | null {
+  const start = text.indexOf("```");
+  if (start < 0) return null;
+  const endFence = text.indexOf("```", start + 3);
+  return {
+    start,
+    end: endFence < 0 ? text.length : endFence + 3,
+    text: text.slice(start, endFence < 0 ? text.length : endFence + 3),
+  };
+}
+
+function findBalancedObjectEnd(text: string, start: number): number | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+    }
+  }
+  return null;
+}
+
+function findBareProtocol(text: string): ProtocolSegment | null {
+  for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
+    const prefix = text.slice(start);
+    if (!/^\{\s*(?:"|$)/.test(prefix)) continue;
+    const end = findBalancedObjectEnd(text, start) ?? text.length;
+    return { start, end, text: text.slice(start, end) };
+  }
+  return null;
+}
+
+function findProtocolSegment(text: string): ProtocolSegment | null {
+  const fenced = findFencedProtocol(text);
+  const bare = findBareProtocol(text);
+  if (!fenced) return bare;
+  if (!bare) return fenced;
+  return fenced.start < bare.start ? fenced : bare;
+}
+
+/** Return the first point at which model output becomes a protocol candidate. */
+export function findReviewProtocolStart(text: string): number | null {
+  return findProtocolSegment(String(text ?? ""))?.start ?? null;
+}
+
 /**
- * Parse a standalone Reviewer verdict document. Returns null for any text that
- * is not exactly the PASS/REJECT protocol so callers can keep normal prose
- * untouched.
+ * Parse the first Reviewer protocol document in model output. Prefix prose is
+ * allowed because the Actions lane must not leak a verdict that follows it.
  */
 export function parseReviewVerdictText(text: string): ReviewVerdict | null {
-  const trimmed = String(text ?? "").trim();
-  if (!trimmed) return null;
-  if (!trimmed.startsWith("{") && !trimmed.startsWith("```")) return null;
+  const segment = findProtocolSegment(String(text ?? ""));
+  if (!segment) return null;
   try {
-    return parseReviewVerdict(trimmed);
+    return parseReviewVerdict(segment.text);
   } catch {
     return null;
   }
@@ -40,10 +100,17 @@ export function formatReviewVerdictText(verdict: ReviewVerdict): string {
 }
 
 /**
- * Replace a protocol verdict with its readable form. Any other text passes
- * through unchanged so ordinary lane answers keep their original wording.
+ * Replace a protocol verdict anywhere in model output with readable text.
+ * An invalid protocol candidate is replaced with a fixed message so raw JSON
+ * cannot reach the Actions lane or its persisted history.
  */
 export function presentReviewVerdictText(text: string): string {
-  const verdict = parseReviewVerdictText(text);
-  return verdict ? formatReviewVerdictText(verdict) : text;
+  const source = String(text ?? "");
+  const segment = findProtocolSegment(source);
+  if (!segment) return source;
+  const verdict = parseReviewVerdictText(source);
+  const replacement = verdict
+    ? formatReviewVerdictText(verdict)
+    : "Reviewer verdict could not be rendered.";
+  return `${source.slice(0, segment.start)}${replacement}`.trim();
 }

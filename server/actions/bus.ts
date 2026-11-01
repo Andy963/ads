@@ -533,7 +533,7 @@ export class LaneDispatchBus {
       this.options.interactiveVerificationTimeoutMs,
       DEFAULT_INTERACTIVE_VERIFICATION_TIMEOUT_MS,
     );
-    let pending = "";
+    const pendingByStream: Record<"stdout" | "stderr", string> = { stdout: "", stderr: "" };
     const emit = (line: string): void => {
       const text = line.trimEnd();
       if (!text.trim()) return;
@@ -541,17 +541,19 @@ export class LaneDispatchBus {
         onLine?.(text.slice(0, 500));
       } catch { /* Lane logging must never break verification. */ }
     };
-    const push = (chunk: string): void => {
+    const push = (chunk: string, stream: "stdout" | "stderr"): void => {
       if (!onLine) return;
-      const lines = (pending + chunk.replace(/\r\n?/g, "\n")).split("\n");
-      pending = lines.pop() ?? "";
+      const lines = (pendingByStream[stream] + chunk.replace(/\r\n?/g, "\n")).split("\n");
+      pendingByStream[stream] = lines.pop() ?? "";
       for (const line of lines) emit(line);
     };
     const result = await this.runInteractiveCommand(
       parts[0]!, parts.slice(1), repoPath, signal, timeoutMs,
-      undefined, (chunk) => push(chunk),
+      undefined, (chunk, stream) => push(chunk, stream),
     );
-    if (pending) emit(pending);
+    for (const stream of ["stdout", "stderr"] as const) {
+      if (pendingByStream[stream]) emit(pendingByStream[stream]);
+    }
     const output = [result.stdout, result.stderr]
       .map((value) => value.trim())
       .filter(Boolean)

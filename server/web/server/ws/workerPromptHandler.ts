@@ -6,6 +6,7 @@ import { isNativeExecutionId, redactNativeExecutionIds } from "../../../runtime/
 import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { buildWorkspacePatch } from "../../gitPatch.js";
 import { getRuleEnforcementGate, type RuleEnforcementGate } from "../../../middleware/security/enforcementGate.js";
+import { findReviewProtocolStart } from "../../../reviewer/verdictPresentation.js";
 import { extractCommandPayload } from "./utils.js";
 
 type FileChangeLike = { kind?: unknown; path?: unknown };
@@ -103,11 +104,7 @@ export function attachWorkerPromptHandler(args: {
   channel?: string;
   ruleGate?: RuleEnforcementGate;
   isActive?: () => boolean;
-  /**
-   * Hold back assistant text that opens as a machine protocol document (a bare
-   * JSON object or fenced block) so the lane can present that answer itself.
-   * Ordinary prose still streams.
-   */
+  /** Hold back Reviewer protocol anywhere in an Actions-lane assistant item. */
   gateProtocolText?: boolean;
 }): {
   unsubscribe: () => void;
@@ -124,22 +121,18 @@ export function attachWorkerPromptHandler(args: {
   const terminalCommandKeys = new Set<string>();
   let latestCommandKey: string | null = null;
   let exploredHeaderSent = false;
-  const protocolTextModes = new Map<string, "pending" | "stream" | "withhold">();
+  const protocolTextStartByItemId = new Map<string, number>();
+  const streamedTextByItemId = new Map<string, string>();
   const streamedAssistantItems = new Set<string>();
   const isActive = (): boolean => (args.isActive ? args.isActive() : true);
 
-  const assistantTextMode = (itemId: string, fullText: string): "pending" | "stream" | "withhold" => {
-    if (!args.gateProtocolText) return "stream";
-    const known = protocolTextModes.get(itemId);
-    if (known === "stream" || known === "withhold") return known;
-    const trimmed = fullText.trimStart();
-    if (!trimmed) {
-      protocolTextModes.set(itemId, "pending");
-      return "pending";
-    }
-    const mode = trimmed.startsWith("{") || trimmed.startsWith("```") ? "withhold" : "stream";
-    protocolTextModes.set(itemId, mode);
-    return mode;
+  const visibleAssistantText = (itemId: string, fullText: string): string => {
+    if (!args.gateProtocolText) return fullText;
+    const knownStart = protocolTextStartByItemId.get(itemId);
+    const protocolStart = knownStart ?? findReviewProtocolStart(fullText);
+    if (protocolStart === null) return fullText;
+    protocolTextStartByItemId.set(itemId, protocolStart);
+    return fullText.slice(0, protocolStart).trimEnd();
   };
 
   /** Report command safety violations that reach the event bridge. */
@@ -195,6 +188,9 @@ export function attachWorkerPromptHandler(args: {
       lastRespondingTextByItemId.clear();
       assistantItems.clear();
       followingCommands.clear();
+      protocolTextStartByItemId.clear();
+      streamedTextByItemId.clear();
+      streamedAssistantItems.clear();
       latestAssistantItemId = undefined;
       activeRespondingItemId = null;
       completedRespondingItemIds.clear();
@@ -259,13 +255,18 @@ export function attachWorkerPromptHandler(args: {
         // unrelated snapshot is a reset, not a new delta to append to the chat.
         return;
       }
-      const delta = previous ? next.slice(previous.length) : next;
       lastRespondingTextByItemId.set(itemId, next);
-      if (delta && assistantTextMode(itemId, next) === "stream") {
-        const alreadyStreamed = streamedAssistantItems.has(itemId);
+      const visibleText = visibleAssistantText(itemId, next);
+      const previousVisibleText = streamedTextByItemId.get(itemId) ?? "";
+      if (!visibleText.startsWith(previousVisibleText)) {
+        return;
+      }
+      const delta = visibleText.slice(previousVisibleText.length);
+      streamedTextByItemId.set(itemId, visibleText);
+      if (delta) {
         args.sendToChat({
           type: "delta",
-          delta: alreadyStreamed ? delta : next,
+          delta,
           assistantItemId: itemId,
           ts: eventTimestamp,
         });
@@ -279,7 +280,8 @@ export function attachWorkerPromptHandler(args: {
         const text = String((rawItem as { text?: unknown }).text ?? "");
         assistantItems.set(itemId, text);
         if (text.trim()) latestAssistantItemId = itemId;
-        if (streamedAssistantItems.has(itemId) || assistantTextMode(itemId, text) === "stream") {
+        const hasProtocol = args.gateProtocolText && findReviewProtocolStart(text) !== null;
+        if (!hasProtocol && (streamedAssistantItems.has(itemId) || text.trim())) {
           args.sendToChat({ type: "assistant_item", assistantItemId: itemId, assistantItemText: text, ts: eventTimestamp });
         }
         if (!completedRespondingItemIds.has(itemId)) {

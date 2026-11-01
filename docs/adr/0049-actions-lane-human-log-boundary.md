@@ -15,7 +15,7 @@ The lane also showed almost nothing about how a review was produced. Queued revi
 ## Decision
 
 - The Actions lane is a human log. Reviewer protocol JSON never reaches it as text.
-- Interactive Actions-lane turns withhold assistant frames whose text opens as a protocol document, a bare JSON object or a fenced block. Ordinary prose still streams. When the turn completes, `server/reviewer/verdictPresentation.ts` parses a standalone verdict and renders status, summary, and one line per finding. Anything that is not a verdict is shown unchanged.
+- Interactive Actions-lane turns inspect the whole cumulative assistant item. When a bare JSON object or fenced block begins anywhere in the item, the handler stops streaming at that boundary. It keeps any preceding prose, renders a valid verdict as status, summary, and one line per finding, and replaces an invalid protocol candidate with a fixed rendering-error message. It discards the remaining protocol-bearing suffix. Raw protocol text never reaches the client or `historyStore`.
 - The rendered text is what `historyStore` persists and what the client receives; the protocol document remains only in the job record (`review_verdicts_json`) for Acopilot and delivery decisions.
 - Review execution streams into the lane as it happens: verification stdout/stderr lines (bounded, with an explicit truncation line) and one line per Reviewer inspection tool call. These entries go through the same `recordActionMessage` path as job milestones, so they are broadcast and persisted together.
 - The queue completion message reuses the same formatter, so both delivery paths read identically.
@@ -23,6 +23,6 @@ The lane also showed almost nothing about how a review was produced. Queued revi
 
 ## Consequences
 
-The Actions lane shows review activity and a readable verdict instead of internal protocol output. Protocol-shaped answers appear when the turn completes rather than streaming word by word; ordinary answers and lane status lines stream as before.
+The Actions lane shows review activity and a readable verdict instead of internal protocol output. A prose preface may stream until the protocol boundary, but the protocol itself appears only as a readable conclusion when the turn completes. Invalid protocol candidates remain hidden.
 
-Verdict formatting lives in one module shared by the interactive lane and the review queue, so a future change to the verdict schema updates both. Log streaming is bounded per review so a noisy verification command cannot flood lane history.
+Verdict formatting lives in one module shared by the interactive lane and the review queue, so a future change to the verdict schema updates both. Verification keeps separate stdout and stderr line buffers and is bounded per review, preventing interleaved partial lines or noisy commands from corrupting lane history.

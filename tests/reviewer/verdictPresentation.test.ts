@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  findReviewProtocolStart,
   formatReviewVerdictText,
   parseReviewVerdictText,
   presentReviewVerdictText,
@@ -37,6 +38,18 @@ describe("reviewer verdict presentation", () => {
     assert.equal(presentReviewVerdictText("All good, nothing to report."), "All good, nothing to report.");
     assert.equal(parseReviewVerdictText('{"status":"MAYBE"}'), null);
     assert.equal(parseReviewVerdictText(""), null);
+  });
+
+  it("replaces a fenced verdict after prose and hides malformed candidates", () => {
+    const verdict = JSON.stringify({ status: "PASS", summary: "Clean", defects: [] });
+    const prefaced = `Review complete.\n\n\`\`\`json\n${verdict}\n\`\`\``;
+    assert.equal(findReviewProtocolStart(prefaced), "Review complete.\n\n".length);
+    assert.equal(presentReviewVerdictText(prefaced), "Review complete.\n\nReviewer verdict: PASS\nClean\nNo findings reported.");
+    const malformed = "Review complete.\n\n```json\n{\"status\": \"MAYBE\"}\n```";
+    assert.equal(presentReviewVerdictText(malformed).includes('{"status": "MAYBE"}'), false);
+    assert.match(presentReviewVerdictText(malformed), /Reviewer verdict could not be rendered\./);
+    const trailingProtocol = `${malformed}\n{\"status\": \"PASS\", \"summary\": \"Leaked\", \"defects\": []}`;
+    assert.equal(presentReviewVerdictText(trailingProtocol).includes("Leaked"), false);
   });
 
   it("states an empty finding list explicitly", () => {

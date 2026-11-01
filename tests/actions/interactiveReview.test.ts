@@ -30,7 +30,20 @@ describe("Actions Reviewer queue", () => {
     spawnSync("git", ["config", "user.email", "test@ads.test"], { cwd: repoDir });
     spawnSync("git", ["config", "user.name", "AdsTest"], { cwd: repoDir });
     fs.writeFileSync(path.join(repoDir, "README.md"), "# Test\n");
-    spawnSync("git", ["add", "README.md"], { cwd: repoDir });
+    fs.writeFileSync(
+      path.join(repoDir, "verification-stream.cjs"),
+      [
+        'process.stdout.write("stdout");',
+        'setTimeout(() => process.stderr.write("stderr"), 5);',
+        'setTimeout(() => process.stdout.write("-line\\n"), 10);',
+        'setTimeout(() => process.stderr.write("-line\\n"), 15);',
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(repoDir, "verification-truncate.cjs"),
+      'for (let index = 0; index <= 40; index += 1) console.log(`verification-${index}`);\n',
+    );
+    spawnSync("git", ["add", "README.md", "verification-stream.cjs", "verification-truncate.cjs"], { cwd: repoDir });
     spawnSync("git", ["commit", "-m", "initial"], { cwd: repoDir });
     baseCommit = git("rev-parse", "dev");
     spawnSync("git", ["checkout", "-b", "codex/issue-900"], { cwd: repoDir });
@@ -469,11 +482,88 @@ describe("Actions Reviewer queue", () => {
     assert.equal(result.ok, true, result.error);
     const texts = history.map((entry) => entry.text);
     assert.ok(texts.includes("Verification started: git status"), JSON.stringify(texts));
+    assert.ok(texts.includes("On branch codex/issue-900"), JSON.stringify(texts));
+    assert.ok(texts.includes("nothing to commit, working tree clean"), JSON.stringify(texts));
     assert.ok(texts.includes("Reviewer step: list_dir ."), JSON.stringify(texts));
     const verdictEntry = history.find((entry) => entry.kind?.startsWith("action_review_result:"));
     assert.ok(verdictEntry);
     assert.match(verdictEntry.text, /^Reviewer PASS for PR #901/);
     assert.equal(verdictEntry.text.includes('"status"'), false);
+    const verificationOutputEnd = Math.max(
+      texts.indexOf("On branch codex/issue-900"),
+      texts.indexOf("nothing to commit, working tree clean"),
+    );
+    assert.ok(verificationOutputEnd < texts.indexOf("Reviewer step: list_dir ."), JSON.stringify(texts));
+    assert.ok(texts.indexOf("Reviewer step: list_dir .") < texts.indexOf(verdictEntry.text), JSON.stringify(texts));
+    await tools.dispose();
+  });
+
+  it("keeps stdout and stderr line buffers separate", async () => {
+    const reviewTarget = target();
+    const history: Array<{ role: string; text: string; kind?: string }> = [];
+    const bus = createBus(() => reviewTarget, {
+      testCommand: "node verification-stream.cjs",
+      onHistoryMessage: (entry) => history.push(entry),
+    });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
+
+    const result = await tools.review_action();
+
+    assert.equal(result.ok, true, result.error);
+    const texts = history.map((entry) => entry.text);
+    assert.ok(texts.includes("stdout-line"), JSON.stringify(texts));
+    assert.ok(texts.includes("stderr-line"), JSON.stringify(texts));
+    assert.equal(texts.some((text) => text.includes("stdoutstderr")), false, JSON.stringify(texts));
+    await tools.dispose();
+  });
+
+  it("truncates verification output before Reviewer steps and the verdict", async () => {
+    const reviewTarget = target();
+    const history: Array<{ role: string; text: string; kind?: string }> = [];
+    let calls = 0;
+    const bus = createBus(() => reviewTarget, {
+      testCommand: "node verification-truncate.cjs",
+      useInspection: true,
+      onHistoryMessage: (entry) => history.push(entry),
+      reviewerComplete: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            text: "",
+            toolCalls: [{
+              id: "call-1",
+              type: "function",
+              function: { name: "list_dir", arguments: JSON.stringify({ path: "." }) },
+            }],
+            finishReason: "tool_calls",
+            usage: null,
+          };
+        }
+        return {
+          text: JSON.stringify({ status: "PASS", summary: "Looks good", defects: [] }),
+          toolCalls: [],
+          finishReason: "stop",
+          usage: null,
+        };
+      },
+    });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
+
+    const result = await tools.review_action();
+
+    assert.equal(result.ok, true, result.error);
+    const texts = history.map((entry) => entry.text);
+    assert.ok(texts.includes("verification-0"), JSON.stringify(texts));
+    assert.ok(texts.includes("verification-39"), JSON.stringify(texts));
+    assert.equal(texts.includes("verification-40"), false, JSON.stringify(texts));
+    const truncation = "Verification output truncated after 40 lines.";
+    assert.ok(texts.includes(truncation), JSON.stringify(texts));
+    const reviewerStep = "Reviewer step: list_dir .";
+    assert.ok(texts.includes(reviewerStep), JSON.stringify(texts));
+    const verdictEntry = history.find((entry) => entry.kind?.startsWith("action_review_result:"));
+    assert.ok(verdictEntry);
+    assert.ok(texts.indexOf(truncation) < texts.indexOf(reviewerStep), JSON.stringify(texts));
+    assert.ok(texts.indexOf(reviewerStep) < texts.indexOf(verdictEntry.text), JSON.stringify(texts));
     await tools.dispose();
   });
 });
