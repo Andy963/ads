@@ -1,10 +1,12 @@
+import type { WebPushNotification } from "./service.js";
+
 export function createForegroundAwareWebPushNotifier(args: {
-  notifyUser: (userId: string) => Promise<void>;
+  notifyUser: (userId: string, notification: WebPushNotification) => Promise<void>;
   hasOpenWebClient: (userId: string) => boolean;
-}): (userId: string) => Promise<void> {
-  return async (userId) => {
+}): (userId: string, notification: WebPushNotification) => Promise<void> {
+  return async (userId, notification) => {
     if (!args.hasOpenWebClient(userId)) {
-      await args.notifyUser(userId);
+      await args.notifyUser(userId, notification);
     }
   };
 }

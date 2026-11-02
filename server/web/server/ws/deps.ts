@@ -17,6 +17,7 @@ import type { SyncEventStore } from "../sync/store.js";
 import type { PromptQueueStore } from "../../../state/promptQueueStore.js";
 import type { ActionTools } from "../../../agents/actionTools.js";
 import type { CanonicalLaneId } from "../../../../shared/terminology.js";
+import type { WebPushNotification } from "../../push/service.js";
 
 export type WsLogger = {
   info: (msg: string) => void;
@@ -148,7 +149,7 @@ export type AttachWebSocketServerDeps = {
   commands: WsCommandDeps;
   scheduler: WsSchedulerDeps;
   logger: WsLogger;
-  notifyWebUser?: (userId: string) => Promise<void>;
+  notifyWebUser?: (userId: string, notification: WebPushNotification) => Promise<void>;
 };
 
 export type WsRequestDeps = {
@@ -224,7 +225,7 @@ export type WsPromptHandlerDeps = {
   history: WsHistoryRuntimeDeps;
   scheduler: WsSchedulerDeps;
   middleware?: MiddlewarePipeline;
-  notifyWebUser?: (userId: string) => Promise<void>;
+  notifyWebUser?: (userId: string, notification: WebPushNotification) => Promise<void>;
 };
 
 export type WsPromptOutcome = {
