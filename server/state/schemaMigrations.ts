@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 
 import type { Database as DatabaseType } from "better-sqlite3";
 
-import { BASE_LANE_PROMPTS } from "./lanePromptDefaults.js";
+import {
+  BASE_LANE_PROMPTS,
+  CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
+  LEGACY_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
+} from "./lanePromptDefaults.js";
 import { ensureLanePromptTables } from "./lanePromptStore.js";
 import { sanitizeModelConfigJson } from "./modelConfigTypes.js";
 import { ensurePromptQueueTables } from "./promptQueueStore.js";
@@ -1219,6 +1223,37 @@ Core reviewing rules:
         DROP TABLE action_jobs_legacy_review_queue;
         CREATE INDEX idx_action_jobs_lookup ON action_jobs(project_id, status, created_at);
       `);
+    },
+  },
+  {
+    version: 40,
+    description: "Do not block Acopilot when the dynamic task-slot tool is unavailable",
+    up: (db) => {
+      const table = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'role_profiles'")
+        .get();
+      if (!table) return;
+
+      const profiles = db.prepare(`
+        SELECT id, system_prompt
+        FROM role_profiles
+        WHERE role = 'acopilot'
+      `).all() as Array<{ id: string; system_prompt: string }>;
+      const update = db.prepare(`
+        UPDATE role_profiles
+        SET system_prompt = ?, version = version + 1, updated_at = ?
+        WHERE id = ?
+      `);
+      const now = Date.now();
+
+      for (const profile of profiles) {
+        const nextPrompt = profile.system_prompt
+          .split(LEGACY_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION)
+          .join(CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION);
+        if (nextPrompt !== profile.system_prompt) {
+          update.run(nextPrompt, now, profile.id);
+        }
+      }
     },
   },
 ];

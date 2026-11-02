@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { it } from "node:test";
 
+import {
+  CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
+  LEGACY_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
+} from "../../server/state/lanePromptDefaults.js";
 import { stateSchemaMigrations } from "../../server/state/schemaMigrations.js";
 
 it("consolidates role profiles without losing retired Developer settings", () => {
@@ -162,6 +166,57 @@ it("restores Reviewer jobs without dropping historical Actions job data", () => 
       (db.prepare("SELECT job_kind FROM action_jobs WHERE id = 'review'").get() as { job_kind: string }).job_kind,
       "pull_request_review",
     );
+  } finally {
+    db.close();
+  }
+});
+
+it("replaces the unconditional task-slot instruction in stored Acopilot prompts", () => {
+  const db = new Database(":memory:");
+  try {
+    db.exec(`
+      CREATE TABLE role_profiles (
+        id TEXT PRIMARY KEY,
+        role TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        reasoning_effort TEXT NOT NULL DEFAULT 'high',
+        system_prompt TEXT NOT NULL,
+        is_enabled INTEGER NOT NULL DEFAULT 1,
+        is_default INTEGER NOT NULL DEFAULT 1,
+        version INTEGER NOT NULL DEFAULT 1,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    const legacyPrompt = [
+      "Custom Acopilot instruction.",
+      LEGACY_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
+      LEGACY_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
+      "Keep this custom instruction.",
+    ].join("\n");
+    db.prepare(`
+      INSERT INTO role_profiles
+        (id, role, name, model_id, system_prompt, version, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run("profile-acopilot", "acopilot", "Custom Acopilot", "model", legacyPrompt, 4, 1);
+
+    const migration = stateSchemaMigrations.find((entry) => entry.version === 40);
+    assert.ok(migration);
+    migration.up(db);
+
+    const profile = db.prepare(`
+      SELECT system_prompt, version
+      FROM role_profiles
+      WHERE id = 'profile-acopilot'
+    `).get() as { system_prompt: string; version: number };
+    assert.equal(profile.system_prompt.includes(LEGACY_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION), false);
+    assert.equal(
+      profile.system_prompt.split(CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION).length - 1,
+      2,
+    );
+    assert.match(profile.system_prompt, /Custom Acopilot instruction/);
+    assert.match(profile.system_prompt, /Keep this custom instruction/);
+    assert.equal(profile.version, 5);
   } finally {
     db.close();
   }

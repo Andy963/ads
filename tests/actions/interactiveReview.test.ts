@@ -116,6 +116,7 @@ describe("Actions Reviewer queue", () => {
       useInspection?: boolean;
       reviewerComplete?: typeof completeNativeChat;
       reviewPresentationComplete?: typeof completeNativeModel;
+      reviewPresentationTimeoutMs?: number;
     } = {},
   ): LaneDispatchBus {
     let metadataReads = 0;
@@ -123,6 +124,7 @@ describe("Actions Reviewer queue", () => {
     return new LaneDispatchBus(getStateDatabase(), {
       testCommand: options.testCommand ?? "git status",
       interactiveVerificationTimeoutMs: options.interactiveVerificationTimeoutMs,
+      reviewPresentationTimeoutMs: options.reviewPresentationTimeoutMs,
       interactiveGithubMetadataReader: () => {
         metadataReads += 1;
         options.onMetadataRead?.(metadataReads);
@@ -204,6 +206,11 @@ describe("Actions Reviewer queue", () => {
     };
   }
 
+  async function settlePresentation(): Promise<void> {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
   it("pins a review job, runs verification, and records the verdict in Actions history", async () => {
     const reviewTarget = target();
     let reviewPrompt = "";
@@ -232,8 +239,9 @@ describe("Actions Reviewer queue", () => {
     assert.equal(job.pr_number, reviewTarget.prNumber);
     assert.equal(JSON.parse(job.issue_snapshot_json).acceptanceCriteria[0], "Review the exact commit.");
     assert.equal(JSON.parse(job.verification_report_json).exitCode, 0);
-    assert.ok(history.some((entry) => entry.kind === `action_review_result:${job.id}`));
-    assert.ok(broadcasts.some((payload) => (payload as { kind?: string }).kind === `action_review_result:${job.id}`));
+    await settlePresentation();
+    assert.ok(history.some((entry) => entry.kind === `action_step:${job.id}:result`));
+    assert.ok(broadcasts.some((payload) => (payload as { kind?: string }).kind === `action_step:${job.id}:result`));
     await tools.dispose();
   });
 
@@ -250,7 +258,7 @@ describe("Actions Reviewer queue", () => {
     await tools.dispose();
   });
 
-  it("uses the Acopilot profile model to narrate the verdict for the Actions lane", async () => {
+  it("uses a dedicated prompt to narrate a complete Actions-lane review summary", async () => {
     const reviewTarget = target();
     const history: Array<{ role: string; text: string; kind?: string }> = [];
     const db = getStateDatabase();
@@ -282,12 +290,16 @@ describe("Actions Reviewer queue", () => {
 
     assert.equal(result.ok, true, result.error);
     assert.ok(presentationRequest);
-    assert.equal(presentationRequest.messages[0]?.content, "Configured Acopilot presentation prompt");
+    assert.match(String(presentationRequest.messages[0]?.content), /concise, neutral explanation/);
+    assert.doesNotMatch(String(presentationRequest.messages[0]?.content), /Configured Acopilot/);
     assert.match(String(presentationRequest.messages[1]?.content), /<review-verdict>/);
     assert.deepEqual(presentationRequest.tools, []);
-    const presentation = history.find((entry) => entry.kind?.startsWith("action_review_result:"));
+    await settlePresentation();
+    const presentation = history.find((entry) => entry.kind?.endsWith(":result"));
     assert.ok(presentation);
-    assert.equal(presentation.text, "审查通过。验证完成，未发现需要修改的问题。");
+    assert.match(presentation.text, /^审查通过。验证完成，未发现需要修改的问题。\n\nReviewer verdict: PASS/);
+    assert.match(presentation.text, /Exact target reviewed/);
+    assert.equal(presentation.role, "status");
     assert.equal(presentation.text.includes('"status"'), false);
     await tools.dispose();
   });
@@ -319,10 +331,129 @@ describe("Actions Reviewer queue", () => {
     const result = await tools.review_action();
 
     assert.equal(result.ok, true, result.error);
-    const presentation = history.find((entry) => entry.kind?.startsWith("action_review_result:"));
+    await settlePresentation();
+    const presentation = history.find((entry) => entry.kind?.endsWith(":result"));
     assert.ok(presentation);
-    assert.match(presentation.text, /^Reviewer PASS for PR #901/);
+    assert.match(presentation.text, /^Reviewer verdict: PASS/);
+    assert.match(presentation.text, /Exact target reviewed/);
     assert.equal(presentation.text.includes('"status"'), false);
+    await tools.dispose();
+  });
+
+  it("appends every authoritative finding after a concise narration", async () => {
+    const reviewTarget = target();
+    const history: Array<{ role: string; text: string; kind?: string }> = [];
+    const db = getStateDatabase();
+    const profile = getDefaultRoleProfile(db, "acopilot");
+    assert.ok(profile);
+    saveRoleProfile(db, {
+      ...profile,
+      model_id: "presentation-model",
+      system_prompt: "Ignored by the dedicated presentation prompt",
+      is_enabled: true,
+      is_default: true,
+    });
+    const bus = createBus(() => reviewTarget, {
+      onHistoryMessage: (entry) => history.push(entry),
+      reviewerRunner: async () => JSON.stringify({
+        status: "REJECT",
+        summary: "Two defects need attention",
+        defects: [
+          { file: "server/a.ts", line: 7, severity: "blocker", description: "Missing guard" },
+          { file: "server/b.ts", line: 11, severity: "warning", description: "Missing test" },
+        ],
+      }),
+      reviewPresentationComplete: async () => ({
+        text: "The review identified follow-up work.",
+        toolCalls: [],
+        finishReason: "stop",
+        usage: null,
+      }),
+    });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
+
+    const result = await tools.review_action();
+
+    assert.equal(result.ok, true, result.error);
+    await settlePresentation();
+    const presentation = history.find((entry) => entry.kind?.endsWith(":result"));
+    assert.ok(presentation);
+    assert.match(presentation.text, /^The review identified follow-up work\./);
+    assert.match(presentation.text, /server\/a\.ts:7 \(blocker\): Missing guard/);
+    assert.match(presentation.text, /server\/b\.ts:11 \(warning\): Missing test/);
+    await tools.dispose();
+  });
+
+  it("falls back after a presentation timeout without changing the completed verdict", async () => {
+    const reviewTarget = target();
+    const history: Array<{ role: string; text: string; kind?: string }> = [];
+    const db = getStateDatabase();
+    const profile = getDefaultRoleProfile(db, "acopilot");
+    assert.ok(profile);
+    saveRoleProfile(db, {
+      ...profile,
+      model_id: "presentation-model",
+      system_prompt: "Ignored by the dedicated presentation prompt",
+      is_enabled: true,
+      is_default: true,
+    });
+    const bus = createBus(() => reviewTarget, {
+      onHistoryMessage: (entry) => history.push(entry),
+      reviewPresentationTimeoutMs: 10,
+      reviewPresentationComplete: async () => await new Promise(() => {}),
+    });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
+
+    const result = await tools.review_action();
+
+    assert.equal(result.ok, true, result.error);
+    assert.equal((result.verdict as { status?: string }).status, "PASS");
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    const presentation = history.find((entry) => entry.kind?.endsWith(":result"));
+    assert.ok(presentation);
+    assert.match(presentation.text, /^Reviewer verdict: PASS/);
+    await tools.dispose();
+  });
+
+  it("persists the pinned deterministic verdict before an asynchronous narration", async () => {
+    const reviewTarget = target();
+    const history: Array<{ role: string; text: string; kind?: string }> = [];
+    let releaseNarration: (() => void) | undefined;
+    let narrationStarted = false;
+    let markNarrationStarted: (() => void) | undefined;
+    const narrationStartedPromise = new Promise<void>((resolve) => { markNarrationStarted = resolve; });
+    const bus = createBus(() => reviewTarget, {
+      onHistoryMessage: (entry) => history.push(entry),
+      reviewPresentationComplete: async () => await new Promise((resolve) => {
+        narrationStarted = true;
+        markNarrationStarted?.();
+        releaseNarration = () => resolve({
+          text: "The exact target was reviewed successfully.",
+          toolCalls: [],
+          finishReason: "stop",
+          usage: null,
+        });
+      }),
+    });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
+
+    let completedReview: Awaited<ReturnType<typeof tools.review_action>> | undefined;
+    const pendingReview = tools.review_action().then((result) => { completedReview = result; return result; });
+    await narrationStartedPromise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.ok(completedReview);
+    assert.equal(completedReview.ok, true, completedReview.error);
+    assert.equal(narrationStarted, true);
+    const completed = history.find((entry) => entry.kind?.endsWith(":completed"));
+    assert.ok(completed);
+    assert.match(completed.text, new RegExp(`Review job .* completed for PR #901 at ${headCommit.slice(0, 12)}\\.`));
+    assert.match(completed.text, /^Reviewer verdict: PASS/m);
+    assert.match(completed.text, /Exact target reviewed/);
+    releaseNarration?.();
+    await pendingReview;
+    await settlePresentation();
+    assert.ok(history.some((entry) => entry.kind?.endsWith(":result")));
     await tools.dispose();
   });
 
@@ -578,16 +709,18 @@ describe("Actions Reviewer queue", () => {
     assert.ok(texts.includes("On branch codex/issue-900"), JSON.stringify(texts));
     assert.ok(texts.includes("nothing to commit, working tree clean"), JSON.stringify(texts));
     assert.ok(texts.includes("Reviewer step: list_dir ."), JSON.stringify(texts));
-    const verdictEntry = history.find((entry) => entry.kind?.startsWith("action_review_result:"));
+    await settlePresentation();
+    const verdictEntry = history.find((entry) => entry.kind?.endsWith(":result"));
     assert.ok(verdictEntry);
-    assert.match(verdictEntry.text, /^Reviewer PASS for PR #901/);
+    assert.match(verdictEntry.text, /^Reviewer verdict: PASS/);
     assert.equal(verdictEntry.text.includes('"status"'), false);
+    const completedTexts = history.map((entry) => entry.text);
     const verificationOutputEnd = Math.max(
-      texts.indexOf("On branch codex/issue-900"),
-      texts.indexOf("nothing to commit, working tree clean"),
+      completedTexts.indexOf("On branch codex/issue-900"),
+      completedTexts.indexOf("nothing to commit, working tree clean"),
     );
-    assert.ok(verificationOutputEnd < texts.indexOf("Reviewer step: list_dir ."), JSON.stringify(texts));
-    assert.ok(texts.indexOf("Reviewer step: list_dir .") < texts.indexOf(verdictEntry.text), JSON.stringify(texts));
+    assert.ok(verificationOutputEnd < completedTexts.indexOf("Reviewer step: list_dir ."), JSON.stringify(completedTexts));
+    assert.ok(completedTexts.indexOf("Reviewer step: list_dir .") < completedTexts.indexOf(verdictEntry.text), JSON.stringify(completedTexts));
     await tools.dispose();
   });
 
@@ -653,10 +786,12 @@ describe("Actions Reviewer queue", () => {
     assert.ok(texts.includes(truncation), JSON.stringify(texts));
     const reviewerStep = "Reviewer step: list_dir .";
     assert.ok(texts.includes(reviewerStep), JSON.stringify(texts));
-    const verdictEntry = history.find((entry) => entry.kind?.startsWith("action_review_result:"));
+    await settlePresentation();
+    const verdictEntry = history.find((entry) => entry.kind?.endsWith(":result"));
     assert.ok(verdictEntry);
-    assert.ok(texts.indexOf(truncation) < texts.indexOf(reviewerStep), JSON.stringify(texts));
-    assert.ok(texts.indexOf(reviewerStep) < texts.indexOf(verdictEntry.text), JSON.stringify(texts));
+    const completedTexts = history.map((entry) => entry.text);
+    assert.ok(completedTexts.indexOf(truncation) < completedTexts.indexOf(reviewerStep), JSON.stringify(completedTexts));
+    assert.ok(completedTexts.indexOf(reviewerStep) < completedTexts.indexOf(verdictEntry.text), JSON.stringify(completedTexts));
     await tools.dispose();
   });
 });

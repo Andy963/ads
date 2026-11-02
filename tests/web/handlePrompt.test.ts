@@ -623,6 +623,61 @@ describe("web/server/ws Actions lane reviewer presentation", () => {
     assert.equal(frames.some((frame) => frame.type === "assistant_item"), false);
   });
 
+  it("releases a chunked ordinary JSON object after it is classified", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-chunked-ordinary-json-thread");
+    const incomplete = "Configuration: {\"retries\":";
+    const complete = "Configuration: {\"retries\": 1}";
+    const response = `${complete}. Continue streaming.`;
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(incomplete);
+    orchestrator.emitAssistantDelta(complete);
+    orchestrator.emitAssistantDelta(response);
+    orchestrator.emitAssistantItem(response);
+    orchestrator.resolveLate(response);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; delta?: string; output?: string; assistantItemText?: string }>;
+    assert.deepEqual(
+      frames.filter((frame) => frame.type === "delta").map((frame) => frame.delta),
+      ["Configuration:", " {\"retries\": 1}", ". Continue streaming."],
+    );
+    assert.ok(frames.some((frame) => frame.type === "assistant_item"));
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.equal(result.output, response);
+    assert.ok(historyStore.get("history-1").some((entry) => entry.text === response));
+  });
+
+  it("withholds a valid verdict whose fields are not in schema order", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-reordered-protocol-thread");
+    const reordered = JSON.stringify({
+      summary: "Target not met",
+      defects: [{ file: "server/app.ts", line: 7, severity: "blocker", description: "Missing guard" }],
+      status: "REJECT",
+    });
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(reordered.slice(0, 24));
+    orchestrator.emitAssistantDelta(reordered);
+    orchestrator.emitAssistantItem(reordered);
+    orchestrator.resolveLate(reordered);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; output?: string }>;
+    assert.equal(frames.some((frame) => frame.type === "delta"), false);
+    assert.equal(frames.some((frame) => frame.type === "assistant_item"), false);
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.match(String(result.output), /^Reviewer verdict: REJECT/);
+    assert.equal(String(result.output).includes(reordered), false);
+    assert.equal(JSON.stringify(historyStore.get("history-1")).includes(reordered), false);
+  });
+
   it("renders a verdict after prose and a fenced protocol without leaking it", async () => {
     const { chatMessages, historyStore } = fixture;
     const orchestrator = new SlowOrchestrator("actions-preface-thread");
@@ -647,7 +702,7 @@ describe("web/server/ws Actions lane reviewer presentation", () => {
     assert.equal(JSON.stringify(historyStore.get("history-1")).includes(verdict), false);
   });
 
-  it("replaces an invalid protocol candidate instead of persisting raw JSON", async () => {
+  it("preserves a non-verdict JSON fence in the Actions lane", async () => {
     const { chatMessages, historyStore } = fixture;
     const orchestrator = new SlowOrchestrator("actions-invalid-protocol-thread");
     const response = "Review complete.\n\n```json\n{\"status\": \"MAYBE\"}\n```";
@@ -660,12 +715,31 @@ describe("web/server/ws Actions lane reviewer presentation", () => {
     await pending;
 
     const frames = chatMessages as Array<{ type?: string; output?: string; assistantItemText?: string }>;
-    assert.equal(frames.some((frame) => frame.type === "assistant_item"), false);
+    assert.ok(frames.some((frame) => frame.type === "assistant_item"));
     const result = frames.find((frame) => frame.type === "result");
     assert.ok(result);
-    assert.equal(String(result.output).includes('{"status": "MAYBE"}'), false);
-    assert.match(String(result.output), /Reviewer verdict could not be rendered\./);
-    assert.equal(JSON.stringify(historyStore.get("history-1")).includes('{"status": "MAYBE"}'), false);
+    assert.equal(String(result.output), response);
+    assert.ok(historyStore.get("history-1").some((entry) => entry.text === response));
+  });
+
+  it("preserves ordinary shell fences and JSON objects in the Actions lane", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-ordinary-structured-thread");
+    const response = "Run this:\n```bash\nnpm test\n```\nConfiguration: {\"retries\": 1}.";
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(response);
+    orchestrator.emitAssistantItem(response);
+    orchestrator.resolveLate(response);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; output?: string; assistantItemText?: string }>;
+    assert.ok(frames.some((frame) => frame.type === "assistant_item"));
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.equal(String(result.output), response);
+    assert.ok(historyStore.get("history-1").some((entry) => entry.text === response));
   });
 
   it("keeps ordinary assistant streaming for the Acopilot lane", async () => {

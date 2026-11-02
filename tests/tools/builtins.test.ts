@@ -69,7 +69,14 @@ describe("Acopilot implementation and review tools", () => {
     );
     await assert.rejects(
       executeBuiltinTool("begin_implementation", { issue_id: 1 }, { workspaceRoot: "/repo" }),
-      /Acopilot workflow tools are unavailable in this lane/,
+      /tool absence is not a blocker/,
+    );
+    await assert.rejects(
+      executeBuiltinTool("begin_implementation", { issue_id: 1 }, {
+        workspaceRoot: "/repo",
+        actionTools: { review_action: async () => ({ ok: true }) },
+      }),
+      /tool absence is not a blocker/,
     );
   });
 

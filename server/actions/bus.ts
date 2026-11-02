@@ -13,8 +13,9 @@ import { ReviewerIncompleteError } from "../reviewer/incomplete.js";
 import { runReviewerInspection, type ReviewInspectionProgress } from "../reviewer/inspectionRunner.js";
 import {
   buildReviewVerdictNarrationPrompt,
-  formatReviewVerdictDetails,
+  formatReviewVerdictPresentation,
   normalizeReviewVerdictNarration,
+  REVIEW_VERDICT_NARRATION_SYSTEM_PROMPT,
 } from "../reviewer/verdictPresentation.js";
 import { createNativeModelResolver, type NativeModelConfig } from "../runtime/modelResolver.js";
 import type { completeNativeChat } from "../runtime/openAiCompatibleClient.js";
@@ -55,7 +56,7 @@ function migrateLegacyProjectJobs(db: DatabaseType, projectId: string, aliases: 
 export type ReviewerRunner = (prompt: string, systemPrompt: string) => Promise<string>;
 
 const DEFAULT_REVIEWER_TIMEOUT_MS = 30 * 60 * 1000;
-const DEFAULT_REVIEW_PRESENTATION_TIMEOUT_MS = 30_000;
+const DEFAULT_REVIEW_PRESENTATION_TIMEOUT_MS = 5_000;
 const DEFAULT_INTERACTIVE_VERIFICATION_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_MS = 30 * 1000;
 const processingReviewQueuesByDatabase = new WeakMap<DatabaseType, Map<string, Promise<void>>>();
@@ -188,6 +189,7 @@ export interface LaneDispatchBusOptions {
   reviewerModelResolver?: (modelId: string, owner: string) => NativeModelConfig;
   reviewPresentationComplete?: typeof completeNativeModel;
   reviewPresentationModelResolver?: (modelId: string, owner: string) => NativeModelConfig;
+  reviewPresentationTimeoutMs?: number;
   interactiveGithubMetadataReader?: (input: {
     repoPath: string;
     branch: string;
@@ -290,42 +292,91 @@ export class LaneDispatchBus {
     verdict: ReviewVerdict,
     job: ActionJobRecord,
   ): Promise<string> {
-    const fallback = `Reviewer ${verdict.status} for PR #${job.pr_number} at ${job.head_sha?.slice(0, 12)}.\n${formatReviewVerdictDetails(verdict)}`;
+    const fallback = formatReviewVerdictPresentation(verdict);
     const profile = getDefaultRoleProfile(this.db, "acopilot");
     const owner = String(job.auth_user_id ?? "").trim();
-    if (!profile || profile.role !== "acopilot" || !profile.is_enabled || !profile.model_id.trim() || !profile.system_prompt.trim() || !owner) {
+    if (!profile || profile.role !== "acopilot" || !profile.is_enabled || !profile.model_id.trim() || !owner) {
       return fallback;
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error("Review result presentation timed out.")), DEFAULT_REVIEW_PRESENTATION_TIMEOUT_MS);
+    const timeoutMs = normalizeInteractiveTimeout(
+      this.options.reviewPresentationTimeoutMs,
+      DEFAULT_REVIEW_PRESENTATION_TIMEOUT_MS,
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error("Review result presentation timed out.");
+        controller.abort(error);
+        reject(error);
+      }, timeoutMs);
+    });
     try {
       const model = this.options.reviewPresentationModelResolver
         ? this.options.reviewPresentationModelResolver(profile.model_id, owner)
         : createNativeModelResolver({ owner, stateDbPath: this.db.name, requireOwnerCredentials: true }).resolve(profile.model_id);
       const complete = this.options.reviewPresentationComplete ?? completeNativeModel;
-      const result = await complete({
-        wireApi: model.wireApi,
-        baseUrl: model.baseUrl,
-        apiKey: model.apiKey,
-        model: model.model,
-        messages: [
-          { role: "system", content: profile.system_prompt },
-          { role: "user", content: buildReviewVerdictNarrationPrompt({ pullRequestNumber: job.pr_number, verdict }) },
-        ],
-        tools: [],
-        streaming: false,
-        options: { ...model.options, reasoningEffort: profile.reasoning_effort },
-        signal: controller.signal,
-      });
+      const result = await Promise.race([
+        complete({
+          wireApi: model.wireApi,
+          baseUrl: model.baseUrl,
+          apiKey: model.apiKey,
+          model: model.model,
+          messages: [
+            { role: "system", content: REVIEW_VERDICT_NARRATION_SYSTEM_PROMPT },
+            { role: "user", content: buildReviewVerdictNarrationPrompt({ pullRequestNumber: job.pr_number, verdict }) },
+          ],
+          tools: [],
+          streaming: false,
+          options: { ...model.options },
+          signal: controller.signal,
+        }),
+        timeout,
+      ]);
       if (result.toolCalls.length || result.finishReason === "length" || result.finishReason === "content_filter") return fallback;
-      return normalizeReviewVerdictNarration(result.text) ?? fallback;
+      return formatReviewVerdictPresentation(verdict, normalizeReviewVerdictNarration(result.text) ?? undefined);
     } catch {
       return fallback;
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       controller.abort();
     }
+  }
+
+  private publishReviewVerdictPresentation(
+    verdict: ReviewVerdict,
+    job: ActionJobRecord,
+    repoPath: string,
+  ): void {
+    const pullRequest = typeof job.pr_number === "number" ? `PR #${job.pr_number}` : "the pinned pull request";
+    const pinnedTarget = job.head_sha ? `${pullRequest} at ${job.head_sha.slice(0, 12)}` : pullRequest;
+    this.recordActionMessage(
+      job,
+      repoPath,
+      [
+        `Review job ${job.id} completed for ${pinnedTarget}.`,
+        formatReviewVerdictPresentation(verdict),
+      ].join("\n\n"),
+      `action_step:${job.id}:completed`,
+    );
+    void this.presentReviewVerdictForUser(verdict, job)
+      .then((userPresentation) => {
+        this.recordActionMessage(
+          job,
+          repoPath,
+          userPresentation,
+          `action_step:${job.id}:result`,
+        );
+      })
+      .catch(() => {
+        this.recordActionMessage(
+          job,
+          repoPath,
+          formatReviewVerdictPresentation(verdict),
+          `action_step:${job.id}:result`,
+        );
+      });
   }
 
   private async readInteractiveGithubMetadata(input: {
@@ -1039,13 +1090,10 @@ export class LaneDispatchBus {
         verification_report_json: JSON.stringify(result.testReport ?? {}),
         error_message: null,
       });
-      const userPresentation = await this.presentReviewVerdictForUser(result.verdict, getActionJobById(this.db, job.id) ?? claimedJob);
-      this.recordActionMessage(
+      this.publishReviewVerdictPresentation(
+        result.verdict,
         getActionJobById(this.db, job.id) ?? claimedJob,
         repoPath,
-        userPresentation,
-        `action_review_result:${job.id}`,
-        "assistant",
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
