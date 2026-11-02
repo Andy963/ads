@@ -1,6 +1,7 @@
 import webPush from "web-push";
 
 import type { Database as DatabaseType } from "better-sqlite3";
+import type { CanonicalLaneId } from "../../../shared/terminology.js";
 import { createWebPushStore, type StoredWebPushSubscription } from "../../state/webPushStore.js";
 
 export type WebPushConfig = {
@@ -13,7 +14,20 @@ export type WebPushLogger = {
   warn: (message: string) => void;
 };
 
-export const webPushNotificationPayload = JSON.stringify({ type: "assistant_response" });
+export type WebPushNotification = {
+  type: "assistant_response" | "prompt_error";
+  lane?: CanonicalLaneId;
+  project?: string;
+  sessionId?: string;
+};
+
+export function createWebPushNotificationPayload(notification: WebPushNotification): string {
+  const payload: Record<string, string> = { type: notification.type };
+  if (notification.lane) payload.lane = notification.lane;
+  if (notification.project) payload.project = notification.project;
+  if (notification.sessionId) payload.sessionId = notification.sessionId;
+  return JSON.stringify(payload);
+}
 
 export function isAllowedWebPushEndpoint(endpoint: string): boolean {
   let url: URL;
@@ -73,12 +87,13 @@ export function createWebPushService(args: {
       store.remove(userId, endpoint);
     },
 
-    async notifyUser(userId: string): Promise<void> {
+    async notifyUser(userId: string, notification: WebPushNotification): Promise<void> {
       if (!configured) return;
+      const payload = createWebPushNotificationPayload(notification);
       const subscriptions = store.listByUser(userId);
       await Promise.all(subscriptions.map(async (subscription) => {
         try {
-          await sendNotification(subscription, webPushNotificationPayload, { TTL: 60, urgency: "low", timeout: 10_000 });
+          await sendNotification(subscription, payload, { TTL: 60, urgency: "low", timeout: 10_000 });
         } catch (error) {
           const statusCode = resolveStatusCode(error);
           if (statusCode === 400 || statusCode === 401 || statusCode === 403 || statusCode === 404 || statusCode === 410) {

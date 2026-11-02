@@ -222,25 +222,28 @@ describe("web/server/ws handlePrompt cancellation", () => {
   it("interrupt records the abort status without writing late output or thread state", async () => {
     const { clientMessages, chatMessages, historyStore, interruptControllers, promptRunEpochs } = fixture;
     const saveThreadIdCalls: Array<{ userId: number; threadId: string; agentId: string }> = [];
+    const notifications: Array<Record<string, unknown>> = [];
     const orchestrator = new SlowOrchestrator("late-thread");
 
-    const pending = handlePromptMessage(
-      fixture.buildArgs({
-        parsed: { type: "prompt", payload: "hello" },
-        orchestrator: orchestrator as any,
-        sessionManager: {
-          getOrCreate: () => orchestrator as any,
-          getSavedThreadId: () => undefined,
-          getEffectiveState: () => ({ model: "test-model", modelReasoningEffort: "high", activeAgentId: "codex" }),
-          needsHistoryInjection: () => false,
-          clearHistoryInjection: () => {},
-          saveThreadId: (userId: number, threadId: string, agentId: string) =>
-            saveThreadIdCalls.push({ userId, threadId, agentId }),
-          setUserModel: () => {},
-          setUserModelReasoningEffort: () => {},
-        } as any,
-      }) as any,
-    );
+    const args = fixture.buildArgs({
+      parsed: { type: "prompt", payload: "hello" },
+      orchestrator: orchestrator as any,
+      sessionManager: {
+        getOrCreate: () => orchestrator as any,
+        getSavedThreadId: () => undefined,
+        getEffectiveState: () => ({ model: "test-model", modelReasoningEffort: "high", activeAgentId: "codex" }),
+        needsHistoryInjection: () => false,
+        clearHistoryInjection: () => {},
+        saveThreadId: (userId: number, threadId: string, agentId: string) =>
+          saveThreadIdCalls.push({ userId, threadId, agentId }),
+        setUserModel: () => {},
+        setUserModelReasoningEffort: () => {},
+      } as any,
+    });
+    args.notifyWebUser = async (_userId: string, notification: Record<string, unknown>) => {
+      notifications.push(notification);
+    };
+    const pending = handlePromptMessage(args as any);
 
     await orchestrator.waitForStart();
     assert.equal(
@@ -276,6 +279,7 @@ describe("web/server/ws handlePrompt cancellation", () => {
       ],
     );
     assert.equal(clientMessages.length, 0);
+    assert.deepEqual(notifications, []);
   });
 });
 
@@ -303,10 +307,10 @@ describe("web/server/ws terminal assistant identity", () => {
           },
         });
         (args.request as { clientMessageId: string }).clientMessageId = "turn";
-        const notifiedUsers: string[] = [];
-        args.notifyWebUser = async (userId: string) => {
+        const notifications: Array<{ userId: string; notification: Record<string, unknown> }> = [];
+        args.notifyWebUser = async (userId: string, notification: Record<string, unknown>) => {
           assert.equal(fixture.historyStore.get("history-1").some((entry) => entry.role === "ai"), true);
-          notifiedUsers.push(userId);
+          notifications.push({ userId, notification });
           throw new Error("push delivery unavailable");
         };
         const pending = handlePromptMessage(args as any);
@@ -324,7 +328,14 @@ describe("web/server/ws terminal assistant identity", () => {
         assert.equal(result.clientMessageId, "turn");
         assert.notEqual(result.output, rawOutput);
         assert.deepEqual(result.assistantItems, [{ id: "answer", text: rawOutput }]);
-        assert.deepEqual(notifiedUsers, ["test-user"]);
+        assert.deepEqual(notifications.map((entry) => entry.userId), ["test-user"]);
+        assert.deepEqual(notifications[0]?.notification, {
+          type: "assistant_response",
+          lane: "acopilot",
+          project: path.basename(fixture.workspaceRoot),
+          sessionId: "session-1",
+        });
+        assert.equal(JSON.stringify(notifications[0]?.notification).includes(result.output), false);
         assert.deepEqual(fixture.historyStore.get("history-1").filter(entry => entry.role === "ai").map(entry => entry.text), [result.output]);
         if (name === "tool result") assert.equal(result.output, "Searching.\n\ntool.session_search: no matches");
       } finally {
@@ -372,6 +383,35 @@ describe("web/server/ws handlePrompt input errors", () => {
       [{ role: "status", text: "不支持的图片类型: text/plain", kind: "error" }],
     );
     assert.deepEqual(buildHistoryBootstrapPayload(historyStore.get("history-1"))?.items, historyStore.get("history-1"));
+  });
+
+  it("dispatches a failure notification with lane and project context", async () => {
+    const notifications: Array<Record<string, unknown>> = [];
+    const args = fixture.buildArgs({
+      parsed: {
+        type: "prompt",
+        payload: {
+          text: "hello",
+          images: [{ name: "bad.txt", mime: "text/plain", data: "abc" }],
+        },
+      },
+    });
+    args.notifyWebUser = async (_userId: string, notification: Record<string, unknown>) => {
+      notifications.push(notification);
+    };
+
+    await handlePromptMessage(args as any);
+
+    assert.deepEqual(notifications, [{
+      type: "prompt_error",
+      lane: "acopilot",
+      project: path.basename(fixture.workspaceRoot),
+      sessionId: "session-1",
+    }]);
+    assert.equal(
+      JSON.stringify(notifications[0]).includes("不支持的图片类型"),
+      false,
+    );
   });
 });
 
@@ -504,6 +544,63 @@ describe("web/server/ws handlePrompt session links", () => {
       sessionId: "history-1",
       link: { agentId: "codex", providerSessionId: "native-transcript-1", cwd: workspaceRoot },
     }]);
+  });
+});
+
+describe("web/server/ws handlePrompt failure notifications", () => {
+  let fixture: PromptFixture;
+
+  beforeEach(() => {
+    fixture = createPromptFixture("ads-web-prompt-failure-notify-");
+  });
+
+  afterEach(() => {
+    fixture.cleanup();
+  });
+
+  it("dispatches an Actions-scoped failure notification without the error text", async () => {
+    const notifications: Array<Record<string, unknown>> = [];
+    const orchestrator = {
+      setWorkingDirectory: () => {},
+      status: () => ({ ready: true, streaming: false }),
+      getActiveAgentId: () => "codex",
+      getThreadId: () => null,
+      onEvent: () => () => {},
+      invokeAgent: async () => {
+        throw new Error("provider failed while processing the private prompt");
+      },
+    };
+    const args = fixture.buildArgs({
+      parsed: { type: "prompt", payload: "hello" },
+      orchestrator,
+      context: { lane: "actions" },
+      sessionManager: {
+        getRuntimeBackend: () => "native",
+        getNativeTranscriptId: () => "native-transcript-1",
+        getOrCreate: () => orchestrator,
+        getSavedThreadId: () => undefined,
+        needsHistoryInjection: () => false,
+        clearHistoryInjection: () => {},
+        getEffectiveState: () => ({ activeAgentId: "codex" }),
+      },
+    });
+    args.notifyWebUser = async (_userId: string, notification: Record<string, unknown>) => {
+      notifications.push(notification);
+    };
+
+    const result = await handlePromptMessage(args as any);
+
+    assert.equal(result.outcome.ok, false);
+    assert.deepEqual(notifications, [{
+      type: "prompt_error",
+      lane: "actions",
+      project: path.basename(fixture.workspaceRoot),
+      sessionId: "session-1",
+    }]);
+    assert.equal(
+      JSON.stringify(notifications[0]).includes("private prompt"),
+      false,
+    );
   });
 });
 

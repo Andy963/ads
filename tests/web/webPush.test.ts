@@ -7,7 +7,7 @@ import webPush from "web-push";
 import { createWebPushStore } from "../../server/state/webPushStore.js";
 import { handleWebPushRoutes } from "../../server/web/server/api/routes/webPush.js";
 import type { ApiRouteContext } from "../../server/web/server/api/types.js";
-import { createWebPushService, isAllowedWebPushEndpoint, webPushNotificationPayload } from "../../server/web/push/service.js";
+import { createWebPushService, createWebPushNotificationPayload, isAllowedWebPushEndpoint } from "../../server/web/push/service.js";
 import { createForegroundAwareWebPushNotifier } from "../../server/web/push/foregroundDelivery.js";
 
 function routeContext(args: { method: string; path: string; userId?: string; body?: unknown }) {
@@ -121,22 +121,29 @@ describe("Web Push delivery", () => {
           throw Object.assign(new Error("delivery failed"), { statusCode });
         },
       });
+      const notification = {
+        type: "assistant_response" as const,
+        lane: "acopilot" as const,
+        project: "ads",
+        sessionId: "session-1",
+      };
+      const expectedPayload = createWebPushNotificationPayload(notification);
       for (const status of [400, 401, 403, 404, 410]) {
         const current = subscription(String(status));
         loggedService.saveSubscription("alice", current);
-        await assert.doesNotReject(loggedService.notifyUser("alice"));
+        await assert.doesNotReject(loggedService.notifyUser("alice", notification));
         assert.deepEqual(createWebPushStore(db).listByUser("alice"), []);
       }
       for (const token of ["503", "timeout"]) {
         const current = subscription(token);
         loggedService.saveSubscription("alice", current);
-        await assert.doesNotReject(loggedService.notifyUser("alice"));
+        await assert.doesNotReject(loggedService.notifyUser("alice", notification));
         assert.deepEqual(createWebPushStore(db).listByUser("alice").map((entry) => entry.endpoint), [current.endpoint]);
       }
 
       assert.equal(sent.length, 7);
-      assert.ok(sent.every((entry) => entry.payload === webPushNotificationPayload));
-      assert.doesNotMatch(String(sent[0]?.payload), /conversation|assistant reply text/);
+      assert.ok(sent.every((entry) => entry.payload === expectedPayload));
+      assert.deepEqual(JSON.parse(String(sent[0]?.payload)), notification);
       assert.ok(warnings.every((message) => message.includes("endpoint=fcm.googleapis.com") && message.includes("status=")));
     } finally {
       db.close();
@@ -154,11 +161,17 @@ describe("Web Push delivery", () => {
         notifyUser: service.notifyUser,
         hasOpenWebClient: () => connected,
       });
+      const notification = {
+        type: "assistant_response" as const,
+        lane: "actions" as const,
+        project: "ads",
+        sessionId: "session-2",
+      };
 
-      await notify("alice");
+      await notify("alice", notification);
       assert.equal(sendCount, 0);
       connected = false;
-      await notify("alice");
+      await notify("alice", notification);
       assert.equal(sendCount, 1);
     } finally {
       db.close();

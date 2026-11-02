@@ -7,8 +7,27 @@ self.addEventListener("push", (event) => {
     }
   })();
   const isChinese = self.navigator.language.toLowerCase().startsWith("zh");
-  const title = "ADS";
-  const body = isChinese ? "助手已完成回复。" : "Your assistant has finished responding.";
+  const lane = payload.lane === "actions" ? "actions" : "acopilot";
+  const laneLabel = lane === "actions" ? "Actions" : "Acopilot";
+  const project = typeof payload.project === "string" ? payload.project.trim().slice(0, 60) : "";
+  const failed = payload.type === "prompt_error";
+  const context = [laneLabel, project].filter(Boolean).join(" · ");
+  const title = isChinese
+    ? lane === "actions"
+      ? failed ? "执行失败" : "执行完成"
+      : failed ? "回复失败" : "回复完成"
+    : lane === "actions"
+      ? failed ? "Run failed" : "Run complete"
+      : failed ? "Reply failed" : "Reply complete";
+  const body = failed
+    ? isChinese ? `${context} · 打开查看` : `${context} · Open to view`
+    : context;
+  const tag = payload.lane || payload.project || payload.sessionId
+    ? ["ads", payload.type || "notification", payload.lane || "", payload.project || "", payload.sessionId || ""]
+      .filter(Boolean)
+      .map((part) => String(part).slice(0, 80))
+      .join(":")
+    : payload.type === "assistant_response" ? "assistant-response" : "ads-notification";
   const scopeUrl = new URL(self.registration.scope);
   const iconUrl = new URL("pwa-192x192.png", scopeUrl).href;
 
@@ -17,7 +36,7 @@ self.addEventListener("push", (event) => {
     icon: iconUrl,
     badge: iconUrl,
     data: { url: scopeUrl.href },
-    tag: payload.type === "assistant_response" ? "assistant-response" : "ads-notification",
+    tag,
   }));
 });
 
