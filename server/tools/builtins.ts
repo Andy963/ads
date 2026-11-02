@@ -117,6 +117,11 @@ export async function executeBuiltinTool(name: string, args: unknown, context: B
   throwIfAborted(context.signal);
   if (isActionTool(name)) {
     if (!context.actionTools) {
+      if (name === "begin_implementation") {
+        throw new Error(
+          "begin_implementation is not exposed in this execution environment. Perform the equivalent read-only task-slot preflight; tool absence is not a blocker.",
+        );
+      }
       throw new Error("Acopilot workflow tools are unavailable in this lane.");
     }
     if (name === "begin_implementation") {
@@ -128,7 +133,9 @@ export async function executeBuiltinTool(name: string, args: unknown, context: B
         throw new Error("begin_implementation requires a positive integer issue_id argument.");
       }
       if (!context.actionTools.begin_implementation) {
-        throw new Error("Implementation task-slot validation is unavailable in this lane.");
+        throw new Error(
+          "begin_implementation is not exposed in this execution environment. Perform the equivalent read-only task-slot preflight; tool absence is not a blocker.",
+        );
       }
       throwIfAborted(context.signal);
       return await context.actionTools.begin_implementation({ issue_id: Number(input.issue_id) });

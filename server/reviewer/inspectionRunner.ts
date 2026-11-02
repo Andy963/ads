@@ -3,7 +3,7 @@ import { compactExecution } from "../runtime/executionCompaction.js";
 import { projectNativeContext, resolveNativeContextBudget } from "../runtime/nativeContextProjection.js";
 import { ReviewerIncompleteError } from "./incomplete.js";
 import { filterDiff, REVIEW_DIFF_MAX_LINES, REVIEW_DIFF_MAX_CHARS } from "./diffFilter.js";
-import { type NativeChatMessage } from "../runtime/openAiCompatibleClient.js";
+import { type NativeChatMessage, type NativeChatToolCall } from "../runtime/openAiCompatibleClient.js";
 import { completeNativeModel } from "../runtime/nativeCompletion.js";
 import type { NativeModelConfig } from "../runtime/modelResolver.js";
 import { ReviewerInspectionTools, REVIEWER_TOOLS } from "./inspectionTools.js";
@@ -11,6 +11,58 @@ import { parseReviewVerdict, ReviewerProtocolError } from "./verdictParser.js";
 import type { ReviewVerdict } from "./types.js";
 
 const REVIEWER_OUTPUT_TOKENS = 32_768;
+
+export type ReviewInspectionProgress = {
+  tool: string;
+  summary: string;
+};
+
+function argumentRecord(argumentsJson: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(argumentsJson) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/** One human-readable line per inspection tool call for the Actions lane log. */
+export function summarizeInspectionToolCall(call: NativeChatToolCall): ReviewInspectionProgress {
+  const tool = String(call.function.name ?? "").trim();
+  const args = argumentRecord(String(call.function.arguments ?? ""));
+  const text = (key: string): string => {
+    const value = args[key];
+    return typeof value === "string" ? value.trim() : "";
+  };
+  const numberText = (key: string): string => {
+    const value = args[key];
+    return typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+  };
+  switch (tool) {
+    case "read_diff": {
+      const offset = numberText("offset") || "0";
+      return { tool, summary: `read_diff offset=${offset}` };
+    }
+    case "read_file_range": {
+      const file = text("path") || "(unknown file)";
+      const start = numberText("start_line") || "?";
+      const end = numberText("end_line") || "?";
+      return { tool, summary: `read_file_range ${file}:${start}-${end}` };
+    }
+    case "search_code": {
+      const glob = text("path_pattern");
+      const query = text("query");
+      const offset = numberText("offset") || "0";
+      return { tool, summary: `search_code ${JSON.stringify(query)}${glob ? ` in ${glob}` : ""} offset=${offset}` };
+    }
+    case "list_dir":
+      return { tool, summary: `list_dir ${text("path") || "."}` };
+    default:
+      return { tool, summary: `${tool || "tool"} ${String(call.function.arguments ?? "").slice(0, 160)}`.trim() };
+  }
+}
 
 function flattenSummaryMessages(messages: NativeChatMessage[]): NativeChatMessage[] {
   const text = (value: NativeChatMessage["content"]): string => Array.isArray(value)
@@ -37,6 +89,7 @@ export async function runReviewerInspection(options: {
   toolTurnBudget?: number;
   diff?: string;
   complete?: typeof completeNativeModel;
+  onProgress?: (event: ReviewInspectionProgress) => void;
 }): Promise<ReviewVerdict> {
   if (options.toolTurnBudget !== undefined && (!Number.isSafeInteger(options.toolTurnBudget) || options.toolTurnBudget < 0)) {
     throw new Error("Reviewer tool turn budget must be a non-negative integer (deprecated; positive limits are ignored).");
@@ -110,6 +163,9 @@ export async function runReviewerInspection(options: {
       let pause: string | undefined;
       for (const call of result.toolCalls) {
         options.signal.throwIfAborted();
+        try {
+          options.onProgress?.(summarizeInspectionToolCall(call));
+        } catch { /* Lane logging must never break the review. */ }
         const output = await tools.execute(call);
         options.signal.throwIfAborted();
         messages.push({ role: "tool", content: output, tool_call_id: call.id });

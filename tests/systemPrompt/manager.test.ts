@@ -35,6 +35,8 @@ describe("SystemPromptManager prompt injection", () => {
     assert(actionsInjection);
     assert.match(acopilotInjection.text, /ADS Acopilot/);
     assert.match(acopilotInjection.text, /owner of the full implementation lifecycle/);
+    assert.match(acopilotInjection.text, /When the dynamic begin_implementation tool is available/);
+    assert.match(acopilotInjection.text, /The tool's absence alone is not a blocker/);
     assert.doesNotMatch(acopilotInjection.text, /You are the ADS Reviewer/);
     assert.match(actionsInjection.text, /You are the ADS Reviewer/);
     assert.doesNotMatch(actionsInjection.text, /You are the ADS Acopilot/);

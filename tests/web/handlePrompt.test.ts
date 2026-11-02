@@ -84,6 +84,12 @@ class SlowOrchestrator {
     for (const handler of this.eventHandlers) handler(event);
   }
 
+  emitAssistantDelta(text: string): void {
+    const event = mapThreadEventToAgentEvent({ type: "item.updated", item: { type: "agent_message", id: "answer", text } });
+    assert.ok(event);
+    for (const handler of this.eventHandlers) handler(event);
+  }
+
   getThreadId(): string {
     return this.threadId;
   }
@@ -131,6 +137,7 @@ interface PromptFixture {
     parsed: unknown;
     sessionManager?: unknown;
     orchestrator?: unknown;
+    context?: Record<string, unknown>;
   }) => Record<string, unknown>;
   cleanup: () => void;
 }
@@ -174,6 +181,7 @@ function createPromptFixture(tmpPrefix: string): PromptFixture {
       userId: 1,
       historyKey: "history-1",
       currentCwd: workspaceRoot,
+      ...(overrides.context ?? {}),
     },
     sessions: {
       sessionManager: overrides.sessionManager ?? {},
@@ -519,5 +527,234 @@ describe("web/server/ws/handlePrompt Write summary", () => {
     assert.ok(summary.includes("modify file.txt"), summary);
     assert.ok(summary.includes("(+1 more)"), summary);
     assert.ok(summary.endsWith("(+7 -1)"), summary);
+  });
+});
+
+describe("web/server/ws Actions lane reviewer presentation", () => {
+  let fixture: PromptFixture;
+  const verdict = JSON.stringify({
+    status: "REJECT",
+    summary: "Target not met",
+    defects: [{ file: "server/app.ts", line: 7, severity: "blocker", description: "Missing guard" }],
+  });
+
+  beforeEach(() => {
+    fixture = createPromptFixture("ads-web-prompt-actions-lane-");
+  });
+
+  afterEach(() => {
+    fixture.cleanup();
+  });
+
+  function buildLaneArgs(orchestrator: SlowOrchestrator, lane?: "actions") {
+    return fixture.buildArgs({
+      parsed: { type: "prompt", payload: "review the open pull request" },
+      orchestrator,
+      sessionManager: {
+        getOrCreate: () => orchestrator,
+        getSavedThreadId: () => undefined,
+        getEffectiveState: () => ({ model: "test-model", modelReasoningEffort: "high", activeAgentId: "codex" }),
+        needsHistoryInjection: () => false,
+        clearHistoryInjection: () => {},
+        saveThreadId: () => {},
+        setUserModel: () => {},
+        setUserModelReasoningEffort: () => {},
+      },
+      ...(lane ? { context: { lane } } : {}),
+    });
+  }
+
+  it("presents the Reviewer verdict and withholds assistant frames in the Actions lane", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-thread");
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantItem(verdict);
+    orchestrator.resolveLate(verdict);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; output?: string; assistantItems?: Array<{ text: string }> }>;
+    assert.equal(frames.some((frame) => frame.type === "assistant_item"), false);
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.match(String(result.output), /^Reviewer verdict: REJECT\nTarget not met\nFindings:\n- server\/app\.ts:7 \(blocker\): Missing guard/);
+    assert.equal(String(result.output).includes('"status"'), false);
+    assert.ok((result.assistantItems ?? []).every((item) => !item.text.includes('"status"')));
+    const persisted = historyStore.get("history-1").filter((entry) => entry.role === "ai").map((entry) => entry.text);
+    assert.deepEqual(persisted, [result.output]);
+  });
+
+  it("streams ordinary prose in the Actions lane instead of withholding it", async () => {
+    const { chatMessages } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-prose-thread");
+    const prose = "Checked the diff, tests pass, no blocking findings.";
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta("Checked the diff");
+    orchestrator.emitAssistantDelta(prose);
+    orchestrator.emitAssistantItem(prose);
+    orchestrator.resolveLate(prose);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; delta?: string; assistantItemText?: string }>;
+    const deltas = frames.filter((frame) => frame.type === "delta").map((frame) => frame.delta);
+    assert.deepEqual(deltas, ["Checked the diff", ", tests pass, no blocking findings."]);
+    const item = frames.find((frame) => frame.type === "assistant_item");
+    assert.ok(item);
+    assert.equal(item.assistantItemText, prose);
+  });
+
+  it("withholds protocol deltas in the Actions lane", async () => {
+    const { chatMessages } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-protocol-thread");
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(verdict.slice(0, 20));
+    orchestrator.emitAssistantDelta(verdict);
+    orchestrator.emitAssistantItem(verdict);
+    orchestrator.resolveLate(verdict);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string }>;
+    assert.equal(frames.some((frame) => frame.type === "delta"), false);
+    assert.equal(frames.some((frame) => frame.type === "assistant_item"), false);
+  });
+
+  it("releases a chunked ordinary JSON object after it is classified", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-chunked-ordinary-json-thread");
+    const incomplete = "Configuration: {\"retries\":";
+    const complete = "Configuration: {\"retries\": 1}";
+    const response = `${complete}. Continue streaming.`;
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(incomplete);
+    orchestrator.emitAssistantDelta(complete);
+    orchestrator.emitAssistantDelta(response);
+    orchestrator.emitAssistantItem(response);
+    orchestrator.resolveLate(response);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; delta?: string; output?: string; assistantItemText?: string }>;
+    assert.deepEqual(
+      frames.filter((frame) => frame.type === "delta").map((frame) => frame.delta),
+      ["Configuration:", " {\"retries\": 1}", ". Continue streaming."],
+    );
+    assert.ok(frames.some((frame) => frame.type === "assistant_item"));
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.equal(result.output, response);
+    assert.ok(historyStore.get("history-1").some((entry) => entry.text === response));
+  });
+
+  it("withholds a valid verdict whose fields are not in schema order", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-reordered-protocol-thread");
+    const reordered = JSON.stringify({
+      summary: "Target not met",
+      defects: [{ file: "server/app.ts", line: 7, severity: "blocker", description: "Missing guard" }],
+      status: "REJECT",
+    });
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(reordered.slice(0, 24));
+    orchestrator.emitAssistantDelta(reordered);
+    orchestrator.emitAssistantItem(reordered);
+    orchestrator.resolveLate(reordered);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; output?: string }>;
+    assert.equal(frames.some((frame) => frame.type === "delta"), false);
+    assert.equal(frames.some((frame) => frame.type === "assistant_item"), false);
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.match(String(result.output), /^Reviewer verdict: REJECT/);
+    assert.equal(String(result.output).includes(reordered), false);
+    assert.equal(JSON.stringify(historyStore.get("history-1")).includes(reordered), false);
+  });
+
+  it("renders a verdict after prose and a fenced protocol without leaking it", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-preface-thread");
+    const preface = "Review complete. The result is:";
+    const response = `${preface}\n\n\`\`\`json\n${verdict}\n\`\`\``;
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(preface);
+    orchestrator.emitAssistantDelta(response);
+    orchestrator.emitAssistantItem(response);
+    orchestrator.resolveLate(response);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; delta?: string; output?: string; assistantItemText?: string }>;
+    assert.deepEqual(frames.filter((frame) => frame.type === "delta").map((frame) => frame.delta), [preface]);
+    assert.equal(frames.some((frame) => frame.type === "assistant_item"), false);
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.match(String(result.output), /^Review complete\. The result is:\n\nReviewer verdict: REJECT/);
+    assert.equal(JSON.stringify(result).includes(verdict), false);
+    assert.equal(JSON.stringify(historyStore.get("history-1")).includes(verdict), false);
+  });
+
+  it("preserves a non-verdict JSON fence in the Actions lane", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-invalid-protocol-thread");
+    const response = "Review complete.\n\n```json\n{\"status\": \"MAYBE\"}\n```";
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(response);
+    orchestrator.emitAssistantItem(response);
+    orchestrator.resolveLate(response);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; output?: string; assistantItemText?: string }>;
+    assert.ok(frames.some((frame) => frame.type === "assistant_item"));
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.equal(String(result.output), response);
+    assert.ok(historyStore.get("history-1").some((entry) => entry.text === response));
+  });
+
+  it("preserves ordinary shell fences and JSON objects in the Actions lane", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-ordinary-structured-thread");
+    const response = "Run this:\n```bash\nnpm test\n```\nConfiguration: {\"retries\": 1}.";
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(response);
+    orchestrator.emitAssistantItem(response);
+    orchestrator.resolveLate(response);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; output?: string; assistantItemText?: string }>;
+    assert.ok(frames.some((frame) => frame.type === "assistant_item"));
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.equal(String(result.output), response);
+    assert.ok(historyStore.get("history-1").some((entry) => entry.text === response));
+  });
+
+  it("keeps ordinary assistant streaming for the Acopilot lane", async () => {
+    const { chatMessages } = fixture;
+    const orchestrator = new SlowOrchestrator("acopilot-thread");
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator) as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantItem(verdict);
+    orchestrator.resolveLate(verdict);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; assistantItemText?: string }>;
+    const item = frames.find((frame) => frame.type === "assistant_item");
+    assert.ok(item);
+    assert.equal(item.assistantItemText, verdict);
   });
 });

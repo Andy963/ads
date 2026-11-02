@@ -6,10 +6,15 @@ import { isNativeExecutionId, redactNativeExecutionIds } from "../../../runtime/
 import type { ExploredEntry } from "../../../utils/activityTracker.js";
 import { buildWorkspacePatch } from "../../gitPatch.js";
 import { getRuleEnforcementGate, type RuleEnforcementGate } from "../../../middleware/security/enforcementGate.js";
+import {
+  findReviewProtocolStart,
+  findReviewProtocolStreamBoundary,
+} from "../../../reviewer/verdictPresentation.js";
 import { extractCommandPayload } from "./utils.js";
 
 type FileChangeLike = { kind?: unknown; path?: unknown };
 type PatchFileStatLike = { added: number | null; removed: number | null };
+type ProtocolStreamState = { kind: "pending" | "verdict"; start: number };
 
 type EventSource = {
   onEvent: (handler: (event: AgentEvent) => void) => () => void;
@@ -103,6 +108,8 @@ export function attachWorkerPromptHandler(args: {
   channel?: string;
   ruleGate?: RuleEnforcementGate;
   isActive?: () => boolean;
+  /** Hold back Reviewer protocol anywhere in an Actions-lane assistant item. */
+  gateProtocolText?: boolean;
 }): {
   unsubscribe: () => void;
   handleExploredEntry: (entry: ExploredEntry) => void;
@@ -118,7 +125,27 @@ export function attachWorkerPromptHandler(args: {
   const terminalCommandKeys = new Set<string>();
   let latestCommandKey: string | null = null;
   let exploredHeaderSent = false;
+  const protocolStreamStateByItemId = new Map<string, ProtocolStreamState>();
+  const streamedTextByItemId = new Map<string, string>();
+  const streamedAssistantItems = new Set<string>();
   const isActive = (): boolean => (args.isActive ? args.isActive() : true);
+
+  const visibleAssistantText = (itemId: string, fullText: string): string => {
+    if (!args.gateProtocolText) return fullText;
+    const previousState = protocolStreamStateByItemId.get(itemId);
+    if (previousState?.kind === "verdict") return fullText.slice(0, previousState.start).trimEnd();
+    const boundary = findReviewProtocolStreamBoundary(fullText);
+    if (boundary.kind === "verdict") {
+      protocolStreamStateByItemId.set(itemId, { kind: "verdict", start: boundary.protocolStart });
+      return fullText.slice(0, boundary.protocolStart).trimEnd();
+    }
+    if (boundary.kind === "pending") {
+      protocolStreamStateByItemId.set(itemId, { kind: "pending", start: boundary.protocolStart });
+      return fullText.slice(0, boundary.protocolStart).trimEnd();
+    }
+    protocolStreamStateByItemId.delete(itemId);
+    return fullText;
+  };
 
   /** Report command safety violations that reach the event bridge. */
   const evaluateCommandSafety = (commandLine: string): void => {
@@ -173,6 +200,9 @@ export function attachWorkerPromptHandler(args: {
       lastRespondingTextByItemId.clear();
       assistantItems.clear();
       followingCommands.clear();
+      protocolStreamStateByItemId.clear();
+      streamedTextByItemId.clear();
+      streamedAssistantItems.clear();
       latestAssistantItemId = undefined;
       activeRespondingItemId = null;
       completedRespondingItemIds.clear();
@@ -237,10 +267,22 @@ export function attachWorkerPromptHandler(args: {
         // unrelated snapshot is a reset, not a new delta to append to the chat.
         return;
       }
-      const delta = previous ? next.slice(previous.length) : next;
       lastRespondingTextByItemId.set(itemId, next);
+      const visibleText = visibleAssistantText(itemId, next);
+      const previousVisibleText = streamedTextByItemId.get(itemId) ?? "";
+      if (!visibleText.startsWith(previousVisibleText)) {
+        return;
+      }
+      const delta = visibleText.slice(previousVisibleText.length);
+      streamedTextByItemId.set(itemId, visibleText);
       if (delta) {
-        args.sendToChat({ type: "delta", delta, assistantItemId: itemId, ts: eventTimestamp });
+        args.sendToChat({
+          type: "delta",
+          delta,
+          assistantItemId: itemId,
+          ts: eventTimestamp,
+        });
+        streamedAssistantItems.add(itemId);
       }
       return;
     }
@@ -250,7 +292,10 @@ export function attachWorkerPromptHandler(args: {
         const text = String((rawItem as { text?: unknown }).text ?? "");
         assistantItems.set(itemId, text);
         if (text.trim()) latestAssistantItemId = itemId;
-        args.sendToChat({ type: "assistant_item", assistantItemId: itemId, assistantItemText: text, ts: eventTimestamp });
+        const hasProtocol = args.gateProtocolText && findReviewProtocolStart(text) !== null;
+        if (!hasProtocol && (streamedAssistantItems.has(itemId) || text.trim())) {
+          args.sendToChat({ type: "assistant_item", assistantItemId: itemId, assistantItemText: text, ts: eventTimestamp });
+        }
         if (!completedRespondingItemIds.has(itemId)) {
           completedRespondingItemIds.add(itemId);
           if (activeRespondingItemId === itemId) {
