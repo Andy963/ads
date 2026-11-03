@@ -580,4 +580,136 @@ describe("web/promptQueueService", () => {
     db.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
+
+  it("schedules a stranded queued row when the same prompt is enqueued again", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-prompt-queue-recover-duplicate-"));
+    const db = new DatabaseConstructor(path.join(tempDir, "state.db"));
+    const store = createPromptQueueStore(db);
+    const lane = {
+      authUserId: "auth-1",
+      userId: 7,
+      sessionId: "session-1",
+      chatSessionId: "main",
+      historyKey: "auth-1::session-1::main:generation:1",
+      logicalHistoryKey: "auth-1::session-1::main",
+      laneNamespace: "auth-1::session-1",
+      laneGeneration: 1,
+      workspaceRoot: "/workspace/project",
+    };
+    const executed: string[] = [];
+    const service = new PromptQueueService({
+      store,
+      workerId: "worker-1",
+      resolveCurrentGeneration: () => 1,
+      runPrompt: async (entry) => {
+        executed.push(entry.clientMessageId);
+        return { ok: true };
+      },
+      emitSnapshot: () => undefined,
+    });
+    await service.start();
+
+    store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
+    const duplicate = service.enqueue({
+      ...lane,
+      clientMessageId: "client-1",
+      payload: { text: "one" },
+    });
+    assert.equal(duplicate.duplicate, true);
+    while (store.getByClientMessageId("client-1")?.status !== "completed") {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    assert.deepEqual(executed, ["client-1"]);
+    await service.stop();
+    db.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("schedules a stranded lane when its snapshot is requested after reconnect", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-prompt-queue-recover-snapshot-"));
+    const db = new DatabaseConstructor(path.join(tempDir, "state.db"));
+    const store = createPromptQueueStore(db);
+    const lane = {
+      authUserId: "auth-1",
+      userId: 7,
+      sessionId: "session-1",
+      chatSessionId: "main",
+      historyKey: "auth-1::session-1::main:generation:1",
+      logicalHistoryKey: "auth-1::session-1::main",
+      laneNamespace: "auth-1::session-1",
+      laneGeneration: 1,
+      workspaceRoot: "/workspace/project",
+    };
+    const executed: string[] = [];
+    const service = new PromptQueueService({
+      store,
+      workerId: "worker-1",
+      resolveCurrentGeneration: () => 1,
+      runPrompt: async (entry) => {
+        executed.push(entry.clientMessageId);
+        return { ok: true };
+      },
+      emitSnapshot: () => undefined,
+    });
+    await service.start();
+
+    store.enqueue({ ...lane, clientMessageId: "client-1", payload: { text: "one" } });
+    service.ensureLaneScheduled(lane);
+    while (store.getByClientMessageId("client-1")?.status !== "completed") {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    assert.deepEqual(executed, ["client-1"]);
+    await service.stop();
+    db.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("does not replay running or completed rows during lane recovery", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-prompt-queue-recover-terminal-"));
+    const db = new DatabaseConstructor(path.join(tempDir, "state.db"));
+    const store = createPromptQueueStore(db);
+    const lane = {
+      authUserId: "auth-1",
+      userId: 7,
+      sessionId: "session-1",
+      chatSessionId: "main",
+      historyKey: "auth-1::session-1::main:generation:1",
+      logicalHistoryKey: "auth-1::session-1::main",
+      laneNamespace: "auth-1::session-1",
+      laneGeneration: 1,
+      workspaceRoot: "/workspace/project",
+    };
+    let executions = 0;
+    const service = new PromptQueueService({
+      store,
+      workerId: "worker-1",
+      resolveCurrentGeneration: () => 1,
+      runPrompt: async () => {
+        executions += 1;
+        return { ok: true };
+      },
+      emitSnapshot: () => undefined,
+    });
+    await service.start();
+
+    const running = store.enqueue({ ...lane, clientMessageId: "running", payload: { text: "running" } });
+    const completed = store.enqueue({ ...lane, clientMessageId: "completed", payload: { text: "completed" } });
+    const now = Date.now();
+    db.prepare("UPDATE prompt_queue SET status='running', started_at=?, updated_at=? WHERE id=?")
+      .run(now, now, running.entry.id);
+    db.prepare("UPDATE prompt_queue SET status='completed', completed_at=?, updated_at=? WHERE id=?")
+      .run(now, now, completed.entry.id);
+
+    service.ensureLaneScheduled(lane);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(executions, 0);
+    assert.equal(store.getByClientMessageId("running")?.status, "running");
+    assert.equal(store.getByClientMessageId("completed")?.status, "completed");
+    await service.stop();
+    db.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
 });

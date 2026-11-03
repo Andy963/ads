@@ -42,6 +42,7 @@ import { createDeltaStreamCoalescer } from "../sync/deltaStream.js";
 import { createCommandSnapshotCoalescer } from "../sync/commandSnapshot.js";
 import { projectCommandFrame } from "../commandPresentation.js";
 import { recordConversationMessage } from "../../../utils/conversationMessageRecorder.js";
+import { detectWorkspaceFrom } from "../../../workspace/detector.js";
 import { WEB_ACTIONS_NAMESPACE } from "../start/webLaneResources.js";
 import { onTaskTerminalEvent } from "../../taskNotifications/taskNotificationDispatcher.js";
 
@@ -412,6 +413,14 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
     if (historyOutcome === "failed") {
       return { ok: false, error: "Prompt execution failed before queue completion" };
     }
+    const createInteractiveActionTools = state.createInteractiveActionTools
+      ? async (signal: AbortSignal) => await state.createInteractiveActionTools!({
+          authUserId: entry.authUserId,
+          projectId: entry.sessionId,
+          repoPath: detectWorkspaceFrom(entry.workspaceRoot),
+          signal,
+        })
+      : undefined;
     const result = await handlePromptMessage({
       request: {
         parsed: parsedPrompt,
@@ -453,6 +462,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
       },
       history: { historyStore: laneResources.historyStore },
       scheduler,
+      ...(createInteractiveActionTools ? { createInteractiveActionTools } : {}),
       ...(deps.notifyWebUser ? { notifyWebUser: deps.notifyWebUser } : {}),
     });
     return result.outcome;
@@ -1284,7 +1294,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
 
     const sendPromptQueueSnapshot = (): void => {
       if (promptQueueService) {
-        const entries = promptQueueService.getSnapshot({
+        const lane = {
           authUserId: currentLane.authUserId,
           sessionId: currentLane.sessionId,
           chatSessionId: currentLane.chatSessionId,
@@ -1292,11 +1302,13 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
           logicalHistoryKey: currentLane.logicalHistoryKey,
           laneNamespace: currentLane.laneNamespace,
           laneGeneration: currentLane.laneGeneration,
-        });
+        };
+        const entries = promptQueueService.getSnapshot(lane);
         safeJsonSend(ws, {
           type: "prompt_queue_snapshot",
           entries: entries.map(publicPromptQueueEntry),
         });
+        promptQueueService.ensureLaneScheduled(lane);
       }
     };
 

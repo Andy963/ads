@@ -122,11 +122,20 @@ export class PromptQueueService {
       throw new Error("Prompt queue service does not own the queue");
     }
     const result = this.store.enqueue(input);
-    this.emitSnapshot(result.entry);
-    if (!result.duplicate) {
-      this.scheduleLane(this.laneKey(result.entry));
+    try {
+      this.emitSnapshot(result.entry);
+    } finally {
+      this.ensureLaneScheduled(result.entry);
     }
     return result;
+  }
+
+  ensureLaneScheduled(lane: PromptQueueLane): void {
+    if (!this.isOwner()) return;
+    const laneKey = this.laneKey(lane);
+    if (this.store.listRecoverable().some((entry) => this.laneKey(entry) === laneKey)) {
+      this.scheduleLane(laneKey);
+    }
   }
 
   getSnapshot(lane: PromptQueueLane): PromptQueueEntry[] {
@@ -163,7 +172,7 @@ export class PromptQueueService {
       && this.store.isOwnershipCurrent(this.workerId);
   }
 
-  private laneKey(entry: PromptQueueEntry): string {
+  private laneKey(entry: PromptQueueLane): string {
     return JSON.stringify([
       entry.authUserId,
       entry.sessionId,

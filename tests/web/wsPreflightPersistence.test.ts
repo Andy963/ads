@@ -19,6 +19,7 @@ import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
 import { SyncEventStore } from "../../server/web/server/sync/store.js";
 import { resolveSyncNamespace } from "../../server/web/server/sync/lane.js";
 import { createPromptQueueStore } from "../../server/state/promptQueueStore.js";
+import type { ActionTools } from "../../server/agents/actionTools.js";
 
 type WsJson = { type?: unknown; [k: string]: unknown };
 
@@ -75,6 +76,8 @@ describe("web/server/ws/preflight-persistence", () => {
   let unblockCommands: (() => void) | null;
   let failAgentRequests: boolean;
   let agentRequestCount: number;
+  let lastActionTools: ActionTools | undefined;
+  let actionToolContext: { authUserId: string; projectId: string; repoPath: string } | undefined;
   /** Held by tests that need a prompt to occupy the lane while another waits. */
   let holdAgentRequests: Promise<void> | null;
   const originalEnv = { ...process.env };
@@ -104,14 +107,17 @@ describe("web/server/ws/preflight-persistence", () => {
     >();
     failAgentRequests = false;
     agentRequestCount = 0;
+    lastActionTools = undefined;
+    actionToolContext = undefined;
     holdAgentRequests = null;
     const createSession = ({ cwd }: { cwd: string }): HybridOrchestrator => new HybridOrchestrator({
       initialWorkingDirectory: cwd,
       adapters: [{
         id: "codex",
         metadata: { id: "codex", name: "Preflight fixture", capabilities: ["text"] },
-        send: async () => {
+        send: async (_input, options) => {
           agentRequestCount += 1;
+          lastActionTools = options?.actionTools;
           if (holdAgentRequests) await holdAgentRequests;
           if (failAgentRequests) throw new Error("fixture agent failure");
           return { response: "Fixture reply", usage: null, agentId: "codex" };
@@ -172,6 +178,13 @@ describe("web/server/ws/preflight-persistence", () => {
         cwdStore: new Map(),
         cwdStorePath: process.env.ADS_STATE_DB_PATH,
         persistCwdStore: () => {},
+        createInteractiveActionTools: async ({ authUserId, projectId, repoPath }) => {
+          actionToolContext = { authUserId, projectId, repoPath };
+          return {
+            review_action: async () => ({ ok: true }),
+            dispose: async () => {},
+          };
+        },
       },
       sessions: {
         workerSessionManager,
@@ -294,6 +307,35 @@ describe("web/server/ws/preflight-persistence", () => {
     }
   });
 
+  it("passes action tools to prompts executed from the durable queue", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
+    const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+
+    try {
+      await waitForWsOpen(client);
+      client.send(JSON.stringify({ type: "prompt", payload: { text: "queued tool prompt" }, client_message_id: "tools-1" }));
+      await waitForWsMessage(
+        client,
+        (msg) => msg.type === "ack" && msg.client_message_id === "tools-1",
+        2000,
+      );
+      const completedDeadline = Date.now() + 3000;
+      while (promptQueueStore.getByClientMessageId("tools-1")?.status !== "completed") {
+        assert.ok(Date.now() < completedDeadline, "queued prompt should complete");
+        await delay(5);
+      }
+
+      assert.equal(typeof lastActionTools?.review_action, "function");
+      assert.deepEqual(await lastActionTools?.review_action(), { ok: true });
+      assert.equal(actionToolContext?.authUserId, "test");
+      assert.ok(actionToolContext?.projectId);
+      assert.ok(actionToolContext?.repoPath);
+    } finally {
+      client.terminate();
+    }
+  });
+
   it("assigns an id and persists a prompt before queued execution when the client omits an id", async () => {
     const url = `ws://127.0.0.1:${port}`;
     const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
@@ -376,6 +418,77 @@ describe("web/server/ws/preflight-persistence", () => {
         (entry) => String(entry.kind ?? "").startsWith("client_message_id:durable-1"),
       );
       assert.equal(history.length, 1);
+    } finally {
+      releasePrompt?.();
+      holdAgentRequests = null;
+      client.terminate();
+    }
+  });
+
+  it("resumes a stranded queued prompt from the reconnect snapshot", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
+    const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+    let releasePrompt: (() => void) | null = null;
+
+    try {
+      await waitForWsOpen(client);
+      holdAgentRequests = new Promise<void>((resolve) => {
+        releasePrompt = resolve;
+      });
+      client.send(JSON.stringify({ type: "prompt", payload: { text: "occupy lane" }, client_message_id: "lane-1" }));
+      client.send(JSON.stringify({ type: "prompt", payload: { text: "queued prompt" }, client_message_id: "queued-1" }));
+      await waitForWsMessage(
+        client,
+        (msg) => msg.type === "ack" && msg.client_message_id === "queued-1",
+        2000,
+      );
+
+      const queuedRow = promptQueueStore.getByClientMessageId("queued-1");
+      assert.ok(queuedRow);
+      releasePrompt?.();
+      releasePrompt = null;
+      holdAgentRequests = null;
+
+      const completedDeadline = Date.now() + 3000;
+      while (promptQueueStore.getByClientMessageId("queued-1")?.status !== "completed") {
+        assert.ok(Date.now() < completedDeadline, "queued prompt should complete after the lane is released");
+        await delay(5);
+      }
+      await delay(20);
+
+      const requestsBeforeReconnect = agentRequestCount;
+      promptQueueStore.enqueue({
+        authUserId: queuedRow.authUserId,
+        userId: queuedRow.userId,
+        sessionId: queuedRow.sessionId,
+        chatSessionId: queuedRow.chatSessionId,
+        historyKey: queuedRow.historyKey,
+        logicalHistoryKey: queuedRow.logicalHistoryKey,
+        laneNamespace: queuedRow.laneNamespace,
+        laneGeneration: queuedRow.laneGeneration,
+        workspaceRoot: queuedRow.workspaceRoot,
+        clientMessageId: "stranded-1",
+        payload: { text: "stranded prompt" },
+      });
+      assert.equal(promptQueueStore.getByClientMessageId("stranded-1")?.status, "queued");
+
+      const closed = new Promise<void>((resolve) => client.once("close", () => resolve()));
+      client.close();
+      await closed;
+
+      const reconnected = new WebSocket(url, protocols, { origin: "http://localhost" });
+      try {
+        await waitForWsOpen(reconnected);
+        const recoveredDeadline = Date.now() + 3000;
+        while (promptQueueStore.getByClientMessageId("stranded-1")?.status !== "completed") {
+          assert.ok(Date.now() < recoveredDeadline, "reconnect snapshot should recover the stranded prompt");
+          await delay(5);
+        }
+        assert.equal(agentRequestCount, requestsBeforeReconnect + 1);
+      } finally {
+        reconnected.terminate();
+      }
     } finally {
       releasePrompt?.();
       holdAgentRequests = null;
