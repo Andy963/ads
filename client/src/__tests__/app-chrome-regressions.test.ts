@@ -442,10 +442,12 @@ describe("project status spinner", () => {
     const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
     expect(pid).not.toBe("");
 
-    const actionsRuntime = (wrapper.vm as any).getRuntime(pid) as { busy: { value: boolean } };
-    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime(pid) as { busy: { value: boolean } };
+    const actionsRuntime = (wrapper.vm as any).getRuntime(pid) as { busy: { value: boolean }; connected: { value: boolean } };
+    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime(pid) as { busy: { value: boolean }; connected: { value: boolean } };
     actionsRuntime.busy.value = false;
     acopilotRuntime.busy.value = false;
+    actionsRuntime.connected.value = true;
+    acopilotRuntime.connected.value = true;
     await settleUi(wrapper);
 
     expect(wrapper.find(".projectStatus").classes("spinning")).toBe(false);
@@ -476,6 +478,38 @@ describe("project status spinner", () => {
     await settleUi(wrapper);
     expect(projectStatus.classes("spinning")).toBe(false);
     expect(projectStatus.attributes("title")).toBeUndefined();
+
+    wrapper.unmount();
+  });
+
+  it("hides running animations whenever the lane is disconnected", async () => {
+    const wrapper = await mountApp();
+
+    const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
+    expect(pid).not.toBe("");
+
+    const actionsRuntime = (wrapper.vm as any).getRuntime(pid) as { busy: { value: boolean }; connected: { value: boolean } };
+    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime(pid) as { busy: { value: boolean }; connected: { value: boolean } };
+    actionsRuntime.connected.value = false;
+    acopilotRuntime.connected.value = false;
+    actionsRuntime.busy.value = true;
+    acopilotRuntime.busy.value = true;
+    await settleUi(wrapper);
+
+    const projectStatus = wrapper.find(".projectStatus");
+    expect(projectStatus.classes("spinning")).toBe(false);
+    expect(projectStatus.attributes("title")).toBeUndefined();
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes()).toContain("laneTabStatusDot--disconnected");
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes("laneTabStatusDot--busy-acopilot")).toBe(false);
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes()).toContain("laneTabStatusDot--disconnected");
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes("laneTabStatusDot--busy-actions")).toBe(false);
+
+    acopilotRuntime.connected.value = true;
+    await settleUi(wrapper);
+
+    expect(projectStatus.classes()).toEqual(expect.arrayContaining(["spinning", "spinning--acopilot"]));
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes()).toContain("laneTabStatusDot--busy-acopilot");
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes("laneTabStatusDot--busy-actions")).toBe(false);
 
     wrapper.unmount();
   });
