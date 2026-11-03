@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
   BUILTIN_TOOL_DEFINITIONS,
   executeBuiltinTool,
+  formatBuiltinToolResult,
   isActionTool,
 } from "../tools/builtins.js";
 import type { ActionTools } from "../agents/actionTools.js";
@@ -456,7 +457,7 @@ export class NativeToolExecutor {
     }
     // Cache before execution, including rejections: a host failure may follow a side effect.
     const result = Promise.resolve().then(async () => ({
-      output: JSON.stringify(await executeBuiltinTool(call.function.name, parseArguments(call), {
+      output: formatBuiltinToolResult(call.function.name, await executeBuiltinTool(call.function.name, parseArguments(call), {
         workspaceRoot: this.workspaceRoot,
         authUserId: this.authUserId,
         actionTools: this.actionTools,

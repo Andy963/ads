@@ -53,7 +53,7 @@ describe("server config resolvers", () => {
     assert.strictEqual(config.host, "127.0.0.1");
     assert.strictEqual(config.maxClients, 2);
     assert.strictEqual(config.wsPingIntervalMs, 0);
-    assert.strictEqual(config.wsMaxMissedPongs, 3);
+    assert.strictEqual(config.wsMaxMissedPongs, 6);
     assert.strictEqual(config.wsMaxPayloadBytes, 16 * 1024 * 1024);
     assert.strictEqual(config.historyMaxEntriesPerSession, 200);
     assert.strictEqual(config.historyMaxTextLength, 64 * 1024);

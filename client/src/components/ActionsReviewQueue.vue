@@ -1,33 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 
-type ReviewVerdict = {
-  status: "PASS" | "REJECT";
-  summary: string;
-  defects: Array<{ file: string; line?: number; severity: string; description: string }>;
-};
-
-type VerificationReport = {
-  command?: string;
-  exitCode?: number;
-  summary?: string;
-  output?: string;
-};
-
 type ReviewJob = {
   id: string;
   job_kind: string;
   issue_title: string;
   status: string;
-  current_step: string | null;
-  branch: string | null;
-  base_sha: string | null;
-  head_sha: string | null;
   pr_number: number | null;
   pr_url: string | null;
-  error_message: string | null;
-  verification_report_json: string;
-  review_verdicts_json: string;
+  created_at?: number;
 };
 
 const props = withDefaults(defineProps<{ projectId: string; active?: boolean }>(), { active: true });
@@ -37,39 +18,15 @@ const error = ref("");
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let requestSequence = 0;
 
-const reviewJobs = computed(() => jobs.value.filter((job) => job.job_kind === "pull_request_review").slice(0, 8));
-const hasActiveReview = computed(() => reviewJobs.value.some((job) =>
-  ["queued", "running", "verifying", "reviewing"].includes(job.status),
-));
-
-function verdictFor(job: ReviewJob): ReviewVerdict | null {
-  try {
-    const parsed = JSON.parse(job.review_verdicts_json) as unknown;
-    if (!Array.isArray(parsed)) return null;
-    const verdict = parsed.at(-1) as Partial<ReviewVerdict> | undefined;
-    if (!verdict || (verdict.status !== "PASS" && verdict.status !== "REJECT")) return null;
-    return {
-      status: verdict.status,
-      summary: String(verdict.summary ?? ""),
-      defects: Array.isArray(verdict.defects) ? verdict.defects : [],
-    };
-  } catch {
-    return null;
-  }
-}
-
-function verificationFor(job: ReviewJob): VerificationReport | null {
-  try {
-    const parsed = JSON.parse(job.verification_report_json) as unknown;
-    return parsed && typeof parsed === "object" ? parsed as VerificationReport : null;
-  } catch {
-    return null;
-  }
-}
+const activeStatuses = new Set(["queued", "running", "verifying", "reviewing"]);
+const reviewJobs = computed(() => jobs.value.filter((job) => job.job_kind === "pull_request_review"));
+const activeReviewJobs = computed(() => reviewJobs.value
+  .filter((job) => activeStatuses.has(job.status))
+  .sort((left, right) => (left.created_at ?? 0) - (right.created_at ?? 0)));
+const currentReviewJob = computed(() => activeReviewJobs.value[0] ?? null);
+const hasActiveReview = computed(() => activeReviewJobs.value.length > 0);
 
 function statusLabel(job: ReviewJob): string {
-  const verdict = verdictFor(job);
-  if (verdict) return verdict.status;
   return job.status.replaceAll("_", " ");
 }
 
@@ -126,116 +83,79 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section v-if="reviewJobs.length || error" class="actions-review-queue" aria-label="Actions reviewer queue">
-    <header class="actions-review-queue__header">
-      <strong>Actions reviewer queue</strong>
-      <span>{{ reviewJobs.length }} review{{ reviewJobs.length === 1 ? "" : "s" }}</span>
-    </header>
+  <section v-if="currentReviewJob || error" class="actionsJobBanner actions-review-queue" aria-label="Actions reviewer queue">
     <p v-if="error" class="actions-review-queue__error" role="alert">{{ error }}</p>
-    <article v-for="job in reviewJobs" :key="job.id" class="actions-review-queue__job">
-      <div class="actions-review-queue__title">
-        <a v-if="job.pr_url" :href="job.pr_url" target="_blank" rel="noreferrer">PR #{{ job.pr_number }}</a>
-        <span v-else>PR #{{ job.pr_number }}</span>
-        <span :class="['actions-review-queue__status', `is-${statusLabel(job).toLowerCase()}`]">{{ statusLabel(job) }}</span>
+    <article v-if="currentReviewJob" class="actionsQueueCard actions-review-queue__card" data-testid="actions-review-card">
+      <div class="actions-review-queue__meta">
+        <span :class="['actionsJobBadge', `actionsJobBadge--${currentReviewJob.status}`]">{{ statusLabel(currentReviewJob).toUpperCase() }}</span>
+        <a v-if="currentReviewJob.pr_url" :href="currentReviewJob.pr_url" target="_blank" rel="noreferrer">PR #{{ currentReviewJob.pr_number }}</a>
+        <span v-else>PR #{{ currentReviewJob.pr_number }}</span>
+        <span v-if="activeReviewJobs.length > 1" class="actions-review-queue__count">+{{ activeReviewJobs.length - 1 }} queued</span>
       </div>
-      <div class="actions-review-queue__issue">{{ job.issue_title }}</div>
-      <div class="actions-review-queue__commits">
-        Base {{ job.base_sha?.slice(0, 12) || "unknown" }} · Head {{ job.head_sha?.slice(0, 12) || "unknown" }}
-      </div>
-      <p v-if="job.current_step" class="actions-review-queue__detail">{{ job.current_step }}</p>
-      <p v-if="verdictFor(job)" class="actions-review-queue__detail">{{ verdictFor(job)?.summary }}</p>
-      <ul v-if="verdictFor(job)?.defects.length" class="actions-review-queue__findings">
-        <li v-for="(defect, index) in verdictFor(job)?.defects" :key="`${defect.file}-${index}`">
-          <strong>{{ defect.file }}<template v-if="defect.line">:{{ defect.line }}</template></strong>
-          <span> ({{ defect.severity }}): {{ defect.description }}</span>
-        </li>
-      </ul>
-      <p v-if="job.error_message" class="actions-review-queue__error">{{ job.error_message }}</p>
-      <details v-if="verificationFor(job)" class="actions-review-queue__verification">
-        <summary>Verification: {{ verificationFor(job)?.command }} (exit {{ verificationFor(job)?.exitCode }})</summary>
-        <p>{{ verificationFor(job)?.summary }}</p>
-        <pre v-if="verificationFor(job)?.output">{{ verificationFor(job)?.output }}</pre>
-      </details>
+      <div class="actions-review-queue__issue" :title="currentReviewJob.issue_title">{{ currentReviewJob.issue_title }}</div>
     </article>
   </section>
 </template>
 
 <style scoped>
 .actions-review-queue {
-  flex: 0 0 auto;
-  max-height: 220px;
-  overflow: auto;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border, #d7dce2);
-  background: var(--surface, #fff);
-  color: var(--text-primary, #1f2937);
+  margin: 8px 12px 0;
   font-size: 12px;
 }
 
-.actions-review-queue__header,
-.actions-review-queue__title {
+.actions-review-queue__card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 8px 12px;
+  min-width: 0;
+}
+
+.actions-review-queue__meta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
+  min-height: 24px;
+  line-height: 1.45;
 }
 
-.actions-review-queue__header {
-  margin-bottom: 6px;
-}
-
-.actions-review-queue__header > span,
-.actions-review-queue__commits {
-  color: var(--text-secondary, #667085);
-}
-
-.actions-review-queue__job + .actions-review-queue__job {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border, #d7dce2);
-}
-
-.actions-review-queue__title a {
+.actions-review-queue__meta a {
   font-weight: 650;
+}
+
+.actionsJobBadge {
+  display: inline-block;
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--muted);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.actionsJobBadge--running,
+.actionsJobBadge--verifying,
+.actionsJobBadge--reviewing {
+  background: var(--accent);
+}
+
+.actions-review-queue__count {
+  color: var(--text-secondary, #667085);
+  margin-left: auto;
 }
 
 .actions-review-queue__issue {
   margin-top: 3px;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.actions-review-queue__commits,
-.actions-review-queue__detail {
-  margin-top: 3px;
-  overflow-wrap: anywhere;
-}
-
-.actions-review-queue__status {
-  color: var(--text-secondary, #667085);
-  text-transform: capitalize;
-}
-
-.actions-review-queue__status.is-pass {
-  color: #18794e;
-}
-
-.actions-review-queue__status.is-reject,
 .actions-review-queue__error {
   color: #b42318;
-}
-
-.actions-review-queue__findings {
-  margin: 5px 0 0;
-  padding-left: 18px;
-}
-
-.actions-review-queue__verification {
-  margin-top: 5px;
-}
-
-.actions-review-queue__verification pre {
-  max-height: 120px;
-  overflow: auto;
-  white-space: pre-wrap;
+  margin: 0 0 6px;
 }
 </style>

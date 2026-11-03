@@ -58,15 +58,16 @@ describe("laneActions regressions", () => {
     it("sends the current model with a changed reasoning effort", () => {
       const { actions, runtime, send } = setupModelOverride();
       runtime.modelId.value = "gpt-4o";
+      runtime.chatSessionId = "new-chat-session";
 
-      actions.setAcopilotModelReasoningEffort("low");
+      actions.setAcopilotModelReasoningEffort("max");
 
       expect(send).toHaveBeenCalledWith(
         "model_override",
-        { model: "gpt-4o", model_reasoning_effort: "low" },
+        { model: "gpt-4o", model_reasoning_effort: "max" },
         { clientMessageId: expect.any(String) },
       );
-      expect(readReasoningEffortPreference("default", "advisor", "codex")).toBe("low");
+      expect(readReasoningEffortPreference("default", "acopilot", "codex")).toBe("max");
     });
 
     it("shows the alias in pending switch feedback while transmitting the catalog ID", () => {

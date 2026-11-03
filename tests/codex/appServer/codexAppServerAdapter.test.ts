@@ -158,7 +158,10 @@ describe("CodexAppServerAdapter", () => {
       arguments: { issue_id: 516 },
     });
     assert.equal(beginResult.result.success, true);
-    assert.deepEqual(JSON.parse(beginResult.result.contentItems[0].text), { ok: true, issue_id: 516 });
+    assert.equal(
+      beginResult.result.contentItems[0].text,
+      "begin_implementation completed.\nIssue: #516.",
+    );
 
     const reviewResult = await callBuiltin(fake, {
       threadId: "thread-acopilot-tools",
@@ -168,11 +171,63 @@ describe("CodexAppServerAdapter", () => {
       arguments: {},
     });
     assert.equal(reviewResult.result.success, true);
-    assert.deepEqual(JSON.parse(reviewResult.result.contentItems[0].text), { ok: true, verdict: { status: "PASS" } });
+    assert.equal(
+      reviewResult.result.contentItems[0].text,
+      "review_action completed.\nStatus: PASS.",
+    );
     assert.deepEqual(calls, ["begin:516", "review"]);
 
     fake.notify("turn/completed", { threadId: "thread-acopilot-tools", turn: { id: "turn-acopilot-tools" } });
     await pending;
+    await registry.stopAll();
+  });
+
+  it("starts a tool-enabled thread instead of resuming a persisted thread without Action tools", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-action-fresh" } }),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({
+      projectId: "resume-action-tools",
+      resumeThreadId: "thread-persisted-without-tools",
+      registry,
+    });
+    const calls: string[] = [];
+    const actionTools = {
+      review_action: async () => {
+        calls.push("review");
+        return { ok: true, verdict: { status: "PASS" } };
+      },
+    };
+
+    const pending = adapter.send("Review the current pull request", { actionTools });
+    await waitForRequestCount(fake, "thread/start", 1);
+    assert.equal(fake.requests.filter((request) => request.method === "thread/resume").length, 0);
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
+    assert.deepEqual(
+      (threadStart?.params?.dynamicTools as Array<{ name: string }>).map((tool) => tool.name),
+      ["begin_implementation", "review_action"],
+    );
+
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("turn/started", { threadId: "thread-action-fresh", turn: { id: "turn-action-fresh" } });
+    const reviewResult = await callBuiltin(fake, {
+      threadId: "thread-action-fresh",
+      turnId: "turn-action-fresh",
+      callId: "review-current-pr-after-resume",
+      tool: "review_action",
+      arguments: {},
+    });
+    assert.equal(reviewResult.result.success, true);
+    assert.equal(reviewResult.result.contentItems[0].text, "review_action completed.\nStatus: PASS.");
+    assert.deepEqual(calls, ["review"]);
+
+    fake.notify("turn/completed", { threadId: "thread-action-fresh", turn: { id: "turn-action-fresh" } });
+    await pending;
+    assert.equal(adapter.getThreadId(), "thread-action-fresh");
     await registry.stopAll();
   });
 

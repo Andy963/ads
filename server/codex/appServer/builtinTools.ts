@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
   builtinToolDefinitions,
   executeBuiltinTool,
+  formatBuiltinToolResult,
   isBuiltinTool,
   type BuiltinToolContext,
 } from "../../tools/builtins.js";
@@ -23,7 +24,7 @@ export function builtinDynamicTools(includeActions = false): DynamicToolSpec[] {
 type TurnScope = { threadId: string | null; turnId: string | null; active: boolean };
 
 function failure(message: string): DynamicToolCallResponse {
-  return { success: false, contentItems: [{ type: "inputText", text: JSON.stringify({ ok: false, error: message }) }] };
+  return { success: false, contentItems: [{ type: "inputText", text: `Built-in tool failed: ${message}` }] };
 }
 
 /** Owns only the current turn's calls; never routes by tool name alone. */
@@ -61,7 +62,7 @@ export function createBuiltinToolBridge(options: {
           // Even an ambiguous host failure must never cause a turn retry to replay a side effect.
           options.markSideEffect(request.callId, request.tool);
           const result = await executeBuiltinTool(request.tool, request.arguments, options.context);
-          return { success: result.ok, contentItems: [{ type: "inputText" as const, text: JSON.stringify(result) }] };
+          return { success: result.ok, contentItems: [{ type: "inputText" as const, text: formatBuiltinToolResult(request.tool, result) }] };
         } catch (error) {
           return failure(error instanceof Error ? error.message : "ADS built-in tool failed.");
         }

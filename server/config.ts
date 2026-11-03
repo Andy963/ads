@@ -168,8 +168,8 @@ export function resolveWebConfig(options: DomainConfigOptions = {}): WebConfig {
     port: Number(env.ADS_WEB_PORT) || 8787,
     host: env.ADS_WEB_HOST || "127.0.0.1",
     maxClients: normalizeWebInteger(env.ADS_WEB_MAX_CLIENTS, 32, 1),
-    wsPingIntervalMs: normalizeWebNumber(env.ADS_WEB_WS_PING_INTERVAL_MS, 15_000, 0),
-    wsMaxMissedPongs: normalizeWebInteger(env.ADS_WEB_WS_MAX_MISSED_PONGS, 3, 0),
+    wsPingIntervalMs: normalizeWebNumber(env.ADS_WEB_WS_PING_INTERVAL_MS, 30_000, 0),
+    wsMaxMissedPongs: normalizeWebInteger(env.ADS_WEB_WS_MAX_MISSED_PONGS, 6, 0),
     // 单帧上限：默认 16MB，足以容纳带 base64 图片的 prompt，又能挡住内存型 DoS。
     wsMaxPayloadBytes: normalizeWebInteger(env.ADS_WEB_WS_MAX_PAYLOAD_BYTES, 16 * 1024 * 1024, 1024),
     historyMaxEntriesPerSession: normalizeWebInteger(env.ADS_HISTORY_MAX_ENTRIES_PER_SESSION, 200, 1),

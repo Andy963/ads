@@ -425,9 +425,39 @@ export function readModelIdPreference(projectId: string, lane: string, agentId?:
   return typeof modelId === "string" && modelId ? modelId : null;
 }
 
-export function readReasoningEffortPreference(projectId: string, lane: string, agentId?: string): string | null {
+export function readReasoningEffortPreference(
+  projectId: string,
+  lane: string,
+  agentId?: string,
+  legacyLane?: string,
+): string | null {
   const effort = readModelPreference(projectId, lane, agentId).effort;
-  return typeof effort === "string" && effort ? effort : null;
+  if (typeof effort === "string" && effort) return effort;
+  if (!legacyLane || resolvePreferenceLane(legacyLane) === resolvePreferenceLane(lane)) return null;
+  const legacyEffort = readModelPreference(projectId, legacyLane, agentId).effort;
+  return typeof legacyEffort === "string" && legacyEffort ? legacyEffort : null;
+}
+
+export function writeReasoningEffortPreference(
+  projectId: string,
+  lane: string,
+  agentId: string | undefined,
+  effort: string,
+): void {
+  const laneKey = resolvePreferenceLane(lane);
+  const normalizedEffort = String(effort ?? "").trim();
+  if (!laneKey || !normalizedEffort) return;
+  const agentKey = normalizeKeySegment(agentId, "") || LANE_DEFAULT_AGENT_KEY;
+  updateProjectPreferences(projectId, (prefs) => {
+    const models = { ...(prefs.models ?? {}) };
+    const agents = { ...(models[laneKey] ?? {}) };
+    const current: AgentModelPreference = { ...(agents[agentKey] ?? {}) };
+    if (current.effort === normalizedEffort) return false;
+    agents[agentKey] = { ...current, effort: normalizedEffort };
+    models[laneKey] = agents;
+    prefs.models = models;
+    return true;
+  });
 }
 
 export function writeModelPreference(

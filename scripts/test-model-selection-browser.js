@@ -108,6 +108,7 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
               const box = element.getBoundingClientRect();
               const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
               return {
+                label: (element.textContent ?? "").trim(),
                 height: box.height,
                 top: box.top,
                 bottom: box.bottom,
@@ -115,7 +116,11 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
                 fits: element.scrollWidth <= element.clientWidth,
               };
             }));
-            assert.equal(rows.length, 3);
+            assert.deepEqual(
+              rows.map(row => row.label),
+              ["项目", "角色指令", "模型配置", "Push notifications"],
+              "Mobile drawer navigation must list every module in a stable order",
+            );
             for (const [index, row] of rows.entries()) {
               assert.ok(row.height >= (height > 600 ? 56 : 48), "Primary navigation needs comfortable row heights, including on short screens");
               assert.ok(row.reachable && row.fits, "Every navigation row must remain reachable without horizontal overflow");

@@ -189,48 +189,39 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
         await activate(actions.locator('[data-testid="composer-send-btn"]'));
         await actions.locator('[data-testid="inline-turn-retry"]').waitFor();
         const jobs = [
-          { id: "running-job", issue_title: "Review provider configuration and role settings", current_step: "Checking runtime and UI regressions", status: "running" },
-          { id: "queued-job", issue_title: "Check the next queued task", status: "queued" },
-          { id: "blocked-job", issue_title: "Wait for the required review decision", status: "blocked" },
-        ].map((job, index) => ({ ...job, issue_id: 490 + index, created_at: Date.now() - 10000, updated_at: Date.now() }));
+          { id: "running-job", issue_title: "Review provider configuration and role settings", current_step: "Checking runtime and UI regressions", status: "running", pr_number: 601, pr_url: "https://github.com/Andy963/ads/pull/601" },
+          { id: "queued-job", issue_title: "Check the next queued task", status: "queued", pr_number: 602, pr_url: "https://github.com/Andy963/ads/pull/602" },
+          { id: "blocked-job", issue_title: "Wait for the required review decision", status: "blocked", pr_number: 603, pr_url: "https://github.com/Andy963/ads/pull/603" },
+        ].map((job, index) => ({ ...job, job_kind: "pull_request_review", issue_id: 490 + index, created_at: Date.now() - 10000, updated_at: Date.now() }));
         await page.route("**/api/actions/jobs?*", route => route.fulfill({ contentType: "application/json", body: JSON.stringify(jobs) }));
         await page.reload();
         const taskPanel = await chooseLane("actions");
-        const taskQueue = taskPanel.locator('[data-testid="actions-job-banner"]');
-        await taskQueue.waitFor();
-        assert.equal(await taskQueue.locator('[data-testid="actions-queue-front"]').count(), 1);
-        assert.equal(await taskQueue.locator('[data-testid="actions-queue-peek"]').count(), 2);
-        const activeRow = taskQueue.locator('[data-testid="actions-queue-front"]');
-        assert.equal(await activeRow.getAttribute("data-job-id"), "running-job");
-        assert.equal(await activeRow.evaluate(element => {
-          const badge = element.querySelector(".actionsJobBadge").getBoundingClientRect();
-          const button = element.querySelector("button").getBoundingClientRect();
-          const title = element.querySelector(".actionsQueueCardTitle").getClientRects()[0];
-          return badge.top < title.bottom && badge.bottom > title.top && button.top < title.bottom && button.bottom > title.top;
-        }), true, "Task status, title, and action should share a compact row");
-        assert.deepEqual(await activeRow.evaluate(element => {
-          const style = getComputedStyle(element);
-          return { radius: style.borderRadius, shadow: style.boxShadow, overflow: element.scrollWidth > element.clientWidth };
-        }), { radius: "12px", shadow: "none", overflow: false });
+        const reviewCard = taskPanel.locator('[data-testid="actions-review-card"]');
+        await reviewCard.waitFor();
+        // Only active review jobs are shown, oldest first, and the card keeps a
+        // single compact row: status badge, PR link, issue title and a backlog count.
+        assert.equal(await taskPanel.locator('[data-testid="actions-review-card"]').count(), 1);
+        assert.equal(await reviewCard.locator(".actionsJobBadge").textContent(), "RUNNING");
+        assert.equal(await reviewCard.locator(".actions-review-queue__issue").textContent(), "Review provider configuration and role settings");
+        assert.equal(await reviewCard.locator(".actions-review-queue__count").textContent(), "+1 queued");
+        assert.equal(await reviewCard.locator("a").getAttribute("href"), "https://github.com/Andy963/ads/pull/601");
+        assert.equal(await reviewCard.evaluate(element => element.scrollWidth <= element.clientWidth), true, "Review card must not overflow horizontally");
         const retry = taskPanel.locator('[data-testid="inline-turn-retry"]');
         await retry.waitFor();
-        const before = prompts.length;
+        const blockedOriginal = prompts.find(prompt => prompt.payload.text === blockedMarker);
+        assert.ok(blockedOriginal);
         await activate(retry);
-        await page.locator('.noticeToast[role="status"]').waitFor();
-        assert.equal(prompts.length, before, "An active Actions job must block inline retries");
-        assert.equal(await retry.count(), 1);
+        await page.waitForFunction(() => !document.querySelector('.lanePanel:not([aria-hidden]) [data-testid="inline-turn-retry"]'));
+        // Reviewer jobs run outside the lane prompt stream, so a retry must go through.
+        const blockedAttempts = prompts.filter(prompt => prompt.client_message_id === blockedOriginal.client_message_id);
+        assert.equal(blockedAttempts.length, 2);
+        assert.equal(blockedAttempts[1].payload.replay_incomplete, true);
+        assert.equal(blockedAttempts[1].payload.retry_original, true);
+        assert.equal(await page.locator('.noticeToast[role="status"]').count(), 0, "An active review job must not raise a retry notice");
+        await reviewCard.waitFor();
+        assert.equal(await reviewCard.count(), 1, "Retrying a lane message must keep the review card visible");
+        await taskPanel.locator('.msg[data-role="assistant"]').filter({ hasText: `Worker reply: ${blockedMarker}` }).waitFor();
         await page.screenshot({ path: path.join(artifacts, `${engine}-${width}-task-queue.png`) });
-        await activeRow.press("ArrowDown");
-        assert.equal(await activeRow.getAttribute("data-job-id"), "blocked-job");
-        await activeRow.press("ArrowDown");
-        assert.equal(await activeRow.getAttribute("data-job-id"), "queued-job");
-        await page.route("**/api/actions/jobs/queued-job/cancel", route => route.fulfill({
-          contentType: "application/json", body: JSON.stringify({ status: "cancelled" }),
-        }));
-        await Promise.all([
-          page.waitForResponse(response => response.url().endsWith("/api/actions/jobs/queued-job/cancel") && response.ok()),
-          activate(activeRow.locator('[data-testid="btn-action-cancel"]')),
-        ]);
         assert.deepEqual(errors, []);
         result.status = "passed";
       } catch (error) {
@@ -243,8 +234,8 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
         process.exitCode = 1;
       } finally {
         await page.close();
-        await fixture.close();
         await writeFile(path.join(artifacts, "report.json"), JSON.stringify(report, null, 2));
+        await fixture.close();
       }
     }
   } finally { await browser.close(); }

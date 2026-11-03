@@ -20,6 +20,7 @@ import {
   readModelIdPreference,
   readReasoningEffortPreference,
   writeModelPreference,
+  writeReasoningEffortPreference,
 } from "../../lib/preferencesStore";
 import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
 import { normalizeTurnSemanticOrder } from "../../lib/chat_sync";
@@ -27,6 +28,7 @@ import { isUserAbortFailure, upsertTurnFailureCard } from "../../lib/turnFailure
 import { diagAlert } from "../../lib/diagAlert";
 import { crumb } from "../../lib/diagBreadcrumbs";
 import type { ExecuteBlockUpdate } from "../chatExecute";
+import { normalizeLaneId } from "../../lib/laneIds";
 
 import { isReconnectNotice } from "./reconnectNotice";
 import { WIRE_ACOPILOT_SESSION_ID } from "../../lib/laneWire";
@@ -251,6 +253,7 @@ export type WsMessageHandlerArgs = {
   projects: Ref<ProjectTab[]>;
   pid: string;
   rt: ProjectRuntime;
+  preferenceLane?: "actions" | "acopilot";
   wsInstance: { send: (type: string, payload: unknown) => void };
   maxTurnCommands: number;
   randomId: (prefix: string) => string;
@@ -319,6 +322,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     upsertStreamingDelta,
     replaceStreamingText,
   } = args;
+  const preferenceLane = args.preferenceLane ?? (normalizeLaneId(rt.chatSessionId) === "acopilot" ? "acopilot" : "actions");
   rt.inputLocked ??= { value: false };
   rt.laneStatus ??= { value: null };
   rt.retiredExecuteKeys ??= new Set<string>();
@@ -902,8 +906,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const agentId = String(rt.activeAgentId.value ?? "").trim();
     writeModelPreference(sessionId, chatSessionId, agentId, {
       modelId: normalizeModelId(rt.modelId.value),
-      effort: normalizeReasoningEffort(rt.modelReasoningEffort.value),
     });
+    writeReasoningEffortPreference(
+      sessionId,
+      preferenceLane,
+      agentId,
+      normalizeReasoningEffort(rt.modelReasoningEffort.value),
+    );
   };
 
   const applyEffectiveState = (payload: Record<string, unknown>): void => {
@@ -922,7 +931,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       ? readModelIdPreference(sessionId, chatSessionId, preferenceAgentId)
       : null;
     const storedReasoningEffort = sessionId
-      ? readReasoningEffortPreference(sessionId, chatSessionId, preferenceAgentId)
+      ? readReasoningEffortPreference(sessionId, preferenceLane, preferenceAgentId, chatSessionId)
       : null;
     const effectiveModel = String(payload.effectiveModel ?? "").trim();
     if (effectiveModel) {

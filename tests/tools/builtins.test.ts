@@ -55,7 +55,7 @@ describe("Acopilot implementation and review tools", () => {
         type: "function",
         function: { name: "begin_implementation", arguments: JSON.stringify({ issue_id: 516 }) },
       });
-      assert.deepEqual(JSON.parse(result.output), { ok: true, issueId: 516 });
+      assert.equal(result.output, "begin_implementation completed.\nIssue: #516.");
       assert.deepEqual(calls, [{ issue_id: 516 }]);
     } finally {
       await executor.dispose();
@@ -69,7 +69,14 @@ describe("Acopilot implementation and review tools", () => {
     );
     await assert.rejects(
       executeBuiltinTool("begin_implementation", { issue_id: 1 }, { workspaceRoot: "/repo" }),
-      /Acopilot workflow tools are unavailable in this lane/,
+      /tool absence is not a blocker/,
+    );
+    await assert.rejects(
+      executeBuiltinTool("begin_implementation", { issue_id: 1 }, {
+        workspaceRoot: "/repo",
+        actionTools: { review_action: async () => ({ ok: true }) },
+      }),
+      /tool absence is not a blocker/,
     );
   });
 

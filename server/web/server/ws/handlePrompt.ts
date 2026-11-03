@@ -1,3 +1,5 @@
+import { basename } from "node:path";
+
 import type { Input } from "../../../agents/protocol/types.js";
 
 import { getHistoryClientMessageId } from "../../../utils/historyKind.js";
@@ -19,10 +21,12 @@ import { applySessionOverrides } from "./sessionOverrides.js";
 import { attachWorkerPromptHandler } from "./workerPromptHandler.js";
 import { processPromptOutputBlocks } from "./promptOutputProcessing.js";
 import { handlePromptError } from "./promptErrorHandling.js";
+import { presentReviewVerdictText } from "../../../reviewer/verdictPresentation.js";
 import { beginWsPromptRun, isWsPromptAbort, isWsPromptSilentAbort, raceWsPromptAbort } from "./promptLifecycle.js";
 import { recordConversationMessage } from "../../../utils/conversationMessageRecorder.js";
 import { createCoreMiddlewarePipeline, type MiddlewareChannel } from "../../../middleware/index.js";
 import { ConversationModelUnavailableError } from "../../../state/modelServiceStore.js";
+import type { WebPushNotification } from "../../push/service.js";
 
 export { buildHistoryInjectionContext, prependContextToInput } from "./promptModelConfig.js";
 export { formatWriteExploredSummary } from "./workerPromptHandler.js";
@@ -58,11 +62,35 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
     deps.transport.broadcastJson(payload);
   };
   const isLaneCurrent = (): boolean => (deps.context.isLaneCurrent ? deps.context.isLaneCurrent() : true);
+  // The Actions lane is the human-facing review log. Its model output is the
+  // Reviewer protocol, so it is presented after completion rather than streamed
+  // token by token into the transcript.
+  const humanLogLane = deps.context.lane === "actions";
+  const rawPromptPayload = deps.request.parsed.payload;
+  const turnChannel: MiddlewareChannel =
+    typeof rawPromptPayload === "object" && rawPromptPayload !== null && "channel" in rawPromptPayload && typeof (rawPromptPayload as { channel?: unknown }).channel === "string"
+      ? (rawPromptPayload as { channel: MiddlewareChannel }).channel
+      : "web";
 
   let orchestrator = deps.sessions.orchestrator;
   let outcome: WsPromptOutcome = { ok: false, error: "Prompt did not complete" };
 
   const workspaceRoot = detectWorkspaceFrom(deps.context.currentCwd);
+  const notificationProject = basename(workspaceRoot) || "ADS";
+  const makeWebPushNotification = (type: WebPushNotification["type"]): WebPushNotification => ({
+    type,
+    lane: deps.context.lane ?? "acopilot",
+    project: notificationProject,
+    sessionId: deps.context.sessionId,
+  });
+  const notifyPromptFailure = (): void => {
+    if (turnChannel !== "web" || !deps.notifyWebUser) return;
+    void deps.notifyWebUser(deps.context.authUserId, makeWebPushNotification("prompt_error")).catch((error) => {
+      deps.observability.logger.warn(
+        `[WebPush] Failed to dispatch error notification: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  };
   const lock = deps.sessions.getWorkspaceLock(workspaceRoot);
 
   await lock.runExclusive(async () => {
@@ -79,6 +107,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         kind: "error",
       });
       sendToChat({ type: "error", message: promptInput.message });
+      notifyPromptFailure();
       outcome = { ok: false, error: promptInput.message };
       return;
     }
@@ -174,6 +203,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
             },
           }
         : { type: "error", message });
+      notifyPromptFailure();
       promptRun.cleanup();
       cleanupAfter();
       outcome = { ok: false, error: message };
@@ -196,20 +226,16 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         kind: "error",
       });
       sendToChat({ type: "error", message });
+      notifyPromptFailure();
       promptRun.cleanup();
       cleanupAfter();
       outcome = { ok: false, error: message };
       return;
     }
-    const rawPayload = deps.request.parsed.payload;
-    const turnChannel: MiddlewareChannel =
-      typeof rawPayload === "object" && rawPayload !== null && "channel" in rawPayload && typeof (rawPayload as { channel?: unknown }).channel === "string"
-        ? (rawPayload as { channel: MiddlewareChannel }).channel
-        : "web";
     const clientTurnMetadata =
-      typeof rawPayload === "object" && rawPayload !== null && "metadata" in rawPayload && typeof (rawPayload as { metadata?: unknown }).metadata === "object"
-        && !Array.isArray((rawPayload as { metadata?: unknown }).metadata)
-        ? ((rawPayload as { metadata?: Record<string, unknown> }).metadata ?? {})
+      typeof rawPromptPayload === "object" && rawPromptPayload !== null && "metadata" in rawPromptPayload && typeof (rawPromptPayload as { metadata?: unknown }).metadata === "object"
+        && !Array.isArray((rawPromptPayload as { metadata?: unknown }).metadata)
+        ? ((rawPromptPayload as { metadata?: Record<string, unknown> }).metadata ?? {})
         : {};
     const turnMetadata: Record<string, unknown> = {
       ...clientTurnMetadata,
@@ -238,6 +264,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
       resolveAgentId: () => orchestrator.getActiveAgentId(),
       channel: turnChannel,
       isActive: promptRun.isActive,
+      gateProtocolText: humanLogLane,
       onSessionFallback: ({ previousSessionId, detail }) => {
         // This turn already ran without the old context; re-sending it now would
         // not put it back. Flag the *next* turn so the ADS history goes in then.
@@ -357,6 +384,9 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         source: deps.context.chatSessionId || "worker",
         isActive: promptRun.isActive,
       });
+      if (humanLogLane) {
+        outputForChat = presentReviewVerdictText(outputForChat);
+      }
       promptRun.ensureActive();
 
       promptRun.ensureActive();
@@ -387,11 +417,15 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           );
         }
       }
+      const rawAssistantItems = getAssistantItems();
+      const assistantItems = humanLogLane && rawAssistantItems
+        ? rawAssistantItems.map((item) => ({ ...item, text: presentReviewVerdictText(item.text) }))
+        : rawAssistantItems;
       sendToChat({
         type: "result",
         ok: true,
         output: outputForChat,
-        assistantItems: getAssistantItems(),
+        assistantItems,
         threadId,
         expectedThreadId,
         threadReset,
@@ -418,7 +452,7 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
           agentId: orchestrator.getActiveAgentId?.(),
         });
         if (turnChannel === "web" && deps.notifyWebUser) {
-          void deps.notifyWebUser(deps.context.authUserId).catch((error) => {
+          void deps.notifyWebUser(deps.context.authUserId, makeWebPushNotification("assistant_response")).catch((error) => {
             deps.observability.logger.warn(
               `[WebPush] Failed to dispatch response notification: ${error instanceof Error ? error.message : String(error)}`,
             );
@@ -446,9 +480,10 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         }
       }
       const isSilent = isWsPromptSilentAbort(error);
+      const aborted = controller.signal.aborted || isWsPromptAbort(error) || isSilent;
       handlePromptError({
         error,
-        aborted: controller.signal.aborted || isWsPromptAbort(error) || isSilent,
+        aborted,
         silent: isSilent,
         sessionLogger: deps.observability.sessionLogger,
         logger: deps.observability.logger,
@@ -457,6 +492,9 @@ export async function handlePromptMessage(deps: WsPromptHandlerDeps): Promise<{
         sendToChat,
         isCurrent: deps.context.isLaneCurrent,
       });
+      if (!aborted && isLaneCurrent()) {
+        notifyPromptFailure();
+      }
       outcome = {
         ok: false,
         error: error instanceof Error ? error.message : String(error),

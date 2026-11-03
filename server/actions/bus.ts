@@ -10,9 +10,16 @@ import {
   runDetachedReview,
 } from "../reviewer/runner.js";
 import { ReviewerIncompleteError } from "../reviewer/incomplete.js";
-import { runReviewerInspection } from "../reviewer/inspectionRunner.js";
+import { runReviewerInspection, type ReviewInspectionProgress } from "../reviewer/inspectionRunner.js";
+import {
+  buildReviewVerdictNarrationPrompt,
+  formatReviewVerdictPresentation,
+  normalizeReviewVerdictNarration,
+  REVIEW_VERDICT_NARRATION_SYSTEM_PROMPT,
+} from "../reviewer/verdictPresentation.js";
 import { createNativeModelResolver, type NativeModelConfig } from "../runtime/modelResolver.js";
 import type { completeNativeChat } from "../runtime/openAiCompatibleClient.js";
+import { completeNativeModel } from "../runtime/nativeCompletion.js";
 import type { ReviewPayload, ReviewVerdict } from "../reviewer/types.js";
 import { getDefaultRoleProfile, getRoleProfileById } from "../state/roleProfileStore.js";
 import {
@@ -49,6 +56,7 @@ function migrateLegacyProjectJobs(db: DatabaseType, projectId: string, aliases: 
 export type ReviewerRunner = (prompt: string, systemPrompt: string) => Promise<string>;
 
 const DEFAULT_REVIEWER_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_REVIEW_PRESENTATION_TIMEOUT_MS = 5_000;
 const DEFAULT_INTERACTIVE_VERIFICATION_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_MS = 30 * 1000;
 const processingReviewQueuesByDatabase = new WeakMap<DatabaseType, Map<string, Promise<void>>>();
@@ -179,6 +187,9 @@ export interface LaneDispatchBusOptions {
   reviewerToolTurnBudget?: number;
   reviewerComplete?: typeof completeNativeChat;
   reviewerModelResolver?: (modelId: string, owner: string) => NativeModelConfig;
+  reviewPresentationComplete?: typeof completeNativeModel;
+  reviewPresentationModelResolver?: (modelId: string, owner: string) => NativeModelConfig;
+  reviewPresentationTimeoutMs?: number;
   interactiveGithubMetadataReader?: (input: {
     repoPath: string;
     branch: string;
@@ -211,6 +222,7 @@ export class LaneDispatchBus {
       DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_MS,
     ),
     maxOutputLength = 20_000,
+    onOutput?: (chunk: string, stream: "stdout" | "stderr") => void,
   ): Promise<InteractiveCommandResult> {
     signal?.throwIfAborted();
     return await new Promise<InteractiveCommandResult>((resolve, reject) => {
@@ -259,8 +271,14 @@ export class LaneDispatchBus {
         finish(new Error(`Interactive command '${command}' timed out after ${timeoutMs}ms.`));
       }, timeoutMs);
       if (signal) signal.addEventListener("abort", onAbort, { once: true });
-      child.stdout.on("data", (chunk: Buffer | string) => { stdout = append(stdout, chunk); });
-      child.stderr.on("data", (chunk: Buffer | string) => { stderr = append(stderr, chunk); });
+      child.stdout.on("data", (chunk: Buffer | string) => {
+        stdout = append(stdout, chunk);
+        onOutput?.(String(chunk), "stdout");
+      });
+      child.stderr.on("data", (chunk: Buffer | string) => {
+        stderr = append(stderr, chunk);
+        onOutput?.(String(chunk), "stderr");
+      });
       child.once("error", (error) => finish(error));
       child.once("close", (code) => finish(undefined, {
         exitCode: code ?? 1,
@@ -268,6 +286,97 @@ export class LaneDispatchBus {
         stderr,
       }));
     });
+  }
+
+  private async presentReviewVerdictForUser(
+    verdict: ReviewVerdict,
+    job: ActionJobRecord,
+  ): Promise<string> {
+    const fallback = formatReviewVerdictPresentation(verdict);
+    const profile = getDefaultRoleProfile(this.db, "acopilot");
+    const owner = String(job.auth_user_id ?? "").trim();
+    if (!profile || profile.role !== "acopilot" || !profile.is_enabled || !profile.model_id.trim() || !owner) {
+      return fallback;
+    }
+
+    const controller = new AbortController();
+    const timeoutMs = normalizeInteractiveTimeout(
+      this.options.reviewPresentationTimeoutMs,
+      DEFAULT_REVIEW_PRESENTATION_TIMEOUT_MS,
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error("Review result presentation timed out.");
+        controller.abort(error);
+        reject(error);
+      }, timeoutMs);
+    });
+    try {
+      const model = this.options.reviewPresentationModelResolver
+        ? this.options.reviewPresentationModelResolver(profile.model_id, owner)
+        : createNativeModelResolver({ owner, stateDbPath: this.db.name, requireOwnerCredentials: true }).resolve(profile.model_id);
+      const complete = this.options.reviewPresentationComplete ?? completeNativeModel;
+      const result = await Promise.race([
+        complete({
+          wireApi: model.wireApi,
+          baseUrl: model.baseUrl,
+          apiKey: model.apiKey,
+          model: model.model,
+          messages: [
+            { role: "system", content: REVIEW_VERDICT_NARRATION_SYSTEM_PROMPT },
+            { role: "user", content: buildReviewVerdictNarrationPrompt({ pullRequestNumber: job.pr_number, verdict }) },
+          ],
+          tools: [],
+          streaming: false,
+          options: { ...model.options },
+          signal: controller.signal,
+        }),
+        timeout,
+      ]);
+      if (result.toolCalls.length || result.finishReason === "length" || result.finishReason === "content_filter") return fallback;
+      return formatReviewVerdictPresentation(verdict, normalizeReviewVerdictNarration(result.text) ?? undefined);
+    } catch {
+      return fallback;
+    } finally {
+      if (timer) clearTimeout(timer);
+      controller.abort();
+    }
+  }
+
+  private publishReviewVerdictPresentation(
+    verdict: ReviewVerdict,
+    job: ActionJobRecord,
+    repoPath: string,
+  ): void {
+    const pullRequest = typeof job.pr_number === "number" ? `PR #${job.pr_number}` : "the pinned pull request";
+    const pinnedTarget = job.head_sha ? `${pullRequest} at ${job.head_sha.slice(0, 12)}` : pullRequest;
+    this.recordActionMessage(
+      job,
+      repoPath,
+      [
+        `Review job ${job.id} completed for ${pinnedTarget}.`,
+        formatReviewVerdictPresentation(verdict),
+      ].join("\n\n"),
+      `action_step:${job.id}:completed`,
+    );
+    void this.presentReviewVerdictForUser(verdict, job)
+      .then((userPresentation) => {
+        this.recordActionMessage(
+          job,
+          repoPath,
+          userPresentation,
+          `action_step:${job.id}:result`,
+        );
+      })
+      .catch(() => {
+        this.recordActionMessage(
+          job,
+          repoPath,
+          formatReviewVerdictPresentation(verdict),
+          `action_step:${job.id}:result`,
+        );
+      });
   }
 
   private async readInteractiveGithubMetadata(input: {
@@ -514,6 +623,7 @@ export class LaneDispatchBus {
   private async runInteractiveVerification(
     repoPath: string,
     signal: AbortSignal,
+    onLine?: (line: string) => void,
   ): Promise<NonNullable<ReviewPayload["testReport"]>> {
     const command = String(this.options.testCommand ?? "npm test").trim();
     const parts = command.split(/\s+/).filter(Boolean);
@@ -524,7 +634,27 @@ export class LaneDispatchBus {
       this.options.interactiveVerificationTimeoutMs,
       DEFAULT_INTERACTIVE_VERIFICATION_TIMEOUT_MS,
     );
-    const result = await this.runInteractiveCommand(parts[0]!, parts.slice(1), repoPath, signal, timeoutMs);
+    const pendingByStream: Record<"stdout" | "stderr", string> = { stdout: "", stderr: "" };
+    const emit = (line: string): void => {
+      const text = line.trimEnd();
+      if (!text.trim()) return;
+      try {
+        onLine?.(text.slice(0, 500));
+      } catch { /* Lane logging must never break verification. */ }
+    };
+    const push = (chunk: string, stream: "stdout" | "stderr"): void => {
+      if (!onLine) return;
+      const lines = (pendingByStream[stream] + chunk.replace(/\r\n?/g, "\n")).split("\n");
+      pendingByStream[stream] = lines.pop() ?? "";
+      for (const line of lines) emit(line);
+    };
+    const result = await this.runInteractiveCommand(
+      parts[0]!, parts.slice(1), repoPath, signal, timeoutMs,
+      undefined, (chunk, stream) => push(chunk, stream),
+    );
+    for (const stream of ["stdout", "stderr"] as const) {
+      if (pendingByStream[stream]) emit(pendingByStream[stream]);
+    }
     const output = [result.stdout, result.stderr]
       .map((value) => value.trim())
       .filter(Boolean)
@@ -563,9 +693,28 @@ export class LaneDispatchBus {
       throw new ActionJobReviewConflictError("An interactive review is already running for this target.");
     }
     this.interactiveReviewerTargets.add(key);
+    let logSeq = 0;
+    const logLine = (text: string): void => {
+      this.recordActionMessage(job, session.repoPath, text, `action_step:${job.id}:log:${++logSeq}`);
+    };
+    const maxStreamedLines = 40;
+    let streamedLines = 0;
+    let droppedLines = 0;
+    const streamVerificationLine = (line: string): void => {
+      if (streamedLines >= maxStreamedLines) {
+        droppedLines += 1;
+        return;
+      }
+      streamedLines += 1;
+      logLine(line);
+    };
     try {
       signal.throwIfAborted();
-      const testReport = await this.runInteractiveVerification(session.repoPath, signal);
+      logLine(`Verification started: ${String(this.options.testCommand ?? "npm test").trim()}`);
+      const testReport = await this.runInteractiveVerification(session.repoPath, signal, streamVerificationLine);
+      if (droppedLines > 0) {
+        logLine(`Verification output truncated after ${maxStreamedLines} lines.`);
+      }
       updateActionJobStatus(this.db, job.id, "verifying", {
         current_step: `Verification completed: ${testReport.command} (exit ${testReport.exitCode})`,
         verification_report_json: JSON.stringify(testReport),
@@ -626,6 +775,7 @@ export class LaneDispatchBus {
         job.id,
         signal,
         verifiedSession.authUserId,
+        (progress: ReviewInspectionProgress) => logLine(`Reviewer step: ${progress.summary}`),
       );
       const reviewedSession = await resolveCurrentSession();
       if (reviewedSession.key !== verifiedSession.key) {
@@ -940,16 +1090,10 @@ export class LaneDispatchBus {
         verification_report_json: JSON.stringify(result.testReport ?? {}),
         error_message: null,
       });
-      const findings = result.verdict.defects.map((defect) => {
-        const location = defect.line ? `${defect.file}:${defect.line}` : defect.file;
-        return `- ${location} (${defect.severity}): ${defect.description}`;
-      });
-      this.recordActionMessage(
+      this.publishReviewVerdictPresentation(
+        result.verdict,
         getActionJobById(this.db, job.id) ?? claimedJob,
         repoPath,
-        `Reviewer ${result.verdict.status} for PR #${job.pr_number} at ${job.head_sha?.slice(0, 12)}. ${result.verdict.summary}${findings.length ? `\n${findings.join("\n")}` : ""}`,
-        `action_review_result:${job.id}`,
-        "assistant",
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1081,6 +1225,7 @@ export class LaneDispatchBus {
     jobId?: string,
     signal?: AbortSignal,
     ownerOverride?: string,
+    onProgress?: (event: ReviewInspectionProgress) => void,
   ): Promise<ReviewVerdict> {
     if (payload.diffCaptureError) {
       throw new ReviewerIncompleteError("Reviewer evidence capture failed; no authoritative verdict is available.");
@@ -1114,6 +1259,7 @@ export class LaneDispatchBus {
         toolTurnBudget: this.options.reviewerToolTurnBudget ?? (process.env.ADS_REVIEWER_TOOL_TURNS === "0" ? 0 : undefined),
         diff: payload.diff,
         complete: this.options.reviewerComplete,
+        onProgress,
       });
       reviewerSignal.throwIfAborted();
       return result;

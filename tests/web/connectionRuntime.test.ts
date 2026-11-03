@@ -123,6 +123,8 @@ describe("web/ws/connectionRuntime", () => {
         {
           historyKey: "h1",
           connectionId: "c1",
+          chatSessionId: "main",
+          transcriptMode: "resume" as const,
         } as any,
       ],
     ]);
@@ -152,7 +154,7 @@ describe("web/ws/connectionRuntime", () => {
     assert.equal(promptRunEpochs.get("h1"), 1);
     assert.match(
       logs[0]!,
-      /client disconnected conn=c1 session=session-1 user=7 history=h1 code=1000 reason=bye inFlight=true/,
+      /client disconnected conn=c1 session=session-1 user=7 history=h1 code=1000 reason=bye inFlight=true chat=main transcript=resume/,
     );
   });
 
