@@ -312,7 +312,7 @@ describe("Actions Reviewer queue", () => {
     assert.equal(job?.status, "completed");
     assert.equal(JSON.parse(job?.verification_report_json ?? "{}").exitCode, 1);
     assert.ok(
-      history.some((entry) => entry.text.includes("verification exited non-zero")),
+      history.some((entry) => entry.text.includes("Checks failed for PR #901 · Interactive review")),
       JSON.stringify(history.map((entry) => entry.text)),
     );
     await tools.dispose();
@@ -500,7 +500,9 @@ describe("Actions Reviewer queue", () => {
     assert.equal(narrationStarted, true);
     const completed = history.find((entry) => entry.kind?.endsWith(":completed"));
     assert.ok(completed);
-    assert.match(completed.text, new RegExp(`Review job .* completed for PR #901 at ${headCommit.slice(0, 12)}\\.`));
+    assert.match(completed.text, /^Review complete for PR #901 · Interactive review\./);
+    assert.equal(completed.text.includes(reviewed!.id), false);
+    assert.equal(completed.text.includes(headCommit.slice(0, 12)), false);
     assert.match(completed.text, /^Reviewer verdict: PASS/m);
     assert.match(completed.text, /Exact target reviewed/);
     releaseNarration?.();
@@ -711,14 +713,16 @@ describe("Actions Reviewer queue", () => {
     await tools.dispose();
   });
 
-  it("records verification status and Reviewer inspection steps in the lane", async () => {
+  it("records human review milestones without Reviewer inspection steps", async () => {
     const reviewTarget = target();
     const history: Array<{ role: string; text: string; kind?: string }> = [];
+    const broadcasts: unknown[] = [];
     let calls = 0;
     const bus = createBus(() => reviewTarget, {
       useInspection: true,
       testCommand: "git status --porcelain=v1 --branch",
       onHistoryMessage: (entry) => history.push(entry),
+      onBroadcast: (payload) => broadcasts.push(payload),
       reviewerComplete: async () => {
         calls += 1;
         if (calls === 1) {
@@ -741,24 +745,29 @@ describe("Actions Reviewer queue", () => {
         };
       },
     });
-    const { result, tools } = await runReview(bus, reviewTarget);
+    const { result, job, tools } = await runReview(bus, reviewTarget);
 
     assert.equal(result.ok, true, result.error);
     const texts = history.map((entry) => entry.text);
-    assert.ok(texts.includes("Verification started: git status --porcelain=v1 --branch"), JSON.stringify(texts));
-    const verificationStatus = texts.find((text) => text.includes("verification passed"));
+    const verificationStatus = texts.find((text) => text.includes("Checks passed"));
     assert.ok(verificationStatus, JSON.stringify(texts));
-    assert.match(verificationStatus, /git status --porcelain=v1 --branch, exit 0/);
+    assert.ok(verificationStatus.includes("PR #901"), verificationStatus);
+    assert.ok(verificationStatus.includes(reviewTarget.issue.title), verificationStatus);
     assert.equal(texts.some((text) => text.includes("## codex/issue-900")), false, JSON.stringify(texts));
-    assert.ok(texts.includes("Reviewer step: list_dir ."), JSON.stringify(texts));
+    assert.equal(texts.some((text) => text.includes("Reviewer step") || text.includes("list_dir") || text.includes("offset=")), false, JSON.stringify(texts));
+    assert.equal(texts.some((text) => text.includes(String(job?.id))), false, JSON.stringify(texts));
+    assert.equal(JSON.stringify(broadcasts).includes("Reviewer step"), false, JSON.stringify(broadcasts));
     await settlePresentation();
     const verdictEntry = history.find((entry) => entry.kind?.endsWith(":result"));
     assert.ok(verdictEntry);
     assert.match(verdictEntry.text, /^Reviewer verdict: PASS/);
     assert.equal(verdictEntry.text.includes('"status"'), false);
     const completedTexts = history.map((entry) => entry.text);
-    assert.ok(completedTexts.indexOf(verificationStatus!) < completedTexts.indexOf("Reviewer step: list_dir ."), JSON.stringify(completedTexts));
-    assert.ok(completedTexts.indexOf("Reviewer step: list_dir .") < completedTexts.indexOf(verdictEntry.text), JSON.stringify(completedTexts));
+    const completion = history.find((entry) => entry.kind?.endsWith(":completed"));
+    assert.ok(completion);
+    assert.match(completion.text, /^Review complete for PR #901 · Interactive review\./);
+    assert.ok(completedTexts.indexOf(verificationStatus!) < completedTexts.indexOf(completion.text), JSON.stringify(completedTexts));
+    assert.ok(completedTexts.indexOf(completion.text) < completedTexts.indexOf(verdictEntry.text), JSON.stringify(completedTexts));
     await tools.dispose();
   });
 
@@ -837,7 +846,7 @@ describe("Actions Reviewer queue", () => {
     assert.ok(report.output?.includes("verification-40"), report.output);
     const texts = history.map((entry) => entry.text);
     assert.equal(texts.some((text) => text.includes("verification-0")), false, JSON.stringify(texts));
-    const verificationStatus = texts.find((text) => text.includes("verification passed"));
+    const verificationStatus = texts.find((text) => text.includes("Checks passed"));
     assert.ok(verificationStatus, JSON.stringify(texts));
     await settlePresentation();
     const verdictEntry = history.find((entry) => entry.kind?.endsWith(":result"));

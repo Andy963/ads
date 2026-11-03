@@ -180,6 +180,12 @@ function replayedLaneStatus(kind: string, content: string): LaneStatus | null {
   return null;
 }
 
+function isLegacyReviewInspectionStep(role: string, kind: string, text: string): boolean {
+  return role === "status"
+    && (kind === "action_step" || kind.startsWith("action_step:"))
+    && text.startsWith("Reviewer step:");
+}
+
 function hasTerminalHistoryTail(items: unknown[]): boolean {
   for (let idx = items.length - 1; idx >= 0; idx--) {
     const entry = items[idx];
@@ -1690,6 +1696,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         if (!trimmed) continue;
         const historyText = role === "status" && kind !== "error" ? stripSelectionChangeNotices(trimmed) : trimmed;
         if (!historyText) continue;
+        if (isLegacyReviewInspectionStep(role, kind, historyText)) continue;
         if (kind === "file_change") {
           const files = parseFileChangeHistory(historyText);
           if (files.length > 0) {
@@ -1890,6 +1897,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
       } else if (role === "status") {
         if (text) {
+          if (isLegacyReviewInspectionStep(role, kind, text)) return;
           if (kind.startsWith("action_step:")) {
             const stepIdentity = kind.slice("action_step:".length).trim();
             const stepId = stepIdentity ? `action-step:${stepIdentity}` : String(rec.id ?? randomId("action-step"));

@@ -10,7 +10,7 @@ import {
   runDetachedReview,
 } from "../reviewer/runner.js";
 import { ReviewerIncompleteError } from "../reviewer/incomplete.js";
-import { runReviewerInspection, type ReviewInspectionProgress } from "../reviewer/inspectionRunner.js";
+import { runReviewerInspection } from "../reviewer/inspectionRunner.js";
 import {
   buildReviewVerdictNarrationPrompt,
   formatReviewVerdictPresentation,
@@ -404,13 +404,12 @@ export class LaneDispatchBus {
     job: ActionJobRecord,
     repoPath: string,
   ): void {
-    const pullRequest = typeof job.pr_number === "number" ? `PR #${job.pr_number}` : "the pinned pull request";
-    const pinnedTarget = job.head_sha ? `${pullRequest} at ${job.head_sha.slice(0, 12)}` : pullRequest;
+    const target = this.reviewTargetLabel(job);
     this.recordActionMessage(
       job,
       repoPath,
       [
-        `Review job ${job.id} completed for ${pinnedTarget}.`,
+        `Review complete for ${target}.`,
         formatReviewVerdictPresentation(verdict),
       ].join("\n\n"),
       `action_step:${job.id}:completed`,
@@ -432,6 +431,16 @@ export class LaneDispatchBus {
           `action_step:${job.id}:result`,
         );
       });
+  }
+
+  private reviewTargetLabel(job: ActionJobRecord): string {
+    const prNumber = Number(job.pr_number ?? 0);
+    const issueId = Number(job.issue_id ?? 0);
+    const anchor = prNumber > 0
+      ? `PR #${prNumber}`
+      : issueId > 0 ? `Issue #${issueId}` : "review";
+    const title = String(job.issue_title ?? "").trim();
+    return title ? `${anchor} · ${title}` : anchor;
   }
 
   private async readInteractiveGithubMetadata(input: {
@@ -747,25 +756,20 @@ export class LaneDispatchBus {
       throw new ActionJobReviewConflictError("An interactive review is already running for this target.");
     }
     this.interactiveReviewerTargets.add(key);
-    let logSeq = 0;
-    const logLine = (text: string): void => {
-      this.recordActionMessage(job, session.repoPath, text, `action_step:${job.id}:log:${++logSeq}`);
-    };
     try {
       signal.throwIfAborted();
-      logLine(`Verification started: ${String(this.options.testCommand ?? "npm test").trim()}`);
       const testReport = await this.runInteractiveVerification(session.repoPath, signal);
       updateActionJobStatus(this.db, job.id, "verifying", {
         current_step: `Verification completed: ${testReport.command} (exit ${testReport.exitCode})`,
         verification_report_json: JSON.stringify(testReport),
       });
-      const verificationOutcome = testReport.exitCode === 0
-        ? "passed"
-        : "exited non-zero; the Reviewer will evaluate the report";
+      const target = this.reviewTargetLabel(job);
       this.recordActionMessage(
         job,
         session.repoPath,
-        `Review job ${job.id}: verification ${verificationOutcome} (${testReport.command}, exit ${testReport.exitCode}): ${testReport.summary}`,
+        testReport.exitCode === 0
+          ? `Checks passed for ${target}.`
+          : `Checks failed for ${target} (exit ${testReport.exitCode}): ${testReport.summary}`,
         `action_step:${job.id}:verification`,
       );
       const verifiedSession = await resolveCurrentSession();
@@ -802,14 +806,8 @@ export class LaneDispatchBus {
         throw new ReviewerIncompleteError("Interactive review target changed while capturing evidence; no authoritative verdict is available.");
       }
       updateActionJobStatus(this.db, job.id, "reviewing", {
-        current_step: `Running read-only Reviewer for PR #${job.pr_number}`,
+        current_step: `Running read-only Reviewer for ${target}`,
       });
-      this.recordActionMessage(
-        job,
-        session.repoPath,
-        `Review job ${job.id}: running the read-only Reviewer for PR #${job.pr_number} at ${job.head_sha?.slice(0, 12)}.`,
-        `action_step:${job.id}:reviewing`,
-      );
       const verdict = await this.executeReviewer(
         payload,
         verifiedSession.repoPath,
@@ -817,7 +815,6 @@ export class LaneDispatchBus {
         job.id,
         signal,
         verifiedSession.authUserId,
-        (progress: ReviewInspectionProgress) => logLine(`Reviewer step: ${progress.summary}`),
       );
       const reviewedSession = await resolveCurrentSession();
       if (reviewedSession.key !== verifiedSession.key) {
@@ -987,12 +984,6 @@ export class LaneDispatchBus {
         ? `Queued read-only review for PR #${context.prNumber}; target checks run when the job starts.`
         : `Queued read-only review for branch ${context.branch || "(unknown)"}; target checks run when the job starts.`,
     });
-    this.recordActionMessage(
-      job,
-      context.repoPath,
-      `Queued Reviewer job ${job.id}; the pinned target is resolved when the job reaches the front of the queue.`,
-      `action_step:${job.id}:queued`,
-    );
     this.queueReviewProcessing(context.projectId, context.repoPath);
     return this.reviewQueueAck(getActionJobById(this.db, job.id) ?? job);
   }
@@ -1067,7 +1058,7 @@ export class LaneDispatchBus {
       this.recordActionMessage(
         getActionJobById(this.db, job.id) ?? job,
         repoPath,
-        `Reviewer job ${job.id} was interrupted before producing a verdict. Dispatch a new review to retry the pinned target.`,
+        `Review was interrupted before producing a verdict for ${this.reviewTargetLabel(job)}. Dispatch a new review to retry.`,
         `action_step:${job.id}:interrupted`,
       );
     }
@@ -1096,15 +1087,6 @@ export class LaneDispatchBus {
       verification_report_json: "",
       review_verdicts_json: "[]",
     });
-    this.recordActionMessage(
-      claimedJob,
-      repoPath,
-      (job.pr_number ?? 0) > 0
-        ? `Reviewer job ${job.id} started for PR #${job.pr_number}; verifying the pinned target before execution.`
-        : `Reviewer job ${job.id} started; resolving the review target before execution.`,
-      `action_step:${job.id}:started`,
-    );
-
     try {
       const request: InteractiveReviewTargetRequest = {
         projectId: job.project_id,
@@ -1134,6 +1116,12 @@ export class LaneDispatchBus {
       } else if (!this.reviewTargetMatchesJob(job, session.target)) {
         throw new ReviewerIncompleteError("The pull request, Issue, base, head, or ADR snapshot changed after dispatch.");
       }
+      this.recordActionMessage(
+        job,
+        repoPath,
+        `Review started for ${this.reviewTargetLabel(job)}.`,
+        `action_step:${job.id}:started`,
+      );
       const controller = new AbortController();
       const result = await this.executeInteractiveReviewSession(
         session,
@@ -1174,7 +1162,7 @@ export class LaneDispatchBus {
       this.recordActionMessage(
         getActionJobById(this.db, job.id) ?? claimedJob,
         repoPath,
-        `Reviewer job ${job.id} failed for PR #${job.pr_number}: ${message}`,
+        `Review failed for ${this.reviewTargetLabel(job)}: ${message}`,
         `action_step:${job.id}:failed`,
       );
       await this.publishReviewOutcome(job, repoPath, "ERROR", message, []);
@@ -1202,7 +1190,7 @@ export class LaneDispatchBus {
       this.recordActionMessage(
         getActionJobById(this.db, job.id) ?? job,
         repoPath,
-        `Reviewer job ${job.id}: no Issue is pinned yet, so the ${status} outcome was not published as a comment.`,
+        `The ${status} verdict for ${this.reviewTargetLabel(job)} could not be published because no Issue is pinned.`,
         `action_step:${job.id}:comment_skipped`,
       );
       return;
@@ -1229,15 +1217,8 @@ export class LaneDispatchBus {
       this.recordActionMessage(
         currentJob,
         repoPath,
-        `Reviewer job ${job.id}: publishing the ${status} verdict to Issue #${issueId} failed (${failure}). The wake signal still fires.`,
+        `Publishing the ${status} verdict for ${this.reviewTargetLabel(job)} to Issue #${issueId} failed: ${failure}`,
         `action_step:${job.id}:comment_failed`,
-      );
-    } else {
-      this.recordActionMessage(
-        currentJob,
-        repoPath,
-        `Reviewer job ${job.id}: published the ${status} verdict to Issue #${issueId}.`,
-        `action_step:${job.id}:comment_published`,
       );
     }
     this.options.wakeAcopilotLane?.({
@@ -1268,7 +1249,6 @@ export class LaneDispatchBus {
     jobId?: string,
     signal?: AbortSignal,
     ownerOverride?: string,
-    onProgress?: (event: ReviewInspectionProgress) => void,
   ): Promise<ReviewVerdict> {
     if (payload.diffCaptureError) {
       throw new ReviewerIncompleteError("Reviewer evidence capture failed; no authoritative verdict is available.");
@@ -1302,7 +1282,6 @@ export class LaneDispatchBus {
         toolTurnBudget: this.options.reviewerToolTurnBudget ?? (process.env.ADS_REVIEWER_TOOL_TURNS === "0" ? 0 : undefined),
         diff: payload.diff,
         complete: this.options.reviewerComplete,
-        onProgress,
       });
       reviewerSignal.throwIfAborted();
       return result;
