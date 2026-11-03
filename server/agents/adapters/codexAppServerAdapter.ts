@@ -260,7 +260,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
   private model?: string;
   private modelReasoningEffort?: string;
   private threadId: string | null;
-  private threadHasActionTools: boolean | null;
+  private threadHasBuiltinTools: boolean | null;
   private developerInstructions?: string;
   private spawnEnv?: NodeJS.ProcessEnv;
   private readonly providerInjection?: () => CodexProviderInjection | null;
@@ -294,8 +294,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
     this.modelReasoningEffort = options.modelReasoningEffort;
     this.threadId = options.resumeThreadId?.trim() || null;
     // `thread/resume` cannot add dynamic tools. A persisted thread therefore
-    // starts without Action-tool capability until a fresh thread is started.
-    this.threadHasActionTools = this.threadId ? false : null;
+    // starts without the built-in tool set until a fresh thread is started.
+    this.threadHasBuiltinTools = this.threadId ? false : null;
     this.developerInstructions = options.developerInstructions;
     this.spawnEnv = options.env;
     this.providerInjection = options.providerInjection;
@@ -327,7 +327,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     this.resetController = new AbortController();
     previous.abort();
     this.threadId = null;
-    this.threadHasActionTools = null;
+    this.threadHasBuiltinTools = null;
     this.latestContextUsage = null;
     this.detachGoalSubscriptions();
   }
@@ -591,13 +591,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const client = await this.registry.getOrStart(this.projectId, daemonOptions);
     assertActiveTurn();
     const savedThreadId = this.threadId;
-    const includeActionTools = Boolean(options?.actionTools);
-    if (includeActionTools && this.threadId && this.threadHasActionTools !== true) {
+    if (this.threadId && this.threadHasBuiltinTools !== true) {
       logger.info(
-        `[CodexAppServerAdapter] Thread ${this.threadId} cannot expose Action tools after resume; starting a new tool-enabled thread.`,
+        `[CodexAppServerAdapter] Thread ${this.threadId} cannot expose built-in tools after resume; starting a new tool-enabled thread.`,
       );
       this.threadId = null;
-      this.threadHasActionTools = null;
+      this.threadHasBuiltinTools = null;
       this.latestContextUsage = null;
     }
     let missingThreadRecovered = false;
@@ -618,7 +617,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
         `[CodexAppServerAdapter] Thread ${savedThreadId} is missing; auto-starting a new thread. cause=${message}`,
       );
       this.threadId = null;
-      this.threadHasActionTools = null;
+      this.threadHasBuiltinTools = null;
       this.latestContextUsage = null;
       missingThreadRecovered = true;
      this.emitEvent(
@@ -999,12 +998,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
       assertActiveTurn();
       const startResult = await client.request<Record<string, unknown>, { thread?: { id?: string }; sandbox?: SandboxPolicy; approvalPolicy?: AskForApproval }>(
         "thread/start",
-        this.buildThreadStartParams(includeActionTools),
+        this.buildThreadStartParams(),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
       );
       assertActiveTurn();
       this.rememberConfiguredTurnPolicy(startResult);
-     this.threadHasActionTools = includeActionTools;
+      this.threadHasBuiltinTools = true;
      const newId = startResult?.thread?.id;
      if (typeof newId === "string" && newId.length > 0) {
        this.threadId = newId;
@@ -1303,12 +1302,12 @@ export class CodexAppServerAdapter implements AgentAdapter {
     }
   }
 
-  private buildThreadStartParams(includeActions = false): Record<string, unknown> {
+  private buildThreadStartParams(): Record<string, unknown> {
     const params: Record<string, unknown> = {
       experimentalRawEvents: false,
       persistExtendedHistory: false,
       approvalPolicy: "untrusted",
-      dynamicTools: builtinDynamicTools(includeActions),
+      dynamicTools: builtinDynamicTools(),
     };
     if (this.workingDirectory) params.cwd = this.workingDirectory;
     if (this.model) params.model = this.resolveModel?.(this.model) ?? this.model;

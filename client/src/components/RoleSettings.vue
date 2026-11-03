@@ -50,10 +50,9 @@ const selectedModel = computed(() => {
 });
 const efforts = computed(() => current.value?.reasoning_effort === "low" ? ["low", "medium", "high"] : ["medium", "high"]);
 const roles = [
-  { id: "acopilot", label: "Acopilot", description: "Owns Issue definition, implementation, testing, pull requests, review fixes, and authorized delivery." },
-  { id: "reviewer", label: "Reviewer", description: "Independently reviews pull requests and returns PASS or REJECT. Read-only; never changes code." },
+  { id: "acopilot", label: "Acopilot" },
+  { id: "reviewer", label: "Reviewer" },
 ] as const;
-const selectedRole = computed(() => roles.find((role) => role.id === selected.value)!);
 let swipe: { identifier: number; x: number; y: number; role: StoredRoleProfileValue; horizontal: boolean } | null = null;
 let suppressClickUntil = 0;
 watch([busy, picker, selected], () => { swipe = null; });
@@ -168,7 +167,6 @@ onBeforeUnmount(() => {
     <nav class="lanePromptLaneSelector" aria-label="Agent role">
       <button v-for="role in roles" :key="role.id" type="button" class="lanePromptLane" :class="{ active: selected === role.id }" :aria-pressed="selected === role.id" :disabled="busy" :data-testid="`lane-prompt-lane-${role.id}`" @click="selected = role.id">{{ role.label }}</button>
     </nav>
-    <p class="settingsNote roleDescription" data-testid="role-instructions-description">{{ selectedRole.description }}</p>
     <p v-if="error && !picker" class="settingsFeedback" role="alert" data-testid="lane-prompt-error">{{ error }}</p>
     <p v-if="message" class="settingsFeedback" role="status" data-testid="lane-prompt-status">{{ message }}</p>
     <template v-if="current">

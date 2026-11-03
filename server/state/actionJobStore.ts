@@ -135,6 +135,40 @@ export function createActionJob(
   return getActionJobById(db, job.id)!;
 }
 
+export function updateActionJobPinnedTarget(
+  db: DatabaseType,
+  id: string,
+  target: {
+    issue_id: number;
+    issue_title: string;
+    issue_snapshot: ActionJobIssueSnapshot;
+    branch: string;
+    base_sha: string;
+    head_sha: string;
+    pr_number: number;
+    pr_url: string;
+  },
+  now = Date.now(),
+): void {
+  db.prepare(`
+    UPDATE action_jobs
+    SET issue_id = ?, issue_title = ?, issue_snapshot_json = ?, branch = ?,
+        base_sha = ?, head_sha = ?, pr_number = ?, pr_url = ?, updated_at = ?
+    WHERE id = ?
+  `).run(
+    target.issue_id,
+    target.issue_title,
+    JSON.stringify(target.issue_snapshot),
+    target.branch,
+    target.base_sha,
+    target.head_sha,
+    target.pr_number,
+    target.pr_url,
+    now,
+    id,
+  );
+}
+
 export function updateActionJobStatus(
   db: DatabaseType,
   id: string,

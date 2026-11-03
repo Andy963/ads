@@ -7,7 +7,7 @@ import {
   BUILTIN_TOOL_DEFINITIONS,
   executeBuiltinTool,
   formatBuiltinToolResult,
-  isActionTool,
+  isBuiltinTool,
 } from "../tools/builtins.js";
 import type { ActionTools } from "../agents/actionTools.js";
 import type { MiddlewarePipeline, TurnContext } from "../middleware/index.js";
@@ -419,7 +419,7 @@ export class NativeToolExecutor {
 
   async execute(call: NativeChatToolCall): Promise<NativeToolExecutionResult> {
     this.throwIfAborted();
-    if (isActionTool(call.function.name)) return this.executeBuiltinCall(call);
+    if (isBuiltinTool(call.function.name)) return this.executeBuiltinCall(call);
     const args = parseArguments(call);
     switch (call.function.name) {
       case "read_execution_history": {

@@ -45,7 +45,11 @@ describe("Actions Reviewer queue", () => {
       path.join(repoDir, "verification-truncate.cjs"),
       'for (let index = 0; index <= 40; index += 1) console.log(`verification-${index}`);\n',
     );
-    spawnSync("git", ["add", "README.md", "verification-stream.cjs", "verification-truncate.cjs"], { cwd: repoDir });
+    fs.writeFileSync(
+      path.join(repoDir, "verification-fail.cjs"),
+      'console.error("fixture failure: expected 2, received 3");\nprocess.exit(1);\n',
+    );
+    spawnSync("git", ["add", "README.md", "verification-stream.cjs", "verification-truncate.cjs", "verification-fail.cjs"], { cwd: repoDir });
     spawnSync("git", ["commit", "-m", "initial"], { cwd: repoDir });
     baseCommit = git("rev-parse", "dev");
     spawnSync("git", ["checkout", "-b", "codex/issue-900"], { cwd: repoDir });
@@ -148,10 +152,6 @@ describe("Actions Reviewer queue", () => {
           },
         };
       },
-      interactiveOpenPullRequestReader: () => options.openPullRequests ?? [{
-        number: current().prNumber,
-        headRefName: current().branch,
-      }],
       ...(options.useInspection
         ? {
             reviewerModelResolver: () => ({
@@ -255,6 +255,36 @@ describe("Actions Reviewer queue", () => {
     assert.equal(result.ok, true);
     assert.equal((result.verdict as { status: string }).status, "REJECT");
     assert.equal(bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0]?.status, "completed");
+    await tools.dispose();
+  });
+
+  it("runs the Reviewer when the verification command exits non-zero", async () => {
+    const reviewTarget = target();
+    const history: Array<{ role: string; text: string; kind?: string }> = [];
+    let reviewPrompt = "";
+    const bus = createBus(() => reviewTarget, {
+      testCommand: "node verification-fail.cjs",
+      reviewStatus: "REJECT",
+      onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
+      onHistoryMessage: (entry) => history.push(entry),
+    });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
+
+    const result = await tools.review_action();
+
+    assert.equal(result.ok, true, result.error);
+    assert.equal((result.verdict as { status: string }).status, "REJECT");
+    assert.ok(reviewPrompt.includes("Command: node verification-fail.cjs"));
+    assert.ok(reviewPrompt.includes("Exit Code: 1"));
+    assert.ok(reviewPrompt.includes("fixture failure: expected 2, received 3"));
+    assert.ok(reviewPrompt.includes("A non-zero exit code is evidence for your review"));
+    const job = bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0];
+    assert.equal(job?.status, "completed");
+    assert.equal(JSON.parse(job?.verification_report_json ?? "{}").exitCode, 1);
+    assert.ok(
+      history.some((entry) => entry.text.includes("verification exited non-zero")),
+      JSON.stringify(history.map((entry) => entry.text)),
+    );
     await tools.dispose();
   });
 
@@ -513,7 +543,7 @@ describe("Actions Reviewer queue", () => {
     const job = bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0];
 
     assert.equal(result.ok, false);
-    assert.match(String(result.error), /changed after dispatch/);
+    assert.match(String(result.error), /changed during verification/);
     assert.ok(job);
     assert.equal(job.status, "failed");
     assert.deepEqual(JSON.parse(job.review_verdicts_json), []);
@@ -587,42 +617,20 @@ describe("Actions Reviewer queue", () => {
     await tools.dispose();
   });
 
-  it("validates the Issue task slot without changing the workspace", async () => {
-    spawnSync("git", ["checkout", "dev"], { cwd: repoDir });
+  it("queues the job before workspace and target checks", async () => {
     const reviewTarget = target();
-    const bus = createBus(() => reviewTarget, { openPullRequests: [] });
-    const result = await bus.beginInteractiveImplementation({
-      projectId: reviewTarget.projectId,
-      repoPath: repoDir,
-      authUserId: "user-1",
-      issueId: 900,
-    });
+    fs.appendFileSync(path.join(repoDir, "README.md"), "dirty\n");
+    const bus = createBus(() => reviewTarget);
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
 
-    assert.deepEqual(result, { ok: true, issueId: 900, branch: "dev" });
-    assert.equal(git("branch", "--show-current"), "dev");
-  });
-
-  it("blocks a task when the base workspace is dirty or another PR owns the slot", async () => {
-    spawnSync("git", ["checkout", "dev"], { cwd: repoDir });
-    const reviewTarget = target();
-    const dirtyBus = createBus(() => reviewTarget, { openPullRequests: [] });
-    fs.writeFileSync(path.join(repoDir, "uncommitted.txt"), "preserve this change\n");
-    await assert.rejects(dirtyBus.beginInteractiveImplementation({
-      projectId: reviewTarget.projectId,
-      repoPath: repoDir,
-      authUserId: "user-1",
-      issueId: 900,
-    }), /base workspace has uncommitted changes/);
-    assert.equal(fs.readFileSync(path.join(repoDir, "uncommitted.txt"), "utf8"), "preserve this change\n");
-    fs.rmSync(path.join(repoDir, "uncommitted.txt"));
-
-    const busyBus = createBus(() => reviewTarget, { openPullRequests: [{ number: 902, headRefName: "codex/issue-902" }] });
-    await assert.rejects(busyBus.beginInteractiveImplementation({
-      projectId: reviewTarget.projectId,
-      repoPath: repoDir,
-      authUserId: "user-1",
-      issueId: 900,
-    }), /Open pull request #902 owns the repository task slot/);
+    const result = await tools.review_action();
+    assert.equal(result.ok, false);
+    assert.match(String(result.error), /Commit tracked changes before requesting an interactive review/);
+    const jobs = bus.getJobs(reviewTarget.projectId, repoDir, "user-1");
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0]?.status, "failed");
+    assert.equal(jobs[0]?.base_sha, "");
+    await tools.dispose();
   });
 
   it("rejects review when the Issue-backed PR is missing or ambiguous", async () => {
@@ -630,8 +638,12 @@ describe("Actions Reviewer queue", () => {
     const bus = createBus(() => reviewTarget, { openPullRequests: [] });
     const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
 
-    await assert.rejects(tools.review_action(), /Only one open pull request/);
-    assert.deepEqual(bus.getJobs(reviewTarget.projectId, repoDir, "user-1"), []);
+    const result = await tools.review_action();
+    assert.equal(result.ok, false);
+    assert.match(String(result.error), /Only one open pull request/);
+    const jobs = bus.getJobs(reviewTarget.projectId, repoDir, "user-1");
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0]?.status, "failed");
     await tools.dispose();
   });
 
@@ -670,12 +682,13 @@ describe("Actions Reviewer queue", () => {
     await tools.dispose();
   });
 
-  it("streams verification output and Reviewer inspection steps into the lane", async () => {
+  it("records verification status and Reviewer inspection steps in the lane", async () => {
     const reviewTarget = target();
     const history: Array<{ role: string; text: string; kind?: string }> = [];
     let calls = 0;
     const bus = createBus(() => reviewTarget, {
       useInspection: true,
+      testCommand: "git status --porcelain=v1 --branch",
       onHistoryMessage: (entry) => history.push(entry),
       reviewerComplete: async () => {
         calls += 1;
@@ -705,9 +718,11 @@ describe("Actions Reviewer queue", () => {
 
     assert.equal(result.ok, true, result.error);
     const texts = history.map((entry) => entry.text);
-    assert.ok(texts.includes("Verification started: git status"), JSON.stringify(texts));
-    assert.ok(texts.includes("On branch codex/issue-900"), JSON.stringify(texts));
-    assert.ok(texts.includes("nothing to commit, working tree clean"), JSON.stringify(texts));
+    assert.ok(texts.includes("Verification started: git status --porcelain=v1 --branch"), JSON.stringify(texts));
+    const verificationStatus = texts.find((text) => text.includes("verification passed"));
+    assert.ok(verificationStatus, JSON.stringify(texts));
+    assert.match(verificationStatus, /git status --porcelain=v1 --branch, exit 0/);
+    assert.equal(texts.some((text) => text.includes("## codex/issue-900")), false, JSON.stringify(texts));
     assert.ok(texts.includes("Reviewer step: list_dir ."), JSON.stringify(texts));
     await settlePresentation();
     const verdictEntry = history.find((entry) => entry.kind?.endsWith(":result"));
@@ -715,20 +730,18 @@ describe("Actions Reviewer queue", () => {
     assert.match(verdictEntry.text, /^Reviewer verdict: PASS/);
     assert.equal(verdictEntry.text.includes('"status"'), false);
     const completedTexts = history.map((entry) => entry.text);
-    const verificationOutputEnd = Math.max(
-      completedTexts.indexOf("On branch codex/issue-900"),
-      completedTexts.indexOf("nothing to commit, working tree clean"),
-    );
-    assert.ok(verificationOutputEnd < completedTexts.indexOf("Reviewer step: list_dir ."), JSON.stringify(completedTexts));
+    assert.ok(completedTexts.indexOf(verificationStatus!) < completedTexts.indexOf("Reviewer step: list_dir ."), JSON.stringify(completedTexts));
     assert.ok(completedTexts.indexOf("Reviewer step: list_dir .") < completedTexts.indexOf(verdictEntry.text), JSON.stringify(completedTexts));
     await tools.dispose();
   });
 
-  it("keeps stdout and stderr line buffers separate", async () => {
+  it("passes both stdout and stderr to the Reviewer without streaming them into the lane", async () => {
     const reviewTarget = target();
     const history: Array<{ role: string; text: string; kind?: string }> = [];
+    let reviewPrompt = "";
     const bus = createBus(() => reviewTarget, {
       testCommand: "node verification-stream.cjs",
+      onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
       onHistoryMessage: (entry) => history.push(entry),
     });
     const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
@@ -736,62 +749,44 @@ describe("Actions Reviewer queue", () => {
     const result = await tools.review_action();
 
     assert.equal(result.ok, true, result.error);
+    assert.ok(reviewPrompt.includes("stdout-line"), reviewPrompt);
+    assert.ok(reviewPrompt.includes("stderr-line"), reviewPrompt);
+    assert.equal(reviewPrompt.includes("stdoutstderr"), false, reviewPrompt);
     const texts = history.map((entry) => entry.text);
-    assert.ok(texts.includes("stdout-line"), JSON.stringify(texts));
-    assert.ok(texts.includes("stderr-line"), JSON.stringify(texts));
-    assert.equal(texts.some((text) => text.includes("stdoutstderr")), false, JSON.stringify(texts));
+    assert.equal(texts.some((text) => text.includes("stdout-line") || text.includes("stderr-line")), false, JSON.stringify(texts));
     await tools.dispose();
   });
 
-  it("truncates verification output before Reviewer steps and the verdict", async () => {
+  it("keeps large verification output out of the lane while retaining it in the report", async () => {
     const reviewTarget = target();
     const history: Array<{ role: string; text: string; kind?: string }> = [];
-    let calls = 0;
+    let reviewPrompt = "";
     const bus = createBus(() => reviewTarget, {
       testCommand: "node verification-truncate.cjs",
-      useInspection: true,
+      onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
       onHistoryMessage: (entry) => history.push(entry),
-      reviewerComplete: async () => {
-        calls += 1;
-        if (calls === 1) {
-          return {
-            text: "",
-            toolCalls: [{
-              id: "call-1",
-              type: "function",
-              function: { name: "list_dir", arguments: JSON.stringify({ path: "." }) },
-            }],
-            finishReason: "tool_calls",
-            usage: null,
-          };
-        }
-        return {
-          text: JSON.stringify({ status: "PASS", summary: "Looks good", defects: [] }),
-          toolCalls: [],
-          finishReason: "stop",
-          usage: null,
-        };
-      },
     });
     const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
 
     const result = await tools.review_action();
 
     assert.equal(result.ok, true, result.error);
+    assert.ok(reviewPrompt.includes("verification-0"), reviewPrompt);
+    assert.ok(reviewPrompt.includes("verification-40"), reviewPrompt);
+    const job = bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0];
+    const report = JSON.parse(job?.verification_report_json ?? "{}") as { exitCode?: number; output?: string };
+    assert.equal(report.exitCode, 0);
+    assert.ok(report.output?.includes("verification-0"), report.output);
+    assert.ok(report.output?.includes("verification-40"), report.output);
     const texts = history.map((entry) => entry.text);
-    assert.ok(texts.includes("verification-0"), JSON.stringify(texts));
-    assert.ok(texts.includes("verification-39"), JSON.stringify(texts));
-    assert.equal(texts.includes("verification-40"), false, JSON.stringify(texts));
-    const truncation = "Verification output truncated after 40 lines.";
-    assert.ok(texts.includes(truncation), JSON.stringify(texts));
-    const reviewerStep = "Reviewer step: list_dir .";
-    assert.ok(texts.includes(reviewerStep), JSON.stringify(texts));
+    assert.equal(texts.some((text) => text.includes("verification-0")), false, JSON.stringify(texts));
+    const verificationStatus = texts.find((text) => text.includes("verification passed"));
+    assert.ok(verificationStatus, JSON.stringify(texts));
     await settlePresentation();
     const verdictEntry = history.find((entry) => entry.kind?.endsWith(":result"));
     assert.ok(verdictEntry);
     const completedTexts = history.map((entry) => entry.text);
-    assert.ok(completedTexts.indexOf(truncation) < completedTexts.indexOf(reviewerStep), JSON.stringify(completedTexts));
-    assert.ok(completedTexts.indexOf(reviewerStep) < completedTexts.indexOf(verdictEntry.text), JSON.stringify(completedTexts));
+    assert.ok(completedTexts.indexOf(verificationStatus!) < completedTexts.indexOf(verdictEntry.text), JSON.stringify(completedTexts));
     await tools.dispose();
   });
 });

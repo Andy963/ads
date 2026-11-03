@@ -736,7 +736,7 @@ describe("web/server/ws interactive Actions tools", () => {
     started = null;
   });
 
-  it("passes tools only through the browser Acopilot prompt path", async () => {
+  it("passes the built-in action context to every authenticated prompt path", async () => {
     const sendPrompt = async (protocols: string[], prompt: string, headers?: Record<string, string>): Promise<void> => {
       const ws = new WebSocket(`ws://127.0.0.1:${started!.port}/ws`, protocols, {
         origin: "http://localhost",
@@ -754,7 +754,7 @@ describe("web/server/ws interactive Actions tools", () => {
     await sendPrompt(["ads-v1", "ads-session.browser", "ads-chat.main"], "Actions prompt", { "x-user-id": "browser" });
     assert.equal(workerFactory.created.length, 1);
     assert.equal(workerActionTools.length, 1);
-    assert.equal(workerActionTools[0], undefined);
+    assert.ok(workerActionTools[0]);
 
     await sendPrompt(["ads-v1", "ads-session.advisor", "ads-chat.acopilot"], "Acopilot prompt", { "x-user-id": "advisor" });
     assert.equal(advisorFactory.created.length, 1);
@@ -768,7 +768,7 @@ describe("web/server/ws interactive Actions tools", () => {
     );
     assert.equal(workerFactory.created.length, 2);
     assert.equal(workerActionTools.length, 2);
-    assert.equal(workerActionTools[1], undefined);
-    assert.equal(actionFactoryCalls, 1);
+    assert.ok(workerActionTools[1]);
+    assert.equal(actionFactoryCalls, 3);
   });
 });

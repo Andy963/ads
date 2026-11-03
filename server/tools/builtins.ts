@@ -5,24 +5,7 @@ import type {
   ActionTools,
 } from "../agents/actionTools.js";
 
-export const BUILTIN_TOOL_DEFINITIONS: NativeToolDefinition[] = [];
-
-export const ACTION_TOOL_DEFINITIONS: NativeToolDefinition[] = [
-  {
-    type: "function",
-    function: {
-      name: "begin_implementation",
-      description: "Confirm the requested Issue owns the current workspace task slot before changing files or branches. Refuses a different open PR or a branch assigned to another Issue.",
-      parameters: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          issue_id: { type: "integer", minimum: 1, description: "GitHub Issue number being implemented." },
-        },
-        required: ["issue_id"],
-      },
-    },
-  },
+export const BUILTIN_TOOL_DEFINITIONS: NativeToolDefinition[] = [
   {
     type: "function",
     function: {
@@ -33,16 +16,12 @@ export const ACTION_TOOL_DEFINITIONS: NativeToolDefinition[] = [
   },
 ];
 
-export function isActionTool(name: string): name is ActionToolName {
-  return name === "begin_implementation" || name === "review_action";
+export function isBuiltinTool(name: string): name is ActionToolName {
+  return name === "review_action";
 }
 
-export function isBuiltinTool(name: string): boolean {
-  return isActionTool(name);
-}
-
-export function builtinToolDefinitions(includeActions = false): NativeToolDefinition[] {
-  return includeActions ? ACTION_TOOL_DEFINITIONS : BUILTIN_TOOL_DEFINITIONS;
+export function builtinToolDefinitions(): NativeToolDefinition[] {
+  return BUILTIN_TOOL_DEFINITIONS;
 }
 
 export interface BuiltinToolContext {
@@ -94,14 +73,6 @@ export function formatBuiltinToolResult(tool: string, result: BuiltinToolResult)
       return [`- ${location}${severity ? ` (${severity})` : ""}: ${description}`];
     });
     if (findings.length) lines.push("Findings:", ...findings);
-  } else {
-    if (status) lines.push(`Status: ${status}.`);
-    const issueId = numberValue(result.issueId ?? result.issue_id);
-    const branch = stringValue(result.branch);
-    const pullRequestNumber = numberValue(result.pullRequestNumber ?? result.pr_number);
-    if (issueId !== undefined) lines.push(`Issue: #${issueId}.`);
-    if (branch) lines.push(`Branch: ${branch}.`);
-    if (pullRequestNumber !== undefined) lines.push(`Pull request: #${pullRequestNumber}.`);
   }
 
   const error = stringValue(result.error);
@@ -115,30 +86,9 @@ function throwIfAborted(signal?: AbortSignal): void {
 
 export async function executeBuiltinTool(name: string, args: unknown, context: BuiltinToolContext): Promise<BuiltinToolResult> {
   throwIfAborted(context.signal);
-  if (isActionTool(name)) {
+  if (isBuiltinTool(name)) {
     if (!context.actionTools) {
-      if (name === "begin_implementation") {
-        throw new Error(
-          "begin_implementation is not exposed in this execution environment. Perform the equivalent read-only task-slot preflight; tool absence is not a blocker.",
-        );
-      }
-      throw new Error("Acopilot workflow tools are unavailable in this lane.");
-    }
-    if (name === "begin_implementation") {
-      if (!args || typeof args !== "object" || Array.isArray(args)) {
-        throw new Error("begin_implementation requires an issue_id argument.");
-      }
-      const input = args as Record<string, unknown>;
-      if (Object.keys(input).length !== 1 || !Number.isSafeInteger(input.issue_id) || Number(input.issue_id) < 1) {
-        throw new Error("begin_implementation requires a positive integer issue_id argument.");
-      }
-      if (!context.actionTools.begin_implementation) {
-        throw new Error(
-          "begin_implementation is not exposed in this execution environment. Perform the equivalent read-only task-slot preflight; tool absence is not a blocker.",
-        );
-      }
-      throwIfAborted(context.signal);
-      return await context.actionTools.begin_implementation({ issue_id: Number(input.issue_id) });
+      throw new Error("review_action is unavailable without an authenticated Acopilot project context.");
     }
     if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).length) {
       throw new Error("Reviewer tools accept an empty argument object only.");

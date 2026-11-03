@@ -11,10 +11,10 @@
 ## 2. 标准工作流
 
 1. Acopilot 调查需求，并先创建英文 GitHub Issue，内容包含 Problem Description、Root Cause Analysis、Scope of Work 与 Acceptance Criteria。
-2. 开始修改前，Acopilot 校验当前项目工作区和仓库任务槽。在 Web Acopilot 回合中，如果注入了 `begin_implementation(issue_id)`，必须调用。当前执行环境未注入该动态工具时，读取当前分支、工作区状态与开放 PR 做等价校验。工具缺失本身不是阻塞原因。
+2. Acopilot 决定任务边界和改动范围。`review_action` 是常驻内置工具；服务端从已认证的会话解析项目、工作区与用户身份。
 3. Acopilot 在 `codex/issue-<id>` 分支实现、验证并准备对应 PR。未经用户明确授权，不得推送、合并或部署。
 4. PR 创建后，Acopilot 调用 `review_action`。服务端固定 PR、Issue 条件、base/head 提交与相关 ADR，创建 `pull_request_review` 队列任务。
-5. Actions 队列按项目串行运行验证命令，再由只读 Reviewer 检查固定的 Issue/ADR、PR diff 与验证报告。任务及进度显示在 Actions 队列和会话中。
+5. Actions 队列按项目串行运行验证命令，再把完整验证报告交给只读 Reviewer，由它结合固定的 Issue/ADR 与 PR diff 评估。命令正常结束后，退出码非零不会阻止 Reviewer 运行。Actions 会话只记录命令、退出码与简短摘要，原始输出保留在任务记录和 Reviewer 输入中。
 6. PASS 或 REJECT 与该任务固定的 PR、base/head、Issue 与 ADR 快照绑定。`review_action` 把结构化结果返回 Acopilot；REJECT 时由 Acopilot 修复并为新提交再次派审。
 7. PR 的 head、base、Issue 或所需证据在任务执行期间变化时，任务不得生成权威 PASS/REJECT；必须重新派发当前目标。
 
@@ -35,6 +35,7 @@
 
 ## 5. 失败语义
 
-- GitHub 查询、目标固定、验证命令或 Reviewer 协议失败属于操作失败，不伪装成代码缺陷。
+- GitHub 查询、目标固定、验证命令无法启动、超时或中断，以及 Reviewer 协议失败属于操作失败，不伪装成代码缺陷。
+- 验证命令正常结束但退出码非零时，完整报告作为 Reviewer 的评审证据，不构成提前终止任务的理由。
 - 只有 Reviewer 返回的合法 REJECT 才表示需要修复代码。
 - 任务执行失败、服务重启或目标漂移都不能生成 PASS；Acopilot 应先恢复前置条件，再对当前 PR 重新派审。

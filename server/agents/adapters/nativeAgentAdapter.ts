@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { ToolLoopGuard, ToolLoopPausedError } from "../../runtime/toolLoopGuard.js";
 import { compactExecution } from "../../runtime/executionCompaction.js";
-import { ACTION_TOOL_DEFINITIONS } from "../../tools/builtins.js";
+import { BUILTIN_TOOL_DEFINITIONS } from "../../tools/builtins.js";
 
 import type { Input, ThreadEvent, ThreadItem, Usage } from "../protocol/types.js";
 import type {
@@ -787,9 +787,7 @@ export class NativeAgentAdapter implements AgentAdapter {
       if (retryState.attempt > 1) this.pendingRetryCheckpoint = undefined;
       for (let round = 0; ; round += 1) {
         assertTurnActive();
-        const roundTools = options.actionTools
-          ? [...NATIVE_TOOL_DEFINITIONS, ...ACTION_TOOL_DEFINITIONS]
-          : NATIVE_TOOL_DEFINITIONS;
+        const roundTools = [...NATIVE_TOOL_DEFINITIONS, ...BUILTIN_TOOL_DEFINITIONS];
         const roundMessages = currentMessages;
         const itemId = `${turnId}-message-${round}`;
         const contextProjection = projectNativeContext(roundMessages, {

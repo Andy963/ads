@@ -45,6 +45,7 @@ export function buildReviewPrompt(payload: ReviewPayload): string {
     if (payload.testReport.output) {
       parts.push(`Output:\n${payload.testReport.output}`);
     }
+    parts.push("\nA non-zero exit code is evidence for your review, not an automatic verdict. Determine whether the failure is caused by this change and cite the failing command and relevant output when it blocks acceptance; if the failure is unrelated or pre-existing, say so in the summary.");
   }
 
   const context = boundRelatedContexts(payload.relatedContexts ?? [], payload.relatedContextOmissions);

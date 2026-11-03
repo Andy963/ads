@@ -20,11 +20,8 @@ export type LaneName = CanonicalLaneId;
 
 export const LANE_NAMES: readonly CanonicalLaneId[] = CANONICAL_LANE_IDS;
 
-export const LEGACY_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION =
-  "- Before changing files or branches for an Issue, call begin_implementation with its issue_id. After opening the PR, call review_action to enqueue a pinned review in the Actions lane; the Actions lane runs only the read-only Reviewer, records PASS or REJECT in its queue and conversation, and returns the structured result to Acopilot.";
-
-export const CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION =
-  "- Before changing files or branches for an Issue, validate that it owns the workspace task slot. When the dynamic begin_implementation tool is available, call it with the Issue id. If the current execution environment does not expose that tool, perform equivalent read-only checks of the branch, working tree, and open pull requests. The tool's absence alone is not a blocker. After opening the PR, call review_action to enqueue a pinned review in the Actions lane; the Actions lane runs only the read-only Reviewer, records PASS or REJECT in its queue and conversation, and returns the structured result to Acopilot.";
+export const REVIEW_ACTION_INSTRUCTION =
+  "- After opening the PR, call review_action to pin the PR and run the read-only Actions Reviewer. The Actions lane records PASS or REJECT in its queue and conversation and returns the structured result to Acopilot.";
 
 const COMMON_PROMPT = `You are operating inside ADS, an AI agent workspace and orchestration system.
 
@@ -48,7 +45,7 @@ Acopilot lane:
 - Follow acopilot-issue-flow for evidence and Issue authoring, and developer-pr-lifecycle for implementation, PR review dispatch, and delivery authorization.
 - Use GitHub Issues as the task record. Append clarifications as comments instead of overwriting an in-flight Issue description.
 - For significant architectural changes, record an ADR under docs/adr/.
-${CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION}
+${REVIEW_ACTION_INSTRUCTION}
 - Handle REJECT findings in this Acopilot conversation, then dispatch the updated PR for a new review. A result for an earlier head or base does not apply to a changed PR.
 - Do not start another repository task while a pull request is open against the repository base; finish or resolve the current PR first.
 - Do not merge or clean up a pull request unless the user explicitly authorizes delivery.

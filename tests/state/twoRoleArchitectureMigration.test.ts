@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { it } from "node:test";
 
-import {
-  CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
-  LEGACY_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
-} from "../../server/state/lanePromptDefaults.js";
+import { REVIEW_ACTION_INSTRUCTION } from "../../server/state/lanePromptDefaults.js";
 import { stateSchemaMigrations } from "../../server/state/schemaMigrations.js";
+
+const RETIRED_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION =
+  "- Before changing files or branches for an Issue, call begin_implementation with its issue_id. After opening the PR, call review_action to enqueue a pinned review in the Actions lane; the Actions lane runs only the read-only Reviewer, records PASS or REJECT in its queue and conversation, and returns the structured result to Acopilot.";
+
+const RETIRED_CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION =
+  "- Before changing files or branches for an Issue, validate that it owns the workspace task slot. When the dynamic begin_implementation tool is available, call it with the Issue id. If the current execution environment does not expose that tool, perform equivalent read-only checks of the branch, working tree, and open pull requests. The tool's absence alone is not a blocker. After opening the PR, call review_action to enqueue a pinned review in the Actions lane; the Actions lane runs only the read-only Reviewer, records PASS or REJECT in its queue and conversation, and returns the structured result to Acopilot.";
 
 it("consolidates role profiles without losing retired Developer settings", () => {
   const db = new Database(":memory:");
@@ -89,7 +92,7 @@ it("consolidates role profiles without losing retired Developer settings", () =>
     assert.doesNotMatch(acopilotPrompt, /hand implementation work to the Developer/);
     assert.match(acopilotPrompt, /Follow acopilot-issue-flow for evidence and Issue authoring, and developer-pr-lifecycle for implementation/);
     assert.match(acopilotPrompt, /owner of the full implementation lifecycle/);
-    assert.match(acopilotPrompt, /begin_implementation/);
+    assert.doesNotMatch(acopilotPrompt, /begin_implementation/);
     assert.match(acopilotPrompt, /review_action/);
     assert.match(acopilotPrompt, /Where this section conflicts with an earlier line in this prompt, this section wins\./);
     assert.equal(profiles[1]?.model_id, "model-reviewer");
@@ -190,8 +193,8 @@ it("replaces the unconditional task-slot instruction in stored Acopilot prompts"
     `);
     const legacyPrompt = [
       "Custom Acopilot instruction.",
-      LEGACY_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
-      LEGACY_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
+      RETIRED_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
+      RETIRED_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
       "Keep this custom instruction.",
     ].join("\n");
     db.prepare(`
@@ -209,11 +212,60 @@ it("replaces the unconditional task-slot instruction in stored Acopilot prompts"
       FROM role_profiles
       WHERE id = 'profile-acopilot'
     `).get() as { system_prompt: string; version: number };
-    assert.equal(profile.system_prompt.includes(LEGACY_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION), false);
+    assert.equal(profile.system_prompt.includes(RETIRED_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION), false);
     assert.equal(
-      profile.system_prompt.split(CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION).length - 1,
+      profile.system_prompt.split(RETIRED_CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION).length - 1,
       2,
     );
+    assert.match(profile.system_prompt, /Custom Acopilot instruction/);
+    assert.match(profile.system_prompt, /Keep this custom instruction/);
+    assert.equal(profile.version, 5);
+  } finally {
+    db.close();
+  }
+});
+
+it("replaces both retired task-slot instructions in stored Acopilot prompts", () => {
+  const db = new Database(":memory:");
+  try {
+    db.exec(`
+      CREATE TABLE role_profiles (
+        id TEXT PRIMARY KEY,
+        role TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        reasoning_effort TEXT NOT NULL DEFAULT 'high',
+        system_prompt TEXT NOT NULL,
+        is_enabled INTEGER NOT NULL DEFAULT 1,
+        is_default INTEGER NOT NULL DEFAULT 1,
+        version INTEGER NOT NULL DEFAULT 1,
+        updated_at INTEGER NOT NULL
+      );
+    `);
+    const legacyPrompt = [
+      "Custom Acopilot instruction.",
+      RETIRED_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
+      RETIRED_CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
+      "Keep this custom instruction.",
+    ].join("\n");
+    db.prepare(`
+      INSERT INTO role_profiles
+        (id, role, name, model_id, system_prompt, version, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run("profile-acopilot", "acopilot", "Custom Acopilot", "model", legacyPrompt, 4, 1);
+
+    const migration = stateSchemaMigrations.find((entry) => entry.version === 41);
+    assert.ok(migration);
+    migration.up(db);
+
+    const profile = db.prepare(`
+      SELECT system_prompt, version
+      FROM role_profiles
+      WHERE id = 'profile-acopilot'
+    `).get() as { system_prompt: string; version: number };
+    assert.equal(profile.system_prompt.includes("begin_implementation"), false);
+    assert.equal(profile.system_prompt.includes("task slot"), false);
+    assert.equal(profile.system_prompt.split(REVIEW_ACTION_INSTRUCTION).length - 1, 2);
     assert.match(profile.system_prompt, /Custom Acopilot instruction/);
     assert.match(profile.system_prompt, /Keep this custom instruction/);
     assert.equal(profile.version, 5);

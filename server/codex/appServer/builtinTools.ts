@@ -11,8 +11,8 @@ import type { DynamicToolCallResponse } from "./protocol/v2/DynamicToolCallRespo
 import type { DynamicToolSpec } from "./protocol/v2/DynamicToolSpec.js";
 import type { JsonValue } from "./protocol/serde_json/JsonValue.js";
 
-export function builtinDynamicTools(includeActions = false): DynamicToolSpec[] {
-  return builtinToolDefinitions(includeActions).map(({ function: tool }) => ({
+export function builtinDynamicTools(): DynamicToolSpec[] {
+  return builtinToolDefinitions().map(({ function: tool }) => ({
     type: "function",
     name: tool.name,
     description: tool.description,

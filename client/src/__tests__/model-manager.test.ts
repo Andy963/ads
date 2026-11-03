@@ -593,18 +593,6 @@ describe("single-copy role settings", () => {
     wrapper.unmount();
   });
 
-  it("explains the distinct Acopilot and Reviewer responsibilities", async () => {
-    const { api } = fixture();
-    const wrapper = mount(RoleSettings, { props: { api: api as any } });
-    await flushPromises();
-    expect(wrapper.findAll(".lanePromptLane").map(button => button.text())).toEqual(["Acopilot", "Reviewer"]);
-    expect(wrapper.get('[data-testid="role-instructions-description"]').text()).toContain("implementation");
-    await wrapper.get('[data-testid="lane-prompt-lane-reviewer"]').trigger("click");
-    expect(wrapper.get('[data-testid="role-instructions-description"]').text()).toContain("Read-only");
-    expect(wrapper.get('[data-testid="role-instructions-description"]').text()).toContain("PASS or REJECT");
-    wrapper.unmount();
-  });
-
   it("preserves instruction drafts across roles and model or effort saves", async () => {
     const { api } = fixture();
     const wrapper = mount(RoleSettings, { props: { api: api as any } });
