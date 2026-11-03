@@ -10,7 +10,7 @@ export const BUILTIN_TOOL_DEFINITIONS: NativeToolDefinition[] = [
     type: "function",
     function: {
       name: "review_action",
-      description: "Pin the current Issue-backed pull request and enqueue a read-only Reviewer job in the Actions lane. Wait for its structured result, which also appears in the Actions queue and conversation; review execution never runs in the Acopilot lane.",
+      description: "Enqueue a read-only Reviewer job for the current Issue-backed pull request and return immediately. The verdict is published as a comment on the backing Issue (marker: ads:review-verdict) and the Acopilot lane is woken to read it.",
       parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
@@ -41,12 +41,6 @@ function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function recordValue(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
 /** Return a short tool result that the provider can present as normal prose. */
 export function formatBuiltinToolResult(tool: string, result: BuiltinToolResult): string {
   const lines = [`${tool} ${result.ok ? "completed" : "failed"}.`];
@@ -55,24 +49,12 @@ export function formatBuiltinToolResult(tool: string, result: BuiltinToolResult)
   if (jobId) lines.push(`Actions job: ${jobId}.`);
 
   if (tool === "review_action") {
-    const verdict = recordValue(result.verdict);
-    const verdictStatus = stringValue(verdict?.status);
-    const summary = stringValue(verdict?.summary);
-    if (verdictStatus) lines.push(`Status: ${verdictStatus}.`);
-    else if (status) lines.push(`Status: ${status}.`);
-    if (summary) lines.push(`Summary: ${summary}`);
-    const defects = Array.isArray(verdict?.defects) ? verdict.defects : [];
-    const findings = defects.flatMap((defect) => {
-      const finding = recordValue(defect);
-      const file = stringValue(finding?.file);
-      const severity = stringValue(finding?.severity);
-      const description = stringValue(finding?.description);
-      if (!description) return [];
-      const line = numberValue(finding?.line);
-      const location = file ? `${file}${line !== undefined ? `:${line}` : ""}` : "review finding";
-      return [`- ${location}${severity ? ` (${severity})` : ""}: ${description}`];
-    });
-    if (findings.length) lines.push("Findings:", ...findings);
+    // The tool is an enqueue acknowledgement now; the verdict arrives later.
+    if (status) lines.push(`Status: ${status}.`);
+    const issueId = numberValue(result.issueId);
+    if (issueId !== undefined) lines.push(`Issue: #${issueId}.`);
+    const note = stringValue(result.note);
+    if (note) lines.push(note);
   }
 
   const error = stringValue(result.error);

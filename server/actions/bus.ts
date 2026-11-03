@@ -20,7 +20,7 @@ import {
 import { createNativeModelResolver, type NativeModelConfig } from "../runtime/modelResolver.js";
 import type { completeNativeChat } from "../runtime/openAiCompatibleClient.js";
 import { completeNativeModel } from "../runtime/nativeCompletion.js";
-import type { ReviewPayload, ReviewVerdict } from "../reviewer/types.js";
+import type { ReviewDefect, ReviewPayload, ReviewVerdict } from "../reviewer/types.js";
 import { getDefaultRoleProfile, getRoleProfileById } from "../state/roleProfileStore.js";
 import {
   createActionJob,
@@ -37,6 +37,10 @@ import {
 import { deriveProjectSessionId } from "../web/server/projectSessionId.js";
 import { buildWsConnectionIdentity } from "../web/server/ws/connectionIdentity.js";
 import { resolveActionsLaneIdentity } from "./laneIdentity.js";
+import {
+  buildIssueVerdictComment,
+  type IssueVerdictStatus,
+} from "./reviewComment.js";
 import {
   captureReviewPayloadAsync,
   type ReviewTarget,
@@ -139,6 +143,48 @@ function parseAcceptanceCriteria(body: string): string[] {
     .filter(Boolean);
 }
 
+function issueIdFromBranch(branch: string | null | undefined): number | null {
+  const match = /^codex\/issue-(\d+)$/.exec(String(branch ?? "").trim());
+  if (!match) return null;
+  const issueId = Number(match[1]);
+  return Number.isSafeInteger(issueId) && issueId > 0 ? issueId : null;
+}
+
+async function defaultPublishIssueComment(input: {
+  repoPath: string;
+  issueId: number;
+  body: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  return await new Promise((resolve) => {
+    let settled = false;
+    let stderr = "";
+    const finish = (result: { ok: boolean; error?: string }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const child = spawn("gh", ["issue", "comment", String(input.issueId), "--body-file", "-"], {
+      cwd: input.repoPath,
+    });
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish({ ok: false, error: "gh issue comment timed out after 30000ms" });
+    }, 30_000);
+    child.stdout?.resume();
+    child.stderr?.on("data", (chunk) => {
+      if (stderr.length < 4_000) stderr += String(chunk);
+    });
+    child.on("error", (error) => finish({ ok: false, error: error.message }));
+    child.on("close", (code) => {
+      finish(code === 0
+        ? { ok: true }
+        : { ok: false, error: stderr.trim().slice(0, 500) || `gh exited with code ${code ?? "unknown"}` });
+    });
+    child.stdin.end(input.body);
+  });
+}
+
 function interactiveTargetKey(target: InteractiveReviewTarget): string {
   return createHash("sha256")
     .update(JSON.stringify({
@@ -186,6 +232,21 @@ export interface LaneDispatchBusOptions {
   interactiveVerificationTimeoutMs?: number;
   reviewerTimeoutMs?: number;
   reviewerToolTurnBudget?: number;
+  wakeAcopilotLane?: (args: {
+    projectId: string;
+    repoPath: string;
+    authUserId: string;
+    issueId: number;
+    prNumber?: number | null;
+    status: IssueVerdictStatus;
+    jobId: string;
+    headSha?: string | null;
+  }) => void;
+  publishIssueComment?: (input: {
+    repoPath: string;
+    issueId: number;
+    body: string;
+  }) => { ok: boolean; error?: string } | Promise<{ ok: boolean; error?: string }>;
   reviewerComplete?: typeof completeNativeChat;
   reviewerModelResolver?: (modelId: string, owner: string) => NativeModelConfig;
   reviewPresentationComplete?: typeof completeNativeModel;
@@ -536,7 +597,7 @@ export class LaneDispatchBus {
 
     const branch = await git(["branch", "--show-current"], "Unable to determine the current feature branch");
     if (input.branch && input.branch !== branch) {
-      throw new Error(`Requested branch '${input.branch}' does not match the current branch '${branch}'.`);
+      throw new ReviewerIncompleteError(`Requested branch '${input.branch}' does not match the current branch '${branch}'. Switch back to the review branch and dispatch again.`);
     }
     const issueMatch = /^codex\/issue-(\d+)$/.exec(branch);
     if (!issueMatch) {
@@ -547,7 +608,7 @@ export class LaneDispatchBus {
       throw new Error("The current feature branch does not identify a valid GitHub Issue.");
     }
     if (await git(["status", "--porcelain", "-uno"], "Unable to inspect tracked workspace state")) {
-      throw new Error("Commit tracked changes before requesting an interactive review.");
+      throw new ReviewerIncompleteError("The workspace has uncommitted tracked changes. Commit or revert them, then dispatch the review again.");
     }
 
     const remote = await this.runInteractiveCommand("git", ["remote", "get-url", "origin"], repoPath, signal);
@@ -556,7 +617,7 @@ export class LaneDispatchBus {
     const headCommit = await git(["rev-parse", "--verify", "HEAD^{commit}"], "Unable to resolve the current feature commit");
     const ancestry = await this.runInteractiveCommand("git", ["merge-base", "--is-ancestor", baseCommit, headCommit], repoPath, signal);
     if (ancestry.exitCode !== 0) {
-      throw new Error(`The feature branch must descend from the current '${ACTIONS_BASE_BRANCH}' base.`);
+      throw new ReviewerIncompleteError(`The feature branch does not descend from the current '${ACTIONS_BASE_BRANCH}' base. Rebase onto the latest base, then dispatch the review again.`);
     }
 
     const metadata = await this.readInteractiveGithubMetadata({
@@ -571,14 +632,16 @@ export class LaneDispatchBus {
       || pr.baseRefName !== ACTIONS_BASE_BRANCH
       || pr.headRefOid !== headCommit
       || pr.baseRefOid !== baseCommit) {
-      throw new Error("The pull request does not match the current feature branch, base, or exact head commit.");
+      throw new ReviewerIncompleteError(
+        `The pull request does not match the current target: local head ${headCommit.slice(0, 12)}, base ${baseCommit.slice(0, 12)}, branch '${branch}'; PR #${pr.number} reports head ${String(pr.headRefOid ?? "").slice(0, 12) || "unknown"} on '${pr.headRefName}' against '${pr.baseRefName}' (${pr.state}). Push or wait for GitHub to sync, then dispatch the review again.`,
+      );
     }
     if (metadata.openPullRequests.length !== 1 || metadata.openPullRequests[0]?.number !== pr.number) {
-      throw new Error("Only one open pull request may target the repository base while implementation is in progress.");
+      throw new ReviewerIncompleteError(`Expected exactly one open pull request for this project, found ${metadata.openPullRequests.length}. Close or finish the extra PR, then dispatch the review again.`);
     }
     const issueReference = new RegExp(`(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\\s+#${issueId}\\b`, "i");
     if (!issueReference.test(pr.body)) {
-      throw new Error(`The pull request must link GitHub Issue #${issueId} in its description.`);
+      throw new ReviewerIncompleteError(`The pull request description does not link Issue #${issueId}. Add \`Closes #${issueId}\` to the PR body, then dispatch the review again.`);
     }
 
     const issue = metadata.issue;
@@ -586,7 +649,7 @@ export class LaneDispatchBus {
     const issueDescription = issue.body;
     const acceptanceCriteria = parseAcceptanceCriteria(issueDescription);
     if (issue.number !== issueId || !issueTitle || !issueDescription || acceptanceCriteria.length === 0) {
-      throw new Error(`GitHub Issue #${issueId} does not provide a complete review specification.`);
+      throw new ReviewerIncompleteError(`GitHub Issue #${issueId} is missing a title, description, or acceptance criteria. Complete the Issue, then dispatch the review again.`);
     }
 
     return {
@@ -627,7 +690,21 @@ export class LaneDispatchBus {
       this.options.interactiveVerificationTimeoutMs,
       DEFAULT_INTERACTIVE_VERIFICATION_TIMEOUT_MS,
     );
-    const result = await this.runInteractiveCommand(parts[0]!, parts.slice(1), repoPath, signal, timeoutMs);
+    let result: { exitCode: number; stdout: string; stderr: string };
+    try {
+      result = await this.runInteractiveCommand(parts[0]!, parts.slice(1), repoPath, signal, timeoutMs);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // A timeout is evidence for the Reviewer, not a reason to drop the review.
+      if (signal.aborted || !/timed out after \d+ms/i.test(message)) throw error;
+      const timedOut = {
+        command,
+        exitCode: 124,
+        summary: `Verification timed out after ${timeoutMs}ms. The Reviewer must treat the missing evidence as an open question.`,
+        output: message,
+      };
+      return timedOut;
+    }
     const output = [result.stdout, result.stderr]
       .map((value) => value.trim())
       .filter(Boolean)
@@ -878,8 +955,8 @@ export class LaneDispatchBus {
       && ["queued", "verifying", "reviewing"].includes(job.status),
     );
     if (existing) {
-      await raceReviewerAbort(this.processReviewQueue(context.projectId, context.repoPath), input.signal ?? new AbortController().signal);
-      return this.reviewJobToolResult(existing.id);
+      this.queueReviewProcessing(context.projectId, context.repoPath);
+      return this.reviewQueueAck(existing);
     }
 
     const identity = resolveActionsLaneIdentity(this.db, {
@@ -893,7 +970,7 @@ export class LaneDispatchBus {
       project_id: context.projectId,
       lane_generation: this.options.captureActionsLaneGeneration?.(identity?.logicalHistoryKey ?? "") ?? 1,
       job_kind: "pull_request_review",
-      issue_id: 0,
+      issue_id: issueIdFromBranch(context.branch) ?? 0,
       issue_title: "",
       issue_snapshot: { title: "", description: "", acceptanceCriteria: [], adrs: [] },
       branch: context.branch,
@@ -916,37 +993,21 @@ export class LaneDispatchBus {
       `Queued Reviewer job ${job.id}; the pinned target is resolved when the job reaches the front of the queue.`,
       `action_step:${job.id}:queued`,
     );
-    await raceReviewerAbort(this.processReviewQueue(context.projectId, context.repoPath), input.signal ?? new AbortController().signal);
-    return this.reviewJobToolResult(job.id);
+    this.queueReviewProcessing(context.projectId, context.repoPath);
+    return this.reviewQueueAck(getActionJobById(this.db, job.id) ?? job);
   }
 
-  private reviewJobToolResult(jobId: string): ActionToolResult {
-    const job = getActionJobById(this.db, jobId);
-    if (!job) return { ok: false, jobId, error: "The Actions review job disappeared before returning a result." };
-    if (job.status !== "completed") {
-      return {
-        ok: false,
-        jobId,
-        status: job.status,
-        error: job.error_message || job.current_step || "The Actions review job did not produce an authoritative verdict.",
-      };
-    }
-    try {
-      const parsed = JSON.parse(job.review_verdicts_json) as unknown;
-      if (Array.isArray(parsed)) {
-        const verdict = parsed.at(-1) as ReviewVerdict | undefined;
-        if (verdict && (verdict.status === "PASS" || verdict.status === "REJECT")) {
-          return { ok: true, jobId, status: job.status, verdict };
-        }
-      }
-    } catch {
-      // A malformed or absent verdict is reported as an operational job failure below.
-    }
+  /**
+   * Dispatch only queues work. The verdict travels through the Issue comment and
+   * the Acopilot wake event, so the tool call must not wait for the queue.
+   */
+  private reviewQueueAck(job: ActionJobRecord): ActionToolResult {
     return {
-      ok: false,
-      jobId,
+      ok: true,
+      jobId: job.id,
       status: job.status,
-      error: job.error_message || job.current_step || "The Actions review job did not produce an authoritative verdict.",
+      issueId: Number(job.issue_id ?? 0) > 0 ? job.issue_id : undefined,
+      note: "Review runs in the Actions lane. The verdict is published as a structured comment on the backing Issue and the Acopilot lane is woken when it is ready.",
     };
   }
 
@@ -1091,8 +1152,20 @@ export class LaneDispatchBus {
         getActionJobById(this.db, job.id) ?? claimedJob,
         repoPath,
       );
+      await this.publishReviewOutcome(job, repoPath, result.verdict.status, result.verdict.summary, result.verdict.defects);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof ReviewerIncompleteError) {
+        const verdict: ReviewVerdict = { status: "INCOMPLETE", summary: message, defects: [], reviewedAt: Date.now() };
+        updateActionJobStatus(this.db, job.id, "completed", {
+          current_step: `INCOMPLETE: ${message}`,
+          review_verdicts_json: JSON.stringify([verdict]),
+          error_message: null,
+        });
+        this.publishReviewVerdictPresentation(verdict, getActionJobById(this.db, job.id) ?? claimedJob, repoPath);
+        await this.publishReviewOutcome(job, repoPath, "INCOMPLETE", message, []);
+        return;
+      }
       updateActionJobStatus(this.db, job.id, "failed", {
         current_step: "Review job failed before producing an authoritative verdict",
         error_message: message,
@@ -1104,7 +1177,79 @@ export class LaneDispatchBus {
         `Reviewer job ${job.id} failed for PR #${job.pr_number}: ${message}`,
         `action_step:${job.id}:failed`,
       );
+      await this.publishReviewOutcome(job, repoPath, "ERROR", message, []);
     }
+  }
+
+  /**
+   * The Issue comment is the durable verdict record; the wake event is only a
+   * signal. A failed comment write must not swallow the outcome, so the lane
+   * logs the failure and the wake still fires.
+   */
+  private async publishReviewOutcome(
+    job: ActionJobRecord,
+    repoPath: string,
+    status: IssueVerdictStatus,
+    summary: string,
+    defects: ReviewDefect[],
+  ): Promise<void> {
+    // Pinning can fail before the Issue id is stored, but the branch already
+    // names it. Without this fallback an INCOMPLETE outcome would be invisible.
+    const issueId = Number(job.issue_id ?? 0) > 0
+      ? Number(job.issue_id)
+      : (issueIdFromBranch(job.branch) ?? 0);
+    if (!Number.isSafeInteger(issueId) || issueId < 1) {
+      this.recordActionMessage(
+        getActionJobById(this.db, job.id) ?? job,
+        repoPath,
+        `Reviewer job ${job.id}: no Issue is pinned yet, so the ${status} outcome was not published as a comment.`,
+        `action_step:${job.id}:comment_skipped`,
+      );
+      return;
+    }
+    const body = buildIssueVerdictComment({
+      jobId: job.id,
+      prNumber: job.pr_number,
+      headSha: job.head_sha,
+      baseSha: job.base_sha,
+      status,
+      summary,
+      defects,
+    });
+    const publish = this.options.publishIssueComment ?? defaultPublishIssueComment;
+    let failure: string | null = null;
+    try {
+      const result = await publish({ repoPath, issueId, body });
+      if (!result.ok) failure = result.error ?? "gh issue comment failed";
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
+    const currentJob = getActionJobById(this.db, job.id) ?? job;
+    if (failure) {
+      this.recordActionMessage(
+        currentJob,
+        repoPath,
+        `Reviewer job ${job.id}: publishing the ${status} verdict to Issue #${issueId} failed (${failure}). The wake signal still fires.`,
+        `action_step:${job.id}:comment_failed`,
+      );
+    } else {
+      this.recordActionMessage(
+        currentJob,
+        repoPath,
+        `Reviewer job ${job.id}: published the ${status} verdict to Issue #${issueId}.`,
+        `action_step:${job.id}:comment_published`,
+      );
+    }
+    this.options.wakeAcopilotLane?.({
+      projectId: job.project_id,
+      repoPath,
+      authUserId: job.auth_user_id ?? "",
+      issueId,
+      prNumber: job.pr_number,
+      status,
+      jobId: job.id,
+      headSha: job.head_sha,
+    });
   }
 
   public createInteractiveActionTools(

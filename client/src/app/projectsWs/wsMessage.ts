@@ -277,6 +277,7 @@ export type WsMessageHandlerArgs = {
   finalizeAssistant: ChatActions["finalizeAssistant"];
   finalizeCommandBlock: ChatActions["finalizeCommandBlock"];
   flushQueuedPrompts: ChatActions["flushQueuedPrompts"];
+  enqueuePrompt: ChatActions["enqueuePrompt"];
   ingestCommand: ChatActions["ingestCommand"];
   ingestCommandActivity: ChatActions["ingestCommandActivity"];
   ingestExploredActivity: ChatActions["ingestExploredActivity"];
@@ -312,6 +313,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     finalizeAssistant,
     finalizeCommandBlock,
     flushQueuedPrompts,
+    enqueuePrompt,
     ingestCommand,
     ingestCommandActivity,
     ingestExploredActivity,
@@ -350,6 +352,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
   }>();
   const explicitCommandIdentities = new Map<string, string>();
   const seenCommandFrameIds = new Set<string>();
+  const seenReviewWakeJobs = new Set<string>();
   let legacyCommandCounter = 0;
 
   const finiteOffset = (value: unknown): number | null => {
@@ -1041,6 +1044,35 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     const typeValue = msg.type;
     if (typeof typeValue !== "string") return;
     const type = typeValue;
+
+    if (type === "review_verdict_ready") {
+      if (preferenceLane !== "acopilot") return;
+      const rec = msg as Record<string, unknown>;
+      const jobId = String(rec.jobId ?? "").trim();
+      const status = String(rec.status ?? "").trim().toUpperCase();
+      const issueId = Number(rec.issueId);
+      if (!jobId || !Number.isSafeInteger(issueId) || issueId < 1) return;
+      if (seenReviewWakeJobs.has(jobId)) return;
+      seenReviewWakeJobs.add(jobId);
+      const prNumber = Number(rec.prNumber);
+      const headSha = String(rec.headSha ?? "").trim();
+      const prLabel = Number.isSafeInteger(prNumber) && prNumber > 0 ? `PR #${prNumber}` : "PR";
+      const busy = rt.busy.value || rt.turnInFlight;
+      const prompt = [
+        `Issue #${issueId} 的 ${prLabel} 评审已出结论：${status || "UNKNOWN"}。`,
+        "请先阅读该 Issue 最新的 ads:review-verdict comment（按 head/base 匹配当前 PR，忽略旧结论），然后据此处理。",
+        "PASS 征求用户交付授权；REJECT 按 Findings 返工后重新 review_action；INCOMPLETE 或 ERROR 先按 Summary 恢复前置条件再重新派审。",
+        `Job ${jobId}${headSha ? `，head ${headSha.slice(0, 12)}` : ""}。`,
+      ].join("");
+      if (busy) {
+        rt.laneStatus.value = {
+          kind: "info",
+          message: `收到 Issue #${issueId} 的评审结论（${status || "UNKNOWN"}），当前对话结束后自动处理。`,
+        };
+      }
+      enqueuePrompt(prompt, [], rt);
+      return;
+    }
 
     if (type === "agents") {
       const rec = msg as Record<string, unknown>;

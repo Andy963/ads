@@ -35,7 +35,8 @@ describe("SystemPromptManager prompt injection", () => {
     assert(actionsInjection);
     assert.match(acopilotInjection.text, /ADS Acopilot/);
     assert.match(acopilotInjection.text, /owner of the full implementation lifecycle/);
-    assert.match(acopilotInjection.text, /call review_action to pin the PR/);
+    assert.match(acopilotInjection.text, /call review_action to enqueue the read-only Actions Reviewer/);
+    assert.match(acopilotInjection.text, /ads:review-verdict/);
     assert.doesNotMatch(acopilotInjection.text, /begin_implementation/);
     assert.doesNotMatch(acopilotInjection.text, /You are the ADS Reviewer/);
     assert.match(actionsInjection.text, /You are the ADS Reviewer/);

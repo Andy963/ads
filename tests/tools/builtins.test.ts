@@ -20,7 +20,13 @@ describe("Acopilot built-in tools", () => {
       actionTools: {
         review_action: async () => {
           calls += 1;
-          return { ok: true, verdict: { status: "PASS", summary: "All checks pass." } };
+          return {
+            ok: true,
+            jobId: "job-1",
+            status: "queued",
+            issueId: 613,
+            note: "Review runs in the Actions lane.",
+          };
         },
       },
     });
@@ -30,7 +36,16 @@ describe("Acopilot built-in tools", () => {
         type: "function",
         function: { name: "review_action", arguments: "{}" },
       });
-      assert.equal(result.output, "review_action completed.\nStatus: PASS.\nSummary: All checks pass.");
+      assert.equal(
+        result.output,
+        [
+          "review_action completed.",
+          "Actions job: job-1.",
+          "Status: queued.",
+          "Issue: #613.",
+          "Review runs in the Actions lane.",
+        ].join("\n"),
+      );
       assert.equal(calls, 1);
     } finally {
       await executor.dispose();

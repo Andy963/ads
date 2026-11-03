@@ -170,7 +170,7 @@ describe("CodexAppServerAdapter", () => {
     const actionTools = {
       review_action: async () => {
         calls += 1;
-        return { ok: true, verdict: { status: "PASS" } };
+        return { ok: true, jobId: "job-queued", status: "queued" };
       },
     };
 
@@ -191,7 +191,10 @@ describe("CodexAppServerAdapter", () => {
       arguments: {},
     });
     assert.equal(reviewResult.result.success, true);
-    assert.equal(reviewResult.result.contentItems[0].text, "review_action completed.\nStatus: PASS.");
+    assert.equal(
+      reviewResult.result.contentItems[0].text,
+      "review_action completed.\nActions job: job-queued.\nStatus: queued.",
+    );
     assert.equal(calls, 1);
 
     fake.notify("turn/completed", { threadId: "thread-acopilot-tools", turn: { id: "turn-acopilot-tools" } });
@@ -216,7 +219,7 @@ describe("CodexAppServerAdapter", () => {
     const actionTools = {
       review_action: async () => {
         calls += 1;
-        return { ok: true, verdict: { status: "PASS" } };
+        return { ok: true, jobId: "job-queued", status: "queued" };
       },
     };
 
@@ -239,7 +242,10 @@ describe("CodexAppServerAdapter", () => {
       arguments: {},
     });
     assert.equal(reviewResult.result.success, true);
-    assert.equal(reviewResult.result.contentItems[0].text, "review_action completed.\nStatus: PASS.");
+    assert.equal(
+      reviewResult.result.contentItems[0].text,
+      "review_action completed.\nActions job: job-queued.\nStatus: queued.",
+    );
     assert.equal(calls, 1);
 
     fake.notify("turn/completed", { threadId: "thread-action-fresh", turn: { id: "turn-action-fresh" } });

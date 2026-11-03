@@ -236,7 +236,7 @@ describe("codex provider injection", () => {
 });
 
 describe("CodexAppServerAdapter provider injection", () => {
-  it("sends upstream model names, not catalog IDs, for new and resumed threads", async () => {
+  it("sends upstream model names, not catalog IDs, for new and replacement threads", async () => {
     for (const resumeThreadId of [undefined, "saved-thread"]) {
       const daemons: FakeDaemon[] = [];
       const registry = new CodexAppServerDaemonRegistry({
@@ -258,9 +258,11 @@ describe("CodexAppServerAdapter provider injection", () => {
       });
       const pending = adapter.send("hello");
       const daemon = await waitForDaemon(daemons, 0);
-      await completeTurn(daemon, resumeThreadId ?? "thread-1");
+      // A resumed thread without recorded built-in tool support is replaced by a
+      // fresh tool-enabled thread, so the turn always completes on thread-1.
+      await completeTurn(daemon, "thread-1");
       await pending;
-      const start = daemon.requests.find((request) => request.method === (resumeThreadId ? "thread/resume" : "thread/start"));
+      const start = daemon.requests.find((request) => request.method === "thread/start");
       const turn = daemon.requests.find((request) => request.method === "turn/start");
       assert.equal(start?.params.model, "shared-upstream-name");
       assert.equal(turn?.params.model, "shared-upstream-name");

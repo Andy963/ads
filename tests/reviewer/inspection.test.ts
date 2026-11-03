@@ -430,7 +430,7 @@ describe("isolated Reviewer inspection", () => {
   }> = [
     { name: "malformed JSON", response: { ...verdict, text: privateMarker }, reason: /invalid verdict JSON/ },
     { name: "truncated JSON", response: { ...verdict, text: `{"status":"PASS","summary":"${privateMarker}` }, reason: /invalid verdict JSON/ },
-    { name: "invalid verdict schema", response: { ...verdict, text: JSON.stringify({ status: "PASS", summary: { privateMarker } }) }, reason: /required PASS\/REJECT schema/ },
+    { name: "invalid verdict schema", response: { ...verdict, text: JSON.stringify({ status: "PASS", summary: { privateMarker } }) }, reason: /required PASS\/REJECT(?:\/INCOMPLETE)? schema/ },
     { name: "tools in the final tool-free round", response: { ...verdict, text: privateMarker, toolCalls: [call("list_dir", { path: "." })] }, reason: /final verdict was required/, toolTurnBudget: 0 },
     { name: "8001 text characters with tools", response: { ...verdict, text: privateMarker.padEnd(8001, "x"), toolCalls: [call("list_dir", { path: "." })] }, reason: /text or argument size limit/ },
     { name: "4097 argument characters late in a batch", response: { ...verdict, text: "", toolCalls: [...Array.from({ length: 5 }, (_, i) => call("list_dir", { path: "." }, `valid-${i}`)), oversizedArguments] }, reason: /text or argument size limit/ },

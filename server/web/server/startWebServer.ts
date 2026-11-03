@@ -35,6 +35,7 @@ import {
   WEB_ACTIONS_NAMESPACE,
 } from "./start/webLaneResources.js";
 import { createActionsLaneBroadcaster } from "./start/actionsLaneBroadcast.js";
+import { createAcopilotLaneWaker } from "./start/acopilotLaneWake.js";
 import { resolveAgentsSnapshotThreadId } from "./ws/threadIds.js";
 import { createSessionCacheRegistry } from "./ws/sessionCacheRegistry.js";
 import { LaneDispatchBus } from "../../actions/bus.js";
@@ -277,8 +278,17 @@ export async function startWebServer(): Promise<void> {
     warn: (message) => logger.warn(message),
   });
 
+  const wakeAcopilotLane = createAcopilotLaneWaker({
+    syncEventStore,
+    laneGenerationStore,
+    clientMetaByWs: wsHub.clientMetaByWs,
+    sendJson: wsHub.safeSendJson,
+    warn: (message) => logger.warn(message),
+  });
+
   const reviewTestCommand = process.env.ADS_REVIEW_TEST_COMMAND?.trim();
   const actionBus = new LaneDispatchBus(getStateDatabase(stateDbPath), {
+    wakeAcopilotLane,
     ...(reviewTestCommand ? { testCommand: reviewTestCommand } : {}),
     historyStore: laneResources.worker.historyStore,
     captureActionsLaneGeneration: (logicalHistoryKey) =>
