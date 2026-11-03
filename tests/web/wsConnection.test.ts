@@ -596,7 +596,10 @@ describe("web/server/ws in-band switch_chat_session", () => {
     const initialHistory = started!.workerHistoryStore.get(initialHistoryKey);
     const switchedHistory = started!.workerHistoryStore.get(switchedHistoryKey);
     assert.equal(initialHistory.some((entry) => entry.text === "second prompt"), false);
+    assert.ok(initialHistory.some((entry) => entry.text === "first prompt"));
     assert.ok(switchedHistory.some((entry) => entry.text === "second prompt"));
+    assert.equal(switchedHistory.some((entry) => entry.text === "first prompt"), false);
+    assert.equal(switchedHistory.some((entry) => entry.kind === "session_divider"), false);
   });
 });
 

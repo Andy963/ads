@@ -7,7 +7,7 @@ import { createLaneActions } from "../app/laneActions";
 import { createWsMessageHandler } from "../app/projectsWs/wsMessage";
 
 describe("session boundary divider and status feedback", () => {
-  it("inserts a session boundary divider and retains prior messages when starting a new session", async () => {
+  it("starts a new session with an empty transcript", async () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const deps = {
@@ -26,26 +26,11 @@ describe("session boundary divider and status feedback", () => {
 
     await projects.startNewChatSession();
 
-    // Messages should be retained with divider appended
-    expect(rt.messages.value).toHaveLength(3);
-    expect(rt.messages.value[0]?.content).toBe("Previous user request");
-    expect(rt.messages.value[1]?.content).toBe("Previous model response");
-
-    const divider = rt.messages.value[2]!;
-    expect(divider.role).toBe("system");
-    expect(divider.kind).toBe("divider");
-    expect(divider.content).toBe(
-      "Previous messages above are retained for review only and are NOT injected into model prompt context.",
-    );
-
-    // Composer status feedback
-    expect(rt.laneStatus.value).toEqual({
-      kind: "info",
-      message: "New session active: clean context (previous history is not included).",
-    });
+    expect(rt.messages.value).toHaveLength(0);
+    expect(rt.laneStatus.value).toBeNull();
   });
 
-  it("does not insert duplicate consecutive dividers on repeated new session calls", async () => {
+  it("keeps the transcript empty on repeated new session calls", async () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const deps = {
@@ -62,15 +47,13 @@ describe("session boundary divider and status feedback", () => {
     ];
 
     await projects.startNewChatSession();
-    expect(rt.messages.value).toHaveLength(2);
-    expect(rt.messages.value[1]?.kind).toBe("divider");
+    expect(rt.messages.value).toHaveLength(0);
 
     await projects.startNewChatSession();
-    expect(rt.messages.value).toHaveLength(2);
-    expect(rt.messages.value[1]?.kind).toBe("divider");
+    expect(rt.messages.value).toHaveLength(0);
   });
 
-  it("does not insert a divider if messages are empty", async () => {
+  it("leaves the transcript empty when it was already empty", async () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
     const deps = {
@@ -86,10 +69,7 @@ describe("session boundary divider and status feedback", () => {
 
     await projects.startNewChatSession();
     expect(rt.messages.value).toHaveLength(0);
-    expect(rt.laneStatus.value).toEqual({
-      kind: "info",
-      message: "New session active: clean context (previous history is not included).",
-    });
+    expect(rt.laneStatus.value).toBeNull();
   });
 
   it("replays session_divider from history bootstrap and sets fresh session status", () => {

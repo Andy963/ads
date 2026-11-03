@@ -188,11 +188,11 @@ describe("atomic transcript cache", () => {
     expect(other.messages.value).toEqual([]);
   });
 
-  it("retains review-only messages on a new session without transferring the old cursor", () => {
+  it("starts a new session with an empty transcript and keeps the old cache", () => {
     const { cache, rt, key } = seed();
     rt.transcriptViewport.value = { following: false, firstLoadedId: message.id, anchorId: message.id, anchorOffset: 0, scrollTop: 240 };
     cache.attach(rt, { ...scope, chatSessionId: "new-session" });
-    expect(rt.messages.value).toEqual([message]);
+    expect(rt.messages.value).toEqual([]);
     expect(rt.transcriptViewport.value).toBeNull();
     expect(rt.transcriptCursor).toBe(0);
     expect(rt.transcriptReady).toBe(false);
