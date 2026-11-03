@@ -51,7 +51,6 @@ export function handleImmediateWsMessage(args: {
   isLaneCurrent?: () => boolean;
   sendJson: (payload: unknown) => void;
   broadcastJson?: (payload: unknown) => void;
-  recordStatusError?: (message: string) => void;
 }): boolean {
   if (args.isLaneCurrent && !args.isLaneCurrent()) {
     return args.parsed.type === "ping" || args.parsed.type === "pong" || args.parsed.type === "interrupt";
@@ -66,9 +65,15 @@ export function handleImmediateWsMessage(args: {
   if (args.parsed.type === "interrupt") {
     const found = args.abortInFlight();
     if (!found) {
-      const message = "当前没有正在执行的任务";
-      args.recordStatusError?.(message);
-      const payload = { type: "error", message };
+      // A stop request can race ahead of the turn that the client still shows
+      // as busy, or arrive after it finished. That is a benign no-op, not a
+      // turn failure: persist nothing, but tell the client to settle its local
+      // running state.
+      const payload = {
+        type: "error",
+        message: "当前没有正在执行的任务",
+        errorInfo: { code: "no_active_turn", retryable: false, needsReset: false },
+      };
       if (args.broadcastJson) {
         args.broadcastJson(payload);
       } else {

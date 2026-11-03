@@ -24,7 +24,7 @@ import {
 } from "../../lib/preferencesStore";
 import { splitUnifiedDiffByPath } from "../../lib/patchDiff";
 import { normalizeTurnSemanticOrder } from "../../lib/chat_sync";
-import { isUserAbortFailure, upsertTurnFailureCard } from "../../lib/turnFailure";
+import { isNoActiveTurnNotice, isUserAbortFailure, upsertTurnFailureCard } from "../../lib/turnFailure";
 import { diagAlert } from "../../lib/diagAlert";
 import { crumb } from "../../lib/diagBreadcrumbs";
 import type { ExecuteBlockUpdate } from "../chatExecute";
@@ -1756,7 +1756,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
         if (role === "status") {
           restoredHistoryStatus = replayedLaneStatus(kind, historyText);
-          if (kind === "error" && !isUserAbortFailure(historyText)) {
+          if (kind === "error" && !isUserAbortFailure(historyText) && !isNoActiveTurnNotice(historyText)) {
             // Anchor persisted turn failures to their user prompt so the
             // failed turn keeps a retry target after reconnects and reloads
             // instead of vanishing with the transient lane banner.
@@ -2297,6 +2297,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         return;
       }
 
+      const turnWasInFlight = rt.turnInFlight;
       markTurnTerminal(msg as Record<string, unknown>);
       clearTransientRetryNotice();
       recoveredBackendActivitySeen = false;
@@ -2323,6 +2324,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
 
       const userMessage = normalizeWireText(msg.message) || "error";
       const isUserAbort = isUserAbortFailure(userMessage, (msg as { aborted?: unknown }).aborted);
+      const isNoActiveTurn = errorInfo?.code === "no_active_turn" || isNoActiveTurnNotice(userMessage);
       const errorContent = errorInfo
         ? `⚠️ ${userMessage}\n\n` +
           `错误类型: ${errorInfo.code ?? "unknown"}\n` +
@@ -2330,25 +2332,34 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           (errorInfo.needsReset ? "⚠️ 建议使用 /reset 重置会话\n" : "")
         : userMessage;
 
-      rt.laneStatus.value = { kind: "error", message: errorContent };
+      rt.laneStatus.value = isNoActiveTurn ? null : { kind: "error", message: errorContent };
       // Persist genuine failures on the user turn so the error survives lane
       // status cleanup and page reloads, and so the turn can be retried in
       // place. Intentional user aborts remain lane status only. The record
       // content mirrors the history entry persisted by the server (`[code]
       // hint`) so replay and live events converge on one retry target.
-      if (!isUserAbort) {
+      if (!isUserAbort && !isNoActiveTurn) {
         const failureCardContent = errorInfo?.code ? `[${errorInfo.code}] ${userMessage}` : userMessage;
+        const runningPromptId = firstWireText(
+          rt.queuedPrompts.value.find((prompt) => prompt.deliveryStatus === "running")?.clientMessageId,
+        ).trim();
         const failedTurnId = firstWireText(
           (msg as { clientMessageId?: unknown }).clientMessageId,
           (msg as { client_message_id?: unknown }).client_message_id,
           terminalPromptId,
+          runningPromptId,
         ).trim();
-        rt.messages.value = upsertTurnFailureCard(
-          rt.messages.value,
-          failureCardContent,
-          finiteTimestamp((msg as { ts?: unknown }).ts),
-          failedTurnId || undefined,
-        );
+        // Without an explicit identity only an in-flight turn can own the
+        // failure. Attaching to the newest user message otherwise put retry
+        // buttons on prompts that had never run.
+        if (failedTurnId || turnWasInFlight) {
+          rt.messages.value = upsertTurnFailureCard(
+            rt.messages.value,
+            failureCardContent,
+            finiteTimestamp((msg as { ts?: unknown }).ts),
+            failedTurnId || undefined,
+          );
+        }
       }
       if (isUserAbort) discardAbortedPromptCard(rt, removeQueuedPrompt);
       if (errorInfo?.code === "conversation_model_unavailable") refreshUnavailableModel(userMessage);

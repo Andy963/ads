@@ -318,6 +318,79 @@ describe("issue-221: failed turn preservation and in-place retry", () => {
     wrapper.unmount();
   });
 
+  it("treats a no-op interrupt notice as benign and adds no failure card", async () => {
+    const wrapper = await mountApp();
+
+    wrapper.vm.sendMainPrompt("still waiting");
+    await settleUi(wrapper);
+    const usersBefore = (wrapper.vm.messages as Array<any>).filter((m) => m.role === "user").length;
+
+    lastWs!.onMessage?.({
+      type: "error",
+      message: "当前没有正在执行的任务",
+      errorInfo: { code: "no_active_turn", retryable: false, needsReset: false },
+    });
+    await settleUi(wrapper);
+
+    const messages = wrapper.vm.messages as Array<any>;
+    expect(messages.filter((m) => m.role === "system" && m.kind === "error")).toHaveLength(0);
+    expect(messages.filter((m) => m.role === "user")).toHaveLength(usersBefore);
+    expect(wrapper.vm.actionsConnectionStatus).toBeNull();
+
+    wrapper.unmount();
+  });
+
+  it("does not attach an unidentified error to the newest prompt outside a turn", async () => {
+    const wrapper = await mountApp();
+
+    lastWs!.onMessage?.({
+      type: "history",
+      items: [{ role: "user", text: "already answered", kind: "client_message_id:u-answered", ts: 1000 }],
+    });
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({ type: "error", message: "late transport noise" });
+    await settleUi(wrapper);
+
+    const messages = wrapper.vm.messages as Array<any>;
+    expect(messages.filter((m) => m.role === "system" && m.kind === "error")).toHaveLength(0);
+    expect(messages.filter((m) => m.role === "user")).toHaveLength(1);
+
+    wrapper.unmount();
+  });
+
+  it("refuses a retry while the same prompt is still queued", async () => {
+    const wrapper = await mountApp();
+
+    wrapper.vm.sendMainPrompt("queue once");
+    await settleUi(wrapper);
+    const user = (wrapper.vm.messages as Array<any>).find((m) => m.role === "user");
+    expect(user).toBeTruthy();
+    const card = {
+      id: turnFailureCardId(String(user!.id)),
+      role: "system" as const,
+      kind: "error" as const,
+      content: "Provider failed",
+      ts: Date.now(),
+    };
+    (wrapper.vm.messages as Array<any>).push(card);
+    await settleUi(wrapper);
+    const before = (wrapper.vm.queuedPrompts as Array<any>).length;
+    const sendsBefore = lastWs!.sendPrompt.mock.calls.length;
+
+    wrapper.vm.retryPrompt(card);
+    await settleUi(wrapper);
+
+    expect((wrapper.vm.queuedPrompts as Array<any>)).toHaveLength(before);
+    expect(lastWs!.sendPrompt.mock.calls.length).toBe(sendsBefore);
+    expect(wrapper.vm.actionsConnectionStatus).toEqual({
+      kind: "info",
+      message: "该消息正在执行或排队中，无需重复重试。",
+    });
+
+    wrapper.unmount();
+  });
+
   it("replays a failed turn from history with the user message and error card intact, once", async () => {
     const wrapper = await mountApp();
 
