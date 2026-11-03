@@ -161,6 +161,7 @@ const {
   acopilotMessages,
   acopilotQueuedPrompts,
   acopilotPendingImages,
+  acopilotConnected,
   acopilotReady,
   acopilotBusy,
   acopilotInputLocked,
@@ -172,6 +173,7 @@ const {
   acopilotChatKey,
   acopilotPanelKey,
   actionsAgents,
+  actionsConnected,
   actionsReady,
   actionsInputLocked,
   actionsLaneStatus,
@@ -309,8 +311,12 @@ function handleActiveLaneSetReasoningEffort(effort: string): void {
 type ProjectBusyState = "idle" | "acopilot" | "actions" | "both";
 
 function projectBusyState(projectId: string): ProjectBusyState {
-  const acopilotBusy = runtimeProjectInProgress(getAcopilotRuntime(projectId));
-  const actionsBusy = runtimeProjectInProgress(getRuntime(projectId));
+  const acopilotRuntime = getAcopilotRuntime(projectId);
+  const actionsRuntime = getRuntime(projectId);
+  // A transport loss leaves `busy` set so the reconnect notice and input lock
+  // survive. Running animations, however, must disappear with the connection.
+  const acopilotBusy = Boolean(acopilotRuntime.connected.value) && runtimeProjectInProgress(acopilotRuntime);
+  const actionsBusy = Boolean(actionsRuntime.connected.value) && runtimeProjectInProgress(actionsRuntime);
   if (acopilotBusy && actionsBusy) return "both";
   if (acopilotBusy) return "acopilot";
   if (actionsBusy) return "actions";
@@ -1793,7 +1799,7 @@ const acopilotConnectionStatus = computed(() => {
                   isLaneConnected(tab.id, { acopilot: acopilotReady, actions: actionsReady })
                     ? 'laneTabStatusDot--connected'
                     : 'laneTabStatusDot--disconnected',
-                  (tab.id === 'acopilot' ? acopilotBusy : agentBusy)
+                  (tab.id === 'acopilot' ? acopilotConnected && acopilotBusy : actionsConnected && agentBusy)
                     ? (tab.id === 'acopilot' ? 'laneTabStatusDot--busy-acopilot' : 'laneTabStatusDot--busy-actions')
                     : '',
                 ]"

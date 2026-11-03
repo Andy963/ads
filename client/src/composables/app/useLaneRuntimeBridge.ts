@@ -187,6 +187,7 @@ export function useLaneRuntimeBridge(params: {
   const acopilotPendingImages = computed(() => acopilotRuntime.value.pendingImages.value);
   const acopilotConnected = computed(() => acopilotRuntime.value.connected.value);
   const acopilotReady = computed(() => runtimeIsReady(acopilotRuntime.value));
+  const actionsConnected = computed(() => actionsRuntime.value.connected.value);
   const acopilotBusy = computed(() => acopilotRuntime.value.busy.value);
   const acopilotInputLocked = computed(() => acopilotRuntime.value.inputLocked.value);
   const acopilotLaneStatus = computed(() => acopilotRuntime.value.laneStatus.value);
@@ -338,6 +339,7 @@ export function useLaneRuntimeBridge(params: {
     acopilotChatKey,
     acopilotPanelKey,
     actionsAgents,
+    actionsConnected,
     actionsReady,
     actionsInputLocked,
     actionsLaneStatus,
