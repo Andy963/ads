@@ -38,6 +38,14 @@ type Ref<T> = { value: T };
 const HISTORY_EXECUTE_PREVIEW_LINES = 3;
 const THREAD_RESUMED_NOTICE = "已恢复后端上下文线程。";
 const HISTORY_INJECTION_NOTICE = "没有可复用的原生会话，下一轮发送时会注入最近聊天历史来延续上下文。";
+const HISTORY_INJECTION_RESET_MARKER = "下一轮将注入聊天历史继续上下文";
+const CONTEXT_INJECTION_STATUS_TTL_MS = 6000;
+
+function isHistoryInjectionWarning(value: string | null | undefined): boolean {
+  const text = String(value ?? "").trim();
+  if (!text) return false;
+  return text === HISTORY_INJECTION_NOTICE || text.includes(HISTORY_INJECTION_RESET_MARKER);
+}
 const TRANSIENT_RETRY_NOTICE_ID = "transient-retry-notice";
 const BACKEND_WAITING_STATUS_MESSAGES = new Set([
   "上一轮仍在执行，正在等待后端结果。",
@@ -976,6 +984,23 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
   };
 
+  let transientLaneStatusTimer: number | null = null;
+  const showTransientLaneStatus = (status: LaneStatus, ttlMs: number): void => {
+    if (transientLaneStatusTimer !== null) {
+      try {
+        clearTimeout(transientLaneStatusTimer);
+      } catch {
+        // ignore
+      }
+      transientLaneStatusTimer = null;
+    }
+    rt.laneStatus.value = status;
+    transientLaneStatusTimer = window.setTimeout(() => {
+      transientLaneStatusTimer = null;
+      if (rt.laneStatus.value === status) rt.laneStatus.value = null;
+    }, ttlMs);
+  };
+
   const annotatePendingUserMessageExecution = (payload: Record<string, unknown>): void => {
     const pendingId = String(rt.pendingAckClientMessageId ?? "").trim();
     if (!pendingId) return;
@@ -1568,11 +1593,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const rec = msg as Record<string, unknown>;
       const entryCount = Number(rec.entryCount);
       if (!Number.isFinite(entryCount) || entryCount <= 0) return;
+      if (isHistoryInjectionWarning(rt.threadWarning.value)) {
+        rt.threadWarning.value = null;
+      }
       const earliestRaw = Number(rec.earliestTs);
       const earliestTs = Number.isFinite(earliestRaw) && earliestRaw > 0 ? earliestRaw : null;
       const sinceLabel = earliestTs ? ` (起自 ${new Date(earliestTs).toLocaleString()})` : "";
       const content = `已注入最近 ${Math.floor(entryCount)} 条聊天历史作为本轮上下文${sinceLabel}。`;
-      rt.laneStatus.value = { kind: "info", message: content };
+      showTransientLaneStatus({ kind: "info", message: content }, CONTEXT_INJECTION_STATUS_TTL_MS);
       return;
     }
 
