@@ -659,10 +659,14 @@ export class LaneDispatchBus {
       .map((value) => value.trim())
       .filter(Boolean)
       .join("\n");
+    const lastOutputLine = output.split("\n").reverse().find((line) => line.trim())?.trim();
+    const summary = result.exitCode === 0
+      ? "Tests and checks passed successfully"
+      : (lastOutputLine?.slice(0, 500) ?? `Verification command exited with code ${result.exitCode}`);
     const report = {
       command,
       exitCode: result.exitCode,
-      summary: output || (result.exitCode === 0 ? "Tests and checks passed successfully" : "Verification command failed"),
+      summary,
       output,
     };
     return report;
@@ -719,13 +723,15 @@ export class LaneDispatchBus {
         current_step: `Verification completed: ${testReport.command} (exit ${testReport.exitCode})`,
         verification_report_json: JSON.stringify(testReport),
       });
+      const verificationOutcome = testReport.exitCode === 0
+        ? "passed"
+        : "exited non-zero; continuing so the Reviewer can evaluate the report";
       this.recordActionMessage(
         job,
         session.repoPath,
-        `Review job ${job.id}: verification ${testReport.exitCode === 0 ? "passed" : "failed"} (${testReport.command}, exit ${testReport.exitCode}).`,
+        `Review job ${job.id}: verification ${verificationOutcome} (${testReport.command}, exit ${testReport.exitCode}).`,
         `action_step:${job.id}:verification`,
       );
-      if (testReport.exitCode !== 0) throw new Error(`Verification failed: ${testReport.summary}`);
       const verifiedSession = await resolveCurrentSession();
       if (verifiedSession.key !== session.key) {
         throw new ReviewerIncompleteError("Interactive review target changed during verification; no authoritative verdict is available.");

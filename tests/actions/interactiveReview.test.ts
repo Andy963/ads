@@ -45,7 +45,11 @@ describe("Actions Reviewer queue", () => {
       path.join(repoDir, "verification-truncate.cjs"),
       'for (let index = 0; index <= 40; index += 1) console.log(`verification-${index}`);\n',
     );
-    spawnSync("git", ["add", "README.md", "verification-stream.cjs", "verification-truncate.cjs"], { cwd: repoDir });
+    fs.writeFileSync(
+      path.join(repoDir, "verification-fail.cjs"),
+      'console.error("fixture failure: expected 2, received 3");\nprocess.exit(1);\n',
+    );
+    spawnSync("git", ["add", "README.md", "verification-stream.cjs", "verification-truncate.cjs", "verification-fail.cjs"], { cwd: repoDir });
     spawnSync("git", ["commit", "-m", "initial"], { cwd: repoDir });
     baseCommit = git("rev-parse", "dev");
     spawnSync("git", ["checkout", "-b", "codex/issue-900"], { cwd: repoDir });
@@ -255,6 +259,36 @@ describe("Actions Reviewer queue", () => {
     assert.equal(result.ok, true);
     assert.equal((result.verdict as { status: string }).status, "REJECT");
     assert.equal(bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0]?.status, "completed");
+    await tools.dispose();
+  });
+
+  it("runs the Reviewer when the verification command exits non-zero", async () => {
+    const reviewTarget = target();
+    const history: Array<{ role: string; text: string; kind?: string }> = [];
+    let reviewPrompt = "";
+    const bus = createBus(() => reviewTarget, {
+      testCommand: "node verification-fail.cjs",
+      reviewStatus: "REJECT",
+      onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
+      onHistoryMessage: (entry) => history.push(entry),
+    });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
+
+    const result = await tools.review_action();
+
+    assert.equal(result.ok, true, result.error);
+    assert.equal((result.verdict as { status: string }).status, "REJECT");
+    assert.ok(reviewPrompt.includes("Command: node verification-fail.cjs"));
+    assert.ok(reviewPrompt.includes("Exit Code: 1"));
+    assert.ok(reviewPrompt.includes("fixture failure: expected 2, received 3"));
+    assert.ok(reviewPrompt.includes("A non-zero exit code is evidence for your review"));
+    const job = bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0];
+    assert.equal(job?.status, "completed");
+    assert.equal(JSON.parse(job?.verification_report_json ?? "{}").exitCode, 1);
+    assert.ok(
+      history.some((entry) => entry.text.includes("verification exited non-zero")),
+      JSON.stringify(history.map((entry) => entry.text)),
+    );
     await tools.dispose();
   });
 
@@ -676,6 +710,7 @@ describe("Actions Reviewer queue", () => {
     let calls = 0;
     const bus = createBus(() => reviewTarget, {
       useInspection: true,
+      testCommand: "git status --porcelain=v1 --branch",
       onHistoryMessage: (entry) => history.push(entry),
       reviewerComplete: async () => {
         calls += 1;
@@ -705,9 +740,8 @@ describe("Actions Reviewer queue", () => {
 
     assert.equal(result.ok, true, result.error);
     const texts = history.map((entry) => entry.text);
-    assert.ok(texts.includes("Verification started: git status"), JSON.stringify(texts));
-    assert.ok(texts.includes("On branch codex/issue-900"), JSON.stringify(texts));
-    assert.ok(texts.includes("nothing to commit, working tree clean"), JSON.stringify(texts));
+    assert.ok(texts.includes("Verification started: git status --porcelain=v1 --branch"), JSON.stringify(texts));
+    assert.ok(texts.includes("## codex/issue-900"), JSON.stringify(texts));
     assert.ok(texts.includes("Reviewer step: list_dir ."), JSON.stringify(texts));
     await settlePresentation();
     const verdictEntry = history.find((entry) => entry.kind?.endsWith(":result"));
@@ -715,10 +749,8 @@ describe("Actions Reviewer queue", () => {
     assert.match(verdictEntry.text, /^Reviewer verdict: PASS/);
     assert.equal(verdictEntry.text.includes('"status"'), false);
     const completedTexts = history.map((entry) => entry.text);
-    const verificationOutputEnd = Math.max(
-      completedTexts.indexOf("On branch codex/issue-900"),
-      completedTexts.indexOf("nothing to commit, working tree clean"),
-    );
+    const verificationOutputEnd = completedTexts.indexOf("## codex/issue-900");
+    assert.ok(verificationOutputEnd >= 0, JSON.stringify(completedTexts));
     assert.ok(verificationOutputEnd < completedTexts.indexOf("Reviewer step: list_dir ."), JSON.stringify(completedTexts));
     assert.ok(completedTexts.indexOf("Reviewer step: list_dir .") < completedTexts.indexOf(verdictEntry.text), JSON.stringify(completedTexts));
     await tools.dispose();
