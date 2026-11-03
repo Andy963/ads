@@ -216,4 +216,4 @@ Reviewer 执行或输出协议错误会显示具体原因并返回操作失败�
 
 Reviewer 的模型、推理强度和 system prompt 来自角色配置；连接使用任务所有者的 HTTP 模型配置和凭据。仅配置 Codex CLI 登录而无可用 HTTP 连接不能保证 Reviewer 可用。检查对象是精确被审查提交，不是未提交工作区；不支持写入、shell、符号链接或子模块检查。详见 ADR 0033。
 
-Acopilot 会话中的 `review_action` 将当前 Issue-backed PR 派入 Actions Reviewer 队列，并等待结构化结果。队列先运行 `ADS_REVIEW_TEST_COMMAND`（默认 `npm test`），再调用只读 Reviewer；PR、Issue 条件、相关 ADR、base/head 与验证报告会绑定到同一任务，并显示在 Actions 队列和会话中。Reviewer 角色必须启用并配置可用模型，否则任务以操作失败结束。只有对精确目标产生的 PASS 才是该提交的评审结果；head、base 或 Issue 条件变化后须重新派审。PASS 不会自动合并，合并仍需用户明确授权。
+Acopilot 会话中的 `review_action` 将当前 Issue-backed PR 派入 Actions Reviewer 队列并立即返回 job id，不等待裁决。队列先运行 `ADS_REVIEW_TEST_COMMAND`（默认 `npm test`），再调用只读 Reviewer；PR、Issue 条件、相关 ADR、base/head 与验证报告会绑定到同一任务。任务结束后裁决写成 Issue comment（`<!-- ads:review-verdict -->`），并通过持久事件 `review_verdict_ready` 唤醒 Acopilot 泳道。验证命令超时记为 exit 124 的证据交给 Reviewer，不再终止任务。Reviewer 角色必须启用并配置可用模型，否则任务以操作失败结束。只有对精确目标产生的 PASS 才是该提交的评审结果；head、base 或 Issue 条件变化后须重新派审。PASS 不会自动合并，合并仍需用户明确授权。

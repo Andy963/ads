@@ -185,14 +185,14 @@ describe("reviewer subsystem", () => {
     { name: "empty output", raw: "", reason: /invalid verdict JSON/ },
     { name: "non-JSON text", raw: "secret_internal_protocol", reason: /invalid verdict JSON/ },
     { name: "truncated JSON", raw: '{"status":"PASS","summary":"secret_internal_protocol', reason: /invalid verdict JSON/ },
-    { name: "missing summary", raw: '{"status":"PASS","secret_internal_protocol":true}', reason: /required PASS\/REJECT schema/ },
-    { name: "null verdict", raw: "null", reason: /required PASS\/REJECT schema/ },
-    { name: "array verdict", raw: '["secret_internal_protocol"]', reason: /required PASS\/REJECT schema/ },
-    { name: "unknown status", raw: '{"status":"secret_internal_protocol","summary":"ok"}', reason: /required PASS\/REJECT schema/ },
-    { name: "non-string summary", raw: '{"status":"PASS","summary":{"secret_internal_protocol":true}}', reason: /required PASS\/REJECT schema/ },
-    { name: "non-array defects", raw: '{"status":"REJECT","summary":"secret_internal_protocol","defects":{}}', reason: /required PASS\/REJECT schema/ },
-    { name: "invalid defect severity", raw: '{"status":"REJECT","summary":"ok","defects":[{"file":"x.ts","severity":"secret_internal_protocol","description":"check"}]}', reason: /required PASS\/REJECT schema/ },
-    { name: "missing defect fields", raw: '{"status":"REJECT","summary":"secret_internal_protocol","defects":[{}]}', reason: /required PASS\/REJECT schema/ },
+    { name: "missing summary", raw: '{"status":"PASS","secret_internal_protocol":true}', reason: /required PASS\/REJECT(?:\/INCOMPLETE)? schema/ },
+    { name: "null verdict", raw: "null", reason: /required PASS\/REJECT(?:\/INCOMPLETE)? schema/ },
+    { name: "array verdict", raw: '["secret_internal_protocol"]', reason: /required PASS\/REJECT(?:\/INCOMPLETE)? schema/ },
+    { name: "unknown status", raw: '{"status":"secret_internal_protocol","summary":"ok"}', reason: /required PASS\/REJECT(?:\/INCOMPLETE)? schema/ },
+    { name: "non-string summary", raw: '{"status":"PASS","summary":{"secret_internal_protocol":true}}', reason: /required PASS\/REJECT(?:\/INCOMPLETE)? schema/ },
+    { name: "non-array defects", raw: '{"status":"REJECT","summary":"secret_internal_protocol","defects":{}}', reason: /required PASS\/REJECT(?:\/INCOMPLETE)? schema/ },
+    { name: "invalid defect severity", raw: '{"status":"REJECT","summary":"ok","defects":[{"file":"x.ts","severity":"secret_internal_protocol","description":"check"}]}', reason: /required PASS\/REJECT(?:\/INCOMPLETE)? schema/ },
+    { name: "missing defect fields", raw: '{"status":"REJECT","summary":"secret_internal_protocol","defects":[{}]}', reason: /required PASS\/REJECT(?:\/INCOMPLETE)? schema/ },
   ];
   for (const { name, raw, reason } of invalidVerdicts) {
     it(`throws a sanitized ReviewerProtocolError for ${name} instead of a synthetic REJECT`, () => {
@@ -205,7 +205,7 @@ describe("reviewer subsystem", () => {
       await assert.rejects(runDetachedReview({ issue: { title: "Protocol failure" }, diff: "+ const a = 1;\n" }, {
         reviewerProfileId: "prof-invalid",
         callModel: async () => raw,
-      }), protocolError(/invalid verdict JSON|required PASS\/REJECT schema/));
+      }), protocolError(/invalid verdict JSON|required PASS\/REJECT(?:\/INCOMPLETE)? schema/));
     });
   }
 

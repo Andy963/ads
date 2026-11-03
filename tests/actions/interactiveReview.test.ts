@@ -116,6 +116,8 @@ describe("Actions Reviewer queue", () => {
       openPullRequests?: Array<{ number: number; headRefName: string }>;
       onHistoryMessage?: (entry: { role: string; text: string; kind?: string }) => void;
       onBroadcast?: (payload: unknown) => void;
+      onIssueComment?: (body: string) => void;
+      onWake?: (args: { issueId: number; status: string; jobId: string }) => void;
       reviewerRunner?: (prompt: string) => Promise<string>;
       useInspection?: boolean;
       reviewerComplete?: typeof completeNativeChat;
@@ -190,6 +192,11 @@ describe("Actions Reviewer queue", () => {
             reviewPresentationComplete: options.reviewPresentationComplete,
           }
         : {}),
+      publishIssueComment: ({ body }) => {
+        options.onIssueComment?.(body);
+        return { ok: true };
+      },
+      wakeAcopilotLane: (args) => options.onWake?.(args),
       historyStore: {
         add: (_key, entry) => options.onHistoryMessage?.(entry),
       },
@@ -204,6 +211,35 @@ describe("Actions Reviewer queue", () => {
       authUserId: reviewTarget.authUserId,
       signal,
     };
+  }
+
+  async function runReview(
+    bus: LaneDispatchBus,
+    reviewTarget: InteractiveReviewTarget,
+    signal?: AbortSignal,
+  ): Promise<{
+    ack: { ok: boolean; jobId?: string; error?: string; [key: string]: unknown };
+    job: ReturnType<LaneDispatchBus["getJob"]>;
+    result: { ok: boolean; jobId?: string; status?: string; verdict?: { status?: string }; error?: string };
+    tools: Awaited<ReturnType<LaneDispatchBus["createInteractiveActionTools"]>>;
+  }> {
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget, signal));
+    const ack = await tools.review_action();
+    await bus.processReviewQueue(reviewTarget.projectId, repoDir);
+    const job = ack.jobId ? bus.getJob(String(ack.jobId)) : null;
+    let verdict: { status?: string } | undefined;
+    try {
+      const parsed = JSON.parse(job?.review_verdicts_json || "[]") as Array<{ status?: string }>;
+      verdict = parsed.at(-1);
+    } catch {
+      verdict = undefined;
+    }
+    const result = ack.ok === false
+      ? ack
+      : verdict
+        ? { ok: true, jobId: job?.id, status: job?.status, verdict }
+        : { ok: false, jobId: job?.id, status: job?.status, error: job?.error_message ?? job?.current_step ?? "no verdict" };
+    return { ack, job, result, tools };
   }
 
   async function settlePresentation(): Promise<void> {
@@ -221,9 +257,7 @@ describe("Actions Reviewer queue", () => {
       onHistoryMessage: (entry) => history.push(entry),
       onBroadcast: (payload) => broadcasts.push(payload),
     });
-    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
-
-    const result = await tools.review_action();
+    const { result, tools } = await runReview(bus, reviewTarget);
 
     assert.equal(result.ok, true, result.error);
     assert.equal((result.verdict as { status: string }).status, "PASS");
@@ -248,9 +282,7 @@ describe("Actions Reviewer queue", () => {
   it("returns REJECT as a completed review result without treating it as an operational failure", async () => {
     const reviewTarget = target();
     const bus = createBus(() => reviewTarget, { reviewStatus: "REJECT" });
-    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
-
-    const result = await tools.review_action();
+    const { result, tools } = await runReview(bus, reviewTarget);
 
     assert.equal(result.ok, true);
     assert.equal((result.verdict as { status: string }).status, "REJECT");
@@ -268,9 +300,7 @@ describe("Actions Reviewer queue", () => {
       onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
       onHistoryMessage: (entry) => history.push(entry),
     });
-    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
-
-    const result = await tools.review_action();
+    const { result, tools } = await runReview(bus, reviewTarget);
 
     assert.equal(result.ok, true, result.error);
     assert.equal((result.verdict as { status: string }).status, "REJECT");
@@ -314,9 +344,7 @@ describe("Actions Reviewer queue", () => {
         };
       },
     });
-    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
-
-    const result = await tools.review_action();
+    const { result, tools } = await runReview(bus, reviewTarget);
 
     assert.equal(result.ok, true, result.error);
     assert.ok(presentationRequest);
@@ -356,9 +384,7 @@ describe("Actions Reviewer queue", () => {
         usage: null,
       }),
     });
-    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
-
-    const result = await tools.review_action();
+    const { result, tools } = await runReview(bus, reviewTarget);
 
     assert.equal(result.ok, true, result.error);
     await settlePresentation();
@@ -400,9 +426,7 @@ describe("Actions Reviewer queue", () => {
         usage: null,
       }),
     });
-    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
-
-    const result = await tools.review_action();
+    const { result, tools } = await runReview(bus, reviewTarget);
 
     assert.equal(result.ok, true, result.error);
     await settlePresentation();
@@ -432,9 +456,7 @@ describe("Actions Reviewer queue", () => {
       reviewPresentationTimeoutMs: 10,
       reviewPresentationComplete: async () => await new Promise(() => {}),
     });
-    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
-
-    const result = await tools.review_action();
+    const { result, tools } = await runReview(bus, reviewTarget);
 
     assert.equal(result.ok, true, result.error);
     assert.equal((result.verdict as { status?: string }).status, "PASS");
@@ -467,13 +489,14 @@ describe("Actions Reviewer queue", () => {
     });
     const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
 
-    let completedReview: Awaited<ReturnType<typeof tools.review_action>> | undefined;
-    const pendingReview = tools.review_action().then((result) => { completedReview = result; return result; });
+    const ack = await tools.review_action();
+    assert.equal(ack.ok, true, ack.error);
+    await bus.processReviewQueue(reviewTarget.projectId, repoDir);
     await narrationStartedPromise;
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    assert.ok(completedReview);
-    assert.equal(completedReview.ok, true, completedReview.error);
+    const reviewed = bus.getJob(String(ack.jobId));
+    assert.equal(reviewed?.status, "completed");
     assert.equal(narrationStarted, true);
     const completed = history.find((entry) => entry.kind?.endsWith(":completed"));
     assert.ok(completed);
@@ -481,7 +504,6 @@ describe("Actions Reviewer queue", () => {
     assert.match(completed.text, /^Reviewer verdict: PASS/m);
     assert.match(completed.text, /Exact target reviewed/);
     releaseNarration?.();
-    await pendingReview;
     await settlePresentation();
     assert.ok(history.some((entry) => entry.kind?.endsWith(":result")));
     await tools.dispose();
@@ -516,9 +538,7 @@ describe("Actions Reviewer queue", () => {
       review_verdicts_json: JSON.stringify([{ status: "PASS" }]),
     });
     const bus = createBus(() => reviewTarget);
-    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
-
-    const result = await tools.review_action();
+    const { result, tools } = await runReview(bus, reviewTarget);
 
     assert.equal(result.ok, true, result.error);
     const jobs = bus.getJobs(reviewTarget.projectId, repoDir, "user-1");
@@ -530,23 +550,28 @@ describe("Actions Reviewer queue", () => {
     await tools.dispose();
   });
 
-  it("fails closed when the target changes after the review was queued", async () => {
+  it("reports a target change during review as INCOMPLETE instead of a failed job", async () => {
     let reviewTarget = target();
+    const comments: string[] = [];
+    const wakes: Array<{ issueId: number; status: string; jobId: string }> = [];
     const bus = createBus(() => reviewTarget, {
       onMetadataRead: (count) => {
         if (count === 2) reviewTarget = target({ prNumber: 902, prUrl: "https://github.invalid/pull/902" });
       },
+      onIssueComment: (body) => comments.push(body),
+      onWake: (args) => wakes.push(args),
     });
-    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
-
-    const result = await tools.review_action();
+    const { result, tools } = await runReview(bus, reviewTarget);
     const job = bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0];
 
-    assert.equal(result.ok, false);
-    assert.match(String(result.error), /changed during verification/);
+    assert.equal(result.ok, true, result.error);
     assert.ok(job);
-    assert.equal(job.status, "failed");
-    assert.deepEqual(JSON.parse(job.review_verdicts_json), []);
+    assert.equal(job.status, "completed");
+    const verdict = JSON.parse(job.review_verdicts_json)[0] as { status: string };
+    assert.equal(verdict.status, "INCOMPLETE");
+    assert.equal(comments.length, 1);
+    assert.match(comments[0]!, /^## ADS Reviewer verdict: INCOMPLETE$/m);
+    assert.deepEqual(wakes.map((wake) => wake.status), ["INCOMPLETE"]);
     await tools.dispose();
   });
 
@@ -597,53 +622,48 @@ describe("Actions Reviewer queue", () => {
     assert.deepEqual(bus.getJobs(reviewTarget.projectId, repoDir, "user-1").map((job) => job.status), ["completed", "completed"]);
   });
 
-  it("does not cancel the durable queue when the originating Acopilot call aborts", async () => {
+  it("returns before the review runs and keeps the queued job after the turn aborts", async () => {
     const reviewTarget = target();
     const controller = new AbortController();
-    const bus = createBus(() => reviewTarget, {
-      onMetadataRead: (count) => {
-        if (count === 2) controller.abort(new Error("Acopilot request aborted"));
-      },
-    });
+    const bus = createBus(() => reviewTarget);
     const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget, controller.signal));
 
-    await assert.rejects(tools.review_action(), /Acopilot request aborted/);
+    const ack = await tools.review_action();
+    assert.equal(ack.ok, true, ack.error);
+    assert.equal(ack.status, "queued");
+    controller.abort(new Error("Acopilot request aborted"));
     await bus.processReviewQueue(reviewTarget.projectId, repoDir);
 
-    const job = bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0];
+    const job = bus.getJob(String(ack.jobId));
     assert.ok(job);
     assert.equal(job.status, "completed");
     assert.equal(JSON.parse(job.review_verdicts_json)[0].status, "PASS");
     await tools.dispose();
   });
 
-  it("queues the job before workspace and target checks", async () => {
+  it("acknowledges the job before target checks and reports a dirty workspace as INCOMPLETE", async () => {
     const reviewTarget = target();
     fs.appendFileSync(path.join(repoDir, "README.md"), "dirty\n");
     const bus = createBus(() => reviewTarget);
-    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
-
-    const result = await tools.review_action();
-    assert.equal(result.ok, false);
-    assert.match(String(result.error), /Commit tracked changes before requesting an interactive review/);
-    const jobs = bus.getJobs(reviewTarget.projectId, repoDir, "user-1");
-    assert.equal(jobs.length, 1);
-    assert.equal(jobs[0]?.status, "failed");
-    assert.equal(jobs[0]?.base_sha, "");
+    const comments: string[] = [];
+    const { ack, job, tools } = await runReview(bus, reviewTarget);
+    assert.equal(ack.ok, true, ack.error);
+    assert.equal(job?.status, "completed");
+    assert.equal(JSON.parse(job?.review_verdicts_json ?? "[]")[0].status, "INCOMPLETE");
+    assert.match(job?.current_step ?? "", /uncommitted tracked changes/i);
+    assert.equal(job?.base_sha, "");
+    assert.equal(comments.length, 0);
     await tools.dispose();
   });
 
-  it("rejects review when the Issue-backed PR is missing or ambiguous", async () => {
+  it("reports a missing or ambiguous Issue-backed PR as INCOMPLETE", async () => {
     const reviewTarget = target();
     const bus = createBus(() => reviewTarget, { openPullRequests: [] });
-    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
-
-    const result = await tools.review_action();
-    assert.equal(result.ok, false);
-    assert.match(String(result.error), /Only one open pull request/);
-    const jobs = bus.getJobs(reviewTarget.projectId, repoDir, "user-1");
-    assert.equal(jobs.length, 1);
-    assert.equal(jobs[0]?.status, "failed");
+    const { job, tools } = await runReview(bus, reviewTarget);
+    assert.equal(job?.status, "completed");
+    const verdict = JSON.parse(job?.review_verdicts_json ?? "[]")[0] as { status: string; summary: string };
+    assert.equal(verdict.status, "INCOMPLETE");
+    assert.match(verdict.summary, /Expected exactly one open pull request/);
     await tools.dispose();
   });
 
@@ -664,21 +684,22 @@ describe("Actions Reviewer queue", () => {
     }), /Unable to read changed ADR 'docs\/adr\/0099-missing\.md'/);
   });
 
-  it("fails an operational queue job when verification times out", async () => {
+  it("passes a verification timeout to the Reviewer instead of aborting the job", async () => {
     const reviewTarget = target();
+    let reviewPrompt = "";
     const bus = createBus(() => reviewTarget, {
       testCommand: "node -e setTimeout(()=>{},10000)",
       interactiveVerificationTimeoutMs: 50,
+      onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
     });
-    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
+    const { result, job, tools } = await runReview(bus, reviewTarget);
 
-    const result = await tools.review_action();
-
-    assert.equal(result.ok, false);
-    assert.match(String(result.error), /timed out/);
-    const job = bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0];
-    assert.equal(job?.status, "failed");
-    assert.deepEqual(JSON.parse(job?.review_verdicts_json ?? "[]"), []);
+    assert.equal(result.ok, true, result.error);
+    assert.equal((result.verdict as { status: string }).status, "PASS");
+    assert.equal(job?.status, "completed");
+    assert.equal(JSON.parse(job?.verification_report_json ?? "{}").exitCode, 124);
+    assert.match(reviewPrompt, /Exit Code: 124/);
+    assert.match(reviewPrompt, /Verification timed out/);
     await tools.dispose();
   });
 
@@ -712,9 +733,7 @@ describe("Actions Reviewer queue", () => {
         };
       },
     });
-    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
-
-    const result = await tools.review_action();
+    const { result, tools } = await runReview(bus, reviewTarget);
 
     assert.equal(result.ok, true, result.error);
     const texts = history.map((entry) => entry.text);
@@ -744,9 +763,7 @@ describe("Actions Reviewer queue", () => {
       onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
       onHistoryMessage: (entry) => history.push(entry),
     });
-    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
-
-    const result = await tools.review_action();
+    const { result, tools } = await runReview(bus, reviewTarget);
 
     assert.equal(result.ok, true, result.error);
     assert.ok(reviewPrompt.includes("stdout-line"), reviewPrompt);
@@ -754,6 +771,40 @@ describe("Actions Reviewer queue", () => {
     assert.equal(reviewPrompt.includes("stdoutstderr"), false, reviewPrompt);
     const texts = history.map((entry) => entry.text);
     assert.equal(texts.some((text) => text.includes("stdout-line") || text.includes("stderr-line")), false, JSON.stringify(texts));
+    await tools.dispose();
+  });
+
+  it("returns queued immediately, then publishes the verdict comment and wakes Acopilot", async () => {
+    const reviewTarget = target();
+    const comments: string[] = [];
+    const wakes: Array<{ issueId: number; status: string; jobId: string }> = [];
+    const bus = createBus(() => reviewTarget, {
+      testCommand: "node -e setTimeout(()=>{},1200)",
+      interactiveVerificationTimeoutMs: 10_000,
+      onIssueComment: (body) => comments.push(body),
+      onWake: (args) => wakes.push(args),
+    });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
+
+    const startedAt = Date.now();
+    const ack = await tools.review_action();
+    const elapsed = Date.now() - startedAt;
+
+    assert.equal(ack.ok, true, ack.error);
+    assert.equal(ack.status, "queued");
+    assert.ok(elapsed < 1000, `dispatch took ${elapsed}ms`);
+    await bus.processReviewQueue(reviewTarget.projectId, repoDir);
+
+    const job = bus.getJob(String(ack.jobId));
+    assert.equal(job?.status, "completed");
+    assert.equal(comments.length, 1);
+    assert.ok(comments[0]!.startsWith("<!-- ads:review-verdict -->"));
+    assert.match(comments[0]!, /^## ADS Reviewer verdict: PASS$/m);
+    assert.match(comments[0]!, new RegExp(`^- Head: \`${headCommit.slice(0, 12)}\`$`, "m"));
+    assert.match(comments[0]!, /^- Job: `/m);
+    assert.deepEqual(wakes.map((wake) => wake.status), ["PASS"]);
+    assert.equal(wakes[0]?.issueId, 900);
+    assert.equal(wakes[0]?.jobId, job?.id);
     await tools.dispose();
   });
 
@@ -766,9 +817,7 @@ describe("Actions Reviewer queue", () => {
       onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
       onHistoryMessage: (entry) => history.push(entry),
     });
-    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
-
-    const result = await tools.review_action();
+    const { result, tools } = await runReview(bus, reviewTarget);
 
     assert.equal(result.ok, true, result.error);
     assert.ok(reviewPrompt.includes("verification-0"), reviewPrompt);

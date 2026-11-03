@@ -82,7 +82,7 @@ export function buildReviewPrompt(payload: ReviewPayload): string {
 If required evidence is unavailable, return {"status":"INCOMPLETE","summary":"Evidence gap"}; this is not a code rejection.
 Your authoritative final response must contain ONLY a valid JSON object matching the following schema. When read-only inspection tools are provided, you may call them before returning this final response:
 {
-  "status": "PASS" | "REJECT",
+  "status": "PASS" | "REJECT" | "INCOMPLETE",
   "summary": "Concise summary of your review evaluation",
   "defects": [
     {

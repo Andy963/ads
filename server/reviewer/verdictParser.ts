@@ -9,7 +9,7 @@ const defectSchema = z.object({
 });
 
 const verdictSchema = z.object({
-  status: z.enum(["PASS", "REJECT"]),
+  status: z.enum(["PASS", "REJECT", "INCOMPLETE"]),
   summary: z.string(),
   defects: z.array(defectSchema).default([]),
 });
@@ -41,7 +41,7 @@ export function parseReviewVerdict(rawText: string, reviewerProfileId?: string):
   }
   const validated = verdictSchema.safeParse(parsed);
   if (!validated.success) {
-    throw new ReviewerProtocolError("Reviewer verdict JSON does not match the required PASS/REJECT schema.");
+    throw new ReviewerProtocolError("Reviewer verdict JSON does not match the required PASS/REJECT/INCOMPLETE schema.");
   }
   return {
     status: validated.data.status,

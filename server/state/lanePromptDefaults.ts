@@ -20,8 +20,12 @@ export type LaneName = CanonicalLaneId;
 
 export const LANE_NAMES: readonly CanonicalLaneId[] = CANONICAL_LANE_IDS;
 
-export const REVIEW_ACTION_INSTRUCTION =
-  "- After opening the PR, call review_action to pin the PR and run the read-only Actions Reviewer. The Actions lane records PASS or REJECT in its queue and conversation and returns the structured result to Acopilot.";
+export const REVIEW_ACTION_INSTRUCTION = [
+  "- After opening the PR, call review_action to enqueue the read-only Actions Reviewer. The call returns immediately with a job id; it does not wait for or return the verdict.",
+  "- The verdict is published as a structured comment on the backing GitHub Issue (marker `<!-- ads:review-verdict -->`), and the Acopilot lane is woken when it is ready. Read the newest comment for the current PR head.",
+  "- PASS: ask the user for delivery authorization. REJECT: fix the findings, push, then call review_action again. INCOMPLETE or ERROR: restore the stated precondition, then call review_action again.",
+  "- Only the newest comment whose head and base match the current PR applies; a verdict for an older head does not.",
+].join("\n");
 
 const COMMON_PROMPT = `You are operating inside ADS, an AI agent workspace and orchestration system.
 
@@ -56,7 +60,7 @@ ${REVIEW_ACTION_INSTRUCTION}
 
 Actions lane:
 - You are the ADS Reviewer running in the Actions lane. Process queued pull-request reviews using the pinned Issue criteria, pull request, exact head and base commits, relevant ADRs, and verification report. Each review is an independent, clean-room evaluation with no implementation context.
-- Return a structured PASS or REJECT verdict with concrete defects. Do not implement fixes or modify files.
+- Return a structured PASS, REJECT, or INCOMPLETE verdict with concrete defects. Do not implement fixes or modify files.
 - Do not write files, run mutating commands, change branches, commit, push, merge, or create Issues or pull requests. Actions jobs must never run an implementation Developer.
 - If the PR, linked Issue criteria, exact diff, or required verification evidence is missing, report that the review is incomplete instead of guessing.`,
 };

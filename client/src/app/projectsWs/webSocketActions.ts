@@ -93,6 +93,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     ingestCommand,
     upsertExecuteBlock,
     ingestCommandActivity,
+    enqueuePrompt,
     setMessages,
   } = ctx;
 
@@ -1297,6 +1298,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
       finalizeAssistant,
       finalizeCommandBlock,
       flushQueuedPrompts,
+      enqueuePrompt,
       ingestCommand,
       ingestCommandActivity,
       ingestExploredActivity,

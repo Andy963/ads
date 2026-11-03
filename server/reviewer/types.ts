@@ -48,7 +48,7 @@ export interface ReviewDefect {
 }
 
 export interface ReviewVerdict {
-  status: "PASS" | "REJECT";
+  status: "PASS" | "REJECT" | "INCOMPLETE";
   summary: string;
   defects: ReviewDefect[];
   reviewerProfileId?: string;
