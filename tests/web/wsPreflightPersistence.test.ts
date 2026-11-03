@@ -19,6 +19,7 @@ import { attachWebSocketServer } from "../../server/web/server/ws/server.js";
 import { SyncEventStore } from "../../server/web/server/sync/store.js";
 import { resolveSyncNamespace } from "../../server/web/server/sync/lane.js";
 import { createPromptQueueStore } from "../../server/state/promptQueueStore.js";
+import type { ActionTools } from "../../server/agents/actionTools.js";
 
 type WsJson = { type?: unknown; [k: string]: unknown };
 
@@ -75,6 +76,8 @@ describe("web/server/ws/preflight-persistence", () => {
   let unblockCommands: (() => void) | null;
   let failAgentRequests: boolean;
   let agentRequestCount: number;
+  let lastActionTools: ActionTools | undefined;
+  let actionToolContext: { authUserId: string; projectId: string; repoPath: string } | undefined;
   /** Held by tests that need a prompt to occupy the lane while another waits. */
   let holdAgentRequests: Promise<void> | null;
   const originalEnv = { ...process.env };
@@ -104,14 +107,17 @@ describe("web/server/ws/preflight-persistence", () => {
     >();
     failAgentRequests = false;
     agentRequestCount = 0;
+    lastActionTools = undefined;
+    actionToolContext = undefined;
     holdAgentRequests = null;
     const createSession = ({ cwd }: { cwd: string }): HybridOrchestrator => new HybridOrchestrator({
       initialWorkingDirectory: cwd,
       adapters: [{
         id: "codex",
         metadata: { id: "codex", name: "Preflight fixture", capabilities: ["text"] },
-        send: async () => {
+        send: async (_input, options) => {
           agentRequestCount += 1;
+          lastActionTools = options?.actionTools;
           if (holdAgentRequests) await holdAgentRequests;
           if (failAgentRequests) throw new Error("fixture agent failure");
           return { response: "Fixture reply", usage: null, agentId: "codex" };
@@ -172,6 +178,13 @@ describe("web/server/ws/preflight-persistence", () => {
         cwdStore: new Map(),
         cwdStorePath: process.env.ADS_STATE_DB_PATH,
         persistCwdStore: () => {},
+        createInteractiveActionTools: async ({ authUserId, projectId, repoPath }) => {
+          actionToolContext = { authUserId, projectId, repoPath };
+          return {
+            review_action: async () => ({ ok: true }),
+            dispose: async () => {},
+          };
+        },
       },
       sessions: {
         workerSessionManager,
@@ -291,6 +304,35 @@ describe("web/server/ws/preflight-persistence", () => {
       } catch {
         // ignore
       }
+    }
+  });
+
+  it("passes action tools to prompts executed from the durable queue", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
+    const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+
+    try {
+      await waitForWsOpen(client);
+      client.send(JSON.stringify({ type: "prompt", payload: { text: "queued tool prompt" }, client_message_id: "tools-1" }));
+      await waitForWsMessage(
+        client,
+        (msg) => msg.type === "ack" && msg.client_message_id === "tools-1",
+        2000,
+      );
+      const completedDeadline = Date.now() + 3000;
+      while (promptQueueStore.getByClientMessageId("tools-1")?.status !== "completed") {
+        assert.ok(Date.now() < completedDeadline, "queued prompt should complete");
+        await delay(5);
+      }
+
+      assert.equal(typeof lastActionTools?.review_action, "function");
+      assert.deepEqual(await lastActionTools?.review_action(), { ok: true });
+      assert.equal(actionToolContext?.authUserId, "test");
+      assert.ok(actionToolContext?.projectId);
+      assert.ok(actionToolContext?.repoPath);
+    } finally {
+      client.terminate();
     }
   });
 
