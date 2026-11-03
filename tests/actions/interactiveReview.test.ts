@@ -152,10 +152,6 @@ describe("Actions Reviewer queue", () => {
           },
         };
       },
-      interactiveOpenPullRequestReader: () => options.openPullRequests ?? [{
-        number: current().prNumber,
-        headRefName: current().branch,
-      }],
       ...(options.useInspection
         ? {
             reviewerModelResolver: () => ({
@@ -547,7 +543,7 @@ describe("Actions Reviewer queue", () => {
     const job = bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0];
 
     assert.equal(result.ok, false);
-    assert.match(String(result.error), /changed after dispatch/);
+    assert.match(String(result.error), /changed during verification/);
     assert.ok(job);
     assert.equal(job.status, "failed");
     assert.deepEqual(JSON.parse(job.review_verdicts_json), []);
@@ -621,42 +617,20 @@ describe("Actions Reviewer queue", () => {
     await tools.dispose();
   });
 
-  it("validates the Issue task slot without changing the workspace", async () => {
-    spawnSync("git", ["checkout", "dev"], { cwd: repoDir });
+  it("queues the job before workspace and target checks", async () => {
     const reviewTarget = target();
-    const bus = createBus(() => reviewTarget, { openPullRequests: [] });
-    const result = await bus.beginInteractiveImplementation({
-      projectId: reviewTarget.projectId,
-      repoPath: repoDir,
-      authUserId: "user-1",
-      issueId: 900,
-    });
+    fs.appendFileSync(path.join(repoDir, "README.md"), "dirty\n");
+    const bus = createBus(() => reviewTarget);
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
 
-    assert.deepEqual(result, { ok: true, issueId: 900, branch: "dev" });
-    assert.equal(git("branch", "--show-current"), "dev");
-  });
-
-  it("blocks a task when the base workspace is dirty or another PR owns the slot", async () => {
-    spawnSync("git", ["checkout", "dev"], { cwd: repoDir });
-    const reviewTarget = target();
-    const dirtyBus = createBus(() => reviewTarget, { openPullRequests: [] });
-    fs.writeFileSync(path.join(repoDir, "uncommitted.txt"), "preserve this change\n");
-    await assert.rejects(dirtyBus.beginInteractiveImplementation({
-      projectId: reviewTarget.projectId,
-      repoPath: repoDir,
-      authUserId: "user-1",
-      issueId: 900,
-    }), /base workspace has uncommitted changes/);
-    assert.equal(fs.readFileSync(path.join(repoDir, "uncommitted.txt"), "utf8"), "preserve this change\n");
-    fs.rmSync(path.join(repoDir, "uncommitted.txt"));
-
-    const busyBus = createBus(() => reviewTarget, { openPullRequests: [{ number: 902, headRefName: "codex/issue-902" }] });
-    await assert.rejects(busyBus.beginInteractiveImplementation({
-      projectId: reviewTarget.projectId,
-      repoPath: repoDir,
-      authUserId: "user-1",
-      issueId: 900,
-    }), /Open pull request #902 owns the repository task slot/);
+    const result = await tools.review_action();
+    assert.equal(result.ok, false);
+    assert.match(String(result.error), /Commit tracked changes before requesting an interactive review/);
+    const jobs = bus.getJobs(reviewTarget.projectId, repoDir, "user-1");
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0]?.status, "failed");
+    assert.equal(jobs[0]?.base_sha, "");
+    await tools.dispose();
   });
 
   it("rejects review when the Issue-backed PR is missing or ambiguous", async () => {
@@ -664,8 +638,12 @@ describe("Actions Reviewer queue", () => {
     const bus = createBus(() => reviewTarget, { openPullRequests: [] });
     const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
 
-    await assert.rejects(tools.review_action(), /Only one open pull request/);
-    assert.deepEqual(bus.getJobs(reviewTarget.projectId, repoDir, "user-1"), []);
+    const result = await tools.review_action();
+    assert.equal(result.ok, false);
+    assert.match(String(result.error), /Only one open pull request/);
+    const jobs = bus.getJobs(reviewTarget.projectId, repoDir, "user-1");
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0]?.status, "failed");
     await tools.dispose();
   });
 

@@ -27,6 +27,7 @@ import {
   getActionJobs,
   getActionJobById,
   updateActionJobStatus,
+  updateActionJobPinnedTarget,
   type ActionJobIssueSnapshot,
   type ActionJobRecord,
 } from "../state/actionJobStore.js";
@@ -196,10 +197,6 @@ export interface LaneDispatchBusOptions {
     issueId: number;
     prNumber?: number | null;
   }) => InteractiveGithubMetadata | Promise<InteractiveGithubMetadata>;
-  interactiveOpenPullRequestReader?: (input: {
-    repoPath: string;
-    baseRefName: string;
-  }) => Array<{ number: number; headRefName: string }> | Promise<Array<{ number: number; headRefName: string }>>;
 }
 
 export class LaneDispatchBus {
@@ -817,6 +814,38 @@ export class LaneDispatchBus {
     }
   }
 
+  private async resolveInteractiveDispatchTarget(
+    input: InteractiveReviewTargetRequest & { signal?: AbortSignal },
+  ): Promise<{
+    projectId: string;
+    repoPath: string;
+    authUserId: string;
+    branch: string;
+    prNumber: number;
+  }> {
+    const { projectId, repoPath, authUserId } = await this.resolveInteractiveProjectContext(input, input.signal);
+    let branch = String(input.branch ?? "").trim();
+    if (!branch) {
+      const result = await this.runInteractiveCommand("git", ["branch", "--show-current"], repoPath, input.signal);
+      branch = result.exitCode === 0 ? result.stdout.trim() : "";
+    }
+    return {
+      projectId,
+      repoPath,
+      authUserId,
+      branch,
+      prNumber: Number.isSafeInteger(input.prNumber) && Number(input.prNumber) > 0 ? Number(input.prNumber) : 0,
+    };
+  }
+
+  private jobNeedsPinning(job: ActionJobRecord): boolean {
+    return !job.base_sha
+      || !job.head_sha
+      || !job.pr_number
+      || !job.issue_id
+      || !job.pr_url;
+  }
+
   private reviewTargetMatchesJob(job: ActionJobRecord, target: InteractiveReviewTarget): boolean {
     if (job.job_kind !== "pull_request_review"
       || job.issue_id !== target.issue.id
@@ -839,75 +868,55 @@ export class LaneDispatchBus {
   public async dispatchReviewJob(
     input: InteractiveReviewTargetRequest & { signal?: AbortSignal },
   ): Promise<ActionToolResult> {
-    const session = await this.resolveInteractiveReviewSession(input, input.signal);
-    const target = session.target;
-    if (!target.baseCommit || !target.headCommit) {
-      throw new ReviewerIncompleteError("The review target is missing exact base or head commit evidence.");
-    }
-    const issueId = Number(target.issue.id);
-    if (!Number.isSafeInteger(issueId) || issueId < 1) {
-      throw new ReviewerIncompleteError("The review target is missing its GitHub Issue number.");
-    }
-    this.failInterruptedReviewJobs(target.projectId, target.repoPath);
-    const reviewerProfile = getDefaultRoleProfile(this.db, "reviewer");
-    if (!reviewerProfile || reviewerProfile.role !== "reviewer" || !reviewerProfile.is_enabled
-      || !reviewerProfile.model_id.trim() || !reviewerProfile.system_prompt.trim()) {
-      throw new Error("Configure an enabled Reviewer profile with a model and system prompt before dispatching a review.");
-    }
+    const context = await this.resolveInteractiveDispatchTarget(input);
+    this.failInterruptedReviewJobs(context.projectId, context.repoPath);
 
-    const existing = getActionJobs(this.db, target.projectId, undefined, target.authUserId).find((job) =>
+    const existing = getActionJobs(this.db, context.projectId, undefined, context.authUserId).find((job) =>
       job.job_kind === "pull_request_review"
-      && job.pr_number === target.prNumber
-      && job.base_sha === target.baseCommit
-      && job.head_sha === target.headCommit
+      && job.branch === context.branch
+      && (context.prNumber === 0 || job.pr_number === context.prNumber)
       && ["queued", "verifying", "reviewing"].includes(job.status),
     );
     if (existing) {
-      await raceReviewerAbort(this.processReviewQueue(target.projectId, target.repoPath), input.signal ?? new AbortController().signal);
+      await raceReviewerAbort(this.processReviewQueue(context.projectId, context.repoPath), input.signal ?? new AbortController().signal);
       return this.reviewJobToolResult(existing.id);
     }
 
     const identity = resolveActionsLaneIdentity(this.db, {
-      projectId: target.projectId,
-      repoPath: target.repoPath,
-      authUserId: target.authUserId,
+      projectId: context.projectId,
+      repoPath: context.repoPath,
+      authUserId: context.authUserId,
     });
-    if (!identity) throw new Error("The authenticated Actions lane is unavailable for this project.");
-
     const id = randomUUID();
-    const issueSnapshot: ActionJobIssueSnapshot = {
-      title: target.issue.title,
-      description: target.issue.description ?? target.issue.title,
-      acceptanceCriteria: [...(target.issue.acceptanceCriteria ?? [])],
-      adrs: (target.adrs ?? []).map((adr) => ({ ...adr })),
-    };
     const job = createActionJob(this.db, {
       id,
-      project_id: target.projectId,
-      lane_generation: this.options.captureActionsLaneGeneration?.(identity.logicalHistoryKey) ?? 1,
+      project_id: context.projectId,
+      lane_generation: this.options.captureActionsLaneGeneration?.(identity?.logicalHistoryKey ?? "") ?? 1,
       job_kind: "pull_request_review",
-      issue_id: issueId,
-      issue_title: target.issue.title,
-      issue_snapshot: issueSnapshot,
-      branch: target.branch,
-      base_sha: target.baseCommit,
-      head_sha: target.headCommit,
-      reviewer_profile_ids_json: JSON.stringify([reviewerProfile.id]),
-      pr_number: target.prNumber,
-      pr_url: target.prUrl,
-      auth_user_id: target.authUserId,
-      chat_session_id: identity.chatSessionId,
+      issue_id: 0,
+      issue_title: "",
+      issue_snapshot: { title: "", description: "", acceptanceCriteria: [], adrs: [] },
+      branch: context.branch,
+      base_sha: "",
+      head_sha: "",
+      reviewer_profile_ids_json: "[]",
+      pr_number: context.prNumber,
+      pr_url: "",
+      auth_user_id: context.authUserId,
+      chat_session_id: identity?.chatSessionId ?? "",
     });
     updateActionJobStatus(this.db, job.id, "queued", {
-      current_step: `Queued read-only review for PR #${target.prNumber} at ${target.headCommit.slice(0, 12)}`,
+      current_step: context.prNumber > 0
+        ? `Queued read-only review for PR #${context.prNumber}; target checks run when the job starts.`
+        : `Queued read-only review for branch ${context.branch || "(unknown)"}; target checks run when the job starts.`,
     });
     this.recordActionMessage(
       job,
-      target.repoPath,
-      `Queued Reviewer job ${job.id} for PR #${target.prNumber} at ${target.headCommit.slice(0, 12)} (base ${target.baseCommit.slice(0, 12)}).`,
+      context.repoPath,
+      `Queued Reviewer job ${job.id}; the pinned target is resolved when the job reaches the front of the queue.`,
       `action_step:${job.id}:queued`,
     );
-    await raceReviewerAbort(this.processReviewQueue(target.projectId, target.repoPath), input.signal ?? new AbortController().signal);
+    await raceReviewerAbort(this.processReviewQueue(context.projectId, context.repoPath), input.signal ?? new AbortController().signal);
     return this.reviewJobToolResult(job.id);
   }
 
@@ -1021,7 +1030,7 @@ export class LaneDispatchBus {
     if (!claim.changes) return;
     const claimedJob = getActionJobById(this.db, job.id) ?? job;
     updateActionJobStatus(this.db, job.id, "verifying", {
-      current_step: `Checking pinned target for PR #${job.pr_number}`,
+      current_step: (job.pr_number ?? 0) > 0 ? `Checking pinned target for PR #${job.pr_number}` : "Resolving the review target when the job starts",
       error_message: null,
       verification_report_json: "",
       review_verdicts_json: "[]",
@@ -1029,7 +1038,9 @@ export class LaneDispatchBus {
     this.recordActionMessage(
       claimedJob,
       repoPath,
-      `Reviewer job ${job.id} started for PR #${job.pr_number}; verifying the pinned target before execution.`,
+      (job.pr_number ?? 0) > 0
+        ? `Reviewer job ${job.id} started for PR #${job.pr_number}; verifying the pinned target before execution.`
+        : `Reviewer job ${job.id} started; resolving the review target before execution.`,
       `action_step:${job.id}:started`,
     );
 
@@ -1039,10 +1050,27 @@ export class LaneDispatchBus {
         repoPath,
         authUserId: job.auth_user_id ?? "",
         branch: job.branch ?? undefined,
-        prNumber: job.pr_number,
+        prNumber: (job.pr_number ?? 0) > 0 ? job.pr_number : undefined,
       };
       const session = await this.resolveInteractiveReviewSession(request);
-      if (!this.reviewTargetMatchesJob(job, session.target)) {
+      if (this.jobNeedsPinning(job)) {
+        updateActionJobPinnedTarget(this.db, job.id, {
+          issue_id: Number(session.target.issue.id),
+          issue_title: session.target.issue.title,
+          issue_snapshot: {
+            title: session.target.issue.title,
+            description: session.target.issue.description ?? session.target.issue.title,
+            acceptanceCriteria: [...(session.target.issue.acceptanceCriteria ?? [])],
+            adrs: (session.target.adrs ?? []).map((adr) => ({ ...adr })),
+          },
+          branch: session.target.branch,
+          base_sha: session.target.baseCommit ?? "",
+          head_sha: session.target.headCommit ?? "",
+          pr_number: Number(session.target.prNumber),
+          pr_url: session.target.prUrl,
+        });
+        job = getActionJobById(this.db, job.id) ?? job;
+      } else if (!this.reviewTargetMatchesJob(job, session.target)) {
         throw new ReviewerIncompleteError("The pull request, Issue, base, head, or ADR snapshot changed after dispatch.");
       }
       const controller = new AbortController();
@@ -1079,109 +1107,11 @@ export class LaneDispatchBus {
     }
   }
 
-  private async readInteractiveOpenPullRequests(
-    repoPath: string,
-    signal?: AbortSignal,
-  ): Promise<Array<{ number: number; headRefName: string }>> {
-    if (this.options.interactiveOpenPullRequestReader) {
-      const pullRequests = await this.options.interactiveOpenPullRequestReader({
-        repoPath,
-        baseRefName: ACTIONS_BASE_BRANCH,
-      });
-      signal?.throwIfAborted();
-      return pullRequests;
-    }
-
-    const remote = await this.runInteractiveCommand("git", ["remote", "get-url", "origin"], repoPath, signal);
-    if (remote.exitCode !== 0 || !remote.stdout.trim()) return [];
-
-    const result = await this.runInteractiveCommand(
-      "gh",
-      ["pr", "list", "--state", "open", "--base", ACTIONS_BASE_BRANCH, "--limit", "2", "--json", "number,headRefName"],
-      repoPath,
-      signal,
-    );
-    if (result.exitCode !== 0) {
-      throw new Error(`Unable to inspect open pull requests: ${result.stderr.trim() || "gh command failed"}`);
-    }
-    try {
-      const parsed = JSON.parse(result.stdout || "[]") as unknown;
-      if (!Array.isArray(parsed)) throw new Error("expected an array");
-      return parsed.map((record) => {
-        const item = record as Record<string, unknown>;
-        const number = Number(item.number);
-        const headRefName = String(item.headRefName ?? "").trim();
-        if (!Number.isSafeInteger(number) || number < 1 || !headRefName) {
-          throw new Error("invalid pull request number or head branch");
-        }
-        return { number, headRefName };
-      });
-    } catch (error) {
-      throw new Error(`Open pull request metadata is invalid: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  public async beginInteractiveImplementation(input: InteractiveReviewTargetRequest & {
-    issueId: number;
-    signal?: AbortSignal;
-  }): Promise<{ ok: true; issueId: number; branch: string; pullRequestNumber?: number }> {
-    if (!Number.isSafeInteger(input.issueId) || input.issueId < 1) {
-      throw new Error("Implementation requires a valid GitHub Issue number.");
-    }
-    const { repoPath } = await this.resolveInteractiveProjectContext(input, input.signal);
-    const branchResult = await this.runInteractiveCommand("git", ["branch", "--show-current"], repoPath, input.signal);
-    if (branchResult.exitCode !== 0) {
-      throw new Error(`Unable to determine the current workspace branch: ${branchResult.stderr.trim() || "git command failed"}`);
-    }
-    const branch = branchResult.stdout.trim();
-    const expectedBranch = `codex/issue-${input.issueId}`;
-    if (branch !== ACTIONS_BASE_BRANCH && branch !== expectedBranch) {
-      throw new Error(`Workspace is on '${branch}', not '${ACTIONS_BASE_BRANCH}' or '${expectedBranch}'. Finish the current repository task first.`);
-    }
-    if (branch === ACTIONS_BASE_BRANCH) {
-      const statusResult = await this.runInteractiveCommand(
-        "git",
-        ["status", "--porcelain", "--untracked-files=all"],
-        repoPath,
-        input.signal,
-      );
-      if (statusResult.exitCode !== 0) {
-        throw new Error(`Unable to verify the base workspace is clean: ${statusResult.stderr.trim() || "git command failed"}`);
-      }
-      if (statusResult.stdout.trim()) {
-        throw new Error("The base workspace has uncommitted changes. Preserve or resolve them before starting a repository task.");
-      }
-    }
-
-    const openPullRequests = await this.readInteractiveOpenPullRequests(repoPath, input.signal);
-    if (openPullRequests.length > 1) {
-      throw new Error("The repository has multiple open pull requests targeting dev. Resolve them before starting another task.");
-    }
-    const openPullRequest = openPullRequests[0];
-    if (openPullRequest && (branch !== expectedBranch || openPullRequest.headRefName !== expectedBranch)) {
-      throw new Error(`Open pull request #${openPullRequest.number} owns the repository task slot. Continue Issue #${input.issueId} only after checking out '${expectedBranch}'.`);
-    }
-
-    return {
-      ok: true,
-      issueId: input.issueId,
-      branch,
-      ...(openPullRequest ? { pullRequestNumber: openPullRequest.number } : {}),
-    };
-  }
-
   public createInteractiveActionTools(
     input: InteractiveReviewTargetRequest & { signal: AbortSignal },
   ): Promise<ActionTools & { dispose: () => Promise<void> }> {
     return Promise.resolve({
       review_action: async () => await this.dispatchReviewJob(input),
-      begin_implementation: async ({ issue_id }) => await this.beginInteractiveImplementation({
-        projectId: input.projectId,
-        repoPath: input.repoPath,
-        authUserId: input.authUserId,
-        issueId: issue_id,
-        signal: input.signal,
-      }),
       dispose: async () => {},
     });
   }

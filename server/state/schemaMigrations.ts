@@ -4,8 +4,7 @@ import type { Database as DatabaseType } from "better-sqlite3";
 
 import {
   BASE_LANE_PROMPTS,
-  CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
-  LEGACY_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION,
+  REVIEW_ACTION_INSTRUCTION,
 } from "./lanePromptDefaults.js";
 import { ensureLanePromptTables } from "./lanePromptStore.js";
 import { sanitizeModelConfigJson } from "./modelConfigTypes.js";
@@ -167,6 +166,14 @@ function repairLegacyActionsLaneGenerations(db: DatabaseType): void {
     if (jobId) updateGeneration.run(generation, jobId);
   }
 }
+
+// Frozen text from shipped migrations. These literals rewrite prompts that
+// older databases already stored; do not reuse them in new prompts.
+const RETIRED_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION =
+  "- Before changing files or branches for an Issue, call begin_implementation with its issue_id. After opening the PR, call review_action to enqueue a pinned review in the Actions lane; the Actions lane runs only the read-only Reviewer, records PASS or REJECT in its queue and conversation, and returns the structured result to Acopilot.";
+
+const RETIRED_CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION =
+  "- Before changing files or branches for an Issue, validate that it owns the workspace task slot. When the dynamic begin_implementation tool is available, call it with the Issue id. If the current execution environment does not expose that tool, perform equivalent read-only checks of the branch, working tree, and open pull requests. The tool's absence alone is not a blocker. After opening the PR, call review_action to enqueue a pinned review in the Actions lane; the Actions lane runs only the read-only Reviewer, records PASS or REJECT in its queue and conversation, and returns the structured result to Acopilot.";
 
 export const stateSchemaMigrations: StateSchemaMigration[] = [
   {
@@ -1248,8 +1255,41 @@ Core reviewing rules:
 
       for (const profile of profiles) {
         const nextPrompt = profile.system_prompt
-          .split(LEGACY_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION)
-          .join(CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION);
+          .split(RETIRED_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION)
+          .join(RETIRED_CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION);
+        if (nextPrompt !== profile.system_prompt) {
+          update.run(nextPrompt, now, profile.id);
+        }
+      }
+    },
+  },
+  {
+    version: 41,
+    description: "Remove the retired implementation task-slot preflight from Acopilot prompts",
+    up: (db) => {
+      const table = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'role_profiles'")
+        .get();
+      if (!table) return;
+
+      const profiles = db.prepare(`
+        SELECT id, system_prompt
+        FROM role_profiles
+        WHERE role = 'acopilot'
+      `).all() as Array<{ id: string; system_prompt: string }>;
+      const update = db.prepare(`
+        UPDATE role_profiles
+        SET system_prompt = ?, version = version + 1, updated_at = ?
+        WHERE id = ?
+      `);
+      const now = Date.now();
+
+      for (const profile of profiles) {
+        const nextPrompt = profile.system_prompt
+          .split(RETIRED_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION)
+          .join(REVIEW_ACTION_INSTRUCTION)
+          .split(RETIRED_CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION)
+          .join(REVIEW_ACTION_INSTRUCTION);
         if (nextPrompt !== profile.system_prompt) {
           update.run(nextPrompt, now, profile.id);
         }

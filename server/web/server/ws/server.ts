@@ -43,7 +43,6 @@ import { createCommandSnapshotCoalescer } from "../sync/commandSnapshot.js";
 import { projectCommandFrame } from "../commandPresentation.js";
 import { recordConversationMessage } from "../../../utils/conversationMessageRecorder.js";
 import { WEB_ACTIONS_NAMESPACE } from "../start/webLaneResources.js";
-import { shouldExposeInteractiveActionTools } from "./actionToolExposure.js";
 import { onTaskTerminalEvent } from "../../taskNotifications/taskNotificationDispatcher.js";
 
 import { handlePromptMessage } from "./handlePrompt.js";
@@ -1754,11 +1753,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
               agents: {
                 agentAvailability: agents.agentAvailability,
               },
-              ...(shouldExposeInteractiveActionTools({
-                isConnector: Boolean(aliveWs.isConnector),
-                laneNamespace: lane.laneNamespace,
-                factoryAvailable: Boolean(state.createInteractiveActionTools),
-              })
+              ...(state.createInteractiveActionTools
                 ? { createInteractiveActionTools: state.createInteractiveActionTools }
                 : {}),
               ...(deps.notifyWebUser ? { notifyWebUser: deps.notifyWebUser } : {}),

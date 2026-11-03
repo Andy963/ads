@@ -120,7 +120,44 @@ describe("CodexAppServerAdapter", () => {
     assert.equal(adapter.id, "codex");
   });
 
-  it("exposes implementation and review-dispatch tools in the Acopilot turn", async () => {
+  it("always registers review_action in the built-in tool set", async () => {
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-builtins" } }),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({ projectId: "builtin-tools", registry });
+
+    const pending = adapter.send("Review the current pull request");
+    await waitForRequestCount(fake, "turn/start", 1);
+    const threadStart = fake.requests.find((request) => request.method === "thread/start");
+    assert.deepEqual(
+      (threadStart?.params?.dynamicTools as Array<{ name: string }>).map((tool) => tool.name),
+      ["review_action"],
+    );
+
+    fake.notify("turn/started", { threadId: "thread-builtins", turn: { id: "turn-builtins" } });
+    const reviewResult = await callBuiltin(fake, {
+      threadId: "thread-builtins",
+      turnId: "turn-builtins",
+      callId: "review-without-context",
+      tool: "review_action",
+      arguments: {},
+    });
+    assert.equal(reviewResult.result.success, false);
+    assert.match(
+      reviewResult.result.contentItems[0].text,
+      /review_action is unavailable without an authenticated Acopilot project context/,
+    );
+
+    fake.notify("turn/completed", { threadId: "thread-builtins", turn: { id: "turn-builtins" } });
+    await pending;
+    await registry.stopAll();
+  });
+
+  it("executes review_action through the host bridge when project context is present", async () => {
     const fake = buildFakeServer({
       autoReplies: {
         "thread/start": () => ({ thread: { id: "thread-acopilot-tools" } }),
@@ -129,14 +166,10 @@ describe("CodexAppServerAdapter", () => {
     });
     const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
     const adapter = new CodexAppServerAdapter({ projectId: "acopilot-tools", registry });
-    const calls: string[] = [];
+    let calls = 0;
     const actionTools = {
-      begin_implementation: async ({ issue_id }: { issue_id: number }) => {
-        calls.push(`begin:${issue_id}`);
-        return { ok: true, issue_id };
-      },
       review_action: async () => {
-        calls.push("review");
+        calls += 1;
         return { ok: true, verdict: { status: "PASS" } };
       },
     };
@@ -146,23 +179,10 @@ describe("CodexAppServerAdapter", () => {
     const threadStart = fake.requests.find((request) => request.method === "thread/start");
     assert.deepEqual(
       (threadStart?.params?.dynamicTools as Array<{ name: string }>).map((tool) => tool.name),
-      ["begin_implementation", "review_action"],
+      ["review_action"],
     );
 
     fake.notify("turn/started", { threadId: "thread-acopilot-tools", turn: { id: "turn-acopilot-tools" } });
-    const beginResult = await callBuiltin(fake, {
-      threadId: "thread-acopilot-tools",
-      turnId: "turn-acopilot-tools",
-      callId: "begin-implementation",
-      tool: "begin_implementation",
-      arguments: { issue_id: 516 },
-    });
-    assert.equal(beginResult.result.success, true);
-    assert.equal(
-      beginResult.result.contentItems[0].text,
-      "begin_implementation completed.\nIssue: #516.",
-    );
-
     const reviewResult = await callBuiltin(fake, {
       threadId: "thread-acopilot-tools",
       turnId: "turn-acopilot-tools",
@@ -171,18 +191,15 @@ describe("CodexAppServerAdapter", () => {
       arguments: {},
     });
     assert.equal(reviewResult.result.success, true);
-    assert.equal(
-      reviewResult.result.contentItems[0].text,
-      "review_action completed.\nStatus: PASS.",
-    );
-    assert.deepEqual(calls, ["begin:516", "review"]);
+    assert.equal(reviewResult.result.contentItems[0].text, "review_action completed.\nStatus: PASS.");
+    assert.equal(calls, 1);
 
     fake.notify("turn/completed", { threadId: "thread-acopilot-tools", turn: { id: "turn-acopilot-tools" } });
     await pending;
     await registry.stopAll();
   });
 
-  it("starts a tool-enabled thread instead of resuming a persisted thread without Action tools", async () => {
+  it("starts a tool-enabled thread instead of resuming a persisted thread without built-in tools", async () => {
     const fake = buildFakeServer({
       autoReplies: {
         "thread/start": () => ({ thread: { id: "thread-action-fresh" } }),
@@ -195,10 +212,10 @@ describe("CodexAppServerAdapter", () => {
       resumeThreadId: "thread-persisted-without-tools",
       registry,
     });
-    const calls: string[] = [];
+    let calls = 0;
     const actionTools = {
       review_action: async () => {
-        calls.push("review");
+        calls += 1;
         return { ok: true, verdict: { status: "PASS" } };
       },
     };
@@ -209,7 +226,7 @@ describe("CodexAppServerAdapter", () => {
     const threadStart = fake.requests.find((request) => request.method === "thread/start");
     assert.deepEqual(
       (threadStart?.params?.dynamicTools as Array<{ name: string }>).map((tool) => tool.name),
-      ["begin_implementation", "review_action"],
+      ["review_action"],
     );
 
     await waitForRequestCount(fake, "turn/start", 1);
@@ -223,7 +240,7 @@ describe("CodexAppServerAdapter", () => {
     });
     assert.equal(reviewResult.result.success, true);
     assert.equal(reviewResult.result.contentItems[0].text, "review_action completed.\nStatus: PASS.");
-    assert.deepEqual(calls, ["review"]);
+    assert.equal(calls, 1);
 
     fake.notify("turn/completed", { threadId: "thread-action-fresh", turn: { id: "turn-action-fresh" } });
     await pending;
@@ -610,70 +627,15 @@ describe("CodexAppServerAdapter", () => {
    await registry.stopAll();
  });
 
-  it("resumes an existing persisted thread via thread/resume before turn start", async () => {
-    let resumeCalls = 0;
-    const fake = buildFakeServer({
+  it("recreates a missing thread when thread/resume reports no rollout found", async () => {
+    let clientCount = 0;
+    const first = buildFakeServer({
       autoReplies: {
-        "thread/resume": (msg) => {
-          resumeCalls += 1;
-          return { thread: { id: msg.params?.threadId } };
-        },
+        "thread/start": () => ({ thread: { id: "thread-deleted" } }),
         "turn/start": () => ({}),
       },
     });
-    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
-    const adapter = new CodexAppServerAdapter({
-      projectId: "resume-thread-test",
-      resumeThreadId: "thread-persisted-abc",
-      registry,
-    });
-    const events: unknown[] = [];
-    adapter.onEvent((event) => events.push(event));
-
-    const sendPromise = adapter.send("hello from resumed thread");
-    await waitForRequestCount(fake, "thread/resume", 1);
-    await waitForRequestCount(fake, "turn/start", 1);
-    fake.notify("item/completed", {
-      item: { type: "agentMessage", id: "m-resumed", text: "Welcome back" },
-      threadId: "thread-persisted-abc",
-      turnId: "turn-resumed",
-    });
-    fake.notify("turn/completed", { threadId: "thread-persisted-abc", turn: { id: "turn-resumed" } });
-
-    const result = await sendPromise;
-    assert.equal(result.response, "Welcome back");
-    assert.equal(adapter.getThreadId(), "thread-persisted-abc");
-    assert.equal(resumeCalls, 1);
-    assert.equal(fake.requests.filter((request) => request.method === "thread/start").length, 0);
-    const resumeRequest = fake.requests.find((request) => request.method === "thread/resume");
-    assert(resumeRequest, "expected thread/resume request");
-    assert.equal((resumeRequest.params as any).approvalPolicy, "untrusted");
-    assert.equal(
-      (fake.requests.find((request) => request.method === "turn/start")?.params as any)?.threadId,
-      "thread-persisted-abc",
-    );
-    const hasFallback = events.some(
-      (event) => typeof event === "object" && event !== null && "sessionFallback" in event,
-    );
-    assert.equal(hasFallback, false, "must not emit sessionFallback on successful resume");
-
-    // On second send, thread is already loaded in client, must not call thread/resume again
-    const secondSendPromise = adapter.send("second message");
-    await waitForRequestCount(fake, "turn/start", 2);
-    assert.equal(fake.requests.filter((request) => request.method === "thread/resume").length, 1);
-    fake.notify("item/completed", {
-      item: { type: "agentMessage", id: "m-second", text: "Second reply" },
-      threadId: "thread-persisted-abc",
-      turnId: "turn-second",
-    });
-    fake.notify("turn/completed", { threadId: "thread-persisted-abc", turn: { id: "turn-second" } });
-    await secondSendPromise;
-
-    await registry.stopAll();
-  });
-
-  it("recreates a missing thread when thread/resume reports no rollout found", async () => {
-    const fake = buildFakeServer({
+    const second = buildFakeServer({
       autoReplies: {
         "thread/start": () => ({ thread: { id: "thread-new-from-missing" } }),
         "turn/start": () => ({}),
@@ -685,25 +647,29 @@ describe("CodexAppServerAdapter", () => {
         }),
       },
     });
-    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
-    const adapter = new CodexAppServerAdapter({
-      projectId: "missing-on-resume",
-      resumeThreadId: "thread-deleted",
-      registry,
+    const registry = new CodexAppServerDaemonRegistry({
+      factory: () => (clientCount++ === 0 ? first.client : second.client),
     });
+    const adapter = new CodexAppServerAdapter({ projectId: "missing-on-resume", registry });
     const events: unknown[] = [];
     adapter.onEvent((event) => events.push(event));
 
+    const firstSend = adapter.send("seed the thread");
+    await waitForRequestCount(first, "turn/start", 1);
+    first.notify("turn/completed", { threadId: "thread-deleted", turn: { id: "turn-seed" } });
+    await firstSend;
+    await registry.stop("missing-on-resume");
+
     const sendPromise = adapter.send("recover from deleted thread");
-    await waitForRequestCount(fake, "thread/resume", 1);
-    await waitForRequestCount(fake, "thread/start", 1);
-    await waitForRequestCount(fake, "turn/start", 1);
-    fake.notify("item/completed", {
+    await waitForRequestCount(second, "thread/resume", 1);
+    await waitForRequestCount(second, "thread/start", 1);
+    await waitForRequestCount(second, "turn/start", 1);
+    second.notify("item/completed", {
       item: { type: "agentMessage", id: "m-recovered", text: "Recovered" },
       threadId: "thread-new-from-missing",
       turnId: "turn-recovered",
     });
-    fake.notify("turn/completed", {
+    second.notify("turn/completed", {
       threadId: "thread-new-from-missing",
       turn: { id: "turn-recovered" },
     });
@@ -724,47 +690,49 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
-  it("recreates a missing resumed thread and retries the turn", async () => {
+  it("recreates a missing thread and retries the turn", async () => {
+    let threadStarts = 0;
     let turnStartAttempts = 0;
     const fake = buildFakeServer({
       autoReplies: {
-        "thread/start": () => ({ thread: { id: "thread-recreated" } }),
+        "thread/start": () => ({ thread: { id: threadStarts++ === 0 ? "thread-original" : "thread-recreated" } }),
         "turn/start": () => ({}),
       },
       autoErrors: {
         "turn/start": () => {
           turnStartAttempts += 1;
-          return turnStartAttempts === 1
-            ? { code: -32600, message: "thread not found: thread-missing" }
+          return turnStartAttempts === 2
+            ? { code: -32600, message: "thread not found: thread-original" }
             : undefined;
         },
       },
     });
     const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
-    const adapter = new CodexAppServerAdapter({
-      projectId: "missing-thread",
-      resumeThreadId: "thread-missing",
-      registry,
-    });
+    const adapter = new CodexAppServerAdapter({ projectId: "missing-thread", registry });
     const events: unknown[] = [];
     adapter.onEvent((event) => events.push(event));
 
+    const firstSend = adapter.send("seed the thread");
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("turn/completed", { threadId: "thread-original", turn: { id: "turn-seed" } });
+    await firstSend;
+
     const sendPromise = adapter.send("recover this thread");
-    await waitForRequestCount(fake, "turn/start", 2);
+    await waitForRequestCount(fake, "turn/start", 3);
     fake.notify("item/completed", {
       item: { type: "agentMessage", id: "m-recovered", text: "Recovered" },
       threadId: "thread-recreated",
-      turnId: "turn-recreated",
+      turnId: "turn-recovered",
     });
-    fake.notify("turn/completed", { threadId: "thread-recreated", turn: { id: "turn-recreated" } });
+    fake.notify("turn/completed", { threadId: "thread-recreated", turn: { id: "turn-recovered" } });
 
     const result = await sendPromise;
     assert.equal(result.response, "Recovered");
     assert.equal(adapter.getThreadId(), "thread-recreated");
-    assert.equal(turnStartAttempts, 2);
-    assert.equal(fake.requests.filter((request) => request.method === "thread/start").length, 1);
+    assert.equal(turnStartAttempts, 3);
+    assert.equal(fake.requests.filter((request) => request.method === "thread/start").length, 2);
     assert.equal(
-      (fake.requests.filter((request) => request.method === "turn/start")[1]?.params as any).threadId,
+      (fake.requests.filter((request) => request.method === "turn/start")[2]?.params as any).threadId,
       "thread-recreated",
     );
     const fallbackEvent = events.find(
@@ -774,13 +742,13 @@ describe("CodexAppServerAdapter", () => {
     assert(fallbackEvent, "expected a session fallback event");
     assert.deepEqual(fallbackEvent.sessionFallback, {
       reason: "missing_provider_session",
-      previousSessionId: "thread-missing",
+      previousSessionId: "thread-original",
     });
 
     await registry.stopAll();
   });
 
-  it("recovers when auto-compaction discovers that the resumed thread is missing", async () => {
+  it("recovers when auto-compaction discovers that the current thread is missing", async () => {
     let threadStarts = 0;
     const fake = buildFakeServer({
       autoReplies: {
@@ -831,24 +799,35 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
-  it("preserves non-missing resumed thread errors", async () => {
+  it("preserves non-missing thread errors", async () => {
+    let turnStartAttempts = 0;
     const fake = buildFakeServer({
+      autoReplies: {
+        "thread/start": () => ({ thread: { id: "thread-still-valid" } }),
+        "turn/start": () => ({}),
+      },
       autoErrors: {
-        "turn/start": () => ({ code: -32000, message: "upstream connection error" }),
+        "turn/start": () => {
+          turnStartAttempts += 1;
+          return turnStartAttempts === 2
+            ? { code: -32000, message: "upstream connection error" }
+            : undefined;
+        },
       },
     });
     const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
-    const adapter = new CodexAppServerAdapter({
-      projectId: "non-missing-thread-error",
-      resumeThreadId: "thread-still-valid",
-      registry,
-    });
+    const adapter = new CodexAppServerAdapter({ projectId: "non-missing-thread-error", registry });
     const events: unknown[] = [];
     adapter.onEvent((event) => events.push(event));
 
+    const firstSend = adapter.send("seed the thread");
+    await waitForRequestCount(fake, "turn/start", 1);
+    fake.notify("turn/completed", { threadId: "thread-still-valid", turn: { id: "turn-seed" } });
+    await firstSend;
+
     await assert.rejects(adapter.send("keep the saved thread"), /upstream connection error/);
-    assert.equal(fake.requests.filter((request) => request.method === "thread/start").length, 0);
-    assert.equal(fake.requests.filter((request) => request.method === "turn/start").length, 1);
+    assert.equal(fake.requests.filter((request) => request.method === "thread/start").length, 1);
+    assert.equal(fake.requests.filter((request) => request.method === "turn/start").length, 2);
     assert.equal(
       events.some(
         (event) => typeof event === "object" && event !== null && "sessionFallback" in event,

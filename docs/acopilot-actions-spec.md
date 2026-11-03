@@ -11,7 +11,7 @@
 ## 2. 标准工作流
 
 1. Acopilot 调查需求，并先创建英文 GitHub Issue，内容包含 Problem Description、Root Cause Analysis、Scope of Work 与 Acceptance Criteria。
-2. 开始修改前，Acopilot 校验当前项目工作区和仓库任务槽。在 Web Acopilot 回合中，如果注入了 `begin_implementation(issue_id)`，必须调用。当前执行环境未注入该动态工具时，读取当前分支、工作区状态与开放 PR 做等价校验。工具缺失本身不是阻塞原因。
+2. Acopilot 决定任务边界和改动范围。`review_action` 是常驻内置工具；服务端从已认证的会话解析项目、工作区与用户身份。
 3. Acopilot 在 `codex/issue-<id>` 分支实现、验证并准备对应 PR。未经用户明确授权，不得推送、合并或部署。
 4. PR 创建后，Acopilot 调用 `review_action`。服务端固定 PR、Issue 条件、base/head 提交与相关 ADR，创建 `pull_request_review` 队列任务。
 5. Actions 队列按项目串行运行验证命令，再把完整验证报告交给只读 Reviewer，由它结合固定的 Issue/ADR 与 PR diff 评估。命令正常结束后，退出码非零不会阻止 Reviewer 运行。Actions 会话只记录命令、退出码与简短摘要，原始输出保留在任务记录和 Reviewer 输入中。
