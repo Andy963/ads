@@ -222,7 +222,6 @@ export class LaneDispatchBus {
       DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_MS,
     ),
     maxOutputLength = 20_000,
-    onOutput?: (chunk: string, stream: "stdout" | "stderr") => void,
   ): Promise<InteractiveCommandResult> {
     signal?.throwIfAborted();
     return await new Promise<InteractiveCommandResult>((resolve, reject) => {
@@ -273,11 +272,9 @@ export class LaneDispatchBus {
       if (signal) signal.addEventListener("abort", onAbort, { once: true });
       child.stdout.on("data", (chunk: Buffer | string) => {
         stdout = append(stdout, chunk);
-        onOutput?.(String(chunk), "stdout");
       });
       child.stderr.on("data", (chunk: Buffer | string) => {
         stderr = append(stderr, chunk);
-        onOutput?.(String(chunk), "stderr");
       });
       child.once("error", (error) => finish(error));
       child.once("close", (code) => finish(undefined, {
@@ -623,7 +620,6 @@ export class LaneDispatchBus {
   private async runInteractiveVerification(
     repoPath: string,
     signal: AbortSignal,
-    onLine?: (line: string) => void,
   ): Promise<NonNullable<ReviewPayload["testReport"]>> {
     const command = String(this.options.testCommand ?? "npm test").trim();
     const parts = command.split(/\s+/).filter(Boolean);
@@ -634,27 +630,7 @@ export class LaneDispatchBus {
       this.options.interactiveVerificationTimeoutMs,
       DEFAULT_INTERACTIVE_VERIFICATION_TIMEOUT_MS,
     );
-    const pendingByStream: Record<"stdout" | "stderr", string> = { stdout: "", stderr: "" };
-    const emit = (line: string): void => {
-      const text = line.trimEnd();
-      if (!text.trim()) return;
-      try {
-        onLine?.(text.slice(0, 500));
-      } catch { /* Lane logging must never break verification. */ }
-    };
-    const push = (chunk: string, stream: "stdout" | "stderr"): void => {
-      if (!onLine) return;
-      const lines = (pendingByStream[stream] + chunk.replace(/\r\n?/g, "\n")).split("\n");
-      pendingByStream[stream] = lines.pop() ?? "";
-      for (const line of lines) emit(line);
-    };
-    const result = await this.runInteractiveCommand(
-      parts[0]!, parts.slice(1), repoPath, signal, timeoutMs,
-      undefined, (chunk, stream) => push(chunk, stream),
-    );
-    for (const stream of ["stdout", "stderr"] as const) {
-      if (pendingByStream[stream]) emit(pendingByStream[stream]);
-    }
+    const result = await this.runInteractiveCommand(parts[0]!, parts.slice(1), repoPath, signal, timeoutMs);
     const output = [result.stdout, result.stderr]
       .map((value) => value.trim())
       .filter(Boolean)
@@ -701,35 +677,21 @@ export class LaneDispatchBus {
     const logLine = (text: string): void => {
       this.recordActionMessage(job, session.repoPath, text, `action_step:${job.id}:log:${++logSeq}`);
     };
-    const maxStreamedLines = 40;
-    let streamedLines = 0;
-    let droppedLines = 0;
-    const streamVerificationLine = (line: string): void => {
-      if (streamedLines >= maxStreamedLines) {
-        droppedLines += 1;
-        return;
-      }
-      streamedLines += 1;
-      logLine(line);
-    };
     try {
       signal.throwIfAborted();
       logLine(`Verification started: ${String(this.options.testCommand ?? "npm test").trim()}`);
-      const testReport = await this.runInteractiveVerification(session.repoPath, signal, streamVerificationLine);
-      if (droppedLines > 0) {
-        logLine(`Verification output truncated after ${maxStreamedLines} lines.`);
-      }
+      const testReport = await this.runInteractiveVerification(session.repoPath, signal);
       updateActionJobStatus(this.db, job.id, "verifying", {
         current_step: `Verification completed: ${testReport.command} (exit ${testReport.exitCode})`,
         verification_report_json: JSON.stringify(testReport),
       });
       const verificationOutcome = testReport.exitCode === 0
         ? "passed"
-        : "exited non-zero; continuing so the Reviewer can evaluate the report";
+        : "exited non-zero; the Reviewer will evaluate the report";
       this.recordActionMessage(
         job,
         session.repoPath,
-        `Review job ${job.id}: verification ${verificationOutcome} (${testReport.command}, exit ${testReport.exitCode}).`,
+        `Review job ${job.id}: verification ${verificationOutcome} (${testReport.command}, exit ${testReport.exitCode}): ${testReport.summary}`,
         `action_step:${job.id}:verification`,
       );
       const verifiedSession = await resolveCurrentSession();

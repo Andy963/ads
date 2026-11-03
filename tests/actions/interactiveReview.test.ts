@@ -704,7 +704,7 @@ describe("Actions Reviewer queue", () => {
     await tools.dispose();
   });
 
-  it("streams verification output and Reviewer inspection steps into the lane", async () => {
+  it("records verification status and Reviewer inspection steps in the lane", async () => {
     const reviewTarget = target();
     const history: Array<{ role: string; text: string; kind?: string }> = [];
     let calls = 0;
@@ -741,7 +741,10 @@ describe("Actions Reviewer queue", () => {
     assert.equal(result.ok, true, result.error);
     const texts = history.map((entry) => entry.text);
     assert.ok(texts.includes("Verification started: git status --porcelain=v1 --branch"), JSON.stringify(texts));
-    assert.ok(texts.includes("## codex/issue-900"), JSON.stringify(texts));
+    const verificationStatus = texts.find((text) => text.includes("verification passed"));
+    assert.ok(verificationStatus, JSON.stringify(texts));
+    assert.match(verificationStatus, /git status --porcelain=v1 --branch, exit 0/);
+    assert.equal(texts.some((text) => text.includes("## codex/issue-900")), false, JSON.stringify(texts));
     assert.ok(texts.includes("Reviewer step: list_dir ."), JSON.stringify(texts));
     await settlePresentation();
     const verdictEntry = history.find((entry) => entry.kind?.endsWith(":result"));
@@ -749,18 +752,18 @@ describe("Actions Reviewer queue", () => {
     assert.match(verdictEntry.text, /^Reviewer verdict: PASS/);
     assert.equal(verdictEntry.text.includes('"status"'), false);
     const completedTexts = history.map((entry) => entry.text);
-    const verificationOutputEnd = completedTexts.indexOf("## codex/issue-900");
-    assert.ok(verificationOutputEnd >= 0, JSON.stringify(completedTexts));
-    assert.ok(verificationOutputEnd < completedTexts.indexOf("Reviewer step: list_dir ."), JSON.stringify(completedTexts));
+    assert.ok(completedTexts.indexOf(verificationStatus!) < completedTexts.indexOf("Reviewer step: list_dir ."), JSON.stringify(completedTexts));
     assert.ok(completedTexts.indexOf("Reviewer step: list_dir .") < completedTexts.indexOf(verdictEntry.text), JSON.stringify(completedTexts));
     await tools.dispose();
   });
 
-  it("keeps stdout and stderr line buffers separate", async () => {
+  it("passes both stdout and stderr to the Reviewer without streaming them into the lane", async () => {
     const reviewTarget = target();
     const history: Array<{ role: string; text: string; kind?: string }> = [];
+    let reviewPrompt = "";
     const bus = createBus(() => reviewTarget, {
       testCommand: "node verification-stream.cjs",
+      onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
       onHistoryMessage: (entry) => history.push(entry),
     });
     const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
@@ -768,62 +771,44 @@ describe("Actions Reviewer queue", () => {
     const result = await tools.review_action();
 
     assert.equal(result.ok, true, result.error);
+    assert.ok(reviewPrompt.includes("stdout-line"), reviewPrompt);
+    assert.ok(reviewPrompt.includes("stderr-line"), reviewPrompt);
+    assert.equal(reviewPrompt.includes("stdoutstderr"), false, reviewPrompt);
     const texts = history.map((entry) => entry.text);
-    assert.ok(texts.includes("stdout-line"), JSON.stringify(texts));
-    assert.ok(texts.includes("stderr-line"), JSON.stringify(texts));
-    assert.equal(texts.some((text) => text.includes("stdoutstderr")), false, JSON.stringify(texts));
+    assert.equal(texts.some((text) => text.includes("stdout-line") || text.includes("stderr-line")), false, JSON.stringify(texts));
     await tools.dispose();
   });
 
-  it("truncates verification output before Reviewer steps and the verdict", async () => {
+  it("keeps large verification output out of the lane while retaining it in the report", async () => {
     const reviewTarget = target();
     const history: Array<{ role: string; text: string; kind?: string }> = [];
-    let calls = 0;
+    let reviewPrompt = "";
     const bus = createBus(() => reviewTarget, {
       testCommand: "node verification-truncate.cjs",
-      useInspection: true,
+      onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
       onHistoryMessage: (entry) => history.push(entry),
-      reviewerComplete: async () => {
-        calls += 1;
-        if (calls === 1) {
-          return {
-            text: "",
-            toolCalls: [{
-              id: "call-1",
-              type: "function",
-              function: { name: "list_dir", arguments: JSON.stringify({ path: "." }) },
-            }],
-            finishReason: "tool_calls",
-            usage: null,
-          };
-        }
-        return {
-          text: JSON.stringify({ status: "PASS", summary: "Looks good", defects: [] }),
-          toolCalls: [],
-          finishReason: "stop",
-          usage: null,
-        };
-      },
     });
     const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
 
     const result = await tools.review_action();
 
     assert.equal(result.ok, true, result.error);
+    assert.ok(reviewPrompt.includes("verification-0"), reviewPrompt);
+    assert.ok(reviewPrompt.includes("verification-40"), reviewPrompt);
+    const job = bus.getJobs(reviewTarget.projectId, repoDir, "user-1")[0];
+    const report = JSON.parse(job?.verification_report_json ?? "{}") as { exitCode?: number; output?: string };
+    assert.equal(report.exitCode, 0);
+    assert.ok(report.output?.includes("verification-0"), report.output);
+    assert.ok(report.output?.includes("verification-40"), report.output);
     const texts = history.map((entry) => entry.text);
-    assert.ok(texts.includes("verification-0"), JSON.stringify(texts));
-    assert.ok(texts.includes("verification-39"), JSON.stringify(texts));
-    assert.equal(texts.includes("verification-40"), false, JSON.stringify(texts));
-    const truncation = "Verification output truncated after 40 lines.";
-    assert.ok(texts.includes(truncation), JSON.stringify(texts));
-    const reviewerStep = "Reviewer step: list_dir .";
-    assert.ok(texts.includes(reviewerStep), JSON.stringify(texts));
+    assert.equal(texts.some((text) => text.includes("verification-0")), false, JSON.stringify(texts));
+    const verificationStatus = texts.find((text) => text.includes("verification passed"));
+    assert.ok(verificationStatus, JSON.stringify(texts));
     await settlePresentation();
     const verdictEntry = history.find((entry) => entry.kind?.endsWith(":result"));
     assert.ok(verdictEntry);
     const completedTexts = history.map((entry) => entry.text);
-    assert.ok(completedTexts.indexOf(truncation) < completedTexts.indexOf(reviewerStep), JSON.stringify(completedTexts));
-    assert.ok(completedTexts.indexOf(reviewerStep) < completedTexts.indexOf(verdictEntry.text), JSON.stringify(completedTexts));
+    assert.ok(completedTexts.indexOf(verificationStatus!) < completedTexts.indexOf(verdictEntry.text), JSON.stringify(completedTexts));
     await tools.dispose();
   });
 });
