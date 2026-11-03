@@ -183,6 +183,50 @@ describe("session boundary divider and status feedback", () => {
     expect(rt.laneStatus.value).toBeNull();
   });
 
+  it("filters legacy Reviewer inspection steps from Actions history", () => {
+    const ctx = createAppContext();
+    const chat = createChatActions(ctx as AppContext);
+    const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, {
+      activateProject: vi.fn(async () => {}),
+    });
+    ctx.loggedIn.value = true;
+    projects.initializeProjects();
+    const rt = ctx.activeRuntime.value;
+
+    const handler = createWsMessageHandler({
+      rt,
+      project: { id: "default", sessionId: "default", chatSessionId: "main" } as any,
+      projects: ctx.projects,
+      activeProjectId: ctx.activeProjectId,
+      activeProject: ctx.activeProject,
+      cancelPendingResume: chat.cancelPendingResume,
+      clearPendingPrompt: vi.fn(),
+      clearStepLive: vi.fn(),
+      finalizeAssistant: vi.fn(),
+      finalizeCommandBlock: vi.fn(),
+      flushQueuedPrompts: vi.fn(),
+      enqueuePrompt: vi.fn(),
+      pushMessageBeforeLive: vi.fn(),
+      threadReset: vi.fn(),
+      updateProject: vi.fn(),
+      applyResumeHistory: chat.applyResumeHistory,
+      randomId: (p) => `${p}-1`,
+    });
+
+    handler({
+      type: "history",
+      items: [
+        { role: "status", kind: "action_step:job-1:log:1", text: "Reviewer step: read_file_range src/app.ts:1-40", ts: 100 },
+        { role: "status", kind: "action_step:job-1:log:2", text: 'Reviewer step: search_code "INCOMPLETE" in tests/** offset=1000', ts: 101 },
+        { role: "status", kind: "action_step:job-1:started", text: "Review started for PR #621 · Remove review noise.", ts: 102 },
+      ],
+    });
+
+    expect(rt.messages.value.map((entry) => entry.content)).toEqual([
+      "Review started for PR #621 · Remove review noise.",
+    ]);
+  });
+
   it("clears laneStatus fresh session notice when first turn completes with result", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);
