@@ -525,7 +525,9 @@ describe("web/server/ws in-band switch_chat_session", () => {
 
     const errorPromise = waitForWsMessage(
       ws,
-      (m) => m.type === "error" && m.message === "当前没有正在执行的任务",
+      (m) => m.type === "error"
+        && m.message === "当前没有正在执行的任务"
+        && (m.errorInfo as { code?: string } | undefined)?.code === "no_active_turn",
     );
     ws.send(JSON.stringify({ type: "interrupt" }));
     await errorPromise;

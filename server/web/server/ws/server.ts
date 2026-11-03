@@ -1364,13 +1364,6 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
         isLaneCurrent: () => isLaneCurrent(lane),
         sendJson: (payload) => safeJsonSend(ws, payload),
         broadcastJson: (payload) => broadcastJsonForLane(lane, payload),
-        recordStatusError: (message) =>
-          lane.historyStore.add(lane.historyKey, {
-            role: "status",
-            text: message,
-            ts: Date.now(),
-            kind: "error",
-          }),
       });
 
     const runPreflightForLane = (

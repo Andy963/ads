@@ -1154,6 +1154,17 @@ export function createChatActions(ctx: AppContext) {
       state.laneStatus.value = { kind: "error", message: "无法重试：找不到该轮对应的原始消息，请重新发送。" };
       return;
     }
+    // A retry targets the failed turn's identity. If that identity is still
+    // queued, running, or awaiting acknowledgement, a second queue entry would
+    // only be rejected as a duplicate by the server, so stop it here.
+    const pendingRetryId = String(state.pendingAckClientMessageId ?? "").trim();
+    const activeRetry = state.queuedPrompts.value.find(
+      (prompt) => prompt.clientMessageId === userItem.id && prompt.deliveryStatus !== "failed",
+    );
+    if (pendingRetryId === userItem.id || activeRetry) {
+      state.laneStatus.value = { kind: "info", message: "该消息正在执行或排队中，无需重复重试。" };
+      return;
+    }
     ensureOutboxBinding(state);
     if (state.cancelledPromptIds?.has(userItem.id) || state.retiredPromptIds?.has(userItem.id)
       || !outbox.reactivateForRetry(outboxKeyFor(state), userItem.id)) {

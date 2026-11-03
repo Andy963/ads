@@ -31,7 +31,6 @@ describe("web/ws/messageIntake", () => {
   it("handles ping/pong/interrupt control messages immediately", () => {
     const sent: unknown[] = [];
     const broadcast: unknown[] = [];
-    const recordedErrors: string[] = [];
     let aborted = 0;
 
     assert.equal(
@@ -40,7 +39,6 @@ describe("web/ws/messageIntake", () => {
         receivedAt: 7,
         abortInFlight: () => false,
         sendJson: (payload) => sent.push(payload),
-        recordStatusError: (message) => recordedErrors.push(message),
       }),
       true,
     );
@@ -54,7 +52,6 @@ describe("web/ws/messageIntake", () => {
         },
         sendJson: (payload) => sent.push(payload),
         broadcastJson: (payload) => broadcast.push(payload),
-        recordStatusError: (message) => recordedErrors.push(message),
       }),
       true,
     );
@@ -64,7 +61,6 @@ describe("web/ws/messageIntake", () => {
         receivedAt: 9,
         abortInFlight: () => true,
         sendJson: (payload) => sent.push(payload),
-        recordStatusError: (message) => recordedErrors.push(message),
       }),
       true,
     );
@@ -72,11 +68,14 @@ describe("web/ws/messageIntake", () => {
     assert.deepEqual(sent, [
       { type: "pong", ts: 7 },
     ]);
-    assert.deepEqual(broadcast, [{ type: "error", message: "当前没有正在执行的任务" }]);
-    assert.deepEqual(recordedErrors, ["当前没有正在执行的任务"]);
+    assert.deepEqual(broadcast, [{
+      type: "error",
+      message: "当前没有正在执行的任务",
+      errorInfo: { code: "no_active_turn", retryable: false, needsReset: false },
+    }]);
   });
 
-  it("falls back to the current socket when interrupt errors cannot broadcast", () => {
+  it("falls back to the current socket when the interrupt no-op cannot broadcast", () => {
     const sent: unknown[] = [];
 
     assert.equal(
@@ -89,12 +88,15 @@ describe("web/ws/messageIntake", () => {
       true,
     );
 
-    assert.deepEqual(sent, [{ type: "error", message: "当前没有正在执行的任务" }]);
+    assert.deepEqual(sent, [{
+      type: "error",
+      message: "当前没有正在执行的任务",
+      errorInfo: { code: "no_active_turn", retryable: false, needsReset: false },
+    }]);
   });
 
-  it("does not record a status error when interrupt aborts an in-flight task", () => {
+  it("does not emit anything when interrupt aborts an in-flight task", () => {
     const sent: unknown[] = [];
-    const recordedErrors: string[] = [];
 
     assert.equal(
       handleImmediateWsMessage({
@@ -102,12 +104,10 @@ describe("web/ws/messageIntake", () => {
         receivedAt: 8,
         abortInFlight: () => true,
         sendJson: (payload) => sent.push(payload),
-        recordStatusError: (message) => recordedErrors.push(message),
       }),
       true,
     );
 
     assert.deepEqual(sent, []);
-    assert.deepEqual(recordedErrors, []);
   });
 });
