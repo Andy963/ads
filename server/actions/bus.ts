@@ -143,6 +143,13 @@ function parseAcceptanceCriteria(body: string): string[] {
     .filter(Boolean);
 }
 
+function issueIdFromBranch(branch: string | null | undefined): number | null {
+  const match = /^codex\/issue-(\d+)$/.exec(String(branch ?? "").trim());
+  if (!match) return null;
+  const issueId = Number(match[1]);
+  return Number.isSafeInteger(issueId) && issueId > 0 ? issueId : null;
+}
+
 async function defaultPublishIssueComment(input: {
   repoPath: string;
   issueId: number;
@@ -963,7 +970,7 @@ export class LaneDispatchBus {
       project_id: context.projectId,
       lane_generation: this.options.captureActionsLaneGeneration?.(identity?.logicalHistoryKey ?? "") ?? 1,
       job_kind: "pull_request_review",
-      issue_id: 0,
+      issue_id: issueIdFromBranch(context.branch) ?? 0,
       issue_title: "",
       issue_snapshot: { title: "", description: "", acceptanceCriteria: [], adrs: [] },
       branch: context.branch,
@@ -1186,7 +1193,11 @@ export class LaneDispatchBus {
     summary: string,
     defects: ReviewDefect[],
   ): Promise<void> {
-    const issueId = Number(job.issue_id ?? 0);
+    // Pinning can fail before the Issue id is stored, but the branch already
+    // names it. Without this fallback an INCOMPLETE outcome would be invisible.
+    const issueId = Number(job.issue_id ?? 0) > 0
+      ? Number(job.issue_id)
+      : (issueIdFromBranch(job.branch) ?? 0);
     if (!Number.isSafeInteger(issueId) || issueId < 1) {
       this.recordActionMessage(
         getActionJobById(this.db, job.id) ?? job,

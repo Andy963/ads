@@ -644,15 +644,23 @@ describe("Actions Reviewer queue", () => {
   it("acknowledges the job before target checks and reports a dirty workspace as INCOMPLETE", async () => {
     const reviewTarget = target();
     fs.appendFileSync(path.join(repoDir, "README.md"), "dirty\n");
-    const bus = createBus(() => reviewTarget);
     const comments: string[] = [];
+    const wakes: Array<{ issueId: number; status: string }> = [];
+    const bus = createBus(() => reviewTarget, {
+      onIssueComment: (body) => comments.push(body),
+      onWake: (args) => wakes.push(args),
+    });
     const { ack, job, tools } = await runReview(bus, reviewTarget);
     assert.equal(ack.ok, true, ack.error);
+    assert.equal(ack.issueId, 900);
     assert.equal(job?.status, "completed");
     assert.equal(JSON.parse(job?.review_verdicts_json ?? "[]")[0].status, "INCOMPLETE");
     assert.match(job?.current_step ?? "", /uncommitted tracked changes/i);
     assert.equal(job?.base_sha, "");
-    assert.equal(comments.length, 0);
+    assert.equal(comments.length, 1);
+    assert.match(comments[0]!, /^## ADS Reviewer verdict: INCOMPLETE$/m);
+    assert.deepEqual(wakes.map((wake) => wake.status), ["INCOMPLETE"]);
+    assert.equal(wakes[0]?.issueId, 900);
     await tools.dispose();
   });
 
