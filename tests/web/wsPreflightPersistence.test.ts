@@ -383,6 +383,77 @@ describe("web/server/ws/preflight-persistence", () => {
     }
   });
 
+  it("resumes a stranded queued prompt from the reconnect snapshot", async () => {
+    const url = `ws://127.0.0.1:${port}`;
+    const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];
+    const client = new WebSocket(url, protocols, { origin: "http://localhost" });
+    let releasePrompt: (() => void) | null = null;
+
+    try {
+      await waitForWsOpen(client);
+      holdAgentRequests = new Promise<void>((resolve) => {
+        releasePrompt = resolve;
+      });
+      client.send(JSON.stringify({ type: "prompt", payload: { text: "occupy lane" }, client_message_id: "lane-1" }));
+      client.send(JSON.stringify({ type: "prompt", payload: { text: "queued prompt" }, client_message_id: "queued-1" }));
+      await waitForWsMessage(
+        client,
+        (msg) => msg.type === "ack" && msg.client_message_id === "queued-1",
+        2000,
+      );
+
+      const queuedRow = promptQueueStore.getByClientMessageId("queued-1");
+      assert.ok(queuedRow);
+      releasePrompt?.();
+      releasePrompt = null;
+      holdAgentRequests = null;
+
+      const completedDeadline = Date.now() + 3000;
+      while (promptQueueStore.getByClientMessageId("queued-1")?.status !== "completed") {
+        assert.ok(Date.now() < completedDeadline, "queued prompt should complete after the lane is released");
+        await delay(5);
+      }
+      await delay(20);
+
+      const requestsBeforeReconnect = agentRequestCount;
+      promptQueueStore.enqueue({
+        authUserId: queuedRow.authUserId,
+        userId: queuedRow.userId,
+        sessionId: queuedRow.sessionId,
+        chatSessionId: queuedRow.chatSessionId,
+        historyKey: queuedRow.historyKey,
+        logicalHistoryKey: queuedRow.logicalHistoryKey,
+        laneNamespace: queuedRow.laneNamespace,
+        laneGeneration: queuedRow.laneGeneration,
+        workspaceRoot: queuedRow.workspaceRoot,
+        clientMessageId: "stranded-1",
+        payload: { text: "stranded prompt" },
+      });
+      assert.equal(promptQueueStore.getByClientMessageId("stranded-1")?.status, "queued");
+
+      const closed = new Promise<void>((resolve) => client.once("close", () => resolve()));
+      client.close();
+      await closed;
+
+      const reconnected = new WebSocket(url, protocols, { origin: "http://localhost" });
+      try {
+        await waitForWsOpen(reconnected);
+        const recoveredDeadline = Date.now() + 3000;
+        while (promptQueueStore.getByClientMessageId("stranded-1")?.status !== "completed") {
+          assert.ok(Date.now() < recoveredDeadline, "reconnect snapshot should recover the stranded prompt");
+          await delay(5);
+        }
+        assert.equal(agentRequestCount, requestsBeforeReconnect + 1);
+      } finally {
+        reconnected.terminate();
+      }
+    } finally {
+      releasePrompt?.();
+      holdAgentRequests = null;
+      client.terminate();
+    }
+  });
+
   it("rejects a plain resend of a failed identity but re-executes its explicit replay", async () => {
     const url = `ws://127.0.0.1:${port}`;
     const protocols = ["ads-v1", "ads-session.test", "ads-chat.main"];

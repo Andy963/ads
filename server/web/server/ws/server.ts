@@ -1284,7 +1284,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
 
     const sendPromptQueueSnapshot = (): void => {
       if (promptQueueService) {
-        const entries = promptQueueService.getSnapshot({
+        const lane = {
           authUserId: currentLane.authUserId,
           sessionId: currentLane.sessionId,
           chatSessionId: currentLane.chatSessionId,
@@ -1292,11 +1292,13 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
           logicalHistoryKey: currentLane.logicalHistoryKey,
           laneNamespace: currentLane.laneNamespace,
           laneGeneration: currentLane.laneGeneration,
-        });
+        };
+        const entries = promptQueueService.getSnapshot(lane);
         safeJsonSend(ws, {
           type: "prompt_queue_snapshot",
           entries: entries.map(publicPromptQueueEntry),
         });
+        promptQueueService.ensureLaneScheduled(lane);
       }
     };
 
