@@ -26,11 +26,18 @@ import {
   createActionJob,
   getActionJobs,
   getActionJobById,
+  supersedeReviewJobsForNewHead,
   updateActionJobStatus,
   updateActionJobPinnedTarget,
   type ActionJobIssueSnapshot,
   type ActionJobRecord,
 } from "../state/actionJobStore.js";
+import {
+  acquireReviewQueueLease,
+  getReviewQueueLease,
+  releaseReviewQueueLease,
+  renewReviewQueueLease,
+} from "../state/reviewQueueLeaseStore.js";
 import {
   ACTIONS_BASE_BRANCH,
 } from "./pipeline.js";
@@ -64,12 +71,14 @@ const DEFAULT_REVIEWER_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_REVIEW_PRESENTATION_TIMEOUT_MS = 5_000;
 const DEFAULT_INTERACTIVE_VERIFICATION_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_MS = 30 * 1000;
-const processingReviewQueuesByDatabase = new WeakMap<DatabaseType, Map<string, Promise<void>>>();
+const DEFAULT_REVIEW_QUEUE_LEASE_TTL_MS = 90_000;
+const DEFAULT_REVIEW_QUEUE_LEASE_HEARTBEAT_MS = 30_000;
+const processingReviewQueuesByDatabase = new WeakMap<DatabaseType, Map<string, Promise<boolean>>>();
 
-function getProcessingReviewQueues(db: DatabaseType): Map<string, Promise<void>> {
+function getProcessingReviewQueues(db: DatabaseType): Map<string, Promise<boolean>> {
   const existing = processingReviewQueuesByDatabase.get(db);
   if (existing) return existing;
-  const queues = new Map<string, Promise<void>>();
+  const queues = new Map<string, Promise<boolean>>();
   processingReviewQueuesByDatabase.set(db, queues);
   return queues;
 }
@@ -78,6 +87,13 @@ export class ActionJobReviewConflictError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ActionJobReviewConflictError";
+  }
+}
+
+export class ReviewJobSupersededError extends Error {
+  constructor(message = "The review job was superseded by a newer head commit.") {
+    super(message);
+    this.name = "ReviewJobSupersededError";
   }
 }
 
@@ -232,6 +248,9 @@ export interface LaneDispatchBusOptions {
   interactiveVerificationTimeoutMs?: number;
   reviewerTimeoutMs?: number;
   reviewerToolTurnBudget?: number;
+  reviewQueueLeaseTtlMs?: number;
+  reviewQueueLeaseHeartbeatMs?: number;
+  workerId?: string;
   wakeAcopilotLane?: (args: {
     projectId: string;
     repoPath: string;
@@ -262,13 +281,15 @@ export interface LaneDispatchBusOptions {
 
 export class LaneDispatchBus {
   private interactiveReviewerTargets = new Set<string>();
-  private readonly processingReviewQueues: Map<string, Promise<void>>;
+  private readonly processingReviewQueues: Map<string, Promise<boolean>>;
+  private readonly workerId: string;
 
   constructor(
     private db: DatabaseType,
     private options: LaneDispatchBusOptions = {},
   ) {
     this.processingReviewQueues = getProcessingReviewQueues(db);
+    this.workerId = String(this.options.workerId ?? "").trim() || randomUUID();
   }
   private async runInteractiveCommand(
     command: string,
@@ -759,10 +780,10 @@ export class LaneDispatchBus {
     try {
       signal.throwIfAborted();
       const testReport = await this.runInteractiveVerification(session.repoPath, signal);
-      updateActionJobStatus(this.db, job.id, "verifying", {
+      if (!updateActionJobStatus(this.db, job.id, "verifying", {
         current_step: `Verification completed: ${testReport.command} (exit ${testReport.exitCode})`,
         verification_report_json: JSON.stringify(testReport),
-      });
+      }, Date.now(), { requireNotSuperseded: true })) throw new ReviewJobSupersededError();
       const target = this.reviewTargetLabel(job);
       this.recordActionMessage(
         job,
@@ -805,9 +826,9 @@ export class LaneDispatchBus {
       if (capturedSession.key !== verifiedSession.key) {
         throw new ReviewerIncompleteError("Interactive review target changed while capturing evidence; no authoritative verdict is available.");
       }
-      updateActionJobStatus(this.db, job.id, "reviewing", {
+      if (!updateActionJobStatus(this.db, job.id, "reviewing", {
         current_step: `Running read-only Reviewer for ${target}`,
-      });
+      }, Date.now(), { requireNotSuperseded: true })) throw new ReviewJobSupersededError();
       const verdict = await this.executeReviewer(
         payload,
         verifiedSession.repoPath,
@@ -943,12 +964,13 @@ export class LaneDispatchBus {
     input: InteractiveReviewTargetRequest & { signal?: AbortSignal },
   ): Promise<ActionToolResult> {
     const context = await this.resolveInteractiveDispatchTarget(input);
-    this.failInterruptedReviewJobs(context.projectId, context.repoPath);
+    this.failInterruptedReviewJobsIfOwned(context.projectId, context.repoPath);
 
     const existing = getActionJobs(this.db, context.projectId, undefined, context.authUserId).find((job) =>
       job.job_kind === "pull_request_review"
       && job.branch === context.branch
       && (context.prNumber === 0 || job.pr_number === context.prNumber)
+      && job.superseded_at === null
       && ["queued", "verifying", "reviewing"].includes(job.status),
     );
     if (existing) {
@@ -1004,7 +1026,8 @@ export class LaneDispatchBus {
 
   public resumeReviewQueue(projectId: string, repoPath: string): void {
     const canonicalProjectId = resolveCanonicalProjectId(projectId, repoPath);
-    this.failInterruptedReviewJobs(canonicalProjectId, repoPath);
+    this.failInterruptedReviewJobsIfOwned(canonicalProjectId, repoPath);
+    if (!this.hasQueuedReview(canonicalProjectId)) return;
     this.queueReviewProcessing(canonicalProjectId, repoPath);
   }
 
@@ -1012,8 +1035,10 @@ export class LaneDispatchBus {
     const canonicalProjectId = resolveCanonicalProjectId(projectId, repoPath);
     const key = canonicalProjectId;
     const active = this.processingReviewQueues.get(key);
-    if (active) return await active;
-    this.failInterruptedReviewJobs(canonicalProjectId, repoPath);
+    if (active) {
+      await active;
+      return;
+    }
     const run = this.runReviewQueue(canonicalProjectId, repoPath);
     this.processingReviewQueues.set(key, run);
     try {
@@ -1024,26 +1049,36 @@ export class LaneDispatchBus {
   }
 
   private queueReviewProcessing(projectId: string, repoPath: string): void {
-    if (this.options.autoStartReviewQueue === false || this.processingReviewQueues.has(projectId)) return;
+    if (this.options.autoStartReviewQueue === false
+      || this.processingReviewQueues.has(projectId)
+      || !this.hasQueuedReview(projectId)) return;
     const run = Promise.resolve().then(() => this.runReviewQueue(projectId, repoPath));
     this.processingReviewQueues.set(projectId, run);
-    void run.catch((error) => {
+    let leaseAcquired = false;
+    void run.then((acquired) => {
+      leaseAcquired = acquired;
+    }).catch((error) => {
       console.warn(`[actions] Reviewer queue failed for project '${projectId}':`, error);
     }).finally(() => {
       if (this.processingReviewQueues.get(projectId) === run) this.processingReviewQueues.delete(projectId);
-      this.failInterruptedReviewJobs(projectId, repoPath);
-      const hasQueuedReview = getActionJobs(this.db, projectId).some((job) =>
-        job.job_kind === "pull_request_review" && job.status === "queued",
-      );
-      if (hasQueuedReview) this.queueReviewProcessing(projectId, repoPath);
+      if (!leaseAcquired) return;
+      if (this.hasQueuedReview(projectId)) this.queueReviewProcessing(projectId, repoPath);
     });
   }
 
+  private hasQueuedReview(projectId: string): boolean {
+    return getActionJobs(this.db, projectId).some((job) =>
+      job.job_kind === "pull_request_review"
+      && job.status === "queued"
+      && job.superseded_at === null,
+    );
+  }
+
   private failInterruptedReviewJobs(projectId: string, repoPath: string): void {
-    if (this.processingReviewQueues.has(projectId)) return;
     const jobs = this.db.prepare(`
       SELECT * FROM action_jobs
       WHERE project_id = ? AND job_kind = 'pull_request_review' AND status IN ('verifying', 'reviewing')
+        AND superseded_at IS NULL
     `).all(projectId) as ActionJobRecord[];
     const errorMessage = "The review job has no active worker. Dispatch a new review to retry the pinned target.";
     for (const job of jobs) {
@@ -1052,7 +1087,7 @@ export class LaneDispatchBus {
         UPDATE action_jobs
         SET status = 'failed', current_step = 'Review job interrupted before producing a verdict',
             error_message = ?, review_verdicts_json = '[]', updated_at = ?
-        WHERE id = ? AND status IN ('verifying', 'reviewing')
+        WHERE id = ? AND status IN ('verifying', 'reviewing') AND superseded_at IS NULL
       `).run(errorMessage, now, job.id) as { changes?: number };
       if (result.changes !== 1) continue;
       this.recordActionMessage(
@@ -1064,13 +1099,55 @@ export class LaneDispatchBus {
     }
   }
 
-  private async runReviewQueue(projectId: string, repoPath: string): Promise<void> {
-    while (true) {
-      const job = getActionJobs(this.db, projectId)
-        .filter((candidate) => candidate.job_kind === "pull_request_review" && candidate.status === "queued")
-        .sort((left, right) => left.created_at - right.created_at)[0];
-      if (!job) return;
-      await this.executeQueuedReview(job, repoPath);
+  private failInterruptedReviewJobsIfOwned(projectId: string, repoPath: string): void {
+    if (this.processingReviewQueues.has(projectId)) return;
+    const lease = getReviewQueueLease(this.db, projectId);
+    if (lease && lease.owner_id !== this.workerId && lease.expires_at > Date.now()) return;
+    this.failInterruptedReviewJobs(projectId, repoPath);
+  }
+
+  private async runReviewQueue(projectId: string, repoPath: string): Promise<boolean> {
+    const leaseTtlMs = normalizeInteractiveTimeout(
+      this.options.reviewQueueLeaseTtlMs,
+      DEFAULT_REVIEW_QUEUE_LEASE_TTL_MS,
+    );
+    if (!acquireReviewQueueLease(this.db, projectId, this.workerId, leaseTtlMs)) {
+      return false;
+    }
+    const heartbeatMs = Math.min(
+      normalizeInteractiveTimeout(this.options.reviewQueueLeaseHeartbeatMs, DEFAULT_REVIEW_QUEUE_LEASE_HEARTBEAT_MS),
+      Math.max(1, Math.floor(leaseTtlMs / 2)),
+    );
+    const heartbeat = setInterval(() => {
+      try {
+        if (!renewReviewQueueLease(this.db, projectId, this.workerId, leaseTtlMs)) {
+          console.warn(`[actions] Review queue lease for project '${projectId}' is no longer owned by this process.`);
+        }
+      } catch (error) {
+        console.warn(`[actions] Unable to renew the review queue lease for project '${projectId}':`, error);
+      }
+    }, heartbeatMs);
+    heartbeat.unref?.();
+    try {
+      this.failInterruptedReviewJobs(projectId, repoPath);
+      while (true) {
+        const job = getActionJobs(this.db, projectId)
+          .filter((candidate) =>
+            candidate.job_kind === "pull_request_review"
+            && candidate.status === "queued"
+            && candidate.superseded_at === null,
+          )
+          .sort((left, right) => left.created_at - right.created_at)[0];
+        if (!job) return true;
+        await this.executeQueuedReview(job, repoPath);
+      }
+    } finally {
+      clearInterval(heartbeat);
+      try {
+        releaseReviewQueueLease(this.db, projectId, this.workerId);
+      } catch (error) {
+        console.warn(`[actions] Unable to release the review queue lease for project '${projectId}':`, error);
+      }
     }
   }
 
@@ -1078,15 +1155,16 @@ export class LaneDispatchBus {
     const claim = this.db.prepare(`
       UPDATE action_jobs SET status = 'verifying', updated_at = ?
       WHERE id = ? AND job_kind = 'pull_request_review' AND status = 'queued'
+        AND superseded_at IS NULL
     `).run(Date.now(), job.id) as { changes?: number };
     if (!claim.changes) return;
     const claimedJob = getActionJobById(this.db, job.id) ?? job;
-    updateActionJobStatus(this.db, job.id, "verifying", {
+    if (!updateActionJobStatus(this.db, job.id, "verifying", {
       current_step: (job.pr_number ?? 0) > 0 ? `Checking pinned target for PR #${job.pr_number}` : "Resolving the review target when the job starts",
       error_message: null,
       verification_report_json: "",
       review_verdicts_json: "[]",
-    });
+    }, Date.now(), { requireNotSuperseded: true })) return;
     try {
       const request: InteractiveReviewTargetRequest = {
         projectId: job.project_id,
@@ -1097,24 +1175,32 @@ export class LaneDispatchBus {
       };
       const session = await this.resolveInteractiveReviewSession(request);
       if (this.jobNeedsPinning(job)) {
-        updateActionJobPinnedTarget(this.db, job.id, {
-          issue_id: Number(session.target.issue.id),
-          issue_title: session.target.issue.title,
-          issue_snapshot: {
-            title: session.target.issue.title,
-            description: session.target.issue.description ?? session.target.issue.title,
-            acceptanceCriteria: [...(session.target.issue.acceptanceCriteria ?? [])],
-            adrs: (session.target.adrs ?? []).map((adr) => ({ ...adr })),
-          },
-          branch: session.target.branch,
-          base_sha: session.target.baseCommit ?? "",
-          head_sha: session.target.headCommit ?? "",
-          pr_number: Number(session.target.prNumber),
-          pr_url: session.target.prUrl,
+        const pinAndSupersede = this.db.transaction(() => {
+          const pinned = updateActionJobPinnedTarget(this.db, job.id, {
+            issue_id: Number(session.target.issue.id),
+            issue_title: session.target.issue.title,
+            issue_snapshot: {
+              title: session.target.issue.title,
+              description: session.target.issue.description ?? session.target.issue.title,
+              acceptanceCriteria: [...(session.target.issue.acceptanceCriteria ?? [])],
+              adrs: (session.target.adrs ?? []).map((adr) => ({ ...adr })),
+            },
+            branch: session.target.branch,
+            base_sha: session.target.baseCommit ?? "",
+            head_sha: session.target.headCommit ?? "",
+            pr_number: Number(session.target.prNumber),
+            pr_url: session.target.prUrl,
+          });
+          if (!pinned) return false;
+          this.supersedeOlderReviewJobs(job, session.target);
+          return true;
         });
+        if (!pinAndSupersede()) throw new ReviewJobSupersededError();
         job = getActionJobById(this.db, job.id) ?? job;
       } else if (!this.reviewTargetMatchesJob(job, session.target)) {
         throw new ReviewerIncompleteError("The pull request, Issue, base, head, or ADR snapshot changed after dispatch.");
+      } else {
+        this.supersedeOlderReviewJobs(job, session.target);
       }
       this.recordActionMessage(
         job,
@@ -1129,12 +1215,13 @@ export class LaneDispatchBus {
         () => this.resolveInteractiveReviewSession(request),
         job,
       );
-      updateActionJobStatus(this.db, job.id, "completed", {
+      this.assertReviewJobCurrent(job.id);
+      if (!updateActionJobStatus(this.db, job.id, "completed", {
         current_step: `${result.verdict.status}: ${result.verdict.summary}`,
         review_verdicts_json: JSON.stringify([result.verdict]),
         verification_report_json: JSON.stringify(result.testReport ?? {}),
         error_message: null,
-      });
+      }, Date.now(), { requireNotSuperseded: true })) throw new ReviewJobSupersededError();
       this.publishReviewVerdictPresentation(
         result.verdict,
         getActionJobById(this.db, job.id) ?? claimedJob,
@@ -1143,22 +1230,47 @@ export class LaneDispatchBus {
       await this.publishReviewOutcome(job, repoPath, result.verdict.status, result.verdict.summary, result.verdict.defects);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof ReviewJobSupersededError || this.isReviewJobSuperseded(job.id)) {
+        this.recordActionMessage(
+          getActionJobById(this.db, job.id) ?? claimedJob,
+          repoPath,
+          `Review for ${this.reviewTargetLabel(job)} was superseded by a newer head commit and was not published.`,
+          `action_step:${job.id}:superseded`,
+        );
+        return;
+      }
       if (error instanceof ReviewerIncompleteError) {
         const verdict: ReviewVerdict = { status: "INCOMPLETE", summary: message, defects: [], reviewedAt: Date.now() };
-        updateActionJobStatus(this.db, job.id, "completed", {
+        if (!updateActionJobStatus(this.db, job.id, "completed", {
           current_step: `INCOMPLETE: ${message}`,
           review_verdicts_json: JSON.stringify([verdict]),
           error_message: null,
-        });
+        }, Date.now(), { requireNotSuperseded: true })) {
+          this.recordActionMessage(
+            getActionJobById(this.db, job.id) ?? claimedJob,
+            repoPath,
+            `Review for ${this.reviewTargetLabel(job)} was superseded by a newer head commit and was not published.`,
+            `action_step:${job.id}:superseded`,
+          );
+          return;
+        }
         this.publishReviewVerdictPresentation(verdict, getActionJobById(this.db, job.id) ?? claimedJob, repoPath);
         await this.publishReviewOutcome(job, repoPath, "INCOMPLETE", message, []);
         return;
       }
-      updateActionJobStatus(this.db, job.id, "failed", {
+      if (!updateActionJobStatus(this.db, job.id, "failed", {
         current_step: "Review job failed before producing an authoritative verdict",
         error_message: message,
         review_verdicts_json: "[]",
-      });
+      }, Date.now(), { requireNotSuperseded: true })) {
+        this.recordActionMessage(
+          getActionJobById(this.db, job.id) ?? claimedJob,
+          repoPath,
+          `Review for ${this.reviewTargetLabel(job)} was superseded by a newer head commit and was not published.`,
+          `action_step:${job.id}:superseded`,
+        );
+        return;
+      }
       this.recordActionMessage(
         getActionJobById(this.db, job.id) ?? claimedJob,
         repoPath,
@@ -1167,6 +1279,24 @@ export class LaneDispatchBus {
       );
       await this.publishReviewOutcome(job, repoPath, "ERROR", message, []);
     }
+  }
+
+  private supersedeOlderReviewJobs(job: ActionJobRecord, target: InteractiveReviewTarget): void {
+    supersedeReviewJobsForNewHead(this.db, {
+      projectId: job.project_id,
+      prNumber: target.prNumber,
+      branch: target.branch,
+      keepHeadSha: target.headCommit ?? "",
+      supersededByJobId: job.id,
+    });
+  }
+
+  private isReviewJobSuperseded(jobId: string): boolean {
+    return Boolean(getActionJobById(this.db, jobId)?.superseded_at);
+  }
+
+  private assertReviewJobCurrent(jobId: string): void {
+    if (this.isReviewJobSuperseded(jobId)) throw new ReviewJobSupersededError();
   }
 
   /**
@@ -1181,6 +1311,15 @@ export class LaneDispatchBus {
     summary: string,
     defects: ReviewDefect[],
   ): Promise<void> {
+    if (this.isReviewJobSuperseded(job.id)) {
+      this.recordActionMessage(
+        getActionJobById(this.db, job.id) ?? job,
+        repoPath,
+        `The ${status} verdict for ${this.reviewTargetLabel(job)} was not published because the job was superseded.`,
+        `action_step:${job.id}:superseded`,
+      );
+      return;
+    }
     // Pinning can fail before the Issue id is stored, but the branch already
     // names it. Without this fallback an INCOMPLETE outcome would be invisible.
     const issueId = Number(job.issue_id ?? 0) > 0

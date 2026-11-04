@@ -24,6 +24,8 @@
 - Reviewer 只读；它无法写入文件、运行 shell、切换分支、提交、推送、合并或创建 Issue/PR。
 - 验证报告与 Issue 条件、相关 ADR、PR 编号和精确 base/head 一同保存。旧 head 或 base 的 PASS 不适用于新目标。
 - 每个项目的评审任务串行执行，避免共享工作区上的并发验证或 Reviewer 执行。
+- 固定新 head 时，同一 PR（无 PR 号时按分支）下其它 head 的未取消评审任务会被标记为 superseded；旧任务保留审计记录，但不会继续入队、认领、写裁决 comment 或唤醒 Acopilot。
+- 项目评审队列通过 `review_queue_leases` 建立租约，同一项目同时只有一个 owner 执行队列；非 owner 进程不得把其它进程正在运行的 `verifying` 或 `reviewing` 任务标记为中断。
 - 队列结果通过 Issue comment 持久化，并以 `review_verdict_ready` 事件唤醒 Acopilot；Actions 会话只展示过程与可读摘要，不承担裁决存档。
 - 用户明确授权之前不得合并、关闭 Issue、删除分支或部署。
 
