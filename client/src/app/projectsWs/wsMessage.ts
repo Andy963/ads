@@ -144,6 +144,18 @@ function parseClientMessageIdFromHistoryKind(kind: string): string {
   return (separator >= 0 ? tail.slice(0, separator) : tail).trim();
 }
 
+function isSystemOriginHistoryKind(kind: string): boolean {
+  const marker = ";prompt_meta:";
+  const markerIndex = kind.indexOf(marker);
+  if (markerIndex < 0) return false;
+  for (const part of kind.slice(markerIndex + marker.length).split(",")) {
+    const [keyRaw, valueRaw = ""] = part.split("=");
+    if (String(keyRaw ?? "").trim() !== "origin") continue;
+    return decodeHistoryKindValue(valueRaw).trim() === "system";
+  }
+  return false;
+}
+
 function parseFileChangeHistory(text: string): ChatPatchFile[] {
   return String(text ?? "")
     .replace(/\r\n/g, "\n")
@@ -1103,7 +1115,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           message: `收到 Issue #${issueId} 的评审结论（${status || "UNKNOWN"}），当前对话结束后自动处理。`,
         };
       }
-      enqueuePrompt(prompt, [], rt);
+      enqueuePrompt(prompt, [], rt, { origin: "system" });
       return;
     }
 
@@ -1340,7 +1352,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
             : prompt);
           continue;
         }
-        if (!shouldSuppressQueueCard(rt, clientMessageId, acknowledged, status, lastError)) {
+        if (record.origin !== "system" && !shouldSuppressQueueCard(rt, clientMessageId, acknowledged, status, lastError)) {
           const text = firstWireText(
             rt.messages.value.find((message) => message.id === clientMessageId)?.content,
             record.text,
@@ -1802,6 +1814,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           continue;
         }
         if (role === "user") {
+          if (isSystemOriginHistoryKind(kind)) continue;
           restoredHistoryStatus = null;
           const execution = parseExecutionFromHistoryKind(kind);
           const clientMessageId = parseClientMessageIdFromHistoryKind(kind);
@@ -1874,7 +1887,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         const alreadyHas = clientMessageId
           ? existing.some((m) => m.id === clientMessageId)
           : Boolean(lastUser && lastUser.content === text && lastUser.ts === eventTs);
-        if (!alreadyHas && text) {
+        if (!alreadyHas && text && !isSystemOriginHistoryKind(kind)) {
           pushMessageBeforeLive({
             id: clientMessageId || randomId("u"),
             role: "user",
@@ -1961,7 +1974,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const alreadyHas = clientMessageId
         ? existing.some((m) => m.id === clientMessageId)
         : Boolean(lastUser && lastUser.content === text && lastUser.ts === eventTs);
-      if (!alreadyHas && text) {
+      if (!alreadyHas && text && !isSystemOriginHistoryKind(String(msg.kind ?? ""))) {
         const execution = parseExecutionFromHistoryKind(String(msg.kind ?? ""));
         pushMessageBeforeLive({
           id: clientMessageId || randomId("u"),

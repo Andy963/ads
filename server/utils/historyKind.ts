@@ -5,6 +5,7 @@ export type PromptExecutionMetadata = {
   effectiveAgentId?: string;
   effectiveModel?: string;
   effectiveModelReasoningEffort?: string;
+  origin?: string;
 };
 
 const CLIENT_MESSAGE_ID_PREFIX = "client_message_id:";
@@ -34,12 +35,14 @@ function serializePromptMetadata(metadata: PromptExecutionMetadata): string {
   const effectiveAgentId = trimString(metadata.effectiveAgentId);
   const effectiveModel = trimString(metadata.effectiveModel);
   const effectiveEffort = trimString(metadata.effectiveModelReasoningEffort).toLowerCase();
+  const origin = trimString(metadata.origin);
   if (agentId) parts.push(`agent=${encodeMetaValue(agentId)}`);
   if (model) parts.push(`model=${encodeMetaValue(model)}`);
   if (effort) parts.push(`effort=${encodeMetaValue(effort)}`);
   if (effectiveAgentId) parts.push(`eff_agent=${encodeMetaValue(effectiveAgentId)}`);
   if (effectiveModel) parts.push(`eff_model=${encodeMetaValue(effectiveModel)}`);
   if (effectiveEffort) parts.push(`eff_effort=${encodeMetaValue(effectiveEffort)}`);
+  if (origin) parts.push(`origin=${encodeMetaValue(origin)}`);
   return parts.join(",");
 }
 
@@ -84,6 +87,7 @@ export function parsePromptExecutionMetadataFromHistoryKind(kind: unknown): Prom
     else if (key === "eff_agent") metadata.effectiveAgentId = value;
     else if (key === "eff_model") metadata.effectiveModel = value;
     else if (key === "eff_effort") metadata.effectiveModelReasoningEffort = value;
+    else if (key === "origin") metadata.origin = value;
   }
   return metadata;
 }
@@ -106,6 +110,7 @@ export function mergePromptExecutionMetadataIntoKind(args: {
     effectiveModelReasoningEffort:
       trimString(args.metadata.effectiveModelReasoningEffort) ||
       existing.effectiveModelReasoningEffort,
+    origin: trimString(args.metadata.origin) || existing.origin,
   };
   return buildClientMessageHistoryKind({ clientMessageId, metadata: merged });
 }

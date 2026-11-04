@@ -178,6 +178,40 @@ describe("web/ws/preflight", () => {
     }
   });
 
+  it("records an internal prompt origin in the history kind", () => {
+    const historyStore = new HistoryStore({ namespace: "test-preflight-internal-prompt", maxEntriesPerSession: 20 });
+    const historyKey = "history-internal-prompt";
+    const sanitizeInput = (payload: unknown) => {
+      if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+        return String((payload as Record<string, unknown>).text ?? "");
+      }
+      return String(payload ?? "");
+    };
+
+    try {
+      preflightPersistAndAck({
+        parsed: { type: "prompt", payload: { text: "review verdict follows", origin: "system" }, client_message_id: "p-system" },
+        requestId: "req-system",
+        clientMessageId: "p-system",
+        receivedAt: 1,
+        historyStore,
+        historyKey,
+        sanitizeInput,
+        sendJson: () => {},
+        traceWsDuplication: false,
+        warn: () => {},
+        sessionId: "session-1",
+        userId: 7,
+      });
+      const entries = historyStore.get(historyKey);
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0]?.role, "user");
+      assert.match(String(entries[0]?.kind ?? ""), /origin=system/);
+    } finally {
+      historyStore.clear(historyKey);
+    }
+  });
+
   it("does not put an already consumed prompt back into the durable queue", () => {
     const historyStore = new HistoryStore({ namespace: "test-preflight-consumed-queue", maxEntriesPerSession: 20 });
     const sent: unknown[] = [];
@@ -571,7 +605,7 @@ describe("web/ws/preflight", () => {
         role: "user",
         text: "hi",
         ts: 1,
-        kind: "client_message_id:p2;prompt_meta:agent=codex,model=gpt-4.1,effort=high",
+        kind: "client_message_id:p2;prompt_meta:agent=codex,model=gpt-4.1,effort=high,origin=system",
       });
 
       const updated = historyStore.updatePromptExecutionMetadata("history-eff", "p2", {
@@ -591,6 +625,7 @@ describe("web/ws/preflight", () => {
       assert.match(kind, /eff_agent=claude/);
       assert.match(kind, /eff_model=claude-sonnet/);
       assert.match(kind, /eff_effort=low/);
+      assert.match(kind, /origin=system/);
 
       const noop = historyStore.updatePromptExecutionMetadata("history-eff", "missing", {
         effectiveAgentId: "claude",

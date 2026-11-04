@@ -40,4 +40,5 @@ export type QueuedPrompt = {
   imagesCount: number;
   deliveryStatus?: "offline" | "awaiting_ack" | "queued" | "running" | "failed";
   queueError?: string;
+  origin?: "user" | "system";
 };

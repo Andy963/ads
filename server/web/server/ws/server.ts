@@ -288,6 +288,7 @@ export function attachWebSocketServer(deps: AttachWebSocketServerDeps): PromptQu
     return {
       clientMessageId: entry.clientMessageId,
       ...(text ? { text } : {}),
+      ...(entry.payload.origin === "system" ? { origin: "system" } : {}),
       status: entry.status,
       position: entry.position,
       laneGeneration: entry.laneGeneration,

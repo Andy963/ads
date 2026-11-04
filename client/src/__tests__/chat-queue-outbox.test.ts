@@ -467,6 +467,28 @@ describe("issue-328 queued prompt bubbles", () => {
     expect(wrapper.emitted("removeQueued")).toEqual([["q-1"], ["q-2"]]);
   });
 
+  it("keeps internal system prompts out of the visible queue", async () => {
+    const wrapper = mount(MainChatComposerPanel, {
+      props: {
+        draft: "",
+        queuedPrompts: [
+          { id: "q-user", text: "User prompt", imagesCount: 0 },
+          { id: "q-system", text: "Review verdict wake", imagesCount: 0, origin: "system" },
+        ],
+        pendingImages: [],
+        connected: true,
+        busy: true,
+      },
+    });
+
+    const items = wrapper.findAll(".queue-item");
+    expect(items).toHaveLength(1);
+    expect(items[0]?.find(".queue-badge").text()).toBe("#1");
+    expect(items[0]?.find(".queue-text").text()).toContain("User prompt");
+    expect(wrapper.text()).not.toContain("Review verdict wake");
+    wrapper.unmount();
+  });
+
   it("offers explicit retry and removal for a failed server queue card", async () => {
     const wrapper = mount(MainChatComposerPanel, {
       props: {
@@ -554,6 +576,17 @@ describe("queued prompt delivery feedback", () => {
     } else {
       expect(rt.queuedPrompts.value).toEqual([expect.objectContaining({ deliveryStatus: "offline" })]);
     }
+  });
+
+  it("sends an internal prompt without rendering it as user input", async () => {
+    const { chat, rt, sentFrames } = mountChatHarness({ sessionId: "internal-prompt-origin" });
+    chat.enqueuePrompt("Issue #613 review verdict", [], rt, { origin: "system" });
+    await settle();
+
+    expect(sentFrames).toHaveLength(1);
+    expect(sentFrames[0]?.payload.origin).toBe("system");
+    expect(rt.messages.value.some((message) => message.role === "user")).toBe(false);
+    expect(rt.messages.value.some((message) => message.role === "assistant" && message.streaming)).toBe(true);
   });
 });
 

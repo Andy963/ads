@@ -54,6 +54,7 @@ const emit = defineEmits<{
 }>();
 
 const canInterrupt = computed(() => props.busy && props.connected);
+const visibleQueuedPrompts = computed(() => props.queuedPrompts.filter((prompt) => prompt.origin !== "system"));
 
 const normalizedConnectionStatusKind = computed(() => props.connectionStatusKind ?? "info");
 const latestPrompt = ref("");
@@ -453,8 +454,8 @@ onBeforeUnmount(() => {
       <span class="laneStatusText">{{ connectionStatusMessage }}</span>
     </div>
 
-    <div v-if="queuedPrompts.length" class="queue" aria-label="排队消息">
-      <div v-for="(q, idx) in queuedPrompts" :key="q.id" class="queue-item">
+    <div v-if="visibleQueuedPrompts.length" class="queue" aria-label="排队消息">
+      <div v-for="(q, idx) in visibleQueuedPrompts" :key="q.id" class="queue-item">
         <span class="queue-badge" :title="`第 ${idx + 1} 条排队消息`">#{{ idx + 1 }}</span>
         <span class="queue-controls">
           <button

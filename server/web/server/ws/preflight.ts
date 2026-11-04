@@ -141,6 +141,7 @@ export function preflightPersistAndAck(args: {
             : typeof payload.model_reasoning_effort === "string"
               ? payload.model_reasoning_effort
               : undefined,
+        origin: typeof payload.origin === "string" ? payload.origin : undefined,
       },
     });
     const persistence = args.historyStore.addWithResult(args.historyKey, {
