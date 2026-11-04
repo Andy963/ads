@@ -66,7 +66,7 @@ describe("review_verdict_ready wake event", () => {
     handler(wakeFrame());
 
     expect(enqueuePrompt).toHaveBeenCalledTimes(1);
-    const [prompt, images, rt] = enqueuePrompt.mock.calls[0]!;
+    const [prompt, images, rt, options] = enqueuePrompt.mock.calls[0]!;
     expect(String(prompt)).toContain("Issue #613");
     expect(String(prompt)).toContain("PR #614");
     expect(String(prompt)).toContain("REJECT");
@@ -74,6 +74,7 @@ describe("review_verdict_ready wake event", () => {
     expect(String(prompt)).toContain("job-1");
     expect(images).toEqual([]);
     expect(rt).toBeTruthy();
+    expect(options).toEqual({ origin: "system" });
   });
 
   it("ignores a duplicate wake for the same job", () => {
@@ -96,5 +97,17 @@ describe("review_verdict_ready wake event", () => {
     const { handler, enqueuePrompt } = setup({ preferenceLane: "actions" });
     handler(wakeFrame());
     expect(enqueuePrompt).not.toHaveBeenCalled();
+  });
+
+  it("does not render an internal wake prompt as a user message", () => {
+    const { rt, handler } = setup();
+    handler({
+      type: "user",
+      clientMessageId: "p-system",
+      text: "Issue #613 review verdict",
+      ts: Date.now(),
+      kind: "client_message_id:p-system;prompt_meta:origin=system",
+    });
+    expect(rt.messages.value.some((message) => message.role === "user")).toBe(false);
   });
 });

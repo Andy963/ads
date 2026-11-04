@@ -180,6 +180,7 @@ export function createChatActions(ctx: AppContext) {
       ...(prompt.modelReasoningEffort ? { modelReasoningEffort: prompt.modelReasoningEffort } : {}),
       ...(prompt.replayIncomplete ? { replayIncomplete: true } : {}),
       ...(prompt.retryOriginal ? { retryOriginal: true } : {}),
+      ...(prompt.origin === "system" ? { origin: "system" as const } : {}),
     };
   };
 
@@ -326,6 +327,7 @@ export function createChatActions(ctx: AppContext) {
         modelReasoningEffort: String(prompt.modelReasoningEffort ?? prompt.model_reasoning_effort ?? ""),
         ...(prompt.replayIncomplete ? { replayIncomplete: true } : {}),
         ...(prompt.retryOriginal ? { retryOriginal: true } : {}),
+        ...(prompt.origin === "system" ? { origin: "system" as const } : {}),
         ...(prompt.sentAwaitingAck ? { replayIncomplete: true, restoredFromStorage: true } : {}),
       } satisfies QueuedPrompt);
       });
@@ -518,6 +520,7 @@ export function createChatActions(ctx: AppContext) {
           modelReasoningEffort: String(stored.modelReasoningEffort ?? stored.model_reasoning_effort ?? "").trim(),
           restoredFromStorage: true,
           ...(stored.retryOriginal ? { retryOriginal: true } : {}),
+          ...(stored.origin === "system" ? { origin: "system" as const } : {}),
         });
       }
     }
@@ -542,6 +545,7 @@ export function createChatActions(ctx: AppContext) {
         modelReasoningEffort: String(queued.modelReasoningEffort ?? queued.model_reasoning_effort ?? "").trim(),
         ...(queued.replayIncomplete || queued.sentAwaitingAck ? { replayIncomplete: true } : {}),
         ...(queued.retryOriginal ? { retryOriginal: true } : {}),
+        ...(queued.origin === "system" ? { origin: "system" as const } : {}),
         ...(queued.sentAwaitingAck ? { restoredFromStorage: true } : {}),
       });
     }
@@ -1095,7 +1099,12 @@ export function createChatActions(ctx: AppContext) {
     void flushQueuedPrompts(state);
   };
 
-  const enqueuePrompt = (text: string, images: IncomingImage[], rt?: ProjectRuntime): void => {
+  const enqueuePrompt = (
+    text: string,
+    images: IncomingImage[],
+    rt?: ProjectRuntime,
+    options: { origin?: "user" | "system" } = {},
+  ): void => {
     const state = runtimeOrActive(rt);
     const content = String(text ?? "").trim();
     const imgs = Array.isArray(images) ? images : [];
@@ -1115,6 +1124,7 @@ export function createChatActions(ctx: AppContext) {
         images: imgs,
         createdAt: Date.now(),
         agentId,
+        ...(options.origin === "system" ? { origin: "system" as const } : {}),
         deliveryStatus: state.connected.value ? "awaiting_ack" : "offline",
       },
     ];
@@ -1295,6 +1305,7 @@ export function createChatActions(ctx: AppContext) {
       const agentId = next.preparedPayload?.agentId ?? (queuedAgentId || activeAgentId);
       const preparedPayload = next.preparedPayload ?? {
         text: promptText, model_reasoning_effort: effort, model, agentId,
+        ...(next.origin === "system" ? { origin: "system" as const } : {}),
         ...(next.images.length > 0 ? { images: next.images.map(image => ({ ...image })) } : {}),
       };
       // Freeze the first wire payload before handing it to WebSocket. A failed
@@ -1308,7 +1319,7 @@ export function createChatActions(ctx: AppContext) {
         ...(effort ? { modelReasoningEffort: effort } : {}),
       };
       const alreadyInMessages = state.messages.value.some((m) => m.id === next.clientMessageId);
-      if (!runtimeWasBusy && !alreadyInMessages) {
+      if (next.origin !== "system" && !runtimeWasBusy && !alreadyInMessages) {
         pushMessageBeforeLive(
           { id: next.clientMessageId, role: "user", kind: "text", content: display, execution, ts: next.createdAt ?? Date.now() },
           state,

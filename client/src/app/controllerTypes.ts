@@ -26,6 +26,7 @@ export type PreparedPromptPayload = {
   agentId: string;
   model: string;
   model_reasoning_effort: string;
+  origin?: "system";
 };
 
 export type QueuedPrompt = {
@@ -46,6 +47,8 @@ export type QueuedPrompt = {
   queueAttempts?: number;
   queueError?: string;
   serverQueueTracked?: boolean;
+  /** Internal prompts run a turn without appearing as user input. */
+  origin?: "user" | "system";
   /** Lane generation the durable server row was written under. */
   queueLaneGeneration?: number;
 };
