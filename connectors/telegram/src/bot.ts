@@ -5,6 +5,7 @@ import { createAuthMiddleware } from "./middleware/auth.js";
 import { createRateLimitMiddleware } from "./middleware/rateLimit.js";
 import { escapeTelegramMarkdownV2 } from "./utils/markdown.js";
 import { chunkMessage } from "./utils/chunkMessage.js";
+import { createPromptStatusReporter } from "./promptStatus.js";
 import {
   allowedReasoningEfforts,
   buildModelKeyboard,
@@ -175,9 +176,21 @@ export function createTelegramBot(options?: {
 
     const chatId = ctx.chat.id;
     const userId = ctx.from.id;
+    const status = createPromptStatusReporter({
+      sendMessage: async (text) => {
+        const message = await ctx.reply(text, { disable_notification: config.silentNotifications });
+        return message.message_id;
+      },
+      editMessage: async (messageId, text) => {
+        await ctx.api.editMessageText(chatId, messageId, text);
+      },
+      sendTyping: async () => {
+        await ctx.replyWithChatAction("typing");
+      },
+    });
 
     try {
-      await ctx.replyWithChatAction("typing");
+      await status.start();
       const { finalResponse } = await getChatClient(chatId).sendPrompt({
         text,
         channel: "telegram",
@@ -199,9 +212,13 @@ export function createTelegramBot(options?: {
           await ctx.reply(responseText, { disable_notification: config.silentNotifications });
         });
       }
+      await status.complete();
     } catch (err) {
+      await status.fail();
       const message = err instanceof Error ? err.message : String(err);
       await ctx.reply(`Error executing prompt: ${message}`);
+    } finally {
+      status.stop();
     }
   });
 
