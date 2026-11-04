@@ -344,14 +344,17 @@ function scrollHostTowards(host: HTMLElement, top: number, smooth: boolean): voi
 // The one and only alignment of the reading lock: scroll so the answer row's
 // top sits READING_LOCK_TOP_OFFSET_PX below the viewport top. After this runs
 // the content grows downward on its own; no per-frame correction follows.
-function alignAnswerToViewportTop(row: HTMLElement, smooth: boolean): void {
+function alignAnswerToViewportTop(row: HTMLElement, smooth: boolean): number | null {
   const host = listRef.value;
-  if (!host || !row.isConnected) return;
+  if (!host || !row.isConnected) return null;
   const delta =
     row.getBoundingClientRect().top - host.getBoundingClientRect().top - READING_LOCK_TOP_OFFSET_PX;
-  if (Math.abs(delta) < 1) return;
-  scrollHostTowards(host, host.scrollTop + delta, smooth);
+  if (Math.abs(delta) < 1) return host.scrollTop;
+  const maxScrollTop = Math.max(0, host.scrollHeight - host.clientHeight);
+  const target = Math.max(0, Math.min(host.scrollTop + delta, maxScrollTop));
+  scrollHostTowards(host, target, smooth);
   scheduleViewportSave();
+  return target;
 }
 
 // Attempt the one-shot alignment. The answer owns the reading state even when
@@ -366,8 +369,8 @@ function tryLockAnswerRow(row: HTMLElement, smooth: boolean): boolean {
   readingLockEl = row;
   readingLockPendingId = "";
   autoScroll.value = false;
-  showScrollToBottom.value = true;
-  alignAnswerToViewportTop(row, smooth);
+  const targetTop = alignAnswerToViewportTop(row, smooth);
+  updateScrollToBottomVisibility(targetTop ?? undefined);
   return true;
 }
 
@@ -429,7 +432,7 @@ function pauseChatAutoScroll(): void {
   readingLockAligning = false;
   cancelBottomSettlement();
   autoScroll.value = false;
-  showScrollToBottom.value = true;
+  updateScrollToBottomVisibility();
 }
 
 function onChatScrollIntent(): void {
@@ -485,9 +488,10 @@ function clearChatTouchStart(): void {
 
 async function refreshAfterVisibility(): Promise<void> {
   await nextTick();
-  if (!listRef.value || !autoScroll.value) return;
-  listRef.value.scrollTop = listRef.value.scrollHeight;
-  showScrollToBottom.value = false;
+  const host = listRef.value;
+  if (!host) return;
+  if (autoScroll.value) host.scrollTop = host.scrollHeight;
+  updateScrollToBottomVisibility();
 }
 
 defineExpose({ refreshAfterVisibility });
@@ -509,7 +513,10 @@ function scheduleChatScrollToBottom(): void {
       if (readingLockAligning) return;
       // While the reading lock holds, the answer grows downward on its own;
       // never re-pin the bottom or correct the scroll position per frame.
-      if (readingLockEl) return;
+      if (readingLockEl) {
+        updateScrollToBottomVisibility();
+        return;
+      }
       const host = listRef.value;
       if (!host) return;
       if (readingLockPendingId && autoScroll.value) {
@@ -534,7 +541,10 @@ function scheduleChatScrollToBottom(): void {
 
 function onVisualViewportChange(): void {
   markChatKeyboardLayoutTransition();
-  if (!autoScroll.value || readingLockEl || readingLockAligning) return;
+  if (!autoScroll.value || readingLockEl || readingLockAligning) {
+    updateScrollToBottomVisibility();
+    return;
+  }
   scheduleChatScrollToBottom();
 }
 
@@ -690,6 +700,18 @@ const liveStepCanToggleExpanded = computed(() => {
 });
 const { copiedMessageId, onCopyMessage, formatMessageTs } = useCopyMessage();
 
+function updateScrollToBottomVisibility(scrollTop?: number): void {
+  const host = listRef.value;
+  if (!host) {
+    showScrollToBottom.value = false;
+    return;
+  }
+  const top = scrollTop ?? host.scrollTop;
+  showScrollToBottom.value =
+    host.scrollHeight > host.clientHeight &&
+    host.scrollHeight - top - host.clientHeight >= CHAT_STICKY_THRESHOLD_PX;
+}
+
 function handleScroll() {
   if (!listRef.value) return;
   const physicalScrollIntent = chatPhysicalScrollIntent;
@@ -706,7 +728,7 @@ function handleScroll() {
     // from physical input (wheel/touch/key release the lock earlier), so keep
     // the lock and leave the viewport untouched.
     autoScroll.value = false;
-    showScrollToBottom.value = true;
+    updateScrollToBottomVisibility();
     scheduleViewportSave();
     return;
   }
@@ -724,7 +746,7 @@ function handleScroll() {
     markViewportUserControlled();
   }
   autoScroll.value = distance < CHAT_STICKY_THRESHOLD_PX;
-  showScrollToBottom.value = distance >= CHAT_STICKY_THRESHOLD_PX;
+  updateScrollToBottomVisibility();
   scheduleViewportSave();
 }
 
@@ -751,7 +773,7 @@ function restoreInitialViewport(): void {
     initialViewportRestoreFrame = null;
     suppressInitialViewportScroll = false;
   });
-  showScrollToBottom.value = true;
+  updateScrollToBottomVisibility();
 }
 
 function escapeSelectorValue(value: string): string {
@@ -833,6 +855,7 @@ onMounted(() => {
     chatResizeObserver = new ResizeObserver(() => {
       markChatViewportLayoutTransition();
       restoreInitialViewport();
+      updateScrollToBottomVisibility();
       // If the chat pane is initially hidden (e.g. mobile tab), scrollHeight can be 0.
       // Once the pane becomes visible, ensure we still land at the bottom.
       scheduleChatScrollToBottom();
@@ -1020,7 +1043,7 @@ watch(
   () => {
     if (readingLockEl || readingLockAligning) return;
     if (autoScroll.value) scheduleChatScrollToBottom();
-    else showScrollToBottom.value = true;
+    else updateScrollToBottomVisibility();
   },
 );
 
