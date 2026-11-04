@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ref, toRaw } from "vue";
 
 import { createWsMessageHandler } from "../app/projectsWs/wsMessage";
 
@@ -532,6 +533,29 @@ describe("ws workspace project sync", () => {
       next.handler({ type: "context_injection", entryCount: 1, earliestTs: 1000 });
       vi.advanceTimersByTime(6000);
       expect(nextRt.laneStatus.value).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("dismisses the injection status when laneStatus is a Vue ref", () => {
+    vi.useFakeTimers();
+    try {
+      const rt = createRuntime();
+      rt.laneStatus = ref(null);
+      const { handler } = createHandler({ projects: [], pid: "default", rt, updateProject: vi.fn() });
+
+      handler({ type: "context_injection", entryCount: 2, earliestTs: 1000 });
+      expect(rt.laneStatus.value?.message).toMatch(/^已注入最近 2 条聊天历史/);
+
+      vi.advanceTimersByTime(6000);
+      expect(rt.laneStatus.value).toBeNull();
+
+      handler({ type: "context_injection", entryCount: 3, earliestTs: 1000 });
+      const newer = { kind: "info" as const, message: "newer status" };
+      rt.laneStatus.value = newer;
+      vi.advanceTimersByTime(6000);
+      expect(toRaw(rt.laneStatus.value)).toBe(newer);
     } finally {
       vi.useRealTimers();
     }

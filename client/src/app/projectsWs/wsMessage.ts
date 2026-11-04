@@ -1,3 +1,5 @@
+import { toRaw } from "vue";
+
 import { stripStreamingDisconnectNotice } from "../../lib/chat_sync";
 import { assistantMessageId, applyAssistantItem, reconcileAssistantItems } from "../assistantItems";
 import type { ChatActions } from "../chat";
@@ -1003,7 +1005,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     rt.laneStatus.value = status;
     transientLaneStatusTimer = window.setTimeout(() => {
       transientLaneStatusTimer = null;
-      if (rt.laneStatus.value === status) rt.laneStatus.value = null;
+      if (toRaw(rt.laneStatus.value) === toRaw(status)) rt.laneStatus.value = null;
     }, ttlMs);
   };
 
