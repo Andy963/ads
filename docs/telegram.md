@@ -46,6 +46,8 @@ node connectors/telegram/bin/ads-telegram.js start
 
 Each Telegram chat uses an independent Core chat session. History, `/new`, and `/stop` actions are scoped to that chat and cannot affect another chat.
 
+Text prompts receive a visible status message immediately after the connector accepts them. While the turn is running, the connector refreshes the Telegram typing indicator and updates that message with elapsed time. The status is finalized when the turn completes or fails, so a long-running turn remains distinguishable from a stopped connector.
+
 The `/model` list is read from ADS Core's global model configuration registry (`/api/models`). Model configuration is not workspace-scoped. A model selection is stored in the chat's Core session, so changing it in one Telegram chat does not change another chat's active model.
 
 The connector receives Core `task_terminal` events. A scheduled task with an explicit Telegram `chatId` is delivered to that chat; `TELEGRAM_NOTIFICATION_CHAT_ID` is an optional fallback.
