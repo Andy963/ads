@@ -154,6 +154,8 @@ Telegram variables belong to the standalone `connectors/telegram` package and ar
 | `ADS_CONNECTOR_TOKEN` | 必填 | Core connector bearer token；Connector 与 Core 必须配置为同一值 |
 | `ADS_CONNECTOR_USER_ID` | 首个启用的 Web 用户 | Bearer connector 使用的凭据 owner 覆盖值；未设置或保持 `connector` 时使用首个启用的 Web 用户 |
 | `TELEGRAM_MAX_REQUESTS_PER_MINUTE` | `30` | 每分钟最高请求频率限制 |
+| `TELEGRAM_PROMPT_IDLE_TIMEOUT_MS` | `180000` | 连续多久没有收到同一 prompt 的任何事件时发送一次“仍在执行”提醒；不会终止 turn |
+| `TELEGRAM_PROMPT_MAX_DURATION_MS` | `1800000` | 单个 prompt 的绝对等待上限，超过后 Connector 停止等待并报错；必须不小于 idle 超时 |
 | `TELEGRAM_PROXY_URL` | 未设置 | 网络代理地址（如 `http://127.0.0.1:7890`） |
 | `TELEGRAM_SILENT_NOTIFICATIONS` | `true` | 是否静默推送任务完成通知 |
 | `TELEGRAM_NOTIFICATION_CHAT_ID` | 未设置 | 接收异步任务终态通知的 Chat ID |

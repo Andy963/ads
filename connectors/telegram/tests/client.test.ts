@@ -274,4 +274,148 @@ describe("AdsCoreClient", () => {
     client.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
+
+  it("keeps a pending prompt alive while matching events arrive", async () => {
+    const wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      wss.once("listening", () => resolve());
+      wss.once("error", reject);
+    });
+    const address = wss.address();
+    if (!address || typeof address === "string") {
+      throw new Error("WebSocket test server did not expose a TCP address");
+    }
+
+    let idleNotices = 0;
+    wss.on("connection", (ws) => {
+      ws.on("message", (raw) => {
+        const message = JSON.parse(String(raw)) as { type?: string; client_message_id?: string };
+        if (message.type !== "prompt") return;
+        const clientMessageId = message.client_message_id;
+        const frames = [
+          { type: "ack", client_message_id: clientMessageId },
+          { type: "command", clientMessageId, command: { id: "cmd-1", command: "echo", status: "inProgress" } },
+          { type: "delta", clientMessageId, delta: "x" },
+          { type: "patch", clientMessageId, patch: "diff" },
+        ];
+        let index = 0;
+        const keepalive = setInterval(() => {
+          ws.send(JSON.stringify(frames[index % frames.length]));
+          index += 1;
+        }, 25);
+        setTimeout(() => {
+          clearInterval(keepalive);
+          ws.send(JSON.stringify({
+            type: "result",
+            ok: true,
+            output: "done",
+            clientMessageId,
+          }));
+        }, 200);
+      });
+    });
+
+    const client = new AdsCoreClient({
+      coreUrl: `http://127.0.0.1:${address.port}`,
+      coreWsUrl: `ws://127.0.0.1:${address.port}`,
+      promptIdleTimeoutMs: 80,
+      promptMaxDurationMs: 2_000,
+      onPromptIdle: () => {
+        idleNotices += 1;
+      },
+    });
+    await client.connect();
+    const { finalResponse } = await client.sendPrompt({
+      text: "keepalive",
+      clientMessageId: "keepalive-1",
+    });
+
+    assert.equal(await finalResponse, "done");
+    assert.equal(idleNotices, 0);
+    client.close();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
+
+  it("notifies once when a prompt goes idle without settling it", async () => {
+    const wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      wss.once("listening", () => resolve());
+      wss.once("error", reject);
+    });
+    const address = wss.address();
+    if (!address || typeof address === "string") {
+      throw new Error("WebSocket test server did not expose a TCP address");
+    }
+
+    wss.on("connection", (ws) => {
+      ws.on("message", (raw) => {
+        const message = JSON.parse(String(raw)) as { type?: string; client_message_id?: string };
+        if (message.type !== "prompt") return;
+        setTimeout(() => {
+          ws.send(JSON.stringify({
+            type: "result",
+            ok: true,
+            output: "late result",
+            clientMessageId: message.client_message_id,
+          }));
+        }, 150);
+      });
+    });
+
+    let idleNotices = 0;
+    const client = new AdsCoreClient({
+      coreUrl: `http://127.0.0.1:${address.port}`,
+      coreWsUrl: `ws://127.0.0.1:${address.port}`,
+      promptIdleTimeoutMs: 40,
+      promptMaxDurationMs: 1_000,
+      onPromptIdle: () => {
+        idleNotices += 1;
+      },
+    });
+    await client.connect();
+    const { finalResponse } = await client.sendPrompt({
+      text: "slow",
+      clientMessageId: "idle-1",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    assert.equal(idleNotices, 1);
+    assert.equal(await finalResponse, "late result");
+    client.close();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
+
+  it("rejects only after the maximum prompt duration", async () => {
+    const wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      wss.once("listening", () => resolve());
+      wss.once("error", reject);
+    });
+    const address = wss.address();
+    if (!address || typeof address === "string") {
+      throw new Error("WebSocket test server did not expose a TCP address");
+    }
+
+    wss.on("connection", (ws) => {
+      ws.on("message", () => {
+        // Keep the turn pending so the maximum-duration timer is the only exit.
+      });
+    });
+
+    const client = new AdsCoreClient({
+      coreUrl: `http://127.0.0.1:${address.port}`,
+      coreWsUrl: `ws://127.0.0.1:${address.port}`,
+      promptIdleTimeoutMs: 30,
+      promptMaxDurationMs: 90,
+    });
+    await client.connect();
+    const { finalResponse } = await client.sendPrompt({
+      text: "never finishes",
+      clientMessageId: "max-1",
+    });
+
+    await assert.rejects(finalResponse, /Prompt exceeded maximum duration after 90ms/);
+    client.close();
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+  });
 });
