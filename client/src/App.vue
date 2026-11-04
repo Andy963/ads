@@ -161,7 +161,6 @@ const {
   acopilotMessages,
   acopilotQueuedPrompts,
   acopilotPendingImages,
-  acopilotConnected,
   acopilotReady,
   acopilotBusy,
   acopilotInputLocked,
@@ -173,7 +172,6 @@ const {
   acopilotChatKey,
   acopilotPanelKey,
   actionsAgents,
-  actionsConnected,
   actionsReady,
   actionsInputLocked,
   actionsLaneStatus,
@@ -1799,7 +1797,8 @@ const acopilotConnectionStatus = computed(() => {
                   isLaneConnected(tab.id, { acopilot: acopilotReady, actions: actionsReady })
                     ? 'laneTabStatusDot--connected'
                     : 'laneTabStatusDot--disconnected',
-                  (tab.id === 'acopilot' ? acopilotConnected && acopilotBusy : actionsConnected && agentBusy)
+                  (isLaneConnected(tab.id, { acopilot: acopilotReady, actions: actionsReady }) &&
+                    (tab.id === 'acopilot' ? acopilotBusy : agentBusy))
                     ? (tab.id === 'acopilot' ? 'laneTabStatusDot--busy-acopilot' : 'laneTabStatusDot--busy-actions')
                     : '',
                 ]"

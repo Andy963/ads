@@ -442,12 +442,22 @@ describe("project status spinner", () => {
     const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
     expect(pid).not.toBe("");
 
-    const actionsRuntime = (wrapper.vm as any).getRuntime(pid) as { busy: { value: boolean }; connected: { value: boolean } };
-    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime(pid) as { busy: { value: boolean }; connected: { value: boolean } };
+    const actionsRuntime = (wrapper.vm as any).getRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
+    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
     actionsRuntime.busy.value = false;
     acopilotRuntime.busy.value = false;
     actionsRuntime.connected.value = true;
     acopilotRuntime.connected.value = true;
+    actionsRuntime.transcriptAuthoritative.value = true;
+    acopilotRuntime.transcriptAuthoritative.value = true;
     await settleUi(wrapper);
 
     expect(wrapper.find(".projectStatus").classes("spinning")).toBe(false);
@@ -488,10 +498,20 @@ describe("project status spinner", () => {
     const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
     expect(pid).not.toBe("");
 
-    const actionsRuntime = (wrapper.vm as any).getRuntime(pid) as { busy: { value: boolean }; connected: { value: boolean } };
-    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime(pid) as { busy: { value: boolean }; connected: { value: boolean } };
+    const actionsRuntime = (wrapper.vm as any).getRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
+    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
     actionsRuntime.connected.value = false;
     acopilotRuntime.connected.value = false;
+    actionsRuntime.transcriptAuthoritative.value = false;
+    acopilotRuntime.transcriptAuthoritative.value = false;
     actionsRuntime.busy.value = true;
     acopilotRuntime.busy.value = true;
     await settleUi(wrapper);
@@ -505,6 +525,7 @@ describe("project status spinner", () => {
     expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes("laneTabStatusDot--busy-actions")).toBe(false);
 
     acopilotRuntime.connected.value = true;
+    acopilotRuntime.transcriptAuthoritative.value = true;
     await settleUi(wrapper);
 
     expect(projectStatus.classes()).toEqual(expect.arrayContaining(["spinning", "spinning--acopilot"]));
@@ -514,42 +535,97 @@ describe("project status spinner", () => {
     wrapper.unmount();
   });
 
-  it("uses pulsing breathing animation for busy lane dots", async () => {
+  it("keeps busy dots hidden when a connected lane is not ready", async () => {
+    const wrapper = await mountApp();
+
+    const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
+    const actionsRuntime = (wrapper.vm as any).getRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
+    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
+    actionsRuntime.connected.value = true;
+    acopilotRuntime.connected.value = true;
+    actionsRuntime.transcriptAuthoritative.value = false;
+    acopilotRuntime.transcriptAuthoritative.value = false;
+    actionsRuntime.busy.value = true;
+    acopilotRuntime.busy.value = true;
+    await settleUi(wrapper);
+
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes()).toContain("laneTabStatusDot--disconnected");
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes("laneTabStatusDot--busy-acopilot")).toBe(false);
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes()).toContain("laneTabStatusDot--disconnected");
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes("laneTabStatusDot--busy-actions")).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it("marks both lanes disconnected on a browser offline event", async () => {
+    const wrapper = await mountApp();
+
+    const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
+    const actionsRuntime = (wrapper.vm as any).getRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
+    const acopilotRuntime = (wrapper.vm as any).getAcopilotRuntime(pid) as {
+      busy: { value: boolean };
+      connected: { value: boolean };
+      transcriptAuthoritative: { value: boolean };
+    };
+    actionsRuntime.connected.value = true;
+    acopilotRuntime.connected.value = true;
+    actionsRuntime.transcriptAuthoritative.value = true;
+    acopilotRuntime.transcriptAuthoritative.value = true;
+    actionsRuntime.busy.value = true;
+    acopilotRuntime.busy.value = true;
+    await settleUi(wrapper);
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes()).toContain("laneTabStatusDot--busy-acopilot");
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes()).toContain("laneTabStatusDot--busy-actions");
+
+    window.dispatchEvent(new Event("offline"));
+    await settleUi(wrapper);
+
+    expect(actionsRuntime.connected.value).toBe(false);
+    expect(acopilotRuntime.connected.value).toBe(false);
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes()).toContain("laneTabStatusDot--disconnected");
+    expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes("laneTabStatusDot--busy-acopilot")).toBe(false);
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes()).toContain("laneTabStatusDot--disconnected");
+    expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes("laneTabStatusDot--busy-actions")).toBe(false);
+
+    wrapper.unmount();
+  });
+
+  it("renders static busy lane dots without pulse or scale", async () => {
     const css = await readClientFile("../App.css");
     const advisorDot = css.match(/\.laneTabStatusDot--busy-acopilot\s*\{[^}]*\}/)?.[0];
     const workerDot = css.match(/\.laneTabStatusDot--busy-actions\s*\{[^}]*\}/)?.[0];
 
     expect(advisorDot).toBeDefined();
     expect(advisorDot).toMatch(/background:\s*#a855f7\s*;/);
-    expect(advisorDot).toMatch(/animation:\s*laneDotPulse 1\.6s ease-in-out infinite\s*;/);
+    expect(advisorDot).toMatch(/box-shadow:\s*0 0 0 2px rgba\(168, 85, 247, 0\.35\)\s*;/);
+    expect(advisorDot).not.toMatch(/animation|transform|will-change|laneDotPulse/);
 
     expect(workerDot).toBeDefined();
     expect(workerDot).toMatch(/background:\s*#10b981\s*;/);
-    expect(workerDot).toMatch(/animation:\s*laneDotPulse 1\.6s ease-in-out infinite\s*;/);
+    expect(workerDot).toMatch(/box-shadow:\s*0 0 0 2px rgba\(16, 185, 129, 0\.35\)\s*;/);
+    expect(workerDot).not.toMatch(/animation|transform|will-change|laneDotPulse/);
 
-    expect(css).toMatch(/@keyframes\s+laneDotPulse\s*\{/);
+    expect(css).not.toMatch(/laneDotPulse/);
 
-    // Perceptibility floors (issue #480): the old 7px dot scaling to 1.2 with
-    // a 0.2-alpha ring was below the visibility threshold on high-DPI phones,
-    // and the regex assertions above passed anyway. Assert the amplitude
-    // itself, not just the declaration strings.
     const baseDot = css.match(/\.laneTabStatusDot\s*\{[^}]*\}/)?.[0] ?? "";
     const dotSize = Number(baseDot.match(/width:\s*(\d+(?:\.\d+)?)px/)?.[1]);
     expect(dotSize).toBeGreaterThanOrEqual(8);
 
-    const keyframes = css.match(/@keyframes\s+laneDotPulse\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
-    const peakScale = Math.max(...[...keyframes.matchAll(/scale\((\d+(?:\.\d+)?)\)/g)].map((match) => Number(match[1])));
-    expect(peakScale).toBeGreaterThanOrEqual(1.4);
-    const rings = [...keyframes.matchAll(/0 0 0 (\d+(?:\.\d+)?)px rgba\(var\(--lane-pulse-color\),\s*(\d+(?:\.\d+)?)\)/g)]
-      .map((match) => ({ spread: Number(match[1]), alpha: Number(match[2]) }));
-    expect(rings.some((ring) => ring.spread >= 5 && ring.alpha >= 0.4)).toBe(true);
-
-    // The global reduced-motion override zeroes all animation; the busy dot
-    // must be exempted there or a busy lane silently loses its indicator.
     const globalCss = await readClientFile("../global.css");
-    expect(globalCss).toMatch(
-      /prefers-reduced-motion:\s*reduce[\s\S]*\.laneTabStatusDot--busy-acopilot[\s\S]*?animation:\s*none\s*!important[\s\S]*?box-shadow:/,
-    );
+    expect(globalCss).not.toMatch(/laneTabStatusDot--busy/);
+    expect(globalCss).not.toMatch(/lane-pulse-color/);
   });
 });
 
