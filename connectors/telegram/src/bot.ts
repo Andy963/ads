@@ -27,6 +27,7 @@ export function createTelegramBot(options?: {
 } {
   const config = options?.config ?? loadConnectorConfig();
   validateConnectorConfig(config);
+  const bot = new Bot(config.botToken);
 
   const createClient = options?.createClient ?? ((clientOptions: AdsClientOptions) => new AdsCoreClient(clientOptions));
   const client = options?.client ?? createClient({
@@ -51,12 +52,23 @@ export function createTelegramBot(options?: {
       // keeps history, reset, and interrupt actions scoped to one chat.
       sessionId: "telegram",
       chatSessionId: `chat-${key}`,
+      promptIdleTimeoutMs: config.promptIdleTimeoutMs,
+      promptMaxDurationMs: config.promptMaxDurationMs,
+      onPromptIdle: () => {
+        void bot.api.sendMessage(
+          key,
+          "Still working on this request. I will send the result when it finishes.",
+          { disable_notification: config.silentNotifications },
+        ).catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn(`[telegram-connector] Could not send idle notice: ${message}`);
+        });
+      },
     });
     chatClients.set(key, chatClient);
     return chatClient;
   };
 
-  const bot = new Bot(config.botToken);
   bot.use(createAuthMiddleware(config.allowedUsers));
   bot.use(createRateLimitMiddleware(config.maxRequestsPerMinute));
 

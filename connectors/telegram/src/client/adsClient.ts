@@ -8,6 +8,9 @@ export interface AdsClientOptions {
   chatSessionId?: string;
   autoReconnect?: boolean;
   reconnectIntervalMs?: number;
+  promptIdleTimeoutMs?: number;
+  promptMaxDurationMs?: number;
+  onPromptIdle?: (notice: PromptIdleNotice) => void;
 }
 
 export interface PromptTurnOptions {
@@ -17,6 +20,14 @@ export interface PromptTurnOptions {
   metadata?: Record<string, unknown>;
   clientMessageId?: string;
   timeoutMs?: number;
+  idleTimeoutMs?: number;
+  maxDurationMs?: number;
+}
+
+export interface PromptIdleNotice {
+  clientMessageId: string;
+  idleTimeoutMs: number;
+  maxDurationMs: number;
 }
 
 export interface ModelOption {
@@ -39,6 +50,25 @@ export interface AdsEvent {
   [key: string]: unknown;
 }
 
+export const DEFAULT_PROMPT_IDLE_TIMEOUT_MS = 180_000;
+export const DEFAULT_PROMPT_MAX_DURATION_MS = 1_800_000;
+
+function normalizePromptDuration(value: number | undefined, fallback: number): number {
+  const normalized = Number(value ?? fallback);
+  return Number.isFinite(normalized) && normalized > 0 ? Math.floor(normalized) : fallback;
+}
+
+interface PendingPrompt {
+  resolve: (reply: string) => void;
+  reject: (err: Error) => void;
+  accumulatedText: string;
+  idleTimer?: NodeJS.Timeout;
+  maxTimer?: NodeJS.Timeout;
+  idleNotified: boolean;
+  idleTimeoutMs: number;
+  maxDurationMs: number;
+}
+
 export class AdsCoreClient {
   private ws: WebSocket | null = null;
   private isConnected = false;
@@ -48,12 +78,7 @@ export class AdsCoreClient {
   private welcomeReceived = false;
   private readonly welcomeWaiters = new Set<() => void>();
   private readonly eventListeners = new Set<(event: AdsEvent) => void>();
-  private pendingPrompts = new Map<string, {
-    resolve: (reply: string) => void;
-    reject: (err: Error) => void;
-    accumulatedText: string;
-    timer: NodeJS.Timeout;
-  }>();
+  private pendingPrompts = new Map<string, PendingPrompt>();
   private pendingControls = new Map<string, {
     resolve: (state: ModelState) => void;
     reject: (err: Error) => void;
@@ -141,21 +166,29 @@ export class AdsCoreClient {
         try { listener(parsed); } catch { /* ignore */ }
       }
 
-      const clientMsgId = typeof parsed.clientMessageId === "string" ? parsed.clientMessageId : "";
+      const clientMsgId = typeof parsed.clientMessageId === "string"
+        ? parsed.clientMessageId
+        : typeof parsed.client_message_id === "string"
+          ? parsed.client_message_id
+          : "";
       const fallbackPending = !clientMsgId && this.pendingPrompts.size === 1 ? this.pendingPrompts.entries().next().value : undefined;
       const resolvedId = clientMsgId || (Array.isArray(fallbackPending) ? String(fallbackPending[0]) : "");
       const pending = resolvedId ? this.pendingPrompts.get(resolvedId) : undefined;
+
+      if (pending && parsed.type !== "result" && parsed.type !== "error") {
+        this.armPromptIdleTimer(resolvedId, pending);
+      }
 
       if (parsed.type === "delta" && pending) {
         const text = typeof parsed.delta === "string" ? parsed.delta : "";
         pending.accumulatedText += text;
       } else if (parsed.type === "result" && pending) {
         const text = typeof parsed.output === "string" ? parsed.output : pending.accumulatedText;
-        clearTimeout(pending.timer);
+        this.clearPromptTimers(pending);
         this.pendingPrompts.delete(resolvedId);
         pending.resolve(text);
       } else if (parsed.type === "error" && pending) {
-        clearTimeout(pending.timer);
+        this.clearPromptTimers(pending);
         this.pendingPrompts.delete(resolvedId);
         pending.reject(new Error(String(parsed.message ?? parsed.error ?? "ADS Core prompt failed")));
       }
@@ -204,18 +237,35 @@ export class AdsCoreClient {
       metadata: options.metadata,
     };
 
-    const timeoutMs = options.timeoutMs ?? 180_000;
+    const maxDurationMs = normalizePromptDuration(
+      options.maxDurationMs ?? options.timeoutMs ?? this.options.promptMaxDurationMs,
+      DEFAULT_PROMPT_MAX_DURATION_MS,
+    );
+    const idleTimeoutMs = Math.min(
+      normalizePromptDuration(
+        options.idleTimeoutMs ?? this.options.promptIdleTimeoutMs,
+        DEFAULT_PROMPT_IDLE_TIMEOUT_MS,
+      ),
+      maxDurationMs,
+    );
     const finalResponse = new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingPrompts.delete(clientMessageId);
-        reject(new Error(`Prompt timeout after ${timeoutMs}ms`));
-      }, timeoutMs);
-      this.pendingPrompts.set(clientMessageId, {
+      const pending: PendingPrompt = {
         resolve,
         reject,
         accumulatedText: "",
-        timer,
-      });
+        idleNotified: false,
+        idleTimeoutMs,
+        maxDurationMs,
+      };
+      pending.maxTimer = setTimeout(() => {
+        if (this.pendingPrompts.get(clientMessageId) !== pending) return;
+        this.clearPromptTimers(pending);
+        this.pendingPrompts.delete(clientMessageId);
+        pending.reject(new Error(`Prompt exceeded maximum duration after ${maxDurationMs}ms`));
+      }, maxDurationMs);
+      pending.maxTimer.unref?.();
+      this.pendingPrompts.set(clientMessageId, pending);
+      this.armPromptIdleTimer(clientMessageId, pending);
     });
 
     const message = {
@@ -226,6 +276,35 @@ export class AdsCoreClient {
 
     this.ws!.send(JSON.stringify(message));
     return { finalResponse, clientMessageId };
+  }
+
+  private armPromptIdleTimer(clientMessageId: string, pending: PendingPrompt): void {
+    if (pending.idleTimer) clearTimeout(pending.idleTimer);
+    pending.idleTimer = setTimeout(() => {
+      if (this.pendingPrompts.get(clientMessageId) !== pending || pending.idleNotified) return;
+      pending.idleNotified = true;
+      try {
+        this.options.onPromptIdle?.({
+          clientMessageId,
+          idleTimeoutMs: pending.idleTimeoutMs,
+          maxDurationMs: pending.maxDurationMs,
+        });
+      } catch {
+        // A notification failure must not settle the pending prompt.
+      }
+    }, pending.idleTimeoutMs);
+    pending.idleTimer.unref?.();
+  }
+
+  private clearPromptTimers(pending: PendingPrompt): void {
+    if (pending.idleTimer) {
+      clearTimeout(pending.idleTimer);
+      pending.idleTimer = undefined;
+    }
+    if (pending.maxTimer) {
+      clearTimeout(pending.maxTimer);
+      pending.maxTimer = undefined;
+    }
   }
 
   async sendInterrupt(): Promise<void> {
@@ -318,7 +397,7 @@ export class AdsCoreClient {
       this.reconnectTimer = null;
     }
     for (const [, pending] of this.pendingPrompts) {
-      clearTimeout(pending.timer);
+      this.clearPromptTimers(pending);
       pending.reject(new Error("Client closed"));
     }
     this.pendingPrompts.clear();

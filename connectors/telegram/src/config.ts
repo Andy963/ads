@@ -1,3 +1,8 @@
+import {
+  DEFAULT_PROMPT_IDLE_TIMEOUT_MS,
+  DEFAULT_PROMPT_MAX_DURATION_MS,
+} from "./client/adsClient.js";
+
 export interface TelegramConnectorConfig {
   botToken: string;
   allowedUsers: number[];
@@ -8,6 +13,8 @@ export interface TelegramConnectorConfig {
   proxyUrl?: string;
   maxRequestsPerMinute: number;
   silentNotifications: boolean;
+  promptIdleTimeoutMs: number;
+  promptMaxDurationMs: number;
 }
 
 function parseAllowedUsers(env: NodeJS.ProcessEnv): number[] {
@@ -39,6 +46,11 @@ function resolveWsUrl(coreUrl: string, explicitWs?: string): string {
   }
 }
 
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  const value = Number(String(raw ?? "").trim());
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
 export function loadConnectorConfig(env: NodeJS.ProcessEnv = process.env): TelegramConnectorConfig {
   const botToken = String(env.TELEGRAM_BOT_TOKEN ?? "").trim();
   const allowedUsers = parseAllowedUsers(env);
@@ -50,6 +62,14 @@ export function loadConnectorConfig(env: NodeJS.ProcessEnv = process.env): Teleg
   const maxRequestsPerMinute = Number(env.TELEGRAM_MAX_REQUESTS_PER_MINUTE ?? 30) || 30;
   const silentRaw = String(env.TELEGRAM_SILENT_NOTIFICATIONS ?? "true").trim().toLowerCase();
   const silentNotifications = silentRaw !== "false" && silentRaw !== "0";
+  const promptIdleTimeoutMs = parsePositiveInt(
+    env.TELEGRAM_PROMPT_IDLE_TIMEOUT_MS,
+    DEFAULT_PROMPT_IDLE_TIMEOUT_MS,
+  );
+  const promptMaxDurationMs = parsePositiveInt(
+    env.TELEGRAM_PROMPT_MAX_DURATION_MS,
+    DEFAULT_PROMPT_MAX_DURATION_MS,
+  );
 
   return {
     botToken,
@@ -61,6 +81,8 @@ export function loadConnectorConfig(env: NodeJS.ProcessEnv = process.env): Teleg
     proxyUrl,
     maxRequestsPerMinute,
     silentNotifications,
+    promptIdleTimeoutMs,
+    promptMaxDurationMs,
   };
 }
 
@@ -73,5 +95,10 @@ export function validateConnectorConfig(config: TelegramConnectorConfig): void {
   }
   if (!config.connectorToken) {
     throw new Error("ADS_CONNECTOR_TOKEN is required");
+  }
+  if (config.promptMaxDurationMs < config.promptIdleTimeoutMs) {
+    throw new Error(
+      "TELEGRAM_PROMPT_MAX_DURATION_MS must be greater than or equal to TELEGRAM_PROMPT_IDLE_TIMEOUT_MS",
+    );
   }
 }
