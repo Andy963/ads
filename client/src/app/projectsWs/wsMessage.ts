@@ -48,6 +48,13 @@ function isHistoryInjectionWarning(value: string | null | undefined): boolean {
   if (!text) return false;
   return text === HISTORY_INJECTION_NOTICE || text.includes(HISTORY_INJECTION_RESET_MARKER);
 }
+
+// The Actions lane runs every Reviewer job on a fresh message list, so these
+// interactive-chat restoration notices describe state that lane never uses.
+const CONTEXT_RESTORE_STATUS_MESSAGES = new Set([
+  THREAD_RESUMED_NOTICE,
+  "后端线程未直接恢复；下一轮发送时会注入最近聊天历史来延续上下文。",
+]);
 const TRANSIENT_RETRY_NOTICE_ID = "transient-retry-notice";
 const BACKEND_WAITING_STATUS_MESSAGES = new Set([
   "上一轮仍在执行，正在等待后端结果。",
@@ -353,6 +360,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     replaceStreamingText,
   } = args;
   const preferenceLane = args.preferenceLane ?? (normalizeLaneId(rt.chatSessionId) === "acopilot" ? "acopilot" : "actions");
+  const showsContextRestoreNotices = preferenceLane === "acopilot";
   rt.inputLocked ??= { value: false };
   rt.laneStatus ??= { value: null };
   rt.retiredExecuteKeys ??= new Set<string>();
@@ -1480,7 +1488,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           source: "welcome_reset",
         });
       } else if (contextMode === "history_injection" && hasStaleLocalContinuity) {
-        rt.threadWarning.value = HISTORY_INJECTION_NOTICE;
+        if (showsContextRestoreNotices) rt.threadWarning.value = HISTORY_INJECTION_NOTICE;
       } else if (prevThreadId && serverThreadId && prevThreadId !== serverThreadId) {
         rt.threadWarning.value =
           `后端线程已变化但没有显式重置标记（原=${prevThreadId}，现=${serverThreadId}）。` +
@@ -1610,6 +1618,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     }
 
     if (type === "context_injection") {
+      if (!showsContextRestoreNotices) return;
       const rec = msg as Record<string, unknown>;
       const entryCount = Number(rec.entryCount);
       if (!Number.isFinite(entryCount) || entryCount <= 0) return;
@@ -1627,6 +1636,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (type === "status") {
       const content = firstWireText(msg.message, msg.output, msg.text).trim();
       if (!content) return;
+      if (!showsContextRestoreNotices && CONTEXT_RESTORE_STATUS_MESSAGES.has(content)) return;
       if (recoveredBackendActivitySeen && BACKEND_WAITING_STATUS_MESSAGES.has(content)) return;
       const kind = String(msg.kind ?? "").trim() === "error"
         ? "error"
@@ -1682,7 +1692,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       }
       const historyThreadId = String((msg as { threadId?: unknown }).threadId ?? "").trim();
       const historyContextMode = String((msg as { contextMode?: unknown }).contextMode ?? "").trim();
-      const restoreNotice = contextModeNotice(historyContextMode);
+      const restoreNotice = showsContextRestoreNotices ? contextModeNotice(historyContextMode) : "";
       const restoredContextStatus: LaneStatus | null = restoreNotice && !resumeReplacePending
         ? { kind: "info", message: restoreNotice }
         : null;
