@@ -799,29 +799,12 @@
 
 .laneTabStatusDot--busy-acopilot {
   background: #a855f7;
-  --lane-pulse-color: 168, 85, 247;
-  animation: laneDotPulse 1.6s ease-in-out infinite;
-  will-change: transform, box-shadow;
+  box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.35);
 }
 
 .laneTabStatusDot--busy-actions {
   background: #10b981;
-  --lane-pulse-color: 16, 185, 129;
-  animation: laneDotPulse 1.6s ease-in-out infinite;
-  will-change: transform, box-shadow;
-}
-
-@keyframes laneDotPulse {
-  0%, 100% {
-    transform: scale(1);
-    box-shadow: 0 0 0 2px rgba(var(--lane-pulse-color), 0.45);
-    opacity: 0.9;
-  }
-  50% {
-    transform: scale(1.5);
-    box-shadow: 0 0 0 6px rgba(var(--lane-pulse-color), 0.55);
-    opacity: 1;
-  }
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.35);
 }
 
 .laneTab.active {
