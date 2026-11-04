@@ -59,6 +59,9 @@ function createHandler(args: { projects: any[]; pid: string; rt: any; updateProj
     projects: { value: args.projects },
     pid: args.pid,
     rt: args.rt,
+    // These cases describe the interactive chat lane, which still renders
+    // context restoration notices. The Actions lane suppresses them.
+    preferenceLane: "acopilot",
     wsInstance: { send: vi.fn() },
     maxTurnCommands: 64,
     randomId,
