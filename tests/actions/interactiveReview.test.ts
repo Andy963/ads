@@ -4,9 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { spawnSync } from "node:child_process";
+import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
 
 import { LaneDispatchBus, type InteractiveReviewTarget } from "../../server/actions/bus.js";
-import { createActionJob, updateActionJobStatus } from "../../server/state/actionJobStore.js";
+import {
+  createActionJob,
+  supersedeReviewJobsForNewHead,
+  updateActionJobStatus,
+} from "../../server/state/actionJobStore.js";
 import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
 import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
 import { deriveProjectSessionId } from "../../server/web/server/projectSessionId.js";
@@ -123,14 +128,21 @@ describe("Actions Reviewer queue", () => {
       reviewerComplete?: typeof completeNativeChat;
       reviewPresentationComplete?: typeof completeNativeModel;
       reviewPresentationTimeoutMs?: number;
+      db?: DatabaseType;
+      workerId?: string;
+      reviewQueueLeaseTtlMs?: number;
+      reviewQueueLeaseHeartbeatMs?: number;
     } = {},
   ): LaneDispatchBus {
     let metadataReads = 0;
     const current = getTarget;
-    return new LaneDispatchBus(getStateDatabase(), {
+    return new LaneDispatchBus(options.db ?? getStateDatabase(), {
       testCommand: options.testCommand ?? "git status",
       interactiveVerificationTimeoutMs: options.interactiveVerificationTimeoutMs,
       reviewPresentationTimeoutMs: options.reviewPresentationTimeoutMs,
+      workerId: options.workerId,
+      reviewQueueLeaseTtlMs: options.reviewQueueLeaseTtlMs,
+      reviewQueueLeaseHeartbeatMs: options.reviewQueueLeaseHeartbeatMs,
       interactiveGithubMetadataReader: () => {
         metadataReads += 1;
         options.onMetadataRead?.(metadataReads);
@@ -854,5 +866,92 @@ describe("Actions Reviewer queue", () => {
     const completedTexts = history.map((entry) => entry.text);
     assert.ok(completedTexts.indexOf(verificationStatus!) < completedTexts.indexOf(verdictEntry.text), JSON.stringify(completedTexts));
     await tools.dispose();
+  });
+
+  it("leases the project review queue across database connections", async () => {
+    const reviewTarget = target();
+    let reviewerRuns = 0;
+    let startReview!: () => void;
+    let releaseReview!: () => void;
+    const reviewStarted = new Promise<void>((resolve) => { startReview = resolve; });
+    const reviewGate = new Promise<void>((resolve) => { releaseReview = resolve; });
+    const busA = createBus(() => reviewTarget, {
+      workerId: "review-worker-a",
+      reviewQueueLeaseTtlMs: 60_000,
+      reviewQueueLeaseHeartbeatMs: 5_000,
+      reviewerRunner: async () => {
+        reviewerRuns += 1;
+        startReview();
+        await reviewGate;
+        return JSON.stringify({ status: "PASS", summary: "Reviewed", defects: [] });
+      },
+    });
+    const dbPath = process.env.ADS_STATE_DB_PATH;
+    assert.ok(dbPath);
+    const secondDb = new DatabaseConstructor(dbPath, { fileMustExist: true });
+    secondDb.pragma("busy_timeout = 5000");
+    const busB = createBus(() => reviewTarget, { db: secondDb, workerId: "review-worker-b" });
+    const tools = await busA.createInteractiveActionTools(reviewRequest(reviewTarget));
+    try {
+      const ack = await tools.review_action();
+      const runA = busA.processReviewQueue(reviewTarget.projectId, repoDir);
+      await reviewStarted;
+
+      assert.equal(busA.getJob(String(ack.jobId))?.status, "reviewing");
+      await busB.processReviewQueue(reviewTarget.projectId, repoDir);
+      assert.equal(reviewerRuns, 1);
+      assert.equal(busB.getJob(String(ack.jobId))?.status, "reviewing");
+
+      releaseReview();
+      await runA;
+      assert.equal(busA.getJob(String(ack.jobId))?.status, "completed");
+    } finally {
+      releaseReview();
+      await tools.dispose();
+      secondDb.close();
+    }
+  });
+
+  it("does not publish or wake for a review superseded while the Reviewer runs", async () => {
+    const reviewTarget = target();
+    let startReview!: () => void;
+    let releaseReview!: () => void;
+    const reviewStarted = new Promise<void>((resolve) => { startReview = resolve; });
+    const reviewGate = new Promise<void>((resolve) => { releaseReview = resolve; });
+    const comments: string[] = [];
+    const wakes: Array<{ status: string }> = [];
+    const bus = createBus(() => reviewTarget, {
+      onIssueComment: (body) => comments.push(body),
+      onWake: (args) => wakes.push(args),
+      reviewerRunner: async () => {
+        startReview();
+        await reviewGate;
+        return JSON.stringify({ status: "PASS", summary: "Reviewed", defects: [] });
+      },
+    });
+    const tools = await bus.createInteractiveActionTools(reviewRequest(reviewTarget));
+    try {
+      const ack = await tools.review_action();
+      const run = bus.processReviewQueue(reviewTarget.projectId, repoDir);
+      await reviewStarted;
+      supersedeReviewJobsForNewHead(getStateDatabase(), {
+        projectId: reviewTarget.projectId,
+        prNumber: reviewTarget.prNumber,
+        branch: reviewTarget.branch,
+        keepHeadSha: "new-head-commit",
+        supersededByJobId: "newer-review-job",
+      });
+      releaseReview();
+      await run;
+
+      const job = bus.getJob(String(ack.jobId));
+      assert.ok(job?.superseded_at);
+      assert.equal(job?.status, "cancelled");
+      assert.equal(comments.length, 0);
+      assert.equal(wakes.length, 0);
+    } finally {
+      releaseReview();
+      await tools.dispose();
+    }
   });
 });

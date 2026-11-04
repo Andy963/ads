@@ -51,6 +51,8 @@ export interface ActionJobRecord {
   error_message: string | null;
   rework_count: number;
   blocked_at: number | null;
+  superseded_at: number | null;
+  superseded_by_job_id: string | null;
   auth_user_id: string | null;
   chat_session_id: string | null;
   created_at: number;
@@ -149,12 +151,12 @@ export function updateActionJobPinnedTarget(
     pr_url: string;
   },
   now = Date.now(),
-): void {
-  db.prepare(`
+): boolean {
+  const result = db.prepare(`
     UPDATE action_jobs
     SET issue_id = ?, issue_title = ?, issue_snapshot_json = ?, branch = ?,
         base_sha = ?, head_sha = ?, pr_number = ?, pr_url = ?, updated_at = ?
-    WHERE id = ?
+    WHERE id = ? AND superseded_at IS NULL
   `).run(
     target.issue_id,
     target.issue_title,
@@ -166,7 +168,8 @@ export function updateActionJobPinnedTarget(
     target.pr_url,
     now,
     id,
-  );
+  ) as { changes?: number };
+  return (result.changes ?? 0) > 0;
 }
 
 export function updateActionJobStatus(
@@ -176,7 +179,8 @@ export function updateActionJobStatus(
   updates: Partial<Pick<ActionJobRecord,
     "current_step" | "review_verdicts_json" | "verification_report_json" | "error_message">> = {},
   now = Date.now(),
-): void {
+  options: { requireNotSuperseded?: boolean } = {},
+): boolean {
   const fields = ["status = ?", "updated_at = ?"];
   const values: unknown[] = [status, now];
   for (const field of ["current_step", "review_verdicts_json", "verification_report_json", "error_message"] as const) {
@@ -186,5 +190,73 @@ export function updateActionJobStatus(
     values.push(updates[field] ?? fallback);
   }
   values.push(id);
-  db.prepare(`UPDATE action_jobs SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+  const where = options.requireNotSuperseded ? " WHERE id = ? AND superseded_at IS NULL" : " WHERE id = ?";
+  const result = db.prepare(`UPDATE action_jobs SET ${fields.join(", ")}${where}`).run(...values) as { changes?: number };
+  return (result.changes ?? 0) > 0;
+}
+
+export interface SupersedeReviewJobsInput {
+  projectId: string;
+  prNumber?: number | null;
+  branch?: string | null;
+  keepHeadSha: string;
+  supersededByJobId: string;
+}
+
+/**
+ * A review job is current only for the head it pinned. When a newer head is
+ * pinned for the same PR or branch, older rows stay as audit records but must
+ * not remain runnable or publishable.
+ */
+export function supersedeReviewJobsForNewHead(
+  db: DatabaseType,
+  input: SupersedeReviewJobsInput,
+  now = Date.now(),
+): number {
+  const projectId = String(input.projectId ?? "").trim();
+  const keepHeadSha = String(input.keepHeadSha ?? "").trim();
+  const supersededByJobId = String(input.supersededByJobId ?? "").trim();
+  const prNumber = Number(input.prNumber ?? 0);
+  const branch = String(input.branch ?? "").trim();
+  if (!projectId || !keepHeadSha || !supersededByJobId) return 0;
+  if (!Number.isSafeInteger(prNumber) || prNumber < 0) return 0;
+
+  const targetClause = prNumber > 0
+    ? "pr_number = ?"
+    : branch
+      ? "COALESCE(pr_number, 0) = 0 AND branch = ?"
+      : "";
+  if (!targetClause) return 0;
+
+  const result = db.prepare(`
+    UPDATE action_jobs
+    SET superseded_at = ?,
+        superseded_by_job_id = ?,
+        status = CASE
+          WHEN status IN ('queued', 'running', 'verifying', 'reviewing') THEN 'cancelled'
+          ELSE status
+        END,
+        current_step = CASE
+          WHEN status IN ('queued', 'running', 'verifying', 'reviewing')
+            THEN 'Superseded by a newer head commit'
+          ELSE current_step
+        END,
+        updated_at = ?
+    WHERE project_id = ?
+      AND job_kind = 'pull_request_review'
+      AND id <> ?
+      AND superseded_at IS NULL
+      AND status <> 'cancelled'
+      AND COALESCE(head_sha, '') <> ?
+      AND ${targetClause}
+  `).run(
+    now,
+    supersededByJobId,
+    now,
+    projectId,
+    supersededByJobId,
+    keepHeadSha,
+    prNumber > 0 ? prNumber : branch,
+  ) as { changes?: number };
+  return result.changes ?? 0;
 }

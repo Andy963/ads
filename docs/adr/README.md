@@ -58,4 +58,7 @@
 - 0047 - [ADR 0047: Multiplex Project Lanes over One WebSocket](0047-multiplex-websocket-lanes.md)
 - 0048 - [ADR 0048: Acopilot Implementation with an Actions Reviewer Queue](0048-two-role-architecture-with-actions-review-queue.md)
 - 0049 - [ADR 0049: Actions Lane Presents a Human Review Log](0049-actions-lane-human-log-boundary.md)
+- 0050 - [ADR 0050: Review Verdicts Are Published Through the Issue, Not Through the Tool Call](0050-review-verdicts-published-through-issue.md)
+- 0051 - [ADR 0051: Review Jobs Are Superseded When Their Pinned Head Is Replaced](0051-review-jobs-are-superseded-by-new-heads.md)
+- 0052 - [ADR 0052: Review Queue Execution Is Leased Per Project](0052-review-queue-execution-is-leased-per-project.md)
 <!-- ADS:ADR_INDEX_END -->

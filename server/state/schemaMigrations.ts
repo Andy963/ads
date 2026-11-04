@@ -1296,6 +1296,28 @@ Core reviewing rules:
       }
     },
   },
+  {
+    version: 42,
+    description: "Track superseded review jobs and project review queue leases",
+    up: (db) => {
+      addColumnIfMissing(db, "action_jobs", "superseded_at", "INTEGER");
+      addColumnIfMissing(db, "action_jobs", "superseded_by_job_id", "TEXT");
+      if (tableExists(db, "action_jobs")) {
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_action_jobs_review_head
+            ON action_jobs(project_id, pr_number, head_sha, superseded_at);
+        `);
+      }
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS review_queue_leases (
+          project_id TEXT PRIMARY KEY,
+          owner_id TEXT NOT NULL,
+          expires_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+      `);
+    },
+  },
 ];
 
 /**
