@@ -201,6 +201,7 @@ export function createTelegramBot(options?: {
       });
 
       const responseText = await finalResponse;
+      await status.complete();
       const markdown = escapeTelegramMarkdownV2(responseText);
       const chunks = chunkMessage(markdown);
       for (const chunk of chunks) {
@@ -212,7 +213,6 @@ export function createTelegramBot(options?: {
           await ctx.reply(responseText, { disable_notification: config.silentNotifications });
         });
       }
-      await status.complete();
     } catch (err) {
       await status.fail();
       const message = err instanceof Error ? err.message : String(err);
