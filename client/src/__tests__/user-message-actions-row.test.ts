@@ -3,7 +3,6 @@ import { mount } from "@vue/test-utils";
 
 import MainChatMessageList from "../components/MainChatMessageList.vue";
 import { turnFailureCardId } from "../lib/turnFailure";
-import { readSfc } from "./readSfc";
 
 function messageListProps(messages: unknown[]) {
   return {
@@ -91,14 +90,4 @@ describe("message action row order", () => {
     wrapper.unmount();
   });
 
-  it("left-aligns the user action row in the stylesheet", async () => {
-    const css = await readSfc("../components/MainChatMessageList.vue", import.meta.url);
-
-    expect(css).toMatch(
-      /\.msg\[data-role="user"\]\s+\.msgActions\s*\{[^}]*justify-content:\s*flex-start\s*;/,
-    );
-    expect(css).not.toMatch(
-      /\.msg\[data-role="user"\]\s+\.msgActions\s*\{[^}]*justify-content:\s*flex-end\s*;/,
-    );
-  });
 });

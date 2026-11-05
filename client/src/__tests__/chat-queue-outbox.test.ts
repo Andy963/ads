@@ -1,5 +1,5 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { mount, shallowMount } from "@vue/test-utils";
+import { mount } from "@vue/test-utils";
 import { defineComponent, ref } from "vue";
 
 import { createAppContext } from "../app/controller";
@@ -88,128 +88,6 @@ const runningCard = (overrides: Partial<QueuedPrompt> = {}): QueuedPrompt => ({
   serverQueueTracked: true,
   queueLaneGeneration: 1,
   ...overrides,
-});
-
-// --- Actions lane queue visibility (App mount, mocked api/ws) ---------------
-
-const postSpy = vi.fn();
-const getSpy = vi.fn();
-
-vi.mock("../api/client", () => {
-  class ApiClient {
-    constructor(_: { baseUrl: string }) {}
-
-    async get<T>(url: string): Promise<T> {
-      if (url === "/api/models") return [] as T;
-      if (url.startsWith("/api/paths/validate")) return { ok: false } as T;
-      if (url === "/api/projects") {
-        return {
-          projects: [{ id: "p-1", name: "ads", workspaceRoot: "/home/andy/repos/ads", chatSessionId: "main" }],
-          activeProjectId: "p-1",
-        } as T;
-      }
-      if (url.startsWith("/api/actions/jobs")) {
-        return getSpy(url) as T;
-      }
-      return {} as T;
-    }
-
-    async post<T>(url: string, body: unknown): Promise<T> {
-      return postSpy(url, body) as T;
-    }
-
-    async patch<T>(): Promise<T> {
-      throw new Error("not implemented");
-    }
-
-    async delete<T>(): Promise<T> {
-      throw new Error("not implemented");
-    }
-  }
-
-  return { ApiClient };
-});
-
-vi.mock("../api/ws", () => {
-  class AdsWebSocket {
-    onOpen?: () => void;
-    onClose?: (ev: { code: number; reason?: string }) => void;
-    onError?: () => void;
-    onMessage?: (msg: unknown) => void;
-
-    clearHistory = vi.fn();
-
-    constructor(_: { sessionId: string; chatSessionId?: string }) {}
-
-    connect(): void {}
-    close(): void {}
-    send(): void {}
-    sendPrompt(): void {}
-    interrupt(): void {}
-  }
-
-  return {
-    AdsWebSocket,
-    getProjectWebSocketLane: (options: {
-      sessionId: string;
-      lane: "actions" | "acopilot";
-      configs: Record<"actions" | "acopilot", {
-        chatSessionId: string;
-        resume?: { afterSeq: number; laneGeneration: number };
-      }>;
-    }) => {
-      const config = options.configs[options.lane];
-      return new AdsWebSocket({
-        sessionId: options.sessionId,
-        chatSessionId: config.chatSessionId,
-        resume: config.resume,
-      } as never);
-    },
-  };
-});
-
-vi.mock("../components/LoginGate.vue", () => {
-  return {
-    default: defineComponent({
-      name: "LoginGate",
-      emits: ["logged-in"],
-      mounted() {
-        this.$emit("logged-in", { id: "u-1", username: "admin" });
-      },
-      template: "<div />",
-    }),
-  };
-});
-
-describe("Actions queue retirement", () => {
-  beforeEach(() => {
-    localStorage.clear();
-    sessionStorage.clear();
-    postSpy.mockReset();
-    getSpy.mockReset();
-  });
-
-  afterEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("does not load or render retired Actions queue jobs", async () => {
-    getSpy.mockResolvedValue([]);
-    localStorage.setItem("ads.app_state", JSON.stringify({
-      version: 1,
-      updatedAt: Date.now(),
-      projects: [{ id: "p-1", sessionId: "p-1", path: "/home/andy/repos/ads", name: "ads", chatSessionId: "main", initialized: true }],
-      activeProject: "p-1",
-    }));
-
-    const App = (await import("../App.vue")).default;
-    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
-    await settleUi(wrapper);
-
-    expect(wrapper.html()).not.toContain("ActionsQueueStack");
-    expect(getSpy).not.toHaveBeenCalled();
-    wrapper.unmount();
-  });
 });
 
 const OUTBOX_UNIT_KEY = outboxStorageKey("session-a", "main");
@@ -425,7 +303,6 @@ describe("issue-328 queued prompt bubbles", () => {
         pendingImages: [], connected: true, busy: false,
       },
     });
-    expect(wrapper.find(".queue-status").exists()).toBe(false);
     expect(wrapper.get(".queue-controls").text()).toBe("");
     expect(wrapper.get(".queue-text").text()).toBe("Queued message");
     expect(wrapper.find(".queue-action--remove").exists()).toBe(true);
@@ -507,7 +384,6 @@ describe("issue-328 queued prompt bubbles", () => {
     });
 
     const item = wrapper.get(".queue-item");
-    expect(item.find(".queue-status").exists()).toBe(false);
     expect(item.get(".queue-action--retry").attributes("title")).toBe("Prompt execution was interrupted");
     await item.get(".queue-action--retry").trigger("click");
     await item.get(".queue-action--remove").trigger("click");

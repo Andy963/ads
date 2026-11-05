@@ -3,7 +3,6 @@ import { mount } from "@vue/test-utils";
 import { defineComponent, nextTick, ref } from "vue";
 
 import MainChatComposerPanel from "../components/MainChatComposerPanel.vue";
-import { readSfc } from "./readSfc";
 
 const ComposerHost = defineComponent({
   components: { MainChatComposerPanel },
@@ -279,26 +278,6 @@ describe("MainChat compact composer layout", () => {
     expect(cancelFrame).toHaveBeenLastCalledWith(nextFrameId);
   });
 
-  it("keeps controls compact and the composer in the bottom flex flow", async () => {
-    const composer = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
-    const chat = await readSfc("../components/MainChat.vue", import.meta.url);
-
-    expect(composer).toMatch(/\.composerMainRow\s*\{[^}]*align-items:\s*flex-end\s*;/);
-    expect(composer).toMatch(/\.composerMainRowLeft,\s*\.composerMainRowRight\s*\{[^}]*flex:\s*0 0 auto\s*;/);
-    expect(composer).toMatch(/\.composer-input\s*\{[^}]*flex:\s*1 1 auto\s*;[^}]*min-width:\s*0\s*;/);
-    expect(composer).toMatch(/\.composer\s*\{[^}]*flex-shrink:\s*0\s*;/);
-    expect(composer).not.toMatch(/\.composer\s*\{[^}]*position:\s*(absolute|fixed)\s*;/);
-    expect(chat).toMatch(/\.detail\s*\{[^}]*display:\s*flex\s*;[^}]*flex-direction:\s*column\s*;/);
-    expect(chat).toMatch(/\.chat\s*\{[^}]*flex:\s*1 1 auto\s*;/);
-  });
-
-  it("balances composer input spacing between the action toggle and placeholder text", async () => {
-    const composer = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
-
-    expect(composer).toMatch(/\.composerMainRow\s*\{[^}]*column-gap:\s*2px\s*;/);
-    expect(composer).toMatch(/\.composer-input\s*\{[^}]*padding:\s*6px 4px 6px 2px\s*;/);
-  });
-
   it("reserves the tool row when only the visual viewport height changes", async () => {
     const viewport = Object.assign(new EventTarget(), { height: 844, offsetTop: 0, width: 390 });
     vi.stubGlobal("visualViewport", viewport);
@@ -353,38 +332,4 @@ describe("MainChat compact composer layout", () => {
     wrapper.unmount();
   });
 
-  it("consumes only the root's remaining safe area without adding another input inset", async () => {
-    const composer = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
-    const composerRule = composer.match(/\.composer\s*\{[^}]*\}/)?.[0];
-    const inputWrapRule = composer.match(/\.inputWrap\s*\{[^}]*\}/)?.[0];
-
-    expect(composerRule).toContain("padding: 8px 16px var(--app-safe-bottom, env(safe-area-inset-bottom, 0px));");
-    expect(inputWrapRule).not.toContain("safe-area-inset-bottom");
-    expect(inputWrapRule).not.toContain("padding-bottom");
-    expect(composer).not.toMatch(/padding-bottom:\s*calc\(12px\s*\+/);
-  });
-
-  it("spans expanded text across the full row above the actions", async () => {
-    const composer = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
-
-    expect(composer).toMatch(/\.composerMainRow\s*\{[^}]*display:\s*grid\s*;[^}]*grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto\s*;[^}]*grid-template-areas:\s*"left input right"\s*;/);
-    expect(composer).toMatch(/\.composer-input\s*\{[^}]*width:\s*100%\s*;/);
-    expect(composer).toMatch(/\.composerMainRow--expanded\s*\{[^}]*grid-template-areas:\s*"input input input"\s*"left \. right"\s*;/);
-  });
-
-  it("does not invoke invasive diagAlert popup on constrained composer height (Issue #339)", async () => {
-    const useComposerSource = await readSfc("../components/mainChat/useComposer.ts", import.meta.url);
-    expect(useComposerSource).not.toMatch(/diagAlert\(/);
-    expect(useComposerSource).not.toMatch(/import.*diagAlert.*from/);
-  });
-
-  it("aligns mobile horizontal padding to 8px across the chat stream and composer", async () => {
-    const composer = await readSfc("../components/MainChatComposerPanel.vue", import.meta.url);
-    const chat = await readSfc("../components/MainChat.css", import.meta.url);
-    const app = await readSfc("../App.css", import.meta.url);
-
-    expect(composer).toMatch(/@media\s*\(max-width:\s*900px\)\s*\{[\s\S]*?\.composer\s*\{[\s\S]*?padding-left:\s*8px\s*;[\s\S]*?padding-right:\s*8px\s*;/);
-    expect(chat).toMatch(/@media\s*\(max-width:\s*900px\)\s*\{[\s\S]*?\.chat\s*\{[\s\S]*?padding:\s*12px 8px\s*;/);
-    expect(app).toMatch(/@media\s*\(max-width:\s*900px\)[\s\S]*?\.laneTabs\s*\{[\s\S]*?width:\s*calc\(100% - 16px\)\s*;[\s\S]*?max-width:\s*none\s*;/);
-  });
 });

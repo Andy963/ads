@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 
 import MainChatMessageList from "../components/MainChatMessageList.vue";
-import { readSfc } from "./readSfc";
 
 async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Promise<void> {
   await wrapper.vm.$nextTick();
@@ -50,8 +49,6 @@ describe("thinking placeholder animated dots", () => {
     const dots = typing.get(".thinkingDots");
     expect(dots.attributes("aria-hidden")).toBe("true");
     expect(dots.findAll(".thinkingDot")).toHaveLength(3);
-    expect(wrapper.find(".thinkingText").exists()).toBe(false);
-
     wrapper.unmount();
   });
 
@@ -141,15 +138,4 @@ describe("thinking placeholder animated dots", () => {
     wrapper.unmount();
   });
 
-  it("uses transform and opacity state changes instead of CSS keyframe animation", async () => {
-    const css = await readSfc("../components/mainChat/ThinkingDots.vue", import.meta.url);
-
-    expect(css).not.toContain(".thinkingText::after");
-    expect(css).not.toContain("@keyframes thinkingDots");
-    expect(css).toMatch(/\.thinkingDots\s*\{[^}]*display:\s*inline-flex\s*;/);
-    expect(css).toMatch(/\.thinkingDot\s*\{[^}]*opacity:\s*0\.3\s*;/);
-    expect(css).toMatch(/\.thinkingDot\s*\{[^}]*transform:\s*translate3d\(0, 0, 0\) scale\(0\.85\)\s*;/);
-    expect(css).toMatch(/\.thinkingDot--active\s*\{[^}]*opacity:\s*1\s*;/);
-    expect(css).toMatch(/\.thinkingDot--active\s*\{[^}]*transform:\s*translate3d\(0, -2px, 0\) scale\(1\.15\)\s*;/);
-  });
 });

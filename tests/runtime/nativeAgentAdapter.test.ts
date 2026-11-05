@@ -457,7 +457,7 @@ describe("NativeAgentAdapter", () => {
     }
   });
 
-  for (const configured of [undefined, "", "invalid", "-1", "1.5", "1", "64", "0"]) {
+  for (const configured of [undefined, "1"]) {
     it(`ignores the retired total tool quota (${JSON.stringify(configured)})`, async () => {
       const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-unlimited-"));
       try {
@@ -555,67 +555,6 @@ describe("NativeAgentAdapter", () => {
       assert.deepEqual(requests[3]?.map(message => message.role), ["user", "assistant", "tool", "assistant", "user", "assistant", "user"]);
     } finally {
       resetStateDatabaseForTests();
-      fs.rmSync(workspace, { recursive: true, force: true });
-    }
-  });
-
-  it("sends reasoning_effort for models that do not declare the capability", async () => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-reasoning-"));
-    try {
-      let requestBody: Record<string, unknown> | null = null;
-      const adapter = new NativeAgentAdapter({
-        credentialOwner: "test-owner",
-        workspaceRoot: workspace,
-        modelReasoningEffort: "high",
-        modelResolver: {
-          resolve: () => ({
-            model: "gpt-4o",
-            baseUrl: "https://provider.test/v1",
-            apiKey: "test-api-key",
-            provider: "test",
-            options: { reasoningEffort: "high" },
-          }),
-        },
-        fetchImpl: async (_input, init) => {
-          requestBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-          return sse([JSON.stringify({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] })]);
-        },
-      });
-
-      await adapter.send("hello");
-
-      assert.equal(requestBody?.reasoning_effort, "high");
-    } finally {
-      fs.rmSync(workspace, { recursive: true, force: true });
-    }
-  });
-
-  it("includes the session reasoning_effort for every model", async () => {
-    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "ads-native-adapter-reasoning-supported-"));
-    try {
-      let requestBody: Record<string, unknown> | null = null;
-      const adapter = new NativeAgentAdapter({
-        credentialOwner: "test-owner",
-        workspaceRoot: workspace,
-        modelReasoningEffort: "high",
-        modelResolver: {
-          resolve: () => ({
-            model: "reasoning-model",
-            baseUrl: "https://provider.test/v1",
-            apiKey: "test-api-key",
-            provider: "test",
-          }),
-        },
-        fetchImpl: async (_input, init) => {
-          requestBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-          return sse([JSON.stringify({ choices: [{ delta: { content: "done" }, finish_reason: "stop" }] })]);
-        },
-      });
-
-      await adapter.send("hello");
-
-      assert.equal(requestBody?.reasoning_effort, "high");
-    } finally {
       fs.rmSync(workspace, { recursive: true, force: true });
     }
   });

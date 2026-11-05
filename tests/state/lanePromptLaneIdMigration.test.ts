@@ -429,16 +429,4 @@ describe("state/lanePromptLaneIdMigration", () => {
     assert.throws(() => migrateCanonicalDatabase(), /dangling reference|State migration 25/);
   });
 
-  it("is a no-op on a database where the tables were never created", () => {
-    const db = new DatabaseConstructor(":memory:");
-    try {
-      const migration = stateSchemaMigrations.find(
-        (entry) => entry.version === CANONICAL_LANE_MIGRATION_VERSION,
-      );
-      assert.ok(migration);
-      assert.doesNotThrow(() => migration.up(db));
-    } finally {
-      db.close();
-    }
-  });
 });

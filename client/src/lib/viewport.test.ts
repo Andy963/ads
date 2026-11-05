@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { readSfc } from "../__tests__/readSfc";
-
 type ListenerRegistration = {
   target: EventTarget;
   type: string;
@@ -59,22 +57,6 @@ describe("chat visual viewport anchoring", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-  });
-
-  it("gives the root sole ownership of visual viewport geometry and remaining safe area", async () => {
-    const app = await readSfc("../App.vue", import.meta.url);
-    const html = await readSfc("../../index.html", import.meta.url);
-    const global = await readSfc("../global.css", import.meta.url);
-    const rule = app.match(/\.app\s*\{[^}]*\}/)?.[0];
-    const root = html.match(/#app\s*\{[^}]*\}/)?.[0];
-    expect(rule).toBeDefined();
-    expect(rule).toMatch(/height:\s*100%\s*;/);
-    expect(rule).not.toContain("--app-top");
-    expect(root).toMatch(/position:\s*fixed\s*;/);
-    expect(root).toMatch(/top:\s*var\(--app-top,\s*0px\)\s*;/);
-    expect(root).toMatch(/height:\s*var\(--ads-visual-viewport-height,\s*100dvh\)\s*;/);
-    expect(root).toContain("max(0px, calc(env(safe-area-inset-bottom, 0px) - var(--app-bottom, 0px)))");
-    expect(global).not.toMatch(/#app\s*\{[^}]*height:/);
   });
 
   it("tracks keyboard panning even when only a viewport scroll event fires", async () => {

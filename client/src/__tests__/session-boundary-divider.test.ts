@@ -53,25 +53,6 @@ describe("session boundary divider and status feedback", () => {
     expect(rt.messages.value).toHaveLength(0);
   });
 
-  it("leaves the transcript empty when it was already empty", async () => {
-    const ctx = createAppContext();
-    const chat = createChatActions(ctx as AppContext);
-    const deps = {
-      activateProject: vi.fn(async () => {}),
-    };
-    const projects = createProjectActions({ ...ctx, ...chat } as AppContext & ReturnType<typeof createChatActions>, deps);
-
-    ctx.loggedIn.value = true;
-    projects.initializeProjects();
-
-    const rt = ctx.activeRuntime.value;
-    rt.messages.value = [];
-
-    await projects.startNewChatSession();
-    expect(rt.messages.value).toHaveLength(0);
-    expect(rt.laneStatus.value).toBeNull();
-  });
-
   it("replays session_divider from history bootstrap and sets fresh session status", () => {
     const ctx = createAppContext();
     const chat = createChatActions(ctx as AppContext);

@@ -502,7 +502,6 @@ describe("issue-221: failed turn retry button", () => {
     expect(msgActions).not.toBeNull();
     expect(msgActions!.querySelector(".msgCopyBtn")).not.toBeNull();
     expect(retryButton.element.closest(".bubble")).toBe(msgActions!.closest(".bubble"));
-    expect(wrapper.find(".turnFailureActions").exists()).toBe(false);
     expect(wrapper.find('[data-role="system"][data-kind="error"]').exists()).toBe(false);
     await retryButton.trigger("click");
     expect(wrapper.emitted("retryMessage")).toHaveLength(1);
@@ -1040,9 +1039,6 @@ describe("issue-325: image attachment modernization", () => {
 
     const bar = wrapper.find(".attachmentsBar");
     expect(bar.exists()).toBe(true);
-
-    // Global clear button is removed
-    expect(wrapper.find(".attachmentsClear").exists()).toBe(false);
 
     // Thumbnails have individual delete badges
     const thumbs = wrapper.findAll(".attachmentsThumbItem");

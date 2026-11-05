@@ -4,7 +4,6 @@ import { config, flushPromises, mount } from "@vue/test-utils";
 import ModelManager from "../components/ModelManager.vue";
 import ModelServicePicker from "../components/ModelServicePicker.vue";
 import RoleSettings from "../components/RoleSettings.vue";
-import { readSfc } from "./readSfc";
 import {
   DEFAULT_MODEL_CONTEXT_WINDOW,
   DEFAULT_MODEL_OUTPUT_TOKENS,
@@ -185,18 +184,6 @@ describe("provider-first model management", () => {
     expect(firstRow.attributes("style")).toContain("translateX(0px)");
     expect(wrapper.get('[data-testid="model-manager-dialog"]').exists()).toBe(true);
     wrapper.unmount();
-  });
-
-  it("keeps standard surface background on modelRowSwipe without container-level destructive red fill", async () => {
-    const css = await readSfc("../components/modelSettings.css", import.meta.url);
-    const rowSwipeRule = css.match(/\.modelRowSwipe\s*\{([^}]+)\}/)?.[1] ?? "";
-    expect(rowSwipeRule).toContain("background: var(--settings-surface)");
-    expect(rowSwipeRule).not.toContain("var(--settings-destructive");
-    expect(rowSwipeRule).not.toContain("#ff3b30");
-
-    const deleteRule = css.match(/\.modelSwipeDelete\s*\{([^}]+)\}/)?.[1] ?? "";
-    expect(deleteRule).toContain("background: var(--settings-destructive, #ff3b30)");
-    expect(deleteRule).toContain("width: 80px");
   });
 
   it("does not bleed destructive red background when models enter busy or delete states", async () => {

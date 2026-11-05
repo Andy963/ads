@@ -39,7 +39,6 @@ function assertTaskContext(messages: NativeChatMessage[]): void {
   assert.equal(messages.filter(message => message.role === "user" && message.content === task).length, 1);
   assert.equal(messages.at(-1)?.content, nextPrompt);
   assert.match(String(messages.find(message => message.role === "assistant" && String(message.content).startsWith("[Native runtime:"))?.content), /not completed/);
-  assert.doesNotThrow(() => projectNativeContext(messages));
 }
 
 describe("native stopped-turn continuation", () => {

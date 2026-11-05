@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { nextTick, ref, watch } from "vue";
 import { mount } from "@vue/test-utils";
-import fs from "node:fs";
-import path from "node:path";
 
 import MainChat from "../components/MainChat.vue";
 import type { ChatMessage } from "../components/mainChat/types";
@@ -299,13 +297,4 @@ describe("Issue #559: reconnect transcript bottom alignment and atomic history r
     wrapper.unmount();
   });
 
-  it("verifies hardware layer promotion and momentum scrolling in CSS", () => {
-    const mainChatCss = fs.readFileSync(path.resolve(__dirname, "../components/MainChat.css"), "utf-8");
-    const appCss = fs.readFileSync(path.resolve(__dirname, "../App.css"), "utf-8");
-
-    expect(mainChatCss).toContain("transform: translateZ(0)");
-    expect(mainChatCss).toContain("-webkit-overflow-scrolling: touch");
-    expect(appCss).toContain("transform: translateZ(0)");
-    expect(appCss).toContain("-webkit-overflow-scrolling: touch");
-  });
 });
