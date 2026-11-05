@@ -184,6 +184,9 @@ export function createTelegramBot(options?: {
       editMessage: async (messageId, text) => {
         await ctx.api.editMessageText(chatId, messageId, text);
       },
+      deleteMessage: async (messageId) => {
+        await ctx.api.deleteMessage(chatId, messageId);
+      },
       sendTyping: async () => {
         await ctx.replyWithChatAction("typing");
       },
