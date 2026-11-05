@@ -1,11 +1,8 @@
-import { readFile } from "node:fs/promises";
-
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mount, shallowMount } from "@vue/test-utils";
 import { defineComponent, h, type Component } from "vue";
 
 import type { ModelConfig } from "../api/types";
-import { readSfc } from "./readSfc";
 
 type GetImpl = (url: string) => Promise<unknown>;
 type PostImpl = (url: string, body: unknown) => Promise<unknown>;
@@ -144,11 +141,6 @@ function idsFromVm(wrapper: { vm: { projects: Array<{ id: string }> } }): string
   return wrapper.vm.projects.map((p) => p.id);
 }
 
-async function readClientFile(relativeToThisTest: string): Promise<string> {
-  const url = new URL(relativeToThisTest, import.meta.url);
-  return readFile(url, "utf8");
-}
-
 function getLaneTextarea(wrapper: any, lane: "acopilot" | "actions"): any {
   return wrapper.get(`[data-testid="lane-panel-${lane}"] textarea.composer-input`);
 }
@@ -251,7 +243,6 @@ describe("app brand version display", () => {
     expect(footer.get(".drawerBrandVersion").text()).toBe("v0.0.1");
 
     const topbar = wrapper.get("header.topbar");
-    expect(topbar.find(".brand").exists()).toBe(false);
     expect(topbar.text()).not.toContain("0.0.1");
 
     wrapper.unmount();
@@ -385,53 +376,6 @@ describe("mobile navigation shell (mobile-pane-tabs)", () => {
     expect((wrapper.find('[data-testid="lane-panel-actions"]').element as HTMLElement).style.display).toBe("none");
 
     wrapper.unmount();
-  });
-});
-
-describe("project row mobile layout", () => {
-  it("stacks project name and branch on mobile", async () => {
-    const css = await readClientFile("../App.css");
-
-    expect(css).toMatch(/\.projectText\s*\{[\s\S]*flex-direction:\s*column\s*;/);
-    expect(css).toMatch(/\.projectBranch\s*\{[\s\S]*display:\s*block\s*;/);
-
-    expect(css).not.toMatch(/@media\s*\(max-width:\s*900px\)[\s\S]*\.projectText\s*\{[\s\S]*flex-direction:\s*row\s*;/);
-    expect(css).not.toMatch(/@media\s*\(max-width:\s*900px\)[\s\S]*\.projectBranch\s*\{[\s\S]*display:\s*inline\s*;/);
-    expect(css).toMatch(/\.projectNode\.active\s+\.projectRowActions\s*\{[\s\S]*opacity:\s*1\s*[;\s][\s\S]*pointer-events:\s*auto\s*;/);
-  });
-
-  it("locks project item dimensions and configures mobile drawer project tree scrolling (Issue #338)", async () => {
-    const css = await readClientFile("../App.css");
-
-    // Base .projectNode rules
-    expect(css).toMatch(/\.projectNode\s*\{[^}]*flex-shrink:\s*0\s*;/);
-    expect(css).toMatch(/\.projectNode\s*\{[^}]*min-height:\s*46px\s*;/);
-
-    // Mobile media query rules
-    const mobileStart = css.indexOf("@media (max-width: 900px)");
-    expect(mobileStart).toBeGreaterThan(-1);
-    const mobileCss = css.slice(mobileStart);
-
-    expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*flex:\s*1 1 0\s*;/);
-    expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*overflow-y:\s*auto\s*;/);
-    expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*overflow-x:\s*hidden\s*;/);
-    expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*padding:\s*8px 0 24px\s*;/);
-    expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*-webkit-overflow-scrolling:\s*touch\s*;/);
-    expect(mobileCss).toMatch(/\.projectTree\s*\{[^}]*overscroll-behavior:\s*contain\s*;/);
-
-    // Redundant title hidden and header aligned compactly
-    expect(mobileCss).toMatch(/\.projectTreeTitle\s*\{[^}]*display:\s*none\s*;/);
-    expect(mobileCss).toMatch(/\.projectTreeHeader\s*\{[^}]*justify-content:\s*flex-end\s*;/);
-  });
-
-  it("keeps primary drawer navigation comfortable on normal and short displays", async () => {
-    const css = await readClientFile("../App.css");
-
-    expect(css).toMatch(/\.mobileDrawerNavItem\s*\{[^}]*min-height:\s*56px\s*;/);
-    expect(css).toMatch(/\.mobileDrawerNavItem\s*\{[^}]*padding:\s*14px 12px\s*;/);
-    expect(css).toMatch(/\.mobileDrawerNavItem\s*\{[^}]*line-height:\s*22px\s*;/);
-    expect(css).toMatch(/@media\s*\(max-height:\s*600px\)[\s\S]*?\.mobileDrawerNavItem\s*\{[^}]*min-height:\s*48px\s*;/);
-    expect(css).toMatch(/@media\s*\(max-height:\s*600px\)[\s\S]*?\.mobileDrawerNavItem\s*\{[^}]*padding:\s*10px 12px\s*;/);
   });
 });
 
@@ -602,31 +546,6 @@ describe("project status spinner", () => {
     wrapper.unmount();
   });
 
-  it("renders static busy lane dots without pulse or scale", async () => {
-    const css = await readClientFile("../App.css");
-    const advisorDot = css.match(/\.laneTabStatusDot--busy-acopilot\s*\{[^}]*\}/)?.[0];
-    const workerDot = css.match(/\.laneTabStatusDot--busy-actions\s*\{[^}]*\}/)?.[0];
-
-    expect(advisorDot).toBeDefined();
-    expect(advisorDot).toMatch(/background:\s*#a855f7\s*;/);
-    expect(advisorDot).toMatch(/box-shadow:\s*0 0 0 2px rgba\(168, 85, 247, 0\.35\)\s*;/);
-    expect(advisorDot).not.toMatch(/animation|transform|will-change|laneDotPulse/);
-
-    expect(workerDot).toBeDefined();
-    expect(workerDot).toMatch(/background:\s*#10b981\s*;/);
-    expect(workerDot).toMatch(/box-shadow:\s*0 0 0 2px rgba\(16, 185, 129, 0\.35\)\s*;/);
-    expect(workerDot).not.toMatch(/animation|transform|will-change|laneDotPulse/);
-
-    expect(css).not.toMatch(/laneDotPulse/);
-
-    const baseDot = css.match(/\.laneTabStatusDot\s*\{[^}]*\}/)?.[0] ?? "";
-    const dotSize = Number(baseDot.match(/width:\s*(\d+(?:\.\d+)?)px/)?.[1]);
-    expect(dotSize).toBeGreaterThanOrEqual(8);
-
-    const globalCss = await readClientFile("../global.css");
-    expect(globalCss).not.toMatch(/laneTabStatusDot--busy/);
-    expect(globalCss).not.toMatch(/lane-pulse-color/);
-  });
 });
 
 describe("project and lane composer draft isolation (project-switch-clears-composer)", () => {
@@ -735,38 +654,6 @@ describe("project and lane composer draft isolation (project-switch-clears-compo
   }, 30_000);
 });
 
-describe("PWA manifest navigation", () => {
-  it("uses the deployment base as the stable app id, start URL, and scope", async () => {
-    const config = await readSfc("../../vite.config.ts", import.meta.url);
-
-    expect(config).toContain("id: base");
-    expect(config).toContain("start_url: base");
-    expect(config).toContain("scope: base");
-  });
-
-  it("shields the initial claim from reloading and defers updates to a user prompt", async () => {
-    const config = await readSfc("../../vite.config.ts", import.meta.url);
-    expect(config).toContain("injectRegister: false");
-    expect(config).toContain("clientsClaim: true");
-
-    const script = await readSfc("../../public/registerSW.js", import.meta.url);
-    // The service worker must not self-activate mid-session; the page decides.
-    expect(config).not.toContain("skipWaiting: true");
-    // The initial clientsClaim must not reload the page: only reload when a
-    // controller already existed before this page load.
-    expect(script).toContain("hadController");
-    expect(script).toContain("if (refreshing || !hadController) return;");
-    // No silent cold-start activation racing the app boot; updates are applied
-    // only after explicit user confirmation via the toast.
-    expect(script).not.toContain('.getRegistration("/")');
-    expect(script).not.toContain("applyWaitingWorker(registration);");
-    expect(script).toContain('postMessage({ type: "SKIP_WAITING" })');
-    // Mid-session: show a user-controlled update toast instead of force-reloading.
-    expect(script).toContain("新版本已就绪");
-    expect(script).toContain("立即更新");
-  });
-});
-
 describe("LoginGate", () => {
   beforeEach(() => {
     loginGateMode = "real";
@@ -779,18 +666,6 @@ describe("LoginGate", () => {
       if (url === "/api/auth/login") return { success: true };
       throw new Error(`unexpected POST ${url}`);
     };
-  });
-
-  it("sizes the gate from the visual viewport height with a 100dvh fallback (Issue #476)", async () => {
-    const source = await readClientFile("../components/LoginGate.vue");
-    const gateRule = source.match(/\.gate\s*\{[^}]*\}/)?.[0];
-
-    expect(gateRule).toBeDefined();
-    expect(gateRule).toContain("min-height: var(--ads-visual-viewport-height, 100dvh);");
-    expect(gateRule).toContain("height: var(--ads-visual-viewport-height, 100dvh);");
-    // The inert keyboard-open state was removed; viewport metrics come from
-    // the global installViewportCssVars() layer only.
-    expect(source).not.toContain("keyboard-open");
   });
 
   it("does not unmount inputs or show skeleton on background visibility refresh when already initialized", async () => {

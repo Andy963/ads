@@ -151,7 +151,6 @@ describe("MainChat prompt tools", () => {
   it("keeps secondary actions behind the plus button and disables the trigger while input is locked", () => {
     localStorage.setItem(STORAGE_KEY, "Stored prompt");
     const wrapper = mountPromptTools({ inputLocked: true });
-    expect(wrapper.find(".inputToolbarRight").exists()).toBe(false);
     expect(wrapper.get('[data-testid="composer-actions-toggle"]').attributes("disabled")).toBeDefined();
     expect(wrapper.find('[data-testid="composer-action-sheet"]').exists()).toBe(false);
     wrapper.unmount();

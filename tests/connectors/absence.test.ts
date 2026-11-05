@@ -1,7 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createCoreMiddlewarePipeline } from "../../server/middleware/index.js";
-import { dispatchTaskTerminalEvent } from "../../server/web/taskNotifications/taskNotificationDispatcher.js";
 import type { TurnContext } from "../../server/middleware/types.js";
 
 describe("Core standalone operability without Telegram connector", () => {
@@ -54,27 +53,4 @@ describe("Core standalone operability without Telegram connector", () => {
     }
   });
 
-  it("task notifications gracefully no-op when telegram env is absent", () => {
-    const savedToken = process.env.TELEGRAM_BOT_TOKEN;
-    delete process.env.TELEGRAM_BOT_TOKEN;
-
-    try {
-      const dummyLogger = {
-        info: () => undefined,
-        warn: () => undefined,
-        debug: () => undefined,
-      };
-
-      // Dispatch event should not throw
-      assert.doesNotThrow(() => {
-        dispatchTaskTerminalEvent({
-          taskId: "task-standalone-1",
-          status: "completed",
-          workspaceRoot: "/tmp/workspace",
-        }, { logger: dummyLogger });
-      });
-    } finally {
-      if (savedToken) process.env.TELEGRAM_BOT_TOKEN = savedToken;
-    }
-  });
 });

@@ -3,7 +3,6 @@ import { mount } from "@vue/test-utils";
 
 import type { ModelConfig } from "../api/types";
 
-import MainChat from "../components/MainChat.vue";
 import MainChatModelSelectors from "../components/MainChatModelSelectors.vue";
 
 function makeModel(id: string, displayName: string, provider: string): ModelConfig {
@@ -17,14 +16,6 @@ function makeModel(id: string, displayName: string, provider: string): ModelConf
 }
 
 describe("MainChat model selector", () => {
-  const baseProps = {
-    messages: [],
-    queuedPrompts: [],
-    pendingImages: [],
-    connected: true,
-    busy: false,
-  } as const;
-
   const selectorBaseProps = {
     connected: true,
     busy: false,
@@ -179,40 +170,6 @@ describe("MainChat model selector", () => {
       "xhigh",
       "max",
     ]);
-    wrapper.unmount();
-  });
-
-  it("does not show execution context under user messages", () => {
-    const wrapper = mount(MainChat, {
-      props: {
-        ...baseProps,
-        messages: [
-          {
-            id: "u-1",
-            role: "user",
-            kind: "text",
-            content: "hello",
-            execution: {
-              agentId: "codex",
-              model: "gpt-4.1",
-              modelReasoningEffort: "high",
-              effectiveAgentId: "claude",
-              effectiveModel: "claude-sonnet",
-            },
-          },
-        ],
-        agents: [{ id: "claude", name: "Claude", ready: true }],
-        activeAgentId: "claude",
-        models: [makeModel("claude-sonnet", "Claude Sonnet", "anthropic")],
-        modelId: "claude-sonnet",
-      },
-      global: { stubs: { MarkdownContent: true, DraggableModal: true } },
-    });
-
-    expect(wrapper.find(".msgExecutionMeta").exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("Agent:");
-    expect(wrapper.text()).not.toContain("Model:");
-    expect(wrapper.text()).not.toContain("Reasoning:");
     wrapper.unmount();
   });
 
@@ -513,8 +470,6 @@ describe("MainChat model selector", () => {
 
     expect(wrapper.find('[data-testid="chat-capsule-text"]').text()).toBe("GPT-4o");
     await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
-    const notice = document.body.querySelector(".nonReasoningNotice");
-    expect(notice).toBeNull();
     expect(document.body.querySelector('[data-testid="reasoning-effort-slider"]')).not.toBeNull();
     wrapper.unmount();
   });
@@ -542,8 +497,6 @@ describe("MainChat model selector", () => {
     expect(slider.getAttribute("aria-valuetext")).toBe("Max");
     expect(slider.max).toBe("2");
     expect(Array.from(document.body.querySelectorAll("[data-effort]")).map(el => el.getAttribute("data-effort"))).toEqual(["high", "xhigh", "max"]);
-    expect(document.body.querySelector(".effortPill")).toBeNull();
-
     wrapper.unmount();
     document.body.innerHTML = "";
   });

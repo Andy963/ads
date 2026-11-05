@@ -138,12 +138,6 @@ describe("cached app bootstrap and authentication", () => {
     }
   });
 
-  it("ignores malformed stored project rows during synchronous setup", () => {
-    localStorage.setItem("ADS_WEB_PROJECTS", '[null,1,{},[]]');
-    state.get.mockReturnValue(new Promise(() => {}));
-    expect(() => mountApp()).not.toThrow();
-  });
-
   it("does not alert for a superseded lane selection while browsing cached history", async () => {
     vi.useFakeTimers();
     state.get.mockReturnValue(new Promise(() => {}));

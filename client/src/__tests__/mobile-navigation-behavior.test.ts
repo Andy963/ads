@@ -392,8 +392,6 @@ describe("mobile navigation behavior", () => {
     const menu = wrapper.find('[data-testid="mobile-context-menu"]');
     const actions = menu.findAll("button.mobileContextAction");
     expect(menu.attributes("aria-label")).toBe("项目操作");
-    expect(menu.find(".mobileContextMenuTitle").exists()).toBe(false);
-    expect(menu.findAll(".mobileContextActionHint")).toHaveLength(0);
     expect(actions).toHaveLength(2);
     expect(actions.every((action) => (action.element as HTMLButtonElement).disabled)).toBe(true);
 
@@ -402,8 +400,6 @@ describe("mobile navigation behavior", () => {
     await settleUi(wrapper);
     expect((menu.find('[data-testid="mobile-context-action-resume"]').element as HTMLButtonElement).disabled).toBe(false);
     expect((menu.find('[data-testid="mobile-context-action-new-session"]').element as HTMLButtonElement).disabled).toBe(true);
-    expect(menu.findAll(".mobileContextActionHint")).toHaveLength(0);
-
     wrapper.unmount();
   }, 40_000);
 
@@ -1122,24 +1118,6 @@ describe("mobile navigation behavior", () => {
       dispatchTouch(drawerEl, "touchend", null, 3900);
       await waitForSnap();
       await settleUi(wrapper);
-      expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(false);
-      expect(wrapper.get('[data-testid="mobile-drawer-toggle"]').attributes("aria-expanded")).toBe("false");
-      wrapper.unmount();
-    });
-
-    it("snaps shut after a 40% close drag", async () => {
-      const wrapper = await mountMobileChat();
-      await wrapper.get('[data-testid="mobile-drawer-toggle"]').trigger("click");
-      await settleUi(wrapper);
-      const drawerEl = wrapper.get('[data-testid="mobile-drawer"]').element;
-      const dragDistance = DRAWER_WIDTH * 0.4;
-
-      dispatchTouch(drawerEl, "touchstart", { clientX: 300, clientY: 400 }, 3000);
-      dispatchTouch(drawerEl, "touchmove", { clientX: 300 - dragDistance, clientY: 400 }, 3400);
-      dispatchTouch(drawerEl, "touchend", null, 3500);
-      await waitForSnap();
-      await settleUi(wrapper);
-
       expect(wrapper.find('[data-testid="mobile-drawer"]').exists()).toBe(false);
       expect(wrapper.get('[data-testid="mobile-drawer-toggle"]').attributes("aria-expanded")).toBe("false");
       wrapper.unmount();

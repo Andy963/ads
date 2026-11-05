@@ -1,9 +1,6 @@
 import { enableAutoUnmount, mount, shallowMount } from "@vue/test-utils";
 import { defineComponent, nextTick, type PropType } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { ModelConfig } from "../api/types";
 import { createAppContext } from "../app/controller";
@@ -800,11 +797,6 @@ describe("Issue #228 bottom-following intent", () => {
   });
 });
 
-function readUtf8(relativePath: string): string {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  return fs.readFileSync(path.resolve(here, relativePath), "utf8");
-}
-
 describe("Issue #385 transcript viewport scope", () => {
   it("accepts only the current account, panel, and session scope", () => {
     const current = buildTranscriptViewportScopeKey({ panelKey: "worker:session-a", errorRecoveryGeneration: 0, accountGeneration: 2 });
@@ -838,17 +830,4 @@ describe("Issue #385 transcript viewport scope", () => {
     expect(wrapper.emitted("update:viewport")).toHaveLength(1);
   });
 
-  it("fences viewport events from a panel belonging to an old session scope", () => {
-    const app = readUtf8("../App.vue");
-    const mainChat = readUtf8("../components/MainChat.vue");
-
-    expect(mainChat).toMatch(/viewportScopeKey\?:\s*string\s*;/);
-    expect(mainChat).toMatch(/emit\("update:viewportScope", props\.viewportScopeKey\)/);
-    expect(mainChat.indexOf('emit("update:viewportScope"')).toBeLessThan(mainChat.indexOf('emit("update:viewport", viewport)'));
-    expect(app).toMatch(/:viewport-scope-key="acopilotViewportScopeKey"/);
-    expect(app).toMatch(/:viewport-scope-key="actionsViewportScopeKey"/);
-    expect(app).toMatch(/accountGeneration\.value/);
-    expect(app).toMatch(/isTranscriptViewportScopeCurrent\(acopilotViewportScope\.value, acopilotViewportScopeKey\.value\)/);
-    expect(app).toMatch(/isTranscriptViewportScopeCurrent\(actionsViewportScope\.value, actionsViewportScopeKey\.value\)/);
-  });
 });

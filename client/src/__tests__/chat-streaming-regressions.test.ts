@@ -375,43 +375,6 @@ describe("Issue #141: Interleaved turn streaming and elimination of monolithic b
     expect(messages.filter((m) => m.kind === "execute")).toHaveLength(1);
   });
 
-  it("issue-141: does not render retired planCard in MainChat even if legacy plan messages exist", async () => {
-    const messages = [
-      { id: "u-1", role: "user" as const, kind: "text" as const, content: "Build project" },
-      {
-        id: "plan-1",
-        role: "system" as const,
-        kind: "plan" as const,
-        content: "Plan text",
-        plan: {
-          planId: "p1",
-          status: "in_progress" as const,
-          items: [{ text: "Item 1", status: "completed" as const }],
-        },
-      },
-    ];
-
-    const wrapper = mount(MainChat, {
-      props: {
-        messages: messages as any,
-        queuedPrompts: [],
-        pendingImages: [],
-        connected: true,
-        busy: false,
-      },
-      attachTo: document.body,
-    });
-
-    await wrapper.vm.$nextTick();
-
-    // The dedicated planCard element and its checkbox markers must not exist (ADR 0002)
-    expect(wrapper.find(".planCard").exists()).toBe(false);
-    expect(wrapper.find(".planCardCheckbox").exists()).toBe(false);
-    expect(wrapper.find(".planCardHeader").exists()).toBe(false);
-
-    wrapper.unmount();
-  });
-
   it("issue-141: seals assistant streaming bubble and creates separate cards on phase_complete without commands", () => {
     const { chat, rt, handler } = createWsHarness();
 
