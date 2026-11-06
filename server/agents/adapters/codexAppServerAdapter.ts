@@ -49,6 +49,7 @@ import {
   createProviderSessionFallbackEvent,
   isMissingProviderSessionError,
 } from "./missingProviderSession.js";
+import { readPersistedDynamicToolNames } from "./threadToolMetadata.js";
 
 const logger = createLogger("CodexAppServerAdapter");
 
@@ -293,9 +294,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
     this.model = options.model;
     this.modelReasoningEffort = options.modelReasoningEffort;
     this.threadId = options.resumeThreadId?.trim() || null;
-    // `thread/resume` cannot add dynamic tools. A persisted thread therefore
-    // starts without the built-in tool set until a fresh thread is started.
-    this.threadHasBuiltinTools = this.threadId ? false : null;
+    // A resumed thread's tool declarations come from its persisted rollout.
+    // They are checked after resume, before the first turn starts.
+    this.threadHasBuiltinTools = null;
     this.developerInstructions = options.developerInstructions;
     this.spawnEnv = options.env;
     this.providerInjection = options.providerInjection;
@@ -591,14 +592,6 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const client = await this.registry.getOrStart(this.projectId, daemonOptions);
     assertActiveTurn();
     const savedThreadId = this.threadId;
-    if (this.threadId && this.threadHasBuiltinTools !== true) {
-      logger.info(
-        `[CodexAppServerAdapter] Thread ${this.threadId} cannot expose built-in tools after resume; starting a new tool-enabled thread.`,
-      );
-      this.threadId = null;
-      this.threadHasBuiltinTools = null;
-      this.latestContextUsage = null;
-    }
     let missingThreadRecovered = false;
 
     const recoverMissingThread = (error: unknown): boolean => {
@@ -631,7 +624,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
    };
 
     const resumeThread = async (id: string): Promise<string> => {
-      const resumeResult = await client.request<Record<string, unknown>, { thread?: { id?: string }; sandbox?: SandboxPolicy; approvalPolicy?: AskForApproval }>(
+      const resumeResult = await client.request<Record<string, unknown>, { thread?: { id?: string; path?: string | null }; sandbox?: SandboxPolicy; approvalPolicy?: AskForApproval }>(
         "thread/resume",
         this.buildThreadResumeParams(id),
         { timeoutMs: this.turnTimeoutMs > 0 ? this.turnTimeoutMs : undefined },
@@ -642,6 +635,11 @@ export class CodexAppServerAdapter implements AgentAdapter {
         typeof resumeResult?.thread?.id === "string" && resumeResult.thread.id.length > 0
           ? resumeResult.thread.id
           : id;
+      const persistedToolNames = await readPersistedDynamicToolNames(resumeResult?.thread?.path);
+      const requiredToolNames = builtinDynamicTools().map((tool) => tool.name);
+      this.threadHasBuiltinTools = Boolean(
+        persistedToolNames && requiredToolNames.every((name) => persistedToolNames.has(name)),
+      );
       this.markThreadLoaded(client, resumedId);
       this.threadId = resumedId;
       return resumedId;
@@ -655,6 +653,15 @@ export class CodexAppServerAdapter implements AgentAdapter {
           throw error;
         }
       }
+    }
+
+    if (this.threadId && this.threadHasBuiltinTools !== true) {
+      logger.info(
+        `[CodexAppServerAdapter] Thread ${this.threadId} does not persist all built-in tools; starting a new tool-enabled thread.`,
+      );
+      this.threadId = null;
+      this.threadHasBuiltinTools = null;
+      this.latestContextUsage = null;
     }
 
     if (this.threadId) {

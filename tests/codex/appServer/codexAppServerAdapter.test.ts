@@ -1,5 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import { BUILTIN_TOOL_DEFINITIONS } from "../../../server/tools/builtins.js";
 
@@ -202,9 +205,10 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
-  it("starts a tool-enabled thread instead of resuming a persisted thread without built-in tools", async () => {
+  it("starts a tool-enabled thread when the persisted thread lacks built-in tools", async () => {
     const fake = buildFakeServer({
       autoReplies: {
+        "thread/resume": () => ({ thread: { id: "thread-persisted-without-tools", path: null } }),
         "thread/start": () => ({ thread: { id: "thread-action-fresh" } }),
         "turn/start": () => ({}),
       },
@@ -225,7 +229,7 @@ describe("CodexAppServerAdapter", () => {
 
     const pending = adapter.send("Review the current pull request", { actionTools });
     await waitForRequestCount(fake, "thread/start", 1);
-    assert.equal(fake.requests.filter((request) => request.method === "thread/resume").length, 0);
+    assert.equal(fake.requests.filter((request) => request.method === "thread/resume").length, 1);
     const threadStart = fake.requests.find((request) => request.method === "thread/start");
     assert.deepEqual(
       (threadStart?.params?.dynamicTools as Array<{ name: string }>).map((tool) => tool.name),
@@ -252,6 +256,134 @@ describe("CodexAppServerAdapter", () => {
     await pending;
     assert.equal(adapter.getThreadId(), "thread-action-fresh");
     await registry.stopAll();
+  });
+
+  it("rotates to a tool-enabled thread when rollout metadata is unusable", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-codex-resume-metadata-"));
+    const completeToolDeclarations = BUILTIN_TOOL_DEFINITIONS.map(({ function: tool }) => ({
+      type: "function",
+      name: tool.name,
+    }));
+    const malformedPath = path.join(directory, "malformed.jsonl");
+    const incompletePath = path.join(directory, "incomplete.jsonl");
+    fs.writeFileSync(malformedPath, "{ not json }\n", "utf8");
+    fs.writeFileSync(
+      incompletePath,
+      `${JSON.stringify({
+        type: "session_meta",
+        payload: { dynamic_tools: completeToolDeclarations.slice(1) },
+      })}\n`,
+      "utf8",
+    );
+
+    const cases = [
+      { name: "missing file", rolloutPath: path.join(directory, "missing.jsonl") },
+      { name: "directory path", rolloutPath: directory },
+      { name: "malformed metadata", rolloutPath: malformedPath },
+      { name: "incomplete tool declarations", rolloutPath: incompletePath },
+    ];
+
+    try {
+      for (const [index, testCase] of cases.entries()) {
+        const resumeThreadId = `thread-unusable-${index}`;
+        const freshThreadId = `thread-fresh-${index}`;
+        const fake = buildFakeServer({
+          autoReplies: {
+            "thread/resume": () => ({ thread: { id: resumeThreadId, path: testCase.rolloutPath } }),
+            "thread/start": () => ({ thread: { id: freshThreadId } }),
+            "turn/start": () => ({}),
+          },
+        });
+        const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+        const adapter = new CodexAppServerAdapter({
+          projectId: `resume-unusable-metadata-${index}`,
+          resumeThreadId,
+          registry,
+        });
+
+        const pending = adapter.send(`Case ${testCase.name}`);
+        await waitForRequestCount(fake, "thread/start", 1);
+        assert.equal(
+          fake.requests.filter((request) => request.method === "thread/resume").length,
+          1,
+          testCase.name,
+        );
+        await waitForRequestCount(fake, "turn/start", 1);
+        assert.equal(adapter.getThreadId(), freshThreadId, testCase.name);
+
+        fake.notify("turn/started", { threadId: freshThreadId, turn: { id: `turn-${index}` } });
+        fake.notify("item/completed", {
+          item: { type: "agentMessage", id: `m-${index}`, text: "ok" },
+          threadId: freshThreadId,
+          turnId: `turn-${index}`,
+        });
+        fake.notify("turn/completed", { threadId: freshThreadId, turn: { id: `turn-${index}` } });
+        await pending;
+        assert.equal(adapter.getThreadId(), freshThreadId, testCase.name);
+        await registry.stopAll();
+      }
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes a persisted thread that already declares every built-in tool", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-codex-resume-tools-"));
+    const rolloutPath = path.join(directory, "rollout.jsonl");
+    fs.writeFileSync(
+      rolloutPath,
+      `${JSON.stringify({
+        type: "session_meta",
+        payload: {
+          dynamic_tools: BUILTIN_TOOL_DEFINITIONS.map(({ function: tool }) => ({
+            type: "function",
+            name: tool.name,
+          })),
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const fake = buildFakeServer({
+      autoReplies: {
+        "thread/resume": () => ({
+          thread: { id: "thread-persisted-with-tools", path: rolloutPath },
+        }),
+        "turn/start": () => ({}),
+      },
+    });
+    const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+    const adapter = new CodexAppServerAdapter({
+      projectId: "resume-with-tools",
+      resumeThreadId: "thread-persisted-with-tools",
+      registry,
+    });
+
+    try {
+      const pending = adapter.send("Continue the existing task");
+      await waitForRequestCount(fake, "turn/start", 1);
+      assert.equal(fake.requests.filter((request) => request.method === "thread/resume").length, 1);
+      assert.equal(fake.requests.filter((request) => request.method === "thread/start").length, 0);
+      const turnStart = fake.requests.find((request) => request.method === "turn/start");
+      assert.equal(turnStart?.params?.threadId, "thread-persisted-with-tools");
+
+      fake.notify("turn/started", { threadId: "thread-persisted-with-tools", turn: { id: "turn-resumed" } });
+      fake.notify("item/completed", {
+        item: { type: "agentMessage", id: "m-resumed", text: "Resumed" },
+        threadId: "thread-persisted-with-tools",
+        turnId: "turn-resumed",
+      });
+      fake.notify("turn/completed", {
+        threadId: "thread-persisted-with-tools",
+        turn: { id: "turn-resumed" },
+      });
+      const result = await pending;
+      assert.equal(result.response, "Resumed");
+      assert.equal(adapter.getThreadId(), "thread-persisted-with-tools");
+    } finally {
+      await registry.stopAll();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("creates a thread, sends a turn, and returns the assistant message", async () => {
