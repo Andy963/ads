@@ -32,6 +32,9 @@ export async function readPersistedDynamicToolNames(
   }
 
   const stream = createReadStream(normalizedPath, { encoding: "utf8" });
+  // Keep a listener of our own so an unreadable rollout never surfaces as an
+  // unhandled "error" event, even if readline stops forwarding input errors.
+  stream.on("error", () => {});
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
   try {
     for await (const line of lines) {

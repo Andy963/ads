@@ -258,6 +258,75 @@ describe("CodexAppServerAdapter", () => {
     await registry.stopAll();
   });
 
+  it("rotates to a tool-enabled thread when rollout metadata is unusable", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-codex-resume-metadata-"));
+    const completeToolDeclarations = BUILTIN_TOOL_DEFINITIONS.map(({ function: tool }) => ({
+      type: "function",
+      name: tool.name,
+    }));
+    const malformedPath = path.join(directory, "malformed.jsonl");
+    const incompletePath = path.join(directory, "incomplete.jsonl");
+    fs.writeFileSync(malformedPath, "{ not json }\n", "utf8");
+    fs.writeFileSync(
+      incompletePath,
+      `${JSON.stringify({
+        type: "session_meta",
+        payload: { dynamic_tools: completeToolDeclarations.slice(1) },
+      })}\n`,
+      "utf8",
+    );
+
+    const cases = [
+      { name: "missing file", rolloutPath: path.join(directory, "missing.jsonl") },
+      { name: "directory path", rolloutPath: directory },
+      { name: "malformed metadata", rolloutPath: malformedPath },
+      { name: "incomplete tool declarations", rolloutPath: incompletePath },
+    ];
+
+    try {
+      for (const [index, testCase] of cases.entries()) {
+        const resumeThreadId = `thread-unusable-${index}`;
+        const freshThreadId = `thread-fresh-${index}`;
+        const fake = buildFakeServer({
+          autoReplies: {
+            "thread/resume": () => ({ thread: { id: resumeThreadId, path: testCase.rolloutPath } }),
+            "thread/start": () => ({ thread: { id: freshThreadId } }),
+            "turn/start": () => ({}),
+          },
+        });
+        const registry = new CodexAppServerDaemonRegistry({ factory: () => fake.client });
+        const adapter = new CodexAppServerAdapter({
+          projectId: `resume-unusable-metadata-${index}`,
+          resumeThreadId,
+          registry,
+        });
+
+        const pending = adapter.send(`Case ${testCase.name}`);
+        await waitForRequestCount(fake, "thread/start", 1);
+        assert.equal(
+          fake.requests.filter((request) => request.method === "thread/resume").length,
+          1,
+          testCase.name,
+        );
+        await waitForRequestCount(fake, "turn/start", 1);
+        assert.equal(adapter.getThreadId(), freshThreadId, testCase.name);
+
+        fake.notify("turn/started", { threadId: freshThreadId, turn: { id: `turn-${index}` } });
+        fake.notify("item/completed", {
+          item: { type: "agentMessage", id: `m-${index}`, text: "ok" },
+          threadId: freshThreadId,
+          turnId: `turn-${index}`,
+        });
+        fake.notify("turn/completed", { threadId: freshThreadId, turn: { id: `turn-${index}` } });
+        await pending;
+        assert.equal(adapter.getThreadId(), freshThreadId, testCase.name);
+        await registry.stopAll();
+      }
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("resumes a persisted thread that already declares every built-in tool", async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ads-codex-resume-tools-"));
     const rolloutPath = path.join(directory, "rollout.jsonl");
