@@ -1,0 +1,23 @@
+[package]
+name = "ads-codex-app-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ads-contract.workspace = true
+ads-native.workspace = true
+ads-runtime.workspace = true
+ads-state.workspace = true
+base64.workspace = true
+libc.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
