@@ -51,8 +51,9 @@ pub fn load_connector_config(env: &HashMap<String, String>) -> TelegramConnector
         .find_map(|key| env.get(*key))
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
-    let max_requests_per_minute = env
-        .get("TELEGRAM_MAX_REQUESTS_PER_MINUTE")
+    let max_requests_per_minute = ["TELEGRAM_MAX_REQUESTS_PER_MINUTE", "TELEGRAM_MAX_RPM"]
+        .iter()
+        .find_map(|key| env.get(*key))
         .and_then(|value| value.trim().parse::<i64>().ok())
         .filter(|value| *value != 0)
         .unwrap_or(30);
@@ -182,5 +183,16 @@ mod tests {
             ("TELEGRAM_PROMPT_MAX_DURATION_MS", "1000"),
         ]));
         assert!(validate_connector_config(&invalid_timeout).is_err());
+    }
+
+    #[test]
+    fn accepts_the_legacy_rate_limit_name() {
+        let config = load_connector_config(&env(&[
+            ("TELEGRAM_BOT_TOKEN", "1234:token"),
+            ("TELEGRAM_ALLOWED_USER_ID", "1"),
+            ("ADS_CONNECTOR_TOKEN", "connector"),
+            ("TELEGRAM_MAX_RPM", "12"),
+        ]));
+        assert_eq!(config.max_requests_per_minute, 12);
     }
 }
