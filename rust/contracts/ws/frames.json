@@ -1,0 +1,55 @@
+{
+  "source_commit": "21aeeee1091bea3a9c7c491ee54d4b25a84ae491",
+  "note": "Static literal inventory. The WebSocket type field is extensible and this list is not exhaustive.",
+  "envelope": {
+    "type": "string",
+    "payload": "unknown (optional)",
+    "client_message_id": "string (optional)",
+    "chat_session_id": "string (optional)"
+  },
+  "handshake": {
+    "path": "/ws",
+    "protocols": [
+      "ads-v1",
+      "ads-session.<session-id>",
+      "ads-chat.<chat-session-id>"
+    ],
+    "query": [
+      "afterSeq.<chat-session-id>",
+      "laneGeneration.<chat-session-id>"
+    ]
+  },
+  "known_type_literals": [
+    "ack",
+    "agents",
+    "assistant_item",
+    "command",
+    "context_injection",
+    "delta",
+    "error",
+    "explored",
+    "history",
+    "in_flight",
+    "patch",
+    "phase_complete",
+    "ping",
+    "pong",
+    "prompt",
+    "prompt_queue",
+    "prompt_queue_cancelled",
+    "prompt_queue_snapshot",
+    "prompt_reconcile_error",
+    "prompt_reconcile_result",
+    "result",
+    "session_fallback",
+    "session_list_result",
+    "session_reset",
+    "status",
+    "task_terminal",
+    "text",
+    "thread_reset",
+    "user",
+    "welcome",
+    "workspace"
+  ]
+}

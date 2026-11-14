@@ -1,0 +1,301 @@
+{
+  "source_commit": "21aeeee1091bea3a9c7c491ee54d4b25a84ae491",
+  "note": "Static scan of route files. Method lists may be incomplete when a route dispatches in a helper.",
+  "route_count": 36,
+  "routes": [
+    {
+      "path": "/api/actions/",
+      "methods": [
+        "POST"
+      ],
+      "source": "server/web/server/api/routes/actions.ts",
+      "line": 158
+    },
+    {
+      "path": "/api/actions/dispatch",
+      "methods": [
+        "POST"
+      ],
+      "source": "server/web/server/api/routes/actions.ts",
+      "line": 135
+    },
+    {
+      "path": "/api/actions/jobs",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/actions.ts",
+      "line": 145
+    },
+    {
+      "path": "/api/actions/queue/start",
+      "methods": [
+        "POST"
+      ],
+      "source": "server/web/server/api/routes/actions.ts",
+      "line": 140
+    },
+    {
+      "path": "/api/attachments/images",
+      "methods": [
+        "POST"
+      ],
+      "source": "server/web/server/api/routes/attachments.ts",
+      "line": 21
+    },
+    {
+      "path": "/api/audio/transcriptions",
+      "methods": [
+        "GET",
+        "POST",
+        "PUT"
+      ],
+      "source": "server/web/server/api/routes/audio.ts",
+      "line": 16
+    },
+    {
+      "path": "/api/auth/login",
+      "methods": [
+        "POST"
+      ],
+      "source": "server/web/server/api/routes/auth.ts",
+      "line": 29
+    },
+    {
+      "path": "/api/auth/logout",
+      "methods": [
+        "POST"
+      ],
+      "source": "server/web/server/api/routes/auth.ts",
+      "line": 78
+    },
+    {
+      "path": "/api/auth/me",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/auth.ts",
+      "line": 90
+    },
+    {
+      "path": "/api/auth/status",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/auth.ts",
+      "line": 24
+    },
+    {
+      "path": "/api/lane-prompts",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/lanePrompts.ts",
+      "line": 52
+    },
+    {
+      "path": "/api/model-configs",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/models.ts",
+      "line": 555
+    },
+    {
+      "path": "/api/model-providers",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/models.ts",
+      "line": 307
+    },
+    {
+      "path": "/api/model-services",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/models.ts",
+      "line": 447
+    },
+    {
+      "path": "/api/model-services/",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/models.ts",
+      "line": 447
+    },
+    {
+      "path": "/api/models",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/models.ts",
+      "line": 513
+    },
+    {
+      "path": "/api/models/upstream",
+      "methods": [
+        "POST"
+      ],
+      "source": "server/web/server/api/routes/models.ts",
+      "line": 518
+    },
+    {
+      "path": "/api/models/upstream",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/models.ts",
+      "line": 544
+    },
+    {
+      "path": "/api/models/upstream/config",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/models.ts",
+      "line": 495
+    },
+    {
+      "path": "/api/models/upstream/discover",
+      "methods": [
+        "POST"
+      ],
+      "source": "server/web/server/api/routes/models.ts",
+      "line": 518
+    },
+    {
+      "path": "/api/paths/subdirs",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/paths.ts",
+      "line": 11
+    },
+    {
+      "path": "/api/paths/validate",
+      "methods": [
+        "ANY"
+      ],
+      "source": "server/web/server/api/routes/paths.ts",
+      "line": 32
+    },
+    {
+      "path": "/api/projects",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/projects.ts",
+      "line": 35
+    },
+    {
+      "path": "/api/projects",
+      "methods": [
+        "POST"
+      ],
+      "source": "server/web/server/api/routes/projects.ts",
+      "line": 45
+    },
+    {
+      "path": "/api/projects/active",
+      "methods": [
+        "PATCH"
+      ],
+      "source": "server/web/server/api/routes/projects.ts",
+      "line": 131
+    },
+    {
+      "path": "/api/projects/reorder",
+      "methods": [
+        "POST"
+      ],
+      "source": "server/web/server/api/routes/projects.ts",
+      "line": 81
+    },
+    {
+      "path": "/api/role-profiles",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/roleProfiles.ts",
+      "line": 26
+    },
+    {
+      "path": "/api/runs/interrupt",
+      "methods": [
+        "ANY"
+      ],
+      "source": "server/web/server/api/routes/runs.ts",
+      "line": 30
+    },
+    {
+      "path": "/api/schedules",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/schedules.ts",
+      "line": 93
+    },
+    {
+      "path": "/api/schedules",
+      "methods": [
+        "POST"
+      ],
+      "source": "server/web/server/api/routes/schedules.ts",
+      "line": 103
+    },
+    {
+      "path": "/api/sync/events",
+      "methods": [
+        "ANY"
+      ],
+      "source": "server/web/server/api/routes/sync.ts",
+      "line": 33
+    },
+    {
+      "path": "/api/voice/correction",
+      "methods": [
+        "GET",
+        "POST",
+        "PUT"
+      ],
+      "source": "server/web/server/api/routes/audio.ts",
+      "line": 15
+    },
+    {
+      "path": "/api/voice/settings",
+      "methods": [
+        "GET",
+        "POST",
+        "PUT"
+      ],
+      "source": "server/web/server/api/routes/audio.ts",
+      "line": 14
+    },
+    {
+      "path": "/api/web-push/config",
+      "methods": [
+        "GET"
+      ],
+      "source": "server/web/server/api/routes/webPush.ts",
+      "line": 30
+    },
+    {
+      "path": "/api/web-push/subscription",
+      "methods": [
+        "POST"
+      ],
+      "source": "server/web/server/api/routes/webPush.ts",
+      "line": 35
+    },
+    {
+      "path": "/api/web-push/unsubscribe",
+      "methods": [
+        "POST"
+      ],
+      "source": "server/web/server/api/routes/webPush.ts",
+      "line": 57
+    }
+  ]
+}

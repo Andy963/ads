@@ -1,0 +1,654 @@
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use ads_actions::{
+    IssueCommentRequest, LaneMessage, ResolvedReview, ReviewDispatchRequest, ReviewError,
+    ReviewQueue, ReviewQueueOptions, ReviewerRequest, TargetResolver,
+};
+use ads_reviewer::{ReviewIssue, ReviewTestReport, ReviewVerdict, ReviewVerdictStatus};
+use ads_state::{
+    ActionJobKind, ActionJobStatus, StateDb, UpsertWebProject, WEB_ACTIONS_NAMESPACE,
+    acquire_review_queue_lease, bump_lane_generation, create_action_job, ensure_web_project_tables,
+    get_action_job, logical_history_key, supersede_review_jobs_for_new_head, upsert_web_project,
+};
+use serde_json::Value;
+use tempfile::{TempDir, tempdir};
+
+const BASE_FAKE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const HEAD_OLD: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const HEAD_NEW: &str = "cccccccccccccccccccccccccccccccccccccccc";
+
+fn git(repo: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn repo() -> (TempDir, PathBuf, String, String) {
+    let directory = tempdir().expect("temp dir");
+    let path = directory.path().to_path_buf();
+    git(&path, &["init", "-q"]);
+    git(&path, &["config", "user.email", "reviewer@example.com"]);
+    git(&path, &["config", "user.name", "Reviewer"]);
+    std::fs::write(path.join("a.txt"), "one\n").expect("write a");
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-q", "-m", "base"]);
+    let base = git(&path, &["rev-parse", "HEAD"]);
+    std::fs::write(path.join("b.txt"), "two\n").expect("write b");
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-q", "-m", "head"]);
+    let head = git(&path, &["rev-parse", "HEAD"]);
+    (directory, path, base, head)
+}
+
+fn options() -> ReviewQueueOptions {
+    ReviewQueueOptions::default()
+}
+
+fn resolved(repo: &Path, base: &str, head: &str) -> ResolvedReview {
+    let project_id = ads_state::derive_project_session_id(&repo.to_string_lossy());
+    ResolvedReview {
+        project_id,
+        repo_path: repo.to_path_buf(),
+        auth_user_id: "user-1".to_string(),
+        branch: "codex/issue-7".to_string(),
+        pr_number: 12,
+        pr_url: "https://github.com/example/pull/12".to_string(),
+        target: ads_reviewer::ReviewTarget {
+            issue: ReviewIssue {
+                id: Some(7),
+                title: "Fix the bug".to_string(),
+                description: Some("The bug description".to_string()),
+                acceptance_criteria: Some(vec!["Criterion".to_string()]),
+            },
+            adrs: None,
+            base_ref: "dev".to_string(),
+            head_ref: "HEAD".to_string(),
+            base_commit: Some(base.to_string()),
+            head_commit: Some(head.to_string()),
+        },
+    }
+}
+
+fn fixed_resolver(target: ResolvedReview) -> TargetResolver {
+    Arc::new(move |_request| {
+        let target = target.clone();
+        Box::pin(async move { Ok(target) })
+    })
+}
+
+fn changed_resolver(first: ResolvedReview, second: ResolvedReview) -> TargetResolver {
+    let calls = Arc::new(AtomicUsize::new(0));
+    Arc::new(move |_request| {
+        let first = first.clone();
+        let second = second.clone();
+        let calls = calls.clone();
+        Box::pin(async move {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(first)
+            } else {
+                Ok(second)
+            }
+        })
+    })
+}
+
+fn pass_reviewer() -> ads_actions::ReviewerRunner {
+    Arc::new(|_request: ReviewerRequest| {
+        Box::pin(async {
+            Ok(ReviewVerdict {
+                status: ReviewVerdictStatus::Pass,
+                summary: "All good".to_string(),
+                defects: Vec::new(),
+                reviewer_profile_id: None,
+                reviewed_at: 1_700_000_000_000,
+            })
+        })
+    })
+}
+
+fn failing_reviewer(message: &'static str) -> ads_actions::ReviewerRunner {
+    let message = message.to_string();
+    Arc::new(move |_request: ReviewerRequest| {
+        let message = message.clone();
+        Box::pin(async move { Err(ReviewError::Other(message)) })
+    })
+}
+
+fn incomplete_reviewer() -> ads_actions::ReviewerRunner {
+    Arc::new(|_request: ReviewerRequest| {
+        Box::pin(async { Err(ReviewError::Incomplete("missing evidence".to_string())) })
+    })
+}
+
+fn verification(exit_code: i64) -> ads_actions::VerificationRunner {
+    Arc::new(move |_repo, _cancellation| {
+        Box::pin(async move {
+            Ok(ReviewTestReport {
+                command: "true".to_string(),
+                exit_code,
+                summary: "Tests and checks passed successfully".to_string(),
+                output: Some("ok".to_string()),
+            })
+        })
+    })
+}
+
+fn state() -> (TempDir, StateDb) {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    (directory, db)
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_millis() as i64
+}
+
+fn dispatch_request(
+    project_id: String,
+    repo: &Path,
+    branch: Option<&str>,
+    pr_number: Option<i64>,
+) -> ReviewDispatchRequest {
+    ReviewDispatchRequest {
+        project_id,
+        repo_path: repo.to_path_buf(),
+        auth_user_id: "user-1".to_string(),
+        branch: branch.map(str::to_string),
+        pr_number,
+        lane_generation: 1,
+        chat_session_id: Some("main".to_string()),
+    }
+}
+
+#[tokio::test]
+async fn dispatches_review_jobs_and_deduplicates() {
+    let (_directory, db) = state();
+    let queue = ReviewQueue::new(db.clone(), "worker-1", options());
+    let (_temp, repo, _base, _head) = repo();
+    let project = ads_state::derive_project_session_id(&repo.to_string_lossy());
+
+    let ack = queue
+        .dispatch(
+            dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12)),
+            1_000,
+        )
+        .expect("dispatch");
+    assert!(ack.ok);
+    assert_eq!(ack.status, ActionJobStatus::Queued);
+    assert_eq!(ack.issue_id, Some(7));
+    assert!(!ack.job_id.is_empty());
+    assert_eq!(ack.note, ads_actions::REVIEW_QUEUE_NOTE);
+
+    let first_job_id = ack.job_id.clone();
+    let duplicate = queue
+        .dispatch(
+            dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12)),
+            2_000,
+        )
+        .expect("dedupe");
+    assert_eq!(duplicate.job_id, first_job_id);
+
+    let same_branch_no_pr = queue
+        .dispatch(
+            dispatch_request(project.clone(), &repo, Some("codex/issue-7"), None),
+            3_000,
+        )
+        .expect("dedupe branch");
+    assert_eq!(same_branch_no_pr.job_id, first_job_id);
+
+    let other_branch = queue
+        .dispatch(
+            dispatch_request(project, &repo, Some("codex/issue-8"), None),
+            4_000,
+        )
+        .expect("other dispatch");
+    assert_ne!(other_branch.job_id, first_job_id);
+    assert_eq!(other_branch.issue_id, Some(8));
+}
+
+#[tokio::test]
+async fn production_resolution_rejects_unowned_project_workspaces() {
+    let (_directory, db) = state();
+    let (_temp, repo, _base, _head) = repo();
+    let project = ads_state::derive_project_session_id(&repo.to_string_lossy());
+    let queue = ReviewQueue::new(db.clone(), "worker-1", options());
+    let ack = queue
+        .dispatch(
+            dispatch_request(project.clone(), &repo, Some("codex/issue-7"), None),
+            1_000,
+        )
+        .expect("dispatch");
+    queue.process(&project, &repo).await.expect("process");
+    let connection = db.connect().expect("connection");
+    let job = get_action_job(&connection, &ack.job_id)
+        .expect("read")
+        .expect("job");
+    assert_eq!(job.status, ActionJobStatus::Failed);
+    assert_eq!(
+        job.error_message.as_deref(),
+        Some("Interactive review is limited to the authenticated project workspace.")
+    );
+}
+
+#[test]
+fn dispatch_uses_the_project_actions_lane_identity() {
+    let (_directory, db) = state();
+    let (_temp, repo, _base, _head) = repo();
+    let project = ads_state::derive_project_session_id(&repo.to_string_lossy());
+    let logical_key = logical_history_key("user-1", &project, "chat-42");
+    {
+        let mut connection = db.connect().expect("connection");
+        connection
+            .execute(
+                "INSERT INTO web_users (id, username, password_hash, created_at, updated_at)
+                 VALUES ('user-1', 'admin', 'hash', 1, 1)",
+                [],
+            )
+            .expect("user");
+        ensure_web_project_tables(&connection).expect("project tables");
+        upsert_web_project(
+            &connection,
+            UpsertWebProject {
+                user_id: "user-1",
+                project_id: &project,
+                workspace_root: &repo.to_string_lossy(),
+                name: "Review project",
+                chat_session_id: Some("chat-42"),
+            },
+            1_000,
+        )
+        .expect("project");
+        assert_eq!(
+            bump_lane_generation(&mut connection, WEB_ACTIONS_NAMESPACE, &logical_key, 2_000)
+                .expect("generation"),
+            2
+        );
+    }
+
+    let queue = ReviewQueue::new(db.clone(), "worker-1", options());
+    let ack = queue
+        .dispatch(
+            dispatch_request(project.clone(), &repo, Some("codex/issue-7"), None),
+            3_000,
+        )
+        .expect("dispatch");
+    let connection = db.connect().expect("connection");
+    let job = get_action_job(&connection, &ack.job_id)
+        .expect("read")
+        .expect("job");
+    assert_eq!(job.chat_session_id.as_deref(), Some("chat-42"));
+    assert_eq!(job.lane_generation, 2);
+}
+
+#[tokio::test]
+async fn processes_a_review_end_to_end() {
+    let (_directory, db) = state();
+    let (_temp, repo, base, head) = repo();
+    let target = resolved(&repo, &base, &head);
+    let project = target.project_id.clone();
+
+    let comments = Arc::new(Mutex::new(Vec::new()));
+    let messages = Arc::new(Mutex::new(Vec::new()));
+    let wakes = Arc::new(Mutex::new(Vec::new()));
+    let mut options = options();
+    options.target_resolver = Some(fixed_resolver(target.clone()));
+    options.verification = Some(verification(0));
+    options.reviewer = Some(pass_reviewer());
+    options.publisher = Some(Arc::new({
+        let comments = comments.clone();
+        move |request: IssueCommentRequest| {
+            let comments = comments.clone();
+            Box::pin(async move {
+                comments.lock().expect("comments").push(request);
+                Ok(())
+            })
+        }
+    }));
+    options.messenger = Some(Arc::new({
+        let messages = messages.clone();
+        move |message: LaneMessage| {
+            messages.lock().expect("messages").push(message);
+        }
+    }));
+    options.waker = Some(Arc::new({
+        let wakes = wakes.clone();
+        move |wake: ads_actions::AcopilotWake| {
+            wakes.lock().expect("wakes").push(wake);
+        }
+    }));
+
+    let queue = ReviewQueue::new(db.clone(), "worker-1", options);
+    let ack = queue
+        .dispatch(
+            dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12)),
+            1_000,
+        )
+        .expect("dispatch");
+    let acquired = queue.process(&project, &repo).await.expect("process");
+    assert!(acquired);
+
+    let connection = db.connect().expect("connection");
+    let job = get_action_job(&connection, &ack.job_id)
+        .expect("read")
+        .expect("job");
+    assert_eq!(job.status, ActionJobStatus::Completed);
+    assert!(
+        job.current_step
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("PASS: All good")
+    );
+    assert_eq!(job.issue_id, Some(7));
+    assert_eq!(job.head_sha.as_deref(), Some(head.as_str()));
+    assert_eq!(job.base_sha.as_deref(), Some(base.as_str()));
+    assert_eq!(job.pr_number, Some(12));
+    let verdicts: Value = serde_json::from_str(&job.review_verdicts_json).expect("verdicts");
+    assert_eq!(verdicts[0]["status"], "PASS");
+    let report: Value = serde_json::from_str(&job.verification_report_json).expect("report");
+    assert_eq!(report["command"], "true");
+    assert_eq!(report["exitCode"], 0);
+
+    let comments = comments.lock().expect("comments");
+    assert_eq!(comments.len(), 1);
+    assert!(comments[0].body.contains("<!-- ads:review-verdict -->"));
+    assert!(comments[0].body.contains("## ADS Reviewer verdict: PASS"));
+    let messages = messages.lock().expect("messages");
+    let kinds = messages
+        .iter()
+        .map(|message| message.kind.as_str())
+        .collect::<Vec<_>>();
+    assert!(kinds.iter().any(|kind| kind.ends_with(":started")));
+    assert!(kinds.iter().any(|kind| kind.ends_with(":verification")));
+    assert!(kinds.iter().any(|kind| kind.ends_with(":completed")));
+    assert!(kinds.iter().any(|kind| kind.ends_with(":result")));
+    let wakes = wakes.lock().expect("wakes");
+    assert_eq!(wakes.len(), 1);
+    assert_eq!(wakes[0].issue_id, 7);
+    assert_eq!(wakes[0].status.as_str(), "PASS");
+}
+
+#[tokio::test]
+async fn fails_the_job_when_the_reviewer_errors() {
+    let (_directory, db) = state();
+    let (_temp, repo, base, head) = repo();
+    let target = resolved(&repo, &base, &head);
+    let project = target.project_id.clone();
+    let mut options = options();
+    options.target_resolver = Some(fixed_resolver(target));
+    options.verification = Some(verification(0));
+    options.reviewer = Some(failing_reviewer("boom"));
+    let queue = ReviewQueue::new(db.clone(), "worker-1", options);
+    let ack = queue
+        .dispatch(
+            dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12)),
+            1_000,
+        )
+        .expect("dispatch");
+    queue.process(&project, &repo).await.expect("process");
+    let connection = db.connect().expect("connection");
+    let job = get_action_job(&connection, &ack.job_id)
+        .expect("read")
+        .expect("job");
+    assert_eq!(job.status, ActionJobStatus::Failed);
+    assert_eq!(job.error_message.as_deref(), Some("boom"));
+    assert_eq!(
+        job.current_step.as_deref(),
+        Some("Review job failed before producing an authoritative verdict")
+    );
+    assert_eq!(job.review_verdicts_json, "[]");
+}
+
+#[tokio::test]
+async fn completes_incomplete_verdicts_and_publishes_outcome() {
+    let (_directory, db) = state();
+    let (_temp, repo, base, head) = repo();
+    let target = resolved(&repo, &base, &head);
+    let project = target.project_id.clone();
+    let comments = Arc::new(Mutex::new(Vec::new()));
+    let mut options = options();
+    options.target_resolver = Some(fixed_resolver(target));
+    options.verification = Some(verification(1));
+    options.reviewer = Some(incomplete_reviewer());
+    options.publisher = Some(Arc::new({
+        let comments = comments.clone();
+        move |request: IssueCommentRequest| {
+            let comments = comments.clone();
+            Box::pin(async move {
+                comments.lock().expect("comments").push(request);
+                Ok(())
+            })
+        }
+    }));
+    let queue = ReviewQueue::new(db.clone(), "worker-1", options);
+    let ack = queue
+        .dispatch(
+            dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12)),
+            1_000,
+        )
+        .expect("dispatch");
+    queue.process(&project, &repo).await.expect("process");
+
+    let connection = db.connect().expect("connection");
+    let job = get_action_job(&connection, &ack.job_id)
+        .expect("read")
+        .expect("job");
+    assert_eq!(job.status, ActionJobStatus::Completed);
+    assert_eq!(
+        job.current_step.as_deref(),
+        Some("INCOMPLETE: missing evidence")
+    );
+    let verdicts: Value = serde_json::from_str(&job.review_verdicts_json).expect("verdicts");
+    assert_eq!(verdicts[0]["status"], "INCOMPLETE");
+    assert_eq!(verdicts[0]["summary"], "missing evidence");
+    let comments = comments.lock().expect("comments");
+    assert_eq!(comments.len(), 1);
+    assert!(comments[0].body.contains("INCOMPLETE"));
+    assert!(comments[0].body.contains("No code was rejected"));
+}
+
+#[tokio::test]
+async fn does_not_publish_when_the_job_was_superseded_during_review() {
+    let (_directory, db) = state();
+    let (_temp, repo, base, head) = repo();
+    let target = resolved(&repo, &base, &head);
+    let project = target.project_id.clone();
+    let comments = Arc::new(Mutex::new(Vec::new()));
+    let messages = Arc::new(Mutex::new(Vec::new()));
+    let mut options = options();
+    options.target_resolver = Some(fixed_resolver(target));
+    options.verification = Some(verification(0));
+    options.reviewer = Some(Arc::new({
+        let db = db.clone();
+        let project = project.clone();
+        move |_request: ReviewerRequest| {
+            let db = db.clone();
+            let project = project.clone();
+            Box::pin(async move {
+                let connection = db.connect().expect("connection");
+                supersede_review_jobs_for_new_head(
+                    &connection,
+                    &ads_state::SupersedeReviewJobsInput {
+                        project_id: project,
+                        pr_number: Some(12),
+                        branch: Some("codex/issue-7".to_string()),
+                        keep_head_sha: "never-seen-head".to_string(),
+                        superseded_by_job_id: "newer-job".to_string(),
+                    },
+                    5_000,
+                )
+                .expect("supersede");
+                Ok(ReviewVerdict {
+                    status: ReviewVerdictStatus::Pass,
+                    summary: "too late".to_string(),
+                    defects: Vec::new(),
+                    reviewer_profile_id: None,
+                    reviewed_at: 1_700_000_000_000,
+                })
+            })
+        }
+    }));
+    options.publisher = Some(Arc::new({
+        let comments = comments.clone();
+        move |request: IssueCommentRequest| {
+            let comments = comments.clone();
+            Box::pin(async move {
+                comments.lock().expect("comments").push(request);
+                Ok(())
+            })
+        }
+    }));
+    options.messenger = Some(Arc::new({
+        let messages = messages.clone();
+        move |message: LaneMessage| {
+            messages.lock().expect("messages").push(message);
+        }
+    }));
+    let queue = ReviewQueue::new(db.clone(), "worker-1", options);
+    let ack = queue
+        .dispatch(
+            dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12)),
+            1_000,
+        )
+        .expect("dispatch");
+    queue.process(&project, &repo).await.expect("process");
+
+    let connection = db.connect().expect("connection");
+    let job = get_action_job(&connection, &ack.job_id)
+        .expect("read")
+        .expect("job");
+    assert_eq!(job.superseded_at, Some(5_000));
+    assert!(comments.lock().expect("comments").is_empty());
+    let messages = messages.lock().expect("messages");
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.kind.ends_with(":superseded"))
+    );
+}
+
+#[tokio::test]
+async fn marks_incomplete_when_the_target_changed_during_review() {
+    let (_directory, db) = state();
+    let (_temp, repo, base, head) = repo();
+    let target = resolved(&repo, &base, &head);
+    let changed_target = ResolvedReview {
+        target: ads_reviewer::ReviewTarget {
+            head_commit: Some(HEAD_NEW.to_string()),
+            ..target.target.clone()
+        },
+        ..target.clone()
+    };
+    let project = target.project_id.clone();
+    let mut options = options();
+    options.target_resolver = Some(changed_resolver(target, changed_target));
+    options.verification = Some(verification(0));
+    options.reviewer = Some(pass_reviewer());
+    let queue = ReviewQueue::new(db.clone(), "worker-1", options);
+    let ack = queue
+        .dispatch(
+            dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12)),
+            1_000,
+        )
+        .expect("dispatch");
+    queue.process(&project, &repo).await.expect("process");
+
+    let connection = db.connect().expect("connection");
+    let job = get_action_job(&connection, &ack.job_id)
+        .expect("read")
+        .expect("job");
+    assert_eq!(job.status, ActionJobStatus::Completed);
+    assert!(
+        job.current_step
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("INCOMPLETE: Interactive review target changed during")
+    );
+}
+
+#[tokio::test]
+async fn fails_interrupted_jobs_and_respects_external_leases() {
+    let (_directory, db) = state();
+    let (_temp, repo, _base, _head) = repo();
+    let project = ads_state::derive_project_session_id(&repo.to_string_lossy());
+    let connection = db.connect().expect("connection");
+    let target = resolved(&repo, BASE_FAKE, HEAD_OLD);
+    create_action_job(
+        &connection,
+        ads_state::CreateActionJob {
+            id: "job-1".to_string(),
+            project_id: project.clone(),
+            lane_generation: Some(1),
+            job_kind: ActionJobKind::PullRequestReview,
+            issue_id: 7,
+            issue_title: "Fix".to_string(),
+            issue_snapshot: ads_state::ActionJobIssueSnapshot::default(),
+            status: Some(ActionJobStatus::Reviewing),
+            branch: "codex/issue-7".to_string(),
+            base_sha: String::new(),
+            head_sha: String::new(),
+            reviewer_profile_ids_json: "[]".to_string(),
+            pr_number: 12,
+            pr_url: String::new(),
+            auth_user_id: "user-1".to_string(),
+            chat_session_id: "main".to_string(),
+        },
+        1_000,
+    )
+    .expect("create");
+
+    let messages = Arc::new(Mutex::new(Vec::new()));
+    let mut options = options();
+    options.target_resolver = Some(fixed_resolver(target));
+    options.messenger = Some(Arc::new({
+        let messages = messages.clone();
+        move |message: LaneMessage| {
+            messages.lock().expect("messages").push(message);
+        }
+    }));
+    let queue = ReviewQueue::new(db.clone(), "worker-1", options.clone());
+    let acquired = queue.process(&project, &repo).await.expect("process");
+    assert!(acquired);
+    let connection = db.connect().expect("connection");
+    let interrupted = get_action_job(&connection, "job-1")
+        .expect("read")
+        .expect("job");
+    assert_eq!(interrupted.status, ActionJobStatus::Failed);
+    assert_eq!(
+        interrupted.error_message.as_deref(),
+        Some(
+            "The review job has no active worker. Dispatch a new review to retry the pinned target."
+        )
+    );
+    {
+        let messages = messages.lock().expect("messages");
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.kind.ends_with(":interrupted"))
+        );
+    }
+
+    let other = ReviewQueue::new(db.clone(), "worker-2", options);
+    let acquired = other.process(&project, &repo).await.expect("process");
+    assert!(acquired);
+
+    let connection = db.connect().expect("connection");
+    acquire_review_queue_lease(&connection, &project, "owner-x", 90_000, now_ms()).expect("lease");
+    let blocked = ReviewQueue::new(db.clone(), "worker-3", ReviewQueueOptions::default());
+    let acquired = blocked.process(&project, &repo).await.expect("process");
+    assert!(!acquired);
+}

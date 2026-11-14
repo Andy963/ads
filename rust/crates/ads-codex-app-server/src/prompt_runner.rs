@@ -1,0 +1,650 @@
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::Duration;
+
+use ads_contract::ws::HistoryEntry;
+use ads_runtime::scheduler::{
+    ScheduleExecuteFuture, ScheduleExecutor, SchedulerExecutionInput, normalize_workspace_root,
+};
+use ads_runtime::{PromptQueueFuture, PromptQueueRunOutcome, PromptQueueRunner, PromptRunContext};
+use ads_state::{
+    DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION, DEFAULT_HISTORY_MAX_TEXT_LENGTH, HistoryAddOutcome,
+    HistoryStore, PromptQueueEntry, PromptQueueStatus, StateDb, StateError,
+    build_client_message_history_kind, history_client_message_id,
+};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use rusqlite::{OptionalExtension, params};
+use serde_json::{Map, Value, json};
+use tokio::sync::{Mutex, watch};
+
+use crate::{
+    AgentActionTools, AgentEvent, AgentInputPart, AgentSendOptions, CodexAppServerAgent,
+    CodexAppServerAgentOptions, CodexAppServerDaemonRegistry, SandboxMode, SpawnOptions,
+};
+
+pub type CodexActionToolsFactory =
+    Arc<dyn Fn(&PromptQueueEntry) -> Option<AgentActionTools> + Send + Sync>;
+
+pub struct CodexAppServerPromptRunnerOptions {
+    pub db: StateDb,
+    pub daemon_options: SpawnOptions,
+    pub history_max_entries_per_session: usize,
+    pub history_max_text_length: usize,
+    pub action_tools_factory: Option<CodexActionToolsFactory>,
+}
+
+impl CodexAppServerPromptRunnerOptions {
+    pub fn new(db: StateDb, daemon_options: SpawnOptions) -> Self {
+        Self {
+            db,
+            daemon_options,
+            history_max_entries_per_session: DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION,
+            history_max_text_length: DEFAULT_HISTORY_MAX_TEXT_LENGTH,
+            action_tools_factory: None,
+        }
+    }
+}
+
+pub struct CodexAppServerPromptRunner {
+    options: CodexAppServerPromptRunnerOptions,
+    registry: Arc<CodexAppServerDaemonRegistry>,
+    agents: Mutex<HashMap<String, CodexAppServerAgent>>,
+    active: Mutex<HashMap<i64, watch::Sender<bool>>>,
+}
+
+const CODEX_THREAD_NAMESPACE: &str = "web_codex_thread";
+
+impl CodexAppServerPromptRunner {
+    pub fn new(options: CodexAppServerPromptRunnerOptions) -> Self {
+        Self {
+            options,
+            registry: CodexAppServerDaemonRegistry::new(),
+            agents: Mutex::new(HashMap::new()),
+            active: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn history(&self, namespace: &str) -> HistoryStore {
+        HistoryStore::new(
+            namespace,
+            self.options.history_max_entries_per_session,
+            self.options.history_max_text_length,
+        )
+    }
+
+    async fn agent_for(
+        &self,
+        entry: &PromptQueueEntry,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> ads_state::StateResult<CodexAppServerAgent> {
+        let key = agent_key(entry, model, effort);
+        if let Some(agent) = self.agents.lock().await.get(&key).cloned() {
+            return Ok(agent);
+        }
+        let agent = CodexAppServerAgent::new(CodexAppServerAgentOptions {
+            project_id: ads_state::derive_project_session_id(&entry.workspace_root),
+            workspace_root: entry.workspace_root.clone().into(),
+            working_directory: Some(entry.workspace_root.clone().into()),
+            model: model.map(str::to_string),
+            resume_thread_id: None,
+            reasoning_effort: effort.unwrap_or("high").to_string(),
+            sandbox_mode: SandboxMode::WorkspaceWrite,
+            developer_instructions: None,
+            dynamic_tools: Vec::new(),
+            daemon_options: self.options.daemon_options.clone(),
+            registry: Some(Arc::clone(&self.registry)),
+            turn_timeout: Some(Duration::from_secs(1_800)),
+            auto_compact: Default::default(),
+            retry: Default::default(),
+        });
+        if let Some(thread_id) = load_thread_id(&self.options.db, &key)? {
+            agent.restore_thread(&thread_id, true).await;
+        }
+        self.agents.lock().await.insert(key, agent.clone());
+        Ok(agent)
+    }
+}
+
+impl PromptQueueRunner for CodexAppServerPromptRunner {
+    fn run_prompt<'a>(
+        &'a self,
+        entry: PromptQueueEntry,
+        context: PromptRunContext,
+    ) -> PromptQueueFuture<'a, ads_state::StateResult<PromptQueueRunOutcome>> {
+        Box::pin(async move {
+            let payload = entry.payload.clone();
+            let text = prompt_text(&payload);
+            let images = local_images(&payload, &entry.workspace_root)?;
+            if text.is_none() && images.parts.is_empty() {
+                return Err(StateError::InvalidInput("payload 不能为空".to_string()));
+            }
+            let user_text = text.unwrap_or_default();
+            let history_text = build_history_text(&user_text, images.parts.len());
+            let PreparedImages {
+                parts: image_parts,
+                temp_files: _temp_files,
+            } = images;
+            let history = self.history(&entry.lane_namespace);
+            {
+                let connection = self.options.db.connect()?;
+                if !has_persisted_prompt(
+                    &history.get(&connection, &entry.history_key)?,
+                    &entry.client_message_id,
+                ) {
+                    let history_kind =
+                        build_client_message_history_kind(&entry.client_message_id, None);
+                    let outcome = history.add(
+                        &connection,
+                        &entry.history_key,
+                        HistoryEntry {
+                            role: "user".to_string(),
+                            text: history_text.clone(),
+                            ts: entry.created_at.max(1),
+                            kind: Some(history_kind),
+                        },
+                    )?;
+                    if outcome == HistoryAddOutcome::Invalid {
+                        return Err(StateError::InvalidInput(
+                            "Queued prompt history could not be persisted".to_string(),
+                        ));
+                    }
+                }
+            }
+            context.emit(json!({
+                "type": "user",
+                "clientMessageId": entry.client_message_id,
+                "text": history_text,
+                "ts": entry.created_at.max(1),
+                "eventId": format!("user:{}", entry.client_message_id),
+            }));
+            context.emit(json!({"type": "in_flight", "inFlight": true}));
+
+            let model = payload
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let effort = payload
+                .get("modelReasoningEffort")
+                .or_else(|| payload.get("model_reasoning_effort"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let agent = self.agent_for(&entry, model, effort).await?;
+            let event_context = context.clone();
+            let event_subscription = agent.on_event(move |event| {
+                emit_agent_event(&event_context, &event);
+            });
+            let (abort_tx, abort_rx) = watch::channel(false);
+            self.active.lock().await.insert(entry.id, abort_tx);
+            let mut parts = Vec::new();
+            if !user_text.is_empty() {
+                parts.push(AgentInputPart::text(user_text));
+            }
+            parts.extend(image_parts);
+            let action_tools = self
+                .options
+                .action_tools_factory
+                .as_ref()
+                .and_then(|factory| factory(&entry));
+            let result = agent
+                .send_with_options(
+                    parts,
+                    AgentSendOptions {
+                        abort: Some(abort_rx),
+                        action_tools,
+                    },
+                )
+                .await;
+            agent.off_event(event_subscription);
+            self.active.lock().await.remove(&entry.id);
+
+            match result {
+                Ok(result) => {
+                    let raw_response = result.response;
+                    let state_dir = self
+                        .options
+                        .db
+                        .path()
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new("."));
+                    let directive_results = ads_native::execute_tool_directives_in(
+                        state_dir,
+                        &entry.workspace_root,
+                        &raw_response,
+                    );
+                    let cleaned_response = ads_native::strip_tool_directives(&raw_response);
+                    let output = if directive_results.is_empty() {
+                        cleaned_response
+                    } else {
+                        [cleaned_response.as_str(), "", &directive_results.join("\n")]
+                            .join("\n")
+                            .trim()
+                            .to_string()
+                    };
+                    if !output.is_empty() {
+                        let connection = self.options.db.connect()?;
+                        let _ = history.add(
+                            &connection,
+                            &entry.history_key,
+                            HistoryEntry {
+                                role: "assistant".to_string(),
+                                text: output.clone(),
+                                ts: ads_contract::time::now_unix_millis(),
+                                kind: None,
+                            },
+                        );
+                    }
+                    if let Some(thread_id) = agent.thread_id().await {
+                        save_thread_id(
+                            &self.options.db,
+                            &agent_key(&entry, model, effort),
+                            &thread_id,
+                        )?;
+                    }
+                    context.emit(json!({
+                        "type": "result",
+                        "ok": true,
+                        "output": output.clone(),
+                        "assistantItems": [{"id": format!("{}-assistant", entry.client_message_id), "text": output}],
+                        "threadId": agent.thread_id().await,
+                        "effectiveModel": model,
+                        "effectiveModelReasoningEffort": effort,
+                        "activeAgentId": "codex",
+                        "contextMode": "fresh"
+                    }));
+                    Ok(PromptQueueRunOutcome::success())
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    let connection = self.options.db.connect()?;
+                    let _ = history.add(
+                        &connection,
+                        &entry.history_key,
+                        HistoryEntry {
+                            role: "status".to_string(),
+                            text: message.clone(),
+                            ts: ads_contract::time::now_unix_millis(),
+                            kind: Some("error".to_string()),
+                        },
+                    );
+                    context.emit(json!({
+                        "type": "error",
+                        "message": message,
+                        "errorInfo": {
+                            "code": "codex_app_server_error",
+                            "retryable": false,
+                            "needsReset": false
+                        }
+                    }));
+                    Ok(PromptQueueRunOutcome::failure(message))
+                }
+            }
+        })
+    }
+
+    fn abort_run(&self, entry: &PromptQueueEntry) {
+        if let Some(sender) = self
+            .active
+            .try_lock()
+            .ok()
+            .and_then(|active| active.get(&entry.id).cloned())
+        {
+            let _ = sender.send(true);
+        }
+    }
+}
+
+impl ScheduleExecutor for CodexAppServerPromptRunner {
+    fn execute<'a>(&'a self, input: SchedulerExecutionInput) -> ScheduleExecuteFuture<'a> {
+        Box::pin(async move {
+            self.run_schedule_prompt(
+                &input.workspace_root,
+                &input.owner,
+                &input.payload.external_id,
+                &input.prompt,
+            )
+            .await
+        })
+    }
+}
+
+impl CodexAppServerPromptRunner {
+    pub async fn run_schedule_prompt(
+        &self,
+        workspace_root: &str,
+        owner: &str,
+        history_key: &str,
+        prompt: &str,
+    ) -> Result<String, String> {
+        static SCHEDULE_ENTRY_ID: AtomicI64 = AtomicI64::new(-1);
+
+        let workspace_root = normalize_workspace_root(workspace_root);
+        let owner = {
+            let trimmed = owner.trim();
+            if trimmed.is_empty() {
+                "scheduler"
+            } else {
+                trimmed
+            }
+        };
+        let history_key = {
+            let trimmed = history_key.trim();
+            if trimmed.is_empty() {
+                format!("schedule-{}", uuid::Uuid::new_v4())
+            } else {
+                trimmed.to_string()
+            }
+        };
+        let now = ads_contract::time::now_unix_millis();
+        let mut payload = Map::new();
+        payload.insert("text".to_string(), Value::String(prompt.to_string()));
+        payload.insert("images".to_string(), Value::Array(Vec::new()));
+        if let Ok(model) = std::env::var("ADS_SCHEDULER_MODEL") {
+            let model = model.trim();
+            if !model.is_empty() {
+                payload.insert("model".to_string(), Value::String(model.to_string()));
+            }
+        }
+        let entry = PromptQueueEntry {
+            id: SCHEDULE_ENTRY_ID.fetch_sub(1, Ordering::SeqCst),
+            client_message_id: format!("scheduler:{}", uuid::Uuid::new_v4()),
+            auth_user_id: owner.to_string(),
+            user_id: hash_task_id(&history_key),
+            session_id: history_key.clone(),
+            chat_session_id: history_key.clone(),
+            history_key: history_key.clone(),
+            logical_history_key: history_key.clone(),
+            lane_namespace: "scheduler".to_string(),
+            lane_generation: 1,
+            workspace_root,
+            payload,
+            payload_hash: String::new(),
+            status: PromptQueueStatus::Running,
+            position: 0,
+            attempts: 1,
+            last_error: None,
+            created_at: now,
+            updated_at: now,
+            started_at: Some(now),
+            completed_at: None,
+        };
+
+        let output = Arc::new(StdMutex::new(String::new()));
+        let error_message = Arc::new(StdMutex::new(None::<String>));
+        let output_handle = Arc::clone(&output);
+        let error_handle = Arc::clone(&error_message);
+        let emit = Arc::new(
+            move |event: Value| match event.get("type").and_then(Value::as_str) {
+                Some("result") => {
+                    if let Some(text) = event.get("output").and_then(Value::as_str) {
+                        *output_handle.lock().expect("schedule output") = text.to_string();
+                    }
+                }
+                Some("error") => {
+                    if let Some(message) = event.get("message").and_then(Value::as_str) {
+                        *error_handle.lock().expect("schedule error") = Some(message.to_string());
+                    }
+                }
+                _ => {}
+            },
+        );
+        let outcome = self
+            .run_prompt(entry, PromptRunContext::new(emit))
+            .await
+            .map_err(|error| error.to_string())?;
+        if outcome.ok {
+            return Ok(output.lock().expect("schedule output").clone());
+        }
+        Err(error_message
+            .lock()
+            .expect("schedule error")
+            .clone()
+            .or(outcome.error)
+            .unwrap_or_else(|| "Scheduled prompt failed".to_string()))
+    }
+}
+
+fn prompt_text(payload: &Map<String, Value>) -> Option<String> {
+    payload
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn agent_key(entry: &PromptQueueEntry, model: Option<&str>, effort: Option<&str>) -> String {
+    format!(
+        "{}::{}::{}::{}",
+        entry.logical_history_key,
+        entry.workspace_root,
+        model.unwrap_or_default(),
+        effort.unwrap_or_default()
+    )
+}
+
+fn hash_task_id(task_id: &str) -> i64 {
+    let normalized = task_id.trim();
+    if normalized.is_empty() {
+        return 0;
+    }
+    let compact = normalized.replace('-', "");
+    let hex = compact.chars().take(8).collect::<String>();
+    if let Ok(parsed) = u32::from_str_radix(&hex, 16) {
+        return i64::from(parsed);
+    }
+    let mut hash: u32 = 2_166_136_261;
+    for byte in normalized.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    i64::from(hash)
+}
+
+fn load_thread_id(db: &StateDb, key: &str) -> ads_state::StateResult<Option<String>> {
+    let connection = db.connect()?;
+    connection
+        .query_row(
+            "SELECT value FROM kv_state WHERE namespace = ?1 AND key = ?2",
+            params![CODEX_THREAD_NAMESPACE, key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(StateError::from)
+}
+
+fn save_thread_id(db: &StateDb, key: &str, thread_id: &str) -> ads_state::StateResult<()> {
+    let connection = db.connect()?;
+    connection.execute(
+        "INSERT INTO kv_state (namespace, key, value, updated_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(namespace, key) DO UPDATE SET
+           value = excluded.value,
+           updated_at = excluded.updated_at",
+        params![
+            CODEX_THREAD_NAMESPACE,
+            key,
+            thread_id,
+            ads_contract::time::now_unix_millis()
+        ],
+    )?;
+    Ok(())
+}
+
+struct PreparedImages {
+    parts: Vec<AgentInputPart>,
+    temp_files: TempImageFiles,
+}
+
+#[derive(Default)]
+struct TempImageFiles(Vec<PathBuf>);
+
+impl Drop for TempImageFiles {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn local_images(
+    payload: &Map<String, Value>,
+    workspace_root: &str,
+) -> ads_state::StateResult<PreparedImages> {
+    let mut prepared = PreparedImages {
+        parts: Vec::new(),
+        temp_files: TempImageFiles::default(),
+    };
+    let Some(images) = payload.get("images") else {
+        return Ok(prepared);
+    };
+    let Value::Array(images) = images else {
+        if images.is_null() {
+            return Ok(prepared);
+        }
+        return Err(StateError::InvalidInput(
+            "images must be an array".to_string(),
+        ));
+    };
+    for image in images {
+        let record = image
+            .as_object()
+            .ok_or_else(|| StateError::InvalidInput("invalid image payload".to_string()))?;
+        if let Some(path) = record
+            .get("path")
+            .or_else(|| record.get("localPath"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            prepared.parts.push(AgentInputPart::local_image(path));
+            continue;
+        }
+        let data = record
+            .get("data")
+            .and_then(Value::as_str)
+            .ok_or_else(|| StateError::InvalidInput("图片缺少数据".to_string()))?;
+        let mime = record.get("mime").and_then(Value::as_str).unwrap_or("");
+        if !mime.is_empty() && !is_allowed_image_mime(mime) {
+            return Err(StateError::InvalidInput(format!(
+                "不支持的图片类型: {mime}"
+            )));
+        }
+        let encoded = data
+            .rsplit_once(',')
+            .map(|(_, value)| value)
+            .unwrap_or(data)
+            .split_ascii_whitespace()
+            .collect::<String>();
+        let bytes = STANDARD
+            .decode(encoded)
+            .map_err(|_| StateError::InvalidInput("图片数据无效".to_string()))?;
+        if bytes.is_empty() {
+            return Err(StateError::InvalidInput("图片内容为空".to_string()));
+        }
+        if bytes.len() > 25 * 1024 * 1024 {
+            return Err(StateError::InvalidInput(format!(
+                "图片超过 25MB 限制 ({}KB)",
+                bytes.len().div_ceil(1024)
+            )));
+        }
+        let name = record.get("name").and_then(Value::as_str);
+        let extension = resolve_image_extension(name, mime);
+        let filename = format!(
+            "{}{extension}",
+            &uuid::Uuid::new_v4().simple().to_string()[..16]
+        );
+        let path =
+            ads_state::workspace_state_path(workspace_root, &format!("temp/web-images/{filename}"));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, bytes)?;
+        prepared.temp_files.0.push(path.clone());
+        prepared.parts.push(AgentInputPart::local_image(
+            path.to_string_lossy().to_string(),
+        ));
+    }
+    Ok(prepared)
+}
+
+fn is_allowed_image_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/jpeg" | "image/png" | "image/gif" | "image/webp" | "image/bmp" | "image/svg+xml"
+    )
+}
+
+fn resolve_image_extension(name: Option<&str>, mime: &str) -> String {
+    if let Some(extension) = name
+        .map(Path::new)
+        .and_then(Path::extension)
+        .and_then(|value| value.to_str())
+        .map(|value| format!(".{}", value.to_ascii_lowercase()))
+        .filter(|value| value.len() > 1)
+    {
+        return extension;
+    }
+    match mime {
+        "image/jpeg" => ".jpg",
+        "image/png" => ".png",
+        "image/gif" => ".gif",
+        "image/webp" => ".webp",
+        "image/bmp" => ".bmp",
+        "image/svg+xml" => ".svg",
+        _ => ".jpg",
+    }
+    .to_string()
+}
+
+fn build_history_text(text: &str, image_count: usize) -> String {
+    let mut lines = Vec::new();
+    if !text.is_empty() {
+        lines.push(text.to_string());
+    }
+    if image_count > 0 && (text.is_empty() || !text.contains("/api/attachments/")) {
+        lines.push(format!("Images: {image_count}"));
+    }
+    lines.join("\n")
+}
+
+fn has_persisted_prompt(entries: &[HistoryEntry], client_message_id: &str) -> bool {
+    entries.iter().any(|entry| {
+        entry.role == "user"
+            && history_client_message_id(entry.kind.as_deref()) == client_message_id
+    })
+}
+
+fn emit_agent_event(context: &PromptRunContext, event: &AgentEvent) {
+    match event.phase.as_str() {
+        "responding" if event.delta.is_some() => {
+            let item_id = event
+                .raw
+                .get("itemId")
+                .and_then(Value::as_str)
+                .unwrap_or("codex-message");
+            context.emit(json!({
+                "type": "delta",
+                "delta": event.delta,
+                "assistantItemId": item_id,
+                "ts": event.timestamp
+            }));
+        }
+        "command" => {
+            if let Some(command) = event.raw.get("item") {
+                context.emit(json!({
+                    "type": "command",
+                    "command": command,
+                    "ts": event.timestamp
+                }));
+            }
+        }
+        _ => {}
+    }
+}
