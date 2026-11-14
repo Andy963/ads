@@ -24,6 +24,7 @@ use tokio::sync::{Mutex, watch};
 use crate::{
     AgentActionTools, AgentEvent, AgentInputPart, AgentSendOptions, CodexAppServerAgent,
     CodexAppServerAgentOptions, CodexAppServerDaemonRegistry, SandboxMode, SpawnOptions,
+    provider_injection::resolve_codex_model_selection,
 };
 
 pub type CodexActionToolsFactory =
@@ -81,22 +82,28 @@ impl CodexAppServerPromptRunner {
         entry: &PromptQueueEntry,
         model: Option<&str>,
         effort: Option<&str>,
-    ) -> ads_state::StateResult<CodexAppServerAgent> {
-        let key = agent_key(entry, model, effort);
+    ) -> ads_state::StateResult<(CodexAppServerAgent, String)> {
+        let selection = resolve_codex_model_selection(
+            &self.options.db,
+            &entry.auth_user_id,
+            model,
+            self.options.daemon_options.clone(),
+        )?;
+        let key = agent_key(entry, &selection.model_key, effort);
         if let Some(agent) = self.agents.lock().await.get(&key).cloned() {
-            return Ok(agent);
+            return Ok((agent, key));
         }
         let agent = CodexAppServerAgent::new(CodexAppServerAgentOptions {
             project_id: ads_state::derive_project_session_id(&entry.workspace_root),
             workspace_root: entry.workspace_root.clone().into(),
             working_directory: Some(entry.workspace_root.clone().into()),
-            model: model.map(str::to_string),
+            model: selection.model,
             resume_thread_id: None,
             reasoning_effort: effort.unwrap_or("high").to_string(),
             sandbox_mode: SandboxMode::WorkspaceWrite,
             developer_instructions: None,
             dynamic_tools: Vec::new(),
-            daemon_options: self.options.daemon_options.clone(),
+            daemon_options: selection.daemon_options,
             registry: Some(Arc::clone(&self.registry)),
             turn_timeout: Some(Duration::from_secs(1_800)),
             auto_compact: Default::default(),
@@ -105,8 +112,8 @@ impl CodexAppServerPromptRunner {
         if let Some(thread_id) = load_thread_id(&self.options.db, &key)? {
             agent.restore_thread(&thread_id, true).await;
         }
-        self.agents.lock().await.insert(key, agent.clone());
-        Ok(agent)
+        self.agents.lock().await.insert(key.clone(), agent.clone());
+        Ok((agent, key))
     }
 }
 
@@ -175,7 +182,7 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty());
-            let agent = self.agent_for(&entry, model, effort).await?;
+            let (agent, agent_key) = self.agent_for(&entry, model, effort).await?;
             let event_context = context.clone();
             let event_subscription = agent.on_event(move |event| {
                 emit_agent_event(&event_context, &event);
@@ -241,11 +248,7 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                         );
                     }
                     if let Some(thread_id) = agent.thread_id().await {
-                        save_thread_id(
-                            &self.options.db,
-                            &agent_key(&entry, model, effort),
-                            &thread_id,
-                        )?;
+                        save_thread_id(&self.options.db, &agent_key, &thread_id)?;
                     }
                     context.emit(json!({
                         "type": "result",
@@ -419,12 +422,12 @@ fn prompt_text(payload: &Map<String, Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn agent_key(entry: &PromptQueueEntry, model: Option<&str>, effort: Option<&str>) -> String {
+fn agent_key(entry: &PromptQueueEntry, model_key: &str, effort: Option<&str>) -> String {
     format!(
         "{}::{}::{}::{}",
         entry.logical_history_key,
         entry.workspace_root,
-        model.unwrap_or_default(),
+        model_key,
         effort.unwrap_or_default()
     )
 }

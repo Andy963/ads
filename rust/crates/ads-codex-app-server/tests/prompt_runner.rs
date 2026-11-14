@@ -450,3 +450,174 @@ async fn executes_skill_tool_directives_for_codex_prompts() {
     assert!(memory.contains("codex memory"));
     assert!(log_path.exists());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn resolves_selected_model_provider_and_injects_codex_options() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
+
+    use ads_codex_app_server::{
+        CodexAppServerPromptRunner, CodexAppServerPromptRunnerOptions, SpawnOptions,
+    };
+    use ads_contract::models::{ModelConfig, ModelProvider};
+    use ads_runtime::{PromptQueueRunner, PromptRunContext};
+    use ads_state::{
+        EnqueuePromptInput, PromptQueueLane, PromptQueueStore, StateDb, UpstreamCredentialStore,
+        UpstreamCredentials, upsert_model_config, upsert_model_provider,
+    };
+    use serde_json::{Value, json};
+    use tempfile::tempdir;
+
+    let directory = tempdir().expect("temp dir");
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let rpc_log = directory.path().join("rpc.log");
+    let args_log = directory.path().join("args.log");
+    let key_log = directory.path().join("provider-key.txt");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/fixtures/fake-codex-app-server.mjs");
+    let wrapper = directory.path().join("fake-codex");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" > {:?}\nprintf '%s' \"$ADS_CODEX_PROVIDER_API_KEY\" > {:?}\nexec {:?} {:?} \"$@\"\n",
+            args_log,
+            key_log,
+            std::env::var("NODE_BINARY").unwrap_or_else(|_| "node".to_string()),
+            fixture,
+        ),
+    )
+    .expect("wrapper");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    {
+        let connection = db.connect().expect("connection");
+        upsert_model_provider(
+            &connection,
+            &ModelProvider {
+                id: "provider-1".to_string(),
+                name: "Provider One".to_string(),
+                base_url: "https://provider.example/v1".to_string(),
+                credential_profile: None,
+                wire_api: Some("responses".to_string()),
+                is_enabled: true,
+                updated_at: None,
+            },
+            1,
+        )
+        .expect("provider");
+        let mut connection = connection;
+        upsert_model_config(
+            &mut connection,
+            &ModelConfig {
+                id: "model-config-1".to_string(),
+                model_id: "gpt-test".to_string(),
+                display_name: "GPT Test".to_string(),
+                provider: "cpa".to_string(),
+                provider_id: Some("provider-1".to_string()),
+                is_enabled: true,
+                is_default: false,
+                config_json: None,
+                updated_at: None,
+            },
+            1,
+        )
+        .expect("model config");
+        UpstreamCredentialStore::for_state_db(db.path())
+            .save(
+                &connection,
+                "user-1",
+                &UpstreamCredentials {
+                    base_url: "https://provider.example/v1".to_string(),
+                    provider: "cpa".to_string(),
+                    api_key: "secret-api-key".to_string(),
+                },
+                Some("provider-1"),
+            )
+            .expect("credentials");
+    }
+
+    let entry = {
+        let connection = db.connect().expect("connection");
+        PromptQueueStore::new(&connection)
+            .expect("queue store")
+            .enqueue(
+                EnqueuePromptInput {
+                    client_message_id: "prompt-provider".to_string(),
+                    lane: PromptQueueLane {
+                        auth_user_id: "user-1".to_string(),
+                        session_id: "session-1".to_string(),
+                        chat_session_id: "acopilot".to_string(),
+                        history_key: "user-1::session-1::acopilot".to_string(),
+                        logical_history_key: "user-1::session-1::acopilot".to_string(),
+                        lane_namespace: "web-acopilot".to_string(),
+                        lane_generation: 1,
+                    },
+                    user_id: 42,
+                    workspace_root: workspace.to_string_lossy().to_string(),
+                    payload: json!({
+                        "text": "provider probe",
+                        "model": "model-config-1",
+                        "images": []
+                    })
+                    .as_object()
+                    .expect("payload")
+                    .clone(),
+                    retry_failed: false,
+                    retry_original: false,
+                    created_at: Some(1),
+                },
+                ads_contract::time::now_unix_millis(),
+            )
+            .expect("enqueue")
+            .entry
+    };
+    let runner = CodexAppServerPromptRunner::new(CodexAppServerPromptRunnerOptions {
+        db: db.clone(),
+        daemon_options: SpawnOptions {
+            binary: wrapper.to_string_lossy().to_string(),
+            env: [
+                (
+                    "ADS_APP_SERVER_PROBE_LOG".to_string(),
+                    rpc_log.to_string_lossy().to_string(),
+                ),
+                ("ADS_APP_SERVER_PROBE_SIMPLE".to_string(), "1".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+            ..SpawnOptions::default()
+        },
+        history_max_entries_per_session: 1_000,
+        history_max_text_length: 100_000,
+        action_tools_factory: None,
+    });
+
+    let outcome = runner
+        .run_prompt(entry, PromptRunContext::new(Arc::new(|_| {})))
+        .await
+        .expect("prompt run");
+    assert_eq!(outcome, ads_runtime::PromptQueueRunOutcome::success());
+
+    let app_server_args = std::fs::read_to_string(args_log).expect("app-server args");
+    assert!(app_server_args.contains("model_providers.ads-provider-1.name=\"Provider One\""));
+    assert!(
+        app_server_args
+            .contains("model_providers.ads-provider-1.base_url=\"https://provider.example/v1\"")
+    );
+    assert!(app_server_args.contains("model_provider=\"ads-provider-1\""));
+    assert_eq!(
+        std::fs::read_to_string(key_log).expect("provider key"),
+        "secret-api-key"
+    );
+
+    let transcript = std::fs::read_to_string(rpc_log).expect("rpc log");
+    let turn_model = transcript
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|message| message["direction"] == "inbound" && message["method"] == "turn/start")
+        .and_then(|message| message["params"]["model"].as_str().map(str::to_string))
+        .expect("turn model");
+    assert_eq!(turn_model, "gpt-test");
+}
