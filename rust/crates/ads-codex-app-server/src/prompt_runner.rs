@@ -184,8 +184,9 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                 .filter(|value| !value.is_empty());
             let (agent, agent_key) = self.agent_for(&entry, model, effort).await?;
             let event_context = context.clone();
+            let streamed_assistant_text = Arc::new(StdMutex::new(HashMap::<String, String>::new()));
             let event_subscription = agent.on_event(move |event| {
-                emit_agent_event(&event_context, &event);
+                emit_agent_event(&event_context, &streamed_assistant_text, &event);
             });
             let (abort_tx, abort_rx) = watch::channel(false);
             self.active.lock().await.insert(entry.id, abort_tx);
@@ -624,17 +625,36 @@ fn has_persisted_prompt(entries: &[HistoryEntry], client_message_id: &str) -> bo
     })
 }
 
-fn emit_agent_event(context: &PromptRunContext, event: &AgentEvent) {
+fn emit_agent_event(
+    context: &PromptRunContext,
+    streamed_assistant_text: &StdMutex<HashMap<String, String>>,
+    event: &AgentEvent,
+) {
     match event.phase.as_str() {
-        "responding" if event.delta.is_some() => {
+        "responding" if let Some(next) = event.delta.as_deref() => {
             let item_id = event
                 .raw
                 .get("itemId")
                 .and_then(Value::as_str)
                 .unwrap_or("codex-message");
+            let delta = {
+                let mut streamed = streamed_assistant_text
+                    .lock()
+                    .expect("assistant stream lock");
+                let previous = streamed.get(item_id).map(String::as_str).unwrap_or("");
+                if !previous.is_empty() && !next.starts_with(previous) {
+                    return;
+                }
+                let delta = next.strip_prefix(previous).unwrap_or(next).to_string();
+                streamed.insert(item_id.to_string(), next.to_string());
+                delta
+            };
+            if delta.is_empty() {
+                return;
+            }
             context.emit(json!({
                 "type": "delta",
-                "delta": event.delta,
+                "delta": delta,
                 "assistantItemId": item_id,
                 "ts": event.timestamp
             }));

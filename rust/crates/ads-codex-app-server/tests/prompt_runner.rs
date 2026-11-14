@@ -621,3 +621,119 @@ async fn resolves_selected_model_provider_and_injects_codex_options() {
         .expect("turn model");
     assert_eq!(turn_model, "gpt-test");
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn forwards_only_the_new_suffix_of_cumulative_assistant_text() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, Mutex};
+
+    use ads_codex_app_server::{
+        CodexAppServerPromptRunner, CodexAppServerPromptRunnerOptions, SpawnOptions,
+    };
+    use ads_runtime::{PromptQueueRunner, PromptRunContext};
+    use ads_state::{EnqueuePromptInput, PromptQueueLane, PromptQueueStore, StateDb};
+    use serde_json::{Value, json};
+    use tempfile::tempdir;
+
+    let directory = tempdir().expect("temp dir");
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir(&workspace).expect("workspace");
+    let log_path = directory.path().join("rpc.log");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/fixtures/fake-codex-app-server.mjs");
+    let wrapper = directory.path().join("fake-codex");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nexec {:?} {:?} \"$@\"\n",
+            std::env::var("NODE_BINARY").unwrap_or_else(|_| "node".to_string()),
+            fixture,
+        ),
+    )
+    .expect("wrapper");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let entry = {
+        let connection = db.connect().expect("connection");
+        PromptQueueStore::new(&connection)
+            .expect("queue store")
+            .enqueue(
+                EnqueuePromptInput {
+                    client_message_id: "cumulative-delta".to_string(),
+                    lane: PromptQueueLane {
+                        auth_user_id: "user-1".to_string(),
+                        session_id: "session-1".to_string(),
+                        chat_session_id: "acopilot".to_string(),
+                        history_key: "user-1::session-1::acopilot".to_string(),
+                        logical_history_key: "user-1::session-1::acopilot".to_string(),
+                        lane_namespace: "web-acopilot".to_string(),
+                        lane_generation: 1,
+                    },
+                    user_id: 42,
+                    workspace_root: workspace.to_string_lossy().to_string(),
+                    payload: json!({"text": "stream probe", "images": []})
+                        .as_object()
+                        .expect("payload")
+                        .clone(),
+                    retry_failed: false,
+                    retry_original: false,
+                    created_at: Some(1),
+                },
+                ads_contract::time::now_unix_millis(),
+            )
+            .expect("enqueue")
+            .entry
+    };
+    let runner = CodexAppServerPromptRunner::new(CodexAppServerPromptRunnerOptions {
+        db: db.clone(),
+        daemon_options: SpawnOptions {
+            binary: wrapper.to_string_lossy().to_string(),
+            env: [
+                (
+                    "ADS_APP_SERVER_PROBE_LOG".to_string(),
+                    log_path.to_string_lossy().to_string(),
+                ),
+                ("ADS_APP_SERVER_PROBE_SIMPLE".to_string(), "1".to_string()),
+                (
+                    "ADS_APP_SERVER_PROBE_RESPONSE".to_string(),
+                    "我先核对".to_string(),
+                ),
+                (
+                    "ADS_APP_SERVER_PROBE_DELTA_PARTS".to_string(),
+                    r#"["我","先","核对"]"#.to_string(),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            ..SpawnOptions::default()
+        },
+        history_max_entries_per_session: 1_000,
+        history_max_text_length: 100_000,
+        action_tools_factory: None,
+    });
+
+    let events = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let event_log = Arc::clone(&events);
+    let outcome = runner
+        .run_prompt(
+            entry,
+            PromptRunContext::new(Arc::new(move |event| {
+                event_log.lock().expect("event log").push(event);
+            })),
+        )
+        .await
+        .expect("prompt run");
+    assert_eq!(outcome, ads_runtime::PromptQueueRunOutcome::success());
+
+    let deltas = events
+        .lock()
+        .expect("event log")
+        .iter()
+        .filter(|event| event["type"] == "delta")
+        .filter_map(|event| event["delta"].as_str().map(str::to_string))
+        .collect::<Vec<_>>();
+    assert_eq!(deltas, ["我", "先", "核对"]);
+    assert_eq!(deltas.concat(), "我先核对");
+}
