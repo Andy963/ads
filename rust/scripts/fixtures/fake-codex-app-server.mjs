@@ -42,6 +42,7 @@ function serverRequest(id, method, params) {
 }
 
 async function runTurn() {
+  if (process.env.ADS_APP_SERVER_PROBE_STALL === "1") return;
   const turn = String(++turnNumber);
   notify("thread/started", { thread: { id: "thread-1" } });
   notify("turn/started", { threadId: "thread-1", turn: { id: `turn-${turn}` } });
