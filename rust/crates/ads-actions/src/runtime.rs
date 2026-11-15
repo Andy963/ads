@@ -23,6 +23,11 @@ pub fn review_action_tools_factory(queue: Arc<ReviewQueue>) -> ActionToolsFactor
         let workspace_root = entry.workspace_root.clone();
         let lane_generation = entry.lane_generation;
         let chat_session_id = entry.chat_session_id.clone();
+        let automatic = entry
+            .payload
+            .get("origin")
+            .and_then(serde_json::Value::as_str)
+            == Some("system");
         Some(ActionTools::new(move || {
             let queue = Arc::clone(&queue);
             let project_id = project_id.clone();
@@ -43,6 +48,7 @@ pub fn review_action_tools_factory(queue: Arc<ReviewQueue>) -> ActionToolsFactor
                             pr_number: None,
                             lane_generation,
                             chat_session_id: Some(chat_session_id),
+                            automatic,
                         },
                         now_ms(),
                     )
