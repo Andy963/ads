@@ -13,8 +13,8 @@ use ads_runtime::scheduler::{
 use ads_runtime::{PromptQueueFuture, PromptQueueRunOutcome, PromptQueueRunner, PromptRunContext};
 use ads_state::{
     DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION, DEFAULT_HISTORY_MAX_TEXT_LENGTH, HistoryAddOutcome,
-    HistoryStore, PromptQueueEntry, PromptQueueStatus, StateDb, StateError,
-    build_client_message_history_kind, history_client_message_id,
+    HistoryStore, PromptExecutionMetadata, PromptQueueEntry, PromptQueueStatus, StateDb,
+    StateError, build_client_message_history_kind, history_client_message_id,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rusqlite::{OptionalExtension, params};
@@ -130,14 +130,35 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                 temp_files: _temp_files,
             } = images;
             let history = self.history(&entry.lane_namespace);
+            let history_kind = build_client_message_history_kind(
+                &entry.client_message_id,
+                Some(&PromptExecutionMetadata {
+                    agent_id: payload
+                        .get("agentId")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    model: payload
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    model_reasoning_effort: payload
+                        .get("modelReasoningEffort")
+                        .or_else(|| payload.get("model_reasoning_effort"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    origin: payload
+                        .get("origin")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    ..PromptExecutionMetadata::default()
+                }),
+            );
             {
                 let connection = self.options.db.connect()?;
                 if !has_persisted_prompt(
                     &history.get(&connection, &entry.history_key)?,
                     &entry.client_message_id,
                 ) {
-                    let history_kind =
-                        build_client_message_history_kind(&entry.client_message_id, None);
                     let outcome = history.add(
                         &connection,
                         &entry.history_key,
@@ -145,7 +166,7 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                             role: "user".to_string(),
                             text: history_text.clone(),
                             ts: entry.created_at.max(1),
-                            kind: Some(history_kind),
+                            kind: Some(history_kind.clone()),
                         },
                     )?;
                     if outcome == HistoryAddOutcome::Invalid {
@@ -154,14 +175,15 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                         ));
                     }
                 }
+                context.emit(json!({
+                    "type": "user",
+                    "clientMessageId": entry.client_message_id,
+                    "text": history_text,
+                    "ts": entry.created_at.max(1),
+                    "eventId": format!("user:{}", entry.client_message_id),
+                    "kind": history_kind,
+                }));
             }
-            context.emit(json!({
-                "type": "user",
-                "clientMessageId": entry.client_message_id,
-                "text": history_text,
-                "ts": entry.created_at.max(1),
-                "eventId": format!("user:{}", entry.client_message_id),
-            }));
             context.emit(json!({"type": "in_flight", "inFlight": true}));
 
             let model = payload

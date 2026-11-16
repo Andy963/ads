@@ -185,7 +185,7 @@ impl NativePromptRunner {
                     role: "user".to_string(),
                     text: history_text.clone(),
                     ts: entry_ts,
-                    kind: Some(history_kind),
+                    kind: Some(history_kind.clone()),
                 },
             )?;
             if outcome == HistoryAddOutcome::Invalid {
@@ -199,6 +199,7 @@ impl NativePromptRunner {
                 "text": history_text,
                 "ts": entry_ts,
                 "eventId": format!("user:{}", entry.client_message_id),
+                "kind": history_kind,
             }));
         }
         drop(connection);

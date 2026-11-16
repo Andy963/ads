@@ -128,12 +128,14 @@ pub fn build_router(auth: Arc<AuthService>, config: RouterConfig) -> Router {
             .websocket_hub
             .unwrap_or_else(|| Arc::new(WebSocketHub::new(WebSocketConfig::from_env()))),
         prompt_queue: None,
+        agent_messages: None,
         schedule_compiler: config.schedule_compiler,
         scheduler: config.scheduler,
         review_queue: config.review_queue,
     };
     if let Some(runner) = config.prompt_queue_runner {
-        start_prompt_queue(&mut state, runner);
+        start_prompt_queue(&mut state, Arc::clone(&runner));
+        start_agent_messages(&mut state, runner);
     }
     spawn_delta_flush_ticker(state.clone());
     let json_api = Router::new()
@@ -294,6 +296,20 @@ fn start_prompt_queue(state: &mut AppState, runner: Arc<dyn PromptQueueRunner>) 
             eprintln!("[ads-prompts] failed to start prompt queue: {error}");
         }
     });
+}
+
+fn start_agent_messages(state: &mut AppState, runner: Arc<dyn PromptQueueRunner>) {
+    let Some(prompt_queue) = state.prompt_queue.as_ref().cloned() else {
+        return;
+    };
+    let service = crate::AgentMessageService::new(
+        state.auth.db().clone(),
+        Arc::clone(&state.ws),
+        prompt_queue,
+        runner,
+    );
+    service.start();
+    state.agent_messages = Some(service);
 }
 
 fn process_is_alive(pid: i64) -> bool {

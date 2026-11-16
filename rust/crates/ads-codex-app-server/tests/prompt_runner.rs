@@ -51,6 +51,7 @@ async fn runs_a_queued_prompt_through_the_codex_app_server() {
                     workspace_root: workspace.to_string_lossy().to_string(),
                     payload: json!({
                         "text": "probe request",
+                        "origin": "agent",
                         "images": [{
                             "name": "probe.png",
                             "mime": "image/png",
@@ -101,7 +102,15 @@ async fn runs_a_queued_prompt_through_the_codex_app_server() {
 
     {
         let events = events.lock().expect("event lock");
-        assert!(events.iter().any(|event| event["type"] == "user"));
+        let user_event = events
+            .iter()
+            .find(|event| event["type"] == "user")
+            .expect("user event");
+        assert!(
+            user_event["kind"]
+                .as_str()
+                .is_some_and(|kind| kind.contains("origin=agent"))
+        );
         assert!(events.iter().any(|event| event["type"] == "in_flight"));
         assert!(
             events
@@ -113,7 +122,16 @@ async fn runs_a_queued_prompt_through_the_codex_app_server() {
     let history = HistoryStore::new("web-acopilot", 1_000, 100_000)
         .get(&connection, "user-1::session-1::acopilot")
         .expect("history");
-    assert!(history.iter().any(|entry| entry.role == "user"));
+    let user_history = history
+        .iter()
+        .find(|entry| entry.role == "user")
+        .expect("user history");
+    assert!(
+        user_history
+            .kind
+            .as_deref()
+            .is_some_and(|kind| kind.contains("origin=agent"))
+    );
     assert!(
         history
             .iter()

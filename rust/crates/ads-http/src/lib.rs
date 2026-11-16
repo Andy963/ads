@@ -1,3 +1,4 @@
+mod agent_messages;
 mod command;
 mod command_snapshot;
 pub mod cookies;
@@ -15,6 +16,10 @@ mod skills;
 mod state;
 mod task_notifications;
 
+pub use agent_messages::{
+    AgentMessageService, ReviewVerdictMessage, agent_message_snapshots,
+    enqueue_review_verdict_message,
+};
 pub use command::{
     AdsCommandOptions, CommandLineResult, run_ads_command_line, run_ads_command_line_with_options,
 };
@@ -33,7 +38,4 @@ pub use skills::{
 pub use state::AppState;
 pub use static_files::resolve_client_dir;
 pub use task_notifications::WebSocketScheduleNotifier;
-pub use ws::{
-    AcopilotWakeEvent, ActionsLaneMessage, WebSocketConfig, WebSocketHub, publish_acopilot_wake,
-    publish_actions_lane_message,
-};
+pub use ws::{ActionsLaneMessage, WebSocketConfig, WebSocketHub, publish_actions_lane_message};

@@ -277,6 +277,45 @@ async fn drains_one_lane_in_fifo_order_and_releases_ownership() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn agent_lane_reservation_serializes_user_prompts() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let runner = FakeRunner::new(Duration::from_millis(1));
+    let generation = Arc::new(AtomicI64::new(1));
+    let snapshots = Arc::new(Mutex::new(Vec::new()));
+    let service = service(
+        &db,
+        Arc::clone(&runner),
+        generation,
+        Arc::clone(&snapshots),
+        None,
+    );
+    service.start().await.expect("start");
+    let lane = lane(1);
+    assert!(service.try_reserve_lane(&lane));
+
+    let now = now_ms();
+    service
+        .enqueue(prompt_input("cm-after-agent", 1, "user prompt", now))
+        .expect("enqueue");
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(runner.calls().is_empty());
+    assert_eq!(
+        entry_status(&db, "cm-after-agent"),
+        Some(PromptQueueStatus::Queued)
+    );
+
+    service.release_reserved_lane(&lane);
+    wait_until(
+        || entry_status(&db, "cm-after-agent") == Some(PromptQueueStatus::Completed),
+        "queued user prompt after agent reservation",
+    )
+    .await;
+    assert_eq!(runner.calls(), vec!["cm-after-agent"]);
+    service.stop().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn generation_mismatch_fails_without_running_the_prompt() {
     let directory = tempdir().expect("temp dir");
     let db = StateDb::open(directory.path().join("state.db")).expect("state db");
@@ -381,6 +420,66 @@ async fn losing_the_ownership_lease_aborts_the_active_run() {
     )
     .await;
     gate.notify_waiters();
+    service.stop().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn transient_renewal_error_does_not_permanently_drop_ownership() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let runner = FakeRunner::new(Duration::ZERO);
+    let generation = Arc::new(AtomicI64::new(1));
+    let snapshots = Arc::new(Mutex::new(Vec::new()));
+    let errors = Arc::new(Mutex::new(Vec::new()));
+    let observed_errors = Arc::clone(&errors);
+    let service = PromptQueueService::new(PromptQueueServiceOptions {
+        store: db.clone(),
+        worker_id: "worker-1".to_string(),
+        owner_pid: Some(100),
+        is_owner_alive: None,
+        ownership_renewal_interval: Some(Duration::from_millis(10)),
+        resolve_current_generation: Arc::new(move |_entry| generation.load(Ordering::SeqCst)),
+        runner,
+        emit_snapshot: Arc::new(move |entry| {
+            snapshots.lock().expect("snapshots").push(entry);
+        }),
+        emit_event: Arc::new(|_, _| {}),
+        on_error: Some(Arc::new(move |error| {
+            observed_errors.lock().expect("renewal errors").push(error);
+        })),
+    });
+    service.start().await.expect("start");
+
+    let connection = db.connect().expect("connection");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_ownership_renewal
+             BEFORE UPDATE ON prompt_queue_ownership
+             BEGIN
+               SELECT RAISE(FAIL, 'transient renewal failure');
+             END;",
+        )
+        .expect("renewal failure trigger");
+
+    wait_until(
+        || {
+            errors
+                .lock()
+                .expect("renewal errors")
+                .iter()
+                .any(|error| error.contains("renewal delayed"))
+        },
+        "renewal failure reported",
+    )
+    .await;
+    assert!(
+        service.is_owner(),
+        "a transient SQLite error must not permanently drop ownership"
+    );
+
+    connection
+        .execute_batch("DROP TRIGGER fail_ownership_renewal;")
+        .expect("drop renewal failure trigger");
     service.stop().await;
 }
 

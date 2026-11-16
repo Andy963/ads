@@ -378,6 +378,10 @@ async fn processes_a_review_end_to_end() {
     let wakes = wakes.lock().expect("wakes");
     assert_eq!(wakes.len(), 1);
     assert_eq!(wakes[0].issue_id, 7);
+    assert_eq!(
+        wakes[0].issue_url.as_deref(),
+        Some("https://github.com/example/issues/7")
+    );
     assert_eq!(wakes[0].status.as_str(), "PASS");
 }
 

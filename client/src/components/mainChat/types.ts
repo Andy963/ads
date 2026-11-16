@@ -3,7 +3,7 @@ import type { ChatPatch, ChatPlan } from "../../app/controllerTypes";
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
-  kind: "text" | "command" | "execute" | "patch" | "error" | "plan" | "thought";
+  kind: "text" | "command" | "execute" | "patch" | "error" | "plan" | "thought" | "divider" | "agent_handoff";
   content: string;
   fullContent?: string;
   patch?: ChatPatch;
@@ -25,6 +25,24 @@ export type ChatMessage = {
     effectiveModel?: string;
     effectiveModelReasoningEffort?: string;
   };
+  agentHandoff?: AgentHandoff;
+};
+
+export type AgentHandoff = {
+  messageId: string;
+  status: "pending" | "running" | "delivered" | "failed" | "superseded" | "unknown";
+  fromLane?: string;
+  fromRole?: string;
+  toLane?: string;
+  toRole?: string;
+  issueId?: number;
+  issueTitle?: string;
+  issueUrl?: string;
+  prNumber?: number;
+  baseSha?: string;
+  headSha?: string;
+  correlationId?: string;
+  lastError?: string;
 };
 
 export type RenderMessage = ChatMessage & {

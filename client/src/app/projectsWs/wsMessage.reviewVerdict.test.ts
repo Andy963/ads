@@ -48,66 +48,93 @@ function setup(options: { preferenceLane?: "actions" | "acopilot" } = {}): {
   return { rt, handler, enqueuePrompt };
 }
 
-function wakeFrame(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function handoffFrame(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    type: "review_verdict_ready",
-    jobId: "job-1",
+    type: "agent_message",
+    messageId: "review-verdict:job-1",
+    kind: "review_verdict",
+    fromLane: "actions",
+    fromRole: "reviewer",
+    toLane: "acopilot",
+    toRole: "acopilot",
+    correlationId: "job-1",
     issueId: 613,
+    issueTitle: "Fix review handoff",
+    issueUrl: "https://github.com/Andy963/ads/issues/613",
     prNumber: 614,
-    status: "REJECT",
+    status: "pending",
+    baseSha: "aaa111",
     headSha: "cf1e4a7da50681226edf99caa383ff8c3c3aa089",
+    text: "Reviewer -> Acopilot handoff for Issue #613. Status: REJECT.",
+    updatedAt: Date.now(),
     ...overrides,
   };
 }
 
-describe("review_verdict_ready wake event", () => {
-  it("queues a follow-up turn that points at the Issue verdict comment", () => {
-    const { handler, enqueuePrompt } = setup();
-    handler(wakeFrame());
-
-    expect(enqueuePrompt).toHaveBeenCalledTimes(1);
-    const [prompt, images, rt, options] = enqueuePrompt.mock.calls[0]!;
-    expect(String(prompt)).toContain("Issue #613");
-    expect(String(prompt)).toContain("PR #614");
-    expect(String(prompt)).toContain("REJECT");
-    expect(String(prompt)).toContain("ads:review-verdict");
-    expect(String(prompt)).toContain("job-1");
-    expect(images).toEqual([]);
-    expect(rt).toBeTruthy();
-    expect(options).toEqual({ origin: "system" });
-  });
-
-  it("ignores a duplicate wake for the same job", () => {
-    const { handler, enqueuePrompt } = setup();
-    handler(wakeFrame());
-    handler(wakeFrame());
-    expect(enqueuePrompt).toHaveBeenCalledTimes(1);
-  });
-
-  it("shows a notice instead of interrupting a busy lane", () => {
+describe("Reviewer to Acopilot handoff events", () => {
+  it("renders a visible agent handoff without creating a user prompt", () => {
     const { rt, handler, enqueuePrompt } = setup();
-    rt.busy.value = true;
-    handler(wakeFrame({ status: "PASS" }));
-    expect(rt.laneStatus.value?.kind).toBe("info");
-    expect(String(rt.laneStatus.value?.message ?? "")).toContain("评审结论");
-    expect(enqueuePrompt).toHaveBeenCalledTimes(1);
+    handler(handoffFrame());
+
+    expect(enqueuePrompt).not.toHaveBeenCalled();
+    expect(rt.queuedPrompts.value).toEqual([]);
+    const card = rt.messages.value.find((message) => message.id === "review-verdict:job-1");
+    expect(card).toMatchObject({
+      role: "system",
+      kind: "agent_handoff",
+      agentHandoff: {
+        messageId: "review-verdict:job-1",
+        status: "pending",
+        issueId: 613,
+        prNumber: 614,
+        headSha: "cf1e4a7da50681226edf99caa383ff8c3c3aa089",
+      },
+    });
+    expect(rt.messages.value.some((message) => message.role === "user")).toBe(false);
   });
 
-  it("does not react in the Actions lane", () => {
+  it("updates one card across handoff lifecycle events", () => {
+    const { rt, handler } = setup();
+    handler(handoffFrame());
+    handler(handoffFrame({ status: "running", attempts: 1 }));
+    handler(handoffFrame({ status: "delivered", attempts: 1 }));
+
+    const cards = rt.messages.value.filter((message) => message.kind === "agent_handoff");
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.agentHandoff?.status).toBe("delivered");
+  });
+
+  it("restores handoffs from an authoritative snapshot", () => {
+    const { rt, handler } = setup();
+    handler({ type: "agent_message_snapshot", entries: [handoffFrame({ status: "failed", lastError: "model unavailable" })] });
+    expect(rt.messages.value.find((message) => message.kind === "agent_handoff")?.agentHandoff).toMatchObject({
+      status: "failed",
+      lastError: "model unavailable",
+    });
+  });
+
+  it("ignores handoffs in the Actions lane", () => {
     const { handler, enqueuePrompt } = setup({ preferenceLane: "actions" });
-    handler(wakeFrame());
+    handler(handoffFrame());
     expect(enqueuePrompt).not.toHaveBeenCalled();
   });
 
-  it("does not render an internal wake prompt as a user message", () => {
+  it("ignores the retired review_verdict_ready prompt source", () => {
+    const { handler, enqueuePrompt } = setup();
+    handler({ type: "review_verdict_ready", jobId: "job-legacy", issueId: 613, status: "PASS" });
+    expect(enqueuePrompt).not.toHaveBeenCalled();
+  });
+
+  it("renders an agent-origin history entry as a handoff instead of user input", () => {
     const { rt, handler } = setup();
     handler({
       type: "user",
-      clientMessageId: "p-system",
-      text: "Issue #613 review verdict",
+      clientMessageId: "review-verdict:job-1",
+      text: "Reviewer handoff",
       ts: Date.now(),
-      kind: "client_message_id:p-system;prompt_meta:origin=system",
+      kind: "client_message_id:review-verdict:job-1;prompt_meta:origin=agent",
     });
     expect(rt.messages.value.some((message) => message.role === "user")).toBe(false);
+    expect(rt.messages.value.some((message) => message.kind === "agent_handoff")).toBe(true);
   });
 });

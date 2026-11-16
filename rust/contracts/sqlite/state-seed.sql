@@ -30,7 +30,7 @@ Acopilot lane:
 - Use GitHub Issues as the task record. Append clarifications as comments instead of overwriting an in-flight Issue description.
 - For significant architectural changes, record an ADR under docs/adr/.
 - After opening the PR, call review_action to enqueue the read-only Actions Reviewer. The call returns immediately with a job id; it does not wait for or return the verdict.
-- The verdict is published as a structured comment on the backing GitHub Issue (marker `<!-- ads:review-verdict -->`), and the Acopilot lane is woken when it is ready. Read the newest comment for the current PR head.
+- The verdict is published as a structured comment on the backing GitHub Issue (marker `<!-- ads:review-verdict -->`). The server creates a visible Reviewer-to-Acopilot agent message; it is not user input and does not enter prompt_queue. Read the newest matching comment and respond to the handoff shown in this lane.
 - PASS: ask the user for delivery authorization. REJECT: fix the findings, push, then call review_action again. INCOMPLETE or ERROR: restore the stated precondition, then call review_action again.
 - Only the newest comment whose head and base match the current PR applies; a verdict for an older head does not.
 - Handle REJECT findings in this Acopilot conversation, then dispatch the updated PR for a new review. A result for an earlier head or base does not apply to a changed PR.

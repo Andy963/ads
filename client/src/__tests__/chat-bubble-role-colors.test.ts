@@ -103,4 +103,38 @@ describe("chat bubble role colors and geometry contract", () => {
 
     wrapper.unmount();
   });
+
+  it("renders a visible Reviewer to Acopilot handoff card", () => {
+    const messages = [{
+      id: "review-verdict:job-1",
+      role: "system",
+      kind: "agent_handoff",
+      content: "Read the Issue verdict and handle the findings.",
+      agentHandoff: {
+        messageId: "review-verdict:job-1",
+        status: "delivered",
+        issueId: 648,
+        issueTitle: "Model review verdict wake as a durable agent message",
+        issueUrl: "https://github.com/Andy963/ads/issues/648",
+        prNumber: 649,
+        baseSha: "aaa111bbb222",
+        headSha: "ccc333ddd444",
+      },
+      ts: 300,
+    }];
+
+    const wrapper = mountMessageList(messages);
+    const card = wrapper.get('[data-testid="agent-handoff-card"]');
+    expect(card.attributes("data-status")).toBe("delivered");
+    expect(card.text()).toContain("Reviewer");
+    expect(card.text()).toContain("Acopilot");
+    expect(card.text()).toContain("Issue #648");
+    expect(card.text()).toContain("PR #649");
+    expect(card.text()).toContain("已交付");
+    expect(card.text()).toContain("head ccc333ddd444");
+    expect(card.get(".agentHandoffTitle a").attributes("href")).toBe(
+      "https://github.com/Andy963/ads/issues/648",
+    );
+    wrapper.unmount();
+  });
 });

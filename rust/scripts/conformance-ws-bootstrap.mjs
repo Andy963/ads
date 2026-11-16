@@ -2,7 +2,6 @@
  * Black-box WebSocket conformance for the Rust /ws handshake, bootstrap,
  * resume replay, authentication and Origin boundaries.
  */
-import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
@@ -122,7 +121,7 @@ async function withConnection(baseUrl, options, fn) {
   }
 }
 
-function authUserId(pair, side, cookie) {
+function authUserId(pair, side, _cookie) {
   const stateDir = side === "node" ? pair.nodeStateDir : pair.rustStateDir;
   const db = new Database(path.join(stateDir, "state.db"), { readonly: true });
   try {

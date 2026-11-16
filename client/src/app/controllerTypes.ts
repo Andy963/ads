@@ -137,7 +137,7 @@ export type ChatItem = {
   providerCommandId?: string;
   id: string;
   role: "user" | "assistant" | "system";
-  kind: "text" | "command" | "execute" | "patch" | "error" | "plan" | "thought" | "divider";
+  kind: "text" | "command" | "execute" | "patch" | "error" | "plan" | "thought" | "divider" | "agent_handoff";
   content: string;
   fullContent?: string;
   patch?: ChatPatch;
@@ -154,6 +154,22 @@ export type ChatItem = {
   ts?: number;
   streaming?: boolean;
   execution?: ChatExecutionContext;
+  agentHandoff?: {
+    messageId: string;
+    status: "pending" | "running" | "delivered" | "failed" | "superseded" | "unknown";
+    fromLane?: string;
+    fromRole?: string;
+    toLane?: string;
+    toRole?: string;
+    issueId?: number;
+    issueTitle?: string;
+    issueUrl?: string;
+    prNumber?: number;
+    baseSha?: string;
+    headSha?: string;
+    correlationId?: string;
+    lastError?: string;
+  };
 };
 
 export type ExecutePreviewState = {

@@ -687,7 +687,7 @@ impl WebSocketHub {
         sent
     }
 
-    fn broadcast_lane_frame(
+    pub(crate) fn broadcast_lane_frame(
         &self,
         auth_user_id: &str,
         session_id: &str,
@@ -1438,7 +1438,7 @@ async fn send_bootstrap_frames(
     }
     if let Some(lane) = prompt_queue_lane {
         let entries = load_prompt_queue_entries(state, lane).await;
-        return send_json(
+        if !send_json(
             socket,
             json!({
                 "type": "prompt_queue_snapshot",
@@ -1449,7 +1449,27 @@ async fn send_bootstrap_frames(
                     .collect::<Vec<_>>(),
             }),
         )
-        .await;
+        .await
+        {
+            return false;
+        }
+        if lane.chat_session_id == ACOPILOT_CHAT_SESSION_ID
+            && !send_json(
+                socket,
+                json!({
+                    "type": "agent_message_snapshot",
+                    "entries": crate::agent_message_snapshots(
+                        state.auth.db(),
+                        &lane.auth_user_id,
+                        &lane.session_id,
+                        lane.generation,
+                    ),
+                }),
+            )
+            .await
+        {
+            return false;
+        }
     }
     true
 }
@@ -1462,6 +1482,10 @@ fn bootstrap_in_flight(state: &AppState, lane: Option<&LaneBinding>) -> bool {
         .prompt_queue
         .as_ref()
         .is_some_and(|service| service.is_lane_active(&lane.history_key))
+        || state
+            .agent_messages
+            .as_ref()
+            .is_some_and(|service| service.is_lane_active(&lane.history_key))
 }
 
 async fn load_prompt_queue_entries(state: &AppState, lane: &LaneBinding) -> Vec<PromptQueueEntry> {
@@ -1624,6 +1648,15 @@ pub(crate) fn emit_prompt_queue_snapshot(state: &AppState, fallback: &PromptQueu
 }
 
 pub(crate) fn emit_prompt_event(state: &AppState, entry: &PromptQueueEntry, payload: Value) {
+    emit_prompt_event_with(state.auth.db(), &state.ws, entry, payload);
+}
+
+pub(crate) fn emit_prompt_event_with(
+    db: &ads_state::StateDb,
+    ws: &WebSocketHub,
+    entry: &PromptQueueEntry,
+    payload: Value,
+) {
     let mut framed = project_command_frame(payload);
     let event_type = framed
         .as_object()
@@ -1633,24 +1666,18 @@ pub(crate) fn emit_prompt_event(state: &AppState, entry: &PromptQueueEntry, payl
         .unwrap_or("")
         .to_string();
     if event_type == "delta" {
-        attach_delta_snapshot(state, entry, &mut framed);
+        attach_delta_snapshot(db, ws, entry, &mut framed);
     } else if event_type == "command" || event_type == "phase_complete" {
-        state
-            .ws
-            .delta_coalescer(&entry.lane_namespace, &entry.history_key)
-            .finish_phase(state.auth.db());
+        ws.delta_coalescer(&entry.lane_namespace, &entry.history_key)
+            .finish_phase(db);
     } else if event_type == "result" || event_type == "error" {
-        state
-            .ws
-            .delta_coalescer(&entry.lane_namespace, &entry.history_key)
-            .finish(state.auth.db());
-        state
-            .ws
-            .command_coalescer(&entry.lane_namespace, &entry.history_key)
-            .finish(state.auth.db());
+        ws.delta_coalescer(&entry.lane_namespace, &entry.history_key)
+            .finish(db);
+        ws.command_coalescer(&entry.lane_namespace, &entry.history_key)
+            .finish(db);
     }
     if event_type == "command" {
-        attach_command_snapshot(state, entry, &mut framed);
+        attach_command_snapshot(db, ws, entry, &mut framed);
     }
     if !event_type.is_empty()
         && !ads_state::TRANSIENT_SYNC_EVENT_TYPES.contains(&event_type.as_str())
@@ -1666,7 +1693,7 @@ pub(crate) fn emit_prompt_event(state: &AppState, entry: &PromptQueueEntry, payl
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
-        let seq = state.auth.db().connect().ok().and_then(|mut connection| {
+        let seq = db.connect().ok().and_then(|mut connection| {
             let store = SyncEventStore::default();
             let ts = ads_contract::time::now_unix_millis();
             let result = if event_type == "prompt_queue" {
@@ -1714,7 +1741,7 @@ pub(crate) fn emit_prompt_event(state: &AppState, entry: &PromptQueueEntry, payl
             }
         }
     }
-    state.ws.broadcast_lane_frame(
+    ws.broadcast_lane_frame(
         &entry.auth_user_id,
         &entry.session_id,
         &entry.chat_session_id,
@@ -1827,76 +1854,6 @@ pub fn publish_actions_lane_message(
     Ok(())
 }
 
-pub struct AcopilotWakeEvent<'a> {
-    pub auth_user_id: &'a str,
-    pub project_id: &'a str,
-    pub issue_id: i64,
-    pub pr_number: Option<i64>,
-    pub status: &'a str,
-    pub job_id: &'a str,
-    pub head_sha: Option<&'a str>,
-}
-
-pub fn publish_acopilot_wake(
-    db: &StateDb,
-    hub: &WebSocketHub,
-    wake: &AcopilotWakeEvent<'_>,
-) -> Result<(), String> {
-    let auth_user_id = wake.auth_user_id.trim();
-    let project_id = wake.project_id.trim();
-    let job_id = wake.job_id.trim();
-    if auth_user_id.is_empty() || project_id.is_empty() || job_id.is_empty() || wake.issue_id < 1 {
-        return Err("refusing unscoped Acopilot wake event".to_string());
-    }
-    let mut connection = db.connect().map_err(|error| error.to_string())?;
-    let logical_key = logical_history_key(auth_user_id, project_id, ACOPILOT_CHAT_SESSION_ID);
-    let now = ads_contract::time::now_unix_millis();
-    let generation = get_lane_generation(&mut connection, ACOPILOT_NAMESPACE, &logical_key, now)
-        .map_err(|error| error.to_string())?;
-    let history_key = history_key_for_generation(&logical_key, generation);
-    let event_id = format!("review_verdict_ready:{job_id}");
-    let payload = json!({
-        "type": "review_verdict_ready",
-        "eventId": event_id,
-        "ts": now,
-        "projectId": project_id,
-        "issueId": wake.issue_id,
-        "prNumber": wake.pr_number,
-        "status": wake.status,
-        "jobId": job_id,
-        "headSha": wake.head_sha,
-    });
-    let seq = SyncEventStore::default()
-        .append(
-            &mut connection,
-            AppendSyncEvent {
-                namespace: ACOPILOT_NAMESPACE,
-                lane_key: &history_key,
-                event_type: "review_verdict_ready",
-                event_id: Some(&event_id),
-                revision: None,
-                payload: &payload,
-                ts: Some(now),
-                run_id: None,
-            },
-        )
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "failed to persist Acopilot wake event".to_string())?;
-    let mut framed = payload;
-    if let Some(record) = framed.as_object_mut() {
-        record.insert("seq".to_string(), json!(seq));
-    }
-    hub.broadcast_lane_frame(
-        auth_user_id,
-        project_id,
-        ACOPILOT_CHAT_SESSION_ID,
-        &logical_key,
-        generation,
-        &framed,
-    );
-    Ok(())
-}
-
 fn prompt_queue_cancelled_payload(
     state: &AppState,
     lane: &LaneBinding,
@@ -1950,7 +1907,12 @@ fn prompt_queue_cancelled_payload(
     payload
 }
 
-fn attach_command_snapshot(state: &AppState, entry: &PromptQueueEntry, framed: &mut Value) {
+fn attach_command_snapshot(
+    db: &ads_state::StateDb,
+    ws: &WebSocketHub,
+    entry: &PromptQueueEntry,
+    framed: &mut Value,
+) {
     let Some(record) = framed.as_object_mut() else {
         return;
     };
@@ -1959,10 +1921,9 @@ fn attach_command_snapshot(state: &AppState, entry: &PromptQueueEntry, framed: &
     };
     let command = record.get("command").cloned().unwrap_or(Value::Null);
     let ts = record.get("ts").and_then(Value::as_i64).unwrap_or(0);
-    let position = state
-        .ws
+    let position = ws
         .command_coalescer(&entry.lane_namespace, &entry.history_key)
-        .record(state.auth.db(), ts, &command);
+        .record(db, ts, &command);
     let Some(position) = position else {
         return;
     };
@@ -1976,7 +1937,12 @@ fn attach_command_snapshot(state: &AppState, entry: &PromptQueueEntry, framed: &
     }
 }
 
-fn attach_delta_snapshot(state: &AppState, entry: &PromptQueueEntry, framed: &mut Value) {
+fn attach_delta_snapshot(
+    db: &ads_state::StateDb,
+    ws: &WebSocketHub,
+    entry: &PromptQueueEntry,
+    framed: &mut Value,
+) {
     let Some(record) = framed.as_object_mut() else {
         return;
     };
@@ -1998,10 +1964,7 @@ fn attach_delta_snapshot(state: &AppState, entry: &PromptQueueEntry, framed: &mu
         record.get("clientMessageId").and_then(Value::as_str),
         record.get("assistantItemId").and_then(Value::as_str),
     );
-    let db = state.auth.db();
-    let coalescer = state
-        .ws
-        .delta_coalescer(&entry.lane_namespace, &entry.history_key);
+    let coalescer = ws.delta_coalescer(&entry.lane_namespace, &entry.history_key);
     let position = coalescer.append_delta(db, &delta, ts, Some(identity));
     if let Some(position) = position {
         record.insert("streamId".to_string(), json!(position.stream_id));
@@ -4655,49 +4618,6 @@ mod tests {
             .events;
         assert_eq!(replay.len(), 1);
         assert_eq!(replay[0].event_type, "message");
-    }
-
-    #[test]
-    fn publishes_acopilot_wakes_as_replayable_lane_frames() {
-        let (db, _directory) = test_state();
-        let hub = WebSocketHub::new(WebSocketConfig::default());
-        let mut receiver = register_hub_lane(&hub, "user-1", "project-1", "acopilot", 1);
-        publish_acopilot_wake(
-            &db,
-            &hub,
-            &AcopilotWakeEvent {
-                auth_user_id: "user-1",
-                project_id: "project-1",
-                issue_id: 7,
-                pr_number: Some(12),
-                status: "PASS",
-                job_id: "job-1",
-                head_sha: Some("abc"),
-            },
-        )
-        .expect("publish wake");
-
-        let ControlEvent::Frame(frame) = receiver.try_recv().expect("frame") else {
-            panic!("expected a frame");
-        };
-        assert_eq!(frame["type"], "review_verdict_ready");
-        assert_eq!(frame["issueId"], 7);
-        assert_eq!(frame["status"], "PASS");
-        assert!(frame["seq"].as_i64().unwrap_or_default() > 0);
-
-        let connection = db.connect().expect("connection");
-        let replay = SyncEventStore::default()
-            .read_after(
-                &connection,
-                ACOPILOT_NAMESPACE,
-                "user-1::project-1::acopilot",
-                None,
-                None,
-            )
-            .expect("replay")
-            .events;
-        assert_eq!(replay.len(), 1);
-        assert_eq!(replay[0].event_type, "review_verdict_ready");
     }
 
     #[test]

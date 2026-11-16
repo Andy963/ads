@@ -10,7 +10,8 @@ use crate::{StateError, StateResult, column_exists, table_exists};
 
 const RETIRED_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION: &str = "- Before changing files or branches for an Issue, call begin_implementation with its issue_id. After opening the PR, call review_action to enqueue a pinned review in the Actions lane; the Actions lane runs only the read-only Reviewer, records PASS or REJECT in its queue and conversation, and returns the structured result to Acopilot.";
 const RETIRED_CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION: &str = "- Before changing files or branches for an Issue, validate that it owns the workspace task slot. When the dynamic begin_implementation tool is available, call it with the Issue id. If the current execution environment does not expose that tool, perform equivalent read-only checks of the branch, working tree, and open pull requests. The tool's absence alone is not a blocker. After opening the PR, call review_action to enqueue a pinned review in the Actions lane; the Actions lane runs only the read-only Reviewer, records PASS or REJECT in its queue and conversation, and returns the structured result to Acopilot.";
-const REVIEW_ACTION_INSTRUCTION: &str = "- After opening the PR, call review_action to enqueue the read-only Actions Reviewer. The call returns immediately with a job id; it does not wait for or return the verdict.\n- The verdict is published as a structured comment on the backing GitHub Issue (marker `<!-- ads:review-verdict -->`), and the Acopilot lane is woken when it is ready. Read the newest comment for the current PR head.\n- PASS: ask the user for delivery authorization. REJECT: fix the findings, push, then call review_action again. INCOMPLETE or ERROR: restore the stated precondition, then call review_action again.\n- Only the newest comment whose head and base match the current PR applies; a verdict for an older head does not.";
+const RETIRED_REVIEW_ACTION_WAKE_INSTRUCTION: &str = "- After opening the PR, call review_action to enqueue the read-only Actions Reviewer. The call returns immediately with a job id; it does not wait for or return the verdict.\n- The verdict is published as a structured comment on the backing GitHub Issue (marker `<!-- ads:review-verdict -->`), and the Acopilot lane is woken when it is ready. Read the newest comment for the current PR head.\n- PASS: ask the user for delivery authorization. REJECT: fix the findings, push, then call review_action again. INCOMPLETE or ERROR: restore the stated precondition, then call review_action again.\n- Only the newest comment whose head and base match the current PR applies; a verdict for an older head does not.";
+const REVIEW_ACTION_INSTRUCTION: &str = "- After opening the PR, call review_action to enqueue the read-only Actions Reviewer. The call returns immediately with a job id; it does not wait for or return the verdict.\n- The verdict is published as a structured comment on the backing GitHub Issue (marker `<!-- ads:review-verdict -->`). The server creates a visible Reviewer-to-Acopilot agent message; it is not user input and does not enter prompt_queue. Read the newest matching comment and respond to the handoff shown in this lane.\n- PASS: ask the user for delivery authorization. REJECT: fix the findings, push, then call review_action again. INCOMPLETE or ERROR: restore the stated precondition, then call review_action again.\n- Only the newest comment whose head and base match the current PR applies; a verdict for an older head does not.";
 const COMMON_PROMPT: &str = concat!(
     "You are operating inside ADS, an AI agent workspace and orchestration system.\n\n",
     "General operating rules:\n",
@@ -198,6 +199,9 @@ pub(crate) fn migrate_state(connection: &Connection, from: i64, to: i64) -> Stat
     }
     if from < 42 {
         migrate_state_42(&transaction)?;
+    }
+    if from < 43 {
+        migrate_state_43(&transaction)?;
     }
     transaction.execute(
         "UPDATE schema_version SET version = ?1, updated_at = datetime('now') WHERE id = 1",
@@ -2021,6 +2025,16 @@ fn migrate_state_42(connection: &Connection) -> StateResult<()> {
          );",
     )?;
     Ok(())
+}
+
+fn migrate_state_43(connection: &Connection) -> StateResult<()> {
+    crate::agent_message_store::ensure_agent_message_tables(connection)?;
+    rewrite_acopilot_prompts(connection, |prompt| {
+        prompt.replace(
+            RETIRED_REVIEW_ACTION_WAKE_INSTRUCTION,
+            REVIEW_ACTION_INSTRUCTION,
+        )
+    })
 }
 
 pub(crate) fn migrate_workspace(connection: &Connection, from: i64, to: i64) -> StateResult<()> {

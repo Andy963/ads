@@ -9,6 +9,7 @@ use ads_runtime::scheduler::{ScheduleCompiler, SchedulerRuntime};
 use ads_state::WorkspaceDb;
 
 use crate::CookieSecureMode;
+use crate::agent_messages::AgentMessageService;
 use crate::ws::WebSocketHub;
 
 #[derive(Clone)]
@@ -23,6 +24,7 @@ pub struct AppState {
     pub workspace_state_dir: Arc<PathBuf>,
     pub ws: Arc<WebSocketHub>,
     pub prompt_queue: Option<Arc<PromptQueueService>>,
+    pub agent_messages: Option<Arc<AgentMessageService>>,
     pub schedule_compiler: Option<Arc<dyn ScheduleCompiler>>,
     pub scheduler: Option<Arc<SchedulerRuntime>>,
     pub review_queue: Option<Arc<ReviewQueue>>,

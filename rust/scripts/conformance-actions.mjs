@@ -19,7 +19,7 @@ const rustDir = path.join(root, "rust");
 const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-actions-conformance-"));
 const projectDir = path.join(workspaceDir, "project");
 
-function seedCompletedReview(stateDir, projectId, workspaceRoot) {
+function seedCompletedReview(stateDir, projectId, _workspaceRoot) {
   const db = new Database(path.join(stateDir, "state.db"));
   try {
     const user = db.prepare("SELECT id FROM web_users ORDER BY created_at ASC LIMIT 1").get();

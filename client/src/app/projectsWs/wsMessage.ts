@@ -152,15 +152,38 @@ function parseClientMessageIdFromHistoryKind(kind: string): string {
 }
 
 function isSystemOriginHistoryKind(kind: string): boolean {
+  return promptOriginFromHistoryKind(kind) === "system";
+}
+
+function promptOriginFromHistoryKind(kind: string): "system" | "agent" | "" {
   const marker = ";prompt_meta:";
   const markerIndex = kind.indexOf(marker);
-  if (markerIndex < 0) return false;
+  if (markerIndex < 0) return "";
   for (const part of kind.slice(markerIndex + marker.length).split(",")) {
     const [keyRaw, valueRaw = ""] = part.split("=");
     if (String(keyRaw ?? "").trim() !== "origin") continue;
-    return decodeHistoryKindValue(valueRaw).trim() === "system";
+    const origin = decodeHistoryKindValue(valueRaw).trim();
+    return origin === "system" || origin === "agent" ? origin : "";
   }
-  return false;
+  return "";
+}
+
+function agentHandoffFromHistory(kind: string, text: string, messageId: string): ChatItem | null {
+  if (promptOriginFromHistoryKind(kind) !== "agent") return null;
+  return {
+    id: messageId.includes("-") ? messageId : `h-agent-${messageId}`,
+    role: "system",
+    kind: "agent_handoff",
+    content: text,
+    agentHandoff: {
+      messageId,
+      status: "unknown",
+      fromLane: "actions",
+      fromRole: "reviewer",
+      toLane: "acopilot",
+      toRole: "acopilot",
+    },
+  };
 }
 
 function parseFileChangeHistory(text: string): ChatPatchFile[] {
@@ -348,7 +371,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     finalizeAssistant,
     finalizeCommandBlock,
     flushQueuedPrompts,
-    enqueuePrompt,
     ingestCommand,
     ingestCommandActivity,
     ingestExploredActivity,
@@ -388,7 +410,6 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
   }>();
   const explicitCommandIdentities = new Map<string, string>();
   const seenCommandFrameIds = new Set<string>();
-  const seenReviewWakeJobs = new Set<string>();
   let legacyCommandCounter = 0;
 
   const finiteOffset = (value: unknown): number | null => {
@@ -1098,32 +1119,54 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
     if (typeof typeValue !== "string") return;
     const type = typeValue;
 
-    if (type === "review_verdict_ready") {
+    if (type === "review_verdict_ready") return;
+
+    if (type === "agent_message" || type === "agent_message_snapshot") {
       if (preferenceLane !== "acopilot") return;
-      const rec = msg as Record<string, unknown>;
-      const jobId = String(rec.jobId ?? "").trim();
-      const status = String(rec.status ?? "").trim().toUpperCase();
-      const issueId = Number(rec.issueId);
-      if (!jobId || !Number.isSafeInteger(issueId) || issueId < 1) return;
-      if (seenReviewWakeJobs.has(jobId)) return;
-      seenReviewWakeJobs.add(jobId);
-      const prNumber = Number(rec.prNumber);
-      const headSha = String(rec.headSha ?? "").trim();
-      const prLabel = Number.isSafeInteger(prNumber) && prNumber > 0 ? `PR #${prNumber}` : "PR";
-      const busy = rt.busy.value || rt.turnInFlight;
-      const prompt = [
-        `Issue #${issueId} 的 ${prLabel} 评审已出结论：${status || "UNKNOWN"}。`,
-        "请先阅读该 Issue 最新的 ads:review-verdict comment（按 head/base 匹配当前 PR，忽略旧结论），然后据此处理。",
-        "PASS 征求用户交付授权；REJECT 按 Findings 返工后重新 review_action；INCOMPLETE 或 ERROR 先按 Summary 恢复前置条件再重新派审。",
-        `Job ${jobId}${headSha ? `，head ${headSha.slice(0, 12)}` : ""}。`,
-      ].join("");
-      if (busy) {
-        rt.laneStatus.value = {
-          kind: "info",
-          message: `收到 Issue #${issueId} 的评审结论（${status || "UNKNOWN"}），当前对话结束后自动处理。`,
+      const entries = type === "agent_message_snapshot"
+        ? (Array.isArray((msg as Record<string, unknown>).entries) ? (msg as Record<string, unknown>).entries as unknown[] : [])
+        : [msg];
+      for (const entry of entries) {
+        if (!isRecord(entry)) continue;
+        const messageId = String(entry.messageId ?? "").trim();
+        if (!messageId) continue;
+        const statusRaw = String(entry.status ?? "unknown").trim().toLowerCase();
+        const status = ["pending", "running", "delivered", "failed", "superseded"].includes(statusRaw)
+          ? statusRaw as "pending" | "running" | "delivered" | "failed" | "superseded"
+          : "unknown";
+        const issueId = Number(entry.issueId);
+        const prNumber = Number(entry.prNumber);
+        const content = String(entry.text ?? "").trim() || `Reviewer → Acopilot handoff ${messageId}`;
+        const card: ChatItem = {
+          id: messageId,
+          role: "system",
+          kind: "agent_handoff",
+          content,
+          ts: Number(entry.updatedAt) || Date.now(),
+          agentHandoff: {
+            messageId,
+            status,
+            fromLane: String(entry.fromLane ?? "actions"),
+            fromRole: String(entry.fromRole ?? "reviewer"),
+            toLane: String(entry.toLane ?? "acopilot"),
+            toRole: String(entry.toRole ?? "acopilot"),
+            ...(Number.isSafeInteger(issueId) && issueId > 0 ? { issueId } : {}),
+            ...(String(entry.issueTitle ?? "").trim() ? { issueTitle: String(entry.issueTitle).trim() } : {}),
+            ...(String(entry.issueUrl ?? "").trim() ? { issueUrl: String(entry.issueUrl).trim() } : {}),
+            ...(Number.isSafeInteger(prNumber) && prNumber > 0 ? { prNumber } : {}),
+            ...(String(entry.baseSha ?? "").trim() ? { baseSha: String(entry.baseSha).trim() } : {}),
+            ...(String(entry.headSha ?? "").trim() ? { headSha: String(entry.headSha).trim() } : {}),
+            ...(String(entry.correlationId ?? "").trim() ? { correlationId: String(entry.correlationId).trim() } : {}),
+            ...(String(entry.lastError ?? "").trim() ? { lastError: String(entry.lastError).trim() } : {}),
+          },
         };
+        const existingIndex = rt.messages.value.findIndex((message) => message.id === messageId);
+        if (existingIndex >= 0) {
+          rt.messages.value = rt.messages.value.map((message, index) => index === existingIndex ? card : message);
+        } else {
+          pushMessageBeforeLive(card, rt);
+        }
       }
-      enqueuePrompt(prompt, [], rt, { origin: "system" });
       return;
     }
 
@@ -1825,9 +1868,14 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         }
         if (role === "user") {
           if (isSystemOriginHistoryKind(kind)) continue;
+          const clientMessageId = parseClientMessageIdFromHistoryKind(kind);
+          const handoff = agentHandoffFromHistory(kind, historyText, clientMessageId);
+          if (handoff) {
+            next.push({ ...handoff, ts: ts ?? undefined });
+            continue;
+          }
           restoredHistoryStatus = null;
           const execution = parseExecutionFromHistoryKind(kind);
-          const clientMessageId = parseClientMessageIdFromHistoryKind(kind);
           next.push({
             id: clientMessageId.includes("-") ? clientMessageId : `h-u-${idx}`,
             role: "user",
@@ -1984,7 +2032,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       const alreadyHas = clientMessageId
         ? existing.some((m) => m.id === clientMessageId)
         : Boolean(lastUser && lastUser.content === text && lastUser.ts === eventTs);
-      if (!alreadyHas && text && !isSystemOriginHistoryKind(String(msg.kind ?? ""))) {
+      const historyKind = String(msg.kind ?? "");
+      if (promptOriginFromHistoryKind(historyKind) === "agent") {
+        const handoff = agentHandoffFromHistory(historyKind, text, clientMessageId);
+        if (handoff && !alreadyHas) pushMessageBeforeLive(handoff, rt);
+        return;
+      }
+      if (!alreadyHas && text && !isSystemOriginHistoryKind(historyKind)) {
         const execution = parseExecutionFromHistoryKind(String(msg.kind ?? ""));
         pushMessageBeforeLive({
           id: clientMessageId || randomId("u"),

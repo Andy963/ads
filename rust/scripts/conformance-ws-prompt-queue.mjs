@@ -193,7 +193,7 @@ async function main() {
     const nodeLogin = await loginAs(pair.nodeBase, pair.username, pair.password);
     const rustLogin = await loginAs(pair.rustBase, pair.username, pair.password);
     const rustUser = authUserId(pair.rustStateDir, pair.username);
-    const nodeUser = authUserId(pair.nodeStateDir, pair.username);
+    const _nodeUser = authUserId(pair.nodeStateDir, pair.username);
     await Promise.all([
       waitForQueueOwner(pair.rustStateDir),
       waitForQueueOwner(pair.nodeStateDir),
@@ -204,8 +204,8 @@ async function main() {
     const rust = connect(pair.rustBase, { cookie: rustLogin.cookie, protocols });
     try {
       await Promise.all([node.opened, rust.opened]);
-      const nodeBootstrap = await collect(node, 3);
-      const rustBootstrap = await collect(rust, 3);
+      const _nodeBootstrap = await collect(node, 3);
+      const _rustBootstrap = await collect(rust, 3);
 
       const nodeId = "cm-prompt-node";
       const rustId = "cm-prompt-rust";

@@ -1,6 +1,5 @@
-use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use ads_actions::{ReviewQueue, ReviewQueueOptions, review_action_tools_factory};
 use ads_auth::{AuthConfig, AuthService, InitAdminOutcome, ResetAdminOutcome};
@@ -9,9 +8,9 @@ use ads_codex_app_server::{
     CodexAppServerPromptRunnerOptions, SpawnOptions, resolve_agent_runtime,
 };
 use ads_http::{
-    AcopilotWakeEvent, ActionsLaneMessage, CookieSecureMode, RouterConfig, WebSocketConfig,
+    ActionsLaneMessage, CookieSecureMode, ReviewVerdictMessage, RouterConfig, WebSocketConfig,
     WebSocketHub, WebSocketScheduleNotifier, build_router, detect_workspace_root,
-    parse_allowed_origins, publish_acopilot_wake, publish_actions_lane_message,
+    enqueue_review_verdict_message, parse_allowed_origins, publish_actions_lane_message,
     resolve_allowed_dirs, resolve_client_dir,
 };
 use ads_native::{
@@ -129,7 +128,6 @@ fn build_review_queue(db: StateDb, hub: Arc<WebSocketHub>) -> Arc<ReviewQueue> {
     let messenger_hub = Arc::clone(&hub);
     let waker_db = db.clone();
     let waker_hub = Arc::clone(&hub);
-    let woken_jobs = Arc::new(Mutex::new(HashSet::<String>::new()));
     let messenger = Arc::new(move |message: ads_actions::LaneMessage| {
         let result = publish_actions_lane_message(
             &messenger_db,
@@ -150,31 +148,25 @@ fn build_review_queue(db: StateDb, hub: Arc<WebSocketHub>) -> Arc<ReviewQueue> {
         }
     });
     let waker = Arc::new(move |wake: ads_actions::AcopilotWake| {
-        {
-            let mut jobs = woken_jobs.lock().expect("action wake registry lock");
-            if !jobs.insert(wake.job_id.clone()) {
-                return;
-            }
-        }
-        let result = publish_acopilot_wake(
+        let result = enqueue_review_verdict_message(
             &waker_db,
             &waker_hub,
-            &AcopilotWakeEvent {
+            ReviewVerdictMessage {
                 auth_user_id: &wake.auth_user_id,
                 project_id: &wake.project_id,
+                workspace_root: &wake.repo_path.to_string_lossy(),
                 issue_id: wake.issue_id,
+                issue_title: &wake.issue_title,
+                issue_url: wake.issue_url.as_deref(),
                 pr_number: wake.pr_number,
+                base_sha: wake.base_sha.as_deref(),
                 status: wake.status.as_str(),
                 job_id: &wake.job_id,
                 head_sha: wake.head_sha.as_deref(),
             },
         );
         if let Err(error) = result {
-            woken_jobs
-                .lock()
-                .expect("action wake registry lock")
-                .remove(&wake.job_id);
-            eprintln!("[ads-actions] unable to publish Acopilot wake: {error}");
+            eprintln!("[ads-actions] unable to enqueue Reviewer handoff: {error}");
         }
     });
     let options = ReviewQueueOptions {

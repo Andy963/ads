@@ -25,6 +25,7 @@ fn opens_state_database_at_the_contract_version() {
         "web_users",
         "web_sessions",
         "action_jobs",
+        "agent_messages",
         "sync_events",
         "native_transcript_turns",
         "web_push_subscriptions",
@@ -71,6 +72,50 @@ fn opens_workspace_database_at_the_contract_version() {
             .expect("table count");
         assert_eq!(exists, 1, "missing workspace table {table}");
     }
+}
+
+#[test]
+fn migrates_state_42_to_agent_message_store() {
+    let directory = tempdir().expect("temp dir");
+    let path = directory.path().join("state.db");
+    StateDb::open(&path).expect("state db");
+    let connection = Connection::open(&path).expect("connection");
+    connection
+        .execute_batch(
+            "DROP TABLE agent_messages;
+             UPDATE schema_version SET version = 42 WHERE id = 1;",
+        )
+        .expect("downgrade fixture");
+    drop(connection);
+
+    let db = StateDb::open(&path).expect("migrated state db");
+    let connection = db.connect().expect("connection");
+    let version: i64 = connection
+        .query_row(
+            "SELECT version FROM schema_version WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("version");
+    assert_eq!(version, STATE_SCHEMA_VERSION);
+    let tables: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'agent_messages'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("agent message table");
+    assert_eq!(tables, 1);
+    let indexes: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'index' AND name LIKE 'idx_agent_messages_%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("agent message indexes");
+    assert_eq!(indexes, 3);
 }
 
 #[test]

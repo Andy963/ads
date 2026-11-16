@@ -684,7 +684,10 @@ impl ReviewQueue {
                 repo_path: repo_path.to_path_buf(),
                 auth_user_id: job.auth_user_id.clone().unwrap_or_default(),
                 issue_id,
+                issue_title: job.issue_title.clone(),
+                issue_url: issue_url_from_pr_url(job.pr_url.as_deref(), issue_id),
                 pr_number: job.pr_number,
+                base_sha: job.base_sha.clone(),
                 status,
                 job_id: job.id.clone(),
                 head_sha: job.head_sha.clone(),
@@ -921,6 +924,18 @@ fn review_target_matches_job(job: &ActionJobRecord, session: &ResolvedReview) ->
                 .iter()
                 .map(|adr| (&adr.id, &adr.title, &adr.decision))
                 .collect::<Vec<_>>()
+}
+
+fn issue_url_from_pr_url(pr_url: Option<&str>, issue_id: i64) -> Option<String> {
+    if issue_id < 1 {
+        return None;
+    }
+    let pr_url = pr_url?.trim();
+    let (repository_url, _) = pr_url.split_once("/pull/")?;
+    let repository_url = repository_url.trim_end_matches('/');
+    repository_url
+        .starts_with("https://github.com/")
+        .then(|| format!("{repository_url}/issues/{issue_id}"))
 }
 
 fn review_target_label(job: &ActionJobRecord) -> String {
