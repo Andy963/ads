@@ -34,6 +34,7 @@ pub struct ReviewVerdictMessage<'a> {
     pub head_sha: Option<&'a str>,
     pub status: &'a str,
     pub job_id: &'a str,
+    pub source_created_at: i64,
 }
 
 pub fn enqueue_review_verdict_message(
@@ -110,11 +111,17 @@ pub fn enqueue_review_verdict_message(
                 base_sha: input.base_sha.map(str::to_string),
                 head_sha: input.head_sha.map(str::to_string),
                 payload,
+                source_created_at: input.source_created_at,
                 created_at: now,
             },
             now,
         )
         .map_err(|error| error.to_string())?;
+    for message_id in &result.superseded_ids {
+        if let Ok(Some(superseded)) = store.get_by_message_id(message_id) {
+            publish_agent_message_event(db, hub, &superseded);
+        }
+    }
     if !result.duplicate {
         publish_agent_message_event(db, hub, &result.message);
     }
@@ -277,6 +284,35 @@ impl AgentMessageService {
                 .expect("agent message active lock")
                 .values()
                 .any(|entry| entry.history_key == history_key)
+    }
+
+    pub fn retry_failed(
+        &self,
+        message_id: &str,
+        auth_user_id: &str,
+        project_id: &str,
+        lane_generation: i64,
+    ) -> Result<Option<AgentMessageRecord>, String> {
+        let message_id = message_id.trim();
+        if message_id.is_empty() {
+            return Err("Missing agent message id".to_string());
+        }
+        let retried = self
+            .with_store(|store| {
+                store.retry_failed(
+                    message_id,
+                    auth_user_id,
+                    project_id,
+                    "acopilot",
+                    lane_generation,
+                    ads_contract::time::now_unix_millis(),
+                )
+            })
+            .map_err(|error| error.to_string())?;
+        if let Some(message) = retried.as_ref() {
+            publish_agent_message_event(&self.db, &self.hub, message);
+        }
+        Ok(retried)
     }
 
     fn dispatch(self: &Arc<Self>, message: AgentMessageRecord) {
@@ -508,6 +544,7 @@ fn agent_message_event_payload(message: &AgentMessageRecord) -> Value {
         "attempts": message.attempts,
         "lastError": message.last_error,
         "text": message.payload.get("text").and_then(Value::as_str).unwrap_or(""),
+        "sourceCreatedAt": message.source_created_at,
         "createdAt": message.created_at,
         "updatedAt": message.updated_at,
     })
@@ -629,6 +666,7 @@ mod tests {
                 head_sha: Some("head"),
                 status,
                 job_id: "job-1",
+                source_created_at: 1,
             });
             assert!(prompt.contains(expected), "status={status} prompt={prompt}");
         }
@@ -676,6 +714,7 @@ mod tests {
                 head_sha: Some("head"),
                 status: "PASS",
                 job_id: "job-1",
+                source_created_at: 1,
             },
         )
         .expect("enqueue");
@@ -696,6 +735,7 @@ mod tests {
                 head_sha: Some("head"),
                 status: "PASS",
                 job_id: "job-1",
+                source_created_at: 1,
             },
         )
         .expect("duplicate");

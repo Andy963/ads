@@ -34,6 +34,7 @@ fn message(id: &str, head: &str, created_at: i64) -> NewAgentMessage {
         base_sha: Some("base".to_string()),
         head_sha: Some(head.to_string()),
         payload: payload("Reviewer handoff"),
+        source_created_at: created_at,
         created_at,
     }
 }
@@ -76,6 +77,77 @@ fn enqueue_is_idempotent_and_supersedes_older_pending_heads() {
             .expect("second exists")
             .status,
         AgentMessageStatus::Pending
+    );
+}
+
+#[test]
+fn delayed_older_review_cannot_replace_a_newer_handoff() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let connection = db.connect().expect("connection");
+    let store = AgentMessageStore::new(&connection).expect("store");
+
+    store
+        .enqueue(message("review-verdict:job-new", "head-new", 300), 300)
+        .expect("new handoff");
+    let delayed = store
+        .enqueue(message("review-verdict:job-old", "head-old", 200), 400)
+        .expect("delayed old handoff");
+
+    assert_eq!(delayed.message.status, AgentMessageStatus::Superseded);
+    assert!(delayed.superseded_ids.is_empty());
+    assert_eq!(
+        store
+            .get_by_message_id("review-verdict:job-new")
+            .expect("new message")
+            .expect("new exists")
+            .status,
+        AgentMessageStatus::Pending,
+    );
+}
+
+#[test]
+fn failed_handoff_can_be_explicitly_retried() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let connection = db.connect().expect("connection");
+    let store = AgentMessageStore::new(&connection).expect("store");
+    store
+        .enqueue(message("review-verdict:job-retry", "head", 100), 100)
+        .expect("handoff");
+    store
+        .claim("review-verdict:job-retry", "worker-1", 200, 110)
+        .expect("claim")
+        .expect("claimed");
+    store
+        .mark_failed(
+            "review-verdict:job-retry",
+            "worker-1",
+            "model unavailable",
+            120,
+        )
+        .expect("failed")
+        .expect("failed message");
+    let retried = store
+        .retry_failed(
+            "review-verdict:job-retry",
+            "user-1",
+            "project-1",
+            "acopilot",
+            1,
+            130,
+        )
+        .expect("retry")
+        .expect("retried message");
+    assert_eq!(retried.status, AgentMessageStatus::Pending);
+    assert_eq!(retried.last_error, None);
+    assert_eq!(
+        store
+            .claim("review-verdict:job-retry", "worker-2", 250, 140)
+            .expect("reclaim")
+            .expect("reclaimed")
+            .attempts,
+        2
     );
 }
 

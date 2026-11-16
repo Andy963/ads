@@ -690,6 +690,7 @@ impl ReviewQueue {
                 base_sha: job.base_sha.clone(),
                 status,
                 job_id: job.id.clone(),
+                source_created_at: job.created_at,
                 head_sha: job.head_sha.clone(),
             });
         }

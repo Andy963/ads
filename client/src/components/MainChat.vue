@@ -42,6 +42,7 @@ const emit = defineEmits<{
   (e: "update:viewport", value: TranscriptViewport): void;
   (e: "send", content: string): void;
   (e: "retryMessage", message: ChatMessage): void;
+  (e: "retryAgentHandoff", messageId: string): void;
   (e: "interrupt"): void;
   (e: "clear"): void;
   (e: "addImages", images: IncomingImage[]): void;
@@ -1210,6 +1211,7 @@ onBeforeUnmount(() => {
           :workspace-root="workspaceRoot"
           @copy-message="onCopyMessage($event)"
           @retry-message="emit('retryMessage', $event)"
+          @retry-agent-handoff="emit('retryAgentHandoff', $event)"
           @toggle-live-step-expanded="toggleLiveStepExpanded"
           @before-history-prepend="pauseChatAutoScroll"
         />

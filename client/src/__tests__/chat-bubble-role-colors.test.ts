@@ -137,4 +137,24 @@ describe("chat bubble role colors and geometry contract", () => {
     );
     wrapper.unmount();
   });
+
+  it("retries a failed Reviewer to Acopilot handoff", async () => {
+    const wrapper = mountMessageList([{
+      id: "review-verdict:job-failed",
+      role: "system",
+      kind: "agent_handoff",
+      content: "Retry this handoff.",
+      agentHandoff: {
+        messageId: "review-verdict:job-failed",
+        status: "failed",
+        lastError: "model unavailable",
+      },
+    }]);
+
+    await wrapper.get("[data-testid='agent-handoff-retry']").trigger("click");
+    expect(wrapper.emitted("retryAgentHandoff")?.[0]).toEqual([
+      "review-verdict:job-failed",
+    ]);
+    wrapper.unmount();
+  });
 });

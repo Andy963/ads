@@ -504,6 +504,17 @@ function retryAcopilotMessage(message: Parameters<typeof retryPrompt>[0]): void 
   retryPrompt(message, activeAcopilotRuntime.value);
 }
 
+function retryAcopilotAgentHandoff(messageId: string): void {
+  const id = String(messageId ?? "").trim();
+  if (!loggedIn.value || !id) return;
+  const socket = activeAcopilotRuntime.value.ws as {
+    send?: (type: string, payload?: unknown) => boolean | void;
+  } | null;
+  if (socket?.send?.("retry_agent_message", { messageId: id }) === false) {
+    activeAcopilotRuntime.value.wsError.value = "Agent handoff retry could not be sent";
+  }
+}
+
 function retryActionsMessage(message: Parameters<typeof retryPrompt>[0]): void {
   if (!loggedIn.value) return;
   retryPrompt(message);
@@ -1882,6 +1893,7 @@ const acopilotConnectionStatus = computed(() => {
                 :thread-warning="acopilotThreadWarning"
                 @send="sendAcopilotPrompt"
                 @retry-message="retryAcopilotMessage($event)"
+                @retry-agent-handoff="retryAcopilotAgentHandoff($event)"
                 @update:draft="acopilotComposerDraft = $event"
                 @update:viewport-scope="handleAcopilotViewportScope"
                 @update:viewport="handleAcopilotViewport"

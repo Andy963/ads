@@ -2264,7 +2264,7 @@ async fn handle_text_frame(
 
     if matches!(
         frame_type,
-        "prompt" | "command" | "cancel_prompt" | "prompt_reconcile"
+        "prompt" | "command" | "cancel_prompt" | "prompt_reconcile" | "retry_agent_message"
     ) {
         connection
             .state
@@ -2350,6 +2350,9 @@ async fn handle_text_frame(
         }
         "prompt_reconcile" => {
             handle_prompt_reconcile(socket, connection, frame.get("payload")).await
+        }
+        "retry_agent_message" => {
+            handle_retry_agent_message(socket, connection, frame.get("payload")).await
         }
         _ => true,
     }
@@ -3221,6 +3224,78 @@ async fn handle_cancel_prompt(
         }),
     )
     .await
+}
+
+async fn handle_retry_agent_message(
+    socket: &mut LaneSocket<'_>,
+    connection: &ConnectionContext<'_>,
+    payload: Option<&Value>,
+) -> bool {
+    let message_id = payload
+        .and_then(Value::as_object)
+        .and_then(|payload| {
+            payload
+                .get("messageId")
+                .or_else(|| payload.get("message_id"))
+        })
+        .map(node_string)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if message_id.is_empty() {
+        return send_json(
+            socket,
+            json!({ "type": "agent_message_retry_error", "message": "Missing agent message id" }),
+        )
+        .await;
+    }
+    if connection.lane.chat_session_id != ACOPILOT_CHAT_SESSION_ID {
+        return send_json(
+            socket,
+            json!({ "type": "agent_message_retry_error", "message": "Agent handoffs belong to the Acopilot lane" }),
+        )
+        .await;
+    }
+    let Some(service) = connection.state.agent_messages.as_ref() else {
+        return send_json(
+            socket,
+            json!({ "type": "agent_message_retry_error", "message": "Agent message service is unavailable" }),
+        )
+        .await;
+    };
+    let retried = service.retry_failed(
+        &message_id,
+        &connection.lane.auth_user_id,
+        &connection.lane.session_id,
+        connection.lane.generation,
+    );
+    match retried {
+        Ok(Some(message)) => {
+            send_json(
+                socket,
+                json!({
+                    "type": "agent_message_retry_ack",
+                    "messageId": message.message_id,
+                    "status": message.status.as_str(),
+                }),
+            )
+            .await
+        }
+        Ok(None) => {
+            send_json(
+                socket,
+                json!({ "type": "agent_message_retry_error", "message": "Agent handoff is not failed in this lane" }),
+            )
+            .await
+        }
+        Err(error) => {
+            send_json(
+                socket,
+                json!({ "type": "agent_message_retry_error", "message": error }),
+            )
+            .await
+        }
+    }
 }
 
 async fn handle_prompt_reconcile(

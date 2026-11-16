@@ -1322,6 +1322,13 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
       return;
     }
 
+    if (type === "agent_message_retry_error") {
+      rt.wsError.value = String(msg.message ?? "Agent handoff retry failed");
+      return;
+    }
+
+    if (type === "agent_message_retry_ack") return;
+
     if (type === "prompt_queue_cancelled") {
       const clientMessageId = String(msg.clientMessageId ?? msg.client_message_id ?? "").trim();
       if (!clientMessageId) return;

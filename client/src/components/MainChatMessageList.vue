@@ -122,6 +122,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "copyMessage", message: RenderMessage): void;
   (e: "retryMessage", message: RenderMessage): void;
+  (e: "retryAgentHandoff", messageId: string): void;
   (e: "toggleLiveStepExpanded"): void;
   (e: "beforeHistoryPrepend"): void;
 }>();
@@ -841,6 +842,13 @@ function getAssistantTint(m: RenderMessage): AssistantBubbleTint | undefined {
           </div>
           <div class="agentHandoffBody"><MarkdownContent :content="m.content" /></div>
           <div v-if="m.agentHandoff?.lastError" class="agentHandoffError">{{ m.agentHandoff.lastError }}</div>
+          <button
+            v-if="m.agentHandoff?.status === 'failed' && m.agentHandoff?.messageId"
+            class="agentHandoffRetry"
+            type="button"
+            data-testid="agent-handoff-retry"
+            @click.stop="emit('retryAgentHandoff', m.agentHandoff.messageId)"
+          >重试交付</button>
         </div>
         <div
           v-else
@@ -1625,6 +1633,18 @@ function getAssistantTint(m: RenderMessage): AssistantBubbleTint | undefined {
   background: rgba(254, 226, 226, 0.8);
   color: #991b1b;
   font-size: 12px;
+}
+
+.agentHandoffRetry {
+  margin-top: 10px;
+  padding: 5px 10px;
+  border: 1px solid rgba(185, 28, 28, 0.35);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.8);
+  color: #991b1b;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
 }
 
 .msg[data-kind="error"] .bubble {

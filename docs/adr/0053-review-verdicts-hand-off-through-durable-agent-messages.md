@@ -26,9 +26,9 @@ The Agent2Agent task model, durable workflow message passing, and actor mailboxe
 - Insert the Reviewer handoff on the server after the review reaches a terminal outcome. Browser clients no longer turn review events into prompts and no review handoff creates a `prompt_queue` row.
 - Run an Acopilot handoff as a typed agent-message turn. The model receives the handoff text and metadata, while the UI renders a visible Reviewer-to-Acopilot handoff card instead of a user bubble or an invisible system artifact.
 - Serialize user turns and agent-message turns through the same per-lane execution reservation. A message may wait while user work is active, and a user prompt may wait while an agent-message turn is active, but neither can start a concurrent model turn for the lane.
-- Lifecycle states are `pending`, `running`, `delivered`, `failed`, and `superseded`. Claimed messages use a renewable lease. Failed messages remain recoverable and are not converted into user-message retry cards.
+- Lifecycle states are `pending`, `running`, `delivered`, `failed`, and `superseded`. Claimed messages use a renewable lease. A failed handoff can be explicitly returned to `pending` by the Acopilot lane retry action; it is never converted into a user-message retry card.
  - Durable agent messages have no age-based expiry. The lease only claims execution rights: an expired `running` claim makes the same message eligible for takeover after a crash, without deleting the row, its payload, or its lifecycle history. Reconnecting to an existing Web conversation does not expire a handoff.
-- A newer pending Review handoff for the same Issue and PR supersedes older pending or failed handoffs. A handoff bound to an obsolete lane generation is superseded rather than executed.
+- Supersession uses the originating review job's monotonic creation time, not delivery order. A newer Review handoff for the same Issue and PR supersedes older pending or failed handoffs, while a delayed older job is itself recorded as superseded and cannot replace the newer target. A handoff bound to an obsolete lane generation is superseded rather than executed.
 - Apply A2A-style Task, Message, and Artifact semantics internally without introducing an HTTP/gRPC protocol, external workflow engine, or graph framework.
 
 ## Consequences

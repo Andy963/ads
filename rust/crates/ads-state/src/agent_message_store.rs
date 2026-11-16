@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS agent_messages (
   status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'delivered', 'failed', 'superseded')),
   attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
   last_error TEXT,
+  source_created_at INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   claimed_at INTEGER,
@@ -149,6 +150,7 @@ pub struct AgentMessageRecord {
     pub status: AgentMessageStatus,
     pub attempts: i64,
     pub last_error: Option<String>,
+    pub source_created_at: i64,
     pub created_at: i64,
     pub updated_at: i64,
     pub claimed_at: Option<i64>,
@@ -180,6 +182,7 @@ pub struct NewAgentMessage {
     pub base_sha: Option<String>,
     pub head_sha: Option<String>,
     pub payload: Map<String, Value>,
+    pub source_created_at: i64,
     pub created_at: i64,
 }
 
@@ -220,6 +223,7 @@ impl<'a> AgentMessageStore<'a> {
             || input.to_lane.trim().is_empty()
             || input.kind.trim().is_empty()
             || input.correlation_id.trim().is_empty()
+            || input.source_created_at < 1
         {
             return Err(StateError::InvalidInput(
                 "Agent message requires authenticated project, destination lane, kind, and correlation id"
@@ -237,7 +241,35 @@ impl<'a> AgentMessageStore<'a> {
         }
 
         let mut superseded_ids = Vec::new();
+        let mut incoming_superseded = false;
         if input.kind == "review_verdict" {
+            incoming_superseded = transaction.query_row(
+                "SELECT EXISTS (
+                   SELECT 1 FROM agent_messages
+                   WHERE auth_user_id = ?1
+                     AND project_id = ?2
+                     AND to_lane = ?3
+                     AND kind = ?4
+                     AND issue_id IS ?5
+                     AND pr_number IS ?6
+                     AND source_created_at > ?7
+                     AND status <> 'superseded'
+                     AND message_id <> ?8
+                 )",
+                params![
+                    input.auth_user_id,
+                    input.project_id,
+                    input.to_lane,
+                    input.kind,
+                    input.issue_id,
+                    input.pr_number,
+                    input.source_created_at,
+                    input.message_id.trim(),
+                ],
+                |row| row.get(0),
+            )?;
+        }
+        if input.kind == "review_verdict" && !incoming_superseded {
             let mut statement = transaction.prepare(
                 "SELECT message_id FROM agent_messages
                  WHERE auth_user_id = ?1
@@ -246,8 +278,9 @@ impl<'a> AgentMessageStore<'a> {
                    AND kind = ?4
                    AND issue_id IS ?5
                    AND pr_number IS ?6
+                   AND source_created_at < ?7
                    AND status IN ('pending', 'failed')
-                   AND message_id <> ?7",
+                   AND message_id <> ?8",
             )?;
             superseded_ids = statement
                 .query_map(
@@ -258,6 +291,7 @@ impl<'a> AgentMessageStore<'a> {
                         input.kind,
                         input.issue_id,
                         input.pr_number,
+                        input.source_created_at,
                         input.message_id.trim(),
                     ],
                     |row| row.get::<_, String>(0),
@@ -274,8 +308,9 @@ impl<'a> AgentMessageStore<'a> {
                        AND kind = ?5
                        AND issue_id IS ?6
                        AND pr_number IS ?7
+                       AND source_created_at < ?8
                        AND status IN ('pending', 'failed')
-                       AND message_id <> ?8",
+                       AND message_id <> ?9",
                     params![
                         now,
                         input.auth_user_id,
@@ -284,6 +319,7 @@ impl<'a> AgentMessageStore<'a> {
                         input.kind,
                         input.issue_id,
                         input.pr_number,
+                        input.source_created_at,
                         input.message_id.trim(),
                     ],
                 )?;
@@ -296,10 +332,11 @@ impl<'a> AgentMessageStore<'a> {
                history_key, logical_history_key, lane_namespace, lane_generation,
                workspace_root, from_lane, from_role, to_lane, to_role, kind,
                correlation_id, issue_id, issue_title, issue_url, pr_number, base_sha,
-               head_sha, payload_json, status, attempts, created_at, updated_at
+               head_sha, payload_json, status, attempts, source_created_at,
+               created_at, updated_at
              ) VALUES (
                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-               ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, 'pending', 0, ?24, ?24
+               ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, 0, ?25, ?26, ?27
              )",
             params![
                 input.message_id.trim(),
@@ -325,6 +362,13 @@ impl<'a> AgentMessageStore<'a> {
                 input.base_sha,
                 input.head_sha,
                 serde_json::to_string(&Value::Object(input.payload))?,
+                if incoming_superseded {
+                    "superseded"
+                } else {
+                    "pending"
+                },
+                input.source_created_at,
+                input.created_at,
                 now,
             ],
         )?;
@@ -401,6 +445,40 @@ impl<'a> AgentMessageStore<'a> {
                AND (status = 'pending'
                     OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?1)))",
             params![now, worker_id, lease_expires_at, message_id],
+        )?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        self.get_by_message_id(message_id)
+    }
+
+    pub fn retry_failed(
+        &self,
+        message_id: &str,
+        auth_user_id: &str,
+        project_id: &str,
+        to_lane: &str,
+        lane_generation: i64,
+        now: i64,
+    ) -> StateResult<Option<AgentMessageRecord>> {
+        let changed = self.connection.execute(
+            "UPDATE agent_messages
+             SET status = 'pending', updated_at = ?1, last_error = NULL,
+                 lease_owner = NULL, lease_expires_at = NULL
+             WHERE message_id = ?2
+               AND auth_user_id = ?3
+               AND project_id = ?4
+               AND to_lane = ?5
+               AND lane_generation = ?6
+               AND status = 'failed'",
+            params![
+                now,
+                message_id,
+                auth_user_id,
+                project_id,
+                to_lane,
+                lane_generation.max(1)
+            ],
         )?;
         if changed == 0 {
             return Ok(None);
@@ -534,6 +612,7 @@ fn map_agent_message(row: &Row<'_>) -> rusqlite::Result<AgentMessageRecord> {
         status: row.get("status")?,
         attempts: row.get("attempts")?,
         last_error: row.get("last_error")?,
+        source_created_at: row.get("source_created_at")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         claimed_at: row.get("claimed_at")?,
