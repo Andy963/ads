@@ -679,17 +679,26 @@ impl ReviewQueue {
             );
             return;
         }
-        let ready = self.db.connect().and_then(|connection| {
-            connection
-                .execute(
-                    "UPDATE action_jobs
-                     SET agent_handoff_ready = 1, updated_at = ?1
-                     WHERE id = ?2 AND requires_agent_handoff = 1",
-                    rusqlite::params![now_ms(), job.id],
-                )
-                .map(|_| ())
-                .map_err(ads_state::StateError::from)
-        });
+        let mut ready = Err(ads_state::StateError::InvalidInput(
+            "handoff readiness was not attempted".to_string(),
+        ));
+        for attempt in 0..20 {
+            ready = self.db.connect().and_then(|connection| {
+                connection
+                    .execute(
+                        "UPDATE action_jobs
+                         SET agent_handoff_ready = 1, updated_at = ?1
+                         WHERE id = ?2 AND requires_agent_handoff = 1",
+                        rusqlite::params![now_ms(), job.id],
+                    )
+                    .map(|_| ())
+                    .map_err(ads_state::StateError::from)
+            });
+            if ready.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250 * (attempt + 1))).await;
+        }
         if let Err(error) = ready {
             self.record_action_message(
                 job,

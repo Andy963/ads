@@ -500,7 +500,12 @@ impl<'a> AgentMessageStore<'a> {
             "UPDATE agent_messages
              SET lease_expires_at = ?1, updated_at = ?2
              WHERE message_id = ?3 AND status = 'running' AND lease_owner = ?4
-               AND lease_expires_at > ?2",
+               AND lease_expires_at > ?2
+               AND agent_messages.lane_generation = COALESCE((
+                 SELECT generation FROM web_lane_generations
+                 WHERE namespace = agent_messages.lane_namespace
+                   AND lane_key = agent_messages.logical_history_key
+               ), 1)",
             params![lease_expires_at, now, message_id, worker_id],
         )? == 1)
     }
@@ -580,7 +585,12 @@ impl<'a> AgentMessageStore<'a> {
                  delivered_at = CASE WHEN ?1 = 'delivered' THEN ?2 ELSE delivered_at END,
                  lease_owner = NULL, lease_expires_at = NULL
              WHERE message_id = ?4 AND status = 'running' AND lease_owner = ?5
-               AND lease_expires_at > ?2",
+               AND lease_expires_at > ?2
+               AND agent_messages.lane_generation = COALESCE((
+                 SELECT generation FROM web_lane_generations
+                 WHERE namespace = agent_messages.lane_namespace
+                   AND lane_key = agent_messages.logical_history_key
+               ), 1)",
             params![status, now, error, message_id, worker_id],
         )?;
         if changed == 0 {

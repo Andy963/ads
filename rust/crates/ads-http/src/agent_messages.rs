@@ -585,7 +585,21 @@ impl AgentMessageService {
         entry: PromptQueueEntry,
         lane: PromptQueueLane,
     ) {
-        if !self.generation_is_current(&message) {
+        let current_generation = match self.generation_is_current(&message) {
+            Ok(current) => current,
+            Err(error) => {
+                self.report(format!(
+                    "failed to verify agent message generation: {error}"
+                ));
+                self.active
+                    .lock()
+                    .expect("agent message active lock")
+                    .remove(&message.message_id);
+                self.prompt_queue.release_reserved_lane(&lane);
+                return;
+            }
+        };
+        if !current_generation {
             if let Ok(Some(updated)) = self.with_store(|store| {
                 store.mark_running_superseded(
                     &message.message_id,
@@ -647,7 +661,21 @@ impl AgentMessageService {
             return;
         }
         let now = ads_contract::time::now_unix_millis();
-        let terminal = if !self.generation_is_current(&message) {
+        let current_generation = match self.generation_is_current(&message) {
+            Ok(current) => current,
+            Err(error) => {
+                self.report(format!(
+                    "failed to verify terminal agent generation: {error}"
+                ));
+                self.active
+                    .lock()
+                    .expect("agent message active lock")
+                    .remove(&message.message_id);
+                self.prompt_queue.release_reserved_lane(&lane);
+                return;
+            }
+        };
+        let terminal = if !current_generation {
             self.with_store(|store| {
                 store.mark_running_superseded(&message.message_id, &self.worker_id, now)
             })
@@ -730,17 +758,16 @@ impl AgentMessageService {
         })
     }
 
-    fn generation_is_current(&self, message: &AgentMessageRecord) -> bool {
-        let Ok(mut connection) = self.db.connect() else {
-            return false;
-        };
+    fn generation_is_current(&self, message: &AgentMessageRecord) -> Result<bool, String> {
+        let mut connection = self.db.connect().map_err(|error| error.to_string())?;
         get_lane_generation(
             &mut connection,
             &message.lane_namespace,
             &message.logical_history_key,
             ads_contract::time::now_unix_millis(),
         )
-        .is_ok_and(|generation| generation == message.lane_generation)
+        .map(|generation| generation == message.lane_generation)
+        .map_err(|error| error.to_string())
     }
 
     fn with_store<T>(
