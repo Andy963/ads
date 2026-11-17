@@ -719,7 +719,33 @@ impl AgentMessageService {
         }));
         let outcome = match self.runner.reconcile_before_run(&entry).await {
             Ok(Some(outcome)) => Ok(outcome),
-            Ok(None) => self.runner.run_prompt(entry, context).await,
+            Ok(None) => {
+                if lease_lost.load(Ordering::SeqCst) || !self.prompt_queue.is_owner() {
+                    heartbeat.abort();
+                    self.active
+                        .lock()
+                        .expect("agent message active lock")
+                        .remove(&message.message_id);
+                    self.prompt_queue.release_reserved_lane(&lane);
+                    return;
+                }
+                if !self.execution_is_current(&message).unwrap_or(false) {
+                    heartbeat.abort();
+                    let now = ads_contract::time::now_unix_millis();
+                    if let Ok(Some(updated)) = self.with_store(|store| {
+                        store.mark_running_superseded(&message.message_id, &self.worker_id, now)
+                    }) {
+                        publish_agent_message_event(&self.db, &self.hub, &updated);
+                    }
+                    self.active
+                        .lock()
+                        .expect("agent message active lock")
+                        .remove(&message.message_id);
+                    self.prompt_queue.release_reserved_lane(&lane);
+                    return;
+                }
+                self.runner.run_prompt(entry, context).await
+            }
             Err(error) => Err(error),
         };
         heartbeat.abort();
@@ -1345,6 +1371,132 @@ mod tests {
         let snapshots = agent_message_snapshots(&db, "user-1", "project-1", 1);
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0]["status"], "delivered");
+
+        service.stop();
+        prompt_queue.stop().await;
+    }
+
+    struct SupersedingRunner {
+        db: StateDb,
+        calls: AtomicUsize,
+    }
+
+    impl PromptQueueRunner for SupersedingRunner {
+        fn reconcile_before_run<'a>(
+            &'a self,
+            _entry: &'a PromptQueueEntry,
+        ) -> PromptQueueFuture<'a, StateResult<Option<PromptQueueRunOutcome>>> {
+            Box::pin(async move {
+                let connection = self.db.connect().expect("connection");
+                connection
+                    .execute(
+                        "UPDATE action_jobs SET superseded_at = 100 WHERE id = 'job-race'",
+                        [],
+                    )
+                    .expect("supersede");
+                Ok(None)
+            })
+        }
+
+        fn run_prompt<'a>(
+            &'a self,
+            _entry: PromptQueueEntry,
+            _context: PromptRunContext,
+        ) -> PromptQueueFuture<'a, StateResult<PromptQueueRunOutcome>> {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(PromptQueueRunOutcome::success())
+            })
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn superseded_during_reconciliation_does_not_execute_runner() {
+        let directory = tempdir().expect("temp dir");
+        let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+        let hub = Arc::new(WebSocketHub::new(crate::WebSocketConfig::default()));
+        let runner = Arc::new(SupersedingRunner {
+            db: db.clone(),
+            calls: AtomicUsize::new(0),
+        });
+        let prompt_queue = PromptQueueService::new(PromptQueueServiceOptions {
+            store: db.clone(),
+            worker_id: "prompt-worker".to_string(),
+            owner_pid: Some(i64::from(std::process::id())),
+            is_owner_alive: None,
+            ownership_renewal_interval: Some(Duration::from_millis(10)),
+            resolve_current_generation: Arc::new(|_| 1),
+            runner: runner.clone(),
+            emit_snapshot: Arc::new(|_| {}),
+            emit_event: Arc::new(|_, _| {}),
+            on_error: None,
+        });
+        prompt_queue.start().await.expect("prompt queue");
+        let service = AgentMessageService::new(
+            db.clone(),
+            Arc::clone(&hub),
+            Arc::clone(&prompt_queue),
+            runner.clone(),
+        );
+        service.start();
+
+        let connection = db.connect().expect("connection");
+        connection
+            .execute(
+                "INSERT INTO action_jobs
+                   (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                    requires_agent_handoff)
+                 VALUES ('job-race', 'project-1', 'pull_request_review',
+                         'Review handoff', 'completed', 1, 1, 1)",
+                [],
+            )
+            .expect("review job");
+        drop(connection);
+
+        enqueue_review_verdict_message(
+            &db,
+            &hub,
+            ReviewVerdictMessage {
+                auth_user_id: "user-1",
+                project_id: "project-1",
+                workspace_root: "/repo",
+                issue_id: 7,
+                issue_title: "Review handoff",
+                issue_url: Some("https://github.com/example/issues/7"),
+                pr_number: Some(12),
+                base_sha: Some("base"),
+                head_sha: Some("head"),
+                status: "PASS",
+                job_id: "job-race",
+                source_created_at: 1,
+                lane_generation: 1,
+            },
+        )
+        .expect("enqueue");
+
+        for _ in 0..200 {
+            let superseded = {
+                let connection = db.connect().expect("connection");
+                let store = AgentMessageStore::new(&connection).expect("store");
+                store
+                    .get_by_message_id("review-verdict:job-race")
+                    .expect("message")
+                    .is_some_and(|message| message.status == AgentMessageStatus::Superseded)
+            };
+            if superseded {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        let connection = db.connect().expect("connection");
+        let message = AgentMessageStore::new(&connection)
+            .expect("store")
+            .get_by_message_id("review-verdict:job-race")
+            .expect("message")
+            .expect("message exists");
+        assert_eq!(message.status, AgentMessageStatus::Superseded);
 
         service.stop();
         prompt_queue.stop().await;

@@ -129,6 +129,16 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
             "INSERT INTO action_jobs
                (id, project_id, job_kind, issue_id, issue_title, status, created_at, updated_at,
                 requires_agent_handoff, agent_handoff_ready)
+             VALUES ('error-review', 'project-1', 'pull_request_review', 319, 'Error Review',
+                     'failed', 1, 1, 1, 0)",
+            [],
+        )
+        .expect("error review");
+    connection
+        .execute(
+            "INSERT INTO action_jobs
+               (id, project_id, job_kind, issue_id, issue_title, status, created_at, updated_at,
+                requires_agent_handoff, agent_handoff_ready)
              VALUES ('completed-review', 'project-1', 'pull_request_review', 7, 'Completed',
                      'completed', 1, 1, 1, 1)",
             [],
@@ -159,6 +169,11 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
             "legacy-review-wake",
             r#"{"text":"Read the newest ads:review-verdict comment. Job consumed-review.","origin":"system"}"#,
             "queued",
+        ),
+        (
+            "legacy-error-wake",
+            r#"{"text":"Issue #319 的 PR 评审已出结论：ERROR。请先阅读该 Issue 最新的 ads:review-verdict comment（按 head/base 匹配当前 PR，忽略旧结论），然后据此处理。PASS 征求用户交付授权；REJECT 按 Findings 返工后重新 review_action；INCOMPLETE 或 ERROR 先按 Summary 恢复前置条件再重新派审。Job error-review。","origin":"system"}"#,
+            "failed",
         ),
         (
             "ordinary-system-message",
@@ -232,6 +247,17 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
     assert_eq!(migrated_handoff.0, "pending");
     assert_eq!(migrated_handoff.1, 7);
     assert_eq!(migrated_handoff.2, "consumed-review");
+    let error_handoff_payload: String = connection
+        .query_row(
+            "SELECT payload_json FROM agent_messages
+             WHERE message_id = 'review-verdict:error-review'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("migrated error handoff");
+    let error_payload: serde_json::Value =
+        serde_json::from_str(&error_handoff_payload).expect("payload json");
+    assert_eq!(error_payload["reviewStatus"], "ERROR");
     let active_required: i64 = connection
         .query_row(
             "SELECT requires_agent_handoff FROM action_jobs WHERE id = 'active-review'",

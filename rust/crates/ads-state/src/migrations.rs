@@ -2431,7 +2431,17 @@ fn extract_handoff_number(text: &str, marker: &str) -> Option<i64> {
 }
 
 fn extract_handoff_status(text: &str) -> &'static str {
-    for status in ["PASS", "REJECT", "INCOMPLETE", "ERROR"] {
+    for prefix in ["出结论：", "结论：", "Status: ", "status: "] {
+        if let Some(pos) = text.find(prefix) {
+            let rest = &text[pos + prefix.len()..];
+            for status in ["REJECT", "INCOMPLETE", "ERROR", "PASS"] {
+                if rest.starts_with(status) {
+                    return status;
+                }
+            }
+        }
+    }
+    for status in ["REJECT", "INCOMPLETE", "ERROR", "PASS"] {
         if text.contains(status) {
             return status;
         }
