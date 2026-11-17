@@ -684,15 +684,20 @@ impl ReviewQueue {
         ));
         for attempt in 0..20 {
             ready = self.db.connect().and_then(|connection| {
-                connection
-                    .execute(
-                        "UPDATE action_jobs
-                         SET agent_handoff_ready = 1, updated_at = ?1
-                         WHERE id = ?2 AND requires_agent_handoff = 1",
-                        rusqlite::params![now_ms(), job.id],
-                    )
-                    .map(|_| ())
-                    .map_err(ads_state::StateError::from)
+                let changed = connection.execute(
+                    "UPDATE action_jobs
+                     SET agent_handoff_ready = 1, updated_at = ?1
+                     WHERE id = ?2 AND requires_agent_handoff = 1
+                       AND superseded_at IS NULL",
+                    rusqlite::params![now_ms(), job.id],
+                )?;
+                if changed == 1 {
+                    Ok(())
+                } else {
+                    Err(ads_state::StateError::InvalidInput(
+                        "review job was superseded before handoff readiness".to_string(),
+                    ))
+                }
             });
             if ready.is_ok() {
                 break;

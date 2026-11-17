@@ -9,8 +9,10 @@ use ads_state::{
     NewAgentMessage, PromptQueueEntry, PromptQueueLane, PromptQueueStatus, StateDb,
     WEB_ACOPILOT_NAMESPACE, get_lane_generation, history_key_for_generation, logical_history_key,
 };
+use rusqlite::params;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
+use tokio::process::Command;
 
 use crate::ws::{WebSocketHub, emit_prompt_event_with};
 
@@ -213,7 +215,7 @@ fn review_verdict_status_from_step(step: &str) -> Option<&'static str> {
     }
 }
 
-pub fn reconcile_completed_review_handoffs(
+pub async fn reconcile_completed_review_handoffs(
     db: &StateDb,
     hub: &WebSocketHub,
 ) -> Result<usize, String> {
@@ -224,13 +226,13 @@ pub fn reconcile_completed_review_handoffs(
                 "SELECT j.id, j.project_id, j.auth_user_id, j.issue_id, j.issue_title,
                         j.pr_number, j.base_sha, j.head_sha, j.pr_url, j.current_step,
                         j.created_at, j.status, j.acopilot_lane_generation,
+                        j.agent_handoff_ready,
                         (SELECT p.workspace_root FROM web_projects p
                          WHERE p.user_id = j.auth_user_id AND p.project_id = j.project_id
                          ORDER BY p.updated_at DESC LIMIT 1)
                  FROM action_jobs j
                  WHERE j.job_kind = 'pull_request_review'
                    AND j.requires_agent_handoff = 1
-                   AND j.agent_handoff_ready = 1
                    AND j.status IN ('completed', 'failed')
                    AND j.superseded_at IS NULL
                    AND j.issue_id IS NOT NULL AND j.issue_id > 0
@@ -261,7 +263,8 @@ pub fn reconcile_completed_review_handoffs(
                     row.get::<_, i64>(10)?,
                     row.get::<_, String>(11)?,
                     row.get::<_, i64>(12)?,
-                    row.get::<_, Option<String>>(13)?,
+                    row.get::<_, i64>(13)?,
+                    row.get::<_, Option<String>>(14)?,
                 ))
             })
             .map_err(|error| error.to_string())?
@@ -285,6 +288,7 @@ pub fn reconcile_completed_review_handoffs(
         source_created_at,
         action_status,
         lane_generation,
+        handoff_ready,
         workspace_root,
     ) in records
     {
@@ -310,6 +314,24 @@ pub fn reconcile_completed_review_handoffs(
                 .starts_with("https://github.com/")
                 .then(|| format!("{}/issues/{issue_id}", repository_url.trim_end_matches('/')))
         });
+        if handoff_ready != 1 {
+            if !review_verdict_comment_exists(&workspace_root, issue_id, &job_id).await {
+                continue;
+            }
+            let marked = db
+                .connect()
+                .map_err(|error| error.to_string())?
+                .execute(
+                    "UPDATE action_jobs
+                     SET agent_handoff_ready = 1, updated_at = ?1
+                     WHERE id = ?2 AND superseded_at IS NULL",
+                    params![ads_contract::time::now_unix_millis(), job_id],
+                )
+                .map_err(|error| error.to_string())?;
+            if marked != 1 {
+                continue;
+            }
+        }
         let result = enqueue_review_verdict_message(
             db,
             hub,
@@ -334,6 +356,28 @@ pub fn reconcile_completed_review_handoffs(
         }
     }
     Ok(created)
+}
+
+async fn review_verdict_comment_exists(repo_path: &str, issue_id: i64, job_id: &str) -> bool {
+    let output = Command::new("gh")
+        .args([
+            "issue",
+            "view",
+            &issue_id.to_string(),
+            "--json",
+            "comments",
+            "--jq",
+            ".comments[].body",
+        ])
+        .current_dir(repo_path)
+        .output()
+        .await;
+    let Ok(output) = output else {
+        return false;
+    };
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout).contains("<!-- ads:review-verdict -->")
+        && String::from_utf8_lossy(&output.stdout).contains(job_id)
 }
 
 pub struct AgentMessageService {
@@ -376,7 +420,7 @@ impl AgentMessageService {
                     return;
                 }
                 if let Err(error) =
-                    reconcile_completed_review_handoffs(&reconciler.db, &reconciler.hub)
+                    reconcile_completed_review_handoffs(&reconciler.db, &reconciler.hub).await
                 {
                     reconciler.report(format!(
                         "failed to reconcile completed review handoffs: {error}"
@@ -936,7 +980,6 @@ mod tests {
         PromptQueueServiceOptions, PromptRunContext,
     };
     use ads_state::{PromptQueueEntry, StateDb, StateResult, bump_lane_generation};
-    use rusqlite::params;
     use tempfile::tempdir;
 
     use super::*;
@@ -961,8 +1004,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn reconciles_a_missing_handoff_from_a_completed_review_job() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn reconciles_a_missing_handoff_from_a_completed_review_job() {
         let directory = tempdir().expect("temp dir");
         let db = StateDb::open(directory.path().join("state.db")).expect("state db");
         let hub = WebSocketHub::new(crate::WebSocketConfig::default());
@@ -1016,11 +1059,15 @@ mod tests {
         drop(connection);
 
         assert_eq!(
-            reconcile_completed_review_handoffs(&db, &hub).expect("reconcile"),
+            reconcile_completed_review_handoffs(&db, &hub)
+                .await
+                .expect("reconcile"),
             2
         );
         assert_eq!(
-            reconcile_completed_review_handoffs(&db, &hub).expect("dedupe"),
+            reconcile_completed_review_handoffs(&db, &hub)
+                .await
+                .expect("dedupe"),
             0
         );
         let connection = db.connect().expect("connection");
