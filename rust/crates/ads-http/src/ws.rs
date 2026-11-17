@@ -2312,7 +2312,7 @@ async fn handle_text_frame(
             switch_chat_and_reply(socket, connection, &target).await
         }
         "clear_history" => {
-            abort_prompt_queue_lane(connection);
+            supersede_prompt_queue_lane(connection);
             finish_delta_stream(connection);
             let scope =
                 resolve_clear_history_scope(&connection.lane.chat_session_id, frame.get("payload"));
@@ -2423,6 +2423,21 @@ fn abort_prompt_queue_lane(connection: &ConnectionContext<'_>) -> usize {
         .agent_messages
         .as_ref()
         .map_or(0, |service| service.abort_lane(&lane));
+    prompt_turns + agent_turns
+}
+
+fn supersede_prompt_queue_lane(connection: &ConnectionContext<'_>) -> usize {
+    let lane = prompt_queue_lane(&connection.lane);
+    let prompt_turns = connection
+        .state
+        .prompt_queue
+        .as_ref()
+        .map_or(0, |service| service.abort_lane(&lane));
+    let agent_turns = connection
+        .state
+        .agent_messages
+        .as_ref()
+        .map_or(0, |service| service.supersede_lane(&lane));
     prompt_turns + agent_turns
 }
 

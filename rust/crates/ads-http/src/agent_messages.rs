@@ -548,6 +548,27 @@ impl AgentMessageService {
         active.len()
     }
 
+    pub fn supersede_lane(&self, lane: &PromptQueueLane) -> usize {
+        let active = self
+            .active
+            .lock()
+            .expect("agent message active lock")
+            .values()
+            .filter(|entry| entry_matches_lane(entry, lane))
+            .cloned()
+            .collect::<Vec<_>>();
+        let now = ads_contract::time::now_unix_millis();
+        for entry in &active {
+            if let Ok(Some(updated)) = self.with_store(|store| {
+                store.mark_running_superseded(&entry.client_message_id, &self.worker_id, now)
+            }) {
+                publish_agent_message_event(&self.db, &self.hub, &updated);
+            }
+            self.runner.abort_run(entry);
+        }
+        active.len()
+    }
+
     pub fn retry_failed(
         &self,
         message_id: &str,
@@ -1629,6 +1650,108 @@ mod tests {
             .expect("retry")
             .expect("retried message");
         assert_eq!(retried.status, AgentMessageStatus::Pending);
+
+        prompt_queue.stop().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn supersede_lane_marks_active_message_superseded() {
+        let directory = tempdir().expect("temp dir");
+        let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+        let hub = Arc::new(WebSocketHub::new(crate::WebSocketConfig::default()));
+        let runner = Arc::new(FakeRunner::default());
+        let prompt_queue = PromptQueueService::new(PromptQueueServiceOptions {
+            store: db.clone(),
+            worker_id: "prompt-worker".to_string(),
+            owner_pid: Some(i64::from(std::process::id())),
+            is_owner_alive: None,
+            ownership_renewal_interval: Some(Duration::from_millis(10)),
+            resolve_current_generation: Arc::new(|_| 1),
+            runner: runner.clone(),
+            emit_snapshot: Arc::new(|_| {}),
+            emit_event: Arc::new(|_, _| {}),
+            on_error: None,
+        });
+        prompt_queue.start().await.expect("prompt queue");
+        let service = AgentMessageService::new(
+            db.clone(),
+            Arc::clone(&hub),
+            Arc::clone(&prompt_queue),
+            runner.clone(),
+        );
+
+        let connection = db.connect().expect("connection");
+        connection
+            .execute(
+                "INSERT INTO action_jobs
+                   (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                    requires_agent_handoff)
+                 VALUES ('job-reset-lane', 'project-1', 'pull_request_review',
+                         'Review handoff', 'completed', 1, 1, 1)",
+                [],
+            )
+            .expect("review job");
+        drop(connection);
+
+        let enqueued = enqueue_review_verdict_message(
+            &db,
+            &hub,
+            ReviewVerdictMessage {
+                auth_user_id: "user-1",
+                project_id: "project-1",
+                workspace_root: "/repo",
+                issue_id: 7,
+                issue_title: "Review handoff",
+                issue_url: Some("https://github.com/example/issues/7"),
+                pr_number: Some(12),
+                branch: Some("codex/issue-7"),
+                base_sha: Some("base"),
+                head_sha: Some("head"),
+                status: "PASS",
+                job_id: "job-reset-lane",
+                source_created_at: 1,
+                lane_generation: 1,
+            },
+        )
+        .expect("enqueue");
+
+        let lane = PromptQueueLane {
+            auth_user_id: "user-1".to_string(),
+            session_id: "project-1".to_string(),
+            chat_session_id: "acopilot".to_string(),
+            history_key: "user-1::project-1::acopilot".to_string(),
+            logical_history_key: "user-1::project-1::acopilot".to_string(),
+            lane_namespace: "web-acopilot".to_string(),
+            lane_generation: 1,
+        };
+
+        {
+            let now = ads_contract::time::now_unix_millis();
+            let connection = db.connect().expect("connection");
+            let store = AgentMessageStore::new(&connection).expect("store");
+            store
+                .claim(&enqueued.message.message_id, &service.worker_id, now + 60_000, now)
+                .expect("claim")
+                .expect("claimed");
+        }
+
+        let entry = synthetic_turn_entry(&enqueued.message);
+        service
+            .active
+            .lock()
+            .expect("active")
+            .insert(enqueued.message.message_id.clone(), entry);
+
+        let superseded = service.supersede_lane(&lane);
+        assert_eq!(superseded, 1);
+
+        let connection = db.connect().expect("connection");
+        let message = AgentMessageStore::new(&connection)
+            .expect("store")
+            .get_by_message_id(&enqueued.message.message_id)
+            .expect("message")
+            .expect("message exists");
+        assert_eq!(message.status, AgentMessageStatus::Superseded);
 
         prompt_queue.stop().await;
     }
