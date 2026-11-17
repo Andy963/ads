@@ -215,6 +215,9 @@ pub(crate) fn migrate_state(connection: &Connection, from: i64, to: i64) -> Stat
     if from < 47 {
         migrate_state_47(&transaction)?;
     }
+    if from < 48 {
+        migrate_state_48(&transaction)?;
+    }
     transaction.execute(
         "UPDATE schema_version SET version = ?1, updated_at = datetime('now') WHERE id = 1",
         params![to],
@@ -2148,6 +2151,27 @@ fn migrate_state_47(connection: &Connection) -> StateResult<()> {
            )",
         [],
     )?;
+    Ok(())
+}
+
+fn migrate_state_48(connection: &Connection) -> StateResult<()> {
+    if table_exists(connection, "prompt_queue")? {
+        connection.execute(
+            "DELETE FROM prompt_queue
+             WHERE payload_json LIKE '%\"origin\":\"system\"%'
+               AND payload_json LIKE '%ads:review-verdict%'",
+            [],
+        )?;
+    }
+    if table_exists(connection, "action_jobs")? {
+        connection.execute(
+            "UPDATE action_jobs
+             SET requires_agent_handoff = 0, agent_handoff_ready = 0
+             WHERE job_kind = 'pull_request_review'
+               AND status IN ('completed', 'failed')",
+            [],
+        )?;
+    }
     Ok(())
 }
 

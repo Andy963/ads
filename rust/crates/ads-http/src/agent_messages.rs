@@ -80,8 +80,21 @@ pub fn enqueue_review_verdict_message(
             json!(input.status.trim().to_uppercase()),
         ),
         ("issueId".to_string(), json!(input.issue_id)),
+        ("issueUrl".to_string(), json!(input.issue_url)),
         ("prNumber".to_string(), json!(input.pr_number)),
+        ("baseSha".to_string(), json!(input.base_sha)),
+        ("headSha".to_string(), json!(input.head_sha)),
         ("jobId".to_string(), json!(job_id)),
+        (
+            "verdictComment".to_string(),
+            json!({
+                "marker": "ads:review-verdict",
+                "issueId": input.issue_id,
+                "jobId": job_id,
+                "baseSha": input.base_sha,
+                "headSha": input.head_sha,
+            }),
+        ),
     ]);
     let now = ads_contract::time::now_unix_millis();
     let store = AgentMessageStore::new(&connection).map_err(|error| error.to_string())?;
@@ -940,6 +953,9 @@ fn review_verdict_prompt(input: &ReviewVerdictMessage<'_>) -> String {
         .head_sha
         .map(|sha| format!(" at head {}", &sha[..sha.len().min(12)]))
         .unwrap_or_default();
+    let issue_url = input.issue_url.unwrap_or("not recorded");
+    let base_sha = input.base_sha.unwrap_or("not recorded");
+    let head_sha = input.head_sha.unwrap_or("not recorded");
     let next = match status.as_str() {
         "PASS" => "Ask the user for delivery authorization.",
         "REJECT" => {
@@ -952,7 +968,7 @@ fn review_verdict_prompt(input: &ReviewVerdictMessage<'_>) -> String {
         _ => "Read the verdict comment and determine the correct next action.",
     };
     format!(
-        "Reviewer -> Acopilot handoff for {target} on {pr_label}{head}.\nStatus: {status}.\nJob: {}.\nRead the newest Issue comment marked ads:review-verdict that matches the current PR head and base. Ignore older-head verdicts.\n{next}",
+        "Reviewer -> Acopilot handoff for {target} on {pr_label}{head}.\nStatus: {status}.\nIssue URL: {issue_url}.\nBase SHA: {base_sha}.\nHead SHA: {head_sha}.\nAuthoritative comment: newest Issue comment marked ads:review-verdict for job {}.\nRead only that comment when its base and head match the values above. Ignore older-head verdicts.\n{next}",
         input.job_id.trim()
     )
 }
@@ -1116,6 +1132,10 @@ mod tests {
                 lane_generation: 1,
             });
             assert!(prompt.contains(expected), "status={status} prompt={prompt}");
+            assert!(prompt.contains("Issue URL: https://github.com/example/issues/7."));
+            assert!(prompt.contains("Base SHA: base."));
+            assert!(prompt.contains("Head SHA: head."));
+            assert!(prompt.contains("job job-1"));
         }
     }
 
@@ -1284,13 +1304,23 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM prompt_queue", [], |row| row.get(0))
             .expect("prompt count");
         assert_eq!(prompt_count, 0);
-        let status = AgentMessageStore::new(&connection)
+        let message = AgentMessageStore::new(&connection)
             .expect("store")
             .get_by_message_id("review-verdict:job-1")
             .expect("message")
-            .expect("message exists")
-            .status;
-        assert_eq!(status, AgentMessageStatus::Delivered);
+            .expect("message exists");
+        assert_eq!(message.status, AgentMessageStatus::Delivered);
+        assert_eq!(
+            message.payload["issueUrl"],
+            "https://github.com/example/issues/7"
+        );
+        assert_eq!(message.payload["baseSha"], "base");
+        assert_eq!(message.payload["headSha"], "head");
+        assert_eq!(
+            message.payload["verdictComment"]["marker"],
+            "ads:review-verdict"
+        );
+        assert_eq!(message.payload["verdictComment"]["jobId"], "job-1");
         let replay = ads_state::SyncEventStore::default()
             .read_after(
                 &connection,

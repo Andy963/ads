@@ -119,6 +119,100 @@ fn migrates_state_42_to_agent_message_store() {
 }
 
 #[test]
+fn migrates_state_47_by_retiring_legacy_review_wakes() {
+    let directory = tempdir().expect("temp dir");
+    let path = directory.path().join("state.db");
+    StateDb::open(&path).expect("state db");
+    let connection = Connection::open(&path).expect("connection");
+    connection
+        .execute(
+            "INSERT INTO action_jobs
+               (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                requires_agent_handoff, agent_handoff_ready)
+             VALUES ('completed-review', 'project-1', 'pull_request_review', 'Completed',
+                     'completed', 1, 1, 1, 1)",
+            [],
+        )
+        .expect("completed review");
+    connection
+        .execute(
+            "INSERT INTO action_jobs
+               (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                requires_agent_handoff, agent_handoff_ready)
+             VALUES ('active-review', 'project-1', 'pull_request_review', 'Active',
+                     'queued', 2, 2, 1, 0)",
+            [],
+        )
+        .expect("active review");
+    for (id, payload, status) in [
+        (
+            "legacy-review-wake",
+            r#"{"text":"Read the newest ads:review-verdict comment","origin":"system"}"#,
+            "queued",
+        ),
+        (
+            "ordinary-system-message",
+            r#"{"text":"ordinary system message","origin":"system"}"#,
+            "queued",
+        ),
+        (
+            "user-message",
+            r#"{"text":"user message","origin":"user"}"#,
+            "failed",
+        ),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO prompt_queue
+                   (client_message_id, auth_user_id, user_id, session_id, chat_session_id,
+                    history_key, logical_history_key, lane_namespace, lane_generation,
+                    workspace_root, payload_json, payload_hash, status, attempts,
+                    created_at, updated_at)
+                 VALUES (?1, 'user-1', 1, 'project-1', 'acopilot',
+                         'user-1::project-1::acopilot', 'user-1::project-1::acopilot',
+                         'web-acopilot', 1, '/repo', ?2, 'hash', ?3, 0, 1, 1)",
+                params![id, payload, status],
+            )
+            .expect("prompt queue fixture");
+    }
+    connection
+        .execute("UPDATE schema_version SET version = 47 WHERE id = 1", [])
+        .expect("downgrade fixture");
+    drop(connection);
+
+    let db = StateDb::open(&path).expect("migrated state db");
+    let connection = db.connect().expect("connection");
+    let remaining = {
+        let mut statement = connection
+            .prepare("SELECT client_message_id FROM prompt_queue ORDER BY client_message_id")
+            .expect("prompt query");
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("prompt rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("prompt ids")
+    };
+    assert_eq!(remaining, vec!["ordinary-system-message", "user-message"]);
+    let completed_flags: (i64, i64) = connection
+        .query_row(
+            "SELECT requires_agent_handoff, agent_handoff_ready
+             FROM action_jobs WHERE id = 'completed-review'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("completed review flags");
+    assert_eq!(completed_flags, (0, 0));
+    let active_required: i64 = connection
+        .query_row(
+            "SELECT requires_agent_handoff FROM action_jobs WHERE id = 'active-review'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("active review flag");
+    assert_eq!(active_required, 1);
+}
+
+#[test]
 fn refuses_to_open_a_future_schema_version() {
     let directory = tempdir().expect("temp dir");
     let path = directory.path().join("stale.db");
