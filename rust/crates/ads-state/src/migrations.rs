@@ -2155,20 +2155,32 @@ fn migrate_state_47(connection: &Connection) -> StateResult<()> {
 }
 
 fn migrate_state_48(connection: &Connection) -> StateResult<()> {
+    if table_exists(connection, "action_jobs")? && table_exists(connection, "prompt_queue")? {
+        connection.execute(
+            "UPDATE action_jobs AS j
+             SET requires_agent_handoff = CASE WHEN EXISTS (
+                   SELECT 1 FROM prompt_queue q
+                   WHERE q.payload_json LIKE '%\"origin\":\"system\"%'
+                     AND q.payload_json LIKE '%ads:review-verdict%'
+                     AND instr(q.payload_json, 'Job ' || j.id) > 0
+                 ) THEN 0 ELSE 1 END,
+                 agent_handoff_ready = CASE WHEN EXISTS (
+                   SELECT 1 FROM prompt_queue q
+                   WHERE q.payload_json LIKE '%\"origin\":\"system\"%'
+                     AND q.payload_json LIKE '%ads:review-verdict%'
+                     AND instr(q.payload_json, 'Job ' || j.id) > 0
+                 ) THEN 1 ELSE 0 END
+             WHERE j.job_kind = 'pull_request_review'
+               AND j.status IN ('completed', 'failed')
+               AND j.superseded_at IS NULL",
+            [],
+        )?;
+    }
     if table_exists(connection, "prompt_queue")? {
         connection.execute(
             "DELETE FROM prompt_queue
              WHERE payload_json LIKE '%\"origin\":\"system\"%'
                AND payload_json LIKE '%ads:review-verdict%'",
-            [],
-        )?;
-    }
-    if table_exists(connection, "action_jobs")? {
-        connection.execute(
-            "UPDATE action_jobs
-             SET requires_agent_handoff = 0, agent_handoff_ready = 0
-             WHERE job_kind = 'pull_request_review'
-               AND status IN ('completed', 'failed')",
             [],
         )?;
     }

@@ -18,6 +18,7 @@ use ads_state::{
 use chrono::Utc;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tokio::process::Command;
 
 use crate::defaults::{default_publisher, default_reviewer_runner, default_verification_runner};
 use crate::dispatch::{canonical_project_id, issue_id_from_branch};
@@ -719,13 +720,17 @@ impl ReviewQueue {
             return;
         }
         if let Some(waker) = self.options.waker.clone() {
+            let issue_url = match issue_url_from_pr_url(job.pr_url.as_deref(), issue_id) {
+                Some(url) => Some(url),
+                None => issue_url_from_repository(repo_path, issue_id).await,
+            };
             waker(AcopilotWake {
                 project_id: job.project_id.clone(),
                 repo_path: repo_path.to_path_buf(),
                 auth_user_id: job.auth_user_id.clone().unwrap_or_default(),
                 issue_id,
                 issue_title: job.issue_title.clone(),
-                issue_url: issue_url_from_pr_url(job.pr_url.as_deref(), issue_id),
+                issue_url,
                 pr_number: job.pr_number,
                 base_sha: job.base_sha.clone(),
                 status,
@@ -980,6 +985,41 @@ fn issue_url_from_pr_url(pr_url: Option<&str>, issue_id: i64) -> Option<String> 
         .then(|| format!("{repository_url}/issues/{issue_id}"))
 }
 
+async fn issue_url_from_repository(repo_path: &Path, issue_id: i64) -> Option<String> {
+    if issue_id < 1 {
+        return None;
+    }
+    let output = tokio::time::timeout(
+        Duration::from_secs(5),
+        Command::new("git")
+            .arg("-C")
+            .arg(repo_path)
+            .args(["config", "--get", "remote.origin.url"])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    github_repository_url(&String::from_utf8_lossy(&output.stdout))
+        .map(|repository_url| format!("{repository_url}/issues/{issue_id}"))
+}
+
+fn github_repository_url(remote: &str) -> Option<String> {
+    let remote = remote.trim().trim_end_matches('/').trim_end_matches(".git");
+    let path = remote
+        .strip_prefix("git@github.com:")
+        .or_else(|| remote.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| remote.strip_prefix("https://github.com/"))
+        .or_else(|| remote.strip_prefix("http://github.com/"))?;
+    let path = path.trim_matches('/');
+    (path.split('/').filter(|part| !part.is_empty()).count() >= 2)
+        .then(|| format!("https://github.com/{path}"))
+}
+
 fn review_target_label(job: &ActionJobRecord) -> String {
     let pr_number = job.pr_number.unwrap_or(0);
     let issue_id = job.issue_id.unwrap_or(0);
@@ -1029,5 +1069,52 @@ fn issue_verdict_status(status: ReviewVerdictStatus) -> IssueVerdictStatus {
         ReviewVerdictStatus::Pass => IssueVerdictStatus::Pass,
         ReviewVerdictStatus::Reject => IssueVerdictStatus::Reject,
         ReviewVerdictStatus::Incomplete => IssueVerdictStatus::Incomplete,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_github_remotes_for_issue_links() {
+        for remote in [
+            "git@github.com:Andy963/ads.git",
+            "ssh://git@github.com/Andy963/ads.git",
+            "https://github.com/Andy963/ads.git",
+            "https://github.com/Andy963/ads/",
+        ] {
+            assert_eq!(
+                github_repository_url(remote).as_deref(),
+                Some("https://github.com/Andy963/ads")
+            );
+        }
+        assert_eq!(github_repository_url("https://example.com/ads.git"), None);
+    }
+
+    #[tokio::test]
+    async fn derives_issue_links_from_repository_identity() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let output = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(directory.path())
+            .output()
+            .await
+            .expect("git init");
+        assert!(output.status.success());
+        let output = Command::new("git")
+            .args(["remote", "add", "origin", "git@github.com:Andy963/ads.git"])
+            .current_dir(directory.path())
+            .output()
+            .await
+            .expect("git remote");
+        assert!(output.status.success());
+
+        assert_eq!(
+            issue_url_from_repository(directory.path(), 648)
+                .await
+                .as_deref(),
+            Some("https://github.com/Andy963/ads/issues/648")
+        );
     }
 }

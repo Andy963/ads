@@ -139,6 +139,16 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
             "INSERT INTO action_jobs
                (id, project_id, job_kind, issue_title, status, created_at, updated_at,
                 requires_agent_handoff, agent_handoff_ready)
+             VALUES ('consumed-review', 'project-1', 'pull_request_review', 'Consumed',
+                     'completed', 1, 1, 1, 0)",
+            [],
+        )
+        .expect("consumed review");
+    connection
+        .execute(
+            "INSERT INTO action_jobs
+               (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                requires_agent_handoff, agent_handoff_ready)
              VALUES ('active-review', 'project-1', 'pull_request_review', 'Active',
                      'queued', 2, 2, 1, 0)",
             [],
@@ -147,7 +157,7 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
     for (id, payload, status) in [
         (
             "legacy-review-wake",
-            r#"{"text":"Read the newest ads:review-verdict comment","origin":"system"}"#,
+            r#"{"text":"Read the newest ads:review-verdict comment. Job consumed-review.","origin":"system"}"#,
             "queued",
         ),
         (
@@ -201,7 +211,16 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("completed review flags");
-    assert_eq!(completed_flags, (0, 0));
+    assert_eq!(completed_flags, (1, 0));
+    let consumed_flags: (i64, i64) = connection
+        .query_row(
+            "SELECT requires_agent_handoff, agent_handoff_ready
+             FROM action_jobs WHERE id = 'consumed-review'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("consumed review flags");
+    assert_eq!(consumed_flags, (0, 1));
     let active_required: i64 = connection
         .query_row(
             "SELECT requires_agent_handoff FROM action_jobs WHERE id = 'active-review'",
