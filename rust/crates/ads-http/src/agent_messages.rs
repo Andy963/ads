@@ -249,7 +249,15 @@ where
     F: Fn(String, i64, String) -> Fut + Send + Sync,
     Fut: std::future::Future<Output = bool> + Send,
 {
+    let now = ads_contract::time::now_unix_millis();
     let connection = db.connect().map_err(|error| error.to_string())?;
+    if let Ok(store) = AgentMessageStore::new(&connection) {
+        if let Ok(superseded) = store.supersede_messages_for_superseded_review_jobs(now) {
+            for record in superseded {
+                publish_agent_message_event(db, hub, &record);
+            }
+        }
+    }
     let records = {
         let mut statement = connection
             .prepare(
@@ -340,12 +348,12 @@ where
             };
             status
         };
-        let issue_url = pr_url.as_deref().and_then(|url| {
-            let (repository_url, _) = url.trim().split_once("/pull/")?;
-            repository_url
-                .starts_with("https://github.com/")
-                .then(|| format!("{}/issues/{issue_id}", repository_url.trim_end_matches('/')))
-        });
+        let issue_url = ads_actions::resolve_issue_url(
+            pr_url.as_deref(),
+            std::path::Path::new(&workspace_root),
+            issue_id,
+        )
+        .await;
         if !comment_exists(workspace_root.clone(), issue_id, job_id.clone()).await {
             continue;
         }
@@ -476,6 +484,13 @@ impl AgentMessageService {
                     continue;
                 }
                 let now = ads_contract::time::now_unix_millis();
+                if let Ok(superseded) = service.with_store(|store| {
+                    store.supersede_messages_for_superseded_review_jobs(now)
+                }) {
+                    for record in superseded {
+                        publish_agent_message_event(&service.db, &service.hub, &record);
+                    }
+                }
                 let messages = service
                     .with_store(|store| store.list_recoverable(now))
                     .unwrap_or_default();
@@ -1095,6 +1110,21 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn reconciles_a_missing_handoff_from_a_completed_review_job() {
         let directory = tempdir().expect("temp dir");
+        let repo_dir = tempdir().expect("repo dir");
+        let git_init = tokio::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo_dir.path())
+            .output()
+            .await
+            .expect("git init");
+        assert!(git_init.status.success());
+        let git_remote = tokio::process::Command::new("git")
+            .args(["remote", "add", "origin", "git@github.com:Andy963/ads.git"])
+            .current_dir(repo_dir.path())
+            .output()
+            .await
+            .expect("git remote");
+        assert!(git_remote.status.success());
         let db = StateDb::open(directory.path().join("state.db")).expect("state db");
         let hub = WebSocketHub::new(crate::WebSocketConfig::default());
         let now = ads_contract::time::now_unix_millis();
@@ -1111,8 +1141,8 @@ mod tests {
                 "INSERT INTO web_projects
                    (user_id, project_id, workspace_root, display_name, chat_session_id,
                     sort_order, created_at, updated_at)
-                 VALUES ('user-1', 'project-1', '/repo', 'Repo', 'acopilot', 0, 1, 1)",
-                [],
+                 VALUES ('user-1', 'project-1', ?1, 'Repo', 'acopilot', 0, 1, 1)",
+                params![repo_dir.path().to_string_lossy()],
             )
             .expect("project");
         connection
@@ -1139,7 +1169,7 @@ mod tests {
                  VALUES ('job-error', 'project-1', 1, 'pull_request_review', 648,
                          'Durable handoffs', 'failed', 'codex/issue-648', 'base', 'head',
                          'Review job failed before producing an authoritative verdict', 649,
-                         'https://github.com/Andy963/ads/pull/649', 'user-1', 'acopilot',
+                         NULL, 'user-1', 'acopilot',
                          ?1, ?1, 1, 1)",
                 params![now],
             )
@@ -1172,6 +1202,10 @@ mod tests {
             .expect("message")
             .expect("error message exists");
         assert_eq!(error_message.payload["reviewStatus"], "ERROR");
+        assert_eq!(
+            error_message.issue_url.as_deref(),
+            Some("https://github.com/Andy963/ads/issues/648")
+        );
     }
 
     #[test]

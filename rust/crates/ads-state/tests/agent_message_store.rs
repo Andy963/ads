@@ -98,6 +98,44 @@ fn enqueue_is_idempotent_and_supersedes_older_pending_heads() {
 }
 
 #[test]
+fn superseded_action_job_marks_pending_handoff_superseded() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let connection = db.connect().expect("connection");
+    let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:job-old-superseded", 100);
+
+    let enqueued = store
+        .enqueue(message("review-verdict:job-old-superseded", "head-1", 100), 100)
+        .expect("enqueue");
+    assert_eq!(enqueued.message.status, AgentMessageStatus::Pending);
+
+    connection
+        .execute(
+            "UPDATE action_jobs SET superseded_at = ?1 WHERE id = ?2",
+            params![150, "review-verdict:job-old-superseded"],
+        )
+        .expect("supersede job");
+
+    let updated = store
+        .supersede_messages_for_superseded_review_jobs(160)
+        .expect("supersede messages");
+    assert_eq!(updated.len(), 1);
+    assert_eq!(updated[0].message_id, "review-verdict:job-old-superseded");
+    assert_eq!(updated[0].status, AgentMessageStatus::Superseded);
+    assert_eq!(
+        updated[0].transition_revision,
+        enqueued.message.transition_revision + 1
+    );
+
+    let read = store
+        .get_by_message_id("review-verdict:job-old-superseded")
+        .expect("read")
+        .expect("exists");
+    assert_eq!(read.status, AgentMessageStatus::Superseded);
+}
+
+#[test]
 fn delayed_older_review_cannot_replace_a_newer_handoff() {
     let directory = tempdir().expect("temp dir");
     let db = StateDb::open(directory.path().join("state.db")).expect("state db");

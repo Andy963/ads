@@ -645,6 +645,51 @@ impl<'a> AgentMessageStore<'a> {
         )? == 1)
     }
 
+    pub fn supersede_messages_for_superseded_review_jobs(
+        &self,
+        now: i64,
+    ) -> StateResult<Vec<AgentMessageRecord>> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let mut statement = transaction.prepare(
+            "SELECT message_id FROM agent_messages
+             WHERE kind = 'review_verdict'
+               AND status IN ('pending', 'failed')
+               AND EXISTS (
+                 SELECT 1 FROM action_jobs j
+                 WHERE j.id = agent_messages.correlation_id
+                   AND j.superseded_at IS NOT NULL
+               )",
+        )?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        if !ids.is_empty() {
+            transaction.execute(
+                "UPDATE agent_messages
+                 SET status = 'superseded', updated_at = ?1,
+                     transition_revision = transition_revision + 1,
+                     lease_owner = NULL, lease_expires_at = NULL
+                 WHERE kind = 'review_verdict'
+                   AND status IN ('pending', 'failed')
+                   AND EXISTS (
+                     SELECT 1 FROM action_jobs j
+                     WHERE j.id = agent_messages.correlation_id
+                       AND j.superseded_at IS NOT NULL
+                   )",
+                params![now],
+            )?;
+        }
+        let mut updated = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(msg) = get_agent_message_by_id_on(&transaction, &id)? {
+                updated.push(msg);
+            }
+        }
+        transaction.commit()?;
+        Ok(updated)
+    }
+
     pub fn mark_running_superseded(
         &self,
         message_id: &str,

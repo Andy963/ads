@@ -2235,23 +2235,20 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
             .as_deref()
             .and_then(|job_id| load_handoff_job(connection, job_id).transpose())
             .transpose()?;
-        let issue_id = job
-            .as_ref()
-            .and_then(|job| job.issue_id)
-            .or_else(|| extract_handoff_number(&text, "Issue #"));
-        let pr_number = job
-            .as_ref()
-            .and_then(|job| job.pr_number)
-            .or_else(|| extract_handoff_number(&text, "PR #"));
+        let Some(job) = job else {
+            continue;
+        };
+        let correlation_id = job.id.clone();
+        let issue_id = job.issue_id.or_else(|| extract_handoff_number(&text, "Issue #"));
+        let pr_number = job.pr_number.or_else(|| extract_handoff_number(&text, "PR #"));
         let review_status = extract_handoff_status(&text);
-        let issue_url = job.as_ref().and_then(|job| job.issue_url(issue_id));
-        let issue_title = job
-            .as_ref()
-            .map(|job| job.issue_title.clone())
-            .filter(|title| !title.trim().is_empty())
-            .unwrap_or_else(|| "Reviewer verdict".to_string());
-        let correlation_id = job_id.unwrap_or_else(|| format!("legacy:{}", wake.client_message_id));
-        let task_status = if job.as_ref().and_then(|job| job.superseded_at).is_some() {
+        let issue_url = job.issue_url(issue_id);
+        let issue_title = if !job.issue_title.trim().is_empty() {
+            job.issue_title.clone()
+        } else {
+            "Reviewer verdict".to_string()
+        };
+        let task_status = if job.superseded_at.is_some() {
             "superseded"
         } else if wake.status == "completed" {
             "delivered"
@@ -2275,15 +2272,15 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
             "issueId": issue_id,
             "issueUrl": issue_url,
             "prNumber": pr_number,
-            "jobId": job.as_ref().map(|job| job.id.as_str()),
-            "baseSha": job.as_ref().and_then(|job| job.base_sha.as_deref()),
-            "headSha": job.as_ref().and_then(|job| job.head_sha.as_deref()),
+            "jobId": job.id.as_str(),
+            "baseSha": job.base_sha.as_deref(),
+            "headSha": job.head_sha.as_deref(),
             "verdictComment": {
                 "marker": "ads:review-verdict",
                 "issueId": issue_id,
-                "jobId": job.as_ref().map(|job| job.id.as_str()),
-                "baseSha": job.as_ref().and_then(|job| job.base_sha.as_deref()),
-                "headSha": job.as_ref().and_then(|job| job.head_sha.as_deref())
+                "jobId": job.id.as_str(),
+                "baseSha": job.base_sha.as_deref(),
+                "headSha": job.head_sha.as_deref()
             },
             "legacyClientMessageId": wake.client_message_id
         });
@@ -2306,9 +2303,7 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
                 format!("review-verdict:{correlation_id}"),
                 &wake.auth_user_id,
                 wake.user_id,
-                job.as_ref()
-                    .map(|job| job.project_id.as_str())
-                    .unwrap_or(&wake.session_id),
+                &job.project_id,
                 &wake.chat_session_id,
                 &wake.history_key,
                 &wake.logical_history_key,
@@ -2320,9 +2315,9 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
                 &issue_title,
                 issue_url,
                 pr_number,
-                job.as_ref().and_then(|job| job.base_sha.as_deref()),
-                job.as_ref().and_then(|job| job.branch.as_deref()),
-                job.as_ref().and_then(|job| job.head_sha.as_deref()),
+                job.base_sha.as_deref(),
+                job.branch.as_deref(),
+                job.head_sha.as_deref(),
                 serde_json::to_string(&agent_payload).map_err(|error| {
                     StateError::InvalidInput(format!("legacy handoff payload: {error}"))
                 })?,
@@ -2342,6 +2337,7 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 struct LegacyReviewWake {
     client_message_id: String,
     auth_user_id: String,

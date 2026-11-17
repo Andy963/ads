@@ -507,6 +507,22 @@ pub fn supersede_review_jobs_for_new_head(
             target_value
         ],
     )?;
+    if changes > 0 && crate::table_exists(connection, "agent_messages")? {
+        connection.execute(
+            "UPDATE agent_messages
+             SET status = 'superseded', updated_at = ?1,
+                 transition_revision = transition_revision + 1,
+                 lease_owner = NULL, lease_expires_at = NULL
+             WHERE kind = 'review_verdict'
+               AND status IN ('pending', 'failed')
+               AND EXISTS (
+                 SELECT 1 FROM action_jobs j
+                 WHERE j.id = agent_messages.correlation_id
+                   AND j.superseded_at IS NOT NULL
+               )",
+            params![now],
+        )?;
+    }
     Ok(changes)
 }
 

@@ -176,6 +176,11 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
             "failed",
         ),
         (
+            "unmatched-legacy-wake",
+            r#"{"text":"Read the newest ads:review-verdict comment. Job nonexistent-job.","origin":"system"}"#,
+            "queued",
+        ),
+        (
             "ordinary-system-message",
             r#"{"text":"ordinary system message","origin":"system"}"#,
             "queued",
@@ -258,6 +263,14 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
     let error_payload: serde_json::Value =
         serde_json::from_str(&error_handoff_payload).expect("payload json");
     assert_eq!(error_payload["reviewStatus"], "ERROR");
+    let unmatched_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM agent_messages WHERE message_id LIKE '%nonexistent%' OR correlation_id LIKE '%unmatched%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("unmatched count");
+    assert_eq!(unmatched_count, 0);
     let active_required: i64 = connection
         .query_row(
             "SELECT requires_agent_handoff FROM action_jobs WHERE id = 'active-review'",

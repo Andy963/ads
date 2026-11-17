@@ -720,10 +720,7 @@ impl ReviewQueue {
             return;
         }
         if let Some(waker) = self.options.waker.clone() {
-            let issue_url = match issue_url_from_pr_url(job.pr_url.as_deref(), issue_id) {
-                Some(url) => Some(url),
-                None => issue_url_from_repository(repo_path, issue_id).await,
-            };
+            let issue_url = resolve_issue_url(job.pr_url.as_deref(), repo_path, issue_id).await;
             waker(AcopilotWake {
                 project_id: job.project_id.clone(),
                 repo_path: repo_path.to_path_buf(),
@@ -974,7 +971,7 @@ fn review_target_matches_job(job: &ActionJobRecord, session: &ResolvedReview) ->
                 .collect::<Vec<_>>()
 }
 
-fn issue_url_from_pr_url(pr_url: Option<&str>, issue_id: i64) -> Option<String> {
+pub fn issue_url_from_pr_url(pr_url: Option<&str>, issue_id: i64) -> Option<String> {
     if issue_id < 1 {
         return None;
     }
@@ -986,7 +983,7 @@ fn issue_url_from_pr_url(pr_url: Option<&str>, issue_id: i64) -> Option<String> 
         .then(|| format!("{repository_url}/issues/{issue_id}"))
 }
 
-async fn issue_url_from_repository(repo_path: &Path, issue_id: i64) -> Option<String> {
+pub async fn issue_url_from_repository(repo_path: &Path, issue_id: i64) -> Option<String> {
     if issue_id < 1 {
         return None;
     }
@@ -1009,7 +1006,7 @@ async fn issue_url_from_repository(repo_path: &Path, issue_id: i64) -> Option<St
         .map(|repository_url| format!("{repository_url}/issues/{issue_id}"))
 }
 
-fn github_repository_url(remote: &str) -> Option<String> {
+pub fn github_repository_url(remote: &str) -> Option<String> {
     let remote = remote.trim().trim_end_matches('/').trim_end_matches(".git");
     let path = remote
         .strip_prefix("git@github.com:")
@@ -1019,6 +1016,17 @@ fn github_repository_url(remote: &str) -> Option<String> {
     let path = path.trim_matches('/');
     (path.split('/').filter(|part| !part.is_empty()).count() >= 2)
         .then(|| format!("https://github.com/{path}"))
+}
+
+pub async fn resolve_issue_url(
+    pr_url: Option<&str>,
+    repo_path: &Path,
+    issue_id: i64,
+) -> Option<String> {
+    if let Some(url) = issue_url_from_pr_url(pr_url, issue_id) {
+        return Some(url);
+    }
+    issue_url_from_repository(repo_path, issue_id).await
 }
 
 fn review_target_label(job: &ActionJobRecord) -> String {
