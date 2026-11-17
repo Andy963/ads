@@ -732,6 +732,7 @@ impl ReviewQueue {
                 issue_title: job.issue_title.clone(),
                 issue_url,
                 pr_number: job.pr_number,
+                branch: job.branch.clone(),
                 base_sha: job.base_sha.clone(),
                 status,
                 job_id: job.id.clone(),

@@ -63,6 +63,7 @@ CREATE TABLE agent_messages (
   issue_title TEXT NOT NULL DEFAULT '',
   issue_url TEXT,
   pr_number INTEGER,
+  branch TEXT,
   base_sha TEXT,
   head_sha TEXT,
   payload_json TEXT NOT NULL,

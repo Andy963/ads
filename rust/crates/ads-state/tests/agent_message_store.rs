@@ -32,6 +32,7 @@ fn message(id: &str, head: &str, created_at: i64) -> NewAgentMessage {
         issue_title: "Review handoff".to_string(),
         issue_url: Some("https://github.com/example/issues/7".to_string()),
         pr_number: Some(12),
+        branch: Some("codex/issue-7".to_string()),
         base_sha: Some("base".to_string()),
         head_sha: Some(head.to_string()),
         payload: payload("Reviewer handoff"),
@@ -423,5 +424,63 @@ fn claim_lifecycle_uses_leases_and_marks_terminal_state() {
             .expect("lane messages")
             .len(),
         1
+    );
+}
+
+#[test]
+fn no_pr_reviews_on_different_branches_do_not_supersede_each_other() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let connection = db.connect().expect("connection");
+    let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:branch-a-1", 100);
+    seed_review_job(&connection, "review-verdict:branch-b", 200);
+    seed_review_job(&connection, "review-verdict:branch-a-2", 300);
+
+    let mut msg_a1 = message("review-verdict:branch-a-1", "head-a1", 100);
+    msg_a1.pr_number = None;
+    msg_a1.branch = Some("codex/issue-7-a".to_string());
+
+    let mut msg_b = message("review-verdict:branch-b", "head-b", 200);
+    msg_b.pr_number = None;
+    msg_b.branch = Some("codex/issue-7-b".to_string());
+
+    let mut msg_a2 = message("review-verdict:branch-a-2", "head-a2", 300);
+    msg_a2.pr_number = None;
+    msg_a2.branch = Some("codex/issue-7-a".to_string());
+
+    let res_a1 = store.enqueue(msg_a1, 100).expect("enqueue a1");
+    assert_eq!(res_a1.message.status, AgentMessageStatus::Pending);
+
+    let res_b = store.enqueue(msg_b, 200).expect("enqueue b");
+    assert_eq!(res_b.message.status, AgentMessageStatus::Pending);
+    assert!(res_b.superseded_ids.is_empty());
+    assert_eq!(
+        store
+            .get_by_message_id("review-verdict:branch-a-1")
+            .expect("read a1")
+            .expect("exists")
+            .status,
+        AgentMessageStatus::Pending
+    );
+
+    let res_a2 = store.enqueue(msg_a2, 300).expect("enqueue a2");
+    assert_eq!(res_a2.message.status, AgentMessageStatus::Pending);
+    assert_eq!(res_a2.superseded_ids, vec!["review-verdict:branch-a-1"]);
+    assert_eq!(
+        store
+            .get_by_message_id("review-verdict:branch-a-1")
+            .expect("read a1")
+            .expect("exists")
+            .status,
+        AgentMessageStatus::Superseded
+    );
+    assert_eq!(
+        store
+            .get_by_message_id("review-verdict:branch-b")
+            .expect("read b")
+            .expect("exists")
+            .status,
+        AgentMessageStatus::Pending
     );
 }

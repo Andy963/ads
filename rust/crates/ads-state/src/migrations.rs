@@ -2156,6 +2156,9 @@ fn migrate_state_47(connection: &Connection) -> StateResult<()> {
 }
 
 fn migrate_state_48(connection: &Connection) -> StateResult<()> {
+    if table_exists(connection, "agent_messages")? {
+        add_column_if_missing(connection, "agent_messages", "branch", "TEXT")?;
+    }
     if table_exists(connection, "prompt_queue")? && table_exists(connection, "agent_messages")? {
         migrate_legacy_review_wakes(connection)?;
     }
@@ -2290,14 +2293,14 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
                history_key, logical_history_key, lane_namespace, lane_generation,
                workspace_root, from_lane, from_role, to_lane, to_role, kind,
                correlation_id, issue_id, issue_title, issue_url, pr_number, base_sha,
-               head_sha, payload_json, status, attempts, last_error, source_created_at,
+               branch, head_sha, payload_json, status, attempts, last_error, source_created_at,
                transition_revision, created_at, updated_at, claimed_at, delivered_at
              ) VALUES (
                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'actions', 'reviewer',
-               'acopilot', 'acopilot', 'review_verdict', ?11, ?12, ?13, ?14, ?15,
-               ?16, ?17, ?18, ?19, 0, ?20, ?21, ?22, ?23, ?24,
-               CASE WHEN ?19 = 'running' THEN ?24 ELSE NULL END,
-               CASE WHEN ?19 = 'delivered' THEN ?24 ELSE NULL END
+               'acopilot', 'acopilot', 'review_verdict', ?11, ?12, ?13, ?14, ?15, ?16,
+               ?17, ?18, ?19, ?20, 0, ?21, ?22, ?23, ?24, ?25,
+               CASE WHEN ?20 = 'running' THEN ?25 ELSE NULL END,
+               CASE WHEN ?20 = 'delivered' THEN ?25 ELSE NULL END
              )",
             params![
                 format!("review-verdict:{correlation_id}"),
@@ -2318,6 +2321,7 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
                 issue_url,
                 pr_number,
                 job.as_ref().and_then(|job| job.base_sha.as_deref()),
+                job.as_ref().and_then(|job| job.branch.as_deref()),
                 job.as_ref().and_then(|job| job.head_sha.as_deref()),
                 serde_json::to_string(&agent_payload).map_err(|error| {
                     StateError::InvalidInput(format!("legacy handoff payload: {error}"))
@@ -2361,6 +2365,7 @@ struct LegacyHandoffJob {
     issue_id: Option<i64>,
     issue_title: String,
     pr_number: Option<i64>,
+    branch: Option<String>,
     pr_url: Option<String>,
     base_sha: Option<String>,
     head_sha: Option<String>,
@@ -2385,7 +2390,7 @@ fn load_handoff_job(
 ) -> StateResult<Option<LegacyHandoffJob>> {
     connection
         .query_row(
-            "SELECT id, project_id, issue_id, issue_title, pr_number, pr_url,
+            "SELECT id, project_id, issue_id, issue_title, pr_number, branch, pr_url,
                     base_sha, head_sha, superseded_at
              FROM action_jobs WHERE id = ?1",
             params![job_id],
@@ -2396,10 +2401,11 @@ fn load_handoff_job(
                     issue_id: row.get(2)?,
                     issue_title: row.get(3)?,
                     pr_number: row.get(4)?,
-                    pr_url: row.get(5)?,
-                    base_sha: row.get(6)?,
-                    head_sha: row.get(7)?,
-                    superseded_at: row.get(8)?,
+                    branch: row.get(5)?,
+                    pr_url: row.get(6)?,
+                    base_sha: row.get(7)?,
+                    head_sha: row.get(8)?,
+                    superseded_at: row.get(9)?,
                 })
             },
         )

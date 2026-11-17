@@ -159,6 +159,7 @@ fn build_review_queue(db: StateDb, hub: Arc<WebSocketHub>) -> Arc<ReviewQueue> {
                 issue_title: &wake.issue_title,
                 issue_url: wake.issue_url.as_deref(),
                 pr_number: wake.pr_number,
+                branch: wake.branch.as_deref(),
                 base_sha: wake.base_sha.as_deref(),
                 status: wake.status.as_str(),
                 job_id: &wake.job_id,

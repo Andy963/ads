@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS agent_messages (
   issue_title TEXT NOT NULL DEFAULT '',
   issue_url TEXT,
   pr_number INTEGER,
+  branch TEXT,
   base_sha TEXT,
   head_sha TEXT,
   payload_json TEXT NOT NULL,
@@ -145,6 +146,7 @@ pub struct AgentMessageRecord {
     pub issue_title: String,
     pub issue_url: Option<String>,
     pub pr_number: Option<i64>,
+    pub branch: Option<String>,
     pub base_sha: Option<String>,
     pub head_sha: Option<String>,
     pub payload: Map<String, Value>,
@@ -181,6 +183,7 @@ pub struct NewAgentMessage {
     pub issue_title: String,
     pub issue_url: Option<String>,
     pub pr_number: Option<i64>,
+    pub branch: Option<String>,
     pub base_sha: Option<String>,
     pub head_sha: Option<String>,
     pub payload: Map<String, Value>,
@@ -270,9 +273,12 @@ impl<'a> AgentMessageStore<'a> {
                      AND to_lane = ?3
                      AND kind = ?4
                      AND issue_id IS ?5
-                     AND pr_number IS ?6
-                     AND (source_created_at > ?7
-                          OR (source_created_at = ?7 AND message_id > ?8))
+                     AND (
+                       (?6 IS NOT NULL AND ?6 > 0 AND pr_number = ?6)
+                       OR (COALESCE(pr_number, 0) = 0 AND COALESCE(?6, 0) = 0 AND branch IS ?7)
+                     )
+                     AND (source_created_at > ?8
+                          OR (source_created_at = ?8 AND message_id > ?9))
                      AND status <> 'superseded'
                  )",
                 params![
@@ -282,6 +288,7 @@ impl<'a> AgentMessageStore<'a> {
                     input.kind,
                     input.issue_id,
                     input.pr_number,
+                    input.branch.as_deref(),
                     input.source_created_at,
                     input.message_id.trim(),
                 ],
@@ -296,11 +303,14 @@ impl<'a> AgentMessageStore<'a> {
                    AND to_lane = ?3
                    AND kind = ?4
                    AND issue_id IS ?5
-                   AND pr_number IS ?6
-                   AND (source_created_at < ?7
-                        OR (source_created_at = ?7 AND message_id < ?8))
+                   AND (
+                     (?6 IS NOT NULL AND ?6 > 0 AND pr_number = ?6)
+                     OR (COALESCE(pr_number, 0) = 0 AND COALESCE(?6, 0) = 0 AND branch IS ?7)
+                   )
+                   AND (source_created_at < ?8
+                        OR (source_created_at = ?8 AND message_id < ?9))
                    AND status IN ('pending', 'failed', 'running')
-                   AND message_id <> ?8",
+                   AND message_id <> ?9",
             )?;
             superseded_ids = statement
                 .query_map(
@@ -311,6 +321,7 @@ impl<'a> AgentMessageStore<'a> {
                         input.kind,
                         input.issue_id,
                         input.pr_number,
+                        input.branch.as_deref(),
                         input.source_created_at,
                         input.message_id.trim(),
                     ],
@@ -329,11 +340,14 @@ impl<'a> AgentMessageStore<'a> {
                        AND to_lane = ?4
                        AND kind = ?5
                        AND issue_id IS ?6
-                       AND pr_number IS ?7
-                       AND (source_created_at < ?8
-                            OR (source_created_at = ?8 AND message_id < ?9))
+                       AND (
+                         (?7 IS NOT NULL AND ?7 > 0 AND pr_number = ?7)
+                         OR (COALESCE(pr_number, 0) = 0 AND COALESCE(?7, 0) = 0 AND branch IS ?8)
+                       )
+                       AND (source_created_at < ?9
+                            OR (source_created_at = ?9 AND message_id < ?10))
                        AND status IN ('pending', 'failed', 'running')
-                       AND message_id <> ?9",
+                       AND message_id <> ?10",
                     params![
                         now,
                         input.auth_user_id,
@@ -342,6 +356,7 @@ impl<'a> AgentMessageStore<'a> {
                         input.kind,
                         input.issue_id,
                         input.pr_number,
+                        input.branch.as_deref(),
                         input.source_created_at,
                         input.message_id.trim(),
                     ],
@@ -355,11 +370,11 @@ impl<'a> AgentMessageStore<'a> {
                history_key, logical_history_key, lane_namespace, lane_generation,
                workspace_root, from_lane, from_role, to_lane, to_role, kind,
                correlation_id, issue_id, issue_title, issue_url, pr_number, base_sha,
-               head_sha, payload_json, status, attempts, source_created_at, transition_revision,
-               created_at, updated_at
+               branch, head_sha, payload_json, status, attempts, source_created_at,
+               transition_revision, created_at, updated_at
              ) VALUES (
                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-               ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, 0, ?25, ?26, ?27, ?28
+               ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, 0, ?26, ?27, ?28, ?29
              )",
             params![
                 input.message_id.trim(),
@@ -383,6 +398,7 @@ impl<'a> AgentMessageStore<'a> {
                 input.issue_url,
                 input.pr_number,
                 input.base_sha,
+                input.branch,
                 input.head_sha,
                 serde_json::to_string(&Value::Object(input.payload))?,
                 if incoming_superseded {
@@ -774,6 +790,7 @@ fn map_agent_message(row: &Row<'_>) -> rusqlite::Result<AgentMessageRecord> {
         issue_title: row.get("issue_title")?,
         issue_url: row.get("issue_url")?,
         pr_number: row.get("pr_number")?,
+        branch: row.get("branch")?,
         base_sha: row.get("base_sha")?,
         head_sha: row.get("head_sha")?,
         payload,

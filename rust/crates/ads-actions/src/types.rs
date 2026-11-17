@@ -114,6 +114,7 @@ pub struct AcopilotWake {
     pub issue_title: String,
     pub issue_url: Option<String>,
     pub pr_number: Option<i64>,
+    pub branch: Option<String>,
     pub base_sha: Option<String>,
     pub status: IssueVerdictStatus,
     pub job_id: String,

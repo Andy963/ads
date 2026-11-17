@@ -32,6 +32,7 @@ pub struct ReviewVerdictMessage<'a> {
     pub issue_title: &'a str,
     pub issue_url: Option<&'a str>,
     pub pr_number: Option<i64>,
+    pub branch: Option<&'a str>,
     pub base_sha: Option<&'a str>,
     pub head_sha: Option<&'a str>,
     pub status: &'a str,
@@ -126,6 +127,7 @@ pub fn enqueue_review_verdict_message(
                 issue_title: input.issue_title.trim().to_string(),
                 issue_url: input.issue_url.map(str::to_string),
                 pr_number: input.pr_number,
+                branch: input.branch.map(str::to_string),
                 base_sha: input.base_sha.map(str::to_string),
                 head_sha: input.head_sha.map(str::to_string),
                 payload,
@@ -253,7 +255,7 @@ where
             .prepare(
                 "SELECT j.id, j.project_id, j.auth_user_id, j.issue_id, j.issue_title,
                         j.pr_number, j.base_sha, j.head_sha, j.pr_url, j.current_step,
-                        j.created_at, j.status, j.acopilot_lane_generation,
+                        j.branch, j.created_at, j.status, j.acopilot_lane_generation,
                         j.agent_handoff_ready,
                         (SELECT p.workspace_root FROM web_projects p
                          WHERE p.user_id = j.auth_user_id AND p.project_id = j.project_id
@@ -288,11 +290,12 @@ where
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
                     row.get::<_, Option<String>>(9)?,
-                    row.get::<_, i64>(10)?,
-                    row.get::<_, String>(11)?,
-                    row.get::<_, i64>(12)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, i64>(11)?,
+                    row.get::<_, String>(12)?,
                     row.get::<_, i64>(13)?,
-                    row.get::<_, Option<String>>(14)?,
+                    row.get::<_, i64>(14)?,
+                    row.get::<_, Option<String>>(15)?,
                 ))
             })
             .map_err(|error| error.to_string())?
@@ -313,6 +316,7 @@ where
         head_sha,
         pr_url,
         current_step,
+        branch,
         source_created_at,
         action_status,
         lane_generation,
@@ -371,6 +375,7 @@ where
                 issue_title: &issue_title,
                 issue_url: issue_url.as_deref(),
                 pr_number,
+                branch: branch.as_deref(),
                 base_sha: base_sha.as_deref(),
                 head_sha: head_sha.as_deref(),
                 status,
@@ -529,7 +534,12 @@ impl AgentMessageService {
         let now = ads_contract::time::now_unix_millis();
         for entry in &active {
             if let Ok(Some(updated)) = self.with_store(|store| {
-                store.mark_running_superseded(&entry.client_message_id, &self.worker_id, now)
+                store.mark_failed(
+                    &entry.client_message_id,
+                    &self.worker_id,
+                    "Agent message turn interrupted by user",
+                    now,
+                )
             }) {
                 publish_agent_message_event(&self.db, &self.hub, &updated);
             }
@@ -956,6 +966,7 @@ fn agent_message_event_payload(message: &AgentMessageRecord) -> Value {
         "issueTitle": message.issue_title,
         "issueUrl": message.issue_url,
         "prNumber": message.pr_number,
+        "branch": message.branch,
         "baseSha": message.base_sha,
         "headSha": message.head_sha,
         "status": message.status.as_str(),
@@ -1158,6 +1169,7 @@ mod tests {
                 issue_title: "Review handoff",
                 issue_url: Some("https://github.com/example/issues/7"),
                 pr_number: Some(12),
+                branch: Some("codex/issue-7"),
                 base_sha: Some("base"),
                 head_sha: Some("head"),
                 status,
@@ -1208,6 +1220,7 @@ mod tests {
                 issue_title: "Review handoff",
                 issue_url: Some("https://github.com/example/issues/7"),
                 pr_number: Some(12),
+                branch: Some("codex/issue-7"),
                 base_sha: Some("base"),
                 head_sha: Some("head"),
                 status: "PASS",
@@ -1277,6 +1290,7 @@ mod tests {
                 issue_title: "Review handoff",
                 issue_url: Some("https://github.com/example/issues/7"),
                 pr_number: Some(12),
+                branch: Some("codex/issue-7"),
                 base_sha: Some("base"),
                 head_sha: Some("head"),
                 status: "PASS",
@@ -1299,6 +1313,7 @@ mod tests {
                 issue_title: "Review handoff",
                 issue_url: Some("https://github.com/example/issues/7"),
                 pr_number: Some(12),
+                branch: Some("codex/issue-7"),
                 base_sha: Some("base"),
                 head_sha: Some("head"),
                 status: "PASS",
@@ -1464,6 +1479,7 @@ mod tests {
                 issue_title: "Review handoff",
                 issue_url: Some("https://github.com/example/issues/7"),
                 pr_number: Some(12),
+                branch: Some("codex/issue-7"),
                 base_sha: Some("base"),
                 head_sha: Some("head"),
                 status: "PASS",
@@ -1499,6 +1515,121 @@ mod tests {
         assert_eq!(message.status, AgentMessageStatus::Superseded);
 
         service.stop();
+        prompt_queue.stop().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn abort_lane_leaves_message_failed_and_retryable() {
+        let directory = tempdir().expect("temp dir");
+        let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+        let hub = Arc::new(WebSocketHub::new(crate::WebSocketConfig::default()));
+        let runner = Arc::new(FakeRunner::default());
+        let prompt_queue = PromptQueueService::new(PromptQueueServiceOptions {
+            store: db.clone(),
+            worker_id: "prompt-worker".to_string(),
+            owner_pid: Some(i64::from(std::process::id())),
+            is_owner_alive: None,
+            ownership_renewal_interval: Some(Duration::from_millis(10)),
+            resolve_current_generation: Arc::new(|_| 1),
+            runner: runner.clone(),
+            emit_snapshot: Arc::new(|_| {}),
+            emit_event: Arc::new(|_, _| {}),
+            on_error: None,
+        });
+        prompt_queue.start().await.expect("prompt queue");
+        let service = AgentMessageService::new(
+            db.clone(),
+            Arc::clone(&hub),
+            Arc::clone(&prompt_queue),
+            runner.clone(),
+        );
+
+        let connection = db.connect().expect("connection");
+        connection
+            .execute(
+                "INSERT INTO action_jobs
+                   (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                    requires_agent_handoff)
+                 VALUES ('job-abort', 'project-1', 'pull_request_review',
+                         'Review handoff', 'completed', 1, 1, 1)",
+                [],
+            )
+            .expect("review job");
+        drop(connection);
+
+        let enqueued = enqueue_review_verdict_message(
+            &db,
+            &hub,
+            ReviewVerdictMessage {
+                auth_user_id: "user-1",
+                project_id: "project-1",
+                workspace_root: "/repo",
+                issue_id: 7,
+                issue_title: "Review handoff",
+                issue_url: Some("https://github.com/example/issues/7"),
+                pr_number: Some(12),
+                branch: Some("codex/issue-7"),
+                base_sha: Some("base"),
+                head_sha: Some("head"),
+                status: "PASS",
+                job_id: "job-abort",
+                source_created_at: 1,
+                lane_generation: 1,
+            },
+        )
+        .expect("enqueue");
+
+        let lane = PromptQueueLane {
+            auth_user_id: "user-1".to_string(),
+            session_id: "project-1".to_string(),
+            chat_session_id: "acopilot".to_string(),
+            history_key: "user-1::project-1::acopilot".to_string(),
+            logical_history_key: "user-1::project-1::acopilot".to_string(),
+            lane_namespace: "web-acopilot".to_string(),
+            lane_generation: 1,
+        };
+
+        {
+            let now = ads_contract::time::now_unix_millis();
+            let connection = db.connect().expect("connection");
+            let store = AgentMessageStore::new(&connection).expect("store");
+            store
+                .claim(&enqueued.message.message_id, &service.worker_id, now + 60_000, now)
+                .expect("claim")
+                .expect("claimed");
+        }
+
+        let entry = synthetic_turn_entry(&enqueued.message);
+        service
+            .active
+            .lock()
+            .expect("active")
+            .insert(enqueued.message.message_id.clone(), entry);
+
+        let aborted = service.abort_lane(&lane);
+        assert_eq!(aborted, 1);
+
+        let connection = db.connect().expect("connection");
+        let message = AgentMessageStore::new(&connection)
+            .expect("store")
+            .get_by_message_id(&enqueued.message.message_id)
+            .expect("message")
+            .expect("message exists");
+        assert_eq!(message.status, AgentMessageStatus::Failed);
+        assert!(
+            message
+                .last_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("interrupted")
+        );
+
+        let retried = service
+            .retry_failed(&enqueued.message.message_id, "user-1", "project-1", 1)
+            .expect("retry")
+            .expect("retried message");
+        assert_eq!(retried.status, AgentMessageStatus::Pending);
+
         prompt_queue.stop().await;
     }
 }
