@@ -230,6 +230,7 @@ pub fn reconcile_completed_review_handoffs(
                  FROM action_jobs j
                  WHERE j.job_kind = 'pull_request_review'
                    AND j.requires_agent_handoff = 1
+                   AND j.agent_handoff_ready = 1
                    AND j.status IN ('completed', 'failed')
                    AND j.superseded_at IS NULL
                    AND j.issue_id IS NOT NULL AND j.issue_id > 0
@@ -962,11 +963,11 @@ mod tests {
                    (id, project_id, lane_generation, job_kind, issue_id, issue_title,
                     status, branch, base_sha, head_sha, current_step, pr_number, pr_url,
                     auth_user_id, chat_session_id, created_at, updated_at,
-                    requires_agent_handoff)
+                    requires_agent_handoff, agent_handoff_ready)
                  VALUES ('job-terminal', 'project-1', 1, 'pull_request_review', 648,
                          'Durable handoffs', 'completed', 'codex/issue-648', 'base', 'head',
                          'PASS: verified', 649, 'https://github.com/Andy963/ads/pull/649',
-                         'user-1', 'acopilot', ?1, ?1, 1)",
+                         'user-1', 'acopilot', ?1, ?1, 1, 1)",
                 params![now],
             )
             .expect("action job");
@@ -976,12 +977,12 @@ mod tests {
                    (id, project_id, lane_generation, job_kind, issue_id, issue_title,
                     status, branch, base_sha, head_sha, current_step, pr_number, pr_url,
                     auth_user_id, chat_session_id, created_at, updated_at,
-                    requires_agent_handoff)
+                    requires_agent_handoff, agent_handoff_ready)
                  VALUES ('job-error', 'project-1', 1, 'pull_request_review', 648,
                          'Durable handoffs', 'failed', 'codex/issue-648', 'base', 'head',
                          'Review job failed before producing an authoritative verdict', 649,
                          'https://github.com/Andy963/ads/pull/649', 'user-1', 'acopilot',
-                         ?1, ?1, 1)",
+                         ?1, ?1, 1, 1)",
                 params![now],
             )
             .expect("error action job");

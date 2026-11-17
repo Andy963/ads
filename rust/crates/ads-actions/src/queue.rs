@@ -677,6 +677,32 @@ impl ReviewQueue {
                 format!("action_step:{}:comment_failed", job.id),
                 LaneMessageRole::Status,
             );
+            return;
+        }
+        let ready = self.db.connect().and_then(|connection| {
+            connection
+                .execute(
+                    "UPDATE action_jobs
+                     SET agent_handoff_ready = 1, updated_at = ?1
+                     WHERE id = ?2 AND requires_agent_handoff = 1",
+                    rusqlite::params![now_ms(), job.id],
+                )
+                .map(|_| ())
+                .map_err(ads_state::StateError::from)
+        });
+        if let Err(error) = ready {
+            self.record_action_message(
+                job,
+                repo_path,
+                format!(
+                    "Marking the {} handoff ready for {} failed: {error}",
+                    status.as_str(),
+                    review_target_label(job)
+                ),
+                format!("action_step:{}:handoff_ready_failed", job.id),
+                LaneMessageRole::Status,
+            );
+            return;
         }
         if let Some(waker) = self.options.waker.clone() {
             waker(AcopilotWake {
