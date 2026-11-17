@@ -62,7 +62,8 @@ if (mode === "write") {
   leases.acquireReviewQueueLease(db, "project-1", "owner-b", 1_000, 3_000);
 }
 
-const jobs = actions.getActionJobs(db, "project-1");
-const queuedJobs = actions.getActionJobs(db, "project-1", "queued");
+const normalize = ({ transition_revision: _transitionRevision, ...job }: Record<string, unknown>) => job;
+const jobs = actions.getActionJobs(db, "project-1").map(normalize);
+const queuedJobs = actions.getActionJobs(db, "project-1", "queued").map(normalize);
 const lease = leases.getReviewQueueLease(db, "project-1");
 process.stdout.write(`${JSON.stringify({ jobs, queuedJobs, lease })}\n`);

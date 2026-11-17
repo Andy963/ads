@@ -1137,6 +1137,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         const issueId = Number(entry.issueId);
         const prNumber = Number(entry.prNumber);
         const content = String(entry.text ?? "").trim() || `Reviewer → Acopilot handoff ${messageId}`;
+        const transitionRevision = Number(entry.transitionRevision);
         const card: ChatItem = {
           id: messageId,
           role: "system",
@@ -1146,6 +1147,7 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           agentHandoff: {
             messageId,
             status,
+            ...(Number.isSafeInteger(transitionRevision) && transitionRevision > 0 ? { transitionRevision } : {}),
             fromLane: String(entry.fromLane ?? "actions"),
             fromRole: String(entry.fromRole ?? "reviewer"),
             toLane: String(entry.toLane ?? "acopilot"),
@@ -1162,7 +1164,11 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
         };
         const existingIndex = rt.messages.value.findIndex((message) => message.id === messageId);
         if (existingIndex >= 0) {
-          rt.messages.value = rt.messages.value.map((message, index) => index === existingIndex ? card : message);
+          const currentRevision = Number(rt.messages.value[existingIndex]?.agentHandoff?.transitionRevision ?? 0);
+          const incomingRevision = Number(card.agentHandoff?.transitionRevision ?? 0);
+          if (incomingRevision >= currentRevision) {
+            rt.messages.value = rt.messages.value.map((message, index) => index === existingIndex ? card : message);
+          }
         } else {
           pushMessageBeforeLive(card, rt);
         }

@@ -385,6 +385,8 @@ impl PromptQueueService {
                         ));
                     }
                 }
+                // A renewal loop that regains ownership must resume queued work.
+                service.reschedule_recoverable_lanes();
             }
         });
         *lock(&self.ownership_timer) = Some(handle);
@@ -429,6 +431,19 @@ impl PromptQueueService {
                 });
         if should_reschedule {
             self.schedule_lane(lane_key.to_string());
+        }
+    }
+
+    fn reschedule_recoverable_lanes(self: &Arc<Self>) {
+        let Ok(entries) = self.with_store(|store| store.list_recoverable()) else {
+            return;
+        };
+        let mut lanes = HashSet::new();
+        for entry in entries {
+            lanes.insert(entry_lane_key(&entry));
+        }
+        for lane_key in lanes {
+            self.schedule_lane(lane_key);
         }
     }
 

@@ -156,7 +156,7 @@ pub(crate) fn publish_agent_message_event(
                 lane_key: &message.history_key,
                 event_type: AGENT_MESSAGE_EVENT,
                 event_id: Some(&format!("agent_message:{}", message.message_id)),
-                revision: Some(agent_message_status_revision(message.status)),
+                revision: Some(message.transition_revision),
                 payload: &payload,
                 ts: Some(ts),
                 run_id: None,
@@ -914,6 +914,7 @@ fn agent_message_event_payload(message: &AgentMessageRecord) -> Value {
         "baseSha": message.base_sha,
         "headSha": message.head_sha,
         "status": message.status.as_str(),
+        "transitionRevision": message.transition_revision,
         "attempts": message.attempts,
         "lastError": message.last_error,
         "text": message.payload.get("text").and_then(Value::as_str).unwrap_or(""),
@@ -921,16 +922,6 @@ fn agent_message_event_payload(message: &AgentMessageRecord) -> Value {
         "createdAt": message.created_at,
         "updatedAt": message.updated_at,
     })
-}
-
-fn agent_message_status_revision(status: AgentMessageStatus) -> i64 {
-    match status {
-        AgentMessageStatus::Pending => 1,
-        AgentMessageStatus::Running => 2,
-        AgentMessageStatus::Delivered => 3,
-        AgentMessageStatus::Failed => 4,
-        AgentMessageStatus::Superseded => 5,
-    }
 }
 
 fn review_verdict_prompt(input: &ReviewVerdictMessage<'_>) -> String {

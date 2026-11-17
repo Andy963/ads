@@ -31,6 +31,7 @@ export type ChatMessage = {
 export type AgentHandoff = {
   messageId: string;
   status: "pending" | "running" | "delivered" | "failed" | "superseded" | "unknown";
+  transitionRevision?: number;
   fromLane?: string;
   fromRole?: string;
   toLane?: string;

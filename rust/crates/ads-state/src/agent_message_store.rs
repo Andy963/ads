@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS agent_messages (
   attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
   last_error TEXT,
   source_created_at INTEGER NOT NULL,
+  transition_revision INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   claimed_at INTEGER,
@@ -151,6 +152,7 @@ pub struct AgentMessageRecord {
     pub attempts: i64,
     pub last_error: Option<String>,
     pub source_created_at: i64,
+    pub transition_revision: i64,
     pub created_at: i64,
     pub updated_at: i64,
     pub claimed_at: Option<i64>,
@@ -351,11 +353,11 @@ impl<'a> AgentMessageStore<'a> {
                history_key, logical_history_key, lane_namespace, lane_generation,
                workspace_root, from_lane, from_role, to_lane, to_role, kind,
                correlation_id, issue_id, issue_title, issue_url, pr_number, base_sha,
-               head_sha, payload_json, status, attempts, source_created_at,
+               head_sha, payload_json, status, attempts, source_created_at, transition_revision,
                created_at, updated_at
              ) VALUES (
                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-               ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, 0, ?25, ?26, ?27
+               ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, 0, ?25, ?26, ?27, ?28
              )",
             params![
                 input.message_id.trim(),
@@ -387,6 +389,7 @@ impl<'a> AgentMessageStore<'a> {
                     "pending"
                 },
                 input.source_created_at,
+                if incoming_superseded { 30 } else { 1 },
                 input.created_at,
                 now,
             ],
@@ -459,6 +462,7 @@ impl<'a> AgentMessageStore<'a> {
             "UPDATE agent_messages
              SET status = 'running', attempts = attempts + 1, claimed_at = ?1,
                  updated_at = ?1, last_error = NULL, lease_owner = ?2,
+                 transition_revision = transition_revision + 1,
                  lease_expires_at = ?3
              WHERE message_id = ?4
                AND (status = 'pending'
@@ -483,6 +487,7 @@ impl<'a> AgentMessageStore<'a> {
         let changed = self.connection.execute(
             "UPDATE agent_messages
              SET status = 'pending', updated_at = ?1, last_error = NULL,
+                 transition_revision = transition_revision + 1,
                  lease_owner = NULL, lease_expires_at = NULL
              WHERE message_id = ?2
                AND auth_user_id = ?3
@@ -560,7 +565,8 @@ impl<'a> AgentMessageStore<'a> {
     pub fn mark_superseded(&self, message_id: &str, now: i64) -> StateResult<bool> {
         Ok(self.connection.execute(
             "UPDATE agent_messages
-             SET status = 'superseded', updated_at = ?1, lease_owner = NULL, lease_expires_at = NULL
+             SET status = 'superseded', updated_at = ?1, lease_owner = NULL, lease_expires_at = NULL,
+                 transition_revision = transition_revision + 1
              WHERE message_id = ?2
                AND (status IN ('pending', 'failed')
                     OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?1)))",
@@ -577,6 +583,7 @@ impl<'a> AgentMessageStore<'a> {
         let changed = self.connection.execute(
             "UPDATE agent_messages
              SET status = 'superseded', updated_at = ?1,
+                 transition_revision = transition_revision + 1,
                  lease_owner = NULL, lease_expires_at = NULL
              WHERE message_id = ?2 AND status = 'running' AND lease_owner = ?3",
             params![now, message_id, worker_id],
@@ -599,7 +606,8 @@ impl<'a> AgentMessageStore<'a> {
             "UPDATE agent_messages
              SET status = ?1, updated_at = ?2, last_error = ?3,
                  delivered_at = CASE WHEN ?1 = 'delivered' THEN ?2 ELSE delivered_at END,
-                 lease_owner = NULL, lease_expires_at = NULL
+                 lease_owner = NULL, lease_expires_at = NULL,
+                 transition_revision = transition_revision + 1
              WHERE message_id = ?4 AND status = 'running' AND lease_owner = ?5
                AND lease_expires_at > ?2
                AND agent_messages.lane_generation = COALESCE((
@@ -665,6 +673,7 @@ fn map_agent_message(row: &Row<'_>) -> rusqlite::Result<AgentMessageRecord> {
         attempts: row.get("attempts")?,
         last_error: row.get("last_error")?,
         source_created_at: row.get("source_created_at")?,
+        transition_revision: row.get("transition_revision")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         claimed_at: row.get("claimed_at")?,

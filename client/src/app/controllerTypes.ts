@@ -157,6 +157,7 @@ export type ChatItem = {
   agentHandoff?: {
     messageId: string;
     status: "pending" | "running" | "delivered" | "failed" | "superseded" | "unknown";
+    transitionRevision?: number;
     fromLane?: string;
     fromRole?: string;
     toLane?: string;

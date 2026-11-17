@@ -158,6 +158,36 @@ fn coalesced_snapshots_replace_the_previous_row_at_a_new_sequence() {
 }
 
 #[test]
+fn coalesced_snapshots_reject_stale_revisions() {
+    let (db, _directory) = open_state();
+    let mut connection = db.connect().expect("connection");
+    let store = SyncEventStore::default();
+    for (revision, text) in [(2, "new"), (1, "stale")] {
+        store
+            .append_coalesced(
+                &mut connection,
+                AppendSyncEvent {
+                    namespace: "chat",
+                    lane_key: "lane-1",
+                    event_type: "agent_message",
+                    event_id: Some("message-1"),
+                    revision: Some(revision),
+                    payload: &json!({"status": text}),
+                    ts: Some(revision),
+                    run_id: None,
+                },
+            )
+            .expect("append");
+    }
+    let events = store
+        .read_coalesced(&connection, "chat", "lane-1", Some("agent_message"))
+        .expect("coalesced");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].revision, 2);
+    assert_eq!(events[0].payload["status"], json!("new"));
+}
+
+#[test]
 fn durable_retention_advances_the_truncation_watermark() {
     let (db, _directory) = open_state();
     let mut connection = db.connect().expect("connection");

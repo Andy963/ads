@@ -212,6 +212,9 @@ pub(crate) fn migrate_state(connection: &Connection, from: i64, to: i64) -> Stat
     if from < 46 {
         migrate_state_46(&transaction)?;
     }
+    if from < 47 {
+        migrate_state_47(&transaction)?;
+    }
     transaction.execute(
         "UPDATE schema_version SET version = ?1, updated_at = datetime('now') WHERE id = 1",
         params![to],
@@ -2101,6 +2104,50 @@ fn migrate_state_46(connection: &Connection) -> StateResult<()> {
             [],
         )?;
     }
+    Ok(())
+}
+
+fn migrate_state_47(connection: &Connection) -> StateResult<()> {
+    if !column_exists(connection, "agent_messages", "transition_revision")? {
+        connection.execute(
+            "ALTER TABLE agent_messages
+             ADD COLUMN transition_revision INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    connection.execute(
+        "UPDATE agent_messages
+         SET transition_revision = CASE status
+           WHEN 'pending' THEN 1
+           WHEN 'running' THEN 2
+           WHEN 'delivered' THEN 10
+           WHEN 'failed' THEN 20
+           WHEN 'superseded' THEN 30
+           ELSE 0 END",
+        [],
+    )?;
+    connection.execute(
+        "UPDATE action_jobs AS j
+         SET requires_agent_handoff = 1
+         WHERE j.job_kind = 'pull_request_review'
+           AND j.status IN ('completed', 'failed')
+           AND j.superseded_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM action_jobs newer
+             WHERE newer.job_kind = j.job_kind
+               AND newer.project_id = j.project_id
+               AND COALESCE(newer.pr_number, 0) = COALESCE(j.pr_number, 0)
+               AND COALESCE(newer.branch, '') = CASE
+                     WHEN COALESCE(j.pr_number, 0) > 0 THEN ''
+                     ELSE COALESCE(j.branch, '')
+                   END
+               AND newer.status IN ('completed', 'failed')
+               AND newer.superseded_at IS NULL
+               AND (newer.created_at > j.created_at
+                    OR (newer.created_at = j.created_at AND newer.id > j.id))
+           )",
+        [],
+    )?;
     Ok(())
 }
 
