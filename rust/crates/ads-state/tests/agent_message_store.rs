@@ -171,6 +171,84 @@ fn failed_handoff_can_be_explicitly_retried() {
 }
 
 #[test]
+fn superseded_review_job_is_not_recoverable() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let connection = db.connect().expect("connection");
+    let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:job-recover", 100);
+    store
+        .enqueue(message("review-verdict:job-recover", "head", 100), 100)
+        .expect("handoff");
+
+    assert_eq!(store.list_recoverable(110).expect("recoverable").len(), 1);
+    connection
+        .execute(
+            "UPDATE action_jobs SET superseded_at = ?1 WHERE id = ?2",
+            params![120, "review-verdict:job-recover"],
+        )
+        .expect("supersede job");
+
+    assert!(store.list_recoverable(130).expect("recoverable").is_empty());
+}
+
+#[test]
+fn superseded_review_job_cannot_be_retried() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let connection = db.connect().expect("connection");
+    let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:job-retry-superseded", 100);
+    store
+        .enqueue(
+            message("review-verdict:job-retry-superseded", "head", 100),
+            100,
+        )
+        .expect("handoff");
+    store
+        .claim("review-verdict:job-retry-superseded", "worker-1", 200, 110)
+        .expect("claim")
+        .expect("claimed");
+    store
+        .mark_failed(
+            "review-verdict:job-retry-superseded",
+            "worker-1",
+            "model unavailable",
+            120,
+        )
+        .expect("failed")
+        .expect("failed message");
+    connection
+        .execute(
+            "UPDATE action_jobs SET superseded_at = ?1 WHERE id = ?2",
+            params![130, "review-verdict:job-retry-superseded"],
+        )
+        .expect("supersede job");
+
+    assert!(
+        store
+            .retry_failed(
+                "review-verdict:job-retry-superseded",
+                "user-1",
+                "project-1",
+                "acopilot",
+                1,
+                140,
+            )
+            .expect("retry")
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .get_by_message_id("review-verdict:job-retry-superseded")
+            .expect("message")
+            .expect("message exists")
+            .status,
+        AgentMessageStatus::Failed
+    );
+}
+
+#[test]
 fn running_handoff_can_be_superseded_when_the_lane_resets() {
     let directory = tempdir().expect("temp dir");
     let db = StateDb::open(directory.path().join("state.db")).expect("state db");

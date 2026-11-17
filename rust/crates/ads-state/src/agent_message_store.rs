@@ -413,8 +413,17 @@ impl<'a> AgentMessageStore<'a> {
     pub fn list_recoverable(&self, now: i64) -> StateResult<Vec<AgentMessageRecord>> {
         let mut statement = self.connection.prepare(
             "SELECT * FROM agent_messages
-             WHERE status = 'pending'
-                OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?1))
+             WHERE (status = 'pending'
+                OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?1)))
+               AND (
+                 kind <> 'review_verdict'
+                 OR EXISTS (
+                   SELECT 1
+                   FROM action_jobs j
+                   WHERE j.id = agent_messages.correlation_id
+                     AND j.superseded_at IS NULL
+                 )
+               )
              ORDER BY id ASC",
         )?;
         let rows = statement.query_map(params![now], map_agent_message)?;
@@ -494,7 +503,16 @@ impl<'a> AgentMessageStore<'a> {
                AND project_id = ?4
                AND to_lane = ?5
                AND lane_generation = ?6
-               AND status = 'failed'",
+               AND status = 'failed'
+               AND (
+                 kind <> 'review_verdict'
+                 OR EXISTS (
+                   SELECT 1
+                   FROM action_jobs j
+                   WHERE j.id = agent_messages.correlation_id
+                     AND j.superseded_at IS NULL
+                 )
+               )",
             params![
                 now,
                 message_id,
