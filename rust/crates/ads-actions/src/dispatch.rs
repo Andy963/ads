@@ -97,6 +97,7 @@ pub fn dispatch_review_job(
             id: Uuid::new_v4().to_string(),
             project_id,
             lane_generation: Some(lane_generation),
+            acopilot_lane_generation: request.lane_generation.max(1),
             job_kind: ActionJobKind::PullRequestReview,
             issue_id: issue_id_from_branch(Some(&branch)).unwrap_or(0),
             issue_title: String::new(),

@@ -118,6 +118,7 @@ pub struct AcopilotWake {
     pub status: IssueVerdictStatus,
     pub job_id: String,
     pub source_created_at: i64,
+    pub lane_generation: i64,
     pub head_sha: Option<String>,
 }
 

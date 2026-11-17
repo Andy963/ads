@@ -35,6 +35,7 @@ pub struct ReviewVerdictMessage<'a> {
     pub status: &'a str,
     pub job_id: &'a str,
     pub source_created_at: i64,
+    pub lane_generation: i64,
 }
 
 pub fn enqueue_review_verdict_message(
@@ -56,13 +57,15 @@ pub fn enqueue_review_verdict_message(
     }
     let mut connection = db.connect().map_err(|error| error.to_string())?;
     let logical_key = logical_history_key(auth_user_id, project_id, ACOPILOT_CHAT_SESSION_ID);
-    let generation = get_lane_generation(
+    let current_generation = get_lane_generation(
         &mut connection,
         WEB_ACOPILOT_NAMESPACE,
         &logical_key,
         ads_contract::time::now_unix_millis(),
     )
     .map_err(|error| error.to_string())?;
+    let generation = input.lane_generation.max(1);
+    let force_superseded = current_generation != generation;
     let history_key = history_key_for_generation(&logical_key, generation);
     let message_id = format!("review-verdict:{job_id}");
     let text = review_verdict_prompt(&input);
@@ -112,6 +115,7 @@ pub fn enqueue_review_verdict_message(
                 head_sha: input.head_sha.map(str::to_string),
                 payload,
                 source_created_at: input.source_created_at,
+                force_superseded,
                 created_at: now,
             },
             now,
@@ -219,7 +223,7 @@ pub fn reconcile_completed_review_handoffs(
             .prepare(
                 "SELECT j.id, j.project_id, j.auth_user_id, j.issue_id, j.issue_title,
                         j.pr_number, j.base_sha, j.head_sha, j.pr_url, j.current_step,
-                        j.created_at, j.status,
+                        j.created_at, j.status, j.acopilot_lane_generation,
                         (SELECT p.workspace_root FROM web_projects p
                          WHERE p.user_id = j.auth_user_id AND p.project_id = j.project_id
                          ORDER BY p.updated_at DESC LIMIT 1)
@@ -255,7 +259,8 @@ pub fn reconcile_completed_review_handoffs(
                     row.get::<_, Option<String>>(9)?,
                     row.get::<_, i64>(10)?,
                     row.get::<_, String>(11)?,
-                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, i64>(12)?,
+                    row.get::<_, Option<String>>(13)?,
                 ))
             })
             .map_err(|error| error.to_string())?
@@ -278,6 +283,7 @@ pub fn reconcile_completed_review_handoffs(
         current_step,
         source_created_at,
         action_status,
+        lane_generation,
         workspace_root,
     ) in records
     {
@@ -319,6 +325,7 @@ pub fn reconcile_completed_review_handoffs(
                 status,
                 job_id: &job_id,
                 source_created_at,
+                lane_generation,
             },
         )?;
         if !result.duplicate {
@@ -602,7 +609,12 @@ impl AgentMessageService {
             self.prompt_queue.release_reserved_lane(&lane);
             return;
         }
-        let heartbeat = self.spawn_heartbeat(message.message_id.clone(), entry.clone());
+        let lease_lost = Arc::new(AtomicBool::new(false));
+        let heartbeat = self.spawn_heartbeat(
+            message.message_id.clone(),
+            entry.clone(),
+            Arc::clone(&lease_lost),
+        );
         let db = self.db.clone();
         let hub = Arc::clone(&self.hub);
         let event_entry = entry.clone();
@@ -625,7 +637,7 @@ impl AgentMessageService {
             Err(error) => Err(error),
         };
         heartbeat.abort();
-        if !self.prompt_queue.is_owner() {
+        if lease_lost.load(Ordering::SeqCst) || !self.prompt_queue.is_owner() {
             self.active
                 .lock()
                 .expect("agent message active lock")
@@ -678,6 +690,7 @@ impl AgentMessageService {
         &self,
         message_id: String,
         entry: PromptQueueEntry,
+        lease_lost: Arc<AtomicBool>,
     ) -> tokio::task::JoinHandle<()> {
         let db = self.db.clone();
         let worker_id = self.worker_id.clone();
@@ -689,20 +702,27 @@ impl AgentMessageService {
             loop {
                 ticker.tick().await;
                 if !prompt_queue.is_owner() {
+                    lease_lost.store(true, Ordering::SeqCst);
                     runner.abort_run(&entry);
                     return;
                 }
                 let now = ads_contract::time::now_unix_millis();
                 let Ok(connection) = db.connect() else {
+                    lease_lost.store(true, Ordering::SeqCst);
+                    runner.abort_run(&entry);
                     return;
                 };
                 let Ok(store) = AgentMessageStore::new(&connection) else {
+                    lease_lost.store(true, Ordering::SeqCst);
+                    runner.abort_run(&entry);
                     return;
                 };
                 if !store
                     .renew(&message_id, &worker_id, now + LANE_TURN_LEASE_MS, now)
                     .unwrap_or(false)
                 {
+                    lease_lost.store(true, Ordering::SeqCst);
+                    runner.abort_run(&entry);
                     return;
                 }
             }
@@ -887,7 +907,7 @@ mod tests {
         PromptQueueFuture, PromptQueueRunOutcome, PromptQueueRunner, PromptQueueService,
         PromptQueueServiceOptions, PromptRunContext,
     };
-    use ads_state::{PromptQueueEntry, StateDb, StateResult};
+    use ads_state::{PromptQueueEntry, StateDb, StateResult, bump_lane_generation};
     use rusqlite::params;
     use tempfile::tempdir;
 
@@ -1012,9 +1032,53 @@ mod tests {
                 status,
                 job_id: "job-1",
                 source_created_at: 1,
+                lane_generation: 1,
             });
             assert!(prompt.contains(expected), "status={status} prompt={prompt}");
         }
+    }
+
+    #[test]
+    fn stale_origin_generation_creates_only_a_superseded_handoff() {
+        let directory = tempdir().expect("temp dir");
+        let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+        let hub = WebSocketHub::new(crate::WebSocketConfig::default());
+        let mut connection = db.connect().expect("connection");
+        bump_lane_generation(
+            &mut connection,
+            WEB_ACOPILOT_NAMESPACE,
+            "user-1::project-1::acopilot",
+            ads_contract::time::now_unix_millis(),
+        )
+        .expect("bump generation");
+
+        enqueue_review_verdict_message(
+            &db,
+            &hub,
+            ReviewVerdictMessage {
+                auth_user_id: "user-1",
+                project_id: "project-1",
+                workspace_root: "/repo",
+                issue_id: 7,
+                issue_title: "Review handoff",
+                issue_url: Some("https://github.com/example/issues/7"),
+                pr_number: Some(12),
+                base_sha: Some("base"),
+                head_sha: Some("head"),
+                status: "PASS",
+                job_id: "job-stale-generation",
+                source_created_at: 1,
+                lane_generation: 1,
+            },
+        )
+        .expect("enqueue");
+
+        let message = AgentMessageStore::new(&connection)
+            .expect("store")
+            .get_by_message_id("review-verdict:job-stale-generation")
+            .expect("message")
+            .expect("message exists");
+        assert_eq!(message.status, AgentMessageStatus::Superseded);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1060,6 +1124,7 @@ mod tests {
                 status: "PASS",
                 job_id: "job-1",
                 source_created_at: 1,
+                lane_generation: 1,
             },
         )
         .expect("enqueue");
@@ -1081,6 +1146,7 @@ mod tests {
                 status: "PASS",
                 job_id: "job-1",
                 source_created_at: 1,
+                lane_generation: 1,
             },
         )
         .expect("duplicate");

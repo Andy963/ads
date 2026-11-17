@@ -62,6 +62,7 @@ fn test_app() -> TestApp {
                 id: "job-1".to_string(),
                 project_id: project_id.clone(),
                 lane_generation: Some(2),
+                acopilot_lane_generation: 1,
                 job_kind: ActionJobKind::PullRequestReview,
                 issue_id: 7,
                 issue_title: "Fix the bug".to_string(),

@@ -35,6 +35,7 @@ fn message(id: &str, head: &str, created_at: i64) -> NewAgentMessage {
         head_sha: Some(head.to_string()),
         payload: payload("Reviewer handoff"),
         source_created_at: created_at,
+        force_superseded: false,
         created_at,
     }
 }
@@ -197,6 +198,33 @@ fn newer_review_supersedes_an_older_running_handoff() {
             .expect("old exists")
             .status,
         AgentMessageStatus::Superseded
+    );
+}
+
+#[test]
+fn expired_owner_cannot_renew_or_write_a_terminal_state() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let connection = db.connect().expect("connection");
+    let store = AgentMessageStore::new(&connection).expect("store");
+    store
+        .enqueue(message("review-verdict:job-expired", "head", 100), 100)
+        .expect("handoff");
+    store
+        .claim("review-verdict:job-expired", "worker-1", 200, 110)
+        .expect("claim")
+        .expect("claimed");
+
+    assert!(
+        !store
+            .renew("review-verdict:job-expired", "worker-1", 300, 200)
+            .expect("expired renew")
+    );
+    assert!(
+        store
+            .mark_delivered("review-verdict:job-expired", "worker-1", 200)
+            .expect("expired terminal")
+            .is_none()
     );
 }
 

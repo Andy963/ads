@@ -206,6 +206,9 @@ pub(crate) fn migrate_state(connection: &Connection, from: i64, to: i64) -> Stat
     if from < 44 {
         migrate_state_44(&transaction)?;
     }
+    if from < 45 {
+        migrate_state_45(&transaction)?;
+    }
     transaction.execute(
         "UPDATE schema_version SET version = ?1, updated_at = datetime('now') WHERE id = 1",
         params![to],
@@ -2073,6 +2076,17 @@ fn migrate_state_44(connection: &Connection) -> StateResult<()> {
            )",
         [],
     )?;
+    Ok(())
+}
+
+fn migrate_state_45(connection: &Connection) -> StateResult<()> {
+    if !column_exists(connection, "action_jobs", "acopilot_lane_generation")? {
+        connection.execute(
+            "ALTER TABLE action_jobs
+             ADD COLUMN acopilot_lane_generation INTEGER NOT NULL DEFAULT 1",
+            [],
+        )?;
+    }
     Ok(())
 }
 

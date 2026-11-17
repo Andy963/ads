@@ -691,6 +691,7 @@ impl ReviewQueue {
                 status,
                 job_id: job.id.clone(),
                 source_created_at: job.created_at,
+                lane_generation: job.acopilot_lane_generation,
                 head_sha: job.head_sha.clone(),
             });
         }

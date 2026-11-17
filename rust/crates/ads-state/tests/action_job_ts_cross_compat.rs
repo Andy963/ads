@@ -57,6 +57,7 @@ fn job(id: &str, head: &str) -> CreateActionJob {
         id: id.to_string(),
         project_id: "project-1".to_string(),
         lane_generation: Some(0),
+        acopilot_lane_generation: 1,
         job_kind: ActionJobKind::PullRequestReview,
         issue_id: 11,
         issue_title: "Issue".to_string(),

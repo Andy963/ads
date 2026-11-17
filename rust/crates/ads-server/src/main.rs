@@ -163,6 +163,7 @@ fn build_review_queue(db: StateDb, hub: Arc<WebSocketHub>) -> Arc<ReviewQueue> {
                 status: wake.status.as_str(),
                 job_id: &wake.job_id,
                 source_created_at: wake.source_created_at,
+                lane_generation: wake.lane_generation,
                 head_sha: wake.head_sha.as_deref(),
             },
         );

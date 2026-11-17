@@ -596,6 +596,7 @@ async fn fails_interrupted_jobs_and_respects_external_leases() {
             id: "job-1".to_string(),
             project_id: project.clone(),
             lane_generation: Some(1),
+            acopilot_lane_generation: 1,
             job_kind: ActionJobKind::PullRequestReview,
             issue_id: 7,
             issue_title: "Fix".to_string(),

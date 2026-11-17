@@ -152,7 +152,7 @@ CREATE TABLE IF NOT EXISTS web_sessions (
 );
 "#;
 
-pub const STATE_SCHEMA_VERSION: i64 = 44;
+pub const STATE_SCHEMA_VERSION: i64 = 45;
 pub const WORKSPACE_SCHEMA_VERSION: i64 = 29;
 pub const SESSION_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 

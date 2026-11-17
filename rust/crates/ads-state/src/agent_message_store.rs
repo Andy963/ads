@@ -183,6 +183,7 @@ pub struct NewAgentMessage {
     pub head_sha: Option<String>,
     pub payload: Map<String, Value>,
     pub source_created_at: i64,
+    pub force_superseded: bool,
     pub created_at: i64,
 }
 
@@ -241,8 +242,8 @@ impl<'a> AgentMessageStore<'a> {
         }
 
         let mut superseded_ids = Vec::new();
-        let mut incoming_superseded = false;
-        if input.kind == "review_verdict" {
+        let mut incoming_superseded = input.force_superseded;
+        if input.kind == "review_verdict" && !input.force_superseded {
             incoming_superseded = transaction.query_row(
                 "SELECT EXISTS (
                    SELECT 1 FROM agent_messages
@@ -498,7 +499,8 @@ impl<'a> AgentMessageStore<'a> {
         Ok(self.connection.execute(
             "UPDATE agent_messages
              SET lease_expires_at = ?1, updated_at = ?2
-             WHERE message_id = ?3 AND status = 'running' AND lease_owner = ?4",
+             WHERE message_id = ?3 AND status = 'running' AND lease_owner = ?4
+               AND lease_expires_at > ?2",
             params![lease_expires_at, now, message_id, worker_id],
         )? == 1)
     }
@@ -577,7 +579,8 @@ impl<'a> AgentMessageStore<'a> {
              SET status = ?1, updated_at = ?2, last_error = ?3,
                  delivered_at = CASE WHEN ?1 = 'delivered' THEN ?2 ELSE delivered_at END,
                  lease_owner = NULL, lease_expires_at = NULL
-             WHERE message_id = ?4 AND status = 'running' AND lease_owner = ?5",
+             WHERE message_id = ?4 AND status = 'running' AND lease_owner = ?5
+               AND lease_expires_at > ?2",
             params![status, now, error, message_id, worker_id],
         )?;
         if changed == 0 {
