@@ -219,6 +219,21 @@ pub async fn reconcile_completed_review_handoffs(
     db: &StateDb,
     hub: &WebSocketHub,
 ) -> Result<usize, String> {
+    reconcile_completed_review_handoffs_with(db, hub, |repo_path, issue_id, job_id| async move {
+        review_verdict_comment_exists(&repo_path, issue_id, &job_id).await
+    })
+    .await
+}
+
+async fn reconcile_completed_review_handoffs_with<F, Fut>(
+    db: &StateDb,
+    hub: &WebSocketHub,
+    comment_exists: F,
+) -> Result<usize, String>
+where
+    F: Fn(String, i64, String) -> Fut + Send + Sync,
+    Fut: std::future::Future<Output = bool> + Send,
+{
     let connection = db.connect().map_err(|error| error.to_string())?;
     let records = {
         let mut statement = connection
@@ -314,10 +329,10 @@ pub async fn reconcile_completed_review_handoffs(
                 .starts_with("https://github.com/")
                 .then(|| format!("{}/issues/{issue_id}", repository_url.trim_end_matches('/')))
         });
+        if !comment_exists(workspace_root.clone(), issue_id, job_id.clone()).await {
+            continue;
+        }
         if handoff_ready != 1 {
-            if !review_verdict_comment_exists(&workspace_root, issue_id, &job_id).await {
-                continue;
-            }
             let marked = db
                 .connect()
                 .map_err(|error| error.to_string())?
@@ -1059,13 +1074,13 @@ mod tests {
         drop(connection);
 
         assert_eq!(
-            reconcile_completed_review_handoffs(&db, &hub)
+            reconcile_completed_review_handoffs_with(&db, &hub, |_, _, _| async { true })
                 .await
                 .expect("reconcile"),
             2
         );
         assert_eq!(
-            reconcile_completed_review_handoffs(&db, &hub)
+            reconcile_completed_review_handoffs_with(&db, &hub, |_, _, _| async { true })
                 .await
                 .expect("dedupe"),
             0
@@ -1119,6 +1134,16 @@ mod tests {
         let db = StateDb::open(directory.path().join("state.db")).expect("state db");
         let hub = WebSocketHub::new(crate::WebSocketConfig::default());
         let mut connection = db.connect().expect("connection");
+        connection
+            .execute(
+                "INSERT INTO action_jobs
+                   (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                    requires_agent_handoff)
+                 VALUES ('job-stale-generation', 'project-1', 'pull_request_review',
+                         'Review handoff', 'completed', 1, 1, 1)",
+                [],
+            )
+            .expect("review job");
         bump_lane_generation(
             &mut connection,
             WEB_ACOPILOT_NAMESPACE,
@@ -1182,6 +1207,19 @@ mod tests {
             runner.clone(),
         );
         service.start();
+
+        let connection = db.connect().expect("connection");
+        connection
+            .execute(
+                "INSERT INTO action_jobs
+                   (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                    requires_agent_handoff)
+                 VALUES ('job-1', 'project-1', 'pull_request_review',
+                         'Review handoff', 'completed', 1, 1, 1)",
+                [],
+            )
+            .expect("review job");
+        drop(connection);
 
         let enqueued = enqueue_review_verdict_message(
             &db,

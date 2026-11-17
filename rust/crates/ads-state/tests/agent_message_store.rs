@@ -1,4 +1,5 @@
 use ads_state::{AgentMessageStatus, AgentMessageStore, NewAgentMessage, StateDb};
+use rusqlite::{Connection, params};
 use serde_json::{Map, Value, json};
 use tempfile::tempdir;
 
@@ -40,12 +41,26 @@ fn message(id: &str, head: &str, created_at: i64) -> NewAgentMessage {
     }
 }
 
+fn seed_review_job(connection: &Connection, id: &str, now: i64) {
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO action_jobs
+               (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                requires_agent_handoff)
+             VALUES (?1, 'project-1', 'pull_request_review', 'Issue', 'completed', ?2, ?2, 1)",
+            params![id, now],
+        )
+        .expect("review job");
+}
+
 #[test]
 fn enqueue_is_idempotent_and_supersedes_older_pending_heads() {
     let directory = tempdir().expect("temp dir");
     let db = StateDb::open(directory.path().join("state.db")).expect("state db");
     let connection = db.connect().expect("connection");
     let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:job-1", 100);
+    seed_review_job(&connection, "review-verdict:job-2", 300);
 
     let first = store
         .enqueue(message("review-verdict:job-1", "head-1", 100), 100)
@@ -87,6 +102,8 @@ fn delayed_older_review_cannot_replace_a_newer_handoff() {
     let db = StateDb::open(directory.path().join("state.db")).expect("state db");
     let connection = db.connect().expect("connection");
     let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:job-new", 300);
+    seed_review_job(&connection, "review-verdict:job-old", 200);
 
     store
         .enqueue(message("review-verdict:job-new", "head-new", 300), 300)
@@ -113,6 +130,7 @@ fn failed_handoff_can_be_explicitly_retried() {
     let db = StateDb::open(directory.path().join("state.db")).expect("state db");
     let connection = db.connect().expect("connection");
     let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:job-retry", 100);
     store
         .enqueue(message("review-verdict:job-retry", "head", 100), 100)
         .expect("handoff");
@@ -158,6 +176,7 @@ fn running_handoff_can_be_superseded_when_the_lane_resets() {
     let db = StateDb::open(directory.path().join("state.db")).expect("state db");
     let connection = db.connect().expect("connection");
     let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:job-reset", 100);
     store
         .enqueue(message("review-verdict:job-reset", "head", 100), 100)
         .expect("handoff");
@@ -179,6 +198,8 @@ fn newer_review_supersedes_an_older_running_handoff() {
     let db = StateDb::open(directory.path().join("state.db")).expect("state db");
     let connection = db.connect().expect("connection");
     let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:job-old", 100);
+    seed_review_job(&connection, "review-verdict:job-new", 200);
     store
         .enqueue(message("review-verdict:job-old", "head-old", 100), 100)
         .expect("old handoff");
@@ -207,6 +228,7 @@ fn expired_owner_cannot_renew_or_write_a_terminal_state() {
     let db = StateDb::open(directory.path().join("state.db")).expect("state db");
     let connection = db.connect().expect("connection");
     let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:job-expired", 100);
     store
         .enqueue(message("review-verdict:job-expired", "head", 100), 100)
         .expect("handoff");
@@ -234,6 +256,7 @@ fn claim_lifecycle_uses_leases_and_marks_terminal_state() {
     let db = StateDb::open(directory.path().join("state.db")).expect("state db");
     let connection = db.connect().expect("connection");
     let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:job-1", 100);
     store
         .enqueue(message("review-verdict:job-1", "head-1", 100), 100)
         .expect("handoff");

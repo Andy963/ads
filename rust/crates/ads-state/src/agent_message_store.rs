@@ -240,6 +240,22 @@ impl<'a> AgentMessageStore<'a> {
                 superseded_ids: Vec::new(),
             });
         }
+        if input.kind == "review_verdict" {
+            let still_current: bool = transaction.query_row(
+                "SELECT EXISTS (
+                   SELECT 1 FROM action_jobs
+                   WHERE id = ?1 AND superseded_at IS NULL
+                 )",
+                params![input.correlation_id.trim()],
+                |row| row.get(0),
+            )?;
+            if !still_current {
+                transaction.commit()?;
+                return Err(StateError::InvalidInput(
+                    "Review job was superseded before its handoff was enqueued".to_string(),
+                ));
+            }
+        }
 
         let mut superseded_ids = Vec::new();
         let mut incoming_superseded = input.force_superseded;

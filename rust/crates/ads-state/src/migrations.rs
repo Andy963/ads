@@ -2101,13 +2101,6 @@ fn migrate_state_46(connection: &Connection) -> StateResult<()> {
             [],
         )?;
     }
-    connection.execute(
-        "UPDATE action_jobs
-         SET agent_handoff_ready = 1
-         WHERE requires_agent_handoff = 1
-           AND status IN ('completed', 'failed')",
-        [],
-    )?;
     Ok(())
 }
 
