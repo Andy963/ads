@@ -44,7 +44,21 @@ if (tests.length === 0) {
     },
   );
   if (result.error) throw result.error;
-  process.exitCode = result.status ?? 1;
+  if (result.status !== 0) {
+    process.exitCode = result.status ?? 1;
+  } else if (fs.existsSync(path.join(root, "rust", "Cargo.toml"))) {
+    const cargoResult = spawnSync(
+      "cargo",
+      ["test", "--workspace", "--", "--test-threads=2"],
+      {
+        cwd: path.join(root, "rust"),
+        env: { ...process.env, CARGO_BUILD_JOBS: "2" },
+        stdio: "inherit",
+      },
+    );
+    if (cargoResult.error) throw cargoResult.error;
+    process.exitCode = cargoResult.status ?? 1;
+  }
 }
 
 try {
