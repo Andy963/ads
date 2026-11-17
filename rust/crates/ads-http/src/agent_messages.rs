@@ -5,9 +5,9 @@ use std::time::Duration;
 
 use ads_runtime::{PromptQueueRunner, PromptQueueService, PromptRunContext};
 use ads_state::{
-    AgentMessageRecord, AgentMessageStatus, AgentMessageStore, EnqueueAgentMessageResult,
-    NewAgentMessage, PromptQueueEntry, PromptQueueLane, PromptQueueStatus, StateDb,
-    WEB_ACOPILOT_NAMESPACE, get_lane_generation, history_key_for_generation, logical_history_key,
+    AgentMessageRecord, AgentMessageStore, EnqueueAgentMessageResult, NewAgentMessage,
+    PromptQueueEntry, PromptQueueLane, PromptQueueStatus, StateDb, WEB_ACOPILOT_NAMESPACE,
+    get_lane_generation, history_key_for_generation, logical_history_key,
 };
 use rusqlite::params;
 use serde_json::{Map, Value, json};
@@ -577,10 +577,9 @@ impl AgentMessageService {
             .collect::<Vec<_>>();
         for entry in active {
             let still_running = self
-                .with_store(|store| store.get_by_message_id(&entry.client_message_id))
+                .with_store(|store| store.is_current_running(&entry.client_message_id))
                 .ok()
-                .flatten()
-                .is_some_and(|message| message.status == AgentMessageStatus::Running);
+                .unwrap_or(false);
             if !still_running {
                 self.runner.abort_run(&entry);
             }
@@ -657,7 +656,7 @@ impl AgentMessageService {
         entry: PromptQueueEntry,
         lane: PromptQueueLane,
     ) {
-        let current_generation = match self.generation_is_current(&message) {
+        let current_generation = match self.execution_is_current(&message) {
             Ok(current) => current,
             Err(error) => {
                 self.report(format!(
@@ -733,7 +732,7 @@ impl AgentMessageService {
             return;
         }
         let now = ads_contract::time::now_unix_millis();
-        let current_generation = match self.generation_is_current(&message) {
+        let current_generation = match self.execution_is_current(&message) {
             Ok(current) => current,
             Err(error) => {
                 self.report(format!(
@@ -830,16 +829,23 @@ impl AgentMessageService {
         })
     }
 
-    fn generation_is_current(&self, message: &AgentMessageRecord) -> Result<bool, String> {
+    fn execution_is_current(&self, message: &AgentMessageRecord) -> Result<bool, String> {
         let mut connection = self.db.connect().map_err(|error| error.to_string())?;
-        get_lane_generation(
+        let generation_current = get_lane_generation(
             &mut connection,
             &message.lane_namespace,
             &message.logical_history_key,
             ads_contract::time::now_unix_millis(),
         )
         .map(|generation| generation == message.lane_generation)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+        if !generation_current {
+            return Ok(false);
+        }
+        AgentMessageStore::new(&connection)
+            .map_err(|error| error.to_string())?
+            .is_current_running(&message.message_id)
+            .map_err(|error| error.to_string())
     }
 
     fn with_store<T>(
@@ -1001,7 +1007,9 @@ mod tests {
         PromptQueueFuture, PromptQueueRunOutcome, PromptQueueRunner, PromptQueueService,
         PromptQueueServiceOptions, PromptRunContext,
     };
-    use ads_state::{PromptQueueEntry, StateDb, StateResult, bump_lane_generation};
+    use ads_state::{
+        AgentMessageStatus, PromptQueueEntry, StateDb, StateResult, bump_lane_generation,
+    };
     use tempfile::tempdir;
 
     use super::*;

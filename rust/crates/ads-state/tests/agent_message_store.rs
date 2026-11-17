@@ -330,6 +330,50 @@ fn expired_owner_cannot_renew_or_write_a_terminal_state() {
 }
 
 #[test]
+fn superseded_review_job_cannot_be_renewed_or_completed() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let connection = db.connect().expect("connection");
+    let store = AgentMessageStore::new(&connection).expect("store");
+    seed_review_job(&connection, "review-verdict:job-running-stale", 100);
+    store
+        .enqueue(
+            message("review-verdict:job-running-stale", "head", 100),
+            100,
+        )
+        .expect("handoff");
+    store
+        .claim("review-verdict:job-running-stale", "worker-1", 200, 110)
+        .expect("claim")
+        .expect("claimed");
+    connection
+        .execute(
+            "UPDATE action_jobs SET superseded_at = ?1 WHERE id = ?2",
+            params![120, "review-verdict:job-running-stale"],
+        )
+        .expect("supersede job");
+
+    assert!(
+        !store
+            .renew("review-verdict:job-running-stale", "worker-1", 300, 130)
+            .expect("renew")
+    );
+    let terminal = store
+        .mark_delivered("review-verdict:job-running-stale", "worker-1", 140)
+        .expect("terminal")
+        .expect("message");
+    assert_eq!(terminal.status, AgentMessageStatus::Superseded);
+    assert_eq!(
+        store
+            .get_by_message_id("review-verdict:job-running-stale")
+            .expect("message")
+            .expect("message exists")
+            .status,
+        AgentMessageStatus::Superseded
+    );
+}
+
+#[test]
 fn claim_lifecycle_uses_leases_and_marks_terminal_state() {
     let directory = tempdir().expect("temp dir");
     let db = StateDb::open(directory.path().join("state.db")).expect("state db");

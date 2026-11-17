@@ -477,7 +477,15 @@ impl<'a> AgentMessageStore<'a> {
                  lease_expires_at = ?3
              WHERE message_id = ?4
                AND (status = 'pending'
-                    OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?1)))",
+                    OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?1)))
+               AND (
+                 kind <> 'review_verdict'
+                 OR EXISTS (
+                   SELECT 1 FROM action_jobs j
+                   WHERE j.id = agent_messages.correlation_id
+                     AND j.superseded_at IS NULL
+                 )
+               )",
             params![now, worker_id, lease_expires_at, message_id],
         )?;
         if changed == 0 {
@@ -546,9 +554,36 @@ impl<'a> AgentMessageStore<'a> {
                  SELECT generation FROM web_lane_generations
                  WHERE namespace = agent_messages.lane_namespace
                    AND lane_key = agent_messages.logical_history_key
-               ), 1)",
+               ), 1)
+               AND (
+                 kind <> 'review_verdict'
+                 OR EXISTS (
+                   SELECT 1 FROM action_jobs j
+                   WHERE j.id = agent_messages.correlation_id
+                     AND j.superseded_at IS NULL
+                 )
+               )",
             params![lease_expires_at, now, message_id, worker_id],
         )? == 1)
+    }
+
+    pub fn is_current_running(&self, message_id: &str) -> StateResult<bool> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS (
+               SELECT 1 FROM agent_messages m
+               WHERE m.message_id = ?1 AND m.status = 'running'
+                 AND (
+                   m.kind <> 'review_verdict'
+                   OR EXISTS (
+                     SELECT 1 FROM action_jobs j
+                     WHERE j.id = m.correlation_id
+                       AND j.superseded_at IS NULL
+                   )
+                 )
+             )",
+            params![message_id],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn mark_delivered(
@@ -600,7 +635,27 @@ impl<'a> AgentMessageStore<'a> {
         worker_id: &str,
         now: i64,
     ) -> StateResult<Option<AgentMessageRecord>> {
-        let changed = self.connection.execute(
+        let transaction = self.connection.unchecked_transaction()?;
+        let superseded = transaction.execute(
+            "UPDATE agent_messages
+             SET status = 'superseded', updated_at = ?1,
+                 transition_revision = transition_revision + 1,
+                 lease_owner = NULL, lease_expires_at = NULL
+             WHERE message_id = ?2 AND status = 'running' AND lease_owner = ?3
+               AND kind = 'review_verdict'
+               AND NOT EXISTS (
+                 SELECT 1 FROM action_jobs j
+                 WHERE j.id = agent_messages.correlation_id
+                   AND j.superseded_at IS NULL
+               )",
+            params![now, message_id, worker_id],
+        )?;
+        if superseded > 0 {
+            let message = get_agent_message_by_id_on(&transaction, message_id)?;
+            transaction.commit()?;
+            return Ok(message);
+        }
+        let changed = transaction.execute(
             "UPDATE agent_messages
              SET status = 'superseded', updated_at = ?1,
                  transition_revision = transition_revision + 1,
@@ -609,9 +664,12 @@ impl<'a> AgentMessageStore<'a> {
             params![now, message_id, worker_id],
         )?;
         if changed == 0 {
+            transaction.commit()?;
             return Ok(None);
         }
-        self.get_by_message_id(message_id)
+        let message = get_agent_message_by_id_on(&transaction, message_id)?;
+        transaction.commit()?;
+        Ok(message)
     }
 
     fn finish(
@@ -622,7 +680,34 @@ impl<'a> AgentMessageStore<'a> {
         error: Option<&str>,
         now: i64,
     ) -> StateResult<Option<AgentMessageRecord>> {
-        let changed = self.connection.execute(
+        let transaction = self.connection.unchecked_transaction()?;
+        let review_superseded = transaction.query_row(
+            "SELECT EXISTS (
+                   SELECT 1 FROM agent_messages m
+                   WHERE m.message_id = ?1 AND m.kind = 'review_verdict'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM action_jobs j
+                       WHERE j.id = m.correlation_id
+                         AND j.superseded_at IS NULL
+                     )
+                 )",
+            params![message_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if review_superseded {
+            transaction.execute(
+                "UPDATE agent_messages
+                 SET status = 'superseded', updated_at = ?1,
+                     transition_revision = transition_revision + 1,
+                     lease_owner = NULL, lease_expires_at = NULL
+                 WHERE message_id = ?2 AND status = 'running' AND lease_owner = ?3",
+                params![now, message_id, worker_id],
+            )?;
+            let message = get_agent_message_by_id_on(&transaction, message_id)?;
+            transaction.commit()?;
+            return Ok(message);
+        }
+        let changed = transaction.execute(
             "UPDATE agent_messages
              SET status = ?1, updated_at = ?2, last_error = ?3,
                  delivered_at = CASE WHEN ?1 = 'delivered' THEN ?2 ELSE delivered_at END,
@@ -638,9 +723,12 @@ impl<'a> AgentMessageStore<'a> {
             params![status, now, error, message_id, worker_id],
         )?;
         if changed == 0 {
+            transaction.commit()?;
             return Ok(None);
         }
-        self.get_by_message_id(message_id)
+        let message = get_agent_message_by_id_on(&transaction, message_id)?;
+        transaction.commit()?;
+        Ok(message)
     }
 }
 

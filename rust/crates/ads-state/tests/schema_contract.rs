@@ -213,6 +213,33 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
 }
 
 #[test]
+fn checked_in_state_contract_matches_the_runtime_version() {
+    let directory = tempdir().expect("temp dir");
+    let path = directory.path().join("state.db");
+    StateDb::open(&path).expect("state db");
+    let connection = Connection::open(&path).expect("connection");
+    let contract: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type = 'table' AND name = 'agent_messages'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("agent message contract");
+    assert!(contract.contains("transition_revision"));
+    let contract_sql = include_str!("../../../contracts/sqlite/state.sql");
+    assert!(
+        contract_sql.contains(&format!("-- schema_version: {STATE_SCHEMA_VERSION}")),
+        "checked-in state contract must match STATE_SCHEMA_VERSION"
+    );
+    let manifest = include_str!("../../../contracts/sqlite/manifest.json");
+    assert!(
+        manifest.contains(&format!("\"schema_version\": {STATE_SCHEMA_VERSION}")),
+        "checked-in manifest must match STATE_SCHEMA_VERSION"
+    );
+}
+
+#[test]
 fn refuses_to_open_a_future_schema_version() {
     let directory = tempdir().expect("temp dir");
     let path = directory.path().join("stale.db");
