@@ -321,7 +321,9 @@ impl<'a> AgentMessageStore<'a> {
             if !superseded_ids.is_empty() {
                 transaction.execute(
                     "UPDATE agent_messages
-                     SET status = 'superseded', updated_at = ?1, lease_owner = NULL, lease_expires_at = NULL
+                     SET status = 'superseded', updated_at = ?1,
+                         transition_revision = transition_revision + 1,
+                         lease_owner = NULL, lease_expires_at = NULL
                      WHERE auth_user_id = ?2
                        AND project_id = ?3
                        AND to_lane = ?4

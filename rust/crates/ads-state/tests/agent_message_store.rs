@@ -281,7 +281,7 @@ fn newer_review_supersedes_an_older_running_handoff() {
     store
         .enqueue(message("review-verdict:job-old", "head-old", 100), 100)
         .expect("old handoff");
-    store
+    let claimed = store
         .claim("review-verdict:job-old", "worker-1", 200, 110)
         .expect("claim")
         .expect("claimed");
@@ -290,13 +290,14 @@ fn newer_review_supersedes_an_older_running_handoff() {
         .enqueue(message("review-verdict:job-new", "head-new", 200), 200)
         .expect("new handoff");
     assert_eq!(newer.superseded_ids, vec!["review-verdict:job-old"]);
+    let superseded = store
+        .get_by_message_id("review-verdict:job-old")
+        .expect("old message")
+        .expect("old exists");
+    assert_eq!(superseded.status, AgentMessageStatus::Superseded);
     assert_eq!(
-        store
-            .get_by_message_id("review-verdict:job-old")
-            .expect("old message")
-            .expect("old exists")
-            .status,
-        AgentMessageStatus::Superseded
+        superseded.transition_revision,
+        claimed.transition_revision + 1
     );
 }
 
