@@ -203,6 +203,9 @@ pub(crate) fn migrate_state(connection: &Connection, from: i64, to: i64) -> Stat
     if from < 43 {
         migrate_state_43(&transaction)?;
     }
+    if from < 44 {
+        migrate_state_44(&transaction)?;
+    }
     transaction.execute(
         "UPDATE schema_version SET version = ?1, updated_at = datetime('now') WHERE id = 1",
         params![to],
@@ -2035,6 +2038,24 @@ fn migrate_state_43(connection: &Connection) -> StateResult<()> {
             REVIEW_ACTION_INSTRUCTION,
         )
     })
+}
+
+fn migrate_state_44(connection: &Connection) -> StateResult<()> {
+    if !column_exists(connection, "action_jobs", "requires_agent_handoff")? {
+        connection.execute(
+            "ALTER TABLE action_jobs
+             ADD COLUMN requires_agent_handoff INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    connection.execute(
+        "UPDATE action_jobs
+         SET requires_agent_handoff = 1
+         WHERE job_kind = 'pull_request_review'
+           AND status IN ('queued', 'running', 'verifying', 'reviewing', 'waiting_merge')",
+        [],
+    )?;
+    Ok(())
 }
 
 pub(crate) fn migrate_workspace(connection: &Connection, from: i64, to: i64) -> StateResult<()> {

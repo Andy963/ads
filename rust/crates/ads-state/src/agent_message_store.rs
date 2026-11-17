@@ -252,9 +252,9 @@ impl<'a> AgentMessageStore<'a> {
                      AND kind = ?4
                      AND issue_id IS ?5
                      AND pr_number IS ?6
-                     AND source_created_at > ?7
+                     AND (source_created_at > ?7
+                          OR (source_created_at = ?7 AND message_id > ?8))
                      AND status <> 'superseded'
-                     AND message_id <> ?8
                  )",
                 params![
                     input.auth_user_id,
@@ -278,8 +278,9 @@ impl<'a> AgentMessageStore<'a> {
                    AND kind = ?4
                    AND issue_id IS ?5
                    AND pr_number IS ?6
-                   AND source_created_at < ?7
-                   AND status IN ('pending', 'failed')
+                   AND (source_created_at < ?7
+                        OR (source_created_at = ?7 AND message_id < ?8))
+                   AND status IN ('pending', 'failed', 'running')
                    AND message_id <> ?8",
             )?;
             superseded_ids = statement
@@ -308,8 +309,9 @@ impl<'a> AgentMessageStore<'a> {
                        AND kind = ?5
                        AND issue_id IS ?6
                        AND pr_number IS ?7
-                       AND source_created_at < ?8
-                       AND status IN ('pending', 'failed')
+                       AND (source_created_at < ?8
+                            OR (source_created_at = ?8 AND message_id < ?9))
+                       AND status IN ('pending', 'failed', 'running')
                        AND message_id <> ?9",
                     params![
                         now,

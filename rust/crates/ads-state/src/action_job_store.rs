@@ -176,6 +176,7 @@ pub struct ActionJobRecord {
     pub blocked_at: Option<i64>,
     pub superseded_at: Option<i64>,
     pub superseded_by_job_id: Option<String>,
+    pub requires_agent_handoff: i64,
     pub auth_user_id: Option<String>,
     pub chat_session_id: Option<String>,
     pub created_at: i64,
@@ -292,8 +293,10 @@ pub fn create_action_job(
            id, project_id, lane_generation, job_kind, issue_id, issue_title, issue_snapshot_json,
            verification_report_json, status, branch, base_sha, head_sha, reviewer_profile_ids_json,
            current_step, steps_json, review_verdicts_json, attempts_json, pr_number, pr_url,
-           error_message, rework_count, blocked_at, auth_user_id, chat_session_id, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, NULL, '[]', '[]', '[]', ?, ?, NULL, 0, NULL, ?, ?, ?, ?)",
+           error_message, rework_count, blocked_at, auth_user_id, chat_session_id, created_at,
+           updated_at, requires_agent_handoff
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, NULL, '[]', '[]', '[]', ?, ?, NULL, 0, NULL, ?, ?, ?, ?,
+                   CASE WHEN ? = 'pull_request_review' THEN 1 ELSE 0 END)",
         params![
             job.id,
             job.project_id,
@@ -313,6 +316,7 @@ pub fn create_action_job(
             job.chat_session_id,
             now,
             now,
+            job.job_kind,
         ],
     )?;
     get_action_job(connection, &job.id)?.ok_or_else(|| {
@@ -533,6 +537,7 @@ fn action_job_from_row(row: &Row<'_>) -> rusqlite::Result<ActionJobRecord> {
         blocked_at: row.get("blocked_at")?,
         superseded_at: row.get("superseded_at")?,
         superseded_by_job_id: row.get("superseded_by_job_id")?,
+        requires_agent_handoff: row.get("requires_agent_handoff")?,
         auth_user_id: row.get("auth_user_id")?,
         chat_session_id: row.get("chat_session_id")?,
         created_at: row.get("created_at")?,

@@ -173,6 +173,34 @@ fn running_handoff_can_be_superseded_when_the_lane_resets() {
 }
 
 #[test]
+fn newer_review_supersedes_an_older_running_handoff() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let connection = db.connect().expect("connection");
+    let store = AgentMessageStore::new(&connection).expect("store");
+    store
+        .enqueue(message("review-verdict:job-old", "head-old", 100), 100)
+        .expect("old handoff");
+    store
+        .claim("review-verdict:job-old", "worker-1", 200, 110)
+        .expect("claim")
+        .expect("claimed");
+
+    let newer = store
+        .enqueue(message("review-verdict:job-new", "head-new", 200), 200)
+        .expect("new handoff");
+    assert_eq!(newer.superseded_ids, vec!["review-verdict:job-old"]);
+    assert_eq!(
+        store
+            .get_by_message_id("review-verdict:job-old")
+            .expect("old message")
+            .expect("old exists")
+            .status,
+        AgentMessageStatus::Superseded
+    );
+}
+
+#[test]
 fn claim_lifecycle_uses_leases_and_marks_terminal_state() {
     let directory = tempdir().expect("temp dir");
     let db = StateDb::open(directory.path().join("state.db")).expect("state db");

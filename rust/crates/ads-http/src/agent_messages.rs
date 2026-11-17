@@ -9,7 +9,6 @@ use ads_state::{
     NewAgentMessage, PromptQueueEntry, PromptQueueLane, PromptQueueStatus, StateDb,
     WEB_ACOPILOT_NAMESPACE, get_lane_generation, history_key_for_generation, logical_history_key,
 };
-use rusqlite::params;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
@@ -22,8 +21,6 @@ const LANE_TURN_LEASE_MS: i64 = 60_000;
 const LANE_TURN_RENEW_MS: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 const WEB_USER_ID_PREFIX: i64 = 0x7000_0000_0000;
-const HANDOFF_CUTOVER_NAMESPACE: &str = "agent_messages";
-const HANDOFF_CUTOVER_KEY: &str = "review_handoff_cutover_at";
 
 pub struct ReviewVerdictMessage<'a> {
     pub auth_user_id: &'a str,
@@ -217,52 +214,34 @@ pub fn reconcile_completed_review_handoffs(
     hub: &WebSocketHub,
 ) -> Result<usize, String> {
     let connection = db.connect().map_err(|error| error.to_string())?;
-    let now = ads_contract::time::now_unix_millis();
-    let initial_cutover = now.saturating_sub(5 * 60_000);
-    connection
-        .execute(
-            "INSERT OR IGNORE INTO kv_state (namespace, key, value, updated_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                HANDOFF_CUTOVER_NAMESPACE,
-                HANDOFF_CUTOVER_KEY,
-                initial_cutover.to_string(),
-                now
-            ],
-        )
-        .map_err(|error| error.to_string())?;
-    let cutover: String = connection
-        .query_row(
-            "SELECT value FROM kv_state WHERE namespace = ?1 AND key = ?2",
-            params![HANDOFF_CUTOVER_NAMESPACE, HANDOFF_CUTOVER_KEY],
-            |row| row.get(0),
-        )
-        .map_err(|error| error.to_string())?;
-    let cutover = cutover
-        .trim()
-        .parse::<i64>()
-        .map_err(|error| format!("invalid review handoff cutover: {error}"))?;
     let records = {
         let mut statement = connection
             .prepare(
                 "SELECT j.id, j.project_id, j.auth_user_id, j.issue_id, j.issue_title,
                         j.pr_number, j.base_sha, j.head_sha, j.pr_url, j.current_step,
-                        j.created_at,
+                        j.created_at, j.status,
                         (SELECT p.workspace_root FROM web_projects p
                          WHERE p.user_id = j.auth_user_id AND p.project_id = j.project_id
                          ORDER BY p.updated_at DESC LIMIT 1)
                  FROM action_jobs j
                  WHERE j.job_kind = 'pull_request_review'
-                   AND j.status = 'completed'
+                   AND j.requires_agent_handoff = 1
+                   AND j.status IN ('completed', 'failed')
                    AND j.superseded_at IS NULL
-                   AND j.updated_at >= ?1
                    AND j.issue_id IS NOT NULL AND j.issue_id > 0
                    AND j.auth_user_id IS NOT NULL AND j.auth_user_id <> ''
+                   AND NOT EXISTS (
+                     SELECT 1 FROM agent_messages m
+                     WHERE m.auth_user_id = j.auth_user_id
+                       AND m.project_id = j.project_id
+                       AND m.kind = 'review_verdict'
+                       AND m.correlation_id = j.id
+                   )
                  ORDER BY j.created_at ASC",
             )
             .map_err(|error| error.to_string())?;
         statement
-            .query_map(params![cutover], |row| {
+            .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -275,7 +254,8 @@ pub fn reconcile_completed_review_handoffs(
                     row.get::<_, Option<String>>(8)?,
                     row.get::<_, Option<String>>(9)?,
                     row.get::<_, i64>(10)?,
-                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, Option<String>>(12)?,
                 ))
             })
             .map_err(|error| error.to_string())?
@@ -297,16 +277,25 @@ pub fn reconcile_completed_review_handoffs(
         pr_url,
         current_step,
         source_created_at,
+        action_status,
         workspace_root,
     ) in records
     {
-        let (Some(auth_user_id), Some(issue_id), Some(workspace_root), Some(current_step)) =
-            (auth_user_id, issue_id, workspace_root, current_step)
+        let (Some(auth_user_id), Some(issue_id), Some(workspace_root)) =
+            (auth_user_id, issue_id, workspace_root)
         else {
             continue;
         };
-        let Some(status) = review_verdict_status_from_step(&current_step) else {
-            continue;
+        let status = if action_status == "failed" {
+            "ERROR"
+        } else {
+            let Some(status) = current_step
+                .as_deref()
+                .and_then(review_verdict_status_from_step)
+            else {
+                continue;
+            };
+            status
         };
         let issue_url = pr_url.as_deref().and_then(|url| {
             let (repository_url, _) = url.trim().split_once("/pull/")?;
@@ -397,6 +386,7 @@ impl AgentMessageService {
                 if service.stopped.load(Ordering::SeqCst) {
                     return;
                 }
+                service.abort_superseded_active_turns();
                 if !service.prompt_queue.is_owner() {
                     continue;
                 }
@@ -495,6 +485,26 @@ impl AgentMessageService {
             publish_agent_message_event(&self.db, &self.hub, message);
         }
         Ok(retried)
+    }
+
+    fn abort_superseded_active_turns(&self) {
+        let active = self
+            .active
+            .lock()
+            .expect("agent message active lock")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for entry in active {
+            let still_running = self
+                .with_store(|store| store.get_by_message_id(&entry.client_message_id))
+                .ok()
+                .flatten()
+                .is_some_and(|message| message.status == AgentMessageStatus::Running);
+            if !still_running {
+                self.runner.abort_run(&entry);
+            }
+        }
     }
 
     fn dispatch(self: &Arc<Self>, message: AgentMessageRecord) {
@@ -852,6 +862,7 @@ mod tests {
         PromptQueueServiceOptions, PromptRunContext,
     };
     use ads_state::{PromptQueueEntry, StateDb, StateResult};
+    use rusqlite::params;
     use tempfile::tempdir;
 
     use super::*;
@@ -904,19 +915,35 @@ mod tests {
                 "INSERT INTO action_jobs
                    (id, project_id, lane_generation, job_kind, issue_id, issue_title,
                     status, branch, base_sha, head_sha, current_step, pr_number, pr_url,
-                    auth_user_id, chat_session_id, created_at, updated_at)
+                    auth_user_id, chat_session_id, created_at, updated_at,
+                    requires_agent_handoff)
                  VALUES ('job-terminal', 'project-1', 1, 'pull_request_review', 648,
                          'Durable handoffs', 'completed', 'codex/issue-648', 'base', 'head',
                          'PASS: verified', 649, 'https://github.com/Andy963/ads/pull/649',
-                         'user-1', 'acopilot', ?1, ?1)",
+                         'user-1', 'acopilot', ?1, ?1, 1)",
                 params![now],
             )
             .expect("action job");
+        connection
+            .execute(
+                "INSERT INTO action_jobs
+                   (id, project_id, lane_generation, job_kind, issue_id, issue_title,
+                    status, branch, base_sha, head_sha, current_step, pr_number, pr_url,
+                    auth_user_id, chat_session_id, created_at, updated_at,
+                    requires_agent_handoff)
+                 VALUES ('job-error', 'project-1', 1, 'pull_request_review', 648,
+                         'Durable handoffs', 'failed', 'codex/issue-648', 'base', 'head',
+                         'Review job failed before producing an authoritative verdict', 649,
+                         'https://github.com/Andy963/ads/pull/649', 'user-1', 'acopilot',
+                         ?1, ?1, 1)",
+                params![now],
+            )
+            .expect("error action job");
         drop(connection);
 
         assert_eq!(
             reconcile_completed_review_handoffs(&db, &hub).expect("reconcile"),
-            1
+            2
         );
         assert_eq!(
             reconcile_completed_review_handoffs(&db, &hub).expect("dedupe"),
@@ -930,6 +957,12 @@ mod tests {
             .expect("message exists");
         assert_eq!(message.status, AgentMessageStatus::Pending);
         assert_eq!(message.source_created_at, now);
+        let error_message = AgentMessageStore::new(&connection)
+            .expect("store")
+            .get_by_message_id("review-verdict:job-error")
+            .expect("message")
+            .expect("error message exists");
+        assert_eq!(error_message.payload["reviewStatus"], "ERROR");
     }
 
     #[test]
