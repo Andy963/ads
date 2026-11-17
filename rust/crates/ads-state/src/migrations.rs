@@ -5,6 +5,7 @@ use regex::Regex;
 use rusqlite::types::{Value, ValueRef};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde::Serialize;
+use serde_json::{Value as JsonValue, json};
 
 use crate::{StateError, StateResult, column_exists, table_exists};
 
@@ -2155,20 +2156,20 @@ fn migrate_state_47(connection: &Connection) -> StateResult<()> {
 }
 
 fn migrate_state_48(connection: &Connection) -> StateResult<()> {
-    if table_exists(connection, "action_jobs")? && table_exists(connection, "prompt_queue")? {
+    if table_exists(connection, "prompt_queue")? && table_exists(connection, "agent_messages")? {
+        migrate_legacy_review_wakes(connection)?;
+    }
+    if table_exists(connection, "action_jobs")? {
         connection.execute(
             "UPDATE action_jobs AS j
-             SET requires_agent_handoff = CASE WHEN EXISTS (
-                   SELECT 1 FROM prompt_queue q
-                   WHERE q.payload_json LIKE '%\"origin\":\"system\"%'
-                     AND q.payload_json LIKE '%ads:review-verdict%'
-                     AND instr(q.payload_json, 'Job ' || j.id) > 0
-                 ) THEN 0 ELSE 1 END,
+             SET requires_agent_handoff = 1,
                  agent_handoff_ready = CASE WHEN EXISTS (
-                   SELECT 1 FROM prompt_queue q
-                   WHERE q.payload_json LIKE '%\"origin\":\"system\"%'
-                     AND q.payload_json LIKE '%ads:review-verdict%'
-                     AND instr(q.payload_json, 'Job ' || j.id) > 0
+                   SELECT 1 FROM agent_messages m
+                   WHERE m.project_id = j.project_id
+                     AND (j.auth_user_id IS NULL OR m.auth_user_id = j.auth_user_id)
+                     AND (j.chat_session_id IS NULL OR m.chat_session_id = j.chat_session_id)
+                     AND m.kind = 'review_verdict'
+                     AND m.correlation_id = j.id
                  ) THEN 1 ELSE 0 END
              WHERE j.job_kind = 'pull_request_review'
                AND j.status IN ('completed', 'failed')
@@ -2185,6 +2186,257 @@ fn migrate_state_48(connection: &Connection) -> StateResult<()> {
         )?;
     }
     Ok(())
+}
+
+fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
+    let rows = {
+        let mut statement = connection.prepare(
+            "SELECT client_message_id, auth_user_id, user_id, session_id, chat_session_id,
+                    history_key, logical_history_key, lane_namespace, lane_generation,
+                    workspace_root, payload_json, status, created_at, updated_at
+             FROM prompt_queue
+             WHERE payload_json LIKE '%\"origin\":\"system\"%'
+               AND payload_json LIKE '%ads:review-verdict%'
+             ORDER BY created_at DESC, id DESC",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok(LegacyReviewWake {
+                    client_message_id: row.get(0)?,
+                    auth_user_id: row.get(1)?,
+                    user_id: row.get(2)?,
+                    session_id: row.get(3)?,
+                    chat_session_id: row.get(4)?,
+                    history_key: row.get(5)?,
+                    logical_history_key: row.get(6)?,
+                    lane_namespace: row.get(7)?,
+                    lane_generation: row.get::<_, i64>(8)?.max(1),
+                    workspace_root: row.get(9)?,
+                    payload_json: row.get(10)?,
+                    status: row.get(11)?,
+                    created_at: row.get(12)?,
+                    updated_at: row.get(13)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    for wake in rows {
+        let payload = serde_json::from_str::<JsonValue>(&wake.payload_json).unwrap_or_default();
+        let text = payload
+            .get("text")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("Reviewer verdict handoff")
+            .to_string();
+        let job_id = extract_handoff_job_id(&text);
+        let job = job_id
+            .as_deref()
+            .and_then(|job_id| load_handoff_job(connection, job_id).transpose())
+            .transpose()?;
+        let issue_id = job
+            .as_ref()
+            .and_then(|job| job.issue_id)
+            .or_else(|| extract_handoff_number(&text, "Issue #"));
+        let pr_number = job
+            .as_ref()
+            .and_then(|job| job.pr_number)
+            .or_else(|| extract_handoff_number(&text, "PR #"));
+        let review_status = extract_handoff_status(&text);
+        let issue_url = job.as_ref().and_then(|job| job.issue_url(issue_id));
+        let issue_title = job
+            .as_ref()
+            .map(|job| job.issue_title.clone())
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| "Reviewer verdict".to_string());
+        let correlation_id = job_id.unwrap_or_else(|| format!("legacy:{}", wake.client_message_id));
+        let task_status = if job.as_ref().and_then(|job| job.superseded_at).is_some() {
+            "superseded"
+        } else if wake.status == "completed" {
+            "delivered"
+        } else if wake.status == "queued" {
+            "pending"
+        } else {
+            "failed"
+        };
+        let revision = match task_status {
+            "delivered" => 10,
+            "failed" => 20,
+            "superseded" => 30,
+            "pending" => 1,
+            _ => 0,
+        };
+        let agent_payload = json!({
+            "text": text,
+            "origin": "agent",
+            "agentId": "codex",
+            "reviewStatus": review_status,
+            "issueId": issue_id,
+            "issueUrl": issue_url,
+            "prNumber": pr_number,
+            "jobId": job.as_ref().map(|job| job.id.as_str()),
+            "baseSha": job.as_ref().and_then(|job| job.base_sha.as_deref()),
+            "headSha": job.as_ref().and_then(|job| job.head_sha.as_deref()),
+            "verdictComment": {
+                "marker": "ads:review-verdict",
+                "issueId": issue_id,
+                "jobId": job.as_ref().map(|job| job.id.as_str()),
+                "baseSha": job.as_ref().and_then(|job| job.base_sha.as_deref()),
+                "headSha": job.as_ref().and_then(|job| job.head_sha.as_deref())
+            },
+            "legacyClientMessageId": wake.client_message_id
+        });
+        connection.execute(
+            "INSERT OR IGNORE INTO agent_messages (
+               message_id, auth_user_id, user_id, project_id, chat_session_id,
+               history_key, logical_history_key, lane_namespace, lane_generation,
+               workspace_root, from_lane, from_role, to_lane, to_role, kind,
+               correlation_id, issue_id, issue_title, issue_url, pr_number, base_sha,
+               head_sha, payload_json, status, attempts, last_error, source_created_at,
+               transition_revision, created_at, updated_at, claimed_at, delivered_at
+             ) VALUES (
+               ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'actions', 'reviewer',
+               'acopilot', 'acopilot', 'review_verdict', ?11, ?12, ?13, ?14, ?15,
+               ?16, ?17, ?18, ?19, 0, ?20, ?21, ?22, ?23, ?24,
+               CASE WHEN ?19 = 'running' THEN ?24 ELSE NULL END,
+               CASE WHEN ?19 = 'delivered' THEN ?24 ELSE NULL END
+             )",
+            params![
+                format!("review-verdict:{correlation_id}"),
+                &wake.auth_user_id,
+                wake.user_id,
+                job.as_ref()
+                    .map(|job| job.project_id.as_str())
+                    .unwrap_or(&wake.session_id),
+                &wake.chat_session_id,
+                &wake.history_key,
+                &wake.logical_history_key,
+                &wake.lane_namespace,
+                wake.lane_generation,
+                &wake.workspace_root,
+                &correlation_id,
+                issue_id,
+                &issue_title,
+                issue_url,
+                pr_number,
+                job.as_ref().and_then(|job| job.base_sha.as_deref()),
+                job.as_ref().and_then(|job| job.head_sha.as_deref()),
+                serde_json::to_string(&agent_payload).map_err(|error| {
+                    StateError::InvalidInput(format!("legacy handoff payload: {error}"))
+                })?,
+                &task_status,
+                if task_status == "failed" {
+                    Some("Legacy request did not complete before the durable handoff migration")
+                } else {
+                    None
+                },
+                wake.created_at.max(1),
+                revision,
+                wake.created_at,
+                wake.updated_at,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+struct LegacyReviewWake {
+    client_message_id: String,
+    auth_user_id: String,
+    user_id: i64,
+    session_id: String,
+    chat_session_id: String,
+    history_key: String,
+    logical_history_key: String,
+    lane_namespace: String,
+    lane_generation: i64,
+    workspace_root: String,
+    payload_json: String,
+    status: String,
+    created_at: i64,
+    updated_at: i64,
+}
+
+struct LegacyHandoffJob {
+    id: String,
+    project_id: String,
+    issue_id: Option<i64>,
+    issue_title: String,
+    pr_number: Option<i64>,
+    pr_url: Option<String>,
+    base_sha: Option<String>,
+    head_sha: Option<String>,
+    superseded_at: Option<i64>,
+}
+
+impl LegacyHandoffJob {
+    fn issue_url(&self, issue_id: Option<i64>) -> Option<String> {
+        let issue_id = issue_id?;
+        let pr_url = self.pr_url.as_deref()?.trim();
+        let (repository_url, _) = pr_url.split_once("/pull/")?;
+        let repository_url = repository_url.trim_end_matches('/');
+        repository_url
+            .starts_with("https://github.com/")
+            .then(|| format!("{repository_url}/issues/{issue_id}"))
+    }
+}
+
+fn load_handoff_job(
+    connection: &Connection,
+    job_id: &str,
+) -> StateResult<Option<LegacyHandoffJob>> {
+    connection
+        .query_row(
+            "SELECT id, project_id, issue_id, issue_title, pr_number, pr_url,
+                    base_sha, head_sha, superseded_at
+             FROM action_jobs WHERE id = ?1",
+            params![job_id],
+            |row| {
+                Ok(LegacyHandoffJob {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    issue_id: row.get(2)?,
+                    issue_title: row.get(3)?,
+                    pr_number: row.get(4)?,
+                    pr_url: row.get(5)?,
+                    base_sha: row.get(6)?,
+                    head_sha: row.get(7)?,
+                    superseded_at: row.get(8)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(StateError::from)
+}
+
+fn extract_handoff_job_id(text: &str) -> Option<String> {
+    for marker in ["Job ", "Job: "] {
+        let start = text.find(marker)? + marker.len();
+        let token = text[start..]
+            .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
+            .next()
+            .unwrap_or_default();
+        if !token.is_empty() {
+            return Some(token.to_string());
+        }
+    }
+    None
+}
+
+fn extract_handoff_number(text: &str, marker: &str) -> Option<i64> {
+    let start = text.find(marker)? + marker.len();
+    let digits = text[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>();
+    digits.parse().ok().filter(|value| *value > 0)
+}
+
+fn extract_handoff_status(text: &str) -> &'static str {
+    for status in ["PASS", "REJECT", "INCOMPLETE", "ERROR"] {
+        if text.contains(status) {
+            return status;
+        }
+    }
+    "INCOMPLETE"
 }
 
 pub(crate) fn migrate_workspace(connection: &Connection, from: i64, to: i64) -> StateResult<()> {

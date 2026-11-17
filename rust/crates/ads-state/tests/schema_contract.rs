@@ -127,9 +127,9 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
     connection
         .execute(
             "INSERT INTO action_jobs
-               (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+               (id, project_id, job_kind, issue_id, issue_title, status, created_at, updated_at,
                 requires_agent_handoff, agent_handoff_ready)
-             VALUES ('completed-review', 'project-1', 'pull_request_review', 'Completed',
+             VALUES ('completed-review', 'project-1', 'pull_request_review', 7, 'Completed',
                      'completed', 1, 1, 1, 1)",
             [],
         )
@@ -137,9 +137,9 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
     connection
         .execute(
             "INSERT INTO action_jobs
-               (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+               (id, project_id, job_kind, issue_id, issue_title, status, created_at, updated_at,
                 requires_agent_handoff, agent_handoff_ready)
-             VALUES ('consumed-review', 'project-1', 'pull_request_review', 'Consumed',
+             VALUES ('consumed-review', 'project-1', 'pull_request_review', 7, 'Consumed',
                      'completed', 1, 1, 1, 0)",
             [],
         )
@@ -220,7 +220,18 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("consumed review flags");
-    assert_eq!(consumed_flags, (0, 1));
+    assert_eq!(consumed_flags, (1, 1));
+    let migrated_handoff: (String, i64, String) = connection
+        .query_row(
+            "SELECT status, issue_id, correlation_id FROM agent_messages
+             WHERE message_id = 'review-verdict:consumed-review'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("migrated legacy handoff");
+    assert_eq!(migrated_handoff.0, "pending");
+    assert_eq!(migrated_handoff.1, 7);
+    assert_eq!(migrated_handoff.2, "consumed-review");
     let active_required: i64 = connection
         .query_row(
             "SELECT requires_agent_handoff FROM action_jobs WHERE id = 'active-review'",
