@@ -1119,6 +1119,11 @@ impl NativePromptRunner {
     fn add_error_history(&self, entry: &PromptQueueEntry, message: &str) -> NativeResult<()> {
         let connection = self.options.db.connect()?;
         let history = self.history(&entry.lane_namespace);
+        let kind = if entry.payload.get("origin").and_then(Value::as_str) == Some("agent") {
+            format!("agent_message_error:{}", entry.client_message_id)
+        } else {
+            "error".to_string()
+        };
         history.add(
             &connection,
             &entry.history_key,
@@ -1126,7 +1131,7 @@ impl NativePromptRunner {
                 role: "status".to_string(),
                 text: message.to_string(),
                 ts: now_ms(),
-                kind: Some("error".to_string()),
+                kind: Some(kind),
             },
         )?;
         Ok(())

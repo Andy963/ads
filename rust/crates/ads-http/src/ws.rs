@@ -2412,9 +2412,18 @@ async fn refresh_lane_generation(connection: &mut ConnectionContext<'_>) {
 }
 
 fn abort_prompt_queue_lane(connection: &ConnectionContext<'_>) -> usize {
-    connection.state.prompt_queue.as_ref().map_or(0, |service| {
-        service.abort_lane(&prompt_queue_lane(&connection.lane))
-    })
+    let lane = prompt_queue_lane(&connection.lane);
+    let prompt_turns = connection
+        .state
+        .prompt_queue
+        .as_ref()
+        .map_or(0, |service| service.abort_lane(&lane));
+    let agent_turns = connection
+        .state
+        .agent_messages
+        .as_ref()
+        .map_or(0, |service| service.abort_lane(&lane));
+    prompt_turns + agent_turns
 }
 
 fn derive_web_user_id(lane: &LaneBinding) -> i64 {

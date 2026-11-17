@@ -9,6 +9,7 @@ use ads_state::{
     NewAgentMessage, PromptQueueEntry, PromptQueueLane, PromptQueueStatus, StateDb,
     WEB_ACOPILOT_NAMESPACE, get_lane_generation, history_key_for_generation, logical_history_key,
 };
+use rusqlite::params;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
@@ -21,6 +22,8 @@ const LANE_TURN_LEASE_MS: i64 = 60_000;
 const LANE_TURN_RENEW_MS: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 const WEB_USER_ID_PREFIX: i64 = 0x7000_0000_0000;
+const HANDOFF_CUTOVER_NAMESPACE: &str = "agent_messages";
+const HANDOFF_CUTOVER_KEY: &str = "review_handoff_cutover_at";
 
 pub struct ReviewVerdictMessage<'a> {
     pub auth_user_id: &'a str,
@@ -194,6 +197,148 @@ pub fn agent_message_snapshots(
         .collect()
 }
 
+fn review_verdict_status_from_step(step: &str) -> Option<&'static str> {
+    let status = step.split(':').next()?.trim().to_uppercase();
+    if status == "PASS" {
+        Some("PASS")
+    } else if status == "REJECT" {
+        Some("REJECT")
+    } else if status == "INCOMPLETE" {
+        Some("INCOMPLETE")
+    } else if status == "ERROR" {
+        Some("ERROR")
+    } else {
+        None
+    }
+}
+
+pub fn reconcile_completed_review_handoffs(
+    db: &StateDb,
+    hub: &WebSocketHub,
+) -> Result<usize, String> {
+    let connection = db.connect().map_err(|error| error.to_string())?;
+    let now = ads_contract::time::now_unix_millis();
+    let initial_cutover = now.saturating_sub(5 * 60_000);
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO kv_state (namespace, key, value, updated_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                HANDOFF_CUTOVER_NAMESPACE,
+                HANDOFF_CUTOVER_KEY,
+                initial_cutover.to_string(),
+                now
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    let cutover: String = connection
+        .query_row(
+            "SELECT value FROM kv_state WHERE namespace = ?1 AND key = ?2",
+            params![HANDOFF_CUTOVER_NAMESPACE, HANDOFF_CUTOVER_KEY],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let cutover = cutover
+        .trim()
+        .parse::<i64>()
+        .map_err(|error| format!("invalid review handoff cutover: {error}"))?;
+    let records = {
+        let mut statement = connection
+            .prepare(
+                "SELECT j.id, j.project_id, j.auth_user_id, j.issue_id, j.issue_title,
+                        j.pr_number, j.base_sha, j.head_sha, j.pr_url, j.current_step,
+                        j.created_at,
+                        (SELECT p.workspace_root FROM web_projects p
+                         WHERE p.user_id = j.auth_user_id AND p.project_id = j.project_id
+                         ORDER BY p.updated_at DESC LIMIT 1)
+                 FROM action_jobs j
+                 WHERE j.job_kind = 'pull_request_review'
+                   AND j.status = 'completed'
+                   AND j.superseded_at IS NULL
+                   AND j.updated_at >= ?1
+                   AND j.issue_id IS NOT NULL AND j.issue_id > 0
+                   AND j.auth_user_id IS NOT NULL AND j.auth_user_id <> ''
+                 ORDER BY j.created_at ASC",
+            )
+            .map_err(|error| error.to_string())?;
+        statement
+            .query_map(params![cutover], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    drop(connection);
+
+    let mut created = 0usize;
+    for (
+        job_id,
+        project_id,
+        auth_user_id,
+        issue_id,
+        issue_title,
+        pr_number,
+        base_sha,
+        head_sha,
+        pr_url,
+        current_step,
+        source_created_at,
+        workspace_root,
+    ) in records
+    {
+        let (Some(auth_user_id), Some(issue_id), Some(workspace_root), Some(current_step)) =
+            (auth_user_id, issue_id, workspace_root, current_step)
+        else {
+            continue;
+        };
+        let Some(status) = review_verdict_status_from_step(&current_step) else {
+            continue;
+        };
+        let issue_url = pr_url.as_deref().and_then(|url| {
+            let (repository_url, _) = url.trim().split_once("/pull/")?;
+            repository_url
+                .starts_with("https://github.com/")
+                .then(|| format!("{}/issues/{issue_id}", repository_url.trim_end_matches('/')))
+        });
+        let result = enqueue_review_verdict_message(
+            db,
+            hub,
+            ReviewVerdictMessage {
+                auth_user_id: &auth_user_id,
+                project_id: &project_id,
+                workspace_root: &workspace_root,
+                issue_id,
+                issue_title: &issue_title,
+                issue_url: issue_url.as_deref(),
+                pr_number,
+                base_sha: base_sha.as_deref(),
+                head_sha: head_sha.as_deref(),
+                status,
+                job_id: &job_id,
+                source_created_at,
+            },
+        )?;
+        if !result.duplicate {
+            created += 1;
+        }
+    }
+    Ok(created)
+}
+
 pub struct AgentMessageService {
     db: StateDb,
     hub: Arc<WebSocketHub>,
@@ -227,6 +372,22 @@ impl AgentMessageService {
     }
 
     pub fn start(self: &Arc<Self>) {
+        let reconciler = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                if reconciler.stopped.load(Ordering::SeqCst) {
+                    return;
+                }
+                if let Err(error) =
+                    reconcile_completed_review_handoffs(&reconciler.db, &reconciler.hub)
+                {
+                    reconciler.report(format!(
+                        "failed to reconcile completed review handoffs: {error}"
+                    ));
+                }
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        });
         let service = Arc::clone(self);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(POLL_INTERVAL);
@@ -284,6 +445,27 @@ impl AgentMessageService {
                 .expect("agent message active lock")
                 .values()
                 .any(|entry| entry.history_key == history_key)
+    }
+
+    pub fn abort_lane(&self, lane: &PromptQueueLane) -> usize {
+        let active = self
+            .active
+            .lock()
+            .expect("agent message active lock")
+            .values()
+            .filter(|entry| entry_matches_lane(entry, lane))
+            .cloned()
+            .collect::<Vec<_>>();
+        let now = ads_contract::time::now_unix_millis();
+        for entry in &active {
+            if let Ok(Some(updated)) = self.with_store(|store| {
+                store.mark_running_superseded(&entry.client_message_id, &self.worker_id, now)
+            }) {
+                publish_agent_message_event(&self.db, &self.hub, &updated);
+            }
+            self.runner.abort_run(entry);
+        }
+        active.len()
     }
 
     pub fn retry_failed(
@@ -385,11 +567,31 @@ impl AgentMessageService {
         entry: PromptQueueEntry,
         lane: PromptQueueLane,
     ) {
+        if !self.generation_is_current(&message) {
+            if let Ok(Some(updated)) = self.with_store(|store| {
+                store.mark_running_superseded(
+                    &message.message_id,
+                    &self.worker_id,
+                    ads_contract::time::now_unix_millis(),
+                )
+            }) {
+                publish_agent_message_event(&self.db, &self.hub, &updated);
+            }
+            self.active
+                .lock()
+                .expect("agent message active lock")
+                .remove(&message.message_id);
+            self.prompt_queue.release_reserved_lane(&lane);
+            return;
+        }
         let heartbeat = self.spawn_heartbeat(message.message_id.clone());
         let db = self.db.clone();
         let hub = Arc::clone(&self.hub);
         let event_entry = entry.clone();
         let context = PromptRunContext::new(Arc::new(move |payload| {
+            if payload.get("type").and_then(Value::as_str) == Some("error") {
+                return;
+            }
             let is_user_echo = payload.get("type").and_then(Value::as_str) == Some("user")
                 && payload
                     .get("clientMessageId")
@@ -406,29 +608,35 @@ impl AgentMessageService {
         };
         heartbeat.abort();
         let now = ads_contract::time::now_unix_millis();
-        let terminal = match outcome {
-            Ok(outcome) if outcome.ok => self.with_store(|store| {
-                store.mark_delivered(&message.message_id, &self.worker_id, now)
-            }),
-            Ok(outcome) => self.with_store(|store| {
-                store.mark_failed(
-                    &message.message_id,
-                    &self.worker_id,
-                    outcome
-                        .error
-                        .as_deref()
-                        .unwrap_or("Agent message turn failed"),
-                    now,
-                )
-            }),
-            Err(error) => self.with_store(|store| {
-                store.mark_failed(
-                    &message.message_id,
-                    &self.worker_id,
-                    &error.to_string(),
-                    now,
-                )
-            }),
+        let terminal = if !self.generation_is_current(&message) {
+            self.with_store(|store| {
+                store.mark_running_superseded(&message.message_id, &self.worker_id, now)
+            })
+        } else {
+            match outcome {
+                Ok(outcome) if outcome.ok => self.with_store(|store| {
+                    store.mark_delivered(&message.message_id, &self.worker_id, now)
+                }),
+                Ok(outcome) => self.with_store(|store| {
+                    store.mark_failed(
+                        &message.message_id,
+                        &self.worker_id,
+                        outcome
+                            .error
+                            .as_deref()
+                            .unwrap_or("Agent message turn failed"),
+                        now,
+                    )
+                }),
+                Err(error) => self.with_store(|store| {
+                    store.mark_failed(
+                        &message.message_id,
+                        &self.worker_id,
+                        &error.to_string(),
+                        now,
+                    )
+                }),
+            }
         };
         if let Ok(Some(updated)) = terminal {
             publish_agent_message_event(&self.db, &self.hub, &updated);
@@ -465,6 +673,19 @@ impl AgentMessageService {
         })
     }
 
+    fn generation_is_current(&self, message: &AgentMessageRecord) -> bool {
+        let Ok(mut connection) = self.db.connect() else {
+            return false;
+        };
+        get_lane_generation(
+            &mut connection,
+            &message.lane_namespace,
+            &message.logical_history_key,
+            ads_contract::time::now_unix_millis(),
+        )
+        .is_ok_and(|generation| generation == message.lane_generation)
+    }
+
     fn with_store<T>(
         &self,
         operation: impl FnOnce(&AgentMessageStore<'_>) -> ads_state::StateResult<T>,
@@ -489,6 +710,15 @@ fn prompt_lane(message: &AgentMessageRecord) -> PromptQueueLane {
         lane_namespace: message.lane_namespace.clone(),
         lane_generation: message.lane_generation,
     }
+}
+
+fn entry_matches_lane(entry: &PromptQueueEntry, lane: &PromptQueueLane) -> bool {
+    entry.auth_user_id == lane.auth_user_id
+        && entry.session_id == lane.session_id
+        && entry.chat_session_id == lane.chat_session_id
+        && entry.logical_history_key == lane.logical_history_key
+        && entry.lane_namespace == lane.lane_namespace
+        && entry.lane_generation == lane.lane_generation
 }
 
 fn synthetic_turn_entry(message: &AgentMessageRecord) -> PromptQueueEntry {
@@ -644,6 +874,62 @@ mod tests {
                 Ok(PromptQueueRunOutcome::success())
             })
         }
+    }
+
+    #[test]
+    fn reconciles_a_missing_handoff_from_a_completed_review_job() {
+        let directory = tempdir().expect("temp dir");
+        let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+        let hub = WebSocketHub::new(crate::WebSocketConfig::default());
+        let now = ads_contract::time::now_unix_millis();
+        let connection = db.connect().expect("connection");
+        connection
+            .execute(
+                "INSERT INTO web_users (id, username, password_hash, created_at, updated_at)
+                 VALUES ('user-1', 'andy', 'hash', 1, 1)",
+                [],
+            )
+            .expect("user");
+        connection
+            .execute(
+                "INSERT INTO web_projects
+                   (user_id, project_id, workspace_root, display_name, chat_session_id,
+                    sort_order, created_at, updated_at)
+                 VALUES ('user-1', 'project-1', '/repo', 'Repo', 'acopilot', 0, 1, 1)",
+                [],
+            )
+            .expect("project");
+        connection
+            .execute(
+                "INSERT INTO action_jobs
+                   (id, project_id, lane_generation, job_kind, issue_id, issue_title,
+                    status, branch, base_sha, head_sha, current_step, pr_number, pr_url,
+                    auth_user_id, chat_session_id, created_at, updated_at)
+                 VALUES ('job-terminal', 'project-1', 1, 'pull_request_review', 648,
+                         'Durable handoffs', 'completed', 'codex/issue-648', 'base', 'head',
+                         'PASS: verified', 649, 'https://github.com/Andy963/ads/pull/649',
+                         'user-1', 'acopilot', ?1, ?1)",
+                params![now],
+            )
+            .expect("action job");
+        drop(connection);
+
+        assert_eq!(
+            reconcile_completed_review_handoffs(&db, &hub).expect("reconcile"),
+            1
+        );
+        assert_eq!(
+            reconcile_completed_review_handoffs(&db, &hub).expect("dedupe"),
+            0
+        );
+        let connection = db.connect().expect("connection");
+        let message = AgentMessageStore::new(&connection)
+            .expect("store")
+            .get_by_message_id("review-verdict:job-terminal")
+            .expect("message")
+            .expect("message exists");
+        assert_eq!(message.status, AgentMessageStatus::Pending);
+        assert_eq!(message.source_created_at, now);
     }
 
     #[test]

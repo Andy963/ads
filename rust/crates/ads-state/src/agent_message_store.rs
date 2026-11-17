@@ -541,6 +541,25 @@ impl<'a> AgentMessageStore<'a> {
         )? == 1)
     }
 
+    pub fn mark_running_superseded(
+        &self,
+        message_id: &str,
+        worker_id: &str,
+        now: i64,
+    ) -> StateResult<Option<AgentMessageRecord>> {
+        let changed = self.connection.execute(
+            "UPDATE agent_messages
+             SET status = 'superseded', updated_at = ?1,
+                 lease_owner = NULL, lease_expires_at = NULL
+             WHERE message_id = ?2 AND status = 'running' AND lease_owner = ?3",
+            params![now, message_id, worker_id],
+        )?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        self.get_by_message_id(message_id)
+    }
+
     fn finish(
         &self,
         message_id: &str,

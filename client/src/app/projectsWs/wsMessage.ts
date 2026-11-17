@@ -1863,6 +1863,9 @@ export function createWsMessageHandler(args: WsMessageHandlerArgs) {
           });
           continue;
         }
+        if (role === "status" && kind.startsWith("agent_message_error:")) {
+          continue;
+        }
         if (role === "status") {
           restoredHistoryStatus = replayedLaneStatus(kind, historyText);
           if (kind === "error" && !isUserAbortFailure(historyText) && !isNoActiveTurnNotice(historyText)) {

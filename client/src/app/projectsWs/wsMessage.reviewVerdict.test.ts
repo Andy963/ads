@@ -137,4 +137,29 @@ describe("Reviewer to Acopilot handoff events", () => {
     expect(rt.messages.value.some((message) => message.role === "user")).toBe(false);
     expect(rt.messages.value.some((message) => message.kind === "agent_handoff")).toBe(true);
   });
+
+  it("keeps persisted agent errors off the user retry path", () => {
+    const { rt, handler } = setup();
+    handler({
+      type: "history",
+      items: [
+        {
+          role: "user",
+          text: "Reviewer handoff",
+          kind: "client_message_id:review-verdict:job-1;prompt_meta:origin=agent",
+          ts: 1,
+        },
+        {
+          role: "status",
+          text: "model unavailable",
+          kind: "agent_message_error:review-verdict:job-1",
+          ts: 2,
+        },
+      ],
+    });
+
+    expect(rt.messages.value.some((message) => message.kind === "agent_handoff")).toBe(true);
+    expect(rt.messages.value.some((message) => message.role === "user")).toBe(false);
+    expect(rt.messages.value.some((message) => message.kind === "error")).toBe(false);
+  });
 });

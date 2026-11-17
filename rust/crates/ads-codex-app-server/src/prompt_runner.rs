@@ -285,6 +285,12 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                 Err(error) => {
                     let message = error.to_string();
                     let connection = self.options.db.connect()?;
+                    let kind =
+                        if entry.payload.get("origin").and_then(Value::as_str) == Some("agent") {
+                            format!("agent_message_error:{}", entry.client_message_id)
+                        } else {
+                            "error".to_string()
+                        };
                     let _ = history.add(
                         &connection,
                         &entry.history_key,
@@ -292,7 +298,7 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                             role: "status".to_string(),
                             text: message.clone(),
                             ts: ads_contract::time::now_unix_millis(),
-                            kind: Some("error".to_string()),
+                            kind: Some(kind),
                         },
                     );
                     context.emit(json!({

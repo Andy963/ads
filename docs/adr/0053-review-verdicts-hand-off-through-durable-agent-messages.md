@@ -25,10 +25,13 @@ The Agent2Agent task model, durable workflow message passing, and actor mailboxe
 - Use a deterministic message id derived from the review job. Database uniqueness and an idempotent consumer make replay and multi-tab delivery converge on one effective handoff.
 - Insert the Reviewer handoff on the server after the review reaches a terminal outcome. Browser clients no longer turn review events into prompts and no review handoff creates a `prompt_queue` row.
 - Run an Acopilot handoff as a typed agent-message turn. The model receives the handoff text and metadata, while the UI renders a visible Reviewer-to-Acopilot handoff card instead of a user bubble or an invisible system artifact.
+- Agent-turn execution errors update the handoff card and its persisted lifecycle; they never become a user retry card or a generic prompt failure.
 - Serialize user turns and agent-message turns through the same per-lane execution reservation. A message may wait while user work is active, and a user prompt may wait while an agent-message turn is active, but neither can start a concurrent model turn for the lane.
 - Lifecycle states are `pending`, `running`, `delivered`, `failed`, and `superseded`. Claimed messages use a renewable lease. A failed handoff can be explicitly returned to `pending` by the Acopilot lane retry action; it is never converted into a user-message retry card.
  - Durable agent messages have no age-based expiry. The lease only claims execution rights: an expired `running` claim makes the same message eligible for takeover after a crash, without deleting the row, its payload, or its lifecycle history. Reconnecting to an existing Web conversation does not expire a handoff.
 - Supersession uses the originating review job's monotonic creation time, not delivery order. A newer Review handoff for the same Issue and PR supersedes older pending or failed handoffs, while a delayed older job is itself recorded as superseded and cannot replace the newer target. A handoff bound to an obsolete lane generation is superseded rather than executed.
+- A lane reset supersedes any active agent-message turn for that generation. Active turns are rechecked at start and at terminal write, so a generation change cannot publish a stale handoff as delivered or failed.
+- The server periodically reconciles completed review jobs after a durable cutover watermark. If the terminal review job exists but its agent message is missing, the handoff is recreated idempotently after restart or transient database failure.
 - Apply A2A-style Task, Message, and Artifact semantics internally without introducing an HTTP/gRPC protocol, external workflow engine, or graph framework.
 
 ## Consequences

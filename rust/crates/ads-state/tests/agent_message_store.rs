@@ -152,6 +152,27 @@ fn failed_handoff_can_be_explicitly_retried() {
 }
 
 #[test]
+fn running_handoff_can_be_superseded_when_the_lane_resets() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let connection = db.connect().expect("connection");
+    let store = AgentMessageStore::new(&connection).expect("store");
+    store
+        .enqueue(message("review-verdict:job-reset", "head", 100), 100)
+        .expect("handoff");
+    store
+        .claim("review-verdict:job-reset", "worker-1", 200, 110)
+        .expect("claim")
+        .expect("claimed");
+
+    let updated = store
+        .mark_running_superseded("review-verdict:job-reset", "worker-1", 120)
+        .expect("supersede")
+        .expect("running message");
+    assert_eq!(updated.status, AgentMessageStatus::Superseded);
+}
+
+#[test]
 fn claim_lifecycle_uses_leases_and_marks_terminal_state() {
     let directory = tempdir().expect("temp dir");
     let db = StateDb::open(directory.path().join("state.db")).expect("state db");
