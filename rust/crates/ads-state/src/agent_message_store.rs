@@ -538,7 +538,9 @@ impl<'a> AgentMessageStore<'a> {
         Ok(self.connection.execute(
             "UPDATE agent_messages
              SET status = 'superseded', updated_at = ?1, lease_owner = NULL, lease_expires_at = NULL
-             WHERE message_id = ?2 AND status IN ('pending', 'failed')",
+             WHERE message_id = ?2
+               AND (status IN ('pending', 'failed')
+                    OR (status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?1)))",
             params![now, message_id],
         )? == 1)
     }

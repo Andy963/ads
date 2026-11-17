@@ -594,7 +594,15 @@ impl AgentMessageService {
             self.prompt_queue.release_reserved_lane(&lane);
             return;
         }
-        let heartbeat = self.spawn_heartbeat(message.message_id.clone());
+        if !self.prompt_queue.is_owner() {
+            self.active
+                .lock()
+                .expect("agent message active lock")
+                .remove(&message.message_id);
+            self.prompt_queue.release_reserved_lane(&lane);
+            return;
+        }
+        let heartbeat = self.spawn_heartbeat(message.message_id.clone(), entry.clone());
         let db = self.db.clone();
         let hub = Arc::clone(&self.hub);
         let event_entry = entry.clone();
@@ -617,6 +625,14 @@ impl AgentMessageService {
             Err(error) => Err(error),
         };
         heartbeat.abort();
+        if !self.prompt_queue.is_owner() {
+            self.active
+                .lock()
+                .expect("agent message active lock")
+                .remove(&message.message_id);
+            self.prompt_queue.release_reserved_lane(&lane);
+            return;
+        }
         let now = ads_contract::time::now_unix_millis();
         let terminal = if !self.generation_is_current(&message) {
             self.with_store(|store| {
@@ -658,14 +674,24 @@ impl AgentMessageService {
         self.prompt_queue.release_reserved_lane(&lane);
     }
 
-    fn spawn_heartbeat(&self, message_id: String) -> tokio::task::JoinHandle<()> {
+    fn spawn_heartbeat(
+        &self,
+        message_id: String,
+        entry: PromptQueueEntry,
+    ) -> tokio::task::JoinHandle<()> {
         let db = self.db.clone();
         let worker_id = self.worker_id.clone();
+        let prompt_queue = Arc::clone(&self.prompt_queue);
+        let runner = Arc::clone(&self.runner);
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(LANE_TURN_RENEW_MS);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 ticker.tick().await;
+                if !prompt_queue.is_owner() {
+                    runner.abort_run(&entry);
+                    return;
+                }
                 let now = ads_contract::time::now_unix_millis();
                 let Ok(connection) = db.connect() else {
                     return;

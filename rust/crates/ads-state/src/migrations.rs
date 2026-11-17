@@ -2055,6 +2055,24 @@ fn migrate_state_44(connection: &Connection) -> StateResult<()> {
            AND status IN ('queued', 'running', 'verifying', 'reviewing', 'waiting_merge')",
         [],
     )?;
+    connection.execute(
+        "UPDATE action_jobs AS j
+         SET requires_agent_handoff = 1
+         WHERE j.job_kind = 'pull_request_review'
+           AND j.status IN ('completed', 'failed')
+           AND j.superseded_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM action_jobs newer
+             WHERE newer.job_kind = j.job_kind
+               AND newer.project_id = j.project_id
+               AND COALESCE(newer.pr_number, 0) = COALESCE(j.pr_number, 0)
+               AND newer.status IN ('completed', 'failed')
+               AND newer.superseded_at IS NULL
+               AND (newer.created_at > j.created_at
+                    OR (newer.created_at = j.created_at AND newer.id > j.id))
+           )",
+        [],
+    )?;
     Ok(())
 }
 
