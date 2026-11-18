@@ -236,6 +236,7 @@ async fn blocks_automatic_retry_after_repeated_operational_failures() {
                     id: format!("failed-{index}"),
                     project_id: project.clone(),
                     lane_generation: Some(1),
+                    acopilot_lane_generation: 1,
                     job_kind: ActionJobKind::PullRequestReview,
                     issue_id: 7,
                     issue_title: "Fix the bug".to_string(),

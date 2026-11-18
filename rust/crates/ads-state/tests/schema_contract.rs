@@ -222,7 +222,14 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
             .collect::<Result<Vec<_>, _>>()
             .expect("prompt ids")
     };
-    assert_eq!(remaining, vec!["ordinary-system-message", "user-message"]);
+    assert_eq!(
+        remaining,
+        vec![
+            "ordinary-system-message",
+            "unmatched-legacy-wake",
+            "user-message"
+        ]
+    );
     let completed_flags: (i64, i64) = connection
         .query_row(
             "SELECT requires_agent_handoff, agent_handoff_ready
@@ -271,6 +278,19 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
         )
         .expect("unmatched count");
     assert_eq!(unmatched_count, 0);
+    let unmatched_status: (String, Option<String>) = connection
+        .query_row(
+            "SELECT status, last_error FROM prompt_queue
+             WHERE client_message_id = 'unmatched-legacy-wake'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("unmatched legacy wake");
+    assert_eq!(unmatched_status.0, "failed");
+    assert_eq!(
+        unmatched_status.1.as_deref(),
+        Some("Legacy review wake could not be matched to an action job during migration")
+    );
     let active_required: i64 = connection
         .query_row(
             "SELECT requires_agent_handoff FROM action_jobs WHERE id = 'active-review'",

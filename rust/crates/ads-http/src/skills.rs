@@ -10,8 +10,7 @@ const SKILLS_METADATA_FILE: &str = "metadata.yaml";
 const MAX_SKILL_NAME_LENGTH: usize = 64;
 const MAX_DESCRIPTION_LENGTH: usize = 1024;
 const ALLOWED_RESOURCE_DIRS: [&str; 3] = ["scripts", "references", "assets"];
-const BUILTIN_SKILL_CREATOR: &str =
-    include_str!("../../../../server/skills/builtin/skill-creator/SKILL.md");
+const BUILTIN_SKILL_CREATOR: &str = include_str!("../assets/builtin/skill-creator/SKILL.md");
 
 const SKILL_TEMPLATE: &str = r#"---
 name: {skill_name}

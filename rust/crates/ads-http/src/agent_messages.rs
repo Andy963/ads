@@ -484,9 +484,9 @@ impl AgentMessageService {
                     continue;
                 }
                 let now = ads_contract::time::now_unix_millis();
-                if let Ok(superseded) = service.with_store(|store| {
-                    store.supersede_messages_for_superseded_review_jobs(now)
-                }) {
+                if let Ok(superseded) = service
+                    .with_store(|store| store.supersede_messages_for_superseded_review_jobs(now))
+                {
                     for record in superseded {
                         publish_agent_message_event(&service.db, &service.hub, &record);
                     }
@@ -1649,7 +1649,12 @@ mod tests {
             let connection = db.connect().expect("connection");
             let store = AgentMessageStore::new(&connection).expect("store");
             store
-                .claim(&enqueued.message.message_id, &service.worker_id, now + 60_000, now)
+                .claim(
+                    &enqueued.message.message_id,
+                    &service.worker_id,
+                    now + 60_000,
+                    now,
+                )
                 .expect("claim")
                 .expect("claimed");
         }
@@ -1764,7 +1769,12 @@ mod tests {
             let connection = db.connect().expect("connection");
             let store = AgentMessageStore::new(&connection).expect("store");
             store
-                .claim(&enqueued.message.message_id, &service.worker_id, now + 60_000, now)
+                .claim(
+                    &enqueued.message.message_id,
+                    &service.worker_id,
+                    now + 60_000,
+                    now,
+                )
                 .expect("claim")
                 .expect("claimed");
         }

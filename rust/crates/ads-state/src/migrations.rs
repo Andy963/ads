@@ -2159,9 +2159,13 @@ fn migrate_state_48(connection: &Connection) -> StateResult<()> {
     if table_exists(connection, "agent_messages")? {
         add_column_if_missing(connection, "agent_messages", "branch", "TEXT")?;
     }
-    if table_exists(connection, "prompt_queue")? && table_exists(connection, "agent_messages")? {
-        migrate_legacy_review_wakes(connection)?;
-    }
+    let migrated_legacy_review_wakes = if table_exists(connection, "prompt_queue")?
+        && table_exists(connection, "agent_messages")?
+    {
+        migrate_legacy_review_wakes(connection)?
+    } else {
+        Vec::new()
+    };
     if table_exists(connection, "action_jobs")? {
         connection.execute(
             "UPDATE action_jobs AS j
@@ -2180,21 +2184,20 @@ fn migrate_state_48(connection: &Connection) -> StateResult<()> {
             [],
         )?;
     }
-    if table_exists(connection, "prompt_queue")? {
+    for client_message_id in migrated_legacy_review_wakes {
         connection.execute(
-            "DELETE FROM prompt_queue
-             WHERE payload_json LIKE '%\"origin\":\"system\"%'
-               AND payload_json LIKE '%ads:review-verdict%'",
-            [],
+            "DELETE FROM prompt_queue WHERE client_message_id = ?1",
+            params![client_message_id],
         )?;
     }
     Ok(())
 }
 
-fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
+fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<Vec<String>> {
+    let mut migrated_client_message_ids = Vec::new();
     let rows = {
         let mut statement = connection.prepare(
-            "SELECT client_message_id, auth_user_id, user_id, session_id, chat_session_id,
+            "SELECT client_message_id, auth_user_id, user_id, chat_session_id,
                     history_key, logical_history_key, lane_namespace, lane_generation,
                     workspace_root, payload_json, status, created_at, updated_at
              FROM prompt_queue
@@ -2208,17 +2211,16 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
                     client_message_id: row.get(0)?,
                     auth_user_id: row.get(1)?,
                     user_id: row.get(2)?,
-                    session_id: row.get(3)?,
-                    chat_session_id: row.get(4)?,
-                    history_key: row.get(5)?,
-                    logical_history_key: row.get(6)?,
-                    lane_namespace: row.get(7)?,
-                    lane_generation: row.get::<_, i64>(8)?.max(1),
-                    workspace_root: row.get(9)?,
-                    payload_json: row.get(10)?,
-                    status: row.get(11)?,
-                    created_at: row.get(12)?,
-                    updated_at: row.get(13)?,
+                    chat_session_id: row.get(3)?,
+                    history_key: row.get(4)?,
+                    logical_history_key: row.get(5)?,
+                    lane_namespace: row.get(6)?,
+                    lane_generation: row.get::<_, i64>(7)?.max(1),
+                    workspace_root: row.get(8)?,
+                    payload_json: row.get(9)?,
+                    status: row.get(10)?,
+                    created_at: row.get(11)?,
+                    updated_at: row.get(12)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?
@@ -2237,6 +2239,18 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
             .and_then(|job_id| load_handoff_job(connection, job_id).transpose())
             .transpose()?;
         let Some(job) = job else {
+            connection.execute(
+                "UPDATE prompt_queue
+                 SET status = 'failed',
+                     last_error = ?1,
+                     updated_at = ?2
+                 WHERE client_message_id = ?3",
+                params![
+                    "Legacy review wake could not be matched to an action job during migration",
+                    wake.updated_at.max(1),
+                    &wake.client_message_id,
+                ],
+            )?;
             continue;
         };
         let correlation_id = job.id.clone();
@@ -2338,16 +2352,15 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
                 wake.updated_at,
             ],
         )?;
+        migrated_client_message_ids.push(wake.client_message_id);
     }
-    Ok(())
+    Ok(migrated_client_message_ids)
 }
 
-#[allow(dead_code)]
 struct LegacyReviewWake {
     client_message_id: String,
     auth_user_id: String,
     user_id: i64,
-    session_id: String,
     chat_session_id: String,
     history_key: String,
     logical_history_key: String,
@@ -3481,6 +3494,222 @@ mod tests {
             )
             .expect("fixture schema");
         connection
+    }
+
+    fn state_48_fixture() -> Connection {
+        let connection = Connection::open_in_memory().expect("memory db");
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_version (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, updated_at TEXT);
+                 INSERT INTO schema_version VALUES (1, 47, datetime('now'));
+                 CREATE TABLE action_jobs (
+                   id TEXT PRIMARY KEY,
+                   project_id TEXT NOT NULL,
+                   job_kind TEXT NOT NULL,
+                   issue_id INTEGER,
+                   issue_title TEXT NOT NULL,
+                   status TEXT NOT NULL,
+                   pr_number INTEGER,
+                   pr_url TEXT,
+                   branch TEXT,
+                   base_sha TEXT,
+                   head_sha TEXT,
+                   auth_user_id TEXT,
+                   chat_session_id TEXT,
+                   superseded_at INTEGER,
+                   requires_agent_handoff INTEGER NOT NULL DEFAULT 0,
+                   agent_handoff_ready INTEGER NOT NULL DEFAULT 0,
+                   created_at INTEGER NOT NULL,
+                   updated_at INTEGER NOT NULL
+                 );
+                 CREATE TABLE prompt_queue (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   client_message_id TEXT NOT NULL UNIQUE,
+                   auth_user_id TEXT NOT NULL,
+                   user_id INTEGER NOT NULL,
+                   session_id TEXT NOT NULL,
+                   chat_session_id TEXT NOT NULL,
+                   history_key TEXT NOT NULL,
+                   logical_history_key TEXT NOT NULL,
+                   lane_namespace TEXT NOT NULL,
+                   lane_generation INTEGER NOT NULL,
+                   workspace_root TEXT NOT NULL,
+                   payload_json TEXT NOT NULL,
+                   status TEXT NOT NULL,
+                   last_error TEXT,
+                   created_at INTEGER NOT NULL,
+                   updated_at INTEGER NOT NULL
+                 );",
+            )
+            .expect("fixture schema");
+        crate::ensure_agent_message_tables(&connection).expect("agent message schema");
+        connection
+    }
+
+    fn insert_review_job(connection: &Connection, id: &str) {
+        connection
+            .execute(
+                "INSERT INTO action_jobs (
+                   id, project_id, job_kind, issue_id, issue_title, status,
+                   pr_number, pr_url, branch, base_sha, head_sha, auth_user_id,
+                   chat_session_id, created_at, updated_at
+                 ) VALUES (
+                   ?1, 'project-1', 'pull_request_review', 648, 'Durable handoff',
+                   'completed', 657, 'https://github.com/Andy963/ads/pull/657',
+                   'codex/issue-648', 'base-sha', 'head-sha', 'user-1', 'chat-1', 1, 1
+                 )",
+                params![id],
+            )
+            .expect("review job");
+    }
+
+    fn insert_legacy_review_wake(
+        connection: &Connection,
+        client_message_id: &str,
+        payload_json: &str,
+        status: &str,
+        created_at: i64,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO prompt_queue (
+                   client_message_id, auth_user_id, user_id, session_id, chat_session_id,
+                   history_key, logical_history_key, lane_namespace, lane_generation,
+                   workspace_root, payload_json, status, created_at, updated_at
+                 ) VALUES (
+                   ?1, 'user-1', 42, 'session-1', 'chat-1',
+                   'history-1', 'logical-history-1', 'web-acopilot', 1,
+                   '/repo', ?2, ?3, ?4, ?4
+                 )",
+                params![client_message_id, payload_json, status, created_at],
+            )
+            .expect("legacy review wake");
+    }
+
+    #[test]
+    fn migrates_legacy_review_wake_with_runtime_context() {
+        let connection = state_48_fixture();
+        insert_review_job(&connection, "job-1");
+        insert_legacy_review_wake(
+            &connection,
+            "legacy-1",
+            &serde_json::json!({
+                "origin": "system",
+                "text": "ads:review-verdict. Reviewer verdict handoff. Job job-1. Issue #648. PR #657. Status: PASS."
+            })
+            .to_string(),
+            "completed",
+            100,
+        );
+
+        migrate_state(&connection, 47, 48).expect("state migration");
+
+        let store = crate::AgentMessageStore::new(&connection).expect("message store");
+        let message = store
+            .get_by_message_id("review-verdict:job-1")
+            .expect("read handoff")
+            .expect("migrated handoff");
+        assert_eq!(message.auth_user_id, "user-1");
+        assert_eq!(message.user_id, 42);
+        assert_eq!(message.project_id, "project-1");
+        assert_eq!(message.chat_session_id, "chat-1");
+        assert_eq!(message.issue_id, Some(648));
+        assert_eq!(
+            message.issue_url.as_deref(),
+            Some("https://github.com/Andy963/ads/issues/648")
+        );
+        assert_eq!(message.pr_number, Some(657));
+        assert_eq!(message.base_sha.as_deref(), Some("base-sha"));
+        assert_eq!(message.head_sha.as_deref(), Some("head-sha"));
+        assert_eq!(message.payload["jobId"], serde_json::json!("job-1"));
+        assert_eq!(message.payload["reviewStatus"], serde_json::json!("PASS"));
+
+        let remaining_wakes: i64 = connection
+            .query_row("SELECT COUNT(*) FROM prompt_queue", [], |row| row.get(0))
+            .expect("remaining wakes");
+        assert_eq!(remaining_wakes, 0);
+    }
+
+    #[test]
+    fn rolls_back_legacy_review_migration_on_malformed_payload() {
+        let connection = state_48_fixture();
+        insert_review_job(&connection, "job-1");
+        insert_legacy_review_wake(
+            &connection,
+            "legacy-valid",
+            &serde_json::json!({
+                "origin": "system",
+                "text": "ads:review-verdict. Reviewer verdict handoff. Job job-1. Status: PASS."
+            })
+            .to_string(),
+            "completed",
+            200,
+        );
+        insert_legacy_review_wake(
+            &connection,
+            "legacy-malformed",
+            "{\"origin\":\"system\",\"text\":\"ads:review-verdict",
+            "completed",
+            100,
+        );
+
+        let error = migrate_state(&connection, 47, 48).expect_err("malformed payload");
+        match error {
+            StateError::InvalidInput(message) => assert!(message.contains("malformed json")),
+            other => panic!("unexpected migration error: {other:?}"),
+        }
+
+        let migrated_messages: i64 = connection
+            .query_row("SELECT COUNT(*) FROM agent_messages", [], |row| row.get(0))
+            .expect("migrated messages");
+        assert_eq!(migrated_messages, 0);
+        let remaining_wakes: i64 = connection
+            .query_row("SELECT COUNT(*) FROM prompt_queue", [], |row| row.get(0))
+            .expect("remaining wakes");
+        assert_eq!(remaining_wakes, 2);
+        let version: i64 = connection
+            .query_row(
+                "SELECT version FROM schema_version WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("schema version");
+        assert_eq!(version, 47);
+    }
+
+    #[test]
+    fn records_unmatched_legacy_review_wake_as_failed() {
+        let connection = state_48_fixture();
+        insert_legacy_review_wake(
+            &connection,
+            "legacy-unmatched",
+            &serde_json::json!({
+                "origin": "system",
+                "text": "ads:review-verdict. Reviewer verdict handoff. Job missing-job. Status: ERROR."
+            })
+            .to_string(),
+            "queued",
+            100,
+        );
+
+        migrate_state(&connection, 47, 48).expect("state migration");
+
+        let message_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM agent_messages", [], |row| row.get(0))
+            .expect("agent messages");
+        assert_eq!(message_count, 0);
+        let (status, last_error): (String, Option<String>) = connection
+            .query_row(
+                "SELECT status, last_error FROM prompt_queue WHERE client_message_id = 'legacy-unmatched'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("unmatched wake");
+        assert_eq!(status, "failed");
+        assert_eq!(
+            last_error.as_deref(),
+            Some("Legacy review wake could not be matched to an action job during migration")
+        );
     }
 
     #[test]
