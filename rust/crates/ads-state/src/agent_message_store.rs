@@ -653,7 +653,7 @@ impl<'a> AgentMessageStore<'a> {
         let mut statement = transaction.prepare(
             "SELECT message_id FROM agent_messages
              WHERE kind = 'review_verdict'
-               AND status IN ('pending', 'failed')
+               AND status IN ('pending', 'failed', 'running')
                AND EXISTS (
                  SELECT 1 FROM action_jobs j
                  WHERE j.id = agent_messages.correlation_id
@@ -671,7 +671,7 @@ impl<'a> AgentMessageStore<'a> {
                      transition_revision = transition_revision + 1,
                      lease_owner = NULL, lease_expires_at = NULL
                  WHERE kind = 'review_verdict'
-                   AND status IN ('pending', 'failed')
+                   AND status IN ('pending', 'failed', 'running')
                    AND EXISTS (
                      SELECT 1 FROM action_jobs j
                      WHERE j.id = agent_messages.correlation_id
