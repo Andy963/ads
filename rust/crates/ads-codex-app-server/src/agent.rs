@@ -16,7 +16,7 @@ use crate::{CodexAppServerClient, RpcError, SpawnOptions, Subscription};
 
 const CODEX_AGENT_ID: &str = "codex";
 const DEFAULT_REASONING_EFFORT: &str = "high";
-const REVIEW_ACTION_DESCRIPTION: &str = "Enqueue a read-only Reviewer job for the current Issue-backed pull request and return immediately. The verdict is published as a comment on the backing Issue (marker: ads:review-verdict) and the Acopilot lane is woken to read it.";
+const REVIEW_ACTION_DESCRIPTION: const REVIEW_ACTION_DESCRIPTION: &str = "Enqueue a read-only Reviewer job for the current Issue-backed pull request and return immediately. The verdict is published as a comment on the backing Issue (marker: ads:review-verdict) and the Acopilot lane is woken to read it.";str = "SOP: Create Issue -> Create PR -> Dispatch SubAgent Reviewer. Enqueue a read-only Reviewer job for the current Issue-backed pull request and return immediately. The verdict is published as a comment on the backing Issue (marker: ads:review-verdict) and the Acopilot lane is woken to read it.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxMode {
