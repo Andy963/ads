@@ -2155,6 +2155,11 @@ fn migrate_state_47(connection: &Connection) -> StateResult<()> {
     Ok(())
 }
 
+fn migrate_state_49(connection: &Connection) -> StateResult<()> {
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_web_lane_generations_ns_key ON web_lane_generations(namespace, lane_key)", [])?;
+    Ok(())
+}
+
 fn migrate_state_48(connection: &Connection) -> StateResult<()> {
     if table_exists(connection, "agent_messages")? {
         add_column_if_missing(connection, "agent_messages", "branch", "TEXT")?;
