@@ -151,12 +151,18 @@ async fn resolves_a_complete_github_review_target_with_fake_gh() {
 
     let fake_dir = tempfile::tempdir().expect("fake gh dir");
     let gh = fake_dir.path().join("gh");
+    let pr_attempts = fake_dir.path().join("pr-attempts");
     std::fs::write(
         &gh,
         format!(
             r###"#!/bin/sh
 case "$*" in
   "pr list --head"*)
+    printf 'attempt\n' >> {pr_attempts:?}
+    if [ "$(wc -l < {pr_attempts:?})" -eq 1 ]; then
+      echo 'Post "https://api.github.com/graphql": net/http: TLS handshake timeout' >&2
+      exit 1
+    fi
     printf '%s\n' '[{{"number":12,"url":"https://github.com/example/repo/pull/12","state":"OPEN","headRefName":"codex/issue-12","baseRefName":"dev","baseRefOid":"{base}","headRefOid":"{head}","body":"Closes #12"}}]'
     ;;
   "pr list --state open"*)
@@ -218,4 +224,11 @@ esac
     );
     assert_eq!(resolved.target.base_commit.as_deref(), Some(base.as_str()));
     assert_eq!(resolved.target.head_commit.as_deref(), Some(head.as_str()));
+    assert_eq!(
+        std::fs::read_to_string(pr_attempts)
+            .expect("attempt log")
+            .lines()
+            .count(),
+        2
+    );
 }
