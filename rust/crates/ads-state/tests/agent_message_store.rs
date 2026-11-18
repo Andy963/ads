@@ -106,7 +106,10 @@ fn superseded_action_job_marks_pending_handoff_superseded() {
     seed_review_job(&connection, "review-verdict:job-old-superseded", 100);
 
     let enqueued = store
-        .enqueue(message("review-verdict:job-old-superseded", "head-1", 100), 100)
+        .enqueue(
+            message("review-verdict:job-old-superseded", "head-1", 100),
+            100,
+        )
         .expect("enqueue");
     assert_eq!(enqueued.message.status, AgentMessageStatus::Pending);
 

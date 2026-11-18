@@ -2155,11 +2155,6 @@ fn migrate_state_47(connection: &Connection) -> StateResult<()> {
     Ok(())
 }
 
-fn migrate_state_49(connection: &Connection) -> StateResult<()> {
-    connection.execute("CREATE INDEX IF NOT EXISTS idx_web_lane_generations_ns_key ON web_lane_generations(namespace, lane_key)", [])?;
-    Ok(())
-}
-
 fn migrate_state_48(connection: &Connection) -> StateResult<()> {
     if table_exists(connection, "agent_messages")? {
         add_column_if_missing(connection, "agent_messages", "branch", "TEXT")?;
@@ -2174,7 +2169,8 @@ fn migrate_state_48(connection: &Connection) -> StateResult<()> {
                  agent_handoff_ready = CASE WHEN EXISTS (
                    SELECT 1 FROM agent_messages m
                    WHERE m.project_id = j.project_id
-                      AND (j.auth_user_id IS NULL OR m.auth_user_id = j.auth_user_id)
+                     AND (j.auth_user_id IS NULL OR m.auth_user_id = j.auth_user_id)
+                     AND (j.chat_session_id IS NULL OR m.chat_session_id = j.chat_session_id)
                      AND m.kind = 'review_verdict'
                      AND m.correlation_id = j.id
                  ) THEN 1 ELSE 0 END
@@ -2207,8 +2203,9 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
              ORDER BY created_at DESC, id DESC",
         )?;
         statement
-                    auth_user_id: row.get(1)?,n                Ok(LegacyReviewWake {
-                    auth_user_id: row.get(1)?,
+            .query_map([], |row| {
+                Ok(LegacyReviewWake {
+                    client_message_id: row.get(0)?,
                     auth_user_id: row.get(1)?,
                     user_id: row.get(2)?,
                     session_id: row.get(3)?,
@@ -2227,7 +2224,8 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
             .collect::<Result<Vec<_>, _>>()?
     };
     for wake in rows {
-        let payload = serde_json::from_str::<JsonValue>(&wake.payload_json).map_err(|e| StateError::InvalidInput(format!("malformed json: {e}")))?;
+        let payload = serde_json::from_str::<JsonValue>(&wake.payload_json)
+            .map_err(|e| StateError::InvalidInput(format!("malformed json: {e}")))?;
         let text = payload
             .get("text")
             .and_then(JsonValue::as_str)
@@ -2242,8 +2240,12 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
             continue;
         };
         let correlation_id = job.id.clone();
-        let issue_id = job.issue_id.or_else(|| extract_handoff_number(&text, "Issue #"));
-        let pr_number = job.pr_number.or_else(|| extract_handoff_number(&text, "PR #"));
+        let issue_id = job
+            .issue_id
+            .or_else(|| extract_handoff_number(&text, "Issue #"));
+        let pr_number = job
+            .pr_number
+            .or_else(|| extract_handoff_number(&text, "PR #"));
         let review_status = extract_handoff_status(&text);
         let issue_url = job.issue_url(issue_id);
         let issue_title = if !job.issue_title.trim().is_empty() {
