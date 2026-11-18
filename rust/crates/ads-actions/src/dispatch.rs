@@ -21,7 +21,11 @@ pub struct ReviewDispatchRequest {
     pub pr_number: Option<i64>,
     pub lane_generation: i64,
     pub chat_session_id: Option<String>,
+    pub automatic: bool,
 }
+
+const AUTOMATIC_REVIEW_FAILURE_WINDOW_MS: i64 = 15 * 60 * 1000;
+const AUTOMATIC_REVIEW_FAILURE_LIMIT: usize = 2;
 
 pub fn issue_id_from_branch(branch: Option<&str>) -> Option<i64> {
     let branch = branch.unwrap_or("").trim();
@@ -73,22 +77,38 @@ pub fn dispatch_review_job(
         )
     });
 
-    let existing = list_action_jobs(&connection, &project_id, None, Some(&auth_user_id))?
-        .into_iter()
-        .find(|job| {
-            job.job_kind == ActionJobKind::PullRequestReview
-                && job.branch.as_deref().unwrap_or("") == branch
-                && (pr_number == 0 || job.pr_number == Some(pr_number))
-                && job.superseded_at.is_none()
-                && matches!(
-                    job.status,
-                    ActionJobStatus::Queued
-                        | ActionJobStatus::Verifying
-                        | ActionJobStatus::Reviewing
-                )
-        });
+    let jobs = list_action_jobs(&connection, &project_id, None, Some(&auth_user_id))?;
+    let existing = jobs.iter().cloned().find(|job| {
+        job.job_kind == ActionJobKind::PullRequestReview
+            && job.branch.as_deref().unwrap_or("") == branch
+            && (pr_number == 0 || job.pr_number == Some(pr_number))
+            && job.superseded_at.is_none()
+            && matches!(
+                job.status,
+                ActionJobStatus::Queued | ActionJobStatus::Verifying | ActionJobStatus::Reviewing
+            )
+    });
     if let Some(job) = existing {
         return Ok(review_queue_ack(job));
+    }
+
+    if request.automatic && !branch.is_empty() {
+        let cutoff = now - AUTOMATIC_REVIEW_FAILURE_WINDOW_MS;
+        let consecutive_failures = jobs
+            .iter()
+            .filter(|job| {
+                job.job_kind == ActionJobKind::PullRequestReview
+                    && job.branch.as_deref().unwrap_or("") == branch
+                    && job.superseded_at.is_none()
+                    && job.created_at >= cutoff
+            })
+            .take_while(|job| job.status == ActionJobStatus::Failed)
+            .count();
+        if consecutive_failures >= AUTOMATIC_REVIEW_FAILURE_LIMIT {
+            return Err(ReviewError::Conflict(format!(
+                "Automatic review retry paused after {consecutive_failures} consecutive operational failures for branch '{branch}' within 15 minutes. Fix the upstream failure and retry the review explicitly."
+            )));
+        }
     }
 
     let job = create_action_job(

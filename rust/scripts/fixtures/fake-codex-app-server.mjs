@@ -6,6 +6,9 @@ const logPath = process.env.ADS_APP_SERVER_PROBE_LOG;
 if (!logPath) throw new Error("ADS_APP_SERVER_PROBE_LOG is required");
 const simple = process.env.ADS_APP_SERVER_PROBE_SIMPLE === "1";
 const responseText = process.env.ADS_APP_SERVER_PROBE_RESPONSE || "conformance done";
+const responseDeltaParts = process.env.ADS_APP_SERVER_PROBE_DELTA_PARTS
+  ? JSON.parse(process.env.ADS_APP_SERVER_PROBE_DELTA_PARTS)
+  : [responseText];
 
 const pending = new Map();
 let turnNumber = 0;
@@ -39,6 +42,7 @@ function serverRequest(id, method, params) {
 }
 
 async function runTurn() {
+  if (process.env.ADS_APP_SERVER_PROBE_STALL === "1") return;
   const turn = String(++turnNumber);
   notify("thread/started", { thread: { id: "thread-1" } });
   notify("turn/started", { threadId: "thread-1", turn: { id: `turn-${turn}` } });
@@ -77,12 +81,14 @@ async function runTurn() {
       notify(event, { threadId: "thread-1", turnId: `turn-${turn}`, item });
     }
   }
-  notify("item/agentMessage/delta", {
-    threadId: "thread-1",
-    turnId: `turn-${turn}`,
-    itemId: `message-${turn}`,
-    delta: responseText,
-  });
+  for (const delta of responseDeltaParts) {
+    notify("item/agentMessage/delta", {
+      threadId: "thread-1",
+      turnId: `turn-${turn}`,
+      itemId: `message-${turn}`,
+      delta,
+    });
+  }
   notify("item/completed", {
     threadId: "thread-1",
     turnId: `turn-${turn}`,

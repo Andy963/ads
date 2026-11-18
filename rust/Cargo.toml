@@ -7,6 +7,7 @@ members = [
   "crates/ads-reviewer",
   "crates/ads-state",
   "crates/ads-runtime",
+  "crates/ads-telegram",
   "crates/ads-auth",
   "crates/ads-http",
   "crates/ads-server",
@@ -29,7 +30,9 @@ ads-native = { path = "crates/ads-native" }
 ads-reviewer = { path = "crates/ads-reviewer" }
 ads-state = { path = "crates/ads-state" }
 ads-runtime = { path = "crates/ads-runtime" }
+ads-telegram = { path = "crates/ads-telegram" }
 aes-gcm = "0.10"
+async-trait = "0.1"
 axum = { version = "0.8.9", features = ["ws"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 chrono-tz = "0.10"
@@ -63,6 +66,7 @@ tempfile = "3"
 thiserror = "2"
 toml = "0.8"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tokio-tungstenite = { version = "0.29", features = ["connect", "rustls-tls-webpki-roots"] }
 tower = { version = "0.5.3", features = ["util"] }
 tower-http = { version = "0.6", features = ["set-header"] }
 url = "2"

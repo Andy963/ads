@@ -9,9 +9,10 @@ use ads_actions::{
 };
 use ads_reviewer::{ReviewIssue, ReviewTestReport, ReviewVerdict, ReviewVerdictStatus};
 use ads_state::{
-    ActionJobKind, ActionJobStatus, StateDb, UpsertWebProject, WEB_ACTIONS_NAMESPACE,
-    acquire_review_queue_lease, bump_lane_generation, create_action_job, ensure_web_project_tables,
-    get_action_job, logical_history_key, supersede_review_jobs_for_new_head, upsert_web_project,
+    ActionJobKind, ActionJobStatus, ActionJobStatusUpdate, StateDb, UpsertWebProject,
+    WEB_ACTIONS_NAMESPACE, acquire_review_queue_lease, bump_lane_generation, create_action_job,
+    ensure_web_project_tables, get_action_job, list_action_jobs, logical_history_key,
+    supersede_review_jobs_for_new_head, update_action_job_status, upsert_web_project,
 };
 use serde_json::Value;
 use tempfile::{TempDir, tempdir};
@@ -171,6 +172,7 @@ fn dispatch_request(
         pr_number,
         lane_generation: 1,
         chat_session_id: Some("main".to_string()),
+        automatic: false,
     }
 }
 
@@ -218,6 +220,78 @@ async fn dispatches_review_jobs_and_deduplicates() {
         .expect("other dispatch");
     assert_ne!(other_branch.job_id, first_job_id);
     assert_eq!(other_branch.issue_id, Some(8));
+}
+
+#[tokio::test]
+async fn blocks_automatic_retry_after_repeated_operational_failures() {
+    let (_directory, db) = state();
+    let (_temp, repo, _base, _head) = repo();
+    let project = ads_state::derive_project_session_id(&repo.to_string_lossy());
+    {
+        let connection = db.connect().expect("connection");
+        for (index, created_at) in [(1_i64, 8_000_i64), (2_i64, 9_000_i64)] {
+            let job = create_action_job(
+                &connection,
+                ads_state::CreateActionJob {
+                    id: format!("failed-{index}"),
+                    project_id: project.clone(),
+                    lane_generation: Some(1),
+                    job_kind: ActionJobKind::PullRequestReview,
+                    issue_id: 7,
+                    issue_title: "Fix the bug".to_string(),
+                    issue_snapshot: Default::default(),
+                    status: Some(ActionJobStatus::Queued),
+                    branch: "codex/issue-7".to_string(),
+                    base_sha: String::new(),
+                    head_sha: String::new(),
+                    reviewer_profile_ids_json: "[]".to_string(),
+                    pr_number: 12,
+                    pr_url: String::new(),
+                    auth_user_id: "user-1".to_string(),
+                    chat_session_id: "main".to_string(),
+                },
+                created_at,
+            )
+            .expect("job");
+            update_action_job_status(
+                &connection,
+                &job.id,
+                ActionJobStatus::Failed,
+                ActionJobStatusUpdate {
+                    error_message: Some(Some(
+                        "Native upstream request failed with status 503".to_string(),
+                    )),
+                    ..ActionJobStatusUpdate::default()
+                },
+                created_at,
+                false,
+            )
+            .expect("failed status");
+        }
+    }
+
+    let queue = ReviewQueue::new(db.clone(), "worker-1", options());
+    let mut automatic = dispatch_request(project.clone(), &repo, Some("codex/issue-7"), None);
+    automatic.automatic = true;
+    let error = queue
+        .dispatch(automatic, 10_000)
+        .expect_err("circuit breaker");
+    assert!(error.to_string().contains("Automatic review retry paused"));
+    let connection = db.connect().expect("connection");
+    assert_eq!(
+        list_action_jobs(&connection, &project, None, Some("user-1"))
+            .expect("jobs")
+            .len(),
+        2
+    );
+
+    let manual = queue
+        .dispatch(
+            dispatch_request(project.clone(), &repo, Some("codex/issue-7"), None),
+            10_000,
+        )
+        .expect("manual retry");
+    assert_eq!(manual.status, ActionJobStatus::Queued);
 }
 
 #[tokio::test]

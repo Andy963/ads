@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use ads_contract::ws::HistoryEntry;
@@ -19,11 +19,12 @@ use ads_state::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Map, Value, json};
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, Notify, watch};
 
 use crate::{
     AgentActionTools, AgentEvent, AgentInputPart, AgentSendOptions, CodexAppServerAgent,
     CodexAppServerAgentOptions, CodexAppServerDaemonRegistry, SandboxMode, SpawnOptions,
+    provider_injection::resolve_codex_model_selection,
 };
 
 pub type CodexActionToolsFactory =
@@ -35,6 +36,7 @@ pub struct CodexAppServerPromptRunnerOptions {
     pub history_max_entries_per_session: usize,
     pub history_max_text_length: usize,
     pub action_tools_factory: Option<CodexActionToolsFactory>,
+    pub turn_idle_timeout: Option<Duration>,
 }
 
 impl CodexAppServerPromptRunnerOptions {
@@ -45,6 +47,7 @@ impl CodexAppServerPromptRunnerOptions {
             history_max_entries_per_session: DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION,
             history_max_text_length: DEFAULT_HISTORY_MAX_TEXT_LENGTH,
             action_tools_factory: None,
+            turn_idle_timeout: resolve_turn_idle_timeout(),
         }
     }
 }
@@ -81,22 +84,28 @@ impl CodexAppServerPromptRunner {
         entry: &PromptQueueEntry,
         model: Option<&str>,
         effort: Option<&str>,
-    ) -> ads_state::StateResult<CodexAppServerAgent> {
-        let key = agent_key(entry, model, effort);
+    ) -> ads_state::StateResult<(CodexAppServerAgent, String)> {
+        let selection = resolve_codex_model_selection(
+            &self.options.db,
+            &entry.auth_user_id,
+            model,
+            self.options.daemon_options.clone(),
+        )?;
+        let key = agent_key(entry, &selection.model_key, effort);
         if let Some(agent) = self.agents.lock().await.get(&key).cloned() {
-            return Ok(agent);
+            return Ok((agent, key));
         }
         let agent = CodexAppServerAgent::new(CodexAppServerAgentOptions {
             project_id: ads_state::derive_project_session_id(&entry.workspace_root),
             workspace_root: entry.workspace_root.clone().into(),
             working_directory: Some(entry.workspace_root.clone().into()),
-            model: model.map(str::to_string),
+            model: selection.model,
             resume_thread_id: None,
             reasoning_effort: effort.unwrap_or("high").to_string(),
             sandbox_mode: SandboxMode::WorkspaceWrite,
             developer_instructions: None,
             dynamic_tools: Vec::new(),
-            daemon_options: self.options.daemon_options.clone(),
+            daemon_options: selection.daemon_options,
             registry: Some(Arc::clone(&self.registry)),
             turn_timeout: Some(Duration::from_secs(1_800)),
             auto_compact: Default::default(),
@@ -105,8 +114,8 @@ impl CodexAppServerPromptRunner {
         if let Some(thread_id) = load_thread_id(&self.options.db, &key)? {
             agent.restore_thread(&thread_id, true).await;
         }
-        self.agents.lock().await.insert(key, agent.clone());
-        Ok(agent)
+        self.agents.lock().await.insert(key.clone(), agent.clone());
+        Ok((agent, key))
     }
 }
 
@@ -197,13 +206,22 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty());
-            let agent = self.agent_for(&entry, model, effort).await?;
+            let (agent, agent_key) = self.agent_for(&entry, model, effort).await?;
             let event_context = context.clone();
+            let streamed_assistant_text = Arc::new(StdMutex::new(HashMap::<String, String>::new()));
+            let activity = Arc::new(Notify::new());
+            let side_effect_observed = Arc::new(AtomicBool::new(false));
+            let activity_for_events = Arc::clone(&activity);
+            let side_effect_for_events = Arc::clone(&side_effect_observed);
             let event_subscription = agent.on_event(move |event| {
-                emit_agent_event(&event_context, &event);
+                if matches!(event.phase.as_str(), "command" | "editing" | "tool") {
+                    side_effect_for_events.store(true, Ordering::SeqCst);
+                }
+                activity_for_events.notify_one();
+                emit_agent_event(&event_context, &streamed_assistant_text, &event);
             });
             let (abort_tx, abort_rx) = watch::channel(false);
-            self.active.lock().await.insert(entry.id, abort_tx);
+            self.active.lock().await.insert(entry.id, abort_tx.clone());
             let mut parts = Vec::new();
             if !user_text.is_empty() {
                 parts.push(AgentInputPart::text(user_text));
@@ -214,15 +232,31 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                 .action_tools_factory
                 .as_ref()
                 .and_then(|factory| factory(&entry));
-            let result = agent
-                .send_with_options(
-                    parts,
-                    AgentSendOptions {
-                        abort: Some(abort_rx),
-                        action_tools,
-                    },
-                )
-                .await;
+            let mut send = Box::pin(agent.send_with_options(
+                parts,
+                AgentSendOptions {
+                    abort: Some(abort_rx),
+                    action_tools,
+                },
+            ));
+            let result = if let Some(idle_timeout) = self.options.turn_idle_timeout {
+                loop {
+                    tokio::select! {
+                        result = &mut send => break result,
+                        _ = activity.notified() => {}
+                        _ = tokio::time::sleep(idle_timeout), if !side_effect_observed.load(Ordering::SeqCst) => {
+                            let _ = abort_tx.send(true);
+                            let _ = send.await;
+                            break Err(crate::AgentError::TurnFailed(format!(
+                                "Codex app-server produced no output for {}ms; the turn was interrupted. Retry or switch models.",
+                                idle_timeout.as_millis()
+                            )));
+                        }
+                    }
+                }
+            } else {
+                send.await
+            };
             agent.off_event(event_subscription);
             self.active.lock().await.remove(&entry.id);
 
@@ -263,11 +297,7 @@ impl PromptQueueRunner for CodexAppServerPromptRunner {
                         );
                     }
                     if let Some(thread_id) = agent.thread_id().await {
-                        save_thread_id(
-                            &self.options.db,
-                            &agent_key(&entry, model, effort),
-                            &thread_id,
-                        )?;
+                        save_thread_id(&self.options.db, &agent_key, &thread_id)?;
                     }
                     context.emit(json!({
                         "type": "result",
@@ -447,12 +477,22 @@ fn prompt_text(payload: &Map<String, Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn agent_key(entry: &PromptQueueEntry, model: Option<&str>, effort: Option<&str>) -> String {
+fn resolve_turn_idle_timeout() -> Option<Duration> {
+    ["ADS_CODEX_IDLE_TIMEOUT_MS", "ADS_AGENT_IDLE_TIMEOUT_MS"]
+        .iter()
+        .find_map(|key| std::env::var(key).ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map_or(Some(Duration::from_secs(120)), |milliseconds| {
+            (milliseconds > 0).then(|| Duration::from_millis(milliseconds))
+        })
+}
+
+fn agent_key(entry: &PromptQueueEntry, model_key: &str, effort: Option<&str>) -> String {
     format!(
         "{}::{}::{}::{}",
         entry.logical_history_key,
         entry.workspace_root,
-        model.unwrap_or_default(),
+        model_key,
         effort.unwrap_or_default()
     )
 }
@@ -649,17 +689,36 @@ fn has_persisted_prompt(entries: &[HistoryEntry], client_message_id: &str) -> bo
     })
 }
 
-fn emit_agent_event(context: &PromptRunContext, event: &AgentEvent) {
+fn emit_agent_event(
+    context: &PromptRunContext,
+    streamed_assistant_text: &StdMutex<HashMap<String, String>>,
+    event: &AgentEvent,
+) {
     match event.phase.as_str() {
-        "responding" if event.delta.is_some() => {
+        "responding" if let Some(next) = event.delta.as_deref() => {
             let item_id = event
                 .raw
                 .get("itemId")
                 .and_then(Value::as_str)
                 .unwrap_or("codex-message");
+            let delta = {
+                let mut streamed = streamed_assistant_text
+                    .lock()
+                    .expect("assistant stream lock");
+                let previous = streamed.get(item_id).map(String::as_str).unwrap_or("");
+                if !previous.is_empty() && !next.starts_with(previous) {
+                    return;
+                }
+                let delta = next.strip_prefix(previous).unwrap_or(next).to_string();
+                streamed.insert(item_id.to_string(), next.to_string());
+                delta
+            };
+            if delta.is_empty() {
+                return;
+            }
             context.emit(json!({
                 "type": "delta",
-                "delta": event.delta,
+                "delta": delta,
                 "assistantItemId": item_id,
                 "ts": event.timestamp
             }));
