@@ -2169,8 +2169,7 @@ fn migrate_state_48(connection: &Connection) -> StateResult<()> {
                  agent_handoff_ready = CASE WHEN EXISTS (
                    SELECT 1 FROM agent_messages m
                    WHERE m.project_id = j.project_id
-                     AND (j.auth_user_id IS NULL OR m.auth_user_id = j.auth_user_id)
-                     AND (j.chat_session_id IS NULL OR m.chat_session_id = j.chat_session_id)
+                      AND (j.auth_user_id IS NULL OR m.auth_user_id = j.auth_user_id)
                      AND m.kind = 'review_verdict'
                      AND m.correlation_id = j.id
                  ) THEN 1 ELSE 0 END
@@ -2203,9 +2202,8 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
              ORDER BY created_at DESC, id DESC",
         )?;
         statement
-            .query_map([], |row| {
-                Ok(LegacyReviewWake {
-                    client_message_id: row.get(0)?,
+                    auth_user_id: row.get(1)?,n                Ok(LegacyReviewWake {
+                    auth_user_id: row.get(1)?,
                     auth_user_id: row.get(1)?,
                     user_id: row.get(2)?,
                     session_id: row.get(3)?,
