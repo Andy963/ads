@@ -2222,7 +2222,7 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<()> {
             .collect::<Result<Vec<_>, _>>()?
     };
     for wake in rows {
-        let payload = serde_json::from_str::<JsonValue>(&wake.payload_json).unwrap_or_default();
+        let payload = serde_json::from_str::<JsonValue>(&wake.payload_json).map_err(|e| StateError::InvalidInput(format!("malformed json: {e}")))?;
         let text = payload
             .get("text")
             .and_then(JsonValue::as_str)
