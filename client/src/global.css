@@ -1,0 +1,116 @@
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", ui-sans-serif, system-ui, Roboto, "Helvetica Neue", Arial,
+    "Noto Sans", "Liberation Sans", sans-serif;
+  --font-mono: "Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+
+  --app-bg: #f2f2f7;
+  --surface: #ffffff;
+  --surface-2: #f2f2f7;
+  --border: #3c3c4321;
+  --text: #1c1c1e;
+  --muted: #6c6c70;
+  --muted-2: #8e8e93;
+  --segmented-bg: #e3e3e8;
+  --selection-bg: #e8f1ff;
+  --hover-bg: #e5e5ea;
+  --focus-ring: rgba(0, 122, 255, 0.18);
+
+  --accent: #007aff;
+  --accent-2: #0062cc;
+  --danger: #d70015;
+  --danger-2: #dc2626;
+
+  --github-canvas: #f6f8fa;
+  --github-canvas-subtle: #f6f8fa;
+  --github-surface: #ffffff;
+  --github-border: #d0d7de;
+  --github-border-muted: #d8dee4;
+  --github-text: #24292f;
+  --github-muted: #57606a;
+  --github-accent: #0969da;
+  --github-accent-strong: #0550ae;
+  --github-accent-subtle: rgba(9, 105, 218, 0.08);
+  --github-code-bg: #f6f8fa;
+  --github-code-header: #eef2f6;
+
+  --radius-sm: 10px;
+  --radius: 12px;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 1px 3px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  touch-action: manipulation;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--app-bg);
+  color: var(--text);
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+/* iOS Safari 在聚焦字号 <16px 的表单控件时会自动放大页面 */
+@media (max-width: 768px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Failed lazy chunk load (see lib/asyncComponent.ts) */
+.lazyChunkError {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 16px;
+  color: var(--muted, #64748b);
+  font-size: 13px;
+}
+
+.lazyChunkErrorReload {
+  min-height: 36px;
+  padding: 0 16px;
+  border: 1px solid var(--border, #cbd5e1);
+  border-radius: 8px;
+  background: var(--surface, #ffffff);
+  color: var(--text, #0f172a);
+  font-size: 13px;
+  cursor: pointer;
+}

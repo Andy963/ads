@@ -1,0 +1,106 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { defineConfig, loadEnv } from "vite";
+import vue from "@vitejs/plugin-vue";
+import { VitePWA } from "vite-plugin-pwa";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+function normalizeBasePath(raw: string | undefined): string {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed || trimmed === "/") return "/";
+  const withLeading = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return withLeading.endsWith("/") ? withLeading : `${withLeading}/`;
+}
+
+export default defineConfig(({ mode }) => {
+  const repoRoot = path.resolve(__dirname, "..");
+  const env = loadEnv(mode, repoRoot, "");
+  const base = normalizeBasePath(env.ADS_WEB_BASE_PATH || env.VITE_BASE_PATH);
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(repoRoot, "package.json"), "utf8")) as { version?: string };
+  const appVersion = pkg.version || "0.0.1";
+
+  return {
+    root: __dirname,
+    cacheDir: path.resolve(repoRoot, "node_modules", ".vite", "client"),
+    base,
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion),
+    },
+    plugins: [
+      vue(),
+      VitePWA({
+        registerType: "autoUpdate",
+        injectRegister: false,
+        includeAssets: ["favicon.ico", "apple-touch-icon.png", "pwa-192x192.png", "pwa-512x512.png"],
+        manifest: {
+          id: base,
+          name: "ADS Tasks",
+          short_name: "ADS",
+          description: "ADS Task & Agent Management",
+          theme_color: "#18181b",
+          background_color: "#09090b",
+          display: "standalone",
+          orientation: "portrait",
+          start_url: base,
+          scope: base,
+          icons: [
+            {
+              src: "pwa-192x192.png",
+              sizes: "192x192",
+              type: "image/png",
+            },
+            {
+              src: "pwa-512x512.png",
+              sizes: "512x512",
+              type: "image/png",
+            },
+            {
+              src: "pwa-512x512.png",
+              sizes: "512x512",
+              type: "image/png",
+              purpose: "any maskable",
+            },
+          ],
+        },
+        workbox: {
+          clientsClaim: true,
+          importScripts: [`${base}push-sw.js`],
+          navigateFallbackDenylist: [/^\/api/, /^\/ws/],
+          globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
+        },
+      }),
+    ],
+    server: {
+      proxy: {
+        "/api": {
+          target: "http://localhost:8787",
+          changeOrigin: true,
+        },
+        "/ws": {
+          target: "ws://localhost:8787",
+          ws: true,
+          changeOrigin: true,
+        },
+      },
+    },
+    build: {
+      outDir: path.resolve(repoRoot, "dist", "client"),
+      emptyOutDir: true,
+      // The execute-block fixture ships only in an explicit fixture build
+      // (ADS_WEB_FIXTURE_ENTRY=1); production output excludes it entirely.
+      ...(env.ADS_WEB_FIXTURE_ENTRY === "1"
+        ? {
+            rollupOptions: {
+              input: {
+                main: path.resolve(__dirname, "index.html"),
+                fixture: path.resolve(__dirname, "fixture.html"),
+              },
+            },
+          }
+        : {}),
+    },
+  };
+});

@@ -1,0 +1,2025 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+
+import MarkdownContent from "./MarkdownContent.vue";
+import MainChatPendingImageViewer from "./MainChatPendingImageViewer.vue";
+import ThinkingDots from "./mainChat/ThinkingDots.vue";
+import type { ChatMessage, RenderMessage } from "./mainChat/types";
+import type { ChatItem } from "../app/controllerTypes";
+import { PATCH_DIFF_FALLBACK_KEY, splitUnifiedDiffByPath } from "../lib/patchDiff";
+import { normalizeTurnSemanticOrder } from "../lib/chat_sync";
+import { TURN_FAILURE_CARD_PREFIX, turnFailureCardId } from "../lib/turnFailure";
+
+const LIVE_STEP_MESSAGE_ID = "live-step";
+const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)]+)\)/g;
+
+function userMessageText(content: string): string {
+  if (!content) return "";
+  return content.replace(MARKDOWN_IMAGE_RE, "").trim();
+}
+
+function parseShellWords(command: string): string[] | null {
+  const words: string[] = [];
+  let word = "";
+  let quote: "'" | '"' | null = null;
+  let started = false;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index] ?? "";
+
+    if (quote === "'") {
+      if (character === "'") quote = null;
+      else word += character;
+      continue;
+    }
+
+    if (quote === '"') {
+      if (character === '"') {
+        quote = null;
+      } else if (character === "\\") {
+        const next = command[index + 1];
+        if (next === "\n") {
+          index += 1;
+        } else if (next && ['"', "\\", "$", "`"].includes(next)) {
+          word += next;
+          index += 1;
+        } else {
+          word += character;
+        }
+      } else {
+        word += character;
+      }
+      continue;
+    }
+
+    if (character === "\\") {
+      const next = command[index + 1];
+      if (!next) return null;
+      if (next !== "\n") word += next;
+      started = true;
+      index += 1;
+    } else if (character === "'" || character === '"') {
+      quote = character;
+      started = true;
+    } else if (/\s/.test(character)) {
+      if (started) {
+        words.push(word);
+        word = "";
+        started = false;
+      }
+    } else {
+      word += character;
+      started = true;
+    }
+  }
+
+  if (quote) return null;
+  if (started) words.push(word);
+  return words;
+}
+
+function formatExecuteCommandForDisplay(command: unknown): string {
+  const rawCommand = String(command ?? "");
+  const words = parseShellWords(rawCommand);
+  if (!words || words.length !== 3) return rawCommand;
+
+  const executable = words[0]?.split("/").at(-1);
+  if (executable !== "bash" || !["-lc", "-c"].includes(words[1] ?? "")) return rawCommand;
+  return words[2] ?? rawCommand;
+}
+
+function userMessageAttachments(content: string): Array<{ alt: string; url: string }> {
+  if (!content) return [];
+  const attachments: Array<{ alt: string; url: string }> = [];
+  const re = new RegExp(MARKDOWN_IMAGE_RE.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(content)) !== null) {
+    const alt = match[1] || "";
+    const url = match[2] || "";
+    if (url) {
+      attachments.push({ alt, url });
+    }
+  }
+  return attachments;
+}
+
+const props = defineProps<{
+  messages: ChatMessage[];
+  copiedMessageId: string | null;
+  formatMessageTs: (ts: number) => string;
+  liveStepExpanded: boolean;
+  liveStepHasOverflow: boolean;
+  liveStepCanToggleExpanded: boolean;
+  liveStepOutlineItems: string[];
+  liveStepOutlineHiddenCount: number;
+  liveStepCollapsedTrivialOutline: boolean;
+  workspaceRoot?: string | null;
+  initialFirstLoadedId?: string;
+  initialAnchorId?: string;
+  autoScroll?: boolean;
+}>();
+
+const emit = defineEmits<{
+  (e: "copyMessage", message: RenderMessage): void;
+  (e: "retryMessage", message: RenderMessage): void;
+  (e: "retryAgentHandoff", messageId: string): void;
+  (e: "toggleLiveStepExpanded"): void;
+  (e: "beforeHistoryPrepend"): void;
+}>();
+
+const openCommandTrees = ref<Set<string>>(new Set());
+const expandedPatchKeys = ref<Set<string>>(new Set());
+const messageImageViewerOpen = ref(false);
+const messageImageViewerPreviews = ref<Array<{ key: string; src: string; href: string }>>([]);
+
+function openMessageImageViewer(attachments: Array<{ alt: string; url: string }>, startIndex = 0): void {
+  messageImageViewerPreviews.value = attachments.map((a, i) => ({
+    key: `msg-img-${i}-${a.url}`,
+    src: a.url,
+    href: a.url,
+  }));
+  messageImageViewerOpen.value = true;
+}
+const messageListEl = ref<HTMLElement | null>(null);
+const overflowingExecuteCommandIds = ref<Set<string>>(new Set());
+const executeMarqueeDurations = ref<Map<string, string>>(new Map());
+let executeCommandResizeObserver: ResizeObserver | null = null;
+
+const INITIAL_MESSAGE_WINDOW = 30;
+const EARLIER_MESSAGE_PAGE_SIZE = 20;
+const CHAT_TOP_THRESHOLD_PX = 240;
+const EXECUTE_MARQUEE_GAP_PX = 32;
+const EXECUTE_MARQUEE_SPEED_PX_PER_SECOND = 50;
+const EXECUTE_MARQUEE_MIN_DURATION_SECONDS = 8;
+
+const loadedStart = ref(0);
+const loadingEarlierMessages = ref(false);
+let messageScrollRoot: HTMLElement | null = null;
+let earlierMessagesObserver: IntersectionObserver | null = null;
+
+type PatchRenderRow = {
+  key: string;
+  path: string;
+  added: number | null;
+  removed: number | null;
+  diff: string;
+};
+
+function isLiveStepRenderMessage(m: RenderMessage): boolean {
+  return m.id === LIVE_STEP_MESSAGE_ID && m.role === "assistant" && m.kind === "text";
+}
+
+function escapeHtml(text: string): string {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatPatchStatHtml(added: number | null | undefined, removed: number | null | undefined): string {
+  if (typeof added !== "number" || typeof removed !== "number") {
+    return `<span class="patchCardStatBinary">(binary)</span>`;
+  }
+  return (
+    `<span class="patchCardStat">(` +
+    `<span class="patchCardStatAdd">+${added}</span> ` +
+    `<span class="patchCardStatDel">-${removed}</span>` +
+    `)</span>`
+  );
+}
+
+function patchRowTitle(row: PatchRenderRow): string {
+  const title = String(row.path ?? "").trim();
+  return title || "补丁";
+}
+
+function patchRowMeta(row: PatchRenderRow): string {
+  const parts: string[] = [];
+  parts.push(formatPatchStatHtml(row.added, row.removed));
+  return parts.join(" ");
+}
+
+function patchDiffLineKind(line: string): "add" | "del" | "meta" | "hunk" | "ctx" {
+  if (!line) return "ctx";
+  if (line.startsWith("diff --git ")) return "meta";
+  if (line.startsWith("index ")) return "meta";
+  if (line.startsWith("new file mode ")) return "meta";
+  if (line.startsWith("deleted file mode ")) return "meta";
+  if (line.startsWith("similarity index ")) return "meta";
+  if (line.startsWith("rename from ")) return "meta";
+  if (line.startsWith("rename to ")) return "meta";
+  if (line.startsWith("Binary files ")) return "meta";
+  if (line.startsWith("--- ") || line.startsWith("+++ ")) return "meta";
+  if (line.startsWith("@@")) return "hunk";
+  if (line.startsWith("+")) return "add";
+  if (line.startsWith("-")) return "del";
+  return "ctx";
+}
+
+function renderPatchDiffHtml(raw: unknown): string {
+  const text = String(raw ?? "");
+  if (!text) return "";
+
+  const normalized = text.replace(/\r\n/g, "\n");
+  const lines = normalized.split("\n");
+  return lines
+    .map((line) => {
+      const kind = patchDiffLineKind(line);
+      return `<span class="patchCardDiffLine patchCardDiffLine--${kind}">${escapeHtml(line)}</span>`;
+    })
+    .join("\n");
+}
+
+function patchExpandKey(messageId: string, rowKey: string): string {
+  return `${messageId}::${rowKey}`;
+}
+
+function buildPatchRows(m: RenderMessage): PatchRenderRow[] {
+  const files = Array.isArray(m.patch?.files) ? m.patch.files : [];
+  const diff = String(m.patch?.diff ?? m.content ?? "").trimEnd();
+  const diffByPath = splitUnifiedDiffByPath(diff);
+  const fallbackDiff = diffByPath.get(PATCH_DIFF_FALLBACK_KEY) ?? "";
+  const rows: PatchRenderRow[] = [];
+  const seen = new Set<string>();
+  let fallbackUsed = false;
+
+  for (const file of files) {
+    const filePath = String(file?.path ?? "").trim();
+    if (!filePath || seen.has(filePath)) continue;
+    const rowDiff = diffByPath.get(filePath) ?? (!fallbackUsed && files.length === 1 ? fallbackDiff : "");
+    if (rowDiff === fallbackDiff && rowDiff) fallbackUsed = true;
+    rows.push({
+      key: filePath,
+      path: filePath,
+      added: file?.added ?? null,
+      removed: file?.removed ?? null,
+      diff: rowDiff,
+    });
+    seen.add(filePath);
+  }
+
+  for (const [path, section] of diffByPath.entries()) {
+    if (path === PATCH_DIFF_FALLBACK_KEY || seen.has(path) || !section.trim()) continue;
+    rows.push({
+      key: path,
+      path,
+      added: null,
+      removed: null,
+      diff: section,
+    });
+    seen.add(path);
+  }
+
+  if (!rows.length && fallbackDiff) {
+    rows.push({
+      key: PATCH_DIFF_FALLBACK_KEY,
+      path: "补丁",
+      added: null,
+      removed: null,
+      diff: fallbackDiff,
+    });
+    fallbackUsed = true;
+  }
+
+  if (!fallbackUsed && fallbackDiff) {
+    rows.push({
+      key: `${PATCH_DIFF_FALLBACK_KEY}:extra`,
+      path: "补丁",
+      added: null,
+      removed: null,
+      diff: fallbackDiff,
+    });
+  }
+
+  return rows;
+}
+
+function isPatchExpanded(messageId: string, rowKey: string): boolean {
+  return expandedPatchKeys.value.has(patchExpandKey(messageId, rowKey));
+}
+
+function togglePatchExpanded(messageId: string, rowKey: string): void {
+  const key = patchExpandKey(messageId, rowKey);
+  const next = new Set(expandedPatchKeys.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  expandedPatchKeys.value = next;
+}
+
+const renderMessages = computed<RenderMessage[]>(() => {
+  const rawOrdered = normalizeTurnSemanticOrder(props.messages as ChatItem[]) as ChatMessage[];
+  const turns: ChatMessage[][] = [];
+  let currentTurn: ChatMessage[] = [];
+  for (const msg of rawOrdered) {
+    if (msg.role === "user" && currentTurn.length > 0) {
+      turns.push(currentTurn);
+      currentTurn = [];
+    }
+    currentTurn.push(msg);
+  }
+  if (currentTurn.length > 0) turns.push(currentTurn);
+
+  const processed: ChatMessage[] = [];
+  for (const turn of turns) {
+    const turnPatches = turn
+      .filter((m) => (m.kind === "patch" && Boolean(m.patch || m.content)) || Boolean(m.patch))
+      .map((m) => m.patch ?? (m.content ? { files: [], diff: m.content } : null))
+      .filter(Boolean);
+
+    let mergedPatch: ChatMessage["patch"] | undefined;
+    if (turnPatches.length > 0) {
+      const allFiles = turnPatches.flatMap((p) => p?.files ?? []);
+      const allDiffs = turnPatches.map((p) => p?.diff ?? "").filter(Boolean).join("\n\n");
+      const truncated = turnPatches.some((p) => p?.truncated);
+      if (allFiles.length > 0 || allDiffs.trim()) {
+        mergedPatch = {
+          files: allFiles,
+          diff: allDiffs,
+          truncated: truncated || undefined,
+        };
+      }
+    }
+
+    const visibleTurn: ChatMessage[] = [];
+    for (const msg of turn) {
+      if (msg.kind === "thought" || msg.kind === "plan" || msg.kind === "patch" || msg.kind === "command") {
+        continue;
+      }
+      visibleTurn.push({ ...msg });
+    }
+
+    if (mergedPatch) {
+      // A patch is supplementary metadata, never a standalone message. Only
+      // fold it into a substantive assistant explanation; creating an empty
+      // bubble would make a patch look like an unsolicited response.
+      const target = [...visibleTurn]
+        .reverse()
+        .find((m) => m.role === "assistant" && m.kind === "text" && String(m.content ?? "").trim());
+      if (target) {
+        target.patch = mergedPatch;
+      }
+    }
+
+    processed.push(...visibleTurn);
+  }
+
+  // The transcript keeps a single replaceable command slot: a new command
+  // supersedes the previous one, so only the latest execute block is visible.
+  let latestExecuteIndex = -1;
+  for (let index = processed.length - 1; index >= 0; index -= 1) {
+    if (processed[index]?.kind === "execute") {
+      latestExecuteIndex = index;
+      break;
+    }
+  }
+  if (latestExecuteIndex < 0) return processed;
+  return processed.filter((msg, index) => msg.kind !== "execute" || index === latestExecuteIndex);
+});
+
+const loadedMessages = computed<RenderMessage[]>(() =>
+  renderMessages.value.slice(loadedStart.value),
+);
+
+const hasEarlierMessages = computed(() => loadedStart.value > 0);
+
+// Only the execute row can enter or leave the marquee state, so the layout
+// pass is keyed on it instead of the whole transcript, which changes on every
+// streamed token and would force a synchronous reflow per chunk.
+const executeCommandSignature = computed(() =>
+  renderMessages.value
+    .filter((message) => message.kind === "execute")
+    .map((message) => `${String(message.id ?? "").trim()}:${formatExecuteCommandForDisplay(message.command)}:${message.streaming ? 1 : 0}`)
+    .join("|"),
+);
+
+function isExecuteCommandOverflowing(messageId: unknown): boolean {
+  const key = String(messageId ?? "").trim();
+  return Boolean(key && overflowingExecuteCommandIds.value.has(key));
+}
+
+function executeMarqueeDuration(textWidth: number): string {
+  const duration = Math.max(
+    EXECUTE_MARQUEE_MIN_DURATION_SECONDS,
+    (textWidth + EXECUTE_MARQUEE_GAP_PX) / EXECUTE_MARQUEE_SPEED_PX_PER_SECOND,
+  );
+  return `${duration}s`;
+}
+
+function executeCommandTrackStyle(messageId: unknown): Record<string, string> | undefined {
+  const key = String(messageId ?? "").trim();
+  const duration = executeMarqueeDurations.value.get(key);
+  return duration ? { "--execute-marquee-duration": duration } : undefined;
+}
+
+function updateExecuteCommandOverflow(): void {
+  const root = messageListEl.value;
+  if (!root) return;
+
+  const next = new Set<string>();
+  const nextDurations = new Map<string, string>();
+  root.querySelectorAll<HTMLElement>(".execute-block .execute-cmd").forEach((commandEl) => {
+    const messageId = String(commandEl.dataset.messageId ?? "").trim();
+    const textEl = commandEl.querySelector<HTMLElement>(".execute-cmd-copy");
+    if (!messageId || !textEl) return;
+
+    const containerWidth = commandEl.clientWidth || commandEl.getBoundingClientRect().width;
+    const textWidth = Math.max(textEl.scrollWidth, textEl.getBoundingClientRect().width);
+    if (containerWidth > 0 && textWidth > containerWidth + 0.5) {
+      next.add(messageId);
+      nextDurations.set(messageId, executeMarqueeDuration(textWidth));
+    }
+  });
+
+  const current = overflowingExecuteCommandIds.value;
+  const currentDurations = executeMarqueeDurations.value;
+  if (
+    current.size === next.size &&
+    [...current].every((id) => next.has(id)) &&
+    currentDurations.size === nextDurations.size &&
+    [...currentDurations].every(([id, duration]) => nextDurations.get(id) === duration)
+  ) return;
+  overflowingExecuteCommandIds.value = next;
+  executeMarqueeDurations.value = nextDurations;
+}
+
+function observeExecuteCommandSizes(): void {
+  executeCommandResizeObserver?.disconnect();
+  executeCommandResizeObserver = null;
+
+  if (typeof ResizeObserver === "undefined") return;
+  const commandElements = messageListEl.value?.querySelectorAll<HTMLElement>(
+    ".execute-block .execute-cmd",
+  );
+  if (!commandElements?.length) return;
+
+  executeCommandResizeObserver = new ResizeObserver(() => {
+    updateExecuteCommandOverflow();
+  });
+  commandElements.forEach((element) => {
+    executeCommandResizeObserver?.observe(element);
+    const copy = element.querySelector<HTMLElement>(".execute-cmd-copy");
+    if (copy) executeCommandResizeObserver?.observe(copy);
+  });
+}
+
+function refreshExecuteCommandLayout(): void {
+  void nextTick().then(() => {
+    updateExecuteCommandOverflow();
+    observeExecuteCommandSizes();
+  });
+}
+
+function isNearTop(): boolean {
+  const root = messageScrollRoot;
+  if (!root) return false;
+  return root.scrollTop <= CHAT_TOP_THRESHOLD_PX;
+}
+
+async function loadEarlierMessages(): Promise<void> {
+  if (loadingEarlierMessages.value || !hasEarlierMessages.value) return;
+  loadingEarlierMessages.value = true;
+  emit("beforeHistoryPrepend");
+  // MainChat releases its streaming turn anchor here. Give WebKit one frame
+  // to re-enable native scroll anchoring before inserting older rows.
+  await new Promise<void>((resolve) => {
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => resolve());
+    else resolve();
+  });
+  loadedStart.value = Math.max(0, loadedStart.value - EARLIER_MESSAGE_PAGE_SIZE);
+  try {
+    await nextTick();
+  } finally {
+    loadingEarlierMessages.value = false;
+  }
+}
+
+function observeEarlierMessagesSentinel(): void {
+  earlierMessagesObserver?.disconnect();
+  earlierMessagesObserver = null;
+
+  const sentinel = messageListEl.value?.querySelector<HTMLElement>("[data-testid='load-earlier-sentinel']");
+  if (!sentinel || !messageScrollRoot || typeof IntersectionObserver === "undefined") return;
+
+  earlierMessagesObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((entry) => entry.isIntersecting) && isNearTop()) void loadEarlierMessages();
+    },
+    { root: messageScrollRoot, rootMargin: `${CHAT_TOP_THRESHOLD_PX}px 0px 0px 0px` },
+  );
+  earlierMessagesObserver.observe(sentinel);
+}
+
+watch(
+  renderMessages,
+  (next, previous) => {
+    if (next.length === 0) {
+      loadedStart.value = 0;
+      return;
+    }
+
+    if (!previous?.length) {
+      if (props.autoScroll !== false) {
+        loadedStart.value = Math.max(0, next.length - INITIAL_MESSAGE_WINDOW);
+        return;
+      }
+      const restoredIndex = next.findIndex((message) => message.id === props.initialFirstLoadedId);
+      const anchorIndex = next.findIndex((message) => message.id === props.initialAnchorId);
+      const restored = [restoredIndex, anchorIndex].filter((index) => index >= 0);
+      loadedStart.value = restored.length > 0 ? Math.min(...restored) : Math.max(0, next.length - INITIAL_MESSAGE_WINDOW);
+      return;
+    }
+
+    // Anchor to the previous window, not a slice of the already-updated transcript.
+    // Tail appends, backfills, and live-row removal must retain every surviving loaded row.
+    const loadedIds = new Set(previous.slice(loadedStart.value).map((message) => message.id));
+    const firstSurvivingIndex = next.findIndex((message) => loadedIds.has(message.id));
+    // A reload can hydrate a short cached prefix with the complete transcript.
+    // Keep only the newest page in that case; otherwise the old prefix keeps
+    // the history sentinel in view and eagerly expands every earlier page.
+    if (loadedStart.value === 0 && firstSurvivingIndex === 0 && next.length > previous.length + 2) {
+      loadedStart.value = Math.max(0, next.length - INITIAL_MESSAGE_WINDOW);
+      return;
+    }
+    loadedStart.value = firstSurvivingIndex >= 0
+      ? firstSurvivingIndex
+      : Math.max(0, next.length - INITIAL_MESSAGE_WINDOW);
+  },
+  { immediate: true },
+);
+
+// Reobserve only when the sentinel mounts or disappears. Rearming it after every
+// page can repeatedly fire while still intersecting and eagerly mount all history.
+watch(hasEarlierMessages, observeEarlierMessagesSentinel, { flush: "post" });
+
+onMounted(() => {
+  messageScrollRoot = (messageListEl.value?.closest(".chat") as HTMLElement | null) ?? messageListEl.value?.parentElement ?? null;
+  observeEarlierMessagesSentinel();
+  refreshExecuteCommandLayout();
+  if (typeof document !== "undefined" && "fonts" in document) {
+    void document.fonts.ready.then(() => {
+      refreshExecuteCommandLayout();
+    });
+  }
+});
+
+onBeforeUnmount(() => {
+  earlierMessagesObserver?.disconnect();
+  earlierMessagesObserver = null;
+  executeCommandResizeObserver?.disconnect();
+  executeCommandResizeObserver = null;
+  messageScrollRoot = null;
+});
+
+watch([executeCommandSignature, loadedStart], refreshExecuteCommandLayout, { flush: "post" });
+
+defineExpose({ loadEarlierMessages });
+
+watch(
+  () =>
+    renderMessages.value
+      .filter((m) => Boolean(m.patch))
+      .flatMap((m) =>
+        buildPatchRows(m as RenderMessage)
+          .map((row) => patchExpandKey(String(m.id ?? "").trim(), row.key))
+          .filter(Boolean),
+      )
+      .filter(Boolean),
+  (keys) => {
+    const visibleKeys = new Set(keys);
+    const next = new Set([...expandedPatchKeys.value].filter((key) => visibleKeys.has(key)));
+    if (next.size !== expandedPatchKeys.value.size) {
+      expandedPatchKeys.value = next;
+    }
+  },
+  { immediate: true },
+);
+
+function getCommands(content: unknown): string[] {
+  return String(content ?? "")
+    .split("\n")
+    .filter((line) => line.match(/^\$\s*/))
+    .map((line) => line.replace(/^\$\s*/, ""));
+}
+
+const commandTreeCommandsById = computed(() => {
+  const map = new Map<string, string[]>();
+  for (const m of renderMessages.value) {
+    if (m.kind !== "command") continue;
+    map.set(m.id, getCommands(m.content));
+  }
+  return map;
+});
+
+function getCommandTreeCommands(m: RenderMessage): string[] {
+  return commandTreeCommandsById.value.get(m.id) ?? [];
+}
+
+function getCommandTreeShownCount(m: RenderMessage): number {
+  if (typeof m.commandsShown === "number" && Number.isFinite(m.commandsShown) && m.commandsShown >= 0) return m.commandsShown;
+  return getCommandTreeCommands(m).length;
+}
+
+function getCommandTreeTotalCount(m: RenderMessage): number {
+  const shown = getCommandTreeShownCount(m);
+  if (typeof m.commandsTotal === "number" && Number.isFinite(m.commandsTotal) && m.commandsTotal >= 0) return m.commandsTotal;
+  return shown;
+}
+
+function hasCommandTreeOverflow(m: RenderMessage): boolean {
+  return getCommandTreeTotalCount(m) > getCommandTreeShownCount(m);
+}
+
+function isCommandTreeOpen(id: string, commandsCount: number): boolean {
+  void commandsCount;
+  return openCommandTrees.value.has(id);
+}
+
+function toggleCommandTree(id: string): void {
+  const next = new Set(openCommandTrees.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  openCommandTrees.value = next;
+}
+
+function caretPath(open: boolean): string {
+  return open ? "M6 8l4 4 4-4" : "M8 6l4 4-4 4";
+}
+
+function shouldShowMsgActions(m: RenderMessage): boolean {
+  if (m.role === "system") return false;
+  if (m.streaming && String(m.content ?? "").length === 0) return false;
+  if (m.kind === "patch" || m.kind === "thought" || m.kind === "divider") return false;
+  return true;
+}
+
+function shouldUseCompactBubble(m: RenderMessage): boolean {
+  return !shouldShowMsgActions(m);
+}
+
+function isTurnFailureCard(m: RenderMessage): boolean {
+  return m.role === "system" && m.kind === "error" && m.id.startsWith(TURN_FAILURE_CARD_PREFIX);
+}
+
+function agentHandoffStatusLabel(status: string | undefined): string {
+  switch (status) {
+    case "pending": return "等待执行";
+    case "running": return "交付中";
+    case "delivered": return "已交付";
+    case "failed": return "交付失败";
+    case "superseded": return "已过期";
+    default: return "历史交付";
+  }
+}
+
+function agentHandoffTarget(m: RenderMessage): string {
+  const handoff = m.agentHandoff;
+  if (!handoff) return "Reviewer → Acopilot";
+  const issue = handoff.issueId ? `Issue #${handoff.issueId}` : "当前 Issue";
+  const pr = handoff.prNumber ? ` · PR #${handoff.prNumber}` : "";
+  return `${issue}${pr}`;
+}
+
+function agentHandoffIssueUrl(m: RenderMessage): string {
+  const value = String(m.agentHandoff?.issueUrl ?? "").trim();
+  return value.startsWith("https://github.com/") ? value : "";
+}
+
+function shortSha(value: string | undefined): string {
+  return String(value ?? "").trim().slice(0, 12);
+}
+
+function getTurnFailureForUser(message: RenderMessage): RenderMessage | null {
+  if (message.role !== "user") return null;
+  // The card id embeds its user message id, so the retry control follows the
+  // turn that failed no matter where the card sits in the loaded window.
+  const failure = loadedMessages.value.find((m) => m.id === turnFailureCardId(message.id));
+  return failure && isTurnFailureCard(failure) ? failure : null;
+}
+
+function retryUserTurn(message: RenderMessage): void {
+  const failure = getTurnFailureForUser(message);
+  if (failure) emit("retryMessage", failure);
+}
+
+const ASSISTANT_BUBBLE_TINTS = ["purple", "blue", "green", "amber", "pink"] as const;
+type AssistantBubbleTint = typeof ASSISTANT_BUBBLE_TINTS[number];
+
+// Keep tint selection independent of transcript order as history is loaded.
+function hashMessageId(id: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < id.length; index += 1) {
+    hash ^= id.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function getAssistantTint(m: RenderMessage): AssistantBubbleTint | undefined {
+  if (m.role !== "assistant" || m.kind !== "text" || m.id === LIVE_STEP_MESSAGE_ID) return undefined;
+  const tintIndex = hashMessageId(m.id) % ASSISTANT_BUBBLE_TINTS.length;
+  return ASSISTANT_BUBBLE_TINTS[tintIndex];
+}
+</script>
+
+<template>
+  <div
+    ref="messageListEl"
+    class="messageList"
+    :data-total-messages="renderMessages.length"
+    :data-loaded-messages="loadedMessages.length"
+    :data-loaded-start="loadedStart"
+  >
+    <div v-if="messages.length === 0" class="chat-empty">
+      <span>直接开始对话…</span>
+    </div>
+    <div
+      v-if="hasEarlierMessages"
+      class="messageHistorySentinel"
+      data-testid="load-earlier-sentinel"
+      aria-hidden="true"
+    ></div>
+    <template v-for="(m, messageIndex) in loadedMessages" :key="m.id">
+      <div
+        v-if="!isTurnFailureCard(m)"
+        class="msg"
+        :data-id="m.id"
+        :data-role="m.role"
+        :data-kind="m.kind"
+        :data-tint="getAssistantTint(m)"
+      >
+        <div v-if="m.kind === 'command'" class="command-block">
+        <button
+          class="command-tree-header"
+          type="button"
+          aria-label="Toggle commands"
+          :aria-expanded="isCommandTreeOpen(m.id, getCommandTreeCommands(m).length)"
+          @click="toggleCommandTree(m.id)"
+        >
+          <span v-if="getCommandTreeCommands(m).length > 0" class="command-caret" aria-hidden="true">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 20 20"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path :d="caretPath(isCommandTreeOpen(m.id, getCommandTreeCommands(m).length))" />
+            </svg>
+          </span>
+          <span class="prompt-tag">执行</span>
+          <span class="command-count">
+            {{ getCommandTreeTotalCount(m) }} 条命令<span v-if="hasCommandTreeOverflow(m)">（显示最近 {{ getCommandTreeShownCount(m) }} 条）</span>
+          </span>
+        </button>
+        <div v-if="isCommandTreeOpen(m.id, getCommandTreeCommands(m).length)" class="command-tree">
+          <div v-for="(cmd, cIdx) in getCommandTreeCommands(m)" :key="cIdx" class="command-tree-item">
+            <span class="command-tree-branch">├─</span>
+            <span class="command-cmd">{{ cmd }}</span>
+          </div>
+        </div>
+        </div>
+        <div v-else-if="m.kind === 'execute'" :class="['bubble', 'bubble--compact', 'execute-block', { 'execute-block--running': m.streaming }]">
+        <div class="execute-header">
+          <div class="execute-left">
+            <span class="prompt-tag">&gt;_</span>
+            <div
+              class="execute-cmd"
+              :class="{ 'execute-cmd--overflowing': isExecuteCommandOverflowing(m.id) }"
+              :data-message-id="m.id"
+              :title="formatExecuteCommandForDisplay(m.command)"
+            >
+              <div :key="formatExecuteCommandForDisplay(m.command)" class="execute-cmd-track" :style="executeCommandTrackStyle(m.id)">
+                <span class="execute-cmd-copy">{{ formatExecuteCommandForDisplay(m.command) }}</span>
+                <span v-if="isExecuteCommandOverflowing(m.id)" class="execute-cmd-copy" aria-hidden="true">{{ formatExecuteCommandForDisplay(m.command) }}</span>
+              </div>
+            </div>
+            <span v-if="m.streaming" class="executeLoadingDots" aria-label="Running...">
+              <span class="executeLoadingDot"></span>
+              <span class="executeLoadingDot"></span>
+              <span class="executeLoadingDot"></span>
+            </span>
+          </div>
+        </div>
+        </div>
+        <div v-else-if="m.kind === 'divider'" class="sessionBoundaryDivider" data-testid="session-boundary-divider">
+        <div class="sessionBoundaryLine">
+          <span class="sessionBoundaryTag">⚡ New Session Initialized</span>
+        </div>
+        <div class="sessionBoundaryNotice">
+          {{ m.content || "Previous messages above are retained for review only and are NOT injected into model prompt context." }}
+        </div>
+        </div>
+        <div
+          v-else-if="m.kind === 'agent_handoff'"
+          class="agentHandoffCard"
+          :data-status="m.agentHandoff?.status ?? 'unknown'"
+          :data-message-id="m.agentHandoff?.messageId"
+          data-testid="agent-handoff-card"
+        >
+          <div class="agentHandoffHeader">
+            <span class="agentHandoffRoute">Reviewer <span aria-hidden="true">→</span> Acopilot</span>
+            <span class="agentHandoffStatus">{{ agentHandoffStatusLabel(m.agentHandoff?.status) }}</span>
+          </div>
+          <div class="agentHandoffTitle">
+            <a
+              v-if="agentHandoffIssueUrl(m)"
+              :href="agentHandoffIssueUrl(m)"
+              target="_blank"
+              rel="noopener noreferrer"
+            >{{ agentHandoffTarget(m) }}</a>
+            <span v-else>{{ agentHandoffTarget(m) }}</span>
+          </div>
+          <div v-if="m.agentHandoff?.issueTitle" class="agentHandoffIssue">{{ m.agentHandoff.issueTitle }}</div>
+          <div v-if="m.agentHandoff?.headSha" class="agentHandoffMeta">
+            head {{ shortSha(m.agentHandoff.headSha) }}
+            <span v-if="m.agentHandoff?.baseSha"> · base {{ shortSha(m.agentHandoff.baseSha) }}</span>
+          </div>
+          <div class="agentHandoffBody"><MarkdownContent :content="m.content" /></div>
+          <div v-if="m.agentHandoff?.lastError" class="agentHandoffError">{{ m.agentHandoff.lastError }}</div>
+          <button
+            v-if="m.agentHandoff?.status === 'failed' && m.agentHandoff?.messageId"
+            class="agentHandoffRetry"
+            type="button"
+            data-testid="agent-handoff-retry"
+            @click.stop="emit('retryAgentHandoff', m.agentHandoff.messageId)"
+          >重试交付</button>
+        </div>
+        <div
+          v-else
+          :class="[
+            'bubble',
+            {
+              'bubble--compact': shouldUseCompactBubble(m),
+              'bubble--retryNotice': m.kind === 'error' && (m.retryCount ?? 0) > 0,
+            },
+          ]"
+        >
+          <span v-if="m.kind === 'error' && (m.retryCount ?? 0) > 0" class="retryBadge">x{{ m.retryCount }}</span>
+        <div v-if="m.role === 'assistant' && m.kind === 'text' && m.streaming && String(m.content ?? '').length === 0" class="typing" aria-label="AI is thinking">
+          <span class="thinkingLabel">thinking</span>
+          <ThinkingDots />
+        </div>
+        <div v-else-if="isLiveStepRenderMessage(m)" class="liveStep">
+          <div
+            class="liveStepBody"
+            :data-expanded="String(liveStepExpanded)"
+            :data-outline-only="String(!liveStepExpanded && liveStepOutlineItems.length > 0)"
+            :data-trivial-outline="String(liveStepCollapsedTrivialOutline)"
+            :class="{ 'liveStepBody--clamped': liveStepHasOverflow && !liveStepExpanded && liveStepCanToggleExpanded }"
+          >
+            <MarkdownContent :content="m.content" />
+            <div v-if="!liveStepExpanded && liveStepOutlineItems.length > 0" class="liveStepOutline" aria-hidden="true">
+              <div v-for="(title, idx) in liveStepOutlineItems" :key="idx" class="liveStepOutlineItem" :title="title">
+                <span class="liveStepOutlineBullet" aria-hidden="true">•</span>
+                <span class="liveStepOutlineText">{{ title }}</span>
+              </div>
+              <div v-if="liveStepOutlineHiddenCount > 0" class="liveStepOutlineMore">+{{ liveStepOutlineHiddenCount }} 条</div>
+            </div>
+          </div>
+          <div v-if="liveStepCanToggleExpanded" class="liveStepToggleRow">
+            <button class="liveStepToggleBtn" type="button" :aria-expanded="liveStepExpanded" @click.stop="emit('toggleLiveStepExpanded')">
+              {{ liveStepExpanded ? "收起" : "展开" }}
+            </button>
+          </div>
+        </div>
+          <div v-else>
+            <template v-if="m.role === 'user'">
+              <MarkdownContent
+                v-if="userMessageText(m.content)"
+                :content="userMessageText(m.content)"
+              />
+              <div
+                v-if="userMessageAttachments(m.content).length"
+                class="msgAttachmentGrid"
+                :class="{ 'msgAttachmentGrid--single': userMessageAttachments(m.content).length === 1 }"
+                data-testid="msg-attachment-grid"
+              >
+                <button
+                  v-for="(att, attIdx) in userMessageAttachments(m.content)"
+                  :key="attIdx"
+                  type="button"
+                  class="msgAttachmentThumb"
+                  :title="att.alt || `附件图片 ${attIdx + 1}`"
+                  :aria-label="att.alt || `附件图片 ${attIdx + 1}`"
+                  :data-testid="`msg-attachment-thumb-${attIdx}`"
+                  @click="openMessageImageViewer(userMessageAttachments(m.content), attIdx)"
+                >
+                  <img :src="att.url" :alt="att.alt || ''" class="msgAttachmentImg" />
+                </button>
+              </div>
+            </template>
+            <template v-else>
+              <MarkdownContent :content="m.content" />
+            </template>
+            <div v-if="m.patch && buildPatchRows(m).length > 0" class="patchCard foldedPatch">
+              <div v-for="(row, rowIdx) in buildPatchRows(m)" :key="row.key" class="patchCardRow">
+                <div class="patchCardHeader">
+                  <div class="patchCardSummary">
+                    <div class="patchCardTitle" :title="patchRowTitle(row)">{{ patchRowTitle(row) }}</div>
+                    <div v-if="patchRowMeta(row)" class="patchCardMeta" v-html="patchRowMeta(row)"></div>
+                  </div>
+                  <button
+                    v-if="row.diff"
+                    class="patchCardToggle"
+                    type="button"
+                    :aria-expanded="isPatchExpanded(m.id, row.key)"
+                    :data-testid="`patch-toggle-${m.id}-${rowIdx}`"
+                    @click.stop="togglePatchExpanded(m.id, row.key)"
+                  >
+                    {{ isPatchExpanded(m.id, row.key) ? "收起" : "展开" }}
+                  </button>
+                </div>
+                <div v-if="row.diff && isPatchExpanded(m.id, row.key)" class="patchCardBody">
+                  <pre class="patchCardDiff" v-html="renderPatchDiffHtml(row.diff)"></pre>
+                </div>
+              </div>
+              <div v-if="m.patch?.truncated" class="patchCardNote">Diff 已截断，避免刷屏。</div>
+            </div>
+          </div>
+          <div v-if="shouldShowMsgActions(m)" class="msgActions">
+          <span v-if="m.ts" class="msgTime">{{ formatMessageTs(m.ts) }}</span>
+          <button
+            v-if="m.role === 'user' && getTurnFailureForUser(m)"
+            class="turnFailureRetryBtn"
+            type="button"
+            data-testid="inline-turn-retry"
+            aria-label="Retry message"
+            title="Retry"
+            @click="retryUserTurn(m)"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 5v4h4" />
+              <path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 19v-4h-4" />
+            </svg>
+          </button>
+          <button class="msgCopyBtn" type="button" aria-label="复制消息" @click="emit('copyMessage', m)">
+            <svg
+              v-if="copiedMessageId === m.id"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M20 6L9 17l-5-5" />
+            </svg>
+            <svg
+              v-else
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.75"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <rect x="9" y="9" width="11" height="11" rx="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+          </button>
+          </div>
+        </div>
+      </div>
+    </template>
+    <MainChatPendingImageViewer
+      v-if="messageImageViewerOpen"
+      :previews="messageImageViewerPreviews"
+      @close="messageImageViewerOpen = false"
+    />
+  </div>
+</template>
+
+<style scoped>
+.chat-empty {
+  padding: 18px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 14px;
+}
+
+/* Loaded rows need real geometry for native prepend anchoring in WebKit.
+   The history window bounds mount cost instead of substituting intrinsic heights. */
+.msg {
+  display: flex;
+  margin-bottom: 18px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: visible;
+  justify-content: flex-start;
+}
+
+.msg[data-role="user"] {
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
+.command-block {
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 12px;
+  padding: 8px 14px;
+  border: 1px solid var(--github-border);
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.execute-block {
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  display: flex;
+  flex-direction: column;
+}
+
+.execute-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  padding: 0;
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.execute-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.execute-left .prompt-tag {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.execute-cmd {
+  display: block;
+  color: #0f172a;
+  font-size: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  flex: 1 1 0;
+  width: 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+
+.execute-cmd-track {
+  display: inline;
+}
+
+.execute-cmd-copy {
+  display: inline-block;
+  width: max-content;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.execute-cmd--overflowing {
+  text-overflow: clip;
+}
+
+.execute-cmd--overflowing .execute-cmd-track {
+  --execute-marquee-gap: 32px;
+  --execute-marquee-gap-half: 16px;
+  display: inline-flex;
+  width: max-content;
+  gap: var(--execute-marquee-gap);
+  animation: execute-command-marquee var(--execute-marquee-duration, 20s) linear infinite;
+  will-change: transform;
+}
+
+@keyframes execute-command-marquee {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(calc(-50% - var(--execute-marquee-gap-half)));
+  }
+}
+
+/* Command scrolling exposes otherwise clipped content. Keep this functional
+   motion without changing the global reduced-motion policy for other UI. */
+@media (prefers-reduced-motion: reduce) {
+  .execute-cmd--overflowing .execute-cmd-track {
+    animation-duration: var(--execute-marquee-duration, 20s) !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
+.patchCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.patchCardRow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.patchCardRow + .patchCardRow {
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.patchCardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.patchCardSummary {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.patchCardTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.patchCardMeta {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.patchCardMeta :deep(.patchCardStatAdd) {
+  color: #16a34a;
+  font-weight: 800;
+}
+
+.patchCardMeta :deep(.patchCardStatDel) {
+  color: #b91c1c;
+  font-weight: 800;
+}
+
+.patchCardMeta :deep(.patchCardStatBinary) {
+  color: #64748b;
+  font-weight: 700;
+}
+
+.patchCardMetaExtra {
+  color: #64748b;
+}
+
+.patchCardToggle {
+  flex: 0 0 auto;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f172a;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.patchCardToggle:hover {
+  background: #ffffff;
+}
+
+.patchCardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.patchCardDiff {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--github-border);
+  background: var(--github-code-bg);
+  color: var(--github-text);
+  font-size: 14px;
+  line-height: 1.45;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  overflow: auto;
+  white-space: pre;
+}
+
+.patchCardDiff :deep(.patchCardDiffLine--add) {
+  color: #15803d;
+}
+
+.patchCardDiff :deep(.patchCardDiffLine--del) {
+  color: #b91c1c;
+}
+
+.patchCardDiff :deep(.patchCardDiffLine--meta) {
+  color: #64748b;
+}
+
+.patchCardDiff :deep(.patchCardDiffLine--hunk) {
+  color: #7c3aed;
+}
+
+.patchCardNote {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.foldedPatch {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.command-tree-header {
+  width: 100%;
+  padding: 4px 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.command-caret {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  cursor: inherit;
+  padding: 0;
+}
+
+.command-tree-header:hover .command-caret {
+  color: #0f172a;
+}
+
+.prompt-tag {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  text-transform: none;
+}
+
+.command-count {
+  color: #94a3b8;
+  font-size: 12px;
+  margin-left: 0;
+}
+
+.command-tree {
+  padding-left: 8px;
+}
+
+.command-tree-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 2px 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.command-tree-branch {
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 14px;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.command-cmd {
+  color: #64748b;
+  font-size: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.bubble {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border-radius: 0;
+  padding: 4px 0 24px;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  position: relative;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.bubble--compact {
+  padding: 0;
+}
+
+.bubble--retryNotice {
+  padding-right: 52px;
+}
+
+.turnFailureRetryBtn {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #b91c1c;
+  cursor: pointer;
+}
+
+.turnFailureRetryBtn:hover {
+  background: rgba(220, 38, 38, 0.12);
+  color: #991b1b;
+}
+
+.retryBadge {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  min-width: 28px;
+  height: 20px;
+  padding: 0 7px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: rgba(251, 146, 60, 0.16);
+  border: 1px solid rgba(251, 146, 60, 0.42);
+  color: #9a3412;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.msgActions {
+  position: absolute;
+  left: 0;
+  bottom: 2px;
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+
+.msg:hover .msgActions {
+  opacity: 1;
+}
+
+.msgCopyBtn {
+  width: 30px;
+  height: 30px;
+  padding: 2px;
+  box-sizing: border-box;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  border-radius: 0;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.msgCopyBtn:hover {
+  color: #0f172a;
+}
+
+.msgTime {
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px;
+  color: #94a3b8;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.msg[data-role="user"] .bubble {
+  width: fit-content;
+  max-width: 78%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 9px 14px;
+  border: none;
+  border-radius: 18px 18px 4px 18px;
+  background: rgba(37, 99, 235, 0.1);
+  color: #0f172a;
+  overflow: visible;
+}
+
+.msg[data-role="assistant"] .bubble {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 10px 16px 24px;
+  border: 1px solid rgba(192, 132, 252, 0.45);
+  border-radius: 18px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  background: #FAF5FF;
+  color: #581c87;
+  overflow: visible;
+}
+
+.msg[data-role="assistant"] .bubble :deep(.md) {
+  color: inherit;
+}
+
+.msg[data-role="assistant"][data-tint="purple"] .bubble {
+  background: #FAF5FF;
+  border: 1px solid rgba(192, 132, 252, 0.45);
+  color: #581c87;
+}
+
+.msg[data-role="assistant"][data-tint="blue"] .bubble {
+  background: #F0F9FF;
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #0c4a6e;
+}
+
+.msg[data-role="assistant"][data-tint="green"] .bubble {
+  background: #F0FDF4;
+  border: 1px solid rgba(74, 222, 128, 0.45);
+  color: #14532d;
+}
+
+.msg[data-role="assistant"][data-tint="amber"] .bubble {
+  background: #FFFBEB;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  color: #78350f;
+}
+
+.msg[data-role="assistant"][data-tint="pink"] .bubble {
+  background: #FDF2F8;
+  border: 1px solid rgba(244, 114, 182, 0.4);
+  color: #831843;
+}
+
+.msg[data-id="live-step"] .bubble {
+  background: transparent;
+  padding: 4px 0 24px;
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+}
+
+.msg[data-id="live-step"] .bubble :deep(.md) {
+  color: var(--github-text);
+}
+
+.msg[data-role="assistant"] .msgActions {
+  left: 16px;
+  bottom: 4px;
+}
+
+.msg[data-role="system"] .bubble {
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(208, 215, 222, 0.95);
+  background: rgba(246, 248, 250, 0.96);
+}
+
+.agentHandoffCard {
+  width: min(760px, 100%);
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: 1px solid rgba(99, 102, 241, 0.38);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(238, 242, 255, 0.98), rgba(250, 245, 255, 0.98));
+  color: #312e81;
+  box-shadow: 0 4px 16px rgba(79, 70, 229, 0.08);
+}
+
+.agentHandoffHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agentHandoffRoute {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #4338ca;
+}
+
+.agentHandoffStatus {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(79, 70, 229, 0.1);
+  color: #4338ca;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.agentHandoffCard[data-status="running"] .agentHandoffStatus {
+  background: rgba(14, 116, 144, 0.12);
+  color: #0e7490;
+}
+
+.agentHandoffCard[data-status="delivered"] .agentHandoffStatus {
+  background: rgba(22, 101, 52, 0.12);
+  color: #166534;
+}
+
+.agentHandoffCard[data-status="failed"] .agentHandoffStatus {
+  background: rgba(185, 28, 28, 0.12);
+  color: #b91c1c;
+}
+
+.agentHandoffCard[data-status="superseded"] .agentHandoffStatus {
+  background: rgba(100, 116, 139, 0.14);
+  color: #475569;
+}
+
+.agentHandoffTitle {
+  margin-top: 8px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.agentHandoffTitle a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.agentHandoffIssue {
+  margin-top: 2px;
+  color: #4f46e5;
+  font-size: 12px;
+}
+
+.agentHandoffMeta {
+  margin-top: 6px;
+  color: #64748b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+}
+
+.agentHandoffBody {
+  margin-top: 10px;
+  color: #3730a3;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.agentHandoffError {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(254, 226, 226, 0.8);
+  color: #991b1b;
+  font-size: 12px;
+}
+
+.agentHandoffRetry {
+  margin-top: 10px;
+  padding: 5px 10px;
+  border: 1px solid rgba(185, 28, 28, 0.35);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.8);
+  color: #991b1b;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.msg[data-kind="error"] .bubble {
+  padding: 10px 14px 22px;
+  border: 1px solid rgba(251, 146, 60, 0.55);
+  border-color: rgba(251, 146, 60, 0.55);
+  border-radius: 12px;
+  background: rgba(255, 247, 237, 0.96);
+  color: #7c2d12;
+}
+
+.msg[data-kind="execute"] .bubble {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 12px;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.msg[data-role="user"] .msgActions {
+  position: static;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  margin-top: 2px;
+  gap: 6px;
+}
+
+.msg[data-role="user"] .msgCopyBtn {
+  width: 24px;
+  height: 24px;
+}
+
+.msg[data-role="user"] .bubble :deep(.md > :last-child) {
+  margin-bottom: 0;
+}
+
+.msgAttachmentGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 80px);
+  gap: 6px;
+  margin-top: 6px;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.msgAttachmentGrid--single {
+  grid-template-columns: minmax(0, 160px);
+}
+
+.msgAttachmentThumb {
+  width: 80px;
+  height: 80px;
+  border-radius: 8px;
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  overflow: hidden;
+  padding: 0;
+  background: rgba(15, 23, 42, 0.04);
+  cursor: pointer;
+  display: block;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.msgAttachmentGrid--single .msgAttachmentThumb {
+  width: 160px;
+  height: 160px;
+  max-width: 100%;
+  max-height: 160px;
+}
+
+.msgAttachmentThumb:hover {
+  transform: scale(1.02);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.msgAttachmentThumb:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+}
+
+.msgAttachmentImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.thoughtCard {
+  border-left: 3px solid #8b5cf6;
+  background: rgba(248, 250, 252, 0.94);
+}
+
+.thoughtCardHeader {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  font-size: 13px;
+  color: #475569;
+}
+
+.thoughtCardSummary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.thoughtCardToggleText {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.thoughtCardBody {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--github-border);
+  font-size: 13px;
+  color: #334155;
+}
+
+.msg[data-id="live-step"] .liveStepBody {
+  position: relative;
+}
+
+.msg[data-id="live-step"] .liveStepBody[data-outline-only="true"] :deep(.md) {
+  visibility: hidden;
+}
+
+.msg[data-id="live-step"] .liveStepBody[data-trivial-outline="true"] :deep(.md) {
+  min-height: 0;
+  max-height: none;
+}
+
+.msg[data-id="live-step"] .liveStepOutline {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 2px;
+  font-style: italic;
+  pointer-events: none;
+}
+
+.msg[data-id="live-step"] .liveStepOutlineItem {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.msg[data-id="live-step"] .liveStepOutlineBullet {
+  color: rgba(15, 23, 42, 0.55);
+  flex: 0 0 auto;
+}
+
+.msg[data-id="live-step"] .liveStepOutlineText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(15, 23, 42, 0.82);
+  font-weight: 700;
+  min-width: 0;
+}
+
+.msg[data-id="live-step"] .liveStepOutlineMore {
+  color: rgba(15, 23, 42, 0.6);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msg[data-id="live-step"] .liveStepBody :deep(.md) {
+  font-style: italic;
+  max-height: 4.8em;
+  max-height: 3lh;
+  min-height: 4.8em;
+  min-height: 3lh;
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+.msg[data-id="live-step"] .liveStepBody[data-expanded="true"] :deep(.md) {
+  max-height: none;
+  min-height: 0;
+  overflow: visible;
+}
+
+.msg[data-id="live-step"] .liveStepBody.liveStepBody--clamped::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1.6em;
+  background: linear-gradient(to bottom, rgba(246, 248, 250, 0), rgba(255, 255, 255, 0.96));
+  pointer-events: none;
+}
+
+.msg[data-id="live-step"] .liveStepToggleRow {
+  margin-top: 6px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.msg[data-id="live-step"] .liveStepToggleBtn {
+  border: 1px solid var(--github-border);
+  background: rgba(246, 248, 250, 0.98);
+  color: var(--github-muted);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.msg[data-id="live-step"] .liveStepToggleBtn:hover {
+  background: rgba(234, 238, 242, 0.98);
+  color: var(--github-text);
+}
+
+.msg[data-kind="command"] .bubble {
+  background: rgba(255, 255, 255, 0.96);
+  border-color: var(--github-border);
+}
+
+.typing {
+  display: inline-flex;
+  align-items: baseline;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1;
+  color: #94a3b8;
+}
+
+.thinkingLabel {
+  font-style: italic;
+}
+
+.msg[data-kind="divider"] {
+  width: 100%;
+  margin: 18px 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.sessionBoundaryDivider {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+  padding: 2px 0;
+}
+
+.sessionBoundaryLine {
+  position: relative;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sessionBoundaryLine::before,
+.sessionBoundaryLine::after {
+  content: "";
+  flex: 1;
+  border-bottom: 1px dashed var(--border, #cbd5e1);
+}
+
+.sessionBoundaryTag {
+  padding: 3px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 9999px;
+  margin: 0 12px;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sessionBoundaryNotice {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted, #64748b);
+  text-align: center;
+  max-width: 90%;
+  word-break: break-word;
+}
+
+.thoughtSpinner {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid rgba(139, 92, 246, 0.3);
+  border-top-color: #8b5cf6;
+  border-radius: 50%;
+  animation: actionSpin 0.8s linear infinite;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.executeLoadingDots {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  margin-left: 6px;
+}
+
+.executeLoadingDot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent, #0969da);
+  animation: executeDotPulse 1.2s ease-in-out infinite;
+}
+
+.executeLoadingDot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.executeLoadingDot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes executeDotPulse {
+  0%,
+  60%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.85);
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (max-width: 900px) {
+  .msg[data-role="user"] .bubble {
+    width: 100%;
+    max-width: 100%;
+    border-radius: 18px;
+  }
+}
+
+@keyframes actionSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+</style>

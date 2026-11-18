@@ -1,0 +1,236 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { autosizeTextarea, createTextareaWrapMeasurer } from "./textarea_autosize";
+
+function makeStyle(overrides: Partial<CSSStyleDeclaration>): CSSStyleDeclaration {
+  return {
+    boxSizing: "border-box",
+    lineHeight: "20px",
+    fontSize: "16px",
+    paddingTop: "10px",
+    paddingBottom: "10px",
+    borderTopWidth: "1px",
+    borderBottomWidth: "1px",
+    ...overrides,
+  } as unknown as CSSStyleDeclaration;
+}
+
+describe("autosizeTextarea", () => {
+  it("caps multiline input by the available height without losing expansion state", () => {
+    const element = document.createElement("textarea");
+    element.value = "First line\nSecond line\nThird line";
+    Object.defineProperty(element, "scrollHeight", { get: () => 300 });
+    vi.spyOn(window, "getComputedStyle").mockReturnValue(makeStyle({}));
+
+    expect(autosizeTextarea(element, { minRows: 1, maxRows: 8, maxHeightPx: 90 })).toBe(true);
+    expect(element.style.height).toBe("90px");
+    expect(element.style.overflowY).toBe("auto");
+    expect(autosizeTextarea(element, { minRows: 1, maxRows: 8, maxHeightPx: 0 })).toBe(true);
+    expect(element.style.height).toBe("42px");
+
+    element.value = "";
+    expect(autosizeTextarea(element, { minRows: 1, maxRows: 8, maxHeightPx: 90 })).toBe(false);
+    expect(element.style.height).toBe("42px");
+    expect(element.style.overflowY).toBe("hidden");
+  });
+
+  it("recognizes explicit newlines even before hidden content can be measured", () => {
+    const element = document.createElement("textarea");
+    element.value = "First line\nSecond line";
+    vi.spyOn(window, "getComputedStyle").mockReturnValue(makeStyle({}));
+    expect(autosizeTextarea(element, { minRows: 1, maxRows: 8 })).toBe(true);
+  });
+
+  it("measures content without inheriting the native rows height", () => {
+    const element = document.createElement("textarea");
+    element.rows = 5;
+    document.body.appendChild(element);
+
+    const measuredHeights: string[] = [];
+    Object.defineProperty(element, "scrollHeight", {
+      configurable: true,
+      get: () => {
+        measuredHeights.push(element.style.height);
+        const contentRows = element.value.split("\n").length;
+        const nativeRows = element.style.height === "auto" ? element.rows : 1;
+        return Math.max(contentRows, nativeRows) * 20 + 20;
+      },
+    });
+    vi.spyOn(window, "getComputedStyle").mockReturnValue(makeStyle({}));
+
+    expect(autosizeTextarea(element, { minRows: 1, maxRows: 8 })).toBe(false);
+    expect(element.style.height).toBe("42px");
+
+    element.value = Array.from({ length: 12 }, (_, index) => `Line ${index}`).join("\n");
+    expect(autosizeTextarea(element, { minRows: 1, maxRows: 8 })).toBe(true);
+    expect(element.style.height).toBe("182px");
+    expect(element.style.overflowY).toBe("auto");
+
+    element.value = "";
+    expect(autosizeTextarea(element, { minRows: 1, maxRows: 8 })).toBe(false);
+    expect(element.style.height).toBe("42px");
+    expect(element.style.overflowY).toBe("hidden");
+    expect(measuredHeights).toEqual(["0px"]);
+
+    element.remove();
+  });
+
+  it("clamps height between minRows/maxRows and toggles overflow", () => {
+    const el = document.createElement("textarea");
+    el.value = "Measured content";
+    document.body.appendChild(el);
+
+    const scroll = { value: 0 };
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      get: () => scroll.value,
+    });
+
+    vi.spyOn(window, "getComputedStyle").mockReturnValue(makeStyle({}));
+
+    // With minRows=3, maxRows=8, lineHeight=20, padding=20, border=2:
+    // minHeight = 20*3 + 22 = 82
+    // maxHeight = 20*8 + 22 = 182
+    scroll.value = 30;
+    autosizeTextarea(el, { minRows: 3, maxRows: 8 });
+    expect(el.style.height).toBe("82px");
+    expect(el.style.overflowY).toBe("hidden");
+
+    scroll.value = 100;
+    autosizeTextarea(el, { minRows: 3, maxRows: 8 });
+    expect(el.style.height).toBe("102px");
+    expect(el.style.overflowY).toBe("hidden");
+
+    scroll.value = 500;
+    autosizeTextarea(el, { minRows: 3, maxRows: 8 });
+    expect(el.style.height).toBe("182px");
+    expect(el.style.overflowY).toBe("auto");
+
+    el.remove();
+  });
+
+  it("shrinks when content is reduced", () => {
+    const el = document.createElement("textarea");
+    el.value = "Measured content";
+    document.body.appendChild(el);
+
+    const scroll = { value: 0 };
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      get: () => scroll.value,
+    });
+
+    vi.spyOn(window, "getComputedStyle").mockReturnValue(makeStyle({}));
+
+    scroll.value = 500;
+    autosizeTextarea(el, { minRows: 3, maxRows: 8 });
+    expect(el.style.height).toBe("182px");
+
+    scroll.value = 50;
+    autosizeTextarea(el, { minRows: 3, maxRows: 8 });
+    expect(el.style.height).toBe("82px");
+
+    el.remove();
+  });
+
+  it("falls back to fontSize when lineHeight is normal", () => {
+    const el = document.createElement("textarea");
+    el.value = "Measured content";
+    document.body.appendChild(el);
+
+    const scroll = { value: 0 };
+    Object.defineProperty(el, "scrollHeight", {
+      configurable: true,
+      get: () => scroll.value,
+    });
+
+    vi.spyOn(window, "getComputedStyle").mockReturnValue(
+      makeStyle({
+        boxSizing: "content-box",
+        lineHeight: "normal",
+        fontSize: "10px",
+        paddingTop: "0px",
+        paddingBottom: "0px",
+        borderTopWidth: "0px",
+        borderBottomWidth: "0px",
+      }),
+    );
+
+    // With fontSize=10, fallback lineHeight ~= 12, minRows=3 => 36px, maxRows=8 => 96px.
+    scroll.value = 20;
+    autosizeTextarea(el, { minRows: 3, maxRows: 8 });
+    expect(el.style.height).toBe("36px");
+    expect(el.style.overflowY).toBe("hidden");
+
+    scroll.value = 120;
+    autosizeTextarea(el, { minRows: 3, maxRows: 8 });
+    expect(el.style.height).toBe("96px");
+    expect(el.style.overflowY).toBe("auto");
+
+    el.remove();
+  });
+
+  it("clears stale height and scrolling without measuring an empty editor", () => {
+    const el = document.createElement("textarea");
+    el.style.height = "182px";
+    el.style.overflowY = "auto";
+    el.scrollTop = 100;
+    const scrollHeight = vi.fn(() => 500);
+    Object.defineProperty(el, "scrollHeight", { get: scrollHeight });
+    vi.spyOn(window, "getComputedStyle").mockReturnValue(makeStyle({}));
+
+    expect(autosizeTextarea(el, { minRows: 1, maxRows: 8 })).toBe(false);
+    expect(el.style.height).toBe("42px");
+    expect(el.style.overflowY).toBe("hidden");
+    expect(el.scrollTop).toBe(0);
+    expect(scrollHeight).not.toHaveBeenCalled();
+  });
+});
+
+describe("createTextareaWrapMeasurer", () => {
+  it("measures compact wrapping without changing or reading the live editor's geometry", () => {
+    const element = document.createElement("textarea");
+    element.value = "A draft that wraps at compact width";
+    element.style.width = "380px";
+    element.style.height = "82px";
+    element.style.overflowY = "auto";
+    element.scrollTop = 24;
+    const originalStyle = element.style.cssText;
+    vi.spyOn(window, "getComputedStyle").mockReturnValue(makeStyle({ fontFamily: "monospace", letterSpacing: "1px" }));
+    const liveScrollHeight = vi.spyOn(element, "scrollHeight", "get").mockReturnValue(500);
+    vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLTextAreaElement) {
+      return this.style.width === "200px" ? 60 : 40;
+    });
+    const measurer = createTextareaWrapMeasurer();
+    try {
+      expect(measurer.measure(element, 200)).toBe(true);
+      const mirror = document.querySelector<HTMLTextAreaElement>("[data-composer-measure]")!;
+      expect(mirror.value).toBe(element.value);
+      expect(mirror.style.fontFamily).toBe("monospace");
+      expect(mirror.style.letterSpacing).toBe("1px");
+      expect(mirror.style.visibility).toBe("hidden");
+      expect(mirror.style.overflow).toBe("hidden");
+      expect(mirror.getAttribute("aria-hidden")).toBe("true");
+      expect(mirror.tabIndex).toBe(-1);
+
+      expect(measurer.measure(element, 400)).toBe(false);
+      expect(document.querySelector("[data-composer-measure]")).toBe(mirror);
+      expect(element.style.cssText).toBe(originalStyle);
+      expect(element.scrollTop).toBe(24);
+      expect(liveScrollHeight).not.toHaveBeenCalled();
+    } finally {
+      measurer.dispose();
+    }
+    expect(document.querySelector("[data-composer-measure]")).toBeNull();
+  });
+
+  it("handles empty text and explicit newlines without allocating a measurement node", () => {
+    const element = document.createElement("textarea");
+    const measurer = createTextareaWrapMeasurer();
+    expect(measurer.measure(element, 200)).toBe(false);
+    element.value = "First line\nSecond line";
+    expect(measurer.measure(element, 200)).toBe(true);
+    expect(document.querySelector("[data-composer-measure]")).toBeNull();
+    measurer.dispose();
+  });
+});

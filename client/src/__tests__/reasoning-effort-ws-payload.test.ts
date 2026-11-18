@@ -1,0 +1,370 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { shallowMount } from "@vue/test-utils";
+import { defineComponent } from "vue";
+
+import type { ModelConfig } from "../api/types";
+
+type GetImpl = (url: string) => Promise<unknown>;
+
+let getImpl: GetImpl | null = null;
+let lastWs: {
+  onOpen?: () => void;
+  onClose?: (ev: { code: number; reason?: string }) => void;
+  onError?: () => void;
+  onMessage?: (msg: unknown) => void;
+  sendPrompt?: (payload: unknown, clientMessageId?: string) => void;
+  clearHistory: () => void;
+} | null = null;
+let lastAdvisorWs: typeof lastWs = null;
+let lastSendPromptPayload: unknown = null;
+let lastAdvisorSendPromptPayload: unknown = null;
+
+vi.mock("../api/client", () => {
+  class ApiClient {
+    constructor(_: { baseUrl: string }) {}
+
+    async get<T>(url: string): Promise<T> {
+      if (!getImpl) throw new Error("getImpl not set");
+      return (await getImpl(url)) as T;
+    }
+
+    async post<T>(): Promise<T> {
+      throw new Error("not implemented");
+    }
+
+    async patch<T>(): Promise<T> {
+      throw new Error("not implemented");
+    }
+
+    async delete<T>(): Promise<T> {
+      throw new Error("not implemented");
+    }
+  }
+
+  return { ApiClient };
+});
+
+vi.mock("../api/ws", () => {
+  class AdsWebSocket {
+    onOpen?: () => void;
+    onClose?: (ev: { code: number; reason?: string }) => void;
+    onError?: () => void;
+    onMessage?: (msg: unknown) => void;
+
+    clearHistory = vi.fn();
+
+    constructor(options: { sessionId: string; chatSessionId?: string }) {
+      const chatSessionId = String(options.chatSessionId ?? "main").trim() || "main";
+      if (chatSessionId === "acopilot") {
+        lastAdvisorWs = this as unknown as typeof lastWs;
+        return;
+      } else {
+        lastWs = this as unknown as typeof lastWs;
+      }
+    }
+
+    connect(): void {}
+    close(): void {}
+
+    send(): void {}
+    sendPrompt(payload: unknown): void {
+      if (this === lastAdvisorWs) {
+        lastAdvisorSendPromptPayload = payload;
+      } else {
+        lastSendPromptPayload = payload;
+      }
+    }
+    interrupt(): void {}
+  }
+
+  return {
+    AdsWebSocket,
+    getProjectWebSocketLane: (options: {
+      sessionId: string;
+      lane: "actions" | "acopilot";
+      configs: Record<"actions" | "acopilot", {
+        chatSessionId: string;
+        resume?: { afterSeq: number; laneGeneration: number };
+      }>;
+    }) => {
+      const config = options.configs[options.lane];
+      return new AdsWebSocket({
+        sessionId: options.sessionId,
+        chatSessionId: config.chatSessionId,
+        resume: config.resume,
+      } as never);
+    },
+  };
+});
+
+vi.mock("../components/LoginGate.vue", () => {
+  return {
+    default: defineComponent({
+      name: "LoginGate",
+      emits: ["logged-in"],
+      mounted() {
+        this.$emit("logged-in", { id: "u-1", username: "admin" });
+      },
+      template: "<div />",
+    }),
+  };
+});
+
+async function settleUi(wrapper: { vm: { $nextTick: () => Promise<void> } }): Promise<void> {
+  await wrapper.vm.$nextTick();
+  await Promise.resolve();
+  await wrapper.vm.$nextTick();
+}
+
+async function ensureWsConnected(wrapper: any): Promise<void> {
+  if (!lastWs) {
+    await wrapper.vm.connectWs?.();
+    await settleUi(wrapper);
+  }
+  expect(lastWs).toBeTruthy();
+  lastWs!.onOpen?.();
+  await settleUi(wrapper);
+}
+
+async function ensureAdvisorWsConnected(wrapper: any): Promise<void> {
+  for (let i = 0; i < 10 && !lastAdvisorWs; i += 1) {
+    await settleUi(wrapper);
+  }
+  expect(lastAdvisorWs).toBeTruthy();
+  lastAdvisorWs!.onOpen?.();
+  await settleUi(wrapper);
+}
+
+describe("reasoning effort WS payload", () => {
+  beforeEach(() => {
+    lastWs = null;
+    lastAdvisorWs = null;
+    lastSendPromptPayload = null;
+    lastAdvisorSendPromptPayload = null;
+    try {
+      localStorage.clear();
+      sessionStorage.clear();
+    } catch {
+      // ignore
+    }
+    getImpl = async (url: string) => {
+      if (url === "/api/models") return [] satisfies ModelConfig[];
+      if (url.startsWith("/api/paths/validate")) return { ok: false };
+      return {};
+    };
+  });
+
+  afterEach(() => {
+    getImpl = null;
+    lastWs = null;
+    lastAdvisorWs = null;
+    lastSendPromptPayload = null;
+    lastAdvisorSendPromptPayload = null;
+    vi.clearAllMocks();
+    try {
+      sessionStorage.clear();
+    } catch {
+      // ignore
+    }
+  });
+
+  it("defaults actions model_reasoning_effort to high", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    wrapper.vm.sendMainPrompt?.("hello");
+    await settleUi(wrapper);
+
+    expect(lastSendPromptPayload).toBeTruthy();
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "high", model: "auto" });
+  });
+
+  it("includes the active agent id on prompt payloads", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "welcome",
+      threadId: null,
+      chatSessionId: "main",
+      activeAgentId: "claude",
+    });
+    await settleUi(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "agents",
+      activeAgentId: "claude",
+      agents: [
+        { id: "codex", name: "Codex", ready: true },
+        { id: "claude", name: "Claude", ready: true },
+      ],
+    });
+    await settleUi(wrapper);
+
+    wrapper.vm.sendMainPrompt?.("hello");
+    await settleUi(wrapper);
+
+    expect(lastSendPromptPayload).toBeTruthy();
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", agentId: "claude" });
+    expect(localStorage.getItem("ads.outbox.default.main")).toContain('"agentId":"claude"');
+  });
+
+  it("uses an optimistically selected ready agent for immediate prompts", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "agents",
+      activeAgentId: "codex",
+      agents: [
+        { id: "codex", name: "Codex", ready: true },
+        { id: "claude", name: "Claude", ready: true },
+      ],
+    });
+    await settleUi(wrapper);
+
+    wrapper.vm.switchMainAgent?.("claude");
+    wrapper.vm.sendMainPrompt?.("hello");
+    await settleUi(wrapper);
+
+    expect(lastSendPromptPayload).toBeTruthy();
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", agentId: "claude" });
+    wrapper.unmount();
+  });
+
+  it("aligns the model with an optimistically selected agent before immediate prompts", async () => {
+    getImpl = async (url: string) => {
+      if (url === "/api/models")
+        return [
+          { id: "gpt", modelId: "gpt-4.1", displayName: "GPT", provider: "openai", isEnabled: true },
+          { id: "claude", modelId: "claude-sonnet", displayName: "Claude", provider: "anthropic", isEnabled: true },
+        ] satisfies ModelConfig[];
+      if (url.startsWith("/api/paths/validate")) return { ok: false };
+      return {};
+    };
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    lastWs!.onMessage?.({
+      type: "agents",
+      activeAgentId: "codex",
+      agents: [
+        { id: "codex", name: "Codex", ready: true },
+        { id: "claude", name: "Claude", ready: true },
+      ],
+    });
+    await settleUi(wrapper);
+
+    wrapper.vm.setMainModelId?.("gpt-4.1");
+    wrapper.vm.switchMainAgent?.("claude");
+    wrapper.vm.sendMainPrompt?.("hello");
+    await settleUi(wrapper);
+
+    expect(lastSendPromptPayload).toBeTruthy();
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", agentId: "claude", model: "claude" });
+    wrapper.unmount();
+  });
+
+  it("keeps acopilot default model_reasoning_effort at high", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+    await ensureAdvisorWsConnected(wrapper);
+
+    wrapper.vm.sendAcopilotPrompt?.("hello");
+    await settleUi(wrapper);
+
+    expect(lastAdvisorSendPromptPayload).toBeTruthy();
+    expect(lastAdvisorSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "high", model: "auto" });
+  });
+
+  it("uses an optimistically selected acopilot agent for immediate acopilot prompts", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+    await ensureAdvisorWsConnected(wrapper);
+
+    lastAdvisorWs!.onMessage?.({
+      type: "agents",
+      activeAgentId: "codex",
+      agents: [
+        { id: "codex", name: "Codex", ready: true },
+        { id: "claude", name: "Claude", ready: true },
+      ],
+    });
+    await settleUi(wrapper);
+
+    wrapper.vm.switchAcopilotAgent?.("claude");
+    wrapper.vm.sendAcopilotPrompt?.("hello");
+    await settleUi(wrapper);
+
+    expect(lastAdvisorSendPromptPayload).toBeTruthy();
+    expect(lastAdvisorSendPromptPayload).toMatchObject({ text: "hello", agentId: "claude" });
+    wrapper.unmount();
+  });
+
+  it("restores persisted reasoning effort and overrides defaults", async () => {
+    try {
+      localStorage.setItem("ads.reasoningEffort.default.main", "medium");
+    } catch {
+      // ignore
+    }
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    wrapper.vm.sendMainPrompt?.("hello");
+    await settleUi(wrapper);
+
+    expect(lastSendPromptPayload).toBeTruthy();
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "medium", model: "auto" });
+  });
+
+  it("includes model_reasoning_effort on prompt payload", async () => {
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    wrapper.vm.setMainModelReasoningEffort?.("xhigh");
+    await settleUi(wrapper);
+
+    wrapper.vm.sendMainPrompt?.("hello");
+    await settleUi(wrapper);
+
+    expect(lastSendPromptPayload).toBeTruthy();
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model_reasoning_effort: "xhigh", model: "auto" });
+  });
+
+  it("restores persisted model id and includes it in payload", async () => {
+    try {
+      localStorage.setItem("ads.modelId.default.main", "gpt-4.1");
+    } catch {
+      // ignore
+    }
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await settleUi(wrapper);
+    await ensureWsConnected(wrapper);
+
+    wrapper.vm.sendMainPrompt?.("hello");
+    await settleUi(wrapper);
+
+    expect(lastSendPromptPayload).toBeTruthy();
+    expect(lastSendPromptPayload).toMatchObject({ text: "hello", model: "gpt-4.1" });
+  });
+});

@@ -1,0 +1,304 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { createWsMessageHandler } from "../app/projectsWs/wsMessage";
+
+type Ref<T> = { value: T };
+
+function createRuntime(): any {
+  return {
+    busy: { value: false } satisfies Ref<boolean>,
+    turnInFlight: false,
+    turnHasPatch: false,
+    pendingAckClientMessageId: null,
+    suppressNextClearHistoryResult: false,
+    pendingCdRequestedPath: null,
+    messages: { value: [] } satisfies Ref<any[]>,
+    turnCommands: [],
+    recentCommands: { value: [] } satisfies Ref<string[]>,
+    executePreviewByKey: new Map(),
+    executeOrder: [],
+    seenCommandIds: new Set<string>(),
+    liveActivity: {},
+    activeThreadId: { value: null } satisfies Ref<string | null>,
+    workspacePath: { value: "" } satisfies Ref<string>,
+    resumeReplacePending: false,
+  };
+}
+
+function createHandler(rt: any) {
+  const randomId = (() => {
+    let n = 0;
+    return (prefix: string) => `${prefix}-${++n}`;
+  })();
+
+  const pushMessageBeforeLive = (msg: any, targetRt: any) => {
+    const next = { id: randomId("msg"), ts: Date.now(), ...msg };
+    targetRt.messages.value = [...targetRt.messages.value, next];
+  };
+
+  const commandKeyForWsEvent = (cmd: string, id: string | null) => {
+    const normalizedCmd = String(cmd ?? "").trim();
+    if (!normalizedCmd) return null;
+    const normalizedId = String(id ?? "").trim();
+    return normalizedId ? `${normalizedId}:${normalizedCmd}` : normalizedCmd;
+  };
+
+  const upsertExecuteBlock = (key: string, cmd: string, outputDelta: string, targetRt: any) => {
+    const normalizedKey = String(key ?? "").trim();
+    const normalizedCmd = String(cmd ?? "").trim();
+    if (!normalizedKey || !normalizedCmd) return;
+
+    const header = `$ ${normalizedCmd}\n`;
+    let delta = String(outputDelta ?? "");
+    if (delta.startsWith(header)) delta = delta.slice(header.length);
+    delta = delta.replace(/^\n+/, "");
+    const firstLine = delta.split("\n").find((line) => line.trim().length > 0) ?? "";
+    const preview = firstLine.replace(/\s+$/, "");
+
+    const itemId = `exec:${normalizedKey}`;
+    const existing = targetRt.messages.value.slice();
+    const idx = existing.findIndex((m: any) => m && m.id === itemId);
+    const previousContent = idx >= 0 ? String(existing[idx]?.content ?? "") : "";
+    const nextContent = preview || previousContent;
+
+    targetRt.executePreviewByKey.set(normalizedKey, {
+      key: normalizedKey,
+      command: normalizedCmd,
+      previewLines: nextContent ? [nextContent] : [],
+      totalLines: nextContent ? 1 : 0,
+      remainder: "",
+    });
+    if (!targetRt.executeOrder.includes(normalizedKey)) {
+      targetRt.executeOrder = [...targetRt.executeOrder, normalizedKey];
+    }
+
+    const nextItem = {
+      id: itemId,
+      role: "system",
+      kind: "execute",
+      content: nextContent,
+      command: normalizedCmd,
+      hiddenLineCount: 0,
+      streaming: true,
+    };
+    if (idx >= 0) {
+      existing[idx] = nextItem;
+      targetRt.messages.value = existing;
+      return;
+    }
+    targetRt.messages.value = [...existing, nextItem];
+  };
+
+  const handler = createWsMessageHandler({
+    projects: { value: [] },
+    pid: "default",
+    rt,
+    wsInstance: { send: vi.fn() },
+    maxTurnCommands: 64,
+    randomId,
+
+    updateProject: vi.fn(),
+    applyResumeHistory: vi.fn(),
+    cancelPendingResume: vi.fn(),
+    clearPendingPrompt: vi.fn(),
+    clearStepLive: vi.fn(),
+    commandKeyForWsEvent,
+    finalizeAssistant: vi.fn(),
+    finalizeCommandBlock: vi.fn(),
+    flushQueuedPrompts: vi.fn(),
+    enqueuePrompt: vi.fn(),
+    ingestCommand: vi.fn(),
+    ingestCommandActivity: vi.fn(),
+    ingestExploredActivity: vi.fn(),
+    pushMessageBeforeLive,
+    threadReset: vi.fn(),
+    upsertExecuteBlock,
+    upsertLiveActivity: vi.fn(),
+    upsertStreamingDelta: vi.fn(),
+  });
+
+  return { handler, commandKeyForWsEvent, upsertExecuteBlock };
+}
+
+describe("ws patch diff dedup", () => {
+  it("adds non-zero command exit codes to execute previews when no output delta is present", () => {
+    const rt = createRuntime();
+    const { handler } = createHandler(rt);
+
+    handler({
+      type: "command",
+      command: {
+        id: "cmd-1",
+        command: "npm test",
+        status: "failed",
+        exit_code: 2,
+      },
+    });
+
+    const execute = rt.messages.value.find((m: any) => m.kind === "execute" && m.command === "npm test");
+    expect(execute).toMatchObject({
+      content: "[exit code 2]",
+      streaming: true,
+    });
+  });
+
+  it("does not append duplicate exit codes when terminal command events repeat", () => {
+    const rt = createRuntime();
+    const { handler } = createHandler(rt);
+    const event = {
+      type: "command",
+      command: {
+        id: "cmd-1",
+        command: "npm test",
+        status: "failed",
+        exit_code: 2,
+      },
+    };
+
+    handler(event);
+    handler(event);
+
+    const execute = rt.messages.value.find((m: any) => m.kind === "execute" && m.command === "npm test");
+    expect(execute?.content).toBe("[exit code 2]");
+  });
+
+  it("merges multiple patch messages into a single system message within a turn", () => {
+    const rt = createRuntime();
+    const { handler } = createHandler(rt);
+
+    handler({
+      type: "patch",
+      patch: {
+        files: [{ path: "a.txt", added: 1, removed: 0 }],
+        diff: "diff --git a/a.txt b/a.txt\nindex 1111111..2222222 100644\n--- a/a.txt\n+++ b/a.txt\n",
+        truncated: false,
+      },
+    });
+
+    handler({
+      type: "patch",
+      patch: {
+        files: [{ path: "b.txt", added: 2, removed: 0 }],
+        diff: "diff --git a/b.txt b/b.txt\nindex 3333333..4444444 100644\n--- a/b.txt\n+++ b/b.txt\n",
+        truncated: false,
+      },
+    });
+
+    expect(rt.messages.value).toHaveLength(1);
+    const [msg] = rt.messages.value;
+    expect(msg.kind).toBe("patch");
+    expect(msg.patch?.files.map((file: any) => file.path)).toEqual(["a.txt", "b.txt"]);
+    expect(String(msg.patch?.diff ?? "")).toContain("diff --git a/a.txt b/a.txt");
+    expect(String(msg.patch?.diff ?? "")).toContain("diff --git a/b.txt b/b.txt");
+  });
+
+  it("overwrites the diff for a file when it is patched again", () => {
+    const rt = createRuntime();
+    const { handler } = createHandler(rt);
+
+    handler({
+      type: "patch",
+      patch: {
+        files: [{ path: "a.txt", added: 1, removed: 0 }],
+        diff: "diff --git a/a.txt b/a.txt\nindex 1111111..2222222 100644\n--- a/a.txt\n+++ b/a.txt\n",
+        truncated: false,
+      },
+    });
+
+    handler({
+      type: "patch",
+      patch: {
+        files: [{ path: "a.txt", added: 2, removed: 0 }],
+        diff: "diff --git a/a.txt b/a.txt\nindex 3333333..4444444 100644\n--- a/a.txt\n+++ b/a.txt\n",
+        truncated: false,
+      },
+    });
+
+    expect(rt.messages.value).toHaveLength(1);
+    const [msg] = rt.messages.value;
+    expect(msg.kind).toBe("patch");
+    expect(msg.patch?.files.map((file: any) => file.path)).toEqual(["a.txt"]);
+    expect(String(msg.patch?.diff ?? "")).toContain("index 3333333..4444444");
+    expect(String(msg.patch?.diff ?? "")).not.toContain("index 1111111..2222222");
+  });
+
+  it("drops git diff execute preview when a patch diff is emitted later in the same turn", () => {
+    const rt = createRuntime();
+    const { handler } = createHandler(rt);
+
+    handler({
+      type: "command",
+      command: {
+        id: "c1",
+        command: "git diff -- client/src/lib/markdown.ts",
+        outputDelta: "$ git diff -- client/src/lib/markdown.ts\ndiff --git a/a b/b\n",
+      },
+    });
+
+    expect(rt.messages.value.some((m: any) => m.kind === "execute")).toBe(true);
+
+    handler({
+      type: "patch",
+      patch: {
+        files: [],
+        diff: "diff --git a/a b/b\nindex 1111111..2222222 100644\n--- a/a\n+++ b/b\n",
+        truncated: false,
+      },
+    });
+
+    expect(rt.turnHasPatch).toBe(true);
+    expect(rt.messages.value.some((m: any) => m.kind === "execute")).toBe(false);
+    expect(rt.messages.value.some((m: any) => m.kind === "patch" && String(m.patch?.diff ?? "").includes("diff --git"))).toBe(true);
+  });
+
+  it("prevents git diff execute previews once a patch diff has already been emitted", () => {
+    const rt = createRuntime();
+    const { handler } = createHandler(rt);
+
+    handler({
+      type: "patch",
+      patch: {
+        files: [],
+        diff: "diff --git a/a b/b\nindex 1111111..2222222 100644\n--- a/a\n+++ b/b\n",
+        truncated: false,
+      },
+    });
+
+    handler({
+      type: "command",
+      command: {
+        id: "c2",
+        command: "git diff -- client/src/lib/markdown.ts",
+        outputDelta: "$ git diff -- client/src/lib/markdown.ts\ndiff --git a/a b/b\n",
+      },
+    });
+
+    expect(rt.turnHasPatch).toBe(true);
+    expect(rt.messages.value.some((m: any) => m.kind === "execute")).toBe(false);
+  });
+
+  it("keeps non-diff command outputs even after a patch diff", () => {
+    const rt = createRuntime();
+    const { handler } = createHandler(rt);
+
+    handler({
+      type: "patch",
+      patch: {
+        files: [],
+        diff: "diff --git a/a b/b\nindex 1111111..2222222 100644\n--- a/a\n+++ b/b\n",
+        truncated: false,
+      },
+    });
+
+    handler({
+      type: "command",
+      command: {
+        id: "c3",
+        command: "git status --porcelain",
+        outputDelta: "$ git status --porcelain\nM client/src/lib/markdown.ts\n",
+      },
+    });
+
+    expect(rt.messages.value.some((m: any) => m.kind === "execute" && m.command === "git status --porcelain")).toBe(true);
+  });
+});

@@ -1,0 +1,1498 @@
+.app {
+  --topbar-height: 40px;
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--app-bg);
+  color: var(--text);
+}
+.topbar {
+  flex-shrink: 0;
+  height: calc(var(--topbar-height) + env(safe-area-inset-top, 0px));
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: env(safe-area-inset-top, 0px) 12px 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: none;
+  width: 100%;
+  gap: 10px;
+  position: relative;
+  z-index: 120;
+}
+.mobileMenuBtn,
+.mobileContextTitle,
+.mobileContextMenu {
+  display: none;
+}
+.topbarMain {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.projectAdd {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-weight: 900;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+  cursor: pointer;
+}
+.projectAdd:hover {
+  background: rgba(37, 99, 235, 0.06);
+}
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(10px);
+  z-index: 9999;
+}
+.modalCard {
+  width: min(520px, 100%);
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
+  padding: 18px 18px 16px 18px;
+}
+.modalTitle {
+  font-size: 16px;
+  font-weight: 900;
+  color: #0f172a;
+}
+.modalDesc {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.5;
+}
+.modalPreview {
+  margin-top: 12px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.modalPreviewTitle {
+  font-size: 13px;
+  font-weight: 900;
+  color: #0f172a;
+}
+.modalPreviewPrompt {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+}
+.modalForm {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.modalLabel {
+  font-size: 12px;
+  font-weight: 800;
+  color: #0f172a;
+}
+.modalInput {
+  width: 100%;
+  padding: 12px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  background: rgba(248, 250, 252, 0.9);
+  font-size: 14px;
+  color: #0f172a;
+  transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+}
+.modalInput::placeholder {
+  color: rgba(100, 116, 139, 0.65);
+}
+.modalInput:focus {
+  outline: none;
+  border-color: rgba(37, 99, 235, 0.8);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+  background: white;
+}
+.modalHintRow {
+  margin-top: -6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.pathStatus {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+.pathStatus.ok {
+  color: #059669;
+}
+.pathStatus.error {
+  color: #dc2626;
+}
+.pathStatus.checking {
+  color: #64748b;
+}
+.inlineAction {
+  border: none;
+  background: transparent;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 4px 2px;
+}
+.inlineAction:disabled {
+  color: rgba(100, 116, 139, 0.5);
+  cursor: not-allowed;
+}
+.modalError {
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.08);
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  color: #dc2626;
+}
+.modalActions {
+  margin-top: 16px;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.btnSecondary,
+.btnPrimary,
+.btnDanger {
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+}
+.btnSecondary {
+  background: var(--surface);
+  color: var(--text);
+}
+.btnSecondary:hover {
+  background: rgba(15, 23, 42, 0.03);
+}
+.btnPrimary {
+  border-color: rgba(37, 99, 235, 0.25);
+  background: var(--accent);
+  color: white;
+}
+.btnPrimary:hover:not(:disabled) {
+  background: var(--accent-2);
+}
+.btnPrimary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btnDanger {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: var(--danger);
+  color: white;
+}
+.btnDanger:hover {
+  background: var(--danger-2);
+}
+.drawerFooter {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin-top: auto;
+  padding: 8px 12px 4px;
+  border-top: 0;
+}
+.drawerBrandTitle {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.drawerBrandVersion {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 0;
+  padding: 1px 5px;
+  border-radius: 4px;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+}
+.right {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+.topbarIconBtn {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.topbarIconBtn:hover {
+  background: var(--hover-bg);
+  color: var(--accent-2);
+}
+.layout {
+  position: relative;
+  --sidebar-width: clamp(280px, 24vw, 360px);
+  flex: 1;
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  gap: 0;
+  width: 100%;
+  margin: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.chatHost {
+  flex: 1;
+  min-height: 0;
+}
+.chatHost :deep(.chat),
+.chatHost .chat {
+  -webkit-overflow-scrolling: touch;
+  transform: translateZ(0);
+}
+.left {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--app-bg);
+  border-right: 1px solid var(--border);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.projectTree {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 0;
+  background: transparent;
+  padding: 0;
+  height: auto;
+  min-height: 0;
+  overflow: auto;
+}
+.projectTreeHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  flex: 0 0 auto;
+}
+.projectTreeHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.projectTreeTitle {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.projectNode {
+  position: relative;
+  overflow: hidden;
+  border-radius: 0;
+  background: var(--surface);
+  touch-action: pan-y;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+  min-height: 46px;
+}
+.projectTreeHeader + .projectNode { border-radius: var(--radius) var(--radius) 0 0; }
+.projectNode:last-child { border-radius: 0 0 var(--radius) var(--radius); }
+.projectTreeHeader + .projectNode:last-child { border-radius: var(--radius); }
+.projectNode + .projectNode::before { content: ""; position: absolute; top: 0; left: 12px; right: 0; height: .5px; background: var(--border); z-index: 2; pointer-events: none; }
+
+.projectSwipeActions {
+  position: absolute;
+  inset: 0 0 0 auto;
+  z-index: 0;
+  display: flex;
+  align-items: stretch;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.15s ease, visibility 0.15s ease;
+}
+
+.projectSwipeActions.actionVisible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.projectSwipeAction.delete {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 76px;
+  border: none;
+  background: #ef4444;
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.projectSwipeAction.delete:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.projectRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  color: var(--text);
+  border: 0;
+  border-radius: 0;
+  padding: 10px 12px;
+  background: var(--surface);
+  cursor: pointer;
+  box-shadow: none;
+  position: relative;
+  z-index: 1;
+  touch-action: pan-y;
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.18s ease;
+}
+
+.projectNode.swiping .projectRow {
+  transition: none;
+}
+
+.projectNode.active .projectRow {
+  background: var(--selection-bg);
+  box-shadow: none;
+}
+
+.projectNode.active .projectName {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.projectNode.active .projectBranch {
+  color: var(--accent);
+  font-weight: 500;
+}
+.projectRow:hover {
+  background: var(--hover-bg);
+}
+.projectRow.isDragging {
+  opacity: 0.7;
+}
+.projectRow.dropBefore,
+.projectRow.dropAfter {
+  position: relative;
+}
+.projectRow.dropBefore::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: -2px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(47, 128, 255, 0.75);
+}
+.projectRow.dropAfter::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -2px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(47, 128, 255, 0.75);
+}
+.projectDragSpacer {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+.projectRemove {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: rgba(254, 202, 202, 0.55);
+  color: rgba(185, 28, 28, 0.95);
+  cursor: pointer;
+  user-select: none;
+}
+.projectRemove:hover:not(.disabled) {
+  background: rgba(254, 202, 202, 0.85);
+}
+.projectRemove.disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.projectNode.active .projectRemove {
+  background: rgba(239, 68, 68, 0.14);
+  color: #dc2626;
+}
+.projectDragHandle {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: rgba(226, 232, 240, 0.8);
+  color: rgba(100, 116, 139, 0.95);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+}
+.projectDragHandle:active {
+  cursor: grabbing;
+}
+.projectNode.active .projectDragHandle {
+  background: rgba(37, 99, 235, 0.12);
+  color: var(--accent);
+}
+.projectStatus {
+  --project-status-center: #ffffff;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  border: 2px solid rgba(148, 163, 184, 0.75);
+  position: relative;
+  flex: 0 0 auto;
+}
+.projectStatus::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 6px;
+  height: 6px;
+  margin: auto;
+  border-radius: 999px;
+  background: transparent;
+}
+.projectNode.active .projectStatus::after {
+  background: var(--accent);
+}
+.projectStatus.spinning {
+  border-color: #10b981;
+  border-top-color: transparent;
+  animation: spin 0.9s linear infinite;
+}
+.projectStatus.spinning::after {
+  background: transparent;
+}
+.projectNode.active .projectStatus {
+  --project-status-center: #2563eb;
+  border-color: var(--accent);
+}
+.projectNode.active .projectStatus.spinning {
+  border-color: #10b981;
+  border-top-color: transparent;
+}
+.projectNode.active .projectStatus.spinning::after {
+  background: transparent;
+}
+.projectStatus.spinning--acopilot,
+.projectNode.active .projectStatus.spinning--acopilot {
+  border-color: #a855f7;
+  border-top-color: transparent;
+}
+.projectStatus.spinning--actions,
+.projectNode.active .projectStatus.spinning--actions {
+  border-color: #10b981;
+  border-top-color: transparent;
+}
+.projectStatus.spinning--both,
+.projectNode.active .projectStatus.spinning--both {
+  border-color: transparent;
+  background: conic-gradient(#a855f7 0deg 180deg, #10b981 180deg 360deg);
+}
+.projectStatus.spinning--both::after,
+.projectNode.active .projectStatus.spinning--both::after {
+  inset: 2px;
+  width: auto;
+  height: auto;
+  margin: 0;
+  background: var(--project-status-center);
+}
+.projectText {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.projectRowActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+/* Reveal-on-hover only where hovering exists. On touch devices a hover rule
+   that flips pointer-events makes the browser spend the first tap applying
+   :hover instead of firing click, so the row needs two taps to switch. */
+@media (hover: hover) and (pointer: fine) {
+  .projectRowActions {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
+  }
+  .projectNode:hover .projectRowActions,
+  .projectNode:focus-within .projectRowActions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .projectNode.active .projectRowActions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+.projectName {
+  font-size: 15px;
+  font-weight: 400;
+  color: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.projectBranch {
+  display: block;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.projectTasks {
+  position: relative;
+  margin-left: 7px;
+  padding-left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.taskBoard {
+  /* Keep the list compact; it should scroll internally when there are many tasks. */
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+.modalCardWide {
+  width: min(900px, 100%);
+  max-height: 88vh;
+  overflow: hidden;
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.chatShell,
+.lanePanels,
+.lanePanel {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  touch-action: pan-y;
+}
+
+.chatShell {
+  gap: 0;
+}
+
+/* One shared control surface: the lane switch, the divider and the model/effort
+   capsule are segments of a single pill, so they can never drift apart in
+   height, border or background. */
+.laneTabs {
+  width: calc(100% - 24px);
+  max-width: 600px;
+  align-self: center;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  min-height: 36px;
+  margin: 6px 12px;
+  padding: 3px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 12px;
+  background: var(--segmented-bg);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.laneTabGroup {
+  display: inline-flex;
+  align-items: center;
+  flex: 2 1 0;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* Short hairline inside the surface, never a full-height rule across it. */
+.laneControlDivider {
+  flex: 0 0 1px;
+  align-self: center;
+  height: 20px;
+  margin: 0 4px;
+  background: var(--border);
+  border-radius: 1px;
+  opacity: 0.8;
+}
+
+.laneModelControls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 1 1 0;
+  min-width: 0;
+  margin-left: 0;
+  padding-left: 0;
+  border-left: none;
+  overflow: hidden;
+}
+
+.laneSessionActions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.laneTabIconBtn {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  border: none;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  background: transparent;
+  color: #64748b;
+  box-shadow: none;
+  transition: background-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.laneTabIconBtn:hover:not(:disabled) {
+  color: #0f172a;
+  background: rgba(15, 23, 42, 0.06);
+}
+
+.laneTabIconBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.laneTab {
+  flex: 1 1 0;
+  justify-content: center;
+  touch-action: manipulation;
+  min-height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+  padding: 4px 18px;
+  border-radius: 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, transform 0.12s ease;
+}
+
+.laneTabStatusDot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.laneTabStatusDot--connected {
+  background: #059669;
+  box-shadow: 0 0 0 2.5px rgba(5, 150, 105, 0.14);
+}
+
+.laneTabStatusDot--disconnected {
+  background: #94a3b8;
+}
+
+.laneTabStatusDot--busy-acopilot {
+  background: #a855f7;
+  box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.35);
+}
+
+.laneTabStatusDot--busy-actions {
+  background: #10b981;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.35);
+}
+
+.laneTab.active {
+  background: white;
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12), 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.laneTab:not(.active) {
+  color: var(--muted);
+}
+
+.laneTab:not(.active):hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.laneTab:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.laneTab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.lanePanels {
+  flex: 1 1 auto;
+}
+
+/* Desktop keeps its single-pane swap: the track wrapper is transparent to the
+   flex column layout, and the inactive panel is hidden inline from the
+   template (display: none) so both lanes stay mounted. */
+.lanePanelsTrack {
+  display: contents;
+}
+
+.error {
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.08);
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #dc2626;
+}
+.layout :deep(.composer-input[data-notice-constrained]) {
+  max-height: var(--notice-input-height);
+  /* The autosizer owns inline overflow; constrained drafts must stay editable. */
+  overflow-y: auto !important;
+}
+.layout :deep(.composerMainRow[data-notice-constrained]) {
+  grid-template-areas: "left input right";
+}
+
+.noticeToast {
+  flex: 0 0 auto;
+  align-self: center;
+  min-height: 0;
+  max-height: var(--notice-height, 25%);
+  max-width: min(calc(100% - 24px), 620px);
+  margin: var(--notice-margin, 6px) 12px;
+  padding: var(--notice-padding, 8px) 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  animation: noticeToastIn 0.14s ease-out;
+}
+.noticeToastText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@keyframes noticeToastIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 900px) {
+  .app {
+    --topbar-height: 36px;
+  }
+  .topbar {
+    border-bottom: 0;
+    box-shadow: none;
+    background: var(--app-bg);
+  }
+  .laneTabs {
+    border-bottom: none;
+    box-shadow: none;
+  }
+  .layout {
+    grid-template-columns: 1fr;
+    padding: 0;
+    gap: 0;
+    max-width: none;
+    position: relative;
+  }
+  :deep(input),
+  :deep(textarea),
+  :deep(select) {
+    font-size: 16px;
+  }
+  .topbar {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .mobileMenuBtn {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: var(--topbar-height);
+    padding: 0;
+    flex: 0 0 auto;
+    border: none;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--accent);
+    cursor: pointer;
+    outline: none;
+  }
+  .mobileMenuBtn:focus {
+    outline: none;
+  }
+  .mobileMenuBtn:focus:not(:focus-visible) {
+    outline: none;
+  }
+  .mobileMenuBtn:focus-visible {
+    outline: none;
+  }
+  .mobileMenuBtn:hover {
+    background: rgba(15, 23, 42, 0.06);
+    color: var(--text);
+  }
+  .mobileMenuIcon {
+    display: block;
+  }
+  .mobileContextTitle {
+    position: absolute;
+    left: 50%;
+    display: block;
+    width: max-content;
+    max-width: calc(100% - 180px);
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 600;
+    text-align: center;
+    text-overflow: ellipsis;
+    transform: translateX(-50%);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .mobileContextMenu {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 8px;
+    display: flex;
+    flex-direction: column;
+    width: max-content;
+    min-width: 140px;
+    max-width: calc(100vw - 24px);
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: var(--surface);
+    box-shadow: 0 18px 42px rgba(15, 23, 42, 0.18);
+    z-index: 140;
+  }
+  .mobileContextAction {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    width: 100%;
+    min-height: 44px;
+    padding: 8px 10px;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    font-size: 15px;
+    font-weight: 400;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .mobileContextAction:hover:not(:disabled) {
+    background: var(--hover-bg);
+    color: var(--accent);
+  }
+  .mobileContextAction + .mobileContextAction { border-top: .5px solid var(--border); }
+  .mobileContextAction:disabled {
+    color: var(--muted-2);
+    opacity: 0.72;
+    cursor: not-allowed;
+  }
+  .left {
+    display: none;
+  }
+  .left.mobileDrawer {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 110;
+    display: flex;
+    width: min(360px, 84vw);
+    max-width: calc(100vw - 24px);
+    padding: 8px 12px;
+    border-right: 1px solid var(--border);
+    border-radius: 0 16px 16px 0;
+    background: var(--app-bg);
+    box-shadow: 18px 0 42px rgba(15, 23, 42, 0.16);
+    overflow: hidden;
+  }
+  .mobileDrawer:focus {
+    outline: none;
+  }
+  .mobileDrawerNav {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    gap: 0;
+    width: 100%;
+    border-radius: var(--radius);
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .mobileDrawerNavItem {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
+    min-height: 56px;
+    padding: 14px 12px;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text);
+    font-size: 15px;
+    line-height: 22px;
+    font-weight: 400;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+  .mobileDrawerNavItem.active {
+    background: var(--selection-bg);
+    color: var(--accent);
+  }
+  .mobileDrawerNavItem { position: relative; }
+  .mobileDrawerNavItem + .mobileDrawerNavItem::before { content: ""; position: absolute; top: 0; left: 12px; right: 0; height: .5px; background: var(--border); }
+  .mobileDrawerNavItem :deep(.el-icon) { color: var(--accent); }
+  .mobileDrawerNavItem--link {
+    color: var(--text);
+  }
+  .mobileDrawerNavItem--divider {
+    margin-top: 0;
+    border-top: 0;
+  }
+  .mobileDrawerNavItem--link:active {
+    background: var(--surface-2);
+  }
+  .mobileDrawerNavChevron {
+    margin-left: auto;
+    color: var(--muted-2);
+  }
+  .mobileDrawerNavItem:focus-visible,
+  .mobileDrawerSubitem:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .mobileDrawerSubitems {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    margin-top: 8px;
+    padding: 10px 0 0;
+    border-top: 1px solid var(--border);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .mobileDrawerSubitem {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    min-height: 52px;
+    padding: 8px 10px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+  }
+  .mobileDrawerSubitem:hover,
+  .mobileDrawerSubitem.active {
+    border-color: rgba(37, 99, 235, 0.18);
+    background: rgba(37, 99, 235, 0.08);
+  }
+  .mobileDrawerSubitemText {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .mobileDrawerSubitemText strong {
+    overflow: hidden;
+    color: inherit;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .mobileDrawerSubitemText small {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .left.mobileDrawer .drawerFooter {
+    padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+  }
+  .mobileDrawerBackdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 100;
+    background: rgba(15, 23, 42, 0.34);
+    backdrop-filter: blur(2px);
+  }
+  .mobile-drawer-enter-from,
+  .mobile-drawer-leave-to {
+    transform: translateX(-104%);
+  }
+  .mobile-drawer-enter-active,
+  .mobile-drawer-leave-active {
+    transition: transform 0.28s cubic-bezier(0.3, 0.8, 0.4, 1);
+  }
+  .mobile-fade-enter-from,
+  .mobile-fade-leave-to {
+    opacity: 0;
+  }
+  .mobile-fade-enter-active,
+  .mobile-fade-leave-active {
+    transition: opacity 0.28s ease;
+  }
+  /* Mobile lane carousel: both panels stay mounted side by side, each one
+     viewport wide; the track slides between them with no unmount gap. */
+  .lanePanels {
+    /* Only the track transform owns horizontal positioning. Unlike hidden,
+       clip prevents focus/reveal scrolling from leaving a second offset. */
+    overflow: clip;
+    touch-action: pan-y;
+  }
+  .lanePanelsTrack {
+    display: flex;
+    flex-direction: row;
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 200%;
+    transform: translate3d(0, 0, 0);
+    transition: transform 0.36s cubic-bezier(0.25, 1, 0.5, 1);
+    will-change: transform;
+    touch-action: pan-y;
+  }
+  .lanePanelsTrack--worker {
+    transform: translate3d(-50%, 0, 0);
+  }
+  .lanePanelsTrack--dragging {
+    transition: none;
+  }
+  .lanePanelsTrack > .lanePanel {
+    flex: 0 0 50%;
+    width: 50%;
+  }
+  .projectTree {
+    flex: 1 1 0;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    border-radius: 13px;
+    padding: 8px 0 24px;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .projectTreeHeader {
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    padding: 2px 0 6px;
+  }
+  .projectTreeTitle {
+    display: none;
+  }
+  .mobileMainPanel {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+    width: 100%;
+    overflow: hidden;
+  }
+  .mobileMainPanel :deep(.modelManager),
+  .mobileMainPanel :deep(.ruleManager) {
+    flex: 1 1 auto;
+    height: 100%;
+    max-height: none;
+    border-radius: 13px;
+  }
+  .mobileMainPanel :deep(.modelHeader),
+  .mobileMainPanel :deep(.ruleHeader) {
+    padding: 11px 12px;
+  }
+  .mobileMainPanel :deep(.modelSubtitle),
+  .mobileMainPanel :deep(.ruleSubtitle) {
+    display: none;
+  }
+  .mobileMainPanel :deep(.cliList),
+  .mobileMainPanel :deep(.ruleBody) {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  .mobileMainPanel :deep(.cliRow) {
+    flex-wrap: wrap;
+  }
+  .mobileMainPanel :deep(.cliCount) {
+    display: none;
+  }
+  .mobileMainPanel :deep(.modelRow) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mobileMainPanel :deep(.modelRowActions),
+  .mobileMainPanel :deep(.ruleRowActions) {
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+  .mobileMainPanel :deep(.modelToggleGrid) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mobileMainPanel :deep(.ruleTab span:not(.tabBadge)) {
+    display: none;
+  }
+  .mobileMainPanel :deep(.ruleTab) {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .mobileMainPanel :deep(.ruleRow) {
+    flex-wrap: wrap;
+  }
+  .mobileMainPanel :deep(.sevOptions) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .mobileMainPanel :deep(.twoCol) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mobileModuleEmpty {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    min-height: 0;
+    padding: 28px;
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    background: var(--surface);
+    color: var(--muted);
+    text-align: center;
+  }
+  .mobileModuleEmpty strong {
+    color: var(--text);
+  }
+  .mobileModuleEmpty span {
+    max-width: 280px;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .chatShell {
+    display: flex;
+  }
+  .mobileTaskWorkspace {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0 4px 4px;
+  }
+  .mobileTaskWorkspace :deep(.taskBoard) {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+  }
+  .laneTabs {
+    width: calc(100% - 16px);
+    max-width: none;
+    min-height: 36px;
+    margin: 4px 8px;
+    padding: 3px;
+    gap: 0;
+  }
+
+  .laneTabGroup {
+    position: relative;
+    display: inline-grid;
+    grid-template-columns: 1fr 1fr;
+    align-items: center;
+    padding: 0;
+    gap: 0;
+  }
+
+  /* Sliding activation pill, in sync with the panel carousel easing. The
+     per-tab background highlight is removed so only the pill carries it.
+     Offsets resolve against the group's padding box, which no longer has its
+     own padding, so the pill lands exactly on a tab instead of inside it. */
+  .laneTabGroup::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 0;
+    width: 50%;
+    border-radius: 9px;
+    background: white;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
+    transform: translateX(calc(var(--lane-pill-progress, 0) * 100%));
+    transition: var(--lane-pill-transition, transform 0.36s cubic-bezier(0.25, 1, 0.5, 1));
+    pointer-events: none;
+  }
+  .laneTabGroup:has([data-testid="lane-tab-actions"].active)::before {
+    transform: translateX(calc(var(--lane-pill-progress, 1) * 100%));
+  }
+  .laneTab {
+    position: relative;
+    z-index: 1;
+    justify-content: center;
+  }
+  .laneTab:not(:focus-visible) {
+    background: transparent;
+    box-shadow: none;
+  }
+  .laneTab {
+    flex: 0 0 auto;
+    min-width: 0;
+    white-space: nowrap;
+    padding: 4px 14px;
+    gap: 5px;
+    font-size: 13px;
+  }
+  .laneModelControls {
+    flex: 1 1 0;
+    gap: 6px;
+    padding-left: 0;
+  }
+}
+
+@media (max-width: 768px) {
+  .drawerBrandVersion,
+  .projectBranch,
+  .mobileDrawerSubitemText small {
+    font-size: 12px;
+  }
+}
+
+@media (max-height: 600px) {
+  .mobileDrawerNavItem {
+    min-height: 48px;
+    padding: 10px 12px;
+  }
+}
+
+/* ---------- Project ActionSheet ---------- */
+.projectActionSheetMask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.34);
+}
+
+.projectActionSheet {
+  width: 100%;
+  max-width: 480px;
+  margin: 0 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.projectActionSheetGroup {
+  display: flex;
+  flex-direction: column;
+  border-radius: 13px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.projectActionSheetHeader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.projectActionSheetTitle {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.projectActionSheetSubtitle {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.projectActionSheetItem {
+  width: 100%;
+  min-height: 48px;
+  border: none;
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 10px 16px;
+}
+
+.projectActionSheetGroup .projectActionSheetItem + .projectActionSheetItem {
+  border-top: 1px solid var(--border);
+}
+
+.projectActionSheetItem.danger {
+  color: var(--danger-2, #ef4444);
+}
+
+.actionSheetItemLabel {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.actionSheetItemHint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.projectActionSheetItem.cancel {
+  border-radius: 13px;
+  font-weight: 700;
+}
+
+.projectActionSheetItem:active:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.projectActionSheetItem:disabled {
+  color: var(--muted-2);
+  cursor: not-allowed;
+}

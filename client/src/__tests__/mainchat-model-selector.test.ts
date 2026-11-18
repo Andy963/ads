@@ -1,0 +1,572 @@
+import { describe, it, expect } from "vitest";
+import { mount } from "@vue/test-utils";
+
+import type { ModelConfig } from "../api/types";
+
+import MainChatModelSelectors from "../components/MainChatModelSelectors.vue";
+
+function makeModel(id: string, displayName: string, provider: string): ModelConfig {
+  return {
+    id,
+    displayName,
+    provider,
+    isEnabled: true,
+    isDefault: false,
+  };
+}
+
+describe("MainChat model selector", () => {
+  const selectorBaseProps = {
+    connected: true,
+    busy: false,
+  } as const;
+
+  it("renders the model label without an agent selector or appended id", () => {
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [makeModel("gpt-4.1", "GPT-4.1", "openai")],
+        modelId: "gpt-4.1",
+      },
+    });
+
+    const agentSelect = wrapper.find('select[aria-label="Select agent"]');
+    expect(agentSelect.exists()).toBe(false);
+
+    const modelSelect = wrapper.find('[data-testid="chat-model-select"]');
+    expect(modelSelect.exists()).toBe(true);
+    expect(modelSelect.text()).toContain("GPT-4.1");
+    expect(modelSelect.text()).not.toContain("(gpt-4.1)");
+
+    const modelOptions = wrapper.findAll('[data-testid="chat-model-option"]').map((option) => option.attributes("data-model-id"));
+    expect(modelOptions).not.toContain("auto");
+
+    wrapper.unmount();
+  });
+
+  it("renders reasoning efforts for any active agent with model-provided options", () => {
+    const model = makeModel("custom-model", "Custom Model", "custom");
+    model.configJson = {
+      allowedAgents: ["custom"],
+      reasoningEfforts: ["minimal", "high"],
+    };
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "custom", name: "Custom", ready: true }],
+        activeAgentId: "custom",
+        models: [model],
+        modelId: "custom-model",
+      },
+    });
+
+    const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
+    expect(effortSelect.exists()).toBe(true);
+    expect(effortSelect.findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual(["minimal", "high"]);
+
+    wrapper.unmount();
+  });
+
+  it("exposes independent native dropdowns for model and reasoning changes", async () => {
+    const model = makeModel("gpt-5.6", "GPT-5.6", "openai");
+    model.configJson = { reasoningEfforts: ["low", "high"] };
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [model, makeModel("gpt-4.1", "GPT-4.1", "openai")],
+        modelId: "gpt-5.6",
+        modelReasoningEffort: "low",
+      },
+    });
+
+    const modelSelect = wrapper.get('select[aria-label="Model"]');
+    const effortSelect = wrapper.get('select[aria-label="Reasoning effort"]');
+    expect(wrapper.findAll("select")).toHaveLength(2);
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+    expect((modelSelect.element as HTMLSelectElement).value).toBe("gpt-5.6");
+    expect((effortSelect.element as HTMLSelectElement).value).toBe("low");
+
+    await modelSelect.setValue("gpt-4.1");
+    expect(wrapper.emitted("setModel")?.at(-1)?.[0]).toBe("gpt-4.1");
+    expect(wrapper.emitted("setReasoningEffort")).toBeUndefined();
+
+    await effortSelect.setValue("high");
+    expect(wrapper.emitted("setReasoningEffort")?.at(-1)?.[0]).toBe("high");
+    expect(wrapper.emitted("setModel")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("defaults unconfigured models to medium and high reasoning effort options", () => {
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [makeModel("gpt-5.6", "GPT-5.6", "openai")],
+        modelId: "gpt-5.6",
+      },
+    });
+
+    const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
+    expect(effortSelect.findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual(["medium", "high"]);
+    expect((effortSelect.element as HTMLSelectElement).value).toBe("high");
+    wrapper.unmount();
+  });
+
+  it("reads Codex reasoning efforts from the selected model config", () => {
+    const model = makeModel("gpt-5.6-sol", "GPT-5.6", "openai");
+    model.configJson = {
+      reasoningEfforts: ["medium", "high", "xhigh", "max", "ultra", "bogus"],
+    };
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [model],
+        modelId: "gpt-5.6-sol",
+        modelReasoningEffort: "ultra",
+      },
+    });
+
+    const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
+    expect((effortSelect.element as HTMLSelectElement).value).toBe("ultra");
+    expect(effortSelect.findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual([
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ]);
+    wrapper.unmount();
+  });
+
+  it("shows Claude CLI effort levels from the selected model config", () => {
+    const model = makeModel("claude-opus-4-8", "Claude Opus 4.8", "anthropic");
+    model.configJson = {
+      reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
+    };
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "claude", name: "Claude", ready: true }],
+        activeAgentId: "claude",
+        models: [model],
+        modelId: "claude-opus-4-8",
+        modelReasoningEffort: "max",
+      },
+    });
+
+    const effortSelect = wrapper.find('[data-testid="chat-reasoning-effort"]');
+    expect((effortSelect.element as HTMLSelectElement).value).toBe("max");
+    expect(effortSelect.findAll("[data-reasoning-effort]").map((option) => option.attributes("data-reasoning-effort"))).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
+    wrapper.unmount();
+  });
+
+  it("defaults to the first available model when current is unset", async () => {
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [makeModel("gpt-4.1", "GPT-4.1", "openai"), makeModel("gpt-4o", "GPT-4o", "openai")],
+        modelId: "auto",
+      },
+    });
+
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("setModel")?.[0]?.[0]).toBe("gpt-4.1");
+    wrapper.unmount();
+  });
+
+  it("falls back to the first filtered model for the active agent", async () => {
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [
+          { id: "claude", name: "Claude", ready: true },
+          { id: "codex", name: "Codex", ready: true },
+        ],
+        activeAgentId: "claude",
+        models: [
+          makeModel("gpt-4.1", "GPT-4.1", "openai"),
+          makeModel("claude-3.5-sonnet", "Claude Sonnet", "anthropic"),
+        ],
+        modelId: "gpt-4.1",
+      },
+    });
+
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("setModel")?.[0]?.[0]).toBe("claude-3.5-sonnet");
+    wrapper.unmount();
+  });
+
+  it("shows only models supported by the active CLI and never switches CLI from model selection", async () => {
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [
+          { id: "codex", name: "Codex", ready: true },
+          { id: "claude", name: "Claude Code", ready: true },
+        ],
+        activeAgentId: "codex",
+        models: [
+          makeModel("gpt-4.1", "GPT-4.1", "openai"),
+          makeModel("claude-opus-5[1m]", "Claude Opus 5", "anthropic"),
+        ],
+        modelId: "gpt-4.1",
+      },
+    });
+
+    const modelSelect = wrapper.find('[data-testid="chat-model-select"]');
+    expect(wrapper.findAll('[data-testid="chat-model-option"]').map((option) => option.attributes("data-model-id"))).toEqual(["gpt-4.1"]);
+    expect(modelSelect.text()).not.toContain("Claude Opus 5");
+
+    await modelSelect.setValue("gpt-4.1");
+
+    expect(wrapper.emitted("switchAgent")).toBeUndefined();
+    expect(wrapper.emitted("setModel")?.[0]?.[0]).toBe("gpt-4.1");
+    wrapper.unmount();
+  });
+
+  it("does not expose models when no CLI is ready", () => {
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [
+          { id: "codex", name: "Codex", ready: false },
+          { id: "claude", name: "Claude Code", ready: false },
+        ],
+        activeAgentId: "codex",
+        models: [
+          makeModel("gpt-4.1", "GPT-4.1", "openai"),
+          makeModel("claude-opus-5[1m]", "Claude Opus 5", "anthropic"),
+        ],
+        modelId: "gpt-4.1",
+      },
+    });
+
+    const modelSelect = wrapper.find('[data-testid="chat-model-select"]');
+    expect((modelSelect.element as HTMLSelectElement).disabled).toBe(true);
+    expect(wrapper.findAll('[data-testid="chat-model-option"]')).toHaveLength(0);
+    expect(modelSelect.text()).toContain("No models");
+    expect(modelSelect.text()).not.toContain("GPT-4.1");
+    expect(modelSelect.text()).not.toContain("Claude Opus 5");
+    expect((wrapper.get('[data-testid="chat-reasoning-effort"]').element as HTMLSelectElement).disabled).toBe(true);
+
+    wrapper.unmount();
+  });
+
+  it("prefers the active agent default model when the current model is unset", async () => {
+    const fable = makeModel("claude-fable-5[1m]", "Claude Fable 5", "anthropic");
+    const opus = makeModel("claude-opus-5[1m]", "Claude Opus 5", "anthropic");
+    opus.isDefault = true;
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "claude", name: "Claude Code", ready: true }],
+        activeAgentId: "claude",
+        models: [fable, opus],
+        modelId: "auto",
+      },
+    });
+
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("setModel")?.[0]?.[0]).toBe("claude-opus-5[1m]");
+    wrapper.unmount();
+  });
+
+  it("does not emit setModel when the model list is empty", async () => {
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [],
+        modelId: "auto",
+      },
+    });
+
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("setModel")).toBeUndefined();
+
+    const modelSelect = wrapper.find('[data-testid="chat-model-select"]');
+    expect(modelSelect.exists()).toBe(true);
+    expect((modelSelect.element as HTMLSelectElement).disabled).toBe(true);
+    expect(modelSelect.text()).toContain("No models");
+
+    wrapper.unmount();
+  });
+
+  it("replaces an unavailable model with the enabled default after unlocking", async () => {
+    const model = makeModel("gpt-4.1", "GPT-4.1", "openai");
+    model.configJson = {
+      reasoningEfforts: ["medium", "high"],
+    };
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        inputLocked: true,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [model],
+        modelId: "removed-model",
+        modelReasoningEffort: "medium",
+      },
+    });
+
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("setModel")).toBeUndefined();
+    expect(wrapper.emitted("setReasoningEffort")).toBeUndefined();
+
+    await wrapper.setProps({ inputLocked: false });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.emitted("setModel")?.at(-1)).toEqual(["gpt-4.1"]);
+    expect((wrapper.get('[data-testid="chat-model-select"]').element as HTMLSelectElement).value).toBe("gpt-4.1");
+    expect((wrapper.get('[data-testid="chat-reasoning-effort"]').element as HTMLSelectElement).disabled).toBe(false);
+    wrapper.unmount();
+  });
+
+  it.each([
+    { busy: true },
+    { inputLocked: true },
+    { connected: false },
+  ])("blocks both dropdown changes when restricted by %j", async (restriction) => {
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        ...restriction,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [makeModel("gpt-4.1", "GPT-4.1", "openai"), makeModel("gpt-4o", "GPT-4o", "openai")],
+        modelId: "gpt-4.1",
+        modelReasoningEffort: "high",
+      },
+    });
+    const modelSelect = wrapper.get('[data-testid="chat-model-select"]');
+    const effortSelect = wrapper.get('[data-testid="chat-reasoning-effort"]');
+    expect((modelSelect.element as HTMLSelectElement).disabled).toBe(true);
+    expect((effortSelect.element as HTMLSelectElement).disabled).toBe(true);
+    await modelSelect.setValue("gpt-4o");
+    await effortSelect.setValue("low");
+    expect(wrapper.emitted("setModel")).toBeUndefined();
+    expect(wrapper.emitted("setReasoningEffort")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("updates the selected native values when active-lane props change", async () => {
+    const gpt4o = makeModel("gpt-4o", "GPT-4o", "openai");
+    gpt4o.configJson = { reasoningEfforts: ["medium", "high"] };
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [makeModel("gpt-4.1", "GPT-4.1", "openai"), gpt4o],
+        modelId: "gpt-4.1",
+        modelReasoningEffort: "high",
+      },
+    });
+    await wrapper.setProps({ modelId: "gpt-4o", modelReasoningEffort: "medium" });
+    expect((wrapper.get('[data-testid="chat-model-select"]').element as HTMLSelectElement).value).toBe("gpt-4o");
+    expect((wrapper.get('[data-testid="chat-reasoning-effort"]').element as HTMLSelectElement).value).toBe("medium");
+    expect(wrapper.emitted("setModel")).toBeUndefined();
+    expect(wrapper.emitted("setReasoningEffort")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("renders unified capsule and opens picker sheet on click", async () => {
+    const model = makeModel("gpt-5.5", "GPT-5.5", "openai");
+    model.configJson = { reasoningEfforts: ["low", "medium", "high", "max"] };
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [model, makeModel("gemini-flash", "Gemini Flash", "google")],
+        modelId: "gpt-5.5",
+        modelReasoningEffort: "max",
+      },
+      attachTo: document.body,
+    });
+
+    const capsule = wrapper.find('[data-testid="chat-model-capsule"]');
+    expect(capsule.exists()).toBe(true);
+    expect(wrapper.find('[data-testid="chat-capsule-text"]').text()).toBe("GPT-5.5");
+    expect(wrapper.find('[data-testid="chat-capsule-effort"]').text()).toBe("Max");
+
+    expect(document.body.querySelector('[data-testid="model-picker-sheet"]')).toBeNull();
+    await capsule.trigger("click");
+    expect(document.body.querySelector('[data-testid="model-picker-sheet"]')).not.toBeNull();
+
+    const geminiItem = document.body.querySelector('[data-testid="model-picker-item-gemini-flash"]') as HTMLButtonElement | null;
+    expect(geminiItem).not.toBeNull();
+    geminiItem?.click();
+    expect(wrapper.emitted("setModel")?.at(-1)?.[0]).toBe("gemini-flash");
+
+    const slider = document.body.querySelector('[data-testid="reasoning-effort-slider"]') as HTMLInputElement;
+    expect(slider).not.toBeNull();
+    slider.value = "0";
+    slider.dispatchEvent(new Event("input"));
+    expect(wrapper.emitted("setReasoningEffort")).toBeUndefined();
+    slider.dispatchEvent(new Event("change"));
+    expect(wrapper.emitted("setReasoningEffort")?.at(-1)?.[0]).toBe("low");
+
+    wrapper.unmount();
+  });
+
+  it("previews slider movement and emits only the final configured level", async () => {
+    const model = makeModel("gpt-5.5", "GPT-5.5", "openai");
+    model.configJson = { reasoningEfforts: ["low", "medium", "high", "max"] };
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [model],
+        modelId: "gpt-5.5",
+        modelReasoningEffort: "high",
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
+    const slider = document.body.querySelector('[data-testid="reasoning-effort-slider"]') as HTMLInputElement;
+    expect(slider).not.toBeNull();
+
+    slider.value = "0";
+    slider.dispatchEvent(new Event("input"));
+    slider.value = "1";
+    slider.dispatchEvent(new Event("input"));
+    expect(wrapper.emitted("setReasoningEffort")).toBeUndefined();
+    slider.dispatchEvent(new Event("change"));
+    expect(wrapper.emitted("setReasoningEffort")).toEqual([["medium"]]);
+    expect(document.body.querySelector('[data-testid="model-picker-sheet"]')).not.toBeNull();
+    wrapper.unmount();
+  });
+
+  it("exposes ADS effort settings for standard models without capability gating", async () => {
+    const gpt4o = makeModel("gpt-4o", "GPT-4o", "openai");
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [gpt4o],
+        modelId: "gpt-4o",
+      },
+      attachTo: document.body,
+    });
+
+    expect(wrapper.find('[data-testid="chat-capsule-text"]').text()).toBe("GPT-4o");
+    await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
+    expect(document.body.querySelector('[data-testid="reasoning-effort-slider"]')).not.toBeNull();
+    wrapper.unmount();
+  });
+
+  it("renders only supported tiers in reasoning effort slider and single-line title", async () => {
+    document.body.innerHTML = "";
+    const luna = makeModel("gpt-5.6-luna", "GPT-5.6 Luna", "openai");
+    luna.configJson = { reasoningEfforts: ["high", "xhigh", "max"] };
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [luna],
+        modelId: "gpt-5.6-luna",
+        modelReasoningEffort: "max",
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
+
+    const slider = document.body.querySelector('[data-testid="reasoning-effort-slider"]') as HTMLInputElement;
+    expect(slider.getAttribute("aria-label")).toBe("Reasoning effort");
+    expect(slider.getAttribute("aria-valuetext")).toBe("Max");
+    expect(slider.max).toBe("2");
+    expect(Array.from(document.body.querySelectorAll("[data-effort]")).map(el => el.getAttribute("data-effort"))).toEqual(["high", "xhigh", "max"]);
+    wrapper.unmount();
+    document.body.innerHTML = "";
+  });
+
+  it("defaults the native slider to the medium and high stops", async () => {
+    document.body.innerHTML = "";
+    const gpt5 = makeModel("gpt-5.6", "GPT-5.6", "openai");
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [gpt5],
+        modelId: "gpt-5.6",
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
+    const slider = document.body.querySelector('[data-testid="reasoning-effort-slider"]') as HTMLInputElement;
+    expect(slider.type).toBe("range");
+    expect(slider.max).toBe("1");
+    expect(slider.value).toBe("1");
+    expect(document.body.querySelectorAll("[data-effort]")).toHaveLength(2);
+    wrapper.unmount();
+    document.body.innerHTML = "";
+  });
+
+  it("positions Done button at top right, suppresses top-left cancel, and closes on Done or Escape", async () => {
+    document.body.innerHTML = "";
+    const model = makeModel("gpt-5.6", "GPT-5.6", "openai");
+    const wrapper = mount(MainChatModelSelectors, {
+      props: {
+        ...selectorBaseProps,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [model],
+        modelId: "gpt-5.6",
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
+    const sheet = document.body.querySelector('[data-testid="model-picker-sheet"]') as HTMLElement | null;
+    expect(sheet).not.toBeNull();
+
+    // The top-left header slot is empty (no sheet-cancel button)
+    expect(sheet?.querySelector('[data-testid="sheet-cancel"]')).toBeNull();
+
+    // The Done button renders in the top-right header position with bold styling (.sheetDone)
+    const doneBtn = sheet?.querySelector('[data-testid="model-picker-done"]') as HTMLButtonElement | null;
+    expect(doneBtn).not.toBeNull();
+    expect(doneBtn?.textContent?.trim()).toBe("Done");
+    expect(doneBtn?.classList.contains("sheetDone")).toBe(true);
+    expect(doneBtn?.classList.contains("sheetNavigationButton")).toBe(true);
+
+    // Clicking the Done button closes the model selection sheet cleanly
+    doneBtn?.click();
+    await wrapper.vm.$nextTick();
+    expect(document.body.querySelector('[data-testid="model-picker-sheet"]')).toBeNull();
+
+    // Reopen and verify pressing Escape closes the model selection sheet cleanly
+    await wrapper.find('[data-testid="chat-model-capsule"]').trigger("click");
+    const reopenedSheet = document.body.querySelector('[data-testid="model-picker-sheet"]') as HTMLElement | null;
+    expect(reopenedSheet).not.toBeNull();
+    reopenedSheet?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await wrapper.vm.$nextTick();
+    expect(document.body.querySelector('[data-testid="model-picker-sheet"]')).toBeNull();
+
+    wrapper.unmount();
+    document.body.innerHTML = "";
+  });
+});

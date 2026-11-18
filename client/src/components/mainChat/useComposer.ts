@@ -1,0 +1,920 @@
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+
+import type { IncomingImage } from "./types";
+import { autosizeTextarea, createTextareaWrapMeasurer } from "../../lib/textarea_autosize";
+import {
+  computeVoiceWaveformRms,
+  createIdleVoiceWaveformLevels,
+  pushVoiceWaveformLevel,
+  VoiceWaveformEnvelope,
+  VOICE_WAVEFORM_BAR_COUNT,
+  VOICE_WAVEFORM_SAMPLE_INTERVAL_MS,
+} from "../../lib/voiceWaveform";
+
+type VoiceStatusKind = "idle" | "recording" | "transcribing" | "error" | "ok";
+type TranscriptionResponse = { ok?: boolean; text?: string; error?: string; message?: string; correction?: { status: string; warning?: string } };
+
+const COMPOSER_MIN_ROWS = 1;
+const COMPOSER_MAX_ROWS = 5;
+
+function pickRecorderMime(): string {
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/ogg", "audio/mp4"];
+  for (const mime of candidates) {
+    try {
+      if (MediaRecorder.isTypeSupported(mime)) {
+        return mime;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return "";
+}
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(new Error("read failed"));
+    reader.readAsDataURL(blob);
+  }).catch(() => "");
+}
+
+async function fileToDataUrl(file: File): Promise<string> {
+  const viaReader = await blobToDataUrl(file);
+  if (viaReader) return viaReader;
+  try {
+    const buffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    const base64 = btoa(binary);
+    const mime = (file.type || "image/png").trim();
+    return `data:${mime};base64,${base64}`;
+  } catch {
+    return "";
+  }
+}
+
+async function readImagesFromNavigatorClipboard(maxBytes: number): Promise<IncomingImage[]> {
+  try {
+    const clipboard = navigator.clipboard as undefined | { read?: () => Promise<ClipboardItem[]> };
+    if (!clipboard?.read) return [];
+    const items = await clipboard.read().catch(() => []);
+    const out: IncomingImage[] = [];
+    for (const item of items) {
+      const types = Array.isArray(item.types) ? item.types : [];
+      for (const type of types) {
+        const t = String(type ?? "");
+        if (!t.startsWith("image/")) continue;
+        const blob = await item.getType(t).catch(() => null);
+        if (!blob) continue;
+        if (blob.size <= 0 || blob.size > maxBytes) continue;
+        const data = await blobToDataUrl(blob);
+        if (!data) continue;
+        out.push({ mime: t, data });
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export function useMainChatComposer(params: {
+  getDraft: () => string;
+  getDraftScope?: () => string;
+  onDraftChange: (draft: string) => void;
+  pendingImages: ReadonlyArray<IncomingImage>;
+  isBusy: () => boolean;
+  isInputLocked?: () => boolean;
+  isVoiceInputActive?: () => boolean;
+  getApiToken: () => string;
+  onSend: (content: string) => boolean | void;
+  onAddImages: (images: IncomingImage[]) => void;
+}) {
+  const inputEl = ref<HTMLTextAreaElement | null>(null);
+  const draftValue = ref(String(params.getDraft() ?? ""));
+  // Keep native/IME editing independent of parent draft echoes. External draft
+  // changes still synchronize explicitly with the DOM and send-button state.
+  const hasContent = ref(draftValue.value.trim().length > 0);
+  const input = computed({
+    get: () => draftValue.value,
+    set: (value: string) => {
+      draftValue.value = value;
+      hasContent.value = value.trim().length > 0;
+      const el = inputEl.value;
+      if (el && el.value !== value) {
+        el.value = value;
+      }
+      params.onDraftChange(value);
+    },
+  });
+  let composing = false;
+  const onInput = (): void => {
+    if (inputEl.value) input.value = inputEl.value.value;
+  };
+  const onCompositionStart = (): void => {
+    composing = true;
+  };
+  const onCompositionEnd = (): void => {
+    composing = false;
+    onInput();
+  };
+
+  watch(
+    [() => params.getDraft(), () => params.getDraftScope?.() ?? ""],
+    ([nextDraft]) => {
+      const normalized = String(nextDraft ?? "");
+      if (normalized !== input.value || (inputEl.value && inputEl.value.value !== normalized)) {
+        draftValue.value = normalized;
+        hasContent.value = normalized.trim().length > 0;
+        const el = inputEl.value;
+        if (el && el.value !== normalized) {
+          el.value = normalized;
+        }
+        resizeComposer();
+      }
+    },
+    { immediate: true },
+  );
+
+  const composerRowEl = ref<HTMLElement | null>(null);
+  const leftActionsEl = ref<HTMLElement | null>(null);
+  const rightActionsEl = ref<HTMLElement | null>(null);
+  const composerExpanded = ref(false);
+  const wrapMeasurer = createTextareaWrapMeasurer();
+
+  const availableTextareaHeight = (): number | undefined => {
+    const row = composerRowEl.value;
+    const composer = row?.closest<HTMLElement>(".composer");
+    const container = composer?.closest<HTMLElement>(".detail");
+    if (!row || !composer || !container) return undefined;
+    const bounds = container.getBoundingClientRect();
+    if (bounds.height <= 0) return undefined;
+    const chat = container.querySelector(".chat");
+    const chatTop = chat?.getBoundingClientRect().top ?? bounds.top;
+    const chatStyle = chat ? window.getComputedStyle(chat) : null;
+    const chatInsets = chatStyle
+      ? [chatStyle.paddingTop, chatStyle.paddingBottom, chatStyle.borderTopWidth, chatStyle.borderBottomWidth]
+        .reduce((total, value) => total + (Number.parseFloat(value) || 0), 0)
+      : 0;
+    const availableHeight = bounds.bottom - Math.max(bounds.top, chatTop) - chatInsets;
+    const style = window.getComputedStyle(row);
+    const padding = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
+    const toolsHeight = Math.max(leftActionsEl.value?.offsetHeight ?? 0, rightActionsEl.value?.offsetHeight ?? 0);
+    const chromeHeight = composer.offsetHeight - row.offsetHeight + padding + toolsHeight + (Number.parseFloat(style.rowGap) || 0);
+    const cap = Math.max(0, availableHeight - chromeHeight);
+    return cap;
+  };
+
+  const resizeComposerHeight = (): void => {
+    const el = inputEl.value;
+    if (!el) return;
+    const row = composerRowEl.value;
+    if (row?.closest(".detail") && row.clientWidth === 0) return;
+    autosizeTextarea(el, {
+      minRows: COMPOSER_MIN_ROWS,
+      maxRows: COMPOSER_MAX_ROWS,
+      ...(el.value ? { maxHeightPx: availableTextareaHeight() } : {}),
+    });
+  };
+
+  const resizeComposer = (): void => {
+    const el = inputEl.value;
+    if (!el) return;
+    if (!el.value) {
+      wrapMeasurer.dispose();
+      composerExpanded.value = false;
+      resizeComposerHeight();
+      return;
+    }
+
+    const row = composerRowEl.value;
+    if (row?.closest(".detail") && row.clientWidth === 0) return;
+    const left = leftActionsEl.value;
+    const right = rightActionsEl.value;
+    let compactWidth = el.getBoundingClientRect().width;
+    if (row && left && right) {
+      const style = window.getComputedStyle(row);
+      const padding = (Number.parseFloat(style.paddingLeft) || 0) + (Number.parseFloat(style.paddingRight) || 0);
+      const gap = Number.parseFloat(style.columnGap) || 0;
+      compactWidth = row.clientWidth - padding - gap * 2 - left.offsetWidth - right.offsetWidth;
+    }
+
+    const nextExpanded = wrapMeasurer.measure(el, compactWidth);
+    if (nextExpanded !== composerExpanded.value) {
+      composerExpanded.value = nextExpanded;
+      return;
+    }
+    resizeComposerHeight();
+  };
+
+  // Expansion is an output, never an input to wrap measurement. Feeding it
+  // back into the post watcher can recursively flush Vue's production scheduler.
+  watch([input, inputEl], resizeComposer, { flush: "post", immediate: true });
+  watch(composerExpanded, resizeComposerHeight, { flush: "post" });
+
+  // Some environments/layout changes won't trigger reactive updates (e.g. viewport resize affects wrapping).
+  // Attach lightweight native listeners so the composer reliably grows up to maxRows.
+  let attachedEl: HTMLTextAreaElement | null = null;
+  let composerResizeObserver: ResizeObserver | null = null;
+  let composerResizeFrame: number | null = null;
+  let composerResizeNeedsMeasurement = false;
+  const onNativeInput = (): void => {
+    resizeComposer();
+  };
+
+  const attachNativeListeners = (el: HTMLTextAreaElement | null): void => {
+    composerResizeObserver?.disconnect();
+    composerResizeObserver = null;
+    composerResizeNeedsMeasurement = false;
+    if (composerResizeFrame !== null) {
+      window.cancelAnimationFrame(composerResizeFrame);
+      composerResizeFrame = null;
+    }
+    if (attachedEl) {
+      attachedEl.removeEventListener("input", onNativeInput);
+      attachedEl = null;
+    }
+    if (!el) return;
+    attachedEl = el;
+    el.addEventListener("input", onNativeInput, { passive: true });
+    if (typeof ResizeObserver !== "undefined") {
+      const composer = composerRowEl.value?.closest<HTMLElement>(".composer");
+      const container = composer?.closest<HTMLElement>(".detail");
+      const heightTargets = new Set([composer, container, leftActionsEl.value, rightActionsEl.value]);
+      const wrapWidthTargets = new Set([composerRowEl.value, container, leftActionsEl.value, rightActionsEl.value]);
+      const observedSizes = new WeakMap<Element, { width: number; height: number }>();
+      composerResizeObserver = new ResizeObserver((entries) => {
+        let sizeChanged = false;
+        for (const entry of entries) {
+          const { width, height } = entry.contentRect;
+          const previousSize = observedSizes.get(entry.target);
+          observedSizes.set(entry.target, { width, height });
+          if (width > 0 && width !== previousSize?.width) {
+            sizeChanged = true;
+            if (wrapWidthTargets.has(entry.target as HTMLElement)) composerResizeNeedsMeasurement = true;
+          }
+          if (heightTargets.has(entry.target as HTMLElement) && height > 0 && height !== previousSize?.height) sizeChanged = true;
+        }
+        if (!sizeChanged) return;
+        if (composerResizeFrame !== null) window.cancelAnimationFrame(composerResizeFrame);
+        composerResizeFrame = window.requestAnimationFrame(() => {
+          composerResizeFrame = null;
+          const needsMeasurement = composerResizeNeedsMeasurement;
+          composerResizeNeedsMeasurement = false;
+          if (needsMeasurement) resizeComposer();
+          else resizeComposerHeight();
+        });
+      });
+      for (const target of [el, composerRowEl.value, ...heightTargets]) {
+        if (target) composerResizeObserver.observe(target);
+      }
+    }
+  };
+
+  // Sync the uncontrolled textarea's value the moment the ref binds; layout
+  // work stays in the post-flush watcher below.
+  watch(
+    inputEl,
+    (el) => {
+      if (el && el.value !== draftValue.value) {
+        el.value = draftValue.value;
+      }
+    },
+    { flush: "sync", immediate: true },
+  );
+
+  watch(
+    inputEl,
+    (el) => {
+      attachNativeListeners(el);
+      resizeComposer();
+    },
+    { flush: "post", immediate: true },
+  );
+
+  const onWindowResize = (): void => {
+    resizeComposer();
+  };
+  const viewport = window.visualViewport;
+  const onVisibilityChange = (): void => {
+    if (document.visibilityState === "visible") resizeComposer();
+  };
+
+  onMounted(() => {
+    window.addEventListener("resize", onWindowResize, { passive: true });
+    window.addEventListener("pageshow", onWindowResize, { passive: true });
+    viewport?.addEventListener("resize", onWindowResize, { passive: true });
+    viewport?.addEventListener("scroll", onWindowResize, { passive: true });
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    resizeComposer();
+  });
+
+  const recording = ref(false);
+  const transcribing = ref(false);
+  const voiceStatusKind = ref<VoiceStatusKind>("idle");
+  const voiceStatusMessage = ref("");
+  const voiceWaveformLevels = ref(createIdleVoiceWaveformLevels());
+  const voiceWaveformReactive = ref(false);
+  let voiceGeneration = 0;
+  let microphonePending = false;
+  let transcriptionController: AbortController | null = null;
+  let sendAfterTranscribe = false;
+  let voiceToastTimer: ReturnType<typeof setTimeout> | null = null;
+
+  let recorder: MediaRecorder | null = null;
+  let recorderStream: MediaStream | null = null;
+  let recorderMime = "";
+  let recorderChunks: Blob[] = [];
+  let voiceAudioContext: AudioContext | null = null;
+  let voiceAnalyser: AnalyserNode | null = null;
+  let voiceSource: MediaStreamAudioSourceNode | null = null;
+  let voiceAnalysisFrame: number | null = null;
+
+  const stopVoiceAnalysis = (): void => {
+    if (voiceAnalysisFrame !== null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+      try {
+        window.cancelAnimationFrame(voiceAnalysisFrame);
+      } catch {
+        // ignore
+      }
+    }
+    voiceAnalysisFrame = null;
+    voiceWaveformReactive.value = false;
+    voiceWaveformLevels.value = createIdleVoiceWaveformLevels();
+
+    try {
+      voiceSource?.disconnect();
+    } catch {
+      // ignore
+    }
+    try {
+      voiceAnalyser?.disconnect();
+    } catch {
+      // ignore
+    }
+    voiceSource = null;
+    voiceAnalyser = null;
+
+    const context = voiceAudioContext;
+    voiceAudioContext = null;
+    if (context) {
+      try {
+        void context.close().catch(() => undefined);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  const startVoiceAnalysis = (stream: MediaStream): void => {
+    stopVoiceAnalysis();
+    if (typeof window === "undefined" || typeof window.AudioContext !== "function" || typeof window.requestAnimationFrame !== "function") {
+      return;
+    }
+
+    try {
+      const context = new window.AudioContext();
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.65;
+      const source = context.createMediaStreamSource(stream);
+      source.connect(analyser);
+
+      voiceAudioContext = context;
+      voiceAnalyser = analyser;
+      voiceSource = source;
+      voiceWaveformReactive.value = true;
+      const samples = new Uint8Array(analyser.fftSize);
+      const envelope = new VoiceWaveformEnvelope();
+      let history = createIdleVoiceWaveformLevels(VOICE_WAVEFORM_BAR_COUNT);
+      let lastSampleAt = Number.NEGATIVE_INFINITY;
+
+      const sampleFrame = (timestamp: number): void => {
+        if (voiceAudioContext !== context || voiceAnalyser !== analyser) return;
+        if (timestamp - lastSampleAt >= VOICE_WAVEFORM_SAMPLE_INTERVAL_MS) {
+          lastSampleAt = timestamp;
+          analyser.getByteTimeDomainData(samples);
+          const level = envelope.push(computeVoiceWaveformRms(samples));
+          history = pushVoiceWaveformLevel(history, level, VOICE_WAVEFORM_BAR_COUNT);
+          voiceWaveformLevels.value = history;
+        }
+        voiceAnalysisFrame = window.requestAnimationFrame(sampleFrame);
+      };
+
+      void context.resume().catch(() => undefined);
+      voiceAnalysisFrame = window.requestAnimationFrame(sampleFrame);
+    } catch {
+      stopVoiceAnalysis();
+    }
+  };
+
+  const clearVoiceToast = (): void => {
+    if (voiceToastTimer) {
+      clearTimeout(voiceToastTimer);
+      voiceToastTimer = null;
+    }
+  };
+
+  const setVoiceStatus = (kind: VoiceStatusKind, message: string, autoClearMs?: number): void => {
+    clearVoiceToast();
+    voiceStatusKind.value = kind;
+    voiceStatusMessage.value = message;
+    if (kind === "idle" || !message) {
+      voiceStatusKind.value = "idle";
+      voiceStatusMessage.value = "";
+      return;
+    }
+    if (autoClearMs && autoClearMs > 0) {
+      voiceToastTimer = setTimeout(() => {
+        if (voiceStatusKind.value === kind && voiceStatusMessage.value === message) {
+          voiceStatusKind.value = "idle";
+          voiceStatusMessage.value = "";
+        }
+        voiceToastTimer = null;
+      }, autoClearMs);
+    }
+  };
+
+  const cleanupRecorder = (): void => {
+    stopVoiceAnalysis();
+    if (recorderStream) {
+      for (const track of recorderStream.getTracks()) {
+        try {
+          track.stop();
+        } catch {
+          // ignore
+        }
+      }
+    }
+    recorderStream = null;
+    recorder = null;
+    recorderChunks = [];
+    recorderMime = "";
+  };
+
+  onBeforeUnmount(() => {
+    window.removeEventListener("resize", onWindowResize);
+    window.removeEventListener("pageshow", onWindowResize);
+    viewport?.removeEventListener("resize", onWindowResize);
+    viewport?.removeEventListener("scroll", onWindowResize);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+    attachNativeListeners(null);
+    wrapMeasurer.dispose();
+  });
+
+  const insertIntoComposer = async (text: string): Promise<void> => {
+    const normalized = String(text ?? "").trim();
+    if (!normalized) return;
+
+    const el = inputEl.value;
+    if (!el) {
+      const prefix = input.value.trim() ? `${input.value}\n` : input.value;
+      input.value = `${prefix}${normalized}`;
+      return;
+    }
+
+    const current = input.value;
+    const start = typeof el.selectionStart === "number" ? el.selectionStart : current.length;
+    const end = typeof el.selectionEnd === "number" ? el.selectionEnd : start;
+    const before = current.slice(0, start);
+    const after = current.slice(end);
+    const needsSpacer = before && !/[\s\n]$/.test(before);
+    const insert = `${needsSpacer ? "\n" : ""}${normalized}`;
+    input.value = before + insert + after;
+    await nextTick();
+    try {
+      const pos = before.length + insert.length;
+      el.focus();
+      el.setSelectionRange(pos, pos);
+    } catch {
+      // ignore
+    }
+  };
+
+  const transcribeAudio = async (blob: Blob, generation: number): Promise<void> => {
+    if (generation !== voiceGeneration) return;
+    transcriptionController?.abort();
+    const controller = new AbortController();
+    transcriptionController = controller;
+    const current = () => generation === voiceGeneration && !controller.signal.aborted;
+    transcribing.value = true;
+    setVoiceStatus("idle", "");
+    try {
+      const headers: Record<string, string> = {};
+      const token = params.getApiToken().trim();
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      headers["Content-Type"] = blob.type || "application/octet-stream";
+
+      const res = await fetch("/api/audio/transcriptions", { method: "POST", headers, body: blob, signal: controller.signal });
+      const payload = (await res.json().catch(() => null)) as TranscriptionResponse | null;
+      if (!current()) return;
+      if (!res.ok) {
+        const message = String(payload?.error ?? payload?.message ?? `HTTP ${res.status}`).trim();
+        throw new Error(message || `HTTP ${res.status}`);
+      }
+
+      const text = String(payload?.text ?? "").trim();
+      if (!text) {
+        setVoiceStatus("error", "未识别到文本", 3500);
+        sendAfterTranscribe = false;
+        return;
+      }
+      await insertIntoComposer(text);
+      if (!current()) return;
+      transcribing.value = false;
+      if (sendAfterTranscribe) {
+        sendAfterTranscribe = false;
+        await nextTick();
+        if (current()) send();
+        if (current() && payload?.correction?.status === "failed") {
+          setVoiceStatus("ok", "纠错失败，已保留原始转写。", 5000);
+        }
+      } else {
+        setVoiceStatus("ok", payload?.correction?.status === "failed" ? "已追加语音文本；纠错失败，已保留原文。" : "已追加语音文本", payload?.correction?.status === "failed" ? 5000 : 1200);
+      }
+    } catch (error) {
+      if (!current()) return;
+      sendAfterTranscribe = false;
+      const raw = error instanceof Error ? error.message : String(error);
+      const lowered = raw.trim().toLowerCase();
+      const message =
+        lowered.includes("fetch failed") || lowered.includes("failed to fetch") ? "语音识别上游连接失败（检查网络/KEY）" : raw;
+      setVoiceStatus("error", message || "语音识别失败", 4000);
+    } finally {
+      if (transcriptionController === controller) {
+        transcriptionController = null;
+        transcribing.value = false;
+      }
+    }
+  };
+
+  const startRecording = async (): Promise<void> => {
+    const micSupported =
+      typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined";
+    if (!micSupported) {
+      setVoiceStatus("error", "当前浏览器不支持录音", 3500);
+      return;
+    }
+    if (params.isBusy() || params.isInputLocked?.() || params.isVoiceInputActive?.() === false || transcribing.value || recording.value || microphonePending) {
+      return;
+    }
+    const generation = ++voiceGeneration;
+    microphonePending = true;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (generation !== voiceGeneration || params.isInputLocked?.() || params.isBusy()) {
+        for (const track of stream.getTracks()) track.stop();
+        return;
+      }
+      cleanupRecorder();
+      sendAfterTranscribe = false;
+      recorderStream = stream;
+      recorderChunks = [];
+      recorderMime = pickRecorderMime();
+      recorder = new MediaRecorder(stream, recorderMime ? { mimeType: recorderMime } : undefined);
+
+      recorder.ondataavailable = (ev) => {
+        if (generation !== voiceGeneration) return;
+        if (ev.data && ev.data.size > 0) {
+          recorderChunks.push(ev.data);
+        }
+      };
+      recorder.onerror = () => {
+        if (generation !== voiceGeneration) return;
+        cancelRecording();
+        setVoiceStatus("error", "录音失败", 3500);
+      };
+      recorder.onstop = () => {
+        if (generation !== voiceGeneration) return;
+        const type = recorderMime || recorder?.mimeType || recorderChunks[0]?.type || "audio/webm";
+        const blob = new Blob(recorderChunks, { type });
+        cleanupRecorder();
+        void transcribeAudio(blob, generation);
+      };
+
+      recorder.start();
+      recording.value = true;
+      startVoiceAnalysis(stream);
+      setVoiceStatus("idle", "");
+    } catch (error) {
+      if (generation !== voiceGeneration) return;
+      recording.value = false;
+      cleanupRecorder();
+      const message = error instanceof Error ? error.message : String(error);
+      setVoiceStatus("error", `无法访问麦克风：${message}`, 4500);
+    } finally {
+      if (generation === voiceGeneration) microphonePending = false;
+    }
+  };
+
+  const stopRecording = (): void => {
+    if (!recording.value) return;
+    recording.value = false;
+    transcribing.value = true;
+    setVoiceStatus("idle", "");
+    stopVoiceAnalysis();
+    try {
+      recorder?.stop();
+    } catch {
+      cleanupRecorder();
+      transcribing.value = false;
+      setVoiceStatus("error", "停止录音失败", 3500);
+    }
+  };
+
+  const toggleRecording = async (): Promise<void> => {
+    if (recording.value) {
+      stopRecording();
+      return;
+    }
+    await startRecording();
+  };
+
+  const cancelRecording = (): void => {
+    voiceGeneration += 1;
+    microphonePending = false;
+    transcriptionController?.abort();
+    transcriptionController = null;
+    sendAfterTranscribe = false;
+    recording.value = false;
+    transcribing.value = false;
+    stopVoiceAnalysis();
+    try {
+      recorder?.stop();
+    } catch {
+      // ignore error during stop
+    }
+    cleanupRecorder();
+    recorderChunks = [];
+    setVoiceStatus("idle", "");
+  };
+
+  watch(() => params.getDraftScope?.(), () => cancelRecording(), { flush: "sync" });
+  watch(() => params.isVoiceInputActive?.(), (active) => { if (active === false) cancelRecording(); }, { flush: "sync" });
+
+  const stopAndSend = (): void => {
+    if (!recording.value && !transcribing.value) return;
+    sendAfterTranscribe = true;
+    if (recording.value) {
+      stopRecording();
+    }
+  };
+
+  const send = (): void => {
+    if (recording.value || transcribing.value || params.isInputLocked?.()) return;
+    const el = inputEl.value;
+    if (composing) el?.blur();
+    const text = (el?.value ?? input.value).trim();
+    if (!text && params.pendingImages.length === 0) return;
+    try {
+      const accepted = params.onSend(text);
+      if (accepted !== false) {
+        input.value = "";
+        if (el) el.value = "";
+        composing = false;
+        composerExpanded.value = false;
+        resizeComposer();
+      }
+    } catch {
+      // Keep the draft when dispatch fails so the user can retry it.
+    }
+  };
+
+  const onInputKeydown = (ev: KeyboardEvent): void => {
+    if (ev.key !== "Enter") return;
+    if (composing || ev.isComposing || ev.keyCode === 229) return;
+    if (ev.altKey) return;
+    if (ev.shiftKey || ev.ctrlKey || ev.metaKey) return;
+    ev.preventDefault();
+    send();
+  };
+
+  const onPaste = async (ev: ClipboardEvent): Promise<void> => {
+    if (params.isInputLocked?.()) return;
+    const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+    const data = ev.clipboardData;
+    const target = ev.target instanceof HTMLTextAreaElement ? ev.target : null;
+
+    const items = data?.items ? Array.from(data.items) : [];
+    const fromItems = items
+      .filter((i) => i.kind === "file" && ((i.type || "").startsWith("image/") || !i.type))
+      .map((i) => i.getAsFile())
+      .filter(Boolean) as File[];
+    const fromFiles = data?.files
+      ? Array.from(data.files).filter((f) => ((f.type || "").startsWith("image/") || !f.type) && f.size > 0)
+      : [];
+    const files = [...fromItems, ...fromFiles].filter((f) => f.size > 0);
+    const uniqueFiles = (() => {
+      const rank = (mime: string) => {
+        const t = String(mime ?? "").toLowerCase();
+        if (t === "image/png") return 100;
+        if (t === "image/webp") return 90;
+        if (t === "image/jpeg" || t === "image/jpg") return 80;
+        if (t === "image/gif") return 70;
+        if (t === "image/bmp") return 60;
+        if (t === "image/svg+xml") return 50;
+        if (t.startsWith("image/")) return 40;
+        if (!t) return 10;
+        return 0;
+      };
+
+      const byKey = new Map<string, File>();
+      for (const f of files) {
+        const key = `${f.name}|${f.size}`;
+        const existing = byKey.get(key);
+        if (!existing || rank(f.type) > rank(existing.type)) {
+          byKey.set(key, f);
+        }
+      }
+      return Array.from(byKey.values());
+    })();
+
+    const html = (data?.getData("text/html") ?? "").trim();
+    const plainRaw = data?.getData("text/plain") ?? "";
+    const plain = plainRaw.trim();
+    const uriList = (data?.getData("text/uri-list") ?? "").trim();
+
+    const imgSrcFromHtml = html ? /<img[^>]+src=["']([^"']+)["']/i.exec(html)?.[1] : undefined;
+    const directSrcFromHtml = String(imgSrcFromHtml ?? "").trim();
+    const uriFromUriList = uriList
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .find((l) => l && !l.startsWith("#"));
+    const isImageUrl = (value: string): boolean => {
+      const v = String(value ?? "").trim();
+      if (!v) return false;
+      if (v.startsWith("data:image/")) return true;
+      if (!/^https?:\/\//i.test(v)) return false;
+      return /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(v);
+    };
+    const srcFromText = (() => {
+      if (plain.startsWith("data:image/")) return plain;
+      const maybeUrl = plain.trim();
+      if (!/^https?:\/\//i.test(maybeUrl)) return "";
+      if (!/\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(maybeUrl)) return "";
+      return maybeUrl;
+    })();
+    const srcFromUriList = uriFromUriList && isImageUrl(uriFromUriList) ? uriFromUriList : "";
+    const directSrc = (directSrcFromHtml || srcFromUriList || srcFromText || "").trim();
+
+    const clipboardTypes = data?.types ? Array.from(data.types).map((t) => String(t ?? "")) : [];
+    const hasExplicitImageType = clipboardTypes.some((t) => t === "Files" || t.startsWith("image/"));
+    const hasFileLikeItem = items.some((i) => i.kind === "file");
+    const shouldHandleImages = uniqueFiles.length > 0 || Boolean(directSrc) || hasExplicitImageType || hasFileLikeItem;
+
+    const images: IncomingImage[] = [];
+    if (shouldHandleImages) {
+      ev.preventDefault();
+
+      if (directSrc && uniqueFiles.length === 0) {
+        const isFromHtml = directSrcFromHtml.length > 0 && directSrc === directSrcFromHtml;
+        if (directSrc.startsWith("data:image/")) {
+          images.push({ data: directSrc });
+        } else if (/^https?:\/\//i.test(directSrc) && (isFromHtml || isImageUrl(directSrc))) {
+          const fetched = await fetch(directSrc)
+            .then(async (r) => {
+              if (!r.ok) return "";
+              const blob = await r.blob();
+              const mime = String(blob.type ?? "");
+              if (!mime.startsWith("image/")) return "";
+              if (blob.size > MAX_IMAGE_BYTES) return "";
+              return await blobToDataUrl(blob);
+            })
+            .catch(() => "");
+          if (fetched) images.push({ data: fetched });
+        }
+      }
+
+      for (const file of uniqueFiles) {
+        if (file.size > MAX_IMAGE_BYTES) {
+          continue;
+        }
+        const dataUrl = await fileToDataUrl(file);
+        if (!dataUrl) continue;
+        images.push({ name: file.name, mime: file.type, data: dataUrl });
+      }
+
+      if (images.length === 0) {
+        const fromNavigator = await readImagesFromNavigatorClipboard(MAX_IMAGE_BYTES);
+        images.push(...fromNavigator);
+      }
+
+      if (images.length) {
+        params.onAddImages(images);
+        return;
+      }
+
+      const fallbackText = plainRaw || uriFromUriList || "";
+      const finalText = fallbackText
+        ? fallbackText
+        : await (async () => {
+            try {
+              const clipboard = navigator.clipboard as undefined | { readText?: () => Promise<string> };
+              return (await clipboard?.readText?.()) ?? "";
+            } catch {
+              return "";
+            }
+          })();
+
+      if (!finalText) return;
+      const start = target?.selectionStart ?? input.value.length;
+      const end = target?.selectionEnd ?? start;
+      input.value = input.value.slice(0, start) + finalText + input.value.slice(end);
+      await nextTick();
+      try {
+        const pos = start + finalText.length;
+        target?.setSelectionRange(pos, pos);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const hasTextType = clipboardTypes.some((t) => t.startsWith("text/"));
+    if (target && !plainRaw && !html && !uriList && !hasTextType) {
+      const clipboard = navigator.clipboard as undefined | { readText?: () => Promise<string> };
+      if (!clipboard?.readText) return;
+      ev.preventDefault();
+      const navText = await clipboard.readText().catch(() => "");
+      if (!navText) return;
+      const start = target.selectionStart ?? input.value.length;
+      const end = target.selectionEnd ?? start;
+      input.value = input.value.slice(0, start) + navText + input.value.slice(end);
+      await nextTick();
+      try {
+        const pos = start + navText.length;
+        target.setSelectionRange(pos, pos);
+      } catch {
+        // ignore
+      }
+    }
+  };
+
+  const fileInputEl = ref<HTMLInputElement | null>(null);
+
+  const triggerFileInput = (): void => {
+    if (params.isInputLocked?.()) return;
+    fileInputEl.value?.click();
+  };
+
+  const onFileInputChange = async (ev: Event): Promise<void> => {
+    if (params.isInputLocked?.()) return;
+    const target = ev.target as HTMLInputElement | null;
+    if (!target?.files) return;
+    const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+    const images: IncomingImage[] = [];
+    for (const file of Array.from(target.files)) {
+      if (!file.type.startsWith("image/")) continue;
+      if (file.size <= 0 || file.size > MAX_IMAGE_BYTES) continue;
+      const dataUrl = await fileToDataUrl(file);
+      if (!dataUrl) continue;
+      images.push({ name: file.name, mime: file.type, data: dataUrl });
+    }
+    if (images.length) {
+      params.onAddImages(images);
+    }
+    target.value = "";
+  };
+
+  onBeforeUnmount(() => {
+    cancelRecording();
+    clearVoiceToast();
+  });
+
+  return {
+    input,
+    inputEl,
+    hasContent,
+    composerRowEl,
+    leftActionsEl,
+    rightActionsEl,
+    composerExpanded,
+    fileInputEl,
+    send,
+    onInput,
+    onCompositionStart,
+    onCompositionEnd,
+    onInputKeydown,
+    onPaste,
+    recording,
+    transcribing,
+    voiceStatusKind,
+    voiceStatusMessage,
+    voiceWaveformLevels,
+    voiceWaveformReactive,
+    toggleRecording,
+    cancelRecording,
+    stopAndSend,
+    triggerFileInput,
+    onFileInputChange,
+  };
+}
