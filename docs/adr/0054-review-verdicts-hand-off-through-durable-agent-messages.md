@@ -1,4 +1,4 @@
-# ADR 0053: Review Verdicts Hand Off Through Durable Agent Messages
+# ADR 0054: Review Verdicts Hand Off Through Durable Agent Messages
 
 ## Status
 

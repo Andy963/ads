@@ -2,7 +2,7 @@
 
 ## Status
 
-Partially superseded by ADR 0053 for wake delivery. The Issue-comment artifact and exact-target verdict decisions remain accepted. — Issue #613
+Partially superseded by ADR 0054 for wake delivery. The Issue-comment artifact and exact-target verdict decisions remain accepted. — Issue #613
 
 ## Context
 
@@ -20,7 +20,7 @@ The verdict also existed only in the transient tool result and in the Actions la
 - The Issue comment is the authoritative, durable verdict record. The Actions lane log stays a human-readable progress log and is not a decision record.
 - Statuses are `PASS`, `REJECT`, `INCOMPLETE`, and `ERROR`. `ReviewerIncompleteError` (target drift, unpinned evidence, changed Issue or ADR snapshot) maps to `INCOMPLETE`. Genuine infrastructure crashes map to `ERROR`. Only a valid Reviewer REJECT means "fix the code".
 - A durable sync event `review_verdict_ready` was formerly appended to the Acopilot lane after the comment was published. It carried `{ issueId, prNumber, status, jobId, headSha }` and no verdict body.
-- The frontend formerly treated the signal as a prompt source. ADR 0053 replaces this path with a server-owned durable agent message and typed Acopilot handoff turn.
+- The frontend formerly treated the signal as a prompt source. ADR 0054 replaces this path with a server-owned durable agent message and typed Acopilot handoff turn.
 - Recoverable preconditions in `resolveInteractiveTarget` (head/base drift, missing acceptance criteria, unpublished PR) raise `ReviewerIncompleteError` with the concrete difference. Only unrecoverable failures keep raising plain errors.
 
 ## Consequences

@@ -2,8 +2,8 @@
   "source_commit": "21aeeee1091bea3a9c7c491ee54d4b25a84ae491",
   "state": {
     "schema_version": 48,
-    "tables": 30,
-    "indexes": 20,
+    "tables": 31,
+    "indexes": 23,
     "triggers": 0,
     "views": 0
   },

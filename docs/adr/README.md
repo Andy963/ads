@@ -61,9 +61,6 @@
 - 0050 - [ADR 0050: Review Verdicts Are Published Through the Issue, Not Through the Tool Call](0050-review-verdicts-published-through-issue.md)
 - 0051 - [ADR 0051: Review Jobs Are Superseded When Their Pinned Head Is Replaced](0051-review-jobs-are-superseded-by-new-heads.md)
 - 0052 - [ADR 0052: Review Queue Execution Is Leased Per Project](0052-review-queue-execution-is-leased-per-project.md)
-<<<<<<< HEAD
-- 0053 - [ADR 0053: Review Verdicts Hand Off Through Durable Agent Messages](0053-review-verdicts-hand-off-through-durable-agent-messages.md)
-=======
 - 0053 - [ADR 0053: Run the Telegram Connector as a Rust Core Client](0053-rust-telegram-connector.md)
->>>>>>> origin/rust-backend
+- 0054 - [ADR 0054: Review Verdicts Hand Off Through Durable Agent Messages](0054-review-verdicts-hand-off-through-durable-agent-messages.md)
 <!-- ADS:ADR_INDEX_END -->
