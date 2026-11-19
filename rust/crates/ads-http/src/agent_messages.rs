@@ -1396,13 +1396,14 @@ mod tests {
         }
 
         assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
-        let prompts = runner.prompts.lock().expect("prompts");
-        assert_eq!(prompts.len(), 1);
-        assert_eq!(
-            prompts[0].payload.get("origin").and_then(Value::as_str),
-            Some("agent")
-        );
-        drop(prompts);
+        {
+            let prompts = runner.prompts.lock().expect("prompts");
+            assert_eq!(prompts.len(), 1);
+            assert_eq!(
+                prompts[0].payload.get("origin").and_then(Value::as_str),
+                Some("agent")
+            );
+        }
         let connection = db.connect().expect("connection");
         let prompt_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM prompt_queue", [], |row| row.get(0))

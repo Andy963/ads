@@ -218,6 +218,26 @@ impl<'a> AgentMessageStore<'a> {
         input: NewAgentMessage,
         now: i64,
     ) -> StateResult<EnqueueAgentMessageResult> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let result = self.enqueue_on(&transaction, input, now)?;
+        transaction.commit()?;
+        Ok(result)
+    }
+
+    pub(crate) fn enqueue_in_transaction(
+        &self,
+        input: NewAgentMessage,
+        now: i64,
+    ) -> StateResult<EnqueueAgentMessageResult> {
+        self.enqueue_on(self.connection, input, now)
+    }
+
+    fn enqueue_on(
+        &self,
+        connection: &Connection,
+        input: NewAgentMessage,
+        now: i64,
+    ) -> StateResult<EnqueueAgentMessageResult> {
         let message_id = input.message_id.trim();
         if message_id.is_empty() {
             return Err(StateError::InvalidInput(
@@ -236,9 +256,7 @@ impl<'a> AgentMessageStore<'a> {
                     .to_string(),
             ));
         }
-        let transaction = self.connection.unchecked_transaction()?;
-        if let Some(existing) = get_agent_message_by_id_on(&transaction, input.message_id.trim())? {
-            transaction.commit()?;
+        if let Some(existing) = get_agent_message_by_id_on(connection, input.message_id.trim())? {
             return Ok(EnqueueAgentMessageResult {
                 message: existing,
                 duplicate: true,
@@ -246,7 +264,7 @@ impl<'a> AgentMessageStore<'a> {
             });
         }
         if input.kind == "review_verdict" {
-            let still_current: bool = transaction.query_row(
+            let still_current: bool = connection.query_row(
                 "SELECT EXISTS (
                    SELECT 1 FROM action_jobs
                    WHERE id = ?1 AND superseded_at IS NULL
@@ -255,7 +273,6 @@ impl<'a> AgentMessageStore<'a> {
                 |row| row.get(0),
             )?;
             if !still_current {
-                transaction.commit()?;
                 return Err(StateError::InvalidInput(
                     "Review job was superseded before its handoff was enqueued".to_string(),
                 ));
@@ -265,7 +282,7 @@ impl<'a> AgentMessageStore<'a> {
         let mut superseded_ids = Vec::new();
         let mut incoming_superseded = input.force_superseded;
         if input.kind == "review_verdict" && !input.force_superseded {
-            incoming_superseded = transaction.query_row(
+            incoming_superseded = connection.query_row(
                 "SELECT EXISTS (
                    SELECT 1 FROM agent_messages
                    WHERE auth_user_id = ?1
@@ -296,7 +313,7 @@ impl<'a> AgentMessageStore<'a> {
             )?;
         }
         if input.kind == "review_verdict" && !incoming_superseded {
-            let mut statement = transaction.prepare(
+            let mut statement = connection.prepare(
                 "SELECT message_id FROM agent_messages
                  WHERE auth_user_id = ?1
                    AND project_id = ?2
@@ -330,7 +347,7 @@ impl<'a> AgentMessageStore<'a> {
                 .collect::<Result<Vec<_>, _>>()?;
             drop(statement);
             if !superseded_ids.is_empty() {
-                transaction.execute(
+                connection.execute(
                     "UPDATE agent_messages
                      SET status = 'superseded', updated_at = ?1,
                          transition_revision = transition_revision + 1,
@@ -364,7 +381,7 @@ impl<'a> AgentMessageStore<'a> {
             }
         }
 
-        transaction.execute(
+        connection.execute(
             "INSERT INTO agent_messages (
                message_id, auth_user_id, user_id, project_id, chat_session_id,
                history_key, logical_history_key, lane_namespace, lane_generation,
@@ -412,11 +429,10 @@ impl<'a> AgentMessageStore<'a> {
                 now,
             ],
         )?;
-        let created = get_agent_message_by_id_on(&transaction, input.message_id.trim())?
-            .ok_or_else(|| {
+        let created =
+            get_agent_message_by_id_on(connection, input.message_id.trim())?.ok_or_else(|| {
                 StateError::InvalidInput("Agent message insert disappeared".to_string())
             })?;
-        transaction.commit()?;
         Ok(EnqueueAgentMessageResult {
             message: created,
             duplicate: false,

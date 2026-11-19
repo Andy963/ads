@@ -20,7 +20,7 @@ const webUserIdPrefix = 0x700000000000;
 
 function connect(baseUrl, options = {}) {
   const url = `${baseUrl.replace(/^http/, "ws")}/ws${options.search ?? ""}`;
-  const headers = {};
+  const headers = { origin: baseUrl };
   if (options.cookie) headers.cookie = options.cookie;
   const socket = new WebSocket(url, options.protocols ?? [], { headers });
   const frames = [];

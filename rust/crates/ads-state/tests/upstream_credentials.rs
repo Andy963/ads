@@ -226,11 +226,18 @@ fn typescript_decrypts_a_rust_credential_envelope() {
     drop(connection);
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    let store_path = root.join("server/state/upstreamCredentialStore.ts");
+    let source_store_path = root.join("server/state/upstreamCredentialStore.ts");
+    let store_path = if source_store_path.exists() {
+        source_store_path
+    } else {
+        root.join("dist/server/state/upstreamCredentialStore.js")
+    };
     let script = r#"
 import Database from "better-sqlite3";
 import { pathToFileURL } from "node:url";
-const { createUpstreamCredentialStore } = await import(pathToFileURL(process.env.ADS_TS_STORE).href);
+const storeModule = await import(pathToFileURL(process.env.ADS_TS_STORE).href);
+const createUpstreamCredentialStore =
+  storeModule.createUpstreamCredentialStore ?? storeModule.default?.createUpstreamCredentialStore;
 const db = new Database(process.env.ADS_DB_PATH, { readonly: true });
 const store = createUpstreamCredentialStore(db, { pepper: process.env.ADS_TEST_PEPPER });
 const credentials = store.getCredentials("owner-rust", "provider-rust");

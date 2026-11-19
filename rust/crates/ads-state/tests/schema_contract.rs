@@ -238,7 +238,7 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("completed review flags");
-    assert_eq!(completed_flags, (1, 0));
+    assert_eq!(completed_flags, (0, 0));
     let consumed_flags: (i64, i64) = connection
         .query_row(
             "SELECT requires_agent_handoff, agent_handoff_ready
@@ -299,6 +299,15 @@ fn migrates_state_47_by_retiring_legacy_review_wakes() {
         )
         .expect("active review flag");
     assert_eq!(active_required, 1);
+    let handoff_cutover: String = connection
+        .query_row(
+            "SELECT value FROM kv_state
+             WHERE namespace = 'agent_messages' AND key = 'review_handoff_cutover_at'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("review handoff cutover");
+    assert!(handoff_cutover.parse::<i64>().expect("cutover timestamp") > 1);
 }
 
 #[test]
@@ -1412,6 +1421,14 @@ fn migrates_state_29_through_42() {
                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
              );
              INSERT INTO schema_version (id, version) VALUES (1, 29);
+
+             CREATE TABLE kv_state (
+               namespace TEXT NOT NULL,
+               key TEXT NOT NULL,
+               value TEXT NOT NULL,
+               updated_at INTEGER NOT NULL,
+               PRIMARY KEY(namespace, key)
+             );
 
              CREATE TABLE role_profiles (
                id TEXT PRIMARY KEY,

@@ -78,16 +78,21 @@ pub fn dispatch_review_job(
     });
 
     let jobs = list_action_jobs(&connection, &project_id, None, Some(&auth_user_id))?;
-    let existing = jobs.iter().cloned().find(|job| {
-        job.job_kind == ActionJobKind::PullRequestReview
-            && job.branch.as_deref().unwrap_or("") == branch
-            && (pr_number == 0 || job.pr_number == Some(pr_number))
-            && job.superseded_at.is_none()
-            && matches!(
-                job.status,
-                ActionJobStatus::Queued | ActionJobStatus::Verifying | ActionJobStatus::Reviewing
-            )
-    });
+    let existing = jobs
+        .iter()
+        .find(|job| {
+            job.job_kind == ActionJobKind::PullRequestReview
+                && job.branch.as_deref().unwrap_or("") == branch
+                && (pr_number == 0 || job.pr_number == Some(pr_number))
+                && job.superseded_at.is_none()
+                && matches!(
+                    job.status,
+                    ActionJobStatus::Queued
+                        | ActionJobStatus::Verifying
+                        | ActionJobStatus::Reviewing
+                )
+        })
+        .cloned();
     if let Some(job) = existing {
         return Ok(review_queue_ack(job));
     }

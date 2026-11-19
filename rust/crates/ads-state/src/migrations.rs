@@ -7,7 +7,12 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
 
-use crate::{StateError, StateResult, column_exists, table_exists};
+use crate::{
+    AgentMessageStore, NewAgentMessage, StateError, StateResult, column_exists, table_exists,
+};
+
+const REVIEW_HANDOFF_CUTOVER_NAMESPACE: &str = "agent_messages";
+const REVIEW_HANDOFF_CUTOVER_KEY: &str = "review_handoff_cutover_at";
 
 const RETIRED_UNCONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION: &str = "- Before changing files or branches for an Issue, call begin_implementation with its issue_id. After opening the PR, call review_action to enqueue a pinned review in the Actions lane; the Actions lane runs only the read-only Reviewer, records PASS or REJECT in its queue and conversation, and returns the structured result to Acopilot.";
 const RETIRED_CONDITIONAL_IMPLEMENTATION_GATE_INSTRUCTION: &str = "- Before changing files or branches for an Issue, validate that it owns the workspace task slot. When the dynamic begin_implementation tool is available, call it with the Issue id. If the current execution environment does not expose that tool, perform equivalent read-only checks of the branch, working tree, and open pull requests. The tool's absence alone is not a blocker. After opening the PR, call review_action to enqueue a pinned review in the Actions lane; the Actions lane runs only the read-only Reviewer, records PASS or REJECT in its queue and conversation, and returns the structured result to Acopilot.";
@@ -2156,6 +2161,17 @@ fn migrate_state_47(connection: &Connection) -> StateResult<()> {
 }
 
 fn migrate_state_48(connection: &Connection) -> StateResult<()> {
+    let cutover_at = ads_contract::time::now_unix_millis().max(1);
+    connection.execute(
+        "INSERT OR IGNORE INTO kv_state (namespace, key, value, updated_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            REVIEW_HANDOFF_CUTOVER_NAMESPACE,
+            REVIEW_HANDOFF_CUTOVER_KEY,
+            cutover_at.to_string(),
+            cutover_at,
+        ],
+    )?;
     if table_exists(connection, "agent_messages")? {
         add_column_if_missing(connection, "agent_messages", "branch", "TEXT")?;
     }
@@ -2169,7 +2185,18 @@ fn migrate_state_48(connection: &Connection) -> StateResult<()> {
     if table_exists(connection, "action_jobs")? {
         connection.execute(
             "UPDATE action_jobs AS j
-             SET requires_agent_handoff = 1,
+             SET requires_agent_handoff = CASE
+                   WHEN EXISTS (
+                     SELECT 1 FROM agent_messages m
+                     WHERE m.project_id = j.project_id
+                       AND (j.auth_user_id IS NULL OR m.auth_user_id = j.auth_user_id)
+                       AND (j.chat_session_id IS NULL OR m.chat_session_id = j.chat_session_id)
+                       AND m.kind = 'review_verdict'
+                       AND m.correlation_id = j.id
+                   ) THEN 1
+                   WHEN j.requires_agent_handoff = 1 AND j.updated_at >= ?1 THEN 1
+                   ELSE 0
+                 END,
                  agent_handoff_ready = CASE WHEN EXISTS (
                    SELECT 1 FROM agent_messages m
                    WHERE m.project_id = j.project_id
@@ -2181,7 +2208,7 @@ fn migrate_state_48(connection: &Connection) -> StateResult<()> {
              WHERE j.job_kind = 'pull_request_review'
                AND j.status IN ('completed', 'failed')
                AND j.superseded_at IS NULL",
-            [],
+            params![cutover_at],
         )?;
     }
     for client_message_id in migrated_legacy_review_wakes {
@@ -2267,22 +2294,10 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<Vec<Strin
         } else {
             "Reviewer verdict".to_string()
         };
-        let task_status = if job.superseded_at.is_some() {
-            "superseded"
-        } else if wake.status == "completed" {
-            "delivered"
-        } else if wake.status == "queued" {
-            "pending"
-        } else {
-            "failed"
-        };
-        let revision = match task_status {
-            "delivered" => 10,
-            "failed" => 20,
-            "superseded" => 30,
-            "pending" => 1,
-            _ => 0,
-        };
+        if job.superseded_at.is_some() {
+            migrated_client_message_ids.push(wake.client_message_id);
+            continue;
+        }
         let agent_payload = json!({
             "text": text,
             "origin": "agent",
@@ -2303,55 +2318,64 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<Vec<Strin
             },
             "legacyClientMessageId": wake.client_message_id
         });
-        connection.execute(
-            "INSERT OR IGNORE INTO agent_messages (
-               message_id, auth_user_id, user_id, project_id, chat_session_id,
-               history_key, logical_history_key, lane_namespace, lane_generation,
-               workspace_root, from_lane, from_role, to_lane, to_role, kind,
-               correlation_id, issue_id, issue_title, issue_url, pr_number, base_sha,
-               branch, head_sha, payload_json, status, attempts, last_error, source_created_at,
-               transition_revision, created_at, updated_at, claimed_at, delivered_at
-             ) VALUES (
-               ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'actions', 'reviewer',
-               'acopilot', 'acopilot', 'review_verdict', ?11, ?12, ?13, ?14, ?15, ?16,
-               ?17, ?18, ?19, ?20, 0, ?21, ?22, ?23, ?24, ?25,
-               CASE WHEN ?20 = 'running' THEN ?25 ELSE NULL END,
-               CASE WHEN ?20 = 'delivered' THEN ?25 ELSE NULL END
-             )",
-            params![
-                format!("review-verdict:{correlation_id}"),
-                &wake.auth_user_id,
-                wake.user_id,
-                &job.project_id,
-                &wake.chat_session_id,
-                &wake.history_key,
-                &wake.logical_history_key,
-                &wake.lane_namespace,
-                wake.lane_generation,
-                &wake.workspace_root,
-                &correlation_id,
+        let payload = agent_payload.as_object().cloned().ok_or_else(|| {
+            StateError::InvalidInput("legacy handoff payload must be an object".to_string())
+        })?;
+        let message_id = format!("review-verdict:{correlation_id}");
+        let handoff_at = wake.updated_at.max(wake.created_at).max(1);
+        AgentMessageStore::new(connection)?.enqueue_in_transaction(
+            NewAgentMessage {
+                message_id: message_id.clone(),
+                auth_user_id: wake.auth_user_id,
+                user_id: wake.user_id,
+                project_id: job.project_id.clone(),
+                chat_session_id: wake.chat_session_id,
+                history_key: wake.history_key,
+                logical_history_key: wake.logical_history_key,
+                lane_namespace: wake.lane_namespace,
+                lane_generation: wake.lane_generation,
+                workspace_root: wake.workspace_root,
+                from_lane: "actions".to_string(),
+                from_role: "reviewer".to_string(),
+                to_lane: "acopilot".to_string(),
+                to_role: "acopilot".to_string(),
+                kind: "review_verdict".to_string(),
+                correlation_id,
                 issue_id,
-                &issue_title,
+                issue_title,
                 issue_url,
                 pr_number,
-                job.base_sha.as_deref(),
-                job.branch.as_deref(),
-                job.head_sha.as_deref(),
-                serde_json::to_string(&agent_payload).map_err(|error| {
-                    StateError::InvalidInput(format!("legacy handoff payload: {error}"))
-                })?,
-                &task_status,
-                if task_status == "failed" {
-                    Some("Legacy request did not complete before the durable handoff migration")
-                } else {
-                    None
-                },
-                wake.created_at.max(1),
-                revision,
-                wake.created_at,
-                wake.updated_at,
-            ],
+                branch: job.branch,
+                base_sha: job.base_sha,
+                head_sha: job.head_sha,
+                payload,
+                source_created_at: wake.created_at.max(1),
+                force_superseded: false,
+                created_at: wake.created_at,
+            },
+            handoff_at,
         )?;
+        if wake.status == "completed" {
+            connection.execute(
+                "UPDATE agent_messages
+                 SET status = 'delivered', delivered_at = ?1, updated_at = ?1,
+                     transition_revision = transition_revision + 1
+                 WHERE message_id = ?2 AND status = 'pending'",
+                params![handoff_at, &message_id],
+            )?;
+        } else if wake.status == "failed" {
+            connection.execute(
+                "UPDATE agent_messages
+                 SET status = 'failed', last_error = ?1, updated_at = ?2,
+                     transition_revision = transition_revision + 1
+                 WHERE message_id = ?3 AND status = 'pending'",
+                params![
+                    "Legacy request did not complete before the durable handoff migration",
+                    handoff_at,
+                    &message_id,
+                ],
+            )?;
+        }
         migrated_client_message_ids.push(wake.client_message_id);
     }
     Ok(migrated_client_message_ids)
@@ -3502,6 +3526,13 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE schema_version (id INTEGER PRIMARY KEY, version INTEGER NOT NULL, updated_at TEXT);
                  INSERT INTO schema_version VALUES (1, 47, datetime('now'));
+                 CREATE TABLE kv_state (
+                   namespace TEXT NOT NULL,
+                   key TEXT NOT NULL,
+                   value TEXT NOT NULL,
+                   updated_at INTEGER NOT NULL,
+                   PRIMARY KEY(namespace, key)
+                 );
                  CREATE TABLE action_jobs (
                    id TEXT PRIMARY KEY,
                    project_id TEXT NOT NULL,
@@ -3621,9 +3652,100 @@ mod tests {
         assert_eq!(message.pr_number, Some(657));
         assert_eq!(message.base_sha.as_deref(), Some("base-sha"));
         assert_eq!(message.head_sha.as_deref(), Some("head-sha"));
+        assert_eq!(message.status.as_str(), "delivered");
         assert_eq!(message.payload["jobId"], serde_json::json!("job-1"));
         assert_eq!(message.payload["reviewStatus"], serde_json::json!("PASS"));
 
+        let remaining_wakes: i64 = connection
+            .query_row("SELECT COUNT(*) FROM prompt_queue", [], |row| row.get(0))
+            .expect("remaining wakes");
+        assert_eq!(remaining_wakes, 0);
+    }
+
+    #[test]
+    fn does_not_reactivate_historical_terminal_review_without_legacy_wake() {
+        let connection = state_48_fixture();
+        insert_review_job(&connection, "historical-review");
+
+        migrate_state(&connection, 47, 48).expect("state migration");
+
+        let flags: (i64, i64) = connection
+            .query_row(
+                "SELECT requires_agent_handoff, agent_handoff_ready
+                 FROM action_jobs WHERE id = 'historical-review'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("historical review flags");
+        assert_eq!(flags, (0, 0));
+        let cutover: String = connection
+            .query_row(
+                "SELECT value FROM kv_state
+                 WHERE namespace = ?1 AND key = ?2",
+                params![REVIEW_HANDOFF_CUTOVER_NAMESPACE, REVIEW_HANDOFF_CUTOVER_KEY],
+                |row| row.get(0),
+            )
+            .expect("cutover watermark");
+        assert!(cutover.parse::<i64>().expect("cutover timestamp") > 1);
+        let messages: i64 = connection
+            .query_row("SELECT COUNT(*) FROM agent_messages", [], |row| row.get(0))
+            .expect("message count");
+        assert_eq!(messages, 0);
+    }
+
+    #[test]
+    fn coalesces_legacy_review_wakes_by_review_target() {
+        let connection = state_48_fixture();
+        insert_review_job(&connection, "job-old");
+        insert_review_job(&connection, "job-new");
+        connection
+            .execute(
+                "UPDATE action_jobs SET created_at = 100, updated_at = 100 WHERE id = 'job-old'",
+                [],
+            )
+            .expect("old job time");
+        connection
+            .execute(
+                "UPDATE action_jobs SET created_at = 200, updated_at = 200 WHERE id = 'job-new'",
+                [],
+            )
+            .expect("new job time");
+        insert_legacy_review_wake(
+            &connection,
+            "legacy-old",
+            &serde_json::json!({
+                "origin": "system",
+                "text": "ads:review-verdict. Reviewer verdict handoff. Job job-old. Issue #648. PR #657. Status: REJECT."
+            })
+            .to_string(),
+            "queued",
+            100,
+        );
+        insert_legacy_review_wake(
+            &connection,
+            "legacy-new",
+            &serde_json::json!({
+                "origin": "system",
+                "text": "ads:review-verdict. Reviewer verdict handoff. Job job-new. Issue #648. PR #657. Status: PASS."
+            })
+            .to_string(),
+            "queued",
+            200,
+        );
+
+        migrate_state(&connection, 47, 48).expect("state migration");
+
+        let store = crate::AgentMessageStore::new(&connection).expect("message store");
+        let newer = store
+            .get_by_message_id("review-verdict:job-new")
+            .expect("read newer handoff")
+            .expect("newer handoff");
+        let older = store
+            .get_by_message_id("review-verdict:job-old")
+            .expect("read older handoff")
+            .expect("older handoff");
+        assert_eq!(newer.status.as_str(), "pending");
+        assert_eq!(older.status.as_str(), "superseded");
         let remaining_wakes: i64 = connection
             .query_row("SELECT COUNT(*) FROM prompt_queue", [], |row| row.get(0))
             .expect("remaining wakes");

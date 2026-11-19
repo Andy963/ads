@@ -147,7 +147,12 @@ where
 async fn run_gh_cmd(args: &[&str], cwd: &Path) -> Result<(i32, String, String), ReviewError> {
     let attempts = GH_RETRY_DELAYS.len() + 1;
     let mut last_result = None;
-    for attempt in 0..attempts {
+    for (attempt, delay) in GH_RETRY_DELAYS
+        .iter()
+        .copied()
+        .chain(std::iter::once(Duration::ZERO))
+        .enumerate()
+    {
         let result = run_cmd("gh", args, cwd, DEFAULT_CMD_TIMEOUT).await;
         let retryable = match &result {
             Ok((code, _, stderr)) => *code != 0 && is_retryable_github_failure(stderr),
@@ -157,7 +162,7 @@ async fn run_gh_cmd(args: &[&str], cwd: &Path) -> Result<(i32, String, String), 
             return result;
         }
         last_result = Some(result);
-        tokio::time::sleep(GH_RETRY_DELAYS[attempt]).await;
+        tokio::time::sleep(delay).await;
     }
     last_result.unwrap_or_else(|| {
         Err(ReviewError::Other(

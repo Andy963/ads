@@ -72,6 +72,20 @@ function startChild(command, args, options, children) {
   };
 }
 
+function resolveLegacyModule(root, relativePath) {
+  const source = path.isAbsolute(relativePath) ? relativePath : path.join(root, relativePath);
+  if (fs.existsSync(source)) {
+    return source;
+  }
+  const built = path.join(root, "dist", relativePath.replace(/\.ts$/, ".js"));
+  assert(fs.existsSync(built), `legacy module is unavailable: ${relativePath}`);
+  return built;
+}
+
+function nodeModuleArgs(modulePath) {
+  return modulePath.endsWith(".ts") ? ["--import", "tsx"] : [];
+}
+
 async function stopChild(child) {
   if (child.exitCode !== null) return;
   child.kill("SIGTERM");
@@ -104,7 +118,16 @@ export async function waitForServer(baseUrl, handle) {
 }
 
 export async function request(baseUrl, pathname, options = {}) {
-  const response = await fetch(`${baseUrl}${pathname}`, options);
+  const requestOptions = { ...options };
+  const method = String(options.method ?? "GET").toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+    const headers = new Headers(options.headers);
+    if (!headers.has("origin")) {
+      headers.set("origin", baseUrl);
+    }
+    requestOptions.headers = headers;
+  }
+  const response = await fetch(`${baseUrl}${pathname}`, requestOptions);
   const text = await response.text();
   let body = null;
   try {
@@ -187,10 +210,13 @@ export async function compare(label, nodeResult, rustResult, options = {}) {
 export async function loginAs(baseUrl, username, password) {
   const result = await request(baseUrl, "/api/auth/login", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", origin: baseUrl },
     body: JSON.stringify({ username, password }),
   });
-  assert(result.status === 200, `login failed with ${result.status}`);
+  assert(
+    result.status === 200,
+    `login failed with ${result.status}: ${JSON.stringify(result.body)}`,
+  );
   const setCookie = result.headers.get("set-cookie");
   assert(setCookie, "login did not set a session cookie");
   return { result, cookie: cookiePair(setCookie), setCookie };
@@ -201,7 +227,9 @@ export async function loginAs(baseUrl, username, password) {
  * servers with isolated state directories.
  */
 export async function startServerPair(options) {
-  const { root, rustDir, nodeEntry = "server/web/server_impl.ts" } = options;
+  const { root, rustDir } = options;
+  const nodeEntry = resolveLegacyModule(root, options.nodeEntry ?? "server/web/server_impl.ts");
+  const nodeInitAdmin = resolveLegacyModule(root, "server/web/auth/initAdminCli.ts");
   const children = [];
   const nodeStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-node-conformance-"));
   const rustStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-rust-conformance-"));
@@ -224,9 +252,8 @@ export async function startServerPair(options) {
   const nodeAdmin = spawnSync(
     process.execPath,
     [
-      "--import",
-      "tsx",
-      path.join(root, "server", "web", "auth", "initAdminCli.ts"),
+      ...nodeModuleArgs(nodeInitAdmin),
+      nodeInitAdmin,
       "--username",
       username,
       "--password",
@@ -264,12 +291,13 @@ export async function startServerPair(options) {
   const sharedEnv = {
     ADS_WEB_HOST: "127.0.0.1",
     ADS_WEB_COOKIE_SECURE: "0",
+    ADS_WEB_ALLOWED_ORIGINS: "*",
     ...(options.env ?? {}),
   };
 
   const nodeServer = startChild(
     process.execPath,
-    ["--import", "tsx", nodeEntry, ...(options.nodeArgs ?? [])],
+    [...nodeModuleArgs(nodeEntry), nodeEntry, ...(options.nodeArgs ?? [])],
     {
       cwd: options.nodeCwd ?? root,
       env: {

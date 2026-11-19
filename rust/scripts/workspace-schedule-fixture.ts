@@ -1,10 +1,4 @@
-import { ScheduleStore } from "../../server/scheduler/store.js";
-
-const [mode, dbPath, workspaceRoot] = process.argv.slice(2);
-if (!mode || !dbPath || !workspaceRoot) {
-  throw new Error("usage: workspace-schedule-fixture.ts <mode> <db-path> <workspace-root>");
-}
-process.env.ADS_DATABASE_PATH = dbPath;
+import { legacyModulePath } from "./legacy-module-path.ts";
 
 function scheduleSpec(name: string) {
   return {
@@ -36,40 +30,54 @@ function scheduleSpec(name: string) {
   };
 }
 
-const store = new ScheduleStore({ workspacePath: workspaceRoot });
+async function main() {
+  const { ScheduleStore } = await import(legacyModulePath("server/scheduler/store.ts"));
+  const [mode, dbPath, workspaceRoot] = process.argv.slice(2);
+  if (!mode || !dbPath || !workspaceRoot) {
+    throw new Error("usage: workspace-schedule-fixture.ts <mode> <db-path> <workspace-root>");
+  }
+  process.env.ADS_DATABASE_PATH = dbPath;
 
-if (mode === "verify") {
-  const schedules = store.listSchedules();
-  const runsByScheduleId = Object.fromEntries(
-    schedules.map((schedule) => [schedule.id, store.listRuns(schedule.id)]),
-  );
-  process.stdout.write(`${JSON.stringify({ schedules, runsByScheduleId })}\n`);
-} else if (mode === "write") {
-  const schedule = store.createSchedule(
-    {
-      instruction: "typescript instruction",
-      spec: scheduleSpec("TypeScript schedule"),
-      enabled: true,
-      nextRunAt: 500,
-    },
-    400,
-  );
-  const run = store.insertRun(
-    {
-      scheduleId: schedule.id,
-      externalId: "ts-external-1",
-      runAt: 500,
-      taskId: null,
-      status: "running",
-    },
-    410,
-  );
-  const updated = store.updateRunByExternalId(
-    "ts-external-1",
-    { status: "completed", result: "ts result", completedAt: 420 },
-    420,
-  );
-  process.stdout.write(`${JSON.stringify({ schedule, run, updated })}\n`);
-} else {
-  throw new Error(`unknown mode: ${mode}`);
+  const store = new ScheduleStore({ workspacePath: workspaceRoot });
+
+  if (mode === "verify") {
+    const schedules = store.listSchedules();
+    const runsByScheduleId = Object.fromEntries(
+      schedules.map((schedule) => [schedule.id, store.listRuns(schedule.id)]),
+    );
+    process.stdout.write(`${JSON.stringify({ schedules, runsByScheduleId })}\n`);
+  } else if (mode === "write") {
+    const schedule = store.createSchedule(
+      {
+        instruction: "typescript instruction",
+        spec: scheduleSpec("TypeScript schedule"),
+        enabled: true,
+        nextRunAt: 500,
+      },
+      400,
+    );
+    const run = store.insertRun(
+      {
+        scheduleId: schedule.id,
+        externalId: "ts-external-1",
+        runAt: 500,
+        taskId: null,
+        status: "running",
+      },
+      410,
+    );
+    const updated = store.updateRunByExternalId(
+      "ts-external-1",
+      { status: "completed", result: "ts result", completedAt: 420 },
+      420,
+    );
+    process.stdout.write(`${JSON.stringify({ schedule, run, updated })}\n`);
+  } else {
+    throw new Error(`unknown mode: ${mode}`);
+  }
 }
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

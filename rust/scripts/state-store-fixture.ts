@@ -1,9 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(scriptDir, "../..");
+import { legacyModulePath } from "./legacy-module-path.ts";
 
 type Mode = "create" | "verify";
 
@@ -15,16 +13,16 @@ function assert(condition: unknown, message: string): asserts condition {
 
 async function openState(dbPath: string) {
   process.env.ADS_STATE_DB_PATH = dbPath;
-  const { getStateDatabase } = await import(path.join(root, "server/state/database.ts"));
+  const { getStateDatabase } = await import(legacyModulePath("server/state/database.ts"));
   return getStateDatabase(dbPath);
 }
 
 async function create(dbPath: string) {
-  const { ensureWebAuthTables } = await import(path.join(root, "server/web/auth/schema.ts"));
-  const { ensureWebProjectTables } = await import(path.join(root, "server/web/projects/schema.ts"));
-  const projectStore = await import(path.join(root, "server/web/projects/store.ts"));
+  const { ensureWebAuthTables } = await import(legacyModulePath("server/web/auth/schema.ts"));
+  const { ensureWebProjectTables } = await import(legacyModulePath("server/web/projects/schema.ts"));
+  const projectStore = await import(legacyModulePath("server/web/projects/store.ts"));
   const { createGlobalModelConfigStore } = await import(
-    path.join(root, "server/state/globalModelConfigStore.ts")
+    legacyModulePath("server/state/globalModelConfigStore.ts")
   );
 
   const db = await openState(dbPath);
@@ -79,9 +77,9 @@ async function create(dbPath: string) {
 }
 
 async function verify(dbPath: string) {
-  const projectStore = await import(path.join(root, "server/web/projects/store.ts"));
+  const projectStore = await import(legacyModulePath("server/web/projects/store.ts"));
   const { createGlobalModelConfigStore } = await import(
-    path.join(root, "server/state/globalModelConfigStore.ts")
+    legacyModulePath("server/state/globalModelConfigStore.ts")
   );
 
   const db = await openState(dbPath);
@@ -157,4 +155,7 @@ async function main() {
   throw new Error(`unknown mode: ${mode}`);
 }
 
-await main();
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
