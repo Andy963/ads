@@ -18,6 +18,7 @@ use ads_state::{
 use chrono::Utc;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use tokio::process::Command;
 
 use crate::defaults::{default_publisher, default_reviewer_runner, default_verification_runner};
 use crate::dispatch::{canonical_project_id, issue_id_from_branch};
@@ -677,16 +678,63 @@ impl ReviewQueue {
                 format!("action_step:{}:comment_failed", job.id),
                 LaneMessageRole::Status,
             );
+            return;
+        }
+        let mut ready = Err(ads_state::StateError::InvalidInput(
+            "handoff readiness was not attempted".to_string(),
+        ));
+        for attempt in 0..20 {
+            ready = self.db.connect().and_then(|connection| {
+                let changed = connection.execute(
+                    "UPDATE action_jobs
+                     SET agent_handoff_ready = 1, updated_at = ?1
+                     WHERE id = ?2 AND requires_agent_handoff = 1
+                       AND superseded_at IS NULL",
+                    rusqlite::params![now_ms(), job.id],
+                )?;
+                if changed == 1 {
+                    Ok(())
+                } else {
+                    Err(ads_state::StateError::InvalidInput(
+                        "review job was superseded before handoff readiness".to_string(),
+                    ))
+                }
+            });
+            if ready.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250 * (attempt + 1))).await;
+        }
+        if let Err(error) = ready {
+            self.record_action_message(
+                job,
+                repo_path,
+                format!(
+                    "Marking the {} handoff ready for {} failed: {error}",
+                    status.as_str(),
+                    review_target_label(job)
+                ),
+                format!("action_step:{}:handoff_ready_failed", job.id),
+                LaneMessageRole::Status,
+            );
+            return;
         }
         if let Some(waker) = self.options.waker.clone() {
+            let issue_url = resolve_issue_url(job.pr_url.as_deref(), repo_path, issue_id).await;
             waker(AcopilotWake {
                 project_id: job.project_id.clone(),
                 repo_path: repo_path.to_path_buf(),
                 auth_user_id: job.auth_user_id.clone().unwrap_or_default(),
                 issue_id,
+                issue_title: job.issue_title.clone(),
+                issue_url,
                 pr_number: job.pr_number,
+                branch: job.branch.clone(),
+                base_sha: job.base_sha.clone(),
                 status,
                 job_id: job.id.clone(),
+                source_created_at: job.created_at,
+                lane_generation: job.acopilot_lane_generation,
                 head_sha: job.head_sha.clone(),
             });
         }
@@ -923,6 +971,64 @@ fn review_target_matches_job(job: &ActionJobRecord, session: &ResolvedReview) ->
                 .collect::<Vec<_>>()
 }
 
+pub fn issue_url_from_pr_url(pr_url: Option<&str>, issue_id: i64) -> Option<String> {
+    if issue_id < 1 {
+        return None;
+    }
+    let pr_url = pr_url?.trim();
+    let (repository_url, _) = pr_url.split_once("/pull/")?;
+    let repository_url = repository_url.trim_end_matches('/');
+    repository_url
+        .starts_with("https://github.com/")
+        .then(|| format!("{repository_url}/issues/{issue_id}"))
+}
+
+pub async fn issue_url_from_repository(repo_path: &Path, issue_id: i64) -> Option<String> {
+    if issue_id < 1 {
+        return None;
+    }
+    let output = tokio::time::timeout(
+        Duration::from_secs(5),
+        Command::new("git")
+            .arg("-C")
+            .arg(repo_path)
+            .args(["config", "--get", "remote.origin.url"])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    github_repository_url(&String::from_utf8_lossy(&output.stdout))
+        .map(|repository_url| format!("{repository_url}/issues/{issue_id}"))
+}
+
+pub fn github_repository_url(remote: &str) -> Option<String> {
+    let remote = remote.trim().trim_end_matches('/').trim_end_matches(".git");
+    let path = remote
+        .strip_prefix("git@github.com:")
+        .or_else(|| remote.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| remote.strip_prefix("https://github.com/"))
+        .or_else(|| remote.strip_prefix("http://github.com/"))?;
+    let path = path.trim_matches('/');
+    (path.split('/').filter(|part| !part.is_empty()).count() >= 2)
+        .then(|| format!("https://github.com/{path}"))
+}
+
+pub async fn resolve_issue_url(
+    pr_url: Option<&str>,
+    repo_path: &Path,
+    issue_id: i64,
+) -> Option<String> {
+    if let Some(url) = issue_url_from_pr_url(pr_url, issue_id) {
+        return Some(url);
+    }
+    issue_url_from_repository(repo_path, issue_id).await
+}
+
 fn review_target_label(job: &ActionJobRecord) -> String {
     let pr_number = job.pr_number.unwrap_or(0);
     let issue_id = job.issue_id.unwrap_or(0);
@@ -972,5 +1078,52 @@ fn issue_verdict_status(status: ReviewVerdictStatus) -> IssueVerdictStatus {
         ReviewVerdictStatus::Pass => IssueVerdictStatus::Pass,
         ReviewVerdictStatus::Reject => IssueVerdictStatus::Reject,
         ReviewVerdictStatus::Incomplete => IssueVerdictStatus::Incomplete,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_github_remotes_for_issue_links() {
+        for remote in [
+            "git@github.com:Andy963/ads.git",
+            "ssh://git@github.com/Andy963/ads.git",
+            "https://github.com/Andy963/ads.git",
+            "https://github.com/Andy963/ads/",
+        ] {
+            assert_eq!(
+                github_repository_url(remote).as_deref(),
+                Some("https://github.com/Andy963/ads")
+            );
+        }
+        assert_eq!(github_repository_url("https://example.com/ads.git"), None);
+    }
+
+    #[tokio::test]
+    async fn derives_issue_links_from_repository_identity() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let output = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(directory.path())
+            .output()
+            .await
+            .expect("git init");
+        assert!(output.status.success());
+        let output = Command::new("git")
+            .args(["remote", "add", "origin", "git@github.com:Andy963/ads.git"])
+            .current_dir(directory.path())
+            .output()
+            .await
+            .expect("git remote");
+        assert!(output.status.success());
+
+        assert_eq!(
+            issue_url_from_repository(directory.path(), 648)
+                .await
+                .as_deref(),
+            Some("https://github.com/Andy963/ads/issues/648")
+        );
     }
 }

@@ -124,7 +124,7 @@ async function main() {
     assert(rustCached.status === 304, `rust cached status ${rustCached.status}`);
     compareRawHeaders("attachment-raw-cached", nodeCached, rustCached);
 
-    const duplicateNode = await upload(pair.nodeBase, nodeLogin.cookie, bytes);
+    const _duplicateNode = await upload(pair.nodeBase, nodeLogin.cookie, bytes);
     const duplicateRust = await upload(pair.rustBase, rustLogin.cookie, bytes);
     assertJson(duplicateRust.body.id, rustUpload.body.id, "duplicate upload id");
 

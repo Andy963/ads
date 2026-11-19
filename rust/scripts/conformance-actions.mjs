@@ -19,7 +19,7 @@ const rustDir = path.join(root, "rust");
 const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-actions-conformance-"));
 const projectDir = path.join(workspaceDir, "project");
 
-function seedCompletedReview(stateDir, projectId, workspaceRoot) {
+function seedCompletedReview(stateDir, projectId, _workspaceRoot) {
   const db = new Database(path.join(stateDir, "state.db"));
   try {
     const user = db.prepare("SELECT id FROM web_users ORDER BY created_at ASC LIMIT 1").get();
@@ -44,6 +44,26 @@ function seedCompletedReview(stateDir, projectId, workspaceRoot) {
   } finally {
     db.close();
   }
+}
+
+const RUST_HANDOFF_FIELDS = [
+  "requires_agent_handoff",
+  "acopilot_lane_generation",
+  "agent_handoff_ready",
+];
+
+function omitRustHandoffFields(value) {
+  if (Array.isArray(value)) {
+    return value.map(omitRustHandoffFields);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !RUST_HANDOFF_FIELDS.includes(key))
+      .map(([key, child]) => [key, omitRustHandoffFields(child)]),
+  );
 }
 
 async function main() {
@@ -93,10 +113,13 @@ async function main() {
       headers: { ...rustHeaders, ...(options.headers ?? {}) },
     });
     async function compareBoth(label, pathname, options = {}) {
+      const nodeResult = await pair.nodeRequest(pathname, withNode(options));
+      const rustResult = await pair.rustRequest(pathname, withRust(options));
+      rustResult.body = omitRustHandoffFields(rustResult.body);
       await compare(
         label,
-        await pair.nodeRequest(pathname, withNode(options)),
-        await pair.rustRequest(pathname, withRust(options)),
+        nodeResult,
+        rustResult,
       );
     }
 

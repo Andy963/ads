@@ -75,6 +75,10 @@ middleware 已支持 scope、recall/ingest 与环境变量装配。Actions job �
 POST 路由已对齐 TypeScript。
 Telegram 调度终态会通过 WebSocket `task_terminal` 广播给 connector，Native 与
 Codex scheduler executor 均已通过黑盒验证。
+`ads-telegram` 已提供 Rust connector binary：它通过 Core REST/WS 合同维护
+每 Telegram chat 独立会话，并覆盖模型切换、通知、限流、thinking 状态和
+MarkdownV2 分片。部署时可在 Rust binary 与原 Node connector 之间切换，无需
+修改 Core 数据库或 WebSocket 协议。
 HTTP 基础层已实现 Origin 防护、1 MB JSON 请求体限制、与 Node 一致的 JSON
 读取语义、静态资源 fallback、图片附件和 Actions job 列表/废弃路由；
 `init-admin` / `reset-admin` 已可用。迁移状态见仓库根目录的

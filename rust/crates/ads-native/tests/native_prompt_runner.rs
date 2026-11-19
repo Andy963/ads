@@ -809,6 +809,39 @@ async fn streams_chat_completion_into_events_history_and_transcript() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn preserves_agent_origin_in_live_and_persisted_turn_metadata() {
+    let harness = Harness::start(chat_stream_router()).await;
+    let mut prompt = payload("Reviewer handoff");
+    prompt.insert("origin".to_string(), json!("agent"));
+    let entry = harness.enqueue_payload("cm-agent-origin", prompt);
+    let outcome = harness
+        .runner
+        .run_prompt(entry, harness.context())
+        .await
+        .expect("run prompt");
+    assert_eq!(outcome, PromptQueueRunOutcome::success());
+
+    let user_event = harness
+        .events_of("user")
+        .into_iter()
+        .next()
+        .expect("user event");
+    let live_kind = user_event
+        .get("kind")
+        .and_then(Value::as_str)
+        .expect("live kind");
+    assert!(live_kind.contains("origin=agent"), "kind={live_kind}");
+    let history_kind = harness
+        .history()
+        .into_iter()
+        .find(|entry| entry.role == "user")
+        .and_then(|entry| entry.kind)
+        .expect("history kind");
+    assert!(history_kind.contains("origin=agent"), "kind={history_kind}");
+    harness.drain().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runs_scheduler_prompts_with_scheduler_owner_credentials() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let harness = Harness::start_with_wire(

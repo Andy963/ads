@@ -16,7 +16,7 @@ Add nullable `superseded_at` and `superseded_by_job_id` columns to `action_jobs`
 
 Supersession is a separate lifecycle dimension, not a new `status` value. Terminal old jobs keep their status and gain the supersession marker. Active old jobs become `cancelled` and receive the marker. The new job id is stored in `superseded_by_job_id`.
 
-Superseded jobs are excluded from queue selection, atomic claim, and interrupted-job recovery. A review that is superseded while running checks the marker before publishing its verdict; it records a superseded message in the Actions lane but writes no Issue comment and emits no `review_verdict_ready` event.
+Superseded jobs are excluded from queue selection, atomic claim, and interrupted-job recovery. A review that is superseded while running checks the marker before publishing its verdict; it records a superseded message in the Actions lane but writes no Issue comment and creates no Reviewer-to-Acopilot agent message.
 
 ## Consequences
 

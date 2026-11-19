@@ -14,6 +14,7 @@ use crate::types::{ResolveReviewRequest, ResolvedReview, ReviewError, TargetReso
 const ACTIONS_BASE_BRANCH: &str = "dev";
 const DEFAULT_CMD_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_COMMAND_OUTPUT_CHARS: usize = 20_000;
+const GH_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(500), Duration::from_secs(2)];
 
 pub fn parse_acceptance_criteria(body: &str) -> Vec<String> {
     let header = match Regex::new(r"(?im)^#{2,}\s+Acceptance Criteria\s*$") {
@@ -141,6 +142,59 @@ where
             .skip(length - MAX_COMMAND_OUTPUT_CHARS)
             .collect::<Vec<_>>(),
     )
+}
+
+async fn run_gh_cmd(args: &[&str], cwd: &Path) -> Result<(i32, String, String), ReviewError> {
+    let attempts = GH_RETRY_DELAYS.len() + 1;
+    let mut last_result = None;
+    for (attempt, delay) in GH_RETRY_DELAYS
+        .iter()
+        .copied()
+        .chain(std::iter::once(Duration::ZERO))
+        .enumerate()
+    {
+        let result = run_cmd("gh", args, cwd, DEFAULT_CMD_TIMEOUT).await;
+        let retryable = match &result {
+            Ok((code, _, stderr)) => *code != 0 && is_retryable_github_failure(stderr),
+            Err(error) => is_retryable_github_failure(&error.to_string()),
+        };
+        if !retryable || attempt + 1 == attempts {
+            return result;
+        }
+        last_result = Some(result);
+        tokio::time::sleep(delay).await;
+    }
+    last_result.unwrap_or_else(|| {
+        Err(ReviewError::Other(
+            "GitHub command retry loop ended without a result".to_string(),
+        ))
+    })
+}
+
+fn is_retryable_github_failure(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    [
+        "tls handshake timeout",
+        "i/o timeout",
+        "context deadline exceeded",
+        "timeout awaiting response",
+        "connection reset",
+        "connection refused",
+        "network is unreachable",
+        "temporary failure in name resolution",
+        "could not resolve host",
+        "no such host",
+        "unexpected eof",
+        "stream error",
+        "http 502",
+        "http 503",
+        "http 504",
+        "bad gateway",
+        "service unavailable",
+        "gateway timeout",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
 }
 
 async fn terminate_process_group(child: &mut tokio::process::Child, pid: Option<u32>) {
@@ -282,8 +336,7 @@ pub async fn resolve_interactive_target(
         ]
     };
 
-    let (pr_code, pr_stdout, pr_stderr) =
-        run_cmd("gh", &pr_args, repo_path, DEFAULT_CMD_TIMEOUT).await?;
+    let (pr_code, pr_stdout, pr_stderr) = run_gh_cmd(&pr_args, repo_path).await?;
     if pr_code != 0 {
         let msg = if pr_stderr.is_empty() {
             "gh command failed"
@@ -346,8 +399,7 @@ pub async fn resolve_interactive_target(
         )));
     }
 
-    let (open_prs_code, open_prs_stdout, open_prs_stderr) = run_cmd(
-        "gh",
+    let (open_prs_code, open_prs_stdout, open_prs_stderr) = run_gh_cmd(
         &[
             "pr",
             "list",
@@ -359,7 +411,6 @@ pub async fn resolve_interactive_target(
             "number,headRefName",
         ],
         repo_path,
-        DEFAULT_CMD_TIMEOUT,
     )
     .await?;
     if open_prs_code != 0 {
@@ -399,8 +450,7 @@ pub async fn resolve_interactive_target(
         )));
     }
 
-    let (issue_code, issue_stdout, issue_stderr) = run_cmd(
-        "gh",
+    let (issue_code, issue_stdout, issue_stderr) = run_gh_cmd(
         &[
             "issue",
             "view",
@@ -409,7 +459,6 @@ pub async fn resolve_interactive_target(
             "number,title,body,state",
         ],
         repo_path,
-        DEFAULT_CMD_TIMEOUT,
     )
     .await?;
     if issue_code != 0 {
@@ -584,5 +633,18 @@ mod tests {
             error.to_string(),
             "Interactive command 'sh' timed out after 100ms."
         );
+    }
+
+    #[test]
+    fn classifies_only_transient_github_failures_as_retryable() {
+        assert!(is_retryable_github_failure(
+            r#"Post "https://api.github.com/graphql": net/http: TLS handshake timeout"#
+        ));
+        assert!(is_retryable_github_failure("HTTP 503: Service Unavailable"));
+        assert!(is_retryable_github_failure("dial tcp: i/o timeout"));
+        assert!(!is_retryable_github_failure("HTTP 401: Bad credentials"));
+        assert!(!is_retryable_github_failure(
+            "no pull requests found for branch"
+        ));
     }
 }

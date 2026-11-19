@@ -25,6 +25,7 @@ fn opens_state_database_at_the_contract_version() {
         "web_users",
         "web_sessions",
         "action_jobs",
+        "agent_messages",
         "sync_events",
         "native_transcript_turns",
         "web_push_subscriptions",
@@ -71,6 +72,269 @@ fn opens_workspace_database_at_the_contract_version() {
             .expect("table count");
         assert_eq!(exists, 1, "missing workspace table {table}");
     }
+}
+
+#[test]
+fn migrates_state_42_to_agent_message_store() {
+    let directory = tempdir().expect("temp dir");
+    let path = directory.path().join("state.db");
+    StateDb::open(&path).expect("state db");
+    let connection = Connection::open(&path).expect("connection");
+    connection
+        .execute_batch(
+            "DROP TABLE agent_messages;
+             UPDATE schema_version SET version = 42 WHERE id = 1;",
+        )
+        .expect("downgrade fixture");
+    drop(connection);
+
+    let db = StateDb::open(&path).expect("migrated state db");
+    let connection = db.connect().expect("connection");
+    let version: i64 = connection
+        .query_row(
+            "SELECT version FROM schema_version WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("version");
+    assert_eq!(version, STATE_SCHEMA_VERSION);
+    let tables: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'agent_messages'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("agent message table");
+    assert_eq!(tables, 1);
+    let indexes: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'index' AND name LIKE 'idx_agent_messages_%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("agent message indexes");
+    assert_eq!(indexes, 3);
+}
+
+#[test]
+fn migrates_state_47_by_retiring_legacy_review_wakes() {
+    let directory = tempdir().expect("temp dir");
+    let path = directory.path().join("state.db");
+    StateDb::open(&path).expect("state db");
+    let connection = Connection::open(&path).expect("connection");
+    connection
+        .execute(
+            "INSERT INTO action_jobs
+               (id, project_id, job_kind, issue_id, issue_title, status, created_at, updated_at,
+                requires_agent_handoff, agent_handoff_ready)
+             VALUES ('error-review', 'project-1', 'pull_request_review', 319, 'Error Review',
+                     'failed', 1, 1, 1, 0)",
+            [],
+        )
+        .expect("error review");
+    connection
+        .execute(
+            "INSERT INTO action_jobs
+               (id, project_id, job_kind, issue_id, issue_title, status, created_at, updated_at,
+                requires_agent_handoff, agent_handoff_ready)
+             VALUES ('completed-review', 'project-1', 'pull_request_review', 7, 'Completed',
+                     'completed', 1, 1, 1, 1)",
+            [],
+        )
+        .expect("completed review");
+    connection
+        .execute(
+            "INSERT INTO action_jobs
+               (id, project_id, job_kind, issue_id, issue_title, status, created_at, updated_at,
+                requires_agent_handoff, agent_handoff_ready)
+             VALUES ('consumed-review', 'project-1', 'pull_request_review', 7, 'Consumed',
+                     'completed', 1, 1, 1, 0)",
+            [],
+        )
+        .expect("consumed review");
+    connection
+        .execute(
+            "INSERT INTO action_jobs
+               (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                requires_agent_handoff, agent_handoff_ready)
+             VALUES ('active-review', 'project-1', 'pull_request_review', 'Active',
+                     'queued', 2, 2, 1, 0)",
+            [],
+        )
+        .expect("active review");
+    for (id, payload, status) in [
+        (
+            "legacy-review-wake",
+            r#"{"text":"Read the newest ads:review-verdict comment. Job consumed-review.","origin":"system"}"#,
+            "queued",
+        ),
+        (
+            "legacy-error-wake",
+            r#"{"text":"Issue #319 的 PR 评审已出结论：ERROR。请先阅读该 Issue 最新的 ads:review-verdict comment（按 head/base 匹配当前 PR，忽略旧结论），然后据此处理。PASS 征求用户交付授权；REJECT 按 Findings 返工后重新 review_action；INCOMPLETE 或 ERROR 先按 Summary 恢复前置条件再重新派审。Job error-review。","origin":"system"}"#,
+            "failed",
+        ),
+        (
+            "unmatched-legacy-wake",
+            r#"{"text":"Read the newest ads:review-verdict comment. Job nonexistent-job.","origin":"system"}"#,
+            "queued",
+        ),
+        (
+            "ordinary-system-message",
+            r#"{"text":"ordinary system message","origin":"system"}"#,
+            "queued",
+        ),
+        (
+            "user-message",
+            r#"{"text":"user message","origin":"user"}"#,
+            "failed",
+        ),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO prompt_queue
+                   (client_message_id, auth_user_id, user_id, session_id, chat_session_id,
+                    history_key, logical_history_key, lane_namespace, lane_generation,
+                    workspace_root, payload_json, payload_hash, status, attempts,
+                    created_at, updated_at)
+                 VALUES (?1, 'user-1', 1, 'project-1', 'acopilot',
+                         'user-1::project-1::acopilot', 'user-1::project-1::acopilot',
+                         'web-acopilot', 1, '/repo', ?2, 'hash', ?3, 0, 1, 1)",
+                params![id, payload, status],
+            )
+            .expect("prompt queue fixture");
+    }
+    connection
+        .execute("UPDATE schema_version SET version = 47 WHERE id = 1", [])
+        .expect("downgrade fixture");
+    drop(connection);
+
+    let db = StateDb::open(&path).expect("migrated state db");
+    let connection = db.connect().expect("connection");
+    let remaining = {
+        let mut statement = connection
+            .prepare("SELECT client_message_id FROM prompt_queue ORDER BY client_message_id")
+            .expect("prompt query");
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("prompt rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("prompt ids")
+    };
+    assert_eq!(
+        remaining,
+        vec![
+            "ordinary-system-message",
+            "unmatched-legacy-wake",
+            "user-message"
+        ]
+    );
+    let completed_flags: (i64, i64) = connection
+        .query_row(
+            "SELECT requires_agent_handoff, agent_handoff_ready
+             FROM action_jobs WHERE id = 'completed-review'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("completed review flags");
+    assert_eq!(completed_flags, (0, 0));
+    let consumed_flags: (i64, i64) = connection
+        .query_row(
+            "SELECT requires_agent_handoff, agent_handoff_ready
+             FROM action_jobs WHERE id = 'consumed-review'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("consumed review flags");
+    assert_eq!(consumed_flags, (1, 1));
+    let migrated_handoff: (String, i64, String) = connection
+        .query_row(
+            "SELECT status, issue_id, correlation_id FROM agent_messages
+             WHERE message_id = 'review-verdict:consumed-review'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("migrated legacy handoff");
+    assert_eq!(migrated_handoff.0, "pending");
+    assert_eq!(migrated_handoff.1, 7);
+    assert_eq!(migrated_handoff.2, "consumed-review");
+    let error_handoff_payload: String = connection
+        .query_row(
+            "SELECT payload_json FROM agent_messages
+             WHERE message_id = 'review-verdict:error-review'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("migrated error handoff");
+    let error_payload: serde_json::Value =
+        serde_json::from_str(&error_handoff_payload).expect("payload json");
+    assert_eq!(error_payload["reviewStatus"], "ERROR");
+    let unmatched_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM agent_messages WHERE message_id LIKE '%nonexistent%' OR correlation_id LIKE '%unmatched%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("unmatched count");
+    assert_eq!(unmatched_count, 0);
+    let unmatched_status: (String, Option<String>) = connection
+        .query_row(
+            "SELECT status, last_error FROM prompt_queue
+             WHERE client_message_id = 'unmatched-legacy-wake'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("unmatched legacy wake");
+    assert_eq!(unmatched_status.0, "failed");
+    assert_eq!(
+        unmatched_status.1.as_deref(),
+        Some("Legacy review wake could not be matched to an action job during migration")
+    );
+    let active_required: i64 = connection
+        .query_row(
+            "SELECT requires_agent_handoff FROM action_jobs WHERE id = 'active-review'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("active review flag");
+    assert_eq!(active_required, 1);
+    let handoff_cutover: String = connection
+        .query_row(
+            "SELECT value FROM kv_state
+             WHERE namespace = 'agent_messages' AND key = 'review_handoff_cutover_at'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("review handoff cutover");
+    assert!(handoff_cutover.parse::<i64>().expect("cutover timestamp") > 1);
+}
+
+#[test]
+fn checked_in_state_contract_matches_the_runtime_version() {
+    let directory = tempdir().expect("temp dir");
+    let path = directory.path().join("state.db");
+    StateDb::open(&path).expect("state db");
+    let connection = Connection::open(&path).expect("connection");
+    let contract: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master
+             WHERE type = 'table' AND name = 'agent_messages'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("agent message contract");
+    assert!(contract.contains("transition_revision"));
+    let contract_sql = include_str!("../../../contracts/sqlite/state.sql");
+    assert!(
+        contract_sql.contains(&format!("-- schema_version: {STATE_SCHEMA_VERSION}")),
+        "checked-in state contract must match STATE_SCHEMA_VERSION"
+    );
+    let manifest = include_str!("../../../contracts/sqlite/manifest.json");
+    assert!(
+        manifest.contains(&format!("\"schema_version\": {STATE_SCHEMA_VERSION}")),
+        "checked-in manifest must match STATE_SCHEMA_VERSION"
+    );
 }
 
 #[test]
@@ -1157,6 +1421,14 @@ fn migrates_state_29_through_42() {
                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
              );
              INSERT INTO schema_version (id, version) VALUES (1, 29);
+
+             CREATE TABLE kv_state (
+               namespace TEXT NOT NULL,
+               key TEXT NOT NULL,
+               value TEXT NOT NULL,
+               updated_at INTEGER NOT NULL,
+               PRIMARY KEY(namespace, key)
+             );
 
              CREATE TABLE role_profiles (
                id TEXT PRIMARY KEY,

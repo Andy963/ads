@@ -17,6 +17,7 @@ use tokio::sync::{Mutex, Notify, oneshot};
 mod agent;
 mod daemon_registry;
 mod prompt_runner;
+mod provider_injection;
 
 pub use agent::{
     ActionToolFuture, AgentActionTools, AgentError, AgentEvent, AgentInputPart, AgentRunResult,

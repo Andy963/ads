@@ -21,7 +21,11 @@ pub struct ReviewDispatchRequest {
     pub pr_number: Option<i64>,
     pub lane_generation: i64,
     pub chat_session_id: Option<String>,
+    pub automatic: bool,
 }
+
+const AUTOMATIC_REVIEW_FAILURE_WINDOW_MS: i64 = 15 * 60 * 1000;
+const AUTOMATIC_REVIEW_FAILURE_LIMIT: usize = 2;
 
 pub fn issue_id_from_branch(branch: Option<&str>) -> Option<i64> {
     let branch = branch.unwrap_or("").trim();
@@ -73,8 +77,9 @@ pub fn dispatch_review_job(
         )
     });
 
-    let existing = list_action_jobs(&connection, &project_id, None, Some(&auth_user_id))?
-        .into_iter()
+    let jobs = list_action_jobs(&connection, &project_id, None, Some(&auth_user_id))?;
+    let existing = jobs
+        .iter()
         .find(|job| {
             job.job_kind == ActionJobKind::PullRequestReview
                 && job.branch.as_deref().unwrap_or("") == branch
@@ -86,9 +91,29 @@ pub fn dispatch_review_job(
                         | ActionJobStatus::Verifying
                         | ActionJobStatus::Reviewing
                 )
-        });
+        })
+        .cloned();
     if let Some(job) = existing {
         return Ok(review_queue_ack(job));
+    }
+
+    if request.automatic && !branch.is_empty() {
+        let cutoff = now - AUTOMATIC_REVIEW_FAILURE_WINDOW_MS;
+        let consecutive_failures = jobs
+            .iter()
+            .filter(|job| {
+                job.job_kind == ActionJobKind::PullRequestReview
+                    && job.branch.as_deref().unwrap_or("") == branch
+                    && job.superseded_at.is_none()
+                    && job.created_at >= cutoff
+            })
+            .take_while(|job| job.status == ActionJobStatus::Failed)
+            .count();
+        if consecutive_failures >= AUTOMATIC_REVIEW_FAILURE_LIMIT {
+            return Err(ReviewError::Conflict(format!(
+                "Automatic review retry paused after {consecutive_failures} consecutive operational failures for branch '{branch}' within 15 minutes. Fix the upstream failure and retry the review explicitly."
+            )));
+        }
     }
 
     let job = create_action_job(
@@ -97,6 +122,7 @@ pub fn dispatch_review_job(
             id: Uuid::new_v4().to_string(),
             project_id,
             lane_generation: Some(lane_generation),
+            acopilot_lane_generation: request.lane_generation.max(1),
             job_kind: ActionJobKind::PullRequestReview,
             issue_id: issue_id_from_branch(Some(&branch)).unwrap_or(0),
             issue_title: String::new(),

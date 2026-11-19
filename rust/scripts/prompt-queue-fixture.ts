@@ -1,9 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(scriptDir, "../..");
+import { legacyModulePath } from "./legacy-module-path.ts";
 
 type Mode = "create" | "verify";
 
@@ -15,7 +13,7 @@ function assert(condition: unknown, message: string): asserts condition {
 
 async function openState(dbPath: string) {
   process.env.ADS_STATE_DB_PATH = dbPath;
-  const { getStateDatabase } = await import(path.join(root, "server/state/database.ts"));
+  const { getStateDatabase } = await import(legacyModulePath("server/state/database.ts"));
   return getStateDatabase(dbPath);
 }
 
@@ -33,7 +31,7 @@ function lane() {
 
 async function create(dbPath: string) {
   const { createPromptQueueStore } = await import(
-    path.join(root, "server/state/promptQueueStore.ts")
+    legacyModulePath("server/state/promptQueueStore.ts")
   );
   const store = createPromptQueueStore(await openState(dbPath));
   store.enqueue({
@@ -57,7 +55,7 @@ async function create(dbPath: string) {
 
 async function verify(dbPath: string) {
   const { createPromptQueueStore } = await import(
-    path.join(root, "server/state/promptQueueStore.ts")
+    legacyModulePath("server/state/promptQueueStore.ts")
   );
   const store = createPromptQueueStore(await openState(dbPath));
   const entries = store.listLogicalLane(lane());
@@ -112,4 +110,7 @@ async function main() {
   throw new Error(`unknown mode: ${mode}`);
 }
 
-await main();
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

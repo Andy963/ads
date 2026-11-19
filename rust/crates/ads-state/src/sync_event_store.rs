@@ -103,6 +103,19 @@ impl SyncEventStore {
 
         let transaction = connection.unchecked_transaction()?;
         if let Some(event_id) = coalesced_event_id {
+            let current_revision: Option<i64> = transaction
+                .query_row(
+                    "SELECT revision FROM sync_events
+                     WHERE namespace = ?1 AND lane_key = ?2 AND event_type = ?3
+                       AND event_id = ?4 ORDER BY seq DESC LIMIT 1",
+                    params![namespace, lane_key, event_type, event_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if current_revision.is_some_and(|current| current > revision) {
+                transaction.commit()?;
+                return Ok(None);
+            }
             transaction.execute(
                 "DELETE FROM sync_events
                  WHERE namespace = ?1 AND lane_key = ?2 AND event_type = ?3 AND event_id = ?4",

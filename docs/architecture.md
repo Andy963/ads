@@ -69,7 +69,7 @@ Web 与独立 Channel Connector 通过 Core WebSocket 协议使用各自隔离�
 - **Actions Reviewer 队列**：`review_action` 是常驻 ADS 内置工具，每个会话的模型工具列表都包含它。服务端从已认证会话解析项目、工作区与用户身份；缺少该上下文时调用返回明确错误。派发只写入队列，分支、PR、Issue 与 commit 的匹配检查在队首执行时完成。
   `review_action` 将固定的 PR、Issue、ADR 与 base/head 快照写入持久队列；验证和只读 Reviewer 在 Actions lane
   按项目串行运行。任务结束后裁决写成 Issue comment（`<!-- ads:review-verdict -->`），并向 Acopilot 泳道发送
-  持久事件 `review_verdict_ready` 唤醒后续处理；工具调用本身立即返回，不等裁决。队列不执行 Developer，
+  服务端把裁决作为持久 `agent_message` 从 Reviewer 交付给 Acopilot，并以独立 inbox、lease 和可见 handoff 卡处理；工具调用本身立即返回，不等裁决。Agent message 不进入用户 `prompt_queue`。队列不执行 Developer，
   PASS 也不会触发合并。详见 [ADR 0048](adr/0048-two-role-architecture-with-actions-review-queue.md) 与
   [ADR 0050](adr/0050-review-verdicts-published-through-issue.md)。
 - **上游重试与自愈 (Upstream Retry & Healing)**：

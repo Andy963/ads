@@ -9,7 +9,7 @@
 - 分支：`codex/rust-backend`
 - 基线：`21aeeee1`（`dev`）
 - Rust workspace：`rust/`
-- 当前阶段：合同基线、鉴权、project/model/provider HTTP、图片附件、skill 命令、WebSocket bootstrap/replay/history/reset/session-switch/prompt-queue/command/多 lane 复用、Codex App-Server stdio JSON-RPC/daemon 基础，以及 Native Runtime 的 Chat Completions / Responses 多轮执行闭环、shell/file 工具调用、terminal continuation、execution compaction、token calibration、CfMem middleware 与瞬时上游重试
+- 当前阶段：合同基线、鉴权、project/model/provider HTTP、图片附件、skill 命令、WebSocket bootstrap/replay/history/reset/session-switch/prompt-queue/command/多 lane 复用、Codex App-Server stdio JSON-RPC/daemon、Rust Telegram connector，以及 Native Runtime 的 Chat Completions / Responses 多轮执行闭环、shell/file 工具调用、terminal continuation、execution compaction、token calibration、CfMem middleware 与瞬时上游重试
 - Actions Runtime：`review_action` 真实入队、review queue lease/自动处理、
   verification/Reviewer 执行、related-context AST 提取、issue verdict 发布、
   durable Actions 消息与 Acopilot wake
@@ -568,6 +568,16 @@ conformance 约 4–6 分钟；没有出现链接 OOM。瓶颈是单核编译和
   executor。
 - Codex thread id 持久化到 `kv_state/web_codex_thread`；新 runner 进程会以
   tool-enabled resume 恢复同一 lane，不再每次启动都新建 thread。
+- Codex turn 参数不再直接使用 ADS model config id。Rust runner 先解析
+  `model_configs.model_id`，校验 attached provider 与 owner-scoped encrypted
+  credential，再以 `model_providers.ads-<slug>.*` 和 `model_provider` 全局参数
+  启动 app-server；API key 仅进入子进程 `ADS_CODEX_PROVIDER_API_KEY` 环境。
+- `ads-telegram` 已从 Node 移植为 Rust workspace binary。它复用 Core REST/WS
+  合同，按 Telegram chat 隔离会话，支持命令、模型 inline keyboard、通知、
+  限流、thinking 状态、MarkdownV2 分片与 plain-text fallback、idle notice 和
+  maximum duration。fake Telegram API + fake Core WebSocket 已覆盖 prompt、模型
+  菜单和每 chat 协议身份；真实部署另验证了 Telegram `getMe`、出站消息、Core
+  WebSocket 连接与服务稳定性。
 - Codex scheduler executor 跟随 runtime backend 选择；WebSocket 图片 data URI
   按 25 MB/MIME/扩展名规则写入 workspace 临时目录，prompt 完成或失败后清理。
 - 同一 state 目录已完成 Codex→Native→Codex 本地切换演练：Native 正常接管，切回

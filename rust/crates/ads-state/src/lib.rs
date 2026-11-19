@@ -1,4 +1,5 @@
 mod action_job_store;
+mod agent_message_store;
 mod attachment_store;
 mod auth_store;
 mod cwd_store;
@@ -35,6 +36,10 @@ pub use action_job_store::{
     claim_queued_review_job, create_action_job, fail_interrupted_review_jobs, get_action_job,
     list_action_jobs, supersede_review_jobs_for_new_head, update_action_job_pinned_target,
     update_action_job_status,
+};
+pub use agent_message_store::{
+    AgentMessageRecord, AgentMessageStatus, AgentMessageStore, EnqueueAgentMessageResult,
+    NewAgentMessage, ensure_agent_message_tables,
 };
 pub use attachment_store::{AttachmentStore, CreateImageAttachment};
 pub use auth_store::{
@@ -147,7 +152,7 @@ CREATE TABLE IF NOT EXISTS web_sessions (
 );
 "#;
 
-pub const STATE_SCHEMA_VERSION: i64 = 42;
+pub const STATE_SCHEMA_VERSION: i64 = 48;
 pub const WORKSPACE_SCHEMA_VERSION: i64 = 29;
 pub const SESSION_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 

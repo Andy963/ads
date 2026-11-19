@@ -111,9 +111,15 @@ pub struct AcopilotWake {
     pub repo_path: PathBuf,
     pub auth_user_id: String,
     pub issue_id: i64,
+    pub issue_title: String,
+    pub issue_url: Option<String>,
     pub pr_number: Option<i64>,
+    pub branch: Option<String>,
+    pub base_sha: Option<String>,
     pub status: IssueVerdictStatus,
     pub job_id: String,
+    pub source_created_at: i64,
+    pub lane_generation: i64,
     pub head_sha: Option<String>,
 }
 

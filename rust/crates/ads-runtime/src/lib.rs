@@ -287,6 +287,42 @@ impl PromptQueueService {
             .any(|entry| entry.history_key == history_key)
     }
 
+    /// Reserve a lane for a server-owned agent turn. User prompts for the same
+    /// lane remain durable but cannot start until the reservation is released.
+    pub fn try_reserve_lane(&self, lane: &PromptQueueLane) -> bool {
+        if !self.is_owner() {
+            return false;
+        }
+        let lane_key = lane_key_of(lane);
+        let mut tasks = lock(&self.lane_tasks);
+        if tasks.contains_key(&lane_key) {
+            return false;
+        }
+        tasks.insert(lane_key, None);
+        true
+    }
+
+    pub fn release_reserved_lane(self: &Arc<Self>, lane: &PromptQueueLane) {
+        let lane_key = lane_key_of(lane);
+        {
+            let mut tasks = lock(&self.lane_tasks);
+            tasks.remove(&lane_key);
+        }
+        if !self.is_owner() {
+            return;
+        }
+        let should_reschedule =
+            self.with_store(|store| store.list_recoverable())
+                .is_ok_and(|entries| {
+                    entries
+                        .iter()
+                        .any(|entry| entry_lane_key(entry) == lane_key)
+                });
+        if should_reschedule {
+            self.schedule_lane(lane_key);
+        }
+    }
+
     pub fn is_owner(&self) -> bool {
         self.started.load(Ordering::SeqCst)
             && !self.stopped.load(Ordering::SeqCst)
@@ -341,10 +377,16 @@ impl PromptQueueService {
                         return;
                     }
                     Err(error) => {
-                        service.lose_ownership(&error.to_string());
-                        return;
+                        // SQLite contention is transient. Keep the renewal loop alive so the
+                        // same worker can extend or reacquire its lease once the write lock
+                        // clears; only an explicit competing owner ends this service.
+                        service.report_error(format!(
+                            "Prompt queue ownership renewal delayed: {error}"
+                        ));
                     }
                 }
+                // A renewal loop that regains ownership must resume queued work.
+                service.reschedule_recoverable_lanes();
             }
         });
         *lock(&self.ownership_timer) = Some(handle);
@@ -389,6 +431,19 @@ impl PromptQueueService {
                 });
         if should_reschedule {
             self.schedule_lane(lane_key.to_string());
+        }
+    }
+
+    fn reschedule_recoverable_lanes(self: &Arc<Self>) {
+        let Ok(entries) = self.with_store(|store| store.list_recoverable()) else {
+            return;
+        };
+        let mut lanes = HashSet::new();
+        for entry in entries {
+            lanes.insert(entry_lane_key(&entry));
+        }
+        for lane_key in lanes {
+            self.schedule_lane(lane_key);
         }
     }
 
