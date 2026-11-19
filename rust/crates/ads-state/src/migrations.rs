@@ -2224,7 +2224,7 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<Vec<Strin
     let mut migrated_client_message_ids = Vec::new();
     let rows = {
         let mut statement = connection.prepare(
-            "SELECT client_message_id, auth_user_id, user_id, chat_session_id,
+            "SELECT client_message_id, auth_user_id, user_id, session_id, chat_session_id,
                     history_key, logical_history_key, lane_namespace, lane_generation,
                     workspace_root, payload_json, status, created_at, updated_at
              FROM prompt_queue
@@ -2238,20 +2238,22 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<Vec<Strin
                     client_message_id: row.get(0)?,
                     auth_user_id: row.get(1)?,
                     user_id: row.get(2)?,
-                    chat_session_id: row.get(3)?,
-                    history_key: row.get(4)?,
-                    logical_history_key: row.get(5)?,
-                    lane_namespace: row.get(6)?,
-                    lane_generation: row.get::<_, i64>(7)?.max(1),
-                    workspace_root: row.get(8)?,
-                    payload_json: row.get(9)?,
-                    status: row.get(10)?,
-                    created_at: row.get(11)?,
-                    updated_at: row.get(12)?,
+                    session_id: row.get(3)?,
+                    chat_session_id: row.get(4)?,
+                    history_key: row.get(5)?,
+                    logical_history_key: row.get(6)?,
+                    lane_namespace: row.get(7)?,
+                    lane_generation: row.get::<_, i64>(8)?.max(1),
+                    workspace_root: row.get(9)?,
+                    payload_json: row.get(10)?,
+                    status: row.get(11)?,
+                    created_at: row.get(12)?,
+                    updated_at: row.get(13)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?
     };
+    let mut candidates = Vec::new();
     for wake in rows {
         let payload = serde_json::from_str::<JsonValue>(&wake.payload_json)
             .map_err(|e| StateError::InvalidInput(format!("malformed json: {e}")))?;
@@ -2266,20 +2268,32 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<Vec<Strin
             .and_then(|job_id| load_handoff_job(connection, job_id).transpose())
             .transpose()?;
         let Some(job) = job else {
-            connection.execute(
-                "UPDATE prompt_queue
-                 SET status = 'failed',
-                     last_error = ?1,
-                     updated_at = ?2
-                 WHERE client_message_id = ?3",
-                params![
-                    "Legacy review wake could not be matched to an action job during migration",
-                    wake.updated_at.max(1),
-                    &wake.client_message_id,
-                ],
+            quarantine_legacy_review_wake(
+                connection,
+                &wake,
+                "Legacy review wake could not be matched to an action job during migration",
             )?;
             continue;
         };
+        if !job.matches_legacy_review_wake(&wake) {
+            quarantine_legacy_review_wake(
+                connection,
+                &wake,
+                "Legacy review wake referenced an action job outside its review scope",
+            )?;
+            continue;
+        }
+        candidates.push(LegacyReviewWakeCandidate { wake, text, job });
+    }
+    candidates.sort_by(|left, right| {
+        right
+            .job
+            .created_at
+            .cmp(&left.job.created_at)
+            .then_with(|| right.job.id.cmp(&left.job.id))
+            .then_with(|| right.wake.created_at.cmp(&left.wake.created_at))
+    });
+    for LegacyReviewWakeCandidate { wake, text, job } in candidates {
         let correlation_id = job.id.clone();
         let issue_id = job
             .issue_id
@@ -2349,7 +2363,7 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<Vec<Strin
                 base_sha: job.base_sha,
                 head_sha: job.head_sha,
                 payload,
-                source_created_at: wake.created_at.max(1),
+                source_created_at: job.created_at.max(1),
                 force_superseded: false,
                 created_at: wake.created_at,
             },
@@ -2381,10 +2395,25 @@ fn migrate_legacy_review_wakes(connection: &Connection) -> StateResult<Vec<Strin
     Ok(migrated_client_message_ids)
 }
 
+fn quarantine_legacy_review_wake(
+    connection: &Connection,
+    wake: &LegacyReviewWake,
+    reason: &str,
+) -> StateResult<()> {
+    connection.execute(
+        "UPDATE prompt_queue
+         SET status = 'failed', last_error = ?1, updated_at = ?2
+         WHERE client_message_id = ?3",
+        params![reason, wake.updated_at.max(1), &wake.client_message_id],
+    )?;
+    Ok(())
+}
+
 struct LegacyReviewWake {
     client_message_id: String,
     auth_user_id: String,
     user_id: i64,
+    session_id: String,
     chat_session_id: String,
     history_key: String,
     logical_history_key: String,
@@ -2397,9 +2426,19 @@ struct LegacyReviewWake {
     updated_at: i64,
 }
 
+struct LegacyReviewWakeCandidate {
+    wake: LegacyReviewWake,
+    text: String,
+    job: LegacyHandoffJob,
+}
+
 struct LegacyHandoffJob {
     id: String,
     project_id: String,
+    job_kind: String,
+    status: String,
+    auth_user_id: Option<String>,
+    chat_session_id: Option<String>,
     issue_id: Option<i64>,
     issue_title: String,
     pr_number: Option<i64>,
@@ -2408,9 +2447,24 @@ struct LegacyHandoffJob {
     base_sha: Option<String>,
     head_sha: Option<String>,
     superseded_at: Option<i64>,
+    created_at: i64,
 }
 
 impl LegacyHandoffJob {
+    fn matches_legacy_review_wake(&self, wake: &LegacyReviewWake) -> bool {
+        self.job_kind == "pull_request_review"
+            && matches!(self.status.as_str(), "completed" | "failed")
+            && self.project_id == wake.session_id
+            && self
+                .auth_user_id
+                .as_deref()
+                .is_none_or(|owner| owner == wake.auth_user_id)
+            && self
+                .chat_session_id
+                .as_deref()
+                .is_none_or(|chat| chat == wake.chat_session_id)
+    }
+
     fn issue_url(&self, issue_id: Option<i64>) -> Option<String> {
         let issue_id = issue_id?;
         let pr_url = self.pr_url.as_deref()?.trim();
@@ -2428,22 +2482,28 @@ fn load_handoff_job(
 ) -> StateResult<Option<LegacyHandoffJob>> {
     connection
         .query_row(
-            "SELECT id, project_id, issue_id, issue_title, pr_number, branch, pr_url,
-                    base_sha, head_sha, superseded_at
+            "SELECT id, project_id, job_kind, status, auth_user_id, chat_session_id,
+                    issue_id, issue_title, pr_number, branch, pr_url, base_sha, head_sha,
+                    superseded_at, created_at
              FROM action_jobs WHERE id = ?1",
             params![job_id],
             |row| {
                 Ok(LegacyHandoffJob {
                     id: row.get(0)?,
                     project_id: row.get(1)?,
-                    issue_id: row.get(2)?,
-                    issue_title: row.get(3)?,
-                    pr_number: row.get(4)?,
-                    branch: row.get(5)?,
-                    pr_url: row.get(6)?,
-                    base_sha: row.get(7)?,
-                    head_sha: row.get(8)?,
-                    superseded_at: row.get(9)?,
+                    job_kind: row.get(2)?,
+                    status: row.get(3)?,
+                    auth_user_id: row.get(4)?,
+                    chat_session_id: row.get(5)?,
+                    issue_id: row.get(6)?,
+                    issue_title: row.get(7)?,
+                    pr_number: row.get(8)?,
+                    branch: row.get(9)?,
+                    pr_url: row.get(10)?,
+                    base_sha: row.get(11)?,
+                    head_sha: row.get(12)?,
+                    superseded_at: row.get(13)?,
+                    created_at: row.get(14)?,
                 })
             },
         )
@@ -3608,7 +3668,7 @@ mod tests {
                    history_key, logical_history_key, lane_namespace, lane_generation,
                    workspace_root, payload_json, status, created_at, updated_at
                  ) VALUES (
-                   ?1, 'user-1', 42, 'session-1', 'chat-1',
+                   ?1, 'user-1', 42, 'project-1', 'chat-1',
                    'history-1', 'logical-history-1', 'web-acopilot', 1,
                    '/repo', ?2, ?3, ?4, ?4
                  )",
@@ -3719,7 +3779,7 @@ mod tests {
             })
             .to_string(),
             "queued",
-            100,
+            300,
         );
         insert_legacy_review_wake(
             &connection,
@@ -3746,10 +3806,75 @@ mod tests {
             .expect("older handoff");
         assert_eq!(newer.status.as_str(), "pending");
         assert_eq!(older.status.as_str(), "superseded");
+        assert_eq!(newer.source_created_at, 200);
+        assert_eq!(older.source_created_at, 100);
         let remaining_wakes: i64 = connection
             .query_row("SELECT COUNT(*) FROM prompt_queue", [], |row| row.get(0))
             .expect("remaining wakes");
         assert_eq!(remaining_wakes, 0);
+    }
+
+    #[test]
+    fn quarantines_legacy_review_wakes_for_mismatched_job_scope() {
+        let connection = state_48_fixture();
+        for (job_id, update) in [
+            (
+                "job-wrong-kind",
+                "UPDATE action_jobs SET job_kind = 'github_issue' WHERE id = 'job-wrong-kind'",
+            ),
+            (
+                "job-wrong-user",
+                "UPDATE action_jobs SET auth_user_id = 'user-2' WHERE id = 'job-wrong-user'",
+            ),
+            (
+                "job-wrong-project",
+                "UPDATE action_jobs SET project_id = 'project-2' WHERE id = 'job-wrong-project'",
+            ),
+            (
+                "job-wrong-chat",
+                "UPDATE action_jobs SET chat_session_id = 'chat-2' WHERE id = 'job-wrong-chat'",
+            ),
+        ] {
+            insert_review_job(&connection, job_id);
+            connection.execute(update, []).expect("scope mutation");
+            insert_legacy_review_wake(
+                &connection,
+                &format!("legacy-{job_id}"),
+                &serde_json::json!({
+                    "origin": "system",
+                    "text": format!("ads:review-verdict. Reviewer verdict handoff. Job {job_id}. Issue #648. PR #657. Status: PASS.")
+                })
+                .to_string(),
+                "queued",
+                100,
+            );
+        }
+
+        migrate_state(&connection, 47, 48).expect("state migration");
+
+        let messages: i64 = connection
+            .query_row("SELECT COUNT(*) FROM agent_messages", [], |row| row.get(0))
+            .expect("message count");
+        assert_eq!(messages, 0);
+        for job_id in [
+            "job-wrong-kind",
+            "job-wrong-user",
+            "job-wrong-project",
+            "job-wrong-chat",
+        ] {
+            let (status, last_error): (String, Option<String>) = connection
+                .query_row(
+                    "SELECT status, last_error FROM prompt_queue WHERE client_message_id = ?1",
+                    params![format!("legacy-{job_id}")],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("quarantined wake");
+            assert_eq!(status, "failed");
+            assert_eq!(
+                last_error.as_deref(),
+                Some("Legacy review wake referenced an action job outside its review scope")
+            );
+        }
     }
 
     #[test]
