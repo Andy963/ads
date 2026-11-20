@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Ownership of generated output paths (issue #460):
+//   dist/server, dist/shared, dist/templates - legacy pre-split tsc emit, removed on migration
 //   ts-server/dist/server, ts-server/dist/shared - backend tsc emit (full build)
 //   ts-server/dist/templates                     - retired prompt templates, owned for removal
 //   dist/client               - web bundle, cleaned by Vite's emptyOutDir (never here)
@@ -19,6 +20,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const DEFAULT_OWNED_PATHS = [
+  "dist/server",
+  "dist/shared",
+  "dist/templates",
   "ts-server/dist/server",
   "ts-server/dist/shared",
   "ts-server/dist/templates",

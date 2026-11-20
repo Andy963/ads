@@ -15,9 +15,15 @@ const required = [
   "ts-server/dist/server/skills/builtin/skill-creator/SKILL.md",
   "ts-server/dist/shared/terminology.js",
 ];
+const forbidden = ["dist/server", "dist/shared", "dist/templates"];
 const missing = required.filter((relativePath) => !fs.existsSync(path.join(root, relativePath)));
 if (missing.length > 0) {
   console.error(`[verify-release-layout] Missing required release paths:\n  ${missing.join("\n  ")}`);
+  process.exit(1);
+}
+const stale = forbidden.filter((relativePath) => fs.existsSync(path.join(root, relativePath)));
+if (stale.length > 0) {
+  console.error(`[verify-release-layout] Stale pre-split paths are present:\n  ${stale.join("\n  ")}`);
   process.exit(1);
 }
 console.log(`[verify-release-layout] release layout verified at ${root}`);

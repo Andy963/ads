@@ -23,7 +23,7 @@
     "url": "https://github.com/Andy963/ads/issues"
   },
   "scripts": {
-    "clean": "node scripts/clean-build-outputs.js --root . --paths ts-server/dist/server,ts-server/dist/shared,ts-server/dist/templates",
+    "clean": "node scripts/clean-build-outputs.js --root .",
     "build": "npm run clean && npm run build:server && npm run build:web",
     "build:server": "tsc -p tsconfig.build.json && node scripts/copy-runtime-assets.js",
     "build:web": "vite build --config client/vite.config.ts",

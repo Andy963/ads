@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 function printUsage(): void {
   console.error("Usage: npm run web:reset-admin -- --username <u> --password-stdin");
   console.error("  Or:  npm run web:reset-admin -- --username <u> --password <p>");
-  console.error("  Or:  node dist/server/web/auth/resetAdminCli.js --username <u> --password-stdin");
+  console.error("  Or:  node ts-server/dist/server/web/auth/resetAdminCli.js --username <u> --password-stdin");
 }
 
 function parseFlagValue(args: string[], name: string): string | null {

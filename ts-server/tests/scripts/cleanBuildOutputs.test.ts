@@ -104,7 +104,7 @@ describe("scripts/clean-build-outputs", () => {
     fs.mkdirSync(path.join(root, ".ads"), { recursive: true });
     fs.writeFileSync(path.join(root, ".ads", "state.db"), "workspace data\n", "utf8");
 
-    const result = runClean(root, ["--paths", "dist/server,dist/shared,dist/templates"]);
+    const result = runClean(root);
     assert.equal(result.status, 0, result.stderr);
 
     assert.ok(!fs.existsSync(path.join(root, "dist", "server")), "backend output removed");

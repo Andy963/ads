@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -27,5 +28,30 @@ describe("release layout", () => {
     const compiledUtils = path.join(root, "ts-server", "dist", "server", "utils");
     assert.equal(findProjectRoot(compiledUtils), root);
     assert.equal(resolveClientDistDir(root), path.join(root, "dist", "client"));
+  });
+
+  it("rejects stale pre-split server output in the release root", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ads-release-stale-"));
+    tempDirs.push(root);
+    for (const file of [
+      "package.json",
+      "dist/client/index.html",
+      "ts-server/dist/server/cli.js",
+      "ts-server/dist/server/skills/builtin/skill-creator/SKILL.md",
+      "ts-server/dist/shared/terminology.js",
+      "dist/server/stale.js",
+    ]) {
+      const target = path.join(root, file);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, "{}\n", "utf8");
+    }
+
+    const result = spawnSync(
+      process.execPath,
+      [path.resolve(import.meta.dirname, "../../../scripts/verify-release-layout.js"), root],
+      { encoding: "utf8" },
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Stale pre-split paths are present/);
   });
 });
