@@ -149,9 +149,10 @@ describe("active project header context", () => {
     await emitWorkspaceBranch(wrapper, "dev");
 
     expect(wrapper.get('[data-testid="active-project-context"]').attributes("title")).toBe("ads dev");
+    expect(wrapper.get('[data-testid="active-project-context"]').attributes("role")).toBe("group");
     expect(wrapper.get('[data-testid="active-project-context"]').attributes("aria-label")).toBe("当前项目 ads，当前分支 dev");
-    expect(wrapper.get('[data-testid="active-project-context-name"]').text()).toBe("ads");
-    expect(wrapper.get('[data-testid="active-project-context-branch"]').text()).toBe("dev");
+    expect(wrapper.get('[data-testid="active-project-context-name"]').attributes("aria-hidden")).toBe("true");
+    expect(wrapper.get('[data-testid="active-project-context-branch"]').attributes("aria-hidden")).toBe("true");
 
     await emitWorkspaceBranch(wrapper, "feature/header-context");
 

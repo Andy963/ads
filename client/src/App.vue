@@ -1517,6 +1517,7 @@ const acopilotConnectionStatus = computed(() => {
         <div
           v-if="!isMobile || mobileDrawerSection === 'projects'"
           class="activeProjectContext"
+          role="group"
           data-testid="active-project-context"
           :title="activeProjectContextTitle"
           :aria-label="activeProjectContextAriaLabel"
@@ -1525,13 +1526,14 @@ const acopilotConnectionStatus = computed(() => {
             class="activeProjectContextName"
             data-testid="active-project-context-name"
             :title="activeProjectName"
+            aria-hidden="true"
           >{{ activeProjectName }}</span>
           <span
             v-if="activeProjectBranchLabel"
             class="activeProjectBranchBadge"
             data-testid="active-project-context-branch"
             :title="activeProjectBranchLabel"
-            :aria-label="`当前分支 ${activeProjectBranchLabel}`"
+            aria-hidden="true"
           >{{ activeProjectBranchLabel }}</span>
         </div>
         <div v-else class="mobileContextTitle" :title="mobileContextTitle">
