@@ -728,7 +728,14 @@ pub(crate) fn allowlist_from_env() -> Option<Vec<String>> {
     parse_allowlist(&raw)
 }
 
-pub(crate) fn command_has_executable(command: &str) -> bool {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShellBlock {
+    Brace,
+    If,
+    Loop,
+}
+
+pub(crate) fn command_has_executable(command: &str, cwd: &std::path::Path) -> bool {
     let command = command.trim();
     if command.is_empty() {
         return false;
@@ -738,15 +745,8 @@ pub(crate) fn command_has_executable(command: &str) -> bool {
     } else {
         vec![command.to_string()]
     };
-    let shell_words = command
-        .split(|character: char| character.is_whitespace() || ";|&(){}".contains(character))
-        .filter(|word| !word.is_empty())
-        .collect::<Vec<_>>();
-    let has_if_block = shell_words.contains(&"if") && shell_words.contains(&"fi");
-    let has_brace_block = command.contains('{') && command.contains('}');
-    let has_loop_block = shell_words.contains(&"do") && shell_words.contains(&"done");
-    let has_case_block = shell_words.contains(&"case") && shell_words.contains(&"esac");
-    !segments.is_empty()
+    let mut blocks = Vec::new();
+    let valid = !segments.is_empty()
         && segments.iter().all(|segment| {
             let Ok(tokens) = tokenize_command_line(segment) else {
                 return false;
@@ -759,43 +759,67 @@ pub(crate) fn command_has_executable(command: &str) -> bool {
             }) {
                 executable_index += 1;
             }
-            while tokens.get(executable_index).is_some_and(|token| {
-                matches!(
-                    command_basename(token).as_str(),
-                    "!" | "{" | "do" | "elif" | "else" | "if" | "then" | "time" | "until" | "while"
-                )
-            }) {
-                executable_index += 1;
-            }
-            let Some(executable) = tokens.get(executable_index) else {
-                return tokens.first().is_some_and(|token| {
-                    match command_basename(token).as_str() {
-                        "}" => has_brace_block,
-                        "fi" => has_if_block,
-                        "done" => has_loop_block,
-                        "esac" => has_case_block,
-                        _ => false,
+            loop {
+                let Some(token) = tokens.get(executable_index) else {
+                    return false;
+                };
+                match command_basename(token).as_str() {
+                    "fi" => {
+                        return executable_index + 1 == tokens.len()
+                            && blocks.pop() == Some(ShellBlock::If);
                     }
-                });
-            };
-            let normalized = command_basename(executable);
-            if tokens.len() == 1 {
-                match normalized.as_str() {
-                    "}" if has_brace_block => return true,
-                    "fi" if has_if_block => return true,
-                    "done" if has_loop_block => return true,
-                    "esac" if has_case_block => return true,
-                    _ => {}
+                    "}" => {
+                        return executable_index + 1 == tokens.len()
+                            && blocks.pop() == Some(ShellBlock::Brace);
+                    }
+                    "done" => {
+                        return executable_index + 1 == tokens.len()
+                            && blocks.pop() == Some(ShellBlock::Loop);
+                    }
+                    "if" => {
+                        blocks.push(ShellBlock::If);
+                        executable_index += 1;
+                    }
+                    "{" => {
+                        blocks.push(ShellBlock::Brace);
+                        executable_index += 1;
+                    }
+                    "while" | "until" => {
+                        blocks.push(ShellBlock::Loop);
+                        executable_index += 1;
+                    }
+                    "for" => {
+                        blocks.push(ShellBlock::Loop);
+                        return tokens.iter().any(|token| command_basename(token) == "in");
+                    }
+                    "then" | "else" | "elif" if blocks.last() == Some(&ShellBlock::If) => {
+                        executable_index += 1;
+                    }
+                    "do" if blocks.last() == Some(&ShellBlock::Loop) => {
+                        executable_index += 1;
+                    }
+                    "!" | "time" => {
+                        executable_index += 1;
+                    }
+                    _ => {
+                        return SHELL_BUILTINS.contains(&command_basename(token).as_str())
+                            || executable_exists(token, cwd);
+                    }
                 }
             }
-            SHELL_BUILTINS.contains(&normalized.as_str()) || executable_exists(executable)
-        })
+        });
+    valid && blocks.is_empty()
 }
 
-fn executable_exists(command: &str) -> bool {
+fn executable_exists(command: &str, cwd: &std::path::Path) -> bool {
     let path = std::path::Path::new(command);
     if path.components().count() > 1 {
-        return is_executable_file(path);
+        let resolved = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            cwd.join(path)
+        };
+        return is_executable_file(&resolved);
     }
     std::env::var_os("PATH").is_some_and(|paths| {
         std::env::split_paths(&paths).any(|directory| is_executable_file(&directory.join(command)))
@@ -1125,22 +1149,41 @@ mod tests {
 
     #[test]
     fn requires_a_real_executable_or_shell_construct() {
-        assert!(!command_has_executable("Please inspect the logs"));
-        assert!(!command_has_executable("{ Please inspect the logs; }"));
-        assert!(!command_has_executable("for the logs"));
-        assert!(!command_has_executable("case the logs"));
-        assert!(!command_has_executable("function"));
-        assert!(!command_has_executable("in"));
-        assert!(!command_has_executable("{ echo ok; } Please inspect"));
-        assert!(!command_has_executable("done"));
-        assert!(!command_has_executable("fi"));
+        let directory = tempdir().expect("tempdir");
+        let valid = |command: &str| command_has_executable(command, directory.path());
+        assert!(!valid("Please inspect the logs"));
+        assert!(!valid("{ Please inspect the logs; }"));
+        assert!(!valid("for the logs"));
+        assert!(!valid("case the logs"));
+        assert!(!valid("function"));
+        assert!(!valid("in"));
+        assert!(!valid("{ echo ok; } Please inspect"));
+        assert!(!valid("fi; echo if"));
+        assert!(!valid("}; echo {"));
+        assert!(!valid("done"));
+        assert!(!valid("fi"));
+        assert!(!valid("definitely-not-an-installed-command"));
+        assert!(valid("[ -f file ]"));
+        assert!(valid("{ echo ok; }"));
+        assert!(valid("if [ -f file ]; then echo ok; fi"));
+        assert!(valid("printf 'x' | cat"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolves_relative_executables_against_the_command_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().expect("tempdir");
+        let script = directory.path().join("script.sh");
+        std::fs::write(&script, "#!/bin/sh\n").expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("permissions");
+        assert!(command_has_executable("./script.sh", directory.path()));
         assert!(!command_has_executable(
-            "definitely-not-an-installed-command"
+            "./script.sh",
+            std::path::Path::new("/")
         ));
-        assert!(command_has_executable("[ -f file ]"));
-        assert!(command_has_executable("{ echo ok; }"));
-        assert!(command_has_executable("if [ -f file ]; then echo ok; fi"));
-        assert!(command_has_executable("printf 'x' | cat"));
     }
 
     #[test]

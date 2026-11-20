@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -502,9 +503,9 @@ impl NativePromptRunner {
                 let mut loop_warnings = Vec::new();
                 for call in completion.tool_calls {
                     cancellation.check()?;
-                    let started_command = command_start(&call);
+                    let started_command = command_start(&call, Path::new(&entry.workspace_root));
                     if let Some(command) = started_command.as_ref() {
-                        emit_command_event(&context, command);
+                        emit_command_event(&context, command, Path::new(&entry.workspace_root));
                     }
                     let result = if loop_pause.is_some() {
                         NativeToolExecutionResult {
@@ -558,7 +559,10 @@ impl NativePromptRunner {
                         .command
                         .as_ref()
                         .filter(|command| command.status != "in_progress")
-                        .filter(|command| command_frame_text(&command.command).is_some())
+                        .filter(|command| {
+                            command_frame_text(&command.command, Path::new(&entry.workspace_root))
+                                .is_some()
+                        })
                     {
                         new_entries.push(command_entry(call.id.as_str(), command));
                     }
@@ -581,7 +585,7 @@ impl NativePromptRunner {
                         usage.as_ref(),
                     )?;
                     if let Some(command) = result.command.as_ref() {
-                        emit_command_event(&context, command);
+                        emit_command_event(&context, command, Path::new(&entry.workspace_root));
                     }
                 }
                 if let Some(reason) = loop_pause {
@@ -1286,13 +1290,13 @@ impl PromptQueueRunner for NativePromptRunner {
     }
 }
 
-fn command_start(call: &crate::NativeToolCall) -> Option<CommandArtifact> {
+fn command_start(call: &crate::NativeToolCall, cwd: &std::path::Path) -> Option<CommandArtifact> {
     if call.function.name != "exec_command" {
         return None;
     }
     let arguments: Value = serde_json::from_str(&call.function.arguments).ok()?;
     let arguments = arguments.as_object()?;
-    let command = command_frame_text(arguments.get("cmd")?.as_str()?)?;
+    let command = command_frame_text(arguments.get("cmd")?.as_str()?, cwd)?;
     let args = arguments
         .get("args")
         .and_then(Value::as_array)
@@ -1312,19 +1316,23 @@ fn command_start(call: &crate::NativeToolCall) -> Option<CommandArtifact> {
     })
 }
 
-fn command_frame_text(raw: &str) -> Option<&str> {
+fn command_frame_text<'a>(raw: &'a str, cwd: &std::path::Path) -> Option<&'a str> {
     let command = raw.trim();
     if command.is_empty() || command.starts_with("```") {
         return None;
     }
-    if !crate::tools::command_has_executable(command) {
+    if !crate::tools::command_has_executable(command, cwd) {
         return None;
     }
     Some(command)
 }
 
-fn emit_command_event(context: &PromptRunContext, command: &CommandArtifact) {
-    if command_frame_text(&command.command).is_none() {
+fn emit_command_event(
+    context: &PromptRunContext,
+    command: &CommandArtifact,
+    cwd: &std::path::Path,
+) {
+    if command_frame_text(&command.command, cwd).is_none() {
         return;
     }
     let mut projected = Map::new();
