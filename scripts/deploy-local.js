@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const sourceRoot = path.resolve(path.dirname(scriptPath), "..");
-const telegramConnectorRoot = path.join(sourceRoot, "connectors", "telegram");
+const telegramConnectorRoot = path.join(sourceRoot, "ts-server", "connectors", "telegram");
 const home = os.homedir();
 const runtimeRoot = path.join(home, ".local", "share", "ads-runtime");
 const releasesDir = path.join(runtimeRoot, "releases");
@@ -201,14 +201,14 @@ WantedBy=default.target
 function buildWebServiceUnit() {
   return buildServiceUnit({
     description: "ADS Web Console",
-    entrypoint: path.join(currentLink, "dist", "server", "cli.js"),
+    entrypoint: path.join(currentLink, "ts-server", "dist", "server", "cli.js"),
   });
 }
 
 function buildTelegramServiceUnit() {
   return buildServiceUnit({
     description: "ADS Telegram Connector",
-    entrypoint: path.join(currentLink, "connectors", "telegram", "bin", "ads-telegram.js"),
+    entrypoint: path.join(currentLink, "ts-server", "connectors", "telegram", "bin", "ads-telegram.js"),
     command: "start",
     environmentFile: envPath,
   });
@@ -231,13 +231,14 @@ function assembleRelease() {
   fs.mkdirSync(releasesDir, { recursive: true });
   fs.mkdirSync(stagingDir);
   copyDirectory(path.join(sourceRoot, "dist"), path.join(stagingDir, "dist"));
+  copyDirectory(path.join(sourceRoot, "ts-server", "dist"), path.join(stagingDir, "ts-server", "dist"));
   copyDirectory(path.join(sourceRoot, "scripts"), path.join(stagingDir, "scripts"));
   for (const file of ["package.json", "package-lock.json", "tsconfig.build.json"]) {
     copyFile(path.join(sourceRoot, file), path.join(stagingDir, file));
   }
 
   if (fs.existsSync(telegramConnectorRoot)) {
-    const connectorStagingRoot = path.join(stagingDir, "connectors", "telegram");
+    const connectorStagingRoot = path.join(stagingDir, "ts-server", "connectors", "telegram");
     copyDirectory(path.join(telegramConnectorRoot, "dist"), path.join(connectorStagingRoot, "dist"));
     for (const file of ["bin/ads-telegram.js", "package.json", "package-lock.json"]) {
       copyFile(path.join(telegramConnectorRoot, file), path.join(connectorStagingRoot, file));
@@ -251,11 +252,11 @@ function assembleRelease() {
 
   if (fs.existsSync(telegramConnectorRoot)) {
     run(npmBin, ["ci", "--omit=dev", "--no-audit", "--no-fund"], {
-      cwd: path.join(stagingDir, "connectors", "telegram"),
+      cwd: path.join(stagingDir, "ts-server", "connectors", "telegram"),
       env: toolEnv,
     });
   }
-  run(nodeBin, [path.join(stagingDir, "dist", "server", "cli.js"), "version"], {
+  run(nodeBin, [path.join(stagingDir, "ts-server", "dist", "server", "cli.js"), "version"], {
     cwd: stagingDir,
     env: {
       ...toolEnv,

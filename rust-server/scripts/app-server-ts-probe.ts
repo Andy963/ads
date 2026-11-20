@@ -1,5 +1,5 @@
-import { CodexAppServerAdapter } from "../../server/agents/adapters/codexAppServerAdapter.js";
-import { getSharedDaemonRegistry } from "../../server/codex/appServer/daemonRegistry.js";
+import { CodexAppServerAdapter } from "../../ts-server/server/agents/adapters/codexAppServerAdapter.js";
+import { getSharedDaemonRegistry } from "../../ts-server/server/codex/appServer/daemonRegistry.js";
 
 const binary = process.env.ADS_APP_SERVER_PROBE_BIN?.trim();
 const cwd = process.env.ADS_APP_SERVER_PROBE_CWD?.trim();

@@ -4,21 +4,15 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-function findProjectRoot(): string {
-  let dir = __dirname;
-  for (let i = 0; i < 10; i++) {
-    if (
-      fs.existsSync(path.join(dir, "package.json")) &&
-      fs.existsSync(path.join(dir, "tsconfig.build.json")) &&
-      fs.existsSync(path.join(dir, "scripts"))
-    ) {
-      return dir;
-    }
+export function findProjectRoot(startDir = __dirname): string {
+  let dir = startDir;
+  for (let i = 0; i < 12; i++) {
+    if (fs.existsSync(path.join(dir, "package.json"))) return dir;
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  return path.resolve(__dirname, "..", "..");
+  return path.resolve(startDir, "..", "..", "..");
 }
 
 export const PROJECT_ROOT = findProjectRoot();

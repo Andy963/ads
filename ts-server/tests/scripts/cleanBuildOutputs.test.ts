@@ -104,7 +104,7 @@ describe("scripts/clean-build-outputs", () => {
     fs.mkdirSync(path.join(root, ".ads"), { recursive: true });
     fs.writeFileSync(path.join(root, ".ads", "state.db"), "workspace data\n", "utf8");
 
-    const result = runClean(root);
+    const result = runClean(root, ["--paths", "dist/server,dist/shared,dist/templates"]);
     assert.equal(result.status, 0, result.stderr);
 
     assert.ok(!fs.existsSync(path.join(root, "dist", "server")), "backend output removed");
@@ -155,11 +155,14 @@ describe("scripts/clean-build-outputs", () => {
     // Seed a builtin skill fixture and retired legacy outputs that must not
     // survive cleanup. The compiled skill script is planted after the build,
     // mimicking tsc emit in a real build (the fixture tsc project only covers src/).
-    const skillDir = path.join(root, "server", "skills", "builtin", "skill-creator");
+    const skillDir = path.join(root, "ts-server", "server", "skills", "builtin", "skill-creator");
     fs.mkdirSync(path.join(skillDir, "scripts"), { recursive: true });
     fs.writeFileSync(path.join(skillDir, "SKILL.md"), "# Skill Creator\n", "utf8");
     fs.writeFileSync(path.join(skillDir, "scripts", "init-skill.ts"), "export const init = 1;\n", "utf8");
-    for (const rel of ["dist/templates/instructions.md", "dist/server/web/server/taskQueue/runtime.js"]) {
+    for (const rel of [
+      "ts-server/dist/templates/instructions.md",
+      "ts-server/dist/server/web/server/taskQueue/runtime.js",
+    ]) {
       const full = path.join(root, rel);
       fs.mkdirSync(path.dirname(full), { recursive: true });
       fs.writeFileSync(full, "stale\n", "utf8");
@@ -167,7 +170,9 @@ describe("scripts/clean-build-outputs", () => {
 
     // Full build: clean owned outputs, compile, copy + validate skill assets.
     buildFixture(root);
-    const compiledDir = path.join(root, "dist", "server", "skills", "builtin", "skill-creator", "scripts");
+    const clean = runClean(root, ["--paths", "ts-server/dist/server,ts-server/dist/shared,ts-server/dist/templates"]);
+    assert.equal(clean.status, 0, clean.stderr);
+    const compiledDir = path.join(root, "ts-server", "dist", "server", "skills", "builtin", "skill-creator", "scripts");
     fs.mkdirSync(compiledDir, { recursive: true });
     fs.writeFileSync(path.join(compiledDir, "init-skill.js"), "export const init = 1;\n", "utf8");
     const copyScriptDir = path.join(root, "scripts");
@@ -180,13 +185,24 @@ describe("scripts/clean-build-outputs", () => {
     // Assemble a release the same way deploy-local does: copy the whole dist.
     const staging = path.join(root, "staging");
     fs.cpSync(path.join(root, "dist"), path.join(staging, "dist"), { recursive: true });
+    fs.cpSync(path.join(root, "ts-server", "dist"), path.join(staging, "ts-server", "dist"), {
+      recursive: true,
+    });
 
-    assert.ok(fs.existsSync(path.join(staging, "dist", "server", "skills", "builtin", "skill-creator", "SKILL.md")), "builtin SKILL.md ships");
     assert.ok(
-      fs.existsSync(path.join(staging, "dist", "server", "skills", "builtin", "skill-creator", "scripts", "init-skill.js")),
+      fs.existsSync(path.join(staging, "ts-server", "dist", "server", "skills", "builtin", "skill-creator", "SKILL.md")),
+      "builtin SKILL.md ships",
+    );
+    assert.ok(
+      fs.existsSync(
+        path.join(staging, "ts-server", "dist", "server", "skills", "builtin", "skill-creator", "scripts", "init-skill.js"),
+      ),
       "compiled skill script ships",
     );
-    assert.ok(!fs.existsSync(path.join(staging, "dist", "templates")), "legacy templates absent from release");
-    assert.ok(!fs.existsSync(path.join(staging, "dist", "server", "web", "server", "taskQueue", "runtime.js")), "retired TaskQueue output absent");
+    assert.ok(!fs.existsSync(path.join(staging, "ts-server", "dist", "templates")), "legacy templates absent from release");
+    assert.ok(
+      !fs.existsSync(path.join(staging, "ts-server", "dist", "server", "web", "server", "taskQueue", "runtime.js")),
+      "retired TaskQueue output absent",
+    );
   });
 });

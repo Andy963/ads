@@ -47,7 +47,13 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
       report.cases.push(result);
       db.prepare("UPDATE role_profiles SET model_id = ?, system_prompt = ?, reasoning_effort = ? WHERE role = ?")
         .run("browser-model", "Saved instructions", "high", "reviewer");
-      const page = await browser.newPage({ viewport: { width, height: 844 }, isMobile: width < 900, hasTouch: width < 900, serviceWorkers: "block" });
+      const page = await browser.newPage({
+        viewport: { width, height: 844 },
+        isMobile: width < 900,
+        hasTouch: width < 900,
+        serviceWorkers: "block",
+        locale: "en-US",
+      });
       page.setDefaultTimeout(10000);
       const errors = [];
       const overrides = [];

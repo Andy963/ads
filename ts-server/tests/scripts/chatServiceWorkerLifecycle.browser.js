@@ -1,5 +1,5 @@
 // Run after building and installing WebKit:
-// node --test tests/scripts/chatServiceWorkerLifecycle.browser.js
+// node --test ts-server/tests/scripts/chatServiceWorkerLifecycle.browser.js
 import assert from "node:assert/strict";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -9,10 +9,10 @@ import { webkit } from "playwright";
 import {
   observeChatServiceWorkerLifecycle,
   waitForChatServiceWorkerLifecycle,
-} from "../../scripts/lib/chat-service-worker-lifecycle.js";
-import { startChatBrowserServer } from "../../scripts/lib/chat-browser-server.js";
+} from "../../../scripts/lib/chat-service-worker-lifecycle.js";
+import { startChatBrowserServer } from "../../../scripts/lib/chat-browser-server.js";
 
-const buildRoot = fileURLToPath(new URL("../../dist/client", import.meta.url));
+const buildRoot = fileURLToPath(new URL("../../../dist/client", import.meta.url));
 
 async function waitUntil(predicate) {
   const deadline = Date.now() + 10_000;

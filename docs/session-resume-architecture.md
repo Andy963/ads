@@ -66,7 +66,7 @@ ADS 目前的"恢复上下文"能力存在两条互相竞争的路径：
 
 **限制 C — 恢复成功了还要再注入一遍历史。** `resolveResumeState` 的 `thread_resumed_with_history` 分支同时返回 `resumeThreadId` 和 `shouldInjectHistory: true`，`restoreMode` 却写成 `history_injection`——日志与返回值自相矛盾。下一次 prompt 时 [`handlePrompt.ts`](../ts-server/server/web/ws/handlePrompt.ts) 的 `needsHistoryInjection` 命中，把同一段历史再喂一遍。模型因此看到"原生上下文 + 一份该上下文的文字复述"，这正是"效果并不好"的直接来源。
 
-> 已修复：两个持有 `resumeThreadId` 的分支改为 `shouldInjectHistory: false` / `restoreMode: "thread_resumed"`。回归护栏见 `tests/sessions/sessionState.test.ts` 与 `tests/sessions/sessionManager.test.ts`。
+> 已修复：两个持有 `resumeThreadId` 的分支改为 `shouldInjectHistory: false` / `restoreMode: "thread_resumed"`。回归护栏见 `ts-server/tests/sessions/sessionState.test.ts` 与 `ts-server/tests/sessions/sessionManager.test.ts`。
 
 ### 2.4 探活方式的代价（已修复）
 
@@ -339,7 +339,7 @@ codex   Error: thread/resume: thread/resume failed: no rollout found for thread 
 claude  No conversation found with session ID: <id>
 ```
 
-其余失败（上游 529、模型不匹配、网络中断）**必须保留 session id**：吞掉它们会因为一个下一轮就会自愈的原因永久丢掉整段对话。判据同时要避开同形异义的字符串——`file not found: /tmp/image.png`、`command not found: rg` 都不得命中，`tests/agents/missingProviderSession.test.ts` 对此有专门断言。
+其余失败（上游 529、模型不匹配、网络中断）**必须保留 session id**：吞掉它们会因为一个下一轮就会自愈的原因永久丢掉整段对话。判据同时要避开同形异义的字符串——`file not found: /tmp/image.png`、`command not found: rg` 都不得命中，`ts-server/tests/agents/missingProviderSession.test.ts` 对此有专门断言。
 
 #### 降级时序
 
@@ -386,13 +386,13 @@ rollout 文件兜底原计划在 P4，实际已随 P1 一并落地。逐条收�
 
 已落地：
 
-- `tests/agents/sessionCatalog.test.ts`（23 项）：预览提取、slug 推导、limit 归一、游标编解码与损坏游标回退、catalog 合并/去重/排序/搜索/cwd 过滤，以及一次性会话隐藏与计数、`includeNoise` 放行、搜索豁免、当前会话豁免、重名折叠、`stale` 标记、fork 链只保留最新一条。
-- `tests/state/historyMaintenance.test.ts`：`listAgentSessionLinks` 每条对话只返回一行，且 bare column 取自 `last_seen_at` 最新的 fork（同毫秒并列时由 `id` 决定）。
-- `tests/web/sessionList.test.ts`（5 项）：`session_list` 请求解析（含 `includeNoise`、`cursor`）、默认 agent、错误不抛出、翻页与 `appended` 标记。
-- `tests/web/taskResumeProbe.test.ts`（7 项）：三态探测、`unknown` 不被判为永久失败、错误消息能被 `isPermanentTaskResumeFailure` 识别。
+- `ts-server/tests/agents/sessionCatalog.test.ts`（23 项）：预览提取、slug 推导、limit 归一、游标编解码与损坏游标回退、catalog 合并/去重/排序/搜索/cwd 过滤，以及一次性会话隐藏与计数、`includeNoise` 放行、搜索豁免、当前会话豁免、重名折叠、`stale` 标记、fork 链只保留最新一条。
+- `ts-server/tests/state/historyMaintenance.test.ts`：`listAgentSessionLinks` 每条对话只返回一行，且 bare column 取自 `last_seen_at` 最新的 fork（同毫秒并列时由 `id` 决定）。
+- `ts-server/tests/web/sessionList.test.ts`（5 项）：`session_list` 请求解析（含 `includeNoise`、`cursor`）、默认 agent、错误不抛出、翻页与 `appended` 标记。
+- `ts-server/tests/web/taskResumeProbe.test.ts`（7 项）：三态探测、`unknown` 不被判为永久失败、错误消息能被 `isPermanentTaskResumeFailure` 识别。
 - Connector session tests：callback data 编解码与 64 字节上限、空列表文案、按钮与状态标注、折叠/隐藏/降级的回传、长标题按字符截断。
-- `tests/sessions/sessionState.test.ts`、`tests/sessions/sessionManager.test.ts`：原生恢复分支断言 `shouldInjectHistory === false` / `restoreMode === "thread_resumed"`（P0 回归护栏）。
-- `tests/web/handleTaskResume.test.ts`：Codex session 原生恢复、磁盘缺失的 saved id 清理、降级文案与未尝试原生恢复时的原有措辞。
+- `ts-server/tests/sessions/sessionState.test.ts`、`ts-server/tests/sessions/sessionManager.test.ts`：原生恢复分支断言 `shouldInjectHistory === false` / `restoreMode === "thread_resumed"`（P0 回归护栏）。
+- `ts-server/tests/web/handleTaskResume.test.ts`：Codex session 原生恢复、磁盘缺失的 saved id 清理、降级文案与未尝试原生恢复时的原有措辞。
 - `client/src/__tests__/session-resume-picker.test.ts`（19 项）：挂载即拉列表、点击派发 `sessionId`、快捷项派发 `undefined`、busy 时不派发、空态、搜索防抖、cwd 开关重新拉取、错误展示、隐藏计数提示、`×N` 折叠标记、禁用原因展示，以及「加载更多」的出现条件与并发抑制、`stale` 标记不影响可点击、fork 折叠说明。
 
 校验命令：`npm test`（926 通过）、`npm run test:web`（417 通过）、`npm run lint`、`npm run build`。

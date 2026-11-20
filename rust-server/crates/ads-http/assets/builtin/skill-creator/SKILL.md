@@ -75,7 +75,7 @@ npx tsx scripts/init-skill.ts my-skill --path ~/.codex/skills --resources script
 ```
 
 The `scripts/` directory referenced above is relative to this skill's own location:
-`server/skills/builtin/skill-creator/scripts/`
+`$CODEX_HOME/skills/skill-creator/scripts/`
 
 ### Step 4: Edit the Skill
 

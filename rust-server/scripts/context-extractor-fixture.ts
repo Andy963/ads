@@ -1,4 +1,4 @@
-import { extractRelatedContexts } from "../../server/reviewer/contextExtractor.js";
+import { extractRelatedContexts } from "../../ts-server/server/reviewer/contextExtractor.js";
 
 const [repoPath, baseCommit, headCommit] = process.argv.slice(2);
 if (!repoPath || !baseCommit || !headCommit) {

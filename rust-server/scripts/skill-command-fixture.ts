@@ -4,7 +4,7 @@
  */
 import readline from "node:readline";
 
-import { runAdsCommandLine } from "../../server/web/commandRouter.js";
+import { runAdsCommandLine } from "../../ts-server/server/web/commandRouter.js";
 
 const workspaceRoot = process.argv[2] ?? process.cwd();
 

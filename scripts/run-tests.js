@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const testsRoot = path.join(root, "tests");
+const testsRoot = path.join(root, "ts-server", "tests");
 const nodeBin = process.execPath;
 
 function collectTests(directory) {
@@ -36,7 +36,15 @@ if (tests.length === 0) {
 } else {
   const result = spawnSync(
     nodeBin,
-    ["--import", "tsx", "--import", "./tests/helpers/adsStateDir.ts", "--test", `--test-concurrency=${testConcurrency}`, ...tests],
+    [
+      "--import",
+      "tsx",
+      "--import",
+      "./ts-server/tests/helpers/adsStateDir.ts",
+      "--test",
+      `--test-concurrency=${testConcurrency}`,
+      ...tests,
+    ],
     {
       cwd: root,
       env: { ...process.env, ADS_TEST_STATE_ROOT: testStateDir },

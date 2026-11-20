@@ -137,7 +137,7 @@ export function loadConfig(path: string): UserConfig {
 ## Testing
 
 - Write tests for new features and bug fixes
-- Place tests in the `tests/` directory
+- Place tests in the `ts-server/ts-server/tests/` directory
 - Use descriptive test names
 - Aim for high code coverage on critical paths
 
@@ -178,7 +178,7 @@ ads/
 ├── ts-server/     # TypeScript backend, shared contracts, tests, and connector
 │   ├── server/
 │   ├── shared/
-│   ├── tests/
+│   ├── ts-server/tests/
 │   └── connectors/telegram/
 └── docs/          # Documentation
 ```

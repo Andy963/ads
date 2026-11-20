@@ -102,9 +102,7 @@ export function createHttpServer(options: {
   handleApiRequest?: (req: http.IncomingMessage, res: http.ServerResponse) => Promise<boolean>;
   logger?: Logger;
 }): http.Server {
-  const distClientDir = fs.existsSync(path.join(PROJECT_ROOT, "server", "cli.js"))
-    ? path.join(PROJECT_ROOT, "client")
-    : path.join(PROJECT_ROOT, "dist", "client");
+  const distClientDir = resolveClientDistDir(PROJECT_ROOT);
   const distClientIndexPath = path.join(distClientDir, "index.html");
   let distClientReady = false;
 
@@ -218,4 +216,10 @@ export function createHttpServer(options: {
     res.writeHead(404).end("Not Found");
   });
   return server;
+}
+
+export function resolveClientDistDir(projectRoot: string): string {
+  return fs.existsSync(path.join(projectRoot, "server", "cli.js"))
+    ? path.join(projectRoot, "client")
+    : path.join(projectRoot, "dist", "client");
 }

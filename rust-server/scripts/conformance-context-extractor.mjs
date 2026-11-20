@@ -67,6 +67,7 @@ try {
       "",
     ].join("\n"),
   );
+  fs.mkdirSync(path.join(repo, "ts-server/shared"), { recursive: true });
   fs.writeFileSync(
     path.join(repo, "ts-server/shared/index.ts"),
     [

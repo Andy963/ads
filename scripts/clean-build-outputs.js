@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Ownership of generated output paths (issue #460):
-//   dist/server, dist/shared  - backend tsc emit (full build)
-//   dist/templates            - retired legacy prompt templates, owned for removal
+//   ts-server/dist/server, ts-server/dist/shared - backend tsc emit (full build)
+//   ts-server/dist/templates                     - retired prompt templates, owned for removal
 //   dist/client               - web bundle, cleaned by Vite's emptyOutDir (never here)
-//   connectors/telegram/dist  - connector tsc emit (connector build, --paths dist)
+//   ts-server/connectors/telegram/dist - connector tsc emit (connector build, --paths dist)
 //
 // A full build removes its owned outputs before compiling so stale emit from
 // deleted sources cannot leak into release assembly. Cleanup is restricted to
@@ -18,7 +18,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const DEFAULT_OWNED_PATHS = ["dist/server", "dist/shared", "dist/templates"];
+export const DEFAULT_OWNED_PATHS = [
+  "ts-server/dist/server",
+  "ts-server/dist/shared",
+  "ts-server/dist/templates",
+];
 
 function parseArgs(argv) {
   let root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
