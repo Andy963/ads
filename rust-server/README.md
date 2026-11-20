@@ -87,7 +87,7 @@ HTTP 基础层已实现 Origin 防护、1 MB JSON 请求体限制、与 Node 一
 ## 命令
 
 ```bash
-cd rust
+cd rust-server
 cargo fmt --all
 cargo test --workspace
 cargo run -p ads-server

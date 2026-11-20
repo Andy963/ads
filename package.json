@@ -60,7 +60,7 @@
     "node": ">=24"
   },
   "bin": {
-    "ads": "./ts-server/dist/server/cli.js"
+    "ads": "ts-server/dist/server/cli.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.6.2",

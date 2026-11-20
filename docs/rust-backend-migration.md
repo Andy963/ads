@@ -594,7 +594,7 @@ conformance 约 4–6 分钟；没有出现链接 OOM。瓶颈是单核编译和
 ## 验证命令
 
 ```bash
-cd rust
+cd rust-server
 cargo fmt --all -- --check
 CARGO_BUILD_JOBS=2 cargo clippy --workspace --all-targets -- -D warnings
 CARGO_BUILD_JOBS=2 cargo test --workspace -- --test-threads=2
