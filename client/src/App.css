@@ -36,6 +36,40 @@
   min-width: 0;
   overflow: hidden;
 }
+.activeProjectContext {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.activeProjectContextName {
+  flex: 0 10 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activeProjectBranchBadge {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 55%;
+  overflow: hidden;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .projectAdd {
   flex-shrink: 0;
   width: 24px;
@@ -968,6 +1002,14 @@
     text-overflow: ellipsis;
     transform: translateX(-50%);
     white-space: nowrap;
+    pointer-events: none;
+  }
+  .activeProjectContext {
+    position: absolute;
+    left: 50%;
+    width: max-content;
+    max-width: calc(100% - 180px);
+    transform: translateX(-50%);
     pointer-events: none;
   }
   .mobileContextMenu {

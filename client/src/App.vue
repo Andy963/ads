@@ -353,6 +353,22 @@ const mobileContextTitle = computed(() => {
   return activeProject.value?.name?.trim() || "项目";
 });
 
+const activeProjectName = computed(() => activeProject.value?.name?.trim() || "项目");
+const activeProjectBranchLabel = computed(() => {
+  const branch = String(activeProject.value?.branch ?? "").trim();
+  return branch ? formatProjectBranch(branch) : "";
+});
+const activeProjectContextTitle = computed(() => (
+  activeProjectBranchLabel.value
+    ? `${activeProjectName.value} ${activeProjectBranchLabel.value}`
+    : activeProjectName.value
+));
+const activeProjectContextAriaLabel = computed(() => (
+  activeProjectBranchLabel.value
+    ? `当前项目 ${activeProjectName.value}，当前分支 ${activeProjectBranchLabel.value}`
+    : `当前项目 ${activeProjectName.value}`
+));
+
 const mobileContextMenuTitle = computed(() => {
   if (mobileDrawerSection.value === "settings") {
     if (mobileSettingsTab.value === "models") return "模型配置操作";
@@ -1498,7 +1514,29 @@ const acopilotConnectionStatus = computed(() => {
         </svg>
       </button>
       <div class="topbarMain">
-        <div v-if="isMobile" class="mobileContextTitle" :title="mobileContextTitle">
+        <div
+          v-if="!isMobile || mobileDrawerSection === 'projects'"
+          class="activeProjectContext"
+          role="group"
+          data-testid="active-project-context"
+          :title="activeProjectContextTitle"
+          :aria-label="activeProjectContextAriaLabel"
+        >
+          <span
+            class="activeProjectContextName"
+            data-testid="active-project-context-name"
+            :title="activeProjectName"
+            aria-hidden="true"
+          >{{ activeProjectName }}</span>
+          <span
+            v-if="activeProjectBranchLabel"
+            class="activeProjectBranchBadge"
+            data-testid="active-project-context-branch"
+            :title="activeProjectBranchLabel"
+            aria-hidden="true"
+          >{{ activeProjectBranchLabel }}</span>
+        </div>
+        <div v-else class="mobileContextTitle" :title="mobileContextTitle">
           {{ mobileContextTitle }}
         </div>
       </div>
