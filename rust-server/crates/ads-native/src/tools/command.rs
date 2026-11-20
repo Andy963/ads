@@ -20,10 +20,6 @@ const KILL_GRACE: Duration = Duration::from_millis(1_200);
 const SHELL_BUILTINS: &[&str] = &[
     "[", "cd", "echo", "false", "printf", "pwd", "test", "true", "unset",
 ];
-const SHELL_KEYWORDS: &[&str] = &[
-    "!", "{", "}", "case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if",
-    "in", "then", "time", "until", "while",
-];
 const PRIVATE_KEY_LABELS: &[&str] = &[
     "PRIVATE KEY",
     "RSA PRIVATE KEY",
@@ -742,6 +738,14 @@ pub(crate) fn command_has_executable(command: &str) -> bool {
     } else {
         vec![command.to_string()]
     };
+    let shell_words = command
+        .split(|character: char| character.is_whitespace() || ";|&(){}".contains(character))
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let has_if_block = shell_words.contains(&"if") && shell_words.contains(&"fi");
+    let has_brace_block = command.contains('{') && command.contains('}');
+    let has_loop_block = shell_words.contains(&"do") && shell_words.contains(&"done");
+    let has_case_block = shell_words.contains(&"case") && shell_words.contains(&"esac");
     !segments.is_empty()
         && segments.iter().all(|segment| {
             let Ok(tokens) = tokenize_command_line(segment) else {
@@ -758,23 +762,33 @@ pub(crate) fn command_has_executable(command: &str) -> bool {
             while tokens.get(executable_index).is_some_and(|token| {
                 matches!(
                     command_basename(token).as_str(),
-                    "!" | "{" | "then" | "else" | "elif" | "do" | "if" | "time" | "until" | "while"
+                    "!" | "{" | "do" | "elif" | "else" | "if" | "then" | "time" | "until" | "while"
                 )
             }) {
                 executable_index += 1;
             }
             let Some(executable) = tokens.get(executable_index) else {
                 return tokens.first().is_some_and(|token| {
-                    matches!(
-                        command_basename(token).as_str(),
-                        "}" | "done" | "esac" | "fi" | "then" | "else"
-                    )
+                    match command_basename(token).as_str() {
+                        "}" => has_brace_block,
+                        "fi" => has_if_block,
+                        "done" => has_loop_block,
+                        "esac" => has_case_block,
+                        _ => false,
+                    }
                 });
             };
             let normalized = command_basename(executable);
-            SHELL_BUILTINS.contains(&normalized.as_str())
-                || SHELL_KEYWORDS.contains(&normalized.as_str())
-                || executable_exists(executable)
+            if tokens.len() == 1 {
+                match normalized.as_str() {
+                    "}" if has_brace_block => return true,
+                    "fi" if has_if_block => return true,
+                    "done" if has_loop_block => return true,
+                    "esac" if has_case_block => return true,
+                    _ => {}
+                }
+            }
+            SHELL_BUILTINS.contains(&normalized.as_str()) || executable_exists(executable)
         })
 }
 
@@ -1113,6 +1127,13 @@ mod tests {
     fn requires_a_real_executable_or_shell_construct() {
         assert!(!command_has_executable("Please inspect the logs"));
         assert!(!command_has_executable("{ Please inspect the logs; }"));
+        assert!(!command_has_executable("for the logs"));
+        assert!(!command_has_executable("case the logs"));
+        assert!(!command_has_executable("function"));
+        assert!(!command_has_executable("in"));
+        assert!(!command_has_executable("{ echo ok; } Please inspect"));
+        assert!(!command_has_executable("done"));
+        assert!(!command_has_executable("fi"));
         assert!(!command_has_executable(
             "definitely-not-an-installed-command"
         ));
