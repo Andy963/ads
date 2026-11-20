@@ -174,6 +174,24 @@ describe("pull request routes", () => {
     assert.equal(calls, 2);
   });
 
+  it("invalidates every cached cursor page when a project refresh inserts a newer row", async () => {
+    const oldRows = [baseRows[2], baseRows[1], baseRows[0]];
+    const newRows = [{ ...baseRows[0], number: 45, title: "Newest row" }, ...oldRows];
+    const responses = [oldRows, oldRows, newRows, newRows];
+    let calls = 0;
+    const runner: GhRunner = async () => ({ stdout: JSON.stringify(responses[calls++]) });
+    const first = await listPullRequestsForProject({ projectKey: "u:p", cwd: "/repo", query: query(), runner, now: 1_000 });
+    const cursor = first.nextCursor ?? undefined;
+    const oldSecond = await listPullRequestsForProject({ projectKey: "u:p", cwd: "/repo", query: query({ cursor }), runner, now: 1_001 });
+    assert.deepEqual(oldSecond.items.map((item) => item.number), [42]);
+
+    const refreshed = await listPullRequestsForProject({ projectKey: "u:p", cwd: "/repo", query: query({ refresh: true }), runner, now: 1_002 });
+    assert.deepEqual(refreshed.items.map((item) => item.number), [45, 44]);
+    const refreshedSecond = await listPullRequestsForProject({ projectKey: "u:p", cwd: "/repo", query: query({ cursor: refreshed.nextCursor ?? undefined }), runner, now: 1_003 });
+    assert.deepEqual(refreshedSecond.items.map((item) => item.number), [43, 42]);
+    assert.equal(calls, 4);
+  });
+
   it("returns explicit failure metadata instead of throwing", async () => {
     const runner: GhRunner = async () => { throw new Error("gh unavailable"); };
     const response = await listPullRequestsForProject({ projectKey: "u:p", cwd: "/repo", query: query(), runner, now: 1_000 });

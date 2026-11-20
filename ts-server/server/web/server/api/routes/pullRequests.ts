@@ -218,7 +218,14 @@ export async function listPullRequestsForProject(input: {
   const offset = decodeCursor(input.query.cursor);
   const key = listCacheKey(input.projectKey, input.query, offset);
   if (input.query.refresh) {
-    listCache.delete(key);
+    for (const cacheKey of listCache.keys()) {
+      try {
+        const parsed = JSON.parse(cacheKey) as unknown;
+        if (Array.isArray(parsed) && parsed[0] === input.projectKey) listCache.delete(cacheKey);
+      } catch {
+        listCache.delete(cacheKey);
+      }
+    }
     for (const detailKey of detailGroupCache.keys()) {
       if (detailKey.startsWith(`${input.projectKey}:`)) detailGroupCache.delete(detailKey);
     }

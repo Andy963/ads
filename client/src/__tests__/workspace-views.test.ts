@@ -93,6 +93,14 @@ describe("project workspace views", () => {
     expect(wrapper.find('[data-testid="active-project-context"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="lane-new-session"]').exists()).toBe(false);
 
+    Object.defineProperty(window, "innerWidth", { value: 390, configurable: true });
+    window.dispatchEvent(new Event("resize"));
+    await settleUi(wrapper);
+    expect(wrapper.get(".app").attributes("data-active-workspace-view")).toBe("prs");
+    Object.defineProperty(window, "innerWidth", { value: 1200, configurable: true });
+    window.dispatchEvent(new Event("resize"));
+    await settleUi(wrapper);
+
     await wrapper.get('[data-testid="lane-tab-actions"]').trigger("click");
     await settleUi(wrapper);
     expect(wrapper.get(".app").attributes("data-active-workspace-view")).toBe("actions");

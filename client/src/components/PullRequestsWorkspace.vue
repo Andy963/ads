@@ -36,6 +36,7 @@ const detailLoading = ref(false);
 const detailError = ref("");
 const sentinel = ref<HTMLElement | null>(null);
 let listController: AbortController | null = null;
+let loadMoreController: AbortController | null = null;
 let detailController: AbortController | null = null;
 let requestGeneration = 0;
 let intersectionObserver: IntersectionObserver | null = null;
@@ -104,8 +105,10 @@ async function persistFirstPage(responseItems: PullRequestSummary[], fetchedAt: 
 async function loadScope(forceRefresh = false): Promise<void> {
   const generation = ++requestGeneration;
   listController?.abort();
+  loadMoreController?.abort();
   listController = new AbortController();
   loading.value = true;
+  loadingMore.value = false;
   error.value = "";
   items.value = [];
   nextCursor.value = null;
@@ -116,11 +119,15 @@ async function loadScope(forceRefresh = false): Promise<void> {
   const cache = getPullRequestFirstPageCache();
   if (cache) {
     try {
-      const record = await cache.load(props.projectId, filters.value);
-      if (generation !== requestGeneration) return;
-      if (record) {
-        items.value = record.items;
-        cacheRestored.value = true;
+      if (forceRefresh) {
+        await cache.clearProject(props.projectId);
+      } else {
+        const record = await cache.load(props.projectId, filters.value);
+        if (generation !== requestGeneration) return;
+        if (record) {
+          items.value = record.items;
+          cacheRestored.value = true;
+        }
       }
     } catch {
       // Cache failures must not prevent a live refresh.
@@ -148,18 +155,21 @@ async function loadScope(forceRefresh = false): Promise<void> {
 async function loadMore(): Promise<void> {
   if (loading.value || loadingMore.value || !nextCursor.value) return;
   const generation = requestGeneration;
+  loadMoreController?.abort();
+  loadMoreController = new AbortController();
   loadingMore.value = true;
   error.value = "";
   try {
-    const response = await fetchPullRequests(query(nextCursor.value));
+    const response = await fetchPullRequests(query(nextCursor.value), loadMoreController.signal);
     if (generation !== requestGeneration) return;
     items.value = [...items.value, ...dedupe(response.items)];
     nextCursor.value = response.nextCursor;
     error.value = response.error ?? "";
   } catch (cause) {
+    if (generation !== requestGeneration || (cause instanceof DOMException && cause.name === "AbortError")) return;
     error.value = cause instanceof Error ? cause.message : String(cause);
   } finally {
-    loadingMore.value = false;
+    if (generation === requestGeneration) loadingMore.value = false;
   }
 }
 
@@ -231,6 +241,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   listController?.abort();
+  loadMoreController?.abort();
   detailController?.abort();
   intersectionObserver?.disconnect();
 });

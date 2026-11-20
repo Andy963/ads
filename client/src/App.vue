@@ -1105,7 +1105,7 @@ watch(mobileDrawerOpen, async (open) => {
 });
 
 watch(isMobile, (mobile) => {
-  if (activeProjectId.value.trim()) restoreWorkspaceTab();
+  if (activeProjectId.value.trim() && activeWorkspaceView.value !== "prs") restoreWorkspaceTab();
   if (mobile) return;
   closeMobileDrawer();
   cancelLaneGesture();

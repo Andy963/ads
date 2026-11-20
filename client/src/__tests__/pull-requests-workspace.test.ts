@@ -121,6 +121,37 @@ describe("PullRequestsWorkspace", () => {
     expect(wrapper.get('[data-testid="pr-list-error"]').text()).toContain("cached or partial rows");
   });
 
+  it("ignores a stale pagination failure after the filter scope changes", async () => {
+    let rejectOldPage!: (reason: unknown) => void;
+    listImpl = async (encoded) => {
+      const query = JSON.parse(encoded) as Record<string, unknown>;
+      if (query.state === "closed" && query.cursor === "closed-next") {
+        return { items: [summary(61)], nextCursor: null, partial: false, fetchedAt: 4 };
+      }
+      if (query.state === "closed") {
+        return { items: [summary(60, { state: "closed" })], nextCursor: "closed-next", partial: false, fetchedAt: 3 };
+      }
+      if (query.cursor === "old-next") {
+        return new Promise((_, reject) => { rejectOldPage = reject; });
+      }
+      return { items: [summary(42)], nextCursor: "old-next", partial: false, fetchedAt: 1 };
+    };
+    const wrapper = await mountWorkspace();
+    await wrapper.get(".prLoadMore").trigger("click");
+    await Promise.resolve();
+    await wrapper.get('[data-testid="pr-filter-state-closed"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="pull-request-row-60"]').exists()).toBe(true);
+
+    rejectOldPage(new Error("stale page failure"));
+    await flushPromises();
+    expect(wrapper.find('[data-testid="pr-list-error"]').exists()).toBe(false);
+
+    await wrapper.get(".prLoadMore").trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="pull-request-row-61"]').exists()).toBe(true);
+  });
+
   it("loads detail and checks only after a row is selected", async () => {
     listImpl = async () => ({ items: [summary(42)], nextCursor: null, partial: false, fetchedAt: 1 });
     const detail: PullRequestDetail = {
