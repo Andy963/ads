@@ -731,8 +731,10 @@ pub(crate) fn allowlist_from_env() -> Option<Vec<String>> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ShellBlock {
     Brace,
-    If,
-    Loop,
+    IfBody,
+    IfCondition,
+    LoopBody,
+    LoopHeader,
 }
 
 pub(crate) fn command_has_executable(command: &str, cwd: &std::path::Path) -> bool {
@@ -766,7 +768,7 @@ pub(crate) fn command_has_executable(command: &str, cwd: &std::path::Path) -> bo
                 match command_basename(token).as_str() {
                     "fi" => {
                         return executable_index + 1 == tokens.len()
-                            && blocks.pop() == Some(ShellBlock::If);
+                            && blocks.pop() == Some(ShellBlock::IfBody);
                     }
                     "}" => {
                         return executable_index + 1 == tokens.len()
@@ -774,10 +776,10 @@ pub(crate) fn command_has_executable(command: &str, cwd: &std::path::Path) -> bo
                     }
                     "done" => {
                         return executable_index + 1 == tokens.len()
-                            && blocks.pop() == Some(ShellBlock::Loop);
+                            && blocks.pop() == Some(ShellBlock::LoopBody);
                     }
                     "if" => {
-                        blocks.push(ShellBlock::If);
+                        blocks.push(ShellBlock::IfCondition);
                         executable_index += 1;
                     }
                     "{" => {
@@ -785,17 +787,30 @@ pub(crate) fn command_has_executable(command: &str, cwd: &std::path::Path) -> bo
                         executable_index += 1;
                     }
                     "while" | "until" => {
-                        blocks.push(ShellBlock::Loop);
+                        blocks.push(ShellBlock::LoopHeader);
                         executable_index += 1;
                     }
                     "for" => {
-                        blocks.push(ShellBlock::Loop);
-                        return tokens.iter().any(|token| command_basename(token) == "in");
+                        blocks.push(ShellBlock::LoopHeader);
+                        return tokens.iter().any(|token| command_basename(token) == "in")
+                            && executable_index + 1 < tokens.len();
                     }
-                    "then" | "else" | "elif" if blocks.last() == Some(&ShellBlock::If) => {
+                    "then" if blocks.last() == Some(&ShellBlock::IfCondition) => {
+                        blocks.pop();
+                        blocks.push(ShellBlock::IfBody);
                         executable_index += 1;
                     }
-                    "do" if blocks.last() == Some(&ShellBlock::Loop) => {
+                    "elif" if blocks.last() == Some(&ShellBlock::IfBody) => {
+                        blocks.pop();
+                        blocks.push(ShellBlock::IfCondition);
+                        executable_index += 1;
+                    }
+                    "else" if blocks.last() == Some(&ShellBlock::IfBody) => {
+                        executable_index += 1;
+                    }
+                    "do" if blocks.last() == Some(&ShellBlock::LoopHeader) => {
+                        blocks.pop();
+                        blocks.push(ShellBlock::LoopBody);
                         executable_index += 1;
                     }
                     "!" | "time" => {
@@ -1160,12 +1175,16 @@ mod tests {
         assert!(!valid("{ echo ok; } Please inspect"));
         assert!(!valid("fi; echo if"));
         assert!(!valid("}; echo {"));
+        assert!(!valid("if echo ok; fi"));
+        assert!(!valid("for x in a b; done"));
+        assert!(!valid("for please in inspect the logs; done"));
         assert!(!valid("done"));
         assert!(!valid("fi"));
         assert!(!valid("definitely-not-an-installed-command"));
         assert!(valid("[ -f file ]"));
         assert!(valid("{ echo ok; }"));
         assert!(valid("if [ -f file ]; then echo ok; fi"));
+        assert!(valid("for x in a b; do echo ok; done"));
         assert!(valid("printf 'x' | cat"));
     }
 
