@@ -64,10 +64,11 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
       }));
       try {
         await page.goto(fixture.origin);
-        await page.locator('[data-testid="chat-model-capsule"]:not(:disabled)').waitFor();
+        const capsule = page.locator('.lanePanel:not([aria-hidden]) [data-testid="chat-model-capsule"]');
+        await capsule.waitFor();
         await page.locator('.lanePanel:not([aria-hidden]) textarea.composer-input').fill("Review the latest changes");
         await page.screenshot({ path: path.join(artifacts, `${engine}-${width}-main.png`) });
-        await page.locator('[data-testid="chat-model-capsule"]').click();
+        await capsule.click();
         const sheet = page.locator('[data-testid="model-picker-sheet"]');
         await sheet.waitFor();
         assert.equal(await sheet.evaluate(element => element.matches("dialog:modal")), true);
@@ -84,19 +85,19 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
         assert.equal(await slider.getAttribute("aria-valuetext"), "Max");
         assert.equal(overrides.length, prior, "Dragging must not send intermediate overrides");
         await page.mouse.up();
-        await page.waitForFunction(() => document.querySelector('[data-testid="chat-capsule-effort"]')?.textContent === "Max");
+        await page.waitForFunction(() => document.querySelector('.lanePanel:not([aria-hidden]) [data-testid="chat-capsule-effort"]')?.textContent === "Max");
         await page.waitForFunction(() => document.querySelector('[data-testid="reasoning-effort-slider"]')?.value === "2");
         assert.equal(overrides.length, prior + 1);
         assert.equal(overrides.at(-1).payload.model_reasoning_effort, "max");
         await slider.press("ArrowLeft");
-        await page.waitForFunction(() => document.querySelector('[data-testid="chat-capsule-effort"]')?.textContent === "High");
+        await page.waitForFunction(() => document.querySelector('.lanePanel:not([aria-hidden]) [data-testid="chat-capsule-effort"]')?.textContent === "High");
         await sheet.locator('[data-testid="model-picker-item-m2"]').click();
-        await page.waitForFunction(() => document.querySelector('[data-testid="chat-capsule-text"]')?.textContent === "Second model alias");
+        await page.waitForFunction(() => document.querySelector('.lanePanel:not([aria-hidden]) [data-testid="chat-capsule-text"]')?.textContent === "Second model alias");
         assert.equal(await slider.getAttribute("max"), "1");
         assert.equal(await sheet.evaluate(element => element.scrollWidth <= element.clientWidth), true);
         await page.screenshot({ path: path.join(artifacts, `${engine}-${width}-chat-picker.png`) });
         await sheet.locator('[data-testid="model-picker-done"]').click();
-        assert.equal(await page.locator('[data-testid="chat-model-capsule"]').evaluate(element => document.activeElement === element), true);
+        assert.equal(await capsule.evaluate(element => document.activeElement === element), true);
 
         if (width < 900) {
           await page.locator('[data-testid="mobile-drawer-toggle"]').click();

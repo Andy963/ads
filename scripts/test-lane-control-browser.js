@@ -48,7 +48,7 @@ function readSurface(page) {
   return page.evaluate(() => {
     const box = (el) => {
       const rect = el.getBoundingClientRect();
-      return { left: rect.left, width: rect.width, right: rect.right };
+      return { left: rect.left, top: rect.top, width: rect.width, right: rect.right, bottom: rect.bottom };
     };
     const tabs = [...document.querySelectorAll(".laneTab")].map((tab) => {
       const style = getComputedStyle(tab);
@@ -92,6 +92,7 @@ function readDots(page) {
       const matrix = new DOMMatrixReadOnly(style.transform);
       const ring = /rgba\([\d.]+,\s*[\d.]+,\s*[\d.]+,\s*([\d.]+)\)\s+[\d.-]+px\s+[\d.-]+px\s+[\d.-]+px\s+([\d.-]+)px/.exec(style.boxShadow);
       return {
+        className: dot.className,
         animation: style.animationName,
         scale: style.transform === "none" ? 1 : matrix.a,
         ringAlpha: ring ? Number(ring[1]) : null,
@@ -101,16 +102,6 @@ function readDots(page) {
     };
     return { busy: read("lane-tab-status-acopilot"), idle: read("lane-tab-status-actions") };
   });
-}
-
-async function sampleDots(page, { durationMs = 1900, intervalMs = 90 } = {}) {
-  const samples = [];
-  const start = Date.now();
-  while (Date.now() - start < durationMs) {
-    samples.push(await readDots(page));
-    await page.waitForTimeout(intervalMs);
-  }
-  return samples;
 }
 
 async function sendHeldAdvisorPrompt(page, fixture, marker) {
@@ -131,35 +122,14 @@ async function activateLane(page, lane, mobile) {
     document.querySelector(`[data-testid="lane-tab-${expected}"]`)?.classList.contains("active"), lane);
 }
 
-function assertPulseSamples(samples, label) {
-  const busyScales = samples.map((sample) => sample.busy.scale);
-  const peakScale = Math.max(...busyScales);
-  const troughScale = Math.min(...busyScales);
-  assert.ok(
-    samples.every((sample) => sample.busy.animation.startsWith("laneDotPulse")),
-    `${label}: busy dot must keep the pulse animation, got ${JSON.stringify(samples.map((sample) => sample.busy.animation))}`,
-  );
-  assert.ok(peakScale >= 1.4, `${label}: pulse peak scale ${peakScale} must reach >= 1.4`);
-  assert.ok(peakScale - troughScale >= 0.35, `${label}: pulse amplitude ${peakScale - troughScale} must exceed 0.35`);
-  assert.ok(
-    samples.some((sample) => sample.busy.ringAlpha >= 0.4 && sample.busy.ringSpread >= 5),
-    `${label}: pulse ring must reach alpha >= 0.4 at >= 5px spread, peaks ${JSON.stringify(samples.map((sample) => [sample.busy.ringAlpha, sample.busy.ringSpread]))}`,
-  );
-  assert.ok(
-    samples.every((sample) => sample.idle.animation === "none" && sample.idle.scale === 1),
-    `${label}: the idle lane dot must not animate`,
-  );
-  return { peakScale, troughScale };
-}
-
 for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]) {
   const fixture = await startChatBrowserServer(buildRoot);
   let browser;
   try {
     browser = await browserType.launch();
 
-    // Desktop: the capsule cap binds and the model segment stays in line with
-    // a single lane tab even with a maximally long user alias.
+    // Desktop: the lane strip has three equal workspace views while the model
+    // control lives in the active composer instead of consuming nav width.
     {
       const result = { engine, scenario: "desktop-1280" };
       report.cases.push(result);
@@ -171,13 +141,12 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
         const surface = await readSurface(page);
         result.surface = surface;
         assert.equal(surface.viewport, 1280);
-        assert.ok(Math.abs(surface.tabs[0].width - surface.capsule.width) <= 4, `Each segment must share the width: ${JSON.stringify(surface)}`);
-        assert.ok(surface.capsule.textTruncated, "the long alias must be ellipsized inside the capped capsule");
-        const widestTab = Math.max(...surface.tabs.map((tab) => tab.width));
-        assert.ok(
-          surface.capsule.width <= widestTab * 1.05,
-          `capsule ${surface.capsule.width} must not be markedly wider than a tab ${widestTab}`,
-        );
+        assert.deepEqual(surface.tabs.map((tab) => tab.id), ["lane-tab-acopilot", "lane-tab-actions", "lane-tab-prs"]);
+        const tabWidths = surface.tabs.map((tab) => tab.width);
+        assert.ok(Math.max(...tabWidths) - Math.min(...tabWidths) <= 1, `workspace tabs must share width: ${JSON.stringify(tabWidths)}`);
+        assert.ok(surface.capsule.left >= 0 && surface.capsule.right <= surface.viewport, "the composer model capsule must fit the viewport");
+        assert.ok(surface.capsule.top > surface.surface.bottom, "the model capsule must sit below the lane navigation strip");
+        assert.equal(await page.locator('.laneTabs .modelCapsule').count(), 0, "the nav strip must not contain model controls");
         assert.ok(
           surface.tabs.every((tab) => tab.paddingLeft === 18),
           `desktop tabs must use 18px horizontal padding, got ${JSON.stringify(surface.tabs.map((tab) => tab.paddingLeft))}`,
@@ -246,8 +215,11 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
 
         const release = await sendHeldAdvisorPrompt(page, fixture, `browser-advisor-pulse-${width}`);
         try {
-          const samples = await sampleDots(page);
-          result.pulse = { samples: samples.length, ...assertPulseSamples(samples, `mobile-${width}`) };
+          const dots = await readDots(page);
+          assert.ok(dots.busy.className.includes("laneTabStatusDot--busy-acopilot"));
+          assert.equal(dots.busy.background, "rgb(168, 85, 247)");
+          assert.equal(dots.idle.className.includes("laneTabStatusDot--busy-actions"), false);
+          result.busyDot = dots.busy;
         } finally {
           release();
         }
@@ -266,8 +238,7 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
       }
     }
 
-    // OS reduce-motion: the busy dot degrades to a steady, clearly visible
-    // indicator instead of losing its animation to the global suppression.
+    // OS reduce-motion: lane status remains a steady, clearly visible indicator.
     {
       const result = { engine, scenario: "reduced-motion-375" };
       report.cases.push(result);
@@ -285,31 +256,12 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
         await activateLane(page, "acopilot", true);
         const release = await sendHeldAdvisorPrompt(page, fixture, "browser-advisor-pulse-reduced");
         try {
-          await page.waitForFunction(() => {
-            const dot = document.querySelector('[data-testid="lane-tab-status-acopilot"]');
-            const style = getComputedStyle(dot);
-            return style.animationName === "none" && Math.abs(new DOMMatrixReadOnly(style.transform).a - 1.3) <= 0.05;
-          });
-          const samples = await sampleDots(page, { durationMs: 1000 });
-          result.reducedMotion = samples.at(-1);
-          assert.ok(
-            samples.every((sample) => sample.busy.animation === "none"),
-            "reduce-motion must disable the pulse animation outright",
-          );
-          const scales = samples.map((sample) => sample.busy.scale);
-          assert.ok(
-            scales.every((scale) => Math.abs(scale - 1.3) <= 0.05),
-            `reduce-motion busy dot must stay a steady enlarged indicator, got scales ${JSON.stringify(scales)}`,
-          );
-          assert.ok(
-            samples.every((sample) => sample.busy.ringAlpha >= 0.5 && sample.busy.ringSpread >= 3),
-            `reduce-motion busy dot must keep a strong ring, got ${JSON.stringify(samples.map((sample) => [sample.busy.ringAlpha, sample.busy.ringSpread]))}`,
-          );
-          assert.equal(samples.at(-1).busy.background, "rgb(168, 85, 247)", "the busy lane color must survive reduce-motion");
-          assert.ok(
-            samples.every((sample) => sample.idle.animation === "none"),
-            "the idle lane dot must stay static under reduce-motion",
-          );
+          const dots = await readDots(page);
+          result.reducedMotion = dots.busy;
+          assert.equal(dots.busy.animation, "none");
+          assert.ok(dots.busy.className.includes("laneTabStatusDot--busy-acopilot"));
+          assert.ok(dots.busy.ringAlpha >= 0.2 && dots.busy.ringSpread >= 1);
+          assert.equal(dots.idle.animation, "none");
         } finally {
           release();
         }

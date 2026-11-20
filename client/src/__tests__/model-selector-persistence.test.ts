@@ -229,11 +229,13 @@ describe("Model selector persistence", () => {
       await settleUi(wrapper);
 
       const order = Array.from(wrapper.get(".laneTabGroup").element.children).map((element) => element.getAttribute("data-testid"));
-      expect(order).toEqual(["lane-tab-acopilot", "lane-tab-actions"]);
-      expect(wrapper.get('[data-testid="lane-model-controls"]').classes()).toContain("laneModelControls");
-      const selector = wrapper.findComponent({ name: "MainChatModelSelectors" });
-      expect(selector.props("modelReasoningEffort")).toBe("medium");
-      selector.vm.$emit("setReasoningEffort", "ultra");
+      expect(order).toEqual(["lane-tab-acopilot", "lane-tab-actions", "lane-tab-prs"]);
+      const chats = wrapper.findAllComponents({ name: "MainChatView" });
+      expect(chats).toHaveLength(2);
+      let chat = chats.find((item) => item.props("modelId") === "gpt-4.1");
+      expect(chat).toBeDefined();
+      expect(chat!.props("modelReasoningEffort")).toBe("medium");
+      chat!.vm.$emit("setReasoningEffort", "ultra");
       await settleUi(wrapper);
       controller.sendMainPrompt("Worker prompt");
       await settleUi(wrapper);
@@ -245,8 +247,10 @@ describe("Model selector persistence", () => {
       expect(_lastAdvisorWs).toBeTruthy();
       _lastAdvisorWs!.onOpen?.();
       await settleUi(wrapper);
-      expect(selector.props("modelReasoningEffort")).toBe("high");
-      selector.vm.$emit("setReasoningEffort", "max");
+      chat = wrapper.findAllComponents({ name: "MainChatView" }).find((item) => item.props("modelId") === "gpt-4o");
+      expect(chat).toBeDefined();
+      expect(chat!.props("modelReasoningEffort")).toBe("high");
+      chat!.vm.$emit("setReasoningEffort", "max");
       await settleUi(wrapper);
       controller.sendAcopilotPrompt("Advisor prompt");
       await settleUi(wrapper);
@@ -254,7 +258,9 @@ describe("Model selector persistence", () => {
 
       await wrapper.get('[data-testid="lane-tab-actions"]').trigger("click");
       await settleUi(wrapper);
-      expect(selector.props("modelReasoningEffort")).toBe("ultra");
+      chat = wrapper.findAllComponents({ name: "MainChatView" }).find((item) => item.props("modelId") === "gpt-4.1");
+      expect(chat).toBeDefined();
+      expect(chat!.props("modelReasoningEffort")).toBe("ultra");
     } finally {
       wrapper.unmount();
     }

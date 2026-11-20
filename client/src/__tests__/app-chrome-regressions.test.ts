@@ -350,8 +350,8 @@ describe("mobile navigation shell (mobile-pane-tabs)", () => {
 
     const tablist = wrapper.get('[role="tablist"]');
     const tabs = tablist.findAll('[role="tab"]');
-    expect(tabs.map((tab) => tab.get(".laneTabLabel").text())).toEqual(["Acopilot", "Actions"]);
-    expect(tabs.map((tab) => tab.attributes("aria-selected"))).toEqual(["true", "false"]);
+    expect(tabs.map((tab) => tab.get(".laneTabLabel").text())).toEqual(["Acopilot", "Actions", "PRs"]);
+    expect(tabs.map((tab) => tab.attributes("aria-selected"))).toEqual(["true", "false", "false"]);
     expect(wrapper.find('[data-testid="lane-tab-tasks"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="lane-tab-reviewer"]').exists()).toBe(false);
 

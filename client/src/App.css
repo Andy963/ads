@@ -726,12 +726,13 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
   box-sizing: border-box;
   overflow: hidden;
+  justify-content: center;
 }
 
 .laneTabGroup {
   display: inline-flex;
   align-items: center;
-  flex: 2 1 0;
+  flex: 1 1 auto;
   gap: 2px;
   min-width: 0;
 }
@@ -1375,7 +1376,7 @@
   .laneTabGroup {
     position: relative;
     display: inline-grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     align-items: center;
     padding: 0;
     gap: 0;
@@ -1392,7 +1393,7 @@
     bottom: 0;
     left: 0;
     z-index: 0;
-    width: 50%;
+    width: 33.333333%;
     border-radius: 9px;
     background: white;
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
@@ -1402,6 +1403,9 @@
   }
   .laneTabGroup:has([data-testid="lane-tab-actions"].active)::before {
     transform: translateX(calc(var(--lane-pill-progress, 1) * 100%));
+  }
+  .laneTabGroup:has([data-testid="lane-tab-prs"].active)::before {
+    transform: translateX(200%);
   }
   .laneTab {
     position: relative;

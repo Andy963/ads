@@ -109,7 +109,7 @@ for (const [engine, type] of [["chromium", chromium], ["webkit", webkit]]) {
       try {
         await page.goto(fixture.origin);
         // Account initialization closes transient navigation; wait for it before opening settings.
-        await page.locator('[data-testid="chat-model-capsule"]:not(:disabled)').waitFor();
+        await page.locator('.lanePanel:not([aria-hidden]) [data-testid="chat-model-capsule"]:not(:disabled)').waitFor();
         await page.evaluate(() => window.setKeyboardViewport(window.innerHeight));
         if (width < 900) {
           await page.locator('[data-testid="mobile-drawer-toggle"]').tap();

@@ -149,7 +149,7 @@ try {
         await settle();
         const laneSurface = await page.evaluate(() => {
           const rect = (selector) => {
-            const element = document.querySelector(selector);
+            const element = [...document.querySelectorAll(selector)].find((candidate) => candidate.getClientRects().length > 0);
             if (!element) return null;
             const box = element.getBoundingClientRect();
             return { top: box.top, bottom: box.bottom, height: box.height, width: box.width };
@@ -168,41 +168,35 @@ try {
             surface: rect(".laneTabs"),
             group: rect(".laneTabGroup"),
             tab: rect(".laneTab"),
-            divider: rect(".laneControlDivider"),
-            controls: rect(".laneModelControls"),
             capsule: rect(".modelCapsule"),
+            composerControls: rect('[data-testid="composer-model-controls"]'),
             groupStyle: style(".laneTabGroup"),
-            controlsStyle: style(".laneModelControls"),
+            navModelCount: document.querySelectorAll(".laneTabs .modelCapsule").length,
+            navDividerCount: document.querySelectorAll(".laneTabs .laneControlDivider").length,
           };
         });
 
-        for (const key of ["surface", "group", "tab", "divider", "controls", "capsule"]) {
+        for (const key of ["surface", "group", "tab", "capsule", "composerControls"]) {
           assert.ok(laneSurface[key], `Lane control surface must render ${key}`);
         }
         const tolerance = 0.6;
         assert.ok(
-          Math.abs(laneSurface.tab.height - laneSurface.capsule.height) <= tolerance,
-          `Lane tab and model capsule must share one height; got ${laneSurface.tab.height} vs ${laneSurface.capsule.height}`,
+          laneSurface.capsule.top >= laneSurface.surface.bottom - tolerance,
+          `Model capsule must sit below the lane navigation; got ${laneSurface.capsule.top} vs ${laneSurface.surface.bottom}`,
         );
-        assert.ok(
-          Math.abs(laneSurface.tab.top - laneSurface.capsule.top) <= tolerance,
-          `Lane tab and model capsule must sit flush; got ${laneSurface.tab.top} vs ${laneSurface.capsule.top}`,
-        );
-        assert.ok(
-          laneSurface.divider.height < laneSurface.surface.height,
-          `Lane divider must be a hairline inside the surface; got ${laneSurface.divider.height} in ${laneSurface.surface.height}`,
-        );
+        assert.ok(laneSurface.capsule.width <= laneSurface.composerControls.width + tolerance, "Composer metadata must contain the model capsule");
+        assert.equal(laneSurface.navModelCount, 0, "Lane navigation must not contain a model capsule");
+        assert.equal(laneSurface.navDividerCount, 0, "Lane navigation must not retain the retired model divider");
         assert.equal(laneSurface.groupStyle.background, "rgba(0, 0, 0, 0)", "Lane group must not paint a second surface");
         assert.equal(laneSurface.groupStyle.borderTopWidth, "0px", "Lane group must not paint a second border");
-        assert.equal(laneSurface.controlsStyle.background, "rgba(0, 0, 0, 0)", "Model controls must not paint a second surface");
-        assert.equal(laneSurface.controlsStyle.borderLeftWidth, "0px", "Model controls must not carry a full-height rule");
         result.checks.push({
           kind: "lane-control-single-surface",
           width,
           tabHeight: laneSurface.tab.height,
           capsuleHeight: laneSurface.capsule.height,
           surfaceHeight: laneSurface.surface.height,
-          dividerHeight: laneSurface.divider.height,
+          surfaceBottom: laneSurface.surface.bottom,
+          capsuleTop: laneSurface.capsule.top,
         });
       }
 

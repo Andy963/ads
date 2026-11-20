@@ -11,6 +11,7 @@ import { handleAuthRoutes } from "./routes/auth.js";
 import { handleAudioRoutes } from "./routes/audio.js";
 import { handlePathRoutes } from "./routes/paths.js";
 import { handleProjectRoutes } from "./routes/projects.js";
+import { handlePullRequestRoutes } from "./routes/pullRequests.js";
 import { handleModelRoutes } from "./routes/models.js";
 import { handleAttachmentRoutes } from "./routes/attachments.js";
 import { handleLanePromptRoutes } from "./routes/lanePrompts.js";
@@ -84,6 +85,7 @@ export function createApiRequestHandler(deps: {
     if (await handleAudioRoutes(routeCtx, { logger: deps.logger })) return true;
     if (await handlePathRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
     if (await handleProjectRoutes(routeCtx, { allowedDirs: deps.allowedDirs })) return true;
+    if (await handlePullRequestRoutes(routeCtx, { defaultWorkspaceRoot: deps.workspaceRoot })) return true;
     if (await handleLanePromptRoutes(routeCtx, { lanePromptStore: deps.lanePromptStore })) return true;
     if (await handleRoleProfileRoutes(routeCtx)) return true;
     if (await handleActionRoutes(routeCtx, { resolveWorkspaceRoot: deps.resolveWorkspaceRoot, allowedDirs: deps.allowedDirs })) return true;
