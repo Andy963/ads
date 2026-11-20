@@ -755,8 +755,21 @@ pub(crate) fn command_has_executable(command: &str) -> bool {
             }) {
                 executable_index += 1;
             }
+            while tokens.get(executable_index).is_some_and(|token| {
+                matches!(
+                    command_basename(token).as_str(),
+                    "!" | "{" | "then" | "else" | "elif" | "do" | "if" | "time" | "until" | "while"
+                )
+            }) {
+                executable_index += 1;
+            }
             let Some(executable) = tokens.get(executable_index) else {
-                return false;
+                return tokens.first().is_some_and(|token| {
+                    matches!(
+                        command_basename(token).as_str(),
+                        "}" | "done" | "esac" | "fi" | "then" | "else"
+                    )
+                });
             };
             let normalized = command_basename(executable);
             SHELL_BUILTINS.contains(&normalized.as_str())
@@ -768,11 +781,29 @@ pub(crate) fn command_has_executable(command: &str) -> bool {
 fn executable_exists(command: &str) -> bool {
     let path = std::path::Path::new(command);
     if path.components().count() > 1 {
-        return path.is_file();
+        return is_executable_file(path);
     }
     std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|directory| directory.join(command).is_file())
+        std::env::split_paths(&paths).any(|directory| is_executable_file(&directory.join(command)))
     })
+}
+
+fn is_executable_file(path: &std::path::Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn parse_allowlist(raw: &str) -> Option<Vec<String>> {
@@ -1081,11 +1112,13 @@ mod tests {
     #[test]
     fn requires_a_real_executable_or_shell_construct() {
         assert!(!command_has_executable("Please inspect the logs"));
+        assert!(!command_has_executable("{ Please inspect the logs; }"));
         assert!(!command_has_executable(
             "definitely-not-an-installed-command"
         ));
         assert!(command_has_executable("[ -f file ]"));
         assert!(command_has_executable("{ echo ok; }"));
+        assert!(command_has_executable("if [ -f file ]; then echo ok; fi"));
         assert!(command_has_executable("printf 'x' | cat"));
     }
 
