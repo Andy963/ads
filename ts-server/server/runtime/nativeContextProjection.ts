@@ -1,0 +1,399 @@
+import type {
+  NativeChatMessage,
+  NativeChatToolCall,
+  NativeToolDefinition,
+} from "./openAiCompatibleClient.js";
+import {
+  DEFAULT_MODEL_CONTEXT_WINDOW,
+  DEFAULT_MODEL_OUTPUT_TOKENS,
+  MIN_MODEL_CONTEXT_WINDOW,
+  defaultModelOutputTokens,
+  normalizeModelTokenLimit,
+} from "../../shared/modelTokenBudget.js";
+
+export const DEFAULT_NATIVE_CONTEXT_WINDOW = DEFAULT_MODEL_CONTEXT_WINDOW;
+export const DEFAULT_NATIVE_CONTEXT_RESERVED_TOKENS = DEFAULT_MODEL_OUTPUT_TOKENS;
+
+const MESSAGE_OVERHEAD_TOKENS = 8;
+const TOOL_OUTPUT_TRUNCATION_MARKER = "[Native context truncated: tool output omitted]";
+
+export interface NativeTokenCalibration {
+  /** Raw heuristic estimate of the exact projected request sent upstream. */
+  estimatedInputTokens: number;
+  /** Prompt usage for that request, never accumulated billing usage. */
+  actualInputTokens: number;
+}
+
+export interface NativeContextProjectionOptions {
+  contextWindow?: number;
+  reservedTokens?: number;
+  maxOutputTokens?: number;
+  tools?: NativeToolDefinition[];
+  /** Keep stopped task turns together with the next user request. */
+  requiredRecentTurns?: number;
+  tokenCalibration?: NativeTokenCalibration;
+}
+
+export interface NativeContextProjectionDiagnostic {
+  compacted: boolean;
+  contextWindow: number;
+  reservedTokens: number;
+  estimatedTokens: number;
+  droppedMessages: number;
+  truncatedToolOutputs: number;
+}
+
+export interface NativeContextProjection {
+  messages: NativeChatMessage[];
+  diagnostic: NativeContextProjectionDiagnostic;
+}
+
+export class NativeContextLimitError extends Error {
+  readonly code = "NATIVE_CONTEXT_LIMIT";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "NativeContextLimitError";
+  }
+}
+
+interface ContextTurn {
+  messages: NativeChatMessage[];
+}
+
+function cloneMessage(message: NativeChatMessage): NativeChatMessage {
+  return {
+    ...message,
+    ...(message.nativeResponses ? { nativeResponses: structuredClone(message.nativeResponses) } : {}),
+    ...(Array.isArray(message.content) ? {
+      content: message.content.map(part => part.type === "image_url"
+        ? { ...part, image_url: { ...part.image_url } }
+        : { ...part }),
+    } : {}),
+    ...(message.tool_calls
+      ? {
+          tool_calls: message.tool_calls.map((call) => ({
+            ...call,
+            function: { ...call.function },
+          })),
+        }
+      : {}),
+  };
+}
+
+function textTokens(value: string | null | undefined): number {
+  return Math.ceil(String(value ?? "").length / 4);
+}
+
+export function estimateNativeMessageTokens(message: NativeChatMessage): number {
+  const toolCallTokens = message.tool_calls?.reduce(
+    (total, call) => total + estimateNativeToolCallTokens(call),
+    0,
+  ) ?? 0;
+  // Image tokenization is provider-specific. Reserve a conservative budget per
+  // image rather than counting base64 characters or treating it as empty text.
+  const contentTokens = Array.isArray(message.content)
+    ? message.content.reduce((total, part) => total + (part.type === "text" ? textTokens(part.text) : 4_096), 0)
+    : textTokens(message.content);
+  // Visible messages/calls are already counted above; include opaque reasoning
+  // in the fixed budget without making it display text or a truncatable tool result.
+  const reasoningTokens = message.nativeResponses?.output.reduce((total, item) => total
+    + (item.type === "reasoning" ? MESSAGE_OVERHEAD_TOKENS + textTokens(JSON.stringify(item)) : 0), 0) ?? 0;
+  return MESSAGE_OVERHEAD_TOKENS + contentTokens + textTokens(message.name) + toolCallTokens + reasoningTokens;
+}
+
+function estimateNativeToolCallTokens(call: NativeChatToolCall): number {
+  return MESSAGE_OVERHEAD_TOKENS
+    + textTokens(call.id)
+    + textTokens(call.function.name)
+    + textTokens(call.function.arguments);
+}
+
+function estimateMessagesTokens(messages: NativeChatMessage[]): number {
+  return messages.reduce((total, message) => total + estimateNativeMessageTokens(message), 0);
+}
+
+function estimateToolDefinitionTokens(tools: NativeToolDefinition[] | undefined): number {
+  if (!tools || tools.length === 0) return 0;
+  return tools.reduce(
+    (total, tool) => total + MESSAGE_OVERHEAD_TOKENS + textTokens(JSON.stringify(tool)),
+    0,
+  );
+}
+
+export function estimateNativeRequestTokens(
+  messages: NativeChatMessage[],
+  tools?: NativeToolDefinition[],
+): number {
+  return estimateMessagesTokens(messages) + estimateToolDefinitionTokens(tools);
+}
+
+export function resolveNativeContextBudget(options: NativeContextProjectionOptions = {}): {
+  contextWindow: number;
+  reservedTokens: number;
+} {
+  const contextWindow = normalizeModelTokenLimit(options.contextWindow, MIN_MODEL_CONTEXT_WINDOW)
+    ?? DEFAULT_NATIVE_CONTEXT_WINDOW;
+  const requested = normalizeModelTokenLimit(options.reservedTokens ?? options.maxOutputTokens)
+    ?? defaultModelOutputTokens(contextWindow);
+  // Keep a minimal input budget, and use this same effective cap on the wire.
+  return { contextWindow, reservedTokens: Math.min(requested, contextWindow - 64) };
+}
+
+function calibrationScale(calibration: NativeTokenCalibration | undefined): number {
+  if (!calibration
+    || !Number.isSafeInteger(calibration.actualInputTokens) || calibration.actualInputTokens <= 0
+    || !Number.isSafeInteger(calibration.estimatedInputTokens) || calibration.estimatedInputTokens <= 0) {
+    return 1;
+  }
+  // Do not extrapolate a cheap previous prompt into optimistic future budgets.
+  return Math.max(1, calibration.actualInputTokens / calibration.estimatedInputTokens);
+}
+
+function assertToolCall(call: NativeChatToolCall, index: number): void {
+  if (!call || typeof call.id !== "string" || !call.id.trim()) {
+    throw new NativeContextLimitError(`Invalid Native tool call at index ${index}: missing tool call id.`);
+  }
+  if (!call.function || typeof call.function.name !== "string" || !call.function.name.trim()) {
+    throw new NativeContextLimitError(`Invalid Native tool call ${call.id}: missing function name.`);
+  }
+  if (typeof call.function.arguments !== "string") {
+    throw new NativeContextLimitError(`Invalid Native tool call ${call.id}: arguments must be a string.`);
+  }
+}
+
+function groupMessages(messages: NativeChatMessage[]): {
+  system: NativeChatMessage[];
+  turns: ContextTurn[];
+} {
+  const system: NativeChatMessage[] = [];
+  const turns: ContextTurn[] = [];
+  let current: NativeChatMessage[] | null = null;
+  let pendingToolCalls = new Set<string>();
+
+  const finishTurn = (): void => {
+    if (current === null) return;
+    if (pendingToolCalls.size > 0) {
+      throw new NativeContextLimitError(
+        `Invalid Native message sequence: tool results are missing for ${[...pendingToolCalls].join(", ")}.`,
+      );
+    }
+    turns.push({ messages: current });
+    current = null;
+    pendingToolCalls = new Set<string>();
+  };
+
+  for (const message of messages) {
+    if (!message || typeof message !== "object") {
+      throw new NativeContextLimitError("Invalid Native message sequence: message is not an object.");
+    }
+    if (message.role === "system") {
+      if (current !== null) {
+        throw new NativeContextLimitError("Invalid Native message sequence: system message appears after a turn.");
+      }
+      system.push(cloneMessage(message));
+      continue;
+    }
+    if (message.role === "user") {
+      if (current?.length === 1) {
+        throw new NativeContextLimitError(
+          "Invalid Native message sequence: previous user turn has no assistant response.",
+        );
+      }
+      finishTurn();
+      current = [cloneMessage(message)];
+      continue;
+    }
+    if (current === null) {
+      throw new NativeContextLimitError(
+        `Invalid Native message sequence: ${message.role} message appears before a user message.`,
+      );
+    }
+    if (message.role === "assistant") {
+      if (pendingToolCalls.size > 0) {
+        throw new NativeContextLimitError(
+          `Invalid Native message sequence: assistant message interrupted pending tool results for ${[...pendingToolCalls].join(", ")}.`,
+        );
+      }
+      const calls = message.tool_calls ?? [];
+      calls.forEach((call, index) => assertToolCall(call, index));
+      const ids = new Set<string>();
+      for (const call of calls) {
+        if (ids.has(call.id)) {
+          throw new NativeContextLimitError(`Invalid Native message sequence: duplicate tool call id ${call.id}.`);
+        }
+        ids.add(call.id);
+      }
+      current.push(cloneMessage(message));
+      for (const call of calls) pendingToolCalls.add(call.id);
+      continue;
+    }
+    if (message.role === "tool") {
+      const toolCallId = typeof message.tool_call_id === "string" ? message.tool_call_id : "";
+      if (!pendingToolCalls.has(toolCallId)) {
+        throw new NativeContextLimitError(
+          `Invalid Native message sequence: tool result ${toolCallId || "<missing>"} has no matching tool call.`,
+        );
+      }
+      current.push(cloneMessage(message));
+      pendingToolCalls.delete(toolCallId);
+      continue;
+    }
+    throw new NativeContextLimitError("Invalid Native message sequence: unsupported message role.");
+  }
+  finishTurn();
+  return { system, turns };
+}
+
+function truncateToolContent(content: string, tokenBudget: number): string {
+  if (tokenBudget <= 0) return TOOL_OUTPUT_TRUNCATION_MARKER;
+  const markerTokens = textTokens(TOOL_OUTPUT_TRUNCATION_MARKER);
+  if (tokenBudget <= markerTokens) {
+    return TOOL_OUTPUT_TRUNCATION_MARKER.slice(0, Math.max(0, tokenBudget * 4));
+  }
+  const contentBudget = tokenBudget - markerTokens;
+  return `${content.slice(0, contentBudget * 4)}${TOOL_OUTPUT_TRUNCATION_MARKER}`;
+}
+
+function fitToolTurn(turn: ContextTurn, tokenBudget: number): { turn: ContextTurn; truncated: number } {
+  const toolIndexes = turn.messages
+    .map((message, index) => message.role === "tool" && message.nativeToolOutcome !== "unknown" ? index : -1)
+    .filter((index) => index >= 0);
+  if (toolIndexes.length === 0) {
+    throw new NativeContextLimitError(
+      `Native context limit exceeded: the latest indivisible turn requires ${estimateMessagesTokens(turn.messages)} tokens, but only ${tokenBudget} input tokens are available.`,
+    );
+  }
+
+  const fixedMessages = turn.messages.map((message) => message.role === "tool" && message.nativeToolOutcome !== "unknown"
+    ? { ...cloneMessage(message), content: "" }
+    : cloneMessage(message));
+  let remaining = tokenBudget - estimateMessagesTokens(fixedMessages);
+  if (remaining < 0) {
+    throw new NativeContextLimitError(
+      "Native context limit exceeded: the latest tool turn contains fixed message overhead larger than the context budget.",
+    );
+  }
+
+  const fitted = fixedMessages;
+  let truncated = 0;
+  for (let position = 0; position < toolIndexes.length; position += 1) {
+    const index = toolIndexes[position];
+    const original = turn.messages[index];
+    if (!original) continue;
+    const originalContent = typeof original.content === "string" ? original.content : String(original.content ?? "");
+    const originalTokens = textTokens(originalContent);
+    const slots = toolIndexes.length - position;
+    const perToolBudget = Math.floor(remaining / slots);
+    if (originalTokens <= perToolBudget) {
+      fitted[index] = { ...cloneMessage(original), content: originalContent };
+      remaining -= originalTokens;
+      continue;
+    }
+    if (perToolBudget <= 0) {
+      throw new NativeContextLimitError(
+        "Native context limit exceeded: the latest tool turn cannot retain truncation markers within the context budget.",
+      );
+    }
+    fitted[index] = { ...cloneMessage(original), content: truncateToolContent(originalContent, perToolBudget) };
+    remaining -= perToolBudget;
+    truncated += 1;
+  }
+
+  const fittedTokens = estimateMessagesTokens(fitted);
+  if (fittedTokens > tokenBudget) {
+    throw new NativeContextLimitError(
+      `Native context limit exceeded: truncated tool turn still requires ${fittedTokens} tokens, but only ${tokenBudget} input tokens are available.`,
+    );
+  }
+  return { turn: { messages: fitted }, truncated };
+}
+
+export function projectNativeContext(
+  messages: NativeChatMessage[],
+  options: NativeContextProjectionOptions = {},
+): NativeContextProjection {
+  const { contextWindow, reservedTokens } = resolveNativeContextBudget(options);
+  const tokenScale = calibrationScale(options.tokenCalibration);
+  // Fit in heuristic units so truncation, tool schemas, images and fixed
+  // overhead all obey the same calibrated budget without rounding per item.
+  const inputBudget = Math.floor((contextWindow - reservedTokens) / tokenScale);
+  if (inputBudget <= 0) {
+    throw new NativeContextLimitError(
+      `Native context limit exceeded: context window ${contextWindow} leaves no input budget after reserving ${reservedTokens} tokens and applying usage calibration.`,
+    );
+  }
+
+  const grouped = groupMessages(messages);
+  const requiredRecentTurns = Math.min(grouped.turns.length, Math.max(1, Math.floor(options.requiredRecentTurns ?? 1)));
+  if (requiredRecentTurns > 1) {
+    const required = grouped.turns.splice(grouped.turns.length - requiredRecentTurns);
+    grouped.turns.push({ messages: required.flatMap(turn => turn.messages) });
+  }
+  const toolDefinitionTokens = estimateToolDefinitionTokens(options.tools);
+  const systemTokens = estimateMessagesTokens(grouped.system);
+  if (systemTokens + toolDefinitionTokens > inputBudget) {
+    throw new NativeContextLimitError(
+      `Native context limit exceeded: system messages and tool definitions require ${systemTokens + toolDefinitionTokens} tokens, but only ${inputBudget} input tokens are available.`,
+    );
+  }
+
+  const selected: ContextTurn[] = [];
+  let usedTokens = systemTokens + toolDefinitionTokens;
+  let droppedMessages = 0;
+  let truncatedToolOutputs = 0;
+  for (let index = grouped.turns.length - 1; index >= 0; index -= 1) {
+    const turn = grouped.turns[index];
+    if (!turn) continue;
+    const turnTokens = estimateMessagesTokens(turn.messages);
+    if (usedTokens + turnTokens <= inputBudget) {
+      selected.push(turn);
+      usedTokens += turnTokens;
+      continue;
+    }
+
+    if (index < grouped.turns.length - 1) {
+      droppedMessages += turn.messages.length;
+      continue;
+    }
+
+    const remainingBudget = inputBudget - usedTokens;
+    const fitted = fitToolTurn(turn, remainingBudget);
+    selected.push(fitted.turn);
+    usedTokens += estimateMessagesTokens(fitted.turn.messages);
+    truncatedToolOutputs += fitted.truncated;
+    droppedMessages += grouped.turns.length - index - 1;
+    break;
+  }
+  selected.reverse();
+
+  const compacted = selected.length < grouped.turns.length || truncatedToolOutputs > 0;
+  if (droppedMessages === 0 && selected.length < grouped.turns.length) {
+    droppedMessages = messages.length - grouped.system.length - selected.flatMap((turn) => turn.messages).length;
+  }
+  const projectedMessages = [
+    ...grouped.system,
+    ...selected.flatMap((turn) => turn.messages),
+  ];
+  return {
+    messages: projectedMessages,
+    diagnostic: {
+      compacted,
+      contextWindow,
+      reservedTokens,
+      estimatedTokens: Math.ceil(estimateNativeRequestTokens(projectedMessages, options.tools) * tokenScale),
+      droppedMessages,
+      truncatedToolOutputs,
+    },
+  };
+}
+
+export function formatNativeContextDiagnostic(diagnostic: NativeContextProjectionDiagnostic): string {
+  if (!diagnostic.compacted) return "Native context projection completed without compaction.";
+  return [
+    "Native context projection compacted older turns.",
+    `Estimated ${diagnostic.estimatedTokens}/${diagnostic.contextWindow} tokens.`,
+    `Dropped ${diagnostic.droppedMessages} message(s).`,
+    `Truncated ${diagnostic.truncatedToolOutputs} tool output(s).`,
+  ].join(" ");
+}

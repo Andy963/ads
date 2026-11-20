@@ -1,0 +1,102 @@
+{
+  "name": "ads",
+  "version": "0.6.3",
+  "type": "module",
+  "description": "AI agent workspace and task orchestration with optional channel connectors",
+  "author": "ADS Contributors",
+  "license": "MIT",
+  "keywords": [
+    "ai",
+    "ai-agents",
+    "task-queue",
+    "workflow",
+    "automation",
+    "codex",
+    "openai"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Andy963/ads.git"
+  },
+  "homepage": "https://github.com/Andy963/ads#readme",
+  "bugs": {
+    "url": "https://github.com/Andy963/ads/issues"
+  },
+  "scripts": {
+    "clean": "node scripts/clean-build-outputs.js --root .",
+    "build": "npm run clean && npm run build:server && npm run build:web",
+    "build:server": "tsc -p tsconfig.build.json && node scripts/copy-runtime-assets.js",
+    "build:web": "vite build --config client/vite.config.ts",
+    "build:web:fixture": "ADS_WEB_FIXTURE_ENTRY=1 vite build --config client/vite.config.ts",
+    "postbuild": "node scripts/chmod-bins.js",
+    "verify:release": "node scripts/verify-release-layout.js",
+    "dev:web": "vite --config client/vite.config.ts",
+    "test:web": "vitest --config client/vitest.config.ts run",
+    "test:composer-browser": "node scripts/test-composer-browser.js",
+    "test:composer-layout-browser": "node scripts/test-composer-layout-browser.js",
+    "test:chat-browser": "node scripts/test-chat-browser.js",
+    "test:execute-marquee-browser": "node scripts/test-execute-marquee-browser.js",
+    "test:role-prompt-keyboard-browser": "node scripts/test-role-prompt-keyboard-browser.js",
+    "test:login-keyboard-browser": "node scripts/test-login-keyboard-browser.js",
+    "test:lane-control-browser": "node scripts/test-lane-control-browser.js",
+    "test:model-settings-browser": "node scripts/test-model-settings-browser.js",
+    "test:model-selection-browser": "node scripts/test-model-selection-browser.js",
+    "test:task-notice-browser": "node scripts/test-task-notice-browser.js",
+    "test:message-retry-browser": "node scripts/test-message-retry-browser.js",
+    "start": "node ts-server/dist/server/cli.js",
+    "dev": "tsx watch ts-server/server/web/server.ts",
+    "test": "npm run test:server && npm run test:web",
+    "test:server": "node scripts/run-tests.js",
+    "coverage": "c8 --all --include ts-server/server --reporter=text --reporter=lcov npm run test:server",
+    "deploy": "node scripts/deploy-local.js",
+    "web": "node ts-server/dist/server/cli.js",
+    "web:init-admin": "tsx ts-server/server/web/auth/initAdminCli.ts",
+    "web:reset-admin": "tsx ts-server/server/web/auth/resetAdminCli.ts",
+    "lint": "eslint ts-server client --ext .ts",
+    "skills:migrate": "tsx ts-server/server/skills/migrate.ts",
+    "codex:regen-types": "node scripts/generate-codex-app-server-types.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "ads": "ts-server/dist/server/cli.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.6.2",
+    "liteque": "^0.8.0",
+    "toml": "^3.0.0",
+    "typescript": "^5.5.4",
+    "web-push": "^3.6.7",
+    "ws": "^8.18.0",
+    "yaml": "^2.6.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.5.0",
+    "@types/web-push": "^3.6.4",
+    "@types/ws": "^8.5.12",
+    "@typescript-eslint/eslint-plugin": "^8.46.4",
+    "@typescript-eslint/parser": "^8.46.4",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/test-utils": "^2.4.6",
+    "c8": "^9.1.0",
+    "dotenv": "^16.4.5",
+    "element-plus": "^2.13.2",
+    "esbuild": "^0.27.3",
+    "eslint": "^9.39.1",
+    "globals": "^16.5.0",
+    "highlight.js": "^11.11.1",
+    "jsdom": "^27.4.0",
+    "markdown-it": "^14.1.0",
+    "playwright": "^1.63.0",
+    "tsx": "^4.16.0",
+    "typescript-eslint": "^8.46.4",
+    "vite": "^6.0.11",
+    "vite-plugin-pwa": "^1.3.0",
+    "vitest": "^4.0.18",
+    "vue": "^3.5.42"
+  }
+}

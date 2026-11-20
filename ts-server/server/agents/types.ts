@@ -1,0 +1,64 @@
+import type { Input, Usage } from "./protocol/types.js";
+import type { AgentEvent } from "../codex/events.js";
+import type { IntakeClassification } from "../intake/types.js";
+import type { MiddlewarePipeline, TurnContext } from "../middleware/index.js";
+import type { ActionTools } from "./actionTools.js";
+
+export type AgentCapability = "text" | "images" | "files" | "commands";
+
+export type AgentIdentifier = "codex" | string;
+
+export type AgentMiddlewareContext = Omit<TurnContext, "prompt" | "workspaceRoot"> & {
+  prompt?: string;
+  workspaceRoot?: string;
+};
+
+export interface AgentMetadata {
+  id: AgentIdentifier;
+  name: string;
+  description?: string;
+  vendor?: string;
+  capabilities: AgentCapability[];
+  defaultModel?: string;
+}
+
+export interface AgentStatus {
+  ready: boolean;
+  streaming: boolean;
+  error?: string;
+}
+
+export interface AgentSendOptions {
+  actionTools?: ActionTools;
+  streaming?: boolean;
+  outputSchema?: unknown;
+  signal?: AbortSignal;
+  env?: Record<string, string>;
+  /** Optional turn hooks used by in-process runtimes before and after tools. */
+  middleware?: MiddlewarePipeline;
+  middlewareContext?: AgentMiddlewareContext;
+}
+
+export interface AgentRunResult {
+  response: string;
+  usage: Usage | null;
+  agentId: AgentIdentifier;
+}
+
+export interface AgentAdapter {
+  readonly id: AgentIdentifier;
+  readonly metadata: AgentMetadata;
+  status(): AgentStatus;
+  send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult>;
+  onEvent(handler: (event: AgentEvent) => void): () => void;
+  reset(options?: { clearPersistedState?: boolean }): void;
+  setWorkingDirectory?(workingDirectory?: string, options?: { preserveSession?: boolean }): void;
+  setModel?(model?: string): void;
+  /** Whether changing the model preserves the provider-native thread. */
+  readonly preservesThreadOnModelChange?: boolean;
+  setModelConfig?(config?: Record<string, unknown> | null): void;
+  setModelReasoningEffort?(effort?: string): void;
+  setDeveloperInstructions?(instructions: string): void;
+  getThreadId?(): string | null;
+  classifyInput?(input: string): Promise<IntakeClassification>;
+}

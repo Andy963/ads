@@ -1,7 +1,7 @@
 # Node / TypeScript
 node_modules/
 dist/
-rust/target/
+rust-server/target/
 build/
 coverage/
 .nyc_output/

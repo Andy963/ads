@@ -1,0 +1,259 @@
+import type { SandboxMode } from "../../../config.js";
+import type { CanonicalLaneId } from "../../../../shared/terminology.js";
+import {
+  SessionManager,
+  resolveSessionAgentAllowlist,
+  type SessionManagerOptions,
+} from "../../../sessions/sessionManager.js";
+import { ThreadStorage } from "../../../sessions/threadStorage.js";
+import type { AsyncLock } from "../../../utils/asyncLock.js";
+import { HistoryStore } from "../../../utils/historyStore.js";
+import { WorkspaceLockPool } from "../workspaceLockPool.js";
+
+export const WEB_ACTIONS_NAMESPACE = "web-actions";
+export const WEB_ACOPILOT_NAMESPACE = "web-acopilot";
+
+export function resolveAdvisorSandboxMode(raw: string | undefined): SandboxMode {
+  const value = raw?.trim();
+  if (value === undefined || value === "") {
+    return "danger-full-access";
+  }
+  if (value === "read-only" || value === "workspace-write" || value === "danger-full-access") {
+    return value;
+  }
+  return "workspace-write";
+}
+
+export type MaterializationState = {
+  materialized: boolean;
+  materializeCount: number;
+};
+
+type ResourceController<T extends object> = {
+  getValue: () => T;
+  inspect: () => MaterializationState;
+};
+
+type LaneResource<T extends object> = {
+  value: T;
+  inspect: () => MaterializationState;
+};
+
+const lazyControllers = new WeakMap<object, ResourceController<object>>();
+
+export function createLazyObject<T extends object>(factory: () => T): T {
+  let instance: T | null = null;
+  let materializeCount = 0;
+
+  const getValue = (): T => {
+    if (instance) {
+      return instance;
+    }
+    instance = factory();
+    materializeCount += 1;
+    return instance;
+  };
+
+  const controller: ResourceController<T> = {
+    getValue,
+    inspect: () => ({
+      materialized: instance !== null,
+      materializeCount,
+    }),
+  };
+
+  const proxy = new Proxy(
+    {},
+    {
+      get: (_target, property) => {
+        const value = Reflect.get(getValue() as object, property, getValue());
+        return typeof value === "function" ? value.bind(getValue()) : value;
+      },
+      set: (_target, property, value) => Reflect.set(getValue() as object, property, value, getValue()),
+      has: (_target, property) => Reflect.has(getValue() as object, property),
+      ownKeys: () => Reflect.ownKeys(getValue() as object),
+      getOwnPropertyDescriptor: (_target, property) => {
+        const descriptor = Reflect.getOwnPropertyDescriptor(getValue() as object, property);
+        if (!descriptor) {
+          return descriptor;
+        }
+        return { ...descriptor, configurable: true };
+      },
+      getPrototypeOf: () => Reflect.getPrototypeOf(getValue() as object),
+      defineProperty: (_target, property, descriptor) => Reflect.defineProperty(getValue() as object, property, descriptor),
+      deleteProperty: (_target, property) => Reflect.deleteProperty(getValue() as object, property),
+    },
+  ) as T;
+
+  lazyControllers.set(proxy as object, controller as ResourceController<object>);
+  return proxy;
+}
+
+export function inspectLazyObject(value: unknown): MaterializationState | null {
+  if (!value || (typeof value !== "object" && typeof value !== "function")) {
+    return null;
+  }
+  return lazyControllers.get(value as object)?.inspect() ?? null;
+}
+
+function createResource<T extends object>(factory: () => T, lazy: boolean): LaneResource<T> {
+  if (!lazy) {
+    const value = factory();
+    return {
+      value,
+      inspect: () => ({
+        materialized: true,
+        materializeCount: 1,
+      }),
+    };
+  }
+
+  const value = createLazyObject(factory);
+  return {
+    value,
+    inspect: () =>
+      inspectLazyObject(value) ?? {
+        materialized: false,
+        materializeCount: 0,
+      },
+  };
+}
+
+export type WebLaneRuntime = {
+  threadStorage: ThreadStorage;
+  historyStore: HistoryStore;
+  sessionManager: SessionManager;
+  getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
+  inspectMaterialization: () => {
+    threadStorage: MaterializationState;
+    historyStore: MaterializationState;
+    sessionManager: MaterializationState;
+    workspaceLockPool: MaterializationState;
+  };
+};
+
+export type WebLaneResources = {
+  worker: WebLaneRuntime;
+  advisor: WebLaneRuntime;
+};
+
+function createLaneRuntime(args: {
+  namespace: string;
+  lane: CanonicalLaneId;
+  sandboxMode: SandboxMode;
+  defaultModel?: string;
+  sessionTimeoutMs: number;
+  sessionCleanupIntervalMs: number;
+  stateDbPath: string;
+  historyMaxEntriesPerSession: number;
+  historyMaxTextLength: number;
+  lazy: boolean;
+  sessionManagerOptions?: SessionManagerOptions;
+  workspaceLockPool: LaneResource<WorkspaceLockPool>;
+}): WebLaneRuntime {
+  const threadStorage = createResource(
+    () =>
+      new ThreadStorage({
+        namespace: args.namespace,
+        stateDbPath: args.stateDbPath,
+      }),
+    args.lazy,
+  );
+  const historyStore = createResource(
+    () =>
+      new HistoryStore({
+        storagePath: args.stateDbPath,
+        namespace: args.namespace,
+        maxEntriesPerSession: args.historyMaxEntriesPerSession,
+        maxTextLength: args.historyMaxTextLength,
+      }),
+    args.lazy,
+  );
+  const sessionManager = createResource(
+    () =>
+      new SessionManager(
+        args.sessionTimeoutMs,
+        args.sessionCleanupIntervalMs,
+        args.sandboxMode,
+        args.defaultModel,
+        threadStorage.value,
+        undefined,
+        {
+          agentAllowlist: resolveSessionAgentAllowlist(
+            args.namespace === WEB_ACOPILOT_NAMESPACE ? "web-acopilot" : "web-actions",
+          ),
+          ...args.sessionManagerOptions,
+          lane: args.lane,
+          stateDbPath: args.stateDbPath,
+        },
+      ),
+    args.lazy,
+  );
+
+  return {
+    threadStorage: threadStorage.value,
+    historyStore: historyStore.value,
+    sessionManager: sessionManager.value,
+    getWorkspaceLock: (workspaceRoot: string) => args.workspaceLockPool.value.get(workspaceRoot),
+    inspectMaterialization: () => ({
+      threadStorage: threadStorage.inspect(),
+      historyStore: historyStore.inspect(),
+      sessionManager: sessionManager.inspect(),
+      workspaceLockPool: args.workspaceLockPool.inspect(),
+    }),
+  };
+}
+
+export function createWebLaneResources(args: {
+  stateDbPath: string;
+  sessionTimeoutMs: number;
+  sessionCleanupIntervalMs: number;
+  historyMaxEntriesPerSession?: number;
+  historyMaxTextLength?: number;
+  advisorCodexModel?: string;
+  advisorSandboxMode?: SandboxMode;
+  workerSessionManagerOptions?: SessionManagerOptions;
+  advisorSessionManagerOptions?: SessionManagerOptions;
+}): WebLaneResources {
+  const advisorSandboxMode =
+    args.advisorSandboxMode ??
+    resolveAdvisorSandboxMode(
+      process.env.ADS_ADVISOR_SANDBOX_MODE ?? process.env.ADS_PLANNER_SANDBOX_MODE,
+    );
+  if (!args.advisorSandboxMode && process.env.ADS_ADVISOR_SANDBOX_MODE === undefined && process.env.ADS_PLANNER_SANDBOX_MODE !== undefined) {
+    console.warn("[config] ADS_PLANNER_SANDBOX_MODE is deprecated; use ADS_ADVISOR_SANDBOX_MODE");
+  }
+
+  const workspaceLockPool = createResource(() => new WorkspaceLockPool(), true);
+
+  return {
+    worker: createLaneRuntime({
+      namespace: WEB_ACTIONS_NAMESPACE,
+      lane: "actions",
+      sandboxMode: "read-only",
+      sessionTimeoutMs: args.sessionTimeoutMs,
+      sessionCleanupIntervalMs: args.sessionCleanupIntervalMs,
+      stateDbPath: args.stateDbPath,
+      historyMaxEntriesPerSession: args.historyMaxEntriesPerSession ?? 200,
+      historyMaxTextLength: args.historyMaxTextLength ?? 64 * 1024,
+      lazy: false,
+      sessionManagerOptions: args.workerSessionManagerOptions,
+      workspaceLockPool,
+    }),
+    advisor: createLaneRuntime({
+      namespace: WEB_ACOPILOT_NAMESPACE,
+      lane: "acopilot",
+      // Acopilot needs write access to implement while Reviewer stays read-only.
+      sandboxMode: advisorSandboxMode,
+      defaultModel: args.advisorCodexModel,
+      sessionTimeoutMs: args.sessionTimeoutMs,
+      sessionCleanupIntervalMs: args.sessionCleanupIntervalMs,
+      stateDbPath: args.stateDbPath,
+      historyMaxEntriesPerSession: args.historyMaxEntriesPerSession ?? 200,
+      historyMaxTextLength: args.historyMaxTextLength ?? 64 * 1024,
+      lazy: true,
+      sessionManagerOptions: args.advisorSessionManagerOptions,
+      workspaceLockPool,
+    }),
+  };
+}

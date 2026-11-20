@@ -8,8 +8,8 @@ const ROOT_DIR = path.resolve(__dirname, "..");
 // Builtin skills ship as Markdown next to their (compiled) scripts. tsc only
 // emits .ts, so without this the skill loader finds an empty builtin root at
 // runtime and every builtin skill silently degrades to missing.
-const BUILTIN_SKILLS_SRC = path.join(ROOT_DIR, "server", "skills", "builtin");
-const BUILTIN_SKILLS_DEST = path.join(ROOT_DIR, "dist", "server", "skills", "builtin");
+const BUILTIN_SKILLS_SRC = path.join(ROOT_DIR, "ts-server", "server", "skills", "builtin");
+const BUILTIN_SKILLS_DEST = path.join(ROOT_DIR, "ts-server", "dist", "server", "skills", "builtin");
 
 function copyNonCompiledAssets(srcDir, destDir) {
   let copied = 0;

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { config, flushPromises, mount } from "@vue/test-utils";
 import VoiceSettings from "../components/VoiceSettings.vue";
 import ModelManager from "../components/ModelManager.vue";
-import { DEFAULT_CORRECTION_SYSTEM_PROMPT } from "../../../shared/voice";
+import { DEFAULT_CORRECTION_SYSTEM_PROMPT } from "../../../ts-server/shared/voice";
 
 function settings() {
   return { configured: true, hasApiKey: true, correctionHasApiKey: true, source: "saved", config: {

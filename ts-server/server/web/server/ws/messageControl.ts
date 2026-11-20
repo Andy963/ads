@@ -1,0 +1,329 @@
+import type { WebSocket } from "ws";
+import { isAcopilotChatSessionId } from "./session.js";
+
+import type { SessionManager } from "../../../sessions/sessionManager.js";
+import { getStateDatabase } from "../../../state/database.js";
+import { ConversationModelUnavailableError, createModelServiceStore } from "../../../state/modelServiceStore.js";
+import { normalizeConfiguredReasoningEffort } from "../../../state/modelConfigTypes.js";
+import type { HistoryStore } from "../../../utils/historyStore.js";
+import type {
+  WsLaneValidityCheck,
+  WsLogger,
+  WsPromptSessionLogger,
+  WsResetResult,
+  WsTaskResumeHandlerDeps,
+} from "./deps.js";
+import { invalidateWsPromptRun } from "./promptLifecycle.js";
+import { handleSessionListMessage } from "./handleSessionList.js";
+import { handleTaskResumeMessage } from "./handleTaskResume.js";
+import { resolveHistoryOwnerId } from "./connectionIdentity.js";
+import type { WsMessage } from "./schema.js";
+import type { PromptIdentityReconciliation } from "../../../state/promptQueueStore.js";
+
+type ClearHistoryScope = "lane" | "shared";
+
+const STANDARD_REASONING_EFFORTS = new Set(["off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
+
+function readModelOverridePayload(payload: unknown): { model: string; effort?: string } | { error: string } {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { error: "Model override payload must be an object" };
+  }
+  const record = payload as Record<string, unknown>;
+  const model = String(record.model ?? record.modelId ?? record.model_id ?? "").trim();
+  if (!model) {
+    return { error: "Model id is required" };
+  }
+  const rawEffort = record.model_reasoning_effort ?? record.modelReasoningEffort;
+  if (rawEffort === undefined || rawEffort === null || String(rawEffort).trim() === "") {
+    return { model };
+  }
+  const effort = String(rawEffort).trim().toLowerCase();
+  if (effort === "default") {
+    return { model };
+  }
+  if (!STANDARD_REASONING_EFFORTS.has(effort)) {
+    return { error: `Invalid reasoning effort: ${effort}` };
+  }
+  return { model, effort };
+}
+
+function readConfiguredReasoningEfforts(configJson: unknown): string[] {
+  if (!configJson || typeof configJson !== "object" || Array.isArray(configJson)) return [];
+  const values = (configJson as Record<string, unknown>).reasoningEfforts;
+  return Array.isArray(values)
+    ? [...new Set(values.map((value) => normalizeConfiguredReasoningEffort(value)).filter((value): value is string => Boolean(value)))]
+    : [];
+}
+
+function resolveClearHistoryScope(payload: unknown, chatSessionId: string): ClearHistoryScope {
+  if (isAcopilotChatSessionId(chatSessionId)) {
+    return "lane";
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return "lane";
+  }
+  const scope = String((payload as Record<string, unknown>).scope ?? "").trim().toLowerCase();
+  return scope === "shared" || scope === "project" ? "shared" : "lane";
+}
+
+export function ensureWsSessionLogger(args: {
+  sessionManager: SessionManager;
+  userId: number;
+  warn: WsLogger["warn"];
+}): WsPromptSessionLogger | null {
+  try {
+    return (args.sessionManager.ensureLogger(args.userId) ?? null) as WsPromptSessionLogger | null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    args.warn(`[WebSocket] Failed to initialize session logger: ${message}`);
+    return null;
+  }
+}
+
+export async function handleWsControlMessage(args: {
+  parsed: WsMessage;
+  chatSessionId: string;
+  authUserId?: string;
+  userId: number;
+  historyKey: string;
+  currentCwd: string;
+  sessionManager: SessionManager;
+  orchestrator: ReturnType<SessionManager["getOrCreate"]>;
+  getWorkspaceLock: WsTaskResumeHandlerDeps["sessions"]["getWorkspaceLock"];
+  historyStore: WsTaskResumeHandlerDeps["history"]["historyStore"];
+  interruptControllers?: Map<string, AbortController>;
+  promptRunEpochs?: Map<string, number>;
+  isLaneCurrent?: WsLaneValidityCheck;
+  sendJson: (payload: unknown) => void;
+  broadcastJson?: (payload: unknown) => void;
+  broadcastSessionReset?: (payload: unknown) => void;
+  resetLaneState?: () => WsResetResult;
+  resetSharedSessionState?: (options: {
+    sourceChatSessionId: string;
+  }) => WsResetResult;
+  completeAfterReset?: () => void;
+  cancelPrompt?: (clientMessageId: string) =>
+    | { ok: true; cancelled: boolean; reason: "cancelled" | "already_cancelled" | "not_queued" }
+    | { ok: false; error: string };
+  reconcilePromptIdentities?: (request: {
+    clientMessageIds: string[];
+    cancelClientMessageIds: string[];
+  }) => { ok: true; identities: PromptIdentityReconciliation[] } | { ok: false; error: string };
+  logger: Pick<WsLogger, "info" | "warn">;
+}): Promise<{
+  handled: boolean;
+  orchestrator: ReturnType<SessionManager["getOrCreate"]>;
+}> {
+  if (args.parsed.type === "model_override") {
+    const requestId = String(args.parsed.client_message_id ?? "").trim() || undefined;
+    const parsed = readModelOverridePayload(args.parsed.payload);
+    if ("error" in parsed) {
+      args.sendJson({ type: "result", ok: false, kind: "model_override", output: parsed.error, client_message_id: requestId });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+
+    let modelConfig;
+    try {
+      modelConfig = createModelServiceStore(getStateDatabase()).resolveConversation(parsed.model);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid model";
+      args.sendJson(error instanceof ConversationModelUnavailableError
+        ? {
+            type: "result",
+            ok: false,
+            kind: "model_override",
+            output: message,
+            client_message_id: requestId,
+            errorInfo: {
+              code: "conversation_model_unavailable",
+              retryable: false,
+              needsReset: false,
+              requestedModel: error.requestedModelId,
+            },
+          }
+        : { type: "result", ok: false, kind: "model_override", output: message, client_message_id: requestId });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+    const allowedEfforts = readConfiguredReasoningEfforts(modelConfig.configJson);
+    if (parsed.effort && allowedEfforts.length > 0 && !allowedEfforts.includes(parsed.effort)) {
+      args.sendJson({ type: "result", ok: false, kind: "model_override", output: `Reasoning effort "${parsed.effort}" is not available for ${modelConfig.modelId}`, client_message_id: requestId });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+
+    const modelId = modelConfig.id;
+    const modelLabel = modelConfig.displayName?.trim() || modelConfig.modelId || "Model";
+    args.sessionManager.setUserModel(args.userId, modelId);
+    if (parsed.effort !== undefined) {
+      args.sessionManager.setUserModelReasoningEffort(args.userId, parsed.effort);
+    }
+    args.orchestrator.setModelConfig?.(modelConfig.configJson ?? null);
+    const effective = args.sessionManager.getEffectiveState(args.userId);
+    args.sendJson({
+      type: "result",
+      ok: true,
+      kind: "model_override",
+      output: `Model switched to ${modelLabel}${effective.modelReasoningEffort ? ` (${effective.modelReasoningEffort})` : ""}`,
+      model: effective.model,
+      model_display_name: modelLabel,
+      model_reasoning_effort: effective.modelReasoningEffort,
+      client_message_id: requestId,
+    });
+    return { handled: true, orchestrator: args.orchestrator };
+  }
+
+  if (args.parsed.type === "clear_history") {
+    const scope = resolveClearHistoryScope(args.parsed.payload, args.chatSessionId);
+    if (args.interruptControllers) {
+      invalidateWsPromptRun({
+        historyKey: args.historyKey,
+        interruptControllers: args.interruptControllers,
+        promptRunEpochs: args.promptRunEpochs,
+      });
+    }
+    args.logger.info(
+      `[Web][continuity] reset source=clear_history scope=${scope} user=${args.userId} history=${args.historyKey}`,
+    );
+    const resetResult: WsResetResult = scope === "shared" && args.resetSharedSessionState
+      ? args.resetSharedSessionState({ sourceChatSessionId: args.chatSessionId })
+      : args.resetLaneState?.() ?? (() => {
+          args.historyStore.clear(args.historyKey);
+          args.sessionManager.reset(args.userId);
+          return undefined;
+        })();
+    const resetPayload: Record<string, unknown> = {
+      type: "session_reset",
+      source: "clear_history",
+      sourceChatSessionId: args.chatSessionId,
+      scope,
+    };
+    if (typeof resetResult === "number") {
+      resetPayload.laneGeneration = resetResult;
+    } else if (resetResult && typeof resetResult === "object") {
+      if (typeof resetResult.sourceGeneration === "number") {
+        resetPayload.laneGeneration = resetResult.sourceGeneration;
+      }
+      if (resetResult.laneGenerations && Object.keys(resetResult.laneGenerations).length > 0) {
+        resetPayload.laneGenerations = resetResult.laneGenerations;
+      }
+    }
+    args.broadcastSessionReset?.(resetPayload);
+    args.completeAfterReset?.();
+    args.sendJson({ type: "result", ok: true, output: "已清空历史缓存并重置会话", kind: "clear_history" });
+    return { handled: true, orchestrator: args.orchestrator };
+  }
+
+  if (args.parsed.type === "prompt_reconcile") {
+    const payload = args.parsed.payload && typeof args.parsed.payload === "object" && !Array.isArray(args.parsed.payload)
+      ? args.parsed.payload as Record<string, unknown>
+      : {};
+    const readIds = (value: unknown): string[] => Array.isArray(value)
+      ? [...new Set(value.map((id) => String(id ?? "").trim()).filter(Boolean))]
+      : [];
+    const clientMessageIds = readIds(payload.clientMessageIds ?? payload.client_message_ids);
+    const cancelClientMessageIds = readIds(payload.cancelClientMessageIds ?? payload.cancel_client_message_ids);
+    if (clientMessageIds.length > 5_000 || cancelClientMessageIds.length > 5_000) {
+      args.sendJson({ type: "prompt_reconcile_error", message: "Too many prompt identities to reconcile" });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+    if (!args.reconcilePromptIdentities) {
+      args.sendJson({ type: "prompt_reconcile_error", message: "Prompt reconciliation is unavailable" });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+    const result = args.reconcilePromptIdentities({ clientMessageIds, cancelClientMessageIds });
+    if (!result.ok) {
+      args.sendJson({ type: "prompt_reconcile_error", message: result.error });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+    args.sendJson({ type: "prompt_reconcile_result", identities: result.identities });
+    return { handled: true, orchestrator: args.orchestrator };
+  }
+
+  if (args.parsed.type === "cancel_prompt") {
+    const payload = args.parsed.payload && typeof args.parsed.payload === "object" && !Array.isArray(args.parsed.payload)
+      ? args.parsed.payload as Record<string, unknown>
+      : null;
+    const clientMessageId = String(
+      args.parsed.client_message_id ?? payload?.clientMessageId ?? payload?.client_message_id ?? "",
+    ).trim();
+    if (!clientMessageId) {
+      args.sendJson({ type: "error", message: "Missing client message id for prompt cancellation" });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+    if (!args.cancelPrompt) {
+      args.sendJson({ type: "ack", client_message_id: clientMessageId, queue_status: "cancelled", duplicate: true });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+    let result:
+      | { ok: true; cancelled: boolean; reason: "cancelled" | "already_cancelled" | "not_queued" }
+      | { ok: false; error: string };
+    try {
+      result = args.cancelPrompt(clientMessageId);
+    } catch (error) {
+      result = { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+    if (!result.ok) {
+      args.sendJson({ type: "error", message: result.error, client_message_id: clientMessageId });
+      return { handled: true, orchestrator: args.orchestrator };
+    }
+    args.sendJson({
+      type: "ack",
+      client_message_id: clientMessageId,
+      queue_status: result.reason === "not_queued" ? "consumed" : "cancelled",
+      duplicate: !result.cancelled,
+    });
+    return { handled: true, orchestrator: args.orchestrator };
+  }
+
+  if (args.parsed.type === "task_resume") {
+    const resume = await handleTaskResumeMessage({
+      request: { parsed: args.parsed },
+      transport: {
+        ws: {} as WebSocket,
+        safeJsonSend: (_ws, payload) => args.sendJson(payload),
+        broadcastJson: args.broadcastJson,
+      },
+      observability: {
+        logger: {
+          warn: args.logger.warn,
+          info: args.logger.info,
+          debug: () => {},
+        },
+      },
+      context: {
+        authUserId: args.authUserId,
+        userId: args.userId,
+        historyKey: args.historyKey,
+        currentCwd: args.currentCwd,
+        isLaneCurrent: args.isLaneCurrent,
+      },
+      sessions: {
+        sessionManager: args.sessionManager,
+        orchestrator: args.orchestrator,
+        getWorkspaceLock: args.getWorkspaceLock,
+      },
+      history: {
+        historyStore: args.historyStore,
+      },
+    });
+    return { handled: true, orchestrator: resume.orchestrator ?? args.orchestrator };
+  }
+
+  if (args.parsed.type === "session_list") {
+    await handleSessionListMessage({
+      payload: args.parsed.payload,
+      historyStore: args.historyStore as unknown as HistoryStore,
+      currentCwd: args.currentCwd,
+      activeAgentId: args.orchestrator.getActiveAgentId(),
+      historyOwnerId: resolveHistoryOwnerId(args.authUserId, args.historyKey),
+      currentSessionId: args.sessionManager.getRuntimeBackend?.() !== "native"
+        ? args.orchestrator.getThreadId()
+        : args.sessionManager.getNativeTranscriptId?.(args.userId) ?? null,
+      runtimeBackend: args.sessionManager.getRuntimeBackend(),
+      sendJson: args.sendJson,
+      logger: args.logger,
+    });
+    return { handled: true, orchestrator: args.orchestrator };
+  }
+
+  return { handled: false, orchestrator: args.orchestrator };
+}

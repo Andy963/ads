@@ -1,0 +1,259 @@
+import type { IncomingMessage, Server as HttpServer } from "node:http";
+
+import type { WebSocket } from "ws";
+
+import type { AgentAvailability } from "../../../agents/health/agentAvailability.js";
+import type { AgentEvent } from "../../../codex/events.js";
+import type { ScheduleCompiler } from "../../../scheduler/compiler.js";
+import type { SchedulerRuntime } from "../../../scheduler/runtime.js";
+import type { DirectoryManager } from "../../../sessions/directoryManager.js";
+import type { SessionManager } from "../../../sessions/sessionManager.js";
+import type { HistoryStore } from "../../../utils/historyStore.js";
+import type { MiddlewarePipeline } from "../../../middleware/index.js";
+import type { AsyncLock } from "../../../utils/asyncLock.js";
+import type { WsMessage } from "./schema.js";
+import type { SessionCacheRegistry } from "./sessionCacheRegistry.js";
+import type { SyncEventStore } from "../sync/store.js";
+import type { PromptQueueStore } from "../../../state/promptQueueStore.js";
+import type { ActionTools } from "../../../agents/actionTools.js";
+import type { CanonicalLaneId } from "../../../../shared/terminology.js";
+import type { WebPushNotification } from "../../push/service.js";
+
+export type WsLogger = {
+  info: (msg: string) => void;
+  warn: (msg: string, ...args: unknown[]) => void;
+  debug: (msg: string) => void;
+};
+
+export type WsSessionLogger = {
+  logInput: (text: string) => void;
+  logOutput: (text: string) => void;
+  logError: (text: string) => void;
+  logEvent?: (event: AgentEvent) => void;
+  attachThreadId?: (threadId?: string) => void;
+} | null;
+
+export type WsPromptSessionLogger = Exclude<WsSessionLogger, null> & {
+  logEvent: (event: AgentEvent) => void;
+  attachThreadId: (threadId?: string) => void;
+};
+
+export type WsClientMeta = {
+  historyKey: string;
+  /** Stable identity shared by every generation of one logical lane. */
+  logicalHistoryKey?: string;
+  laneGeneration?: number;
+  sessionId: string;
+  chatSessionId: string;
+  connectionId: string;
+  authUserId: string;
+  sessionUserId: number;
+  workspaceRoot?: string;
+  /** How this connection received its transcript baseline. */
+  transcriptMode?: "resume" | "snapshot";
+};
+
+export type WsOrchestrator = ReturnType<SessionManager["getOrCreate"]>;
+export type WsLaneValidityCheck = () => boolean;
+export type WsSupervisedActionTools = ActionTools & { dispose: () => Promise<void> };
+export type WsInteractiveActionToolsFactory = (args: {
+  authUserId: string;
+  projectId: string;
+  repoPath: string;
+  signal: AbortSignal;
+}) => WsSupervisedActionTools | Promise<WsSupervisedActionTools>;
+
+export type WsResetResult =
+  | number
+  | {
+      sourceGeneration?: number;
+      laneGenerations?: Record<string, number>;
+    }
+  | undefined;
+
+export type WsConfigDeps = {
+  workspaceRoot: string;
+  allowedDirs: string[];
+  maxClients: number;
+  pingIntervalMs: number;
+  maxMissedPongs: number;
+  /** 单个 WebSocket 帧的最大字节数（内存型 DoS 防护）。未设置时回退到内置默认值。 */
+  maxPayloadBytes?: number;
+  traceWsDuplication: boolean;
+  autoStartPromptQueue?: boolean;
+};
+
+export type WsAuthDeps = {
+  allowedOrigins: Set<string>;
+  isOriginAllowed: (req: IncomingMessage, allowedOrigins: Set<string>) => boolean;
+  authenticateRequest: (req: IncomingMessage) => { ok: false } | { ok: true; userId: string; tokenHash?: string; connector?: true };
+  /**
+   * 周期性复核已建立连接的 session 是否仍然有效（未登出/吊销/过期）。
+   * 返回 false 时连接会被关闭。未提供则跳过复核（用于测试桩）。
+   */
+  revalidateSession?: (tokenHash: string) => boolean;
+};
+
+export type WsAgentDeps = {
+  agentAvailability: AgentAvailability;
+};
+
+export type WsStateDeps = {
+  directoryManager: DirectoryManager;
+  workspaceCache: Map<string, string>;
+  sessionCacheRegistry: SessionCacheRegistry;
+  interruptControllers: Map<string, AbortController>;
+  promptRunEpochs?: Map<string, number>;
+  clientMetaByWs: Map<WebSocket, WsClientMeta>;
+  clients: Set<WebSocket>;
+  cwdStore: Map<string, string>;
+  cwdStorePath: string;
+  persistCwdStore: (storePath: string, store: Map<string, string>) => void;
+  syncEventStore?: SyncEventStore;
+  laneGenerationStore?: import("../sync/laneGeneration.js").WebLaneGenerationStore;
+  promptQueueStore?: PromptQueueStore;
+  isProcessRunning?: (pid: number) => boolean;
+  createInteractiveActionTools?: WsInteractiveActionToolsFactory;
+};
+
+export type WsSessionDeps = {
+  workerSessionManager: SessionManager;
+  advisorSessionManager: SessionManager;
+  getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
+  getAdvisorWorkspaceLock: (workspaceRoot: string) => AsyncLock;
+};
+
+export type WsHistoryDeps = {
+  workerHistoryStore: HistoryStore;
+  advisorHistoryStore: HistoryStore;
+};
+
+export type WsCommandDeps = {
+  runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
+  sanitizeInput: (payload: unknown) => string;
+};
+
+export type WsSchedulerDeps = {
+  scheduleCompiler?: ScheduleCompiler;
+  scheduler?: SchedulerRuntime;
+};
+
+export type AttachWebSocketServerDeps = {
+  server: HttpServer;
+  config: WsConfigDeps;
+  auth: WsAuthDeps;
+  agents: WsAgentDeps;
+  state: WsStateDeps;
+  sessions: WsSessionDeps;
+  history: WsHistoryDeps;
+  commands: WsCommandDeps;
+  scheduler: WsSchedulerDeps;
+  logger: WsLogger;
+  notifyWebUser?: (userId: string, notification: WebPushNotification) => Promise<void>;
+};
+
+export type WsRequestDeps = {
+  parsed: WsMessage;
+  requestId: string;
+  clientMessageId: string | null;
+  receivedAt: number;
+};
+
+export type WsTransportDeps = {
+  ws: WebSocket;
+  safeJsonSend: (ws: WebSocket, payload: unknown) => void;
+  broadcastJson: (payload: unknown) => void;
+  sendWorkspaceState: (ws: WebSocket, workspaceRoot: string) => void;
+  broadcastWorkspaceState?: (workspaceRoot: string) => void;
+};
+
+export type WsConnectionContextDeps = {
+  authUserId: string;
+  sessionId: string;
+  chatSessionId: string;
+  userId: number;
+  historyKey: string;
+  currentCwd: string;
+  lane?: CanonicalLaneId;
+  isLaneCurrent?: WsLaneValidityCheck;
+};
+
+export type WsObservabilityDeps = {
+  logger: WsLogger;
+  sessionLogger: WsSessionLogger;
+  traceWsDuplication: boolean;
+};
+
+export type WsSessionRuntimeDeps = {
+  sessionManager: SessionManager;
+  orchestrator: WsOrchestrator;
+  getWorkspaceLock: (workspaceRoot: string) => AsyncLock;
+  interruptControllers: Map<string, AbortController>;
+  promptRunEpochs?: Map<string, number>;
+};
+
+export type WsHistoryRuntimeDeps = {
+  historyStore: HistoryStore;
+};
+
+export type WsCommandRuntimeDeps = {
+  runAdsCommandLine: (command: string) => Promise<{ ok: boolean; output: string }>;
+  sanitizeInput: (payload: unknown) => string;
+};
+
+export type WsCommandStateDeps = Pick<
+  WsStateDeps,
+  "workspaceCache" | "cwdStore" | "cwdStorePath" | "persistCwdStore"
+> & {
+  directoryManager: DirectoryManager;
+  cacheKey: string;
+  broadcastSessionReset?: (payload: unknown) => void;
+  resetLaneState?: () => WsResetResult;
+  resetSharedSessionState?: (options: { sourceChatSessionId: string }) => WsResetResult;
+  completeAfterReset?: () => void;
+};
+
+export type WsPromptHandlerDeps = {
+  createInteractiveActionTools?: (signal: AbortSignal) => WsSupervisedActionTools | Promise<WsSupervisedActionTools>;
+  request: WsRequestDeps;
+  transport: WsTransportDeps;
+  observability: Omit<WsObservabilityDeps, "sessionLogger"> & {
+    sessionLogger: WsPromptSessionLogger | null;
+  };
+  context: WsConnectionContextDeps;
+  sessions: WsSessionRuntimeDeps;
+  history: WsHistoryRuntimeDeps;
+  scheduler: WsSchedulerDeps;
+  middleware?: MiddlewarePipeline;
+  notifyWebUser?: (userId: string, notification: WebPushNotification) => Promise<void>;
+};
+
+export type WsPromptOutcome = {
+  ok: boolean;
+  error?: string;
+};
+
+export type WsCommandHandlerDeps = {
+  request: Pick<WsRequestDeps, "parsed" | "clientMessageId">;
+  transport: WsTransportDeps;
+  observability: WsObservabilityDeps;
+  context: Omit<Pick<WsConnectionContextDeps, "authUserId" | "sessionId" | "userId" | "historyKey" | "currentCwd" | "isLaneCurrent">, "authUserId"> & {
+    authUserId?: string;
+  };
+  agents: WsAgentDeps;
+  state: WsCommandStateDeps;
+  sessions: WsSessionRuntimeDeps;
+  history: WsHistoryRuntimeDeps;
+  commands: WsCommandRuntimeDeps;
+};
+
+export type WsTaskResumeHandlerDeps = {
+  request: Pick<WsRequestDeps, "parsed">;
+  transport: Pick<WsTransportDeps, "ws" | "safeJsonSend"> & Partial<Pick<WsTransportDeps, "broadcastJson">>;
+  observability: Pick<WsObservabilityDeps, "logger">;
+  context: Omit<Pick<WsConnectionContextDeps, "authUserId" | "userId" | "historyKey" | "currentCwd" | "isLaneCurrent">, "authUserId"> & {
+    authUserId?: string;
+  };
+  sessions: Pick<WsSessionRuntimeDeps, "sessionManager" | "orchestrator" | "getWorkspaceLock">;
+  history: WsHistoryRuntimeDeps;
+};

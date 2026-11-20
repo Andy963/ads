@@ -1,0 +1,89 @@
+import { sendJson } from "../../http.js";
+import type { ApiRouteContext } from "../types.js";
+import type { SyncEventStore } from "../../sync/store.js";
+import { mergeSyncHistory } from "../../sync/history.js";
+import { buildHistoryBootstrapPayload } from "../../ws/bootstrapReplay.js";
+import { resolveLaneRequest } from "../../sync/laneRequest.js";
+import { resolveSyncNamespace } from "../../sync/lane.js";
+import type { WebLaneGenerationStore } from "../../sync/laneGeneration.js";
+import { projectCommandFrame } from "../../commandPresentation.js";
+
+type SyncHistoryStore = {
+  get: (key: string) => Array<{ role: string; text: string; ts: number; kind?: string }>;
+};
+
+function parsePositiveInt(value: string | null, fallback: number): number {
+  if (value === null) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.floor(parsed));
+}
+
+export async function handleSyncRoutes(
+  route: ApiRouteContext,
+  deps: {
+    syncEventStore: SyncEventStore;
+    defaultWorkspaceRoot: string;
+    resolveWorkspaceRoot: (url: URL) => string;
+    workerHistoryStore: SyncHistoryStore;
+    advisorHistoryStore: SyncHistoryStore;
+    laneGenerationStore?: WebLaneGenerationStore;
+  },
+): Promise<boolean> {
+  if (route.pathname !== "/api/sync/events") {
+    return false;
+  }
+  if (route.req.method !== "GET") {
+    sendJson(route.res, 405, { error: "Method Not Allowed" });
+    return true;
+  }
+
+  const resolved = resolveLaneRequest({
+    url: route.url,
+    authUserId: route.auth.userId,
+    defaultWorkspaceRoot: deps.defaultWorkspaceRoot,
+    resolveWorkspaceRoot: deps.resolveWorkspaceRoot,
+    resolveGeneration: deps.laneGenerationStore
+      ? (namespace, logicalLaneKey) => deps.laneGenerationStore!.getGeneration(namespace, logicalLaneKey)
+      : undefined,
+  });
+  if (!resolved.ok) {
+    sendJson(route.res, resolved.failure.status, { error: resolved.failure.error });
+    return true;
+  }
+  const { namespace, laneKey, laneKeys } = resolved.lane;
+
+  const afterSeq = parsePositiveInt(route.url.searchParams.get("afterSeq"), 0);
+  const limit = parsePositiveInt(route.url.searchParams.get("limit"), 500);
+  const result = deps.syncEventStore.readAfterLanes({
+    namespace,
+    laneKeys,
+    afterSeq,
+    limit,
+  });
+  const historyStore = namespace === resolveSyncNamespace("acopilot")
+    ? deps.advisorHistoryStore
+    : deps.workerHistoryStore;
+  const truncated = result.truncated || afterSeq > result.latestSeq;
+  const snapshot = truncated
+    ? buildHistoryBootstrapPayload(mergeSyncHistory([historyStore.get(laneKey)])) ?? { type: "history", items: [] }
+    : null;
+  sendJson(route.res, 200, {
+    events: result.events.map((event) => ({
+      seq: event.seq,
+      type: event.type,
+      eventId: event.eventId ?? null,
+      revision: event.revision,
+      ts: event.ts,
+      runId: event.runId ?? null,
+      payload: projectCommandFrame(event.payload),
+    })),
+    latestSeq: result.latestSeq,
+    minAvailableSeq: result.minAvailableSeq,
+    hasMore: result.hasMore,
+    truncated,
+    ...(resolved.lane.generation ? { laneGeneration: resolved.lane.generation } : {}),
+    snapshot,
+  });
+  return true;
+}

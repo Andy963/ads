@@ -5,9 +5,9 @@ import path from "node:path";
 import { chromium, webkit } from "playwright";
 
 import { startChatBrowserServer } from "./lib/chat-browser-server.js";
-import { getStateDatabase } from "../dist/server/state/database.js";
-import { createGlobalModelConfigStore } from "../dist/server/state/globalModelConfigStore.js";
-import { createModelServiceStore } from "../dist/server/state/modelServiceStore.js";
+import { getStateDatabase } from "../ts-server/dist/server/state/database.js";
+import { createGlobalModelConfigStore } from "../ts-server/dist/server/state/globalModelConfigStore.js";
+import { createModelServiceStore } from "../ts-server/dist/server/state/modelServiceStore.js";
 
 const buildRoot = path.resolve(process.env.ADS_CHAT_BUILD_DIR || "dist/client");
 const artifacts = await mkdtemp(path.join(tmpdir(), "ads-model-selection-"));
@@ -47,7 +47,13 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
       report.cases.push(result);
       db.prepare("UPDATE role_profiles SET model_id = ?, system_prompt = ?, reasoning_effort = ? WHERE role = ?")
         .run("browser-model", "Saved instructions", "high", "reviewer");
-      const page = await browser.newPage({ viewport: { width, height: 844 }, isMobile: width < 900, hasTouch: width < 900, serviceWorkers: "block" });
+      const page = await browser.newPage({
+        viewport: { width, height: 844 },
+        isMobile: width < 900,
+        hasTouch: width < 900,
+        serviceWorkers: "block",
+        locale: "en-US",
+      });
       page.setDefaultTimeout(10000);
       const errors = [];
       const overrides = [];

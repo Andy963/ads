@@ -1,0 +1,505 @@
+import type { Input } from "./protocol/types.js";
+import type {
+  AgentAdapter,
+  AgentIdentifier,
+  AgentMetadata,
+  AgentRunResult,
+  AgentSendOptions,
+  AgentStatus,
+} from "./types.js";
+import type { SystemPromptManager } from "../systemPrompt/manager.js";
+import { detectWorkspaceFrom } from "../workspace/detector.js";
+import { discoverSkills } from "../skills/loader.js";
+import { loadSkillRegistry } from "../skills/registryMetadata.js";
+import { saveSkillDraftFromBlock, type SavedSkillDraft } from "../skills/creator.js";
+import { resolveAgentConfig } from "../config.js";
+import {
+  extractInputText,
+  tokenize,
+  uniqStrings,
+  isNonAsciiToken,
+  extractSkillSaveBlocks,
+  stripSkillSaveBlocks,
+} from "./orchestratorHelpers.js";
+
+interface AgentEntry {
+  adapter: AgentAdapter;
+  metadata: AgentMetadata;
+}
+
+export interface HybridOrchestratorOptions {
+  adapters: AgentAdapter[];
+  defaultAgentId?: AgentIdentifier;
+  initialWorkingDirectory?: string;
+  initialModel?: string;
+  systemPromptManager?: SystemPromptManager;
+}
+
+export interface AgentDescriptor {
+  metadata: AgentMetadata;
+  status: AgentStatus;
+}
+
+export class HybridOrchestrator {
+  private readonly adapters = new Map<AgentIdentifier, AgentEntry>();
+  private activeAgentId: AgentIdentifier;
+  private workingDirectory?: string;
+  private model?: string;
+  private modelConfig?: Record<string, unknown> | null;
+  private modelReasoningEffort?: string;
+  private readonly systemPromptManager?: SystemPromptManager;
+  private readonly skillAutoloadEnabled: boolean;
+  private readonly skillAutosaveEnabled: boolean;
+  private inFlightTurns = 0;
+
+  constructor(options: HybridOrchestratorOptions) {
+    if (!options.adapters.length) {
+      throw new Error("HybridOrchestrator requires at least one agent adapter");
+    }
+    const agentConfig = resolveAgentConfig();
+    this.systemPromptManager = options.systemPromptManager;
+    this.skillAutoloadEnabled = agentConfig.skillAutoloadEnabled;
+    this.skillAutosaveEnabled = agentConfig.skillAutosaveEnabled;
+
+    for (const adapter of options.adapters) {
+      this.registerAdapter(adapter);
+    }
+
+    this.workingDirectory = options.initialWorkingDirectory;
+    this.model = options.initialModel;
+    this.activeAgentId = this.resolveInitialAgent(options.defaultAgentId);
+
+    if (this.workingDirectory) {
+      this.broadcastWorkingDirectory(this.workingDirectory);
+    }
+
+    if (this.model) {
+      this.broadcastModel(this.model);
+    }
+  }
+
+  registerAdapter(adapter: AgentAdapter): void {
+    if (this.adapters.has(adapter.id)) {
+      throw new Error(`Agent with id "${adapter.id}" already registered`);
+    }
+    this.adapters.set(adapter.id, { adapter, metadata: adapter.metadata });
+    if (!this.activeAgentId) {
+      this.activeAgentId = adapter.id;
+    }
+    if (this.workingDirectory) {
+      adapter.setWorkingDirectory?.(this.workingDirectory);
+    }
+    if (this.model) {
+      adapter.setModel?.(this.model);
+    }
+    if (this.modelConfig) {
+      adapter.setModelConfig?.(this.modelConfig);
+    }
+    if (this.modelReasoningEffort) {
+      adapter.setModelReasoningEffort?.(this.modelReasoningEffort);
+    }
+  }
+
+  private resolveInitialAgent(preferred?: AgentIdentifier): AgentIdentifier {
+    if (preferred && this.adapters.has(preferred)) {
+      return preferred;
+    }
+    const iterator = this.adapters.keys().next();
+    if (iterator.done) {
+      throw new Error("No agents available");
+    }
+    return iterator.value;
+  }
+
+  getActiveAgentId(): AgentIdentifier {
+    return this.activeAgentId;
+  }
+
+  hasAgent(agentId: AgentIdentifier): boolean {
+    return this.adapters.has(agentId);
+  }
+
+  /**
+   * Retrieve the underlying adapter for an agent id (e.g. to access
+   * adapter-specific extensions like Codex Goal Mode RPCs). Returns null when
+   * the adapter is not registered.
+   */
+  getAdapter(agentId: AgentIdentifier): AgentAdapter | null {
+    return this.adapters.get(agentId)?.adapter ?? null;
+  }
+
+  listAgents(): AgentDescriptor[] {
+    return Array.from(this.adapters.values()).map(({ adapter, metadata }) => ({
+      metadata,
+      status: adapter.status(),
+    }));
+  }
+
+  switchAgent(agentId: AgentIdentifier): void {
+    if (!this.adapters.has(agentId)) {
+      throw new Error(`Agent "${agentId}" is not registered`);
+    }
+    this.activeAgentId = agentId;
+  }
+
+  private get activeEntry(): AgentEntry {
+    const entry = this.adapters.get(this.activeAgentId);
+    if (!entry) {
+      throw new Error(`Active agent "${this.activeAgentId}" not found`);
+    }
+    return entry;
+  }
+
+  private mergeSystemPrompt(systemText: string, input: Input): Input {
+    if (!systemText.trim()) {
+      return input;
+    }
+    const separator = "\n\n---\n\n**用户请求（请直接回应以下内容，上面是背景指令）：**\n\n";
+    if (typeof input === "string") {
+      return `${systemText}${separator}${input}`;
+    }
+    if (Array.isArray(input)) {
+      return [{ type: "text", text: `${systemText}${separator}` }, ...input];
+    }
+    return `${systemText}${separator}${String(input ?? "")}`;
+  }
+
+  private extractRequestedSkills(input: Input): string[] {
+    const chunks: string[] = [];
+    if (typeof input === "string") {
+      chunks.push(input);
+    } else if (Array.isArray(input)) {
+      for (const part of input) {
+        if (part.type === "text") {
+          chunks.push(part.text);
+        }
+      }
+    }
+    const text = chunks.join("\n");
+    if (!text.includes("$")) {
+      return [];
+    }
+    const names = new Set<string>();
+    for (const match of text.matchAll(/\$([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})/g)) {
+      const name = match[1]?.trim();
+      if (name) {
+        names.add(name);
+      }
+    }
+    return Array.from(names);
+  }
+
+  private inferRequestedSkills(input: Input): string[] {
+    if (!this.skillAutoloadEnabled) {
+      return [];
+    }
+    const workspaceRoot = detectWorkspaceFrom(this.workingDirectory ?? process.cwd());
+    const skills = discoverSkills(workspaceRoot);
+    if (skills.length === 0) {
+      return [];
+    }
+
+    const registry = loadSkillRegistry(workspaceRoot);
+
+    const text = extractInputText(input);
+    const lowered = text.trim().toLowerCase();
+    if (!lowered) {
+      return [];
+    }
+
+    const tokens = tokenize(lowered);
+    if (tokens.length === 0) {
+      return [];
+    }
+    const tokenSet = new Set(tokens);
+
+    const scored: Array<{ name: string; score: number; priority: number; provides: string[] }> = [];
+    for (const skill of skills) {
+      if (registry) {
+        const meta = registry.skills.get(skill.name.toLowerCase()) ?? null;
+        if (registry.mode === "whitelist" && !meta) {
+          continue;
+        }
+        if (meta && !meta.enabled) {
+          continue;
+        }
+      }
+
+      const meta = registry ? registry.skills.get(skill.name.toLowerCase()) ?? null : null;
+      const priority = meta?.priority ?? 0;
+      const provides = meta?.provides ?? [];
+
+      const skillName = skill.name.toLowerCase();
+      if (lowered.includes(skillName)) {
+        scored.push({ name: skill.name, score: 1_000, priority, provides });
+        continue;
+      }
+      const nameTokens = tokenize(skillName);
+      const descTokens = tokenize(String(skill.description ?? "").toLowerCase());
+      let score = 0;
+      for (const tok of nameTokens) {
+        if (tokenSet.has(tok)) {
+          score += 3;
+        }
+      }
+      for (const tok of descTokens) {
+        if (tokenSet.has(tok)) {
+          score += isNonAsciiToken(tok) ? 2 : 1;
+        }
+      }
+      if (score > 0) {
+        scored.push({ name: skill.name, score, priority, provides });
+      }
+    }
+
+    scored.sort(
+      (a, b) =>
+        b.score - a.score || b.priority - a.priority || a.name.localeCompare(b.name),
+    );
+
+    if (!registry) {
+      return scored
+        .filter((entry) => entry.score >= 2 || entry.score >= 1_000)
+        .slice(0, 2)
+        .map((s) => s.name);
+    }
+
+    const groups = new Map<string, { bestScore: number; candidates: typeof scored }>();
+    for (const entry of scored) {
+      const providesKey = String(entry.provides[0] ?? "")
+        .trim()
+        .toLowerCase();
+      const groupKey = providesKey ? `provides:${providesKey}` : `skill:${entry.name.toLowerCase()}`;
+
+      const existing = groups.get(groupKey);
+      if (existing) {
+        existing.bestScore = Math.max(existing.bestScore, entry.score);
+        existing.candidates.push(entry);
+        continue;
+      }
+      groups.set(groupKey, { bestScore: entry.score, candidates: [entry] });
+    }
+
+    const grouped: Array<{ bestScore: number; representative: (typeof scored)[number] }> = [];
+    for (const group of groups.values()) {
+      let representative = group.candidates[0];
+      for (const candidate of group.candidates) {
+        if (candidate.priority !== representative.priority) {
+          if (candidate.priority > representative.priority) {
+            representative = candidate;
+          }
+          continue;
+        }
+        if (candidate.score !== representative.score) {
+          if (candidate.score > representative.score) {
+            representative = candidate;
+          }
+          continue;
+        }
+        if (candidate.name.localeCompare(representative.name) < 0) {
+          representative = candidate;
+        }
+      }
+      grouped.push({ bestScore: group.bestScore, representative });
+    }
+
+    grouped.sort(
+      (a, b) =>
+        b.bestScore - a.bestScore ||
+        b.representative.priority - a.representative.priority ||
+        a.representative.name.localeCompare(b.representative.name),
+    );
+
+    return grouped
+      .filter((entry) => entry.bestScore >= 2 || entry.bestScore >= 1_000)
+      .slice(0, 2)
+      .map((entry) => entry.representative.name);
+  }
+
+  private persistSkillsFromResponse(raw: string): { cleaned: string; saved: SavedSkillDraft[] } {
+    if (!this.skillAutosaveEnabled) {
+      return { cleaned: raw, saved: [] };
+    }
+    const blocks = extractSkillSaveBlocks(raw);
+    if (blocks.length === 0) {
+      return { cleaned: raw, saved: [] };
+    }
+    const saved: SavedSkillDraft[] = [];
+    for (const block of blocks) {
+      try {
+        const result = saveSkillDraftFromBlock({
+          name: block.name,
+          description: block.description,
+          body: block.body,
+        });
+        saved.push(result);
+      } catch {
+        // ignore autosave failures to avoid breaking the user-visible response
+      }
+    }
+    const cleaned = stripSkillSaveBlocks(raw).trim();
+    return { cleaned, saved };
+  }
+
+  private applySystemPrompt(agentId: AgentIdentifier, input: Input): Input {
+    if (!this.systemPromptManager) {
+      return input;
+    }
+    const requestedSkills = uniqStrings([...this.extractRequestedSkills(input), ...this.inferRequestedSkills(input)]);
+    if (requestedSkills.length > 0) {
+      this.systemPromptManager.setRequestedSkills(requestedSkills);
+    }
+    const injection = this.systemPromptManager.maybeInject();
+    if (!injection) {
+      return input;
+    }
+    const entry = this.adapters.get(agentId);
+    const agentName = entry?.metadata.name ?? agentId;
+    const aliasNote =
+      `You are ${agentName} (id: ${agentId}), the active ADS agent. ` +
+      `If the following instructions mention "Codex", treat them as referring to you.`;
+
+    const decorated = `${aliasNote}\n\n${injection.text}`;
+    return this.mergeSystemPrompt(decorated, input);
+  }
+
+  private completeTurn(agentId: AgentIdentifier): void {
+    if (!this.systemPromptManager) {
+      return;
+    }
+    void agentId;
+    this.systemPromptManager.completeTurn();
+  }
+
+  private buildResultWithSavedArtifacts(
+    result: AgentRunResult,
+  ): AgentRunResult {
+    const persisted = this.persistSkillsFromResponse(result.response);
+    const suffix = persisted.saved.length > 0
+      ? `\n\n（已自动沉淀 skill: ${persisted.saved.map((s) => s.skillName).join(", ")}）`
+      : "";
+    return { ...result, response: `${persisted.cleaned}${suffix}`.trim() };
+  }
+
+  private async sendWithAgent(
+    agentId: AgentIdentifier,
+    entry: AgentEntry,
+    input: Input,
+    options?: AgentSendOptions,
+  ): Promise<AgentRunResult> {
+    const prompt = this.applySystemPrompt(agentId, input);
+    this.inFlightTurns += 1;
+    try {
+      const result = await entry.adapter.send(prompt, options);
+      return this.buildResultWithSavedArtifacts(result);
+    } finally {
+      this.inFlightTurns -= 1;
+      this.completeTurn(agentId);
+    }
+  }
+
+  isBusy(): boolean {
+    return this.inFlightTurns > 0;
+  }
+
+  status(): AgentStatus & { agentId: AgentIdentifier } {
+    const status = this.activeEntry.adapter.status();
+    return { ...status, agentId: this.activeAgentId };
+  }
+
+  onEvent(handler: Parameters<AgentAdapter["onEvent"]>[0]): () => void {
+    return this.activeEntry.adapter.onEvent(handler);
+  }
+
+  reset(options?: { clearPersistedState?: boolean }): void {
+    for (const { adapter } of this.adapters.values()) {
+      adapter.reset(options);
+    }
+  }
+
+  async send(input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
+    const agentId = this.activeAgentId;
+    const entry = this.adapters.get(agentId);
+    if (!entry) {
+      throw new Error(`Active agent "${agentId}" not found`);
+    }
+    return this.sendWithAgent(agentId, entry, input, options);
+  }
+
+  async invokeAgent(agentId: AgentIdentifier, input: Input, options?: AgentSendOptions): Promise<AgentRunResult> {
+    const entry = this.adapters.get(agentId);
+    if (!entry) {
+      throw new Error(`Agent "${agentId}" is not registered`);
+    }
+    return this.sendWithAgent(agentId, entry, input, options);
+  }
+
+  setWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void {
+    this.workingDirectory = workingDirectory;
+    const workspaceRoot = detectWorkspaceFrom(workingDirectory ?? process.cwd());
+    this.systemPromptManager?.setWorkspaceRoot(workspaceRoot);
+    this.broadcastWorkingDirectory(workingDirectory, options);
+  }
+
+  private broadcastWorkingDirectory(workingDirectory?: string, options?: { preserveSession?: boolean }): void {
+    for (const { adapter } of this.adapters.values()) {
+      adapter.setWorkingDirectory?.(workingDirectory, options);
+    }
+  }
+
+  setModel(model?: string): void {
+    this.model = model;
+    this.broadcastModel(model);
+  }
+
+  setModelConfig(config?: Record<string, unknown> | null): void {
+    this.modelConfig = config ?? null;
+    for (const { adapter } of this.adapters.values()) {
+      adapter.setModelConfig?.(this.modelConfig);
+    }
+  }
+
+  getModel(): string | undefined {
+    return this.model;
+  }
+
+  private broadcastModel(model?: string): void {
+    for (const { adapter } of this.adapters.values()) {
+      adapter.setModel?.(model);
+    }
+  }
+
+  setModelReasoningEffort(effort?: string): void {
+    const normalized = String(effort ?? "").trim() || undefined;
+    this.modelReasoningEffort = normalized;
+    for (const { adapter } of this.adapters.values()) {
+      adapter.setModelReasoningEffort?.(normalized);
+    }
+  }
+
+  getModelReasoningEffort(): string | undefined {
+    return this.modelReasoningEffort;
+  }
+
+  setDeveloperInstructions(instructions: string): void {
+    for (const { adapter } of this.adapters.values()) {
+      adapter.setDeveloperInstructions?.(instructions);
+    }
+  }
+
+  getThreadId(): string | null {
+    return this.activeEntry.adapter.getThreadId?.() ?? null;
+  }
+
+  async classifyInput(input: string) {
+    const adapter = this.activeEntry.adapter.classifyInput
+      ? this.activeEntry.adapter
+      : this.adapters.get("codex")?.adapter;
+
+    if (!adapter || !adapter.classifyInput) {
+      throw new Error("No agent available to classify input");
+    }
+
+    return adapter.classifyInput(input);
+  }
+}

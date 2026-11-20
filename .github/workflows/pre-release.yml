@@ -39,6 +39,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify release layout
+        run: npm run verify:release
+
       - name: Run unit tests
         run: npm test
 
@@ -96,7 +99,14 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.vars.outputs.tag }}"
-          tar -czf "ads-${TAG}.tgz" dist package.json package-lock.json README.md LICENSE .env.example .env.advanced.example
+          tar -czf "ads-${TAG}.tgz" dist ts-server/dist package.json package-lock.json README.md LICENSE .env.example .env.advanced.example
+          SMOKE_DIR="$RUNNER_TEMP/ads-release-smoke"
+          rm -rf "$SMOKE_DIR"
+          mkdir -p "$SMOKE_DIR"
+          tar -xzf "ads-${TAG}.tgz" -C "$SMOKE_DIR"
+          node scripts/verify-release-layout.js "$SMOKE_DIR"
+          cd "$SMOKE_DIR"
+          node ts-server/dist/server/cli.js version
 
       - name: Create GitHub pre-release
         if: steps.vars.outputs.is_prerelease == 'true'

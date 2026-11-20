@@ -137,7 +137,7 @@ export function loadConfig(path: string): UserConfig {
 ## Testing
 
 - Write tests for new features and bug fixes
-- Place tests in the `tests/` directory
+- Place tests in the `ts-server/tests/` directory
 - Use descriptive test names
 - Aim for high code coverage on critical paths
 
@@ -173,14 +173,13 @@ describe('Feature Name', () => {
 
 ```
 ads/
-├── server/        # Backend (Node.js, TypeScript)
-│   ├── graph/     # Graph/workflow logic
-│   ├── workspace/ # Workspace management
-│   ├── telegram/  # Telegram bot
-│   └── web/       # Web Console backend
-├── client/        # Frontend (Vue 3, Vite)
-├── tests/         # Test files
-├── scripts/       # Build and utility scripts
+├── client/        # Shared frontend (Vue 3, Vite)
+├── rust-server/   # Rust backend and connector crates
+├── ts-server/     # TypeScript backend, shared contracts, tests, and connector
+│   ├── server/
+│   ├── shared/
+│   ├── tests/
+│   └── connectors/telegram/
 └── docs/          # Documentation
 ```
 
