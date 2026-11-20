@@ -706,6 +706,45 @@ fn chat_natural_language_command_router(requests: Arc<Mutex<Vec<Value>>>) -> Rou
     )
 }
 
+fn chat_relative_command_router(requests: Arc<Mutex<Vec<Value>>>) -> Router {
+    Router::new().route(
+        "/v1/chat/completions",
+        post(move |body: String| {
+            let requests = Arc::clone(&requests);
+            async move {
+                let payload: Value = serde_json::from_str(&body).expect("chat request body");
+                let round = {
+                    let mut requests = requests.lock().expect("requests");
+                    requests.push(payload);
+                    requests.len()
+                };
+                let response = if round == 1 {
+                    json!({"choices": [{"delta": {"tool_calls": [{
+                        "index": 0,
+                        "type": "function",
+                        "id": "relative-command",
+                        "function": {
+                            "name": "exec_command",
+                            "arguments": json!({
+                                "cmd": "./script.sh",
+                                "cwd": "nested"
+                            }).to_string()
+                        }
+                    }]}, "finish_reason": null}]})
+                } else {
+                    json!({"choices": [{"delta": {"content": "relative command complete"}, "finish_reason": "stop"}]})
+                };
+                let mut body = format!("data: {response}\n\n");
+                if round == 1 {
+                    body.push_str("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n");
+                }
+                body.push_str("data: [DONE]\n\n");
+                ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+            }
+        }),
+    )
+}
+
 fn chat_parallel_tool_router_captured(requests: Arc<Mutex<Vec<Value>>>) -> Router {
     Router::new().route(
         "/v1/chat/completions",
@@ -1410,6 +1449,51 @@ async fn never_frames_natural_language_as_a_shell_command() {
             .and_then(Value::as_str),
         Some("invalid command rejected")
     );
+    harness.drain().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn frames_relative_commands_with_the_effective_cwd() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let harness = Harness::start_with_wire(
+        chat_relative_command_router(Arc::clone(&requests)),
+        "chat",
+        Arc::clone(&requests),
+    )
+    .await;
+    let nested = harness.workspace.join("nested");
+    fs::create_dir_all(&nested).expect("nested directory");
+    let script = nested.join("script.sh");
+    fs::write(&script, "#!/bin/sh\nprintf 'nested-ok\\n'\n").expect("nested script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("permissions");
+
+    let entry = harness.enqueue("cm-relative-command", "run nested script");
+    let outcome = harness
+        .runner
+        .run_prompt(entry, harness.context())
+        .await
+        .expect("run prompt");
+    assert_eq!(outcome, PromptQueueRunOutcome::success());
+
+    let commands = harness.events_of("command");
+    assert!(commands.iter().any(|event| {
+        event
+            .get("command")
+            .and_then(|command| command.get("command"))
+            .and_then(Value::as_str)
+            == Some("./script.sh")
+    }));
+    assert!(harness.transcript_entries().iter().any(|entry| {
+        entry.get("kind").and_then(Value::as_str) == Some("command")
+            && entry.get("command").and_then(Value::as_str) == Some("./script.sh")
+            && entry
+                .get("output")
+                .and_then(Value::as_str)
+                .is_some_and(|output| output.contains("nested-ok"))
+    }));
     harness.drain().await;
 }
 

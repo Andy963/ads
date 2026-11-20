@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -334,6 +334,26 @@ impl CodexAppServerAgent {
 
     pub fn workspace_root(&self) -> &PathBuf {
         &self.inner.options.workspace_root
+    }
+
+    fn command_execution_cwd(&self, item: &Value) -> PathBuf {
+        let base = self
+            .inner
+            .options
+            .working_directory
+            .as_ref()
+            .unwrap_or(&self.inner.options.workspace_root);
+        match item.get("cwd").and_then(Value::as_str).map(str::trim) {
+            Some(cwd) if !cwd.is_empty() => {
+                let cwd = PathBuf::from(cwd);
+                if cwd.is_absolute() {
+                    cwd
+                } else {
+                    base.join(cwd)
+                }
+            }
+            _ => base.clone(),
+        }
     }
 
     pub async fn thread_id(&self) -> Option<String> {
@@ -900,7 +920,8 @@ impl CodexAppServerAgent {
                 {
                     return;
                 }
-                if let Some(mapped) = map_item_event("item.completed", &item) {
+                let command_cwd = self.command_execution_cwd(&item);
+                if let Some(mapped) = map_item_event("item.completed", &item, &command_cwd) {
                     self.emit(mapped.into_agent_event());
                 }
             }
@@ -909,7 +930,8 @@ impl CodexAppServerAgent {
                 if item_may_have_side_effect(item.get("type").and_then(Value::as_str)) {
                     state.lock().expect("turn state lock").side_effect_observed = true;
                 }
-                if let Some(mapped) = map_item_event("item.started", &item) {
+                let command_cwd = self.command_execution_cwd(&item);
+                if let Some(mapped) = map_item_event("item.started", &item, &command_cwd) {
                     self.emit(mapped.into_agent_event());
                 }
             }
@@ -1644,7 +1666,7 @@ fn non_empty_string(value: Option<&Value>) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
-fn map_item_event(event_type: &str, item: &Value) -> Option<MappedItemEvent> {
+fn map_item_event(event_type: &str, item: &Value, command_cwd: &Path) -> Option<MappedItemEvent> {
     match item.get("type").and_then(Value::as_str)? {
         "agentMessage" if event_type == "item.completed" => Some(MappedItemEvent {
             phase: "responding",
@@ -1663,6 +1685,9 @@ fn map_item_event(event_type: &str, item: &Value) -> Option<MappedItemEvent> {
                 .get("command")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            if !ads_native::command_has_executable(command, command_cwd) {
+                return None;
+            }
             let mut detail = command.to_string();
             if let Some(exit_code) = item.get("exitCode").and_then(Value::as_i64) {
                 detail.push_str(&format!(" | 退出码 {exit_code}"));
@@ -1945,4 +1970,36 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn command_items_require_an_executable_in_the_effective_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let script = directory.path().join("script.sh");
+        std::fs::write(&script, "#!/bin/sh\n").expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("permissions");
+        let item = json!({
+            "type": "commandExecution",
+            "id": "command-1",
+            "command": "./script.sh",
+            "status": "completed"
+        });
+        assert!(map_item_event("item.completed", &item, directory.path()).is_some());
+
+        let reasoning = json!({
+            "type": "commandExecution",
+            "id": "command-2",
+            "command": "Please inspect the logs",
+            "status": "completed"
+        });
+        assert!(map_item_event("item.completed", &reasoning, directory.path()).is_none());
+    }
 }

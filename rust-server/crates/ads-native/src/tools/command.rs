@@ -737,7 +737,7 @@ enum ShellBlock {
     LoopHeader,
 }
 
-pub(crate) fn command_has_executable(command: &str, cwd: &std::path::Path) -> bool {
+pub fn command_has_executable(command: &str, cwd: &std::path::Path) -> bool {
     let command = command.trim();
     if command.is_empty() {
         return false;
@@ -974,35 +974,47 @@ fn split_shell_segments(value: &str) -> Vec<String> {
     let mut quote = None;
     let mut escaped = false;
     let characters = value.chars().collect::<Vec<_>>();
-    for (index, character) in characters.iter().copied().enumerate() {
+    let mut index = 0usize;
+    while index < characters.len() {
+        let character = characters[index];
         if escaped {
             escaped = false;
+            index += 1;
             continue;
         }
         if character == '\\' && quote != Some('\'') {
             escaped = true;
+            index += 1;
             continue;
         }
         if let Some(active) = quote {
             if character == active {
                 quote = None;
             }
+            index += 1;
             continue;
         }
         if character == '\'' || character == '"' {
             quote = Some(character);
+            index += 1;
             continue;
         }
         let next = characters.get(index + 1).copied();
         if character == '|' || character == '&' {
             push_segment(&mut segments, value, start, index);
             if next == Some(character) {
+                index += 2;
+                start = index;
                 continue;
             }
-            start = index + 1;
+            index += 1;
+            start = index;
         } else if character == ';' || character == '\n' {
             push_segment(&mut segments, value, start, index);
-            start = index + 1;
+            index += 1;
+            start = index;
+        } else {
+            index += 1;
         }
     }
     push_segment(&mut segments, value, start, characters.len());
@@ -1184,6 +1196,8 @@ mod tests {
         assert!(valid("[ -f file ]"));
         assert!(valid("{ echo ok; }"));
         assert!(valid("if [ -f file ]; then echo ok; fi"));
+        assert!(valid("if true && false; then echo ok; fi"));
+        assert!(valid("while true || false; do echo ok; done"));
         assert!(valid("for x in a b; do echo ok; done"));
         assert!(valid("printf 'x' | cat"));
     }

@@ -503,9 +503,10 @@ impl NativePromptRunner {
                 let mut loop_warnings = Vec::new();
                 for call in completion.tool_calls {
                     cancellation.check()?;
-                    let started_command = command_start(&call, Path::new(&entry.workspace_root));
+                    let command_cwd = command_cwd_for_call(&call, Path::new(&entry.workspace_root));
+                    let started_command = command_start(&call, &command_cwd);
                     if let Some(command) = started_command.as_ref() {
-                        emit_command_event(&context, command, Path::new(&entry.workspace_root));
+                        emit_command_event(&context, command, &command_cwd);
                     }
                     let result = if loop_pause.is_some() {
                         NativeToolExecutionResult {
@@ -559,10 +560,7 @@ impl NativePromptRunner {
                         .command
                         .as_ref()
                         .filter(|command| command.status != "in_progress")
-                        .filter(|command| {
-                            command_frame_text(&command.command, Path::new(&entry.workspace_root))
-                                .is_some()
-                        })
+                        .filter(|command| command_frame_text(&command.command, &command_cwd).is_some())
                     {
                         new_entries.push(command_entry(call.id.as_str(), command));
                     }
@@ -585,7 +583,7 @@ impl NativePromptRunner {
                         usage.as_ref(),
                     )?;
                     if let Some(command) = result.command.as_ref() {
-                        emit_command_event(&context, command, Path::new(&entry.workspace_root));
+                        emit_command_event(&context, command, &command_cwd);
                     }
                 }
                 if let Some(reason) = loop_pause {
@@ -1314,6 +1312,15 @@ fn command_start(call: &crate::NativeToolCall, cwd: &std::path::Path) -> Option<
         exit_code: None,
         aggregated_output: None,
     })
+}
+
+fn command_cwd_for_call(
+    call: &crate::NativeToolCall,
+    workspace_root: &std::path::Path,
+) -> std::path::PathBuf {
+    let arguments = serde_json::from_str::<Value>(&call.function.arguments).unwrap_or(Value::Null);
+    crate::tools::command_cwd_for_args(workspace_root, &arguments)
+        .unwrap_or_else(|| workspace_root.to_path_buf())
 }
 
 fn command_frame_text<'a>(raw: &'a str, cwd: &std::path::Path) -> Option<&'a str> {

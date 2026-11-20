@@ -66,6 +66,7 @@ pub use reviewer::{
 };
 pub use runner::{NativePromptRunOutcome, NativePromptRunner, NativePromptRunnerOptions};
 pub use schedule_compiler::{NativeScheduleCompiler, NativeScheduleCompilerOptions};
+pub use tools::command_has_executable;
 pub use tools::{ActionTools, ActionToolsFactory, find_security_violation};
 pub use types::{
     NativeChatMessage, NativeCompletion, NativeCompletionRequest, NativeContentPart,

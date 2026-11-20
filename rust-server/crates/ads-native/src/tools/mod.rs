@@ -22,7 +22,7 @@ use crate::{
     NativeToolDefinition, NativeToolFunctionDefinition, TurnContext,
 };
 
-pub(crate) use self::command::command_has_executable;
+pub use self::command::command_has_executable;
 pub use self::command::find_security_violation;
 use self::command::{
     CommandManager, CommandRead, CommandRequest, allowlist_from_env, has_shell_syntax,
@@ -30,6 +30,14 @@ use self::command::{
 };
 pub(crate) use self::loop_guard::{ToolLoopDecision, ToolLoopGuard, paused_error};
 pub(crate) use self::patch::ChangedFile;
+
+pub(crate) fn command_cwd_for_args(workspace_root: &Path, arguments: &Value) -> Option<PathBuf> {
+    let arguments = arguments.as_object()?;
+    match string_argument(arguments, "cwd", false).ok()? {
+        value if value.is_empty() => Some(workspace_root.to_path_buf()),
+        value => resolve_path(workspace_root, &value, false).ok(),
+    }
+}
 
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_TOOL_OUTPUT_CHARS: usize = 64 * 1024;
