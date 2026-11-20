@@ -2,6 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
 
 import MainChatPendingImageViewer from "./MainChatPendingImageViewer.vue";
+import MainChatModelSelectors from "./MainChatModelSelectors.vue";
+import type { ModelConfig } from "../api/types";
 import { resolveComposerImagePreview } from "./mainChat/attachmentPreview";
 import type { IncomingImage, QueuedPrompt } from "./mainChat/types";
 import { useMainChatComposer } from "./mainChat/useComposer";
@@ -38,6 +40,11 @@ const props = withDefaults(defineProps<{
   voiceInputActive?: boolean;
   apiToken?: string;
   runningTaskCount?: number;
+  agents?: Array<{ id: string; name: string; ready: boolean; error?: string }>;
+  activeAgentId?: string;
+  models?: ModelConfig[];
+  modelId?: string;
+  modelReasoningEffort?: string;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
   connectionStatusMessage?: string | null;
 }>(), { voiceInputActive: true });
@@ -51,6 +58,9 @@ const emit = defineEmits<{
   (e: "removeImage", index: number): void;
   (e: "removeQueued", id: string): void;
   (e: "retryQueued", id: string): void;
+  (e: "switchAgent", agentId: string): void;
+  (e: "setModel", modelId: string): void;
+  (e: "setReasoningEffort", effort: string): void;
 }>();
 
 const canInterrupt = computed(() => props.busy && props.connected);
@@ -539,6 +549,21 @@ onBeforeUnmount(() => {
         :disabled="inputLocked"
         @change="onFileInputChange"
       />
+      <div class="composerMetadataRow" data-testid="composer-model-controls">
+        <MainChatModelSelectors
+          :connected="connected"
+          :busy="busy"
+          :input-locked="inputLocked"
+          :agents="agents"
+          :active-agent-id="activeAgentId"
+          :models="models"
+          :model-id="modelId"
+          :model-reasoning-effort="modelReasoningEffort"
+          @switch-agent="emit('switchAgent', $event)"
+          @set-model="emit('setModel', $event)"
+          @set-reasoning-effort="emit('setReasoningEffort', $event)"
+        />
+      </div>
       <div
         ref="composerRowEl"
         class="composerMainRow"
@@ -990,6 +1015,16 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   column-gap: 2px;
   row-gap: 2px;
+}
+.composerMetadataRow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 6px 8px 0;
+}
+.composerMetadataRow :deep(.modelSelectors) {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .composerMainRow--expanded {

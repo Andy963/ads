@@ -6,8 +6,8 @@ const appVersion = typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "0
 
 import LoginGate from "./components/LoginGate.vue";
 import MainChatView from "./components/MainChat.vue";
-import MainChatModelSelectors from "./components/MainChatModelSelectors.vue";
 import ActionsReviewQueue from "./components/ActionsReviewQueue.vue";
+import PullRequestsWorkspace from "./components/PullRequestsWorkspace.vue";
 import { lazyComponent } from "./lib/asyncComponent";
 
 // Settings and session pickers sit behind modals/drawers; keep them out of the
@@ -143,6 +143,7 @@ type MobileManagerHandle = {
   refresh: () => Promise<void>;
   create: () => void;
 };
+type WorkspaceView = ChatLane | "prs";
 
 const mobileDrawerOpen = ref(false);
 const mobileDrawerSection = ref<MobileDrawerSection>("projects");
@@ -153,7 +154,10 @@ const chatLanes: Array<{ id: ChatLane; label: string }> = [
   { id: "acopilot", label: "Acopilot" },
   { id: "actions", label: "Actions" },
 ];
-const workspaceTabs = computed<Array<{ id: ChatLane; label: string }>>(() => chatLanes);
+const workspaceTabs = computed<Array<{ id: WorkspaceView; label: string }>>(() => [
+  ...chatLanes,
+  { id: "prs", label: "PRs" },
+]);
 
 const {
   activeChatLane,
@@ -249,6 +253,7 @@ function handleActionsViewport(viewport: TranscriptViewport): void {
 }
 
 const activeWorkspaceTab = computed<ChatLane>(() => activeChatLane.value);
+const activeWorkspaceView = ref<WorkspaceView>(activeChatLane.value);
 
 const actionsComposerInputLocked = computed(() => Boolean(actionsInputLocked.value));
 
@@ -259,12 +264,6 @@ type MainChatHandle = {
 const acopilotChatRef = ref<MainChatHandle | null>(null);
 const actionsChatRef = ref<MainChatHandle | null>(null);
 
-const activeLaneConnected = computed(() =>
-  activeWorkspaceTab.value === "acopilot" ? Boolean(acopilotReady.value) : Boolean(actionsReady.value),
-);
-const activeLaneInputLocked = computed(() =>
-  activeWorkspaceTab.value === "acopilot" ? Boolean(acopilotInputLocked.value) : actionsComposerInputLocked.value,
-);
 const activeLaneAgents = computed(() =>
   activeWorkspaceTab.value === "acopilot" ? acopilotAgents.value : actionsAgents.value,
 );
@@ -281,6 +280,20 @@ const activeLaneModelReasoningEffort = computed(() =>
     ? activeAcopilotRuntime.value.modelReasoningEffort.value
     : activeRuntime.value.modelReasoningEffort.value,
 );
+
+function workspaceTabConnected(view: WorkspaceView): boolean {
+  return view !== "prs" && isLaneConnected(view, { acopilot: acopilotReady.value, actions: actionsReady.value });
+}
+
+function workspaceTabStatusClass(view: WorkspaceView): string {
+  if (view === "prs") return "";
+  const connected = workspaceTabConnected(view);
+  const busy = view === "acopilot" ? acopilotBusy.value : agentBusy.value;
+  return [
+    connected ? "laneTabStatusDot--connected" : "laneTabStatusDot--disconnected",
+    connected && busy ? (view === "acopilot" ? "laneTabStatusDot--busy-acopilot" : "laneTabStatusDot--busy-actions") : "",
+  ].filter(Boolean).join(" ");
+}
 
 function handleActiveLaneSwitchAgent(agentId: string): void {
   if (activeWorkspaceTab.value === "acopilot") {
@@ -379,7 +392,7 @@ const mobileContextMenuTitle = computed(() => {
 });
 
 const mobileContextActions = computed<MobileContextAction[]>(() => {
-  if (mobileDrawerSection.value === "settings") {
+  if (mobileDrawerSection.value === "settings" || activeWorkspaceView.value === "prs") {
     return [];
   }
   return [
@@ -461,17 +474,20 @@ function onMobileDrawerNavigationClick(event: MouseEvent): void {
   if (mobileDrawerOpen.value) mobileDrawerRef.value?.focus({ preventScroll: true });
 }
 
-function selectWorkspaceTab(tab: ChatLane): void {
-  if (activeWorkspaceTab.value === tab) {
+function selectWorkspaceTab(tab: WorkspaceView): void {
+  if (activeWorkspaceView.value === tab) {
     closeMobileContextMenu();
     return;
   }
   if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
     document.activeElement.blur();
   }
-  setActiveChatLane(tab);
-  crumb(`lane:${activeWorkspaceTab.value}->${tab}`);
-  writeWorkspaceTab(activeProjectId.value, tab);
+  if (tab !== "prs") {
+    setActiveChatLane(tab);
+    writeWorkspaceTab(activeProjectId.value, tab);
+  }
+  activeWorkspaceView.value = tab;
+  crumb(`workspace:${activeWorkspaceTab.value}->${tab}`);
   closeMobileContextMenu();
 }
 
@@ -481,6 +497,7 @@ function restoreWorkspaceTab(): void {
   const projectId = activeProjectId.value.trim();
   const tab = readWorkspaceTab(projectId);
   setActiveChatLane(tab);
+  activeWorkspaceView.value = tab;
 }
 
 async function refreshVisibleLaneChat(lane: ChatLane): Promise<void> {
@@ -931,6 +948,7 @@ function settleLaneGesture(target: ChatLane, width: number): void {
 function onLaneSwipeTouchStart(ev: TouchEvent): void {
   if (laneGesture || laneSnapSettling.value) return;
   if (!isMobile.value || mobileDrawerOpen.value) return;
+  if (activeWorkspaceView.value === "prs") return;
   // An in-flight drawer gesture owns the touch sequence.
   if (drawerDragProgress.value !== null || drawerSnapSettling.value) return;
   if (ev.target instanceof Element && ev.target.closest(LANE_SWIPE_IGNORE_SELECTOR)) return;
@@ -1087,7 +1105,7 @@ watch(mobileDrawerOpen, async (open) => {
 });
 
 watch(isMobile, (mobile) => {
-  if (activeProjectId.value.trim()) restoreWorkspaceTab();
+  if (activeProjectId.value.trim() && activeWorkspaceView.value !== "prs") restoreWorkspaceTab();
   if (mobile) return;
   closeMobileDrawer();
   cancelLaneGesture();
@@ -1096,6 +1114,10 @@ watch(isMobile, (mobile) => {
 watch(activeProjectId, (projectId, previousProjectId) => {
   if (!projectId.trim() || projectId === previousProjectId) return;
   restoreWorkspaceTab();
+});
+
+watch(activeChatLane, (lane) => {
+  if (activeWorkspaceView.value !== "prs") activeWorkspaceView.value = lane;
 });
 
 watch(activeWorkspaceTab, (lane) => {
@@ -1481,6 +1503,7 @@ const acopilotConnectionStatus = computed(() => {
     class="app"
     :data-cache-read-only="!loggedIn"
     :data-active-lane="activeWorkspaceTab"
+    :data-active-workspace-view="activeWorkspaceView"
     :data-project-id="activeProjectId"
     :data-worker-message-count="messages.length"
     :data-advisor-message-count="acopilotMessages.length"
@@ -1541,7 +1564,7 @@ const acopilotConnectionStatus = computed(() => {
         </div>
       </div>
       <div class="right">
-        <div v-if="!isMobile" class="laneSessionActions">
+        <div v-if="!isMobile && activeWorkspaceView !== 'prs'" class="laneSessionActions">
           <button
             v-if="activeLaneHasResume && loggedIn"
             class="laneTabIconBtn"
@@ -1841,9 +1864,9 @@ const acopilotConnectionStatus = computed(() => {
                 :id="`lane-tab-${tab.id}`"
                 type="button"
                 class="laneTab"
-                :class="{ active: activeWorkspaceTab === tab.id }"
+                :class="{ active: activeWorkspaceView === tab.id }"
                 role="tab"
-                :aria-selected="activeWorkspaceTab === tab.id"
+                :aria-selected="activeWorkspaceView === tab.id"
                 :aria-controls="`lane-panel-${tab.id}`"
                 :data-testid="`lane-tab-${tab.id}`"
                 @pointerdown="laneActivation.onPointerDown($event, tab.id)"
@@ -1853,38 +1876,15 @@ const acopilotConnectionStatus = computed(() => {
                 @click="laneActivation.onClick($event, tab.id)"
               >
               <span
+                v-if="tab.id !== 'prs'"
                 class="laneTabStatusDot"
-                :class="[
-                  isLaneConnected(tab.id, { acopilot: acopilotReady, actions: actionsReady })
-                    ? 'laneTabStatusDot--connected'
-                    : 'laneTabStatusDot--disconnected',
-                  (isLaneConnected(tab.id, { acopilot: acopilotReady, actions: actionsReady }) &&
-                    (tab.id === 'acopilot' ? acopilotBusy : agentBusy))
-                    ? (tab.id === 'acopilot' ? 'laneTabStatusDot--busy-acopilot' : 'laneTabStatusDot--busy-actions')
-                    : '',
-                ]"
+                :class="workspaceTabStatusClass(tab.id)"
                :data-testid="`lane-tab-status-${tab.id}`"
                 aria-hidden="true"
               />
               <span class="laneTabLabel">{{ tab.label }}</span>
               </button>
             </template>
-          </div>
-          <div class="laneControlDivider" aria-hidden="true" />
-          <div class="laneModelControls" data-testid="lane-model-controls">
-            <MainChatModelSelectors
-              :connected="activeLaneConnected"
-              :busy="activeLaneBusy"
-              :input-locked="!loggedIn || activeLaneInputLocked"
-              :agents="activeLaneAgents"
-              :active-agent-id="activeLaneActiveAgentId"
-              :models="models"
-              :model-id="activeLaneModelId"
-              :model-reasoning-effort="activeLaneModelReasoningEffort"
-              @switch-agent="handleActiveLaneSwitchAgent"
-              @set-model="handleActiveLaneSetModel"
-              @set-reasoning-effort="handleActiveLaneSetReasoningEffort"
-            />
           </div>
         </div>
 
@@ -1897,6 +1897,7 @@ const acopilotConnectionStatus = computed(() => {
           @touchcancel="onLaneSwipeTouchCancel"
         >
           <div
+            v-show="activeWorkspaceView !== 'prs'"
             class="lanePanelsTrack"
             :class="{ 'lanePanelsTrack--worker': activeWorkspaceTab === 'actions', 'lanePanelsTrack--dragging': laneDragTracking }"
             :style="laneTrackStyle"
@@ -1938,6 +1939,11 @@ const acopilotConnectionStatus = computed(() => {
                 :busy="acopilotBusy"
                 :input-locked="!loggedIn || acopilotInputLocked"
                 :workspace-root="resolveActiveWorkspaceRoot()"
+                :agents="activeLaneAgents"
+                :active-agent-id="activeLaneActiveAgentId"
+                :models="models"
+                :model-id="activeLaneModelId"
+                :model-reasoning-effort="activeLaneModelReasoningEffort"
                 :connection-status-kind="acopilotConnectionStatus?.kind ?? null"
                 :connection-status-message="acopilotConnectionStatus?.message ?? null"
                 :thread-warning="acopilotThreadWarning"
@@ -1953,6 +1959,9 @@ const acopilotConnectionStatus = computed(() => {
                 @removeImage="removeAcopilotPendingImage"
                 @removeQueued="removeAcopilotQueuedPrompt"
                 @retryQueued="retryAcopilotQueuedPrompt"
+                @switch-agent="handleActiveLaneSwitchAgent"
+                @set-model="handleActiveLaneSetModel"
+                @set-reasoning-effort="handleActiveLaneSetReasoningEffort"
               />
             </section>
 
@@ -2000,6 +2009,11 @@ const acopilotConnectionStatus = computed(() => {
                 :input-locked="!loggedIn || actionsComposerInputLocked"
                 :workspace-root="resolveActiveWorkspaceRoot()"
                 :running-task-count="runningTaskCount"
+                :agents="activeLaneAgents"
+                :active-agent-id="activeLaneActiveAgentId"
+                :models="models"
+                :model-id="activeLaneModelId"
+                :model-reasoning-effort="activeLaneModelReasoningEffort"
                 :connection-status-kind="actionsConnectionStatus?.kind ?? null"
                 :connection-status-message="actionsConnectionStatus?.message ?? null"
                 :thread-warning="actionsThreadWarning"
@@ -2015,9 +2029,20 @@ const acopilotConnectionStatus = computed(() => {
                 @removeImage="removePendingImage"
                 @removeQueued="removeQueuedPrompt"
                 @retryQueued="retryQueuedPrompt"
+                @switch-agent="handleActiveLaneSwitchAgent"
+                @set-model="handleActiveLaneSetModel"
+                @set-reasoning-effort="handleActiveLaneSetReasoningEffort"
               />
             </section>
           </div>
+          <PullRequestsWorkspace
+            v-if="activeWorkspaceView === 'prs'"
+            id="lane-panel-prs"
+            role="tabpanel"
+            aria-labelledby="lane-tab-prs"
+            :project-id="activeProjectId"
+            :active="activeWorkspaceView === 'prs'"
+          />
         </div>
       </section>
     </main>

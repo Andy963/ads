@@ -64,4 +64,5 @@
 - 0053 - [ADR 0053: Run the Telegram Connector as a Rust Core Client](0053-rust-telegram-connector.md)
 - 0054 - [ADR 0054: Review Verdicts Hand Off Through Durable Agent Messages](0054-review-verdicts-hand-off-through-durable-agent-messages.md)
 - 0055 - [ADR 0055: Split the Client and Server Implementations](0055-split-client-and-server-implementations.md)
+- 0056 - [ADR 0056: Project Workspaces and Pull Request Cache Boundaries](0056-project-workspaces-and-pull-request-cache.md)
 <!-- ADS:ADR_INDEX_END -->

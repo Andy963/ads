@@ -299,7 +299,7 @@ describe("mobile navigation behavior", () => {
     expect(wrapper.find('[data-testid="mobile-drawer-toggle"]').exists()).toBe(true);
     expect(wrapper.find(".chatShell").exists()).toBe(true);
     expect(wrapper.find(".mobileMainPanel").exists()).toBe(false);
-    expect(wrapper.findAll(".laneTab").map((tab) => tab.text())).toEqual(["Acopilot", "Actions"]);
+    expect(wrapper.findAll(".laneTab").map((tab) => tab.text())).toEqual(["Acopilot", "Actions", "PRs"]);
     expect(wrapper.find('[data-testid="lane-tab-status-acopilot"]').classes()).toContain("laneTabStatusDot--connected");
     expect(wrapper.find('[data-testid="lane-tab-status-actions"]').classes()).toContain("laneTabStatusDot--connected");
     expect(wrapper.find('[data-testid="lane-tab-acopilot"]').classes()).toContain("active");

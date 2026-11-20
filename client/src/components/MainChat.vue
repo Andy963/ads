@@ -4,6 +4,7 @@ import MainChatComposerPanel from "./MainChatComposerPanel.vue";
 import MainChatMessageList from "./MainChatMessageList.vue";
 
 import type { ChatMessage, IncomingImage, QueuedPrompt } from "./mainChat/types";
+import type { ModelConfig } from "../api/types";
 import { useCopyMessage } from "./mainChat/useCopyMessage";
 import { loadMarkdown, loadedMarkdown } from "../lib/markdown/loader";
 import { createTapActivation } from "../lib/tapActivation";
@@ -25,6 +26,11 @@ const props = withDefaults(defineProps<{
   readOnly?: boolean;
   apiToken?: string;
   runningTaskCount?: number;
+  agents?: Array<{ id: string; name: string; ready: boolean; error?: string }>;
+  activeAgentId?: string;
+  models?: ModelConfig[];
+  modelId?: string;
+  modelReasoningEffort?: string;
   workspaceRoot?: string | null;
   viewportScopeKey?: string;
   transcriptScopeKey?: string;
@@ -50,6 +56,9 @@ const emit = defineEmits<{
   (e: "removeImage", index: number): void;
   (e: "removeQueued", id: string): void;
   (e: "retryQueued", id: string): void;
+  (e: "switchAgent", agentId: string): void;
+  (e: "setModel", modelId: string): void;
+  (e: "setReasoningEffort", effort: string): void;
 }>();
 
 const listRef = ref<HTMLElement | null>(null);
@@ -1241,6 +1250,11 @@ onBeforeUnmount(() => {
       :input-locked="inputLocked"
       :api-token="apiToken"
       :running-task-count="runningTaskCount"
+      :agents="agents"
+      :active-agent-id="activeAgentId"
+      :models="models"
+      :model-id="modelId"
+      :model-reasoning-effort="modelReasoningEffort"
       :connection-status-kind="connectionStatusKind"
       :connection-status-message="connectionStatusMessage"
       @update:draft="emit('update:draft', $event)"
@@ -1251,6 +1265,9 @@ onBeforeUnmount(() => {
       @remove-image="emit('removeImage', $event)"
       @remove-queued="emit('removeQueued', $event)"
       @retry-queued="emit('retryQueued', $event)"
+      @switch-agent="emit('switchAgent', $event)"
+      @set-model="emit('setModel', $event)"
+      @set-reasoning-effort="emit('setReasoningEffort', $event)"
     />
   </div>
 </template>

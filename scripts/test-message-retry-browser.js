@@ -54,7 +54,7 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
       };
       try {
         await page.goto(fixture.origin);
-        await page.locator('[data-testid="chat-model-capsule"]:not(:disabled)').waitFor();
+        await page.locator('.lanePanel:not([aria-hidden]) [data-testid="chat-model-capsule"]:not(:disabled)').waitFor();
         for (const [lane, runtime] of [["acopilot", "Advisor"], ["actions", "Worker"]]) {
           const panel = await chooseLane(lane);
           const marker = `browser-${runtime.toLowerCase()}-retry-${width}`;
@@ -117,7 +117,7 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
             await page.context().setOffline(false);
             if (width === 390) {
               await page.goto(fixture.origin);
-              await page.locator('[data-testid="chat-model-capsule"]:not(:disabled)').waitFor();
+              await page.locator('.lanePanel:not([aria-hidden]) [data-testid="chat-model-capsule"]:not(:disabled)').waitFor();
               await chooseLane(lane);
             }
             await panel.locator('.msg[data-role="assistant"]').filter({ hasText: `${runtime} reply: ${offlineMarker}` }).waitFor();
@@ -157,7 +157,7 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
             // Drop all warm client state. The retry must use the server's saved
             // image request, not reconstruct it from the reloaded chat bubble.
             await page.reload();
-            await page.locator('[data-testid="chat-model-capsule"]:not(:disabled)').waitFor();
+            await page.locator('.lanePanel:not([aria-hidden]) [data-testid="chat-model-capsule"]:not(:disabled)').waitFor();
             await chooseLane(lane);
             await retry.waitFor();
             await activate(retry);
