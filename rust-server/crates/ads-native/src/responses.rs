@@ -112,9 +112,11 @@ impl ResponsesOutputItem {
         }
     }
 
-    fn message_text(&self) -> Option<String> {
+    fn visible_message_text(&self) -> Option<String> {
         match self {
-            Self::Message { content, .. } => {
+            Self::Message { phase, content, .. }
+                if phase.as_deref().is_none_or(|phase| phase == "final_answer") =>
+            {
                 Some(content.iter().map(ResponsesPart::text).collect())
             }
             _ => None,
@@ -429,7 +431,7 @@ fn replay_output(message: &NativeChatMessage, scope: &str) -> NativeResult<Optio
     let items = parse_output(output, ParseMode::Incomplete)?;
     let text = items
         .iter()
-        .filter_map(ResponsesOutputItem::message_text)
+        .filter_map(ResponsesOutputItem::visible_message_text)
         .collect::<String>();
     let calls = items
         .iter()
@@ -535,8 +537,10 @@ fn parse_terminal(payload: &Value, scope: &str) -> NativeResult<NativeCompletion
     let mut calls = Vec::new();
     for item in &items {
         match item {
-            ResponsesOutputItem::Message { content, .. } => {
-                text.extend(content.iter().map(ResponsesPart::text));
+            ResponsesOutputItem::Message { .. } => {
+                if let Some(visible) = item.visible_message_text() {
+                    text.push_str(&visible);
+                }
             }
             ResponsesOutputItem::FunctionCall {
                 call_id,
@@ -900,6 +904,7 @@ struct StreamItem {
     call_id: Option<String>,
     name: Option<String>,
     phase: Option<String>,
+    phase_observed: bool,
     arguments: String,
     arguments_observed: bool,
     arguments_done: bool,
@@ -916,6 +921,7 @@ impl StreamItem {
             call_id: None,
             name: None,
             phase: None,
+            phase_observed: false,
             arguments: String::new(),
             arguments_observed: false,
             arguments_done: false,
@@ -972,6 +978,14 @@ impl ResponseStream {
             None => self
                 .items
                 .values()
+                .filter(|item| {
+                    item.kind == "message"
+                        && item.phase_observed
+                        && item
+                            .phase
+                            .as_deref()
+                            .is_none_or(|phase| phase == "final_answer")
+                })
                 .flat_map(|item| item.parts.values().map(|part| part.text.as_str()))
                 .collect(),
         };
@@ -1235,7 +1249,8 @@ impl ResponseStream {
                 state.arguments_done = done;
             }
             ResponsesOutputItem::Message { phase, content, .. } => {
-                state.phase = phase;
+                state.phase = phase.clone();
+                state.phase_observed = true;
                 for (index, part) in content.into_iter().enumerate() {
                     let text = part.text().to_string();
                     let observed = !text.is_empty();
@@ -1362,6 +1377,7 @@ fn transport_error(error: reqwest::Error, cancellation: &crate::Cancellation) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn parses_terminal_output_text_calls_and_scope() {
@@ -1576,6 +1592,65 @@ mod tests {
             .expect("completion");
         assert_eq!(completion.text, "Hello world");
         assert_eq!(completion.finish_reason.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn filters_commentary_from_terminal_text_and_streaming() {
+        let completion = parse_terminal(
+            &json!({
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "id": "commentary",
+                        "role": "assistant",
+                        "status": "completed",
+                        "phase": "commentary",
+                        "content": [{"type": "output_text", "text": "hidden", "annotations": []}]
+                    },
+                    {
+                        "type": "message",
+                        "id": "final",
+                        "role": "assistant",
+                        "status": "completed",
+                        "phase": "final_answer",
+                        "content": [{"type": "output_text", "text": "visible", "annotations": []}]
+                    }
+                ]
+            }),
+            "scope",
+        )
+        .expect("completion");
+        assert_eq!(completion.text, "visible");
+
+        let snapshots = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let callback_snapshots = Arc::clone(&snapshots);
+        let callback = Arc::new(move |text: &str| {
+            callback_snapshots
+                .lock()
+                .expect("snapshots")
+                .push(text.to_string());
+        });
+        let mut stream = ResponseStream::new("scope", Some(callback));
+        for event in [
+            json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"commentary","role":"assistant","status":"in_progress","phase":"commentary","content":[]}}),
+            json!({"type":"response.output_text.delta","item_id":"commentary","output_index":0,"content_index":0,"delta":"hidden"}),
+            json!({"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"final","role":"assistant","status":"in_progress","phase":"final_answer","content":[]}}),
+            json!({"type":"response.output_text.delta","item_id":"final","output_index":1,"content_index":0,"delta":"vis"}),
+        ] {
+            assert!(stream.consume(&event).expect("event").is_none());
+        }
+        assert_eq!(
+            snapshots.lock().expect("snapshots").as_slice(),
+            ["vis".to_string()]
+        );
+        stream
+            .consume(&json!({"type":"response.output_text.delta","item_id":"final","output_index":1,"content_index":0,"delta":"ible"}))
+            .expect("event");
+        assert_eq!(
+            snapshots.lock().expect("snapshots").as_slice(),
+            ["vis".to_string(), "visible".to_string()]
+        );
     }
 
     #[test]

@@ -399,13 +399,39 @@ impl NativePromptRunner {
                     }));
                 }
                 item_id = format!("{turn_id}-message-{round}");
+                let streamed_final = Arc::new(AtomicBool::new(false));
                 let make_delta = {
-                    // The provider does not identify whether text belongs to a
-                    // final answer or to pre-tool commentary until the round is
-                    // complete. Buffer the stream and expose only the final
-                    // no-tool round below.
-                    move |_emitted: Arc<AtomicBool>| -> NativeTextDelta {
-                        Arc::new(|_snapshot: &str| {})
+                    let delta_context = context.clone();
+                    let delta_item_id = item_id.clone();
+                    let delta_executor = Arc::clone(&tool_executor);
+                    let streamed_final = Arc::clone(&streamed_final);
+                    move |emitted: Arc<AtomicBool>| -> NativeTextDelta {
+                        let delta_context = delta_context.clone();
+                        let delta_item_id = delta_item_id.clone();
+                        let delta_executor = Arc::clone(&delta_executor);
+                        let streamed_final = Arc::clone(&streamed_final);
+                        let previous = Arc::new(Mutex::new(String::new()));
+                        Arc::new(move |snapshot: &str| {
+                            if !delta_executor.pending_command_ids().is_empty() {
+                                return;
+                            }
+                            let mut previous = previous.lock().expect("delta lock");
+                            if !snapshot.starts_with(previous.as_str()) {
+                                return;
+                            }
+                            let delta = snapshot[previous.len()..].to_string();
+                            *previous = snapshot.to_string();
+                            if !delta.is_empty() {
+                                emitted.store(true, Ordering::SeqCst);
+                                streamed_final.store(true, Ordering::SeqCst);
+                                delta_context.emit(json!({
+                                    "type": "delta",
+                                    "delta": delta,
+                                    "assistantItemId": delta_item_id,
+                                    "ts": now_ms(),
+                                }));
+                            }
+                        })
                     }
                 };
                 let request = NativeCompletionRequest {
@@ -471,7 +497,7 @@ impl NativePromptRunner {
                 assistant_message.native_responses = completion.native_responses.clone();
                 if completion.tool_calls.is_empty() {
                     response_text = completion.text.clone();
-                    if !completion.text.is_empty() {
+                    if !completion.text.is_empty() && !streamed_final.load(Ordering::SeqCst) {
                         context.emit(json!({
                             "type": "delta",
                             "delta": completion.text,

@@ -304,9 +304,6 @@ async fn parse_chat_stream(
                             .as_str()
                             .ok_or_else(|| NativeError::malformed("SSE content is not a string"))?;
                         text.push_str(content);
-                        if let Some(callback) = on_delta.as_ref() {
-                            callback(&text);
-                        }
                     }
                 }
                 if let Some(tool_calls) = delta.get("tool_calls") {
@@ -332,6 +329,12 @@ async fn parse_chat_stream(
     }
     let tool_calls = complete_tool_calls(calls)?;
     validate_finish_reason(finish_reason.as_deref(), &tool_calls)?;
+    if tool_calls.is_empty()
+        && !text.is_empty()
+        && let Some(callback) = on_delta.as_ref()
+    {
+        callback(&text);
+    }
     Ok(NativeCompletion {
         text,
         tool_calls,

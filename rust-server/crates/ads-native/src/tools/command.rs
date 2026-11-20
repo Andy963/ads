@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,7 +18,7 @@ use crate::{Cancellation, NativeError, NativeResult};
 const MAX_SESSIONS: usize = 16;
 const KILL_GRACE: Duration = Duration::from_millis(1_200);
 const SHELL_BUILTINS: &[&str] = &[
-    "[", "cd", "echo", "false", "printf", "pwd", "test", "true", "unset",
+    "[", "cd", "echo", "export", "false", "printf", "pwd", "test", "true", "unset",
 ];
 const PRIVATE_KEY_LABELS: &[&str] = &[
     "PRIVATE KEY",
@@ -748,20 +748,26 @@ pub fn command_has_executable(command: &str, cwd: &std::path::Path) -> bool {
         vec![command.to_string()]
     };
     let mut blocks = Vec::new();
+    let mut effective_cwd = cwd.to_path_buf();
+    let mut effective_path = std::env::var("PATH").ok();
     let valid = !segments.is_empty()
         && segments.iter().all(|segment| {
             let Ok(tokens) = tokenize_command_line(segment) else {
                 return false;
             };
             let mut executable_index = 0;
-            while tokens.get(executable_index).is_some_and(|token| {
-                token
-                    .split_once('=')
-                    .is_some_and(|(key, _)| is_shell_variable_name(key))
-            }) {
-                executable_index += 1;
-            }
+            let mut segment_path = effective_path.clone();
             loop {
+                while let Some((key, value)) = tokens.get(executable_index).and_then(|token| {
+                    token
+                        .split_once('=')
+                        .filter(|(key, _)| is_shell_variable_name(key))
+                }) {
+                    if key == "PATH" {
+                        segment_path = Some(expand_path_value(value, effective_path.as_deref()));
+                    }
+                    executable_index += 1;
+                }
                 let Some(token) = tokens.get(executable_index) else {
                     return false;
                 };
@@ -816,9 +822,36 @@ pub fn command_has_executable(command: &str, cwd: &std::path::Path) -> bool {
                     "!" | "time" => {
                         executable_index += 1;
                     }
+                    "export" => {
+                        let mut updated_path = None;
+                        for token in tokens.iter().skip(executable_index + 1) {
+                            let Some((key, value)) = token
+                                .split_once('=')
+                                .filter(|(key, _)| is_shell_variable_name(key))
+                            else {
+                                return false;
+                            };
+                            if key == "PATH" {
+                                updated_path =
+                                    Some(expand_path_value(value, effective_path.as_deref()));
+                            }
+                        }
+                        if let Some(path) = updated_path {
+                            effective_path = Some(path);
+                        }
+                        return true;
+                    }
                     _ => {
-                        return SHELL_BUILTINS.contains(&command_basename(token).as_str())
-                            || executable_exists(token, cwd);
+                        if !SHELL_BUILTINS.contains(&command_basename(token).as_str())
+                            && !executable_exists(token, &effective_cwd, segment_path.as_deref())
+                        {
+                            return false;
+                        }
+                        if command_basename(token) == "cd" {
+                            effective_cwd =
+                                cd_target(&tokens[executable_index + 1..], &effective_cwd);
+                        }
+                        return true;
                     }
                 }
             }
@@ -826,18 +859,48 @@ pub fn command_has_executable(command: &str, cwd: &std::path::Path) -> bool {
     valid && blocks.is_empty()
 }
 
-fn executable_exists(command: &str, cwd: &std::path::Path) -> bool {
-    let path = std::path::Path::new(command);
-    if path.components().count() > 1 {
-        let resolved = if path.is_absolute() {
-            path.to_path_buf()
+fn expand_path_value(value: &str, current: Option<&str>) -> String {
+    let current = current.unwrap_or_default();
+    value.replace("${PATH}", current).replace("$PATH", current)
+}
+
+fn cd_target(arguments: &[String], cwd: &Path) -> PathBuf {
+    let Some(target) = arguments.first().map(String::as_str) else {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| cwd.to_path_buf());
+    };
+    if target == "-" || target.starts_with('$') {
+        return cwd.to_path_buf();
+    }
+    let target = Path::new(target);
+    if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        cwd.join(target)
+    }
+}
+
+fn executable_exists(command: &str, cwd: &std::path::Path, path: Option<&str>) -> bool {
+    let command_path = Path::new(command);
+    if command_path.components().count() > 1 {
+        let resolved = if command_path.is_absolute() {
+            command_path.to_path_buf()
         } else {
-            cwd.join(path)
+            cwd.join(command_path)
         };
         return is_executable_file(&resolved);
     }
-    std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|directory| is_executable_file(&directory.join(command)))
+    let environment_path = std::env::var("PATH").ok();
+    path.or(environment_path.as_deref()).is_some_and(|paths| {
+        std::env::split_paths(std::ffi::OsStr::new(&paths)).any(|directory| {
+            let candidate = if directory.is_absolute() {
+                directory.join(command)
+            } else {
+                cwd.join(directory).join(command)
+            };
+            is_executable_file(&candidate)
+        })
     })
 }
 
@@ -1208,14 +1271,31 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let directory = tempdir().expect("tempdir");
-        let script = directory.path().join("script.sh");
+        let nested = directory.path().join("nested");
+        std::fs::create_dir_all(&nested).expect("nested directory");
+        let script = nested.join("script.sh");
         std::fs::write(&script, "#!/bin/sh\n").expect("script");
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
             .expect("permissions");
-        assert!(command_has_executable("./script.sh", directory.path()));
+        assert!(command_has_executable("./script.sh", &nested));
+        assert!(command_has_executable(
+            "cd nested && ./script.sh",
+            directory.path()
+        ));
         assert!(!command_has_executable(
             "./script.sh",
             std::path::Path::new("/")
+        ));
+
+        let bin = directory.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin directory");
+        let tool = bin.join("local-tool");
+        std::fs::write(&tool, "#!/bin/sh\n").expect("tool");
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))
+            .expect("permissions");
+        assert!(command_has_executable(
+            "PATH=bin local-tool",
+            directory.path()
         ));
     }
 

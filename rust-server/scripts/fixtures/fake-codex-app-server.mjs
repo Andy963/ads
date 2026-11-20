@@ -81,6 +81,16 @@ async function runTurn() {
       notify(event, { threadId: "thread-1", turnId: `turn-${turn}`, item });
     }
   }
+  notify("item/started", {
+    threadId: "thread-1",
+    turnId: `turn-${turn}`,
+    item: {
+      type: "agentMessage",
+      id: `message-${turn}`,
+      phase: "final_answer",
+      text: "",
+    },
+  });
   for (const delta of responseDeltaParts) {
     notify("item/agentMessage/delta", {
       threadId: "thread-1",
@@ -92,7 +102,12 @@ async function runTurn() {
   notify("item/completed", {
     threadId: "thread-1",
     turnId: `turn-${turn}`,
-    item: { type: "agentMessage", id: `message-${turn}`, text: responseText },
+    item: {
+      type: "agentMessage",
+      id: `message-${turn}`,
+      phase: "final_answer",
+      text: responseText,
+    },
   });
   notify("turn/completed", {
     threadId: "thread-1",
