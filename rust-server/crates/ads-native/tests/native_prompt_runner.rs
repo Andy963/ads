@@ -209,6 +209,10 @@ impl Harness {
             .collect()
     }
 
+    fn all_events(&self) -> Vec<Value> {
+        self.events.lock().expect("events").clone()
+    }
+
     fn events_of(&self, kind: &str) -> Vec<Value> {
         self.events
             .lock()
@@ -631,21 +635,65 @@ fn chat_pending_command_router(requests: Arc<Mutex<Vec<Value>>>) -> Router {
                 requests.lock().expect("requests").push(payload);
                 let round = requests.lock().expect("requests").len();
                 let response = match round {
-                    1 => json!({"choices": [{"delta": {"tool_calls": [{
-                        "index": 0,
-                        "type": "function",
-                        "id": "exec-1",
-                        "function": {
-                            "name": "exec_command",
-                            "arguments": json!({
-                                "cmd": "/bin/sh",
-                                "args": ["-c", "sleep 1; printf 'finished\\n'"],
-                                "yield_time_ms": 1
-                            }).to_string()
-                        }
-                    }]}, "finish_reason": null}]}),
+                    1 => json!({"choices": [{"delta": {
+                        "content": "I need to inspect the process before waiting.",
+                        "tool_calls": [{
+                            "index": 0,
+                            "type": "function",
+                            "id": "exec-1",
+                            "function": {
+                                "name": "exec_command",
+                                "arguments": json!({
+                                    "cmd": "/bin/sh",
+                                    "args": ["-c", "sleep 1; printf 'finished\\n'"],
+                                    "yield_time_ms": 1
+                                }).to_string()
+                            }
+                        }]
+                    }, "finish_reason": null}]}),
                     2 => json!({"choices": [{"delta": {"content": "too early"}, "finish_reason": "stop"}]}),
                     _ => json!({"choices": [{"delta": {"content": "command complete"}, "finish_reason": "stop"}]}),
+                };
+                let mut body = format!("data: {response}\n\n");
+                if round == 1 {
+                    body.push_str("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n");
+                }
+                body.push_str("data: [DONE]\n\n");
+                ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+            }
+        }),
+    )
+}
+
+fn chat_natural_language_command_router(requests: Arc<Mutex<Vec<Value>>>) -> Router {
+    Router::new().route(
+        "/v1/chat/completions",
+        post(move |body: String| {
+            let requests = Arc::clone(&requests);
+            async move {
+                let payload: Value = serde_json::from_str(&body).expect("chat request body");
+                let round = {
+                    let mut requests = requests.lock().expect("requests");
+                    requests.push(payload);
+                    requests.len()
+                };
+                let response = if round == 1 {
+                    json!({"choices": [{"delta": {
+                        "content": "I should inspect the logs before acting.",
+                        "tool_calls": [{
+                            "index": 0,
+                            "type": "function",
+                            "id": "invalid-command",
+                            "function": {
+                                "name": "exec_command",
+                                "arguments": json!({
+                                    "cmd": "I should inspect the logs before acting."
+                                }).to_string()
+                            }
+                        }]
+                    }, "finish_reason": null}]})
+                } else {
+                    json!({"choices": [{"delta": {"content": "invalid command rejected"}, "finish_reason": "stop"}]})
                 };
                 let mut body = format!("data: {response}\n\n");
                 if round == 1 {
@@ -1283,6 +1331,21 @@ async fn replaces_a_premature_final_answer_with_a_synthetic_wait() {
             .expect("events")
             .contains("too early")
     );
+    let serialized_events = serde_json::to_string(&harness.all_events()).expect("events");
+    assert!(!serialized_events.contains("I need to inspect the process before waiting."));
+    assert!(!serialized_events.contains("too early"));
+    let command_events = harness.events_of("command");
+    assert!(command_events.iter().any(|event| {
+        event
+            .get("command")
+            .and_then(|command| command.get("command"))
+            .and_then(Value::as_str)
+            .is_some_and(|command| {
+                command.starts_with("/bin/sh -c ") && command.contains("printf 'finished")
+            })
+    }));
+    let history_text = serde_json::to_string(&harness.history()).expect("history");
+    assert!(!history_text.contains("I need to inspect the process before waiting."));
 
     let bodies = harness.request_bodies();
     assert_eq!(bodies.len(), 3);
@@ -1316,6 +1379,37 @@ async fn replaces_a_premature_final_answer_with_a_synthetic_wait() {
                 .and_then(Value::as_str)
                 .is_some_and(|output| output.contains("finished"))
     }));
+    harness.drain().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn never_frames_natural_language_as_a_shell_command() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let harness = Harness::start_with_wire(
+        chat_natural_language_command_router(Arc::clone(&requests)),
+        "chat",
+        Arc::clone(&requests),
+    )
+    .await;
+    let entry = harness.enqueue("cm-invalid-command", "show the logs");
+    let outcome = harness
+        .runner
+        .run_prompt(entry, harness.context())
+        .await
+        .expect("run prompt");
+    assert_eq!(outcome, PromptQueueRunOutcome::success());
+    let serialized_events = serde_json::to_string(&harness.all_events()).expect("events");
+    assert!(
+        !serialized_events.contains("I should inspect the logs before acting."),
+        "{serialized_events}"
+    );
+    assert!(harness.events_of("command").is_empty());
+    assert_eq!(
+        harness.events_of("result")[0]
+            .get("output")
+            .and_then(Value::as_str),
+        Some("invalid command rejected")
+    );
     harness.drain().await;
 }
 

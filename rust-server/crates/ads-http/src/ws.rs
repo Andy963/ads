@@ -4242,8 +4242,13 @@ fn history_bootstrap_entries(entries: &[HistoryEntry]) -> Vec<HistoryEntry> {
             let kind = normalized_kind(entry);
             kind != "thought"
                 && kind != "plan"
+                && kind != "reasoning"
+                && kind != "commentary"
+                && kind != "assistant_commentary"
                 && !kind.starts_with("plan:")
                 && entry.role != "thought"
+                && entry.role != "reasoning"
+                && entry.role != "commentary"
         })
         .map(|mut entry| {
             let text = strip_command_history_output(&entry.text, entry.kind.as_deref());
@@ -5020,6 +5025,18 @@ mod tests {
                 text: "plan detail".to_string(),
                 ts: 5,
                 kind: Some("plan:step".to_string()),
+            },
+            HistoryEntry {
+                role: "ai".to_string(),
+                text: "hidden commentary".to_string(),
+                ts: 51,
+                kind: Some("commentary".to_string()),
+            },
+            HistoryEntry {
+                role: "reasoning".to_string(),
+                text: "hidden reasoning role".to_string(),
+                ts: 52,
+                kind: None,
             },
             HistoryEntry {
                 role: "user".to_string(),

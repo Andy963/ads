@@ -264,7 +264,7 @@ struct ContextUsage {
 #[derive(Default)]
 struct TurnState {
     response_text: String,
-    agent_message_buffers: HashMap<String, String>,
+    agent_message_buffers: HashMap<String, Vec<String>>,
     usage: Option<Value>,
     thread_id_from_started: Option<String>,
     turn_id: Option<String>,
@@ -816,27 +816,12 @@ impl CodexAppServerAgent {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 let mut current = state.lock().expect("turn state lock");
-                let next = format!(
-                    "{}{}",
-                    current
-                        .agent_message_buffers
-                        .get(&item_id)
-                        .cloned()
-                        .unwrap_or_default(),
-                    delta
-                );
-                current.agent_message_buffers.insert(item_id, next.clone());
-                current.response_text = next.clone();
+                current
+                    .agent_message_buffers
+                    .entry(item_id)
+                    .or_default()
+                    .push(delta.to_string());
                 drop(current);
-                self.emit(AgentEvent {
-                    phase: "responding".to_string(),
-                    title: "生成回复".to_string(),
-                    detail: None,
-                    delta: Some(next),
-                    timestamp: now_ms(),
-                    raw: params,
-                    session_fallback: None,
-                });
             }
             "item/completed" => {
                 let item = params.get("item").cloned().unwrap_or(Value::Null);
@@ -845,17 +830,60 @@ impl CodexAppServerAgent {
                     state.lock().expect("turn state lock").side_effect_observed = true;
                 }
                 if item_type == Some("agentMessage") {
-                    let text = item
+                    let item_text = item
                         .get("text")
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
+                    let phase = item.get("phase").and_then(Value::as_str);
+                    let visible = phase.is_none() || phase == Some("final_answer");
                     let mut current = state.lock().expect("turn state lock");
-                    current.response_text = text.clone();
-                    if let Some(item_id) = item.get("id").and_then(Value::as_str) {
-                        current
-                            .agent_message_buffers
-                            .insert(item_id.to_string(), text);
+                    let buffered = item
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .and_then(|item_id| current.agent_message_buffers.remove(item_id))
+                        .unwrap_or_default();
+                    let buffered_text = buffered.concat();
+                    let text = if item_text.is_empty() {
+                        buffered_text
+                    } else {
+                        item_text
+                    };
+                    if visible {
+                        current.response_text = text.clone();
+                    }
+                    drop(current);
+                    if !visible {
+                        return;
+                    }
+                    if !text.is_empty() {
+                        let snapshots = if buffered.is_empty() {
+                            vec![text]
+                        } else {
+                            let mut cumulative = String::new();
+                            buffered
+                                .into_iter()
+                                .map(|delta| {
+                                    cumulative.push_str(&delta);
+                                    cumulative.clone()
+                                })
+                                .collect()
+                        };
+                        for snapshot in snapshots {
+                            self.emit(AgentEvent {
+                                phase: "responding".to_string(),
+                                title: "生成回复".to_string(),
+                                detail: None,
+                                delta: Some(snapshot),
+                                timestamp: now_ms(),
+                                raw: json!({
+                                    "threadId": params.get("threadId").cloned().unwrap_or(Value::Null),
+                                    "turnId": params.get("turnId").cloned().unwrap_or(Value::Null),
+                                    "itemId": item.get("id").cloned().unwrap_or(Value::Null)
+                                }),
+                                session_fallback: None,
+                            });
+                        }
                     }
                 }
                 if item_type == Some("commandExecution")

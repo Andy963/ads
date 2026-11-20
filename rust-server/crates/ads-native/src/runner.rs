@@ -399,34 +399,12 @@ impl NativePromptRunner {
                 }
                 item_id = format!("{turn_id}-message-{round}");
                 let make_delta = {
-                    let delta_context = context.clone();
-                    let delta_item_id = item_id.clone();
-                    let delta_executor = Arc::clone(&tool_executor);
-                    move |emitted: Arc<AtomicBool>| -> NativeTextDelta {
-                        let delta_context = delta_context.clone();
-                        let delta_item_id = delta_item_id.clone();
-                        let delta_executor = Arc::clone(&delta_executor);
-                        let previous = Arc::new(Mutex::new(String::new()));
-                        Arc::new(move |snapshot: &str| {
-                            if !delta_executor.pending_command_ids().is_empty() {
-                                return;
-                            }
-                            let mut previous = previous.lock().expect("delta lock");
-                            if !snapshot.starts_with(previous.as_str()) {
-                                return;
-                            }
-                            let delta = snapshot[previous.len()..].to_string();
-                            *previous = snapshot.to_string();
-                            if !delta.is_empty() {
-                                emitted.store(true, Ordering::SeqCst);
-                                delta_context.emit(json!({
-                                    "type": "delta",
-                                    "delta": delta,
-                                    "assistantItemId": delta_item_id,
-                                    "ts": now_ms(),
-                                }));
-                            }
-                        })
+                    // The provider does not identify whether text belongs to a
+                    // final answer or to pre-tool commentary until the round is
+                    // complete. Buffer the stream and expose only the final
+                    // no-tool round below.
+                    move |_emitted: Arc<AtomicBool>| -> NativeTextDelta {
+                        Arc::new(|_snapshot: &str| {})
                     }
                 };
                 let request = NativeCompletionRequest {
@@ -485,31 +463,27 @@ impl NativePromptRunner {
                         json!({ "session_id": pending }).to_string(),
                     )];
                 }
-                append_text_tail(&mut response_text, &completion.text, 128_000);
                 let mut assistant_message = NativeChatMessage::assistant(
-                    completion.text.clone(),
+                    String::new(),
                     completion.tool_calls.clone(),
                 );
                 assistant_message.native_responses = completion.native_responses.clone();
                 if completion.tool_calls.is_empty() {
+                    response_text = completion.text.clone();
+                    if !completion.text.is_empty() {
+                        context.emit(json!({
+                            "type": "delta",
+                            "delta": completion.text,
+                            "assistantItemId": item_id,
+                            "ts": now_ms(),
+                        }));
+                    }
+                    assistant_message.content =
+                        Some(crate::NativeMessageContent::Text(completion.text));
                     current_messages.push(assistant_message.clone());
                     turn_messages.push(assistant_message.clone());
                     turn_entries.push(json!({ "kind": "message", "message": assistant_message }));
                     break;
-                }
-
-                if !completion.text.trim().is_empty() {
-                    context.emit(json!({
-                        "type": "assistant_item",
-                        "assistantItemId": item_id,
-                        "assistantItemText": completion.text,
-                        "ts": now_ms(),
-                    }));
-                    context.emit(json!({
-                        "type": "phase_complete",
-                        "phase": "assistant",
-                        "ts": now_ms(),
-                    }));
                 }
                 current_messages.push(assistant_message.clone());
                 turn_messages.push(assistant_message.clone());
@@ -584,6 +558,7 @@ impl NativePromptRunner {
                         .command
                         .as_ref()
                         .filter(|command| command.status != "in_progress")
+                        .filter(|command| command_frame_text(&command.command).is_some())
                     {
                         new_entries.push(command_entry(call.id.as_str(), command));
                     }
@@ -1317,10 +1292,7 @@ fn command_start(call: &crate::NativeToolCall) -> Option<CommandArtifact> {
     }
     let arguments: Value = serde_json::from_str(&call.function.arguments).ok()?;
     let arguments = arguments.as_object()?;
-    let command = arguments.get("cmd")?.as_str()?.trim();
-    if command.is_empty() {
-        return None;
-    }
+    let command = command_frame_text(arguments.get("cmd")?.as_str()?)?;
     let args = arguments
         .get("args")
         .and_then(Value::as_array)
@@ -1340,7 +1312,44 @@ fn command_start(call: &crate::NativeToolCall) -> Option<CommandArtifact> {
     })
 }
 
+fn command_frame_text(raw: &str) -> Option<&str> {
+    let command = raw.trim();
+    if command.is_empty()
+        || command.starts_with("```")
+        || command.starts_with('{')
+        || command.starts_with('[')
+    {
+        return None;
+    }
+    let first = command
+        .split_whitespace()
+        .next()?
+        .trim_matches(|character: char| {
+            matches!(character, '"' | '\'' | '(' | ')' | ',' | '.' | ':' | ';')
+        });
+    if matches!(
+        first.to_ascii_lowercase().as_str(),
+        "i" | "i'll"
+            | "i'm"
+            | "we"
+            | "we'll"
+            | "we're"
+            | "let"
+            | "the"
+            | "this"
+            | "analysis"
+            | "reasoning"
+            | "plan"
+    ) {
+        return None;
+    }
+    Some(command)
+}
+
 fn emit_command_event(context: &PromptRunContext, command: &CommandArtifact) {
+    if command_frame_text(&command.command).is_none() {
+        return;
+    }
     let mut projected = Map::new();
     projected.insert("id".to_string(), Value::String(command.id.clone()));
     projected.insert(
@@ -1420,33 +1429,6 @@ fn argument_text(value: &Value) -> String {
         Value::Null => "null".to_string(),
         other => other.to_string(),
     }
-}
-
-fn append_text_tail(target: &mut String, value: &str, max_units: usize) {
-    target.push_str(value);
-    if target.encode_utf16().count() > max_units {
-        *target = truncate_tail_utf16(target, max_units);
-    }
-}
-
-fn truncate_tail_utf16(value: &str, max_units: usize) -> String {
-    let total = value.encode_utf16().count();
-    if total <= max_units {
-        return value.to_string();
-    }
-    let skip = total - max_units;
-    let mut units = 0usize;
-    let mut result = String::new();
-    for character in value.chars() {
-        let width = character.len_utf16();
-        if units + width <= skip {
-            units += width;
-            continue;
-        }
-        result.push(character);
-        units += width;
-    }
-    result
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

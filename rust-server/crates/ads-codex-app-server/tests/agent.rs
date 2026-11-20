@@ -176,6 +176,32 @@ fn fake_factory(
                                     .await;
                                 server
                                     .notify(
+                                        "item/agentMessage/delta",
+                                        json!({
+                                            "threadId": thread_id,
+                                            "turnId": turn_id,
+                                            "itemId": "commentary-1",
+                                            "delta": "Hidden commentary"
+                                        }),
+                                    )
+                                    .await;
+                                server
+                                    .notify(
+                                        "item/completed",
+                                        json!({
+                                            "threadId": thread_id,
+                                            "turnId": turn_id,
+                                            "item": {
+                                                "type": "agentMessage",
+                                                "id": "commentary-1",
+                                                "text": "Hidden commentary",
+                                                "phase": "commentary"
+                                            }
+                                        }),
+                                    )
+                                    .await;
+                                server
+                                    .notify(
                                         "item/started",
                                         json!({
                                             "threadId": thread_id,
@@ -1351,6 +1377,7 @@ async fn bridges_context_compaction_and_drops_private_or_collaboration_items() {
             event.phase == "plan"
                 || raw.contains("Hidden plan")
                 || raw.contains("Hidden reasoning")
+                || raw.contains("Hidden commentary")
                 || raw.contains("collabAgentToolCall")
         }));
     }
