@@ -124,6 +124,10 @@ function idsFromVm(wrapper: { vm: { projects: Array<{ id: string }> } }): string
   return wrapper.vm.projects.map((p) => p.id);
 }
 
+function dispatchInteraction(element: Element, type: string): void {
+  element.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }));
+}
+
 describe("App.removeProject", () => {
   beforeEach(() => {
     try {
@@ -242,6 +246,7 @@ describe("App.removeProject", () => {
     await settleUi(wrapper);
 
     expect(deleteCalls).toEqual([]);
+    expect((wrapper.vm as any).activeProjectId).toBe("p1");
     const confirmButton = wrapper.find('[data-testid="project-remove-confirm"]');
     expect(confirmButton.exists()).toBe(true);
 
@@ -250,6 +255,66 @@ describe("App.removeProject", () => {
 
     expect(deleteCalls).toEqual(["/api/projects/p2"]);
     expect(idsFromVm(wrapper as any)).toEqual(["default", "p1"]);
+
+    wrapper.unmount();
+  });
+
+  it("stops touch and pointer events from both remove controls", async () => {
+    projectsFromApi = [
+      { id: "p1", workspaceRoot: "/w/p1", name: "P1", chatSessionId: "main", createdAt: 1, updatedAt: 1 },
+      { id: "p2", workspaceRoot: "/w/p2", name: "P2", chatSessionId: "main", createdAt: 2, updatedAt: 2 },
+    ];
+    activeProjectIdFromApi = "p1";
+
+    const App = (await import("../App.vue")).default;
+    const wrapper = shallowMount(App, { global: { stubs: { LoginGate: false } } });
+    await waitForProjectIds(wrapper as any, ["default", "p1", "p2"]);
+
+    const desktopRemove = wrapper.find('[data-testid="project-remove-p2"]');
+    const row = desktopRemove.element.closest(".projectRow");
+    expect(row).not.toBeNull();
+    const rowTouchStart = vi.fn();
+    const rowTouchEnd = vi.fn();
+    const rowPointerDown = vi.fn();
+    const rowPointerUp = vi.fn();
+    row!.addEventListener("touchstart", rowTouchStart);
+    row!.addEventListener("touchend", rowTouchEnd);
+    row!.addEventListener("pointerdown", rowPointerDown);
+    row!.addEventListener("pointerup", rowPointerUp);
+
+    dispatchInteraction(desktopRemove.element, "touchstart");
+    dispatchInteraction(desktopRemove.element, "touchend");
+    dispatchInteraction(desktopRemove.element, "pointerdown");
+    dispatchInteraction(desktopRemove.element, "pointerup");
+    await settleUi(wrapper);
+
+    expect(rowTouchStart).not.toHaveBeenCalled();
+    expect(rowTouchEnd).not.toHaveBeenCalled();
+    expect(rowPointerDown).not.toHaveBeenCalled();
+    expect(rowPointerUp).not.toHaveBeenCalled();
+
+    const swipeRemove = wrapper.find('[data-testid="project-swipe-remove-p2"]');
+    const projectNode = swipeRemove.element.closest(".projectNode");
+    expect(projectNode).not.toBeNull();
+    const nodeTouchStart = vi.fn();
+    const nodeTouchEnd = vi.fn();
+    const nodePointerDown = vi.fn();
+    const nodePointerUp = vi.fn();
+    projectNode!.addEventListener("touchstart", nodeTouchStart);
+    projectNode!.addEventListener("touchend", nodeTouchEnd);
+    projectNode!.addEventListener("pointerdown", nodePointerDown);
+    projectNode!.addEventListener("pointerup", nodePointerUp);
+
+    dispatchInteraction(swipeRemove.element, "touchstart");
+    dispatchInteraction(swipeRemove.element, "touchend");
+    dispatchInteraction(swipeRemove.element, "pointerdown");
+    dispatchInteraction(swipeRemove.element, "pointerup");
+    await settleUi(wrapper);
+
+    expect(nodeTouchStart).not.toHaveBeenCalled();
+    expect(nodeTouchEnd).not.toHaveBeenCalled();
+    expect(nodePointerDown).not.toHaveBeenCalled();
+    expect(nodePointerUp).not.toHaveBeenCalled();
 
     wrapper.unmount();
   });
