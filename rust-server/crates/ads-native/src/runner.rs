@@ -1314,33 +1314,10 @@ fn command_start(call: &crate::NativeToolCall) -> Option<CommandArtifact> {
 
 fn command_frame_text(raw: &str) -> Option<&str> {
     let command = raw.trim();
-    if command.is_empty()
-        || command.starts_with("```")
-        || command.starts_with('{')
-        || command.starts_with('[')
-    {
+    if command.is_empty() || command.starts_with("```") {
         return None;
     }
-    let first = command
-        .split_whitespace()
-        .next()?
-        .trim_matches(|character: char| {
-            matches!(character, '"' | '\'' | '(' | ')' | ',' | '.' | ':' | ';')
-        });
-    if matches!(
-        first.to_ascii_lowercase().as_str(),
-        "i" | "i'll"
-            | "i'm"
-            | "we"
-            | "we'll"
-            | "we're"
-            | "let"
-            | "the"
-            | "this"
-            | "analysis"
-            | "reasoning"
-            | "plan"
-    ) {
+    if !crate::tools::command_has_executable(command) {
         return None;
     }
     Some(command)

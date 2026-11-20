@@ -22,6 +22,7 @@ use crate::{
     NativeToolDefinition, NativeToolFunctionDefinition, TurnContext,
 };
 
+pub(crate) use self::command::command_has_executable;
 pub use self::command::find_security_violation;
 use self::command::{
     CommandManager, CommandRead, CommandRequest, allowlist_from_env, has_shell_syntax,

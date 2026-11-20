@@ -20,6 +20,10 @@ const KILL_GRACE: Duration = Duration::from_millis(1_200);
 const SHELL_BUILTINS: &[&str] = &[
     "[", "cd", "echo", "false", "printf", "pwd", "test", "true", "unset",
 ];
+const SHELL_KEYWORDS: &[&str] = &[
+    "!", "{", "}", "case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if",
+    "in", "then", "time", "until", "while",
+];
 const PRIVATE_KEY_LABELS: &[&str] = &[
     "PRIVATE KEY",
     "RSA PRIVATE KEY",
@@ -728,6 +732,49 @@ pub(crate) fn allowlist_from_env() -> Option<Vec<String>> {
     parse_allowlist(&raw)
 }
 
+pub(crate) fn command_has_executable(command: &str) -> bool {
+    let command = command.trim();
+    if command.is_empty() {
+        return false;
+    }
+    let segments = if has_shell_syntax(command) {
+        split_shell_segments(command)
+    } else {
+        vec![command.to_string()]
+    };
+    !segments.is_empty()
+        && segments.iter().all(|segment| {
+            let Ok(tokens) = tokenize_command_line(segment) else {
+                return false;
+            };
+            let mut executable_index = 0;
+            while tokens.get(executable_index).is_some_and(|token| {
+                token
+                    .split_once('=')
+                    .is_some_and(|(key, _)| is_shell_variable_name(key))
+            }) {
+                executable_index += 1;
+            }
+            let Some(executable) = tokens.get(executable_index) else {
+                return false;
+            };
+            let normalized = command_basename(executable);
+            SHELL_BUILTINS.contains(&normalized.as_str())
+                || SHELL_KEYWORDS.contains(&normalized.as_str())
+                || executable_exists(executable)
+        })
+}
+
+fn executable_exists(command: &str) -> bool {
+    let path = std::path::Path::new(command);
+    if path.components().count() > 1 {
+        return path.is_file();
+    }
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|directory| directory.join(command).is_file())
+    })
+}
+
 fn parse_allowlist(raw: &str) -> Option<Vec<String>> {
     let parsed = raw
         .split(',')
@@ -1029,6 +1076,17 @@ mod tests {
             vec!["node", "-e", "a b", "c d"]
         );
         assert!(tokenize_command_line("echo 'unterminated").is_err());
+    }
+
+    #[test]
+    fn requires_a_real_executable_or_shell_construct() {
+        assert!(!command_has_executable("Please inspect the logs"));
+        assert!(!command_has_executable(
+            "definitely-not-an-installed-command"
+        ));
+        assert!(command_has_executable("[ -f file ]"));
+        assert!(command_has_executable("{ echo ok; }"));
+        assert!(command_has_executable("printf 'x' | cat"));
     }
 
     #[test]

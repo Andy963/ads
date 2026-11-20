@@ -4246,6 +4246,9 @@ fn history_bootstrap_entries(entries: &[HistoryEntry]) -> Vec<HistoryEntry> {
                 && kind != "commentary"
                 && kind != "assistant_commentary"
                 && !kind.starts_with("plan:")
+                && !kind.starts_with("reasoning:")
+                && !kind.starts_with("commentary:")
+                && !kind.starts_with("assistant_commentary:")
                 && entry.role != "thought"
                 && entry.role != "reasoning"
                 && entry.role != "commentary"
@@ -5037,6 +5040,12 @@ mod tests {
                 text: "hidden reasoning role".to_string(),
                 ts: 52,
                 kind: None,
+            },
+            HistoryEntry {
+                role: "ai".to_string(),
+                text: "hidden commentary step".to_string(),
+                ts: 53,
+                kind: Some("commentary:step".to_string()),
             },
             HistoryEntry {
                 role: "user".to_string(),
