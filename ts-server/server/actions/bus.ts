@@ -1,0 +1,1446 @@
+import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import type { Database as DatabaseType } from "better-sqlite3";
+
+import type { ActionToolResult, ActionTools } from "../agents/actionTools.js";
+import {
+  buildReviewPrompt,
+  runDetachedReview,
+} from "../reviewer/runner.js";
+import { ReviewerIncompleteError } from "../reviewer/incomplete.js";
+import { runReviewerInspection } from "../reviewer/inspectionRunner.js";
+import {
+  buildReviewVerdictNarrationPrompt,
+  formatReviewVerdictPresentation,
+  normalizeReviewVerdictNarration,
+  REVIEW_VERDICT_NARRATION_SYSTEM_PROMPT,
+} from "../reviewer/verdictPresentation.js";
+import { createNativeModelResolver, type NativeModelConfig } from "../runtime/modelResolver.js";
+import type { completeNativeChat } from "../runtime/openAiCompatibleClient.js";
+import { completeNativeModel } from "../runtime/nativeCompletion.js";
+import type { ReviewDefect, ReviewPayload, ReviewVerdict } from "../reviewer/types.js";
+import { getDefaultRoleProfile, getRoleProfileById } from "../state/roleProfileStore.js";
+import {
+  createActionJob,
+  getActionJobs,
+  getActionJobById,
+  supersedeReviewJobsForNewHead,
+  updateActionJobStatus,
+  updateActionJobPinnedTarget,
+  type ActionJobIssueSnapshot,
+  type ActionJobRecord,
+} from "../state/actionJobStore.js";
+import {
+  acquireReviewQueueLease,
+  getReviewQueueLease,
+  releaseReviewQueueLease,
+  renewReviewQueueLease,
+} from "../state/reviewQueueLeaseStore.js";
+import {
+  ACTIONS_BASE_BRANCH,
+} from "./pipeline.js";
+import { deriveProjectSessionId } from "../web/server/projectSessionId.js";
+import { buildWsConnectionIdentity } from "../web/server/ws/connectionIdentity.js";
+import { resolveActionsLaneIdentity } from "./laneIdentity.js";
+import {
+  buildIssueVerdictComment,
+  type IssueVerdictStatus,
+} from "./reviewComment.js";
+import {
+  captureReviewPayloadAsync,
+  type ReviewTarget,
+} from "./reviewService.js";
+
+function resolveCanonicalProjectId(projectId: string, repoPath?: string): string {
+  const workspaceRoot = String(repoPath ?? "").trim();
+  return workspaceRoot ? deriveProjectSessionId(workspaceRoot) : String(projectId ?? "").trim();
+}
+
+function migrateLegacyProjectJobs(db: DatabaseType, projectId: string, aliases: string[]): void {
+  for (const alias of new Set(aliases.map((value) => String(value ?? "").trim()).filter(Boolean))) {
+    if (alias === projectId) continue;
+    db.prepare("UPDATE action_jobs SET project_id = ? WHERE project_id = ?").run(projectId, alias);
+  }
+}
+
+export type ReviewerRunner = (prompt: string, systemPrompt: string) => Promise<string>;
+
+const DEFAULT_REVIEWER_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_REVIEW_PRESENTATION_TIMEOUT_MS = 5_000;
+const DEFAULT_INTERACTIVE_VERIFICATION_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_MS = 30 * 1000;
+const DEFAULT_REVIEW_QUEUE_LEASE_TTL_MS = 90_000;
+const DEFAULT_REVIEW_QUEUE_LEASE_HEARTBEAT_MS = 30_000;
+const processingReviewQueuesByDatabase = new WeakMap<DatabaseType, Map<string, Promise<boolean>>>();
+
+function getProcessingReviewQueues(db: DatabaseType): Map<string, Promise<boolean>> {
+  const existing = processingReviewQueuesByDatabase.get(db);
+  if (existing) return existing;
+  const queues = new Map<string, Promise<boolean>>();
+  processingReviewQueuesByDatabase.set(db, queues);
+  return queues;
+}
+
+export class ActionJobReviewConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ActionJobReviewConflictError";
+  }
+}
+
+export class ReviewJobSupersededError extends Error {
+  constructor(message = "The review job was superseded by a newer head commit.") {
+    super(message);
+    this.name = "ReviewJobSupersededError";
+  }
+}
+
+export type InteractiveReviewTarget = ReviewTarget & {
+  projectId: string;
+  repoPath: string;
+  authUserId: string;
+  branch: string;
+  prNumber: number;
+  prUrl: string;
+};
+
+export type InteractiveReviewTargetRequest = {
+  projectId: string;
+  repoPath: string;
+  authUserId: string;
+  branch?: string;
+  prNumber?: number | null;
+};
+
+type InteractiveReviewSession = {
+  projectId: string;
+  repoPath: string;
+  authUserId: string;
+  target: InteractiveReviewTarget;
+  key: string;
+};
+
+type InteractiveGithubMetadata = {
+  pullRequest: {
+    number: number;
+    url: string;
+    state: string;
+    headRefName: string;
+    baseRefName: string;
+    baseRefOid: string;
+    headRefOid: string;
+    body: string;
+  };
+  openPullRequests: Array<{ number: number; headRefName: string }>;
+  issue: {
+    number: number;
+    title: string;
+    body: string;
+  };
+};
+
+type InteractiveCommandResult = {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+};
+
+function normalizeInteractiveTimeout(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) ? Math.max(1, Math.floor(value!)) : fallback;
+}
+
+function parseAcceptanceCriteria(body: string): string[] {
+  const section = /(?:^|\n)##+\s+Acceptance Criteria\s*\n([\s\S]*?)(?=\n##+\s|$)/i.exec(body)?.[1] ?? "";
+  return section
+    .split(/\r?\n/)
+    .map((line) => /^\s*(?:[-*]|\d+[.)])\s+(.+?)\s*$/.exec(line)?.[1]?.trim() ?? "")
+    .filter(Boolean);
+}
+
+function issueIdFromBranch(branch: string | null | undefined): number | null {
+  const match = /^codex\/issue-(\d+)$/.exec(String(branch ?? "").trim());
+  if (!match) return null;
+  const issueId = Number(match[1]);
+  return Number.isSafeInteger(issueId) && issueId > 0 ? issueId : null;
+}
+
+async function defaultPublishIssueComment(input: {
+  repoPath: string;
+  issueId: number;
+  body: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  return await new Promise((resolve) => {
+    let settled = false;
+    let stderr = "";
+    const finish = (result: { ok: boolean; error?: string }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const child = spawn("gh", ["issue", "comment", String(input.issueId), "--body-file", "-"], {
+      cwd: input.repoPath,
+    });
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish({ ok: false, error: "gh issue comment timed out after 30000ms" });
+    }, 30_000);
+    child.stdout?.resume();
+    child.stderr?.on("data", (chunk) => {
+      if (stderr.length < 4_000) stderr += String(chunk);
+    });
+    child.on("error", (error) => finish({ ok: false, error: error.message }));
+    child.on("close", (code) => {
+      finish(code === 0
+        ? { ok: true }
+        : { ok: false, error: stderr.trim().slice(0, 500) || `gh exited with code ${code ?? "unknown"}` });
+    });
+    child.stdin.end(input.body);
+  });
+}
+
+function interactiveTargetKey(target: InteractiveReviewTarget): string {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      repoPath: target.repoPath,
+      authUserId: target.authUserId,
+      branch: target.branch,
+      prNumber: target.prNumber,
+      prUrl: target.prUrl,
+      issue: target.issue,
+      adrs: target.adrs ?? [],
+      baseRef: target.baseRef,
+      headRef: target.headRef,
+      baseCommit: target.baseCommit,
+      headCommit: target.headCommit,
+    }))
+    .digest("hex");
+}
+
+async function raceReviewerAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error("Reviewer execution aborted");
+  }
+  let onAbort: (() => void) | null = null;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error("Reviewer execution aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+export interface LaneDispatchBusOptions {
+  reviewerRunner?: ReviewerRunner;
+  historyStore?: {
+    add: (key: string, entry: { role: string; text: string; ts: number; kind?: string }) => void;
+  };
+  captureActionsLaneGeneration?: (logicalHistoryKey: string) => number;
+  broadcastToActionsLane?: (payload: unknown, logicalHistoryKey: string, projectId: string, laneGeneration: number) => void;
+  autoStartReviewQueue?: boolean;
+  testCommand?: string;
+  interactiveCommandTimeoutMs?: number;
+  interactiveVerificationTimeoutMs?: number;
+  reviewerTimeoutMs?: number;
+  reviewerToolTurnBudget?: number;
+  reviewQueueLeaseTtlMs?: number;
+  reviewQueueLeaseHeartbeatMs?: number;
+  workerId?: string;
+  wakeAcopilotLane?: (args: {
+    projectId: string;
+    repoPath: string;
+    authUserId: string;
+    issueId: number;
+    prNumber?: number | null;
+    status: IssueVerdictStatus;
+    jobId: string;
+    headSha?: string | null;
+  }) => void;
+  publishIssueComment?: (input: {
+    repoPath: string;
+    issueId: number;
+    body: string;
+  }) => { ok: boolean; error?: string } | Promise<{ ok: boolean; error?: string }>;
+  reviewerComplete?: typeof completeNativeChat;
+  reviewerModelResolver?: (modelId: string, owner: string) => NativeModelConfig;
+  reviewPresentationComplete?: typeof completeNativeModel;
+  reviewPresentationModelResolver?: (modelId: string, owner: string) => NativeModelConfig;
+  reviewPresentationTimeoutMs?: number;
+  interactiveGithubMetadataReader?: (input: {
+    repoPath: string;
+    branch: string;
+    issueId: number;
+    prNumber?: number | null;
+  }) => InteractiveGithubMetadata | Promise<InteractiveGithubMetadata>;
+}
+
+export class LaneDispatchBus {
+  private interactiveReviewerTargets = new Set<string>();
+  private readonly processingReviewQueues: Map<string, Promise<boolean>>;
+  private readonly workerId: string;
+
+  constructor(
+    private db: DatabaseType,
+    private options: LaneDispatchBusOptions = {},
+  ) {
+    this.processingReviewQueues = getProcessingReviewQueues(db);
+    this.workerId = String(this.options.workerId ?? "").trim() || randomUUID();
+  }
+  private async runInteractiveCommand(
+    command: string,
+    args: string[],
+    repoPath: string,
+    signal?: AbortSignal,
+    timeoutMs = normalizeInteractiveTimeout(
+      this.options.interactiveCommandTimeoutMs,
+      DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_MS,
+    ),
+    maxOutputLength = 20_000,
+  ): Promise<InteractiveCommandResult> {
+    signal?.throwIfAborted();
+    return await new Promise<InteractiveCommandResult>((resolve, reject) => {
+      const child = spawn(command, args, {
+        cwd: repoPath,
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      let settled = false;
+      let escalation: ReturnType<typeof setTimeout> | undefined;
+
+      const append = (current: string, chunk: Buffer | string): string =>
+        `${current}${String(chunk)}`.slice(-maxOutputLength);
+      const sendSignal = (name: NodeJS.Signals): void => {
+        if (child.exitCode !== null) return;
+        try {
+          if (process.platform !== "win32" && child.pid) process.kill(-child.pid, name);
+          else child.kill(name);
+        } catch {
+          try { child.kill(name); } catch { /* The process exited between checks. */ }
+        }
+      };
+      const terminate = (): void => {
+        sendSignal("SIGTERM");
+        escalation = setTimeout(() => sendSignal("SIGKILL"), 1_000);
+        escalation.unref();
+      };
+      const finish = (error?: Error, result?: InteractiveCommandResult): void => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        if (escalation) clearTimeout(escalation);
+        if (signal) signal.removeEventListener("abort", onAbort);
+        if (error) reject(error);
+        else resolve(result!);
+      };
+      const onAbort = (): void => {
+        terminate();
+        finish(signal?.reason instanceof Error ? signal.reason : new Error("Interactive command aborted."));
+      };
+
+      const timeout = setTimeout(() => {
+        terminate();
+        finish(new Error(`Interactive command '${command}' timed out after ${timeoutMs}ms.`));
+      }, timeoutMs);
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+      child.stdout.on("data", (chunk: Buffer | string) => {
+        stdout = append(stdout, chunk);
+      });
+      child.stderr.on("data", (chunk: Buffer | string) => {
+        stderr = append(stderr, chunk);
+      });
+      child.once("error", (error) => finish(error));
+      child.once("close", (code) => finish(undefined, {
+        exitCode: code ?? 1,
+        stdout,
+        stderr,
+      }));
+    });
+  }
+
+  private async presentReviewVerdictForUser(
+    verdict: ReviewVerdict,
+    job: ActionJobRecord,
+  ): Promise<string> {
+    const fallback = formatReviewVerdictPresentation(verdict);
+    const profile = getDefaultRoleProfile(this.db, "acopilot");
+    const owner = String(job.auth_user_id ?? "").trim();
+    if (!profile || profile.role !== "acopilot" || !profile.is_enabled || !profile.model_id.trim() || !owner) {
+      return fallback;
+    }
+
+    const controller = new AbortController();
+    const timeoutMs = normalizeInteractiveTimeout(
+      this.options.reviewPresentationTimeoutMs,
+      DEFAULT_REVIEW_PRESENTATION_TIMEOUT_MS,
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error("Review result presentation timed out.");
+        controller.abort(error);
+        reject(error);
+      }, timeoutMs);
+    });
+    try {
+      const model = this.options.reviewPresentationModelResolver
+        ? this.options.reviewPresentationModelResolver(profile.model_id, owner)
+        : createNativeModelResolver({ owner, stateDbPath: this.db.name, requireOwnerCredentials: true }).resolve(profile.model_id);
+      const complete = this.options.reviewPresentationComplete ?? completeNativeModel;
+      const result = await Promise.race([
+        complete({
+          wireApi: model.wireApi,
+          baseUrl: model.baseUrl,
+          apiKey: model.apiKey,
+          model: model.model,
+          messages: [
+            { role: "system", content: REVIEW_VERDICT_NARRATION_SYSTEM_PROMPT },
+            { role: "user", content: buildReviewVerdictNarrationPrompt({ pullRequestNumber: job.pr_number, verdict }) },
+          ],
+          tools: [],
+          streaming: false,
+          options: { ...model.options },
+          signal: controller.signal,
+        }),
+        timeout,
+      ]);
+      if (result.toolCalls.length || result.finishReason === "length" || result.finishReason === "content_filter") return fallback;
+      return formatReviewVerdictPresentation(verdict, normalizeReviewVerdictNarration(result.text) ?? undefined);
+    } catch {
+      return fallback;
+    } finally {
+      if (timer) clearTimeout(timer);
+      controller.abort();
+    }
+  }
+
+  private publishReviewVerdictPresentation(
+    verdict: ReviewVerdict,
+    job: ActionJobRecord,
+    repoPath: string,
+  ): void {
+    const target = this.reviewTargetLabel(job);
+    this.recordActionMessage(
+      job,
+      repoPath,
+      [
+        `Review complete for ${target}.`,
+        formatReviewVerdictPresentation(verdict),
+      ].join("\n\n"),
+      `action_step:${job.id}:completed`,
+    );
+    void this.presentReviewVerdictForUser(verdict, job)
+      .then((userPresentation) => {
+        this.recordActionMessage(
+          job,
+          repoPath,
+          userPresentation,
+          `action_step:${job.id}:result`,
+        );
+      })
+      .catch(() => {
+        this.recordActionMessage(
+          job,
+          repoPath,
+          formatReviewVerdictPresentation(verdict),
+          `action_step:${job.id}:result`,
+        );
+      });
+  }
+
+  private reviewTargetLabel(job: ActionJobRecord): string {
+    const prNumber = Number(job.pr_number ?? 0);
+    const issueId = Number(job.issue_id ?? 0);
+    const anchor = prNumber > 0
+      ? `PR #${prNumber}`
+      : issueId > 0 ? `Issue #${issueId}` : "review";
+    const title = String(job.issue_title ?? "").trim();
+    return title ? `${anchor} · ${title}` : anchor;
+  }
+
+  private async readInteractiveGithubMetadata(input: {
+    repoPath: string;
+    branch: string;
+    issueId: number;
+    prNumber?: number | null;
+  }, signal?: AbortSignal): Promise<InteractiveGithubMetadata> {
+    if (this.options.interactiveGithubMetadataReader) {
+      const metadata = await this.options.interactiveGithubMetadataReader(input);
+      signal?.throwIfAborted();
+      return metadata;
+    }
+
+    const prFields = "number,url,state,headRefName,baseRefName,baseRefOid,headRefOid,body";
+    const prCommand = input.prNumber
+      ? ["pr", "view", String(input.prNumber), "--json", prFields]
+      : ["pr", "list", "--head", input.branch, "--state", "open", "--limit", "2", "--json", prFields];
+    const prResult = await this.runInteractiveCommand("gh", prCommand, input.repoPath, signal);
+    if (prResult.exitCode !== 0) {
+      throw new Error(`Unable to resolve the GitHub pull request: ${prResult.stderr.trim() || "gh command failed"}`);
+    }
+    let prRecords: Array<Record<string, unknown>>;
+    try {
+      const parsed = JSON.parse(prResult.stdout || "[]") as unknown;
+      prRecords = Array.isArray(parsed) ? parsed as Array<Record<string, unknown>> : [parsed as Record<string, unknown>];
+    } catch (error) {
+      throw new Error(`GitHub pull request metadata is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (prRecords.length !== 1) {
+      throw new Error("Interactive review requires exactly one matching open pull request.");
+    }
+    const pr = prRecords[0]!;
+    const pullRequest = {
+      number: Number(pr.number),
+      url: String(pr.url ?? "").trim(),
+      state: String(pr.state ?? "").trim(),
+      headRefName: String(pr.headRefName ?? ""),
+      baseRefName: String(pr.baseRefName ?? ""),
+      baseRefOid: String(pr.baseRefOid ?? ""),
+      headRefOid: String(pr.headRefOid ?? ""),
+      body: String(pr.body ?? ""),
+    };
+    if (!Number.isSafeInteger(pullRequest.number) || pullRequest.number < 1 || !pullRequest.url) {
+      throw new Error("The matching pull request is missing its number or URL.");
+    }
+
+    const openPullRequestsResult = await this.runInteractiveCommand(
+      "gh",
+      ["pr", "list", "--state", "open", "--base", ACTIONS_BASE_BRANCH, "--json", "number,headRefName"],
+      input.repoPath,
+      signal,
+    );
+    if (openPullRequestsResult.exitCode !== 0) {
+      throw new Error(`Unable to inspect open pull requests: ${openPullRequestsResult.stderr.trim() || "gh command failed"}`);
+    }
+    let openPullRequests: Array<{ number: number; headRefName: string }>;
+    try {
+      const parsed = JSON.parse(openPullRequestsResult.stdout || "[]") as unknown;
+      if (!Array.isArray(parsed)) throw new Error("expected an array");
+      openPullRequests = parsed.map((record) => {
+        const item = record as Record<string, unknown>;
+        return { number: Number(item.number), headRefName: String(item.headRefName ?? "") };
+      });
+    } catch (error) {
+      throw new Error(`Open pull request metadata is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    }
+
+    const issueResult = await this.runInteractiveCommand(
+      "gh",
+      ["issue", "view", String(input.issueId), "--json", "number,title,body,state"],
+      input.repoPath,
+      signal,
+    );
+    if (issueResult.exitCode !== 0) {
+      throw new Error(`Unable to resolve GitHub Issue #${input.issueId}: ${issueResult.stderr.trim() || "gh command failed"}`);
+    }
+    let issue: Record<string, unknown>;
+    try {
+      issue = JSON.parse(issueResult.stdout || "{}") as Record<string, unknown>;
+    } catch (error) {
+      throw new Error(`GitHub Issue metadata is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return {
+      pullRequest,
+      openPullRequests,
+      issue: {
+        number: Number(issue.number),
+        title: String(issue.title ?? "").trim(),
+        body: String(issue.body ?? "").trim(),
+      },
+    };
+  }
+
+  private async readInteractiveAdrSnapshot(
+    repoPath: string,
+    baseCommit: string,
+    headCommit: string,
+    signal?: AbortSignal,
+  ): Promise<Array<{ id: string; title: string; decision: string }>> {
+    const changed = await this.runInteractiveCommand(
+      "git",
+      ["diff", "--name-only", `${baseCommit}...${headCommit}`],
+      repoPath,
+      signal,
+    );
+    if (changed.exitCode !== 0) {
+      throw new Error(`Unable to capture changed ADR files: ${changed.stderr.trim() || "git command failed"}`);
+    }
+    const files = String(changed.stdout)
+      .split(/\r?\n/)
+      .map((file) => file.trim())
+      .filter((file) => /^docs\/adr\/[^/]+\.md$/.test(file));
+    return files.map((file) => {
+      let content: string;
+      try {
+        content = readFileSync(path.join(repoPath, file), "utf8");
+      } catch (error) {
+        throw new Error(`Unable to read changed ADR '${file}': ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const title = /^#\s+(.+)$/m.exec(content)?.[1]?.trim() ?? path.basename(file, ".md");
+      const decision = /(?:^|\n)##\s+Decision\s*\n([\s\S]*?)(?=\n##\s|$)/i.exec(content)?.[1]?.trim() ?? content.trim();
+      return { id: path.basename(file, ".md"), title, decision };
+    });
+  }
+
+  private async resolveInteractiveProjectContext(
+    input: InteractiveReviewTargetRequest,
+    signal?: AbortSignal,
+  ): Promise<{ projectId: string; repoPath: string; authUserId: string }> {
+    signal?.throwIfAborted();
+    const repoPath = path.resolve(String(input.repoPath ?? "").trim());
+    const authUserId = String(input.authUserId ?? "").trim();
+    const projectId = resolveCanonicalProjectId(input.projectId, repoPath);
+    if (!repoPath || !authUserId || !projectId) {
+      throw new Error("Interactive review requires an authenticated project workspace.");
+    }
+
+    const identity = resolveActionsLaneIdentity(this.db, {
+      projectId,
+      repoPath,
+      authUserId,
+    });
+    if (!identity || identity.authUserId !== authUserId || identity.projectId !== projectId) {
+      throw new Error("Interactive review is limited to the authenticated project workspace.");
+    }
+    return { projectId, repoPath, authUserId };
+  }
+
+  private async resolveInteractiveTarget(
+    input: InteractiveReviewTargetRequest,
+    signal?: AbortSignal,
+  ): Promise<InteractiveReviewTarget> {
+    const { projectId, repoPath, authUserId } = await this.resolveInteractiveProjectContext(input, signal);
+
+    const git = async (args: string[], label: string): Promise<string> => {
+      const result = await this.runInteractiveCommand("git", args, repoPath, signal);
+      if (result.exitCode !== 0) {
+        throw new Error(`${label}: ${result.stderr.trim() || "command failed"}`);
+      }
+      return result.stdout.trim();
+    };
+
+    const branch = await git(["branch", "--show-current"], "Unable to determine the current feature branch");
+    if (input.branch && input.branch !== branch) {
+      throw new ReviewerIncompleteError(`Requested branch '${input.branch}' does not match the current branch '${branch}'. Switch back to the review branch and dispatch again.`);
+    }
+    const issueMatch = /^codex\/issue-(\d+)$/.exec(branch);
+    if (!issueMatch) {
+      throw new Error("Interactive review requires the assigned codex/issue-<id> feature branch.");
+    }
+    const issueId = Number(issueMatch[1]);
+    if (!Number.isSafeInteger(issueId) || issueId < 1) {
+      throw new Error("The current feature branch does not identify a valid GitHub Issue.");
+    }
+    if (await git(["status", "--porcelain", "-uno"], "Unable to inspect tracked workspace state")) {
+      throw new ReviewerIncompleteError("The workspace has uncommitted tracked changes. Commit or revert them, then dispatch the review again.");
+    }
+
+    const remote = await this.runInteractiveCommand("git", ["remote", "get-url", "origin"], repoPath, signal);
+    const baseRef = remote.exitCode === 0 && remote.stdout.trim() ? "origin/dev" : "dev";
+    const baseCommit = await git(["rev-parse", "--verify", `${baseRef}^{commit}`], `Unable to resolve the ${ACTIONS_BASE_BRANCH} base branch`);
+    const headCommit = await git(["rev-parse", "--verify", "HEAD^{commit}"], "Unable to resolve the current feature commit");
+    const ancestry = await this.runInteractiveCommand("git", ["merge-base", "--is-ancestor", baseCommit, headCommit], repoPath, signal);
+    if (ancestry.exitCode !== 0) {
+      throw new ReviewerIncompleteError(`The feature branch does not descend from the current '${ACTIONS_BASE_BRANCH}' base. Rebase onto the latest base, then dispatch the review again.`);
+    }
+
+    const metadata = await this.readInteractiveGithubMetadata({
+      repoPath,
+      branch,
+      issueId,
+      prNumber: input.prNumber,
+    }, signal);
+    const pr = metadata.pullRequest;
+    if (pr.state.toUpperCase() !== "OPEN"
+      || pr.headRefName !== branch
+      || pr.baseRefName !== ACTIONS_BASE_BRANCH
+      || pr.headRefOid !== headCommit
+      || pr.baseRefOid !== baseCommit) {
+      throw new ReviewerIncompleteError(
+        `The pull request does not match the current target: local head ${headCommit.slice(0, 12)}, base ${baseCommit.slice(0, 12)}, branch '${branch}'; PR #${pr.number} reports head ${String(pr.headRefOid ?? "").slice(0, 12) || "unknown"} on '${pr.headRefName}' against '${pr.baseRefName}' (${pr.state}). Push or wait for GitHub to sync, then dispatch the review again.`,
+      );
+    }
+    if (metadata.openPullRequests.length !== 1 || metadata.openPullRequests[0]?.number !== pr.number) {
+      throw new ReviewerIncompleteError(`Expected exactly one open pull request for this project, found ${metadata.openPullRequests.length}. Close or finish the extra PR, then dispatch the review again.`);
+    }
+    const issueReference = new RegExp(`(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\\s+#${issueId}\\b`, "i");
+    if (!issueReference.test(pr.body)) {
+      throw new ReviewerIncompleteError(`The pull request description does not link Issue #${issueId}. Add \`Closes #${issueId}\` to the PR body, then dispatch the review again.`);
+    }
+
+    const issue = metadata.issue;
+    const issueTitle = issue.title;
+    const issueDescription = issue.body;
+    const acceptanceCriteria = parseAcceptanceCriteria(issueDescription);
+    if (issue.number !== issueId || !issueTitle || !issueDescription || acceptanceCriteria.length === 0) {
+      throw new ReviewerIncompleteError(`GitHub Issue #${issueId} is missing a title, description, or acceptance criteria. Complete the Issue, then dispatch the review again.`);
+    }
+
+    return {
+      projectId,
+      repoPath,
+      authUserId,
+      branch,
+      prNumber: pr.number,
+      prUrl: pr.url,
+      issue: {
+        id: issueId,
+        title: issueTitle,
+        description: issueDescription,
+        acceptanceCriteria,
+      },
+      adrs: await this.readInteractiveAdrSnapshot(repoPath, baseCommit, headCommit, signal),
+      baseRef,
+      headRef: "HEAD",
+      baseCommit,
+      headCommit,
+    };
+  }
+
+  public async resolveInteractiveReviewTarget(input: InteractiveReviewTargetRequest): Promise<InteractiveReviewTarget> {
+    return await this.resolveInteractiveTarget(input);
+  }
+
+  private async runInteractiveVerification(
+    repoPath: string,
+    signal: AbortSignal,
+  ): Promise<NonNullable<ReviewPayload["testReport"]>> {
+    const command = String(this.options.testCommand ?? "npm test").trim();
+    const parts = command.split(/\s+/).filter(Boolean);
+    if (parts.length === 0) throw new Error("Interactive review verification command is empty.");
+    signal.throwIfAborted();
+
+    const timeoutMs = normalizeInteractiveTimeout(
+      this.options.interactiveVerificationTimeoutMs,
+      DEFAULT_INTERACTIVE_VERIFICATION_TIMEOUT_MS,
+    );
+    let result: { exitCode: number; stdout: string; stderr: string };
+    try {
+      result = await this.runInteractiveCommand(parts[0]!, parts.slice(1), repoPath, signal, timeoutMs);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // A timeout is evidence for the Reviewer, not a reason to drop the review.
+      if (signal.aborted || !/timed out after \d+ms/i.test(message)) throw error;
+      const timedOut = {
+        command,
+        exitCode: 124,
+        summary: `Verification timed out after ${timeoutMs}ms. The Reviewer must treat the missing evidence as an open question.`,
+        output: message,
+      };
+      return timedOut;
+    }
+    const output = [result.stdout, result.stderr]
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .join("\n");
+    const lastOutputLine = output.split("\n").reverse().find((line) => line.trim())?.trim();
+    const summary = result.exitCode === 0
+      ? "Tests and checks passed successfully"
+      : (lastOutputLine?.slice(0, 500) ?? `Verification command exited with code ${result.exitCode}`);
+    const report = {
+      command,
+      exitCode: result.exitCode,
+      summary,
+      output,
+    };
+    return report;
+  }
+
+  private async resolveInteractiveReviewSession(
+    input: InteractiveReviewTargetRequest,
+    signal?: AbortSignal,
+  ): Promise<InteractiveReviewSession> {
+    const target = await this.resolveInteractiveTarget(input, signal);
+    return {
+      projectId: target.projectId,
+      repoPath: target.repoPath,
+      authUserId: target.authUserId,
+      target,
+      key: interactiveTargetKey(target),
+    };
+  }
+
+  private async executeInteractiveReviewSession(
+    session: InteractiveReviewSession,
+    signal: AbortSignal,
+    resolveCurrentSession: () => Promise<InteractiveReviewSession>,
+    job: ActionJobRecord,
+  ): Promise<{ verdict: ReviewVerdict; testReport: NonNullable<ReviewPayload["testReport"]> }> {
+    const key = `${session.authUserId}\u0000${session.key}`;
+    if (this.interactiveReviewerTargets.has(key)) {
+      throw new ActionJobReviewConflictError("An interactive review is already running for this target.");
+    }
+    this.interactiveReviewerTargets.add(key);
+    try {
+      signal.throwIfAborted();
+      const testReport = await this.runInteractiveVerification(session.repoPath, signal);
+      if (!updateActionJobStatus(this.db, job.id, "verifying", {
+        current_step: `Verification completed: ${testReport.command} (exit ${testReport.exitCode})`,
+        verification_report_json: JSON.stringify(testReport),
+      }, Date.now(), { requireNotSuperseded: true })) throw new ReviewJobSupersededError();
+      const target = this.reviewTargetLabel(job);
+      this.recordActionMessage(
+        job,
+        session.repoPath,
+        testReport.exitCode === 0
+          ? `Checks passed for ${target}.`
+          : `Checks failed for ${target} (exit ${testReport.exitCode}): ${testReport.summary}`,
+        `action_step:${job.id}:verification`,
+      );
+      const verifiedSession = await resolveCurrentSession();
+      if (verifiedSession.key !== session.key) {
+        throw new ReviewerIncompleteError("Interactive review target changed during verification; no authoritative verdict is available.");
+      }
+      const payload = await captureReviewPayloadAsync(
+        verifiedSession.target,
+        verifiedSession.repoPath,
+        {
+          requirePinnedEvidence: true,
+          testReport,
+        },
+        async (args) => {
+          const result = await this.runInteractiveCommand(
+            "git",
+            args,
+            verifiedSession.repoPath,
+            signal,
+            normalizeInteractiveTimeout(this.options.interactiveCommandTimeoutMs, DEFAULT_INTERACTIVE_COMMAND_TIMEOUT_MS),
+            2_000_000,
+          );
+          return { status: result.exitCode, stdout: result.stdout, stderr: result.stderr };
+        },
+      );
+      const evidence = payload.diffRange;
+      if (!evidence
+        || evidence.baseCommit !== verifiedSession.target.baseCommit
+        || evidence.headCommit !== verifiedSession.target.headCommit) {
+        throw new ReviewerIncompleteError("Reviewer evidence did not remain pinned to the interactive review target.");
+      }
+      const capturedSession = await resolveCurrentSession();
+      if (capturedSession.key !== verifiedSession.key) {
+        throw new ReviewerIncompleteError("Interactive review target changed while capturing evidence; no authoritative verdict is available.");
+      }
+      if (!updateActionJobStatus(this.db, job.id, "reviewing", {
+        current_step: `Running read-only Reviewer for ${target}`,
+      }, Date.now(), { requireNotSuperseded: true })) throw new ReviewJobSupersededError();
+      const verdict = await this.executeReviewer(
+        payload,
+        verifiedSession.repoPath,
+        this.parseReviewerProfileId(job),
+        job.id,
+        signal,
+        verifiedSession.authUserId,
+      );
+      const reviewedSession = await resolveCurrentSession();
+      if (reviewedSession.key !== verifiedSession.key) {
+        throw new ReviewerIncompleteError("The pull request changed during review; no authoritative verdict is available.");
+      }
+      return { verdict, testReport };
+    } finally {
+      this.interactiveReviewerTargets.delete(key);
+    }
+  }
+
+  private laneIdentityForJob(job: ActionJobRecord, repoPath: string) {
+    if (job.auth_user_id && job.chat_session_id) {
+      const identity = {
+        authUserId: job.auth_user_id,
+        sessionId: job.project_id,
+        chatSessionId: job.chat_session_id,
+        connectionId: "actions",
+      };
+      return {
+        ...buildWsConnectionIdentity({ ...identity, generation: job.lane_generation }),
+        logicalHistoryKey: buildWsConnectionIdentity(identity).historyKey,
+      };
+    }
+    return resolveActionsLaneIdentity(this.db, {
+      projectId: job.project_id,
+      repoPath,
+      authUserId: job.auth_user_id,
+      generation: job.lane_generation,
+    });
+  }
+
+  private recordActionMessage(
+    job: ActionJobRecord,
+    repoPath: string,
+    text: string,
+    kind: string,
+    role: "status" | "assistant" = "status",
+  ): void {
+    const identity = this.laneIdentityForJob(job, repoPath);
+    if (!identity) return;
+    const ts = Date.now();
+    const id = `${job.id}:${kind}:${ts}`;
+    try {
+      this.options.historyStore?.add(identity.historyKey, { role, text, ts, kind });
+    } catch (error) {
+      console.warn(`[actions] Unable to persist Reviewer message for job '${job.id}':`, error);
+    }
+    try {
+      this.options.broadcastToActionsLane?.({
+        type: "message",
+        role,
+        text,
+        jobId: job.id,
+        kind,
+        id,
+        eventId: id,
+        ts,
+      }, identity.logicalHistoryKey, job.project_id, job.lane_generation);
+    } catch (error) {
+      console.warn(`[actions] Unable to broadcast Reviewer message for job '${job.id}':`, error);
+    }
+  }
+
+  private parseReviewerProfileId(job: ActionJobRecord): string | undefined {
+    try {
+      const ids = JSON.parse(job.reviewer_profile_ids_json) as unknown;
+      return Array.isArray(ids) && typeof ids[0] === "string" ? ids[0] : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async resolveInteractiveDispatchTarget(
+    input: InteractiveReviewTargetRequest & { signal?: AbortSignal },
+  ): Promise<{
+    projectId: string;
+    repoPath: string;
+    authUserId: string;
+    branch: string;
+    prNumber: number;
+  }> {
+    const { projectId, repoPath, authUserId } = await this.resolveInteractiveProjectContext(input, input.signal);
+    let branch = String(input.branch ?? "").trim();
+    if (!branch) {
+      const result = await this.runInteractiveCommand("git", ["branch", "--show-current"], repoPath, input.signal);
+      branch = result.exitCode === 0 ? result.stdout.trim() : "";
+    }
+    return {
+      projectId,
+      repoPath,
+      authUserId,
+      branch,
+      prNumber: Number.isSafeInteger(input.prNumber) && Number(input.prNumber) > 0 ? Number(input.prNumber) : 0,
+    };
+  }
+
+  private jobNeedsPinning(job: ActionJobRecord): boolean {
+    return !job.base_sha
+      || !job.head_sha
+      || !job.pr_number
+      || !job.issue_id
+      || !job.pr_url;
+  }
+
+  private reviewTargetMatchesJob(job: ActionJobRecord, target: InteractiveReviewTarget): boolean {
+    if (job.job_kind !== "pull_request_review"
+      || job.issue_id !== target.issue.id
+      || job.branch !== target.branch
+      || job.pr_number !== target.prNumber
+      || job.pr_url !== target.prUrl
+      || job.base_sha !== target.baseCommit
+      || job.head_sha !== target.headCommit) return false;
+    try {
+      const snapshot = JSON.parse(job.issue_snapshot_json) as ActionJobIssueSnapshot;
+      return snapshot.title === target.issue.title
+        && snapshot.description === target.issue.description
+        && JSON.stringify(snapshot.acceptanceCriteria) === JSON.stringify(target.issue.acceptanceCriteria)
+        && JSON.stringify(snapshot.adrs) === JSON.stringify(target.adrs);
+    } catch {
+      return false;
+    }
+  }
+
+  public async dispatchReviewJob(
+    input: InteractiveReviewTargetRequest & { signal?: AbortSignal },
+  ): Promise<ActionToolResult> {
+    const context = await this.resolveInteractiveDispatchTarget(input);
+    this.failInterruptedReviewJobsIfOwned(context.projectId, context.repoPath);
+
+    const existing = getActionJobs(this.db, context.projectId, undefined, context.authUserId).find((job) =>
+      job.job_kind === "pull_request_review"
+      && job.branch === context.branch
+      && (context.prNumber === 0 || job.pr_number === context.prNumber)
+      && job.superseded_at === null
+      && ["queued", "verifying", "reviewing"].includes(job.status),
+    );
+    if (existing) {
+      this.queueReviewProcessing(context.projectId, context.repoPath);
+      return this.reviewQueueAck(existing);
+    }
+
+    const identity = resolveActionsLaneIdentity(this.db, {
+      projectId: context.projectId,
+      repoPath: context.repoPath,
+      authUserId: context.authUserId,
+    });
+    const id = randomUUID();
+    const job = createActionJob(this.db, {
+      id,
+      project_id: context.projectId,
+      lane_generation: this.options.captureActionsLaneGeneration?.(identity?.logicalHistoryKey ?? "") ?? 1,
+      job_kind: "pull_request_review",
+      issue_id: issueIdFromBranch(context.branch) ?? 0,
+      issue_title: "",
+      issue_snapshot: { title: "", description: "", acceptanceCriteria: [], adrs: [] },
+      branch: context.branch,
+      base_sha: "",
+      head_sha: "",
+      reviewer_profile_ids_json: "[]",
+      pr_number: context.prNumber,
+      pr_url: "",
+      auth_user_id: context.authUserId,
+      chat_session_id: identity?.chatSessionId ?? "",
+    });
+    updateActionJobStatus(this.db, job.id, "queued", {
+      current_step: context.prNumber > 0
+        ? `Queued read-only review for PR #${context.prNumber}; target checks run when the job starts.`
+        : `Queued read-only review for branch ${context.branch || "(unknown)"}; target checks run when the job starts.`,
+    });
+    this.queueReviewProcessing(context.projectId, context.repoPath);
+    return this.reviewQueueAck(getActionJobById(this.db, job.id) ?? job);
+  }
+
+  /**
+   * Dispatch only queues work. The verdict travels through the Issue comment and
+   * the Acopilot wake event, so the tool call must not wait for the queue.
+   */
+  private reviewQueueAck(job: ActionJobRecord): ActionToolResult {
+    return {
+      ok: true,
+      jobId: job.id,
+      status: job.status,
+      issueId: Number(job.issue_id ?? 0) > 0 ? job.issue_id : undefined,
+      note: "Review runs in the Actions lane. The verdict is published as a structured comment on the backing Issue and the Acopilot lane is woken when it is ready.",
+    };
+  }
+
+  public resumeReviewQueue(projectId: string, repoPath: string): void {
+    const canonicalProjectId = resolveCanonicalProjectId(projectId, repoPath);
+    this.failInterruptedReviewJobsIfOwned(canonicalProjectId, repoPath);
+    if (!this.hasQueuedReview(canonicalProjectId)) return;
+    this.queueReviewProcessing(canonicalProjectId, repoPath);
+  }
+
+  public async processReviewQueue(projectId: string, repoPath: string): Promise<void> {
+    const canonicalProjectId = resolveCanonicalProjectId(projectId, repoPath);
+    const key = canonicalProjectId;
+    const active = this.processingReviewQueues.get(key);
+    if (active) {
+      await active;
+      return;
+    }
+    const run = this.runReviewQueue(canonicalProjectId, repoPath);
+    this.processingReviewQueues.set(key, run);
+    try {
+      await run;
+    } finally {
+      if (this.processingReviewQueues.get(key) === run) this.processingReviewQueues.delete(key);
+    }
+  }
+
+  private queueReviewProcessing(projectId: string, repoPath: string): void {
+    if (this.options.autoStartReviewQueue === false
+      || this.processingReviewQueues.has(projectId)
+      || !this.hasQueuedReview(projectId)) return;
+    const run = Promise.resolve().then(() => this.runReviewQueue(projectId, repoPath));
+    this.processingReviewQueues.set(projectId, run);
+    let leaseAcquired = false;
+    void run.then((acquired) => {
+      leaseAcquired = acquired;
+    }).catch((error) => {
+      console.warn(`[actions] Reviewer queue failed for project '${projectId}':`, error);
+    }).finally(() => {
+      if (this.processingReviewQueues.get(projectId) === run) this.processingReviewQueues.delete(projectId);
+      if (!leaseAcquired) return;
+      if (this.hasQueuedReview(projectId)) this.queueReviewProcessing(projectId, repoPath);
+    });
+  }
+
+  private hasQueuedReview(projectId: string): boolean {
+    return getActionJobs(this.db, projectId).some((job) =>
+      job.job_kind === "pull_request_review"
+      && job.status === "queued"
+      && job.superseded_at === null,
+    );
+  }
+
+  private failInterruptedReviewJobs(projectId: string, repoPath: string): void {
+    const jobs = this.db.prepare(`
+      SELECT * FROM action_jobs
+      WHERE project_id = ? AND job_kind = 'pull_request_review' AND status IN ('verifying', 'reviewing')
+        AND superseded_at IS NULL
+    `).all(projectId) as ActionJobRecord[];
+    const errorMessage = "The review job has no active worker. Dispatch a new review to retry the pinned target.";
+    for (const job of jobs) {
+      const now = Date.now();
+      const result = this.db.prepare(`
+        UPDATE action_jobs
+        SET status = 'failed', current_step = 'Review job interrupted before producing a verdict',
+            error_message = ?, review_verdicts_json = '[]', updated_at = ?
+        WHERE id = ? AND status IN ('verifying', 'reviewing') AND superseded_at IS NULL
+      `).run(errorMessage, now, job.id) as { changes?: number };
+      if (result.changes !== 1) continue;
+      this.recordActionMessage(
+        getActionJobById(this.db, job.id) ?? job,
+        repoPath,
+        `Review was interrupted before producing a verdict for ${this.reviewTargetLabel(job)}. Dispatch a new review to retry.`,
+        `action_step:${job.id}:interrupted`,
+      );
+    }
+  }
+
+  private failInterruptedReviewJobsIfOwned(projectId: string, repoPath: string): void {
+    if (this.processingReviewQueues.has(projectId)) return;
+    const lease = getReviewQueueLease(this.db, projectId);
+    if (lease && lease.owner_id !== this.workerId && lease.expires_at > Date.now()) return;
+    this.failInterruptedReviewJobs(projectId, repoPath);
+  }
+
+  private async runReviewQueue(projectId: string, repoPath: string): Promise<boolean> {
+    const leaseTtlMs = normalizeInteractiveTimeout(
+      this.options.reviewQueueLeaseTtlMs,
+      DEFAULT_REVIEW_QUEUE_LEASE_TTL_MS,
+    );
+    if (!acquireReviewQueueLease(this.db, projectId, this.workerId, leaseTtlMs)) {
+      return false;
+    }
+    const heartbeatMs = Math.min(
+      normalizeInteractiveTimeout(this.options.reviewQueueLeaseHeartbeatMs, DEFAULT_REVIEW_QUEUE_LEASE_HEARTBEAT_MS),
+      Math.max(1, Math.floor(leaseTtlMs / 2)),
+    );
+    const heartbeat = setInterval(() => {
+      try {
+        if (!renewReviewQueueLease(this.db, projectId, this.workerId, leaseTtlMs)) {
+          console.warn(`[actions] Review queue lease for project '${projectId}' is no longer owned by this process.`);
+        }
+      } catch (error) {
+        console.warn(`[actions] Unable to renew the review queue lease for project '${projectId}':`, error);
+      }
+    }, heartbeatMs);
+    heartbeat.unref?.();
+    try {
+      this.failInterruptedReviewJobs(projectId, repoPath);
+      while (true) {
+        const job = getActionJobs(this.db, projectId)
+          .filter((candidate) =>
+            candidate.job_kind === "pull_request_review"
+            && candidate.status === "queued"
+            && candidate.superseded_at === null,
+          )
+          .sort((left, right) => left.created_at - right.created_at)[0];
+        if (!job) return true;
+        await this.executeQueuedReview(job, repoPath);
+      }
+    } finally {
+      clearInterval(heartbeat);
+      try {
+        releaseReviewQueueLease(this.db, projectId, this.workerId);
+      } catch (error) {
+        console.warn(`[actions] Unable to release the review queue lease for project '${projectId}':`, error);
+      }
+    }
+  }
+
+  private async executeQueuedReview(job: ActionJobRecord, repoPath: string): Promise<void> {
+    const claim = this.db.prepare(`
+      UPDATE action_jobs SET status = 'verifying', updated_at = ?
+      WHERE id = ? AND job_kind = 'pull_request_review' AND status = 'queued'
+        AND superseded_at IS NULL
+    `).run(Date.now(), job.id) as { changes?: number };
+    if (!claim.changes) return;
+    const claimedJob = getActionJobById(this.db, job.id) ?? job;
+    if (!updateActionJobStatus(this.db, job.id, "verifying", {
+      current_step: (job.pr_number ?? 0) > 0 ? `Checking pinned target for PR #${job.pr_number}` : "Resolving the review target when the job starts",
+      error_message: null,
+      verification_report_json: "",
+      review_verdicts_json: "[]",
+    }, Date.now(), { requireNotSuperseded: true })) return;
+    try {
+      const request: InteractiveReviewTargetRequest = {
+        projectId: job.project_id,
+        repoPath,
+        authUserId: job.auth_user_id ?? "",
+        branch: job.branch ?? undefined,
+        prNumber: (job.pr_number ?? 0) > 0 ? job.pr_number : undefined,
+      };
+      const session = await this.resolveInteractiveReviewSession(request);
+      if (this.jobNeedsPinning(job)) {
+        const pinAndSupersede = this.db.transaction(() => {
+          const pinned = updateActionJobPinnedTarget(this.db, job.id, {
+            issue_id: Number(session.target.issue.id),
+            issue_title: session.target.issue.title,
+            issue_snapshot: {
+              title: session.target.issue.title,
+              description: session.target.issue.description ?? session.target.issue.title,
+              acceptanceCriteria: [...(session.target.issue.acceptanceCriteria ?? [])],
+              adrs: (session.target.adrs ?? []).map((adr) => ({ ...adr })),
+            },
+            branch: session.target.branch,
+            base_sha: session.target.baseCommit ?? "",
+            head_sha: session.target.headCommit ?? "",
+            pr_number: Number(session.target.prNumber),
+            pr_url: session.target.prUrl,
+          });
+          if (!pinned) return false;
+          this.supersedeOlderReviewJobs(job, session.target);
+          return true;
+        });
+        if (!pinAndSupersede()) throw new ReviewJobSupersededError();
+        job = getActionJobById(this.db, job.id) ?? job;
+      } else if (!this.reviewTargetMatchesJob(job, session.target)) {
+        throw new ReviewerIncompleteError("The pull request, Issue, base, head, or ADR snapshot changed after dispatch.");
+      } else {
+        this.supersedeOlderReviewJobs(job, session.target);
+      }
+      this.recordActionMessage(
+        job,
+        repoPath,
+        `Review started for ${this.reviewTargetLabel(job)}.`,
+        `action_step:${job.id}:started`,
+      );
+      const controller = new AbortController();
+      const result = await this.executeInteractiveReviewSession(
+        session,
+        controller.signal,
+        () => this.resolveInteractiveReviewSession(request),
+        job,
+      );
+      this.assertReviewJobCurrent(job.id);
+      if (!updateActionJobStatus(this.db, job.id, "completed", {
+        current_step: `${result.verdict.status}: ${result.verdict.summary}`,
+        review_verdicts_json: JSON.stringify([result.verdict]),
+        verification_report_json: JSON.stringify(result.testReport ?? {}),
+        error_message: null,
+      }, Date.now(), { requireNotSuperseded: true })) throw new ReviewJobSupersededError();
+      this.publishReviewVerdictPresentation(
+        result.verdict,
+        getActionJobById(this.db, job.id) ?? claimedJob,
+        repoPath,
+      );
+      await this.publishReviewOutcome(job, repoPath, result.verdict.status, result.verdict.summary, result.verdict.defects);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof ReviewJobSupersededError || this.isReviewJobSuperseded(job.id)) {
+        this.recordActionMessage(
+          getActionJobById(this.db, job.id) ?? claimedJob,
+          repoPath,
+          `Review for ${this.reviewTargetLabel(job)} was superseded by a newer head commit and was not published.`,
+          `action_step:${job.id}:superseded`,
+        );
+        return;
+      }
+      if (error instanceof ReviewerIncompleteError) {
+        const verdict: ReviewVerdict = { status: "INCOMPLETE", summary: message, defects: [], reviewedAt: Date.now() };
+        if (!updateActionJobStatus(this.db, job.id, "completed", {
+          current_step: `INCOMPLETE: ${message}`,
+          review_verdicts_json: JSON.stringify([verdict]),
+          error_message: null,
+        }, Date.now(), { requireNotSuperseded: true })) {
+          this.recordActionMessage(
+            getActionJobById(this.db, job.id) ?? claimedJob,
+            repoPath,
+            `Review for ${this.reviewTargetLabel(job)} was superseded by a newer head commit and was not published.`,
+            `action_step:${job.id}:superseded`,
+          );
+          return;
+        }
+        this.publishReviewVerdictPresentation(verdict, getActionJobById(this.db, job.id) ?? claimedJob, repoPath);
+        await this.publishReviewOutcome(job, repoPath, "INCOMPLETE", message, []);
+        return;
+      }
+      if (!updateActionJobStatus(this.db, job.id, "failed", {
+        current_step: "Review job failed before producing an authoritative verdict",
+        error_message: message,
+        review_verdicts_json: "[]",
+      }, Date.now(), { requireNotSuperseded: true })) {
+        this.recordActionMessage(
+          getActionJobById(this.db, job.id) ?? claimedJob,
+          repoPath,
+          `Review for ${this.reviewTargetLabel(job)} was superseded by a newer head commit and was not published.`,
+          `action_step:${job.id}:superseded`,
+        );
+        return;
+      }
+      this.recordActionMessage(
+        getActionJobById(this.db, job.id) ?? claimedJob,
+        repoPath,
+        `Review failed for ${this.reviewTargetLabel(job)}: ${message}`,
+        `action_step:${job.id}:failed`,
+      );
+      await this.publishReviewOutcome(job, repoPath, "ERROR", message, []);
+    }
+  }
+
+  private supersedeOlderReviewJobs(job: ActionJobRecord, target: InteractiveReviewTarget): void {
+    supersedeReviewJobsForNewHead(this.db, {
+      projectId: job.project_id,
+      prNumber: target.prNumber,
+      branch: target.branch,
+      keepHeadSha: target.headCommit ?? "",
+      supersededByJobId: job.id,
+    });
+  }
+
+  private isReviewJobSuperseded(jobId: string): boolean {
+    return Boolean(getActionJobById(this.db, jobId)?.superseded_at);
+  }
+
+  private assertReviewJobCurrent(jobId: string): void {
+    if (this.isReviewJobSuperseded(jobId)) throw new ReviewJobSupersededError();
+  }
+
+  /**
+   * The Issue comment is the durable verdict record; the wake event is only a
+   * signal. A failed comment write must not swallow the outcome, so the lane
+   * logs the failure and the wake still fires.
+   */
+  private async publishReviewOutcome(
+    job: ActionJobRecord,
+    repoPath: string,
+    status: IssueVerdictStatus,
+    summary: string,
+    defects: ReviewDefect[],
+  ): Promise<void> {
+    if (this.isReviewJobSuperseded(job.id)) {
+      this.recordActionMessage(
+        getActionJobById(this.db, job.id) ?? job,
+        repoPath,
+        `The ${status} verdict for ${this.reviewTargetLabel(job)} was not published because the job was superseded.`,
+        `action_step:${job.id}:superseded`,
+      );
+      return;
+    }
+    // Pinning can fail before the Issue id is stored, but the branch already
+    // names it. Without this fallback an INCOMPLETE outcome would be invisible.
+    const issueId = Number(job.issue_id ?? 0) > 0
+      ? Number(job.issue_id)
+      : (issueIdFromBranch(job.branch) ?? 0);
+    if (!Number.isSafeInteger(issueId) || issueId < 1) {
+      this.recordActionMessage(
+        getActionJobById(this.db, job.id) ?? job,
+        repoPath,
+        `The ${status} verdict for ${this.reviewTargetLabel(job)} could not be published because no Issue is pinned.`,
+        `action_step:${job.id}:comment_skipped`,
+      );
+      return;
+    }
+    const body = buildIssueVerdictComment({
+      jobId: job.id,
+      prNumber: job.pr_number,
+      headSha: job.head_sha,
+      baseSha: job.base_sha,
+      status,
+      summary,
+      defects,
+    });
+    const publish = this.options.publishIssueComment ?? defaultPublishIssueComment;
+    let failure: string | null = null;
+    try {
+      const result = await publish({ repoPath, issueId, body });
+      if (!result.ok) failure = result.error ?? "gh issue comment failed";
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
+    const currentJob = getActionJobById(this.db, job.id) ?? job;
+    if (failure) {
+      this.recordActionMessage(
+        currentJob,
+        repoPath,
+        `Publishing the ${status} verdict for ${this.reviewTargetLabel(job)} to Issue #${issueId} failed: ${failure}`,
+        `action_step:${job.id}:comment_failed`,
+      );
+    }
+    this.options.wakeAcopilotLane?.({
+      projectId: job.project_id,
+      repoPath,
+      authUserId: job.auth_user_id ?? "",
+      issueId,
+      prNumber: job.pr_number,
+      status,
+      jobId: job.id,
+      headSha: job.head_sha,
+    });
+  }
+
+  public createInteractiveActionTools(
+    input: InteractiveReviewTargetRequest & { signal: AbortSignal },
+  ): Promise<ActionTools & { dispose: () => Promise<void> }> {
+    return Promise.resolve({
+      review_action: async () => await this.dispatchReviewJob(input),
+      dispose: async () => {},
+    });
+  }
+
+  public async executeReviewer(
+    payload: ReviewPayload,
+    repoPath: string,
+    reviewerProfileId?: string,
+    jobId?: string,
+    signal?: AbortSignal,
+    ownerOverride?: string,
+  ): Promise<ReviewVerdict> {
+    if (payload.diffCaptureError) {
+      throw new ReviewerIncompleteError("Reviewer evidence capture failed; no authoritative verdict is available.");
+    }
+    const profile = reviewerProfileId ? getRoleProfileById(this.db, reviewerProfileId) : getDefaultRoleProfile(this.db, "reviewer");
+    if (!profile || profile.role !== "reviewer" || !profile.is_enabled || !profile.model_id.trim() || !profile.system_prompt.trim()) {
+      throw new Error("Reviewer execution failed: configure an enabled Reviewer role profile with a model and system prompt.");
+    }
+    const controller = new AbortController();
+    const timeoutMs = this.options.reviewerTimeoutMs ?? DEFAULT_REVIEWER_TIMEOUT_MS;
+    const timer = setTimeout(() => controller.abort(new Error("Reviewer execution timed out.")), timeoutMs);
+    const reviewerSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    try {
+      reviewerSignal.throwIfAborted();
+      const prompt = buildReviewPrompt(payload);
+      if (this.options.reviewerRunner) {
+        return await raceReviewerAbort(runDetachedReview(payload, {
+          callModel: this.options.reviewerRunner, systemPrompt: profile.system_prompt, reviewerProfileId: profile.id,
+        }), reviewerSignal);
+      }
+      const commit = payload.diffRange?.headCommit;
+      if (!commit) throw new Error("Reviewer inspection requires captured head commit evidence.");
+      const owner = ownerOverride ?? (jobId ? getActionJobById(this.db, jobId)?.auth_user_id : null) ?? "";
+      const model = this.options.reviewerModelResolver
+        ? this.options.reviewerModelResolver(profile.model_id, owner)
+        : createNativeModelResolver({ owner, stateDbPath: this.db.name, requireOwnerCredentials: true }).resolve(profile.model_id);
+      const result = await runReviewerInspection({
+        workspace: repoPath, commit, prompt, systemPrompt: profile.system_prompt,
+        model: { ...model, options: { ...model.options, reasoningEffort: profile.reasoning_effort } },
+        profileId: profile.id, signal: reviewerSignal,
+        toolTurnBudget: this.options.reviewerToolTurnBudget ?? (process.env.ADS_REVIEWER_TOOL_TURNS === "0" ? 0 : undefined),
+        diff: payload.diff,
+        complete: this.options.reviewerComplete,
+      });
+      reviewerSignal.throwIfAborted();
+      return result;
+    } catch (error) {
+      if (error instanceof ReviewerIncompleteError) throw error;
+      throw new Error(`Reviewer execution failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+    }
+  }
+
+
+  public getJobs(projectId: string, repoPath?: string, authUserId?: string): ActionJobRecord[] {
+    const canonicalProjectId = resolveCanonicalProjectId(projectId, repoPath);
+    migrateLegacyProjectJobs(this.db, canonicalProjectId, [projectId, repoPath ?? ""]);
+    return getActionJobs(this.db, canonicalProjectId, undefined, authUserId);
+  }
+
+  public getJob(jobId: string): ActionJobRecord | null {
+    return getActionJobById(this.db, jobId);
+  }
+}

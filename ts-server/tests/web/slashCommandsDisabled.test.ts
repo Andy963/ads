@@ -1,0 +1,871 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { handleCommandMessage } from "../../server/web/server/ws/handleCommand.js";
+import { handlePromptMessage } from "../../server/web/server/ws/handlePrompt.js";
+import { getStateDatabase } from "../../server/state/database.js";
+import { createGlobalModelConfigStore } from "../../server/state/globalModelConfigStore.js";
+import { createModelServiceStore } from "../../server/state/modelServiceStore.js";
+
+type HistoryEntry = { role: string; text: string; ts: number; kind?: string };
+
+class MemoryHistoryStore {
+  private readonly store = new Map<string, HistoryEntry[]>();
+  readonly links: Array<{ sessionId: string; agentId: string; providerSessionId: string }> = [];
+
+  get(sessionId: string): HistoryEntry[] {
+    return this.store.get(sessionId) ?? [];
+  }
+
+  add(sessionId: string, entry: HistoryEntry): boolean {
+    const list = this.store.get(sessionId) ?? [];
+    list.push(entry);
+    this.store.set(sessionId, list);
+    return true;
+  }
+
+  clear(sessionId: string): void {
+    this.store.delete(sessionId);
+  }
+
+  linkAgentSession(
+    sessionId: string,
+    entry: { agentId: string; providerSessionId: string },
+  ): void {
+    this.links.push({ sessionId, ...entry });
+  }
+}
+
+function inputToText(input: unknown): string {
+  if (typeof input === "string") return input;
+  if (Array.isArray(input)) {
+    return input
+      .map((part) => {
+        if (!part || typeof part !== "object") return "";
+        const rec = part as { type?: unknown; text?: unknown; path?: unknown };
+        if (rec.type === "text") return String(rec.text ?? "");
+        if (rec.type === "local_image") return `[image:${String(rec.path ?? "")}]`;
+        return `[${String(rec.type ?? "unknown")}]`;
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  return String(input ?? "");
+}
+
+class FakeOrchestrator {
+  lastInvokeInput: unknown = null;
+  lastInvokeAgentId: string | null = null;
+  activeAgentId = "codex";
+
+  status(): { ready: boolean; error?: string; streaming: boolean } {
+    return { ready: true, streaming: true };
+  }
+
+  setWorkingDirectory(_workingDirectory?: string): void {
+    // noop
+  }
+
+  getActiveAgentId(): string {
+    return this.activeAgentId;
+  }
+
+  listAgents(): Array<{ metadata: { id: string; name: string }; status: { ready: boolean; streaming: boolean; error?: string } }> {
+    return [
+      {
+        metadata: { id: "codex", name: "Codex" },
+        status: { ready: true, streaming: true },
+      },
+      {
+        metadata: { id: "claude", name: "Claude" },
+        status: { ready: true, streaming: true },
+      },
+    ];
+  }
+
+  hasAgent(agentId: string): boolean {
+    return agentId === "codex" || agentId === "claude";
+  }
+
+  switchAgent(agentId: string): void {
+    if (!this.hasAgent(agentId)) {
+      throw new Error(`Agent "${agentId}" is not registered`);
+    }
+    this.activeAgentId = agentId;
+  }
+
+  onEvent(_handler: (event: unknown) => void): () => void {
+    return () => undefined;
+  }
+
+  async invokeAgent(agentId: string, input: unknown): Promise<{ response: string; usage: null; agentId: string }> {
+    this.lastInvokeInput = input;
+    this.lastInvokeAgentId = agentId;
+    return { response: "stub response", usage: null, agentId };
+  }
+
+  getThreadId(): string {
+    return "thread-test";
+  }
+}
+
+function createTempDir(prefix: string): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+async function withTempWorkspace(prefix: string, fn: (workspaceRoot: string) => Promise<void>): Promise<void> {
+  const workspaceRoot = createTempDir(prefix);
+  try {
+    await fn(workspaceRoot);
+  } finally {
+    try {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function sanitizeCommandPayload(payload: unknown): string {
+  if (typeof payload === "string") return payload;
+  if (payload && typeof payload === "object" && "command" in (payload as Record<string, unknown>)) {
+    return String((payload as Record<string, unknown>).command ?? "");
+  }
+  return "";
+}
+
+function createPromptDeps(args: {
+  payload: unknown;
+  workspaceRoot: string;
+  chatMessages: unknown[];
+  clientMessages: unknown[];
+  historyStore: MemoryHistoryStore;
+  orchestrator: FakeOrchestrator;
+  sessionManager?: Record<string, unknown>;
+  receivedAt?: number;
+}) {
+  return {
+    request: {
+      parsed: { type: "prompt" as const, payload: args.payload },
+      requestId: "req",
+      clientMessageId: null,
+      receivedAt: args.receivedAt ?? Date.now(),
+    },
+    transport: {
+      ws: {} as any,
+      safeJsonSend: (_ws: unknown, payload: unknown) => args.clientMessages.push(payload),
+      broadcastJson: (payload: unknown) => args.chatMessages.push(payload),
+      sendWorkspaceState: () => {},
+    },
+    observability: {
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      sessionLogger: {
+        logInput: () => {},
+        logOutput: () => {},
+        logError: () => {},
+        logEvent: () => {},
+        attachThreadId: () => {},
+      },
+      traceWsDuplication: false,
+    },
+    context: {
+      authUserId: "test",
+      sessionId: "s",
+      chatSessionId: "main" as const,
+      userId: 1,
+      historyKey: "h",
+      currentCwd: args.workspaceRoot,
+    },
+    sessions: {
+      sessionManager: {
+        getOrCreate: () => args.orchestrator as any,
+        getSavedThreadId: () => undefined,
+        getUserModel: () => "test-model",
+        getUserModelReasoningEffort: () => "high",
+        getEffectiveState: () => ({ model: "test-model", modelReasoningEffort: "high", activeAgentId: "codex" }),
+        needsHistoryInjection: () => false,
+        clearHistoryInjection: () => {},
+        setUserModel: () => {},
+        setUserModelReasoningEffort: () => {},
+        saveThreadId: () => {},
+        ...(args.sessionManager ?? {}),
+      } as any,
+      orchestrator: args.orchestrator as any,
+      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
+      interruptControllers: new Map<string, AbortController>(),
+    },
+    history: {
+      historyStore: args.historyStore as any,
+    },
+    tasks: {},
+    scheduler: {},
+  };
+}
+
+function createCommandDeps(args: {
+  parsed: { type: "command" | "set_agent"; payload: unknown };
+  workspaceRoot: string;
+  clientMessages: unknown[];
+  chatMessages: unknown[];
+  historyStore?: MemoryHistoryStore;
+  sessionManager?: Record<string, unknown>;
+  orchestrator?: unknown;
+  directoryManager?: unknown;
+  agentAvailability?: unknown;
+  runAdsCommandLine?: (command: string) => Promise<{ ok: boolean; output: string }>;
+  sendWorkspaceState?: (_ws: unknown, root: string) => void;
+}) {
+  return {
+    request: {
+      parsed: args.parsed,
+      clientMessageId: null,
+    },
+    transport: {
+      ws: {} as any,
+      safeJsonSend: (_ws: unknown, payload: unknown) => args.clientMessages.push(payload),
+      broadcastJson: (payload: unknown) => args.chatMessages.push(payload),
+      sendWorkspaceState: args.sendWorkspaceState ?? (() => {}),
+    },
+    observability: {
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      sessionLogger: null,
+      traceWsDuplication: false,
+    },
+    context: {
+      sessionId: "s",
+      userId: 1,
+      historyKey: "h",
+      currentCwd: args.workspaceRoot,
+    },
+    agents: {
+      agentAvailability: (args.agentAvailability ?? {}) as any,
+    },
+    state: {
+      directoryManager: (args.directoryManager ?? {}) as any,
+      cacheKey: "k",
+      workspaceCache: new Map(),
+      cwdStore: new Map(),
+      cwdStorePath: "",
+      persistCwdStore: () => {},
+    },
+    sessions: {
+      sessionManager: (args.sessionManager ?? {}) as any,
+      orchestrator: (args.orchestrator ?? ({} as any)) as any,
+      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }) as any,
+      interruptControllers: new Map<string, AbortController>(),
+    },
+    history: {
+      historyStore: (args.historyStore ?? new MemoryHistoryStore()) as any,
+    },
+    commands: {
+      runAdsCommandLine: args.runAdsCommandLine ?? (async () => ({ ok: true, output: "" })),
+      sanitizeInput: sanitizeCommandPayload,
+    },
+  };
+}
+
+async function runPromptThrough(payload: string): Promise<{
+  chatMessages: unknown[];
+  clientMessages: unknown[];
+  orchestrator: FakeOrchestrator;
+}> {
+  const chatMessages: unknown[] = [];
+  const clientMessages: unknown[] = [];
+  const orchestrator = new FakeOrchestrator();
+  const historyStore = new MemoryHistoryStore();
+
+  await withTempWorkspace("ads-web-prompt-", async (workspaceRoot) => {
+    await handlePromptMessage(
+      createPromptDeps({
+        payload,
+        workspaceRoot,
+        chatMessages,
+        clientMessages,
+        historyStore,
+        orchestrator,
+      }),
+    );
+  });
+
+  return { chatMessages, clientMessages, orchestrator };
+}
+
+describe("web slash commands", () => {
+  it("does not expose Native execution ids as resumable provider sessions", async () => {
+    const chatMessages: unknown[] = [];
+    const clientMessages: unknown[] = [];
+    const historyStore = new MemoryHistoryStore();
+    const orchestrator = new FakeOrchestrator();
+
+    await withTempWorkspace("ads-web-native-session-", async (workspaceRoot) => {
+      await handlePromptMessage(
+        createPromptDeps({
+          payload: "hello from native runtime",
+          workspaceRoot,
+          chatMessages,
+          clientMessages,
+          historyStore,
+          orchestrator,
+          sessionManager: {
+            getRuntimeBackend: () => "native",
+          },
+        }),
+      );
+    });
+
+    assert.deepEqual(historyStore.links, []);
+  });
+
+  it("treats /search as normal prompt text", async () => {
+    const { chatMessages, clientMessages, orchestrator } = await runPromptThrough("/search hello world");
+    assert.match(inputToText(orchestrator.lastInvokeInput), /\/search hello world/);
+    assert.ok(
+      chatMessages.some(
+        (msg) => (msg as { type?: unknown; output?: unknown }).type === "result" && (msg as { output?: unknown }).output === "stub response",
+      ),
+    );
+    assert.ok(!chatMessages.some((msg) => JSON.stringify(msg).includes("/search <query>")));
+    assert.ok(!clientMessages.some((msg) => JSON.stringify(msg).includes("/search <query>")));
+  });
+
+  it("treats /bootstrap as normal prompt text", async () => {
+    const { chatMessages, clientMessages, orchestrator } = await runPromptThrough("/bootstrap some repo goal");
+    assert.match(inputToText(orchestrator.lastInvokeInput), /\/bootstrap some repo goal/);
+    assert.ok(
+      chatMessages.some(
+        (msg) => (msg as { type?: unknown; output?: unknown }).type === "result" && (msg as { output?: unknown }).output === "stub response",
+      ),
+    );
+    assert.ok(!chatMessages.some((msg) => (msg as { kind?: unknown }).kind === "bootstrap"));
+    assert.ok(!clientMessages.some((msg) => (msg as { kind?: unknown }).kind === "bootstrap"));
+  });
+
+  it("treats /vsearch as normal prompt text", async () => {
+    const { chatMessages, orchestrator } = await runPromptThrough("/vsearch hello world");
+    assert.match(inputToText(orchestrator.lastInvokeInput), /\/vsearch hello world/);
+    assert.ok(
+      chatMessages.some(
+        (msg) => (msg as { type?: unknown; output?: unknown }).type === "result" && (msg as { output?: unknown }).output === "stub response",
+      ),
+    );
+  });
+
+  it("treats /ads.* as normal prompt text", async () => {
+    const { chatMessages, orchestrator } = await runPromptThrough("/ads.status");
+    assert.match(inputToText(orchestrator.lastInvokeInput), /\/ads\.status/);
+    assert.ok(
+      chatMessages.some(
+        (msg) => (msg as { type?: unknown; output?: unknown }).type === "result" && (msg as { output?: unknown }).output === "stub response",
+      ),
+    );
+  });
+
+  it("treats /review as normal prompt text", async () => {
+    const { chatMessages, orchestrator } = await runPromptThrough("/review looks good");
+    assert.match(inputToText(orchestrator.lastInvokeInput), /\/review looks good/);
+    assert.ok(
+      chatMessages.some(
+        (msg) => (msg as { type?: unknown; output?: unknown }).type === "result" && (msg as { output?: unknown }).output === "stub response",
+      ),
+    );
+  });
+
+  it("does not inject the current prompt into restored history context", async () => {
+    await withTempWorkspace("ads-web-prompt-history-current-", async (workspaceRoot) => {
+      const chatMessages: unknown[] = [];
+      const clientMessages: unknown[] = [];
+      const orchestrator = new FakeOrchestrator();
+      const historyStore = new MemoryHistoryStore();
+      historyStore.add("h", { role: "user", text: "previous question", ts: 100 });
+      historyStore.add("h", { role: "ai", text: "previous answer", ts: 101 });
+
+      await handlePromptMessage(
+        createPromptDeps({
+          payload: "current question",
+          workspaceRoot,
+          chatMessages,
+          clientMessages,
+          historyStore,
+          orchestrator,
+          receivedAt: 200,
+          sessionManager: {
+            needsHistoryInjection: () => true,
+          },
+        }),
+      );
+
+      const sent = inputToText(orchestrator.lastInvokeInput);
+      assert.match(sent, /User: previous question/);
+      assert.match(sent, /Assistant: previous answer/);
+      assert.match(sent, /---\ncurrent question/);
+      assert.equal((sent.match(/current question/g) ?? []).length, 1);
+      assert.deepEqual(
+        historyStore.get("h").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [
+          { role: "user", text: "previous question", kind: undefined },
+          { role: "ai", text: "previous answer", kind: undefined },
+          { role: "user", text: "current question", kind: undefined },
+          { role: "ai", text: "stub response", kind: undefined },
+        ],
+      );
+    });
+  });
+
+  it("resumes saved continuity when a prompt recreates an idle-evicted runtime session", async () => {
+    await withTempWorkspace("ads-web-prompt-resume-", async (workspaceRoot) => {
+      const chatMessages: unknown[] = [];
+      const clientMessages: unknown[] = [];
+      const orchestrator = new FakeOrchestrator();
+      const historyStore = new MemoryHistoryStore();
+      const getOrCreateCalls: Array<{ userId: number; cwd?: string; resumeThread?: boolean }> = [];
+
+      await handlePromptMessage(
+        createPromptDeps({
+          payload: "continue working",
+          workspaceRoot,
+          chatMessages,
+          clientMessages,
+          historyStore,
+          orchestrator,
+          sessionManager: {
+            hasSession: () => false,
+            getOrCreate: (userId: number, cwd?: string, resumeThread?: boolean) => {
+              getOrCreateCalls.push({ userId, cwd, resumeThread });
+              return orchestrator as any;
+            },
+          },
+        }),
+      );
+
+      assert.deepEqual(getOrCreateCalls, [{ userId: 1, cwd: workspaceRoot, resumeThread: true }]);
+      assert.ok(
+        chatMessages.some(
+          (msg) => (msg as { type?: unknown; output?: unknown }).type === "result" && (msg as { output?: unknown }).output === "stub response",
+        ),
+      );
+    });
+  });
+
+  it("does not record model rotation notices because the UI already shows the model", async () => {
+    await withTempWorkspace("ads-web-prompt-model-notice-", async (workspaceRoot) => {
+      const chatMessages: unknown[] = [];
+      const clientMessages: unknown[] = [];
+      const orchestrator = new FakeOrchestrator();
+      const historyStore = new MemoryHistoryStore();
+      let currentModel = "gpt-4.1";
+      const db = getStateDatabase();
+      createGlobalModelConfigStore(db).upsertModelConfig({ id: "gpt-4o", modelId: "gpt-4o", displayName: "GPT-4o", provider: "openai", isEnabled: true, isDefault: false });
+      const services = createModelServiceStore(db);
+      services.save("conversation", ["gpt-4o"], "gpt-4o");
+
+      await handlePromptMessage(
+        createPromptDeps({
+          payload: { text: "continue working", model: "gpt-4o" },
+          workspaceRoot,
+          chatMessages,
+          clientMessages,
+          historyStore,
+          orchestrator,
+          sessionManager: {
+            getUserModel: () => currentModel,
+            setUserModel: (_userId: number, model?: string) => {
+              currentModel = model ?? "";
+            },
+            getEffectiveState: () => ({
+              model: currentModel,
+              modelReasoningEffort: "high",
+              activeAgentId: "codex",
+            }),
+          },
+        }),
+      );
+
+      const result = chatMessages.find((msg) => (msg as { type?: unknown }).type === "result") as
+        | { notice?: string; effectiveModel?: string }
+        | undefined;
+      assert.equal(currentModel, "gpt-4o");
+      assert.equal(result?.effectiveModel, "gpt-4o");
+      assert.equal(result?.notice, undefined);
+      assert.deepEqual(
+        historyStore.get("h").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [
+          { role: "user", text: "continue working", kind: undefined },
+          { role: "ai", text: "stub response", kind: undefined },
+        ],
+      );
+    });
+  });
+
+  it("switches the prompt agent without recording a redundant chat notice", async () => {
+    await withTempWorkspace("ads-web-prompt-agent-notice-", async (workspaceRoot) => {
+      const chatMessages: unknown[] = [];
+      const clientMessages: unknown[] = [];
+      const orchestrator = new FakeOrchestrator();
+      const historyStore = new MemoryHistoryStore();
+
+      await handlePromptMessage(
+        createPromptDeps({
+          payload: { text: "continue working", agentId: "claude" },
+          workspaceRoot,
+          chatMessages,
+          clientMessages,
+          historyStore,
+          orchestrator,
+          sessionManager: {
+            switchAgent: (_userId: number, agentId: string) => {
+              orchestrator.switchAgent(agentId);
+              return { success: true, message: "ok" };
+            },
+            getEffectiveState: () => ({
+              model: "test-model",
+              modelReasoningEffort: "high",
+              activeAgentId: orchestrator.getActiveAgentId(),
+            }),
+          },
+        }),
+      );
+
+      const result = chatMessages.find((msg) => (msg as { type?: unknown }).type === "result") as
+        | { notice?: string; activeAgentId?: string }
+        | undefined;
+      assert.equal(orchestrator.lastInvokeAgentId, "claude");
+      assert.equal(result?.activeAgentId, "claude");
+      assert.equal(result?.notice, undefined);
+      assert.deepEqual(
+        historyStore.get("h").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [
+          { role: "user", text: "continue working", kind: undefined },
+          { role: "ai", text: "stub response", kind: undefined },
+        ],
+      );
+    });
+  });
+
+  it("records invalid command payload errors for reconnect replay", async () => {
+    await withTempWorkspace("ads-web-ws-command-invalid-", async (workspaceRoot) => {
+      const clientMessages: unknown[] = [];
+      const chatMessages: unknown[] = [];
+      const historyStore = new MemoryHistoryStore();
+
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: "" },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore,
+        }),
+      );
+
+      assert.equal(result.handled, true);
+      assert.deepEqual(clientMessages, []);
+      assert.deepEqual(chatMessages, [{ type: "error", message: "Payload must be a command string" }]);
+      assert.deepEqual(
+        historyStore.get("h").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [{ role: "status", text: "Payload must be a command string", kind: "error" }],
+      );
+    });
+  });
+
+  it("does not route /search over ws command messages", async () => {
+    await withTempWorkspace("ads-web-ws-command-search-", async (workspaceRoot) => {
+      const clientMessages: unknown[] = [];
+      const chatMessages: unknown[] = [];
+      const historyStore = new MemoryHistoryStore();
+      let called = false;
+
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: "/search hello world" },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore,
+          runAdsCommandLine: async () => {
+            called = true;
+            return { ok: true, output: "unexpected" };
+          },
+        }),
+      );
+
+      assert.equal(result.handled, true);
+      assert.equal(called, false);
+      assert.equal(clientMessages.length, 0);
+      assert.equal(chatMessages.length, 0);
+    });
+  });
+
+  it("does not route /bootstrap over ws command messages", async () => {
+    await withTempWorkspace("ads-web-ws-command-bootstrap-", async (workspaceRoot) => {
+      const clientMessages: unknown[] = [];
+      const chatMessages: unknown[] = [];
+      const historyStore = new MemoryHistoryStore();
+      let called = false;
+
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: "/bootstrap some repo goal" },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore,
+          runAdsCommandLine: async () => {
+            called = true;
+            return { ok: true, output: "unexpected" };
+          },
+        }),
+      );
+
+      assert.equal(result.handled, true);
+      assert.equal(called, false);
+      assert.equal(clientMessages.length, 0);
+      assert.equal(chatMessages.length, 0);
+    });
+  });
+
+  it("does not route /vsearch over ws command messages", async () => {
+    await withTempWorkspace("ads-web-ws-command-vsearch-", async (workspaceRoot) => {
+      const clientMessages: unknown[] = [];
+      const chatMessages: unknown[] = [];
+      const historyStore = new MemoryHistoryStore();
+      let called = false;
+
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: "/vsearch hello world" },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore,
+          runAdsCommandLine: async () => {
+            called = true;
+            return { ok: true, output: "unexpected" };
+          },
+        }),
+      );
+
+      assert.equal(result.handled, true);
+      assert.equal(called, false);
+      assert.equal(clientMessages.length, 0);
+      assert.equal(chatMessages.length, 0);
+    });
+  });
+
+  it("does not route /review over ws command messages", async () => {
+    await withTempWorkspace("ads-web-ws-command-review-", async (workspaceRoot) => {
+      const clientMessages: unknown[] = [];
+      const chatMessages: unknown[] = [];
+      const historyStore = new MemoryHistoryStore();
+      let called = false;
+
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: "/review looks good" },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore,
+          runAdsCommandLine: async () => {
+            called = true;
+            return { ok: true, output: "unexpected" };
+          },
+        }),
+      );
+
+      assert.equal(result.handled, true);
+      assert.equal(called, false);
+      assert.equal(clientMessages.length, 0);
+      assert.equal(chatMessages.length, 0);
+    });
+  });
+
+  it("does not route /ads.* over ws command messages", async () => {
+    await withTempWorkspace("ads-web-ws-command-ads-", async (workspaceRoot) => {
+      const clientMessages: unknown[] = [];
+      const chatMessages: unknown[] = [];
+      const historyStore = new MemoryHistoryStore();
+      let called = false;
+
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: "/ads.status" },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore,
+          runAdsCommandLine: async () => {
+            called = true;
+            return { ok: true, output: "unexpected" };
+          },
+        }),
+      );
+
+      assert.equal(result.handled, true);
+      assert.equal(called, false);
+      assert.equal(clientMessages.length, 0);
+      assert.equal(chatMessages.length, 0);
+    });
+  });
+
+  it("supports silent /cd routing commands", async () => {
+    await withTempWorkspace("ads-web-ws-command-cd-", async (workspaceRoot) => {
+      const clientMessages: unknown[] = [];
+      const chatMessages: unknown[] = [];
+
+      const nextCwd = path.join(workspaceRoot, "next");
+      let cwd = workspaceRoot;
+      let setUserCwdCalled = 0;
+      let sessionManagerCwd: string | null = null;
+      let recreatedWithResumeThread: boolean | undefined;
+      let called = false;
+
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: { command: "/cd next", silent: true } as any },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore: new MemoryHistoryStore(),
+          directoryManager: {
+            setUserCwd: (_userId: number, _targetPath: string) => {
+              setUserCwdCalled += 1;
+              cwd = nextCwd;
+              return { success: true };
+            },
+            getUserCwd: () => cwd,
+          } as any,
+          sessionManager: {
+            hasSession: () => false,
+            setUserCwd: (_userId: number, value: string) => {
+              sessionManagerCwd = value;
+            },
+            getOrCreate: (_userId: number, _cwd?: string, resumeThread?: boolean) => {
+              recreatedWithResumeThread = resumeThread;
+              return new FakeOrchestrator() as any;
+            },
+            getSavedThreadId: () => undefined,
+          } as any,
+          runAdsCommandLine: async () => {
+            called = true;
+            return { ok: true, output: "unexpected" };
+          },
+          sendWorkspaceState: (_ws: unknown, root: string) => clientMessages.push({ type: "workspace", root }),
+        }),
+      );
+
+      assert.equal(result.handled, true);
+      assert.equal(called, false);
+      assert.equal(result.currentCwd, nextCwd);
+      assert.equal(sessionManagerCwd, nextCwd);
+      assert.equal(setUserCwdCalled, 1);
+      assert.equal(recreatedWithResumeThread, true);
+      assert.equal(chatMessages.length, 0);
+      assert.deepEqual(clientMessages, [{ type: "workspace", root: nextCwd }]);
+    });
+  });
+
+  it("broadcasts failed /cd results because they are persisted in history", async () => {
+    await withTempWorkspace("ads-web-ws-command-cd-failed-", async (workspaceRoot) => {
+      const clientMessages: unknown[] = [];
+      const chatMessages: unknown[] = [];
+      const historyStore = new MemoryHistoryStore();
+
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "command", payload: "/cd" },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore,
+          runAdsCommandLine: async () => {
+            throw new Error("should not run failed cd as shell command");
+          },
+        }),
+      );
+
+      assert.equal(result.handled, true);
+      assert.deepEqual(clientMessages, []);
+      assert.deepEqual(chatMessages, [{ type: "result", ok: false, output: "用法: /cd <path>" }]);
+      assert.deepEqual(
+        historyStore.get("h").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+        [{ role: "status", text: "用法: /cd <path>", kind: "error" }],
+      );
+    });
+  });
+
+  it("supports set_agent control messages", async () => {
+    await withTempWorkspace("ads-web-ws-command-agent-", async (workspaceRoot) => {
+      const clientMessages: unknown[] = [];
+      const chatMessages: unknown[] = [];
+      let called = false;
+      let switched: { userId: number; agentId: string } | null = null;
+      let recreatedWithResumeThread: boolean | undefined;
+      const orchestrator = new FakeOrchestrator();
+
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "set_agent", payload: { agentId: "codex" } as any },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore: new MemoryHistoryStore(),
+          sessionManager: {
+            hasSession: () => false,
+            switchAgent: (userId: number, agentId: string) => {
+              switched = { userId, agentId };
+              return { success: true, message: "ok" };
+            },
+            getOrCreate: (_userId: number, _cwd?: string, resumeThread?: boolean) => {
+              recreatedWithResumeThread = resumeThread;
+              return orchestrator as any;
+            },
+            getSavedThreadId: () => undefined,
+          } as any,
+          orchestrator: {} as any,
+          agentAvailability: { mergeStatus: (_agentId: string, status: any) => status } as any,
+          runAdsCommandLine: async () => {
+            called = true;
+            return { ok: true, output: "unexpected" };
+          },
+        }),
+      );
+
+      assert.equal(result.handled, true);
+      assert.equal(called, false);
+      assert.deepEqual(switched, { userId: 1, agentId: "codex" });
+      assert.equal(recreatedWithResumeThread, true);
+      assert.equal(clientMessages.length, 0);
+      assert.equal(chatMessages.length, 1);
+      assert.equal((chatMessages[0] as { type?: unknown }).type, "agents");
+    });
+  });
+
+  it("returns an error when set_agent targets an unassembled agent", async () => {
+    await withTempWorkspace("ads-web-ws-command-agent-error-", async (workspaceRoot) => {
+      const clientMessages: unknown[] = [];
+      const chatMessages: unknown[] = [];
+
+      const result = await handleCommandMessage(
+        createCommandDeps({
+          parsed: { type: "set_agent", payload: { agentId: "claude" } as any },
+          workspaceRoot,
+          clientMessages,
+          chatMessages,
+          historyStore: new MemoryHistoryStore(),
+          sessionManager: {
+            switchAgent: () => ({ success: false, message: '❌ Agent "claude" is not registered' }),
+          } as any,
+          orchestrator: {} as any,
+          agentAvailability: { mergeStatus: (_agentId: string, status: any) => status } as any,
+        }),
+      );
+
+      assert.equal(result.handled, true);
+      assert.deepEqual(clientMessages, []);
+      assert.deepEqual(chatMessages, [{ type: "error", message: '❌ Agent "claude" is not registered' }]);
+    });
+  });
+});

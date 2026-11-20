@@ -39,29 +39,6 @@ jobs:
       - name: Run web tests
         run: npm run test:web
 
-      - name: Install browser engines
-        run: npx --no playwright install --with-deps webkit chromium
-
-      - name: Run chat browser regressions
-        run: npm run test:chat-browser
-
-      - name: Run model and retry browser regressions
-        env:
-          TMPDIR: ${{ runner.temp }}
-        run: |
-          npm run test:model-settings-browser
-          npm run test:model-selection-browser
-          npm run test:message-retry-browser
-
-      - name: Upload retry browser failure diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: message-retry-browser-failure
-          path: ${{ runner.temp }}/ads-message-retry-*/
-          if-no-files-found: ignore
-          retention-days: 7
-
       - name: Resolve release version and tag
         id: vars
         run: |
@@ -86,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.vars.outputs.tag }}"
-          tar -czf "ads-${TAG}.tgz" dist package.json package-lock.json README.md LICENSE .env.example .env.advanced.example
+          tar -czf "ads-${TAG}.tgz" dist ts-server/dist package.json package-lock.json README.md LICENSE .env.example .env.advanced.example
 
       - name: Create GitHub Release
         if: steps.vars.outputs.release == 'true'

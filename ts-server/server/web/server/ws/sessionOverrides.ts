@@ -1,0 +1,45 @@
+import type { SessionManager } from "../../../sessions/sessionManager.js";
+
+import { getStateDatabase } from "../../../state/database.js";
+import { createModelServiceStore } from "../../../state/modelServiceStore.js";
+import {
+  parseAgentIdFromPayload,
+  parseModelFromPayload,
+  parseModelReasoningEffortFromPayload,
+} from "./promptModelConfig.js";
+
+export function applySessionOverrides(args: {
+  sessionManager: SessionManager;
+  authUserId?: string;
+  userId: number;
+  payload: unknown;
+}): void {
+  const { sessionManager, authUserId, userId, payload } = args;
+
+  const agentOverride = parseAgentIdFromPayload(payload);
+  if (agentOverride.present && agentOverride.agentId) {
+    const switchResult = sessionManager.switchAgent(userId, agentOverride.agentId);
+    if (!switchResult.success) {
+      throw new Error(switchResult.message);
+    }
+  }
+
+  const modelOverride = parseModelFromPayload(payload);
+  if (modelOverride.present && modelOverride.model) {
+    const previousModel = sessionManager.getUserModel(userId);
+    const modelConfig = createModelServiceStore(getStateDatabase()).resolveConversation(modelOverride.model);
+    const orchestrator = typeof sessionManager.getOrCreate === "function"
+      ? sessionManager.getOrCreate(userId, undefined, true, { authUserId })
+      : null;
+    if (previousModel !== modelConfig.id) {
+      sessionManager.setUserModel(userId, modelConfig.id);
+    }
+    orchestrator?.setModelConfig?.(modelConfig?.configJson ?? null);
+  }
+
+  const reasoningEffort = parseModelReasoningEffortFromPayload(payload);
+  if (reasoningEffort.present) {
+    sessionManager.setUserModelReasoningEffort(userId, reasoningEffort.effort);
+  }
+
+}

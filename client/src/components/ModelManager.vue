@@ -11,7 +11,7 @@ import {
   defaultModelOutputTokens,
   normalizeModelTokenLimit,
   readModelTokenLimit,
-} from "../../../shared/modelTokenBudget";
+} from "../../../ts-server/shared/modelTokenBudget";
 import ModelServicePicker from "./ModelServicePicker.vue";
 import RoleSettings from "./RoleSettings.vue";
 import VoiceSettings from "./VoiceSettings.vue";

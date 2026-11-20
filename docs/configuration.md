@@ -143,7 +143,7 @@ Chat Completions 的 `max_tokens` 使用同一个有效上限。输入预算等�
 
 ## 7. Optional Telegram Connector
 
-Telegram variables belong to the standalone `connectors/telegram` package and are not read by ADS Core.
+Telegram variables belong to the standalone `ts-server/connectors/telegram` package and are not read by ADS Core.
 
 | 变量名 | 默认值 | 说明 |
 |---|---|---|

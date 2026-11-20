@@ -8,7 +8,7 @@
 - Worktree：`.worktrees/rust-backend`
 - 分支：`codex/rust-backend`
 - 基线：`21aeeee1`（`dev`）
-- Rust workspace：`rust/`
+- Rust workspace：`rust-server/`
 - 当前阶段：合同基线、鉴权、project/model/provider HTTP、图片附件、skill 命令、WebSocket bootstrap/replay/history/reset/session-switch/prompt-queue/command/多 lane 复用、Codex App-Server stdio JSON-RPC/daemon、Rust Telegram connector，以及 Native Runtime 的 Chat Completions / Responses 多轮执行闭环、shell/file 工具调用、terminal continuation、execution compaction、token calibration、CfMem middleware 与瞬时上游重试
 - Actions Runtime：`review_action` 真实入队、review queue lease/自动处理、
   verification/Reviewer 执行、related-context AST 提取、issue verdict 发布、
@@ -30,18 +30,18 @@
 
 已实现基础：
 
-- `rust/scripts/extract-contracts.mjs` 实际执行 TypeScript 迁移并导出最终 DDL。
+- `rust-server/scripts/extract-contracts.mjs` 实际执行 TypeScript 迁移并导出最终 DDL。
 - State 合同：schema 版本 `42`，30 张表。
 - Workspace 合同：schema 版本 `29`，包含 FTS5 虚拟表和 workspace 归属触发器。
 - 使用 Node 的精确 scrypt 参数生成密码兼容向量。
 - 生成 HTTP 路由静态清单与 WebSocket 帧/握手静态清单。
-- 抽出可复用的黑盒 runner `rust/scripts/lib/black-box.mjs`：统一负责构建、
+- 抽出可复用的黑盒 runner `rust-server/scripts/lib/black-box.mjs`：统一负责构建、
   初始化管理员、并行启动两套服务、请求与响应归一化。
-- `rust/scripts/conformance-auth.mjs` 对比鉴权行为。
-- `rust/scripts/conformance-projects.mjs` 对比 project 路由行为。
-- `rust/scripts/conformance-actions.mjs` 对比 Actions job 列表、项目解析与
+- `rust-server/scripts/conformance-auth.mjs` 对比鉴权行为。
+- `rust-server/scripts/conformance-projects.mjs` 对比 project 路由行为。
+- `rust-server/scripts/conformance-actions.mjs` 对比 Actions job 列表、项目解析与
   已废弃 POST 路由的 `410` 响应。
-- `rust/scripts/conformance-context-extractor.mjs` 对同一 git fixture 逐字段对比
+- `rust-server/scripts/conformance-context-extractor.mjs` 对同一 git fixture 逐字段对比
   TypeScript 与 Rust 的 related-context contexts/omissions。
 
 本阶段仍需完成：
@@ -84,7 +84,7 @@
   - `web_projects` / `web_user_settings` 运行时建表、`sort_order` 回填与
     索引迁移。
   - project 增删改查、排序、active project 切换，行为对齐
-    `server/web/projects/store.ts`。
+    `ts-server/server/web/projects/store.ts`。
   - `model_configs` 建表与 `model_id` / `provider_id` 补列，默认模型互斥、
     agent model id 解析、`config_json` 清洗（token 上限、reasoning efforts）。
 - HTTP：
@@ -94,7 +94,7 @@
   - `PATCH/DELETE /api/projects/{projectId}`
   - 工作区路径校验移植：白名单、realpath、`.git` 根探测、错误文案。
 - 交叉兼容：
-  - `rust/scripts/state-store-fixture.ts` 用真实 TypeScript store 创建数据库；
+  - `rust-server/scripts/state-store-fixture.ts` 用真实 TypeScript store 创建数据库；
     Rust 读取、写入后再由 TypeScript 校验，覆盖双向读写。
   - 提取器新增 seed 合同：`sqlite/state-seed.sql` 与
     `sqlite/workspace-seed.sql`。新库与 TypeScript 迁移后的初始数据一致
@@ -277,7 +277,7 @@
   - 用户消息、assistant 输出、错误状态写入 history；completed/failed/
     cancelled turn 写入 native transcript。
   - `client_message_id`、请求 model/effort、origin 与 effective model/effort
-    写入 history kind，格式与 `server/utils/historyKind.ts` 一致。
+    写入 history kind，格式与 `ts-server/server/utils/historyKind.ts` 一致。
   - prompt 事件接入 WebSocket：`delta`/`agents` 只广播不持久化，其余事件写入
     `sync_events`，`prompt_queue` 仍使用 coalesced event；`user` 事件带
     `eventId=user:<clientMessageId>`。
@@ -601,32 +601,32 @@ CARGO_BUILD_JOBS=2 cargo test --workspace -- --test-threads=2
 ```
 
 ```bash
-node --import tsx rust/scripts/extract-contracts.mjs
-node rust/scripts/conformance-auth.mjs
-node rust/scripts/conformance-projects.mjs
-node rust/scripts/conformance-actions.mjs
-node rust/scripts/conformance-context-extractor.mjs
-node rust/scripts/conformance-models.mjs
-node rust/scripts/conformance-role-profiles.mjs
-node rust/scripts/conformance-providers.mjs
-node rust/scripts/conformance-schedules.mjs
-node rust/scripts/conformance-scheduler-runtime.mjs
-node rust/scripts/conformance-http-boundaries.mjs
-node rust/scripts/conformance-attachments.mjs
-node rust/scripts/conformance-connector.mjs
-node rust/scripts/conformance-ws-bootstrap.mjs
-node rust/scripts/conformance-ws-command.mjs
-node rust/scripts/conformance-ws-command-snapshot.mjs
-node rust/scripts/conformance-ws-delta-snapshot.mjs
-node rust/scripts/conformance-ws-multiplexed.mjs
-node rust/scripts/conformance-ws-project-cwd.mjs
-node rust/scripts/conformance-ws-reset.mjs
-node rust/scripts/conformance-ws-prompt-queue.mjs
-node rust/scripts/conformance-ws-native-runtime.mjs
-node rust/scripts/conformance-skills.mjs
-node rust/scripts/conformance-app-server.mjs
-node rust/scripts/conformance-ws-codex-runtime.mjs
-node rust/scripts/conformance-ui-rust.mjs
+node --import tsx rust-server/scripts/extract-contracts.mjs
+node rust-server/scripts/conformance-auth.mjs
+node rust-server/scripts/conformance-projects.mjs
+node rust-server/scripts/conformance-actions.mjs
+node rust-server/scripts/conformance-context-extractor.mjs
+node rust-server/scripts/conformance-models.mjs
+node rust-server/scripts/conformance-role-profiles.mjs
+node rust-server/scripts/conformance-providers.mjs
+node rust-server/scripts/conformance-schedules.mjs
+node rust-server/scripts/conformance-scheduler-runtime.mjs
+node rust-server/scripts/conformance-http-boundaries.mjs
+node rust-server/scripts/conformance-attachments.mjs
+node rust-server/scripts/conformance-connector.mjs
+node rust-server/scripts/conformance-ws-bootstrap.mjs
+node rust-server/scripts/conformance-ws-command.mjs
+node rust-server/scripts/conformance-ws-command-snapshot.mjs
+node rust-server/scripts/conformance-ws-delta-snapshot.mjs
+node rust-server/scripts/conformance-ws-multiplexed.mjs
+node rust-server/scripts/conformance-ws-project-cwd.mjs
+node rust-server/scripts/conformance-ws-reset.mjs
+node rust-server/scripts/conformance-ws-prompt-queue.mjs
+node rust-server/scripts/conformance-ws-native-runtime.mjs
+node rust-server/scripts/conformance-skills.mjs
+node rust-server/scripts/conformance-app-server.mjs
+node rust-server/scripts/conformance-ws-codex-runtime.mjs
+node rust-server/scripts/conformance-ui-rust.mjs
 ```
 
 黑盒脚本会启动隔离的 Node 与 Rust 服务，对比状态码与 JSON 响应体；鉴权脚本

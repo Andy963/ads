@@ -63,7 +63,7 @@ npm run web:init-admin -- --username admin --password-stdin
   export TELEGRAM_BOT_TOKEN="your-bot-token"
   export TELEGRAM_ALLOWED_USER_ID="your-user-id"
   export ADS_CONNECTOR_TOKEN="your-shared-core-token"
-  node connectors/telegram/bin/ads-telegram.js start
+  node ts-server/connectors/telegram/bin/ads-telegram.js start
   ```
 
 ---
@@ -87,11 +87,12 @@ npm run web:init-admin -- --username admin --password-stdin
 
 | 命令 | 说明 |
 |---|---|
-| `npm run build` | 完整构建（TypeScript 编译 + 资源同步 + Vite 前端打包） |
+| `npm run build` | 完整构建（TypeScript server + Vite client） |
+| `npm run build:server` | 仅编译 TypeScript server 到 `ts-server/dist/` |
 | `npm run build:web` | 仅重新打包前端 Web 资源 |
 | `npm run build:web:fixture` | 打包包含浏览器测试 fixture 入口（fixture.html）的前端构建 |
-| `npm run report:web-bundle` | 构建并输出前端分包体积报告（初始加载/总量、gzip、构建耗时） |
-| `npm run test` | 运行服务端完整单元测试（Node test runner） |
+| `npm run test` | 运行 TypeScript server 与前端测试 |
+| `npm run test:server` | 运行 TypeScript server 测试（Node test runner） |
 | `npm run test:web` | 运行前端 Vitest 组件与状态测试 |
 | `npm run lint` | 运行 ESLint 代码规范检查 |
 | `npm run skills:migrate` | 运行技能迁移 CLI，将遗留技能非破坏性迁移至 Codex 标准目录 |
@@ -103,23 +104,15 @@ npm run web:init-admin -- --username admin --password-stdin
 
 ```text
 ads/
-├── connectors/        # Channel Connectors (e.g. telegram)
-│   └── telegram/      # Standalone Telegram channel connector
-├── server/            # Core backend engine
-│   ├── actions/       # Actions 任务总线与执行交付流水线
-│   ├── agents/        # Agent 适配器（Codex App-Server / Native Runtime）与执行守护器
-│   ├── audio/         # 内置语音识别 (ASR) 与纠错服务
-│   ├── middleware/    # Turn 生命周期、中间件与内置安全拦截
-│   ├── reviewer/      # Detached Reviewer 独立审查执行器与工具
-│   ├── runtime/       # 原生 Agent 运行时引擎与上下文投影
-│   ├── scheduler/     # 自然语言定时调度引擎与 Cron 运行时
-│   ├── sessions/      # Session, directory, and thread persistence
-│   ├── state/         # 全局 SQLite (state.db) 数据表与迁移
-│   ├── storage/       # 工作区独立 SQLite (ads.db) 数据表与迁移
-│   └── web/           # Web HTTP API、WebSocket Hub 与鉴权系统
-├── client/            # 前端 Web Console 源码 (Vue 3 + TypeScript + Vite)
-├── docs/              # 模块化详细设计与配置文档
-└── tests/             # 后端完整测试用例集
+├── client/            # Shared Web Console (Vue 3 + TypeScript + Vite)
+├── rust-server/       # Rust backend and Rust Telegram connector crate
+│   └── crates/ads-telegram/
+├── ts-server/         # TypeScript backend and TypeScript Telegram connector
+│   ├── server/
+│   ├── shared/
+│   ├── tests/
+│   └── connectors/telegram/
+└── docs/              # Architecture, configuration, and migration docs
 ```
 
 ---

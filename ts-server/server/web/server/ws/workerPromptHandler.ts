@@ -1,0 +1,416 @@
+import type { ThreadEvent } from "../../../agents/protocol/types.js";
+
+import { isTransientUpstreamModelError } from "../../../agents/adapters/transientModelRetry.js";
+import type { AgentEvent } from "../../../codex/events.js";
+import { isNativeExecutionId, redactNativeExecutionIds } from "../../../runtime/sessionIdentity.js";
+import type { ExploredEntry } from "../../../utils/activityTracker.js";
+import { buildWorkspacePatch } from "../../gitPatch.js";
+import { getRuleEnforcementGate, type RuleEnforcementGate } from "../../../middleware/security/enforcementGate.js";
+import {
+  findReviewProtocolStart,
+  findReviewProtocolStreamBoundary,
+} from "../../../reviewer/verdictPresentation.js";
+import { extractCommandPayload } from "./utils.js";
+
+type FileChangeLike = { kind?: unknown; path?: unknown };
+type PatchFileStatLike = { added: number | null; removed: number | null };
+type ProtocolStreamState = { kind: "pending" | "verdict"; start: number };
+
+type EventSource = {
+  onEvent: (handler: (event: AgentEvent) => void) => () => void;
+};
+
+type SessionLogger = {
+  logEvent: (event: AgentEvent) => void;
+} | null;
+
+type Logger = {
+  info: (msg: string) => void;
+  debug: (msg: string) => void;
+};
+
+function isTransientRetryEvent(event: AgentEvent): boolean {
+  const raw = event.raw as ThreadEvent | null | undefined;
+  if (raw?.type !== "turn.failed" && raw?.type !== "error") return false;
+  const rawMessage = raw.type === "turn.failed" ? raw.error?.message : raw.message;
+  const message = String(rawMessage ?? event.detail ?? event.title ?? "").trim();
+  return isTransientUpstreamModelError(message);
+}
+
+export function formatWriteExploredSummary(
+  changes: FileChangeLike[],
+  patchFiles?: PatchFileStatLike[],
+): string {
+  const safeChanges = Array.isArray(changes) ? changes : [];
+
+  const diffstat = (() => {
+    const files = Array.isArray(patchFiles) ? patchFiles : [];
+    let added = 0;
+    let removed = 0;
+    let hasKnown = false;
+    for (const file of files) {
+      if (typeof file.added === "number" && typeof file.removed === "number") {
+        added += file.added;
+        removed += file.removed;
+        hasKnown = true;
+      }
+    }
+    if (!hasKnown) return "";
+    return `(+${added} -${removed})`;
+  })();
+
+  const toBaseName = (p: string): string => {
+    const rawPath = String(p ?? "").trim();
+    if (!rawPath) return "";
+    const parts = rawPath.split(/[\\/]/).filter(Boolean);
+    return parts.length ? parts[parts.length - 1]! : rawPath;
+  };
+
+  const formatted = safeChanges
+    .map((c) => {
+      const kind = String(c.kind ?? "").trim();
+      const path = String(c.path ?? "").trim();
+      if (!kind || !path) return "";
+      const label = path.length <= 60 ? path : toBaseName(path);
+      return `${kind} ${label}`;
+    })
+    .filter(Boolean);
+  const shown = formatted.slice(0, 4);
+  const hidden = Math.max(0, formatted.length - shown.length);
+  const coreSummary = shown.join(", ") + (hidden ? ` (+${hidden} more)` : "");
+  return coreSummary && diffstat ? `${coreSummary} ${diffstat}` : coreSummary;
+}
+
+function isTerminalCommandStatus(status: unknown): boolean {
+  const normalized = String(status ?? "").trim().toLowerCase();
+  return (
+    normalized === "completed" ||
+    normalized === "failed" ||
+    normalized === "declined" ||
+    normalized === "cancelled"
+  );
+}
+
+export function attachWorkerPromptHandler(args: {
+  orchestrator: EventSource;
+  turnCwd: string;
+  /** Retained for callers compiled against the pre-ADR handler contract. */
+  historyKey?: string;
+  /** Retained for callers compiled against the pre-ADR handler contract. */
+  historyStore?: unknown;
+  sendToChat: (payload: unknown) => void;
+  logger: Logger;
+  sessionLogger: SessionLogger;
+  onThreadStarted?: (threadId: string) => void;
+  /** A resume was abandoned because the provider no longer had that session. */
+  onSessionFallback?: (info: { previousSessionId: string; detail: string }) => void;
+  resolveAgentId?: () => string;
+  channel?: string;
+  ruleGate?: RuleEnforcementGate;
+  isActive?: () => boolean;
+  /** Hold back Reviewer protocol anywhere in an Actions-lane assistant item. */
+  gateProtocolText?: boolean;
+}): {
+  unsubscribe: () => void;
+  handleExploredEntry: (entry: ExploredEntry) => void;
+  getAssistantItems: () => { id: string; text: string; beforeCommandIds?: string[] }[] | undefined;
+} {
+  const assistantItems = new Map<string, string>();
+  const followingCommands = new Map<string, string[]>();
+  let latestAssistantItemId: string | undefined;
+  const lastRespondingTextByItemId = new Map<string, string>();
+  let activeRespondingItemId: string | null = null;
+  const completedRespondingItemIds = new Set<string>();
+  const announcedCommandKeys = new Set<string>();
+  const terminalCommandKeys = new Set<string>();
+  let latestCommandKey: string | null = null;
+  let exploredHeaderSent = false;
+  const protocolStreamStateByItemId = new Map<string, ProtocolStreamState>();
+  const streamedTextByItemId = new Map<string, string>();
+  const streamedAssistantItems = new Set<string>();
+  const isActive = (): boolean => (args.isActive ? args.isActive() : true);
+
+  const visibleAssistantText = (itemId: string, fullText: string): string => {
+    if (!args.gateProtocolText) return fullText;
+    const previousState = protocolStreamStateByItemId.get(itemId);
+    if (previousState?.kind === "verdict") return fullText.slice(0, previousState.start).trimEnd();
+    const boundary = findReviewProtocolStreamBoundary(fullText);
+    if (boundary.kind === "verdict") {
+      protocolStreamStateByItemId.set(itemId, { kind: "verdict", start: boundary.protocolStart });
+      return fullText.slice(0, boundary.protocolStart).trimEnd();
+    }
+    if (boundary.kind === "pending") {
+      protocolStreamStateByItemId.set(itemId, { kind: "pending", start: boundary.protocolStart });
+      return fullText.slice(0, boundary.protocolStart).trimEnd();
+    }
+    protocolStreamStateByItemId.delete(itemId);
+    return fullText;
+  };
+
+  /** Report command safety violations that reach the event bridge. */
+  const evaluateCommandSafety = (commandLine: string): void => {
+    try {
+      const gate = args.ruleGate ?? getRuleEnforcementGate();
+      const result = gate.evaluate({
+        agent: args.resolveAgentId?.() ?? "unknown",
+        channel: args.channel ?? "web",
+        workspace: args.turnCwd,
+        tool: "shell",
+        command: commandLine,
+        userExplicitlyApproved: false,
+      });
+      if (result.decision !== "allow") {
+        args.sendToChat({
+          type: "explored",
+          header: false,
+          entry: {
+            category: "Rule",
+            summary:
+              `[${result.mode}] ${result.decision}: ` +
+              result.hits.map((hit) => `${hit.severity}/${hit.title}`).join("; "),
+          },
+        });
+      }
+    } catch (err) {
+      args.logger.debug(
+        `[RuleGate] evaluation failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  };
+
+  const unsubscribe = args.orchestrator.onEvent((event: AgentEvent) => {
+    if (!isActive()) return;
+    const raw = event.raw as ThreadEvent;
+    if (raw.type === "thread.started" && isNativeExecutionId(raw.thread_id)) {
+      args.logger.debug("[Event] ignored Native runtime thread identity");
+      return;
+    }
+    args.logger.debug(
+      `[Event] phase=${event.phase} title=${redactNativeExecutionIds(event.title) ?? ""} detail=${redactNativeExecutionIds(event.detail?.slice(0, 50)) ?? ""}`,
+    );
+    const rawItem = (raw as { item?: { type?: unknown; id?: unknown } }).item;
+    const rawItemType = rawItem && typeof rawItem === "object"
+      ? String((rawItem as { type?: unknown }).type ?? "").trim()
+      : "";
+    const eventTimestampRaw = Number(event.timestamp);
+    const eventTimestamp = Number.isFinite(eventTimestampRaw) && eventTimestampRaw > 0
+      ? Math.floor(eventTimestampRaw)
+      : Date.now();
+    if (raw.type === "turn.started") {
+      lastRespondingTextByItemId.clear();
+      assistantItems.clear();
+      followingCommands.clear();
+      protocolStreamStateByItemId.clear();
+      streamedTextByItemId.clear();
+      streamedAssistantItems.clear();
+      latestAssistantItemId = undefined;
+      activeRespondingItemId = null;
+      completedRespondingItemIds.clear();
+      announcedCommandKeys.clear();
+      terminalCommandKeys.clear();
+      latestCommandKey = null;
+    }
+    if (raw.type === "thread.started" && raw.thread_id) {
+      args.onThreadStarted?.(raw.thread_id);
+    }
+    // Reasoning, provider plans, and todo lists are internal model protocol
+    // details. They must not enter the ADS websocket or session log.
+    if (
+      rawItemType === "reasoning" ||
+      rawItemType === "plan" ||
+      rawItemType === "todo_list" ||
+      event.phase === "analysis" ||
+      event.phase === "plan"
+    ) {
+      return;
+    }
+    args.sessionLogger?.logEvent(event);
+    if (event.sessionFallback) {
+      const previousSessionId = redactNativeExecutionIds(event.sessionFallback.previousSessionId) ?? "";
+      const detail = redactNativeExecutionIds(event.detail ?? event.title) ?? "";
+      args.onSessionFallback?.({
+        previousSessionId,
+        detail,
+      });
+      args.sendToChat({
+        type: "session_fallback",
+        previousSessionId,
+        message: detail,
+        ts: Date.now(),
+      });
+      return;
+    }
+    if (event.retry?.source === "external") {
+      args.sendToChat({
+        type: "error",
+        message: redactNativeExecutionIds(event.detail ?? event.title) ?? "",
+        transient: true,
+        retryable: true,
+        retryCount: event.retry.retryCount,
+        nextAttempt: event.retry.nextAttempt,
+        maxAttempts: event.retry.maxAttempts,
+      });
+      return;
+    }
+    if (event.phase === "responding" && typeof event.delta === "string" && event.delta) {
+      const next = event.delta;
+      const rawItem = (raw as { item?: { id?: unknown } }).item;
+      const itemId = rawItem && typeof rawItem === "object" ? String(rawItem.id ?? "").trim() || "__unknown__" : "__unknown__";
+      if (activeRespondingItemId && activeRespondingItemId !== itemId && !completedRespondingItemIds.has(activeRespondingItemId)) {
+        completedRespondingItemIds.add(activeRespondingItemId);
+        args.sendToChat({ type: "phase_complete", phase: "assistant", ts: eventTimestamp });
+      }
+      activeRespondingItemId = itemId;
+      const previous = lastRespondingTextByItemId.get(itemId) ?? "";
+      if (previous && !next.startsWith(previous)) {
+        // App-server agent-message updates are cumulative per item. A shorter or
+        // unrelated snapshot is a reset, not a new delta to append to the chat.
+        return;
+      }
+      lastRespondingTextByItemId.set(itemId, next);
+      const visibleText = visibleAssistantText(itemId, next);
+      const previousVisibleText = streamedTextByItemId.get(itemId) ?? "";
+      if (!visibleText.startsWith(previousVisibleText)) {
+        return;
+      }
+      const delta = visibleText.slice(previousVisibleText.length);
+      streamedTextByItemId.set(itemId, visibleText);
+      if (delta) {
+        args.sendToChat({
+          type: "delta",
+          delta,
+          assistantItemId: itemId,
+          ts: eventTimestamp,
+        });
+        streamedAssistantItems.add(itemId);
+      }
+      return;
+    }
+    if (raw.type === "item.completed" && rawItemType === "agent_message") {
+      const itemId = rawItem && typeof rawItem === "object" ? String((rawItem as { id?: unknown }).id ?? "").trim() : "";
+      if (itemId) {
+        const text = String((rawItem as { text?: unknown }).text ?? "");
+        assistantItems.set(itemId, text);
+        if (text.trim()) latestAssistantItemId = itemId;
+        const hasProtocol = args.gateProtocolText && findReviewProtocolStart(text) !== null;
+        if (!hasProtocol && (streamedAssistantItems.has(itemId) || text.trim())) {
+          args.sendToChat({ type: "assistant_item", assistantItemId: itemId, assistantItemText: text, ts: eventTimestamp });
+        }
+        if (!completedRespondingItemIds.has(itemId)) {
+          completedRespondingItemIds.add(itemId);
+          if (activeRespondingItemId === itemId) {
+            activeRespondingItemId = null;
+            args.sendToChat({ type: "phase_complete", phase: "assistant", ts: eventTimestamp });
+          }
+        }
+      } else if (activeRespondingItemId === "__unknown__") {
+        activeRespondingItemId = null;
+        args.sendToChat({ type: "phase_complete", phase: "assistant", ts: eventTimestamp });
+      }
+    }
+
+    if (raw.type === "item.completed" && rawItemType === "file_change") {
+      const item = rawItem as { changes?: unknown };
+      const changes = Array.isArray(item.changes) ? (item.changes as Array<{ kind?: unknown; path?: unknown }>) : [];
+      const paths = changes.map((c) => String(c.path ?? "").trim()).filter(Boolean);
+      const patch = buildWorkspacePatch(args.turnCwd, paths);
+      if (patch) {
+        args.sendToChat({ type: "patch", patch });
+      }
+    }
+    if (event.phase === "command") {
+      const commandPayload = extractCommandPayload(event);
+      args.logger.info(
+        `[Command Event] ${JSON.stringify({
+          detail: redactNativeExecutionIds(event.detail ?? event.title) ?? "",
+          command: commandPayload
+            ? { id: commandPayload.id, command: commandPayload.command, status: commandPayload.status, exit_code: commandPayload.exit_code }
+            : null,
+        })}`,
+      );
+
+      const commandLine = commandPayload?.command ? String(commandPayload.command).trim() : "";
+      const commandKey = commandLine
+        ? (commandPayload?.id ? `id:${commandPayload.id}:cmd:${commandLine}` : `cmd:${commandLine}`)
+        : "";
+
+      if (!commandPayload || !commandLine || !commandKey) {
+        return;
+      }
+
+      const isNewCommand = !announcedCommandKeys.has(commandKey);
+      // A completed command can still produce a late provider update after a
+      // newer command has started. Once a command identity is superseded, do
+      // not let that stale update recreate an older execute block downstream.
+      if (!isNewCommand && latestCommandKey !== commandKey) {
+        return;
+      }
+      if (isNewCommand) {
+        latestCommandKey = commandKey;
+      }
+
+      if (isNewCommand) {
+        announcedCommandKeys.add(commandKey);
+        if (latestAssistantItemId && commandPayload.id) {
+          const ids = followingCommands.get(latestAssistantItemId) ?? [];
+          ids.push(commandPayload.id);
+          followingCommands.set(latestAssistantItemId, ids);
+        }
+        evaluateCommandSafety(commandLine);
+      }
+
+      const isTerminalCommand = isTerminalCommandStatus(commandPayload.status);
+      const shouldSendTerminalCommand = isTerminalCommand && !terminalCommandKeys.has(commandKey);
+      if (!isNewCommand && !shouldSendTerminalCommand) {
+        return;
+      }
+      if (shouldSendTerminalCommand) {
+        terminalCommandKeys.add(commandKey);
+      }
+
+      args.sendToChat({
+        type: "command",
+        ts: eventTimestamp,
+        command: {
+          id: commandPayload.id,
+          command: commandLine,
+          status: commandPayload.status,
+          exit_code: commandPayload.exit_code,
+        },
+      });
+      return;
+    }
+    if (event.phase === "error") {
+      const message = redactNativeExecutionIds(event.detail ?? event.title) ?? "";
+      if (isTransientRetryEvent(event)) {
+        return;
+      }
+      args.sendToChat({ type: "error", message });
+    }
+  });
+
+  const handleExploredEntry = (entry: ExploredEntry) => {
+    if (!isActive()) return;
+    // Command-origin activity already has a structured execution channel.
+    // Filter by origin, not category: genuine Read/Search/Write activity stays visible.
+    if (typeof entry.meta?.command === "string") return;
+    args.sendToChat({
+      type: "explored",
+      header: !exploredHeaderSent,
+      entry: { category: entry.category, summary: entry.summary },
+    });
+    exploredHeaderSent = true;
+  };
+
+  return {
+    unsubscribe,
+    handleExploredEntry,
+    getAssistantItems: () => {
+      const items = [...assistantItems].map(([id, text]) => ({
+        id, text, ...(followingCommands.has(id) ? { beforeCommandIds: followingCommands.get(id) } : {}),
+      })).filter(item => item.text.trim());
+      // Post-processing can change the output without changing provider item identity.
+      return items.length ? items : undefined;
+    },
+  };
+}

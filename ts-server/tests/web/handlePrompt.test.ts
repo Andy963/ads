@@ -1,0 +1,857 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, it } from "node:test";
+
+import { mapThreadEventToAgentEvent, type AgentEvent } from "../../server/codex/events.js";
+import { buildHistoryBootstrapPayload } from "../../server/web/server/ws/bootstrapReplay.js";
+import { abortInFlightHistory } from "../../server/web/server/ws/connectionRuntime.js";
+import { formatWriteExploredSummary, handlePromptMessage } from "../../server/web/server/ws/handlePrompt.js";
+
+type HistoryEntry = { role: string; text: string; ts: number; kind?: string };
+
+class MemoryHistoryStore {
+  private readonly store = new Map<string, HistoryEntry[]>();
+  readonly links: Array<{
+    sessionId: string;
+    link: { agentId: string; providerSessionId: string; cwd?: string };
+  }> = [];
+
+  get(sessionId: string): HistoryEntry[] {
+    return this.store.get(sessionId) ?? [];
+  }
+
+  add(sessionId: string, entry: HistoryEntry): boolean {
+    this.store.set(sessionId, [...this.get(sessionId), entry]);
+    return true;
+  }
+
+  linkAgentSession(
+    sessionId: string,
+    link: { agentId: string; providerSessionId: string; cwd?: string },
+  ): boolean {
+    this.links.push({ sessionId, link });
+    return true;
+  }
+}
+
+class SlowOrchestrator {
+  workingDirectory = "";
+  private readonly eventHandlers = new Set<(event: AgentEvent) => void>();
+  private resolveInvoke: ((value: { response: string; usage: null; agentId: string }) => void) | null = null;
+  private readonly startedPromise: Promise<void>;
+  private startedResolve: (() => void) | null = null;
+
+  constructor(private readonly threadId: string) {
+    this.startedPromise = new Promise<void>((resolve) => {
+      this.startedResolve = resolve;
+    });
+  }
+
+  status(): { ready: boolean; streaming: boolean } {
+    return { ready: true, streaming: true };
+  }
+
+  setWorkingDirectory(cwd: string): void {
+    this.workingDirectory = cwd;
+  }
+
+  setModel(): void {}
+
+  setModelReasoningEffort(): void {}
+
+  getActiveAgentId(): string {
+    return "codex";
+  }
+
+  listAgents(): Array<{ metadata: { id: string; name: string }; status: { ready: boolean; streaming: boolean } }> {
+    return [{ metadata: { id: "codex", name: "Codex" }, status: { ready: true, streaming: true } }];
+  }
+
+  hasAgent(agentId: string): boolean {
+    return agentId === "codex";
+  }
+
+  onEvent(handler: (event: AgentEvent) => void): () => void {
+    this.eventHandlers.add(handler);
+    return () => { this.eventHandlers.delete(handler); };
+  }
+
+  emitAssistantItem(text: string): void {
+    const event = mapThreadEventToAgentEvent({ type: "item.completed", item: { type: "agent_message", id: "answer", text } });
+    assert.ok(event);
+    for (const handler of this.eventHandlers) handler(event);
+  }
+
+  emitAssistantDelta(text: string): void {
+    const event = mapThreadEventToAgentEvent({ type: "item.updated", item: { type: "agent_message", id: "answer", text } });
+    assert.ok(event);
+    for (const handler of this.eventHandlers) handler(event);
+  }
+
+  getThreadId(): string {
+    return this.threadId;
+  }
+
+  async invokeAgent(_agentId: string, _input: unknown): Promise<{ response: string; usage: null; agentId: string }> {
+    this.startedResolve?.();
+    return await new Promise<{ response: string; usage: null; agentId: string }>((resolve) => {
+      this.resolveInvoke = resolve;
+    });
+  }
+
+  waitForStart(): Promise<void> {
+    return this.startedPromise;
+  }
+
+  resolveLate(response: string): void {
+    this.resolveInvoke?.({ response, usage: null, agentId: "codex" });
+  }
+}
+
+class NotReadyOrchestrator {
+  setWorkingDirectory(): void {}
+
+  status(): { ready: boolean; streaming: boolean; error: string } {
+    return { ready: false, streaming: false, error: "Claude credentials are missing" };
+  }
+
+  getActiveAgentId(): string {
+    return "claude";
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+interface PromptFixture {
+  workspaceRoot: string;
+  clientMessages: unknown[];
+  chatMessages: unknown[];
+  historyStore: MemoryHistoryStore;
+  interruptControllers: Map<string, AbortController>;
+  promptRunEpochs: Map<string, number>;
+  buildArgs: (overrides: {
+    parsed: unknown;
+    sessionManager?: unknown;
+    orchestrator?: unknown;
+    context?: Record<string, unknown>;
+  }) => Record<string, unknown>;
+  cleanup: () => void;
+}
+
+function createPromptFixture(tmpPrefix: string): PromptFixture {
+  const workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), tmpPrefix));
+  const clientMessages: unknown[] = [];
+  const chatMessages: unknown[] = [];
+  const historyStore = new MemoryHistoryStore();
+  const interruptControllers = new Map<string, AbortController>();
+  const promptRunEpochs = new Map<string, number>();
+
+  const buildArgs: PromptFixture["buildArgs"] = (overrides) => ({
+    request: {
+      parsed: overrides.parsed,
+      requestId: "req-1",
+      clientMessageId: null,
+      receivedAt: 123,
+    },
+    transport: {
+      ws: {} as any,
+      safeJsonSend: (_ws: unknown, payload: unknown) => clientMessages.push(payload),
+      broadcastJson: (payload: unknown) => chatMessages.push(payload),
+      sendWorkspaceState: () => {},
+    },
+    observability: {
+      logger: { info: () => {}, warn: () => {}, debug: () => {} },
+      sessionLogger: {
+        logInput: () => {},
+        logOutput: () => {},
+        logError: () => {},
+        logEvent: () => {},
+        attachThreadId: () => {},
+      },
+      traceWsDuplication: false,
+    },
+    context: {
+      authUserId: "test-user",
+      sessionId: "session-1",
+      chatSessionId: "main",
+      userId: 1,
+      historyKey: "history-1",
+      currentCwd: workspaceRoot,
+      ...(overrides.context ?? {}),
+    },
+    sessions: {
+      sessionManager: overrides.sessionManager ?? {},
+      orchestrator: overrides.orchestrator ?? {},
+      getWorkspaceLock: () => ({ runExclusive: async (fn: () => Promise<void>) => await fn() }),
+      interruptControllers,
+      promptRunEpochs,
+    },
+    history: {
+      historyStore,
+    },
+    tasks: {},
+    scheduler: {},
+  });
+
+  const cleanup = () => {
+    try {
+      fs.rmSync(workspaceRoot, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  };
+
+  return { workspaceRoot, clientMessages, chatMessages, historyStore, interruptControllers, promptRunEpochs, buildArgs, cleanup };
+}
+
+describe("web/server/ws handlePrompt cancellation", () => {
+  let fixture: PromptFixture;
+
+  beforeEach(() => {
+    fixture = createPromptFixture("ads-web-prompt-cancel-");
+  });
+
+  afterEach(() => {
+    fixture.cleanup();
+  });
+
+  it("interrupt records the abort status without writing late output or thread state", async () => {
+    const { clientMessages, chatMessages, historyStore, interruptControllers, promptRunEpochs } = fixture;
+    const saveThreadIdCalls: Array<{ userId: number; threadId: string; agentId: string }> = [];
+    const notifications: Array<Record<string, unknown>> = [];
+    const orchestrator = new SlowOrchestrator("late-thread");
+
+    const args = fixture.buildArgs({
+      parsed: { type: "prompt", payload: "hello" },
+      orchestrator: orchestrator as any,
+      sessionManager: {
+        getOrCreate: () => orchestrator as any,
+        getSavedThreadId: () => undefined,
+        getEffectiveState: () => ({ model: "test-model", modelReasoningEffort: "high", activeAgentId: "codex" }),
+        needsHistoryInjection: () => false,
+        clearHistoryInjection: () => {},
+        saveThreadId: (userId: number, threadId: string, agentId: string) =>
+          saveThreadIdCalls.push({ userId, threadId, agentId }),
+        setUserModel: () => {},
+        setUserModelReasoningEffort: () => {},
+      } as any,
+    });
+    args.notifyWebUser = async (_userId: string, notification: Record<string, unknown>) => {
+      notifications.push(notification);
+    };
+    const pending = handlePromptMessage(args as any);
+
+    await orchestrator.waitForStart();
+    assert.equal(
+      abortInFlightHistory({
+        interruptControllers,
+        promptRunEpochs,
+        historyKey: "history-1",
+      }),
+      true,
+    );
+
+    const settled = await Promise.race([pending.then(() => "done"), delay(200).then(() => "timeout")]);
+    assert.equal(settled, "done");
+
+    orchestrator.resolveLate("late output that must be ignored");
+    await delay(0);
+
+    assert.ok(chatMessages.some((msg) => (msg as { type?: unknown; message?: unknown }).message === "已中断，输出可能不完整"));
+    assert.equal(
+      chatMessages.some(
+        (msg) =>
+          (msg as { type?: unknown; output?: unknown }).type === "result" &&
+          (msg as { output?: unknown }).output === "late output that must be ignored",
+      ),
+      false,
+    );
+    assert.deepEqual(saveThreadIdCalls, []);
+    assert.deepEqual(
+      historyStore.get("history-1").map((entry) => ({ role: entry.role, text: entry.text, kind: entry.kind })),
+      [
+        { role: "user", text: "hello", kind: undefined },
+        { role: "status", text: "已中断，输出可能不完整", kind: "error" },
+      ],
+    );
+    assert.equal(clientMessages.length, 0);
+    assert.deepEqual(notifications, []);
+  });
+});
+
+describe("web/server/ws terminal assistant identity", () => {
+  for (const [name, rawOutput] of [
+    ["tool result", "Searching.\n<<<tool.session_search>>>\n\n>>>"],
+    ["ADR recording", 'Recorded.\n<<<adr\n{"title":"Test decision","decision":"Keep item identity"}\n>>>'],
+  ] as const) {
+    it(`preserves item identity and persists the post-processed ${name}`, async () => {
+      const fixture = createPromptFixture("ads-web-prompt-identity-");
+      try {
+        const orchestrator = new SlowOrchestrator("test-thread");
+        const args = fixture.buildArgs({
+          parsed: { type: "prompt", payload: "hello" },
+          orchestrator,
+          sessionManager: {
+            getOrCreate: () => orchestrator,
+            getSavedThreadId: () => undefined,
+            getEffectiveState: () => ({ model: "test-model", modelReasoningEffort: "high", activeAgentId: "codex" }),
+            needsHistoryInjection: () => false,
+            clearHistoryInjection: () => {},
+            saveThreadId: () => {},
+            setUserModel: () => {},
+            setUserModelReasoningEffort: () => {},
+          },
+        });
+        (args.request as { clientMessageId: string }).clientMessageId = "turn";
+        const notifications: Array<{ userId: string; notification: Record<string, unknown> }> = [];
+        args.notifyWebUser = async (userId: string, notification: Record<string, unknown>) => {
+          assert.equal(fixture.historyStore.get("history-1").some((entry) => entry.role === "ai"), true);
+          notifications.push({ userId, notification });
+          throw new Error("push delivery unavailable");
+        };
+        const pending = handlePromptMessage(args as any);
+        await orchestrator.waitForStart();
+        orchestrator.emitAssistantItem(rawOutput);
+        orchestrator.resolveLate(rawOutput);
+        await pending;
+
+        const results = fixture.chatMessages.filter((message: any) => message.type === "result") as Array<{
+          ok: boolean; output: string; clientMessageId: string; assistantItems: Array<{ id: string; text: string }>;
+        }>;
+        assert.equal(results.length, 1);
+        const result = results[0]!;
+        assert.equal(result.ok, true);
+        assert.equal(result.clientMessageId, "turn");
+        assert.notEqual(result.output, rawOutput);
+        assert.deepEqual(result.assistantItems, [{ id: "answer", text: rawOutput }]);
+        assert.deepEqual(notifications.map((entry) => entry.userId), ["test-user"]);
+        assert.deepEqual(notifications[0]?.notification, {
+          type: "assistant_response",
+          lane: "acopilot",
+          project: path.basename(fixture.workspaceRoot),
+          sessionId: "session-1",
+        });
+        assert.equal(JSON.stringify(notifications[0]?.notification).includes(result.output), false);
+        assert.deepEqual(fixture.historyStore.get("history-1").filter(entry => entry.role === "ai").map(entry => entry.text), [result.output]);
+        if (name === "tool result") assert.equal(result.output, "Searching.\n\ntool.session_search: no matches");
+      } finally {
+        fixture.cleanup();
+      }
+    });
+  }
+});
+
+describe("web/server/ws handlePrompt input errors", () => {
+  let fixture: PromptFixture;
+
+  beforeEach(() => {
+    fixture = createPromptFixture("ads-web-prompt-input-error-");
+  });
+
+  afterEach(() => {
+    fixture.cleanup();
+  });
+
+  it("persists prompt input failures so reconnect history explains the failed turn", async () => {
+    const { clientMessages, chatMessages, historyStore } = fixture;
+
+    const result = await handlePromptMessage(
+      fixture.buildArgs({
+        parsed: {
+          type: "prompt",
+          payload: {
+            text: "hello",
+            images: [{ name: "bad.txt", mime: "text/plain", data: "abc" }],
+          },
+        },
+      }) as any,
+    );
+
+    assert.equal(result.handled, true);
+    assert.deepEqual(clientMessages, []);
+    assert.deepEqual(chatMessages, [{ type: "error", message: "不支持的图片类型: text/plain" }]);
+    assert.deepEqual(
+      historyStore.get("history-1").map((entry) => ({
+        role: entry.role,
+        text: entry.text,
+        kind: entry.kind,
+      })),
+      [{ role: "status", text: "不支持的图片类型: text/plain", kind: "error" }],
+    );
+    assert.deepEqual(buildHistoryBootstrapPayload(historyStore.get("history-1"))?.items, historyStore.get("history-1"));
+  });
+
+  it("dispatches a failure notification with lane and project context", async () => {
+    const notifications: Array<Record<string, unknown>> = [];
+    const args = fixture.buildArgs({
+      parsed: {
+        type: "prompt",
+        payload: {
+          text: "hello",
+          images: [{ name: "bad.txt", mime: "text/plain", data: "abc" }],
+        },
+      },
+    });
+    args.notifyWebUser = async (_userId: string, notification: Record<string, unknown>) => {
+      notifications.push(notification);
+    };
+
+    await handlePromptMessage(args as any);
+
+    assert.deepEqual(notifications, [{
+      type: "prompt_error",
+      lane: "acopilot",
+      project: path.basename(fixture.workspaceRoot),
+      sessionId: "session-1",
+    }]);
+    assert.equal(
+      JSON.stringify(notifications[0]).includes("不支持的图片类型"),
+      false,
+    );
+  });
+});
+
+describe("web/server/ws handlePrompt not-ready agents", () => {
+  let fixture: PromptFixture;
+  let orchestrator: NotReadyOrchestrator;
+
+  beforeEach(() => {
+    fixture = createPromptFixture("ads-web-prompt-not-ready-");
+    orchestrator = new NotReadyOrchestrator();
+  });
+
+  afterEach(() => {
+    fixture.cleanup();
+  });
+
+  it("persists prompt agent override failures so reconnect history shows the failed turn", async () => {
+    const { clientMessages, chatMessages, historyStore } = fixture;
+
+    const result = await handlePromptMessage(
+      fixture.buildArgs({
+        parsed: { type: "prompt", payload: { text: "hello", agentId: "missing" } },
+        orchestrator,
+        sessionManager: {
+          getOrCreate: () => orchestrator,
+          switchAgent: (_userId: number, agentId: string) => ({
+            success: false,
+            message: `Agent "${agentId}" is not registered`,
+          }),
+          getSavedThreadId: () => undefined,
+          needsHistoryInjection: () => false,
+          clearHistoryInjection: () => {},
+        },
+      }) as any,
+    );
+
+    assert.equal(result.handled, true);
+    assert.deepEqual(clientMessages, []);
+    assert.deepEqual(chatMessages, [{ type: "error", message: 'Agent "missing" is not registered' }]);
+    assert.deepEqual(
+      historyStore.get("history-1").map((entry) => ({
+        role: entry.role,
+        text: entry.text,
+        kind: entry.kind,
+      })),
+      [
+        { role: "user", text: "hello", kind: undefined },
+        { role: "status", text: 'Agent "missing" is not registered', kind: "error" },
+      ],
+    );
+  });
+
+  it("persists the agent readiness failure so reconnect history shows the failed turn", async () => {
+    const { clientMessages, chatMessages, historyStore } = fixture;
+
+    const result = await handlePromptMessage(
+      fixture.buildArgs({
+        parsed: { type: "prompt", payload: { text: "hello", agentId: "claude" } },
+        orchestrator,
+        sessionManager: {
+          getOrCreate: () => orchestrator,
+          switchAgent: (_userId: number, agentId: string) => ({
+            success: agentId === "claude",
+            message: agentId === "claude" ? "ok" : `Agent "${agentId}" is not registered`,
+          }),
+          getSavedThreadId: () => undefined,
+          needsHistoryInjection: () => false,
+          clearHistoryInjection: () => {},
+        },
+      }) as any,
+    );
+
+    assert.equal(result.handled, true);
+    assert.deepEqual(clientMessages, []);
+    assert.deepEqual(chatMessages, [{ type: "error", message: "Claude credentials are missing" }]);
+    assert.deepEqual(
+      historyStore.get("history-1").map((entry) => ({
+        role: entry.role,
+        text: entry.text,
+        kind: entry.kind,
+      })),
+      [
+        { role: "user", text: "hello", kind: undefined },
+        { role: "status", text: "Claude credentials are missing", kind: "error" },
+      ],
+    );
+  });
+});
+
+describe("web/server/ws handlePrompt session links", () => {
+  let fixture: PromptFixture;
+
+  beforeEach(() => {
+    fixture = createPromptFixture("ads-web-prompt-session-link-");
+  });
+
+  afterEach(() => {
+    fixture.cleanup();
+  });
+
+  it("links the durable Native transcript so the session picker can list it", async () => {
+    const { historyStore, workspaceRoot } = fixture;
+    const orchestrator = {
+      setWorkingDirectory: () => {},
+      status: () => ({ ready: true, streaming: true }),
+      getActiveAgentId: () => "codex",
+      getThreadId: () => null,
+      onEvent: () => () => {},
+      invokeAgent: async () => ({ response: "done", usage: null, agentId: "codex" }),
+    };
+
+    const result = await handlePromptMessage(
+      fixture.buildArgs({
+        parsed: { type: "prompt", payload: "hello" },
+        orchestrator,
+        sessionManager: {
+          getRuntimeBackend: () => "native",
+          getNativeTranscriptId: () => "native-transcript-1",
+          getOrCreate: () => orchestrator,
+          getSavedThreadId: () => undefined,
+          needsHistoryInjection: () => false,
+          clearHistoryInjection: () => {},
+          getEffectiveState: () => ({ activeAgentId: "codex" }),
+        },
+      }) as any,
+    );
+
+    assert.equal(result.handled, true);
+    assert.deepEqual(historyStore.links, [{
+      sessionId: "history-1",
+      link: { agentId: "codex", providerSessionId: "native-transcript-1", cwd: workspaceRoot },
+    }]);
+  });
+});
+
+describe("web/server/ws handlePrompt failure notifications", () => {
+  let fixture: PromptFixture;
+
+  beforeEach(() => {
+    fixture = createPromptFixture("ads-web-prompt-failure-notify-");
+  });
+
+  afterEach(() => {
+    fixture.cleanup();
+  });
+
+  it("dispatches an Actions-scoped failure notification without the error text", async () => {
+    const notifications: Array<Record<string, unknown>> = [];
+    const orchestrator = {
+      setWorkingDirectory: () => {},
+      status: () => ({ ready: true, streaming: false }),
+      getActiveAgentId: () => "codex",
+      getThreadId: () => null,
+      onEvent: () => () => {},
+      invokeAgent: async () => {
+        throw new Error("provider failed while processing the private prompt");
+      },
+    };
+    const args = fixture.buildArgs({
+      parsed: { type: "prompt", payload: "hello" },
+      orchestrator,
+      context: { lane: "actions" },
+      sessionManager: {
+        getRuntimeBackend: () => "native",
+        getNativeTranscriptId: () => "native-transcript-1",
+        getOrCreate: () => orchestrator,
+        getSavedThreadId: () => undefined,
+        needsHistoryInjection: () => false,
+        clearHistoryInjection: () => {},
+        getEffectiveState: () => ({ activeAgentId: "codex" }),
+      },
+    });
+    args.notifyWebUser = async (_userId: string, notification: Record<string, unknown>) => {
+      notifications.push(notification);
+    };
+
+    const result = await handlePromptMessage(args as any);
+
+    assert.equal(result.outcome.ok, false);
+    assert.deepEqual(notifications, [{
+      type: "prompt_error",
+      lane: "actions",
+      project: path.basename(fixture.workspaceRoot),
+      sessionId: "session-1",
+    }]);
+    assert.equal(
+      JSON.stringify(notifications[0]).includes("private prompt"),
+      false,
+    );
+  });
+});
+
+describe("web/server/ws/handlePrompt Write summary", () => {
+  it("appends a git-style diffstat when patch stats are available", () => {
+    const longPath = `${"a/".repeat(40)}file.txt`;
+    const changes = [
+      { kind: "modify", path: longPath },
+      { kind: "create", path: "src/short.ts" },
+      { kind: "modify", path: "src/third.ts" },
+      { kind: "delete", path: "src/fourth.ts" },
+      { kind: "modify", path: "src/fifth.ts" },
+    ];
+    const patchFiles = [
+      { path: "src/short.ts", added: 5, removed: 1 },
+      { path: "src/third.ts", added: 2, removed: 0 },
+    ];
+
+    const summary = formatWriteExploredSummary(changes, patchFiles);
+
+    assert.ok(summary.includes("modify file.txt"), summary);
+    assert.ok(summary.includes("(+1 more)"), summary);
+    assert.ok(summary.endsWith("(+7 -1)"), summary);
+  });
+});
+
+describe("web/server/ws Actions lane reviewer presentation", () => {
+  let fixture: PromptFixture;
+  const verdict = JSON.stringify({
+    status: "REJECT",
+    summary: "Target not met",
+    defects: [{ file: "server/app.ts", line: 7, severity: "blocker", description: "Missing guard" }],
+  });
+
+  beforeEach(() => {
+    fixture = createPromptFixture("ads-web-prompt-actions-lane-");
+  });
+
+  afterEach(() => {
+    fixture.cleanup();
+  });
+
+  function buildLaneArgs(orchestrator: SlowOrchestrator, lane?: "actions") {
+    return fixture.buildArgs({
+      parsed: { type: "prompt", payload: "review the open pull request" },
+      orchestrator,
+      sessionManager: {
+        getOrCreate: () => orchestrator,
+        getSavedThreadId: () => undefined,
+        getEffectiveState: () => ({ model: "test-model", modelReasoningEffort: "high", activeAgentId: "codex" }),
+        needsHistoryInjection: () => false,
+        clearHistoryInjection: () => {},
+        saveThreadId: () => {},
+        setUserModel: () => {},
+        setUserModelReasoningEffort: () => {},
+      },
+      ...(lane ? { context: { lane } } : {}),
+    });
+  }
+
+  it("presents the Reviewer verdict and withholds assistant frames in the Actions lane", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-thread");
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantItem(verdict);
+    orchestrator.resolveLate(verdict);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; output?: string; assistantItems?: Array<{ text: string }> }>;
+    assert.equal(frames.some((frame) => frame.type === "assistant_item"), false);
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.match(String(result.output), /^Reviewer verdict: REJECT\nTarget not met\nFindings:\n- server\/app\.ts:7 \(blocker\): Missing guard/);
+    assert.equal(String(result.output).includes('"status"'), false);
+    assert.ok((result.assistantItems ?? []).every((item) => !item.text.includes('"status"')));
+    const persisted = historyStore.get("history-1").filter((entry) => entry.role === "ai").map((entry) => entry.text);
+    assert.deepEqual(persisted, [result.output]);
+  });
+
+  it("streams ordinary prose in the Actions lane instead of withholding it", async () => {
+    const { chatMessages } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-prose-thread");
+    const prose = "Checked the diff, tests pass, no blocking findings.";
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta("Checked the diff");
+    orchestrator.emitAssistantDelta(prose);
+    orchestrator.emitAssistantItem(prose);
+    orchestrator.resolveLate(prose);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; delta?: string; assistantItemText?: string }>;
+    const deltas = frames.filter((frame) => frame.type === "delta").map((frame) => frame.delta);
+    assert.deepEqual(deltas, ["Checked the diff", ", tests pass, no blocking findings."]);
+    const item = frames.find((frame) => frame.type === "assistant_item");
+    assert.ok(item);
+    assert.equal(item.assistantItemText, prose);
+  });
+
+  it("withholds protocol deltas in the Actions lane", async () => {
+    const { chatMessages } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-protocol-thread");
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(verdict.slice(0, 20));
+    orchestrator.emitAssistantDelta(verdict);
+    orchestrator.emitAssistantItem(verdict);
+    orchestrator.resolveLate(verdict);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string }>;
+    assert.equal(frames.some((frame) => frame.type === "delta"), false);
+    assert.equal(frames.some((frame) => frame.type === "assistant_item"), false);
+  });
+
+  it("releases a chunked ordinary JSON object after it is classified", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-chunked-ordinary-json-thread");
+    const incomplete = "Configuration: {\"retries\":";
+    const complete = "Configuration: {\"retries\": 1}";
+    const response = `${complete}. Continue streaming.`;
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(incomplete);
+    orchestrator.emitAssistantDelta(complete);
+    orchestrator.emitAssistantDelta(response);
+    orchestrator.emitAssistantItem(response);
+    orchestrator.resolveLate(response);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; delta?: string; output?: string; assistantItemText?: string }>;
+    assert.deepEqual(
+      frames.filter((frame) => frame.type === "delta").map((frame) => frame.delta),
+      ["Configuration:", " {\"retries\": 1}", ". Continue streaming."],
+    );
+    assert.ok(frames.some((frame) => frame.type === "assistant_item"));
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.equal(result.output, response);
+    assert.ok(historyStore.get("history-1").some((entry) => entry.text === response));
+  });
+
+  it("withholds a valid verdict whose fields are not in schema order", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-reordered-protocol-thread");
+    const reordered = JSON.stringify({
+      summary: "Target not met",
+      defects: [{ file: "server/app.ts", line: 7, severity: "blocker", description: "Missing guard" }],
+      status: "REJECT",
+    });
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(reordered.slice(0, 24));
+    orchestrator.emitAssistantDelta(reordered);
+    orchestrator.emitAssistantItem(reordered);
+    orchestrator.resolveLate(reordered);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; output?: string }>;
+    assert.equal(frames.some((frame) => frame.type === "delta"), false);
+    assert.equal(frames.some((frame) => frame.type === "assistant_item"), false);
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.match(String(result.output), /^Reviewer verdict: REJECT/);
+    assert.equal(String(result.output).includes(reordered), false);
+    assert.equal(JSON.stringify(historyStore.get("history-1")).includes(reordered), false);
+  });
+
+  it("renders a verdict after prose and a fenced protocol without leaking it", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-preface-thread");
+    const preface = "Review complete. The result is:";
+    const response = `${preface}\n\n\`\`\`json\n${verdict}\n\`\`\``;
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(preface);
+    orchestrator.emitAssistantDelta(response);
+    orchestrator.emitAssistantItem(response);
+    orchestrator.resolveLate(response);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; delta?: string; output?: string; assistantItemText?: string }>;
+    assert.deepEqual(frames.filter((frame) => frame.type === "delta").map((frame) => frame.delta), [preface]);
+    assert.equal(frames.some((frame) => frame.type === "assistant_item"), false);
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.match(String(result.output), /^Review complete\. The result is:\n\nReviewer verdict: REJECT/);
+    assert.equal(JSON.stringify(result).includes(verdict), false);
+    assert.equal(JSON.stringify(historyStore.get("history-1")).includes(verdict), false);
+  });
+
+  it("preserves a non-verdict JSON fence in the Actions lane", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-invalid-protocol-thread");
+    const response = "Review complete.\n\n```json\n{\"status\": \"MAYBE\"}\n```";
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(response);
+    orchestrator.emitAssistantItem(response);
+    orchestrator.resolveLate(response);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; output?: string; assistantItemText?: string }>;
+    assert.ok(frames.some((frame) => frame.type === "assistant_item"));
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.equal(String(result.output), response);
+    assert.ok(historyStore.get("history-1").some((entry) => entry.text === response));
+  });
+
+  it("preserves ordinary shell fences and JSON objects in the Actions lane", async () => {
+    const { chatMessages, historyStore } = fixture;
+    const orchestrator = new SlowOrchestrator("actions-ordinary-structured-thread");
+    const response = "Run this:\n```bash\nnpm test\n```\nConfiguration: {\"retries\": 1}.";
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator, "actions") as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantDelta(response);
+    orchestrator.emitAssistantItem(response);
+    orchestrator.resolveLate(response);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; output?: string; assistantItemText?: string }>;
+    assert.ok(frames.some((frame) => frame.type === "assistant_item"));
+    const result = frames.find((frame) => frame.type === "result");
+    assert.ok(result);
+    assert.equal(String(result.output), response);
+    assert.ok(historyStore.get("history-1").some((entry) => entry.text === response));
+  });
+
+  it("keeps ordinary assistant streaming for the Acopilot lane", async () => {
+    const { chatMessages } = fixture;
+    const orchestrator = new SlowOrchestrator("acopilot-thread");
+
+    const pending = handlePromptMessage(buildLaneArgs(orchestrator) as any);
+    await orchestrator.waitForStart();
+    orchestrator.emitAssistantItem(verdict);
+    orchestrator.resolveLate(verdict);
+    await pending;
+
+    const frames = chatMessages as Array<{ type?: string; assistantItemText?: string }>;
+    const item = frames.find((frame) => frame.type === "assistant_item");
+    assert.ok(item);
+    assert.equal(item.assistantItemText, verdict);
+  });
+});

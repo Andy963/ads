@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, shallowMount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
-import { collectCommandActivityFrames, commandActivityCases, commandCommentary, commandFinalReply } from "../../../tests/web/commandActivityHarness";
+import { collectCommandActivityFrames, commandActivityCases, commandCommentary, commandFinalReply } from "../../../ts-server/tests/web/commandActivityHarness";
 import type { ChatMessage } from "../components/mainChat/types";
 import MainChatMessageList from "../components/MainChatMessageList.vue";
 import { loadMarkdown } from "../lib/markdown/loader";

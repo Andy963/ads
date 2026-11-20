@@ -1,0 +1,891 @@
+import { describe, it, beforeEach, afterEach } from "node:test";
+import assert from "node:assert";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
+
+import {
+  getStateDatabase,
+  getStateDatabaseInfo,
+  resetStateDatabaseForTests,
+  resolveStateDbPath,
+} from "../../server/state/database.js";
+import DatabaseConstructor, { type Database as DatabaseType } from "better-sqlite3";
+import { getActionJobs, getActionJobById } from "../../server/state/actionJobStore.js";
+import { insertLegacyActionJob } from "../helpers/legacyActionJobs.js";
+import { createLanePromptStore } from "../../server/state/lanePromptStore.js";
+import {
+  getRoleProfiles,
+  getDefaultRoleProfile,
+  saveRoleProfile,
+} from "../../server/state/roleProfileStore.js";
+import { deleteWebProject } from "../../server/web/projects/store.js";
+import { ensureWebProjectTables } from "../../server/web/projects/schema.js";
+import { ensureWebAuthTables } from "../../server/web/auth/schema.js";
+import { ThreadStorage } from "../../server/sessions/threadStorage.js";
+import { HistoryStore } from "../../server/utils/historyStore.js";
+import { stateSchemaMigrations } from "../../server/state/schemaMigrations.js";
+
+describe("state/database", () => {
+  let tmpDir: string;
+  let dbPath: string;
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-state-db-test-"));
+    dbPath = path.join(tmpDir, "state.db");
+
+    process.env.ADS_STATE_DB_PATH = dbPath;
+    resetStateDatabaseForTests();
+  });
+
+  it("backfills existing Actions jobs created in the current lane generation", () => {
+    const migrationDb = new DatabaseConstructor(":memory:");
+    migrationDb.exec(`
+      CREATE TABLE action_jobs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        auth_user_id TEXT,
+        chat_session_id TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE web_lane_generations (
+        namespace TEXT NOT NULL,
+        lane_key TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(namespace, lane_key)
+      );
+      INSERT INTO web_lane_generations VALUES ('web-actions', 'user-1::project-1::main', 2, 2000);
+      INSERT INTO action_jobs VALUES ('before-reset', 'project-1', 'user-1', 'main', 1000);
+      INSERT INTO action_jobs VALUES ('after-reset', 'project-1', 'user-1', 'main', 3000);
+      INSERT INTO action_jobs VALUES ('other-lane', 'project-1', 'user-2', 'main', 3000);
+    `);
+
+    try {
+      stateSchemaMigrations.find((migration) => migration.version === 34)!.up(migrationDb);
+
+      const jobs = migrationDb
+        .prepare("SELECT id, lane_generation FROM action_jobs ORDER BY id")
+        .all() as Array<{ id: string; lane_generation: number }>;
+      assert.deepStrictEqual(jobs, [
+        { id: "after-reset", lane_generation: 2 },
+        { id: "before-reset", lane_generation: 1 },
+        { id: "other-lane", lane_generation: 1 },
+      ]);
+    } finally {
+      migrationDb.close();
+    }
+  });
+
+  it("recovers a legacy job through a unique workspace-root project mapping", () => {
+    const migrationDb = new DatabaseConstructor(":memory:");
+    migrationDb.exec(`
+      CREATE TABLE action_jobs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        lane_generation INTEGER NOT NULL DEFAULT 1,
+        auth_user_id TEXT,
+        chat_session_id TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE web_lane_generations (
+        namespace TEXT NOT NULL,
+        lane_key TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(namespace, lane_key)
+      );
+      CREATE TABLE web_projects (
+        user_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        workspace_root TEXT NOT NULL,
+        chat_session_id TEXT NOT NULL
+      );
+      INSERT INTO web_projects VALUES ('user-1', 'project-1', '/workspace/project-1', 'main');
+      INSERT INTO web_lane_generations VALUES ('web-actions', 'user-1::project-1::main', 3, 2000);
+      INSERT INTO action_jobs VALUES ('workspace-alias', '/workspace/project-1', 1, NULL, NULL, 3000);
+    `);
+
+    try {
+      stateSchemaMigrations.find((migration) => migration.version === 35)!.up(migrationDb);
+
+      assert.deepStrictEqual(
+        migrationDb.prepare("SELECT lane_generation FROM action_jobs WHERE id = 'workspace-alias'").get(),
+        { lane_generation: 3 },
+      );
+    } finally {
+      migrationDb.close();
+    }
+  });
+
+  it("does not reassign pre-reset, boundary, or ambiguous legacy jobs", () => {
+    const migrationDb = new DatabaseConstructor(":memory:");
+    migrationDb.exec(`
+      CREATE TABLE action_jobs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        lane_generation INTEGER NOT NULL DEFAULT 1,
+        auth_user_id TEXT,
+        chat_session_id TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE web_lane_generations (
+        namespace TEXT NOT NULL,
+        lane_key TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(namespace, lane_key)
+      );
+      CREATE TABLE web_projects (
+        user_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        workspace_root TEXT NOT NULL,
+        chat_session_id TEXT NOT NULL
+      );
+      INSERT INTO web_projects VALUES ('user-1', 'project-1', '/workspace/project-1', 'main');
+      INSERT INTO web_projects VALUES ('user-2', 'project-1', '/workspace/project-1', 'main');
+      INSERT INTO web_lane_generations VALUES ('web-actions', 'user-1::project-1::main', 2, 2000);
+      INSERT INTO web_lane_generations VALUES ('web-actions', 'user-2::project-1::main', 4, 2000);
+      INSERT INTO web_lane_generations VALUES ('web-actions', 'user-1::unmapped-project::main', 2, 2000);
+      INSERT INTO action_jobs VALUES ('before-reset', 'project-1', 1, 'user-1', 'main', 1000);
+      INSERT INTO action_jobs VALUES ('at-reset', 'project-1', 1, 'user-1', 'main', 2000);
+      INSERT INTO action_jobs VALUES ('partial-identity', 'unmapped-project', 1, 'user-1', NULL, 3000);
+      INSERT INTO action_jobs VALUES ('ambiguous', 'project-1', 1, NULL, NULL, 3000);
+    `);
+
+    try {
+      stateSchemaMigrations.find((migration) => migration.version === 35)!.up(migrationDb);
+
+      const jobs = migrationDb
+        .prepare("SELECT id, lane_generation FROM action_jobs ORDER BY id")
+        .all() as Array<{ id: string; lane_generation: number }>;
+      assert.deepStrictEqual(jobs, [
+        { id: "ambiguous", lane_generation: 1 },
+        { id: "at-reset", lane_generation: 1 },
+        { id: "before-reset", lane_generation: 1 },
+        { id: "partial-identity", lane_generation: 1 },
+      ]);
+    } finally {
+      migrationDb.close();
+    }
+  });
+
+  it("repairs a database that already applied the initial lane fence migration", () => {
+    const migrationDb = new DatabaseConstructor(":memory:");
+    migrationDb.exec(`
+      CREATE TABLE action_jobs (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        lane_generation INTEGER NOT NULL DEFAULT 1,
+        auth_user_id TEXT,
+        chat_session_id TEXT,
+        created_at INTEGER NOT NULL
+      );
+      CREATE TABLE web_lane_generations (
+        namespace TEXT NOT NULL,
+        lane_key TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(namespace, lane_key)
+      );
+      INSERT INTO web_lane_generations VALUES ('web-actions', 'user-1::project-1::main', 2, 2000);
+      INSERT INTO action_jobs VALUES ('after-reset', 'project-1', 1, 'user-1', 'main', 3000);
+    `);
+
+    try {
+      const repair = stateSchemaMigrations.find((migration) => migration.version === 35)!.up;
+      repair(migrationDb);
+      repair(migrationDb);
+
+      assert.deepStrictEqual(
+        migrationDb.prepare("SELECT lane_generation FROM action_jobs WHERE id = 'after-reset'").get(),
+        { lane_generation: 2 },
+      );
+    } finally {
+      migrationDb.close();
+    }
+  });
+
+  afterEach(() => {
+    resetStateDatabaseForTests();
+    process.env = { ...originalEnv };
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup errors
+    }
+  });
+
+  it("should create state database file", () => {
+    const db = getStateDatabase();
+    assert.ok(db, "State database should be created");
+    assert.ok(fs.existsSync(dbPath), "State database file should exist");
+  });
+
+  it("redirects an inherited live state path to throwaway test state", () => {
+    const liveStateDir = path.join(os.homedir(), ".local", "state", "ads");
+    const liveDbPath = path.join(liveStateDir, "state.db");
+    process.env.ADS_STATE_DIR = liveStateDir;
+    process.env.ADS_STATE_DB_PATH = liveDbPath;
+    resetStateDatabaseForTests();
+
+    const resolved = resolveStateDbPath();
+
+    assert.notEqual(resolved, liveDbPath);
+    assert.ok(resolved.startsWith(path.resolve(os.tmpdir()) + path.sep), resolved);
+  });
+
+  it("creates the Web Push subscription table in the latest schema", () => {
+    const db = getStateDatabase();
+    const info = getStateDatabaseInfo();
+    const columns = db.prepare("PRAGMA table_info('web_push_subscriptions')").all() as Array<{ name: string }>;
+
+    assert.equal(info.schemaVersion, stateSchemaMigrations.length);
+    assert.deepEqual(columns.map((column) => column.name), [
+      "endpoint",
+      "user_id",
+      "p256dh",
+      "auth",
+      "created_at",
+      "updated_at",
+    ]);
+  });
+
+  it("should return cached database instance", () => {
+    const db1 = getStateDatabase();
+    const db2 = getStateDatabase();
+    assert.strictEqual(db1, db2, "Should return same cached instance");
+  });
+
+  it("should create kv_state table", () => {
+    const db = getStateDatabase();
+    const tableInfo = db.prepare("PRAGMA table_info(kv_state)").all() as Array<{ name: string }>;
+    const columnNames = tableInfo.map((col) => col.name);
+    assert.ok(columnNames.includes("namespace"));
+    assert.ok(columnNames.includes("key"));
+    assert.ok(columnNames.includes("value"));
+    assert.ok(columnNames.includes("updated_at"));
+  });
+
+  it("should create tasks tables", () => {
+    const db = getStateDatabase();
+    const taskInfo = db.prepare("PRAGMA table_info(tasks)").all() as Array<{ name: string }>;
+    const taskColumns = taskInfo.map((col) => col.name);
+    assert.ok(taskColumns.includes("task_id"));
+    assert.ok(taskColumns.includes("status"));
+    assert.ok(taskColumns.includes("spec_json"));
+
+    const msgInfo = db.prepare("PRAGMA table_info(task_messages)").all() as Array<{ name: string }>;
+    const msgColumns = msgInfo.map((col) => col.name);
+    assert.ok(msgColumns.includes("task_id"));
+    assert.ok(msgColumns.includes("payload"));
+  });
+
+  it("should create agent session history links", () => {
+    const db = getStateDatabase();
+    const info = db.prepare("PRAGMA table_info(history_session_links)").all() as Array<{ name: string }>;
+    const columns = info.map((column) => column.name);
+
+    assert.ok(columns.includes("namespace"));
+    assert.ok(columns.includes("session_id"));
+    assert.ok(columns.includes("agent_id"));
+    assert.ok(columns.includes("provider_session_id"));
+    assert.ok(columns.includes("locator_json"));
+  });
+
+  it("should record schema version metadata for a fresh database", () => {
+    getStateDatabase();
+
+    const info = getStateDatabaseInfo();
+    assert.strictEqual(info.schemaVersion, info.latestVersion);
+    assert.strictEqual(info.needsMigration, false);
+  });
+
+  it("keeps the full reasoning effort spectrum for seeded models during migrations", () => {
+    const seedDb = getStateDatabase();
+    const rows = seedDb
+      .prepare(
+        `SELECT id, model_id, config_json
+         FROM model_configs
+         WHERE model_id IN (?, ?)`,
+      )
+      .all("gpt-5.5", "claude-opus-4.8") as Array<{
+      id: string;
+      model_id: string;
+      config_json: string;
+    }>;
+    const update = seedDb.prepare("UPDATE model_configs SET config_json = ? WHERE id = ?");
+    for (const row of rows) {
+      const config = JSON.parse(row.config_json) as { reasoningEfforts?: string[] };
+      config.reasoningEfforts = (config.reasoningEfforts ?? []).filter((effort) => effort !== "ultra");
+      update.run(JSON.stringify(config), row.id);
+    }
+    seedDb.exec("UPDATE schema_version SET version = 11 WHERE id = 1");
+
+    resetStateDatabaseForTests();
+
+    const db = getStateDatabase();
+    const configs = db
+      .prepare(
+        `SELECT model_id, config_json
+         FROM model_configs
+         WHERE model_id IN (?, ?)
+         ORDER BY model_id`,
+      )
+      .all("gpt-5.5", "claude-opus-4.8") as Array<{ model_id: string; config_json: string }>;
+
+    assert.deepStrictEqual(
+      configs.map((row) => ({ modelId: row.model_id, reasoningEfforts: (JSON.parse(row.config_json) as { reasoningEfforts: string[] }).reasoningEfforts })),
+      [
+        { modelId: "claude-opus-4.8", reasoningEfforts: ["high", "xhigh", "max"] },
+        { modelId: "gpt-5.5", reasoningEfforts: ["high", "xhigh", "max", "ultra"] },
+      ],
+    );
+  });
+
+  it("sanitizes invalid reasoning efforts in model configs during migration", () => {
+    const seedDb = getStateDatabase();
+    const insert = seedDb.prepare(`
+      INSERT INTO model_configs
+        (id, model_id, display_name, provider, is_enabled, is_default, config_json, updated_at)
+      VALUES (?, ?, ?, ?, 1, 0, ?, ?)
+    `);
+    const now = Date.now();
+    insert.run(
+      "model-test-invalid",
+      "test-invalid",
+      "Invalid",
+      "test",
+      JSON.stringify({ reasoningEfforts: ["bogus", "extreme"], defaultReasoningEffort: "xhigh", reasoningEffort: "bogus" }),
+      now,
+    );
+    insert.run(
+      "model-test-mixed",
+      "test-mixed",
+      "Mixed",
+      "test",
+      JSON.stringify({ reasoningEfforts: ["high", "xhigh", "bogus"], defaultReasoningEffort: "xhigh", reasoningEffort: "max" }),
+      now,
+    );
+    insert.run("model-test-empty", "test-empty", "Empty", "test", JSON.stringify({ reasoningEfforts: [] }), now);
+    insert.run(
+      "model-test-unconfigured",
+      "test-unconfigured",
+      "Unconfigured",
+      "test",
+      JSON.stringify({ allowedAgents: ["codex"] }),
+      now,
+    );
+    insert.run(
+      "model-test-valid",
+      "test-valid",
+      "Valid",
+      "test",
+      JSON.stringify({ reasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium" }),
+      now,
+    );
+    seedDb.exec("UPDATE schema_version SET version = 14 WHERE id = 1");
+
+    resetStateDatabaseForTests();
+
+    const db = getStateDatabase();
+    const rows = db
+      .prepare(
+        `SELECT model_id, config_json
+         FROM model_configs
+         WHERE model_id LIKE 'test-%'
+         ORDER BY model_id`,
+      )
+      .all() as Array<{ model_id: string; config_json: string }>;
+
+    assert.deepStrictEqual(
+      rows.map((row) => {
+        const config = JSON.parse(row.config_json) as { reasoningEfforts: string[]; defaultReasoningEffort?: string; reasoningEffort?: string };
+        return {
+          modelId: row.model_id,
+          reasoningEfforts: config.reasoningEfforts,
+          defaultReasoningEffort: config.defaultReasoningEffort,
+          reasoningEffort: config.reasoningEffort,
+        };
+      }),
+      [
+        { modelId: "test-empty", reasoningEfforts: ["medium", "high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
+        { modelId: "test-invalid", reasoningEfforts: ["medium", "high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
+        { modelId: "test-mixed", reasoningEfforts: ["high", "xhigh"], defaultReasoningEffort: "xhigh", reasoningEffort: "max" },
+        { modelId: "test-unconfigured", reasoningEfforts: ["medium", "high"], defaultReasoningEffort: "high", reasoningEffort: undefined },
+        { modelId: "test-valid", reasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium", reasoningEffort: undefined },
+      ],
+    );
+  });
+
+  it("seeds gpt-5.6-luna with the full reasoning effort spectrum during migrations", () => {
+    const seedDb = getStateDatabase();
+    seedDb.exec("UPDATE schema_version SET version = 15 WHERE id = 1");
+    seedDb.prepare("DELETE FROM model_configs WHERE model_id = 'gpt-5.6-luna'").run();
+
+    resetStateDatabaseForTests();
+
+    const db = getStateDatabase();
+    const rows = db
+      .prepare("SELECT config_json FROM model_configs WHERE model_id = 'gpt-5.6-luna'")
+      .all() as Array<{ config_json: string }>;
+    assert.strictEqual(rows.length, 1);
+    assert.deepStrictEqual(JSON.parse(rows[0]!.config_json), {
+      allowedAgents: ["codex"],
+      reasoningEfforts: ["high", "xhigh", "max"],
+      defaultReasoningEffort: "max",
+    });
+  });
+
+  it("restores a wiped gpt-5.6-luna reasoning config during migrations", () => {
+    const seedDb = getStateDatabase();
+    seedDb
+      .prepare("UPDATE model_configs SET config_json = ? WHERE model_id = 'gpt-5.6-luna'")
+      .run(JSON.stringify({ allowedAgents: ["codex"], reasoningEfforts: ["medium", "high"], defaultReasoningEffort: "high" }));
+    seedDb.exec("UPDATE schema_version SET version = 15 WHERE id = 1");
+
+    resetStateDatabaseForTests();
+
+    const db = getStateDatabase();
+    const rows = db
+      .prepare("SELECT config_json FROM model_configs WHERE model_id = 'gpt-5.6-luna'")
+      .all() as Array<{ config_json: string }>;
+    assert.strictEqual(rows.length, 1);
+    assert.deepStrictEqual(JSON.parse(rows[0]!.config_json), {
+      allowedAgents: ["codex"],
+      reasoningEfforts: ["high", "xhigh", "max"],
+      defaultReasoningEffort: "max",
+    });
+  });
+
+  it("should upgrade legacy state databases without schema_version metadata", () => {
+    const seedDb = getStateDatabase();
+    seedDb.prepare(
+      `INSERT INTO kv_state (namespace, key, value, updated_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run("test", "legacy-key", "legacy-value", 123);
+    seedDb.exec("DROP TABLE schema_version");
+
+    resetStateDatabaseForTests();
+
+    const db = getStateDatabase();
+    const info = getStateDatabaseInfo();
+    const row = db.prepare(
+      `SELECT value, updated_at
+       FROM kv_state
+       WHERE namespace = ? AND key = ?`,
+    ).get("test", "legacy-key") as { value: string; updated_at: number };
+
+    assert.strictEqual(info.needsMigration, false);
+    assert.strictEqual(info.schemaVersion, info.latestVersion);
+    assert.strictEqual(row.value, "legacy-value");
+    assert.strictEqual(row.updated_at, 123);
+  });
+
+  it("dedupes history client messages by id after metadata-bearing kind migration", () => {
+    const seedDb = getStateDatabase();
+    seedDb.prepare(
+      `INSERT INTO history_entries (namespace, session_id, role, text, ts, kind)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("web", "s1", "user", "hello", 1, "client_message_id:p1;prompt_meta:agent=claude");
+    seedDb.exec("DROP INDEX IF EXISTS idx_history_entries_client_message_id");
+    seedDb.exec("UPDATE schema_version SET version = 3 WHERE id = 1");
+
+    resetStateDatabaseForTests();
+
+    const db = getStateDatabase();
+    const insert = db.prepare(
+      `INSERT OR IGNORE INTO history_entries (namespace, session_id, role, text, ts, kind)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    const info = insert.run("web", "s1", "user", "duplicate", 2, "client_message_id:p1;prompt_meta:agent=codex");
+    const rows = db
+      .prepare(
+        `SELECT text, kind
+         FROM history_entries
+         WHERE namespace = ? AND session_id = ?
+         ORDER BY id ASC`,
+      )
+      .all("web", "s1") as Array<{ text: string; kind: string }>;
+
+    assert.strictEqual(info.changes, 0);
+    assert.deepStrictEqual(rows, [
+      { text: "hello", kind: "client_message_id:p1;prompt_meta:agent=claude" },
+    ]);
+  });
+
+  it("should enable WAL mode", () => {
+    const db = getStateDatabase();
+    const result = db.pragma("journal_mode") as Array<{ journal_mode: string }>;
+    assert.strictEqual(result[0].journal_mode, "wal", "Should use WAL journal mode");
+  });
+
+  it("should enable foreign keys", () => {
+    const db = getStateDatabase();
+    const result = db.pragma("foreign_keys") as Array<{ foreign_keys: number }>;
+    assert.strictEqual(result[0].foreign_keys, 1, "Foreign keys should be enabled");
+  });
+
+  it("should create action_jobs and role_profiles tables with seed profiles", () => {
+    const db = getStateDatabase();
+
+    const actionJobCols = (db.prepare("PRAGMA table_info(action_jobs)").all() as Array<{ name: string }>).map((c) => c.name);
+    assert.ok(actionJobCols.includes("id"));
+    assert.ok(actionJobCols.includes("project_id"));
+    assert.ok(actionJobCols.includes("job_kind"));
+    assert.ok(actionJobCols.includes("issue_id"));
+    assert.ok(actionJobCols.includes("issue_title"));
+    assert.ok(actionJobCols.includes("issue_snapshot_json"));
+    assert.ok(actionJobCols.includes("status"));
+    assert.ok(actionJobCols.includes("reviewer_profile_ids_json"));
+    assert.ok(actionJobCols.includes("rework_count"));
+
+    const roleProfileCols = (db.prepare("PRAGMA table_info(role_profiles)").all() as Array<{ name: string }>).map((c) => c.name);
+    assert.ok(roleProfileCols.includes("id"));
+    assert.ok(roleProfileCols.includes("role"));
+    assert.ok(roleProfileCols.includes("name"));
+    assert.ok(roleProfileCols.includes("model_id"));
+    assert.ok(roleProfileCols.includes("reasoning_effort"));
+    assert.ok(roleProfileCols.includes("system_prompt"));
+    assert.ok(roleProfileCols.includes("is_default"));
+
+    const historyTable = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'role_settings_history'")
+      .get();
+    assert.strictEqual(historyTable, undefined);
+
+    const profiles = db.prepare("SELECT role, name, is_default FROM role_profiles ORDER BY role ASC").all() as Array<{
+      role: string;
+      name: string;
+      is_default: number;
+    }>;
+    assert.strictEqual(profiles.length, 2);
+    assert.deepStrictEqual(
+      profiles.map((p) => ({ role: p.role, is_default: p.is_default })),
+      [
+        { role: "acopilot", is_default: 1 },
+        { role: "reviewer", is_default: 1 },
+      ],
+    );
+  });
+
+  describe("state/actionJobStore", () => {
+    it("reads legacy action jobs as history without exposing ownership in the list API", () => {
+      const db = getStateDatabase();
+      insertLegacyActionJob(db, {
+        id: "job-100-277-abcd",
+        project_id: "/home/andy/repos/ads",
+        issue_id: 277,
+        issue_title: "Acopilot & Actions refactor",
+        status: "blocked",
+        branch: "codex/issue-277",
+      });
+
+      const retrieved = getActionJobById(db, "job-100-277-abcd");
+      assert.ok(retrieved);
+      assert.strictEqual(retrieved.issue_id, 277);
+      assert.strictEqual(retrieved.status, "blocked");
+      assert.strictEqual(retrieved.rework_count, 0);
+      assert.deepStrictEqual(JSON.parse(retrieved.issue_snapshot_json), {
+        title: "Acopilot & Actions refactor",
+        description: "",
+        acceptanceCriteria: [],
+        adrs: [],
+      });
+
+      const list = getActionJobs(db, "/home/andy/repos/ads");
+      assert.strictEqual(list.length, 1);
+      assert.strictEqual(list[0]?.id, "job-100-277-abcd");
+    });
+
+    it("cascade deletes action_jobs when project is deleted", () => {
+      const db = getStateDatabase();
+      ensureWebAuthTables(db);
+      ensureWebProjectTables(db);
+      db.prepare("INSERT OR IGNORE INTO web_users (id, username, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?)").run(
+        "u1",
+        "user1",
+        "hash",
+        1,
+        1,
+      );
+      db.prepare("INSERT OR IGNORE INTO web_projects (user_id, project_id, workspace_root, display_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)").run(
+        "u1",
+        "proj-to-delete",
+        "/tmp/proj",
+        "Test Project",
+        1,
+        1,
+      );
+
+      insertLegacyActionJob(db, {
+        id: "job-del-1",
+        project_id: "proj-to-delete",
+        issue_title: "Task 1",
+      });
+
+      assert.strictEqual(getActionJobs(db, "proj-to-delete").length, 1);
+
+      deleteWebProject(db, "u1", "proj-to-delete");
+
+      assert.strictEqual(getActionJobs(db, "proj-to-delete").length, 0);
+    });
+  });
+
+  describe("state/lanePromptStore", () => {
+    let laneDb: DatabaseType | null = null;
+
+    afterEach(() => {
+      laneDb?.close();
+      laneDb = null;
+    });
+
+    it("seeds both lane baselines and exposes the active versions", () => {
+      laneDb = new DatabaseConstructor(":memory:");
+      const store = createLanePromptStore(laneDb);
+
+      const snapshots = store.listLanePrompts();
+      assert.deepEqual(snapshots.map((snapshot) => snapshot.lane), ["acopilot", "actions"]);
+      for (const snapshot of snapshots) {
+        assert.equal(snapshot.current.version, 1);
+        assert.equal(snapshot.current.isBase, true);
+        assert.equal(snapshot.current.prompt.length > 0, true);
+        assert.deepEqual(snapshot.versions.map((version) => version.version), [1]);
+      }
+    });
+
+    it("overwrites the current prompt and resets without retaining versions", () => {
+      laneDb = new DatabaseConstructor(":memory:");
+      const store = createLanePromptStore(laneDb);
+
+      const saved = store.setLanePrompt("advisor", "Custom advisor prompt", 1000);
+      assert.equal(saved.current.version, 2);
+      assert.equal(saved.current.prompt, "Custom advisor prompt");
+      assert.equal(saved.base.version, 0);
+      assert.equal(saved.versions.length, 1);
+      assert.equal(saved.updatedAt, 1000);
+
+      const second = store.setLanePrompt("advisor", "Second advisor prompt", 2000);
+      assert.equal(second.current.version, 3);
+      assert.deepEqual(second.versions.map((version) => version.version), [3]);
+
+      const reset = store.resetLanePrompt("advisor");
+      assert.equal(reset.current.version, 4);
+      assert.equal(reset.current.prompt, reset.base.prompt);
+      assert.equal(reset.versions.length, 1);
+    });
+
+    it("rejects invalid lanes and empty prompts", () => {
+      laneDb = new DatabaseConstructor(":memory:");
+      const store = createLanePromptStore(laneDb);
+
+      assert.throws(() => store.getLanePrompt("telegram" as never), /Unknown lane/);
+      assert.throws(() => store.setLanePrompt("worker", "   "), /Prompt must not be empty/);
+    });
+  });
+
+  describe("state/roleProfileStore", () => {
+    it("retrieves seeded default role profiles", () => {
+      const db = getStateDatabase();
+      const allProfiles = getRoleProfiles(db);
+      assert.equal(allProfiles.length, 2);
+
+      const acopilot = getDefaultRoleProfile(db, "acopilot");
+      const reviewer = getDefaultRoleProfile(db, "reviewer");
+
+      assert.ok(acopilot);
+      assert.strictEqual(acopilot.role, "acopilot");
+      assert.strictEqual(acopilot.is_default, 1);
+
+      assert.ok(reviewer);
+      assert.strictEqual(reviewer.role, "reviewer");
+      assert.strictEqual(reviewer.is_default, 1);
+    });
+
+    it("keeps Acopilot and Reviewer in separate, independently-defaulted profiles", () => {
+      const db = getStateDatabase();
+
+      for (const role of ["acopilot", "reviewer"] as const) {
+        const rows = getRoleProfiles(db, role);
+        assert.ok(rows.length > 0, `expected at least one ${role} profile`);
+        assert.ok(
+          rows.every((row) => row.role === role),
+          `role filter ${role} returned a foreign role: ${rows.map((r) => r.role).join(",")}`,
+        );
+      }
+
+      const acopilotDefault = getDefaultRoleProfile(db, "acopilot");
+      const reviewerDefault = getDefaultRoleProfile(db, "reviewer");
+      assert.ok(acopilotDefault && reviewerDefault);
+      assert.notStrictEqual(acopilotDefault.id, reviewerDefault.id);
+      assert.notStrictEqual(acopilotDefault.system_prompt, reviewerDefault.system_prompt);
+
+      const promoted = saveRoleProfile(db, {
+        id: "profile-default-acopilot",
+        role: "acopilot",
+        name: "Acopilot Alternate",
+        model_id: "gpt-5.6",
+        system_prompt: "Acopilot alternate prompt",
+        is_default: true,
+      });
+      assert.strictEqual(promoted.role, "acopilot");
+
+      assert.strictEqual(getDefaultRoleProfile(db, "acopilot")?.id, "profile-default-acopilot");
+
+      assert.strictEqual(
+        getRoleProfiles(db, "reviewer").filter((row) => row.is_default === 1).length,
+        1,
+        "the Reviewer must keep exactly one flagged default after an Acopilot profile update",
+      );
+      assert.strictEqual(
+        getRoleProfiles(db, "acopilot").filter((row) => row.is_default === 1).length,
+        1,
+        "Acopilot must keep exactly one flagged default after a profile update",
+      );
+    });
+
+    it("saves a new role profile and updates default status", () => {
+      const db = getStateDatabase();
+      const newProfile = saveRoleProfile(db, {
+        id: "profile-default-acopilot",
+        role: "acopilot",
+        name: "Acopilot Gemini Pro",
+        model_id: "gemini-2.5-pro",
+        reasoning_effort: "medium",
+        system_prompt: "Custom system prompt for testing",
+        is_default: true,
+      });
+
+      assert.strictEqual(newProfile.id, "profile-default-acopilot");
+      assert.strictEqual(newProfile.version, 2);
+      assert.strictEqual(newProfile.is_default, 1);
+
+      const defaultProfile = getDefaultRoleProfile(db, "acopilot");
+      assert.ok(defaultProfile);
+      assert.strictEqual(defaultProfile.id, "profile-default-acopilot");
+      assert.strictEqual(defaultProfile.model_id, "gemini-2.5-pro");
+    });
+
+    it("keeps repeated saves in role_profiles only, without growing any history table", () => {
+      const db = getStateDatabase();
+      for (let i = 0; i < 5; i += 1) {
+        saveRoleProfile(db, {
+          id: "profile-default-acopilot",
+          role: "acopilot",
+          name: "Acopilot Repeat",
+          model_id: `model-${i}`,
+          system_prompt: "Repeated save prompt",
+        });
+      }
+
+      const saved = db
+        .prepare("SELECT model_id, version FROM role_profiles WHERE id = ?")
+        .get("profile-default-acopilot") as { model_id: string; version: number } | undefined;
+      assert.ok(saved);
+      assert.strictEqual(saved.model_id, "model-4");
+      assert.strictEqual(saved.version, 6);
+
+      const historyTable = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'role_settings_history'")
+        .get();
+      assert.strictEqual(historyTable, undefined);
+    });
+
+    it("drops a legacy role_settings_history table during migration while preserving role profiles", () => {
+      const seedDb = getStateDatabase();
+      seedDb.exec(`
+        CREATE TABLE role_settings_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          role TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          model_id TEXT NOT NULL,
+          reasoning_effort TEXT NOT NULL DEFAULT 'high',
+          system_prompt TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX idx_role_settings_history_role ON role_settings_history(role, version DESC);
+        INSERT INTO role_settings_history (role, version, model_id, reasoning_effort, system_prompt, created_at)
+        VALUES ('acopilot', 1, 'legacy-model', 'high', 'legacy prompt', 1);
+        UPDATE schema_version SET version = 29 WHERE id = 1;
+      `);
+
+      resetStateDatabaseForTests();
+
+      const db = getStateDatabase();
+      const historyTable = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'role_settings_history'")
+        .get();
+      assert.strictEqual(historyTable, undefined);
+      const historyIndex = db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_role_settings_history_role'")
+        .get();
+      assert.strictEqual(historyIndex, undefined);
+
+      const profiles = getRoleProfiles(db);
+      assert.strictEqual(profiles.length, 2);
+    });
+  });
+
+  describe("shared prepared statements on state.db", () => {
+    it("replaces history entries without deleting linked provider-session metadata", () => {
+      const history = new HistoryStore({ namespace: "web-worker", storagePath: dbPath });
+      history.add("session-restore", { role: "user", text: "old", ts: 1 });
+      history.linkAgentSession("session-restore", {
+        agentId: "codex",
+        providerSessionId: "provider-thread",
+        cwd: "/repo",
+      });
+
+      assert.equal(history.replaceEntries("session-restore", [
+        { role: "user", text: "restored", ts: 2 },
+      ]), true);
+      assert.deepEqual(history.get("session-restore").map((entry) => entry.text), ["restored"]);
+      assert.equal(history.getAgentSessionLinks("session-restore")[0]?.providerSessionId, "provider-thread");
+    });
+
+    it("does not prepare a fresh thread/history statement set for each additional lane", () => {
+      const db = getStateDatabase(dbPath);
+      const originalPrepare = db.prepare.bind(db);
+      let prepareCount = 0;
+
+      (db as { prepare: typeof db.prepare }).prepare = ((...args: Parameters<typeof db.prepare>) => {
+        prepareCount += 1;
+        return originalPrepare(...args);
+      }) as typeof db.prepare;
+
+      try {
+        const workerThreads = new ThreadStorage({ namespace: "web-worker", stateDbPath: dbPath });
+        const workerHistory = new HistoryStore({ namespace: "web-worker", storagePath: dbPath });
+        const afterWorkerLane = prepareCount;
+
+        assert.ok(afterWorkerLane > 0);
+
+        const advisorThreads = new ThreadStorage({ namespace: "web-advisor", stateDbPath: dbPath });
+        const advisorHistory = new HistoryStore({ namespace: "web-advisor", storagePath: dbPath });
+        const customThreads = new ThreadStorage({ namespace: "web-custom", stateDbPath: dbPath });
+        const customHistory = new HistoryStore({ namespace: "web-custom", storagePath: dbPath });
+
+        assert.equal(prepareCount, afterWorkerLane);
+
+        workerThreads.setRecord(1, { threadId: "worker-thread", cwd: "/tmp/worker", agentThreads: { codex: "worker-thread" } });
+        advisorThreads.setRecord(1, { threadId: "advisor-thread", cwd: "/tmp/advisor", agentThreads: { codex: "advisor-thread" } });
+        customThreads.setRecord(1, { threadId: "custom-thread", cwd: "/tmp/custom", agentThreads: { codex: "custom-thread" } });
+
+        workerHistory.add("session-1", { role: "user", text: "worker-entry", ts: 1 });
+        advisorHistory.add("session-1", { role: "user", text: "advisor-entry", ts: 2 });
+        customHistory.add("session-1", { role: "user", text: "custom-entry", ts: 3 });
+
+        assert.equal(workerThreads.getRecord(1)?.threadId, "worker-thread");
+        assert.equal(advisorThreads.getRecord(1)?.threadId, "advisor-thread");
+        assert.equal(customThreads.getRecord(1)?.threadId, "custom-thread");
+
+        assert.deepEqual(workerHistory.get("session-1").map((entry) => entry.text), ["worker-entry"]);
+        assert.deepEqual(advisorHistory.get("session-1").map((entry) => entry.text), ["advisor-entry"]);
+        assert.deepEqual(customHistory.get("session-1").map((entry) => entry.text), ["custom-entry"]);
+      } finally {
+        (db as { prepare: typeof db.prepare }).prepare = originalPrepare as typeof db.prepare;
+      }
+    });
+  });
+});

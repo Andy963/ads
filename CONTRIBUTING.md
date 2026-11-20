@@ -173,14 +173,13 @@ describe('Feature Name', () => {
 
 ```
 ads/
-├── server/        # Backend (Node.js, TypeScript)
-│   ├── graph/     # Graph/workflow logic
-│   ├── workspace/ # Workspace management
-│   ├── telegram/  # Telegram bot
-│   └── web/       # Web Console backend
-├── client/        # Frontend (Vue 3, Vite)
-├── tests/         # Test files
-├── scripts/       # Build and utility scripts
+├── client/        # Shared frontend (Vue 3, Vite)
+├── rust-server/   # Rust backend and connector crates
+├── ts-server/     # TypeScript backend, shared contracts, tests, and connector
+│   ├── server/
+│   ├── shared/
+│   ├── tests/
+│   └── connectors/telegram/
 └── docs/          # Documentation
 ```
 

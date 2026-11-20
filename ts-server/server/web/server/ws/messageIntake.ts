@@ -1,0 +1,86 @@
+import type { RawData } from "ws";
+
+import { wsMessageSchema, type WsMessage } from "./schema.js";
+
+export type ParsedWsEnvelope =
+  | {
+      ok: true;
+      parsed: WsMessage;
+      receivedAt: number;
+      nextReceivedAt: number;
+      clientMessageId: string | null;
+    }
+  | {
+      ok: false;
+      nextReceivedAt: number;
+      errorMessage: string;
+    };
+
+export function parseIncomingWsEnvelope(args: {
+  data: RawData;
+  lastReceivedAt: number;
+  now?: number;
+}): ParsedWsEnvelope {
+  const now = args.now ?? Date.now();
+  const receivedAt = now > args.lastReceivedAt ? now : args.lastReceivedAt + 1;
+
+  try {
+    const raw = JSON.parse(String(args.data)) as unknown;
+    const result = wsMessageSchema.safeParse(raw);
+    if (!result.success) {
+      return { ok: false, nextReceivedAt: receivedAt, errorMessage: "Invalid message payload" };
+    }
+    const parsed = result.data;
+    const clientMessageIdRaw = String(parsed.client_message_id ?? "").trim();
+    return {
+      ok: true,
+      parsed,
+      receivedAt,
+      nextReceivedAt: receivedAt,
+      clientMessageId: clientMessageIdRaw || null,
+    };
+  } catch {
+    return { ok: false, nextReceivedAt: receivedAt, errorMessage: "Invalid JSON message" };
+  }
+}
+
+export function handleImmediateWsMessage(args: {
+  parsed: WsMessage;
+  receivedAt: number;
+  abortInFlight: () => boolean;
+  isLaneCurrent?: () => boolean;
+  sendJson: (payload: unknown) => void;
+  broadcastJson?: (payload: unknown) => void;
+}): boolean {
+  if (args.isLaneCurrent && !args.isLaneCurrent()) {
+    return args.parsed.type === "ping" || args.parsed.type === "pong" || args.parsed.type === "interrupt";
+  }
+  if (args.parsed.type === "ping") {
+    args.sendJson({ type: "pong", ts: args.receivedAt });
+    return true;
+  }
+  if (args.parsed.type === "pong") {
+    return true;
+  }
+  if (args.parsed.type === "interrupt") {
+    const found = args.abortInFlight();
+    if (!found) {
+      // A stop request can race ahead of the turn that the client still shows
+      // as busy, or arrive after it finished. That is a benign no-op, not a
+      // turn failure: persist nothing, but tell the client to settle its local
+      // running state.
+      const payload = {
+        type: "error",
+        message: "当前没有正在执行的任务",
+        errorInfo: { code: "no_active_turn", retryable: false, needsReset: false },
+      };
+      if (args.broadcastJson) {
+        args.broadcastJson(payload);
+      } else {
+        args.sendJson(payload);
+      }
+    }
+    return true;
+  }
+  return false;
+}

@@ -6,16 +6,17 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const DIST = path.join(ROOT, "dist");
+const SERVER_DIST = path.join(ROOT, "ts-server", "dist");
 
 // 1. Bundle server code into a single file
 console.log("[bundle] Bundling server code with esbuild...");
 await esbuild.build({
-  entryPoints: [path.join(DIST, "server", "cli.js")],
+  entryPoints: [path.join(SERVER_DIST, "server", "cli.js")],
   bundle: true,
   platform: "node",
   target: "node20",
   format: "esm",
-  outfile: path.join(DIST, "server", "cli.bundle.js"),
+  outfile: path.join(SERVER_DIST, "server", "cli.bundle.js"),
   external: ["better-sqlite3"],
   sourcemap: false,
   banner: {
@@ -25,7 +26,7 @@ await esbuild.build({
 
 // 2. Remove old individual files, keep only bundle
 console.log("[bundle] Cleaning up individual server files...");
-const serverDir = path.join(DIST, "server");
+const serverDir = path.join(SERVER_DIST, "server");
 function removeOldFiles(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const fullPath = path.join(dir, entry.name);
@@ -43,7 +44,7 @@ fs.renameSync(
   path.join(serverDir, "cli.bundle.js"),
   path.join(serverDir, "cli.js"),
 );
-console.log("[bundle] Server bundled into dist/server/cli.js");
+console.log("[bundle] Server bundled into ts-server/dist/server/cli.js");
 
 // 3. Copy better-sqlite3 native module (with its dependencies)
 console.log("[bundle] Copying better-sqlite3 native module...");
@@ -84,7 +85,7 @@ const distPkg = {
   },
 };
 fs.writeFileSync(
-  path.join(DIST, "package.json"),
+  path.join(SERVER_DIST, "package.json"),
   JSON.stringify(distPkg, null, 2) + "\n",
 );
 
@@ -96,6 +97,6 @@ for (const f of [".ads", "ads.db", "ads.db-shm", "ads.db-wal"]) {
   }
 }
 
-console.log("[bundle] Done! dist/ is now self-contained.");
-console.log("[bundle] To deploy: copy dist/ to target machine and run:");
-console.log("[bundle]   cd dist && node server/cli.js");
+console.log("[bundle] Done! ts-server/dist/ is now self-contained.");
+console.log("[bundle] To deploy: copy dist/ and ts-server/dist/ to target machine and run:");
+console.log("[bundle]   cd ts-server/dist && node server/cli.js");

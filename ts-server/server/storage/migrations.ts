@@ -1,0 +1,1070 @@
+/**
+ * 数据库迁移管理
+ *
+ * 每个迁移是一个函数，接收数据库实例并执行 schema 变更。
+ * 迁移按顺序执行，版本号从 1 开始递增。
+ *
+ * 添加新迁移时：
+ * 1. 在 migrations 数组末尾添加新的迁移函数
+ * 2. 迁移函数应该是幂等的（可以安全地多次运行）
+ * 3. 使用 IF NOT EXISTS / IF EXISTS 等条件语句
+ */
+
+import type { Database as DatabaseType } from "better-sqlite3";
+
+export interface Migration {
+  version: number;
+  description: string;
+  up: (db: DatabaseType) => void;
+}
+
+function quoteIdentifier(value: string): string {
+  if (!/^[a-z_][a-z0-9_]*$/i.test(value)) {
+    throw new Error("Invalid identifier: " + value);
+  }
+  return `"${value}"`;
+}
+
+function getTableColumnNames(db: DatabaseType, table: string): Set<string> {
+  const columns = db.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all() as Array<{ name?: string }>;
+  return new Set(columns.map((c) => String(c.name ?? "").trim()).filter(Boolean));
+}
+
+function getTableColumnNullability(db: DatabaseType, table: string): Map<string, boolean> {
+  const columns = db.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all() as Array<{ name?: unknown; notnull?: unknown }>;
+  return new Map(
+    columns
+      .map((column) => [String(column.name ?? "").trim(), Number(column.notnull) === 1] as const)
+      .filter(([name]) => name.length > 0),
+  );
+}
+
+function serializeSqliteRow(row: Record<string, unknown>): string {
+  return JSON.stringify(row, (_, value: unknown) => (typeof value === "bigint" ? value.toString() : value)) ?? "{}";
+}
+
+/**
+ * 迁移列表 - 按版本号顺序排列
+ * 新迁移添加到数组末尾
+ */
+export const migrations: Migration[] = [
+  {
+    version: 1,
+    description: "Legacy workflow/graph schema marker for historical database compatibility",
+    up: () => {},
+  },
+  {
+    version: 2,
+    description: "Task queue system - tasks, task_plans, task_messages, task_contexts, model_configs, conversations",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS tasks (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          prompt TEXT NOT NULL,
+          model TEXT NOT NULL DEFAULT 'auto',
+          model_params TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          priority INTEGER DEFAULT 0,
+          inherit_context INTEGER DEFAULT 0,
+          parent_task_id TEXT,
+          thread_id TEXT,
+          result TEXT,
+          error TEXT,
+          retry_count INTEGER DEFAULT 0,
+          max_retries INTEGER DEFAULT 3,
+          created_at INTEGER NOT NULL,
+          started_at INTEGER,
+          completed_at INTEGER,
+          created_by TEXT,
+          FOREIGN KEY(parent_task_id) REFERENCES tasks(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, priority DESC, created_at);
+        CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+
+        CREATE TABLE IF NOT EXISTS task_plans (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL,
+          step_number INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          status TEXT DEFAULT 'pending',
+          started_at INTEGER,
+          completed_at INTEGER,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_task_plans_task ON task_plans(task_id, step_number);
+
+        CREATE TABLE IF NOT EXISTS task_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL,
+          plan_step_id INTEGER,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          message_type TEXT,
+          model_used TEXT,
+          token_count INTEGER,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY(plan_step_id) REFERENCES task_plans(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_task_messages_task ON task_messages(task_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS task_contexts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id TEXT NOT NULL,
+          context_type TEXT NOT NULL,
+          content TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS model_configs (
+          id TEXT PRIMARY KEY,
+          display_name TEXT NOT NULL,
+          provider TEXT NOT NULL,
+          is_enabled INTEGER DEFAULT 1,
+          is_default INTEGER DEFAULT 0,
+          config_json TEXT,
+          updated_at INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS conversations (
+          id TEXT PRIMARY KEY,
+          task_id TEXT,
+          title TEXT,
+          total_tokens INTEGER DEFAULT 0,
+          last_model TEXT,
+          model_response_ids TEXT,
+          status TEXT DEFAULT 'active',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_conversations_task ON conversations(task_id, updated_at);
+
+        CREATE TABLE IF NOT EXISTS conversation_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          conversation_id TEXT NOT NULL,
+          task_id TEXT,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          model_id TEXT,
+          token_count INTEGER DEFAULT 0,
+          metadata TEXT,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL,
+          FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_conv_messages ON conversation_messages(conversation_id, created_at);
+      `);
+    },
+  },
+  {
+    version: 3,
+    description: "Models - remove hardcoded seed configs",
+    up: () => {},
+  },
+  {
+    version: 4,
+    description: "Task ordering - add queue_order to tasks",
+    up: (db) => {
+      const names = getTableColumnNames(db, "tasks");
+      if (!names.has("queue_order")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN queue_order INTEGER`);
+      }
+
+      db.exec(`
+        UPDATE tasks
+        SET queue_order = created_at
+        WHERE queue_order IS NULL
+      `);
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_queue_order
+          ON tasks(status, priority DESC, queue_order ASC, created_at ASC)
+      `);
+    },
+  },
+  {
+    version: 5,
+    description: "Task queue - add queued_at to tasks for delayed enqueue UX",
+    up: (db) => {
+      const names = getTableColumnNames(db, "tasks");
+      if (!names.has("queued_at")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN queued_at INTEGER`);
+      }
+
+      db.exec(`
+        UPDATE tasks
+        SET queued_at = COALESCE(queued_at, created_at)
+        WHERE status = 'queued' AND queued_at IS NULL
+      `);
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_queued_at
+          ON tasks(status, priority DESC, queue_order ASC, queued_at ASC, created_at ASC)
+      `);
+    },
+  },
+  {
+    version: 6,
+    description: "Attachments - add attachments table for image uploads",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS attachments (
+          id TEXT PRIMARY KEY,
+          task_id TEXT,
+          kind TEXT NOT NULL,
+          content_type TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          width INTEGER NOT NULL,
+          height INTEGER NOT NULL,
+          sha256 TEXT NOT NULL,
+          storage_key TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_sha256 ON attachments(sha256);
+        CREATE INDEX IF NOT EXISTS idx_attachments_task_id ON attachments(task_id, created_at DESC);
+      `);
+    },
+  },
+  {
+    version: 7,
+    description: "Task queue - add prompt_injected_at for delayed prompt injection idempotency",
+    up: (db) => {
+      const names = getTableColumnNames(db, "tasks");
+      if (!names.has("prompt_injected_at")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN prompt_injected_at INTEGER`);
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_prompt_injected_at
+          ON tasks(prompt_injected_at, created_at DESC)
+      `);
+    },
+  },
+  {
+    version: 8,
+    description: "Attachments - store original filename",
+    up: (db) => {
+      const names = getTableColumnNames(db, "attachments");
+      if (!names.has("filename")) {
+        db.exec(`ALTER TABLE attachments ADD COLUMN filename TEXT`);
+      }
+    },
+  },
+  {
+    version: 9,
+    description: "Models - remove hardcoded seed configs (continued)",
+    up: () => {},
+  },
+  {
+    version: 10,
+    description: "Tasks - add archived_at for completed task auto-archive + retention purge",
+    up: (db) => {
+      const names = getTableColumnNames(db, "tasks");
+      if (!names.has("archived_at")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN archived_at INTEGER`);
+      }
+
+      // Backfill: archive existing completed tasks so the default UI no longer shows them.
+      db.exec(`
+        UPDATE tasks
+        SET archived_at = COALESCE(archived_at, completed_at, created_at)
+        WHERE status = 'completed' AND archived_at IS NULL
+      `);
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_archived_at
+          ON tasks(archived_at, completed_at DESC, created_at DESC)
+      `);
+    },
+  },
+  {
+    version: 11,
+    description: "Tasks - add agent_id for explicit CLI agent selection",
+    up: (db) => {
+      const names = getTableColumnNames(db, "tasks");
+      if (!names.has("agent_id")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN agent_id TEXT`);
+      }
+    },
+  },
+  {
+    version: 12,
+    description: "Scheduler - schedules and schedule_runs",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS schedules (
+          id TEXT PRIMARY KEY,
+          instruction TEXT NOT NULL,
+          spec_json TEXT NOT NULL,
+          enabled INTEGER NOT NULL DEFAULT 0,
+          next_run_at INTEGER,
+          lease_owner TEXT,
+          lease_until INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_schedules_due
+          ON schedules(enabled, next_run_at, id);
+
+        CREATE INDEX IF NOT EXISTS idx_schedules_lease_until
+          ON schedules(lease_until, id);
+
+        CREATE TABLE IF NOT EXISTS schedule_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          schedule_id TEXT NOT NULL,
+          external_id TEXT NOT NULL,
+          run_at INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          task_id TEXT,
+          result TEXT,
+          error TEXT,
+          created_at INTEGER NOT NULL,
+          started_at INTEGER,
+          completed_at INTEGER,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(schedule_id) REFERENCES schedules(id) ON DELETE CASCADE,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE SET NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_runs_external_id
+          ON schedule_runs(external_id);
+
+        CREATE INDEX IF NOT EXISTS idx_schedule_runs_schedule_id_run_at
+          ON schedule_runs(schedule_id, run_at DESC, id DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_schedule_runs_status_run_at
+          ON schedule_runs(status, run_at DESC, id DESC);
+      `);
+    },
+  },
+  {
+    version: 13,
+    description: "Web review workflow - task review fields, review snapshots, review queue",
+    up: (db) => {
+      const taskNames = getTableColumnNames(db, "tasks");
+      if (!taskNames.has("review_required")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN review_required INTEGER NOT NULL DEFAULT 0`);
+      }
+      if (!taskNames.has("review_status")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN review_status TEXT NOT NULL DEFAULT 'none'`);
+      }
+      if (!taskNames.has("review_snapshot_id")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN review_snapshot_id TEXT`);
+      }
+      if (!taskNames.has("review_conclusion")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN review_conclusion TEXT`);
+      }
+      if (!taskNames.has("reviewed_at")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN reviewed_at INTEGER`);
+      }
+
+      db.exec(`
+        UPDATE tasks
+        SET review_required = COALESCE(review_required, 0)
+        WHERE review_required IS NULL
+      `);
+      db.exec(`
+        UPDATE tasks
+        SET review_status = COALESCE(review_status, 'none')
+        WHERE review_status IS NULL OR TRIM(COALESCE(review_status, '')) = ''
+      `);
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_review_status
+          ON tasks(review_status, completed_at DESC, created_at DESC, id DESC)
+      `);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS review_snapshots (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          spec_ref TEXT,
+          worktree_dir TEXT NOT NULL DEFAULT '',
+          patch_json TEXT,
+          changed_files_json TEXT NOT NULL,
+          lint_summary TEXT NOT NULL DEFAULT '',
+          test_summary TEXT NOT NULL DEFAULT '',
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_snapshots_task_id
+          ON review_snapshots(task_id, created_at DESC, id DESC);
+
+        CREATE TABLE IF NOT EXISTS review_queue_items (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          snapshot_id TEXT NOT NULL,
+          status TEXT NOT NULL,
+          error TEXT,
+          conclusion TEXT,
+          created_at INTEGER NOT NULL,
+          started_at INTEGER,
+          completed_at INTEGER,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY(snapshot_id) REFERENCES review_snapshots(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_queue_status_created_at
+          ON review_queue_items(status, created_at ASC, id ASC);
+        CREATE INDEX IF NOT EXISTS idx_review_queue_task_id
+          ON review_queue_items(task_id, created_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_review_queue_snapshot_id
+          ON review_queue_items(snapshot_id);
+      `);
+    },
+  },
+  {
+    version: 14,
+    description: "Review artifacts - durable reviewer artifacts with snapshot linkage",
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS review_artifacts (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          snapshot_id TEXT NOT NULL,
+          queue_item_id TEXT,
+          scope TEXT NOT NULL,
+          history_key TEXT,
+          prompt_text TEXT NOT NULL DEFAULT '',
+          response_text TEXT NOT NULL DEFAULT '',
+          summary_text TEXT NOT NULL DEFAULT '',
+          verdict TEXT NOT NULL DEFAULT 'analysis',
+          prior_artifact_id TEXT,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY(snapshot_id) REFERENCES review_snapshots(id) ON DELETE CASCADE,
+          FOREIGN KEY(queue_item_id) REFERENCES review_queue_items(id) ON DELETE SET NULL,
+          FOREIGN KEY(prior_artifact_id) REFERENCES review_artifacts(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_artifacts_snapshot_created_at
+          ON review_artifacts(snapshot_id, created_at DESC, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_review_artifacts_task_created_at
+          ON review_artifacts(task_id, created_at DESC, id DESC);
+      `);
+    },
+  },
+  {
+    version: 15,
+    description: "Review snapshots - persist bound worktree directory",
+    up: (db) => {
+      const reviewSnapshotNames = getTableColumnNames(db, "review_snapshots");
+      if (!reviewSnapshotNames.has("worktree_dir")) {
+        db.exec(`ALTER TABLE review_snapshots ADD COLUMN worktree_dir TEXT NOT NULL DEFAULT ''`);
+      }
+      db.exec(`
+        UPDATE review_snapshots
+        SET worktree_dir = COALESCE(worktree_dir, '')
+        WHERE worktree_dir IS NULL
+      `);
+    },
+  },
+  {
+    version: 16,
+    description: "Task execution isolation - add task execution isolation, task runs, and snapshot run linkage",
+    up: (db) => {
+      const taskNames = getTableColumnNames(db, "tasks");
+      if (!taskNames.has("execution_isolation")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN execution_isolation TEXT NOT NULL DEFAULT 'default'`);
+      }
+
+      db.exec(`
+        UPDATE tasks
+        SET execution_isolation = COALESCE(NULLIF(TRIM(execution_isolation), ''), 'default')
+        WHERE execution_isolation IS NULL OR TRIM(COALESCE(execution_isolation, '')) = ''
+      `);
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_execution_isolation
+          ON tasks(execution_isolation, status, created_at DESC, id DESC)
+      `);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS task_runs (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          execution_isolation TEXT NOT NULL DEFAULT 'default',
+          workspace_root TEXT NOT NULL,
+          worktree_dir TEXT,
+          branch_name TEXT,
+          base_head TEXT,
+          end_head TEXT,
+          status TEXT NOT NULL,
+          capture_status TEXT NOT NULL DEFAULT 'pending',
+          apply_status TEXT NOT NULL DEFAULT 'pending',
+          error TEXT,
+          created_at INTEGER NOT NULL,
+          started_at INTEGER,
+          completed_at INTEGER,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_task_runs_task_id_created_at
+          ON task_runs(task_id, created_at DESC, id DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_task_runs_status_created_at
+          ON task_runs(status, created_at DESC, id DESC);
+      `);
+
+      const reviewSnapshotNames = getTableColumnNames(db, "review_snapshots");
+      if (!reviewSnapshotNames.has("task_run_id")) {
+        db.exec(`ALTER TABLE review_snapshots ADD COLUMN task_run_id TEXT`);
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_review_snapshots_task_run_id
+          ON review_snapshots(task_run_id, created_at DESC, id DESC)
+      `);
+    },
+  },
+  {
+    version: 17,
+    description: "Backfill review snapshot task_run_id for upgraded isolation reviews",
+    up: (db) => {
+      db.exec(`
+        UPDATE review_snapshots
+        SET task_run_id = (
+          SELECT r.id
+          FROM task_runs r
+          WHERE r.task_id = review_snapshots.task_id
+            AND r.created_at <= review_snapshots.created_at
+          ORDER BY r.created_at DESC, r.id DESC
+          LIMIT 1
+        )
+        WHERE TRIM(COALESCE(task_run_id, '')) = ''
+          AND EXISTS (
+            SELECT 1
+            FROM task_runs r
+            WHERE r.task_id = review_snapshots.task_id
+              AND r.created_at <= review_snapshots.created_at
+          )
+      `);
+    },
+  },
+  {
+    version: 18,
+    description: "Repair legacy schema-v17 isolation columns for task runs and review snapshots",
+    up: (db) => {
+      // Some historical repair tests and interrupted upgrades can expose a newer
+      // trigger set to an older table shape. Drop it before repairing; v26 recreates it.
+      const futureWorkspaceTriggers = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'enforce_%'")
+        .all() as Array<{ name?: unknown }>;
+      for (const row of futureWorkspaceTriggers) {
+        const name = String(row.name ?? "");
+        if (/^enforce_[a-z0-9_]+$/.test(name)) {
+          db.exec(`DROP TRIGGER IF EXISTS ${name}`);
+        }
+      }
+
+      const taskNames = getTableColumnNames(db, "tasks");
+      if (!taskNames.has("execution_isolation")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN execution_isolation TEXT NOT NULL DEFAULT 'default'`);
+      }
+      db.exec(`
+        UPDATE tasks
+        SET execution_isolation = COALESCE(NULLIF(TRIM(execution_isolation), ''), 'default')
+        WHERE execution_isolation IS NULL OR TRIM(COALESCE(execution_isolation, '')) = ''
+      `);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS task_runs (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          execution_isolation TEXT NOT NULL DEFAULT 'default',
+          workspace_root TEXT NOT NULL,
+          worktree_dir TEXT,
+          branch_name TEXT,
+          base_head TEXT,
+          end_head TEXT,
+          status TEXT NOT NULL,
+          capture_status TEXT NOT NULL DEFAULT 'pending',
+          apply_status TEXT NOT NULL DEFAULT 'pending',
+          error TEXT,
+          created_at INTEGER NOT NULL,
+          started_at INTEGER,
+          completed_at INTEGER,
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        )
+      `);
+
+      const taskRunNames = getTableColumnNames(db, "task_runs");
+      if (!taskRunNames.has("execution_isolation")) {
+        db.exec(`ALTER TABLE task_runs ADD COLUMN execution_isolation TEXT NOT NULL DEFAULT 'default'`);
+      }
+      if (!taskRunNames.has("error")) {
+        db.exec(`ALTER TABLE task_runs ADD COLUMN error TEXT`);
+      }
+
+      db.exec(`
+        UPDATE task_runs
+        SET execution_isolation = COALESCE(NULLIF(TRIM(execution_isolation), ''), 'default')
+        WHERE execution_isolation IS NULL OR TRIM(COALESCE(execution_isolation, '')) = ''
+      `);
+
+      if (taskRunNames.has("apply_error") || taskRunNames.has("capture_error")) {
+        const applyError = taskRunNames.has("apply_error") ? "apply_error" : "NULL";
+        const captureError = taskRunNames.has("capture_error") ? "capture_error" : "NULL";
+        db.exec(`
+          UPDATE task_runs
+          SET error = COALESCE(error, ${applyError}, ${captureError})
+          WHERE TRIM(COALESCE(error, '')) = ''
+        `);
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_execution_isolation
+          ON tasks(execution_isolation, status, created_at DESC, id DESC)
+      `);
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_task_runs_task_id_created_at
+          ON task_runs(task_id, created_at DESC, id DESC)
+      `);
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_task_runs_status_created_at
+          ON task_runs(status, created_at DESC, id DESC)
+      `);
+
+      const reviewSnapshotNames = getTableColumnNames(db, "review_snapshots");
+      if (!reviewSnapshotNames.has("task_run_id")) {
+        db.exec(`ALTER TABLE review_snapshots ADD COLUMN task_run_id TEXT`);
+      }
+      if (!reviewSnapshotNames.has("worktree_dir")) {
+        db.exec(`ALTER TABLE review_snapshots ADD COLUMN worktree_dir TEXT NOT NULL DEFAULT ''`);
+      }
+      db.exec(`
+        UPDATE review_snapshots
+        SET worktree_dir = COALESCE(worktree_dir, '')
+        WHERE worktree_dir IS NULL
+      `);
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_review_snapshots_task_run_id
+          ON review_snapshots(task_run_id, created_at DESC, id DESC)
+      `);
+    },
+  },
+  {
+    version: 19,
+    description: "Model configs - separate immutable config id from agent model id",
+    up: (db) => {
+      const names = getTableColumnNames(db, "model_configs");
+      if (!names.has("model_id")) {
+        db.exec(`ALTER TABLE model_configs ADD COLUMN model_id TEXT`);
+      }
+      db.exec(`
+        UPDATE model_configs
+        SET model_id = id
+        WHERE model_id IS NULL OR TRIM(model_id) = ''
+      `);
+    },
+  },
+  {
+    version: 20,
+    description: "Hermes memory - FTS indexes for task and conversation messages",
+    up: (db) => {
+      db.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS task_messages_fts USING fts5(
+          content,
+          content='task_messages',
+          content_rowid='id',
+          tokenize='unicode61 remove_diacritics 2'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS task_messages_ai AFTER INSERT ON task_messages BEGIN
+          INSERT INTO task_messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS task_messages_ad AFTER DELETE ON task_messages BEGIN
+          INSERT INTO task_messages_fts(task_messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS task_messages_au AFTER UPDATE ON task_messages BEGIN
+          INSERT INTO task_messages_fts(task_messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+          INSERT INTO task_messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS conversation_messages_fts USING fts5(
+          content,
+          content='conversation_messages',
+          content_rowid='id',
+          tokenize='unicode61 remove_diacritics 2'
+        );
+
+        CREATE TRIGGER IF NOT EXISTS conversation_messages_ai AFTER INSERT ON conversation_messages BEGIN
+          INSERT INTO conversation_messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS conversation_messages_ad AFTER DELETE ON conversation_messages BEGIN
+          INSERT INTO conversation_messages_fts(conversation_messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS conversation_messages_au AFTER UPDATE ON conversation_messages BEGIN
+          INSERT INTO conversation_messages_fts(conversation_messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+          INSERT INTO conversation_messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+      `);
+
+      db.exec(`
+        INSERT INTO task_messages_fts(rowid, content)
+        SELECT id, content FROM task_messages
+        WHERE id NOT IN (SELECT rowid FROM task_messages_fts)
+          AND length(content) <= 65536
+        LIMIT 500
+      `);
+      db.exec(`
+        INSERT INTO conversation_messages_fts(rowid, content)
+        SELECT id, content FROM conversation_messages
+        WHERE id NOT IN (SELECT rowid FROM conversation_messages_fts)
+          AND length(content) <= 65536
+        LIMIT 500
+      `);
+    },
+  },
+  {
+    version: 21,
+    description:
+      "Repair model_configs.model_id for dbs that skipped v19 (column missing after schema_version was bumped by a divergent legacy v19)",
+    up: (db) => {
+      const names = getTableColumnNames(db, "model_configs");
+      if (!names.has("model_id")) {
+        db.exec(`ALTER TABLE model_configs ADD COLUMN model_id TEXT`);
+      }
+      db.exec(`
+        UPDATE model_configs
+        SET model_id = id
+        WHERE model_id IS NULL OR TRIM(model_id) = ''
+      `);
+    },
+  },
+  {
+    version: 22,
+    description: "Codex Goal Mode - per-task goal fields (goal_mode, goal_objective, goal_token_budget, goal_status, goal_tokens_used, goal_time_used_seconds)",
+    up: (db) => {
+      const names = getTableColumnNames(db, "tasks");
+      if (!names.has("goal_mode")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN goal_mode INTEGER NOT NULL DEFAULT 0`);
+      }
+      if (!names.has("goal_objective")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN goal_objective TEXT`);
+      }
+      if (!names.has("goal_token_budget")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN goal_token_budget INTEGER`);
+      }
+      if (!names.has("goal_status")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN goal_status TEXT`);
+      }
+      if (!names.has("goal_tokens_used")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN goal_tokens_used INTEGER`);
+      }
+      if (!names.has("goal_time_used_seconds")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN goal_time_used_seconds INTEGER`);
+      }
+    },
+  },
+  {
+    version: 23,
+    description: "Task queue - persist delayed retries after exhausted upstream failures",
+    up: (db) => {
+      const names = getTableColumnNames(db, "tasks");
+      if (!names.has("next_attempt_at")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN next_attempt_at INTEGER`);
+      }
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_tasks_next_attempt_at
+          ON tasks(status, next_attempt_at, queue_order, created_at)
+      `);
+    },
+  },
+  {
+    version: 24,
+    description: "Central workspaces database isolation columns and composite uniqueness",
+    up: (db) => {
+      const addColumn = (table: string, column: string) => {
+        const names = getTableColumnNames(db, table);
+        if (!names.has(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT NOT NULL DEFAULT ''`);
+      };
+      for (const table of ["tasks", "task_plans", "task_messages", "task_contexts", "task_runs", "schedules", "schedule_runs", "attachments", "conversations", "conversation_messages", "review_snapshots", "review_queue_items", "review_artifacts"]) {
+        addColumn(table, "workspace_id");
+      }
+      db.exec(`
+        DROP INDEX IF EXISTS idx_attachments_sha256;
+        DROP INDEX IF EXISTS idx_schedule_runs_external_id;
+        CREATE TABLE IF NOT EXISTS legacy_workspace_migrations (
+          workspace_id TEXT PRIMARY KEY,
+          source_path TEXT NOT NULL UNIQUE,
+          summary_json TEXT NOT NULL,
+          completed_at INTEGER NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_workspace_sha256 ON attachments(workspace_id, sha256);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_runs_workspace_external_id ON schedule_runs(workspace_id, external_id);
+        CREATE INDEX IF NOT EXISTS idx_tasks_workspace_status ON tasks(workspace_id, status, queue_order, created_at);
+        CREATE INDEX IF NOT EXISTS idx_task_messages_workspace_task ON task_messages(workspace_id, task_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_task_runs_workspace_task ON task_runs(workspace_id, task_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_schedules_workspace_due ON schedules(workspace_id, enabled, next_run_at);
+        CREATE INDEX IF NOT EXISTS idx_schedule_runs_workspace_schedule ON schedule_runs(workspace_id, schedule_id, run_at);
+        CREATE INDEX IF NOT EXISTS idx_conversations_workspace ON conversations(workspace_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_conversation_messages_workspace ON conversation_messages(workspace_id, conversation_id, created_at);
+      `);
+    },
+  },
+  {
+    version: 25,
+    description: "Repair central workspace migration audit table",
+    up: (db) => {
+      db.exec("CREATE TABLE IF NOT EXISTS legacy_workspace_migrations (workspace_id TEXT PRIMARY KEY, source_path TEXT NOT NULL UNIQUE, summary_json TEXT NOT NULL, completed_at INTEGER NOT NULL)");
+    },
+  },
+  {
+    version: 26,
+    description: "Enforce workspace ownership across business table references",
+    up: (db) => {
+      // Some invalid parents may have restrictive child foreign keys. Defer those
+      // checks for this transaction while every affected reference is repaired.
+      db.pragma("defer_foreign_keys = ON");
+      db.exec(`
+        DROP INDEX IF EXISTS idx_attachments_sha256;
+        DROP INDEX IF EXISTS idx_schedule_runs_external_id;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_attachments_workspace_sha256
+          ON attachments(workspace_id, sha256);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_runs_workspace_external_id
+          ON schedule_runs(workspace_id, external_id);
+        CREATE TABLE IF NOT EXISTS workspace_reference_repairs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          table_name TEXT NOT NULL,
+          column_name TEXT NOT NULL,
+          parent_table TEXT NOT NULL,
+          row_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          reference_value TEXT NOT NULL,
+          action TEXT NOT NULL,
+          row_json TEXT NOT NULL,
+          repaired_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspace_reference_repairs_lookup
+          ON workspace_reference_repairs(table_name, column_name, repaired_at);
+      `);
+
+      const references = [
+        ["tasks", "parent_task_id", "tasks"],
+        ["task_plans", "task_id", "tasks"],
+        ["task_messages", "task_id", "tasks"],
+        ["task_messages", "plan_step_id", "task_plans"],
+        ["task_contexts", "task_id", "tasks"],
+        ["task_runs", "task_id", "tasks"],
+        ["schedules", "id", "schedules"],
+        ["schedule_runs", "schedule_id", "schedules"],
+        ["schedule_runs", "task_id", "tasks"],
+        ["attachments", "task_id", "tasks"],
+        ["conversations", "task_id", "tasks"],
+        ["conversation_messages", "conversation_id", "conversations"],
+        ["conversation_messages", "task_id", "tasks"],
+        ["review_snapshots", "task_id", "tasks"],
+        ["review_snapshots", "task_run_id", "task_runs"],
+        ["review_queue_items", "task_id", "tasks"],
+        ["review_queue_items", "snapshot_id", "review_snapshots"],
+        ["review_artifacts", "task_id", "tasks"],
+        ["review_artifacts", "snapshot_id", "review_snapshots"],
+        ["review_artifacts", "queue_item_id", "review_queue_items"],
+        ["review_artifacts", "prior_artifact_id", "review_artifacts"],
+      ] as const;
+
+      for (const [table, column, parentTable] of references) {
+        // The schedules self-reference is a no-op used to ensure every workspace-owned root
+        // table participates in the same validation path without inventing a parent relation.
+        if (table === parentTable && column === "id") continue;
+        const childColumns = getTableColumnNames(db, table);
+        const parentColumns = getTableColumnNames(db, parentTable);
+        if (!childColumns.has("workspace_id") || !parentColumns.has("workspace_id") || !childColumns.has(column)) {
+          continue;
+        }
+        const invalidRows = db.prepare(
+          `SELECT child.rowid AS __repair_rowid__, child.* FROM ${quoteIdentifier(table)} child
+           WHERE child.${quoteIdentifier(column)} IS NOT NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM ${quoteIdentifier(parentTable)} parent
+               WHERE parent.id = child.${quoteIdentifier(column)}
+                 AND parent.workspace_id = child.workspace_id
+             )`,
+        ).all() as Array<Record<string, unknown>>;
+        if (invalidRows.length > 0) {
+          const action = getTableColumnNullability(db, table).get(column) ? "delete" : "nullify";
+          const audit = db.prepare(
+            `INSERT INTO workspace_reference_repairs (
+               table_name, column_name, parent_table, row_id, workspace_id,
+               reference_value, action, row_json, repaired_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          );
+          const mutate = action === "nullify"
+            ? db.prepare(`UPDATE ${quoteIdentifier(table)} SET ${quoteIdentifier(column)} = NULL WHERE rowid = ?`)
+            : db.prepare(`DELETE FROM ${quoteIdentifier(table)} WHERE rowid = ?`);
+          const repairedAt = Date.now();
+          for (const row of invalidRows) {
+            const rowId = String(row.__repair_rowid__ ?? row.id ?? "");
+            audit.run(
+              table,
+              column,
+              parentTable,
+              rowId,
+              String(row.workspace_id ?? ""),
+              String(row[column] ?? ""),
+              action,
+              serializeSqliteRow(row),
+              repairedAt,
+            );
+            mutate.run(row.__repair_rowid__);
+          }
+        }
+
+        const remaining = db.prepare(
+          `SELECT COUNT(*) AS count FROM ${quoteIdentifier(table)} child
+           WHERE child.${quoteIdentifier(column)} IS NOT NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM ${quoteIdentifier(parentTable)} parent
+               WHERE parent.id = child.${quoteIdentifier(column)}
+                 AND parent.workspace_id = child.workspace_id
+             )`,
+        ).get() as { count?: unknown };
+        if (Number(remaining?.count ?? 0) > 0) {
+          throw new Error(`${table}.${column} contains cross-workspace or missing references after repair`);
+        }
+
+        for (const operation of ["INSERT", "UPDATE"] as const) {
+          const trigger = `enforce_${table}_${column}_${operation.toLowerCase()}`;
+          db.exec(`
+            CREATE TRIGGER IF NOT EXISTS ${trigger}
+            BEFORE ${operation} ON ${table}
+            WHEN NEW.${column} IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM ${parentTable} parent
+                WHERE parent.id = NEW.${column}
+                  AND parent.workspace_id = NEW.workspace_id
+              )
+            BEGIN
+              SELECT RAISE(ABORT, '${table}.${column} workspace mismatch');
+            END;
+          `);
+        }
+      }
+
+      const foreignKeyErrors = db.prepare("PRAGMA foreign_key_check").all();
+      if (foreignKeyErrors.length > 0) {
+        throw new Error("Workspace ownership migration left foreign key violations");
+      }
+    },
+  },
+  {
+    version: 27,
+    description: "Task workflow - add development, review, and rework categories",
+    up: (db) => {
+      const names = getTableColumnNames(db, "tasks");
+      if (!names.has("category")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN category TEXT NOT NULL DEFAULT 'development'`);
+      }
+      db.exec(`
+        UPDATE tasks SET category = 'development'
+        WHERE category IS NULL OR category NOT IN ('development', 'review', 'rework');
+        CREATE INDEX IF NOT EXISTS idx_tasks_workspace_category
+          ON tasks(workspace_id, category, priority DESC, queue_order ASC, created_at ASC);
+      `);
+    },
+  },
+  {
+    version: 28,
+    description: "Review lifecycle state, settings, and human action audit",
+    up: (db) => {
+      const taskColumns = getTableColumnNames(db, "tasks");
+      if (!taskColumns.has("review_data_json")) {
+        db.exec(`ALTER TABLE tasks ADD COLUMN review_data_json TEXT NOT NULL DEFAULT '{}'`);
+      }
+      db.exec(`
+        UPDATE tasks
+        SET review_data_json = COALESCE(review_data_json, '{}')
+        WHERE review_data_json IS NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_tasks_workspace_review_status
+          ON tasks(workspace_id, review_status, completed_at DESC, created_at DESC, id DESC);
+
+        CREATE TABLE IF NOT EXISTS review_settings (
+          workspace_id TEXT PRIMARY KEY,
+          automation_mode TEXT NOT NULL DEFAULT 'auto_with_fuse',
+          max_rework_rounds INTEGER NOT NULL DEFAULT 2,
+          updated_at INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS review_action_audits (
+          workspace_id TEXT NOT NULL,
+          id TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          root_task_id TEXT NOT NULL,
+          action TEXT NOT NULL,
+          reason TEXT,
+          actor_id TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY(workspace_id, id),
+          UNIQUE(workspace_id, idempotency_key),
+          FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY(root_task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_review_action_audits_task
+          ON review_action_audits(workspace_id, task_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_review_action_audits_root
+          ON review_action_audits(workspace_id, root_task_id, created_at DESC);
+      `);
+    },
+  },
+  {
+    version: 29,
+    description: "Task runs - persist worktree cleanup lifecycle and errors",
+    up: (db) => {
+      const names = getTableColumnNames(db, "task_runs");
+      if (!names.has("cleanup_status")) {
+        db.exec(`ALTER TABLE task_runs ADD COLUMN cleanup_status TEXT NOT NULL DEFAULT 'pending'`);
+      }
+      if (!names.has("cleanup_error")) {
+        db.exec(`ALTER TABLE task_runs ADD COLUMN cleanup_error TEXT`);
+      }
+      if (!names.has("cleanup_at")) {
+        db.exec(`ALTER TABLE task_runs ADD COLUMN cleanup_at INTEGER`);
+      }
+
+      db.exec(`
+        UPDATE task_runs
+        SET cleanup_status = CASE
+          WHEN execution_isolation = 'required' THEN COALESCE(NULLIF(TRIM(cleanup_status), ''), 'pending')
+          ELSE 'not_required'
+        END
+        WHERE cleanup_status IS NULL OR TRIM(COALESCE(cleanup_status, '')) = '' OR execution_isolation != 'required';
+
+        CREATE INDEX IF NOT EXISTS idx_task_runs_cleanup_status
+          ON task_runs(cleanup_status, completed_at DESC, created_at DESC, id DESC);
+      `);
+    },
+  },
+  // 示例：未来的迁移
+  // {
+  //   version: 13,
+  //   description: "Add tags column to nodes",
+  //   up: (db) => {
+  //     // 检查列是否存在
+  //     const columns = db.pragma("table_info(nodes)") as Array<{ name: string }>;
+  //     if (!columns.some(col => col.name === "tags")) {
+  //       db.exec("ALTER TABLE nodes ADD COLUMN tags TEXT");
+  //     }
+  //   },
+  // },
+];
