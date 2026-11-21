@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,7 +18,7 @@ use crate::{Cancellation, NativeError, NativeResult};
 const MAX_SESSIONS: usize = 16;
 const KILL_GRACE: Duration = Duration::from_millis(1_200);
 const SHELL_BUILTINS: &[&str] = &[
-    "[", "cd", "echo", "false", "printf", "pwd", "test", "true", "unset",
+    "[", "cd", "echo", "export", "false", "printf", "pwd", "test", "true", "unset",
 ];
 const PRIVATE_KEY_LABELS: &[&str] = &[
     "PRIVATE KEY",
@@ -728,6 +728,200 @@ pub(crate) fn allowlist_from_env() -> Option<Vec<String>> {
     parse_allowlist(&raw)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShellBlock {
+    Brace,
+    IfBody,
+    IfCondition,
+    LoopBody,
+    LoopHeader,
+}
+
+pub fn command_has_executable(command: &str, cwd: &std::path::Path) -> bool {
+    let command = command.trim();
+    if command.is_empty() {
+        return false;
+    }
+    let segments = if has_shell_syntax(command) {
+        split_shell_segments(command)
+    } else {
+        vec![command.to_string()]
+    };
+    let mut blocks = Vec::new();
+    let mut effective_cwd = cwd.to_path_buf();
+    let mut effective_path = std::env::var("PATH").ok();
+    let valid = !segments.is_empty()
+        && segments.iter().all(|segment| {
+            let Ok(tokens) = tokenize_command_line(segment) else {
+                return false;
+            };
+            let mut executable_index = 0;
+            let mut segment_path = effective_path.clone();
+            loop {
+                while let Some((key, value)) = tokens.get(executable_index).and_then(|token| {
+                    token
+                        .split_once('=')
+                        .filter(|(key, _)| is_shell_variable_name(key))
+                }) {
+                    if key == "PATH" {
+                        segment_path = Some(expand_path_value(value, effective_path.as_deref()));
+                    }
+                    executable_index += 1;
+                }
+                let Some(token) = tokens.get(executable_index) else {
+                    return false;
+                };
+                match command_basename(token).as_str() {
+                    "fi" => {
+                        return executable_index + 1 == tokens.len()
+                            && blocks.pop() == Some(ShellBlock::IfBody);
+                    }
+                    "}" => {
+                        return executable_index + 1 == tokens.len()
+                            && blocks.pop() == Some(ShellBlock::Brace);
+                    }
+                    "done" => {
+                        return executable_index + 1 == tokens.len()
+                            && blocks.pop() == Some(ShellBlock::LoopBody);
+                    }
+                    "if" => {
+                        blocks.push(ShellBlock::IfCondition);
+                        executable_index += 1;
+                    }
+                    "{" => {
+                        blocks.push(ShellBlock::Brace);
+                        executable_index += 1;
+                    }
+                    "while" | "until" => {
+                        blocks.push(ShellBlock::LoopHeader);
+                        executable_index += 1;
+                    }
+                    "for" => {
+                        blocks.push(ShellBlock::LoopHeader);
+                        return tokens.iter().any(|token| command_basename(token) == "in")
+                            && executable_index + 1 < tokens.len();
+                    }
+                    "then" if blocks.last() == Some(&ShellBlock::IfCondition) => {
+                        blocks.pop();
+                        blocks.push(ShellBlock::IfBody);
+                        executable_index += 1;
+                    }
+                    "elif" if blocks.last() == Some(&ShellBlock::IfBody) => {
+                        blocks.pop();
+                        blocks.push(ShellBlock::IfCondition);
+                        executable_index += 1;
+                    }
+                    "else" if blocks.last() == Some(&ShellBlock::IfBody) => {
+                        executable_index += 1;
+                    }
+                    "do" if blocks.last() == Some(&ShellBlock::LoopHeader) => {
+                        blocks.pop();
+                        blocks.push(ShellBlock::LoopBody);
+                        executable_index += 1;
+                    }
+                    "!" | "time" => {
+                        executable_index += 1;
+                    }
+                    "export" => {
+                        let mut updated_path = None;
+                        for token in tokens.iter().skip(executable_index + 1) {
+                            let Some((key, value)) = token
+                                .split_once('=')
+                                .filter(|(key, _)| is_shell_variable_name(key))
+                            else {
+                                return false;
+                            };
+                            if key == "PATH" {
+                                updated_path =
+                                    Some(expand_path_value(value, effective_path.as_deref()));
+                            }
+                        }
+                        if let Some(path) = updated_path {
+                            effective_path = Some(path);
+                        }
+                        return true;
+                    }
+                    _ => {
+                        if !SHELL_BUILTINS.contains(&command_basename(token).as_str())
+                            && !executable_exists(token, &effective_cwd, segment_path.as_deref())
+                        {
+                            return false;
+                        }
+                        if command_basename(token) == "cd" {
+                            effective_cwd =
+                                cd_target(&tokens[executable_index + 1..], &effective_cwd);
+                        }
+                        return true;
+                    }
+                }
+            }
+        });
+    valid && blocks.is_empty()
+}
+
+fn expand_path_value(value: &str, current: Option<&str>) -> String {
+    let current = current.unwrap_or_default();
+    value.replace("${PATH}", current).replace("$PATH", current)
+}
+
+fn cd_target(arguments: &[String], cwd: &Path) -> PathBuf {
+    let Some(target) = arguments.first().map(String::as_str) else {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| cwd.to_path_buf());
+    };
+    if target == "-" || target.starts_with('$') {
+        return cwd.to_path_buf();
+    }
+    let target = Path::new(target);
+    if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        cwd.join(target)
+    }
+}
+
+fn executable_exists(command: &str, cwd: &std::path::Path, path: Option<&str>) -> bool {
+    let command_path = Path::new(command);
+    if command_path.components().count() > 1 {
+        let resolved = if command_path.is_absolute() {
+            command_path.to_path_buf()
+        } else {
+            cwd.join(command_path)
+        };
+        return is_executable_file(&resolved);
+    }
+    let environment_path = std::env::var("PATH").ok();
+    path.or(environment_path.as_deref()).is_some_and(|paths| {
+        std::env::split_paths(std::ffi::OsStr::new(&paths)).any(|directory| {
+            let candidate = if directory.is_absolute() {
+                directory.join(command)
+            } else {
+                cwd.join(directory).join(command)
+            };
+            is_executable_file(&candidate)
+        })
+    })
+}
+
+fn is_executable_file(path: &std::path::Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 fn parse_allowlist(raw: &str) -> Option<Vec<String>> {
     let parsed = raw
         .split(',')
@@ -843,35 +1037,47 @@ fn split_shell_segments(value: &str) -> Vec<String> {
     let mut quote = None;
     let mut escaped = false;
     let characters = value.chars().collect::<Vec<_>>();
-    for (index, character) in characters.iter().copied().enumerate() {
+    let mut index = 0usize;
+    while index < characters.len() {
+        let character = characters[index];
         if escaped {
             escaped = false;
+            index += 1;
             continue;
         }
         if character == '\\' && quote != Some('\'') {
             escaped = true;
+            index += 1;
             continue;
         }
         if let Some(active) = quote {
             if character == active {
                 quote = None;
             }
+            index += 1;
             continue;
         }
         if character == '\'' || character == '"' {
             quote = Some(character);
+            index += 1;
             continue;
         }
         let next = characters.get(index + 1).copied();
         if character == '|' || character == '&' {
             push_segment(&mut segments, value, start, index);
             if next == Some(character) {
+                index += 2;
+                start = index;
                 continue;
             }
-            start = index + 1;
+            index += 1;
+            start = index;
         } else if character == ';' || character == '\n' {
             push_segment(&mut segments, value, start, index);
-            start = index + 1;
+            index += 1;
+            start = index;
+        } else {
+            index += 1;
         }
     }
     push_segment(&mut segments, value, start, characters.len());
@@ -1029,6 +1235,68 @@ mod tests {
             vec!["node", "-e", "a b", "c d"]
         );
         assert!(tokenize_command_line("echo 'unterminated").is_err());
+    }
+
+    #[test]
+    fn requires_a_real_executable_or_shell_construct() {
+        let directory = tempdir().expect("tempdir");
+        let valid = |command: &str| command_has_executable(command, directory.path());
+        assert!(!valid("Please inspect the logs"));
+        assert!(!valid("{ Please inspect the logs; }"));
+        assert!(!valid("for the logs"));
+        assert!(!valid("case the logs"));
+        assert!(!valid("function"));
+        assert!(!valid("in"));
+        assert!(!valid("{ echo ok; } Please inspect"));
+        assert!(!valid("fi; echo if"));
+        assert!(!valid("}; echo {"));
+        assert!(!valid("if echo ok; fi"));
+        assert!(!valid("for x in a b; done"));
+        assert!(!valid("for please in inspect the logs; done"));
+        assert!(!valid("done"));
+        assert!(!valid("fi"));
+        assert!(!valid("definitely-not-an-installed-command"));
+        assert!(valid("[ -f file ]"));
+        assert!(valid("{ echo ok; }"));
+        assert!(valid("if [ -f file ]; then echo ok; fi"));
+        assert!(valid("if true && false; then echo ok; fi"));
+        assert!(valid("while true || false; do echo ok; done"));
+        assert!(valid("for x in a b; do echo ok; done"));
+        assert!(valid("printf 'x' | cat"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolves_relative_executables_against_the_command_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().expect("tempdir");
+        let nested = directory.path().join("nested");
+        std::fs::create_dir_all(&nested).expect("nested directory");
+        let script = nested.join("script.sh");
+        std::fs::write(&script, "#!/bin/sh\n").expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("permissions");
+        assert!(command_has_executable("./script.sh", &nested));
+        assert!(command_has_executable(
+            "cd nested && ./script.sh",
+            directory.path()
+        ));
+        assert!(!command_has_executable(
+            "./script.sh",
+            std::path::Path::new("/")
+        ));
+
+        let bin = directory.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin directory");
+        let tool = bin.join("local-tool");
+        std::fs::write(&tool, "#!/bin/sh\n").expect("tool");
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))
+            .expect("permissions");
+        assert!(command_has_executable(
+            "PATH=bin local-tool",
+            directory.path()
+        ));
     }
 
     #[test]

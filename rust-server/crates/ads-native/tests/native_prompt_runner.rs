@@ -209,6 +209,10 @@ impl Harness {
             .collect()
     }
 
+    fn all_events(&self) -> Vec<Value> {
+        self.events.lock().expect("events").clone()
+    }
+
     fn events_of(&self, kind: &str) -> Vec<Value> {
         self.events
             .lock()
@@ -631,21 +635,102 @@ fn chat_pending_command_router(requests: Arc<Mutex<Vec<Value>>>) -> Router {
                 requests.lock().expect("requests").push(payload);
                 let round = requests.lock().expect("requests").len();
                 let response = match round {
-                    1 => json!({"choices": [{"delta": {"tool_calls": [{
-                        "index": 0,
-                        "type": "function",
-                        "id": "exec-1",
-                        "function": {
-                            "name": "exec_command",
-                            "arguments": json!({
-                                "cmd": "/bin/sh",
-                                "args": ["-c", "sleep 1; printf 'finished\\n'"],
-                                "yield_time_ms": 1
-                            }).to_string()
-                        }
-                    }]}, "finish_reason": null}]}),
+                    1 => json!({"choices": [{"delta": {
+                        "content": "I need to inspect the process before waiting.",
+                        "tool_calls": [{
+                            "index": 0,
+                            "type": "function",
+                            "id": "exec-1",
+                            "function": {
+                                "name": "exec_command",
+                                "arguments": json!({
+                                    "cmd": "/bin/sh",
+                                    "args": ["-c", "sleep 1; printf 'finished\\n'"],
+                                    "yield_time_ms": 1
+                                }).to_string()
+                            }
+                        }]
+                    }, "finish_reason": null}]}),
                     2 => json!({"choices": [{"delta": {"content": "too early"}, "finish_reason": "stop"}]}),
                     _ => json!({"choices": [{"delta": {"content": "command complete"}, "finish_reason": "stop"}]}),
+                };
+                let mut body = format!("data: {response}\n\n");
+                if round == 1 {
+                    body.push_str("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n");
+                }
+                body.push_str("data: [DONE]\n\n");
+                ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+            }
+        }),
+    )
+}
+
+fn chat_natural_language_command_router(requests: Arc<Mutex<Vec<Value>>>) -> Router {
+    Router::new().route(
+        "/v1/chat/completions",
+        post(move |body: String| {
+            let requests = Arc::clone(&requests);
+            async move {
+                let payload: Value = serde_json::from_str(&body).expect("chat request body");
+                let round = {
+                    let mut requests = requests.lock().expect("requests");
+                    requests.push(payload);
+                    requests.len()
+                };
+                let response = if round == 1 {
+                    json!({"choices": [{"delta": {
+                        "content": "I should inspect the logs before acting.",
+                        "tool_calls": [{
+                            "index": 0,
+                            "type": "function",
+                            "id": "invalid-command",
+                            "function": {
+                                "name": "exec_command",
+                                "arguments": json!({
+                                    "cmd": "I should inspect the logs before acting."
+                                }).to_string()
+                            }
+                        }]
+                    }, "finish_reason": null}]})
+                } else {
+                    json!({"choices": [{"delta": {"content": "invalid command rejected"}, "finish_reason": "stop"}]})
+                };
+                let mut body = format!("data: {response}\n\n");
+                if round == 1 {
+                    body.push_str("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n");
+                }
+                body.push_str("data: [DONE]\n\n");
+                ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
+            }
+        }),
+    )
+}
+
+fn chat_relative_command_router(requests: Arc<Mutex<Vec<Value>>>, arguments: Value) -> Router {
+    Router::new().route(
+        "/v1/chat/completions",
+        post(move |body: String| {
+            let requests = Arc::clone(&requests);
+            let arguments = arguments.clone();
+            async move {
+                let payload: Value = serde_json::from_str(&body).expect("chat request body");
+                let round = {
+                    let mut requests = requests.lock().expect("requests");
+                    requests.push(payload);
+                    requests.len()
+                };
+                let response = if round == 1 {
+                    json!({"choices": [{"delta": {"tool_calls": [{
+                        "index": 0,
+                        "type": "function",
+                        "id": "relative-command",
+                        "function": {
+                            "name": "exec_command",
+                                "arguments": arguments.to_string()
+                        }
+                    }]}, "finish_reason": null}]})
+                } else {
+                    json!({"choices": [{"delta": {"content": "relative command complete"}, "finish_reason": "stop"}]})
                 };
                 let mut body = format!("data: {response}\n\n");
                 if round == 1 {
@@ -762,6 +847,15 @@ async fn streams_chat_completion_into_events_history_and_transcript() {
     assert!(types.iter().any(|kind| kind == "assistant_item"));
     assert!(types.iter().any(|kind| kind == "phase_complete"));
     assert_eq!(types.last().map(String::as_str), Some("result"));
+    let first_delta = types
+        .iter()
+        .position(|kind| kind == "delta")
+        .expect("streamed final delta");
+    let result_event = types
+        .iter()
+        .position(|kind| kind == "result")
+        .expect("result event");
+    assert!(first_delta < result_event);
 
     let user_events = harness.events_of("user");
     assert_eq!(user_events.len(), 1);
@@ -773,8 +867,9 @@ async fn streams_chat_completion_into_events_history_and_transcript() {
         .events_of("delta")
         .iter()
         .filter_map(|event| event.get("delta").and_then(Value::as_str))
-        .collect::<String>();
-    assert_eq!(deltas, "Hello world");
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(deltas, ["Hello ".to_string(), "world".to_string()]);
     let assistant = harness.events_of("assistant_item");
     assert_eq!(
         assistant[0]
@@ -1283,6 +1378,21 @@ async fn replaces_a_premature_final_answer_with_a_synthetic_wait() {
             .expect("events")
             .contains("too early")
     );
+    let serialized_events = serde_json::to_string(&harness.all_events()).expect("events");
+    assert!(!serialized_events.contains("I need to inspect the process before waiting."));
+    assert!(!serialized_events.contains("too early"));
+    let command_events = harness.events_of("command");
+    assert!(command_events.iter().any(|event| {
+        event
+            .get("command")
+            .and_then(|command| command.get("command"))
+            .and_then(Value::as_str)
+            .is_some_and(|command| {
+                command.starts_with("/bin/sh -c ") && command.contains("printf 'finished")
+            })
+    }));
+    let history_text = serde_json::to_string(&harness.history()).expect("history");
+    assert!(!history_text.contains("I need to inspect the process before waiting."));
 
     let bodies = harness.request_bodies();
     assert_eq!(bodies.len(), 3);
@@ -1315,6 +1425,169 @@ async fn replaces_a_premature_final_answer_with_a_synthetic_wait() {
                 .get("output")
                 .and_then(Value::as_str)
                 .is_some_and(|output| output.contains("finished"))
+    }));
+    harness.drain().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn never_frames_natural_language_as_a_shell_command() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let harness = Harness::start_with_wire(
+        chat_natural_language_command_router(Arc::clone(&requests)),
+        "chat",
+        Arc::clone(&requests),
+    )
+    .await;
+    let entry = harness.enqueue("cm-invalid-command", "show the logs");
+    let outcome = harness
+        .runner
+        .run_prompt(entry, harness.context())
+        .await
+        .expect("run prompt");
+    assert_eq!(outcome, PromptQueueRunOutcome::success());
+    let serialized_events = serde_json::to_string(&harness.all_events()).expect("events");
+    assert!(
+        !serialized_events.contains("I should inspect the logs before acting."),
+        "{serialized_events}"
+    );
+    assert!(harness.events_of("command").is_empty());
+    assert_eq!(
+        harness.events_of("result")[0]
+            .get("output")
+            .and_then(Value::as_str),
+        Some("invalid command rejected")
+    );
+    harness.drain().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn frames_relative_commands_with_the_effective_cwd() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let harness = Harness::start_with_wire(
+        chat_relative_command_router(
+            Arc::clone(&requests),
+            json!({"cmd": "./script.sh", "cwd": "nested"}),
+        ),
+        "chat",
+        Arc::clone(&requests),
+    )
+    .await;
+    let nested = harness.workspace.join("nested");
+    fs::create_dir_all(&nested).expect("nested directory");
+    let script = nested.join("script.sh");
+    fs::write(&script, "#!/bin/sh\nprintf 'nested-ok\\n'\n").expect("nested script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("permissions");
+
+    let entry = harness.enqueue("cm-relative-command", "run nested script");
+    let outcome = harness
+        .runner
+        .run_prompt(entry, harness.context())
+        .await
+        .expect("run prompt");
+    assert_eq!(outcome, PromptQueueRunOutcome::success());
+
+    let commands = harness.events_of("command");
+    assert!(commands.iter().any(|event| {
+        event
+            .get("command")
+            .and_then(|command| command.get("command"))
+            .and_then(Value::as_str)
+            == Some("./script.sh")
+    }));
+    assert!(harness.transcript_entries().iter().any(|entry| {
+        entry.get("kind").and_then(Value::as_str) == Some("command")
+            && entry.get("command").and_then(Value::as_str) == Some("./script.sh")
+            && entry
+                .get("output")
+                .and_then(Value::as_str)
+                .is_some_and(|output| output.contains("nested-ok"))
+    }));
+    harness.drain().await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn frames_relative_commands_after_cd() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let harness = Harness::start_with_wire(
+        chat_relative_command_router(
+            Arc::clone(&requests),
+            json!({"cmd": "cd nested && ./script.sh"}),
+        ),
+        "chat",
+        Arc::clone(&requests),
+    )
+    .await;
+    let nested = harness.workspace.join("nested");
+    fs::create_dir_all(&nested).expect("nested directory");
+    let script = nested.join("script.sh");
+    fs::write(&script, "#!/bin/sh\nprintf 'cd-ok\\n'\n").expect("nested script");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("permissions");
+
+    let entry = harness.enqueue("cm-cd-command", "cd then run script");
+    let outcome = harness
+        .runner
+        .run_prompt(entry, harness.context())
+        .await
+        .expect("run prompt");
+    assert_eq!(outcome, PromptQueueRunOutcome::success());
+    assert!(harness.events_of("command").iter().any(|event| {
+        event
+            .get("command")
+            .and_then(|command| command.get("command"))
+            .and_then(Value::as_str)
+            == Some("cd nested && ./script.sh")
+    }));
+    assert!(harness.transcript_entries().iter().any(|entry| {
+        entry.get("kind").and_then(Value::as_str) == Some("command")
+            && entry.get("command").and_then(Value::as_str) == Some("cd nested && ./script.sh")
+            && entry
+                .get("output")
+                .and_then(Value::as_str)
+                .is_some_and(|output| output.contains("cd-ok"))
+    }));
+    harness.drain().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn frames_argv_commands_with_shell_metacharacters() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let harness = Harness::start_with_wire(
+        chat_relative_command_router(
+            Arc::clone(&requests),
+            json!({"cmd": "printf", "args": ["foo|bar; baz"]}),
+        ),
+        "chat",
+        Arc::clone(&requests),
+    )
+    .await;
+
+    let entry = harness.enqueue("cm-argv-command", "printf an argument");
+    let outcome = harness
+        .runner
+        .run_prompt(entry, harness.context())
+        .await
+        .expect("run prompt");
+    assert_eq!(outcome, PromptQueueRunOutcome::success());
+    assert!(harness.events_of("command").iter().any(|event| {
+        event
+            .get("command")
+            .and_then(|command| command.get("command"))
+            .and_then(Value::as_str)
+            == Some("printf foo|bar; baz")
+    }));
+    assert!(harness.transcript_entries().iter().any(|entry| {
+        entry.get("kind").and_then(Value::as_str) == Some("command")
+            && entry.get("command").and_then(Value::as_str) == Some("printf foo|bar; baz")
+            && entry
+                .get("output")
+                .and_then(Value::as_str)
+                .is_some_and(|output| output.contains("foo|bar; baz"))
     }));
     harness.drain().await;
 }

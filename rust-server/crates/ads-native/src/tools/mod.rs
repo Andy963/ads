@@ -22,6 +22,7 @@ use crate::{
     NativeToolDefinition, NativeToolFunctionDefinition, TurnContext,
 };
 
+pub use self::command::command_has_executable;
 pub use self::command::find_security_violation;
 use self::command::{
     CommandManager, CommandRead, CommandRequest, allowlist_from_env, has_shell_syntax,
@@ -29,6 +30,14 @@ use self::command::{
 };
 pub(crate) use self::loop_guard::{ToolLoopDecision, ToolLoopGuard, paused_error};
 pub(crate) use self::patch::ChangedFile;
+
+pub(crate) fn command_cwd_for_args(workspace_root: &Path, arguments: &Value) -> Option<PathBuf> {
+    let arguments = arguments.as_object()?;
+    match string_argument(arguments, "cwd", false).ok()? {
+        value if value.is_empty() => Some(workspace_root.to_path_buf()),
+        value => resolve_path(workspace_root, &value, false).ok(),
+    }
+}
 
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_TOOL_OUTPUT_CHARS: usize = 64 * 1024;
@@ -78,6 +87,8 @@ struct BuiltinCall {
 pub(crate) struct CommandArtifact {
     pub id: String,
     pub command: String,
+    #[serde(skip)]
+    pub frame_allowed: bool,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
@@ -448,6 +459,7 @@ impl NativeToolExecutor {
             command: Some(CommandArtifact {
                 id: result.call_id,
                 command: self.redact(&result.command),
+                frame_allowed: false,
                 status,
                 exit_code: result.exit_code,
                 aggregated_output: Some(self.redact(aggregated.trim_end())),
@@ -1038,6 +1050,7 @@ fn spawn_failure(call_id: String, command: String, message: &str) -> NativeToolE
         command: Some(CommandArtifact {
             id: call_id,
             command,
+            frame_allowed: false,
             status: "failed".to_string(),
             exit_code: Some(-1),
             aggregated_output: Some(message.to_string()),

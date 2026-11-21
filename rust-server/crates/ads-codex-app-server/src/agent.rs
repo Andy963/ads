@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -264,7 +264,9 @@ struct ContextUsage {
 #[derive(Default)]
 struct TurnState {
     response_text: String,
-    agent_message_buffers: HashMap<String, String>,
+    agent_message_buffers: HashMap<String, Vec<String>>,
+    agent_message_phases: HashMap<String, Option<String>>,
+    agent_message_streamed: HashMap<String, String>,
     usage: Option<Value>,
     thread_id_from_started: Option<String>,
     turn_id: Option<String>,
@@ -334,6 +336,45 @@ impl CodexAppServerAgent {
 
     pub fn workspace_root(&self) -> &PathBuf {
         &self.inner.options.workspace_root
+    }
+
+    fn command_execution_cwd(&self, item: &Value) -> PathBuf {
+        let base = self
+            .inner
+            .options
+            .working_directory
+            .as_ref()
+            .unwrap_or(&self.inner.options.workspace_root);
+        match item.get("cwd").and_then(Value::as_str).map(str::trim) {
+            Some(cwd) if !cwd.is_empty() => {
+                let cwd = PathBuf::from(cwd);
+                if cwd.is_absolute() {
+                    cwd
+                } else {
+                    base.join(cwd)
+                }
+            }
+            _ => base.clone(),
+        }
+    }
+
+    fn emit_agent_message_delta(&self, params: &Value, item_id: &Value, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.emit(AgentEvent {
+            phase: "responding".to_string(),
+            title: "生成回复".to_string(),
+            detail: None,
+            delta: Some(text.to_string()),
+            timestamp: now_ms(),
+            raw: json!({
+                "threadId": params.get("threadId").cloned().unwrap_or(Value::Null),
+                "turnId": params.get("turnId").cloned().unwrap_or(Value::Null),
+                "itemId": item_id
+            }),
+            session_fallback: None,
+        });
     }
 
     pub async fn thread_id(&self) -> Option<String> {
@@ -815,28 +856,39 @@ impl CodexAppServerAgent {
                     .get("delta")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                let mut current = state.lock().expect("turn state lock");
-                let next = format!(
-                    "{}{}",
+                let snapshot = {
+                    let mut current = state.lock().expect("turn state lock");
                     current
                         .agent_message_buffers
+                        .entry(item_id.clone())
+                        .or_default()
+                        .push(delta.to_string());
+                    current
+                        .agent_message_phases
                         .get(&item_id)
-                        .cloned()
-                        .unwrap_or_default(),
-                    delta
-                );
-                current.agent_message_buffers.insert(item_id, next.clone());
-                current.response_text = next.clone();
-                drop(current);
-                self.emit(AgentEvent {
-                    phase: "responding".to_string(),
-                    title: "生成回复".to_string(),
-                    detail: None,
-                    delta: Some(next),
-                    timestamp: now_ms(),
-                    raw: params,
-                    session_fallback: None,
-                });
+                        .is_some_and(|phase| {
+                            phase.as_deref().is_none_or(|phase| phase == "final_answer")
+                        })
+                        .then(|| {
+                            let snapshot = {
+                                let cumulative = current
+                                    .agent_message_streamed
+                                    .entry(item_id.clone())
+                                    .or_default();
+                                cumulative.push_str(delta);
+                                cumulative.clone()
+                            };
+                            current.response_text = snapshot.clone();
+                            snapshot
+                        })
+                };
+                if let Some(snapshot) = snapshot {
+                    self.emit_agent_message_delta(
+                        &params,
+                        &params.get("itemId").cloned().unwrap_or(Value::Null),
+                        &snapshot,
+                    );
+                }
             }
             "item/completed" => {
                 let item = params.get("item").cloned().unwrap_or(Value::Null);
@@ -845,18 +897,47 @@ impl CodexAppServerAgent {
                     state.lock().expect("turn state lock").side_effect_observed = true;
                 }
                 if item_type == Some("agentMessage") {
-                    let text = item
+                    let item_id = item.get("id").cloned().unwrap_or(Value::Null);
+                    let item_text = item
                         .get("text")
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
                     let mut current = state.lock().expect("turn state lock");
-                    current.response_text = text.clone();
-                    if let Some(item_id) = item.get("id").and_then(Value::as_str) {
-                        current
-                            .agent_message_buffers
-                            .insert(item_id.to_string(), text);
+                    let item_phase = item.get("phase").and_then(Value::as_str);
+                    let stored_phase = item_id
+                        .as_str()
+                        .and_then(|item_id| current.agent_message_phases.remove(item_id));
+                    let phase = item_phase
+                        .map(str::to_string)
+                        .or_else(|| stored_phase.flatten());
+                    let visible = phase.as_deref().is_none_or(|phase| phase == "final_answer");
+                    let buffered = item_id
+                        .as_str()
+                        .and_then(|item_id| current.agent_message_buffers.remove(item_id))
+                        .unwrap_or_default();
+                    let streamed = item_id
+                        .as_str()
+                        .and_then(|item_id| current.agent_message_streamed.remove(item_id))
+                        .unwrap_or_default();
+                    let buffered_text = buffered.concat();
+                    let text = if item_text.is_empty() {
+                        if buffered_text.is_empty() {
+                            streamed.clone()
+                        } else {
+                            buffered_text
+                        }
+                    } else {
+                        item_text
+                    };
+                    if visible {
+                        current.response_text = text.clone();
                     }
+                    drop(current);
+                    if !visible || text.is_empty() || text == streamed {
+                        return;
+                    }
+                    self.emit_agent_message_delta(&params, &item_id, &text);
                 }
                 if item_type == Some("commandExecution")
                     && item
@@ -872,7 +953,8 @@ impl CodexAppServerAgent {
                 {
                     return;
                 }
-                if let Some(mapped) = map_item_event("item.completed", &item) {
+                let command_cwd = self.command_execution_cwd(&item);
+                if let Some(mapped) = map_item_event("item.completed", &item, &command_cwd) {
                     self.emit(mapped.into_agent_event());
                 }
             }
@@ -881,7 +963,43 @@ impl CodexAppServerAgent {
                 if item_may_have_side_effect(item.get("type").and_then(Value::as_str)) {
                     state.lock().expect("turn state lock").side_effect_observed = true;
                 }
-                if let Some(mapped) = map_item_event("item.started", &item) {
+                if item.get("type").and_then(Value::as_str) == Some("agentMessage") {
+                    let item_id = item.get("id").cloned().unwrap_or(Value::Null);
+                    let snapshot = {
+                        let mut current = state.lock().expect("turn state lock");
+                        let Some(item_id) = item_id.as_str() else {
+                            return;
+                        };
+                        let phase = item.get("phase").and_then(Value::as_str);
+                        current
+                            .agent_message_phases
+                            .insert(item_id.to_string(), phase.map(str::to_string));
+                        if phase.is_some_and(|phase| phase != "final_answer") {
+                            current.agent_message_buffers.remove(item_id);
+                            None
+                        } else {
+                            let buffered = current
+                                .agent_message_buffers
+                                .remove(item_id)
+                                .unwrap_or_default()
+                                .concat();
+                            if buffered.is_empty() {
+                                None
+                            } else {
+                                current
+                                    .agent_message_streamed
+                                    .insert(item_id.to_string(), buffered.clone());
+                                current.response_text = buffered.clone();
+                                Some(buffered)
+                            }
+                        }
+                    };
+                    if let Some(snapshot) = snapshot {
+                        self.emit_agent_message_delta(&params, &item_id, &snapshot);
+                    }
+                }
+                let command_cwd = self.command_execution_cwd(&item);
+                if let Some(mapped) = map_item_event("item.started", &item, &command_cwd) {
                     self.emit(mapped.into_agent_event());
                 }
             }
@@ -937,31 +1055,49 @@ impl CodexAppServerAgent {
             .unwrap_or("command-approval")
             .to_string();
         let message = format!("Command blocked by security rule: {violation}");
+        let command_is_frame =
+            ads_native::command_has_executable(command, &self.command_execution_cwd(&params));
         let first = state
             .lock()
             .expect("turn state lock")
             .blocked_command_ids
             .insert(item_id.clone());
         if first {
-            self.emit(AgentEvent {
-                phase: "command".to_string(),
-                title: "命令失败".to_string(),
-                detail: Some(format!("{command} | 退出码 126")),
-                delta: None,
-                timestamp: now_ms(),
-                raw: json!({
-                    "type": "item.completed",
-                    "item": {
-                        "type": "command_execution",
-                        "id": item_id,
-                        "command": command,
-                        "status": "failed",
-                        "exit_code": 126,
-                        "aggregated_output": message
-                    }
-                }),
-                session_fallback: None,
-            });
+            if command_is_frame {
+                self.emit(AgentEvent {
+                    phase: "command".to_string(),
+                    title: "命令失败".to_string(),
+                    detail: Some(format!("{command} | 退出码 126")),
+                    delta: None,
+                    timestamp: now_ms(),
+                    raw: json!({
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "id": item_id,
+                            "command": command,
+                            "status": "failed",
+                            "exit_code": 126,
+                            "aggregated_output": message
+                        }
+                    }),
+                    session_fallback: None,
+                });
+            } else {
+                self.emit(AgentEvent {
+                    phase: "error".to_string(),
+                    title: "命令审批被拒绝".to_string(),
+                    detail: Some(message),
+                    delta: None,
+                    timestamp: now_ms(),
+                    raw: json!({
+                        "type": "commandApproval",
+                        "itemId": item_id,
+                        "decision": "decline"
+                    }),
+                    session_fallback: None,
+                });
+            }
         }
         json!({"decision": "decline"})
     }
@@ -1616,7 +1752,7 @@ fn non_empty_string(value: Option<&Value>) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
-fn map_item_event(event_type: &str, item: &Value) -> Option<MappedItemEvent> {
+fn map_item_event(event_type: &str, item: &Value, command_cwd: &Path) -> Option<MappedItemEvent> {
     match item.get("type").and_then(Value::as_str)? {
         "agentMessage" if event_type == "item.completed" => Some(MappedItemEvent {
             phase: "responding",
@@ -1635,6 +1771,9 @@ fn map_item_event(event_type: &str, item: &Value) -> Option<MappedItemEvent> {
                 .get("command")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            if !ads_native::command_has_executable(command, command_cwd) {
+                return None;
+            }
             let mut detail = command.to_string();
             if let Some(exit_code) = item.get("exitCode").and_then(Value::as_i64) {
                 detail.push_str(&format!(" | 退出码 {exit_code}"));
@@ -1917,4 +2056,36 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn command_items_require_an_executable_in_the_effective_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("tempdir");
+        let script = directory.path().join("script.sh");
+        std::fs::write(&script, "#!/bin/sh\n").expect("script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("permissions");
+        let item = json!({
+            "type": "commandExecution",
+            "id": "command-1",
+            "command": "./script.sh",
+            "status": "completed"
+        });
+        assert!(map_item_event("item.completed", &item, directory.path()).is_some());
+
+        let reasoning = json!({
+            "type": "commandExecution",
+            "id": "command-2",
+            "command": "Please inspect the logs",
+            "status": "completed"
+        });
+        assert!(map_item_event("item.completed", &reasoning, directory.path()).is_none());
+    }
 }

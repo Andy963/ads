@@ -176,6 +176,32 @@ fn fake_factory(
                                     .await;
                                 server
                                     .notify(
+                                        "item/agentMessage/delta",
+                                        json!({
+                                            "threadId": thread_id,
+                                            "turnId": turn_id,
+                                            "itemId": "commentary-1",
+                                            "delta": "Hidden commentary"
+                                        }),
+                                    )
+                                    .await;
+                                server
+                                    .notify(
+                                        "item/completed",
+                                        json!({
+                                            "threadId": thread_id,
+                                            "turnId": turn_id,
+                                            "item": {
+                                                "type": "agentMessage",
+                                                "id": "commentary-1",
+                                                "text": "Hidden commentary",
+                                                "phase": "commentary"
+                                            }
+                                        }),
+                                    )
+                                    .await;
+                                server
+                                    .notify(
                                         "item/started",
                                         json!({
                                             "threadId": thread_id,
@@ -220,6 +246,21 @@ fn fake_factory(
                             }
                             server
                                 .notify(
+                                    "item/started",
+                                    json!({
+                                        "threadId": thread_id,
+                                        "turnId": turn_id,
+                                        "item": {
+                                            "type": "agentMessage",
+                                            "id": "message-1",
+                                            "phase": "final_answer",
+                                            "text": ""
+                                        }
+                                    }),
+                                )
+                                .await;
+                            server
+                                .notify(
                                     "item/agentMessage/delta",
                                     json!({"threadId": thread_id, "turnId": turn_id, "itemId": "message-1", "delta": if turn == 1 { "Hi " } else { "Second " }}),
                                 )
@@ -236,7 +277,7 @@ fn fake_factory(
                                     json!({
                                         "threadId": thread_id,
                                         "turnId": turn_id,
-                                        "item": {"type": "agentMessage", "id": "message-1", "text": if turn == 1 { "Hi there!" } else { "Second answer" }}
+                                        "item": {"type": "agentMessage", "id": "message-1", "phase": "final_answer", "text": if turn == 1 { "Hi there!" } else { "Second answer" }}
                                     }),
                                 )
                                 .await;
@@ -392,6 +433,16 @@ fn approval_factory(
                                     }),
                                 ),
                                 (
+                                    "approval-reasoning",
+                                    "item/commandExecution/requestApproval",
+                                    json!({
+                                        "threadId": "thread-approval",
+                                        "turnId": "turn-approval",
+                                        "itemId": "command-reasoning",
+                                        "command": "Please run rm -f state.db"
+                                    }),
+                                ),
+                                (
                                     "approval-file",
                                     "item/fileChange/requestApproval",
                                     json!({
@@ -445,6 +496,21 @@ fn approval_factory(
                                             "type": "commandExecution",
                                             "id": "command-blocked",
                                             "command": "rm -f state.db",
+                                            "status": "declined"
+                                        }
+                                    }),
+                                )
+                                .await;
+                            server
+                                .notify(
+                                    "item/completed",
+                                    json!({
+                                        "threadId": "thread-approval",
+                                        "turnId": "turn-approval",
+                                        "item": {
+                                            "type": "commandExecution",
+                                            "id": "command-reasoning",
+                                            "command": "Please run rm -f state.db",
                                             "status": "declined"
                                         }
                                     }),
@@ -803,6 +869,18 @@ async fn starts_thread_sends_turns_and_aggregates_agent_messages() {
             "missing {phase} event"
         );
     }
+    let first_stream = events
+        .iter()
+        .position(|event| event.phase == "responding" && event.delta.as_deref() == Some("Hi "))
+        .expect("first streamed response delta");
+    let first_completed = events
+        .iter()
+        .position(|event| event.phase == "completed")
+        .expect("first completed turn");
+    assert!(first_stream < first_completed);
+    assert!(events.iter().any(|event| {
+        event.phase == "responding" && event.delta.as_deref() == Some("Hi there!")
+    }));
 }
 
 #[tokio::test]
@@ -947,13 +1025,14 @@ async fn handles_approvals_and_review_action_without_replaying_side_effects() {
 
     let responses = response_log.lock().await;
     assert_eq!(responses[0]["result"], json!({"decision": "decline"}));
-    assert_eq!(responses[1]["result"], json!({"decision": "accept"}));
-    assert_eq!(responses[2]["result"]["success"], true);
+    assert_eq!(responses[1]["result"], json!({"decision": "decline"}));
+    assert_eq!(responses[2]["result"], json!({"decision": "accept"}));
+    assert_eq!(responses[3]["result"]["success"], true);
     assert_eq!(
-        responses[2]["result"]["contentItems"][0]["text"],
+        responses[3]["result"]["contentItems"][0]["text"],
         "review_action completed.\nActions job: job-1.\nStatus: queued."
     );
-    assert_eq!(responses[3]["result"], responses[2]["result"]);
+    assert_eq!(responses[4]["result"], responses[3]["result"]);
 
     {
         let events = events.lock().expect("event log lock");
@@ -968,6 +1047,14 @@ async fn handles_approvals_and_review_action_without_replaying_side_effects() {
                 .count(),
             1
         );
+        assert!(!events.iter().any(|event| {
+            event.phase == "command" && event.raw["item"]["command"] == "Please run rm -f state.db"
+        }));
+        assert!(events.iter().any(|event| {
+            event.phase == "error"
+                && event.detail.as_deref()
+                    == Some("Command blocked by security rule: Please run rm -f state.db")
+        }));
     }
     let thread_start = request_log
         .lock()
@@ -1351,6 +1438,7 @@ async fn bridges_context_compaction_and_drops_private_or_collaboration_items() {
             event.phase == "plan"
                 || raw.contains("Hidden plan")
                 || raw.contains("Hidden reasoning")
+                || raw.contains("Hidden commentary")
                 || raw.contains("collabAgentToolCall")
         }));
     }
