@@ -17,7 +17,8 @@ import { verifyExecuteMarquee } from "./lib/chat-browser-marquee.js";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), "..");
-const buildRoot = path.resolve(process.env.ADS_CHAT_BUILD_DIR || path.join(repoRoot, "dist/client"));
+const workspaceRoot = path.resolve(repoRoot, "..");
+const buildRoot = path.resolve(process.env.ADS_CHAT_BUILD_DIR || path.join(repoRoot, "dist"));
 const html = await readFile(path.join(buildRoot, "index.html"), "utf8");
 
 const engineFlag = process.argv.slice(2).find((arg) => arg.startsWith("--engine="))?.slice("--engine=".length);
@@ -539,7 +540,7 @@ const formatStages = (timings) => (timings ?? []).map((timing) => `${timing.name
 async function runSerial(selectedEngines) {
   if (selectedEngines.includes("webkit")) {
     const code = await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, ["--test", path.join(repoRoot, "ts-server/tests/scripts/chatServiceWorkerLifecycle.browser.js")], {
+      const child = spawn(process.execPath, ["--test", path.join(workspaceRoot, "ts-server/tests/scripts/chatServiceWorkerLifecycle.browser.js")], {
         stdio: "inherit",
       });
       child.on("error", reject);

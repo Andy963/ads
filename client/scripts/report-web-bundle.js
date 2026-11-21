@@ -2,7 +2,7 @@
 // Reproducible web-bundle size report (issue #459).
 //
 // Builds the client (unless --skip-build) and reports, for the emitted
-// dist/client: per-chunk minified and gzip sizes, the initial-load JavaScript
+// client/dist: per-chunk minified and gzip sizes, the initial-load JavaScript
 // set (entry script plus modulepreload links referenced by index.html), total
 // application JavaScript, request counts, and build wall time.
 //
@@ -19,7 +19,7 @@ import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const distDir = path.join(repoRoot, "dist", "client");
+const distDir = path.join(repoRoot, "dist");
 const args = process.argv.slice(2);
 const skipBuild = args.includes("--skip-build");
 const fixture = args.includes("--fixture");
@@ -40,7 +40,7 @@ function formatKb(bytes) {
 let buildMs = null;
 if (!skipBuild) {
   const started = Date.now();
-  execFileSync("npx", ["vite", "build", "--config", "client/vite.config.ts"], {
+  execFileSync("npx", ["vite", "build"], {
     cwd: repoRoot,
     stdio: "inherit",
     env: { ...process.env, ...(fixture ? { ADS_WEB_FIXTURE_ENTRY: "1" } : {}) },
@@ -50,7 +50,7 @@ if (!skipBuild) {
 
 const indexHtmlPath = path.join(distDir, "index.html");
 if (!fs.existsSync(indexHtmlPath)) {
-  console.error(`dist/client/index.html not found at ${indexHtmlPath}; run without --skip-build first.`);
+  console.error(`client/dist/index.html not found at ${indexHtmlPath}; run without --skip-build first.`);
   process.exit(1);
 }
 const indexHtml = fs.readFileSync(indexHtmlPath, "utf8");

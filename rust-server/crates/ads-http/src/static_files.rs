@@ -15,7 +15,7 @@ use crate::AppState;
 use crate::error::ApiError;
 use crate::origin::is_origin_allowed_for_request;
 
-const WEB_NOT_BUILT: &str = "Web app not built. Run: npm run build:web\n";
+const WEB_NOT_BUILT: &str = "Web app not built. Run: npm --prefix client run build\n";
 
 pub fn resolve_client_dir(start_dir: &Path) -> PathBuf {
     if let Ok(raw) = std::env::var("ADS_WEB_CLIENT_DIR") {
@@ -25,11 +25,16 @@ pub fn resolve_client_dir(start_dir: &Path) -> PathBuf {
         }
     }
     let root = crate::paths::detect_workspace_root(start_dir);
-    if root.join("server").join("cli.js").exists() {
-        root.join("client")
-    } else {
-        root.join("dist").join("client")
-    }
+    let candidates = [
+        root.join("client").join("dist"),
+        root.join("dist").join("client"),
+        root.join("client"),
+    ];
+    candidates
+        .iter()
+        .find(|candidate| candidate.join("index.html").exists())
+        .cloned()
+        .unwrap_or_else(|| candidates[0].clone())
 }
 
 pub async fn handle_fallback(State(state): State<AppState>, request: Request) -> Response {

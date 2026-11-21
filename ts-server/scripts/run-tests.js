@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const testsRoot = path.join(root, "ts-server", "tests");
+const testsRoot = path.join(root, "tests");
 const nodeBin = process.execPath;
 
 function collectTests(directory) {
@@ -40,7 +40,7 @@ if (tests.length === 0) {
       "--import",
       "tsx",
       "--import",
-      "./ts-server/tests/helpers/adsStateDir.ts",
+      "./tests/helpers/adsStateDir.ts",
       "--test",
       `--test-concurrency=${testConcurrency}`,
       ...tests,

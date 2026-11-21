@@ -42,7 +42,7 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_ADVISOR_CODEX_MODEL` | 未设置 | Advisor Lane 专用的 Codex 模型覆盖（旧名 `ADS_PLANNER_CODEX_MODEL` 仍兼容，已弃用） |
 | `ADS_ADVISOR_SANDBOX_MODE` | `danger-full-access` | Codex/Advisor Lane 沙箱权限覆盖；用于需要调用 GitHub CLI 的场景。非法值安全回退为 `workspace-write`（旧名 `ADS_PLANNER_SANDBOX_MODE` 仍兼容，已弃用）；不影响 Native Runtime 的直接宿主机执行语义 |
 | `ADS_SCHEDULER_MODEL` | 未设置 | Scheduler 执行定时 Prompt 时使用的模型覆盖 |
-| `ADS_REVIEW_TEST_COMMAND` | `npm test` | Actions Reviewer 队列在评审前执行的验证命令；非 Node 仓库需覆盖为仓库实际的检查命令 |
+| `ADS_REVIEW_TEST_COMMAND` | `npm test` | Actions Reviewer 队列在评审前执行的验证命令；ADS 仓库建议设为 `npm --prefix ts-server test`，其他项目需覆盖为适用命令 |
 
 ---
 

@@ -601,7 +601,7 @@ CARGO_BUILD_JOBS=2 cargo test --workspace -- --test-threads=2
 ```
 
 ```bash
-node --import tsx rust-server/scripts/extract-contracts.mjs
+node --import ./ts-server/node_modules/tsx/dist/loader.mjs rust-server/scripts/extract-contracts.mjs
 node rust-server/scripts/conformance-auth.mjs
 node rust-server/scripts/conformance-projects.mjs
 node rust-server/scripts/conformance-actions.mjs

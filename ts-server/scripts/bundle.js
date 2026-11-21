@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const DIST = path.join(ROOT, "dist");
-const SERVER_DIST = path.join(ROOT, "ts-server", "dist");
+const SERVER_DIST = DIST;
 
 // 1. Bundle server code into a single file
 console.log("[bundle] Bundling server code with esbuild...");
@@ -98,5 +98,5 @@ for (const f of [".ads", "ads.db", "ads.db-shm", "ads.db-wal"]) {
 }
 
 console.log("[bundle] Done! ts-server/dist/ is now self-contained.");
-console.log("[bundle] To deploy: copy dist/ and ts-server/dist/ to target machine and run:");
-console.log("[bundle]   cd ts-server/dist && node server/cli.js");
+console.log("[bundle] To deploy: copy client/dist and ts-server/dist to the target machine and run:");
+console.log("[bundle]   cd ts-server && node dist/server/cli.js");

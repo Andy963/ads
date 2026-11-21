@@ -1,0 +1,64 @@
+{
+  "name": "ads",
+  "version": "0.6.3",
+  "type": "module",
+  "description": "ADS TypeScript server and web runtime",
+  "author": "ADS Contributors",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Andy963/ads.git"
+  },
+  "homepage": "https://github.com/Andy963/ads#readme",
+  "bugs": {
+    "url": "https://github.com/Andy963/ads/issues"
+  },
+  "scripts": {
+    "clean": "node scripts/clean-build-outputs.js --root .",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/copy-runtime-assets.js && node scripts/chmod-bins.js",
+    "build:ts": "tsc -p tsconfig.build.json",
+    "start": "node dist/server/cli.js",
+    "web": "node dist/server/cli.js",
+    "dev": "tsx watch server/web/server.ts",
+    "test": "node scripts/run-tests.js",
+    "test:server": "node scripts/run-tests.js",
+    "coverage": "c8 --all --include server --reporter=text --reporter=lcov npm run test",
+    "deploy": "node scripts/deploy-local.js",
+    "lint": "eslint server shared tests scripts",
+    "verify:release": "node scripts/verify-release-layout.js ..",
+    "bundle": "node scripts/bundle.js",
+    "web:init-admin": "tsx server/web/auth/initAdminCli.ts",
+    "web:reset-admin": "tsx server/web/auth/resetAdminCli.ts",
+    "skills:migrate": "tsx server/skills/migrate.ts",
+    "codex:regen-types": "node scripts/generate-codex-app-server-types.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "ads": "dist/server/cli.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "12.6.2",
+    "liteque": "0.8.0",
+    "toml": "3.0.0",
+    "web-push": "3.6.7",
+    "ws": "8.18.3",
+    "yaml": "2.8.1",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.1",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "22.18.11",
+    "@types/web-push": "3.6.4",
+    "@types/ws": "8.18.1",
+    "c8": "9.1.0",
+    "esbuild": "0.27.3",
+    "eslint": "9.39.1",
+    "globals": "16.5.0",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.46.4"
+  }
+}

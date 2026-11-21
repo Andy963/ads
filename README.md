@@ -33,29 +33,31 @@ ADS 是一个面向 AI 编程工作流的本地 Web Console 与智能任务编�
 ```bash
 git clone https://github.com/Andy963/ads.git
 cd ads
-npm install
-npm run build
+npm ci --prefix client
+npm ci --prefix ts-server
+npm --prefix client run build
+npm --prefix ts-server run build
 ```
 
 ### 3. 初始化管理员
 首次启动前需创建 Web Console 管理员账号：
 ```bash
-npm run web:init-admin -- --username admin --password-stdin
+npm --prefix ts-server run web:init-admin -- --username admin --password-stdin
 ```
 
 ### 4. 启动服务
 - **生产方式启动 Web Console**：
   ```bash
-  npm start
+  npm --prefix ts-server start
   # or
-  npm run web
+  npm --prefix ts-server run web
   ```
   默认监听 `http://127.0.0.1:8787`。
 
 - **开发调试模式**：
   ```bash
-  npm run dev       # 服务端源码监听 (tsx watch)
-  npm run dev:web   # 前端 Vite 热重载开发服务器
+  npm --prefix ts-server run dev   # 服务端源码监听 (tsx watch)
+  npm --prefix client run dev      # 前端 Vite 热重载开发服务器
   ```
 
 - **启动 Telegram Connector（可选）**：
@@ -87,16 +89,15 @@ npm run web:init-admin -- --username admin --password-stdin
 
 | 命令 | 说明 |
 |---|---|
-| `npm run build` | 完整构建（TypeScript server + Vite client） |
-| `npm run build:server` | 仅编译 TypeScript server 到 `ts-server/dist/` |
-| `npm run build:web` | 仅重新打包前端 Web 资源 |
-| `npm run build:web:fixture` | 打包包含浏览器测试 fixture 入口（fixture.html）的前端构建 |
-| `npm run test` | 运行 TypeScript server 与前端测试 |
-| `npm run test:server` | 运行 TypeScript server 测试（Node test runner） |
-| `npm run test:web` | 运行前端 Vitest 组件与状态测试 |
-| `npm run lint` | 运行 ESLint 代码规范检查 |
-| `npm run skills:migrate` | 运行技能迁移 CLI，将遗留技能非破坏性迁移至 Codex 标准目录 |
-| `npm run web:reset-admin` | 重置或创建新的 Web 管理员账号 |
+| `npm --prefix client run build` | 构建 Web client 到 `client/dist/` |
+| `npm --prefix ts-server run build` | 编译 TypeScript server 到 `ts-server/dist/` 并复制运行时资产 |
+| `npm --prefix client run build:fixture` | 打包包含浏览器测试 fixture 入口（fixture.html）的前端构建 |
+| `npm --prefix ts-server test` | 运行 TypeScript server 测试 |
+| `npm --prefix client test` | 运行前端 Vitest 组件与状态测试 |
+| `npm --prefix client run lint` | 检查 client 代码规范 |
+| `npm --prefix ts-server run lint` | 检查 TypeScript server 代码规范 |
+| `npm --prefix ts-server run skills:migrate` | 运行技能迁移 CLI，将遗留技能非破坏性迁移至 Codex 标准目录 |
+| `npm --prefix ts-server run web:reset-admin` | 重置或创建新的 Web 管理员账号 |
 
 ---
 
@@ -104,10 +105,12 @@ npm run web:init-admin -- --username admin --password-stdin
 
 ```text
 ads/
-├── client/            # Shared Web Console (Vue 3 + TypeScript + Vite)
+├── client/            # Shared Web Console (Vue 3 + TypeScript + Vite), package.json and dist owned here
 ├── rust-server/       # Rust backend and Rust Telegram connector crate
 │   └── crates/ads-telegram/
-├── ts-server/         # TypeScript backend and TypeScript Telegram connector
+├── ts-server/         # TypeScript backend package, tests, build scripts, and Telegram connector
+│   ├── package.json
+│   ├── dist/
 │   ├── server/
 │   ├── shared/
 │   ├── tests/

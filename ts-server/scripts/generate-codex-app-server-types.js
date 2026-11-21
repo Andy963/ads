@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..");
-const OUT_DIR = path.join(ROOT_DIR, "ts-server", "server", "codex", "appServer", "protocol");
+const OUT_DIR = path.join(ROOT_DIR, "server", "codex", "appServer", "protocol");
 const BINARY = process.env.ADS_CODEX_BIN || "codex";
 
 function ensureFreshOutDir() {

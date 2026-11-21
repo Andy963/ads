@@ -1,15 +1,12 @@
 #!/usr/bin/env node
 // Ownership of generated output paths (issue #460):
-//   dist/server, dist/shared, dist/templates - legacy pre-split tsc emit, removed on migration
-//   ts-server/dist/server, ts-server/dist/shared - backend tsc emit (full build)
-//   ts-server/dist/templates                     - retired prompt templates, owned for removal
-//   dist/client               - web bundle, cleaned by Vite's emptyOutDir (never here)
-//   ts-server/connectors/telegram/dist - connector tsc emit (connector build, --paths dist)
+//   dist/server, dist/shared - backend tsc emit (full build)
+//   dist/templates           - retired prompt templates, owned for removal
+//   connectors/telegram/dist - connector tsc emit (connector build, --paths dist)
 //
 // A full build removes its owned outputs before compiling so stale emit from
 // deleted sources cannot leak into release assembly. Cleanup is restricted to
-// the explicit owned list: it never touches dist/client (web-only builds must
-// not delete backend outputs and vice versa), workspace data (.ads), user
+// the explicit owned list: it never touches the client package, workspace data (.ads), user
 // configuration, untracked sources, or existing runtime releases.
 //
 // Usage:
@@ -23,9 +20,6 @@ export const DEFAULT_OWNED_PATHS = [
   "dist/server",
   "dist/shared",
   "dist/templates",
-  "ts-server/dist/server",
-  "ts-server/dist/shared",
-  "ts-server/dist/templates",
 ];
 
 function parseArgs(argv) {

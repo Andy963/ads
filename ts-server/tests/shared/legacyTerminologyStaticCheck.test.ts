@@ -31,7 +31,7 @@ import test from "node:test";
 
 const REPO_ROOT = path.resolve(import.meta.dirname, "..", "..", "..");
 
-const SCAN_ROOTS = ["ts-server/server", "client/src", "ts-server/shared", "scripts"] as const;
+const SCAN_ROOTS = ["ts-server/server", "client/src", "ts-server/shared", "client/scripts", "ts-server/scripts"] as const;
 
 /**
  * Match `worker` only in lane-denoting positions so unrelated infrastructure
@@ -48,7 +48,7 @@ interface LegacyAllowance {
 }
 
 const ALLOWED_LEGACY_TERMINOLOGY: Record<string, LegacyAllowance> = {
-  "scripts/test-message-retry-browser.js": {
+  "client/scripts/test-message-retry-browser.js": {
     reason: "historical-record: uses the shared chat browser fixture's existing lane labels and prompt markers",
     legacyLines: 1,
   },
@@ -161,37 +161,29 @@ const ALLOWED_LEGACY_TERMINOLOGY: Record<string, LegacyAllowance> = {
     reason: "historical-record: ADS_ADVISOR_* / ADS_PLANNER_* env vars kept for compatibility",
     legacyLines: 3,
   },
-  "scripts/test-chat-browser.js": {
+  "client/scripts/test-chat-browser.js": {
     reason: "historical-record: browser test fixture strings predate the rename",
     legacyLines: 14,
   },
-  "scripts/test-lane-control-browser.js": {
-    reason: "historical-record: fixture prompt markers and reply strings are owned by scripts/lib/chat-browser-server.js",
+  "client/scripts/test-lane-control-browser.js": {
+    reason: "historical-record: fixture prompt markers and reply strings are owned by client/scripts/lib/chat-browser-server.js",
     legacyLines: 4,
   },
-  "scripts/lib/chat-browser-server.js": {
+  "client/scripts/lib/chat-browser-server.js": {
     reason: "historical-record: browser test fixture namespaces predate the rename",
     legacyLines: 13,
   },
-  "scripts/lib/chat-browser-history.js": {
+  "client/scripts/lib/chat-browser-history.js": {
     reason: "historical-record: browser test fixture strings predate the rename",
     legacyLines: 5,
   },
-  "scripts/lib/chat-browser-local-first.js": {
+  "client/scripts/lib/chat-browser-local-first.js": {
     reason: "historical-record: fixture prompt markers predate the rename; live session assertions use canonical ids",
     legacyLines: 3,
   },
-  "scripts/lib/chat-browser-post-send.js": {
+  "client/scripts/lib/chat-browser-post-send.js": {
     reason: "historical-record: browser test fixture strings predate the rename",
     legacyLines: 10,
-  },
-  "scripts/tmp-repro-ios3.mjs": {
-    reason: "historical-record: throwaway repro script, slated for deletion in a follow-up",
-    legacyLines: 22,
-  },
-  "scripts/tmp-repro-wrap.mjs": {
-    reason: "historical-record: throwaway repro script, slated for deletion in a follow-up",
-    legacyLines: 3,
   },
 };
 

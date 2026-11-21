@@ -19,15 +19,20 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
+fn ts_server_root() -> PathBuf {
+    repo_root().join("ts-server")
+}
+
 fn run_fixture(script: &str, mode: &str, db_path: &Path, workspace_root: &Path) -> Value {
+    let ts_server_root = ts_server_root();
     let output = Command::new("node")
         .arg("--import")
-        .arg("tsx")
+        .arg(ts_server_root.join("node_modules/tsx/dist/loader.mjs"))
         .arg(repo_root().join(script))
         .arg(mode)
         .arg(db_path)
         .arg(workspace_root)
-        .current_dir(repo_root())
+        .current_dir(&ts_server_root)
         .output()
         .expect("run node fixture");
 
@@ -276,11 +281,12 @@ fn native_transcript_redaction_matches_typescript() {
 }
 
 fn run_fixture_without_workspace(script: &str) -> Value {
+    let ts_server_root = ts_server_root();
     let output = Command::new("node")
         .arg("--import")
-        .arg("tsx")
+        .arg(ts_server_root.join("node_modules/tsx/dist/loader.mjs"))
         .arg(repo_root().join(script))
-        .current_dir(repo_root())
+        .current_dir(&ts_server_root)
         .output()
         .expect("run node fixture");
     assert!(
@@ -379,13 +385,14 @@ fn typescript_and_rust_share_native_transcript_rows() {
 }
 
 fn run_fixture_with_db(script: &str, mode: &str, db_path: &Path) -> Value {
+    let ts_server_root = ts_server_root();
     let output = Command::new("node")
         .arg("--import")
-        .arg("tsx")
+        .arg(ts_server_root.join("node_modules/tsx/dist/loader.mjs"))
         .arg(repo_root().join(script))
         .arg(mode)
         .arg(db_path)
-        .current_dir(repo_root())
+        .current_dir(&ts_server_root)
         .output()
         .expect("run node fixture");
     assert!(

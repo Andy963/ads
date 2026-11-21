@@ -4,7 +4,7 @@ import { createContext, runInContext } from "node:vm";
 import {
   observeChatServiceWorkerLifecycle,
   waitForChatServiceWorkerLifecycle,
-} from "../../../scripts/lib/chat-service-worker-lifecycle.js";
+} from "../../../client/scripts/lib/chat-service-worker-lifecycle.js";
 
 function fixture() {
   const register = Promise.withResolvers<unknown>();

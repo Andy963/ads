@@ -26,10 +26,10 @@ Start the two processes independently:
 
 ```bash
 # Start ADS Core
-node ts-server/dist/server/cli.js
+cd ts-server && npm start
 
 # Start the Telegram Connector
-node ts-server/connectors/telegram/bin/ads-telegram.js start
+cd ts-server/connectors/telegram && npm start
 ```
 
 ## Supported Interaction

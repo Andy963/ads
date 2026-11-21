@@ -81,7 +81,7 @@ for (const [engine, browserType] of [["chromium", chromium], ["webkit", webkit]]
   const browser = await browserType.launch();
   try {
     for (const width of [1280, 320, 375, 390, 430]) {
-      const fixture = await startChatBrowserServer(path.resolve("dist/client"), { settingsApi: true });
+      const fixture = await startChatBrowserServer(path.resolve(import.meta.dirname, "..", "dist"), { settingsApi: true });
       const page = await browser.newPage({ viewport: { width, height: 844 }, isMobile: width < 900, hasTouch: width < 900, serviceWorkers: "block" });
       page.setDefaultTimeout(15000);
       const result = { engine, width, measurements: [] };

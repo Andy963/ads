@@ -21,24 +21,26 @@ describe("release layout", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ads-release-layout-"));
     tempDirs.push(root);
     fs.mkdirSync(path.join(root, "ts-server", "dist", "server", "utils"), { recursive: true });
-    fs.mkdirSync(path.join(root, "dist", "client"), { recursive: true });
-    fs.writeFileSync(path.join(root, "package.json"), "{}\n", "utf8");
-    fs.writeFileSync(path.join(root, "dist", "client", "index.html"), "<html></html>\n", "utf8");
+    fs.mkdirSync(path.join(root, "client", "dist"), { recursive: true });
+    fs.writeFileSync(path.join(root, "ts-server", "package.json"), "{}\n", "utf8");
+    fs.writeFileSync(path.join(root, "client", "dist", "index.html"), "<html></html>\n", "utf8");
 
     const compiledUtils = path.join(root, "ts-server", "dist", "server", "utils");
-    assert.equal(findProjectRoot(compiledUtils), root);
-    assert.equal(resolveClientDistDir(root), path.join(root, "dist", "client"));
+    const tsServerRoot = path.join(root, "ts-server");
+    assert.equal(findProjectRoot(compiledUtils), tsServerRoot);
+    assert.equal(resolveClientDistDir(tsServerRoot), path.join(root, "client", "dist"));
   });
 
   it("rejects stale pre-split server output in the release root", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ads-release-stale-"));
     tempDirs.push(root);
     for (const file of [
-      "package.json",
-      "dist/client/index.html",
+      "client/dist/index.html",
       "ts-server/dist/server/cli.js",
       "ts-server/dist/server/skills/builtin/skill-creator/SKILL.md",
       "ts-server/dist/shared/terminology.js",
+      "ts-server/package.json",
+      "ts-server/package-lock.json",
       "dist/server/stale.js",
     ]) {
       const target = path.join(root, file);
@@ -48,7 +50,7 @@ describe("release layout", () => {
 
     const result = spawnSync(
       process.execPath,
-      [path.resolve(import.meta.dirname, "../../../scripts/verify-release-layout.js"), root],
+      [path.resolve(import.meta.dirname, "../../scripts/verify-release-layout.js"), root],
       { encoding: "utf8" },
     );
     assert.notEqual(result.status, 0);

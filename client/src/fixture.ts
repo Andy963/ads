@@ -1,6 +1,6 @@
 // Dedicated entry for browser fixture pages, built only via
-// `npm run build:web:fixture` (ADS_WEB_FIXTURE_ENTRY=1). The production
-// build:web output never includes fixture code.
+// `npm run build:fixture` (ADS_WEB_FIXTURE_ENTRY=1). The production build
+// output never includes fixture code.
 import { createApp } from "vue";
 
 import { ElIcon } from "element-plus";

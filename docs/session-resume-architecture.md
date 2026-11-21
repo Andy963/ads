@@ -395,7 +395,7 @@ rollout 文件兜底原计划在 P4，实际已随 P1 一并落地。逐条收�
 - `ts-server/tests/web/handleTaskResume.test.ts`：Codex session 原生恢复、磁盘缺失的 saved id 清理、降级文案与未尝试原生恢复时的原有措辞。
 - `client/src/__tests__/session-resume-picker.test.ts`（19 项）：挂载即拉列表、点击派发 `sessionId`、快捷项派发 `undefined`、busy 时不派发、空态、搜索防抖、cwd 开关重新拉取、错误展示、隐藏计数提示、`×N` 折叠标记、禁用原因展示，以及「加载更多」的出现条件与并发抑制、`stale` 标记不影响可点击、fork 折叠说明。
 
-校验命令：`npm test`（926 通过）、`npm run test:web`（417 通过）、`npm run lint`、`npm run build`。
+校验命令：`npm --prefix ts-server test`、`npm --prefix client test`、两个 package 的 `lint` 与 `build`。
 
 手工验证清单见 §11。
 

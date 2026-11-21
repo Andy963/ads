@@ -27,12 +27,12 @@ export default tseslint.config(
     },
   },
   {
-    files: ["ts-server/tests/**/*.ts", "client/src/__tests__/**/*.ts"],
+    files: ["tests/**/*.ts"],
     rules: {
       "@typescript-eslint/no-explicit-any": "off",
     },
   },
   {
-    ignores: ["dist/", "node_modules/", ".ads/", ".agent/", ".worktrees/", "ts-server/dist/", "ts-server/server/codex/appServer/protocol/"],
+    ignores: ["dist/", "node_modules/", ".ads/", "server/codex/appServer/protocol/"],
   }
 );

@@ -1453,22 +1453,25 @@ async fn send_bootstrap_frames(
         {
             return false;
         }
-        if lane.chat_session_id == ACOPILOT_CHAT_SESSION_ID
-            && !send_json(
-                socket,
-                json!({
-                    "type": "agent_message_snapshot",
-                    "entries": crate::agent_message_snapshots(
-                        state.auth.db(),
-                        &lane.auth_user_id,
-                        &lane.session_id,
-                        lane.generation,
-                    ),
-                }),
-            )
-            .await
-        {
-            return false;
+        if lane.chat_session_id == ACOPILOT_CHAT_SESSION_ID {
+            let entries = crate::agent_message_snapshots(
+                state.auth.db(),
+                &lane.auth_user_id,
+                &lane.session_id,
+                lane.generation,
+            );
+            if !entries.is_empty()
+                && !send_json(
+                    socket,
+                    json!({
+                        "type": "agent_message_snapshot",
+                        "entries": entries,
+                    }),
+                )
+                .await
+            {
+                return false;
+            }
         }
     }
     true
@@ -2048,7 +2051,7 @@ fn build_agents() -> Value {
     json!({
         "type": "agents",
         "activeAgentId": "codex",
-        "agents": [{ "id": "codex", "name": "Native Runtime", "ready": true }],
+        "agents": [{ "id": "codex", "name": "Codex", "ready": true }],
         "threadId": null,
     })
 }

@@ -7,7 +7,7 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "strict": true,
-    "outDir": "ts-server/dist",
+    "outDir": "dist",
     "sourceMap": true,
 
     // Additional strict checks
@@ -15,8 +15,8 @@
     "noUnusedParameters": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
-    "rootDir": "ts-server"
+    "rootDir": "."
   },
-  "include": ["ts-server/server", "ts-server/shared"],
-  "exclude": ["node_modules", "ts-server/dist", "ts-server/tests", "docs"]
+  "include": ["server", "shared"],
+  "exclude": ["node_modules", "dist", "tests", "connectors"]
 }

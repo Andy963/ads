@@ -247,8 +247,10 @@ if (!credentials || credentials.apiKey !== "rust-secret" || credentials.baseUrl 
 console.log("ok");
 "#;
     let output = std::process::Command::new("node")
-        .args(["--import", "tsx", "--input-type=module", "-e", script])
-        .current_dir(&root)
+        .arg("--import")
+        .arg(root.join("ts-server/node_modules/tsx/dist/loader.mjs"))
+        .args(["--input-type=module", "-e", script])
+        .current_dir(root.join("ts-server"))
         .env("ADS_DB_PATH", &db_path)
         .env("ADS_TS_STORE", &store_path)
         .env("ADS_TEST_PEPPER", "rust-to-typescript-pepper")

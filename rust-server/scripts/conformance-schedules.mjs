@@ -8,9 +8,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
+import { loadTsServerDependency } from "./lib/ts-server-dependencies.mjs";
 
 import { assert, compare, loginAs, startServerPair } from "./lib/black-box.mjs";
+
+const Database = loadTsServerDependency("better-sqlite3");
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rustDir = path.resolve(scriptDir, "..");

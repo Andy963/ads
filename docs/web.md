@@ -76,13 +76,13 @@ Web Console 经过专门的移动端交互优化：
 修改输入框后，除 Web 单元测试外，还应执行可重复的真实浏览器交互场景：
 
 ```sh
-npm run build:web
-npm run test:composer-browser
+npm --prefix client run build
+npm --prefix client run test:composer-browser
 ```
 
 场景使用本机 Chrome、独立临时用户目录和本地 API/WebSocket fixtures，不连接生产服务。可通过 `CHROME_BIN` 指定浏览器，通过 `ADS_COMPOSER_BUILD_DIR` 指定待验证的客户端构建。检查覆盖移动端触摸、桌面鼠标、320/390px 宽度、300/360/430px 缩小视口、菜单实际命中、多行全宽、清空回缩，以及可见边框与安全区的距离；终端给出元数据和截图的临时目录。模拟视口不等于真实软键盘，更不能替代安装到主屏幕的 iOS PWA。
 
-真机排查必须在受影响页面清缓存或刷新前进行，并单独记录设备型号和 iOS 版本。在 Safari 远程 Web Inspector 中运行 `scripts/inspect-composer.js` 的内容，再使用真实手指操作。该脚本仅临时采集事件、资源路径、视口/安全区、布局、命中测试和文本长度/行数；不读取 Cookie、令牌、会话标识，不导出草稿或对话正文，不发送网络请求，也不随应用加载。取回记录并移除监听：
+真机排查必须在受影响页面清缓存或刷新前进行，并单独记录设备型号和 iOS 版本。在 Safari 远程 Web Inspector 中运行 `client/scripts/inspect-composer.js` 的内容，再使用真实手指操作。该脚本仅临时采集事件、资源路径、视口/安全区、布局、命中测试和文本长度/行数；不读取 Cookie、令牌、会话标识，不导出草稿或对话正文，不发送网络请求，也不随应用加载。取回记录并移除监听：
 
 ```js
 const composerReport = window.ADSComposerInspection.stop();
@@ -108,7 +108,7 @@ JSON.stringify(composerReport, null, 2);
 | `ADS_WEB_LOGIN_LOCKOUT_MS` | `300000` (5分钟) | 登录锁定基础时长 |
 | `ADS_ADVISOR_CODEX_MODEL` | 未设置 | Acopilot 泳道使用的专属 Codex 模型覆盖（变量名沿用旧称，旧名 `ADS_PLANNER_CODEX_MODEL` 仍兼容，已弃用） |
 | `ADS_ADVISOR_SANDBOX_MODE` | `danger-full-access` | Acopilot 泳道沙箱权限覆盖，需保留写权限才能实现代码；非法值回退为 `workspace-write`（变量名沿用旧称，旧名 `ADS_PLANNER_SANDBOX_MODE` 仍兼容，已弃用） |
-| `ADS_REVIEW_TEST_COMMAND` | `npm test` | Actions Reviewer 队列评审前执行的验证命令；非 Node 仓库需覆盖为仓库实际的检查命令 |
+| `ADS_REVIEW_TEST_COMMAND` | `npm test` | Actions Reviewer 队列评审前执行的验证命令；ADS 仓库建议设为 `npm --prefix ts-server test`，其他项目需覆盖为适用命令 |
 | `ADS_SCHEDULER_MODEL` | 未设置 | Scheduler 执行定时 Prompt 时使用的模型覆盖 |
 
 ### Web Push 通知

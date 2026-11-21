@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const buildRoot = path.resolve(process.env.ADS_COMPOSER_BUILD_DIR || path.join(repoRoot, "dist/client"));
+const buildRoot = path.resolve(process.env.ADS_COMPOSER_BUILD_DIR || path.join(repoRoot, "dist"));
 const artifacts = await mkdtemp(path.join(tmpdir(), "ads-composer-check-"));
 const profile = path.join(artifacts, "profile");
 const html = await readFile(path.join(buildRoot, "index.html"), "utf8");

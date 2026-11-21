@@ -4,10 +4,12 @@
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
-import WebSocket from "ws";
+import { loadTsServerDependency } from "./lib/ts-server-dependencies.mjs";
 
 import { assert, loginAs, startServerPair } from "./lib/black-box.mjs";
+
+const Database = loadTsServerDependency("better-sqlite3");
+const WebSocket = loadTsServerDependency("ws");
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rustDir = path.resolve(scriptDir, "..");
@@ -16,7 +18,7 @@ const sessionId = "command-test";
 
 function connect(baseUrl, options = {}) {
   const url = `${baseUrl.replace(/^http/, "ws")}/ws`;
-  const headers = {};
+  const headers = { origin: baseUrl };
   if (options.cookie) headers.cookie = options.cookie;
   const socket = new WebSocket(url, options.protocols ?? [], { headers });
   const frames = [];
@@ -182,7 +184,7 @@ async function runScenario(pair, baseUrl, cookie, stateDir) {
     command("/pwd", "cm-pwd-initial");
     captured.pwdInitial = [await client.next(), await client.next(), await client.next()];
 
-    command("/cd server");
+    command("/cd ts-server/server");
     captured.cdResult = await client.next();
     captured.cdWorkspace = await client.next();
 
@@ -211,7 +213,7 @@ async function runScenario(pair, baseUrl, cookie, stateDir) {
       await client.next(),
     ];
 
-    command({ command: "/cd server", silent: true }, "cm-silent-cd");
+    command({ command: "/cd ts-server/server", silent: true }, "cm-silent-cd");
     captured.silentWorkspace = await client.next();
 
     captured.cwdStore = readCwdStore(stateDir);

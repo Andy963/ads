@@ -8,7 +8,7 @@ import { chromium, webkit } from "playwright";
 import { startChatBrowserServer } from "./lib/chat-browser-server.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const buildRoot = path.resolve(process.env.ADS_CHAT_BUILD_DIR || path.join(repoRoot, "dist/client"));
+const buildRoot = path.resolve(process.env.ADS_CHAT_BUILD_DIR || path.join(repoRoot, "dist"));
 const html = await readFile(path.join(buildRoot, "index.html"), "utf8");
 const artifacts = await mkdtemp(path.join(tmpdir(), "ads-lane-control-"));
 const report = {

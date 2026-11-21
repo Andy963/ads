@@ -32,7 +32,7 @@
 ## 4. 配置前提
 
 - Reviewer 角色必须启用并配置可用模型和系统指令。
-- `ADS_REVIEW_TEST_COMMAND` 指定队列评审前的验证命令，默认值为 `npm test`；非 Node 项目应覆盖为适用命令。
+- `ADS_REVIEW_TEST_COMMAND` 指定队列评审前的验证命令；ADS 仓库使用 `npm --prefix ts-server test`，其他项目按仓库边界覆盖。
 - Acopilot 泳道需要保留实现代码所需的工作区写权限；Actions Reviewer 保持只读。
 
 ## 5. 失败语义

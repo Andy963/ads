@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { chromium, webkit } from "playwright";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const buildRoot = path.resolve(process.env.ADS_COMPOSER_BUILD_DIR || path.join(repoRoot, "dist/client"));
+const buildRoot = path.resolve(process.env.ADS_COMPOSER_BUILD_DIR || path.join(repoRoot, "dist"));
 const html = await readFile(path.join(buildRoot, "index.html"), "utf8");
 const assetPaths = [...html.matchAll(/(?:src|href)="([^"\s]*\/assets\/[^"\s]+)"/g)].map((match) => match[1]);
 const artifacts = await mkdtemp(path.join(tmpdir(), "ads-composer-layout-"));

@@ -934,10 +934,12 @@ impl CodexAppServerAgent {
                         current.response_text = text.clone();
                     }
                     drop(current);
-                    if !visible || text.is_empty() || text == streamed {
+                    if !visible {
                         return;
                     }
-                    self.emit_agent_message_delta(&params, &item_id, &text);
+                    if !text.is_empty() && text != streamed {
+                        self.emit_agent_message_delta(&params, &item_id, &text);
+                    }
                 }
                 if item_type == Some("commandExecution")
                     && item

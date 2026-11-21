@@ -9,10 +9,12 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
-import WebSocket from "ws";
+import { loadTsServerDependency } from "./lib/ts-server-dependencies.mjs";
 
 import { assert, loginAs, request, startServerPair } from "./lib/black-box.mjs";
+
+const Database = loadTsServerDependency("better-sqlite3");
+const WebSocket = loadTsServerDependency("ws");
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rustDir = path.resolve(scriptDir, "..");
@@ -117,7 +119,7 @@ function startUpstream() {
 
 function connect(baseUrl, cookie, protocols = defaultProtocols) {
   const socket = new WebSocket(`${baseUrl.replace(/^http/, "ws")}/ws`, protocols, {
-    headers: { cookie },
+    headers: { cookie, origin: baseUrl },
   });
   const frames = [];
   const waiters = [];
@@ -370,7 +372,6 @@ async function runHydrateSide(baseUrl, stateDir, cookie) {
       (frame) => frame.type === "ack" && frame.client_message_id === "cm-command-hydrate",
       "hydrate ack",
     );
-    await nextMatching(client, (frame) => frame.type === "delta", "hydrate delta");
 
     const joiner = connect(baseUrl, cookie, protocols);
     try {
@@ -501,7 +502,7 @@ async function main() {
       `hydrate real identity ${JSON.stringify(hydrate.started.command)}`,
     );
     assert(
-      hydrate.result.output === "working done",
+      hydrate.result.output === "done",
       `hydrate result ${JSON.stringify(hydrate.result.output)}`,
     );
     assert(

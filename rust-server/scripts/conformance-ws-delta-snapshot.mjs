@@ -12,10 +12,12 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
-import WebSocket from "ws";
+import { loadTsServerDependency } from "./lib/ts-server-dependencies.mjs";
 
 import { assert, loginAs, request, startServerPair } from "./lib/black-box.mjs";
+
+const Database = loadTsServerDependency("better-sqlite3");
+const WebSocket = loadTsServerDependency("ws");
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rustDir = path.resolve(scriptDir, "..");
@@ -37,12 +39,9 @@ function startUpstream() {
         connection: "keep-alive",
       });
       response.write(
-        'data: {"choices":[{"delta":{"content":"Hello "},"finish_reason":null}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"Hello world"},"finish_reason":"stop"}]}\n\n',
       );
       setTimeout(() => {
-        response.write(
-          'data: {"choices":[{"delta":{"content":"world"},"finish_reason":"stop"}]}\n\n',
-        );
         response.write(
           'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n',
         );
@@ -60,7 +59,7 @@ function startUpstream() {
 
 function connect(baseUrl, cookie, protocols = defaultProtocols) {
   const socket = new WebSocket(`${baseUrl.replace(/^http/, "ws")}/ws`, protocols, {
-    headers: { cookie },
+    headers: { cookie, origin: baseUrl },
   });
   const frames = [];
   const waiters = [];
@@ -403,18 +402,18 @@ async function main() {
       "live delta frames must carry a streamId",
     );
     assert(
-      rust.firstDelta.startOffset === 0 && rust.firstDelta.endOffset === 6,
+      rust.firstDelta.startOffset === 0 && rust.firstDelta.endOffset === "Hello world".length,
       `first delta offsets: ${rust.firstDelta.startOffset}-${rust.firstDelta.endOffset}`,
     );
     assert(rust.inFlightEventSeen, "in_flight sync event is missing");
     assert(rust.joinerInFlight === true, `joiner inFlight=${rust.joinerInFlight}`);
     assert(rust.snapshot.bootstrap === true, "bootstrap delta_snapshot must be flagged");
     assert(
-      rust.snapshot.text === "Hello ",
+      rust.snapshot.text === "Hello world",
       `snapshot text ${JSON.stringify(rust.snapshot.text)}`,
     );
     assert(
-      rust.snapshot.startOffset === 0 && rust.snapshot.endOffset === 6,
+      rust.snapshot.startOffset === 0 && rust.snapshot.endOffset === "Hello world".length,
       `snapshot offsets ${rust.snapshot.startOffset}-${rust.snapshot.endOffset}`,
     );
     assert(
@@ -452,18 +451,18 @@ async function main() {
     );
     assert(
       hydrate.firstDelta.startOffset === seededText.length &&
-        hydrate.firstDelta.endOffset === seededText.length + "Hello ".length,
+        hydrate.firstDelta.endOffset === seededText.length + "Hello world".length,
       `hydrated delta offsets ${hydrate.firstDelta.startOffset}-${hydrate.firstDelta.endOffset}`,
     );
     assert(hydrate.joinerInFlight === true, `hydrate joiner inFlight=${hydrate.joinerInFlight}`);
     assert(hydrate.snapshot.bootstrap === true, "hydrated snapshot must be flagged");
     assert(
-      hydrate.snapshot.text === `${seededText}Hello `,
+      hydrate.snapshot.text === `${seededText}Hello world`,
       `hydrated snapshot text ${JSON.stringify(hydrate.snapshot.text)}`,
     );
     assert(
       hydrate.snapshot.startOffset === 0 &&
-        hydrate.snapshot.endOffset === seededText.length + "Hello ".length,
+        hydrate.snapshot.endOffset === seededText.length + "Hello world".length,
       `hydrated snapshot offsets ${hydrate.snapshot.startOffset}-${hydrate.snapshot.endOffset}`,
     );
     assert(

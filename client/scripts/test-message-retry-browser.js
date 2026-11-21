@@ -21,7 +21,7 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
   try {
     for (const width of [320, 390, 1280]) {
       if (selectedWidth && selectedWidth !== width) continue;
-      const fixture = await startChatBrowserServer(path.resolve("dist/client"), { settingsApi: true, durableQueue });
+      const fixture = await startChatBrowserServer(path.resolve(import.meta.dirname, "..", "dist"), { settingsApi: true, durableQueue });
       const page = await browser.newPage({ viewport: { width, height: 844 }, isMobile: width < 900, hasTouch: width < 900, serviceWorkers: "block" });
       page.setDefaultTimeout(15000);
       const result = { engine, width, lanes: [], laneSelections: [] };

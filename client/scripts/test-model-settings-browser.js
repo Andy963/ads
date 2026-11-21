@@ -60,7 +60,7 @@ async function assertScrollable(scroller, lastControl, desktop) {
 }
 
 for (const [engine, type] of [["chromium", chromium], ["webkit", webkit]]) {
-  const fixture = await startChatBrowserServer(path.resolve("dist/client"));
+  const fixture = await startChatBrowserServer(path.resolve(import.meta.dirname, "..", "dist"));
   // Chromium otherwise hides scrollbar painting in headless screenshots.
   const browser = await type.launch(engine === "chromium" ? { ignoreDefaultArgs: ["--hide-scrollbars"] } : {});
   try {

@@ -7,8 +7,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const scriptPath = fileURLToPath(import.meta.url);
-const sourceRoot = path.resolve(path.dirname(scriptPath), "..");
-const telegramConnectorRoot = path.join(sourceRoot, "ts-server", "connectors", "telegram");
+const tsServerRoot = path.resolve(path.dirname(scriptPath), "..");
+const sourceRoot = path.resolve(tsServerRoot, "..");
+const clientRoot = path.join(sourceRoot, "client");
+const telegramConnectorRoot = path.join(tsServerRoot, "connectors", "telegram");
 const home = os.homedir();
 const runtimeRoot = path.join(home, ".local", "share", "ads-runtime");
 const releasesDir = path.join(runtimeRoot, "releases");
@@ -230,11 +232,10 @@ function prepareState() {
 function assembleRelease() {
   fs.mkdirSync(releasesDir, { recursive: true });
   fs.mkdirSync(stagingDir);
-  copyDirectory(path.join(sourceRoot, "dist"), path.join(stagingDir, "dist"));
-  copyDirectory(path.join(sourceRoot, "ts-server", "dist"), path.join(stagingDir, "ts-server", "dist"));
-  copyDirectory(path.join(sourceRoot, "scripts"), path.join(stagingDir, "scripts"));
-  for (const file of ["package.json", "package-lock.json", "tsconfig.build.json"]) {
-    copyFile(path.join(sourceRoot, file), path.join(stagingDir, file));
+  copyDirectory(path.join(clientRoot, "dist"), path.join(stagingDir, "client", "dist"));
+  copyDirectory(path.join(tsServerRoot, "dist"), path.join(stagingDir, "ts-server", "dist"));
+  for (const file of ["package.json", "package-lock.json"]) {
+    copyFile(path.join(tsServerRoot, file), path.join(stagingDir, "ts-server", file));
   }
 
   if (fs.existsSync(telegramConnectorRoot)) {
@@ -246,7 +247,7 @@ function assembleRelease() {
   }
 
   run(npmBin, ["ci", "--omit=dev", "--no-audit", "--no-fund"], {
-    cwd: stagingDir,
+    cwd: path.join(stagingDir, "ts-server"),
     env: toolEnv,
   });
 
@@ -257,7 +258,7 @@ function assembleRelease() {
     });
   }
   run(nodeBin, [path.join(stagingDir, "ts-server", "dist", "server", "cli.js"), "version"], {
-    cwd: stagingDir,
+    cwd: path.join(stagingDir, "ts-server"),
     env: {
       ...toolEnv,
       ADS_ENV_PATH: envPath,
@@ -305,7 +306,8 @@ let switched = false;
 let servicesStopped = false;
 
 try {
-  run(npmBin, ["run", "build"], { cwd: sourceRoot, env: toolEnv });
+  run(npmBin, ["run", "build"], { cwd: clientRoot, env: toolEnv });
+  run(npmBin, ["run", "build"], { cwd: tsServerRoot, env: toolEnv });
   if (fs.existsSync(telegramConnectorRoot)) {
     run(npmBin, ["run", "build"], { cwd: telegramConnectorRoot, env: toolEnv });
   }

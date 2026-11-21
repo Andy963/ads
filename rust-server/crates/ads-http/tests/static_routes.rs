@@ -201,7 +201,7 @@ async fn unbuilt_client_returns_the_typescript_service_unavailable_text() {
     assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
         response.body,
-        b"Web app not built. Run: npm run build:web\n"
+        b"Web app not built. Run: npm --prefix client run build\n"
     );
 }
 

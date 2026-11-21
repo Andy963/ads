@@ -9,10 +9,10 @@ import { webkit } from "playwright";
 import {
   observeChatServiceWorkerLifecycle,
   waitForChatServiceWorkerLifecycle,
-} from "../../../scripts/lib/chat-service-worker-lifecycle.js";
-import { startChatBrowserServer } from "../../../scripts/lib/chat-browser-server.js";
+} from "../../../client/scripts/lib/chat-service-worker-lifecycle.js";
+import { startChatBrowserServer } from "../../../client/scripts/lib/chat-browser-server.js";
 
-const buildRoot = fileURLToPath(new URL("../../../dist/client", import.meta.url));
+const buildRoot = fileURLToPath(new URL("../../../client/dist", import.meta.url));
 
 async function waitUntil(predicate) {
   const deadline = Date.now() + 10_000;

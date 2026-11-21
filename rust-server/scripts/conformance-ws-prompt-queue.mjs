@@ -7,10 +7,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
-import WebSocket from "ws";
+import { loadTsServerDependency } from "./lib/ts-server-dependencies.mjs";
 
 import { assert, loginAs, startServerPair } from "./lib/black-box.mjs";
+
+const Database = loadTsServerDependency("better-sqlite3");
+const WebSocket = loadTsServerDependency("ws");
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rustDir = path.resolve(scriptDir, "..");
@@ -180,6 +182,7 @@ async function main() {
     rustCwd: root,
     nodeCwd: root,
     env: {
+      ADS_AGENT_RUNTIME: "native",
       CODEX_HOME: codexHome,
       CODEX_API_KEY: "",
       CODEX_BASE_URL: "",

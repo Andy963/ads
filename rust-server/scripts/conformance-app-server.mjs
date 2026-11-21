@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { assert } from "./lib/black-box.mjs";
+import { tsxLoader } from "./lib/ts-server-dependencies.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rustDir = path.resolve(scriptDir, "..");
@@ -67,7 +68,7 @@ async function main() {
   try {
     const tsRun = await run(
       process.execPath,
-      ["--import", "tsx", path.join(scriptDir, "app-server-ts-probe.ts")],
+      ["--import", tsxLoader, path.join(scriptDir, "app-server-ts-probe.ts")],
       {
         cwd: root,
         env: {

@@ -8,10 +8,12 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
-import WebSocket from "ws";
+import { loadTsServerDependency } from "./lib/ts-server-dependencies.mjs";
 
 import { assert, loginAs, startServerPair } from "./lib/black-box.mjs";
+
+const Database = loadTsServerDependency("better-sqlite3");
+const WebSocket = loadTsServerDependency("ws");
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rustDir = path.resolve(scriptDir, "..");
@@ -114,7 +116,7 @@ function startUpstream() {
 
 function connect(baseUrl, cookie, protocols) {
   const socket = new WebSocket(`${baseUrl.replace(/^http/, "ws")}/ws`, protocols, {
-    headers: { cookie },
+    headers: { cookie, origin: baseUrl },
   });
   const frames = [];
   const waiters = [];
@@ -270,6 +272,8 @@ async function main() {
     rustCwd: workspace,
     nodeCwd: root,
     env: {
+      ADS_AGENT_RUNTIME: "native",
+      ALLOWED_DIRS: workspace,
       CODEX_HOME: codexHome,
       CODEX_API_KEY: "",
       CODEX_BASE_URL: "",
