@@ -380,6 +380,7 @@ impl NativePromptRunner {
         let mut item_id = format!("{turn_id}-message-0");
         let mut side_effect_observed = false;
         let mut token_calibration: Option<TokenCalibration> = None;
+        let mut command_frames = HashMap::new();
         let loop_result: NativeResult<()> = async {
             for round in 0usize.. {
                 cancellation.check()?;
@@ -532,9 +533,10 @@ impl NativePromptRunner {
                     let command_cwd = command_cwd_for_call(&call, Path::new(&entry.workspace_root));
                     let started_command = command_start(&call, &command_cwd);
                     if let Some(command) = started_command.as_ref() {
-                        emit_command_event(&context, command, &command_cwd);
+                        command_frames.insert(command.id.clone(), command.frame_allowed);
+                        emit_command_event(&context, command);
                     }
-                    let result = if loop_pause.is_some() {
+                    let mut result = if loop_pause.is_some() {
                         NativeToolExecutionResult {
                             output: json!({
                                 "status": "not_executed",
@@ -559,6 +561,18 @@ impl NativePromptRunner {
                             ),
                         }
                     };
+                    if let Some(command) = result.command.as_mut() {
+                        command.frame_allowed = started_command
+                            .as_ref()
+                            .is_some_and(|started| started.frame_allowed)
+                            || command_frames
+                                .get(&command.id)
+                                .copied()
+                                .unwrap_or(false);
+                        if command.frame_allowed {
+                            command_frames.insert(command.id.clone(), true);
+                        }
+                    }
                     cancellation.check()?;
                     if loop_pause.is_none() {
                         side_effect_observed = true;
@@ -586,7 +600,7 @@ impl NativePromptRunner {
                         .command
                         .as_ref()
                         .filter(|command| command.status != "in_progress")
-                        .filter(|command| command_frame_text(&command.command, &command_cwd).is_some())
+                        .filter(|command| command.frame_allowed)
                     {
                         new_entries.push(command_entry(call.id.as_str(), command));
                     }
@@ -609,7 +623,7 @@ impl NativePromptRunner {
                         usage.as_ref(),
                     )?;
                     if let Some(command) = result.command.as_ref() {
-                        emit_command_event(&context, command, &command_cwd);
+                        emit_command_event(&context, command);
                     }
                 }
                 if let Some(reason) = loop_pause {
@@ -1334,6 +1348,7 @@ fn command_start(call: &crate::NativeToolCall, cwd: &std::path::Path) -> Option<
             .join(" ")
             .trim()
             .to_string(),
+        frame_allowed: true,
         status: "in_progress".to_string(),
         exit_code: None,
         aggregated_output: None,
@@ -1360,12 +1375,8 @@ fn command_frame_text<'a>(raw: &'a str, cwd: &std::path::Path) -> Option<&'a str
     Some(command)
 }
 
-fn emit_command_event(
-    context: &PromptRunContext,
-    command: &CommandArtifact,
-    cwd: &std::path::Path,
-) {
-    if command_frame_text(&command.command, cwd).is_none() {
+fn emit_command_event(context: &PromptRunContext, command: &CommandArtifact) {
+    if !command.frame_allowed {
         return;
     }
     let mut projected = Map::new();

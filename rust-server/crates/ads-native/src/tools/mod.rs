@@ -87,6 +87,8 @@ struct BuiltinCall {
 pub(crate) struct CommandArtifact {
     pub id: String,
     pub command: String,
+    #[serde(skip)]
+    pub frame_allowed: bool,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
@@ -457,6 +459,7 @@ impl NativeToolExecutor {
             command: Some(CommandArtifact {
                 id: result.call_id,
                 command: self.redact(&result.command),
+                frame_allowed: false,
                 status,
                 exit_code: result.exit_code,
                 aggregated_output: Some(self.redact(aggregated.trim_end())),
@@ -1047,6 +1050,7 @@ fn spawn_failure(call_id: String, command: String, message: &str) -> NativeToolE
         command: Some(CommandArtifact {
             id: call_id,
             command,
+            frame_allowed: false,
             status: "failed".to_string(),
             exit_code: Some(-1),
             aggregated_output: Some(message.to_string()),

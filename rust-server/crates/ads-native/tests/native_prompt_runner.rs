@@ -867,8 +867,9 @@ async fn streams_chat_completion_into_events_history_and_transcript() {
         .events_of("delta")
         .iter()
         .filter_map(|event| event.get("delta").and_then(Value::as_str))
-        .collect::<String>();
-    assert_eq!(deltas, "Hello world");
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(deltas, ["Hello ".to_string(), "world".to_string()]);
     let assistant = harness.events_of("assistant_item");
     assert_eq!(
         assistant[0]
@@ -1549,6 +1550,44 @@ async fn frames_relative_commands_after_cd() {
                 .get("output")
                 .and_then(Value::as_str)
                 .is_some_and(|output| output.contains("cd-ok"))
+    }));
+    harness.drain().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn frames_argv_commands_with_shell_metacharacters() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let harness = Harness::start_with_wire(
+        chat_relative_command_router(
+            Arc::clone(&requests),
+            json!({"cmd": "printf", "args": ["foo|bar; baz"]}),
+        ),
+        "chat",
+        Arc::clone(&requests),
+    )
+    .await;
+
+    let entry = harness.enqueue("cm-argv-command", "printf an argument");
+    let outcome = harness
+        .runner
+        .run_prompt(entry, harness.context())
+        .await
+        .expect("run prompt");
+    assert_eq!(outcome, PromptQueueRunOutcome::success());
+    assert!(harness.events_of("command").iter().any(|event| {
+        event
+            .get("command")
+            .and_then(|command| command.get("command"))
+            .and_then(Value::as_str)
+            == Some("printf foo|bar; baz")
+    }));
+    assert!(harness.transcript_entries().iter().any(|entry| {
+        entry.get("kind").and_then(Value::as_str) == Some("command")
+            && entry.get("command").and_then(Value::as_str) == Some("printf foo|bar; baz")
+            && entry
+                .get("output")
+                .and_then(Value::as_str)
+                .is_some_and(|output| output.contains("foo|bar; baz"))
     }));
     harness.drain().await;
 }

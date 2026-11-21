@@ -214,6 +214,8 @@ async fn parse_chat_stream(
     let mut text = String::new();
     let mut usage = None;
     let mut finish_reason = None;
+    let mut content_chunks = Vec::new();
+    let mut streamed = false;
     let mut calls = BTreeMap::<usize, NativeToolCall>::new();
     let mut saw_choice = false;
     let mut saw_done = false;
@@ -304,6 +306,7 @@ async fn parse_chat_stream(
                             .as_str()
                             .ok_or_else(|| NativeError::malformed("SSE content is not a string"))?;
                         text.push_str(content);
+                        content_chunks.push(content.to_string());
                     }
                 }
                 if let Some(tool_calls) = delta.get("tool_calls") {
@@ -317,6 +320,16 @@ async fn parse_chat_stream(
                     }
                 }
             }
+            if finish_reason
+                .as_deref()
+                .is_some_and(|reason| reason != "tool_calls")
+                && !streamed
+            {
+                // Chat lacks per-message phases, so finish_reason is the first
+                // point where a tool-call round is ruled out.
+                emit_chat_snapshots(&content_chunks, on_delta.as_ref());
+                streamed = true;
+            }
         }
         if eof || saw_done {
             break;
@@ -329,11 +342,8 @@ async fn parse_chat_stream(
     }
     let tool_calls = complete_tool_calls(calls)?;
     validate_finish_reason(finish_reason.as_deref(), &tool_calls)?;
-    if tool_calls.is_empty()
-        && !text.is_empty()
-        && let Some(callback) = on_delta.as_ref()
-    {
-        callback(&text);
+    if !streamed && tool_calls.is_empty() {
+        emit_chat_snapshots(&content_chunks, on_delta.as_ref());
     }
     Ok(NativeCompletion {
         text,
@@ -342,6 +352,19 @@ async fn parse_chat_stream(
         usage,
         native_responses: None,
     })
+}
+
+fn emit_chat_snapshots(chunks: &[String], callback: Option<&NativeTextDelta>) {
+    let Some(callback) = callback else {
+        return;
+    };
+    let mut text = String::new();
+    for chunk in chunks {
+        text.push_str(chunk);
+        if !text.is_empty() {
+            callback(&text);
+        }
+    }
 }
 
 pub(crate) fn take_sse_event_bytes(buffer: &[u8]) -> NativeResult<Option<(String, Vec<u8>)>> {
