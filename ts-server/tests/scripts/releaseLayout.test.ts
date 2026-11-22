@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 
-import { findProjectRoot } from "../../server/utils/projectRoot.js";
+import { findProjectRoot, findRepositoryRoot } from "../../server/utils/projectRoot.js";
 import { resolveClientDistDir } from "../../server/web/server/httpServer.js";
 
 describe("release layout", () => {
@@ -28,6 +28,7 @@ describe("release layout", () => {
     const compiledUtils = path.join(root, "ts-server", "dist", "server", "utils");
     const tsServerRoot = path.join(root, "ts-server");
     assert.equal(findProjectRoot(compiledUtils), tsServerRoot);
+    assert.equal(findRepositoryRoot(compiledUtils), root);
     assert.equal(resolveClientDistDir(tsServerRoot), path.join(root, "client", "dist"));
   });
 
