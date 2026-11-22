@@ -75,6 +75,9 @@ export default defineConfig(({ mode }) => {
       }),
     ],
     server: {
+      fs: {
+        allow: [repositoryRoot],
+      },
       proxy: {
         "/api": {
           target: "http://localhost:8787",
