@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { Database as DatabaseType } from "better-sqlite3";
 
@@ -81,6 +81,12 @@ function getProcessingReviewQueues(db: DatabaseType): Map<string, Promise<boolea
   const queues = new Map<string, Promise<boolean>>();
   processingReviewQueuesByDatabase.set(db, queues);
   return queues;
+}
+
+function defaultReviewTestCommand(repoPath: string): string {
+  return existsSync(path.join(repoPath, "ts-server", "package.json"))
+    ? "npm --prefix ts-server test"
+    : "npm test";
 }
 
 export class ActionJobReviewConflictError extends Error {
@@ -711,7 +717,7 @@ export class LaneDispatchBus {
     repoPath: string,
     signal: AbortSignal,
   ): Promise<NonNullable<ReviewPayload["testReport"]>> {
-    const command = String(this.options.testCommand ?? "npm test").trim();
+    const command = String(this.options.testCommand ?? defaultReviewTestCommand(repoPath)).trim();
     const parts = command.split(/\s+/).filter(Boolean);
     if (parts.length === 0) throw new Error("Interactive review verification command is empty.");
     signal.throwIfAborted();

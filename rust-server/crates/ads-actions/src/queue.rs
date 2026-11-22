@@ -32,7 +32,13 @@ const DEFAULT_LEASE_TTL: Duration = Duration::from_secs(90);
 const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(30);
 const DEFAULT_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const DEFAULT_REVIEWER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-const DEFAULT_TEST_COMMAND: &str = "npm test";
+fn default_test_command(repo_path: &Path) -> String {
+    if repo_path.join("ts-server/package.json").is_file() {
+        "npm --prefix ts-server test".to_string()
+    } else {
+        "npm test".to_string()
+    }
+}
 
 #[derive(Clone)]
 pub struct ReviewQueue {
@@ -348,8 +354,11 @@ impl ReviewQueue {
         repo_path: &Path,
         cancellation: ads_native::Cancellation,
     ) -> Result<(ReviewVerdict, ReviewTestReport), ReviewError> {
-        let test_report =
-            (self.verification())(session.repo_path.clone(), cancellation.clone()).await?;
+        let test_report = (self.verification(&session.repo_path))(
+            session.repo_path.clone(),
+            cancellation.clone(),
+        )
+        .await?;
         let now = now_ms();
         {
             let connection = self.db.connect()?;
@@ -820,13 +829,13 @@ impl ReviewQueue {
             .unwrap_or_else(crate::resolver::default_target_resolver)
     }
 
-    fn verification(&self) -> VerificationRunner {
+    fn verification(&self, repo_path: &Path) -> VerificationRunner {
         self.options.verification.clone().unwrap_or_else(|| {
             let command = self
                 .options
                 .test_command
                 .clone()
-                .unwrap_or_else(|| DEFAULT_TEST_COMMAND.to_string());
+                .unwrap_or_else(|| default_test_command(repo_path));
             let timeout = self
                 .options
                 .verification_timeout
@@ -1099,6 +1108,19 @@ mod tests {
             );
         }
         assert_eq!(github_repository_url("https://example.com/ads.git"), None);
+    }
+
+    #[test]
+    fn selects_the_package_local_test_command_for_ads_repositories() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        assert_eq!(default_test_command(directory.path()), "npm test");
+        std::fs::create_dir_all(directory.path().join("ts-server")).expect("ts-server directory");
+        std::fs::write(directory.path().join("ts-server/package.json"), "{}\n")
+            .expect("package manifest");
+        assert_eq!(
+            default_test_command(directory.path()),
+            "npm --prefix ts-server test"
+        );
     }
 
     #[tokio::test]

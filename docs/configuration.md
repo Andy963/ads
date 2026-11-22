@@ -42,7 +42,7 @@ ADS 会在启动时从当前工作目录向上查找 `.env` 文件，并自动�
 | `ADS_ADVISOR_CODEX_MODEL` | 未设置 | Advisor Lane 专用的 Codex 模型覆盖（旧名 `ADS_PLANNER_CODEX_MODEL` 仍兼容，已弃用） |
 | `ADS_ADVISOR_SANDBOX_MODE` | `danger-full-access` | Codex/Advisor Lane 沙箱权限覆盖；用于需要调用 GitHub CLI 的场景。非法值安全回退为 `workspace-write`（旧名 `ADS_PLANNER_SANDBOX_MODE` 仍兼容，已弃用）；不影响 Native Runtime 的直接宿主机执行语义 |
 | `ADS_SCHEDULER_MODEL` | 未设置 | Scheduler 执行定时 Prompt 时使用的模型覆盖 |
-| `ADS_REVIEW_TEST_COMMAND` | `npm test` | Actions Reviewer 队列在评审前执行的验证命令；非 Node 仓库需覆盖为仓库实际的检查命令 |
+| `ADS_REVIEW_TEST_COMMAND` | `npm --prefix ts-server test` | Actions Reviewer 队列在评审前执行的验证命令；其他项目需覆盖为适用命令 |
 
 ---
 
@@ -218,4 +218,4 @@ Reviewer 执行或输出协议错误会显示具体原因并返回操作失败�
 
 Reviewer 的模型、推理强度和 system prompt 来自角色配置；连接使用任务所有者的 HTTP 模型配置和凭据。仅配置 Codex CLI 登录而无可用 HTTP 连接不能保证 Reviewer 可用。检查对象是精确被审查提交，不是未提交工作区；不支持写入、shell、符号链接或子模块检查。详见 ADR 0033。
 
-Acopilot 会话中的 `review_action` 将当前 Issue-backed PR 派入 Actions Reviewer 队列并立即返回 job id，不等待裁决。队列先运行 `ADS_REVIEW_TEST_COMMAND`（默认 `npm test`），再调用只读 Reviewer；PR、Issue 条件、相关 ADR、base/head 与验证报告会绑定到同一任务。任务结束后裁决写成 Issue comment（`<!-- ads:review-verdict -->`），并由服务端创建持久的 Reviewer-to-Acopilot `agent_message`；它不会进入用户 `prompt_queue`。Acopilot 泳道显示明确的 agent handoff 卡片，并以独立 lease 和 lane 执行串行化消费该消息。验证命令超时记为 exit 124 的证据交给 Reviewer，不再终止任务。Reviewer 角色必须启用并配置可用模型，否则任务以操作失败结束。只有对精确目标产生的 PASS 才是该提交的评审结果；head、base 或 Issue 条件变化后须重新派审。PASS 不会自动合并，合并仍需用户明确授权。
+Acopilot 会话中的 `review_action` 将当前 Issue-backed PR 派入 Actions Reviewer 队列并立即返回 job id，不等待裁决。队列先运行 `ADS_REVIEW_TEST_COMMAND`（ADS 仓库默认 `npm --prefix ts-server test`），再调用只读 Reviewer；PR、Issue 条件、相关 ADR、base/head 与验证报告会绑定到同一任务。任务结束后裁决写成 Issue comment（`<!-- ads:review-verdict -->`），并由服务端创建持久的 Reviewer-to-Acopilot `agent_message`；它不会进入用户 `prompt_queue`。Acopilot 泳道显示明确的 agent handoff 卡片，并以独立 lease 和 lane 执行串行化消费该消息。验证命令超时记为 exit 124 的证据交给 Reviewer，不再终止任务。Reviewer 角色必须启用并配置可用模型，否则任务以操作失败结束。只有对精确目标产生的 PASS 才是该提交的评审结果；head、base 或 Issue 条件变化后须重新派审。PASS 不会自动合并，合并仍需用户明确授权。

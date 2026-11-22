@@ -104,7 +104,7 @@ CARGO_BUILD_JOBS=2 cargo test --workspace -- --test-threads=2
 在仓库根目录执行：
 
 ```bash
-node --import tsx rust-server/scripts/extract-contracts.mjs
+node --import ./ts-server/node_modules/tsx/dist/loader.mjs rust-server/scripts/extract-contracts.mjs
 ```
 
 脚本会在临时数据库中执行真实 TypeScript 迁移，并将 DDL、密码兼容向量、HTTP

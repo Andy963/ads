@@ -1,6 +1,8 @@
-import Database from "better-sqlite3";
-
 import { legacyModulePath } from "./legacy-module-path.ts";
+
+import { loadTsServerDependency } from "./lib/ts-server-dependencies.mjs";
+
+const Database = loadTsServerDependency("better-sqlite3");
 
 async function main() {
   const { NativeTranscriptStore } = await import(

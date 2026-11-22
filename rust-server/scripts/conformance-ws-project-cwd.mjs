@@ -7,9 +7,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import WebSocket from "ws";
+import { loadTsServerDependency } from "./lib/ts-server-dependencies.mjs";
 
 import { assert, loginAs, request, startServerPair } from "./lib/black-box.mjs";
+
+const WebSocket = loadTsServerDependency("ws");
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rustDir = path.resolve(scriptDir, "..");
@@ -18,7 +20,7 @@ const chatSessionId = "main";
 
 function connect(baseUrl, cookie, protocols) {
   const url = `${baseUrl.replace(/^http/, "ws")}/ws`;
-  const socket = new WebSocket(url, protocols, { headers: { cookie } });
+  const socket = new WebSocket(url, protocols, { headers: { cookie, origin: baseUrl } });
   const frames = [];
   const waiters = [];
   let failure = null;
@@ -211,19 +213,17 @@ function compareFrames(label, node, rust) {
 }
 
 function compareFrameLists(label, nodeFrames, rustFrames) {
-  assert(nodeFrames.length === rustFrames.length, `${label}: frame counts differ`);
+  assert(
+    nodeFrames.length === rustFrames.length,
+    `${label}: frame counts differ: node=${JSON.stringify(nodeFrames)} rust=${JSON.stringify(rustFrames)}`,
+  );
   nodeFrames.forEach((frame, index) => compareFrames(`${label}[${index}]`, frame, rustFrames[index]));
 }
 
-function findNodeModules(start) {
-  let current = start;
-  for (;;) {
-    const candidate = path.join(current, "node_modules");
-    if (fs.existsSync(path.join(candidate, "tsx"))) return candidate;
-    const parent = path.dirname(current);
-    if (parent === current) throw new Error("node_modules with tsx not found");
-    current = parent;
-  }
+function findNodeModules() {
+  const candidate = path.join(root, "ts-server", "node_modules");
+  if (fs.existsSync(path.join(candidate, "tsx"))) return candidate;
+  throw new Error(`TypeScript server node_modules not found: ${candidate}`);
 }
 
 async function main() {
@@ -232,13 +232,14 @@ async function main() {
   const otherRoot = path.join(sandbox, "other");
   fs.mkdirSync(projectRoot);
   fs.mkdirSync(otherRoot);
-  fs.symlinkSync(findNodeModules(root), path.join(sandbox, "node_modules"), "dir");
+  fs.symlinkSync(findNodeModules(), path.join(sandbox, "node_modules"), "dir");
   const pair = await startServerPair({
     root,
     rustDir,
     nodeEntry: path.join(root, "ts-server", "server", "web", "server_impl.ts"),
     nodeCwd: sandbox,
     rustCwd: sandbox,
+    env: { ALLOWED_DIRS: sandbox },
   });
   try {
     const node = await runSide(

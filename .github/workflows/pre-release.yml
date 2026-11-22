@@ -24,8 +24,16 @@ jobs:
         with:
           node-version: "24"
           cache: "npm"
+          cache-dependency-path: |
+            client/package-lock.json
+            ts-server/package-lock.json
 
-      - name: Install dependencies
+      - name: Install client dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Install server dependencies
+        working-directory: ts-server
         run: npm ci
 
       - name: Verify dev toolchain
@@ -33,30 +41,49 @@ jobs:
           set -euo pipefail
           node -v
           npm -v
-          npx --no tsx --version
-          npx --no vitest --version
+          npm --prefix ts-server exec --no -- tsx --version
+          npm --prefix client exec --no -- vitest --version
 
-      - name: Build
+      - name: Lint server
+        working-directory: ts-server
+        run: npm run lint
+
+      - name: Lint client
+        working-directory: client
+        run: npm run lint
+
+      - name: Build client
+        working-directory: client
+        run: npm run build
+
+      - name: Build server
+        working-directory: ts-server
         run: npm run build
 
       - name: Verify release layout
+        working-directory: ts-server
         run: npm run verify:release
 
       - name: Run unit tests
+        working-directory: ts-server
         run: npm test
 
       - name: Run web tests
-        run: npm run test:web
+        working-directory: client
+        run: npm test
 
       - name: Install browser engines
+        working-directory: client
         run: npx --no playwright install --with-deps webkit chromium
 
       - name: Run chat browser regressions
+        working-directory: client
         run: npm run test:chat-browser
 
       - name: Run model and retry browser regressions
         env:
           TMPDIR: ${{ runner.temp }}
+        working-directory: client
         run: |
           npm run test:model-settings-browser
           npm run test:model-selection-browser
@@ -76,7 +103,7 @@ jobs:
         id: vars
         run: |
           set -euo pipefail
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION=$(node -p "require('./ts-server/package.json').version")
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             TAG="${GITHUB_REF_NAME}"
           else
@@ -99,14 +126,15 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.vars.outputs.tag }}"
-          tar -czf "ads-${TAG}.tgz" dist ts-server/dist package.json package-lock.json README.md LICENSE .env.example .env.advanced.example
+          tar -czf "ads-${TAG}.tgz" client/dist ts-server/dist ts-server/package.json ts-server/package-lock.json ts-server/scripts/verify-release-layout.js README.md LICENSE .env.example .env.advanced.example
           SMOKE_DIR="$RUNNER_TEMP/ads-release-smoke"
           rm -rf "$SMOKE_DIR"
           mkdir -p "$SMOKE_DIR"
           tar -xzf "ads-${TAG}.tgz" -C "$SMOKE_DIR"
-          node scripts/verify-release-layout.js "$SMOKE_DIR"
-          cd "$SMOKE_DIR"
-          node ts-server/dist/server/cli.js version
+          node "$SMOKE_DIR/ts-server/scripts/verify-release-layout.js" "$SMOKE_DIR"
+          cd "$SMOKE_DIR/ts-server"
+          npm ci --omit=dev --no-audit --no-fund
+          node dist/server/cli.js version
 
       - name: Create GitHub pre-release
         if: steps.vars.outputs.is_prerelease == 'true'

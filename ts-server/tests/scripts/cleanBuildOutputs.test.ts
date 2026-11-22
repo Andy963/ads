@@ -7,14 +7,13 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { cleanOwnedOutputs } from "../../../scripts/clean-build-outputs.js";
+import { cleanOwnedOutputs } from "../../scripts/clean-build-outputs.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const tsServerRoot = path.resolve(__dirname, "..", "..");
-const repoRoot = path.resolve(tsServerRoot, "..");
-const cleanScriptPath = path.join(repoRoot, "scripts", "clean-build-outputs.js");
-const copyAssetsSourcePath = path.join(repoRoot, "scripts", "copy-runtime-assets.js");
-const tscBinPath = path.join(repoRoot, "node_modules", "typescript", "bin", "tsc");
+const cleanScriptPath = path.join(tsServerRoot, "scripts", "clean-build-outputs.js");
+const copyAssetsSourcePath = path.join(tsServerRoot, "scripts", "copy-runtime-assets.js");
+const tscBinPath = path.join(tsServerRoot, "node_modules", "typescript", "bin", "tsc");
 
 describe("scripts/clean-build-outputs", () => {
   const tempDirs: string[] = [];
@@ -91,6 +90,7 @@ describe("scripts/clean-build-outputs", () => {
   it("removes only owned paths and never touches web, workspace, or untracked files", () => {
     const root = makeTempRoot("ads-clean-owned-");
     for (const rel of [
+      "dist/package.json",
       "dist/server/tasks/executor.js",
       "dist/shared/terminology.js",
       "dist/templates/planner-instructions.md",
@@ -107,6 +107,7 @@ describe("scripts/clean-build-outputs", () => {
     const result = runClean(root);
     assert.equal(result.status, 0, result.stderr);
 
+    assert.ok(!fs.existsSync(path.join(root, "dist", "package.json")), "stale bundle metadata removed");
     assert.ok(!fs.existsSync(path.join(root, "dist", "server")), "backend output removed");
     assert.ok(!fs.existsSync(path.join(root, "dist", "shared")), "shared output removed");
     assert.ok(!fs.existsSync(path.join(root, "dist", "templates")), "legacy templates removed");
@@ -155,13 +156,13 @@ describe("scripts/clean-build-outputs", () => {
     // Seed a builtin skill fixture and retired legacy outputs that must not
     // survive cleanup. The compiled skill script is planted after the build,
     // mimicking tsc emit in a real build (the fixture tsc project only covers src/).
-    const skillDir = path.join(root, "ts-server", "server", "skills", "builtin", "skill-creator");
+    const skillDir = path.join(root, "server", "skills", "builtin", "skill-creator");
     fs.mkdirSync(path.join(skillDir, "scripts"), { recursive: true });
     fs.writeFileSync(path.join(skillDir, "SKILL.md"), "# Skill Creator\n", "utf8");
     fs.writeFileSync(path.join(skillDir, "scripts", "init-skill.ts"), "export const init = 1;\n", "utf8");
     for (const rel of [
-      "ts-server/dist/templates/instructions.md",
-      "ts-server/dist/server/web/server/taskQueue/runtime.js",
+      "dist/templates/instructions.md",
+      "dist/server/web/server/taskQueue/runtime.js",
     ]) {
       const full = path.join(root, rel);
       fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -170,9 +171,9 @@ describe("scripts/clean-build-outputs", () => {
 
     // Full build: clean owned outputs, compile, copy + validate skill assets.
     buildFixture(root);
-    const clean = runClean(root, ["--paths", "ts-server/dist/server,ts-server/dist/shared,ts-server/dist/templates"]);
+    const clean = runClean(root);
     assert.equal(clean.status, 0, clean.stderr);
-    const compiledDir = path.join(root, "ts-server", "dist", "server", "skills", "builtin", "skill-creator", "scripts");
+    const compiledDir = path.join(root, "dist", "server", "skills", "builtin", "skill-creator", "scripts");
     fs.mkdirSync(compiledDir, { recursive: true });
     fs.writeFileSync(path.join(compiledDir, "init-skill.js"), "export const init = 1;\n", "utf8");
     const copyScriptDir = path.join(root, "scripts");
@@ -184,8 +185,7 @@ describe("scripts/clean-build-outputs", () => {
 
     // Assemble a release the same way deploy-local does: copy the whole dist.
     const staging = path.join(root, "staging");
-    fs.cpSync(path.join(root, "dist"), path.join(staging, "dist"), { recursive: true });
-    fs.cpSync(path.join(root, "ts-server", "dist"), path.join(staging, "ts-server", "dist"), {
+    fs.cpSync(path.join(root, "dist"), path.join(staging, "ts-server", "dist"), {
       recursive: true,
     });
 

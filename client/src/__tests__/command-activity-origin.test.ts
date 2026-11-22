@@ -2,7 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, shallowMount } from "@vue/test-utils";
 import { defineComponent } from "vue";
 
-import { collectCommandActivityFrames, commandActivityCases, commandCommentary, commandFinalReply } from "../../../ts-server/tests/web/commandActivityHarness";
+import {
+  collectCommandActivityFrames,
+  commandActivityCases,
+  commandCommentary,
+  commandFinalReply,
+} from "./commandActivityFixture";
 import type { ChatMessage } from "../components/mainChat/types";
 import MainChatMessageList from "../components/MainChatMessageList.vue";
 import { loadMarkdown } from "../lib/markdown/loader";
@@ -53,8 +58,8 @@ vi.mock("../components/LoginGate.vue", () => ({
 afterEach(() => { lastWs = null; });
 
 describe("command activity origin rendering", () => {
-  it("renders actual native bridge frames only as commands while retaining non-command activity and commentary", async () => {
-    // No live provider or application server: only the Native fetch boundary and browser transport are replaced.
+  it("renders native bridge command frames while retaining non-command activity and commentary", async () => {
+    // The package-local fixture runs the compiled server bridge and returns its actual browser wire frames.
     const { frames, entries, commandFrameCount } = await collectCommandActivityFrames();
     expect(entries.slice(0, commandActivityCases.length).map((entry) => entry.category))
       .toEqual(commandActivityCases.map((command) => command.category));

@@ -20,13 +20,13 @@ const gitCommonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
 }).trim();
 const primaryRoot = path.dirname(path.resolve(root, gitCommonDir));
 const clientDir = [root, primaryRoot]
-  .map((candidate) => path.join(candidate, "dist", "client"))
+  .map((candidate) => path.join(candidate, "client", "dist"))
   .find((candidate) => fs.existsSync(path.join(candidate, "index.html")))
-  ?? path.join(root, "dist", "client");
+  ?? path.join(root, "client", "dist");
 const playwrightEntry = [root, primaryRoot]
-  .map((candidate) => path.join(candidate, "node_modules", "playwright", "index.mjs"))
+  .map((candidate) => path.join(candidate, "client", "node_modules", "playwright", "index.mjs"))
   .find((candidate) => fs.existsSync(candidate))
-  ?? path.join(root, "node_modules", "playwright", "index.mjs");
+  ?? path.join(root, "client", "node_modules", "playwright", "index.mjs");
 
 function startUpstream() {
   const requests = [];

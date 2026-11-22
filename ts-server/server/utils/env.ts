@@ -29,10 +29,38 @@ function resolveExplicitEnvPath(): string | null {
   return path.resolve(trimmed);
 }
 
+function isAdsRepositoryRoot(dir: string): boolean {
+  return fs.existsSync(path.join(dir, "ts-server", "package.json"))
+    && fs.existsSync(path.join(dir, "client"));
+}
+
+function findAdsRepositoryRoot(startDir: string): string | null {
+  let current = startDir;
+  while (true) {
+    if (isAdsRepositoryRoot(current)) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return null;
+    }
+    current = parent;
+  }
+}
+
+function isWithinRoot(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
 function findSearchBoundary(startDir: string): string | null {
+  const repositoryRoot = findAdsRepositoryRoot(startDir);
   let current = startDir;
   while (true) {
     if (fs.existsSync(path.join(current, "package.json"))) {
+      if (repositoryRoot && current !== repositoryRoot && isWithinRoot(repositoryRoot, current)) {
+        return repositoryRoot;
+      }
       return current;
     }
     if (fs.existsSync(path.join(current, ".git"))) {

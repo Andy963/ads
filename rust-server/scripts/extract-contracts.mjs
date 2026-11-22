@@ -14,11 +14,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import Database from "better-sqlite3";
-
 import { stateSchemaMigrations } from "../../ts-server/server/state/schemaMigrations.ts";
 import { migrations as workspaceMigrations } from "../../ts-server/server/storage/migrations.ts";
 import { ensureWebAuthTables } from "../../ts-server/server/web/auth/schema.ts";
+import { loadTsServerDependency } from "./lib/ts-server-dependencies.mjs";
+
+const Database = loadTsServerDependency("better-sqlite3");
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDir, "../..");

@@ -4,10 +4,12 @@
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import Database from "better-sqlite3";
-import WebSocket from "ws";
+import { loadTsServerDependency } from "./lib/ts-server-dependencies.mjs";
 
 import { assert, assertJson, loginAs, startServerPair } from "./lib/black-box.mjs";
+
+const Database = loadTsServerDependency("better-sqlite3");
+const WebSocket = loadTsServerDependency("ws");
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rustDir = path.resolve(scriptDir, "..");
@@ -17,7 +19,7 @@ function connect(baseUrl, options = {}) {
   const url = `${baseUrl.replace(/^http/, "ws")}/ws${options.search ?? ""}`;
   const headers = {};
   if (options.cookie) headers.cookie = options.cookie;
-  if (options.origin) headers.origin = options.origin;
+  headers.origin = options.origin ?? baseUrl;
   const socket = new WebSocket(url, options.protocols ?? [], { headers });
   const frames = [];
   const waiters = [];
@@ -98,7 +100,7 @@ function connect(baseUrl, options = {}) {
     opened,
     next,
     closed,
-    close: () => socket.close(),
+    close: () => socket.terminate(),
     closeSnapshot: () => closeEvent,
   };
 }

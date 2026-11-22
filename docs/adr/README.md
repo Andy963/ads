@@ -65,4 +65,5 @@
 - 0054 - [ADR 0054: Review Verdicts Hand Off Through Durable Agent Messages](0054-review-verdicts-hand-off-through-durable-agent-messages.md)
 - 0055 - [ADR 0055: Split the Client and Server Implementations](0055-split-client-and-server-implementations.md)
 - 0056 - [ADR 0056: Project Workspaces and Pull Request Cache Boundaries](0056-project-workspaces-and-pull-request-cache.md)
+- 0057 - [ADR 0057: Package-Local Build and Test Boundaries](0057-package-local-build-test-boundaries.md)
 <!-- ADS:ADR_INDEX_END -->

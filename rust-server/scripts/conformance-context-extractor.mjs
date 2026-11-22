@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { assert, assertJson } from "./lib/black-box.mjs";
+import { tsxLoader } from "./lib/ts-server-dependencies.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDir, "../..");
@@ -83,7 +84,7 @@ try {
 
   const expected = runNode(root, process.execPath, [
     "--import",
-    "tsx",
+    tsxLoader,
     path.join(rustDir, "scripts/context-extractor-fixture.ts"),
     repo,
     base,

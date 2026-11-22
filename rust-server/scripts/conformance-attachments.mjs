@@ -37,7 +37,7 @@ async function upload(baseUrl, cookie, bytes, options = {}) {
   );
   const response = await fetch(`${baseUrl}/api/attachments/images`, {
     method: "POST",
-    headers: cookie ? { cookie } : {},
+    headers: cookie ? { cookie, origin: baseUrl } : { origin: baseUrl },
     body: form,
   });
   const text = await response.text();
@@ -53,7 +53,7 @@ async function upload(baseUrl, cookie, bytes, options = {}) {
 async function postText(baseUrl, cookie, pathname, body) {
   const response = await fetch(`${baseUrl}${pathname}`, {
     method: "POST",
-    headers: { cookie, "content-type": "text/plain" },
+    headers: { cookie, origin: baseUrl, "content-type": "text/plain" },
     body,
   });
   const text = await response.text();

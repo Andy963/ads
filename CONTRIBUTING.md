@@ -32,14 +32,16 @@ By participating in this project, you agree to maintain a respectful and inclusi
    git clone https://github.com/YOUR_USERNAME/ads.git
    cd ads
    ```
-3. Install dependencies:
+3. Install package-local dependencies:
    ```bash
-   npm install
+   npm ci --prefix client
+   npm ci --prefix ts-server
    ```
 4. Create a `.env` file based on `.env.example` (shared by Telegram/Web)
 5. Build the project:
    ```bash
-   npm run build
+   npm --prefix client run build
+   npm --prefix ts-server run build
    ```
 
 ## Development Workflow
@@ -47,7 +49,8 @@ By participating in this project, you agree to maintain a respectful and inclusi
 ### Running in Development Mode
 
 ```bash
-npm run dev
+npm --prefix ts-server run dev
+npm --prefix client run dev
 ```
 
 This runs the server in watch mode, automatically rebuilding on file changes.
@@ -55,13 +58,15 @@ This runs the server in watch mode, automatically rebuilding on file changes.
 ### Running Tests
 
 ```bash
-npm test
+npm --prefix ts-server test
+npm --prefix client test
 ```
 
 ### Building
 
 ```bash
-npm run build
+npm --prefix client run build
+npm --prefix ts-server run build
 ```
 
 ## Pull Request Process
@@ -79,8 +84,10 @@ npm run build
 
 3. **Test your changes**:
    ```bash
-   npm test
-   npm run build
+   npm --prefix ts-server test
+   npm --prefix client test
+   npm --prefix client run build
+   npm --prefix ts-server run build
    ```
 
 4. **Push to your fork**:

@@ -9,6 +9,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
+import { tsxLoader } from "./ts-server-dependencies.mjs";
+
 export function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
@@ -85,7 +87,7 @@ function resolveLegacyModule(root, relativePath) {
 }
 
 function nodeModuleArgs(modulePath) {
-  return modulePath.endsWith(".ts") ? ["--import", "tsx"] : [];
+  return modulePath.endsWith(".ts") ? ["--import", tsxLoader] : [];
 }
 
 async function stopChild(child) {
@@ -291,9 +293,11 @@ export async function startServerPair(options) {
   const nodeBase = `http://127.0.0.1:${nodePort}`;
   const rustBase = `http://127.0.0.1:${rustPort}`;
   const sharedEnv = {
+    ALLOWED_DIRS: root,
     ADS_WEB_HOST: "127.0.0.1",
     ADS_WEB_COOKIE_SECURE: "0",
-    ADS_WEB_ALLOWED_ORIGINS: "*",
+    ADS_WEB_ALLOWED_ORIGINS: "",
+    ADS_WEB_MAX_CLIENTS: "32",
     ...(options.env ?? {}),
   };
 

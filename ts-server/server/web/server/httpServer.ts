@@ -116,7 +116,7 @@ export function createHttpServer(options: {
     if (!isDistClientReady()) {
       setSecurityHeaders(res);
       res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("Web app not built. Run: npm run build:web\n");
+      res.end("Web app not built. Run: npm --prefix client run build\n");
       return true;
     }
 
@@ -148,7 +148,7 @@ export function createHttpServer(options: {
       distClientReady = false;
       setSecurityHeaders(res);
       res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("Web app not built. Run: npm run build:web\n");
+      res.end("Web app not built. Run: npm --prefix client run build\n");
       return true;
     }
 
@@ -163,7 +163,7 @@ export function createHttpServer(options: {
       distClientReady = false;
       setSecurityHeaders(res);
       res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" });
-      res.end("Web app not built. Run: npm run build:web\n");
+      res.end("Web app not built. Run: npm --prefix client run build\n");
       return true;
     }
 
@@ -219,7 +219,10 @@ export function createHttpServer(options: {
 }
 
 export function resolveClientDistDir(projectRoot: string): string {
-  return fs.existsSync(path.join(projectRoot, "server", "cli.js"))
-    ? path.join(projectRoot, "client")
-    : path.join(projectRoot, "dist", "client");
+  const candidates = [
+    path.resolve(projectRoot, "..", "client", "dist"),
+    path.join(projectRoot, "client", "dist"),
+    path.join(projectRoot, "dist", "client"),
+  ];
+  return candidates.find((candidate) => fs.existsSync(path.join(candidate, "index.html"))) ?? candidates[0];
 }

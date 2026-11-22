@@ -328,12 +328,13 @@ async fn payload_matches_the_typescript_capture() {
     git(repo, &["add", "."]);
     git(repo, &["commit", "-q", "-m", "second"]);
 
+    let ts_server_root = ts_server_root();
     let output = Command::new("node")
         .arg("--import")
-        .arg("tsx")
+        .arg(ts_server_root.join("node_modules/tsx/dist/loader.mjs"))
         .arg(repo_root().join("rust-server/scripts/review-capture-fixture.ts"))
         .arg(repo)
-        .current_dir(repo_root())
+        .current_dir(ts_server_root)
         .output()
         .expect("run node fixture");
     assert!(
@@ -383,6 +384,10 @@ fn repo_root() -> &'static Path {
             .expect("repo root")
             .to_path_buf()
     })
+}
+
+fn ts_server_root() -> std::path::PathBuf {
+    repo_root().join("ts-server")
 }
 
 #[tokio::test]

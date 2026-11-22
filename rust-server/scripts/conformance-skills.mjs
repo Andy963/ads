@@ -12,6 +12,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { assert } from "./lib/black-box.mjs";
+import { tsxLoader } from "./lib/ts-server-dependencies.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const rustDir = path.resolve(scriptDir, "..");
@@ -172,7 +173,7 @@ function main() {
     const sharedEnv = { ADS_MIGRATE_LEGACY_SKILLS: "0" };
     const nodeResults = runFixture(
       process.execPath,
-      ["--import", "tsx", path.join(scriptDir, "skill-command-fixture.ts"), workspace],
+      ["--import", tsxLoader, path.join(scriptDir, "skill-command-fixture.ts"), workspace],
       {
         cwd: root,
         env: {

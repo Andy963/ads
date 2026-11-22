@@ -23,7 +23,7 @@
 2. **废弃 `.agent/skills`**：
    - 代码库中的 loader、creator、registryMetadata、commandRouter、系统提示词模板全面清除对 `.agent/skills` 的依赖，`SkillMetadata` 的 source 字段严格收敛为 `global | builtin`。
 3. **平滑非破坏性与原子故障安全迁移**：
-   - 运行时 `discoverSkills()` 及 CLI `npm run skills:migrate` 调用统一迁移模块 `server/skills/migration.ts`。
+   - 运行时 `discoverSkills()` 及 CLI `npm --prefix ts-server run skills:migrate` 调用统一迁移模块 `server/skills/migration.ts`。
    - 将 `$ADS_STATE_DIR/.agent/skills/` 下的存量技能非破坏性复制至目标 `$CODEX_HOME/skills/`；先拷贝至临时 staging 目录再原子重命名，复制失败或中断绝不残留半同步目录；若目标已存在同名技能则跳过，严禁覆盖现有文件且绝不删除源文件。
 4. **持久化对齐**：
    - 模型通过 `<skill_save>` 块沉淀技能时，默认持久化至全局 `$CODEX_HOME/skills/<name>/SKILL.md`，即时对 ADS 与原生 Codex 可用。

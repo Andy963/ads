@@ -2,9 +2,9 @@ import { initAdmin } from "./initAdmin.js";
 import { pathToFileURL } from "node:url";
 
 function printUsage(): void {
-  console.error("Usage: npm run web:init-admin -- --username <u> --password-stdin");
-  console.error("  Or:  npm run web:init-admin -- --username <u> --password <p>");
-  console.error("  Or:  node ts-server/dist/server/web/auth/initAdminCli.js --username <u> --password-stdin");
+  console.error("Usage: npm --prefix ts-server run web:init-admin -- --username <u> --password-stdin");
+  console.error("  Or:  npm --prefix ts-server run web:init-admin -- --username <u> --password <p>");
+  console.error("  Or:  node dist/server/web/auth/initAdminCli.js --username <u> --password-stdin");
 }
 
 function parseFlagValue(args: string[], name: string): string | null {

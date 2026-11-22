@@ -115,6 +115,7 @@ describe("Actions Reviewer queue", () => {
     options: {
       reviewStatus?: "PASS" | "REJECT";
       testCommand?: string;
+      useDefaultTestCommand?: boolean;
       interactiveVerificationTimeoutMs?: number;
       onReviewPrompt?: (prompt: string) => void;
       onMetadataRead?: (count: number) => void;
@@ -137,7 +138,7 @@ describe("Actions Reviewer queue", () => {
     let metadataReads = 0;
     const current = getTarget;
     return new LaneDispatchBus(options.db ?? getStateDatabase(), {
-      testCommand: options.testCommand ?? "git status",
+      ...(options.useDefaultTestCommand ? {} : { testCommand: options.testCommand ?? "git status" }),
       interactiveVerificationTimeoutMs: options.interactiveVerificationTimeoutMs,
       reviewPresentationTimeoutMs: options.reviewPresentationTimeoutMs,
       workerId: options.workerId,
@@ -327,6 +328,27 @@ describe("Actions Reviewer queue", () => {
       history.some((entry) => entry.text.includes("Checks failed for PR #901 · Interactive review")),
       JSON.stringify(history.map((entry) => entry.text)),
     );
+    await tools.dispose();
+  });
+
+  it("uses the server package test command when the repository has no root package", async () => {
+    const serverRoot = path.join(repoDir, "ts-server");
+    fs.mkdirSync(serverRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(serverRoot, "package.json"),
+      JSON.stringify({ name: "test-server", scripts: { test: "node -e 0" } }),
+    );
+    const reviewTarget = target();
+    let reviewPrompt = "";
+    const bus = createBus(() => reviewTarget, {
+      useDefaultTestCommand: true,
+      onReviewPrompt: (prompt) => { reviewPrompt = prompt; },
+    });
+    const { result, tools } = await runReview(bus, reviewTarget);
+
+    assert.equal(result.ok, true, result.error);
+    assert.match(reviewPrompt, /Command: npm --prefix ts-server test/);
+    assert.match(reviewPrompt, /Exit Code: 0/);
     await tools.dispose();
   });
 

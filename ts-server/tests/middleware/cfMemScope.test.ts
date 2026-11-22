@@ -199,7 +199,7 @@ describe("resolveCfMemScope", () => {
   });
 
   it("resolves the live ADS worktree environment correctly", () => {
-    const cwd = process.cwd();
+    const cwd = path.resolve(import.meta.dirname, "..", "..", "..");
     const scope = resolveCfMemScope(cwd);
     assert.ok(scope !== null);
     assert.equal(scope.projectId, "ads");

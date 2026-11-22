@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { PROJECT_ROOT } from "../utils/projectRoot.js";
+import { REPOSITORY_ROOT } from "../utils/projectRoot.js";
 
 function sanitizeSegment(value: string, maxLen = 48): string {
   const normalized = String(value ?? "").trim() || "workspace";
@@ -28,7 +28,7 @@ export function resolveAdsStateDir(): string {
   if (envDir && envDir.trim()) {
     return path.resolve(envDir.trim());
   }
-  return path.join(PROJECT_ROOT, ".ads");
+  return path.join(REPOSITORY_ROOT, ".ads");
 }
 
 /**
