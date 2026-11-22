@@ -3,6 +3,7 @@ import { mount, shallowMount } from "@vue/test-utils";
 import { defineComponent, h, type Component } from "vue";
 
 import type { ModelConfig } from "../api/types";
+import { RECONNECT_BUSY_MESSAGE } from "../app/projectsWs/reconnectNotice";
 
 type GetImpl = (url: string) => Promise<unknown>;
 type PostImpl = (url: string, body: unknown) => Promise<unknown>;
@@ -375,6 +376,63 @@ describe("mobile navigation shell (mobile-pane-tabs)", () => {
     expect((wrapper.find('[data-testid="lane-panel-acopilot"]').element as HTMLElement).style.display).toBe("");
     expect((wrapper.find('[data-testid="lane-panel-actions"]').element as HTMLElement).style.display).toBe("none");
 
+    wrapper.unmount();
+  });
+});
+
+describe("lane connection phase", () => {
+  it("uses real runtime state for both lanes and suppresses duplicate reconnect notices", async () => {
+    const wrapper = await mountApp({ MainChatView: false, MainChatComposerPanel: false });
+    const pid = String((wrapper.vm as any).activeProjectId ?? "").trim();
+    const actions = (wrapper.vm as any).getRuntime(pid) as any;
+    const acopilot = (wrapper.vm as any).getAcopilotRuntime(pid) as any;
+
+    actions.connected.value = false;
+    actions.transcriptAuthoritative.value = false;
+    actions.syncInProgress = false;
+    actions.reconnectTimer = null;
+    actions.reconnectAttempts = 0;
+    actions.wsError.value = null;
+    acopilot.connected.value = true;
+    acopilot.transcriptAuthoritative.value = false;
+    acopilot.syncInProgress = false;
+    acopilot.reconnectTimer = null;
+    acopilot.reconnectAttempts = 0;
+    acopilot.wsError.value = null;
+    await settleUi(wrapper);
+
+    const actionsPanel = wrapper.get('[data-testid="lane-panel-actions"]');
+    const acopilotPanel = wrapper.get('[data-testid="lane-panel-acopilot"]');
+    expect(actionsPanel.get('[data-testid="lane-connection-phase"]').attributes("data-connection-phase")).toBe("connecting");
+    expect(actionsPanel.get(".connectionPhaseSpinner").exists()).toBe(true);
+    expect(acopilotPanel.get('[data-testid="lane-connection-phase"]').attributes("data-connection-phase")).toBe("syncing");
+
+    acopilot.transcriptAuthoritative.value = true;
+    await settleUi(wrapper);
+    expect(acopilotPanel.find('[data-testid="lane-connection-phase"]').exists()).toBe(false);
+
+    acopilot.connected.value = false;
+    acopilot.reconnectTimer = 123 as unknown as number;
+    acopilot.wsError.value = "WebSocket closed (1006)";
+    acopilot.laneStatus.value = { kind: "progress", message: RECONNECT_BUSY_MESSAGE };
+    await settleUi(wrapper);
+    const reconnectPill = acopilotPanel.get('[data-testid="lane-connection-phase"]');
+    expect(reconnectPill.attributes("data-connection-phase")).toBe("reconnecting");
+    expect(reconnectPill.get(".connectionPhaseText").text().length).toBeGreaterThan(0);
+    expect(acopilotPanel.find('[data-testid="lane-connection-status"]').exists()).toBe(false);
+
+    acopilot.reconnectTimer = null;
+    acopilot.reconnectAttempts = 0;
+    acopilot.wsError.value = "Unauthorized";
+    await settleUi(wrapper);
+    const errorPill = acopilotPanel.get('[data-testid="lane-connection-phase"]');
+    expect(errorPill.attributes("data-connection-phase")).toBe("error");
+    expect(errorPill.text()).toContain("Unauthorized");
+    expect(errorPill.find(".connectionPhaseSpinner").exists()).toBe(false);
+
+    await wrapper.get('[data-testid="lane-tab-actions"]').trigger("click");
+    await settleUi(wrapper);
+    expect(wrapper.get('[data-testid="lane-panel-actions"] [data-testid="lane-connection-phase"]').attributes("data-connection-phase")).toBe("connecting");
     wrapper.unmount();
   });
 });
