@@ -39,10 +39,11 @@ export function collectCommandActivityFrames(): {
 } {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ads-client-command-activity-state-"));
   const currentDirectory = path.resolve(process.cwd());
-  const clientRoot = fs.existsSync(path.join(currentDirectory, "scripts", "command-activity-fixture.js"))
+  const fixturePath = path.join("tests", "command-activity-fixture.js");
+  const clientRoot = fs.existsSync(path.join(currentDirectory, fixturePath))
     ? currentDirectory
     : path.join(currentDirectory, "client");
-  const scriptPath = path.join(clientRoot, "scripts", "command-activity-fixture.js");
+  const scriptPath = path.join(clientRoot, fixturePath);
   try {
     const output = execFileSync(process.execPath, [scriptPath], {
       cwd: path.dirname(clientRoot),

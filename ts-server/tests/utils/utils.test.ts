@@ -151,6 +151,7 @@ const RESTORED_ENV_KEYS = [
   "ADS_ENV_SEARCH_MAX_DEPTH",
   "ENV_TEST_KEY",
   "ENV_TEST_BOUNDARY_KEY",
+  "ENV_TEST_REPOSITORY_KEY",
   "ENV_TEST_TOO_DEEP",
 ];
 
@@ -206,6 +207,25 @@ describe("utils/env", () => {
     loadEnv();
 
     assert.equal(process.env.ENV_TEST_BOUNDARY_KEY, undefined);
+  });
+
+  it("loads the repository env from a package-local server directory", () => {
+    const repoDir = mkdtemp("ads-env-package-boundary-");
+    const serverDir = path.join(repoDir, "ts-server");
+    fs.mkdirSync(path.join(serverDir, "server"), { recursive: true });
+    fs.mkdirSync(path.join(repoDir, "client"));
+    fs.writeFileSync(path.join(serverDir, "package.json"), JSON.stringify({ name: "ads-server" }), "utf8");
+    fs.writeFileSync(path.join(repoDir, ".env"), "ENV_TEST_REPOSITORY_KEY=loaded\n", "utf8");
+
+    delete process.env.ADS_ENV_PATH;
+    delete process.env.ADS_ENV_SEARCH_MAX_DEPTH;
+    delete process.env.ENV_TEST_REPOSITORY_KEY;
+
+    process.chdir(serverDir);
+    resetEnvForTests();
+    loadEnv();
+
+    assert.equal(process.env.ENV_TEST_REPOSITORY_KEY, "loaded");
   });
 
   it("respects ADS_ENV_PATH (and optional .local override)", () => {
