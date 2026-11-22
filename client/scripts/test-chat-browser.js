@@ -540,7 +540,7 @@ const formatStages = (timings) => (timings ?? []).map((timing) => `${timing.name
 async function runSerial(selectedEngines) {
   if (selectedEngines.includes("webkit")) {
     const code = await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, ["--test", path.join(workspaceRoot, "ts-server/tests/scripts/chatServiceWorkerLifecycle.browser.js")], {
+      const child = spawn(process.execPath, ["--test", path.join(workspaceRoot, "client/scripts/chatServiceWorkerLifecycle.browser.js")], {
         stdio: "inherit",
       });
       child.on("error", reject);
