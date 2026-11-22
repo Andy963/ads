@@ -309,6 +309,17 @@ try {
   run(npmBin, ["run", "build"], { cwd: clientRoot, env: toolEnv });
   run(npmBin, ["run", "build"], { cwd: tsServerRoot, env: toolEnv });
   if (fs.existsSync(telegramConnectorRoot)) {
+    run(
+      nodeBin,
+      [
+        path.join(tsServerRoot, "scripts", "clean-build-outputs.js"),
+        "--root",
+        telegramConnectorRoot,
+        "--paths",
+        "dist",
+      ],
+      { cwd: telegramConnectorRoot, env: toolEnv },
+    );
     run(npmBin, ["run", "build"], { cwd: telegramConnectorRoot, env: toolEnv });
   }
   assembleRelease();

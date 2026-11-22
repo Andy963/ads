@@ -41,7 +41,7 @@ WebKit 覆盖移动触摸、两路非空历史、发送后清空、组合输入�
 ```bash
 npm ci --prefix client
 npm ci --prefix ts-server
-npx playwright install --with-deps webkit chromium
+npm --prefix client exec --no -- playwright install --with-deps webkit chromium
 npm --prefix client run lint
 npm --prefix ts-server run lint
 npm --prefix client run build

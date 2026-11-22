@@ -41,8 +41,16 @@ jobs:
           set -euo pipefail
           node -v
           npm -v
-          npx --no tsx --version
-          npx --no vitest --version
+          npm --prefix ts-server exec --no -- tsx --version
+          npm --prefix client exec --no -- vitest --version
+
+      - name: Lint server
+        working-directory: ts-server
+        run: npm run lint
+
+      - name: Lint client
+        working-directory: client
+        run: npm run lint
 
       - name: Build client
         working-directory: client
