@@ -7,6 +7,7 @@ import vue from "@vitejs/plugin-vue";
 import { VitePWA } from "vite-plugin-pwa";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repositoryRoot = path.resolve(__dirname, "..");
 
 function normalizeBasePath(raw: string | undefined): string {
   const trimmed = String(raw ?? "").trim();
@@ -16,13 +17,14 @@ function normalizeBasePath(raw: string | undefined): string {
 }
 
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, __dirname, "");
+  const env = loadEnv(mode, repositoryRoot, "");
   const base = normalizeBasePath(env.ADS_WEB_BASE_PATH || env.VITE_BASE_PATH);
   const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "package.json"), "utf8")) as { version?: string };
   const appVersion = pkg.version || "0.0.1";
 
   return {
     root: __dirname,
+    envDir: repositoryRoot,
     cacheDir: path.resolve(__dirname, "node_modules", ".vite"),
     base,
     define: {

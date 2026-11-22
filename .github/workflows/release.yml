@@ -116,12 +116,12 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.vars.outputs.tag }}"
-          tar -czf "ads-${TAG}.tgz" client/dist ts-server/dist ts-server/package.json ts-server/package-lock.json README.md LICENSE .env.example .env.advanced.example
+          tar -czf "ads-${TAG}.tgz" client/dist ts-server/dist ts-server/package.json ts-server/package-lock.json ts-server/scripts/verify-release-layout.js README.md LICENSE .env.example .env.advanced.example
           SMOKE_DIR="$RUNNER_TEMP/ads-release-smoke"
           rm -rf "$SMOKE_DIR"
           mkdir -p "$SMOKE_DIR"
           tar -xzf "ads-${TAG}.tgz" -C "$SMOKE_DIR"
-          node ts-server/scripts/verify-release-layout.js "$SMOKE_DIR"
+          node "$SMOKE_DIR/ts-server/scripts/verify-release-layout.js" "$SMOKE_DIR"
           cd "$SMOKE_DIR/ts-server"
           npm ci --omit=dev --no-audit --no-fund
           node dist/server/cli.js version
