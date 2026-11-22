@@ -1,6 +1,7 @@
 import type { AppContext, ProjectRuntime } from "../controller";
 import type { ChatActions } from "../chat";
 import { createOutboxStore, legacyPendingPromptStorageKey, outboxStorageKey } from "../outbox";
+import { setLaneSyncInProgress } from "../../lib/laneConnectionPhase";
 
 type SessionSwitchIntent = { chatSessionId: string; sentOn?: ProjectRuntime["ws"] };
 
@@ -11,7 +12,7 @@ const switchIntents = new WeakMap<ProjectRuntime, SessionSwitchIntent>();
 export function requestChatSessionSwitch(rt: ProjectRuntime, chatSessionId: string): SessionSwitchIntent {
   const intent = { chatSessionId };
   switchIntents.set(rt, intent);
-  rt.syncInProgress = true;
+  setLaneSyncInProgress(rt, true);
   return intent;
 }
 

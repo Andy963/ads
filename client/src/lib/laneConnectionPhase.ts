@@ -6,7 +6,22 @@ export type LaneConnectionPhaseInput = {
   syncInProgress: boolean;
   reconnectActive: boolean;
   terminalError: string | null | undefined;
+  stateRevision?: number;
 };
+
+type LaneSyncState = {
+  syncInProgress: boolean;
+  connectionPhaseRevision: { value: number };
+};
+
+export function setLaneSyncInProgress(state: LaneSyncState, value: boolean): void {
+  state.syncInProgress = value;
+  state.connectionPhaseRevision.value += 1;
+}
+
+export function touchLaneConnectionPhase(state: { connectionPhaseRevision: { value: number } }): void {
+  state.connectionPhaseRevision.value += 1;
+}
 
 export function resolveLaneConnectionPhase(input: LaneConnectionPhaseInput): LaneConnectionPhase | null {
   if (input.reconnectActive) return "reconnecting";

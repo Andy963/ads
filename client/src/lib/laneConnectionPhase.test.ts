@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveLaneConnectionPhase } from "./laneConnectionPhase";
+import { ref } from "vue";
+
+import { resolveLaneConnectionPhase, setLaneSyncInProgress, touchLaneConnectionPhase } from "./laneConnectionPhase";
 
 const base = {
   connected: false,
@@ -40,5 +42,17 @@ describe("lane connection phase", () => {
       connected: true,
       transcriptAuthoritative: true,
     })).toBeNull();
+  });
+
+  it("bumps a reactive revision when non-ref connection state changes", () => {
+    const state = {
+      syncInProgress: false,
+      connectionPhaseRevision: ref(0),
+    };
+    setLaneSyncInProgress(state, true);
+    expect(state.syncInProgress).toBe(true);
+    expect(state.connectionPhaseRevision.value).toBe(1);
+    touchLaneConnectionPhase(state);
+    expect(state.connectionPhaseRevision.value).toBe(2);
   });
 });

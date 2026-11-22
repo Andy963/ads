@@ -46,7 +46,7 @@ import { isLaneConnected } from "./lib/laneConnectionStatus";
 import { t } from "./lib/i18n";
 import { RECONNECT_BUSY_MESSAGE } from "./app/projectsWs/reconnectNotice";
 import { resolveLaneConnectionPhase, type LaneConnectionPhase } from "./lib/laneConnectionPhase";
-import type { ProjectRuntime } from "./app/controllerTypes";
+import type { LaneStatus, ProjectRuntime } from "./app/controllerTypes";
 const {
   loggedIn,
   cachedTranscriptAvailable,
@@ -1454,13 +1454,14 @@ const authConnectionState = ref<"checking" | "offline" | "unavailable" | "reques
 type LaneConnectionPhaseState = { phase: LaneConnectionPhase; message: string };
 
 function laneConnectionPhaseForRuntime(runtime: ProjectRuntime): LaneConnectionPhaseState | null {
-  const terminalError = String(runtime.wsError.value ?? "").trim() || null;
+  const terminalError = String(runtime.connectionError.value ?? "").trim() || null;
   const phase = resolveLaneConnectionPhase({
     connected: runtime.connected.value,
     transcriptAuthoritative: runtime.transcriptAuthoritative.value,
     syncInProgress: runtime.syncInProgress,
     reconnectActive: runtime.reconnectTimer !== null || runtime.reconnectAttempts > 0,
     terminalError,
+    stateRevision: runtime.connectionPhaseRevision.value,
   });
   if (!phase) return null;
   const message = phase === "connecting"
@@ -1471,6 +1472,27 @@ function laneConnectionPhaseForRuntime(runtime: ProjectRuntime): LaneConnectionP
         ? t("connection.reconnecting")
         : terminalError || t("connection.connectionError");
   return { phase, message };
+}
+
+function laneConnectionStatus(
+  runtime: ProjectRuntime,
+  laneStatus: LaneStatus | null,
+  phase: LaneConnectionPhaseState | null,
+): LaneStatus | null {
+  if (phase?.phase === "error") {
+    if (laneStatus?.kind === "error" && laneStatus.message === phase.message) return null;
+    return laneStatus;
+  }
+  if (phase?.phase === "connecting" || phase?.phase === "reconnecting") {
+    return laneStatus?.kind === "progress" && laneStatus.message === RECONNECT_BUSY_MESSAGE
+      ? null
+      : laneStatus;
+  }
+  const operationalError = String(runtime.wsError.value ?? "").trim();
+  if (operationalError) return { kind: "error" as const, message: operationalError };
+  return laneStatus?.kind === "progress" && laneStatus.message === RECONNECT_BUSY_MESSAGE
+    ? null
+    : laneStatus;
 }
 
 function handleAuthConnectionState(state: "checking" | "offline" | "unavailable" | "request-failed"): void {
@@ -1492,31 +1514,17 @@ function cachedConnectionStatus() {
   };
 }
 
-const actionsConnectionStatus = computed(() => {
-  if (!loggedIn.value) return cachedConnectionStatus();
-  const laneStatus = actionsLaneStatus.value;
-  const phase = actionsConnectionPhase.value;
-  if (phase && laneStatus && (
-    (phase.phase === "error" && laneStatus.kind === "error")
-    || (laneStatus.kind === "progress" && laneStatus.message === RECONNECT_BUSY_MESSAGE)
-  )) return null;
-  return laneStatus;
-});
-
 const actionsConnectionPhase = computed(() => laneConnectionPhaseForRuntime(activeRuntime.value));
 
-const acopilotConnectionStatus = computed(() => {
-  if (!loggedIn.value) return cachedConnectionStatus();
-  const laneStatus = acopilotLaneStatus.value;
-  const phase = acopilotConnectionPhase.value;
-  if (phase && laneStatus && (
-    (phase.phase === "error" && laneStatus.kind === "error")
-    || (laneStatus.kind === "progress" && laneStatus.message === RECONNECT_BUSY_MESSAGE)
-  )) return null;
-  return laneStatus;
-});
-
 const acopilotConnectionPhase = computed(() => laneConnectionPhaseForRuntime(activeAcopilotRuntime.value));
+
+const actionsConnectionStatus = computed(() => loggedIn.value
+  ? laneConnectionStatus(activeRuntime.value, actionsLaneStatus.value, actionsConnectionPhase.value)
+  : cachedConnectionStatus());
+
+const acopilotConnectionStatus = computed(() => loggedIn.value
+  ? laneConnectionStatus(activeAcopilotRuntime.value, acopilotLaneStatus.value, acopilotConnectionPhase.value)
+  : cachedConnectionStatus());
 
 </script>
 

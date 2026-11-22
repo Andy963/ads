@@ -3,7 +3,8 @@ import { mount, shallowMount } from "@vue/test-utils";
 import { defineComponent, h, type Component } from "vue";
 
 import type { ModelConfig } from "../api/types";
-import { RECONNECT_BUSY_MESSAGE } from "../app/projectsWs/reconnectNotice";
+import { RECONNECT_BUSY_MESSAGE, RECONNECT_PENDING_RESEND_NOTICE } from "../app/projectsWs/reconnectNotice";
+import { setLaneSyncInProgress } from "../lib/laneConnectionPhase";
 
 type GetImpl = (url: string) => Promise<unknown>;
 type PostImpl = (url: string, body: unknown) => Promise<unknown>;
@@ -395,10 +396,11 @@ describe("lane connection phase", () => {
     actions.wsError.value = null;
     acopilot.connected.value = true;
     acopilot.transcriptAuthoritative.value = false;
-    acopilot.syncInProgress = false;
+    setLaneSyncInProgress(acopilot, false);
     acopilot.reconnectTimer = null;
     acopilot.reconnectAttempts = 0;
     acopilot.wsError.value = null;
+    acopilot.connectionError.value = null;
     await settleUi(wrapper);
 
     const actionsPanel = wrapper.get('[data-testid="lane-panel-actions"]');
@@ -411,6 +413,18 @@ describe("lane connection phase", () => {
     await settleUi(wrapper);
     expect(acopilotPanel.find('[data-testid="lane-connection-phase"]').exists()).toBe(false);
 
+    setLaneSyncInProgress(acopilot, true);
+    await settleUi(wrapper);
+    expect(acopilotPanel.get('[data-testid="lane-connection-phase"]').attributes("data-connection-phase")).toBe("syncing");
+    setLaneSyncInProgress(acopilot, false);
+    await settleUi(wrapper);
+
+    acopilot.wsError.value = "Prompt reconciliation failed";
+    await settleUi(wrapper);
+    expect(acopilotPanel.find('[data-testid="lane-connection-phase"]').exists()).toBe(false);
+    expect(acopilotPanel.get('[data-testid="lane-connection-status"]').text()).toContain("Prompt reconciliation failed");
+    acopilot.wsError.value = null;
+
     acopilot.connected.value = false;
     acopilot.reconnectTimer = 123 as unknown as number;
     acopilot.wsError.value = "WebSocket closed (1006)";
@@ -421,14 +435,23 @@ describe("lane connection phase", () => {
     expect(reconnectPill.get(".connectionPhaseText").text().length).toBeGreaterThan(0);
     expect(acopilotPanel.find('[data-testid="lane-connection-status"]').exists()).toBe(false);
 
+    acopilot.laneStatus.value = { kind: "progress", message: RECONNECT_PENDING_RESEND_NOTICE };
+    await settleUi(wrapper);
+    expect(acopilotPanel.get('[data-testid="lane-connection-status"]').text()).toContain(
+      RECONNECT_PENDING_RESEND_NOTICE,
+    );
+
     acopilot.reconnectTimer = null;
     acopilot.reconnectAttempts = 0;
+    acopilot.connectionError.value = "Unauthorized";
     acopilot.wsError.value = "Unauthorized";
+    acopilot.laneStatus.value = { kind: "error", message: "Model switch failed" };
     await settleUi(wrapper);
     const errorPill = acopilotPanel.get('[data-testid="lane-connection-phase"]');
     expect(errorPill.attributes("data-connection-phase")).toBe("error");
     expect(errorPill.text()).toContain("Unauthorized");
     expect(errorPill.find(".connectionPhaseSpinner").exists()).toBe(false);
+    expect(acopilotPanel.get('[data-testid="lane-connection-status"]').text()).toContain("Model switch failed");
 
     await wrapper.get('[data-testid="lane-tab-actions"]').trigger("click");
     await settleUi(wrapper);
