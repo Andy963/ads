@@ -59,7 +59,7 @@ afterEach(() => { lastWs = null; });
 
 describe("command activity origin rendering", () => {
   it("renders native bridge command frames while retaining non-command activity and commentary", async () => {
-    // The server package tests exercise NativeAgentAdapter; this client fixture covers the browser transport contract locally.
+    // The package-local fixture runs the compiled server bridge and returns its actual browser wire frames.
     const { frames, entries, commandFrameCount } = await collectCommandActivityFrames();
     expect(entries.slice(0, commandActivityCases.length).map((entry) => entry.category))
       .toEqual(commandActivityCases.map((command) => command.category));
