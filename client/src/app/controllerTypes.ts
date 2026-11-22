@@ -193,6 +193,10 @@ export type ProjectRuntime = {
   projectSessionId: string;
   chatSessionId: string;
   connected: Ref<boolean>;
+  /** Terminal WebSocket/bootstrap error only; operational failures remain in wsError. */
+  connectionError: Ref<string | null>;
+  /** Invalidates the derived connection phase for non-reactive runtime fields. */
+  connectionPhaseRevision: Ref<number>;
   needsChatSync: boolean;
   syncInProgress: boolean;
   syncGeneration: number;

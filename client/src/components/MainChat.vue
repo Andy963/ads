@@ -40,6 +40,9 @@ const props = withDefaults(defineProps<{
   threadWarning?: string | null;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
   connectionStatusMessage?: string | null;
+  connectionPhase?: "connecting" | "syncing" | "reconnecting" | "error" | null;
+  connectionPhaseMessage?: string | null;
+  operationalError?: string | null;
 }>(), { voiceInputActive: true, transcriptAlignSeq: 0, transcriptAuthoritativeSeq: 0, transcriptResetSeq: 0 });
 
 const emit = defineEmits<{
@@ -1257,6 +1260,9 @@ onBeforeUnmount(() => {
       :model-reasoning-effort="modelReasoningEffort"
       :connection-status-kind="connectionStatusKind"
       :connection-status-message="connectionStatusMessage"
+      :connection-phase="connectionPhase"
+      :connection-phase-message="connectionPhaseMessage"
+      :operational-error="operationalError"
       @update:draft="emit('update:draft', $event)"
       @send="handleSend"
       @interrupt="emit('interrupt')"

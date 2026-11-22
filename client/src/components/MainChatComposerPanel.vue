@@ -47,6 +47,9 @@ const props = withDefaults(defineProps<{
   modelReasoningEffort?: string;
   connectionStatusKind?: "info" | "progress" | "disconnected" | "error" | null;
   connectionStatusMessage?: string | null;
+  connectionPhase?: "connecting" | "syncing" | "reconnecting" | "error" | null;
+  connectionPhaseMessage?: string | null;
+  operationalError?: string | null;
 }>(), { voiceInputActive: true });
 
 const emit = defineEmits<{
@@ -453,6 +456,20 @@ onBeforeUnmount(() => {
 <template>
   <div ref="composerRoot" class="composer">
     <div
+      v-if="connectionPhase && connectionPhaseMessage"
+      class="connectionPhasePill"
+      :class="`connectionPhasePill--${connectionPhase}`"
+      :data-connection-phase="connectionPhase"
+      data-testid="lane-connection-phase"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >
+      <span v-if="connectionPhase !== 'error'" class="connectionPhaseSpinner" aria-hidden="true" />
+      <span class="connectionPhaseText">{{ connectionPhaseMessage }}</span>
+    </div>
+
+    <div
       v-if="connectionStatusMessage"
       class="laneStatusBar"
       :class="`laneStatusBar--${normalizedConnectionStatusKind}`"
@@ -462,6 +479,16 @@ onBeforeUnmount(() => {
     >
       <span class="laneStatusDot" aria-hidden="true" />
       <span class="laneStatusText">{{ connectionStatusMessage }}</span>
+    </div>
+
+    <div
+      v-if="operationalError"
+      class="laneStatusBar laneStatusBar--error"
+      role="alert"
+      data-testid="lane-operational-error"
+    >
+      <span class="laneStatusDot" aria-hidden="true" />
+      <span class="laneStatusText">{{ operationalError }}</span>
     </div>
 
     <div v-if="visibleQueuedPrompts.length" class="queue" aria-label="排队消息">
@@ -818,6 +845,58 @@ onBeforeUnmount(() => {
   background: var(--app-bg, #ffffff);
   position: relative;
   z-index: 20;
+}
+
+.connectionPhasePill {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: min(100%, 32rem);
+  min-height: 28px;
+  box-sizing: border-box;
+  padding: 5px 10px;
+  border: 1px solid rgba(96, 165, 250, 0.42);
+  border-radius: 999px;
+  background: rgba(239, 246, 255, 0.96);
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.connectionPhasePill--error {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(254, 242, 242, 0.96);
+  color: #b91c1c;
+}
+
+.connectionPhaseSpinner {
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  flex: 0 0 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: connectionPhaseSpin 0.8s linear infinite;
+}
+
+.connectionPhaseText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@keyframes connectionPhaseSpin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connectionPhaseSpinner {
+    animation: none;
+    border-right-color: currentColor;
+    opacity: 0.65;
+  }
 }
 
 .laneStatusBar {

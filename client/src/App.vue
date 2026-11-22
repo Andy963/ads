@@ -44,6 +44,9 @@ import {
 } from "@element-plus/icons-vue";
 import { isLaneConnected } from "./lib/laneConnectionStatus";
 import { t } from "./lib/i18n";
+import { RECONNECT_BUSY_MESSAGE } from "./app/projectsWs/reconnectNotice";
+import { resolveLaneConnectionPhase, type LaneConnectionPhase } from "./lib/laneConnectionPhase";
+import type { LaneStatus, ProjectRuntime } from "./app/controllerTypes";
 const {
   loggedIn,
   cachedTranscriptAvailable,
@@ -1447,7 +1450,61 @@ async function onSettingsChanged(): Promise<void> {
 const runningTaskCount = computed(() => 0);
 
 const authConnectionState = ref<"checking" | "offline" | "unavailable" | "request-failed">("checking");
-const disconnectedStatusMessage = t("connection.disconnected");
+
+type LaneConnectionPhaseState = { phase: LaneConnectionPhase; message: string };
+
+function laneConnectionPhaseForRuntime(runtime: ProjectRuntime): LaneConnectionPhaseState | null {
+  const terminalError = String(runtime.connectionError.value ?? "").trim() || null;
+  const phase = resolveLaneConnectionPhase({
+    connected: runtime.connected.value,
+    transcriptAuthoritative: runtime.transcriptAuthoritative.value,
+    syncInProgress: runtime.syncInProgress,
+    reconnectActive: runtime.reconnectTimer !== null || runtime.reconnectAttempts > 0,
+    terminalError,
+    stateRevision: runtime.connectionPhaseRevision.value,
+  });
+  if (!phase) return null;
+  const message = phase === "connecting"
+    ? t("connection.connecting")
+    : phase === "syncing"
+      ? t("connection.syncing")
+      : phase === "reconnecting"
+        ? t("connection.reconnecting")
+        : terminalError || t("connection.connectionError");
+  return { phase, message };
+}
+
+function laneConnectionStatus(
+  runtime: ProjectRuntime,
+  laneStatus: LaneStatus | null,
+  phase: LaneConnectionPhaseState | null,
+): LaneStatus | null {
+  if (phase?.phase === "error") {
+    if (laneStatus?.kind === "error" && laneStatus.message === phase.message) return null;
+    return laneStatus;
+  }
+  if (phase?.phase === "connecting" || phase?.phase === "reconnecting") {
+    return laneStatus?.kind === "progress" && laneStatus.message === RECONNECT_BUSY_MESSAGE
+      ? null
+      : laneStatus;
+  }
+  return laneStatus?.kind === "progress" && laneStatus.message === RECONNECT_BUSY_MESSAGE
+    ? null
+    : laneStatus;
+}
+
+function laneOperationalError(
+  runtime: ProjectRuntime,
+  laneStatus: LaneStatus | null,
+  phase: LaneConnectionPhaseState | null,
+): string | null {
+  const error = String(runtime.wsError.value ?? "").trim();
+  if (!error) return null;
+  if (phase?.phase === "connecting" || phase?.phase === "reconnecting") return null;
+  if (phase?.phase === "error" && error === phase.message) return null;
+  if (laneStatus?.kind === "error" && laneStatus.message === error) return null;
+  return error;
+}
 
 function handleAuthConnectionState(state: "checking" | "offline" | "unavailable" | "request-failed"): void {
   authConnectionState.value = state;
@@ -1468,25 +1525,25 @@ function cachedConnectionStatus() {
   };
 }
 
-const actionsConnectionStatus = computed(() => {
-  if (!loggedIn.value) return cachedConnectionStatus();
-  const laneStatus = actionsLaneStatus.value;
-  if (!actionsReady.value && laneStatus?.kind === "progress") return laneStatus;
-  const error = String(wsError.value ?? "").trim();
-  if (error) return { kind: "error" as const, message: error };
-  if (!actionsReady.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
-  return laneStatus;
-});
+const actionsConnectionPhase = computed(() => laneConnectionPhaseForRuntime(activeRuntime.value));
 
-const acopilotConnectionStatus = computed(() => {
-  if (!loggedIn.value) return cachedConnectionStatus();
-  const laneStatus = acopilotLaneStatus.value;
-  if (!acopilotReady.value && laneStatus?.kind === "progress") return laneStatus;
-  const error = String(activeAcopilotRuntime.value.wsError.value ?? "").trim();
-  if (error) return { kind: "error" as const, message: error };
-  if (!acopilotReady.value) return { kind: "disconnected" as const, message: disconnectedStatusMessage };
-  return laneStatus;
-});
+const acopilotConnectionPhase = computed(() => laneConnectionPhaseForRuntime(activeAcopilotRuntime.value));
+
+const actionsConnectionStatus = computed(() => loggedIn.value
+  ? laneConnectionStatus(activeRuntime.value, actionsLaneStatus.value, actionsConnectionPhase.value)
+  : cachedConnectionStatus());
+
+const acopilotConnectionStatus = computed(() => loggedIn.value
+  ? laneConnectionStatus(activeAcopilotRuntime.value, acopilotLaneStatus.value, acopilotConnectionPhase.value)
+  : cachedConnectionStatus());
+
+const actionsOperationalError = computed(() => loggedIn.value
+  ? laneOperationalError(activeRuntime.value, actionsLaneStatus.value, actionsConnectionPhase.value)
+  : null);
+
+const acopilotOperationalError = computed(() => loggedIn.value
+  ? laneOperationalError(activeAcopilotRuntime.value, acopilotLaneStatus.value, acopilotConnectionPhase.value)
+  : null);
 
 </script>
 
@@ -1946,6 +2003,9 @@ const acopilotConnectionStatus = computed(() => {
                 :model-reasoning-effort="activeLaneModelReasoningEffort"
                 :connection-status-kind="acopilotConnectionStatus?.kind ?? null"
                 :connection-status-message="acopilotConnectionStatus?.message ?? null"
+                :connection-phase="acopilotConnectionPhase?.phase ?? null"
+                :connection-phase-message="acopilotConnectionPhase?.message ?? null"
+                :operational-error="acopilotOperationalError"
                 :thread-warning="acopilotThreadWarning"
                 @send="sendAcopilotPrompt"
                 @retry-message="retryAcopilotMessage($event)"
@@ -2016,6 +2076,9 @@ const acopilotConnectionStatus = computed(() => {
                 :model-reasoning-effort="activeLaneModelReasoningEffort"
                 :connection-status-kind="actionsConnectionStatus?.kind ?? null"
                 :connection-status-message="actionsConnectionStatus?.message ?? null"
+                :connection-phase="actionsConnectionPhase?.phase ?? null"
+                :connection-phase-message="actionsConnectionPhase?.message ?? null"
+                :operational-error="actionsOperationalError"
                 :thread-warning="actionsThreadWarning"
                 @send="sendActionsPrompt"
                 @retry-message="retryActionsMessage($event)"

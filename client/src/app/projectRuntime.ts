@@ -8,6 +8,8 @@ export function createProjectRuntime(options: { maxLiveActivitySteps: number }):
     projectSessionId: "",
     chatSessionId: "main",
     connected: ref(false),
+    connectionError: ref<string | null>(null),
+    connectionPhaseRevision: ref(0),
     needsChatSync: false,
     syncInProgress: false,
     syncGeneration: 0,
