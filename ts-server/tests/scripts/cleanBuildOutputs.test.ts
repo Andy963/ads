@@ -90,6 +90,7 @@ describe("scripts/clean-build-outputs", () => {
   it("removes only owned paths and never touches web, workspace, or untracked files", () => {
     const root = makeTempRoot("ads-clean-owned-");
     for (const rel of [
+      "dist/package.json",
       "dist/server/tasks/executor.js",
       "dist/shared/terminology.js",
       "dist/templates/planner-instructions.md",
@@ -106,6 +107,7 @@ describe("scripts/clean-build-outputs", () => {
     const result = runClean(root);
     assert.equal(result.status, 0, result.stderr);
 
+    assert.ok(!fs.existsSync(path.join(root, "dist", "package.json")), "stale bundle metadata removed");
     assert.ok(!fs.existsSync(path.join(root, "dist", "server")), "backend output removed");
     assert.ok(!fs.existsSync(path.join(root, "dist", "shared")), "shared output removed");
     assert.ok(!fs.existsSync(path.join(root, "dist", "templates")), "legacy templates removed");

@@ -72,25 +72,8 @@ for (const mod of nativeModules) {
   console.log(`[bundle]   ✓ ${mod}`);
 }
 
-// 4. Clean up dist/package.json - make it minimal for runtime
-const distPkg = {
-  name: "ads",
-  version: JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version,
-  type: "module",
-  scripts: {
-    start: "node server/cli.js",
-  },
-  engines: {
-    node: ">=20",
-  },
-};
-fs.writeFileSync(
-  path.join(SERVER_DIST, "package.json"),
-  JSON.stringify(distPkg, null, 2) + "\n",
-);
-
-// 5. Remove .ads directory and db files from dist (user workspace data)
-for (const f of [".ads", "ads.db", "ads.db-shm", "ads.db-wal"]) {
+// 4. Remove package metadata and user workspace data from dist.
+for (const f of ["package.json", ".ads", "ads.db", "ads.db-shm", "ads.db-wal"]) {
   const p = path.join(DIST, f);
   if (fs.existsSync(p)) {
     fs.rmSync(p, { recursive: true, force: true });

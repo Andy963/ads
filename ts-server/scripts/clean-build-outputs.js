@@ -17,6 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const DEFAULT_OWNED_PATHS = [
+  "dist/package.json",
   "dist/server",
   "dist/shared",
   "dist/templates",
