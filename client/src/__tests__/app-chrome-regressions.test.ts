@@ -422,7 +422,7 @@ describe("lane connection phase", () => {
     acopilot.wsError.value = "Prompt reconciliation failed";
     await settleUi(wrapper);
     expect(acopilotPanel.find('[data-testid="lane-connection-phase"]').exists()).toBe(false);
-    expect(acopilotPanel.get('[data-testid="lane-connection-status"]').text()).toContain("Prompt reconciliation failed");
+    expect(acopilotPanel.get('[data-testid="lane-operational-error"]').text()).toContain("Prompt reconciliation failed");
     acopilot.wsError.value = null;
 
     acopilot.connected.value = false;
@@ -452,6 +452,7 @@ describe("lane connection phase", () => {
     expect(errorPill.text()).toContain("Unauthorized");
     expect(errorPill.find(".connectionPhaseSpinner").exists()).toBe(false);
     expect(acopilotPanel.get('[data-testid="lane-connection-status"]').text()).toContain("Model switch failed");
+    expect(acopilotPanel.find('[data-testid="lane-operational-error"]').exists()).toBe(false);
 
     await wrapper.get('[data-testid="lane-tab-actions"]').trigger("click");
     await settleUi(wrapper);

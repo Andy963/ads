@@ -1488,11 +1488,22 @@ function laneConnectionStatus(
       ? null
       : laneStatus;
   }
-  const operationalError = String(runtime.wsError.value ?? "").trim();
-  if (operationalError) return { kind: "error" as const, message: operationalError };
   return laneStatus?.kind === "progress" && laneStatus.message === RECONNECT_BUSY_MESSAGE
     ? null
     : laneStatus;
+}
+
+function laneOperationalError(
+  runtime: ProjectRuntime,
+  laneStatus: LaneStatus | null,
+  phase: LaneConnectionPhaseState | null,
+): string | null {
+  const error = String(runtime.wsError.value ?? "").trim();
+  if (!error) return null;
+  if (phase?.phase === "connecting" || phase?.phase === "reconnecting") return null;
+  if (phase?.phase === "error" && error === phase.message) return null;
+  if (laneStatus?.kind === "error" && laneStatus.message === error) return null;
+  return error;
 }
 
 function handleAuthConnectionState(state: "checking" | "offline" | "unavailable" | "request-failed"): void {
@@ -1525,6 +1536,14 @@ const actionsConnectionStatus = computed(() => loggedIn.value
 const acopilotConnectionStatus = computed(() => loggedIn.value
   ? laneConnectionStatus(activeAcopilotRuntime.value, acopilotLaneStatus.value, acopilotConnectionPhase.value)
   : cachedConnectionStatus());
+
+const actionsOperationalError = computed(() => loggedIn.value
+  ? laneOperationalError(activeRuntime.value, actionsLaneStatus.value, actionsConnectionPhase.value)
+  : null);
+
+const acopilotOperationalError = computed(() => loggedIn.value
+  ? laneOperationalError(activeAcopilotRuntime.value, acopilotLaneStatus.value, acopilotConnectionPhase.value)
+  : null);
 
 </script>
 
@@ -1986,6 +2005,7 @@ const acopilotConnectionStatus = computed(() => loggedIn.value
                 :connection-status-message="acopilotConnectionStatus?.message ?? null"
                 :connection-phase="acopilotConnectionPhase?.phase ?? null"
                 :connection-phase-message="acopilotConnectionPhase?.message ?? null"
+                :operational-error="acopilotOperationalError"
                 :thread-warning="acopilotThreadWarning"
                 @send="sendAcopilotPrompt"
                 @retry-message="retryAcopilotMessage($event)"
@@ -2058,6 +2078,7 @@ const acopilotConnectionStatus = computed(() => loggedIn.value
                 :connection-status-message="actionsConnectionStatus?.message ?? null"
                 :connection-phase="actionsConnectionPhase?.phase ?? null"
                 :connection-phase-message="actionsConnectionPhase?.message ?? null"
+                :operational-error="actionsOperationalError"
                 :thread-warning="actionsThreadWarning"
                 @send="sendActionsPrompt"
                 @retry-message="retryActionsMessage($event)"

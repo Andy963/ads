@@ -1994,9 +1994,10 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
   });
 
   it.each([
-    [4401, "Unauthorized"],
-    [4409, "Max clients reached (increase ADS_WEB_MAX_CLIENTS)"],
-  ])("clears busy and reconnect notice for terminal close code %s", async (code, expectedError) => {
+    [4401, "", "Unauthorized"],
+    [4403, "forbidden", "Forbidden: forbidden"],
+    [4409, "", "Max clients reached (increase ADS_WEB_MAX_CLIENTS)"],
+  ] as const)("clears busy and reconnect notice for terminal close code %s", async (code, reason, expectedError) => {
     const { wrapper, rt } = await mountReconnectHarness();
 
     rt.busy.value = true;
@@ -2004,12 +2005,15 @@ describe("WS reconnect preserves UI unless thread_reset", () => {
     rt.messages.value = [{ id: "u1", role: "user", kind: "text", content: "Hello" }];
     await settleUi(wrapper);
 
-    lastWs!.onClose?.({ code, reason: "" });
+    lastWs!.onClose?.({ code, reason });
     await settleUi(wrapper);
 
     expect(rt.busy.value).toBe(false);
     expect(rt.turnInFlight).toBe(false);
     expect(rt.wsError.value).toBe(expectedError);
+    expect(rt.connectionError.value).toBe(expectedError);
+    expect(rt.reconnectAttempts).toBe(0);
+    expect(rt.reconnectTimer).toBeNull();
     expect(rt.messages.value.map((m: any) => String(m.content ?? ""))).not.toContain(RECONNECT_BUSY_MESSAGE);
     expect(rt.inputLocked.value).toBe(false);
     expect(rt.laneStatus.value).toBeNull();

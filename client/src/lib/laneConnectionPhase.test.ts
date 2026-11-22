@@ -28,12 +28,12 @@ describe("lane connection phase", () => {
   });
 
   it("reports reconnecting while a retry is scheduled", () => {
-    expect(resolveLaneConnectionPhase({ ...base, reconnectActive: true, terminalError: "socket closed" })).toBe("reconnecting");
+    expect(resolveLaneConnectionPhase({ ...base, reconnectActive: true })).toBe("reconnecting");
   });
 
-  it("reports terminal errors without treating scheduled reconnects as errors", () => {
+  it("gives terminal errors precedence over stale reconnect state", () => {
     expect(resolveLaneConnectionPhase({ ...base, terminalError: "Unauthorized" })).toBe("error");
-    expect(resolveLaneConnectionPhase({ ...base, reconnectActive: true, terminalError: "Unauthorized" })).toBe("reconnecting");
+    expect(resolveLaneConnectionPhase({ ...base, reconnectActive: true, terminalError: "Unauthorized" })).toBe("error");
   });
 
   it("returns no phase once the lane is ready", () => {

@@ -140,15 +140,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     rt.connectionWatchdogTimer = null;
   };
 
-  const closeRuntimeConnection = (rt: {
-    reconnectTimer: number | null;
-    connectionWatchdogTimer: number | null;
-    ws: { close: () => void } | null;
-    connected: { value: boolean };
-    transcriptAuthoritative: { value: boolean };
-    syncGeneration: number;
-    syncInProgress: boolean;
-  }): void => {
+  const closeRuntimeConnection = (rt: ProjectRuntime): void => {
     clearReconnectTimer(rt);
     clearConnectionWatchdog(rt);
     rt.syncGeneration += 1;
@@ -1168,6 +1160,8 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
     const cleanupTerminalCloseState = () => {
       clearReconnectTimer(rt);
+      rt.reconnectAttempts = 0;
+      touchLaneConnectionPhase(rt);
       clearConnectionWatchdog(rt);
       clearBootstrapHistoryWatchdog();
       rt.busy.value = false;
@@ -1250,7 +1244,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
 
     wsInstance.onClose = (ev) => {
       if (rt.ws !== wsInstance) return;
-      const terminalClose = ev.code === 4401 || ev.code === 4409;
+      const terminalClose = ev.code === 4401 || ev.code === 4403 || ev.code === 4409;
       cleanupDisconnectState({ showReconnectMessage: !terminalClose });
 
       if (ev.code === 4401) {
@@ -1275,6 +1269,13 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
           const crt = acopilotRuntimeByProjectId.get(candidateId);
           if (crt) closeRuntimeConnection(crt);
         }
+        return;
+      }
+      if (ev.code === 4403) {
+        cleanupTerminalCloseState();
+        const reason = String((ev as CloseEvent).reason ?? "").trim();
+        rt.connectionError.value = reason ? `Forbidden: ${reason}` : "Forbidden";
+        rt.wsError.value = rt.connectionError.value;
         return;
       }
 

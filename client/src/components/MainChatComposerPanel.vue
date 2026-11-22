@@ -49,6 +49,7 @@ const props = withDefaults(defineProps<{
   connectionStatusMessage?: string | null;
   connectionPhase?: "connecting" | "syncing" | "reconnecting" | "error" | null;
   connectionPhaseMessage?: string | null;
+  operationalError?: string | null;
 }>(), { voiceInputActive: true });
 
 const emit = defineEmits<{
@@ -478,6 +479,16 @@ onBeforeUnmount(() => {
     >
       <span class="laneStatusDot" aria-hidden="true" />
       <span class="laneStatusText">{{ connectionStatusMessage }}</span>
+    </div>
+
+    <div
+      v-if="operationalError"
+      class="laneStatusBar laneStatusBar--error"
+      role="alert"
+      data-testid="lane-operational-error"
+    >
+      <span class="laneStatusDot" aria-hidden="true" />
+      <span class="laneStatusText">{{ operationalError }}</span>
     </div>
 
     <div v-if="visibleQueuedPrompts.length" class="queue" aria-label="排队消息">

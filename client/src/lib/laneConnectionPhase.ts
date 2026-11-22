@@ -24,8 +24,9 @@ export function touchLaneConnectionPhase(state: { connectionPhaseRevision: { val
 }
 
 export function resolveLaneConnectionPhase(input: LaneConnectionPhaseInput): LaneConnectionPhase | null {
+  if (String(input.terminalError ?? "").trim()) return "error";
   if (input.reconnectActive) return "reconnecting";
-  if (!input.connected) return String(input.terminalError ?? "").trim() ? "error" : "connecting";
+  if (!input.connected) return "connecting";
   if (!input.transcriptAuthoritative || input.syncInProgress) return "syncing";
   return null;
 }
