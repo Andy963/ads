@@ -227,7 +227,7 @@ for (const [engine, browserType] of [["webkit", webkit], ["chromium", chromium]]
         await page.goto(fixture.origin);
         const hint = page.locator(".gate .desc code");
         await hint.waitFor();
-        assert.ok((await hint.textContent()).includes("npm run web:init-admin"));
+        assert.ok((await hint.textContent()).includes("npm --prefix ts-server run web:init-admin"));
         const card = await page.locator(".card").boundingBox();
         assert.ok(card, "card must render");
         assert.ok(Math.abs(card.x + card.width / 2 - 640) <= 1, "card stays horizontally centered");
