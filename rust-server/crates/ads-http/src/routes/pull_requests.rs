@@ -133,68 +133,69 @@ impl PullRequestManager {
         let key = list_cache_key(project_key, &query, offset);
 
         loop {
-            let (mut rx, owns_task) =
-                {
-                    let mut cache = self.inner.cache.lock().await;
-                    let existing_refresh = cache
-                        .in_flight_list
-                        .get(&key)
-                        .is_some_and(|flight| flight.refresh);
-                    let generation = if query.refresh && !existing_refresh {
-                        invalidate_project_cache(&mut cache, project_key)
-                    } else {
-                        current_refresh_generation(&cache, project_key)
-                    };
-                    if let Some(entry) = cache.list.get(&key) {
-                        if entry.expires_at > now {
-                            return Ok(entry.value.clone());
-                        }
-                    }
-                    if let Some(flight) = cache.in_flight_list.get(&key) {
-                        (flight.receiver.clone(), false)
-                    } else {
-                        let (tx, rx) = tokio::sync::watch::channel(None);
-                        cache.in_flight_list.insert(
-                            key.clone(),
-                            InFlight {
-                                receiver: rx.clone(),
-                                refresh: query.refresh,
-                            },
-                        );
-                        let inner = Arc::clone(&self.inner);
-                        let task_key = key.clone();
-                        let task_project_key = project_key.to_string();
-                        let task_receiver = rx.clone();
-                        let task_generation = generation;
-                        let task_query = query.clone();
-                        let task_cwd = cwd.to_path_buf();
-                        tokio::spawn(async move {
-                            let response = inner
-                                .execute_list(&task_query, &task_cwd, offset, now)
-                                .await;
-                            let mut cache = inner.cache.lock().await;
-                            let is_current_generation =
-                                current_refresh_generation(&cache, &task_project_key)
-                                    == task_generation;
-                            if is_current_generation && response.error.is_none() {
-                                cache.list.insert(
-                                    task_key.clone(),
-                                    CacheEntry {
-                                        expires_at: now + LIST_TTL_MS,
-                                        value: response.clone(),
-                                    },
-                                );
-                            }
-                            if cache.in_flight_list.get(&task_key).is_some_and(|current| {
-                                current.receiver.same_channel(&task_receiver)
-                            }) {
-                                cache.in_flight_list.remove(&task_key);
-                            }
-                            let _ = tx.send(Some(response));
-                        });
-                        (rx, true)
-                    }
+            let (mut rx, owns_task) = {
+                let mut cache = self.inner.cache.lock().await;
+                let existing_refresh = cache
+                    .in_flight_list
+                    .get(&key)
+                    .is_some_and(|flight| flight.refresh);
+                let generation = if query.refresh && !existing_refresh {
+                    invalidate_project_cache(&mut cache, project_key)
+                } else {
+                    current_refresh_generation(&cache, project_key)
                 };
+                if let Some(entry) = cache.list.get(&key) {
+                    if entry.expires_at > now {
+                        return Ok(entry.value.clone());
+                    }
+                }
+                if let Some(flight) = cache.in_flight_list.get(&key) {
+                    (flight.receiver.clone(), false)
+                } else {
+                    let (tx, rx) = tokio::sync::watch::channel(None);
+                    cache.in_flight_list.insert(
+                        key.clone(),
+                        InFlight {
+                            receiver: rx.clone(),
+                            refresh: query.refresh,
+                        },
+                    );
+                    let inner = Arc::clone(&self.inner);
+                    let task_key = key.clone();
+                    let task_project_key = project_key.to_string();
+                    let task_receiver = rx.clone();
+                    let task_generation = generation;
+                    let task_query = query.clone();
+                    let task_cwd = cwd.to_path_buf();
+                    tokio::spawn(async move {
+                        let response = inner
+                            .execute_list(&task_query, &task_cwd, offset, now)
+                            .await;
+                        let mut cache = inner.cache.lock().await;
+                        let is_current_generation =
+                            current_refresh_generation(&cache, &task_project_key)
+                                == task_generation;
+                        if is_current_generation && (response.error.is_none() || response.partial) {
+                            cache.list.insert(
+                                task_key.clone(),
+                                CacheEntry {
+                                    expires_at: now + LIST_TTL_MS,
+                                    value: response.clone(),
+                                },
+                            );
+                        }
+                        if cache
+                            .in_flight_list
+                            .get(&task_key)
+                            .is_some_and(|current| current.receiver.same_channel(&task_receiver))
+                        {
+                            cache.in_flight_list.remove(&task_key);
+                        }
+                        let _ = tx.send(Some(response));
+                    });
+                    (rx, true)
+                }
+            };
 
             if let Ok(value) = rx.wait_for(|value| value.is_some()).await {
                 return Ok(value
@@ -340,7 +341,11 @@ impl PullRequestManagerInner {
         offset: usize,
         now: i64,
     ) -> PullRequestListResponse {
-        let limit_arg = (offset + query.limit + 1).min(MAX_CURSOR_OFFSET + MAX_LIMIT);
+        let terms = search_terms(query);
+        let limit_arg = offset
+            .saturating_add(query.limit)
+            .saturating_add(1)
+            .min(MAX_CURSOR_OFFSET.saturating_add(MAX_LIMIT));
         let mut args = vec![
             "pr".to_string(),
             "list".to_string(),
@@ -351,7 +356,6 @@ impl PullRequestManagerInner {
             "--json".to_string(),
             LIST_FIELDS.to_string(),
         ];
-        let terms = search_terms(query);
         if !terms.is_empty() {
             args.push("--search".to_string());
             args.push(terms.join(" "));
@@ -383,11 +387,12 @@ impl PullRequestManagerInner {
             }
         };
 
+        let raw_len = parsed.len();
         let mut invalid_rows = 0;
         let rows: Vec<PullRequestSummary> = parsed
             .iter()
             .filter_map(|row| match to_summary(row) {
-                Some(s) => Some(s),
+                Some(summary) => Some(summary),
                 None => {
                     invalid_rows += 1;
                     None
@@ -402,24 +407,15 @@ impl PullRequestManagerInner {
             vec![]
         };
         let next_offset = offset + page.len();
-        let has_more = rows.len() > page_end;
-        let next_cursor = if has_more {
-            Some(encode_cursor(next_offset))
-        } else {
-            None
-        };
+        let has_more = rows.len() > page_end || raw_len >= limit_arg;
+        let next_cursor = has_more.then(|| encode_cursor(next_offset));
 
         PullRequestListResponse {
             items: page,
             next_cursor,
             partial: invalid_rows > 0,
-            error: if invalid_rows > 0 {
-                Some(format!(
-                    "{invalid_rows} pull request row(s) could not be parsed"
-                ))
-            } else {
-                None
-            },
+            error: (invalid_rows > 0)
+                .then(|| format!("{invalid_rows} pull request row(s) could not be parsed")),
             fetched_at: now,
         }
     }

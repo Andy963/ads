@@ -616,7 +616,7 @@ async fn test_pull_requests_failures_are_not_cached() {
 }
 
 #[tokio::test]
-async fn test_pull_requests_invalid_rows_do_not_create_empty_page() {
+async fn test_pull_requests_invalid_rows_preserve_raw_pagination_and_cache() {
     let runner = Arc::new(MockGhRunner::new());
     let mut rows: Vec<Value> = serde_json::from_str(SAMPLE_PR_LIST).expect("sample rows");
     rows.insert(1, json!({ "number": 0 }));
@@ -633,7 +633,21 @@ async fn test_pull_requests_invalid_rows_do_not_create_empty_page() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(val["items"].as_array().unwrap().len(), 2);
     assert!(val["partial"].as_bool().unwrap());
-    assert!(val["nextCursor"].is_null());
+    assert!(val["nextCursor"].is_string());
+    assert_eq!(ctx.runner.calls.load(Ordering::SeqCst), 1);
+
+    *ctx.runner.list_response.lock().unwrap() = Ok(SAMPLE_PR_LIST.to_string());
+    let (status, cached) = send_request(
+        &ctx.router,
+        "/api/pull-requests?projectId=p1&limit=2",
+        Some(&ctx.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cached["items"].as_array().unwrap().len(), 2);
+    assert!(cached["partial"].as_bool().unwrap());
+    assert!(cached["nextCursor"].is_string());
+    assert_eq!(ctx.runner.calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
