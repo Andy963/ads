@@ -1455,9 +1455,10 @@ type LaneConnectionPhaseState = { phase: LaneConnectionPhase; message: string };
 
 function laneConnectionPhaseForRuntime(runtime: ProjectRuntime): LaneConnectionPhaseState | null {
   const terminalError = String(runtime.connectionError.value ?? "").trim() || null;
+  const socket = runtime.ws as { isConnecting?: () => boolean } | null;
   const phase = resolveLaneConnectionPhase({
     connected: runtime.connected.value,
-    transcriptAuthoritative: runtime.transcriptAuthoritative.value,
+    connecting: socket?.isConnecting?.() === true,
     syncInProgress: runtime.syncInProgress,
     reconnectActive: runtime.reconnectTimer !== null || runtime.reconnectAttempts > 0,
     terminalError,
