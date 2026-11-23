@@ -319,6 +319,113 @@ fn requires_rework_for_latest_reject_and_does_not_reuse_an_older_reject() {
     assert!(error.to_string().contains("only valid after a REJECT"));
 }
 
+#[test]
+fn carries_rework_declaration_across_operational_review_retries() {
+    let (_directory, db) = state();
+    let (_temp, repo, _base, _head) = repo();
+    let project = ads_state::derive_project_session_id(&repo.to_string_lossy());
+    let connection = db.connect().expect("connection");
+    let rejected = create_action_job(
+        &connection,
+        CreateActionJob {
+            id: "reject".to_string(),
+            project_id: project.clone(),
+            lane_generation: Some(1),
+            acopilot_lane_generation: 1,
+            job_kind: ActionJobKind::PullRequestReview,
+            issue_id: 7,
+            issue_title: "Fix the bug".to_string(),
+            issue_snapshot: Default::default(),
+            status: Some(ActionJobStatus::Completed),
+            branch: "codex/issue-7".to_string(),
+            base_sha: BASE_FAKE.to_string(),
+            head_sha: HEAD_OLD.to_string(),
+            reviewer_profile_ids_json: "[]".to_string(),
+            pr_number: 12,
+            pr_url: "https://github.com/example/pull/12".to_string(),
+            auth_user_id: "user-1".to_string(),
+            chat_session_id: "main".to_string(),
+            rework_declaration_json: None,
+        },
+        1_000,
+    )
+    .expect("reject job");
+    update_action_job_status(
+        &connection,
+        &rejected.id,
+        ActionJobStatus::Completed,
+        ActionJobStatusUpdate {
+            current_step: Some(Some("REJECT: defect".to_string())),
+            review_verdicts_json: Some(Some(
+                serde_json::to_string(&[ReviewVerdict {
+                    status: ReviewVerdictStatus::Reject,
+                    summary: "defect".to_string(),
+                    defects: Vec::new(),
+                    reviewer_profile_id: None,
+                    reviewed_at: 1_000,
+                }])
+                .expect("verdict json"),
+            )),
+            ..ActionJobStatusUpdate::default()
+        },
+        1_000,
+        false,
+    )
+    .expect("reject verdict");
+    drop(connection);
+
+    let declaration = serde_json::json!({
+        "prior_job_id": "reject",
+        "issue_id": 7,
+        "pr_number": 12,
+        "base_sha": BASE_FAKE,
+        "rejected_head_sha": HEAD_OLD,
+        "new_head_sha": HEAD_NEW,
+        "root_cause": "root cause",
+        "invariant": "invariant",
+        "audited_scope": ["source"],
+        "changed_behavior": "behavior",
+        "regression_cases": ["regression"],
+        "verification_evidence": ["tests pass"],
+        "residual_risks": []
+    });
+    let queue = ReviewQueue::new(db.clone(), "worker-1", options());
+    let mut first_retry = dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12));
+    first_retry.rework_declaration = Some(declaration.clone());
+    first_retry.current_head_sha = Some(HEAD_NEW.to_string());
+    let first_ack = queue.dispatch(first_retry, 2_000).expect("declared retry");
+    {
+        let connection = db.connect().expect("connection");
+        update_action_job_status(
+            &connection,
+            &first_ack.job_id,
+            ActionJobStatus::Failed,
+            ActionJobStatusUpdate {
+                error_message: Some(Some("temporary upstream failure".to_string())),
+                ..ActionJobStatusUpdate::default()
+            },
+            3_000,
+            false,
+        )
+        .expect("operational failure");
+    }
+
+    let mut second_retry =
+        dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12));
+    second_retry.current_head_sha = Some(HEAD_NEW.to_string());
+    let second_ack = queue
+        .dispatch(second_retry, 4_000)
+        .expect("operational retry");
+    let connection = db.connect().expect("connection");
+    let retry = get_action_job(&connection, &second_ack.job_id)
+        .expect("read retry")
+        .expect("retry job");
+    assert_eq!(
+        retry.rework_declaration_json.as_deref(),
+        Some(declaration.to_string().as_str())
+    );
+}
+
 #[tokio::test]
 async fn blocks_automatic_retry_after_repeated_operational_failures() {
     let (_directory, db) = state();
@@ -556,6 +663,124 @@ async fn processes_a_review_end_to_end() {
         Some("https://github.com/example/issues/7")
     );
     assert_eq!(wakes[0].status.as_str(), "PASS");
+}
+
+#[tokio::test]
+async fn validates_and_delivers_rework_declaration_on_the_pinned_target() {
+    let (_directory, db) = state();
+    let (_temp, repo, base, head) = repo();
+    let target = resolved(&repo, &base, &head);
+    let project = target.project_id.clone();
+    let connection = db.connect().expect("connection");
+    let rejected = create_action_job(
+        &connection,
+        CreateActionJob {
+            id: "reject".to_string(),
+            project_id: project.clone(),
+            lane_generation: Some(1),
+            acopilot_lane_generation: 1,
+            job_kind: ActionJobKind::PullRequestReview,
+            issue_id: 7,
+            issue_title: "Fix the bug".to_string(),
+            issue_snapshot: Default::default(),
+            status: Some(ActionJobStatus::Completed),
+            branch: "codex/issue-7".to_string(),
+            base_sha: base.clone(),
+            head_sha: base.clone(),
+            reviewer_profile_ids_json: "[]".to_string(),
+            pr_number: 12,
+            pr_url: "https://github.com/example/pull/12".to_string(),
+            auth_user_id: "user-1".to_string(),
+            chat_session_id: "main".to_string(),
+            rework_declaration_json: None,
+        },
+        1_000,
+    )
+    .expect("reject job");
+    update_action_job_status(
+        &connection,
+        &rejected.id,
+        ActionJobStatus::Completed,
+        ActionJobStatusUpdate {
+            current_step: Some(Some("REJECT: defect".to_string())),
+            review_verdicts_json: Some(Some(
+                serde_json::to_string(&[ReviewVerdict {
+                    status: ReviewVerdictStatus::Reject,
+                    summary: "defect".to_string(),
+                    defects: Vec::new(),
+                    reviewer_profile_id: None,
+                    reviewed_at: 1_000,
+                }])
+                .expect("verdict json"),
+            )),
+            ..ActionJobStatusUpdate::default()
+        },
+        1_000,
+        false,
+    )
+    .expect("reject verdict");
+    drop(connection);
+
+    let declaration = serde_json::json!({
+        "prior_job_id": "reject",
+        "issue_id": 7,
+        "pr_number": 12,
+        "base_sha": base,
+        "rejected_head_sha": base,
+        "new_head_sha": head,
+        "root_cause": "root cause",
+        "invariant": "invariant",
+        "audited_scope": ["source"],
+        "changed_behavior": "behavior",
+        "regression_cases": ["regression"],
+        "verification_evidence": ["tests pass"],
+        "residual_risks": []
+    });
+    let observed_declaration = Arc::new(Mutex::new(None));
+    let mut options = options();
+    options.target_resolver = Some(fixed_resolver(target));
+    options.verification = Some(verification(0));
+    options.reviewer = Some(Arc::new({
+        let observed_declaration = observed_declaration.clone();
+        move |request: ReviewerRequest| {
+            let observed_declaration = observed_declaration.clone();
+            Box::pin(async move {
+                *observed_declaration.lock().expect("declaration") =
+                    request.payload.rework_declaration;
+                Ok(ReviewVerdict {
+                    status: ReviewVerdictStatus::Pass,
+                    summary: "Rework verified".to_string(),
+                    defects: Vec::new(),
+                    reviewer_profile_id: None,
+                    reviewed_at: 2_000,
+                })
+            })
+        }
+    }));
+    let queue = ReviewQueue::new(db.clone(), "worker-1", options);
+    let mut request = dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12));
+    request.rework_declaration = Some(declaration.clone());
+    request.current_head_sha = Some(head);
+    let ack = queue.dispatch(request, 2_000).expect("declared review");
+    queue
+        .process(&project, &repo)
+        .await
+        .expect("process review");
+
+    let connection = db.connect().expect("connection");
+    let job = get_action_job(&connection, &ack.job_id)
+        .expect("read job")
+        .expect("review job");
+    assert_eq!(job.status, ActionJobStatus::Completed);
+    assert_eq!(job.review_verdicts_json.contains("PASS"), true);
+    assert_eq!(
+        job.rework_declaration_json.as_deref(),
+        Some(declaration.to_string().as_str())
+    );
+    assert_eq!(
+        *observed_declaration.lock().expect("declaration"),
+        Some(declaration)
+    );
 }
 
 #[tokio::test]

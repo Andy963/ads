@@ -15,6 +15,7 @@ The Rust Acopilot flow allowed a pull request to be redispatched after a `REJECT
 - For a redispatched review, the declaration is included in the structured Reviewer payload as an auditable claim. The Reviewer is explicitly instructed to verify it independently against the Issue, diff, and test report.
 - Dispatch validates the declaration against the latest completed, non-superseded review for the same project, branch, and PR. The Actions queue validates it again against the resolved Issue, PR, base, branch, and actual new head before running verification or the Reviewer.
 - Operational outcomes such as `INCOMPLETE` and `ERROR` do not require a rework declaration. They continue through operational recovery.
+- If an operational retry was dispatched with a valid declaration, that declaration remains attached to subsequent operational retries until a new authoritative verdict is produced. A changed head requires an updated declaration; operational recovery cannot erase or replace the pending root-REJECT evidence.
 - This lifecycle invariant is implemented and owned by `rust-server`; TypeScript server behavior and schema remain outside this change.
 
 ## Consequences

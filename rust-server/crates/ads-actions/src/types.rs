@@ -134,7 +134,7 @@ pub struct ReviewQueueAck {
     pub note: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[serde(deny_unknown_fields)]
 pub struct ReworkDeclaration {

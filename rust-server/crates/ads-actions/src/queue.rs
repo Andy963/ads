@@ -21,11 +21,11 @@ use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
 use crate::defaults::{default_publisher, default_reviewer_runner, default_verification_runner};
-use crate::dispatch::{canonical_project_id, issue_id_from_branch};
+use crate::dispatch::{canonical_project_id, is_operational_review_outcome, issue_id_from_branch};
 use crate::types::{
     AcopilotWake, BoxFuture, IssueCommentRequest, LaneMessage, LaneMessageRole,
     ResolveReviewRequest, ResolvedReview, ReviewError, ReviewQueueAck, ReviewQueueOptions,
-    ReviewerRequest, ReviewerRunner, TargetResolver, VerificationRunner,
+    ReviewerRequest, ReviewerRunner, ReworkDeclaration, TargetResolver, VerificationRunner,
 };
 
 const DEFAULT_LEASE_TTL: Duration = Duration::from_secs(90);
@@ -380,7 +380,7 @@ impl ReviewQueue {
                 .all(|item| !item.trim().is_empty());
         let prior_matches = {
             let connection = self.db.connect()?;
-            let latest_review_id = list_action_jobs(
+            let latest_review = list_action_jobs(
                 &connection,
                 &job.project_id,
                 None,
@@ -393,13 +393,34 @@ impl ReviewQueue {
                     && candidate.branch.as_deref() == Some(session.branch.as_str())
                     && candidate.pr_number == Some(session.pr_number)
                     && candidate.superseded_at.is_none()
-            })
-            .map(|candidate| candidate.id);
+            });
+            let declaration_is_latest = latest_review.as_ref().is_some_and(|candidate| {
+                candidate.id == declaration.prior_job_id
+                    || (is_operational_review_outcome(candidate)
+                        && candidate
+                            .rework_declaration_json
+                            .as_deref()
+                            .and_then(|value| serde_json::from_str::<ReworkDeclaration>(value).ok())
+                            .is_some_and(|candidate_declaration| {
+                                candidate_declaration == declaration
+                            }))
+            });
+            let inherited_from_operational_retry =
+                latest_review.as_ref().is_some_and(|candidate| {
+                    is_operational_review_outcome(candidate)
+                        && candidate
+                            .rework_declaration_json
+                            .as_deref()
+                            .and_then(|value| serde_json::from_str::<ReworkDeclaration>(value).ok())
+                            .is_some_and(|candidate_declaration| {
+                                candidate_declaration == declaration
+                            })
+                });
             match get_action_job(&connection, &declaration.prior_job_id)? {
                 Some(prior) if prior.job_kind == ActionJobKind::PullRequestReview => {
-                    latest_review_id.as_deref() == Some(prior.id.as_str())
+                    declaration_is_latest
                         && prior.status == ActionJobStatus::Completed
-                        && prior.superseded_at.is_none()
+                        && (prior.superseded_at.is_none() || inherited_from_operational_retry)
                         && prior
                             .current_step
                             .as_deref()

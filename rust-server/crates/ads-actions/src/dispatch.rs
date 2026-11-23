@@ -105,20 +105,67 @@ pub fn dispatch_review_job(
             && (pr_number == 0 || job.pr_number == Some(pr_number))
             && job.superseded_at.is_none()
     });
-    let prior_reject = latest_review.filter(|job| {
-        job.status == ActionJobStatus::Completed
-            && job
-                .current_step
-                .as_deref()
-                .is_some_and(|step| step.starts_with("REJECT:"))
-            && serde_json::from_str::<Vec<ads_reviewer::ReviewVerdict>>(&job.review_verdicts_json)
+    let inherited_declaration = latest_review
+        .filter(|job| is_operational_review_outcome(job))
+        .and_then(|job| job.rework_declaration_json.as_deref())
+        .map(serde_json::from_str::<ReworkDeclaration>)
+        .transpose()?;
+    let inherited_retry = inherited_declaration.is_some();
+    let declaration_prior = if let Some(declaration) = inherited_declaration.as_ref() {
+        jobs.iter().find(|job| {
+            job.id == declaration.prior_job_id
+                && job.job_kind == ActionJobKind::PullRequestReview
+                && job.branch.as_deref().unwrap_or("") == branch
+                && (pr_number == 0 || job.pr_number == Some(pr_number))
+                && (inherited_retry || job.superseded_at.is_none())
+                && job.status == ActionJobStatus::Completed
+                && job
+                    .current_step
+                    .as_deref()
+                    .is_some_and(|step| step.starts_with("REJECT:"))
+                && serde_json::from_str::<Vec<ads_reviewer::ReviewVerdict>>(
+                    &job.review_verdicts_json,
+                )
                 .is_ok_and(|verdicts| {
                     verdicts
                         .iter()
                         .any(|verdict| verdict.status == ads_reviewer::ReviewVerdictStatus::Reject)
                 })
-    });
-    let rework_declaration = match (prior_reject, request.rework_declaration.as_ref()) {
+        })
+    } else {
+        latest_review.filter(|job| {
+            job.status == ActionJobStatus::Completed
+                && job
+                    .current_step
+                    .as_deref()
+                    .is_some_and(|step| step.starts_with("REJECT:"))
+                && serde_json::from_str::<Vec<ads_reviewer::ReviewVerdict>>(
+                    &job.review_verdicts_json,
+                )
+                .is_ok_and(|verdicts| {
+                    verdicts
+                        .iter()
+                        .any(|verdict| verdict.status == ads_reviewer::ReviewVerdictStatus::Reject)
+                })
+        })
+    };
+    let provided_declaration = request
+        .rework_declaration
+        .as_ref()
+        .map(|value| serde_json::from_value::<ReworkDeclaration>(value.clone()))
+        .transpose()?;
+    let selected_declaration = match (provided_declaration, inherited_declaration) {
+        (Some(provided), Some(inherited)) if provided != inherited => {
+            return Err(ReviewError::Conflict(
+                "An operational retry must preserve the previously validated rework declaration."
+                    .to_string(),
+            ));
+        }
+        (Some(provided), _) => Some(provided),
+        (None, Some(inherited)) => Some(inherited),
+        (None, None) => None,
+    };
+    let rework_declaration = match (declaration_prior, selected_declaration) {
         (None, None) => None,
         (Some(_), None) => {
             return Err(ReviewError::Conflict(
@@ -131,13 +178,17 @@ pub fn dispatch_review_job(
                 "A rework declaration is only valid after a REJECT verdict.".to_string(),
             ));
         }
-        (Some(prior), Some(value)) => {
-            let declaration: ReworkDeclaration = serde_json::from_value(value.clone())?;
+        (Some(prior), Some(declaration)) => {
+            let target_pr_number = if pr_number > 0 {
+                pr_number
+            } else {
+                declaration.pr_number
+            };
             validate_rework_declaration(
                 &declaration,
                 prior,
                 &project_id,
-                pr_number,
+                target_pr_number,
                 &branch,
                 request.current_head_sha.as_deref(),
             )?;
@@ -219,6 +270,15 @@ pub fn dispatch_review_job(
     })?;
     transaction.commit()?;
     Ok(review_queue_ack(job))
+}
+
+pub(crate) fn is_operational_review_outcome(job: &ActionJobRecord) -> bool {
+    job.status == ActionJobStatus::Failed
+        || (job.status == ActionJobStatus::Completed
+            && job
+                .current_step
+                .as_deref()
+                .is_some_and(|step| step.starts_with("INCOMPLETE:") || step.starts_with("ERROR:")))
 }
 
 fn validate_rework_declaration(
