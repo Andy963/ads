@@ -1,7 +1,7 @@
 {
   "source_commit": "21aeeee1091bea3a9c7c491ee54d4b25a84ae491",
   "state": {
-    "schema_version": 48,
+    "schema_version": 49,
     "tables": 31,
     "indexes": 23,
     "triggers": 0,
@@ -14,6 +14,6 @@
     "triggers": 46,
     "views": 0
   },
-  "state_migration_count": 48,
+  "state_migration_count": 49,
   "workspace_migration_count": 29
 }

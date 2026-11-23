@@ -287,6 +287,7 @@ where
 
     ReviewPayload {
         issue: target.issue.clone(),
+        rework_declaration: None,
         diff_range: Some(ReviewDiffRange {
             base_ref: base_ref.to_string(),
             head_ref: head_ref.to_string(),

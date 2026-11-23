@@ -18,5 +18,6 @@ pub use runtime::review_action_tools_factory;
 pub use types::{
     AcopilotWake, IssueCommentPublisher, IssueCommentRequest, LaneMessage, LaneMessageRole,
     LaneMessenger, LaneWaker, ResolveReviewRequest, ResolvedReview, ReviewError, ReviewQueueAck,
-    ReviewQueueOptions, ReviewerRequest, ReviewerRunner, TargetResolver, VerificationRunner,
+    ReviewQueueOptions, ReviewerRequest, ReviewerRunner, ReworkDeclaration, TargetResolver,
+    VerificationRunner,
 };

@@ -55,6 +55,7 @@ pub struct ReviewTestReport {
 #[serde(rename_all = "camelCase", default)]
 pub struct ReviewPayload {
     pub issue: ReviewIssue,
+    pub rework_declaration: Option<serde_json::Value>,
     pub diff_range: Option<ReviewDiffRange>,
     pub adrs: Option<Vec<ReviewAdr>>,
     pub diff: String,

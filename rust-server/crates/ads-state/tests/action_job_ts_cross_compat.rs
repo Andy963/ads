@@ -76,6 +76,7 @@ fn job(id: &str, head: &str) -> CreateActionJob {
         pr_url: "https://github.com/example/pull/12".to_string(),
         auth_user_id: "user-1".to_string(),
         chat_session_id: "chat-1".to_string(),
+        rework_declaration_json: None,
     }
 }
 

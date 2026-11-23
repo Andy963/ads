@@ -42,6 +42,41 @@ fn opens_state_database_at_the_contract_version() {
 }
 
 #[test]
+fn migrates_state_48_to_49_with_rework_declaration_column() {
+    let directory = tempdir().expect("temp dir");
+    let path = directory.path().join("state.db");
+    StateDb::open(&path).expect("state db");
+    let connection = Connection::open(&path).expect("connection");
+    connection
+        .execute_batch(
+            "ALTER TABLE action_jobs DROP COLUMN rework_declaration_json;
+             UPDATE schema_version SET version = 48 WHERE id = 1;",
+        )
+        .expect("version 48 fixture");
+    drop(connection);
+
+    let db = StateDb::open(&path).expect("migrated state db");
+    let connection = db.connect().expect("connection");
+    let version: i64 = connection
+        .query_row(
+            "SELECT version FROM schema_version WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("version");
+    let column_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('action_jobs')
+             WHERE name = 'rework_declaration_json'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("rework declaration column");
+    assert_eq!(version, 49);
+    assert_eq!(column_count, 1);
+}
+
+#[test]
 fn opens_workspace_database_at_the_contract_version() {
     let directory = tempdir().expect("temp dir");
     let path = directory.path().join("workspace.db");

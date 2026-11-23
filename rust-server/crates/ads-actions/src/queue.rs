@@ -268,6 +268,7 @@ impl ReviewQueue {
         let session = (self.resolver())(request.clone()).await?;
         let mut current = job.clone();
         if job_needs_pinning(&current) {
+            self.validate_rework_target(&current, &session)?;
             let now = now_ms();
             let connection = self.db.connect()?;
             let transaction = connection.unchecked_transaction()?;
@@ -346,6 +347,97 @@ impl ReviewQueue {
         Ok(())
     }
 
+    fn validate_rework_target(
+        &self,
+        job: &ActionJobRecord,
+        session: &ResolvedReview,
+    ) -> Result<(), ReviewError> {
+        let Some(serialized) = job.rework_declaration_json.as_deref() else {
+            return Ok(());
+        };
+        let declaration: crate::types::ReworkDeclaration = serde_json::from_str(serialized)?;
+        let complete = !declaration.root_cause.trim().is_empty()
+            && !declaration.invariant.trim().is_empty()
+            && !declaration.audited_scope.is_empty()
+            && declaration
+                .audited_scope
+                .iter()
+                .all(|item| !item.trim().is_empty())
+            && !declaration.changed_behavior.trim().is_empty()
+            && !declaration.regression_cases.is_empty()
+            && declaration
+                .regression_cases
+                .iter()
+                .all(|item| !item.trim().is_empty())
+            && !declaration.verification_evidence.is_empty()
+            && declaration
+                .verification_evidence
+                .iter()
+                .all(|item| !item.trim().is_empty())
+            && declaration
+                .residual_risks
+                .iter()
+                .all(|item| !item.trim().is_empty());
+        let prior_matches = {
+            let connection = self.db.connect()?;
+            let latest_review_id = list_action_jobs(
+                &connection,
+                &job.project_id,
+                None,
+                job.auth_user_id.as_deref(),
+            )?
+            .into_iter()
+            .find(|candidate| {
+                candidate.id != job.id
+                    && candidate.job_kind == ActionJobKind::PullRequestReview
+                    && candidate.branch.as_deref() == Some(session.branch.as_str())
+                    && candidate.pr_number == Some(session.pr_number)
+                    && candidate.superseded_at.is_none()
+            })
+            .map(|candidate| candidate.id);
+            match get_action_job(&connection, &declaration.prior_job_id)? {
+                Some(prior) if prior.job_kind == ActionJobKind::PullRequestReview => {
+                    latest_review_id.as_deref() == Some(prior.id.as_str())
+                        && prior.status == ActionJobStatus::Completed
+                        && prior.superseded_at.is_none()
+                        && prior
+                            .current_step
+                            .as_deref()
+                            .is_some_and(|step| step.starts_with("REJECT:"))
+                        && prior.project_id == job.project_id
+                        && prior.issue_id == Some(declaration.issue_id)
+                        && prior.pr_number == Some(declaration.pr_number)
+                        && prior.branch.as_deref() == Some(session.branch.as_str())
+                        && prior.base_sha.as_deref() == Some(declaration.base_sha.as_str())
+                        && prior.head_sha.as_deref() == Some(declaration.rejected_head_sha.as_str())
+                        && serde_json::from_str::<Vec<ReviewVerdict>>(&prior.review_verdicts_json)
+                            .is_ok_and(|verdicts| {
+                                verdicts
+                                    .iter()
+                                    .any(|verdict| verdict.status == ReviewVerdictStatus::Reject)
+                            })
+                }
+                _ => false,
+            }
+        };
+        let matches = complete
+            && prior_matches
+            && declaration.issue_id == session.target.issue.id.unwrap_or_default()
+            && declaration.pr_number == session.pr_number
+            && declaration.base_sha == session.target.base_commit.as_deref().unwrap_or_default()
+            && declaration.new_head_sha
+                == session.target.head_commit.as_deref().unwrap_or_default()
+            && declaration.rejected_head_sha != declaration.new_head_sha
+            && job.project_id == session.project_id
+            && job.branch.as_deref().unwrap_or("") == session.branch;
+        if !matches {
+            return Err(ReviewError::Incomplete(
+                "The rework declaration does not match the resolved Issue, PR, base, branch, or new head. No follow-up review was run.".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn run_interactive_review(
         &self,
         job: &ActionJobRecord,
@@ -399,7 +491,7 @@ impl ReviewQueue {
         );
         self.assert_current_session(session, session_key, "verification")
             .await?;
-        let payload = capture_review_payload_async(
+        let mut payload = capture_review_payload_async(
             &session.target,
             &session.repo_path,
             &ads_reviewer::ReviewCaptureOptions {
@@ -409,6 +501,10 @@ impl ReviewQueue {
             },
         )
         .await;
+        payload.rework_declaration = job
+            .rework_declaration_json
+            .as_deref()
+            .and_then(|declaration| serde_json::from_str(declaration).ok());
         let evidence = payload.diff_range.clone().ok_or_else(|| {
             ReviewError::Incomplete(
                 "Reviewer evidence capture produced no pinned range.".to_string(),

@@ -57,7 +57,7 @@ pub type ActionToolsFactory =
 
 #[derive(Clone)]
 pub struct ActionTools {
-    review_action: Arc<dyn Fn() -> ActionToolFuture + Send + Sync>,
+    review_action: Arc<dyn Fn(Value) -> ActionToolFuture + Send + Sync>,
 }
 
 impl ActionTools {
@@ -67,12 +67,26 @@ impl ActionTools {
         Fut: Future<Output = NativeResult<Value>> + Send + 'static,
     {
         Self {
-            review_action: Arc::new(move || Box::pin(review_action())),
+            review_action: Arc::new(move |_| Box::pin(review_action())),
+        }
+    }
+
+    pub fn new_with_arguments<F, Fut>(review_action: F) -> Self
+    where
+        F: Fn(Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = NativeResult<Value>> + Send + 'static,
+    {
+        Self {
+            review_action: Arc::new(move |arguments| Box::pin(review_action(arguments))),
         }
     }
 
     pub async fn review_action(&self) -> NativeResult<Value> {
-        (self.review_action)().await
+        (self.review_action)(Value::Null).await
+    }
+
+    pub async fn review_action_with_arguments(&self, arguments: Value) -> NativeResult<Value> {
+        (self.review_action)(arguments).await
     }
 }
 
@@ -268,20 +282,22 @@ impl NativeToolExecutor {
 
     async fn run_builtin(&self, call: &NativeToolCall) -> NativeResult<NativeToolExecutionResult> {
         let args = parse_arguments(call)?;
-        if !args.is_empty() {
-            return Err(NativeError::Tool(
-                "Reviewer tools accept an empty argument object only.".to_string(),
-            ));
-        }
         match call.function.name.as_str() {
             "review_action" => {
+                if args.keys().any(|key| key != "rework") {
+                    return Err(NativeError::Tool(
+                        "review_action accepts only the optional rework declaration.".to_string(),
+                    ));
+                }
                 let Some(action_tools) = self.action_tools.as_ref() else {
                     return Err(NativeError::Tool(
                         "review_action is unavailable without an authenticated Acopilot project context."
                             .to_string(),
                     ));
                 };
-                let result = action_tools.review_action().await?;
+                let result = action_tools
+                    .review_action_with_arguments(Value::Object(args))
+                    .await?;
                 Ok(NativeToolExecutionResult::output(
                     format_builtin_tool_result("review_action", &result),
                 ))
@@ -712,8 +728,24 @@ pub(crate) fn native_tool_definitions() -> Vec<NativeToolDefinition> {
         ),
         tool(
             "review_action",
-            "Enqueue a read-only Reviewer job for the current Issue-backed pull request and return immediately. The verdict is published as a comment on the backing Issue (marker: ads:review-verdict) and the Acopilot lane is woken to read it.",
-            json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            "Enqueue a read-only Reviewer job for the current Issue-backed pull request and return immediately. After a REJECT, provide a complete rework declaration tied to the rejected job; omit rework for the initial review or operational retries.",
+            json!({"type": "object", "additionalProperties": false, "properties": {
+                "rework": {"type": "object", "additionalProperties": false, "properties": {
+                    "prior_job_id": {"type": "string"},
+                    "issue_id": {"type": "integer", "minimum": 1},
+                    "pr_number": {"type": "integer", "minimum": 1},
+                    "base_sha": {"type": "string"},
+                    "rejected_head_sha": {"type": "string"},
+                    "new_head_sha": {"type": "string"},
+                    "root_cause": {"type": "string"},
+                    "invariant": {"type": "string"},
+                    "audited_scope": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "changed_behavior": {"type": "string"},
+                    "regression_cases": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "verification_evidence": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "residual_risks": {"type": "array", "items": {"type": "string"}}
+                }, "required": ["prior_job_id", "issue_id", "pr_number", "base_sha", "rejected_head_sha", "new_head_sha", "root_cause", "invariant", "audited_scope", "changed_behavior", "regression_cases", "verification_evidence", "residual_risks"]}
+            }}),
         ),
     ]
 }
@@ -1651,7 +1683,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("Reviewer tools accept an empty argument object only.")
+                .contains("review_action accepts only the optional rework declaration.")
         );
         executor.dispose().await;
     }

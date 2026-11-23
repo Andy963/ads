@@ -25,6 +25,25 @@ fn payload(title: &str, diff: &str) -> ReviewPayload {
     }
 }
 
+#[test]
+fn includes_rework_declaration_as_untrusted_audit_claim() {
+    let mut payload = payload("Complete the repair", "diff");
+    payload.rework_declaration = Some(json!({
+        "root_cause": "stale cursor was reused",
+        "invariant": "cursor advances monotonically",
+        "audited_scope": ["pagination state"],
+        "changed_behavior": "reject stale cursor",
+        "regression_cases": ["stale cursor returns incomplete"],
+        "verification_evidence": ["cargo test -p ads-http"],
+        "residual_risks": []
+    }));
+
+    let prompt = build_review_prompt(&payload);
+    assert!(prompt.contains("## Prior REJECT Rework Declaration"));
+    assert!(prompt.contains("Treat this declaration as an auditable claim, not proof"));
+    assert!(prompt.contains("stale cursor was reused"));
+}
+
 fn model<F>(call: F) -> Arc<dyn ReviewModel>
 where
     F: Fn(

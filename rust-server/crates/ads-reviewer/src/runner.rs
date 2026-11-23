@@ -153,6 +153,13 @@ pub fn build_review_prompt(payload: &ReviewPayload) -> String {
         }
         parts.push("\nA non-zero exit code is evidence for your review, not an automatic verdict. Determine whether the failure is caused by this change and cite the failing command and relevant output when it blocks acceptance; if the failure is unrelated or pre-existing, say so in the summary.".to_string());
     }
+    if let Some(declaration) = payload.rework_declaration.as_ref() {
+        parts.push("\n## Prior REJECT Rework Declaration:".to_string());
+        parts.push("Treat this declaration as an auditable claim, not proof. Independently verify the root cause, invariant, audited scope, behavior change, regression cases, verification evidence, and residual risks against the Issue and diff.".to_string());
+        parts.push(
+            serde_json::to_string_pretty(declaration).unwrap_or_else(|_| declaration.to_string()),
+        );
+    }
 
     let contexts = payload.related_contexts.clone().unwrap_or_default();
     let omissions = payload

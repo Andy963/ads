@@ -9,10 +9,11 @@ use ads_actions::{
 };
 use ads_reviewer::{ReviewIssue, ReviewTestReport, ReviewVerdict, ReviewVerdictStatus};
 use ads_state::{
-    ActionJobKind, ActionJobStatus, ActionJobStatusUpdate, StateDb, UpsertWebProject,
-    WEB_ACTIONS_NAMESPACE, acquire_review_queue_lease, bump_lane_generation, create_action_job,
-    ensure_web_project_tables, get_action_job, list_action_jobs, logical_history_key,
-    supersede_review_jobs_for_new_head, update_action_job_status, upsert_web_project,
+    ActionJobKind, ActionJobStatus, ActionJobStatusUpdate, CreateActionJob, StateDb,
+    UpsertWebProject, WEB_ACTIONS_NAMESPACE, acquire_review_queue_lease, bump_lane_generation,
+    create_action_job, ensure_web_project_tables, get_action_job, list_action_jobs,
+    logical_history_key, supersede_review_jobs_for_new_head, update_action_job_status,
+    upsert_web_project,
 };
 use serde_json::Value;
 use tempfile::{TempDir, tempdir};
@@ -172,6 +173,8 @@ fn dispatch_request(
         pr_number,
         lane_generation: 1,
         chat_session_id: Some("main".to_string()),
+        rework_declaration: None,
+        current_head_sha: Some("test-head".to_string()),
         automatic: false,
     }
 }
@@ -222,6 +225,100 @@ async fn dispatches_review_jobs_and_deduplicates() {
     assert_eq!(other_branch.issue_id, Some(8));
 }
 
+#[test]
+fn requires_rework_for_latest_reject_and_does_not_reuse_an_older_reject() {
+    let (_directory, db) = state();
+    let (_temp, repo, _base, _head) = repo();
+    let project = ads_state::derive_project_session_id(&repo.to_string_lossy());
+    let connection = db.connect().expect("connection");
+    for (id, status, step, verdict, created_at) in [
+        (
+            "reject",
+            ActionJobStatus::Completed,
+            "REJECT: defect",
+            ReviewVerdictStatus::Reject,
+            1_000,
+        ),
+        (
+            "pass",
+            ActionJobStatus::Completed,
+            "PASS: fixed",
+            ReviewVerdictStatus::Pass,
+            2_000,
+        ),
+    ] {
+        let job = create_action_job(
+            &connection,
+            CreateActionJob {
+                id: id.to_string(),
+                project_id: project.clone(),
+                lane_generation: Some(1),
+                acopilot_lane_generation: 1,
+                job_kind: ActionJobKind::PullRequestReview,
+                issue_id: 7,
+                issue_title: "Fix the bug".to_string(),
+                issue_snapshot: Default::default(),
+                status: Some(ActionJobStatus::Queued),
+                branch: "codex/issue-7".to_string(),
+                base_sha: BASE_FAKE.to_string(),
+                head_sha: HEAD_OLD.to_string(),
+                reviewer_profile_ids_json: "[]".to_string(),
+                pr_number: 12,
+                pr_url: "https://github.com/example/pull/12".to_string(),
+                auth_user_id: "user-1".to_string(),
+                chat_session_id: "main".to_string(),
+                rework_declaration_json: None,
+            },
+            created_at,
+        )
+        .expect("review job");
+        update_action_job_status(
+            &connection,
+            &job.id,
+            status,
+            ActionJobStatusUpdate {
+                current_step: Some(Some(step.to_string())),
+                review_verdicts_json: Some(Some(
+                    serde_json::to_string(&[ReviewVerdict {
+                        status: verdict,
+                        summary: step.to_string(),
+                        defects: Vec::new(),
+                        reviewer_profile_id: None,
+                        reviewed_at: created_at,
+                    }])
+                    .expect("verdict json"),
+                )),
+                ..ActionJobStatusUpdate::default()
+            },
+            created_at,
+            false,
+        )
+        .expect("review outcome");
+    }
+
+    let queue = ReviewQueue::new(db, "worker-1", options());
+    let mut request = dispatch_request(project, &repo, Some("codex/issue-7"), Some(12));
+    request.rework_declaration = Some(serde_json::json!({
+        "prior_job_id": "reject",
+        "issue_id": 7,
+        "pr_number": 12,
+        "base_sha": BASE_FAKE,
+        "rejected_head_sha": HEAD_OLD,
+        "new_head_sha": HEAD_NEW,
+        "root_cause": "fixed",
+        "invariant": "preserved",
+        "audited_scope": ["src"],
+        "changed_behavior": "corrected",
+        "regression_cases": ["reject stale declaration"],
+        "verification_evidence": ["tests pass"],
+        "residual_risks": []
+    }));
+    let error = queue
+        .dispatch(request, 3_000)
+        .expect_err("declaration from an older REJECT cannot be reused");
+    assert!(error.to_string().contains("only valid after a REJECT"));
+}
+
 #[tokio::test]
 async fn blocks_automatic_retry_after_repeated_operational_failures() {
     let (_directory, db) = state();
@@ -250,6 +347,7 @@ async fn blocks_automatic_retry_after_repeated_operational_failures() {
                     pr_url: String::new(),
                     auth_user_id: "user-1".to_string(),
                     chat_session_id: "main".to_string(),
+                    rework_declaration_json: None,
                 },
                 created_at,
             )
@@ -685,6 +783,7 @@ async fn fails_interrupted_jobs_and_respects_external_leases() {
             pr_url: String::new(),
             auth_user_id: "user-1".to_string(),
             chat_session_id: "main".to_string(),
+            rework_declaration_json: None,
         },
         1_000,
     )

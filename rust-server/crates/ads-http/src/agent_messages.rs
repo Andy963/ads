@@ -1038,7 +1038,7 @@ fn review_verdict_prompt(input: &ReviewVerdictMessage<'_>) -> String {
     let next = match status.as_str() {
         "PASS" => "Ask the user for delivery authorization.",
         "REJECT" => {
-            "Handle the findings on the current Issue branch, update the PR, then call review_action again."
+            "Classify the defect family; record root cause, governing invariant, audited affected scope, changed behavior, regression cases, verification evidence, and residual risks. Complete the repair on the current Issue branch, push the new head, then call review_action with a rework declaration tied to this rejected job and its Issue, PR, base, rejected head, and new head."
         }
         "INCOMPLETE" => "Restore the reported precondition, then call review_action again.",
         "ERROR" => {
@@ -1212,7 +1212,7 @@ mod tests {
     fn preserves_the_next_step_for_each_review_verdict_status() {
         for (status, expected) in [
             ("PASS", "delivery authorization"),
-            ("REJECT", "call review_action again"),
+            ("REJECT", "rework declaration tied to this rejected job"),
             ("INCOMPLETE", "Restore the reported precondition"),
             ("ERROR", "fix the environment"),
         ] {

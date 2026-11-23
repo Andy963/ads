@@ -159,6 +159,7 @@ pub struct ActionJobRecord {
     pub issue_title: String,
     pub issue_snapshot_json: String,
     pub verification_report_json: String,
+    pub rework_declaration_json: Option<String>,
     pub status: ActionJobStatus,
     pub branch: Option<String>,
     pub base_sha: Option<String>,
@@ -204,6 +205,7 @@ pub struct CreateActionJob {
     pub pr_url: String,
     pub auth_user_id: String,
     pub chat_session_id: String,
+    pub rework_declaration_json: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -294,11 +296,11 @@ pub fn create_action_job(
     connection.execute(
         "INSERT INTO action_jobs (
            id, project_id, lane_generation, job_kind, issue_id, issue_title, issue_snapshot_json,
-           verification_report_json, status, branch, base_sha, head_sha, reviewer_profile_ids_json,
+           verification_report_json, rework_declaration_json, status, branch, base_sha, head_sha, reviewer_profile_ids_json,
            current_step, steps_json, review_verdicts_json, attempts_json, pr_number, pr_url,
            error_message, rework_count, blocked_at, auth_user_id, chat_session_id, created_at,
            updated_at, requires_agent_handoff, acopilot_lane_generation
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, NULL, '[]', '[]', '[]', ?, ?, NULL, 0, NULL, ?, ?, ?, ?,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, NULL, '[]', '[]', '[]', ?, ?, NULL, 0, NULL, ?, ?, ?, ?,
                    CASE WHEN ? = 'pull_request_review' THEN 1 ELSE 0 END, ?)",
         params![
             job.id,
@@ -308,6 +310,7 @@ pub fn create_action_job(
             job.issue_id,
             job.issue_title,
             issue_snapshot_json,
+            job.rework_declaration_json,
             status,
             job.branch,
             job.base_sha,
@@ -540,6 +543,7 @@ fn action_job_from_row(row: &Row<'_>) -> rusqlite::Result<ActionJobRecord> {
         issue_title: row.get("issue_title")?,
         issue_snapshot_json: row.get("issue_snapshot_json")?,
         verification_report_json: row.get("verification_report_json")?,
+        rework_declaration_json: row.get("rework_declaration_json")?,
         status: row.get("status")?,
         branch: row.get("branch")?,
         base_sha: row.get("base_sha")?,
