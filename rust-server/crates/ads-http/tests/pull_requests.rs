@@ -14,6 +14,7 @@ use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
+use tokio::sync::Notify;
 use tower::ServiceExt;
 
 const SAMPLE_PR_LIST: &str = r#"[
@@ -127,14 +128,52 @@ impl GhRunner for MockGhRunner {
     }
 }
 
-struct TestContext {
+struct BlockingGhRunner {
+    calls: AtomicUsize,
+    started: Notify,
+    release: Notify,
+    list_response: std::sync::Mutex<Result<String, String>>,
+    detail_response: std::sync::Mutex<Result<String, String>>,
+}
+
+impl BlockingGhRunner {
+    fn new() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            started: Notify::new(),
+            release: Notify::new(),
+            list_response: std::sync::Mutex::new(Ok(SAMPLE_PR_LIST.to_string())),
+            detail_response: std::sync::Mutex::new(Ok(sample_pr_detail())),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl GhRunner for BlockingGhRunner {
+    async fn run(&self, args: &[String], _cwd: &Path) -> Result<String, String> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            self.started.notify_one();
+            self.release.notified().await;
+        }
+        if args.contains(&"view".to_string()) {
+            self.detail_response.lock().unwrap().clone()
+        } else {
+            self.list_response.lock().unwrap().clone()
+        }
+    }
+}
+
+struct TestContext<R> {
     router: Router,
-    runner: Arc<MockGhRunner>,
+    runner: Arc<R>,
     cookie: String,
     _directory: TempDir,
 }
 
-async fn setup_app(runner: Arc<MockGhRunner>) -> TestContext {
+async fn setup_app<R>(runner: Arc<R>) -> TestContext<R>
+where
+    R: GhRunner + 'static,
+{
     let directory = tempfile::tempdir().expect("temp dir");
     let db = StateDb::open(directory.path().join("state.db")).expect("state db");
     insert_user(
@@ -453,4 +492,138 @@ async fn test_pull_requests_failure_handling() {
     .await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert_eq!(val["error"], "gh: timeout");
+}
+
+#[tokio::test]
+async fn test_pull_requests_failures_are_not_cached() {
+    let runner = Arc::new(MockGhRunner::new());
+    *runner.list_response.lock().unwrap() = Err("gh: unavailable".to_string());
+    let ctx = setup_app(runner).await;
+
+    let (status, val) = send_request(
+        &ctx.router,
+        "/api/pull-requests?projectId=p1",
+        Some(&ctx.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(val["error"], "gh: unavailable");
+
+    *ctx.runner.list_response.lock().unwrap() = Ok("{}".to_string());
+    let (status, val) = send_request(
+        &ctx.router,
+        "/api/pull-requests?projectId=p1",
+        Some(&ctx.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        val["error"],
+        "GitHub returned a non-array pull request list"
+    );
+
+    *ctx.runner.list_response.lock().unwrap() = Ok(SAMPLE_PR_LIST.to_string());
+    let (status, val) = send_request(
+        &ctx.router,
+        "/api/pull-requests?projectId=p1",
+        Some(&ctx.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(val["items"].as_array().unwrap().len(), 3);
+    assert_eq!(ctx.runner.calls.load(Ordering::SeqCst), 3);
+
+    *ctx.runner.detail_response.lock().unwrap() = Err("gh: timeout".to_string());
+    let (status, val) = send_request(
+        &ctx.router,
+        "/api/pull-requests/42?projectId=p1",
+        Some(&ctx.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(val["error"], "gh: timeout");
+
+    *ctx.runner.detail_response.lock().unwrap() = Ok("not-json".to_string());
+    let (status, _) = send_request(
+        &ctx.router,
+        "/api/pull-requests/42?projectId=p1",
+        Some(&ctx.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+
+    *ctx.runner.detail_response.lock().unwrap() = Ok(sample_pr_detail());
+    let (status, val) = send_request(
+        &ctx.router,
+        "/api/pull-requests/42?projectId=p1",
+        Some(&ctx.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(val["item"]["number"], 42);
+    assert_eq!(ctx.runner.calls.load(Ordering::SeqCst), 6);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cancelled_list_owner_does_not_wedge_deduplicated_requests() {
+    let runner = Arc::new(BlockingGhRunner::new());
+    let ctx = setup_app(runner.clone()).await;
+    let app = ctx.router.clone();
+    let cookie = ctx.cookie.clone();
+    let owner = tokio::spawn(async move {
+        send_request(&app, "/api/pull-requests?projectId=p1", Some(&cookie)).await
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), runner.started.notified())
+        .await
+        .expect("list runner should start");
+    owner.abort();
+    let _ = owner.await;
+    runner.release.notify_one();
+
+    let (status, val) = tokio::time::timeout(
+        Duration::from_secs(2),
+        send_request(
+            &ctx.router,
+            "/api/pull-requests?projectId=p1",
+            Some(&ctx.cookie),
+        ),
+    )
+    .await
+    .expect("replacement list request should not hang");
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(val["items"].as_array().unwrap().len(), 3);
+    assert_eq!(ctx.runner.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cancelled_detail_owner_does_not_wedge_deduplicated_requests() {
+    let runner = Arc::new(BlockingGhRunner::new());
+    let ctx = setup_app(runner.clone()).await;
+    let app = ctx.router.clone();
+    let cookie = ctx.cookie.clone();
+    let owner = tokio::spawn(async move {
+        send_request(&app, "/api/pull-requests/42?projectId=p1", Some(&cookie)).await
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), runner.started.notified())
+        .await
+        .expect("detail runner should start");
+    owner.abort();
+    let _ = owner.await;
+    runner.release.notify_one();
+
+    let (status, val) = tokio::time::timeout(
+        Duration::from_secs(2),
+        send_request(
+            &ctx.router,
+            "/api/pull-requests/42?projectId=p1",
+            Some(&ctx.cookie),
+        ),
+    )
+    .await
+    .expect("replacement detail request should not hang");
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(val["item"]["number"], 42);
+    assert_eq!(ctx.runner.calls.load(Ordering::SeqCst), 1);
 }

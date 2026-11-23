@@ -88,6 +88,10 @@ struct CacheInner {
 }
 
 pub struct PullRequestManager {
+    inner: Arc<PullRequestManagerInner>,
+}
+
+struct PullRequestManagerInner {
     runner: Arc<dyn GhRunner>,
     cache: Mutex<CacheInner>,
 }
@@ -95,13 +99,15 @@ pub struct PullRequestManager {
 impl PullRequestManager {
     pub fn new(runner: Arc<dyn GhRunner>) -> Self {
         Self {
-            runner,
-            cache: Mutex::new(CacheInner::default()),
+            inner: Arc::new(PullRequestManagerInner {
+                runner,
+                cache: Mutex::new(CacheInner::default()),
+            }),
         }
     }
 
     pub async fn reset_caches_for_tests(&self) {
-        let mut cache = self.cache.lock().await;
+        let mut cache = self.inner.cache.lock().await;
         cache.list.clear();
         cache.detail.clear();
         cache.in_flight_list.clear();
@@ -119,53 +125,140 @@ impl PullRequestManager {
         let offset = decode_cursor(query.cursor.as_deref())?;
         let key = list_cache_key(project_key, &query, offset);
 
-        let (mut in_flight_rx, tx) = {
-            let mut cache = self.cache.lock().await;
-            if query.refresh {
-                let prefix = format!("{project_key}:");
-                cache.list.retain(|k, _| !k.starts_with(&prefix));
-                cache.detail.retain(|k, _| !k.starts_with(&prefix));
-            }
-            if let Some(entry) = cache.list.get(&key) {
-                if entry.expires_at > now {
-                    return Ok(entry.value.clone());
+        loop {
+            let (mut rx, owns_task) = {
+                let mut cache = self.inner.cache.lock().await;
+                if query.refresh {
+                    let prefix = format!("{project_key}:");
+                    cache.list.retain(|k, _| !k.starts_with(&prefix));
+                    cache.detail.retain(|k, _| !k.starts_with(&prefix));
                 }
-            }
-            if let Some(rx) = cache.in_flight_list.get(&key) {
-                (Some(rx.clone()), None)
-            } else {
-                let (tx, rx) = tokio::sync::watch::channel(None);
-                cache.in_flight_list.insert(key.clone(), rx);
-                (None, Some(tx))
-            }
-        };
+                if let Some(entry) = cache.list.get(&key) {
+                    if entry.expires_at > now {
+                        return Ok(entry.value.clone());
+                    }
+                }
+                if let Some(rx) = cache.in_flight_list.get(&key) {
+                    (rx.clone(), false)
+                } else {
+                    let (tx, rx) = tokio::sync::watch::channel(None);
+                    cache.in_flight_list.insert(key.clone(), rx.clone());
+                    let inner = Arc::clone(&self.inner);
+                    let task_key = key.clone();
+                    let task_query = query.clone();
+                    let task_cwd = cwd.to_path_buf();
+                    tokio::spawn(async move {
+                        let response = inner
+                            .execute_list(&task_query, &task_cwd, offset, now)
+                            .await;
+                        let mut cache = inner.cache.lock().await;
+                        if response.error.is_none() {
+                            cache.list.insert(
+                                task_key.clone(),
+                                CacheEntry {
+                                    expires_at: now + LIST_TTL_MS,
+                                    value: response.clone(),
+                                },
+                            );
+                        }
+                        cache.in_flight_list.remove(&task_key);
+                        let _ = tx.send(Some(response));
+                    });
+                    (rx, true)
+                }
+            };
 
-        if let Some(mut rx) = in_flight_rx.take() {
-            let _ = rx.wait_for(|v| v.is_some()).await;
-            if let Some(res) = rx.borrow().clone() {
-                return Ok(res);
+            if let Ok(value) = rx.wait_for(|value| value.is_some()).await {
+                return Ok(value
+                    .clone()
+                    .expect("wait_for returned a populated list response"));
+            }
+            if owns_task {
+                return Err(ApiError::internal());
+            }
+
+            let mut cache = self.inner.cache.lock().await;
+            if cache
+                .in_flight_list
+                .get(&key)
+                .is_some_and(|current| current.same_channel(&rx))
+            {
+                cache.in_flight_list.remove(&key);
             }
         }
-
-        let tx = tx.expect("tx exists for new in-flight request");
-        let response = self.execute_list(&query, cwd, offset, now).await;
-
-        {
-            let mut cache = self.cache.lock().await;
-            cache.list.insert(
-                key.clone(),
-                CacheEntry {
-                    expires_at: now + LIST_TTL_MS,
-                    value: response.clone(),
-                },
-            );
-            cache.in_flight_list.remove(&key);
-            let _ = tx.send(Some(response.clone()));
-        }
-
-        Ok(response)
     }
 
+    pub async fn read_pull_request_detail(
+        &self,
+        project_key: &str,
+        cwd: &Path,
+        number: u64,
+        now: Option<i64>,
+    ) -> PullRequestDetailResponse {
+        let now = now.unwrap_or_else(ads_contract::time::now_unix_millis);
+        let key = format!("{project_key}:{number}");
+
+        loop {
+            let (mut rx, owns_task) = {
+                let mut cache = self.inner.cache.lock().await;
+                if let Some(entry) = cache.detail.get(&key) {
+                    if entry.expires_at > now {
+                        return entry.value.clone();
+                    }
+                }
+                if let Some(rx) = cache.in_flight_detail.get(&key) {
+                    (rx.clone(), false)
+                } else {
+                    let (tx, rx) = tokio::sync::watch::channel(None);
+                    cache.in_flight_detail.insert(key.clone(), rx.clone());
+                    let inner = Arc::clone(&self.inner);
+                    let task_key = key.clone();
+                    let task_cwd = cwd.to_path_buf();
+                    tokio::spawn(async move {
+                        let response = inner.execute_detail(number, &task_cwd, now).await;
+                        let mut cache = inner.cache.lock().await;
+                        if response.error.is_none() {
+                            cache.detail.insert(
+                                task_key.clone(),
+                                CacheEntry {
+                                    expires_at: now + DETAIL_TTL_MS,
+                                    value: response.clone(),
+                                },
+                            );
+                        }
+                        cache.in_flight_detail.remove(&task_key);
+                        let _ = tx.send(Some(response));
+                    });
+                    (rx, true)
+                }
+            };
+
+            if let Ok(value) = rx.wait_for(|value| value.is_some()).await {
+                return value
+                    .clone()
+                    .expect("wait_for returned a populated detail response");
+            }
+            if owns_task {
+                return PullRequestDetailResponse {
+                    item: None,
+                    error: Some("Pull request detail worker stopped unexpectedly".to_string()),
+                    fetched_at: now,
+                };
+            }
+
+            let mut cache = self.inner.cache.lock().await;
+            if cache
+                .in_flight_detail
+                .get(&key)
+                .is_some_and(|current| current.same_channel(&rx))
+            {
+                cache.in_flight_detail.remove(&key);
+            }
+        }
+    }
+}
+
+impl PullRequestManagerInner {
     async fn execute_list(
         &self,
         query: &PullRequestListQuery,
@@ -257,40 +350,7 @@ impl PullRequestManager {
         }
     }
 
-    pub async fn read_pull_request_detail(
-        &self,
-        project_key: &str,
-        cwd: &Path,
-        number: u64,
-        now: Option<i64>,
-    ) -> PullRequestDetailResponse {
-        let now = now.unwrap_or_else(ads_contract::time::now_unix_millis);
-        let key = format!("{project_key}:{number}");
-
-        let (mut in_flight_rx, tx) = {
-            let mut cache = self.cache.lock().await;
-            if let Some(entry) = cache.detail.get(&key) {
-                if entry.expires_at > now {
-                    return entry.value.clone();
-                }
-            }
-            if let Some(rx) = cache.in_flight_detail.get(&key) {
-                (Some(rx.clone()), None)
-            } else {
-                let (tx, rx) = tokio::sync::watch::channel(None);
-                cache.in_flight_detail.insert(key.clone(), rx);
-                (None, Some(tx))
-            }
-        };
-
-        if let Some(mut rx) = in_flight_rx.take() {
-            let _ = rx.wait_for(|v| v.is_some()).await;
-            if let Some(res) = rx.borrow().clone() {
-                return res;
-            }
-        }
-
-        let tx = tx.expect("tx exists for new in-flight detail request");
+    async fn execute_detail(&self, number: u64, cwd: &Path, now: i64) -> PullRequestDetailResponse {
         let args = vec![
             "pr".to_string(),
             "view".to_string(),
@@ -299,7 +359,7 @@ impl PullRequestManager {
             DETAIL_FIELDS.to_string(),
         ];
 
-        let response = match self.runner.run(&args, cwd).await {
+        match self.runner.run(&args, cwd).await {
             Ok(stdout) => match serde_json::from_str::<Value>(&stdout) {
                 Ok(val) => match to_detail(&val) {
                     Some(item) => PullRequestDetailResponse {
@@ -324,22 +384,7 @@ impl PullRequestManager {
                 error: Some(err),
                 fetched_at: now,
             },
-        };
-
-        {
-            let mut cache = self.cache.lock().await;
-            cache.detail.insert(
-                key.clone(),
-                CacheEntry {
-                    expires_at: now + DETAIL_TTL_MS,
-                    value: response.clone(),
-                },
-            );
-            cache.in_flight_detail.remove(&key);
-            let _ = tx.send(Some(response.clone()));
         }
-
-        response
     }
 }
 
