@@ -4,6 +4,7 @@ mod auth;
 mod models;
 mod projects;
 mod providers;
+pub mod pull_requests;
 mod role_profiles;
 mod schedules;
 
@@ -52,6 +53,7 @@ pub struct RouterConfig {
     pub scheduler: Option<Arc<SchedulerRuntime>>,
     pub websocket_hub: Option<Arc<WebSocketHub>>,
     pub review_queue: Option<Arc<ReviewQueue>>,
+    pub gh_runner: Option<Arc<dyn pull_requests::GhRunner>>,
 }
 
 impl RouterConfig {
@@ -75,6 +77,7 @@ impl RouterConfig {
             scheduler: None,
             websocket_hub: None,
             review_queue: None,
+            gh_runner: None,
         }
     }
 
@@ -112,9 +115,18 @@ impl RouterConfig {
         self.review_queue = Some(queue);
         self
     }
+
+    pub fn with_gh_runner(mut self, runner: Arc<dyn pull_requests::GhRunner>) -> Self {
+        self.gh_runner = Some(runner);
+        self
+    }
 }
 
 pub fn build_router(auth: Arc<AuthService>, config: RouterConfig) -> Router {
+    let gh_runner: Arc<dyn pull_requests::GhRunner> = config
+        .gh_runner
+        .unwrap_or_else(|| Arc::new(pull_requests::DefaultGhRunner));
+    let pull_request_manager = Arc::new(pull_requests::PullRequestManager::new(gh_runner));
     let mut state = AppState {
         auth,
         cookie_secure: config.cookie_secure,
@@ -132,6 +144,7 @@ pub fn build_router(auth: Arc<AuthService>, config: RouterConfig) -> Router {
         schedule_compiler: config.schedule_compiler,
         scheduler: config.scheduler,
         review_queue: config.review_queue,
+        pull_request_manager,
     };
     if let Some(runner) = config.prompt_queue_runner {
         start_prompt_queue(&mut state, Arc::clone(&runner));
@@ -150,6 +163,8 @@ pub fn build_router(auth: Arc<AuthService>, config: RouterConfig) -> Router {
             "/api/projects/{project_id}",
             patch(projects::update).delete(projects::delete),
         )
+        .route("/api/pull-requests", get(pull_requests::list))
+        .route("/api/pull-requests/{number}", get(pull_requests::detail))
         .route("/api/model-configs", get(models::list).post(models::create))
         .route(
             "/api/model-configs/{model_id}",

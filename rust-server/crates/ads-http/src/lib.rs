@@ -30,7 +30,10 @@ pub use paths::{
     PathValidationFailure, ValidatedWorkspacePath, WorkspacePathError, detect_workspace_root,
     resolve_allowed_dirs, validate_workspace_path, validate_workspace_path_detailed,
 };
-pub use routes::{RouterConfig, build_router};
+pub use routes::{
+    RouterConfig, build_router,
+    pull_requests::{DefaultGhRunner, GhRunner, PullRequestManager},
+};
 pub use skills::{
     SkillEntrypoint, SkillMetadata, SkillPaths, SkillRequiredEnv, SkillSource, SkillTriggers,
     render_compact_skills, render_skill_meta_instruction,
