@@ -3,6 +3,7 @@ pub mod auth;
 pub mod models;
 pub mod native_transcript;
 pub mod projects;
+pub mod pull_requests;
 pub mod role_profiles;
 pub mod schedule;
 pub mod serde_support;

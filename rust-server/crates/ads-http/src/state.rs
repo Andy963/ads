@@ -28,4 +28,5 @@ pub struct AppState {
     pub schedule_compiler: Option<Arc<dyn ScheduleCompiler>>,
     pub scheduler: Option<Arc<SchedulerRuntime>>,
     pub review_queue: Option<Arc<ReviewQueue>>,
+    pub pull_request_manager: Arc<crate::routes::pull_requests::PullRequestManager>,
 }
