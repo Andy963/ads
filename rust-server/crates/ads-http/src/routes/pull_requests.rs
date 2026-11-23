@@ -582,13 +582,21 @@ fn normalize_checks(val: Option<&Value>) -> String {
             .and_then(|c| c.as_str())
             .unwrap_or("")
             .to_uppercase();
+        let state = obj
+            .and_then(|o| o.get("state"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_uppercase();
         if matches!(
             conclusion.as_str(),
             "FAILURE" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED" | "STARTUP_FAILURE"
-        ) {
+        ) || matches!(state.as_str(), "FAILURE" | "ERROR")
+        {
             return "failing".to_string();
         }
-        if !status.is_empty() && status != "COMPLETED" {
+        if (!status.is_empty() && status != "COMPLETED")
+            || matches!(state.as_str(), "PENDING" | "EXPECTED")
+        {
             pending = true;
         }
     }
@@ -721,18 +729,34 @@ fn to_detail(val: &Value) -> Option<PullRequestDetail> {
                     if name.is_empty() {
                         return None;
                     }
-                    let status = o
+                    let state = o
+                        .get("state")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    let raw_status = o
                         .get("status")
                         .and_then(|s| s.as_str())
                         .unwrap_or("")
                         .trim()
                         .to_string();
-                    let conclusion = o
+                    let raw_conclusion = o
                         .get("conclusion")
                         .and_then(|c| c.as_str())
                         .unwrap_or("")
                         .trim()
                         .to_string();
+                    let status = if raw_status.is_empty() {
+                        state.clone()
+                    } else {
+                        raw_status
+                    };
+                    let conclusion = if raw_conclusion.is_empty() {
+                        state.clone()
+                    } else {
+                        raw_conclusion
+                    };
                     let details_url = o
                         .get("detailsUrl")
                         .or_else(|| o.get("targetUrl"))

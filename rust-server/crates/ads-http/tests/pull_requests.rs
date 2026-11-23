@@ -519,6 +519,63 @@ async fn test_pull_requests_detail() {
 }
 
 #[tokio::test]
+async fn test_pull_requests_status_context_checks() {
+    let runner = Arc::new(MockGhRunner::new());
+    let mut rows: Vec<Value> = serde_json::from_str(SAMPLE_PR_LIST).expect("sample rows");
+    rows[0]["statusCheckRollup"] = json!([{
+        "context": "ci/legacy",
+        "state": "FAILURE",
+        "targetUrl": "https://ci/legacy/42"
+    }]);
+    rows[1]["statusCheckRollup"] = json!([{
+        "context": "ci/legacy",
+        "state": "PENDING",
+        "targetUrl": "https://ci/legacy/43"
+    }]);
+    rows[2]["statusCheckRollup"] = json!([{
+        "context": "ci/legacy",
+        "state": "ERROR",
+        "targetUrl": "https://ci/legacy/44"
+    }]);
+    *runner.list_response.lock().unwrap() = Ok(serde_json::to_string(&rows).expect("rows"));
+
+    let mut detail: Value = serde_json::from_str(&sample_pr_detail()).expect("sample detail");
+    detail["statusCheckRollup"] = json!([{
+        "context": "ci/legacy",
+        "state": "FAILURE",
+        "targetUrl": "https://ci/legacy/42"
+    }]);
+    *runner.detail_response.lock().unwrap() = Ok(detail.to_string());
+    let ctx = setup_app(runner).await;
+
+    let (status, val) = send_request(
+        &ctx.router,
+        "/api/pull-requests?projectId=p1",
+        Some(&ctx.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(val["items"][0]["checks"], "failing");
+    assert_eq!(val["items"][1]["checks"], "pending");
+    assert_eq!(val["items"][2]["checks"], "failing");
+
+    let (status, val) = send_request(
+        &ctx.router,
+        "/api/pull-requests/42?projectId=p1",
+        Some(&ctx.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(val["item"]["checks"], "failing");
+    assert_eq!(val["item"]["checksDetail"][0]["status"], "FAILURE");
+    assert_eq!(val["item"]["checksDetail"][0]["conclusion"], "FAILURE");
+    assert_eq!(
+        val["item"]["checksDetail"][0]["detailsUrl"],
+        "https://ci/legacy/42"
+    );
+}
+
+#[tokio::test]
 async fn test_pull_requests_failure_handling() {
     let runner = Arc::new(MockGhRunner::new());
     *runner.list_response.lock().unwrap() = Err("gh: command not found".to_string());
