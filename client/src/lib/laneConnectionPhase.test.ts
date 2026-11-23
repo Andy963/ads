@@ -6,25 +6,29 @@ import { resolveLaneConnectionPhase, setLaneSyncInProgress, touchLaneConnectionP
 
 const base = {
   connected: false,
-  transcriptAuthoritative: false,
+  connecting: false,
   syncInProgress: false,
   reconnectActive: false,
   terminalError: null,
 };
 
 describe("lane connection phase", () => {
-  it("reports connecting before the transport opens", () => {
-    expect(resolveLaneConnectionPhase(base)).toBe("connecting");
+  it("does not report connection or sync activity while the transport is idle", () => {
+    expect(resolveLaneConnectionPhase(base)).toBeNull();
   });
 
-  it("reports syncing after the transport opens but before authoritative history", () => {
-    expect(resolveLaneConnectionPhase({ ...base, connected: true })).toBe("syncing");
+  it("reports connecting only while the transport handshake is active", () => {
+    expect(resolveLaneConnectionPhase({ ...base, connecting: true })).toBe("connecting");
+  });
+
+  it("reports syncing only for an active sync on an open transport", () => {
+    expect(resolveLaneConnectionPhase({ ...base, connected: true, syncInProgress: true })).toBe("syncing");
     expect(resolveLaneConnectionPhase({
       ...base,
       connected: true,
-      transcriptAuthoritative: true,
-      syncInProgress: true,
-    })).toBe("syncing");
+      syncInProgress: false,
+    })).toBeNull();
+    expect(resolveLaneConnectionPhase({ ...base, syncInProgress: true })).toBeNull();
   });
 
   it("reports reconnecting while a retry is scheduled", () => {
@@ -40,7 +44,6 @@ describe("lane connection phase", () => {
     expect(resolveLaneConnectionPhase({
       ...base,
       connected: true,
-      transcriptAuthoritative: true,
     })).toBeNull();
   });
 

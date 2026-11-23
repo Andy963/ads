@@ -4,7 +4,7 @@ import { defineComponent, h, type Component } from "vue";
 
 import type { ModelConfig } from "../api/types";
 import { RECONNECT_BUSY_MESSAGE, RECONNECT_PENDING_RESEND_NOTICE } from "../app/projectsWs/reconnectNotice";
-import { setLaneSyncInProgress } from "../lib/laneConnectionPhase";
+import { setLaneSyncInProgress, touchLaneConnectionPhase } from "../lib/laneConnectionPhase";
 
 type GetImpl = (url: string) => Promise<unknown>;
 type PostImpl = (url: string, body: unknown) => Promise<unknown>;
@@ -405,9 +405,15 @@ describe("lane connection phase", () => {
 
     const actionsPanel = wrapper.get('[data-testid="lane-panel-actions"]');
     const acopilotPanel = wrapper.get('[data-testid="lane-panel-acopilot"]');
+    expect(actionsPanel.find('[data-testid="lane-connection-phase"]').exists()).toBe(false);
+    expect(acopilotPanel.find('[data-testid="lane-connection-phase"]').exists()).toBe(false);
+
+    actions.ws = { isConnecting: () => true };
+    touchLaneConnectionPhase(actions);
+    await settleUi(wrapper);
     expect(actionsPanel.get('[data-testid="lane-connection-phase"]').attributes("data-connection-phase")).toBe("connecting");
     expect(actionsPanel.get(".connectionPhaseSpinner").exists()).toBe(true);
-    expect(acopilotPanel.get('[data-testid="lane-connection-phase"]').attributes("data-connection-phase")).toBe("syncing");
+    expect(acopilotPanel.find('[data-testid="lane-connection-phase"]').exists()).toBe(false);
 
     acopilot.transcriptAuthoritative.value = true;
     await settleUi(wrapper);

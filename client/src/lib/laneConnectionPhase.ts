@@ -2,7 +2,7 @@ export type LaneConnectionPhase = "connecting" | "syncing" | "reconnecting" | "e
 
 export type LaneConnectionPhaseInput = {
   connected: boolean;
-  transcriptAuthoritative: boolean;
+  connecting: boolean;
   syncInProgress: boolean;
   reconnectActive: boolean;
   terminalError: string | null | undefined;
@@ -26,7 +26,7 @@ export function touchLaneConnectionPhase(state: { connectionPhaseRevision: { val
 export function resolveLaneConnectionPhase(input: LaneConnectionPhaseInput): LaneConnectionPhase | null {
   if (String(input.terminalError ?? "").trim()) return "error";
   if (input.reconnectActive) return "reconnecting";
-  if (!input.connected) return "connecting";
-  if (!input.transcriptAuthoritative || input.syncInProgress) return "syncing";
+  if (input.connecting) return "connecting";
+  if (input.connected && input.syncInProgress) return "syncing";
   return null;
 }

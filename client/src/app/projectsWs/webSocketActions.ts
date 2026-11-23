@@ -518,6 +518,7 @@ export function createWebSocketActions(ctx: AppContext & ChatActions, deps: WsDe
     });
 
     rt.ws = wsInstance;
+    touchLaneConnectionPhase(rt);
     // A reconnect may reuse the cached transcript while the new bootstrap is
     // still pending. MainChat must not treat that cache as authoritative until
     // this connection commits its history baseline.
