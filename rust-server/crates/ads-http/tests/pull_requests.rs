@@ -11,6 +11,8 @@ use ads_state::{StateDb, UpsertWebProject, WorkspaceDb, insert_user, upsert_web_
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -648,6 +650,45 @@ async fn test_pull_requests_invalid_rows_preserve_raw_pagination_and_cache() {
     assert!(cached["partial"].as_bool().unwrap());
     assert!(cached["nextCursor"].is_string());
     assert_eq!(ctx.runner.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn test_pull_requests_terminal_page_does_not_emit_invalid_cursor() {
+    let runner = Arc::new(MockGhRunner::new());
+    let rows = (1..=5_021)
+        .map(|number| {
+            json!({
+                "number": number,
+                "title": format!("PR {number}"),
+                "url": format!("https://github.com/Andy963/ads/pull/{number}"),
+                "state": "OPEN",
+                "isDraft": false,
+                "author": { "login": "andy" },
+                "updatedAt": "2026-11-20T10:00:00Z",
+                "createdAt": "2026-11-19T10:00:00Z",
+                "labels": [],
+                "statusCheckRollup": [],
+                "additions": 0,
+                "deletions": 0,
+                "headRefName": "feature",
+                "baseRefName": "dev"
+            })
+        })
+        .collect::<Vec<_>>();
+    *runner.list_response.lock().unwrap() = Ok(serde_json::to_string(&rows).unwrap());
+    let ctx = setup_app(runner).await;
+    let cursor = URL_SAFE_NO_PAD.encode(r#"{"offset":5000}"#);
+
+    let (status, val) = send_request(
+        &ctx.router,
+        &format!("/api/pull-requests?projectId=p1&limit=20&cursor={cursor}"),
+        Some(&ctx.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(val["items"].as_array().unwrap().len(), 20);
+    assert_eq!(val["items"][0]["number"], 5_001);
+    assert!(val["nextCursor"].is_null());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -408,7 +408,8 @@ impl PullRequestManagerInner {
         };
         let next_offset = offset + page.len();
         let has_more = rows.len() > page_end || raw_len >= limit_arg;
-        let next_cursor = has_more.then(|| encode_cursor(next_offset));
+        let next_cursor =
+            (has_more && next_offset <= MAX_CURSOR_OFFSET).then(|| encode_cursor(next_offset));
 
         PullRequestListResponse {
             items: page,
