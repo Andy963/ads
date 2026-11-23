@@ -70,6 +70,23 @@ const SAMPLE_PR_LIST: &str = r#"[
   }
 ]"#;
 
+const REFRESHED_PR_LIST: &str = r#"[
+  {
+    "number": 99,
+    "title": "Fresh pull request",
+    "url": "https://github.com/Andy963/ads/pull/99",
+    "state": "OPEN",
+    "isDraft": false,
+    "author": { "login": "fresh" },
+    "labels": [],
+    "statusCheckRollup": [],
+    "additions": 1,
+    "deletions": 0,
+    "headRefName": "fresh/pr",
+    "baseRefName": "dev"
+  }
+]"#;
+
 fn sample_pr_detail() -> String {
     json!({
       "number": 42,
@@ -159,6 +176,40 @@ impl GhRunner for BlockingGhRunner {
             self.detail_response.lock().unwrap().clone()
         } else {
             self.list_response.lock().unwrap().clone()
+        }
+    }
+}
+
+struct RefreshGhRunner {
+    calls: AtomicUsize,
+    first_started: Notify,
+    first_release: Notify,
+}
+
+impl RefreshGhRunner {
+    fn new() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            first_started: Notify::new(),
+            first_release: Notify::new(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl GhRunner for RefreshGhRunner {
+    async fn run(&self, args: &[String], _cwd: &Path) -> Result<String, String> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            self.first_started.notify_one();
+            self.first_release.notified().await;
+        }
+        if args.contains(&"view".to_string()) {
+            Ok(sample_pr_detail())
+        } else if call == 0 {
+            Ok(SAMPLE_PR_LIST.to_string())
+        } else {
+            Ok(REFRESHED_PR_LIST.to_string())
         }
     }
 }
@@ -562,6 +613,71 @@ async fn test_pull_requests_failures_are_not_cached() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(val["item"]["number"], 42);
     assert_eq!(ctx.runner.calls.load(Ordering::SeqCst), 6);
+}
+
+#[tokio::test]
+async fn test_pull_requests_invalid_rows_do_not_create_empty_page() {
+    let runner = Arc::new(MockGhRunner::new());
+    let mut rows: Vec<Value> = serde_json::from_str(SAMPLE_PR_LIST).expect("sample rows");
+    rows.insert(1, json!({ "number": 0 }));
+    rows.truncate(3);
+    *runner.list_response.lock().unwrap() = Ok(serde_json::to_string(&rows).expect("rows"));
+    let ctx = setup_app(runner).await;
+
+    let (status, val) = send_request(
+        &ctx.router,
+        "/api/pull-requests?projectId=p1&limit=2",
+        Some(&ctx.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(val["items"].as_array().unwrap().len(), 2);
+    assert!(val["partial"].as_bool().unwrap());
+    assert!(val["nextCursor"].is_null());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_refresh_supersedes_an_in_flight_request() {
+    let runner = Arc::new(RefreshGhRunner::new());
+    let ctx = setup_app(runner.clone()).await;
+    let stale_app = ctx.router.clone();
+    let stale_cookie = ctx.cookie.clone();
+    let stale = tokio::spawn(async move {
+        send_request(
+            &stale_app,
+            "/api/pull-requests?projectId=p1",
+            Some(&stale_cookie),
+        )
+        .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), runner.first_started.notified())
+        .await
+        .expect("stale request should start");
+
+    let (status, val) = send_request(
+        &ctx.router,
+        "/api/pull-requests?projectId=p1&refresh=1",
+        Some(&ctx.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(val["items"][0]["number"], 99);
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 2);
+
+    runner.first_release.notify_one();
+    let (status, _) = stale.await.expect("stale request task");
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, val) = send_request(
+        &ctx.router,
+        "/api/pull-requests?projectId=p1",
+        Some(&ctx.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(val["items"][0]["number"], 99);
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 2);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

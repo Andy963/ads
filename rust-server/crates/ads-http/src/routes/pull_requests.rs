@@ -78,13 +78,19 @@ struct CacheEntry<T> {
     value: T,
 }
 
+#[derive(Clone)]
+struct InFlight<T> {
+    receiver: tokio::sync::watch::Receiver<Option<T>>,
+    refresh: bool,
+}
+
 #[derive(Default)]
 struct CacheInner {
     list: HashMap<String, CacheEntry<PullRequestListResponse>>,
     detail: HashMap<String, CacheEntry<PullRequestDetailResponse>>,
-    in_flight_list: HashMap<String, tokio::sync::watch::Receiver<Option<PullRequestListResponse>>>,
-    in_flight_detail:
-        HashMap<String, tokio::sync::watch::Receiver<Option<PullRequestDetailResponse>>>,
+    in_flight_list: HashMap<String, InFlight<PullRequestListResponse>>,
+    in_flight_detail: HashMap<String, InFlight<PullRequestDetailResponse>>,
+    refresh_generation: HashMap<String, u64>,
 }
 
 pub struct PullRequestManager {
@@ -112,6 +118,7 @@ impl PullRequestManager {
         cache.detail.clear();
         cache.in_flight_list.clear();
         cache.in_flight_detail.clear();
+        cache.refresh_generation.clear();
     }
 
     pub async fn list_pull_requests(
@@ -126,47 +133,68 @@ impl PullRequestManager {
         let key = list_cache_key(project_key, &query, offset);
 
         loop {
-            let (mut rx, owns_task) = {
-                let mut cache = self.inner.cache.lock().await;
-                if query.refresh {
-                    let prefix = format!("{project_key}:");
-                    cache.list.retain(|k, _| !k.starts_with(&prefix));
-                    cache.detail.retain(|k, _| !k.starts_with(&prefix));
-                }
-                if let Some(entry) = cache.list.get(&key) {
-                    if entry.expires_at > now {
-                        return Ok(entry.value.clone());
-                    }
-                }
-                if let Some(rx) = cache.in_flight_list.get(&key) {
-                    (rx.clone(), false)
-                } else {
-                    let (tx, rx) = tokio::sync::watch::channel(None);
-                    cache.in_flight_list.insert(key.clone(), rx.clone());
-                    let inner = Arc::clone(&self.inner);
-                    let task_key = key.clone();
-                    let task_query = query.clone();
-                    let task_cwd = cwd.to_path_buf();
-                    tokio::spawn(async move {
-                        let response = inner
-                            .execute_list(&task_query, &task_cwd, offset, now)
-                            .await;
-                        let mut cache = inner.cache.lock().await;
-                        if response.error.is_none() {
-                            cache.list.insert(
-                                task_key.clone(),
-                                CacheEntry {
-                                    expires_at: now + LIST_TTL_MS,
-                                    value: response.clone(),
-                                },
-                            );
+            let (mut rx, owns_task) =
+                {
+                    let mut cache = self.inner.cache.lock().await;
+                    let existing_refresh = cache
+                        .in_flight_list
+                        .get(&key)
+                        .is_some_and(|flight| flight.refresh);
+                    let generation = if query.refresh && !existing_refresh {
+                        invalidate_project_cache(&mut cache, project_key)
+                    } else {
+                        current_refresh_generation(&cache, project_key)
+                    };
+                    if let Some(entry) = cache.list.get(&key) {
+                        if entry.expires_at > now {
+                            return Ok(entry.value.clone());
                         }
-                        cache.in_flight_list.remove(&task_key);
-                        let _ = tx.send(Some(response));
-                    });
-                    (rx, true)
-                }
-            };
+                    }
+                    if let Some(flight) = cache.in_flight_list.get(&key) {
+                        (flight.receiver.clone(), false)
+                    } else {
+                        let (tx, rx) = tokio::sync::watch::channel(None);
+                        cache.in_flight_list.insert(
+                            key.clone(),
+                            InFlight {
+                                receiver: rx.clone(),
+                                refresh: query.refresh,
+                            },
+                        );
+                        let inner = Arc::clone(&self.inner);
+                        let task_key = key.clone();
+                        let task_project_key = project_key.to_string();
+                        let task_receiver = rx.clone();
+                        let task_generation = generation;
+                        let task_query = query.clone();
+                        let task_cwd = cwd.to_path_buf();
+                        tokio::spawn(async move {
+                            let response = inner
+                                .execute_list(&task_query, &task_cwd, offset, now)
+                                .await;
+                            let mut cache = inner.cache.lock().await;
+                            let is_current_generation =
+                                current_refresh_generation(&cache, &task_project_key)
+                                    == task_generation;
+                            if is_current_generation && response.error.is_none() {
+                                cache.list.insert(
+                                    task_key.clone(),
+                                    CacheEntry {
+                                        expires_at: now + LIST_TTL_MS,
+                                        value: response.clone(),
+                                    },
+                                );
+                            }
+                            if cache.in_flight_list.get(&task_key).is_some_and(|current| {
+                                current.receiver.same_channel(&task_receiver)
+                            }) {
+                                cache.in_flight_list.remove(&task_key);
+                            }
+                            let _ = tx.send(Some(response));
+                        });
+                        (rx, true)
+                    }
+                };
 
             if let Ok(value) = rx.wait_for(|value| value.is_some()).await {
                 return Ok(value
@@ -181,7 +209,7 @@ impl PullRequestManager {
             if cache
                 .in_flight_list
                 .get(&key)
-                .is_some_and(|current| current.same_channel(&rx))
+                .is_some_and(|current| current.receiver.same_channel(&rx))
             {
                 cache.in_flight_list.remove(&key);
             }
@@ -206,18 +234,31 @@ impl PullRequestManager {
                         return entry.value.clone();
                     }
                 }
-                if let Some(rx) = cache.in_flight_detail.get(&key) {
-                    (rx.clone(), false)
+                let generation = current_refresh_generation(&cache, project_key);
+                if let Some(flight) = cache.in_flight_detail.get(&key) {
+                    (flight.receiver.clone(), false)
                 } else {
                     let (tx, rx) = tokio::sync::watch::channel(None);
-                    cache.in_flight_detail.insert(key.clone(), rx.clone());
+                    cache.in_flight_detail.insert(
+                        key.clone(),
+                        InFlight {
+                            receiver: rx.clone(),
+                            refresh: false,
+                        },
+                    );
                     let inner = Arc::clone(&self.inner);
                     let task_key = key.clone();
+                    let task_project_key = project_key.to_string();
+                    let task_receiver = rx.clone();
+                    let task_generation = generation;
                     let task_cwd = cwd.to_path_buf();
                     tokio::spawn(async move {
                         let response = inner.execute_detail(number, &task_cwd, now).await;
                         let mut cache = inner.cache.lock().await;
-                        if response.error.is_none() {
+                        let is_current_generation =
+                            current_refresh_generation(&cache, &task_project_key)
+                                == task_generation;
+                        if is_current_generation && response.error.is_none() {
                             cache.detail.insert(
                                 task_key.clone(),
                                 CacheEntry {
@@ -226,7 +267,13 @@ impl PullRequestManager {
                                 },
                             );
                         }
-                        cache.in_flight_detail.remove(&task_key);
+                        if cache
+                            .in_flight_detail
+                            .get(&task_key)
+                            .is_some_and(|current| current.receiver.same_channel(&task_receiver))
+                        {
+                            cache.in_flight_detail.remove(&task_key);
+                        }
                         let _ = tx.send(Some(response));
                     });
                     (rx, true)
@@ -250,12 +297,39 @@ impl PullRequestManager {
             if cache
                 .in_flight_detail
                 .get(&key)
-                .is_some_and(|current| current.same_channel(&rx))
+                .is_some_and(|current| current.receiver.same_channel(&rx))
             {
                 cache.in_flight_detail.remove(&key);
             }
         }
     }
+}
+
+fn current_refresh_generation(cache: &CacheInner, project_key: &str) -> u64 {
+    cache
+        .refresh_generation
+        .get(project_key)
+        .copied()
+        .unwrap_or_default()
+}
+
+fn invalidate_project_cache(cache: &mut CacheInner, project_key: &str) -> u64 {
+    let prefix = format!("{project_key}:");
+    cache.list.retain(|key, _| !key.starts_with(&prefix));
+    cache.detail.retain(|key, _| !key.starts_with(&prefix));
+    cache
+        .in_flight_list
+        .retain(|key, _| !key.starts_with(&prefix));
+    cache
+        .in_flight_detail
+        .retain(|key, _| !key.starts_with(&prefix));
+
+    let generation = cache
+        .refresh_generation
+        .entry(project_key.to_string())
+        .or_default();
+    *generation = generation.saturating_add(1);
+    *generation
 }
 
 impl PullRequestManagerInner {
@@ -309,7 +383,6 @@ impl PullRequestManagerInner {
             }
         };
 
-        let parsed_len = parsed.len();
         let mut invalid_rows = 0;
         let rows: Vec<PullRequestSummary> = parsed
             .iter()
@@ -322,13 +395,14 @@ impl PullRequestManagerInner {
             })
             .collect();
 
-        let page: Vec<PullRequestSummary> = if offset < rows.len() {
-            rows[offset..rows.len().min(offset + query.limit)].to_vec()
+        let page_end = rows.len().min(offset.saturating_add(query.limit));
+        let page: Vec<PullRequestSummary> = if offset < page_end {
+            rows[offset..page_end].to_vec()
         } else {
             vec![]
         };
         let next_offset = offset + page.len();
-        let has_more = rows.len() > offset + page.len() || parsed_len > offset + query.limit;
+        let has_more = rows.len() > page_end;
         let next_cursor = if has_more {
             Some(encode_cursor(next_offset))
         } else {
@@ -861,7 +935,7 @@ pub(super) async fn list(
     };
 
     let workspace_root = resolve_workspace_root(&state, &session.user.id, &project_id).await?;
-    let project_key = format!("{} {}", session.user.id, project_id);
+    let project_key = format!("{}\0{}", session.user.id, project_id);
 
     let query = PullRequestListQuery {
         project_id,
@@ -908,7 +982,7 @@ pub(super) async fn detail(
     }
 
     let workspace_root = resolve_workspace_root(&state, &session.user.id, &project_id).await?;
-    let project_key = format!("{} {}", session.user.id, project_id);
+    let project_key = format!("{}\0{}", session.user.id, project_id);
 
     let response = state
         .pull_request_manager
