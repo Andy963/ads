@@ -748,6 +748,26 @@ async fn test_pull_requests_terminal_page_does_not_emit_invalid_cursor() {
     assert!(val["nextCursor"].is_null());
 }
 
+#[tokio::test]
+async fn test_pull_requests_invalid_rows_do_not_emit_stagnant_cursor() {
+    let runner = Arc::new(MockGhRunner::new());
+    let rows = vec![json!({ "number": 0 }); 5_002];
+    *runner.list_response.lock().unwrap() = Ok(serde_json::to_string(&rows).unwrap());
+    let ctx = setup_app(runner).await;
+    let cursor = URL_SAFE_NO_PAD.encode(r#"{"offset":5000}"#);
+
+    let (status, val) = send_request(
+        &ctx.router,
+        &format!("/api/pull-requests?projectId=p1&limit=1&cursor={cursor}"),
+        Some(&ctx.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(val["items"].as_array().unwrap().is_empty());
+    assert!(val["partial"].as_bool().unwrap());
+    assert!(val["nextCursor"].is_null());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_refresh_supersedes_an_in_flight_request() {
     let runner = Arc::new(RefreshGhRunner::new());
