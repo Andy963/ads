@@ -60,6 +60,7 @@ pub struct CodexAppServerPromptRunner {
 }
 
 const CODEX_THREAD_NAMESPACE: &str = "web_codex_thread";
+const CODEX_APP_SERVER_TURN_TIMEOUT: Duration = Duration::from_secs(10_800);
 
 impl CodexAppServerPromptRunner {
     pub fn new(options: CodexAppServerPromptRunnerOptions) -> Self {
@@ -107,7 +108,7 @@ impl CodexAppServerPromptRunner {
             dynamic_tools: Vec::new(),
             daemon_options: selection.daemon_options,
             registry: Some(Arc::clone(&self.registry)),
-            turn_timeout: Some(Duration::from_secs(1_800)),
+            turn_timeout: Some(CODEX_APP_SERVER_TURN_TIMEOUT),
             auto_compact: Default::default(),
             retry: Default::default(),
         });
@@ -733,5 +734,16 @@ fn emit_agent_event(
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_app_server_turn_timeout_is_three_hours() {
+        assert_eq!(CODEX_APP_SERVER_TURN_TIMEOUT, Duration::from_secs(10_800));
+        assert_eq!(CODEX_APP_SERVER_TURN_TIMEOUT.as_secs(), 3 * 60 * 60);
     }
 }
