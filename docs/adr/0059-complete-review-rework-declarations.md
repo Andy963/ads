@@ -11,6 +11,7 @@ The Rust Acopilot flow allowed a pull request to be redispatched after a `REJECT
 ## Decision
 
 - A redispatch after a completed, non-superseded `REJECT` must include a complete declaration identifying the prior review job, Issue, PR, base, rejected head, and new head.
+- Each declared review job persists `rework_root_job_id`, an immutable SQLite lineage key pointing to the original rejected review job. Queue supersession may retire predecessor rows, but it cannot change this root identity.
 - The declaration records root cause, governing invariant, audited scope, changed behavior, regression cases, verification evidence, and residual risks. It is persisted with the new review job in the Rust server's SQLite `action_jobs` table.
 - For a redispatched review, the declaration is included in the structured Reviewer payload as an auditable claim. The Reviewer is explicitly instructed to verify it independently against the Issue, diff, and test report.
 - Dispatch validates the declaration against the latest completed, non-superseded review for the same project, branch, and PR. The Actions queue validates it again against the resolved Issue, PR, base, branch, and actual new head before running verification or the Reviewer.

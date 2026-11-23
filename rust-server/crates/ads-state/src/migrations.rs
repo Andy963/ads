@@ -227,6 +227,9 @@ pub(crate) fn migrate_state(connection: &Connection, from: i64, to: i64) -> Stat
     if from < 49 {
         migrate_state_49(&transaction)?;
     }
+    if from < 50 {
+        migrate_state_50(&transaction)?;
+    }
     transaction.execute(
         "UPDATE schema_version SET version = ?1, updated_at = datetime('now') WHERE id = 1",
         params![to],
@@ -2226,6 +2229,13 @@ fn migrate_state_48(connection: &Connection) -> StateResult<()> {
 fn migrate_state_49(connection: &Connection) -> StateResult<()> {
     if table_exists(connection, "action_jobs")? {
         add_column_if_missing(connection, "action_jobs", "rework_declaration_json", "TEXT")?;
+    }
+    Ok(())
+}
+
+fn migrate_state_50(connection: &Connection) -> StateResult<()> {
+    if table_exists(connection, "action_jobs")? {
+        add_column_if_missing(connection, "action_jobs", "rework_root_job_id", "TEXT")?;
     }
     Ok(())
 }

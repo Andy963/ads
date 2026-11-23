@@ -42,7 +42,7 @@ fn opens_state_database_at_the_contract_version() {
 }
 
 #[test]
-fn migrates_state_48_to_49_with_rework_declaration_column() {
+fn migrates_state_48_to_50_with_rework_lineage_columns() {
     let directory = tempdir().expect("temp dir");
     let path = directory.path().join("state.db");
     StateDb::open(&path).expect("state db");
@@ -72,8 +72,17 @@ fn migrates_state_48_to_49_with_rework_declaration_column() {
             |row| row.get(0),
         )
         .expect("rework declaration column");
-    assert_eq!(version, 49);
+    assert_eq!(version, STATE_SCHEMA_VERSION);
     assert_eq!(column_count, 1);
+    let root_column_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('action_jobs')
+             WHERE name = 'rework_root_job_id'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("rework root column");
+    assert_eq!(root_column_count, 1);
 }
 
 #[test]

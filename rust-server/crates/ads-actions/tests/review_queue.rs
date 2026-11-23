@@ -268,6 +268,7 @@ fn requires_rework_for_latest_reject_and_does_not_reuse_an_older_reject() {
                 auth_user_id: "user-1".to_string(),
                 chat_session_id: "main".to_string(),
                 rework_declaration_json: None,
+                rework_root_job_id: None,
             },
             created_at,
         )
@@ -319,10 +320,10 @@ fn requires_rework_for_latest_reject_and_does_not_reuse_an_older_reject() {
     assert!(error.to_string().contains("only valid after a REJECT"));
 }
 
-#[test]
-fn carries_rework_declaration_across_operational_review_retries() {
+#[tokio::test]
+async fn carries_rework_declaration_across_operational_review_retries() {
     let (_directory, db) = state();
-    let (_temp, repo, _base, _head) = repo();
+    let (_temp, repo, base, head) = repo();
     let project = ads_state::derive_project_session_id(&repo.to_string_lossy());
     let connection = db.connect().expect("connection");
     let rejected = create_action_job(
@@ -338,14 +339,15 @@ fn carries_rework_declaration_across_operational_review_retries() {
             issue_snapshot: Default::default(),
             status: Some(ActionJobStatus::Completed),
             branch: "codex/issue-7".to_string(),
-            base_sha: BASE_FAKE.to_string(),
-            head_sha: HEAD_OLD.to_string(),
+            base_sha: base.clone(),
+            head_sha: base.clone(),
             reviewer_profile_ids_json: "[]".to_string(),
             pr_number: 12,
             pr_url: "https://github.com/example/pull/12".to_string(),
             auth_user_id: "user-1".to_string(),
             chat_session_id: "main".to_string(),
             rework_declaration_json: None,
+            rework_root_job_id: None,
         },
         1_000,
     )
@@ -378,9 +380,9 @@ fn carries_rework_declaration_across_operational_review_retries() {
         "prior_job_id": "reject",
         "issue_id": 7,
         "pr_number": 12,
-        "base_sha": BASE_FAKE,
-        "rejected_head_sha": HEAD_OLD,
-        "new_head_sha": HEAD_NEW,
+        "base_sha": base,
+        "rejected_head_sha": base,
+        "new_head_sha": head,
         "root_cause": "root cause",
         "invariant": "invariant",
         "audited_scope": ["source"],
@@ -389,31 +391,42 @@ fn carries_rework_declaration_across_operational_review_retries() {
         "verification_evidence": ["tests pass"],
         "residual_risks": []
     });
-    let queue = ReviewQueue::new(db.clone(), "worker-1", options());
+    let mut first_options = options();
+    first_options.target_resolver = Some(fixed_resolver(resolved(&repo, &base, &head)));
+    first_options.verification = Some(verification(0));
+    first_options.reviewer = Some(incomplete_reviewer());
+    let first_queue = ReviewQueue::new(db.clone(), "worker-1", first_options);
     let mut first_retry = dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12));
     first_retry.rework_declaration = Some(declaration.clone());
-    first_retry.current_head_sha = Some(HEAD_NEW.to_string());
-    let first_ack = queue.dispatch(first_retry, 2_000).expect("declared retry");
-    {
-        let connection = db.connect().expect("connection");
-        update_action_job_status(
-            &connection,
-            &first_ack.job_id,
-            ActionJobStatus::Failed,
-            ActionJobStatusUpdate {
-                error_message: Some(Some("temporary upstream failure".to_string())),
-                ..ActionJobStatusUpdate::default()
-            },
-            3_000,
-            false,
-        )
-        .expect("operational failure");
-    }
+    first_retry.current_head_sha = Some(head.clone());
+    let first_ack = first_queue
+        .dispatch(first_retry, 2_000)
+        .expect("declared retry");
+    first_queue
+        .process(&project, &repo)
+        .await
+        .expect("first operational retry");
+    let connection = db.connect().expect("connection");
+    let first_retry_job = get_action_job(&connection, &first_ack.job_id)
+        .expect("read first retry")
+        .expect("first retry job");
+    assert_eq!(first_retry_job.status, ActionJobStatus::Completed);
+    assert!(
+        first_retry_job
+            .current_step
+            .as_deref()
+            .is_some_and(|step| step.starts_with("INCOMPLETE:"))
+    );
+    let rejected = get_action_job(&connection, "reject")
+        .expect("read rejected job")
+        .expect("rejected job");
+    assert!(rejected.superseded_at.is_some());
+    drop(connection);
 
     let mut second_retry =
         dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12));
-    second_retry.current_head_sha = Some(HEAD_NEW.to_string());
-    let second_ack = queue
+    second_retry.current_head_sha = Some(head.clone());
+    let second_ack = first_queue
         .dispatch(second_retry, 4_000)
         .expect("operational retry");
     let connection = db.connect().expect("connection");
@@ -423,6 +436,32 @@ fn carries_rework_declaration_across_operational_review_retries() {
     assert_eq!(
         retry.rework_declaration_json.as_deref(),
         Some(declaration.to_string().as_str())
+    );
+    assert_eq!(retry.rework_root_job_id.as_deref(), Some("reject"));
+    drop(connection);
+
+    let mut second_options = options();
+    second_options.target_resolver = Some(fixed_resolver(resolved(&repo, &base, &head)));
+    second_options.verification = Some(verification(0));
+    second_options.reviewer = Some(pass_reviewer());
+    let second_queue = ReviewQueue::new(db.clone(), "worker-2", second_options);
+    second_queue
+        .process(&project, &repo)
+        .await
+        .expect("process retry after supersession");
+
+    let connection = db.connect().expect("connection");
+    let completed_retry = get_action_job(&connection, &second_ack.job_id)
+        .expect("read completed retry")
+        .expect("completed retry job");
+    assert_eq!(completed_retry.status, ActionJobStatus::Completed);
+    assert!(
+        completed_retry
+            .current_step
+            .as_deref()
+            .is_some_and(|step| step.starts_with("PASS:")),
+        "unexpected retry outcome: {:?}",
+        completed_retry.current_step
     );
 }
 
@@ -455,6 +494,7 @@ async fn blocks_automatic_retry_after_repeated_operational_failures() {
                     auth_user_id: "user-1".to_string(),
                     chat_session_id: "main".to_string(),
                     rework_declaration_json: None,
+                    rework_root_job_id: None,
                 },
                 created_at,
             )
@@ -693,6 +733,7 @@ async fn validates_and_delivers_rework_declaration_on_the_pinned_target() {
             auth_user_id: "user-1".to_string(),
             chat_session_id: "main".to_string(),
             rework_declaration_json: None,
+            rework_root_job_id: None,
         },
         1_000,
     )
@@ -772,11 +813,12 @@ async fn validates_and_delivers_rework_declaration_on_the_pinned_target() {
         .expect("read job")
         .expect("review job");
     assert_eq!(job.status, ActionJobStatus::Completed);
-    assert_eq!(job.review_verdicts_json.contains("PASS"), true);
+    assert!(job.review_verdicts_json.contains("PASS"));
     assert_eq!(
         job.rework_declaration_json.as_deref(),
         Some(declaration.to_string().as_str())
     );
+    assert_eq!(job.rework_root_job_id.as_deref(), Some("reject"));
     assert_eq!(
         *observed_declaration.lock().expect("declaration"),
         Some(declaration)
@@ -1009,6 +1051,7 @@ async fn fails_interrupted_jobs_and_respects_external_leases() {
             auth_user_id: "user-1".to_string(),
             chat_session_id: "main".to_string(),
             rework_declaration_json: None,
+            rework_root_job_id: None,
         },
         1_000,
     )

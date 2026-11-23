@@ -99,25 +99,35 @@ pub fn dispatch_review_job(
         return Ok(review_queue_ack(job));
     }
 
-    let latest_review = jobs.iter().find(|job| {
-        job.job_kind == ActionJobKind::PullRequestReview
-            && job.branch.as_deref().unwrap_or("") == branch
-            && (pr_number == 0 || job.pr_number == Some(pr_number))
-            && job.superseded_at.is_none()
-    });
+    let latest_review = jobs
+        .iter()
+        .filter(|job| {
+            job.job_kind == ActionJobKind::PullRequestReview
+                && job.branch.as_deref().unwrap_or("") == branch
+                && (pr_number == 0 || job.pr_number == Some(pr_number))
+                && job.superseded_at.is_none()
+        })
+        .max_by(|left, right| {
+            (left.created_at, left.id.as_str()).cmp(&(right.created_at, right.id.as_str()))
+        });
     let inherited_declaration = latest_review
         .filter(|job| is_operational_review_outcome(job))
         .and_then(|job| job.rework_declaration_json.as_deref())
         .map(serde_json::from_str::<ReworkDeclaration>)
         .transpose()?;
-    let inherited_retry = inherited_declaration.is_some();
     let declaration_prior = if let Some(declaration) = inherited_declaration.as_ref() {
         jobs.iter().find(|job| {
             job.id == declaration.prior_job_id
                 && job.job_kind == ActionJobKind::PullRequestReview
                 && job.branch.as_deref().unwrap_or("") == branch
                 && (pr_number == 0 || job.pr_number == Some(pr_number))
-                && (inherited_retry || job.superseded_at.is_none())
+                && (job.superseded_at.is_none()
+                    || latest_review.is_some_and(|latest| {
+                        latest.rework_root_job_id.as_deref()
+                            == Some(declaration.prior_job_id.as_str())
+                    }))
+                && (job.rework_root_job_id.as_deref() == Some(declaration.prior_job_id.as_str())
+                    || (job.id == declaration.prior_job_id && job.rework_root_job_id.is_none()))
                 && job.status == ActionJobStatus::Completed
                 && job
                     .current_step
@@ -215,6 +225,11 @@ pub fn dispatch_review_job(
         }
     }
 
+    let rework_root_job_id = rework_declaration
+        .as_deref()
+        .map(serde_json::from_str::<ReworkDeclaration>)
+        .transpose()?
+        .map(|declaration| declaration.prior_job_id);
     let transaction = connection.unchecked_transaction()?;
     let job = create_action_job(
         &transaction,
@@ -237,6 +252,7 @@ pub fn dispatch_review_job(
             auth_user_id: auth_user_id.clone(),
             chat_session_id,
             rework_declaration_json: rework_declaration,
+            rework_root_job_id,
         },
         now,
     )?;

@@ -77,6 +77,7 @@ fn job(id: &str, head: &str) -> CreateActionJob {
         auth_user_id: "user-1".to_string(),
         chat_session_id: "chat-1".to_string(),
         rework_declaration_json: None,
+        rework_root_job_id: None,
     }
 }
 

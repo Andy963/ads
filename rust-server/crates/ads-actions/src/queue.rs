@@ -442,6 +442,7 @@ impl ReviewQueue {
             }
         };
         let matches = complete
+            && job.rework_root_job_id.as_deref() == Some(declaration.prior_job_id.as_str())
             && prior_matches
             && declaration.issue_id == session.target.issue.id.unwrap_or_default()
             && declaration.pr_number == session.pr_number
