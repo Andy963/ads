@@ -153,6 +153,7 @@ describe("active project header context", () => {
     expect(wrapper.get('[data-testid="active-project-context"]').attributes("aria-label")).toBe("当前项目 ads，当前分支 dev");
     expect(wrapper.get('[data-testid="active-project-context-name"]').attributes("aria-hidden")).toBe("true");
     expect(wrapper.get('[data-testid="active-project-context-branch"]').attributes("aria-hidden")).toBe("true");
+    expect(wrapper.get('[data-testid="active-project-context-branch"]').classes()).toContain("activeProjectBranchBadge");
 
     await emitWorkspaceBranch(wrapper, "feature/header-context");
 
