@@ -8,10 +8,14 @@ use ads_runtime::{
 };
 use ads_state::{
     AgentHandoff, AgentHandoffPayload, AgentMessageRecord, AgentMessageStore,
-    EnqueueAgentMessageResult, NewAgentMessage, PromptQueueLane, REVIEW_VERDICT_COMMENT_MARKER,
-    REVIEW_VERDICT_HANDOFF_KIND, ReviewVerdictCommentLocator, ReviewVerdictHandoff,
-    ReviewVerdictStatus, StateDb, WEB_ACOPILOT_NAMESPACE, get_lane_generation,
-    history_key_for_generation, logical_history_key,
+    CONVERSATION_SERVICE, DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION, DEFAULT_HISTORY_MAX_TEXT_LENGTH,
+    EnqueueAgentMessageResult, HistoryStore, NewAgentMessage, PromptQueueLane,
+    REVIEW_VERDICT_COMMENT_MARKER, REVIEW_VERDICT_HANDOFF_KIND, ROLE_ACOPILOT,
+    ReviewVerdictCommentLocator, ReviewVerdictHandoff, ReviewVerdictStatus, StateDb,
+    WEB_ACOPILOT_NAMESPACE, get_default_role_profile, get_lane_generation, get_model_config,
+    get_model_config_by_agent_model_id, get_model_service, history_key_for_generation,
+    list_service_models, logical_history_key, parse_prompt_execution_metadata,
+    resolve_conversation_model,
 };
 use rusqlite::params;
 use serde_json::{Value, json};
@@ -722,7 +726,7 @@ impl AgentMessageService {
             self.prompt_queue.release_reserved_lane(&lane);
             return;
         };
-        let turn = build_handoff_lane_turn(&claimed);
+        let turn = build_handoff_lane_turn(&self.db, &claimed);
         self.active
             .lock()
             .expect("agent message active lock")
@@ -984,11 +988,120 @@ fn prompt_lane(message: &AgentMessageRecord) -> PromptQueueLane {
     }
 }
 
-fn build_handoff_lane_turn(message: &AgentMessageRecord) -> LaneTurn {
+fn resolve_enabled_ads_model_id(
+    connection: &rusqlite::Connection,
+    reference: &str,
+) -> Option<String> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return None;
+    }
+    if let Ok(model) = resolve_conversation_model(connection, reference)
+        && model.is_enabled
+    {
+        return Some(model.id);
+    }
+    if let Ok(Some(model)) = get_model_config(connection, reference)
+        && model.is_enabled
+    {
+        return Some(model.id);
+    }
+    if let Ok(Some(model)) = get_model_config_by_agent_model_id(connection, reference, None)
+        && model.is_enabled
+    {
+        return Some(model.id);
+    }
+    None
+}
+
+fn resolve_handoff_model_selection(
+    db: &StateDb,
+    message: &AgentMessageRecord,
+) -> (Option<String>, Option<String>) {
+    let Ok(connection) = db.connect() else {
+        return (None, None);
+    };
+    let role_profile = get_default_role_profile(&connection, ROLE_ACOPILOT)
+        .ok()
+        .flatten()
+        .filter(|profile| profile.is_enabled != 0);
+    let default_effort = role_profile
+        .as_ref()
+        .map(|profile| profile.reasoning_effort.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    let history_store = HistoryStore::new(
+        &message.lane_namespace,
+        DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION,
+        DEFAULT_HISTORY_MAX_TEXT_LENGTH,
+    );
+    if let Ok(entries) = history_store.get(&connection, &message.history_key) {
+        for entry in entries.iter().rev() {
+            if entry.role != "user" {
+                continue;
+            }
+            let meta = parse_prompt_execution_metadata(entry.kind.as_deref());
+            if matches!(meta.origin.as_deref(), Some("agent") | Some("system")) {
+                continue;
+            }
+            let candidate = meta
+                .model
+                .as_deref()
+                .or(meta.effective_model.as_deref())
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let Some(candidate) = candidate else {
+                continue;
+            };
+            if let Some(resolved_id) = resolve_enabled_ads_model_id(&connection, candidate) {
+                let effort = meta
+                    .model_reasoning_effort
+                    .or(meta.effective_model_reasoning_effort)
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .or(default_effort);
+                return (Some(resolved_id), effort);
+            }
+        }
+    }
+
+    if let Some(profile) = role_profile.as_ref()
+        && let Some(resolved_id) = resolve_enabled_ads_model_id(&connection, &profile.model_id)
+    {
+        return (Some(resolved_id), default_effort);
+    }
+
+    if let Ok(service) = get_model_service(&connection, CONVERSATION_SERVICE) {
+        if let Some(default_id) = service.default_model_id.as_deref()
+            && let Some(resolved_id) = resolve_enabled_ads_model_id(&connection, default_id)
+        {
+            return (Some(resolved_id), default_effort);
+        }
+        if let Ok(models) = list_service_models(&connection, CONVERSATION_SERVICE)
+            && let Some(first) = models.into_iter().find(|model| model.is_enabled)
+        {
+            return (Some(first.id), default_effort);
+        }
+    }
+
+    (None, default_effort)
+}
+
+fn build_handoff_lane_turn(db: &StateDb, message: &AgentMessageRecord) -> LaneTurn {
     let mut payload = message.payload.clone();
     payload.insert("origin".to_string(), json!("agent"));
     if !payload.contains_key("agentId") {
         payload.insert("agentId".to_string(), json!("codex"));
+    }
+    payload.remove("model");
+    payload.remove("modelReasoningEffort");
+    payload.remove("model_reasoning_effort");
+    let (resolved_model, resolved_effort) = resolve_handoff_model_selection(db, message);
+    if let Some(model) = resolved_model {
+        payload.insert("model".to_string(), json!(model));
+    }
+    if let Some(effort) = resolved_effort {
+        payload.insert("modelReasoningEffort".to_string(), json!(effort));
     }
     let (prompt_text, display_text) = if let Some(handoff) = message.to_handoff() {
         (
@@ -1806,7 +1919,7 @@ mod tests {
                 .expect("claimed");
         }
 
-        let turn = build_handoff_lane_turn(&enqueued.message);
+        let turn = build_handoff_lane_turn(&db, &enqueued.message);
         service
             .active
             .lock()
@@ -1926,7 +2039,7 @@ mod tests {
                 .expect("claimed");
         }
 
-        let turn = build_handoff_lane_turn(&enqueued.message);
+        let turn = build_handoff_lane_turn(&db, &enqueued.message);
         service
             .active
             .lock()
@@ -2282,5 +2395,145 @@ mod tests {
             .expect_err("ineligible job must be rejected");
             assert!(!error.is_empty());
         }
+    }
+
+    #[test]
+    fn handoff_lane_turn_resolves_active_lane_then_role_then_conversation_default_and_re_resolves_on_retry() {
+        use ads_contract::models::ModelConfig;
+        use ads_contract::ws::HistoryEntry;
+        use ads_state::{
+            PromptExecutionMetadata, build_client_message_history_kind, upsert_model_config,
+        };
+
+        let directory = tempdir().expect("temp dir");
+        let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+        let hub = WebSocketHub::new(crate::WebSocketConfig::default());
+        let now = ads_contract::time::now_unix_millis();
+        let mut connection = db.connect().expect("connection");
+
+        for (id, model_id, display_name) in [
+            ("model-active", "gemini-4-neon-xhigh", "gemini-4-neon-xhigh"),
+            ("model-role", "gpt-6.1-terra", "gpt-6.1-terra"),
+            ("model-svc", "gpt-5.6-luna", "gpt-5.6-luna"),
+        ] {
+            upsert_model_config(
+                &mut connection,
+                &ModelConfig {
+                    id: id.to_string(),
+                    model_id: model_id.to_string(),
+                    display_name: display_name.to_string(),
+                    provider: "cpa".to_string(),
+                    provider_id: None,
+                    is_enabled: true,
+                    is_default: false,
+                    config_json: None,
+                    updated_at: Some(now),
+                },
+                now,
+            )
+            .expect("upsert model");
+        }
+        connection
+            .execute(
+                "INSERT OR REPLACE INTO model_service_members (service, model_config_id, is_default)
+                 VALUES ('conversation', 'model-svc', 1), ('conversation', 'model-role', 0), ('conversation', 'model-active', 0)",
+                [],
+            )
+            .expect("service members");
+        connection
+            .execute(
+                "UPDATE role_profiles SET model_id = 'model-role', reasoning_effort = 'medium', is_enabled = 1 WHERE role = 'acopilot'",
+                [],
+            )
+            .expect("role profile");
+        connection
+            .execute(
+                "INSERT INTO action_jobs
+                   (id, project_id, job_kind, issue_title, status, created_at, updated_at,
+                    requires_agent_handoff, agent_handoff_ready)
+                 VALUES ('job-model-res', 'project-1', 'pull_request_review',
+                         'Model resolution', 'completed', 1, 1, 1, 1)",
+                [],
+            )
+            .expect("review job");
+
+        let history = HistoryStore::new(
+            WEB_ACOPILOT_NAMESPACE,
+            DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION,
+            DEFAULT_HISTORY_MAX_TEXT_LENGTH,
+        );
+        let history_key = "user-1::project-1::acopilot";
+        history
+            .add(
+                &connection,
+                history_key,
+                HistoryEntry {
+                    role: "user".to_string(),
+                    text: "Active user turn".to_string(),
+                    ts: 10,
+                    kind: Some(build_client_message_history_kind(
+                        "cm-user-1",
+                        Some(&PromptExecutionMetadata {
+                            agent_id: Some("codex".to_string()),
+                            model: Some("model-active".to_string()),
+                            model_reasoning_effort: Some("xhigh".to_string()),
+                            ..PromptExecutionMetadata::default()
+                        }),
+                    )),
+                },
+            )
+            .expect("user history");
+        drop(connection);
+
+        let enqueued = enqueue_review_verdict_message(
+            &db,
+            &hub,
+            ReviewVerdictMessage {
+                auth_user_id: "user-1",
+                project_id: "project-1",
+                workspace_root: "/repo",
+                issue_id: 694,
+                issue_title: "Model resolution",
+                issue_url: Some("https://github.com/Andy963/ads/issues/694"),
+                pr_number: Some(695),
+                branch: Some("codex/issue-694"),
+                base_sha: Some("base"),
+                head_sha: Some("head"),
+                status: "PASS",
+                job_id: "job-model-res",
+                source_created_at: 100,
+                lane_generation: 1,
+            },
+        )
+        .expect("enqueue");
+
+        // Priority 1: active lane user-turn model & effort.
+        let turn_active = build_handoff_lane_turn(&db, &enqueued.message);
+        assert_eq!(turn_active.payload["model"], "model-active");
+        assert_eq!(turn_active.payload["modelReasoningEffort"], "xhigh");
+
+        // Deleting/disabling active lane model falls back to Priority 2: role_profiles(acopilot).
+        {
+            let mut connection = db.connect().expect("connection");
+            ads_state::remove_model_service_references(&mut connection, "model-active", now)
+                .expect("remove service ref");
+            connection
+                .execute("DELETE FROM model_configs WHERE id = 'model-active'", [])
+                .expect("delete active model");
+        }
+        let turn_role = build_handoff_lane_turn(&db, &enqueued.message);
+        assert_eq!(turn_role.payload["model"], "model-role");
+        assert_eq!(turn_role.payload["modelReasoningEffort"], "medium");
+
+        // Clearing role profile model falls back to Priority 3: conversation service default.
+        {
+            let connection = db.connect().expect("connection");
+            connection
+                .execute("UPDATE role_profiles SET model_id = '' WHERE role = 'acopilot'", [])
+                .expect("clear role model");
+        }
+        let turn_service = build_handoff_lane_turn(&db, &enqueued.message);
+        assert_eq!(turn_service.payload["model"], "model-svc");
+        assert_eq!(turn_service.payload["modelReasoningEffort"], "medium");
     }
 }
