@@ -3,17 +3,16 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use ads_contract::models::{
-    CreateModelProviderRequest, ModelConfig, ModelProvider, ModelProviderPayload,
-    UpdateModelProviderRequest, UpstreamConfigResponse, UpstreamDiscoveryRequest,
-    UpstreamDiscoveryResult,
+    CreateModelProviderRequest, ModelProvider, ModelProviderPayload, UpdateModelProviderRequest,
+    UpstreamConfigResponse, UpstreamDiscoveryRequest, UpstreamDiscoveryResult,
 };
 use ads_contract::projects::SuccessResponse;
 use ads_contract::time::now_unix_millis;
 use ads_state::{
     StateDb, StateError, UpstreamCredentialStore, UpstreamCredentials, delete_model_provider,
-    delete_model_provider_with_references, get_model_config_by_agent_model_id, get_model_provider,
-    initialize_model_services, list_model_configs, list_model_providers, list_model_services,
-    normalize_upstream_base_url, upsert_model_config, upsert_model_provider,
+    delete_model_provider_with_references, get_model_provider, initialize_model_services,
+    list_model_configs, list_model_providers, list_model_services, normalize_upstream_base_url,
+    reconcile_provider_models, upsert_model_provider,
 };
 use axum::Json;
 use axum::extract::{Path, Query, Request, State};
@@ -250,7 +249,7 @@ pub(super) async fn sync_provider_models(
     })
     .await?;
 
-    let result = load_upstream_models(&credentials, &provider.base_url).await;
+    let result = load_upstream_models_with_cache(&credentials, &provider.base_url, false).await;
     if !result.ok {
         return Err(ApiError::bad_request(
             result
@@ -262,35 +261,12 @@ pub(super) async fn sync_provider_models(
     let models = spawn_db(db, move |mut connection| {
         initialize_model_services(&connection)?;
         let now = now_unix_millis();
-        for model_id in &result.models {
-            if get_model_config_by_agent_model_id(&connection, model_id, Some(Some(&provider.id)))?
-                .is_some()
-            {
-                continue;
-            }
-            upsert_model_config(
-                &mut connection,
-                &ModelConfig {
-                    id: format!("model-{}", Uuid::new_v4()),
-                    model_id: model_id.clone(),
-                    display_name: model_id.clone(),
-                    provider: provider.name.clone(),
-                    provider_id: Some(provider.id.clone()),
-                    is_enabled: true,
-                    is_default: false,
-                    config_json: Some(json!({
-                        "reasoningEfforts": ["medium", "high"],
-                        "defaultReasoningEffort": "high"
-                    })),
-                    updated_at: None,
-                },
-                now,
-            )?;
-        }
-        Ok(list_model_configs(&connection)?
-            .into_iter()
-            .filter(|model| model.provider_id.as_deref() == Some(&provider.id))
-            .collect::<Vec<_>>())
+        Ok(reconcile_provider_models(
+            &mut connection,
+            &provider,
+            &result.models,
+            now,
+        )?)
     })
     .await?;
     Ok(Json(json!({"ok": true, "models": models})))
@@ -713,6 +689,14 @@ async fn load_upstream_models(
     config: &UpstreamCredentials,
     base_url: &str,
 ) -> UpstreamDiscoveryResult {
+    load_upstream_models_with_cache(config, base_url, true).await
+}
+
+async fn load_upstream_models_with_cache(
+    config: &UpstreamCredentials,
+    base_url: &str,
+    use_cache: bool,
+) -> UpstreamDiscoveryResult {
     if config.api_key.is_empty() || base_url.is_empty() {
         return discovery_error("Upstream model discovery requires an API key and base URL");
     }
@@ -722,7 +706,7 @@ async fn load_upstream_models(
     };
     let cache_key = upstream_cache_key(&endpoint, &config.api_key);
     let now = now_unix_millis();
-    if let Some(models) = cached_upstream_models(&cache_key, now) {
+    if use_cache && let Some(models) = cached_upstream_models(&cache_key, now) {
         return UpstreamDiscoveryResult {
             ok: true,
             models,

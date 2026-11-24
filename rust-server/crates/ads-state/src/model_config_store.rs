@@ -1,7 +1,11 @@
-use ads_contract::models::ModelConfig;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use serde_json::{Map, Value, json};
+use std::collections::HashSet;
 
+use ads_contract::models::{ModelConfig, ModelProvider};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use serde_json::{Map, Value, json};
+use uuid::Uuid;
+
+use crate::model_service_store::remove_model_service_references_tx;
 use crate::{StateError, StateResult, column_exists};
 
 const MIN_MODEL_CONTEXT_WINDOW: f64 = 256.0;
@@ -119,6 +123,20 @@ pub fn upsert_model_config(
     config: &ModelConfig,
     now: i64,
 ) -> StateResult<ModelConfig> {
+    let id = config.id.trim().to_string();
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    upsert_model_config_tx(&transaction, config, now)?;
+    transaction.commit()?;
+
+    get_model_config(connection, &id)?
+        .ok_or_else(|| StateError::InvalidInput("failed to load saved model config".to_string()))
+}
+
+fn upsert_model_config_tx(
+    transaction: &Transaction<'_>,
+    config: &ModelConfig,
+    now: i64,
+) -> StateResult<()> {
     let id = config.id.trim();
     if id.is_empty() {
         return Err(StateError::InvalidInput(
@@ -153,8 +171,6 @@ pub fn upsert_model_config(
         .filter(|value| !value.is_empty());
     let sanitized = sanitize_model_config_json(config.config_json.as_ref());
     let config_json = sanitized.map(|value| value.to_string());
-
-    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
     if config.is_default {
         let defaults = {
@@ -204,10 +220,77 @@ pub fn upsert_model_config(
             now
         ],
     )?;
-    transaction.commit()?;
+    Ok(())
+}
 
-    get_model_config(connection, id)?
-        .ok_or_else(|| StateError::InvalidInput("failed to load saved model config".to_string()))
+pub fn reconcile_provider_models(
+    connection: &mut Connection,
+    provider: &ModelProvider,
+    upstream_model_ids: &[String],
+    now: i64,
+) -> StateResult<Vec<ModelConfig>> {
+    let provider_id = provider.id.trim();
+    if provider_id.is_empty() {
+        return Err(StateError::InvalidInput(
+            "provider id is required".to_string(),
+        ));
+    }
+    let mut ordered_upstream = Vec::new();
+    let mut upstream_set = HashSet::new();
+    for raw in upstream_model_ids {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() && upstream_set.insert(trimmed.to_string()) {
+            ordered_upstream.push(trimmed.to_string());
+        }
+    }
+
+    let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let existing: Vec<ModelConfig> = list_model_configs(&transaction)?
+        .into_iter()
+        .filter(|model| model.provider_id.as_deref() == Some(provider_id))
+        .collect();
+    let existing_model_ids: HashSet<String> = existing
+        .iter()
+        .map(|model| model.model_id.clone())
+        .collect();
+
+    for model_id in &ordered_upstream {
+        if existing_model_ids.contains(model_id) {
+            continue;
+        }
+        upsert_model_config_tx(
+            &transaction,
+            &ModelConfig {
+                id: format!("model-{}", Uuid::new_v4()),
+                model_id: model_id.clone(),
+                display_name: model_id.clone(),
+                provider: provider.name.clone(),
+                provider_id: Some(provider_id.to_string()),
+                is_enabled: true,
+                is_default: false,
+                config_json: Some(json!({
+                    "reasoningEfforts": ["medium", "high"],
+                    "defaultReasoningEffort": "high"
+                })),
+                updated_at: None,
+            },
+            now,
+        )?;
+    }
+
+    for model in &existing {
+        if upstream_set.contains(&model.model_id) {
+            continue;
+        }
+        remove_model_service_references_tx(&transaction, &model.id, now)?;
+        delete_model_config(&transaction, &model.id)?;
+    }
+
+    transaction.commit()?;
+    Ok(list_model_configs(connection)?
+        .into_iter()
+        .filter(|model| model.provider_id.as_deref() == Some(provider_id))
+        .collect())
 }
 
 pub fn delete_model_config(connection: &Connection, id: &str) -> StateResult<bool> {
