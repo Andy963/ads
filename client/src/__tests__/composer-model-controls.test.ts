@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 
 import MainChatComposerPanel from "../components/MainChatComposerPanel.vue";
@@ -16,7 +16,16 @@ function model(): ModelConfig {
 }
 
 describe("composer model controls", () => {
-  it("renders the lane model capsule in composer metadata and forwards changes", async () => {
+  beforeEach(() => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(new DOMRect(16, 240, 32, 32));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    document.body.innerHTML = "";
+  });
+
+  it("does not render the full-width model selector row and exposes Model & reasoning in the action menu", async () => {
     const wrapper = mount(MainChatComposerPanel, {
       props: {
         queuedPrompts: [],
@@ -29,36 +38,89 @@ describe("composer model controls", () => {
         modelId: "m1",
         modelReasoningEffort: "medium",
       },
+      attachTo: document.body,
     });
 
-    expect(wrapper.get('[data-testid="composer-model-controls"]').exists()).toBe(true);
-    expect(wrapper.get('[data-testid="chat-capsule-text"]').text()).toBe("Model One");
+    // Acceptance Criterion: The composer no longer renders the full-width model selector row above the input.
+    expect(wrapper.find('[data-testid="composer-model-controls"]').exists()).toBe(false);
+
+    // Open the composer action sheet (+)
+    await wrapper.get('[data-testid="composer-actions-toggle"]').trigger("click");
+    await wrapper.vm.$nextTick();
+
+    const modelAction = document.body.querySelector('[data-testid="action-model-settings"]') as HTMLButtonElement | null;
+    expect(modelAction).not.toBeNull();
+    expect(modelAction?.disabled).toBe(false);
+    expect(modelAction?.textContent).toContain("Model & reasoning");
+    expect(modelAction?.textContent).toContain("Model One · Med");
+
+    // Activating the entry opens the model picker
+    modelAction?.click();
+    await wrapper.vm.$nextTick();
+    expect(document.body.querySelector('[data-testid="model-picker-sheet"]')).not.toBeNull();
+
     const selector = wrapper.findComponent({ name: "MainChatModelSelectors" });
     selector.vm.$emit("setModel", "m1");
     selector.vm.$emit("setReasoningEffort", "high");
     await wrapper.vm.$nextTick();
     expect(wrapper.emitted("setModel")?.[0]).toEqual(["m1"]);
     expect(wrapper.emitted("setReasoningEffort")?.[0]).toEqual(["high"]);
+
+    // Dismissing the picker restores focus to the trigger
+    const doneBtn = document.body.querySelector('[data-testid="model-picker-done"]') as HTMLButtonElement | null;
+    doneBtn?.click();
+    await wrapper.vm.$nextTick();
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="composer-actions-toggle"]').element);
+
     wrapper.unmount();
+    document.body.innerHTML = "";
   });
 
-  it("keeps the current model visible while busy or locked", () => {
+  it("disables the model action entry while busy or input-locked", async () => {
     const wrapper = mount(MainChatComposerPanel, {
       props: {
         queuedPrompts: [],
         pendingImages: [],
         connected: true,
         busy: true,
-        inputLocked: true,
+        inputLocked: false,
         agents: [{ id: "codex", name: "Codex", ready: true }],
         activeAgentId: "codex",
         models: [model()],
         modelId: "m1",
         modelReasoningEffort: "high",
       },
+      attachTo: document.body,
     });
-    expect(wrapper.get('[data-testid="chat-capsule-text"]').text()).toBe("Model One");
-    expect(wrapper.get('[data-testid="chat-model-capsule"]').attributes("disabled")).toBeDefined();
+
+    await wrapper.get('[data-testid="composer-actions-toggle"]').trigger("click");
+    await wrapper.vm.$nextTick();
+
+    const modelAction = document.body.querySelector('[data-testid="action-model-settings"]') as HTMLButtonElement | null;
+    expect(modelAction).not.toBeNull();
+    expect(modelAction?.disabled).toBe(true);
     wrapper.unmount();
+    document.body.innerHTML = "";
+  });
+
+  it("shows an unavailable state when no models exist", async () => {
+    const wrapper = mount(MainChatComposerPanel, {
+      props: {
+        queuedPrompts: [],
+        pendingImages: [],
+        connected: true,
+        busy: false,
+        agents: [{ id: "codex", name: "Codex", ready: true }],
+        activeAgentId: "codex",
+        models: [],
+      },
+      attachTo: document.body,
+    });
+    await wrapper.get('[data-testid="composer-actions-toggle"]').trigger("click");
+    await wrapper.vm.$nextTick();
+    const summary = document.body.querySelector('[data-testid="action-model-summary"]');
+    expect(summary?.textContent).toBe("无可用模型");
+    wrapper.unmount();
+    document.body.innerHTML = "";
   });
 });

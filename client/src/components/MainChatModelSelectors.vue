@@ -46,6 +46,7 @@ const emit = defineEmits<{
   (e: "switchAgent", agentId: string): void;
   (e: "setModel", modelId: string): void;
   (e: "setReasoningEffort", effort: string): void;
+  (e: "pickerClose"): void;
 }>();
 
 const pickerOpen = ref(false);
@@ -224,10 +225,12 @@ const displayEfforts = computed(() => reasoningEffortOptions.value.map(id => ({
 function togglePicker(): void {
   if (!canChange.value || !compatibleModelOptions.value.length) return;
   pickerOpen.value = !pickerOpen.value;
+  if (!pickerOpen.value) emit("pickerClose");
 }
 
 function closePicker(): void {
   pickerOpen.value = false;
+  emit("pickerClose");
 }
 
 function selectModel(modelId: string): void {
@@ -239,6 +242,23 @@ function selectReasoningEffort(effort: string): void {
   if (!canChange.value || !reasoningEffortOptions.value.includes(effort)) return;
   emit("setReasoningEffort", effort);
 }
+
+function openPicker(): void {
+  if (!canChange.value || !compatibleModelOptions.value.length) return;
+  pickerOpen.value = true;
+}
+
+defineExpose({
+  openPicker,
+  closePicker,
+  togglePicker,
+  pickerOpen,
+  selectedModelLabel,
+  reasoningEffortValue,
+  capsuleLabel,
+  canChange,
+  compatibleModelOptions,
+});
 </script>
 
 <template>
