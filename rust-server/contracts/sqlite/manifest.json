@@ -1,9 +1,9 @@
 {
   "source_commit": "773bc0044496632c3db85fd14077b26cef0fe43f",
   "state": {
-    "schema_version": 51,
-    "tables": 31,
-    "indexes": 23,
+    "schema_version": 52,
+    "tables": 32,
+    "indexes": 24,
     "triggers": 0,
     "views": 0
   },
@@ -15,6 +15,6 @@
     "views": 0
   },
   "state_migration_count": 42,
-  "rust_state_contract_migration_count": 9,
+  "rust_state_contract_migration_count": 10,
   "workspace_migration_count": 29
 }

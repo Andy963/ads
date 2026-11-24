@@ -2,6 +2,7 @@ mod actions;
 mod attachments;
 mod auth;
 mod models;
+mod notes;
 mod projects;
 mod providers;
 pub mod pull_requests;
@@ -165,6 +166,11 @@ pub fn build_router(auth: Arc<AuthService>, config: RouterConfig) -> Router {
         )
         .route("/api/pull-requests", get(pull_requests::list))
         .route("/api/pull-requests/{number}", get(pull_requests::detail))
+        .route("/api/notes", get(notes::list).post(notes::create))
+        .route(
+            "/api/notes/{note_id}",
+            patch(notes::update).delete(notes::delete),
+        )
         .route("/api/model-configs", get(models::list).post(models::create))
         .route(
             "/api/model-configs/{model_id}",

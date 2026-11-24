@@ -10,6 +10,7 @@ mod model_config_store;
 mod model_provider_store;
 mod model_service_store;
 mod native_transcript_store;
+mod note_store;
 mod project_store;
 mod prompt_queue_store;
 mod review_queue_lease_store;
@@ -61,8 +62,8 @@ pub use history_store::{
 pub use lane_generation_store::{bump_lane_generation, get_lane_generation};
 pub use model_config_store::{
     delete_model_config, ensure_model_config_tables, get_model_config,
-    get_model_config_by_agent_model_id, list_model_configs, sanitize_model_config_json,
-    reconcile_provider_models, upsert_model_config,
+    get_model_config_by_agent_model_id, list_model_configs, reconcile_provider_models,
+    sanitize_model_config_json, upsert_model_config,
 };
 pub use model_provider_store::{
     delete_model_provider, delete_model_provider_with_references, ensure_model_provider_tables,
@@ -77,6 +78,10 @@ pub use model_service_store::{
 pub use native_transcript_store::{
     AppendNativeTurn, BeginNativeTurn, NativeTranscriptStore, UpdateNativeTurn,
     redact_native_transcript_text,
+};
+pub use note_store::{
+    ProjectNote, create_project_note, delete_project_note, ensure_project_notes_table,
+    get_project_note, list_project_notes, update_project_note,
 };
 pub use project_store::{
     DEFAULT_PROJECT_CHAT_SESSION_ID, DEFAULT_PROJECT_ID, UpdateWebProject, UpsertWebProject,
@@ -154,7 +159,7 @@ CREATE TABLE IF NOT EXISTS web_sessions (
 );
 "#;
 
-pub const STATE_SCHEMA_VERSION: i64 = 51;
+pub const STATE_SCHEMA_VERSION: i64 = 52;
 pub const WORKSPACE_SCHEMA_VERSION: i64 = 29;
 pub const SESSION_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 

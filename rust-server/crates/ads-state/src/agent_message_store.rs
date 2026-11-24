@@ -403,8 +403,8 @@ pub struct AgentHandoff {
 
 impl AgentHandoff {
     pub fn from_record(record: &AgentMessageRecord) -> Option<Self> {
-        let payload = ReviewVerdictHandoff::from_record(record)
-            .map(AgentHandoffPayload::ReviewVerdict)?;
+        let payload =
+            ReviewVerdictHandoff::from_record(record).map(AgentHandoffPayload::ReviewVerdict)?;
         Some(Self {
             id: record.id,
             message_id: record.message_id.clone(),
