@@ -62,7 +62,7 @@ pub use lane_generation_store::{bump_lane_generation, get_lane_generation};
 pub use model_config_store::{
     delete_model_config, ensure_model_config_tables, get_model_config,
     get_model_config_by_agent_model_id, list_model_configs, sanitize_model_config_json,
-    upsert_model_config,
+    reconcile_provider_models, upsert_model_config,
 };
 pub use model_provider_store::{
     delete_model_provider, delete_model_provider_with_references, ensure_model_provider_tables,

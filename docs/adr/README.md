@@ -70,4 +70,5 @@
 - 0059 - [ADR 0059: Require Complete Declarations Before Review Redispatch](0059-complete-review-rework-declarations.md)
 - 0060 - [ADR 0060: Reviewer-Owned Verification Selection](0060-reviewer-owned-verification-selection.md)
 - 0061 - [ADR 0061: Formalize Durable Agent Handoff Boundaries and Timeline Projections](0061-rust-agent-handoff-boundary.md)
+- 0062 - [ADR 0062: Authoritative Upstream Provider Model Sync](0062-authoritative-provider-model-sync.md)
 <!-- ADS:ADR_INDEX_END -->

@@ -539,3 +539,207 @@ async fn provider_routes_store_credentials_without_echoing_them() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body, json!({"error": "Not found"}));
 }
+
+#[tokio::test]
+async fn provider_model_sync_prunes_missing_upstream_models_and_cleans_references() {
+    use std::sync::{Arc, Mutex};
+    use axum::routing::get;
+    use tokio::net::TcpListener;
+
+    let upstream_models = Arc::new(Mutex::new(vec![
+        "model-keep".to_string(),
+        "model-obsolete".to_string(),
+    ]));
+    let upstream_state = Arc::clone(&upstream_models);
+    let upstream_app = axum::Router::new().route(
+        "/v1/models",
+        get(move || {
+            let state = Arc::clone(&upstream_state);
+            async move {
+                let ids = state.lock().expect("upstream models").clone();
+                axum::Json(json!({
+                    "data": ids.into_iter().map(|id| json!({"id": id})).collect::<Vec<_>>()
+                }))
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server_handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, upstream_app).await;
+    });
+
+    let app = test_app();
+    let cookie = login(&app.router).await;
+    let base_url = format!("http://{addr}/v1");
+
+    let (status, provider_a) = send(
+        &app.router,
+        "POST",
+        "/api/model-providers",
+        &cookie,
+        Some(json!({
+            "name": "SyncProviderA",
+            "baseUrl": base_url,
+            "apiKey": "sk-sync-test",
+            "isEnabled": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{provider_a}");
+    let provider_a_id = provider_a["id"].as_str().expect("provider a id").to_string();
+
+    let (status, provider_b) = send(
+        &app.router,
+        "POST",
+        "/api/model-providers",
+        &cookie,
+        Some(json!({
+            "name": "OtherProviderB",
+            "baseUrl": "https://other.example.com/v1",
+            "isEnabled": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{provider_b}");
+    let provider_b_id = provider_b["id"].as_str().expect("provider b id").to_string();
+
+    let (status, other_model) = send(
+        &app.router,
+        "POST",
+        "/api/model-configs",
+        &cookie,
+        Some(json!({
+            "id": "model-other-provider",
+            "modelId": "model-obsolete",
+            "displayName": "Other Provider Model",
+            "provider": "OtherProviderB",
+            "providerId": provider_b_id
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{other_model}");
+    let other_model_id = other_model["id"].as_str().expect("other model id").to_string();
+
+    // First sync discovers model-keep and model-obsolete.
+    let (status, first_sync) = send(
+        &app.router,
+        "POST",
+        &format!("/api/model-providers/{provider_a_id}/models/sync"),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first_sync}");
+    let first_models = first_sync["models"].as_array().expect("models array");
+    assert_eq!(first_models.len(), 2);
+    let keep_id = first_models
+        .iter()
+        .find(|m| m["modelId"] == "model-keep")
+        .expect("keep")
+        ["id"]
+        .as_str()
+        .expect("keep id")
+        .to_string();
+    let obsolete_id = first_models
+        .iter()
+        .find(|m| m["modelId"] == "model-obsolete")
+        .expect("obsolete")
+        ["id"]
+        .as_str()
+        .expect("obsolete id")
+        .to_string();
+
+    // Customize display name of keep_id, enable both in conversation with obsolete_id as default,
+    // and assign obsolete_id to acopilot role profile.
+    let (status, _) = send(
+        &app.router,
+        "PATCH",
+        &format!("/api/model-configs/{keep_id}"),
+        &cookie,
+        Some(json!({ "displayName": "My Kept Alias" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, svc_body) = send(
+        &app.router,
+        "PUT",
+        "/api/model-services/conversation",
+        &cookie,
+        Some(json!({
+            "modelIds": [obsolete_id, keep_id],
+            "defaultModelId": obsolete_id
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{svc_body}");
+    let (status, _) = send(
+        &app.router,
+        "PUT",
+        "/api/role-profiles/profile-default-acopilot",
+        &cookie,
+        Some(json!({ "model_id": obsolete_id })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Upstream removes model-obsolete and adds model-added.
+    *upstream_models.lock().expect("upstream models") = vec![
+        "model-keep".to_string(),
+        "model-added".to_string(),
+    ];
+
+    let (status, second_sync) = send(
+        &app.router,
+        "POST",
+        &format!("/api/model-providers/{provider_a_id}/models/sync"),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second_sync}");
+    let second_models = second_sync["models"].as_array().expect("second models");
+    let second_model_ids: Vec<&str> = second_models
+        .iter()
+        .filter_map(|m| m["modelId"].as_str())
+        .collect();
+    assert!(second_model_ids.contains(&"model-keep"));
+    assert!(second_model_ids.contains(&"model-added"));
+    assert!(!second_model_ids.contains(&"model-obsolete"));
+    let kept_after = second_models
+        .iter()
+        .find(|m| m["id"] == keep_id)
+        .expect("kept preserved");
+    assert_eq!(kept_after["displayName"], json!("My Kept Alias"));
+
+    // Other provider's model with the same upstream modelId must remain intact.
+    let (status, all_models) = send(&app.router, "GET", "/api/model-configs", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let all_arr = all_models.as_array().expect("all models");
+    assert!(all_arr.iter().any(|m| m["id"] == other_model_id));
+    assert!(!all_arr.iter().any(|m| m["id"] == obsolete_id));
+
+    // Conversation service default promoted to keep_id and acopilot role profile updated.
+    let (status, services) = send(&app.router, "GET", "/api/model-services", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let conv = services
+        .as_array()
+        .expect("services")
+        .iter()
+        .find(|s| s["service"] == "conversation")
+        .expect("conversation service");
+    assert_eq!(conv["modelIds"], json!([keep_id]));
+    assert_eq!(conv["defaultModelId"], json!(keep_id));
+
+    let (status, roles) = send(&app.router, "GET", "/api/role-profiles", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let acopilot = roles
+        .as_array()
+        .expect("roles")
+        .iter()
+        .find(|r| r["role"] == "acopilot")
+        .expect("acopilot role");
+    assert_eq!(acopilot["model_id"], json!(keep_id));
+
+    server_handle.abort();
+}

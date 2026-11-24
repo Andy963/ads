@@ -263,3 +263,116 @@ fn agent_model_lookup_stays_provider_scoped() {
         .expect("exists");
     assert_eq!(null_scoped.id, "model-b");
 }
+
+#[test]
+fn reconcile_provider_models_prunes_obsolete_preserves_other_providers_and_cleans_references() {
+    let directory = tempdir().expect("temp dir");
+    let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+    let mut connection = db.connect().expect("connection");
+    initialize_model_services(&connection).expect("init services");
+
+    let provider_a = ModelProvider {
+        id: "provider-a".to_string(),
+        name: "Provider A".to_string(),
+        base_url: "https://a.test/v1".to_string(),
+        credential_profile: None,
+        wire_api: None,
+        is_enabled: true,
+        updated_at: None,
+    };
+    let provider_b = ModelProvider {
+        id: "provider-b".to_string(),
+        name: "Provider B".to_string(),
+        base_url: "https://b.test/v1".to_string(),
+        credential_profile: None,
+        wire_api: None,
+        is_enabled: true,
+        updated_at: None,
+    };
+    upsert_model_provider(&connection, &provider_a, 1).expect("provider a");
+    upsert_model_provider(&connection, &provider_b, 1).expect("provider b");
+
+    let mut kept = model("model-kept", "kept-upstream", Some("provider-a"));
+    kept.display_name = "Custom Kept Alias".to_string();
+    upsert_model_config(&mut connection, &kept, 1).expect("kept");
+    upsert_model_config(
+        &mut connection,
+        &model("model-stale", "stale-upstream", Some("provider-a")),
+        1,
+    )
+    .expect("stale");
+    upsert_model_config(
+        &mut connection,
+        &model("model-other", "stale-upstream", Some("provider-b")),
+        1,
+    )
+    .expect("other provider");
+    upsert_model_config(
+        &mut connection,
+        &model("model-unscoped", "unscoped-model", None),
+        1,
+    )
+    .expect("unscoped");
+
+    save_model_service(
+        &mut connection,
+        ads_state::CONVERSATION_SERVICE,
+        &["model-stale".to_string(), "model-kept".to_string()],
+        Some("model-stale"),
+    )
+    .expect("save conversation service");
+    connection
+        .execute(
+            "UPDATE role_profiles SET model_id = 'model-stale' WHERE role = 'acopilot'",
+            [],
+        )
+        .expect("set role model");
+
+    let synced = ads_state::reconcile_provider_models(
+        &mut connection,
+        &provider_a,
+        &["kept-upstream".to_string(), "brand-new".to_string()],
+        200,
+    )
+    .expect("reconcile");
+
+    let synced_model_ids: Vec<&str> = synced.iter().map(|m| m.model_id.as_str()).collect();
+    assert!(synced_model_ids.contains(&"kept-upstream"));
+    assert!(synced_model_ids.contains(&"brand-new"));
+    assert!(!synced_model_ids.contains(&"stale-upstream"));
+
+    let kept_after = get_model_config(&connection, "model-kept")
+        .expect("read kept")
+        .expect("kept exists");
+    assert_eq!(kept_after.display_name, "Custom Kept Alias");
+    assert!(
+        get_model_config(&connection, "model-stale")
+            .expect("read stale")
+            .is_none()
+    );
+    assert!(
+        get_model_config(&connection, "model-other")
+            .expect("read other")
+            .is_some()
+    );
+    assert!(
+        get_model_config(&connection, "model-unscoped")
+            .expect("read unscoped")
+            .is_some()
+    );
+
+    let conversation = get_model_service(&connection, ads_state::CONVERSATION_SERVICE).expect("service");
+    assert_eq!(conversation.model_ids, vec!["model-kept"]);
+    assert_eq!(
+        conversation.default_model_id.as_deref(),
+        Some("model-kept")
+    );
+    let role_model: String = connection
+        .query_row(
+            "SELECT model_id FROM role_profiles WHERE role = 'acopilot'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("role model");
+    assert_eq!(role_model, "model-kept");
+}
