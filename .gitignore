@@ -17,6 +17,7 @@ __pycache__/
 .tmp/
 temp/
 deploy/
+!docs/deploy/
 *.pid
 
 # ADS specific

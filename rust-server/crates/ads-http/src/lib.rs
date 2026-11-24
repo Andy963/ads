@@ -23,9 +23,9 @@ pub use agent_messages::{
 pub use command::{
     AdsCommandOptions, CommandLineResult, run_ads_command_line, run_ads_command_line_with_options,
 };
-pub use cookies::CookieSecureMode;
+pub use cookies::{CookieSecureMode, TrustedProxies, client_ip_with_trusted_proxies};
 pub use error::ApiError;
-pub use origin::{is_origin_allowed_for_request, parse_allowed_origins};
+pub use origin::{forwarded_hostname, is_origin_allowed_for_request, parse_allowed_origins};
 pub use paths::{
     PathValidationFailure, ValidatedWorkspacePath, WorkspacePathError, detect_workspace_root,
     resolve_allowed_dirs, validate_workspace_path, validate_workspace_path_detailed,

@@ -61,6 +61,7 @@ pub async fn handle_fallback(State(state): State<AppState>, request: Request) ->
     if path.starts_with("/healthz") {
         return Response::builder()
             .status(StatusCode::OK)
+            .header(header::CACHE_CONTROL, "no-store")
             .body(Body::from("ok"))
             .unwrap_or_else(|_| {
                 text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
@@ -152,6 +153,7 @@ struct StaticFile {
     content_type: &'static str,
     cache_control: &'static str,
     gzip: bool,
+    vary_encoding: bool,
 }
 
 impl StaticFile {
@@ -160,10 +162,11 @@ impl StaticFile {
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, self.content_type)
             .header(header::CACHE_CONTROL, self.cache_control);
+        if self.vary_encoding {
+            builder = builder.header(header::VARY, "Accept-Encoding");
+        }
         if self.gzip {
-            builder = builder
-                .header(header::CONTENT_ENCODING, "gzip")
-                .header(header::VARY, "Accept-Encoding");
+            builder = builder.header(header::CONTENT_ENCODING, "gzip");
         }
         builder.body(Body::from(self.bytes)).unwrap_or_else(|_| {
             text_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error")
@@ -203,7 +206,8 @@ fn read_static_file_blocking(
         Err(_) => return FileOutcome::Missing,
     };
     let content_type = content_type_for(relative);
-    let gzip = accepts_gzip && is_compressible(relative);
+    let vary_encoding = is_compressible(relative);
+    let gzip = accepts_gzip && vary_encoding;
     if gzip {
         let input = bytes;
         match compress_gzip(input) {
@@ -217,6 +221,7 @@ fn read_static_file_blocking(
         content_type,
         cache_control: cache_control_for(relative),
         gzip,
+        vary_encoding,
     })
 }
 

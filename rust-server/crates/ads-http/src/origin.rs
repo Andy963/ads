@@ -30,10 +30,44 @@ pub fn is_origin_allowed_for_request(headers: &HeaderMap, allowed: &HashSet<Stri
     if is_loopback_hostname(&origin_host) {
         return true;
     }
-    let request_host = hostname_from_host_header(first_header_value(headers, "host"));
-    request_host
+    let forwarded_host = forwarded_hostname(headers);
+    if forwarded_host
         .as_deref()
         .is_some_and(|request_host| request_host == origin_host)
+    {
+        return true;
+    }
+    let direct_host = hostname_from_host_header(first_header_value(headers, "host"));
+    direct_host
+        .as_deref()
+        .is_some_and(|request_host| request_host == origin_host)
+}
+
+pub fn forwarded_hostname(headers: &HeaderMap) -> Option<String> {
+    let x_forwarded_host = first_header_value(headers, "x-forwarded-host");
+    if let Some(first_hop) = x_forwarded_host
+        .split(',')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        && let Some(host) = hostname_from_host_header(first_hop)
+    {
+        return Some(host);
+    }
+    let forwarded = first_header_value(headers, "forwarded");
+    if let Some(first_hop) = forwarded.split(',').next() {
+        for param in first_hop.split(';') {
+            if let Some((key, value)) = param.split_once('=')
+                && key.trim().eq_ignore_ascii_case("host")
+            {
+                let unquoted = value.trim().trim_matches('"').trim();
+                if let Some(host) = hostname_from_host_header(unquoted) {
+                    return Some(host);
+                }
+            }
+        }
+    }
+    None
 }
 
 fn first_header_value<'a>(headers: &'a HeaderMap, name: &str) -> &'a str {
@@ -145,5 +179,30 @@ mod tests {
             &headers(Some("not a url"), Some("ads.example")),
             &allowed
         ));
+    }
+
+    #[test]
+    fn default_policy_matches_x_forwarded_host_and_rfc7239_forwarded_host() {
+        let allowed = HashSet::new();
+        let mut xfh = headers(Some("https://ads.example.com"), Some("127.0.0.1:8787"));
+        xfh.insert(
+            "x-forwarded-host",
+            HeaderValue::from_static("ads.example.com:443, internal.proxy:8080"),
+        );
+        assert!(is_origin_allowed_for_request(&xfh, &allowed));
+
+        let mut evil_xfh = headers(Some("https://evil.example.com"), Some("127.0.0.1:8787"));
+        evil_xfh.insert(
+            "x-forwarded-host",
+            HeaderValue::from_static("ads.example.com"),
+        );
+        assert!(!is_origin_allowed_for_request(&evil_xfh, &allowed));
+
+        let mut rfc = headers(Some("https://tunnel.example.com"), Some("127.0.0.1:8787"));
+        rfc.insert(
+            "forwarded",
+            HeaderValue::from_static("for=203.0.113.9;proto=https;host=\"tunnel.example.com:443\", for=10.0.0.1;host=internal"),
+        );
+        assert!(is_origin_allowed_for_request(&rfc, &allowed));
     }
 }
