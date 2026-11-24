@@ -638,9 +638,7 @@ async fn pass_requires_reviewer_selected_verification() {
     let error = run_reviewer_inspection(options(&repo, None, complete))
         .await
         .expect_err("verification is required");
-    assert!(
-        matches!(error, ReviewerError::Incomplete(message) if message.contains("did not run a verification command"))
-    );
+    assert!(matches!(error, ReviewerError::Incomplete(_)));
     assert_eq!(requests.lock().expect("requests").len(), 1);
 }
 
@@ -675,6 +673,53 @@ async fn pass_requires_an_available_verification_command_to_start() {
     let reports = verification_report.lock().expect("verification report");
     assert_eq!(reports.commands.len(), 1);
     assert!(!reports.commands[0].started);
+}
+
+#[tokio::test]
+async fn allows_pass_when_a_later_verification_succeeds() {
+    let repo = repository();
+    let (complete, _) = scripted(vec![
+        completion(
+            "",
+            vec![NativeToolCall::new(
+                "call-1",
+                "run_verification",
+                json!({
+                    "executable": "ads-command-that-does-not-exist",
+                    "args": []
+                })
+                .to_string(),
+            )],
+        ),
+        completion(
+            "",
+            vec![NativeToolCall::new(
+                "call-2",
+                "run_verification",
+                json!({
+                    "executable": "grep",
+                    "args": ["-F", "-q", "line one", "src.ts"]
+                })
+                .to_string(),
+            )],
+        ),
+        completion(
+            r#"{"status":"PASS","summary":"Looks good","defects":[]}"#,
+            Vec::new(),
+        ),
+    ]);
+    let options = options(&repo, None, complete);
+    let verification_report = Arc::clone(&options.verification_report);
+    let verdict = run_reviewer_inspection(options)
+        .await
+        .expect("later successful verification makes PASS authoritative");
+
+    assert_eq!(verdict.status, ReviewVerdictStatus::Pass);
+    let reports = verification_report.lock().expect("verification report");
+    assert_eq!(reports.commands.len(), 2);
+    assert!(!reports.commands[0].started);
+    assert!(reports.commands[1].started);
+    assert_eq!(reports.commands[1].exit_code, 0);
 }
 
 #[tokio::test]

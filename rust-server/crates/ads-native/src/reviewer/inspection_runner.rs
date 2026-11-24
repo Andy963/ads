@@ -180,36 +180,7 @@ pub async fn run_reviewer_inspection(
                             .to_string(),
                     ));
                 }
-                if inspection.has_unavailable_verification() {
-                    let details = inspection
-                        .verification_report()
-                        .commands
-                        .into_iter()
-                        .filter(|command| !command.started)
-                        .map(|command| command.summary)
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    return Err(ReviewerError::Incomplete(
-                        format!("Reviewer verification could not start a selected command: {details}"),
-                    ));
-                }
-                if inspection.verification_report().commands.is_empty() {
-                    return Err(ReviewerError::Incomplete(
-                        "Reviewer did not run a verification command; no PASS verdict is authoritative."
-                            .to_string(),
-                    ));
-                }
                 let verification_report = inspection.verification_report();
-                if !verification_report
-                    .commands
-                    .iter()
-                    .any(|command| command.started)
-                {
-                    return Err(ReviewerError::Incomplete(
-                        "Reviewer did not start an available verification command; no PASS verdict is authoritative."
-                            .to_string(),
-                    ));
-                }
                 if verdict.status == ads_reviewer::ReviewVerdictStatus::Pass
                     && !verification_report.has_successful_command()
                 {
