@@ -279,7 +279,7 @@ impl NativePromptRunner {
         self.claim_transcript(&transcript_id, &writer_id)?;
         let continuation = self.load_continuation(&transcript_id, &writer_id)?;
         let required_recent_turns = continuation.pending_turns.saturating_add(1);
-        let system_prompt = self.system_prompt()?;
+        let system_prompt = self.system_prompt(&entry)?;
         let user_message = NativeChatMessage::user(if images.is_empty() {
             NativeMessageContent::Text(user_text.clone())
         } else {
@@ -381,7 +381,10 @@ impl NativePromptRunner {
                 return Ok(PromptQueueRunOutcome::failure(message));
             }
         };
-        let tools = native_tool_definitions();
+        let mut tools = native_tool_definitions();
+        if entry.lane_namespace == ads_state::WEB_ACTIONS_NAMESPACE {
+            tools.retain(|tool| tool.function.name != "review_action");
+        }
         let mut response_text = String::new();
         let mut usage: Option<NativeUsage> = None;
         let mut loop_guard = ToolLoopGuard::new();
@@ -990,9 +993,21 @@ impl NativePromptRunner {
             .unwrap_or_else(|| NativeError::Io("Transient model retry loop exhausted".to_string())))
     }
 
-    fn system_prompt(&self) -> NativeResult<Option<String>> {
+    fn role_for_turn<'a>(&'a self, entry: &LaneTurn) -> Option<&'a str> {
+        match entry.lane_namespace.as_str() {
+            ads_state::WEB_ACTIONS_NAMESPACE => Some(ads_state::ROLE_REVIEWER),
+            ads_state::WEB_ACOPILOT_NAMESPACE => Some(ads_state::ROLE_ACOPILOT),
+            "scheduler" => None,
+            _ => Some(self.options.role.as_str()),
+        }
+    }
+
+    fn system_prompt(&self, entry: &LaneTurn) -> NativeResult<Option<String>> {
+        let Some(role) = self.role_for_turn(entry) else {
+            return Ok(None);
+        };
         let connection = self.options.db.connect()?;
-        Ok(get_default_role_profile(&connection, &self.options.role)?
+        Ok(get_default_role_profile(&connection, role)?
             .map(|profile| profile.system_prompt.trim().to_string())
             .filter(|value| !value.is_empty()))
     }

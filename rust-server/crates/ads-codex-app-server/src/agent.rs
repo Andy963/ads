@@ -1665,7 +1665,8 @@ impl CodexAppServerAgent {
 
     fn dynamic_tools(&self) -> Vec<Value> {
         let mut tools = self.inner.options.dynamic_tools.clone();
-        if !tools
+        if self.inner.options.sandbox_mode != SandboxMode::ReadOnly
+            && !tools
             .iter()
             .any(|tool| tool.get("name").and_then(Value::as_str) == Some("review_action"))
         {

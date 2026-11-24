@@ -16,8 +16,9 @@ use ads_runtime::{
 };
 use ads_state::{
     DEFAULT_HISTORY_MAX_ENTRIES_PER_SESSION, DEFAULT_HISTORY_MAX_TEXT_LENGTH, HistoryAddOutcome,
-    HistoryStore, PromptExecutionMetadata, StateDb, StateError, build_client_message_history_kind,
-    history_client_message_id,
+    HistoryStore, PromptExecutionMetadata, ROLE_ACOPILOT, ROLE_REVIEWER, StateDb, StateError,
+    WEB_ACOPILOT_NAMESPACE, WEB_ACTIONS_NAMESPACE, build_client_message_history_kind,
+    get_default_role_profile, history_client_message_id,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rusqlite::{OptionalExtension, params};
@@ -55,10 +56,16 @@ impl CodexAppServerPromptRunnerOptions {
     }
 }
 
+struct CachedAgent {
+    agent: CodexAppServerAgent,
+    developer_instructions: Option<String>,
+    sandbox_mode: SandboxMode,
+}
+
 pub struct CodexAppServerPromptRunner {
     options: CodexAppServerPromptRunnerOptions,
     registry: Arc<CodexAppServerDaemonRegistry>,
-    agents: Mutex<HashMap<String, CodexAppServerAgent>>,
+    agents: Mutex<HashMap<String, CachedAgent>>,
     active: Mutex<HashMap<LaneTurnKey, watch::Sender<bool>>>,
 }
 
@@ -83,6 +90,24 @@ impl CodexAppServerPromptRunner {
         )
     }
 
+    fn role_and_sandbox_for(entry: &LaneTurn) -> (Option<&'static str>, SandboxMode) {
+        match entry.lane_namespace.as_str() {
+            WEB_ACTIONS_NAMESPACE => (Some(ROLE_REVIEWER), SandboxMode::ReadOnly),
+            WEB_ACOPILOT_NAMESPACE => (Some(ROLE_ACOPILOT), SandboxMode::WorkspaceWrite),
+            _ => (None, SandboxMode::WorkspaceWrite),
+        }
+    }
+
+    fn load_role_instructions(&self, role: Option<&str>) -> ads_state::StateResult<Option<String>> {
+        let Some(role) = role else {
+            return Ok(None);
+        };
+        let connection = self.options.db.connect()?;
+        Ok(get_default_role_profile(&connection, role)?
+            .map(|profile| profile.system_prompt.trim().to_string())
+            .filter(|value| !value.is_empty()))
+    }
+
     async fn agent_for(
         &self,
         entry: &LaneTurn,
@@ -95,9 +120,14 @@ impl CodexAppServerPromptRunner {
             model,
             self.options.daemon_options.clone(),
         )?;
-        let key = agent_key(entry, &selection.model_key, effort);
-        if let Some(agent) = self.agents.lock().await.get(&key).cloned() {
-            return Ok((agent, key));
+        let (role, sandbox_mode) = Self::role_and_sandbox_for(entry);
+        let developer_instructions = self.load_role_instructions(role)?;
+        let key = agent_key(entry, &selection.model_key, effort, role);
+        if let Some(cached) = self.agents.lock().await.get(&key)
+            && cached.developer_instructions == developer_instructions
+            && cached.sandbox_mode == sandbox_mode
+        {
+            return Ok((cached.agent.clone(), key));
         }
         let agent = CodexAppServerAgent::new(CodexAppServerAgentOptions {
             project_id: ads_state::derive_project_session_id(&entry.workspace_root),
@@ -106,8 +136,8 @@ impl CodexAppServerPromptRunner {
             model: selection.model,
             resume_thread_id: None,
             reasoning_effort: effort.unwrap_or("high").to_string(),
-            sandbox_mode: SandboxMode::WorkspaceWrite,
-            developer_instructions: None,
+            sandbox_mode,
+            developer_instructions: developer_instructions.clone(),
             dynamic_tools: Vec::new(),
             daemon_options: selection.daemon_options,
             registry: Some(Arc::clone(&self.registry)),
@@ -118,7 +148,14 @@ impl CodexAppServerPromptRunner {
         if let Some(thread_id) = load_thread_id(&self.options.db, &key)? {
             agent.restore_thread(&thread_id, true).await;
         }
-        self.agents.lock().await.insert(key.clone(), agent.clone());
+        self.agents.lock().await.insert(
+            key.clone(),
+            CachedAgent {
+                agent: agent.clone(),
+                developer_instructions,
+                sandbox_mode,
+            },
+        );
         Ok((agent, key))
     }
 }
@@ -494,13 +531,19 @@ fn resolve_turn_idle_timeout() -> Option<Duration> {
         })
 }
 
-fn agent_key(entry: &LaneTurn, model_key: &str, effort: Option<&str>) -> String {
+fn agent_key(
+    entry: &LaneTurn,
+    model_key: &str,
+    effort: Option<&str>,
+    role: Option<&str>,
+) -> String {
     format!(
-        "{}::{}::{}::{}",
+        "{}::{}::{}::{}::{}",
         entry.logical_history_key,
         entry.workspace_root,
         model_key,
-        effort.unwrap_or_default()
+        effort.unwrap_or_default(),
+        role.unwrap_or("default")
     )
 }
 
