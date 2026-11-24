@@ -607,6 +607,12 @@ impl ReviewQueue {
                         .to_string(),
                 ));
             }
+            if !verification_report.has_successful_sandboxed_command() {
+                return Err(ReviewError::Incomplete(
+                    "Reviewer PASS requires at least one verification command to complete successfully inside the isolated sandbox."
+                        .to_string(),
+                ));
+            }
         }
         let verdict = reviewer_result?;
         self.assert_current_session(session, session_key, "review")

@@ -110,6 +110,14 @@ fn pass_reviewer() -> ads_actions::ReviewerRunner {
 }
 
 fn pass_reviewer_with_sandbox(sandboxed: bool) -> ads_actions::ReviewerRunner {
+    pass_reviewer_with_verification(sandboxed, true, 0)
+}
+
+fn pass_reviewer_with_verification(
+    sandboxed: bool,
+    started: bool,
+    exit_code: i64,
+) -> ads_actions::ReviewerRunner {
     Arc::new(move |request: ReviewerRequest| {
         request
             .verification_report
@@ -118,11 +126,15 @@ fn pass_reviewer_with_sandbox(sandboxed: bool) -> ads_actions::ReviewerRunner {
             .commands
             .push(ReviewTestReport {
                 command: "[\"cargo\",\"test\"]".to_string(),
-                exit_code: 0,
-                summary: "passed".to_string(),
+                exit_code,
+                summary: if exit_code == 0 {
+                    "passed".to_string()
+                } else {
+                    format!("failed with exit code {exit_code}")
+                },
                 output: Some("ok".to_string()),
                 sandboxed,
-                started: true,
+                started,
             });
         Box::pin(async {
             Ok(ReviewVerdict {
@@ -755,6 +767,47 @@ async fn refuses_pass_when_verification_was_not_sandboxed() {
     assert_eq!(verdicts[0]["status"], "INCOMPLETE");
     let report: Value = serde_json::from_str(&job.verification_report_json).expect("report");
     assert_eq!(report["commands"][0]["sandboxed"], false);
+    assert_eq!(report["commands"][0]["started"], true);
+}
+
+#[tokio::test]
+async fn refuses_pass_when_no_sandboxed_verification_command_succeeded() {
+    let (_directory, db) = state();
+    let (_temp, repo, base, head) = repo();
+    let target = resolved(&repo, &base, &head);
+    let project = target.project_id.clone();
+    let mut options = options();
+    options.target_resolver = Some(fixed_resolver(target));
+    options.reviewer = Some(pass_reviewer_with_verification(true, true, 1));
+    options.publisher = Some(Arc::new(|_request: IssueCommentRequest| {
+        Box::pin(async { Ok(()) })
+    }));
+
+    let queue = ReviewQueue::new(db.clone(), "worker-1", options);
+    let ack = queue
+        .dispatch(
+            dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12)),
+            1_000,
+        )
+        .expect("dispatch");
+    assert!(queue.process(&project, &repo).await.expect("process"));
+
+    let connection = db.connect().expect("connection");
+    let job = get_action_job(&connection, &ack.job_id)
+        .expect("read")
+        .expect("job");
+    assert_eq!(job.status, ActionJobStatus::Completed);
+    assert!(
+        job.current_step
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("INCOMPLETE:")
+    );
+    let verdicts: Value = serde_json::from_str(&job.review_verdicts_json).expect("verdicts");
+    assert_eq!(verdicts[0]["status"], "INCOMPLETE");
+    let report: Value = serde_json::from_str(&job.verification_report_json).expect("report");
+    assert_eq!(report["commands"][0]["exitCode"], 1);
+    assert_eq!(report["commands"][0]["sandboxed"], true);
     assert_eq!(report["commands"][0]["started"], true);
 }
 

@@ -32,11 +32,30 @@ const MAX_VERIFICATION_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_VERIFICATION_TREE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_VERIFICATION_TMPFS_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_VERIFICATION_WORKSPACE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_VERIFICATION_CPU_SECONDS: u64 = 30 * 60;
+const MAX_VERIFICATION_ADDRESS_SPACE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_VERIFICATION_PROCESS_COUNT: u64 = 512;
+const MAX_VERIFICATION_FILE_BYTES: u64 = 1024 * 1024 * 1024;
 const VERIFICATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(60);
 const SANDBOX_STARTED_MARKER: &str = "ADS_SANDBOX_STARTED";
 const VERIFICATION_STARTED_MARKER: &str = "ADS_VERIFICATION_STARTED";
-const SANDBOX_BOOTSTRAP: &str = "set -eu; ulimit -u 512; cp -a --no-preserve=ownership /source/. /workspace/; cd -- \"$1\"; shift; printf '%s\\n' 'ADS_SANDBOX_STARTED'; executable_path=$(command -v \"$1\" 2>/dev/null) || exit 127; case \"$executable_path\" in /*) ;; *) exit 127 ;; esac; printf '%s\\n' 'ADS_VERIFICATION_STARTED'; if exec \"$@\"; then exit 0; else status=$?; exit \"$status\"; fi";
+const SANDBOX_BOOTSTRAP: &str = "set -eu; source_root=${ADS_VERIFICATION_SOURCE:?}; workspace_root=${ADS_VERIFICATION_WORKSPACE:?}; cp -a --no-preserve=ownership \"$source_root\"/. \"$workspace_root\"/; cd -- \"$workspace_root/$1\"; shift; printf '%s\\n' 'ADS_SANDBOX_STARTED'; executable_path=$(command -v \"$1\" 2>/dev/null) || exit 127; case \"$executable_path\" in /*) ;; *) exit 127 ;; esac; printf '%s\\n' 'ADS_VERIFICATION_STARTED'; exec \"$@\"";
+
+#[derive(Debug, Clone)]
+struct SandboxPrograms {
+    resource_limiter: PathBuf,
+    bubblewrap: PathBuf,
+}
+
+impl Default for SandboxPrograms {
+    fn default() -> Self {
+        Self {
+            resource_limiter: PathBuf::from("prlimit"),
+            bubblewrap: PathBuf::from("bwrap"),
+        }
+    }
+}
 
 const SNAPSHOT_UNAVAILABLE: &str = "Inspection snapshot unavailable: Git could not read the reviewed commit within its size/time limits. Do not assume omitted evidence is safe; return INCOMPLETE.";
 
@@ -67,6 +86,7 @@ pub struct ReviewerInspectionTools {
     verification_workspace: Option<(tempfile::TempDir, PathBuf)>,
     verification_report: Arc<Mutex<ReviewVerificationReport>>,
     verification_unavailable: bool,
+    sandbox_programs: SandboxPrograms,
 }
 
 impl ReviewerInspectionTools {
@@ -93,6 +113,7 @@ impl ReviewerInspectionTools {
             verification_workspace: None,
             verification_report: Arc::new(Mutex::new(ReviewVerificationReport::default())),
             verification_unavailable: false,
+            sandbox_programs: SandboxPrograms::default(),
         })
     }
 
@@ -101,6 +122,12 @@ impl ReviewerInspectionTools {
         report: Arc<Mutex<ReviewVerificationReport>>,
     ) -> Self {
         self.verification_report = report;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_sandbox_programs(mut self, programs: SandboxPrograms) -> Self {
+        self.sandbox_programs = programs;
         self
     }
 
@@ -460,7 +487,8 @@ impl ReviewerInspectionTools {
             snapshot.join(working_directory)
         };
 
-        let mut command = sandbox_command(&snapshot, &cwd, executable, args)?;
+        let mut command =
+            sandbox_command(&snapshot, &cwd, executable, args, &self.sandbox_programs)?;
         let mut child = command
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1061,14 +1089,27 @@ fn sandbox_command(
     working_directory: &Path,
     executable: &str,
     args: &[String],
+    programs: &SandboxPrograms,
 ) -> NativeResult<Command> {
-    let mut command = Command::new("bwrap");
+    let mut command = Command::new(&programs.resource_limiter);
     command.env_clear();
+    command.env("PATH", "/usr/bin:/bin");
+    command.args([
+        format!("--cpu={MAX_VERIFICATION_CPU_SECONDS}:{MAX_VERIFICATION_CPU_SECONDS}"),
+        format!(
+            "--as={MAX_VERIFICATION_ADDRESS_SPACE_BYTES}:{MAX_VERIFICATION_ADDRESS_SPACE_BYTES}"
+        ),
+        format!("--nproc={MAX_VERIFICATION_PROCESS_COUNT}:{MAX_VERIFICATION_PROCESS_COUNT}"),
+        format!("--fsize={MAX_VERIFICATION_FILE_BYTES}:{MAX_VERIFICATION_FILE_BYTES}"),
+    ]);
+    command.arg("--").arg(&programs.bubblewrap);
     command.args([
         "--die-with-parent",
         "--unshare-all",
         "--unshare-user",
         "--disable-userns",
+        "--cap-drop",
+        "ALL",
         "--ro-bind",
         "/usr",
         "/usr",
@@ -1137,11 +1178,6 @@ fn sandbox_command(
     let cwd = working_directory.strip_prefix(snapshot).map_err(|_| {
         NativeError::Configuration("Verification directory escaped its snapshot.".to_string())
     })?;
-    let sandbox_cwd = if cwd.as_os_str().is_empty() {
-        "/workspace".to_string()
-    } else {
-        format!("/workspace/{}", cwd.to_string_lossy())
-    };
     let mut path_entries = vec![
         "/usr/local/bin".to_string(),
         "/usr/bin".to_string(),
@@ -1255,6 +1291,12 @@ fn sandbox_command(
         "--setenv",
         "NPM_CONFIG_CACHE",
         "/tmp/npm-cache",
+        "--setenv",
+        "ADS_VERIFICATION_SOURCE",
+        "/source",
+        "--setenv",
+        "ADS_VERIFICATION_WORKSPACE",
+        "/workspace",
         "--",
     ]);
     command
@@ -1263,7 +1305,7 @@ fn sandbox_command(
             "-c",
             SANDBOX_BOOTSTRAP,
             "ads-verification",
-            &sandbox_cwd,
+            cwd.to_string_lossy().as_ref(),
             executable,
         ])
         .args(args);
@@ -1649,13 +1691,36 @@ mod tests {
     #[test]
     fn verification_sandbox_uses_a_bounded_tmpfs_and_never_binds_node_modules() {
         let snapshot = Path::new("/tmp/ads-review-test/workspace");
-        let command = sandbox_command(snapshot, snapshot, "cargo", &[]).expect("sandbox command");
+        let command = sandbox_command(
+            snapshot,
+            snapshot,
+            "cargo",
+            &[],
+            &SandboxPrograms::default(),
+        )
+        .expect("sandbox command");
         let arguments = command
             .as_std()
             .get_args()
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
 
+        assert_eq!(command.as_std().get_program(), "prlimit");
+        assert!(arguments.windows(5).any(|window| {
+            window
+                == [
+                    "--cpu=1800:1800",
+                    "--as=4294967296:4294967296",
+                    "--nproc=512:512",
+                    "--fsize=1073741824:1073741824",
+                    "--",
+                ]
+        }));
+        assert!(
+            arguments
+                .windows(3)
+                .any(|window| { window == ["bwrap", "--die-with-parent", "--unshare-all"] })
+        );
         assert!(arguments.windows(3).any(|window| {
             window == ["--ro-bind", "/tmp/ads-review-test/workspace", "/source"]
         }));
@@ -1675,10 +1740,123 @@ mod tests {
             })
         );
         assert!(
+            arguments
+                .windows(2)
+                .any(|window| window == ["--cap-drop", "ALL"])
+        );
+        assert!(
             !arguments
                 .iter()
                 .any(|argument| argument.contains("node_modules"))
         );
+    }
+
+    #[tokio::test]
+    async fn verification_success_path_executes_the_exact_snapshot_under_hard_limits() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("test directory");
+        let repository = directory.path().join("repository");
+        fs::create_dir(&repository).expect("repository directory");
+        fs::write(repository.join("source.txt"), "line one\nline two\n").expect("source");
+        git(&repository, &["init", "-q"]);
+        git(&repository, &["add", "-A"]);
+        git(
+            &repository,
+            &[
+                "-c",
+                "user.name=Reviewer Test",
+                "-c",
+                "user.email=reviewer@example.com",
+                "commit",
+                "-q",
+                "-m",
+                "test snapshot",
+            ],
+        );
+        let commit = git(&repository, &["rev-parse", "HEAD"]);
+
+        let sandbox_workspace = directory.path().join("sandbox-workspace");
+        fs::create_dir(&sandbox_workspace).expect("sandbox workspace");
+        let launcher = directory.path().join("bwrap-test-launcher");
+        // Emulate Bubblewrap's argument handoff so the success path is deterministic on hosts
+        // that prohibit user namespaces; the production isolation flags are asserted above.
+        let launcher_script = format!(
+            "#!/bin/sh\nset -eu\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    --ro-bind) if [ \"$3\" = /source ]; then export ADS_VERIFICATION_SOURCE=\"$2\"; fi; shift 3 ;;\n    --tmpfs) if [ \"$2\" = /workspace ]; then export ADS_VERIFICATION_WORKSPACE='{}'; fi; shift 2 ;;\n    --size) shift 2 ;;\n    --chmod) shift 3 ;;\n    --setenv) if [ \"$2\" = ADS_VERIFICATION_SOURCE ]; then :; elif [ \"$2\" = ADS_VERIFICATION_WORKSPACE ]; then :; else export \"$2=$3\"; fi; shift 3 ;;\n    --dir|--proc|--dev|--chdir|--cap-drop) shift 2 ;;\n    --die-with-parent|--unshare-all|--unshare-user|--disable-userns) shift ;;\n    --) shift; exec \"$@\" ;;\n    *) exit 125 ;;\n  esac\ndone\nexit 125\n",
+            sandbox_workspace.display()
+        );
+        fs::write(&launcher, launcher_script).expect("test launcher");
+        let mut permissions = fs::metadata(&launcher)
+            .expect("launcher metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&launcher, permissions).expect("launcher permissions");
+
+        let programs = SandboxPrograms {
+            resource_limiter: PathBuf::from("prlimit"),
+            bubblewrap: launcher,
+        };
+        let mut inspection =
+            ReviewerInspectionTools::new(&repository, commit, Cancellation::new(), None)
+                .expect("inspection tools")
+                .with_sandbox_programs(programs);
+        let report = Arc::new(Mutex::new(ReviewVerificationReport::default()));
+        inspection = inspection.with_verification_report(report.clone());
+
+        let output = inspection
+            .execute(&NativeToolCall::new(
+                "verification",
+                "run_verification",
+                json!({
+                    "executable": "sh",
+                    "args": [
+                        "-c",
+                        "prlimit --pid $$ --cpu --as --nproc --fsize; grep -F -q 'line one' source.txt"
+                    ]
+                })
+                .to_string(),
+            ))
+            .await
+            .expect("verification call");
+        let output: Value = serde_json::from_str(&output).expect("tool response");
+        let report = report.lock().expect("verification report");
+        let command = report.commands.first().expect("verification command");
+        assert!(
+            command.sandboxed,
+            "launcher reached the sandbox bootstrap: {output}"
+        );
+        assert!(command.started, "selected executable started: {output}");
+        assert_eq!(command.exit_code, 0, "command output: {:?}", command.output);
+        assert!(
+            command
+                .output
+                .as_deref()
+                .unwrap_or_default()
+                .contains("1800")
+        );
+        assert!(
+            command
+                .output
+                .as_deref()
+                .unwrap_or_default()
+                .contains("4294967296")
+        );
+        assert!(
+            command
+                .output
+                .as_deref()
+                .unwrap_or_default()
+                .contains("512")
+        );
+        assert!(
+            command
+                .output
+                .as_deref()
+                .unwrap_or_default()
+                .contains("1073741824")
+        );
+        assert!(!inspection.has_unavailable_verification());
+        assert_eq!(output["exitCode"].as_i64(), Some(0));
     }
 
     #[test]

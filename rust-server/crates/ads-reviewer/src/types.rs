@@ -59,6 +59,14 @@ pub struct ReviewVerificationReport {
     pub commands: Vec<ReviewTestReport>,
 }
 
+impl ReviewVerificationReport {
+    pub fn has_successful_sandboxed_command(&self) -> bool {
+        self.commands
+            .iter()
+            .any(|command| command.sandboxed && command.started && command.exit_code == 0)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ReviewPayload {
