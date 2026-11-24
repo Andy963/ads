@@ -171,35 +171,33 @@ pub fn client_ip_with_trusted_proxies(
     headers: &HeaderMap,
     trusted: &TrustedProxies,
 ) -> Option<String> {
-    if let Some(raw) = headers
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-    {
-        let entries: Vec<&str> = raw
-            .split(',')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .collect();
-        if !entries.is_empty() {
-            if trusted.is_empty() {
-                return Some(entries[0].to_string());
-            }
-            for candidate in entries.iter().rev() {
-                match parse_ip_token(candidate) {
-                    Some(ip) if trusted.contains(ip) => continue,
-                    Some(ip) => return Some(ip.to_string()),
-                    None => return Some((*candidate).to_string()),
-                }
-            }
-            return Some(entries[0].to_string());
+    let xff_entries: Vec<&str> = headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|raw| raw.split(','))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect();
+    if !xff_entries.is_empty() {
+        if trusted.is_empty() {
+            return Some(xff_entries[0].to_string());
         }
+        for candidate in xff_entries.iter().rev() {
+            match parse_ip_token(candidate) {
+                Some(ip) if trusted.contains(ip) => continue,
+                Some(ip) => return Some(ip.to_string()),
+                None => return Some((*candidate).to_string()),
+            }
+        }
+        return Some(xff_entries[0].to_string());
     }
 
-    if let Some(forwarded) = headers
-        .get("forwarded")
-        .and_then(|value| value.to_str().ok())
-    {
-        let mut entries = Vec::new();
+    let mut forwarded_entries = Vec::new();
+    for header_val in headers.get_all("forwarded") {
+        let Ok(forwarded) = header_val.to_str() else {
+            continue;
+        };
         for hop in forwarded.split(',') {
             for part in hop.split(';') {
                 if let Some((key, value)) = part.split_once('=')
@@ -207,24 +205,24 @@ pub fn client_ip_with_trusted_proxies(
                 {
                     let cleaned = clean_forwarded_for(value);
                     if !cleaned.is_empty() {
-                        entries.push(cleaned);
+                        forwarded_entries.push(cleaned);
                     }
                 }
             }
         }
-        if !entries.is_empty() {
-            if trusted.is_empty() {
-                return Some(entries[0].clone());
-            }
-            for candidate in entries.iter().rev() {
-                match parse_ip_token(candidate) {
-                    Some(ip) if trusted.contains(ip) => continue,
-                    Some(ip) => return Some(ip.to_string()),
-                    None => return Some(candidate.clone()),
-                }
-            }
-            return Some(entries[0].clone());
+    }
+    if !forwarded_entries.is_empty() {
+        if trusted.is_empty() {
+            return Some(forwarded_entries[0].clone());
         }
+        for candidate in forwarded_entries.iter().rev() {
+            match parse_ip_token(candidate) {
+                Some(ip) if trusted.contains(ip) => continue,
+                Some(ip) => return Some(ip.to_string()),
+                None => return Some(candidate.clone()),
+            }
+        }
+        return Some(forwarded_entries[0].clone());
     }
 
     for header_name in ["cf-connecting-ip", "x-real-ip"] {
@@ -393,6 +391,19 @@ mod tests {
         assert_eq!(
             client_ip_with_trusted_proxies(&cf, &trusted).as_deref(),
             Some("198.51.100.8")
+        );
+
+        // RFC 9110: separate X-Forwarded-For header lines appended by proxies must all be inspected
+        // so a spoofed first header cannot bypass ADS_TRUSTED_PROXIES right-to-left filtering.
+        let mut multi_xff = HeaderMap::new();
+        multi_xff.append("x-forwarded-for", HeaderValue::from_static("198.51.100.99"));
+        multi_xff.append(
+            "x-forwarded-for",
+            HeaderValue::from_static("203.0.113.55, 10.0.0.4"),
+        );
+        assert_eq!(
+            client_ip_with_trusted_proxies(&multi_xff, &trusted).as_deref(),
+            Some("203.0.113.55")
         );
     }
 }
