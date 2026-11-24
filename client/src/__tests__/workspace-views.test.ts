@@ -89,7 +89,9 @@ describe("project workspace views", () => {
     expect(wrapper.get(".app").attributes("data-active-workspace-view")).toBe("prs");
     expect(wrapper.find('[data-testid="lane-tab-status-prs"]').exists()).toBe(false);
     expect(wrapper.find('pull-requests-workspace-stub').attributes("projectid")).toBe("p1");
-    expect(wrapper.get(".lanePanelsTrack").isVisible()).toBe(false);
+    expect(wrapper.get('[data-testid="lane-panel-acopilot"]').isVisible()).toBe(false);
+    expect(wrapper.get('[data-testid="lane-panel-actions"]').isVisible()).toBe(false);
+    expect(wrapper.get('[data-testid="lane-panel-prs"]').isVisible()).toBe(true);
     expect(wrapper.find('[data-testid="active-project-context"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="lane-new-session"]').exists()).toBe(false);
 
@@ -104,7 +106,10 @@ describe("project workspace views", () => {
     await wrapper.get('[data-testid="lane-tab-actions"]').trigger("click");
     await settleUi(wrapper);
     expect(wrapper.get(".app").attributes("data-active-workspace-view")).toBe("actions");
-    expect(wrapper.get(".lanePanelsTrack").attributes("style") ?? "").not.toContain("display: none");
+    expect(wrapper.get('[data-testid="lane-panel-actions"]').attributes("style") ?? "").not.toContain("display: none");
+    expect(wrapper.get('[data-testid="lane-panel-actions"]').attributes("aria-hidden")).toBeUndefined();
+    expect(wrapper.get('[data-testid="lane-panel-prs"]').attributes("style") ?? "").toContain("display: none");
+    expect(wrapper.get('[data-testid="lane-panel-prs"]').attributes("aria-hidden")).toBe("true");
     expect(wrapper.find('pull-requests-workspace-stub').exists()).toBe(false);
     expect(wrapper.find('[data-testid="lane-new-session"]').exists()).toBe(true);
   });

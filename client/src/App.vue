@@ -853,7 +853,14 @@ const LANE_FLICK_STALE_MS = 100;
 const LANE_SNAP_SETTLE_MS = 380;
 // Touches starting inside horizontally scrollable or editable children keep
 // their native behavior instead of switching lanes.
-const LANE_SWIPE_IGNORE_SELECTOR = "pre, code, table, input, textarea, select, button, a, [contenteditable]";
+const LANE_SWIPE_IGNORE_SELECTOR = "pre, code, table, input, textarea, select, button, a, [contenteditable], .prFilterScroller";
+const WORKSPACE_VIEW_ORDER: WorkspaceView[] = ["acopilot", "actions", "prs"];
+const MAX_WORKSPACE_VIEW_INDEX = WORKSPACE_VIEW_ORDER.length - 1;
+
+function workspaceViewIndex(view: WorkspaceView): number {
+  const index = WORKSPACE_VIEW_ORDER.indexOf(view);
+  return index >= 0 ? index : 0;
+}
 
 // Dragging a selection handle horizontally must not read as a lane swipe.
 function hasActiveTextSelection(): boolean {
@@ -868,7 +875,7 @@ type LaneGesture = {
   startX: number;
   startY: number;
   startTime: number;
-  startLane: ChatLane;
+  startView: WorkspaceView;
   width: number;
   tracking: boolean;
   samples: TouchSample[];
@@ -898,13 +905,19 @@ const laneTrackStyle = computed<Record<string, string> | undefined>(() => {
 const laneTabGroupStyle = computed<Record<string, string> | undefined>(() => {
   if (!isMobile.value || laneTrackOffset.value === null) return undefined;
   const width = laneGesture?.width || lanePanelWidthPx() || 1;
-  const progress = Math.min(1, Math.max(0, -laneTrackOffset.value / width));
+  const progress = Math.min(MAX_WORKSPACE_VIEW_INDEX, Math.max(0, -laneTrackOffset.value / width));
   return {
     "--lane-pill-progress": String(progress),
     "--lane-pill-transition": laneSnapSettling.value
       ? "transform 0.36s cubic-bezier(0.25, 1, 0.5, 1)"
       : "none",
   };
+});
+
+const prPanelPreviewVisible = computed(() => {
+  if (!isMobile.value || laneTrackOffset.value === null) return false;
+  const width = laneGesture?.width || lanePanelWidthPx() || 1;
+  return laneTrackOffset.value < -width;
 });
 
 function lanePanelWidthPx(): number {
@@ -914,13 +927,14 @@ function lanePanelWidthPx(): number {
 }
 
 function clampLaneOffsetWithResistance(offset: number, width: number): number {
+  const minOffset = -MAX_WORKSPACE_VIEW_INDEX * width;
   if (offset > 0) {
     // Rubber-band resistance past left edge (Advisor)
     return offset * 0.35;
   }
-  if (offset < -width) {
-    // Rubber-band resistance past right edge (Worker)
-    return -width + (offset + width) * 0.35;
+  if (offset < minOffset) {
+    // Rubber-band resistance past right edge (PRs)
+    return minOffset + (offset - minOffset) * 0.35;
   }
   return offset;
 }
@@ -936,23 +950,22 @@ function cancelLaneGesture(): void {
   }
 }
 
-function settleLaneGesture(target: ChatLane, width: number): void {
+function settleLaneGesture(target: WorkspaceView, width: number): void {
   laneSnapSettling.value = true;
-  laneTrackOffset.value = target === "actions" ? -width : 0;
+  laneTrackOffset.value = -workspaceViewIndex(target) * width;
   laneSettleTimer = setTimeout(() => {
     laneSettleTimer = null;
     laneSnapSettling.value = false;
     // The stylesheet position matches the settle target, so dropping the
     // inline transform cannot move the track.
     laneTrackOffset.value = null;
-    if (target !== activeWorkspaceTab.value) selectWorkspaceTab(target);
+    if (target !== activeWorkspaceView.value) selectWorkspaceTab(target);
   }, LANE_SNAP_SETTLE_MS);
 }
 
 function onLaneSwipeTouchStart(ev: TouchEvent): void {
   if (laneGesture || laneSnapSettling.value) return;
   if (!isMobile.value || mobileDrawerOpen.value) return;
-  if (activeWorkspaceView.value === "prs") return;
   // An in-flight drawer gesture owns the touch sequence.
   if (drawerDragProgress.value !== null || drawerSnapSettling.value) return;
   if (ev.target instanceof Element && ev.target.closest(LANE_SWIPE_IGNORE_SELECTOR)) return;
@@ -966,7 +979,7 @@ function onLaneSwipeTouchStart(ev: TouchEvent): void {
     startX: touch.x,
     startY: touch.y,
     startTime: ev.timeStamp,
-    startLane: activeWorkspaceTab.value,
+    startView: activeWorkspaceView.value,
     width: 0,
     tracking: false,
     samples: [{ x: touch.x, time: ev.timeStamp }],
@@ -1010,7 +1023,7 @@ function onLaneSwipeTouchMove(ev: TouchEvent): void {
   gesture.lastTime = ev.timeStamp;
   gesture.samples.push({ x: touch.x, time: ev.timeStamp });
   if (gesture.samples.length > 5) gesture.samples.shift();
-  const base = gesture.startLane === "actions" ? -gesture.width : 0;
+  const base = -workspaceViewIndex(gesture.startView) * gesture.width;
   laneTrackOffset.value = clampLaneOffsetWithResistance(base + dx, gesture.width);
 }
 
@@ -1021,11 +1034,12 @@ function finishLaneGesture(ev: TouchEvent, cancelled: boolean): void {
   if (!gesture || !gesture.tracking) return;
   const width = gesture.width;
   if (cancelled) {
-    // touchcancel always springs back to the lane the drag started from.
-    settleLaneGesture(gesture.startLane, width);
+    // touchcancel always springs back to the view the drag started from.
+    settleLaneGesture(gesture.startView, width);
     return;
   }
-  const base = gesture.startLane === "actions" ? -width : 0;
+  const startIndex = workspaceViewIndex(gesture.startView);
+  const base = -startIndex * width;
   const position = clampLaneOffsetWithResistance(base + (gesture.lastX - gesture.startX), width);
   // Calculate flick velocity over a rolling window (up to ~80ms) to avoid single-frame noise
   let velocity = 0;
@@ -1038,21 +1052,24 @@ function finishLaneGesture(ev: TouchEvent, cancelled: boolean): void {
       velocity = (newest.x - earliest.x) / dt;
     }
   }
-  let target: ChatLane;
+  let targetIndex = startIndex;
   if (velocity <= -LANE_FLICK_VELOCITY_PX_PER_MS) {
-    target = "actions";
+    targetIndex = Math.min(MAX_WORKSPACE_VIEW_INDEX, startIndex + 1);
   } else if (velocity >= LANE_FLICK_VELOCITY_PX_PER_MS) {
-    target = "acopilot";
+    targetIndex = Math.max(0, startIndex - 1);
   } else if (position > 0) {
-    target = "acopilot";
-  } else if (position < -width) {
-    target = "actions";
+    targetIndex = 0;
+  } else if (position < -MAX_WORKSPACE_VIEW_INDEX * width) {
+    targetIndex = MAX_WORKSPACE_VIEW_INDEX;
   } else {
-    const moved = gesture.startLane === "acopilot" ? -position / width : (position + width) / width;
-    const otherLane: ChatLane = gesture.startLane === "acopilot" ? "actions" : "acopilot";
-    target = moved > LANE_SNAP_RATIO ? otherLane : gesture.startLane;
+    const deltaPanels = (-position - startIndex * width) / width;
+    if (deltaPanels > LANE_SNAP_RATIO) {
+      targetIndex = Math.min(MAX_WORKSPACE_VIEW_INDEX, startIndex + 1);
+    } else if (deltaPanels < -LANE_SNAP_RATIO) {
+      targetIndex = Math.max(0, startIndex - 1);
+    }
   }
-  settleLaneGesture(target, width);
+  settleLaneGesture(WORKSPACE_VIEW_ORDER[targetIndex] ?? gesture.startView, width);
 }
 
 function onLaneSwipeTouchEnd(ev: TouchEvent): void {
@@ -1956,20 +1973,23 @@ const acopilotOperationalError = computed(() => loggedIn.value
           @touchcancel="onLaneSwipeTouchCancel"
         >
           <div
-            v-show="activeWorkspaceView !== 'prs'"
             class="lanePanelsTrack"
-            :class="{ 'lanePanelsTrack--worker': activeWorkspaceTab === 'actions', 'lanePanelsTrack--dragging': laneDragTracking }"
+            :class="{
+              'lanePanelsTrack--worker': activeWorkspaceView === 'actions',
+              'lanePanelsTrack--prs': activeWorkspaceView === 'prs',
+              'lanePanelsTrack--dragging': laneDragTracking,
+            }"
             :style="laneTrackStyle"
           >
             <section
               id="lane-panel-acopilot"
               class="lanePanel"
-              :class="{ 'lanePanel--inactive': activeWorkspaceTab !== 'acopilot' }"
-              :style="!isMobile && activeWorkspaceTab !== 'acopilot' ? { display: 'none' } : undefined"
+              :class="{ 'lanePanel--inactive': activeWorkspaceView !== 'acopilot' }"
+              :style="!isMobile && activeWorkspaceView !== 'acopilot' ? { display: 'none' } : undefined"
               role="tabpanel"
               aria-labelledby="lane-tab-acopilot"
-              :aria-hidden="activeWorkspaceTab === 'acopilot' ? undefined : 'true'"
-              :inert="activeWorkspaceTab !== 'acopilot' ? true : undefined"
+              :aria-hidden="activeWorkspaceView === 'acopilot' ? undefined : 'true'"
+              :inert="activeWorkspaceView !== 'acopilot' ? true : undefined"
               data-testid="lane-panel-acopilot"
               :data-message-count="acopilotMessages.length"
               :data-panel-key="`${acopilotPanelKey}:${errorRecoveryGeneration}`"
@@ -2031,12 +2051,12 @@ const acopilotOperationalError = computed(() => loggedIn.value
             <section
               id="lane-panel-actions"
               class="lanePanel"
-              :class="{ 'lanePanel--inactive': activeWorkspaceTab !== 'actions' }"
-              :style="!isMobile && activeWorkspaceTab !== 'actions' ? { display: 'none' } : undefined"
+              :class="{ 'lanePanel--inactive': activeWorkspaceView !== 'actions' }"
+              :style="!isMobile && activeWorkspaceView !== 'actions' ? { display: 'none' } : undefined"
               role="tabpanel"
               aria-labelledby="lane-tab-actions"
-              :aria-hidden="activeWorkspaceTab === 'actions' ? undefined : 'true'"
-              :inert="activeWorkspaceTab !== 'actions' ? true : undefined"
+              :aria-hidden="activeWorkspaceView === 'actions' ? undefined : 'true'"
+              :inert="activeWorkspaceView !== 'actions' ? true : undefined"
               data-testid="lane-panel-actions"
               :data-message-count="messages.length"
               :data-panel-key="`${actionsPanelKey}:${errorRecoveryGeneration}`"
@@ -2100,15 +2120,25 @@ const acopilotOperationalError = computed(() => loggedIn.value
                 @set-reasoning-effort="handleActiveLaneSetReasoningEffort"
               />
             </section>
+
+            <section
+              id="lane-panel-prs"
+              class="lanePanel"
+              :class="{ 'lanePanel--inactive': activeWorkspaceView !== 'prs' }"
+              :style="!isMobile && activeWorkspaceView !== 'prs' ? { display: 'none' } : undefined"
+              role="tabpanel"
+              aria-labelledby="lane-tab-prs"
+              :aria-hidden="activeWorkspaceView === 'prs' ? undefined : 'true'"
+              :inert="activeWorkspaceView !== 'prs' ? true : undefined"
+              data-testid="lane-panel-prs"
+            >
+              <PullRequestsWorkspace
+                v-if="activeWorkspaceView === 'prs' || prPanelPreviewVisible"
+                :project-id="activeProjectId"
+                :active="activeWorkspaceView === 'prs'"
+              />
+            </section>
           </div>
-          <PullRequestsWorkspace
-            v-if="activeWorkspaceView === 'prs'"
-            id="lane-panel-prs"
-            role="tabpanel"
-            aria-labelledby="lane-tab-prs"
-            :project-id="activeProjectId"
-            :active="activeWorkspaceView === 'prs'"
-          />
         </div>
       </section>
     </main>

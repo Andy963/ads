@@ -1230,21 +1230,24 @@
     flex-direction: row;
     flex: 1 1 auto;
     min-height: 0;
-    width: 200%;
+    width: 300%;
     transform: translate3d(0, 0, 0);
     transition: transform 0.36s cubic-bezier(0.25, 1, 0.5, 1);
     will-change: transform;
     touch-action: pan-y;
   }
   .lanePanelsTrack--worker {
-    transform: translate3d(-50%, 0, 0);
+    transform: translate3d(-33.333333%, 0, 0);
+  }
+  .lanePanelsTrack--prs {
+    transform: translate3d(-66.666667%, 0, 0);
   }
   .lanePanelsTrack--dragging {
     transition: none;
   }
   .lanePanelsTrack > .lanePanel {
-    flex: 0 0 50%;
-    width: 50%;
+    flex: 0 0 33.333333%;
+    width: 33.333333%;
   }
   .projectTree {
     flex: 1 1 0;
@@ -1408,7 +1411,7 @@
     transform: translateX(calc(var(--lane-pill-progress, 1) * 100%));
   }
   .laneTabGroup:has([data-testid="lane-tab-prs"].active)::before {
-    transform: translateX(200%);
+    transform: translateX(calc(var(--lane-pill-progress, 2) * 100%));
   }
   .laneTab {
     position: relative;

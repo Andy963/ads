@@ -71,4 +71,5 @@
 - 0060 - [ADR 0060: Reviewer-Owned Verification Selection](0060-reviewer-owned-verification-selection.md)
 - 0061 - [ADR 0061: Formalize Durable Agent Handoff Boundaries and Timeline Projections](0061-rust-agent-handoff-boundary.md)
 - 0062 - [ADR 0062: Authoritative Upstream Provider Model Sync](0062-authoritative-provider-model-sync.md)
+- 0063 - [ADR 0063: Extend Mobile Horizontal Swipe Carousel to All Three Workspace Views](0063-mobile-three-view-workspace-swipe.md)
 <!-- ADS:ADR_INDEX_END -->

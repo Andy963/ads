@@ -712,6 +712,72 @@ describe("mobile navigation behavior", () => {
       wrapper.unmount();
     });
 
+    it("switches from Actions to PRs on a leftward drag and back on a rightward drag", async () => {
+      const wrapper = await mountMobileChat();
+      await wrapper.find('[data-testid="lane-tab-actions"]').trigger("click");
+      await settleUi(wrapper);
+      expect(wrapper.get(".lanePanelsTrack").classes()).toContain("lanePanelsTrack--worker");
+
+      const panels = wrapper.get(".lanePanels").element;
+      // Drag left from Actions (-390px) by 160px -> -550px (past 35% snap ratio -> PRs)
+      dispatchTouch(panels, "touchstart", { clientX: 260, clientY: 300 }, 1000);
+      dispatchTouch(panels, "touchmove", { clientX: 100, clientY: 300 }, 1400);
+      await settleUi(wrapper);
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("translate3d(-550px, 0, 0)");
+      expect(wrapper.get(".laneTabGroup").attributes("style")).toContain("--lane-pill-progress");
+
+      dispatchTouch(panels, "touchend", null, 1500);
+      await waitForSnap();
+      await settleUi(wrapper);
+      expect(wrapper.get(".app").attributes("data-active-workspace-view")).toBe("prs");
+      expect(wrapper.find('[data-testid="lane-tab-prs"]').classes()).toContain("active");
+      expect(wrapper.get(".lanePanelsTrack").classes()).toContain("lanePanelsTrack--prs");
+      expect(wrapper.get('[data-testid="lane-panel-prs"]').attributes("aria-hidden")).toBeUndefined();
+      expect(wrapper.get('[data-testid="lane-panel-actions"]').attributes("aria-hidden")).toBe("true");
+
+      // Drag right from PRs (-780px) by 160px -> -620px (back to Actions)
+      dispatchTouch(panels, "touchstart", { clientX: 120, clientY: 300 }, 2000);
+      dispatchTouch(panels, "touchmove", { clientX: 280, clientY: 300 }, 2400);
+      await settleUi(wrapper);
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("translate3d(-620px, 0, 0)");
+
+      dispatchTouch(panels, "touchend", null, 2500);
+      await waitForSnap();
+      await settleUi(wrapper);
+      expect(wrapper.get(".app").attributes("data-active-workspace-view")).toBe("actions");
+      expect(wrapper.find('[data-testid="lane-tab-actions"]').classes()).toContain("active");
+      expect(wrapper.get(".lanePanelsTrack").classes()).toContain("lanePanelsTrack--worker");
+      wrapper.unmount();
+    });
+
+    it("applies rubber-band resistance at the outer PRs edge and ignores vertical scroll inside PRs", async () => {
+      const wrapper = await mountMobileChat();
+      await wrapper.find('[data-testid="lane-tab-prs"]').trigger("click");
+      await settleUi(wrapper);
+      expect(wrapper.get(".app").attributes("data-active-workspace-view")).toBe("prs");
+
+      const panels = wrapper.get(".lanePanels").element;
+      // Dragging further left past PRs (-780px) by 100px applies 0.35 resistance -> -815px.
+      dispatchTouch(panels, "touchstart", { clientX: 260, clientY: 300 }, 1000);
+      dispatchTouch(panels, "touchmove", { clientX: 160, clientY: 300 }, 1400);
+      await settleUi(wrapper);
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("translate3d(-815px, 0, 0)");
+
+      dispatchTouch(panels, "touchend", null, 1500);
+      await waitForSnap();
+      await settleUi(wrapper);
+      expect(wrapper.get(".app").attributes("data-active-workspace-view")).toBe("prs");
+
+      // Predominantly vertical touch inside PRs must not lock into a horizontal swipe.
+      dispatchTouch(panels, "touchstart", { clientX: 200, clientY: 200 }, 2000);
+      dispatchTouch(panels, "touchmove", { clientX: 215, clientY: 340 }, 2100);
+      await settleUi(wrapper);
+      expect((wrapper.get(".lanePanelsTrack").element as HTMLElement).style.transform).toBe("");
+      dispatchTouch(panels, "touchend", null, 2200);
+      await settleUi(wrapper);
+      expect(wrapper.get(".app").attributes("data-active-workspace-view")).toBe("prs");
+      wrapper.unmount();
+    });
     it("keeps both lane panels mounted with identical DOM elements across switches", async () => {
       const wrapper = await mountMobileChat();
       const advisorEl = wrapper.get('[data-testid="lane-panel-acopilot"]').element;
