@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
 use ads_state::{
-    StateDb, StateError, StateResult, UpstreamCredentialStore, get_model_config,
-    get_model_config_by_agent_model_id, get_model_provider, normalize_upstream_base_url,
+    CONVERSATION_SERVICE, ROLE_ACOPILOT, StateDb, StateError, StateResult, UpstreamCredentialStore,
+    get_default_role_profile, get_model_config, get_model_config_by_agent_model_id,
+    get_model_provider, get_model_service, normalize_upstream_base_url,
 };
 
 use crate::SpawnOptions;
@@ -33,6 +34,11 @@ pub fn resolve_codex_model_selection(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let Some(requested) = requested else {
+        if let Some(default_selection) =
+            resolve_ads_default_codex_model(db, owner, &base_daemon_options)
+        {
+            return Ok(default_selection);
+        }
         return Ok(CodexModelSelection {
             model: None,
             model_key: "default".to_string(),
@@ -40,6 +46,63 @@ pub fn resolve_codex_model_selection(
         });
     };
 
+    resolve_explicit_codex_model(db, owner, requested, base_daemon_options)
+}
+
+fn resolve_ads_default_codex_model(
+    db: &StateDb,
+    owner: &str,
+    base_daemon_options: &SpawnOptions,
+) -> Option<CodexModelSelection> {
+    let connection = db.connect().ok()?;
+    let mut candidates = Vec::new();
+    if let Ok(Some(profile)) = get_default_role_profile(&connection, ROLE_ACOPILOT)
+        && profile.is_enabled != 0
+    {
+        let model_id = profile.model_id.trim();
+        if !model_id.is_empty() {
+            candidates.push(model_id.to_string());
+        }
+    }
+    if let Ok(service) = get_model_service(&connection, CONVERSATION_SERVICE)
+        && let Some(default_id) = service.default_model_id
+    {
+        let trimmed = default_id.trim();
+        if !trimmed.is_empty() && !candidates.iter().any(|item| item == trimmed) {
+            candidates.push(trimmed.to_string());
+        }
+    }
+    let enabled_candidates: Vec<String> = candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let config = get_model_config(&connection, &candidate)
+                .ok()
+                .flatten()
+                .or_else(|| {
+                    get_model_config_by_agent_model_id(&connection, &candidate, None)
+                        .ok()
+                        .flatten()
+                })?;
+            config.is_enabled.then_some(config.id)
+        })
+        .collect();
+    drop(connection);
+    for candidate in enabled_candidates {
+        if let Ok(selection) =
+            resolve_explicit_codex_model(db, owner, &candidate, base_daemon_options.clone())
+        {
+            return Some(selection);
+        }
+    }
+    None
+}
+
+fn resolve_explicit_codex_model(
+    db: &StateDb,
+    owner: &str,
+    requested: &str,
+    base_daemon_options: SpawnOptions,
+) -> StateResult<CodexModelSelection> {
     let connection = db.connect()?;
     let config = get_model_config(&connection, requested)?.or(get_model_config_by_agent_model_id(
         &connection,
@@ -183,7 +246,15 @@ fn toml_string(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::codex_provider_slug;
+    use ads_contract::models::{ModelConfig, ModelProvider};
+    use ads_state::{
+        StateDb, UpstreamCredentialStore, UpstreamCredentials, upsert_model_config,
+        upsert_model_provider,
+    };
+    use tempfile::tempdir;
+
+    use super::{codex_provider_slug, resolve_codex_model_selection};
+    use crate::SpawnOptions;
 
     #[test]
     fn provider_slug_matches_the_typescript_contract() {
@@ -192,5 +263,80 @@ mod tests {
             "ads-provider-seven-bad"
         );
         assert_eq!(codex_provider_slug("---"), "ads-provider");
+    }
+
+    #[test]
+    fn omitted_model_resolves_configured_acopilot_role_model_and_matches_explicit_key() {
+        let directory = tempdir().expect("temp dir");
+        let db = StateDb::open(directory.path().join("state.db")).expect("state db");
+        let mut connection = db.connect().expect("connection");
+        upsert_model_provider(
+            &connection,
+            &ModelProvider {
+                id: "provider-cpa".to_string(),
+                name: "CPA".to_string(),
+                base_url: "https://cpa.example.com/v1".to_string(),
+                wire_api: Some("responses".to_string()),
+                credential_profile: Some("provider-cpa".to_string()),
+                is_enabled: true,
+                updated_at: Some(1),
+            },
+            1,
+        )
+        .expect("provider");
+        upsert_model_config(
+            &mut connection,
+            &ModelConfig {
+                id: "model-neon".to_string(),
+                model_id: "gemini-4-neon-xhigh".to_string(),
+                display_name: "gemini-4-neon-xhigh".to_string(),
+                provider: "cpa".to_string(),
+                provider_id: Some("provider-cpa".to_string()),
+                is_enabled: true,
+                is_default: false,
+                config_json: None,
+                updated_at: Some(1),
+            },
+            1,
+        )
+        .expect("model");
+        connection
+            .execute(
+                "UPDATE role_profiles SET model_id = 'model-neon', is_enabled = 1 WHERE role = 'acopilot'",
+                [],
+            )
+            .expect("role");
+        UpstreamCredentialStore::for_state_db(db.path())
+            .save(
+                &connection,
+                "user-1",
+                &UpstreamCredentials {
+                    base_url: "https://cpa.example.com/v1".to_string(),
+                    provider: "cpa".to_string(),
+                    api_key: "sk-test-key".to_string(),
+                },
+                Some("provider-cpa"),
+            )
+            .expect("creds");
+        drop(connection);
+
+        let fallback = resolve_codex_model_selection(&db, "user-1", None, SpawnOptions::default())
+            .expect("fallback selection");
+        let explicit = resolve_codex_model_selection(
+            &db,
+            "user-1",
+            Some("model-neon"),
+            SpawnOptions::default(),
+        )
+        .expect("explicit selection");
+        assert_eq!(fallback.model.as_deref(), Some("gemini-4-neon-xhigh"));
+        assert_eq!(fallback.model_key, explicit.model_key);
+        assert!(
+            fallback
+                .daemon_options
+                .global_args
+                .iter()
+                .any(|arg| arg.contains("provider-cpa"))
+        );
     }
 }
