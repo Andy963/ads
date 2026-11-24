@@ -30,6 +30,7 @@ pub use runner::{
 pub use types::{
     ReviewAdr, ReviewContextOmission, ReviewDefect, ReviewDiffRange, ReviewIssue, ReviewPayload,
     ReviewRelatedContext, ReviewSeverity, ReviewTestReport, ReviewVerdict, ReviewVerdictStatus,
+    ReviewVerificationReport,
 };
 pub use verdict_parser::{
     REVIEW_INCOMPLETE_CODE, REVIEWER_PROTOCOL_ERROR_CODE, ReviewerError, parse_review_verdict,

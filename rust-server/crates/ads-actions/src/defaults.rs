@@ -4,99 +4,16 @@ use std::time::Duration;
 use ads_native::{
     ModelResolver, ResolveOptions, ReviewerInspectionOptions, run_reviewer_inspection,
 };
-use ads_reviewer::{ReviewTestReport, ReviewVerdict, build_review_prompt};
+use ads_reviewer::{ReviewVerdict, build_review_prompt};
 use ads_state::{ROLE_REVIEWER, StateDb, get_default_role_profile, get_role_profile_by_id};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 use crate::types::{
     IssueCommentPublisher, IssueCommentRequest, ReviewError, ReviewerRequest, ReviewerRunner,
-    VerificationRunner,
 };
 
-const VERIFICATION_OUTPUT_LIMIT: usize = 20_000;
 const COMMENT_TIMEOUT: Duration = Duration::from_secs(30);
-
-pub(crate) fn default_verification_runner(
-    command: String,
-    timeout: Duration,
-) -> VerificationRunner {
-    std::sync::Arc::new(move |repo_path, cancellation| {
-        let command = command.clone();
-        Box::pin(async move {
-            cancellation.check()?;
-            let parts = command
-                .split_whitespace()
-                .map(str::to_string)
-                .collect::<Vec<_>>();
-            if parts.is_empty() {
-                return Err(ReviewError::Other(
-                    "Interactive review verification command is empty.".to_string(),
-                ));
-            }
-            let child = Command::new(&parts[0])
-                .args(&parts[1..])
-                .current_dir(&repo_path)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .kill_on_drop(true)
-                .spawn()
-                .map_err(|error| ReviewError::Other(error.to_string()))?;
-            let output = tokio::select! {
-                result = child.wait_with_output() => {
-                    result.map_err(|error| ReviewError::Other(error.to_string()))?
-                }
-                _ = tokio::time::sleep(timeout) => {
-                    let summary = format!(
-                        "Verification timed out after {}ms. The Reviewer must treat the missing evidence as an open question.",
-                        timeout.as_millis()
-                    );
-                    return Ok(ReviewTestReport {
-                        command,
-                        exit_code: 124,
-                        summary,
-                        output: Some(format!(
-                            "Interactive command '{}' timed out after {}ms.",
-                            parts[0],
-                            timeout.as_millis()
-                        )),
-                    });
-                }
-                _ = cancellation.cancelled() => {
-                    return Err(ReviewError::Other("Interactive command aborted.".to_string()));
-                }
-            };
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let combined = [stdout.trim(), stderr.trim()]
-                .into_iter()
-                .filter(|value| !value.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let combined = tail_chars(&combined, VERIFICATION_OUTPUT_LIMIT);
-            let exit_code = output.status.code().map(i64::from).unwrap_or(1);
-            let last_line = combined
-                .split('\n')
-                .rev()
-                .find(|line| !line.trim().is_empty())
-                .map(str::trim);
-            let summary = if exit_code == 0 {
-                "Tests and checks passed successfully".to_string()
-            } else {
-                last_line
-                    .map(|line| line.chars().take(500).collect::<String>())
-                    .unwrap_or_else(|| format!("Verification command exited with code {exit_code}"))
-            };
-            Ok(ReviewTestReport {
-                command,
-                exit_code,
-                summary,
-                output: (!combined.is_empty()).then_some(combined),
-            })
-        })
-    })
-}
 
 pub(crate) fn default_reviewer_runner(db: StateDb, timeout: Duration) -> ReviewerRunner {
     std::sync::Arc::new(move |request| {
@@ -169,6 +86,7 @@ async fn run_default_reviewer(
         tool_turn_budget,
         diff: Some(request.payload.diff.clone()),
         complete: None,
+        verification_report: request.verification_report.clone(),
     });
     let verdict = tokio::select! {
         result = inspection => map_reviewer_result(result)?,
@@ -251,12 +169,4 @@ pub(crate) fn default_publisher() -> IssueCommentPublisher {
             ))
         })
     })
-}
-
-fn tail_chars(value: &str, limit: usize) -> String {
-    let length = value.chars().count();
-    if length <= limit {
-        return value.to_string();
-    }
-    value.chars().skip(length - limit).collect()
 }

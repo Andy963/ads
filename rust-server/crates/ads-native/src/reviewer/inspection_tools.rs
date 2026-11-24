@@ -1,13 +1,15 @@
 use std::collections::BTreeSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use ads_reviewer::{ReviewTestReport, ReviewVerificationReport};
 use globset::Glob;
 use regex::Regex;
 use serde_json::{Map, Value, json};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::{
@@ -22,6 +24,19 @@ const SEARCH_PAGE_CHARS: usize = 1_000;
 const DIFF_PAGE_CHARS: usize = 7_000;
 const GIT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_ARGUMENT_UNITS: usize = 4_096;
+const MAX_VERIFICATION_COMMANDS: usize = 8;
+const MAX_VERIFICATION_OUTPUT: usize = 6_000;
+const MAX_VERIFICATION_TOOL_OUTPUT: usize = 512;
+const MAX_VERIFICATION_COMMAND_UNITS: usize = 1_024;
+const MAX_VERIFICATION_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_VERIFICATION_TREE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_VERIFICATION_TMPFS_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_VERIFICATION_WORKSPACE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const VERIFICATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(60);
+const SANDBOX_STARTED_MARKER: &str = "ADS_SANDBOX_STARTED";
+const VERIFICATION_STARTED_MARKER: &str = "ADS_VERIFICATION_STARTED";
+const SANDBOX_BOOTSTRAP: &str = "set -eu; ulimit -u 512; cp -a --no-preserve=ownership /source/. /workspace/; cd -- \"$1\"; shift; printf '%s\\n' 'ADS_SANDBOX_STARTED'; executable_path=$(command -v \"$1\" 2>/dev/null) || exit 127; case \"$executable_path\" in /*) ;; *) exit 127 ;; esac; printf '%s\\n' 'ADS_VERIFICATION_STARTED'; if exec \"$@\"; then exit 0; else status=$?; exit \"$status\"; fi";
 
 const SNAPSHOT_UNAVAILABLE: &str = "Inspection snapshot unavailable: Git could not read the reviewed commit within its size/time limits. Do not assume omitted evidence is safe; return INCOMPLETE.";
 
@@ -33,6 +48,14 @@ struct SnapshotEntry {
 }
 
 #[derive(Debug)]
+struct VerificationFile {
+    path: PathBuf,
+    object: String,
+    size: u64,
+    mode: String,
+}
+
+#[derive(Debug)]
 pub struct ReviewerInspectionTools {
     workspace: PathBuf,
     commit: String,
@@ -41,6 +64,9 @@ pub struct ReviewerInspectionTools {
     entries: Option<Vec<SnapshotEntry>>,
     diff_read_through: usize,
     snapshot_unavailable: bool,
+    verification_workspace: Option<(tempfile::TempDir, PathBuf)>,
+    verification_report: Arc<Mutex<ReviewVerificationReport>>,
+    verification_unavailable: bool,
 }
 
 impl ReviewerInspectionTools {
@@ -64,7 +90,29 @@ impl ReviewerInspectionTools {
             entries: None,
             diff_read_through: 0,
             snapshot_unavailable: false,
+            verification_workspace: None,
+            verification_report: Arc::new(Mutex::new(ReviewVerificationReport::default())),
+            verification_unavailable: false,
         })
+    }
+
+    pub fn with_verification_report(
+        mut self,
+        report: Arc<Mutex<ReviewVerificationReport>>,
+    ) -> Self {
+        self.verification_report = report;
+        self
+    }
+
+    pub fn verification_report(&self) -> ReviewVerificationReport {
+        self.verification_report
+            .lock()
+            .expect("verification report lock")
+            .clone()
+    }
+
+    pub fn has_unavailable_verification(&self) -> bool {
+        self.verification_unavailable
     }
 
     pub async fn execute(&mut self, call: &NativeToolCall) -> NativeResult<String> {
@@ -81,9 +129,10 @@ impl ReviewerInspectionTools {
             "read_file_range" => self.read_file_range(&arguments).await,
             "search_code" => self.search_code(&arguments).await,
             "list_dir" => self.list_dir(&arguments).await,
+            "run_verification" => self.run_verification(&arguments).await,
             _ => {
                 return Ok(
-                    "Tool denied: only read_diff, read_file_range, search_code and list_dir are allowed."
+                    "Tool denied: only read_diff, read_file_range, search_code, list_dir and run_verification are allowed."
                         .to_string(),
                 );
             }
@@ -118,6 +167,7 @@ impl ReviewerInspectionTools {
 
     pub fn dispose(&mut self) {
         self.entries = None;
+        self.verification_workspace = None;
     }
 
     fn read_diff(&mut self, arguments: &Map<String, Value>) -> NativeResult<String> {
@@ -275,6 +325,512 @@ impl ReviewerInspectionTools {
             "truncated": total > 100,
         }))
         .unwrap_or_else(|_| "{\"entries\":[],\"truncated\":false}".to_string()))
+    }
+
+    async fn run_verification(&mut self, arguments: &Map<String, Value>) -> NativeResult<String> {
+        ensure_allowed(arguments, &["executable", "args", "working_directory"])?;
+        let executable = required_string(arguments, "executable", 256)?;
+        if executable.contains('/') || executable.contains('\\') || executable.starts_with('-') {
+            return Err(NativeError::Tool(
+                "executable must be a command name without a path.".to_string(),
+            ));
+        }
+        let args = arguments
+            .get("args")
+            .and_then(Value::as_array)
+            .ok_or_else(|| NativeError::Tool("args must be an array of strings.".to_string()))?;
+        if args.len() > 128 {
+            return Err(NativeError::Tool(
+                "args must contain at most 128 strings.".to_string(),
+            ));
+        }
+        let args = args
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|value| !value.contains('\0') && utf16_len(value) <= 1024)
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        NativeError::Tool(
+                            "args must contain strings of at most 1024 characters.".to_string(),
+                        )
+                    })
+            })
+            .collect::<NativeResult<Vec<_>>>()?;
+        let working_directory = arguments
+            .get("working_directory")
+            .map(|_| required_string(arguments, "working_directory", 512))
+            .transpose()?
+            .unwrap_or_else(|| ".".to_string());
+        if working_directory != "." {
+            validate_path(&working_directory)?;
+        }
+        let display = serde_json::to_string(&json!({
+            "executable": executable,
+            "args": args,
+            "workingDirectory": working_directory,
+        }))
+        .unwrap_or_else(|_| "<invalid command>".to_string());
+        if utf16_len(&display) > MAX_VERIFICATION_COMMAND_UNITS {
+            return Err(NativeError::Tool(format!(
+                "Verification command must not exceed {MAX_VERIFICATION_COMMAND_UNITS} characters."
+            )));
+        }
+        {
+            let mut report = self
+                .verification_report
+                .lock()
+                .expect("verification report lock");
+            if report.commands.len() >= MAX_VERIFICATION_COMMANDS {
+                return Err(NativeError::Tool(format!(
+                    "At most {MAX_VERIFICATION_COMMANDS} verification commands may run per review."
+                )));
+            }
+            report.commands.push(ReviewTestReport {
+                command: display.clone(),
+                exit_code: 125,
+                summary: "Command has not completed.".to_string(),
+                output: None,
+                sandboxed: false,
+                started: false,
+            });
+        }
+        let report_index = self
+            .verification_report
+            .lock()
+            .expect("verification report lock")
+            .commands
+            .len()
+            - 1;
+
+        let result = self
+            .execute_verification_command(&executable, &args, &working_directory)
+            .await;
+        let (exit_code, summary, output, sandboxed, started) = match result {
+            Ok(report) => report,
+            Err(NativeError::Cancelled) => return Err(NativeError::Cancelled),
+            Err(error) => {
+                self.verification_unavailable = true;
+                (
+                    125,
+                    "The isolated verification sandbox could not be prepared.".to_string(),
+                    Some(error.to_string()),
+                    false,
+                    false,
+                )
+            }
+        };
+        {
+            let mut report = self
+                .verification_report
+                .lock()
+                .expect("verification report lock");
+            if let Some(command) = report.commands.get_mut(report_index) {
+                command.exit_code = exit_code;
+                command.summary = summary.clone();
+                command.output = output.clone();
+                command.sandboxed = sandboxed;
+                command.started = started;
+            }
+        }
+        Ok(serde_json::to_string(&json!({
+            "command": display,
+            "exitCode": exit_code,
+            "summary": summary,
+            "sandboxed": sandboxed,
+            "started": started,
+            "output": output
+                .as_deref()
+                .map(|value| truncate_utf16(value, MAX_VERIFICATION_TOOL_OUTPUT)),
+        }))
+        .unwrap_or_else(|_| "{\"sandboxed\":false}".to_string()))
+    }
+
+    async fn execute_verification_command(
+        &mut self,
+        executable: &str,
+        args: &[String],
+        working_directory: &str,
+    ) -> NativeResult<(i64, String, Option<String>, bool, bool)> {
+        let snapshot = self.materialize_verification_snapshot().await?;
+        let cwd = if working_directory == "." {
+            snapshot.clone()
+        } else {
+            snapshot.join(working_directory)
+        };
+
+        let mut command = sandbox_command(&snapshot, &cwd, executable, args)?;
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|error| {
+                NativeError::Io(format!("Verification sandbox unavailable: {error}"))
+            })?;
+        #[cfg(unix)]
+        let pid = child.id();
+        let stdout = child
+            .stdout
+            .take()
+            .map(|pipe| tokio::spawn(read_output_tail(pipe, MAX_VERIFICATION_OUTPUT, true)));
+        let stderr = child
+            .stderr
+            .take()
+            .map(|pipe| tokio::spawn(read_output_tail(pipe, MAX_VERIFICATION_OUTPUT, false)));
+        let status = tokio::select! {
+            _ = self.cancellation.cancelled() => {
+                terminate_verification(&mut child).await;
+                return Err(NativeError::Cancelled);
+            }
+            result = tokio::time::timeout(VERIFICATION_TIMEOUT, child.wait()) => match result {
+                Ok(Ok(status)) => status,
+                Ok(Err(error)) => return Err(NativeError::Io(error.to_string())),
+                Err(_) => {
+                    #[cfg(unix)]
+                    if let Some(pid) = pid {
+                        terminate_process_group(pid, &mut child).await;
+                    } else {
+                        terminate_verification(&mut child).await;
+                    }
+                    #[cfg(not(unix))]
+                    terminate_verification(&mut child).await;
+                    let (stdout, sandboxed, started) = await_output(stdout).await;
+                    let (stderr, _, _) = await_output(stderr).await;
+                    let stdout = strip_verification_markers(&stdout);
+                    let output = join_output(stdout, &stderr);
+                    if !sandboxed {
+                        self.verification_unavailable = true;
+                        return Ok((
+                            125,
+                            "The isolated sandbox did not start the verification command.".to_string(),
+                            (!output.is_empty()).then_some(truncate_utf16(&output, MAX_VERIFICATION_OUTPUT).to_string()),
+                            false,
+                            false,
+                        ));
+                    }
+                    return Ok((
+                        124,
+                        if started {
+                            "Verification command timed out after 30 minutes.".to_string()
+                        } else {
+                            "Verification executable was unavailable in the isolated sandbox.".to_string()
+                        },
+                        (!output.is_empty()).then_some(truncate_utf16(&output, MAX_VERIFICATION_OUTPUT).to_string()),
+                        true,
+                        started,
+                    ));
+                }
+            }
+        };
+        let (stdout, sandboxed, started) = await_output(stdout).await;
+        let (stderr, _, _) = await_output(stderr).await;
+        let stdout = strip_verification_markers(&stdout);
+        let output = join_output(stdout, &stderr);
+        if !sandboxed {
+            self.verification_unavailable = true;
+            return Ok((
+                125,
+                "The isolated sandbox did not start the verification command.".to_string(),
+                Some(truncate_utf16(&output, MAX_VERIFICATION_OUTPUT).to_string()),
+                false,
+                false,
+            ));
+        }
+        let exit_code = status.code().map(i64::from).unwrap_or(1);
+        let summary = if !started {
+            "Verification executable was unavailable in the isolated sandbox.".to_string()
+        } else if exit_code == 0 {
+            "Verification command completed successfully.".to_string()
+        } else {
+            output
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| truncate_utf16(line, 256).to_string())
+                .unwrap_or_else(|| format!("Verification command exited with code {exit_code}."))
+        };
+        Ok((
+            exit_code,
+            summary,
+            (!output.is_empty())
+                .then_some(truncate_utf16(&output, MAX_VERIFICATION_OUTPUT).to_string()),
+            true,
+            started,
+        ))
+    }
+
+    async fn materialize_verification_snapshot(&mut self) -> NativeResult<PathBuf> {
+        if let Some((_, root)) = self.verification_workspace.as_ref() {
+            return Ok(root.clone());
+        }
+        let temporary = tempfile::Builder::new()
+            .prefix("ads-review-snapshot-")
+            .tempdir()
+            .map_err(|error| NativeError::Io(error.to_string()))?;
+        let root = temporary.path().join("workspace");
+        fs::create_dir(&root).map_err(|error| NativeError::Io(error.to_string()))?;
+        let files = self.verification_files().await?;
+        self.materialize_verification_files(&root, &files).await?;
+        let result = root.clone();
+        self.verification_workspace = Some((temporary, root));
+        Ok(result)
+    }
+
+    async fn verification_files(&self) -> NativeResult<Vec<VerificationFile>> {
+        self.cancellation.check()?;
+        let mut command = git_command(&self.workspace);
+        command
+            .args(["ls-tree", "-r", "-l", "-z", "--full-tree", &self.commit])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let mut child = command
+            .spawn()
+            .map_err(|error| NativeError::Io(error.to_string()))?;
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| NativeError::Io("Git tree output is unavailable.".to_string()))?;
+        let tree = tokio::select! {
+            _ = self.cancellation.cancelled() => return Err(NativeError::Cancelled),
+            result = tokio::time::timeout(
+                SNAPSHOT_TIMEOUT,
+                read_limited(&mut stdout, MAX_VERIFICATION_TREE_BYTES),
+            ) => match result {
+                Ok(Ok(tree)) => tree,
+                Ok(Err(error)) => return Err(NativeError::Io(error.to_string())),
+                Err(_) => {
+                    let _ = child.kill().await;
+                    return Err(NativeError::Io("Snapshot tree listing timed out.".to_string()));
+                }
+            }
+        };
+        let status = tokio::select! {
+            _ = self.cancellation.cancelled() => {
+                let _ = child.kill().await;
+                return Err(NativeError::Cancelled);
+            }
+            result = tokio::time::timeout(SNAPSHOT_TIMEOUT, child.wait()) => match result {
+                Ok(Ok(status)) => status,
+                Ok(Err(error)) => return Err(NativeError::Io(error.to_string())),
+                Err(_) => {
+                    let _ = child.kill().await;
+                    return Err(NativeError::Io("Snapshot tree listing timed out.".to_string()));
+                }
+            }
+        };
+        if !status.success() {
+            return Err(NativeError::Io(
+                "The exact reviewed commit tree is unavailable or exceeds its metadata limit."
+                    .to_string(),
+            ));
+        }
+        let mut total_size = 0u64;
+        let mut files = Vec::new();
+        for record in tree
+            .split(|byte| *byte == 0)
+            .filter(|record| !record.is_empty())
+        {
+            let separator = record
+                .iter()
+                .position(|byte| *byte == b'\t')
+                .ok_or_else(|| {
+                    NativeError::Io(
+                        "The reviewed commit tree contains an invalid entry.".to_string(),
+                    )
+                })?;
+            let metadata = &record[..separator];
+            let raw_path = &record[separator + 1..];
+            let metadata = std::str::from_utf8(metadata).map_err(|_| {
+                NativeError::Io("The reviewed commit tree metadata is invalid.".to_string())
+            })?;
+            let fields = metadata.split_ascii_whitespace().collect::<Vec<_>>();
+            if fields.len() != 4 || fields[1] != "blob" {
+                return Err(NativeError::Io(
+                    "Verification snapshots containing submodules or unsupported Git entries are unavailable."
+                        .to_string(),
+                ));
+            }
+            if !matches!(fields[0], "100644" | "100755" | "120000")
+                || !commit_hash_regex().is_match(fields[2])
+            {
+                return Err(NativeError::Io(
+                    "The reviewed commit contains an unsupported file entry.".to_string(),
+                ));
+            }
+            let path = std::str::from_utf8(raw_path).map_err(|_| {
+                NativeError::Io("Verification requires UTF-8 repository paths.".to_string())
+            })?;
+            if !safe_snapshot_path(path) {
+                return Err(NativeError::Io(
+                    "The reviewed commit contains an unsafe repository path.".to_string(),
+                ));
+            }
+            let size = fields[3].parse::<u64>().map_err(|_| {
+                NativeError::Io("The reviewed commit contains an invalid blob size.".to_string())
+            })?;
+            total_size = total_size
+                .checked_add(size)
+                .ok_or_else(|| NativeError::Io("Reviewed source size overflowed.".to_string()))?;
+            if total_size > MAX_VERIFICATION_SOURCE_BYTES {
+                return Err(NativeError::Io(format!(
+                    "Reviewed source exceeds the {} MiB verification limit.",
+                    MAX_VERIFICATION_SOURCE_BYTES / (1024 * 1024)
+                )));
+            }
+            files.push(VerificationFile {
+                path: PathBuf::from(path),
+                object: fields[2].to_string(),
+                size,
+                mode: fields[0].to_string(),
+            });
+        }
+        Ok(files)
+    }
+
+    async fn materialize_verification_files(
+        &self,
+        root: &Path,
+        files: &[VerificationFile],
+    ) -> NativeResult<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        let mut command = git_command(&self.workspace);
+        command
+            .args(["cat-file", "--batch"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let mut child = command
+            .spawn()
+            .map_err(|error| NativeError::Io(error.to_string()))?;
+        let mut input = child
+            .stdin
+            .take()
+            .ok_or_else(|| NativeError::Io("Git object input is unavailable.".to_string()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| NativeError::Io("Git object output is unavailable.".to_string()))?;
+        let mut output = BufReader::new(stdout);
+        let materialize = async {
+            for file in files {
+                self.cancellation.check()?;
+                input
+                    .write_all(format!("{}\n", file.object).as_bytes())
+                    .await
+                    .map_err(|error| NativeError::Io(error.to_string()))?;
+                input
+                    .flush()
+                    .await
+                    .map_err(|error| NativeError::Io(error.to_string()))?;
+                let mut header = String::new();
+                output
+                    .read_line(&mut header)
+                    .await
+                    .map_err(|error| NativeError::Io(error.to_string()))?;
+                let fields = header.split_ascii_whitespace().collect::<Vec<_>>();
+                if fields.len() != 3
+                    || fields[0] != file.object
+                    || fields[1] != "blob"
+                    || fields[2].parse::<u64>().ok() != Some(file.size)
+                {
+                    return Err(NativeError::Io(
+                        "Git could not read an exact reviewed source blob.".to_string(),
+                    ));
+                }
+                let target = root.join(&file.path);
+                let parent = target.parent().ok_or_else(|| {
+                    NativeError::Io("Reviewed source path has no parent.".to_string())
+                })?;
+                fs::create_dir_all(parent).map_err(|error| NativeError::Io(error.to_string()))?;
+                if file.mode == "120000" {
+                    if file.size > 4096 {
+                        return Err(NativeError::Io(
+                            "Reviewed source contains an oversized symbolic link.".to_string(),
+                        ));
+                    }
+                    let mut link_target = vec![0; file.size as usize];
+                    output
+                        .read_exact(&mut link_target)
+                        .await
+                        .map_err(|error| NativeError::Io(error.to_string()))?;
+                    create_snapshot_symlink(&link_target, &target)?;
+                } else {
+                    let mut destination = tokio::fs::File::create(&target)
+                        .await
+                        .map_err(|error| NativeError::Io(error.to_string()))?;
+                    let copied =
+                        tokio::io::copy(&mut (&mut output).take(file.size), &mut destination)
+                            .await
+                            .map_err(|error| NativeError::Io(error.to_string()))?;
+                    if copied != file.size {
+                        return Err(NativeError::Io(
+                            "Git returned a truncated reviewed source blob.".to_string(),
+                        ));
+                    }
+                    destination
+                        .flush()
+                        .await
+                        .map_err(|error| NativeError::Io(error.to_string()))?;
+                    #[cfg(unix)]
+                    if file.mode == "100755" {
+                        use std::os::unix::fs::PermissionsExt;
+                        fs::set_permissions(&target, fs::Permissions::from_mode(0o755))
+                            .map_err(|error| NativeError::Io(error.to_string()))?;
+                    }
+                }
+                let mut separator = [0u8; 1];
+                output
+                    .read_exact(&mut separator)
+                    .await
+                    .map_err(|error| NativeError::Io(error.to_string()))?;
+                if separator[0] != b'\n' {
+                    return Err(NativeError::Io(
+                        "Git returned a malformed reviewed source blob.".to_string(),
+                    ));
+                }
+            }
+            Ok(())
+        };
+        let result = tokio::select! {
+            _ = self.cancellation.cancelled() => Err(NativeError::Cancelled),
+            result = tokio::time::timeout(SNAPSHOT_TIMEOUT, materialize) => match result {
+                Ok(result) => result,
+                Err(_) => Err(NativeError::Io("Snapshot materialization timed out.".to_string())),
+            }
+        };
+        drop(input);
+        if let Err(error) = result {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(error);
+        }
+        let status = tokio::select! {
+            _ = self.cancellation.cancelled() => {
+                let _ = child.kill().await;
+                return Err(NativeError::Cancelled);
+            }
+            result = tokio::time::timeout(SNAPSHOT_TIMEOUT, child.wait()) => match result {
+                Ok(Ok(status)) => status,
+                Ok(Err(error)) => return Err(NativeError::Io(error.to_string())),
+                Err(_) => {
+                    let _ = child.kill().await;
+                    return Err(NativeError::Io("Snapshot materialization timed out.".to_string()));
+                }
+            }
+        };
+        if !status.success() {
+            return Err(NativeError::Io(
+                "Git could not read the reviewed commit objects.".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     async fn files(&mut self) -> NativeResult<Vec<SnapshotEntry>> {
@@ -483,7 +1039,346 @@ pub fn reviewer_tools() -> Vec<NativeToolDefinition> {
                 "required": ["path"]
             }),
         ),
+        tool(
+            "run_verification",
+            "Run one bounded verification command against the exact reviewed commit in a disposable, network-isolated sandbox. The selected executable and arguments are passed literally (not interpolated into the fixed sandbox bootstrap). Inspect the diff/manifests first and choose checks that cover changed code. Results record separately whether the sandbox and executable started. A sandbox setup failure or unavailable executable is not a test failure and cannot support PASS.",
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "executable": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "args": {"type": "array", "maxItems": 128, "items": {"type": "string", "maxLength": 1024}},
+                    "working_directory": {"type": "string", "maxLength": 512}
+                },
+                "required": ["executable", "args"]
+            }),
+        ),
     ]
+}
+
+fn sandbox_command(
+    snapshot: &Path,
+    working_directory: &Path,
+    executable: &str,
+    args: &[String],
+) -> NativeResult<Command> {
+    let mut command = Command::new("bwrap");
+    command.env_clear();
+    command.args([
+        "--die-with-parent",
+        "--unshare-all",
+        "--unshare-user",
+        "--disable-userns",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--ro-bind",
+        "/bin",
+        "/bin",
+        "--ro-bind",
+        "/lib",
+        "/lib",
+    ]);
+    for system_path in ["/lib64", "/etc/ssl/certs"] {
+        if Path::new(system_path).exists() {
+            command.args(["--ro-bind", system_path, system_path]);
+        }
+    }
+    let temporary_size = MAX_VERIFICATION_TMPFS_BYTES.to_string();
+    let workspace_size = MAX_VERIFICATION_WORKSPACE_BYTES.to_string();
+    command.args([
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--size",
+        temporary_size.as_str(),
+        "--tmpfs",
+        "/tmp",
+        "--chmod",
+        "1777",
+        "/tmp",
+        "--dir",
+        "/tmp/home",
+        "--dir",
+        "/tmp/cargo",
+        "--dir",
+        "/tmp/go",
+        "--dir",
+        "/tmp/go/pkg",
+        "--dir",
+        "/tmp/go/pkg/mod",
+        "--dir",
+        "/tmp/go-build",
+        "--dir",
+        "/tmp/pip-cache",
+        "--dir",
+        "/tmp/npm-cache",
+        "--dir",
+        "/tmp/npm-cache/_cacache",
+        "--dir",
+        "/toolchain",
+        "--dir",
+        "/source",
+        "--ro-bind",
+    ]);
+    command.arg(snapshot).args([
+        "/source",
+        "--size",
+        workspace_size.as_str(),
+        "--tmpfs",
+        "/workspace",
+        "--chmod",
+        "1777",
+        "/workspace",
+        "--chdir",
+        "/workspace",
+    ]);
+    let cwd = working_directory.strip_prefix(snapshot).map_err(|_| {
+        NativeError::Configuration("Verification directory escaped its snapshot.".to_string())
+    })?;
+    let sandbox_cwd = if cwd.as_os_str().is_empty() {
+        "/workspace".to_string()
+    } else {
+        format!("/workspace/{}", cwd.to_string_lossy())
+    };
+    let mut path_entries = vec![
+        "/usr/local/bin".to_string(),
+        "/usr/bin".to_string(),
+        "/bin".to_string(),
+    ];
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        let cargo_home = std::env::var_os("CARGO_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".cargo"));
+        let cargo_bin = cargo_home.join("bin");
+        if cargo_bin.is_dir() {
+            command.args(["--dir", "/toolchain/cargo-bin"]);
+            command
+                .args(["--ro-bind"])
+                .arg(&cargo_bin)
+                .args(["/toolchain/cargo-bin"]);
+            path_entries.insert(0, "/toolchain/cargo-bin".to_string());
+        }
+        for (source, target) in [
+            (home.join(".rustup"), PathBuf::from("/toolchain/rustup")),
+            (
+                cargo_home.join("registry"),
+                PathBuf::from("/tmp/cargo/registry"),
+            ),
+            (cargo_home.join("git"), PathBuf::from("/tmp/cargo/git")),
+        ] {
+            if source.is_dir() {
+                command.args(["--dir"]).arg(&target);
+                command.args(["--ro-bind"]).arg(source).arg(target);
+            }
+        }
+        for (source, target) in [
+            (home.join("go/pkg/mod"), PathBuf::from("/tmp/go/pkg/mod")),
+            (home.join(".cache/pip"), PathBuf::from("/tmp/pip-cache")),
+        ] {
+            if source.is_dir() {
+                command.args(["--dir"]).arg(&target);
+                command.args(["--ro-bind"]).arg(source).arg(target);
+            }
+        }
+        let npm_cache = home.join(".npm/_cacache");
+        if npm_cache.is_dir() {
+            command
+                .args(["--ro-bind"])
+                .arg(npm_cache)
+                .args(["/tmp/npm-cache/_cacache"]);
+        }
+        if let Some(path) = std::env::var_os("PATH") {
+            for entry in std::env::split_paths(&path) {
+                let Some(node_root) = entry.parent() else {
+                    continue;
+                };
+                if entry
+                    .join("../lib/node_modules/npm/bin/npm-cli.js")
+                    .is_file()
+                {
+                    command.args(["--dir", "/toolchain/node"]);
+                    command
+                        .args(["--ro-bind"])
+                        .arg(node_root)
+                        .args(["/toolchain/node"]);
+                    path_entries.insert(0, "/toolchain/node/bin".to_string());
+                    break;
+                }
+            }
+        }
+    }
+    command.args([
+        "--setenv",
+        "PATH",
+        &path_entries.join(":"),
+        "--setenv",
+        "HOME",
+        "/tmp/home",
+        "--setenv",
+        "TMPDIR",
+        "/tmp",
+        "--setenv",
+        "CARGO_HOME",
+        "/tmp/cargo",
+        "--setenv",
+        "RUSTUP_HOME",
+        "/toolchain/rustup",
+        "--setenv",
+        "GOPATH",
+        "/tmp/go",
+        "--setenv",
+        "GOMODCACHE",
+        "/tmp/go/pkg/mod",
+        "--setenv",
+        "GOCACHE",
+        "/tmp/go-build",
+        "--setenv",
+        "GOPROXY",
+        "off",
+        "--setenv",
+        "GOSUMDB",
+        "off",
+        "--setenv",
+        "PIP_CACHE_DIR",
+        "/tmp/pip-cache",
+        "--setenv",
+        "PIP_NO_INDEX",
+        "1",
+        "--setenv",
+        "CARGO_NET_OFFLINE",
+        "true",
+        "--setenv",
+        "NPM_CONFIG_OFFLINE",
+        "true",
+        "--setenv",
+        "NPM_CONFIG_CACHE",
+        "/tmp/npm-cache",
+        "--",
+    ]);
+    command
+        .args([
+            "/bin/sh",
+            "-c",
+            SANDBOX_BOOTSTRAP,
+            "ads-verification",
+            &sandbox_cwd,
+            executable,
+        ])
+        .args(args);
+    #[cfg(unix)]
+    command.process_group(0);
+    Ok(command)
+}
+
+async fn read_output_tail<R>(
+    mut reader: R,
+    limit: usize,
+    capture_markers: bool,
+) -> (String, bool, bool)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut bytes = Vec::new();
+    let sandbox_marker = format!("{SANDBOX_STARTED_MARKER}\n");
+    let verification_marker = format!("{VERIFICATION_STARTED_MARKER}\n");
+    let marker_prefix = format!("{sandbox_marker}{verification_marker}");
+    let mut prefix = Vec::new();
+    let mut buffer = [0u8; 8_192];
+    while let Ok(read) = reader.read(&mut buffer).await {
+        if read == 0 {
+            break;
+        }
+        if capture_markers && prefix.len() < marker_prefix.len() {
+            let remaining = marker_prefix.len().saturating_sub(prefix.len());
+            prefix.extend_from_slice(&buffer[..read.min(remaining)]);
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+        if bytes.len() > limit.saturating_mul(4) {
+            let remove = bytes.len() - limit.saturating_mul(2);
+            bytes.drain(..remove);
+        }
+    }
+    let output = String::from_utf8_lossy(&bytes).into_owned();
+    let sandboxed = capture_markers && prefix.starts_with(sandbox_marker.as_bytes());
+    let started = capture_markers && prefix.starts_with(marker_prefix.as_bytes());
+    (
+        truncate_utf16(&output, limit).to_string(),
+        sandboxed,
+        started,
+    )
+}
+
+async fn await_output(
+    output: Option<tokio::task::JoinHandle<(String, bool, bool)>>,
+) -> (String, bool, bool) {
+    match output {
+        Some(output) => output.await.unwrap_or_default(),
+        None => (String::new(), false, false),
+    }
+}
+
+fn strip_verification_markers(output: &str) -> &str {
+    output
+        .strip_prefix(&format!(
+            "{SANDBOX_STARTED_MARKER}\n{VERIFICATION_STARTED_MARKER}\n"
+        ))
+        .or_else(|| output.strip_prefix(&format!("{SANDBOX_STARTED_MARKER}\n")))
+        .unwrap_or(output)
+}
+
+async fn read_limited<R>(reader: &mut R, limit: usize) -> NativeResult<Vec<u8>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut output = Vec::new();
+    let mut buffer = [0u8; 8_192];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .await
+            .map_err(|error| NativeError::Io(error.to_string()))?;
+        if read == 0 {
+            return Ok(output);
+        }
+        if output.len().saturating_add(read) > limit {
+            return Err(NativeError::Io(
+                "Snapshot tree metadata exceeds its size limit.".to_string(),
+            ));
+        }
+        output.extend_from_slice(&buffer[..read]);
+    }
+}
+
+fn join_output(stdout: &str, stderr: &str) -> String {
+    [stdout.trim(), stderr.trim()]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn terminate_verification(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        terminate_process_group(pid, child).await;
+        return;
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+#[cfg(unix)]
+async fn terminate_process_group(pid: u32, child: &mut tokio::process::Child) {
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGTERM);
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGKILL);
+    }
+    let _ = child.wait().await;
 }
 
 fn tool(name: &str, description: &str, parameters: Value) -> NativeToolDefinition {
@@ -706,4 +1601,147 @@ fn snapshot_entry_regex() -> &'static Regex {
         Regex::new(r"(?s)^(100644|100755) blob ([a-f0-9]+)\s+(\d+)\t(.+)$")
             .expect("snapshot entry regex")
     })
+}
+
+fn safe_snapshot_path(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('/')
+        && !value.contains('\\')
+        && !value.contains('\0')
+        && value
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+#[cfg(unix)]
+fn create_snapshot_symlink(target: &[u8], path: &Path) -> NativeResult<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(target), path)
+        .map_err(|error| NativeError::Io(error.to_string()))
+}
+
+#[cfg(not(unix))]
+fn create_snapshot_symlink(_target: &[u8], _path: &Path) -> NativeResult<()> {
+    Err(NativeError::Io(
+        "This platform cannot materialize reviewed symbolic links safely.".to_string(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git(repository: &Path, arguments: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(arguments)
+            .current_dir(repository)
+            .output()
+            .expect("git command");
+        assert!(
+            output.status.success(),
+            "git {arguments:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn verification_sandbox_uses_a_bounded_tmpfs_and_never_binds_node_modules() {
+        let snapshot = Path::new("/tmp/ads-review-test/workspace");
+        let command = sandbox_command(snapshot, snapshot, "cargo", &[]).expect("sandbox command");
+        let arguments = command
+            .as_std()
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(arguments.windows(3).any(|window| {
+            window == ["--ro-bind", "/tmp/ads-review-test/workspace", "/source"]
+        }));
+        assert!(
+            arguments
+                .windows(3)
+                .any(|window| { window == ["--size", "4294967296", "--tmpfs"] })
+        );
+        assert!(
+            arguments
+                .windows(2)
+                .any(|window| { window == ["--tmpfs", "/workspace"] })
+        );
+        assert!(
+            arguments.windows(3).any(|window| {
+                window == ["--unshare-all", "--unshare-user", "--disable-userns"]
+            })
+        );
+        assert!(
+            !arguments
+                .iter()
+                .any(|argument| argument.contains("node_modules"))
+        );
+    }
+
+    #[test]
+    fn snapshot_paths_cannot_escape_the_workspace() {
+        assert!(safe_snapshot_path("rust-server/src/lib.rs"));
+        assert!(!safe_snapshot_path("../outside"));
+        assert!(!safe_snapshot_path("/etc/passwd"));
+        assert!(!safe_snapshot_path("src//file.rs"));
+        assert!(!safe_snapshot_path("src\\file.rs"));
+    }
+
+    #[tokio::test]
+    async fn materializes_exact_blobs_without_archive_attributes_or_worktree_changes() {
+        let temporary = tempfile::tempdir().expect("temporary repository");
+        let repository = temporary.path();
+        git(repository, &["init", "-q"]);
+        git(repository, &["config", "user.name", "Reviewer Test"]);
+        git(
+            repository,
+            &["config", "user.email", "reviewer@example.com"],
+        );
+        fs::write(
+            repository.join(".gitattributes"),
+            "ignored.txt export-ignore\nsubstituted.txt export-subst\n",
+        )
+        .expect("attributes");
+        fs::write(repository.join("ignored.txt"), "tracked but not archived\n")
+            .expect("export-ignore file");
+        fs::write(repository.join("substituted.txt"), "$Format:%H$\n").expect("export-subst file");
+        fs::write(repository.join("target.txt"), "pinned source\n").expect("target file");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("target.txt", repository.join("link.txt"))
+            .expect("symbolic link");
+        git(repository, &["add", "-A"]);
+        git(repository, &["commit", "-q", "-m", "snapshot"]);
+        let commit = git(repository, &["rev-parse", "HEAD"]);
+
+        fs::write(repository.join("substituted.txt"), "mutable checkout\n")
+            .expect("dirty working tree");
+        let mut inspection =
+            ReviewerInspectionTools::new(repository, commit, Cancellation::new(), None)
+                .expect("inspection tools");
+        let snapshot = inspection
+            .materialize_verification_snapshot()
+            .await
+            .expect("exact snapshot");
+
+        assert_eq!(
+            fs::read_to_string(snapshot.join("ignored.txt")).expect("export-ignore file"),
+            "tracked but not archived\n"
+        );
+        assert_eq!(
+            fs::read_to_string(snapshot.join("substituted.txt")).expect("export-subst file"),
+            "$Format:%H$\n"
+        );
+        assert_eq!(
+            fs::read_to_string(snapshot.join("target.txt")).expect("target file"),
+            "pinned source\n"
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            fs::read_to_string(snapshot.join("link.txt")).expect("symbolic link"),
+            "pinned source\n"
+        );
+    }
 }

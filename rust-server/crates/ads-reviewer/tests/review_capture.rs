@@ -30,7 +30,7 @@ fn target(require_pinned: bool) -> ReviewTarget {
 fn options(require_pinned: bool) -> ReviewCaptureOptions {
     ReviewCaptureOptions {
         require_pinned_evidence: require_pinned,
-        test_report: None,
+        verification_report: None,
         diff_override: None,
     }
 }
@@ -246,7 +246,7 @@ async fn diff_override_skips_git_diff_but_resolves_commits() {
     };
     let options = ReviewCaptureOptions {
         require_pinned_evidence: true,
-        test_report: None,
+        verification_report: None,
         diff_override: Some(ReviewDiffOverride {
             diff: "override diff".to_string(),
             diff_stat: " override | 1 +\n".to_string(),

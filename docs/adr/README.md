@@ -68,4 +68,5 @@
 - 0057 - [ADR 0057: Package-Local Build and Test Boundaries](0057-package-local-build-test-boundaries.md)
 - 0058 - [ADR 0058: Implement Pull Request Workspace Routes in Rust HTTP Server](0058-rust-server-pull-request-workspace-routes.md)
 - 0059 - [ADR 0059: Require Complete Declarations Before Review Redispatch](0059-complete-review-rework-declarations.md)
+- 0060 - [ADR 0060: Reviewer-Owned Verification Selection](0060-reviewer-owned-verification-selection.md)
 <!-- ADS:ADR_INDEX_END -->

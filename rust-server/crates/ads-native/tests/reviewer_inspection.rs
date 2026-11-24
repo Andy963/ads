@@ -391,6 +391,9 @@ fn options(
         tool_turn_budget: None,
         diff,
         complete: Some(complete),
+        verification_report: Arc::new(
+            Mutex::new(ads_reviewer::ReviewVerificationReport::default()),
+        ),
     }
 }
 
@@ -407,17 +410,37 @@ async fn runs_read_only_inspection_and_returns_a_verdict() {
             )],
         ),
         completion(
+            "",
+            vec![NativeToolCall::new(
+                "call-2",
+                "run_verification",
+                json!({
+                    "executable": "grep",
+                    "args": ["-F", "-q", "line one", "src.ts"]
+                })
+                .to_string(),
+            )],
+        ),
+        completion(
             r#"{"status":"PASS","summary":"Looks good","defects":[]}"#,
             Vec::new(),
         ),
     ]);
-    let verdict = run_reviewer_inspection(options(&repo, None, complete))
-        .await
-        .expect("verdict");
-    assert_eq!(verdict.status, ReviewVerdictStatus::Pass);
-    assert_eq!(verdict.reviewer_profile_id.as_deref(), Some("reviewer-1"));
+    let options = options(&repo, None, complete);
+    let verification_report = Arc::clone(&options.verification_report);
+    let verdict = run_reviewer_inspection(options).await;
+    let reports = verification_report.lock().expect("verification report");
+    assert_eq!(reports.commands.len(), 1);
+    if reports.commands[0].sandboxed && reports.commands[0].started {
+        assert_eq!(reports.commands[0].exit_code, 0);
+        assert_eq!(verdict.expect("verdict").status, ReviewVerdictStatus::Pass);
+    } else {
+        assert!(matches!(verdict, Err(ReviewerError::Incomplete(_))));
+    }
+    drop(reports);
+
     let requests = requests.lock().expect("requests");
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     assert!(
         requests[0]
             .tools
@@ -427,6 +450,191 @@ async fn runs_read_only_inspection_and_returns_a_verdict() {
     assert!(requests[1].messages.iter().any(|message| {
         message.role == "tool" && message.text_content().contains("1: line one")
     }));
+    assert!(requests[2].messages.iter().any(|message| {
+        message.role == "tool" && message.text_content().contains("\"sandboxed\":")
+    }));
+}
+
+#[tokio::test]
+async fn verification_tool_records_a_sandboxed_exact_snapshot_attempt() {
+    let repo = repository();
+    let verification_report =
+        Arc::new(Mutex::new(ads_reviewer::ReviewVerificationReport::default()));
+    let mut inspection = tools(&repo, None).with_verification_report(verification_report.clone());
+    let output = inspection
+        .execute(&call(
+            "run_verification",
+            json!({
+                "executable": "grep",
+                "args": ["-F", "-q", "line one", "src.ts"]
+            }),
+        ))
+        .await
+        .expect("verification result");
+    let output: Value = serde_json::from_str(&output).expect("verification json");
+    let reports = verification_report.lock().expect("verification report");
+    assert_eq!(reports.commands.len(), 1);
+    assert!(reports.commands[0].command.contains("\"src.ts\""));
+    assert_eq!(
+        reports.commands[0].sandboxed,
+        output["sandboxed"].as_bool().expect("sandbox status")
+    );
+    if reports.commands[0].sandboxed {
+        assert_eq!(reports.commands[0].exit_code, 0);
+        assert!(reports.commands[0].started);
+        assert!(!inspection.has_unavailable_verification());
+    } else {
+        assert_eq!(reports.commands[0].exit_code, 125);
+        assert!(!reports.commands[0].started);
+        assert!(inspection.has_unavailable_verification());
+    }
+}
+
+#[tokio::test]
+async fn reviewer_can_select_a_rust_check_in_a_mixed_language_repository() {
+    let mut repo = repository();
+    fs::create_dir_all(repo.path.join("rust-server/src")).expect("Rust workspace");
+    fs::create_dir_all(repo.path.join("ts-server")).expect("TypeScript workspace");
+    fs::write(
+        repo.path.join("rust-server/Cargo.toml"),
+        "[workspace]\nmembers = [\"src\"]\n",
+    )
+    .expect("Rust manifest");
+    fs::write(
+        repo.path.join("rust-server/src/lib.rs"),
+        "pub fn rust_change() {}\n",
+    )
+    .expect("Rust source");
+    fs::write(
+        repo.path.join("ts-server/package.json"),
+        "{\"scripts\":{\"test\":\"echo unrelated\"}}\n",
+    )
+    .expect("TypeScript manifest");
+    git(&repo.path, &["add", "-A"]);
+    git(
+        &repo.path,
+        &[
+            "-c",
+            "user.name=Reviewer Test",
+            "-c",
+            "user.email=reviewer@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "mixed repository",
+        ],
+    );
+    repo.commit = git(&repo.path, &["rev-parse", "HEAD"]);
+
+    let (complete, requests) = scripted(vec![
+        completion(
+            "",
+            vec![NativeToolCall::new(
+                "call-1",
+                "list_dir",
+                json!({"path": "."}).to_string(),
+            )],
+        ),
+        completion(
+            "",
+            vec![NativeToolCall::new(
+                "call-2",
+                "run_verification",
+                json!({
+                    "executable": "grep",
+                    "args": ["-F", "-q", "pub fn rust_change", "rust-server/src/lib.rs"]
+                })
+                .to_string(),
+            )],
+        ),
+        completion(
+            r#"{"status":"PASS","summary":"Rust change verified","defects":[]}"#,
+            Vec::new(),
+        ),
+    ]);
+    let options = options(
+        &repo,
+        Some("+ pub fn rust_change() {}".to_string()),
+        complete,
+    );
+    let verification_report = Arc::clone(&options.verification_report);
+    let verdict = run_reviewer_inspection(options).await;
+
+    let reports = verification_report.lock().expect("verification report");
+    assert_eq!(reports.commands.len(), 1);
+    assert!(
+        reports.commands[0]
+            .command
+            .contains("rust-server/src/lib.rs")
+    );
+    assert!(!reports.commands[0].command.contains("npm"));
+    if reports.commands[0].sandboxed && reports.commands[0].started {
+        assert_eq!(reports.commands[0].exit_code, 0);
+        assert_eq!(verdict.expect("verdict").status, ReviewVerdictStatus::Pass);
+    } else {
+        assert!(matches!(verdict, Err(ReviewerError::Incomplete(_))));
+    }
+    drop(reports);
+
+    let requests = requests.lock().expect("requests");
+    assert_eq!(requests.len(), 3);
+    assert!(requests[1].messages.iter().any(|message| {
+        message.role == "tool"
+            && message.text_content().contains("rust-server/")
+            && message.text_content().contains("ts-server/")
+    }));
+    assert!(requests[2].messages.iter().any(|message| {
+        message.role == "tool" && message.text_content().contains("rust-server/src/lib.rs")
+    }));
+}
+
+#[tokio::test]
+async fn pass_requires_reviewer_selected_verification() {
+    let repo = repository();
+    let (complete, requests) = scripted(vec![completion(
+        r#"{"status":"PASS","summary":"Looks good","defects":[]}"#,
+        Vec::new(),
+    )]);
+    let error = run_reviewer_inspection(options(&repo, None, complete))
+        .await
+        .expect_err("verification is required");
+    assert!(
+        matches!(error, ReviewerError::Incomplete(message) if message.contains("did not run a verification command"))
+    );
+    assert_eq!(requests.lock().expect("requests").len(), 1);
+}
+
+#[tokio::test]
+async fn pass_requires_an_available_verification_command_to_start() {
+    let repo = repository();
+    let (complete, _) = scripted(vec![
+        completion(
+            "",
+            vec![NativeToolCall::new(
+                "call-1",
+                "run_verification",
+                json!({
+                    "executable": "ads-command-that-does-not-exist",
+                    "args": []
+                })
+                .to_string(),
+            )],
+        ),
+        completion(
+            r#"{"status":"PASS","summary":"Looks good","defects":[]}"#,
+            Vec::new(),
+        ),
+    ]);
+    let options = options(&repo, None, complete);
+    let verification_report = Arc::clone(&options.verification_report);
+    let error = run_reviewer_inspection(options)
+        .await
+        .expect_err("no check ran");
+
+    assert!(matches!(error, ReviewerError::Incomplete(_)));
+    let reports = verification_report.lock().expect("verification report");
+    assert_eq!(reports.commands.len(), 1);
+    assert!(!reports.commands[0].started);
 }
 
 #[tokio::test]
@@ -447,16 +655,37 @@ async fn requires_the_full_paged_diff_before_accepting_a_verdict() {
             )],
         ),
         completion(
+            "",
+            vec![NativeToolCall::new(
+                "call-2",
+                "run_verification",
+                json!({
+                    "executable": "grep",
+                    "args": ["-F", "-q", "line one", "src.ts"]
+                })
+                .to_string(),
+            )],
+        ),
+        completion(
             r#"{"status":"PASS","summary":"reviewed","defects":[]}"#,
             Vec::new(),
         ),
     ]);
-    let verdict = run_reviewer_inspection(options(&repo, Some(diff), complete))
-        .await
-        .expect("verdict");
-    assert_eq!(verdict.status, ReviewVerdictStatus::Pass);
+    let options = options(&repo, Some(diff), complete);
+    let verification_report = Arc::clone(&options.verification_report);
+    let verdict = run_reviewer_inspection(options).await;
+    let reports = verification_report.lock().expect("verification report");
+    assert_eq!(reports.commands.len(), 1);
+    if reports.commands[0].sandboxed {
+        assert_eq!(reports.commands[0].exit_code, 0);
+        assert_eq!(verdict.expect("verdict").status, ReviewVerdictStatus::Pass);
+    } else {
+        assert!(matches!(verdict, Err(ReviewerError::Incomplete(_))));
+    }
+    drop(reports);
+
     let requests = requests.lock().expect("requests");
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
     assert!(requests[1].messages.iter().any(|message| {
         message.role == "user" && message.text_content().contains("not fully inspected")
     }));

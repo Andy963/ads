@@ -6,7 +6,9 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
-use crate::types::{ReviewAdr, ReviewDiffRange, ReviewIssue, ReviewPayload, ReviewTestReport};
+use crate::types::{
+    ReviewAdr, ReviewDiffRange, ReviewIssue, ReviewPayload, ReviewVerificationReport,
+};
 use crate::{diff_filter::filter_diff, extract_related_contexts};
 
 const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
@@ -32,7 +34,7 @@ pub struct ReviewDiffOverride {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ReviewCaptureOptions {
     pub require_pinned_evidence: bool,
-    pub test_report: Option<ReviewTestReport>,
+    pub verification_report: Option<ReviewVerificationReport>,
     pub diff_override: Option<ReviewDiffOverride>,
 }
 
@@ -302,7 +304,7 @@ where
         // The TypeScript context extractor is not ported yet; do not fabricate related contexts.
         related_contexts: None,
         related_context_omissions: None,
-        test_report: options.test_report.clone(),
+        verification_report: options.verification_report.clone(),
     }
 }
 

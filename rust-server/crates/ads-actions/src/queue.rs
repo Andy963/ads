@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ads_reviewer::{
-    IssueVerdictCommentInput, IssueVerdictStatus, ReviewTestReport, ReviewVerdict,
-    ReviewVerdictStatus, build_issue_verdict_comment, capture_review_payload_async,
+    IssueVerdictCommentInput, IssueVerdictStatus, ReviewVerdict, ReviewVerdictStatus,
+    ReviewVerificationReport, build_issue_verdict_comment, capture_review_payload_async,
     format_review_verdict_presentation,
 };
 use ads_state::{
@@ -20,25 +20,17 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::process::Command;
 
-use crate::defaults::{default_publisher, default_reviewer_runner, default_verification_runner};
+use crate::defaults::{default_publisher, default_reviewer_runner};
 use crate::dispatch::{canonical_project_id, is_operational_review_outcome, issue_id_from_branch};
 use crate::types::{
     AcopilotWake, BoxFuture, IssueCommentRequest, LaneMessage, LaneMessageRole,
     ResolveReviewRequest, ResolvedReview, ReviewError, ReviewQueueAck, ReviewQueueOptions,
-    ReviewerRequest, ReviewerRunner, ReworkDeclaration, TargetResolver, VerificationRunner,
+    ReviewerRequest, ReviewerRunner, ReworkDeclaration, TargetResolver,
 };
 
 const DEFAULT_LEASE_TTL: Duration = Duration::from_secs(90);
 const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(30);
-const DEFAULT_VERIFICATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const DEFAULT_REVIEWER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-fn default_test_command(repo_path: &Path) -> String {
-    if repo_path.join("ts-server/package.json").is_file() {
-        "npm --prefix ts-server test".to_string()
-    } else {
-        "npm test".to_string()
-    }
-}
 
 #[derive(Clone)]
 pub struct ReviewQueue {
@@ -304,7 +296,7 @@ impl ReviewQueue {
         );
         let cancellation = ads_native::Cancellation::new();
         let session_key = review_key(&session);
-        let (verdict, test_report) = self
+        let (verdict, verification_report) = self
             .run_interactive_review(&current, &session, &session_key, repo_path, cancellation)
             .await?;
         if self.is_superseded(&current.id)? {
@@ -329,7 +321,7 @@ impl ReviewQueue {
                         serde_json::to_string(&[&verdict]).expect("verdict json"),
                     )),
                     verification_report_json: Some(Some(
-                        serde_json::to_string(&test_report).expect("report json"),
+                        serde_json::to_string(&verification_report).expect("report json"),
                     )),
                     error_message: Some(None),
                 },
@@ -471,58 +463,16 @@ impl ReviewQueue {
         session_key: &str,
         repo_path: &Path,
         cancellation: ads_native::Cancellation,
-    ) -> Result<(ReviewVerdict, ReviewTestReport), ReviewError> {
-        let test_report = (self.verification(&session.repo_path))(
-            session.repo_path.clone(),
-            cancellation.clone(),
-        )
-        .await?;
-        let now = now_ms();
-        {
-            let connection = self.db.connect()?;
-            if !update_action_job_status(
-                &connection,
-                &job.id,
-                ActionJobStatus::Verifying,
-                ActionJobStatusUpdate {
-                    current_step: Some(Some(format!(
-                        "Verification completed: {} (exit {})",
-                        test_report.command, test_report.exit_code
-                    ))),
-                    verification_report_json: Some(Some(serde_json::to_string(&test_report)?)),
-                    ..ActionJobStatusUpdate::default()
-                },
-                now,
-                true,
-            )? {
-                return Err(ReviewError::Superseded(
-                    "The review job was superseded by a newer head commit.".to_string(),
-                ));
-            }
-        }
+    ) -> Result<(ReviewVerdict, ReviewVerificationReport), ReviewError> {
         let target = review_target_label(job);
-        self.record_action_message(
-            job,
-            repo_path,
-            if test_report.exit_code == 0 {
-                format!("Checks passed for {target}.")
-            } else {
-                format!(
-                    "Checks failed for {target} (exit {}): {}",
-                    test_report.exit_code, test_report.summary
-                )
-            },
-            format!("action_step:{}:verification", job.id),
-            LaneMessageRole::Status,
-        );
-        self.assert_current_session(session, session_key, "verification")
+        self.assert_current_session(session, session_key, "target check")
             .await?;
         let mut payload = capture_review_payload_async(
             &session.target,
             &session.repo_path,
             &ads_reviewer::ReviewCaptureOptions {
                 require_pinned_evidence: true,
-                test_report: Some(test_report.clone()),
+                verification_report: None,
                 diff_override: None,
             },
         )
@@ -564,18 +514,104 @@ impl ReviewQueue {
                 ));
             }
         }
-        let verdict = (self.reviewer())(ReviewerRequest {
+        let verification_report =
+            std::sync::Arc::new(std::sync::Mutex::new(ReviewVerificationReport::default()));
+        let reviewer_result = (self.reviewer())(ReviewerRequest {
             payload,
             repo_path: session.repo_path.clone(),
             profile_id: parse_reviewer_profile_id(job),
             job_id: job.id.clone(),
             owner: session.auth_user_id.clone(),
             cancellation: cancellation.clone(),
+            verification_report: verification_report.clone(),
         })
-        .await?;
+        .await;
+        let verification_report = verification_report
+            .lock()
+            .expect("verification report lock")
+            .clone();
+        let now = now_ms();
+        {
+            let connection = self.db.connect()?;
+            if !update_action_job_status(
+                &connection,
+                &job.id,
+                ActionJobStatus::Reviewing,
+                ActionJobStatusUpdate {
+                    current_step: Some(Some(format!(
+                        "Reviewer ran {} verification command(s)",
+                        verification_report.commands.len()
+                    ))),
+                    verification_report_json: Some(Some(serde_json::to_string(
+                        &verification_report,
+                    )?)),
+                    ..ActionJobStatusUpdate::default()
+                },
+                now,
+                true,
+            )? {
+                return Err(ReviewError::Superseded(
+                    "The review job was superseded by a newer head commit.".to_string(),
+                ));
+            }
+        }
+        let verification_summary = verification_report
+            .commands
+            .iter()
+            .map(|report| {
+                format!(
+                    "{} (exit {}, sandboxed={}, started={})",
+                    report.command, report.exit_code, report.sandboxed, report.started
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        self.record_action_message(
+            job,
+            repo_path,
+            if verification_summary.is_empty() {
+                format!("Reviewer selected no verification command for {target}.")
+            } else {
+                format!("Reviewer verification for {target}: {verification_summary}")
+            },
+            format!("action_step:{}:verification", job.id),
+            LaneMessageRole::Status,
+        );
+        if reviewer_result
+            .as_ref()
+            .is_ok_and(|verdict| verdict.status == ReviewVerdictStatus::Pass)
+        {
+            if verification_report.commands.is_empty() {
+                return Err(ReviewError::Incomplete(
+                    "Reviewer did not run a verification command; no PASS verdict is authoritative."
+                        .to_string(),
+                ));
+            }
+            if !verification_report
+                .commands
+                .iter()
+                .any(|command| command.started)
+            {
+                return Err(ReviewError::Incomplete(
+                    "Reviewer did not start an available verification command; no PASS verdict is authoritative."
+                        .to_string(),
+                ));
+            }
+            if verification_report
+                .commands
+                .iter()
+                .any(|command| !command.sandboxed)
+            {
+                return Err(ReviewError::Incomplete(
+                    "Reviewer verification did not run entirely inside the isolated sandbox; no PASS verdict is authoritative."
+                        .to_string(),
+                ));
+            }
+        }
+        let verdict = reviewer_result?;
         self.assert_current_session(session, session_key, "review")
             .await?;
-        Ok((verdict, test_report))
+        Ok((verdict, verification_report))
     }
 
     async fn assert_current_session(
@@ -951,21 +987,6 @@ impl ReviewQueue {
             .unwrap_or_else(crate::resolver::default_target_resolver)
     }
 
-    fn verification(&self, repo_path: &Path) -> VerificationRunner {
-        self.options.verification.clone().unwrap_or_else(|| {
-            let command = self
-                .options
-                .test_command
-                .clone()
-                .unwrap_or_else(|| default_test_command(repo_path));
-            let timeout = self
-                .options
-                .verification_timeout
-                .unwrap_or(DEFAULT_VERIFICATION_TIMEOUT);
-            default_verification_runner(command, timeout)
-        })
-    }
-
     fn reviewer(&self) -> ReviewerRunner {
         self.options.reviewer.clone().unwrap_or_else(|| {
             let timeout = self
@@ -1230,19 +1251,6 @@ mod tests {
             );
         }
         assert_eq!(github_repository_url("https://example.com/ads.git"), None);
-    }
-
-    #[test]
-    fn selects_the_package_local_test_command_for_ads_repositories() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        assert_eq!(default_test_command(directory.path()), "npm test");
-        std::fs::create_dir_all(directory.path().join("ts-server")).expect("ts-server directory");
-        std::fs::write(directory.path().join("ts-server/package.json"), "{}\n")
-            .expect("package manifest");
-        assert_eq!(
-            default_test_command(directory.path()),
-            "npm --prefix ts-server test"
-        );
     }
 
     #[tokio::test]
