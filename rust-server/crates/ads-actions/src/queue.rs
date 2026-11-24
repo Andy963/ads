@@ -402,7 +402,9 @@ impl ReviewQueue {
                             .as_deref()
                             .and_then(|value| serde_json::from_str::<ReworkDeclaration>(value).ok())
                             .is_some_and(|candidate_declaration| {
-                                candidate_declaration == declaration
+                                candidate.rework_root_job_id.as_deref()
+                                    == Some(declaration.prior_job_id.as_str())
+                                    && candidate_declaration.targets_same_rejection(&declaration)
                             }))
             });
             let inherited_from_operational_retry =
@@ -413,7 +415,9 @@ impl ReviewQueue {
                             .as_deref()
                             .and_then(|value| serde_json::from_str::<ReworkDeclaration>(value).ok())
                             .is_some_and(|candidate_declaration| {
-                                candidate_declaration == declaration
+                                candidate.rework_root_job_id.as_deref()
+                                    == Some(declaration.prior_job_id.as_str())
+                                    && candidate_declaration.targets_same_rejection(&declaration)
                             })
                 });
             match get_action_job(&connection, &declaration.prior_job_id)? {

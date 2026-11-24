@@ -423,25 +423,35 @@ async fn carries_rework_declaration_across_operational_review_retries() {
     assert!(rejected.superseded_at.is_some());
     drop(connection);
 
+    std::fs::write(repo.join("c.txt"), "three\n").expect("write newer head");
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "newer review head"]);
+    let newer_head = git(&repo, &["rev-parse", "HEAD"]);
+    let mut updated_declaration = declaration.clone();
+    updated_declaration["new_head_sha"] = Value::String(newer_head.clone());
+    updated_declaration["verification_evidence"] =
+        serde_json::json!(["verification rerun for updated head"]);
+
     let mut second_retry =
         dispatch_request(project.clone(), &repo, Some("codex/issue-7"), Some(12));
-    second_retry.current_head_sha = Some(head.clone());
+    second_retry.current_head_sha = Some(newer_head.clone());
+    second_retry.rework_declaration = Some(updated_declaration.clone());
     let second_ack = first_queue
         .dispatch(second_retry, 4_000)
-        .expect("operational retry");
+        .expect("operational retry with updated head declaration");
     let connection = db.connect().expect("connection");
     let retry = get_action_job(&connection, &second_ack.job_id)
         .expect("read retry")
         .expect("retry job");
     assert_eq!(
         retry.rework_declaration_json.as_deref(),
-        Some(declaration.to_string().as_str())
+        Some(updated_declaration.to_string().as_str())
     );
     assert_eq!(retry.rework_root_job_id.as_deref(), Some("reject"));
     drop(connection);
 
     let mut second_options = options();
-    second_options.target_resolver = Some(fixed_resolver(resolved(&repo, &base, &head)));
+    second_options.target_resolver = Some(fixed_resolver(resolved(&repo, &base, &newer_head)));
     second_options.verification = Some(verification(0));
     second_options.reviewer = Some(pass_reviewer());
     let second_queue = ReviewQueue::new(db.clone(), "worker-2", second_options);

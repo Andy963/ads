@@ -165,9 +165,9 @@ pub fn dispatch_review_job(
         .map(|value| serde_json::from_value::<ReworkDeclaration>(value.clone()))
         .transpose()?;
     let selected_declaration = match (provided_declaration, inherited_declaration) {
-        (Some(provided), Some(inherited)) if provided != inherited => {
+        (Some(provided), Some(inherited)) if !provided.targets_same_rejection(&inherited) => {
             return Err(ReviewError::Conflict(
-                "An operational retry must preserve the previously validated rework declaration."
+                "An operational retry must preserve the original REJECT job, Issue, PR, base, and rejected head. Provide an updated complete declaration for the current head."
                     .to_string(),
             ));
         }

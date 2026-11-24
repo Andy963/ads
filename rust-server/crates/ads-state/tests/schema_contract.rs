@@ -50,6 +50,7 @@ fn migrates_state_48_to_50_with_rework_lineage_columns() {
     connection
         .execute_batch(
             "ALTER TABLE action_jobs DROP COLUMN rework_declaration_json;
+             ALTER TABLE action_jobs DROP COLUMN rework_root_job_id;
              UPDATE schema_version SET version = 48 WHERE id = 1;",
         )
         .expect("version 48 fixture");
@@ -375,10 +376,71 @@ fn checked_in_state_contract_matches_the_runtime_version() {
         "checked-in state contract must match STATE_SCHEMA_VERSION"
     );
     let manifest = include_str!("../../../contracts/sqlite/manifest.json");
+    let manifest_value: serde_json::Value = serde_json::from_str(manifest).expect("manifest json");
     assert!(
         manifest.contains(&format!("\"schema_version\": {STATE_SCHEMA_VERSION}")),
         "checked-in manifest must match STATE_SCHEMA_VERSION"
     );
+    assert_eq!(
+        manifest_value["state"]["schema_version"].as_i64(),
+        Some(STATE_SCHEMA_VERSION)
+    );
+    assert_eq!(
+        manifest_value["state_migration_count"].as_i64().unwrap()
+            + manifest_value["rust_state_contract_migration_count"]
+                .as_i64()
+                .unwrap(),
+        STATE_SCHEMA_VERSION
+    );
+    assert!(
+        manifest.contains("\"rust_state_contract_migration_count\": 8"),
+        "checked-in manifest must record the Rust-only state contract migrations"
+    );
+    assert!(contract_sql.contains("rework_declaration_json TEXT"));
+    assert!(contract_sql.contains("rework_root_job_id TEXT"));
+
+    let contract_connection = Connection::open_in_memory().expect("contract database");
+    contract_connection
+        .execute_batch(contract_sql)
+        .expect("execute checked-in SQLite contract");
+    for table in ["action_jobs", "agent_messages"] {
+        let columns = |connection: &Connection| {
+            let mut statement = connection
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .expect("table info statement");
+            statement
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("table info rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("table columns")
+        };
+        assert_eq!(
+            columns(&connection),
+            columns(&contract_connection),
+            "{table} columns"
+        );
+    }
+    for (object_type, manifest_field) in [
+        ("table", "tables"),
+        ("index", "indexes"),
+        ("trigger", "triggers"),
+        ("view", "views"),
+    ] {
+        let contract_count: i64 = contract_connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = ?1 AND sql IS NOT NULL
+                   AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_fts_%'",
+                params![object_type],
+                |row| row.get(0),
+            )
+            .expect("contract object count");
+        assert_eq!(
+            manifest_value["state"][manifest_field].as_i64(),
+            Some(contract_count),
+            "{object_type} manifest count"
+        );
+    }
 }
 
 #[test]

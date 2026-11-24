@@ -153,6 +153,16 @@ pub struct ReworkDeclaration {
     pub residual_risks: Vec<String>,
 }
 
+impl ReworkDeclaration {
+    pub(crate) fn targets_same_rejection(&self, other: &Self) -> bool {
+        self.prior_job_id == other.prior_job_id
+            && self.issue_id == other.issue_id
+            && self.pr_number == other.pr_number
+            && self.base_sha == other.base_sha
+            && self.rejected_head_sha == other.rejected_head_sha
+    }
+}
+
 pub type TargetResolver = Arc<
     dyn Fn(ResolveReviewRequest) -> BoxFuture<Result<ResolvedReview, ReviewError>> + Send + Sync,
 >;
