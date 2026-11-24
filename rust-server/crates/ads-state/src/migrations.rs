@@ -2236,6 +2236,36 @@ fn migrate_state_49(connection: &Connection) -> StateResult<()> {
 fn migrate_state_50(connection: &Connection) -> StateResult<()> {
     if table_exists(connection, "action_jobs")? {
         add_column_if_missing(connection, "action_jobs", "rework_root_job_id", "TEXT")?;
+        let declarations = {
+            let mut statement = connection.prepare(
+                "SELECT id, rework_declaration_json FROM action_jobs
+                 WHERE rework_declaration_json IS NOT NULL AND rework_root_job_id IS NULL",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        for (job_id, declaration_json) in declarations {
+            let root_job_id = serde_json::from_str::<serde_json::Value>(&declaration_json)
+                .ok()
+                .and_then(|declaration| {
+                    declaration
+                        .get("prior_job_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                });
+            if let Some(root_job_id) = root_job_id {
+                connection.execute(
+                    "UPDATE action_jobs SET rework_root_job_id = ?1
+                     WHERE id = ?2 AND rework_root_job_id IS NULL",
+                    params![root_job_id, job_id],
+                )?;
+            }
+        }
     }
     Ok(())
 }

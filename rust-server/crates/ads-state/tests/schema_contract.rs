@@ -87,6 +87,59 @@ fn migrates_state_48_to_50_with_rework_lineage_columns() {
 }
 
 #[test]
+fn migrates_state_49_to_50_backfilling_rework_root_lineage() {
+    let directory = tempdir().expect("temp dir");
+    let path = directory.path().join("state.db");
+    StateDb::open(&path).expect("state db");
+    let connection = Connection::open(&path).expect("connection");
+    connection
+        .execute_batch(
+            r#"INSERT INTO action_jobs (
+               id, project_id, job_kind, issue_id, issue_title, status, branch,
+               base_sha, head_sha, current_step, pr_number, superseded_at, created_at, updated_at
+             ) VALUES (
+               'reject-job', 'project-1', 'pull_request_review', 7, 'Issue 7', 'completed',
+               'codex/issue-7', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+               'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'REJECT: defect', 12, 100, 1, 1
+             );
+             INSERT INTO action_jobs (
+               id, project_id, job_kind, issue_id, issue_title, status, branch,
+               base_sha, head_sha, current_step, pr_number, rework_declaration_json,
+               created_at, updated_at
+             ) VALUES (
+               'retry-job', 'project-1', 'pull_request_review', 7, 'Issue 7', 'completed',
+               'codex/issue-7', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+               'cccccccccccccccccccccccccccccccccccccccc', 'INCOMPLETE: upstream', 12,
+               '{"prior_job_id":"reject-job","issue_id":7,"pr_number":12,"base_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","rejected_head_sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","new_head_sha":"cccccccccccccccccccccccccccccccccccccccc","root_cause":"root cause","invariant":"invariant","audited_scope":["source"],"changed_behavior":"behavior","regression_cases":["regression"],"verification_evidence":["tests pass"],"residual_risks":[]}',
+               2, 2
+             );
+             ALTER TABLE action_jobs DROP COLUMN rework_root_job_id;
+             UPDATE schema_version SET version = 49 WHERE id = 1;"#,
+        )
+        .expect("schema 49 persisted review state");
+    drop(connection);
+
+    let db = StateDb::open(&path).expect("migrated state db");
+    let connection = db.connect().expect("connection");
+    let root_job_id: String = connection
+        .query_row(
+            "SELECT rework_root_job_id FROM action_jobs WHERE id = 'retry-job'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("backfilled rework root");
+    let rejected_job_superseded_at: i64 = connection
+        .query_row(
+            "SELECT superseded_at FROM action_jobs WHERE id = 'reject-job'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("superseded reject job");
+    assert_eq!(root_job_id, "reject-job");
+    assert_eq!(rejected_job_superseded_at, 100);
+}
+
+#[test]
 fn opens_workspace_database_at_the_contract_version() {
     let directory = tempdir().expect("temp dir");
     let path = directory.path().join("workspace.db");

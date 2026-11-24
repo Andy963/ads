@@ -363,10 +363,12 @@ fn fake_factory(
 fn approval_factory(
     requests: Arc<Mutex<Vec<Value>>>,
     responses: Arc<Mutex<Vec<Value>>>,
+    rework_arguments: Value,
 ) -> ClientFactory {
     Arc::new(move |_: SpawnOptions| {
         let requests = Arc::clone(&requests);
         let responses = Arc::clone(&responses);
+        let rework_arguments = rework_arguments.clone();
         Box::pin(async move {
             let (client_stream, server_stream) = tokio::io::duplex(1024 * 1024);
             let (client_reader, client_writer) = split(client_stream);
@@ -459,7 +461,7 @@ fn approval_factory(
                                         "turnId": "turn-approval",
                                         "callId": "review-1",
                                         "tool": "review_action",
-                                        "arguments": {}
+                                        "arguments": rework_arguments.clone()
                                     }),
                                 ),
                                 (
@@ -470,7 +472,7 @@ fn approval_factory(
                                         "turnId": "turn-approval",
                                         "callId": "review-1",
                                         "tool": "review_action",
-                                        "arguments": {}
+                                        "arguments": rework_arguments.clone()
                                     }),
                                 ),
                             ] {
@@ -965,14 +967,33 @@ async fn times_out_and_interrupts_an_active_turn() {
 
 #[tokio::test]
 async fn handles_approvals_and_review_action_without_replaying_side_effects() {
+    let rework_arguments = json!({
+        "rework": {
+            "prior_job_id": "reject-job",
+            "issue_id": 7,
+            "pr_number": 12,
+            "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "rejected_head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "new_head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+            "root_cause": "root cause",
+            "invariant": "invariant",
+            "audited_scope": ["source"],
+            "changed_behavior": "behavior",
+            "regression_cases": ["regression"],
+            "verification_evidence": ["tests pass"],
+            "residual_risks": []
+        }
+    });
     let request_log = Arc::new(Mutex::new(Vec::new()));
     let response_log = Arc::new(Mutex::new(Vec::new()));
     let request_log_for_factory = Arc::clone(&request_log);
     let response_log_for_factory = Arc::clone(&response_log);
+    let rework_arguments_for_factory = rework_arguments.clone();
     let registry = CodexAppServerDaemonRegistry::with_factory(move |options| {
         let factory = approval_factory(
             Arc::clone(&request_log_for_factory),
             Arc::clone(&response_log_for_factory),
+            rework_arguments_for_factory.clone(),
         );
         factory(options)
     });
@@ -1002,13 +1023,22 @@ async fn handles_approvals_and_review_action_without_replaying_side_effects() {
     });
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_for_tool = Arc::clone(&calls);
-    let actions = AgentActionTools::new(move || {
+    let observed_arguments = Arc::new(Mutex::new(None));
+    let observed_arguments_for_tool = Arc::clone(&observed_arguments);
+    let native_tools = ads_native::ActionTools::new_with_arguments(move |arguments| {
         let calls = Arc::clone(&calls_for_tool);
+        let observed_arguments = Arc::clone(&observed_arguments_for_tool);
         async move {
             calls.fetch_add(1, Ordering::AcqRel);
-            Ok(json!({"ok": true, "jobId": "job-1", "status": "queued"}))
+            *observed_arguments.lock().await = Some(arguments);
+            Ok::<_, ads_native::NativeError>(json!({
+                "ok": true,
+                "jobId": "job-1",
+                "status": "queued"
+            }))
         }
     });
+    let actions = AgentActionTools::from_native(native_tools);
 
     let result = agent
         .send_with_options(
@@ -1022,6 +1052,10 @@ async fn handles_approvals_and_review_action_without_replaying_side_effects() {
         .expect("approval turn");
     assert_eq!(result.response, "approved and queued");
     assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert_eq!(
+        observed_arguments.lock().await.as_ref(),
+        Some(&rework_arguments)
+    );
 
     let responses = response_log.lock().await;
     assert_eq!(responses[0]["result"], json!({"decision": "decline"}));
@@ -1066,6 +1100,11 @@ async fn handles_approvals_and_review_action_without_replaying_side_effects() {
     assert_eq!(
         thread_start["params"]["dynamicTools"][0]["name"],
         "review_action"
+    );
+    assert_eq!(
+        thread_start["params"]["dynamicTools"][0]["inputSchema"]["properties"]["rework"]["properties"]
+            ["prior_job_id"]["type"],
+        "string"
     );
     registry.stop_all().await;
 }
