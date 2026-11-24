@@ -58,7 +58,7 @@
 .activeProjectBranchBadge {
   flex: 0 1 auto;
   min-width: 0;
-  max-width: 55%;
+  max-width: min(280px, 100%);
   overflow: hidden;
   padding: 2px 7px;
   border: 1px solid var(--border);
@@ -1012,6 +1012,9 @@
     max-width: calc(100% - 180px);
     transform: translateX(-50%);
     pointer-events: none;
+  }
+  .activeProjectBranchBadge {
+    max-width: 150px;
   }
   .mobileContextMenu {
     position: absolute;
