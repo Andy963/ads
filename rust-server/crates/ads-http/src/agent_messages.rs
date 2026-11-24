@@ -1062,6 +1062,7 @@ fn resolve_handoff_model_selection(
                     .or(default_effort);
                 return (Some(resolved_id), effort);
             }
+            break;
         }
     }
 
@@ -2412,6 +2413,7 @@ mod tests {
         let mut connection = db.connect().expect("connection");
 
         for (id, model_id, display_name) in [
+            ("model-older", "gpt-6-luna", "gpt-6-luna"),
             ("model-active", "gemini-4-neon-xhigh", "gemini-4-neon-xhigh"),
             ("model-role", "gpt-6.1-terra", "gpt-6.1-terra"),
             ("model-svc", "gpt-5.6-luna", "gpt-5.6-luna"),
@@ -2469,6 +2471,26 @@ mod tests {
                 history_key,
                 HistoryEntry {
                     role: "user".to_string(),
+                    text: "Older user turn".to_string(),
+                    ts: 5,
+                    kind: Some(build_client_message_history_kind(
+                        "cm-user-0",
+                        Some(&PromptExecutionMetadata {
+                            agent_id: Some("codex".to_string()),
+                            model: Some("model-older".to_string()),
+                            model_reasoning_effort: Some("low".to_string()),
+                            ..PromptExecutionMetadata::default()
+                        }),
+                    )),
+                },
+            )
+            .expect("older user history");
+        history
+            .add(
+                &connection,
+                history_key,
+                HistoryEntry {
+                    role: "user".to_string(),
                     text: "Active user turn".to_string(),
                     ts: 10,
                     kind: Some(build_client_message_history_kind(
@@ -2512,7 +2534,20 @@ mod tests {
         assert_eq!(turn_active.payload["model"], "model-active");
         assert_eq!(turn_active.payload["modelReasoningEffort"], "xhigh");
 
-        // Deleting/disabling active lane model falls back to Priority 2: role_profiles(acopilot).
+        // Pre-populated stale model/effort fields on persisted payload are stripped and re-resolved.
+        let mut stale_message = enqueued.message.clone();
+        stale_message
+            .payload
+            .insert("model".to_string(), json!("deleted-stale-model"));
+        stale_message
+            .payload
+            .insert("modelReasoningEffort".to_string(), json!("low"));
+        let turn_re_resolved = build_handoff_lane_turn(&db, &stale_message);
+        assert_eq!(turn_re_resolved.payload["model"], "model-active");
+        assert_eq!(turn_re_resolved.payload["modelReasoningEffort"], "xhigh");
+
+        // Deleting/disabling the latest active lane model must NOT resurrect an older user turn's
+        // model; it falls back directly to Priority 2: role_profiles(acopilot).
         {
             let mut connection = db.connect().expect("connection");
             ads_state::remove_model_service_references(&mut connection, "model-active", now)
