@@ -490,6 +490,7 @@ impl ReviewerInspectionTools {
         let mut command =
             sandbox_command(&snapshot, &cwd, executable, args, &self.sandbox_programs)?;
         let mut child = command
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
@@ -1811,7 +1812,7 @@ mod tests {
                     "executable": "sh",
                     "args": [
                         "-c",
-                        "prlimit --pid $$ --cpu --as --nproc --fsize; grep -F -q 'line one' source.txt"
+                        "if IFS= read -r input; then exit 1; fi; prlimit --pid $$ --cpu --as --nproc --fsize; grep -F -q 'line one' source.txt"
                     ]
                 })
                 .to_string(),

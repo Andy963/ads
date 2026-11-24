@@ -490,6 +490,63 @@ async fn verification_tool_records_a_sandboxed_exact_snapshot_attempt() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn actual_bubblewrap_runs_verification_in_isolated_namespaces_when_required() {
+    let repo = repository();
+    let host_network_namespace =
+        fs::read_link("/proc/self/ns/net").expect("host network namespace");
+    let report = Arc::new(Mutex::new(ads_reviewer::ReviewVerificationReport::default()));
+    let mut inspection = tools(&repo, None).with_verification_report(report.clone());
+    let _ = inspection
+        .execute(&call(
+            "run_verification",
+            json!({
+                "executable": "sh",
+                "args": [
+                    "-c",
+                    "test ! -w /source/src.ts && readlink /proc/self/ns/net && prlimit --pid $$ --cpu --as && grep -F -q 'line one' src.ts"
+                ]
+            }),
+        ))
+        .await
+        .expect("verification tool call");
+
+    let reports = report.lock().expect("verification report");
+    let command = reports.commands.first().expect("verification command");
+    let required = std::env::var("ADS_REQUIRE_REVIEW_SANDBOX").is_ok_and(|value| value == "1");
+    if !command.sandboxed {
+        assert!(
+            !required,
+            "real Bubblewrap failed in the required sandbox job: {:?}",
+            command.output
+        );
+        assert!(!command.started);
+        assert_eq!(command.exit_code, 125);
+        assert!(inspection.has_unavailable_verification());
+        return;
+    }
+
+    assert!(command.started);
+    assert_eq!(
+        command.exit_code, 0,
+        "verification output: {:?}",
+        command.output
+    );
+    let output = command.output.as_deref().expect("verification output");
+    let sandbox_network_namespace = output
+        .lines()
+        .find(|line| line.starts_with("net:["))
+        .expect("sandbox network namespace");
+    assert_ne!(
+        sandbox_network_namespace,
+        host_network_namespace.to_string_lossy().as_ref()
+    );
+    assert!(output.contains("1800"));
+    assert!(output.contains("4294967296"));
+    assert!(!inspection.has_unavailable_verification());
+}
+
 #[tokio::test]
 async fn reviewer_can_select_a_rust_check_in_a_mixed_language_repository() {
     let mut repo = repository();
